@@ -30,6 +30,7 @@ import { hashNativeArtifactBytes, readNativeArtifactBytes, readNativeProcessTrac
 import { nativeProcessTraceEnv, nativeSourceRetentionLimits } from '../../../scripts/lib/vitest-startup-trace.mjs';
 // @ts-ignore -- share the router's evidence contract before direct bundle preparation too.
 import { assertPrivateIntegrationEvidence as assertPrivatePreparationEvidence } from '../../../scripts/test-files.mjs';
+import { RESTRICTED_HOLD_PREFLIGHT_TIMEOUT_MS } from '../../../scripts/lib/restricted-hold-preflight.mjs';
 
 export interface PrivateUnrelatedCheckpointObservation {
   workspace: string;
@@ -1412,8 +1413,19 @@ type PrivateBundleBuilder = { command?: string; args?: string[]; timeoutMs: numb
   env?: NodeJS.ProcessEnv;
   /** Original diagnostics must outlive a disposable bundle/source directory. */
   retainedEvidenceDir?: string;
-  onProgress?: (progress: { step: string; completedSteps: number }) => void };
+  onProgress?: (progress: { step: string; completedSteps: number;
+    completedFiles?: number; totalFiles?: number; bytesRead?: number }) => void };
 type PrivateBundleReceipt = { path: string; sha256: string };
+
+/** The final restricted-hold census verifies the complete selected source after
+ * compilation. Its existing child deadline must fit in the enclosing builder:
+ * the compilation allowance alone left only 22s for this 120s child in WI-6464.
+ * Callers reserve this same total in isolatedWorkerOptions' preparation budget.
+ */
+export function privateOperatorApiBuildBudget() {
+  return { timeoutMs: 240_000, maxMs: 420_000 + RESTRICTED_HOLD_PREFLIGHT_TIMEOUT_MS };
+}
+
 /** Preserve a retired build before rebuilding at the runtime's canonical output path. */
 export function archivePrivateOperatorApiBuild(evidenceDir: string, archive: string): string {
   assert.ok(!existsSync(archive), 'Previous private build archive must not be overwritten');
@@ -1469,13 +1481,20 @@ export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string,
         try { steps.push(JSON.parse(line)); } catch { unreadableRows.push(index + 1); }
       }
       const last = steps.at(-1);
+      const activeSteps: typeof steps = [];
+      const durationsMs: Array<{ step: string; elapsedMs: number; status?: number }> = [];
+      for (const step of steps) {
+        if (step.event === 'start') activeSteps.push(step);
+        else if (step.event === 'end') {
+          const index = activeSteps.findLastIndex(open => open.pid === step.pid && open.step === step.step);
+          if (index < 0) continue;
+          const [open] = activeSteps.splice(index, 1);
+          durationsMs.push({ step: step.step, elapsedMs: Math.round((step.at - open.at) * 1000), status: step.status });
+        }
+      }
       receipt.steps = { path: stepPath, count: steps.length, unreadableRows,
-        last: last ?? null, active: last?.event === 'start' ? last.step : null,
-        durationsMs: steps.flatMap((step, index) => {
-          const next = steps[index + 1];
-          return step.event === 'start' && next?.event === 'end' && step.pid === next.pid && step.step === next.step
-            ? [{ step: step.step, elapsedMs: Math.round((next.at - step.at) * 1000), status: next.status }] : [];
-        }) };
+        last: last ?? null, active: activeSteps.at(-1)?.step ?? null,
+        activeSteps: activeSteps.map(({ pid, step }) => ({ pid, step })), durationsMs };
     }
     writeFileSync(join(evidenceDir, 'operator-api-build-result.json'), JSON.stringify({ ...receipt,
       endedAt: new Date().toISOString(), elapsedMs: Date.now() - started }));
@@ -1498,6 +1517,7 @@ export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string,
       catch (error) { finish(); reject(error); return; }
       const completed = new Set<string>();
       const openSteps = new Set<string>();
+      const censuses = new Map<string, { files: number; total: number; bytes: number }>();
       let rowsSeen = 0;
       let lastProgressAt: number | null = null;
       let failure: Error | undefined;
@@ -1506,7 +1526,7 @@ export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string,
         if (!existsSync(stepPath)) return;
         // Only fully appended rows can advance. Nested shell steps may interleave.
         const lines = readFileSync(stepPath, 'utf8').split('\n').slice(0, -1);
-        const progress: Array<{ step: string; completedSteps: number }> = [];
+        const progress: Array<Parameters<NonNullable<PrivateBundleBuilder['onProgress']>>[0]> = [];
         for (const line of lines.slice(rowsSeen)) {
           try {
             const step = JSON.parse(line);
@@ -1514,14 +1534,30 @@ export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string,
               || typeof step.step !== 'string' || !step.step) continue;
             const key = `${step.pid}:${step.step}`;
             if (step.event === 'start' && !completed.has(step.step)) openSteps.add(key);
-            else if (step.event === 'end' && step.status === 0 && openSteps.delete(key) && !completed.has(step.step)) {
-              completed.add(step.step); lastProgressAt = Date.now();
-              progress.push({ step: step.step, completedSteps: completed.size });
+            else if (step.event === 'end') {
+              if (openSteps.delete(key) && step.status === 0 && !completed.has(step.step)) {
+                completed.add(step.step); lastProgressAt = Date.now();
+                progress.push({ step: step.step, completedSteps: completed.size });
+              }
+            } else if (step.event === 'progress' && step.step.endsWith('source-census')
+              && openSteps.has(key) && !completed.has(step.step)
+              && Number.isSafeInteger(step.completedFiles) && Number.isSafeInteger(step.totalFiles)
+              && step.completedFiles >= 0 && step.totalFiles > 0 && step.completedFiles <= step.totalFiles
+              && Number.isSafeInteger(step.bytesRead) && step.bytesRead >= 0) {
+              const previous = censuses.get(key);
+              if (previous && (step.totalFiles !== previous.total || step.completedFiles < previous.files
+                || step.bytesRead < previous.bytes)) continue;
+              censuses.set(key, { files: step.completedFiles, total: step.totalFiles, bytes: step.bytesRead });
+              if (step.completedFiles > (previous?.files ?? 0)) {
+                lastProgressAt = Date.now();
+                progress.push({ step: step.step, completedSteps: completed.size,
+                  completedFiles: step.completedFiles, totalFiles: step.totalFiles, bytesRead: step.bytesRead });
+              }
             }
           } catch { /* an invalid journal row cannot extend the deadline */ }
         }
         rowsSeen = lines.length;
-        // Forward the same validated completions that renew this builder's
+        // Forward the same validated work that renews this builder's
         // deadline, so enclosing watchdogs need no synthetic heartbeat.
         for (const step of progress) builder.onProgress?.(step);
       };

@@ -4,11 +4,14 @@ import { mkdir, rm, symlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
 import { captureIsolatedWorker, isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../../test/isolated-integration-proof';
+import { preparePrivateOperatorApiBundle, privateOperatorApiBuildBudget } from '../../test/private-http-workspace-preflight';
 
 const root = resolve(import.meta.dirname, '../../../..');
-const options = isolatedWorkerOptions(480_000);
+const builder = privateOperatorApiBuildBudget();
+const options = isolatedWorkerOptions(480_000, process.env, 480_000, {}, builder.maxMs);
 
 it('reply and decline acknowledge persisted posts before the private production dispatcher acquires its lease', async context => {
+  let preparedApi!: Awaited<ReturnType<typeof preparePrivateOperatorApiBundle>>;
   const runId = await recordIsolatedIntegrationProof({ root, signal: context.signal,
     minimumFileRunTimeoutMs: options.testTimeoutMs,
     filePath: 'packages/operator-core/lib/consult/consult-cascade-http.integration.test.ts',
@@ -27,6 +30,7 @@ it('reply and decline acknowledge persisted posts before the private production 
       'packages/operator-core/lib/endpoint-route/routes/agent-mcp/run-tool.ts',
       'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh',
       'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts'],
+    prepare: async evidenceDir => { preparedApi = await preparePrivateOperatorApiBundle(root, evidenceDir, { builder }); },
     execute: async (observe, evidenceDir) => {
       await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
       await mkdir(join(evidenceDir, 'tmp'));
@@ -35,7 +39,8 @@ it('reply and decline acknowledge persisted posts before the private production 
       delete env.PC_HEAVY_PREEMPT_READY_FILE;
       delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
       const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
-        process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/consult-cascade-http-fixture.ts')],
+        process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/consult-cascade-http-fixture.ts'),
+        '--prepared-api-sha=' + preparedApi.sha256, '--prepared-receipt-sha=' + preparedApi.receiptSha256],
       { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
       observe(child);
       child.stdout!.on('data', chunk => {

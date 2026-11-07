@@ -363,6 +363,31 @@ export function isolatedTestFileWorkerOptions(env: NodeJS.ProcessEnv, fileCount:
   testFileExecutionFromStdout: executionStart === 'router' };
 }
 
+/** Installed Codex has five bounded assertion cases inside a private API/PG
+ * lifetime. The nested router keeps the ordinary single-file allowance; the
+ * encompassing router consumes the composed total rather than feeding its own
+ * timeout back into the child. Preserve the independent source/cleanup maxima.
+ */
+export function codexManagedToolsNativeProofOptions() {
+  const routerEnv = Object.freeze({
+    PAPERCUSP_TEST_FILE_TIMEOUT_MS: String(defaultTestFileRunTimeoutMs(1)),
+    PAPERCUSP_TEST_FILE_LIST_TIMEOUT_MS: String(testFileListTimeoutMs({})),
+  });
+  const censusExecuteMs = Number(routerEnv.PAPERCUSP_TEST_FILE_LIST_TIMEOUT_MS)
+    + Number(routerEnv.PAPERCUSP_TEST_FILE_TIMEOUT_MS) + TEST_FILE_KILL_GRACE_MS;
+  const censusWorker = { ...isolatedWorkerOptions(censusExecuteMs, routerEnv),
+    testFileExecutionFromStdout: true };
+  // Private API readiness is bounded at 90s; retain another 30s for its
+  // request handoff and host stop outside the nested router's lifetime.
+  const runtimeExecuteMs = censusWorker.testTimeoutMs + 120_000;
+  // Two 25s approval canaries and a 420s API build precede private PG allocation.
+  const runtimeWorker = { ...isolatedWorkerOptions(runtimeExecuteMs, routerEnv, runtimeExecuteMs,
+    { executeStallWindowMs: 12 * 60_000 }, 600_000), testFileExecutionFromStdout: false };
+  assert.ok(runtimeWorker.testTimeoutMs <= MAX_TEST_FILE_RUN_TIMEOUT_MS,
+    'Codex proof phase total must fit the maintained whole-run router ceiling');
+  return { routerEnv, censusWorker, runtimeWorker };
+}
+
 /** Retain original output before termination can interrupt the fixture. A
  * descendant holding stdio must not turn a completed supervisor into a wait
  * without a deadline. Failure receipts never stand in for successful cleanup.
@@ -457,7 +482,12 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
           line.startsWith('TEST_FILE_FINALIZATION ')) {
         try {
           const value = JSON.parse(line.slice('TEST_FILE_FINALIZATION '.length));
-          if (['files-complete', 'provenance-start'].includes(value.phase) &&
+          // Each routed group finalizes independently. More groups can still
+          // execute; only the invocation's terminal provenance starts this clock.
+          // Retain the legacy unscoped completion signal for older launchers.
+          const invocationComplete = value.phase === 'provenance-start' ||
+            value.phase === 'files-complete' && value.scope === undefined;
+          if (invocationComplete &&
               phase === 'execute' && deadlines.finalizeMs) armPhase('finalize');
           else if ((phase === 'bootstrap' || phase === 'finalize') && value.phase === 'provenance-progress' &&
               ['git-checkout', 'source-census'].includes(value.step)) {

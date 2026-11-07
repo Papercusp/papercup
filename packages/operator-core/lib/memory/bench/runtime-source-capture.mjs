@@ -166,6 +166,7 @@ export function startRuntimeSourceCapture(destination) {
   };
   emit({ kind: 'start', schemaVersion: 1, processId: process.pid,
     node: process.version, executable: process.execPath, startedAt: new Date().toISOString(),
+    monotonicNs: process.hrtime.bigint().toString(),
     scope: 'parsed source bytes; native libraries, model files and other processes excluded' });
   session.connect();
 
@@ -264,7 +265,8 @@ export function startRuntimeSourceCapture(destination) {
     const pending = [...targets.values()].reduce((sum, target) => sum + target.pending.size + (target.sourcePending ?? 0), 0);
     const liveWorkers = [...targets.values()].filter(target => target.id !== 'main' && target.live).length;
     emit({ kind: 'terminal', processId: process.pid, exitCode: code, sources: sourceCount,
-      workers: workerCount, errors: errors.length, pending, liveWorkers, finishedAt: new Date().toISOString() });
+      workers: workerCount, errors: errors.length, pending, liveWorkers, finishedAt: new Date().toISOString(),
+      monotonicNs: process.hrtime.bigint().toString() });
     fs.fsyncSync(fd); fs.closeSync(fd); session.disconnect();
   });
 }

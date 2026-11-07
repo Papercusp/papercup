@@ -249,7 +249,7 @@ describe('withInjectedJsonReport — a private report, without stealing stdout f
     });
   });
 
-  it.each(['default', 'verbose', 'dot'])('retains %s human output with private assertion and ledger reports', (reporter) => {
+  it.each(['default', 'verbose', 'dot', 'hanging-process'])('retains %s human output with private assertion and ledger reports', (reporter) => {
     withReporterFiles(['admin-test-runs', 'executed-source-map'], (repoRoot, reporterPath) => {
       for (const selected of [[`--reporter=${reporter}`], ['--reporter', reporter]]) {
         const input = ['--silent', ...selected];
@@ -267,6 +267,25 @@ describe('withInjectedJsonReport — a private report, without stealing stdout f
         expect(injectedReportPath).toBe('/tmp/r.json');
         expect(input).toEqual(['--silent', ...selected]);
       }
+    });
+  });
+
+  it('retains assertion, ledger and source evidence with release hang diagnostics enabled', () => {
+    withReporterFiles(['admin-test-runs', 'executed-source-map'], (repoRoot, reporterPath) => {
+      const selected = ['--reporter=default', '--reporter=hanging-process'];
+      const result = withInjectedJsonReport(selected, '/tmp/r.json', {
+        repoRoot,
+        env: { PC_EXECUTED_SOURCE_MAP_WORKSPACE: 'operator-core' },
+      });
+      expect(result.injectedReportPath).toBe('/tmp/r.json');
+      expect(result.args).toEqual([
+        ...selected,
+        '--reporter=json',
+        `--reporter=${reporterPath('admin-test-runs')}`,
+        `--reporter=${reporterPath('executed-source-map')}`,
+        '--outputFile=/tmp/r.json',
+      ]);
+      expect(selected).toEqual(['--reporter=default', '--reporter=hanging-process']);
     });
   });
 
@@ -454,6 +473,7 @@ describe('allSkippedVerdict — a run that executed ZERO of its collected tests 
     skippedUnmeasuredGroups: 0,
     skippedNames: [] as { name: string; file: string }[],
     executedNames: [] as string[],
+    executedFiles: [] as string[],
     ...over,
   });
   const skips = (n: number) =>
@@ -468,12 +488,29 @@ describe('allSkippedVerdict — a run that executed ZERO of its collected tests 
     expect(verdict.reason).toBe('every-collected-test-was-skipped');
   });
 
-  it('does NOT refuse when even ONE test executed — a partially-skipped run still measured something', () => {
+  it('does NOT refuse when a partially-skipped file has an executed assertion', () => {
     const verdict = allSkippedVerdict(
-      summaryOf({ skippedNames: skips(13), executedNames: ['matrix omp CREATE'] }),
+      summaryOf({
+        skippedNames: skips(13),
+        executedNames: ['matrix omp CREATE'],
+        executedFiles: ['lib/su-session-real-backend-matrix.integration.test.ts'],
+      }),
     );
     expect(verdict.vacuous).toBe(false);
     expect(verdict.reason).toBe('tests-executed');
+  });
+
+  it('refuses a fully skipped requested file even when another file executed an assertion', () => {
+    const verdict = allSkippedVerdict(summaryOf({
+      skippedNames: skips(13),
+      executedNames: ['other file assertion'],
+      executedFiles: ['lib/other.test.ts'],
+    }));
+    expect(verdict).toEqual({
+      vacuous: true,
+      reason: 'requested-file-has-no-executed-tests',
+      files: ['lib/su-session-real-backend-matrix.integration.test.ts'],
+    });
   });
 
   it('does NOT refuse an ordinary green run', () => {

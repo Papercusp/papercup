@@ -320,11 +320,18 @@ export function makeBgCandidate(base: string) {
 
 /** Real compiler inputs, retained independently of the suite registering a case. */
 export async function makeBgCompilerCandidate(base: string, {
-  artifactInputs = false, cliHarness = false, sourceOnly = false, protectedUnconsumed = false,
+  artifactInputs = false, cliHarness = false, sourceOnly = false, protectedUnconsumed = false, runtimeModules = false,
   trace = (_stage: string) => {},
 } = {}) {
   trace('compiler-fixture:start');
   const c = makeBgCandidate(base);
+  if (runtimeModules) {
+    write(c.fixture.repo, 'package.json', JSON.stringify({
+      ...JSON.parse(readFileSync(join(c.fixture.repo, 'package.json'), 'utf8')), type: 'module',
+    }));
+    write(c.fixture.repo, 'packages/core/runtime.mjs', 'export const original = 2;\n');
+    write(c.fixture.repo, 'packages/core/runtime.ts', 'export const transformed: number = 2;\n');
+  }
   git(c.fixture.repo, ['rm', '-rf', '--', 'node_modules', 'apps/operator/node_modules']);
   for (const path of ['papercusp-desktop/bin/lib/pinned-deps.sh', 'apps/operator/bin/release/dependency-generation.sh',
     'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh'])
@@ -356,7 +363,9 @@ export async function makeBgCompilerCandidate(base: string, {
     ...c.options.acceptedManifest, ...(sourceOnly ? { authorityKind: 'source-only' as const } : {}),
   } });
   trace('compiler-fixture:source-ready');
-  write(prepared.root, 'node_modules/fixture-dependency/package.json', '{"name":"fixture-dependency","main":"index.js"}');
+  write(prepared.root, 'node_modules/fixture-dependency/package.json', JSON.stringify({
+    name: 'fixture-dependency', main: 'index.js', ...(runtimeModules ? { type: 'module' } : {}),
+  }));
   write(prepared.root, 'node_modules/fixture-dependency/index.js', 'export default 41;\n');
   write(prepared.root, 'node_modules/fixture-package-manager/cli.js', '// fixture package-manager identity\n');
   write(prepared.root, 'node_modules/fixture-compiler/cli.js', '// fixture compiler identity\n');

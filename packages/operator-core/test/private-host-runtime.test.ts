@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { afterEach, expect, it, vi } from 'vitest';
 import { runHarness } from '@papercusp/verification-harness';
 import * as ts from 'typescript';
-import { archivePrivateOperatorApiBuild, buildPrivateOperatorApiBundle, censusPrivateRuntimeArtifact, preparePrivateOperatorApiBundle, privateBundleRuntimeEnv, privateGitCloneBundleEnv, privateMcpSourceSha, privatePgStartupIdentity, stopPrivateOperatorHost, waitForPrivateOperator, type PrivateHostStopObservation } from './private-http-workspace-preflight';
+import { archivePrivateOperatorApiBuild, buildPrivateOperatorApiBundle, censusPrivateRuntimeArtifact, preparePrivateOperatorApiBundle, privateOperatorApiBuildBudget, privateBundleRuntimeEnv, privateGitCloneBundleEnv, privateMcpSourceSha, privatePgStartupIdentity, stopPrivateOperatorHost, waitForPrivateOperator, type PrivateHostStopObservation } from './private-http-workspace-preflight';
 import { createHash, randomUUID } from 'node:crypto';
 import { readProcessIdentity } from '../lib/process-identity';
 import { hashNativeArtifactBytes, readNativeProcessTraceArtifacts } from '../../../scripts/lib/budgeted-task-scheduler.mjs';
@@ -805,9 +805,44 @@ it('keeps request fixtures on the bounded progress-aware builder path', () => {
     };
     visit(source);
   }
-  expect(callers.sort()).toEqual([routingProof, nativeProof, 'blog-post-http-fixture.ts', 'consult-cascade-http-fixture.ts', 'cupboard-listing-install-http-fixture.ts',
+  expect(callers.sort()).toEqual([routingProof, nativeProof, 'blog-post-http-fixture.ts', 'cupboard-listing-install-http-fixture.ts',
     'customer-data-support-http-fixture.ts', 'governance-http-fixture.ts', 'grading-audit-runtime-fixture.ts', 'grading-audit-runtime-fixture.ts', 'integrations-setup-http-fixture.ts', 'knowledge-native-fixture.ts', 'liveness-alarm-http-fixture.ts',
     'roster-stop-http-fixture.ts', 'staging-first-http-fixture.ts']);
+});
+
+it('keeps the consult API build in preparation and requires both original artifact pins in the worker', () => {
+  const file = join(import.meta.dirname, '../lib/consult/consult-cascade-http.integration.test.ts');
+  const source = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
+  let preparations = 0;
+  let launches = 0;
+  const visit = (node: ts.Node) => {
+    if (ts.isPropertyAssignment(node) && ['prepare', 'execute'].includes(node.name.getText(source))) {
+      const calls: string[] = [];
+      const inspect = (child: ts.Node) => {
+        if (ts.isCallExpression(child) && ts.isIdentifier(child.expression)) calls.push(child.expression.text);
+        ts.forEachChild(child, inspect);
+      };
+      inspect(node.initializer);
+      if (node.name.getText(source) === 'prepare') {
+        expect(calls).toContain('preparePrivateOperatorApiBundle');
+        preparations++;
+      } else {
+        expect(calls).not.toContain('buildPrivateOperatorApiBundle');
+        expect(calls).not.toContain('preparePrivateOperatorApiBundle');
+        expect(node.initializer.getText(source)).toContain("'--prepared-api-sha=' + preparedApi.sha256");
+        expect(node.initializer.getText(source)).toContain("'--prepared-receipt-sha=' + preparedApi.receiptSha256");
+        launches++;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  expect({ preparations, launches }).toEqual({ preparations: 1, launches: 1 });
+  const worker = readFileSync(join(import.meta.dirname, 'consult-cascade-http-fixture.ts'), 'utf8');
+  expect(worker).toContain('resolvePreparedPrivateApiBundle(process.argv.slice(2), evidenceDir)');
+  expect(worker).not.toContain('buildPrivateOperatorApiBundle');
+  expect(worker).toContain('original prepared API receipt pin');
+  expect(privateOperatorApiBuildBudget()).toMatchObject({ timeoutMs: 240_000, maxMs: 540_000 });
 });
 
 it('prepares every roster API bundle before the private execute phase', () => {
@@ -1053,6 +1088,61 @@ it('preserves the timeout when the final journal append is partial', () => {
   const receipt = JSON.parse(readFileSync(join(evidenceDir, 'operator-api-build-result.json'), 'utf8'));
   expect(receipt).toMatchObject({ error: { code: 'ETIMEDOUT' }, steps: { active: 'syntax-check', unreadableRows: [2] } });
 });
+
+it('retains nested active build steps and interleaved completed timing after census progress', () => {
+  const evidenceDir = mkdtempSync(join(tmpdir(), 'private-builder-census-')); dirs.push(evidenceDir);
+  const journal = join(evidenceDir, 'hono-host.mjs.build-steps.jsonl');
+  const rows = [
+    { at: 1, pid: 10, step: 'gate', event: 'start' },
+    { at: 2, pid: 11, step: 'source-census', event: 'start' },
+    { at: 3, pid: 12, step: 'compiler', event: 'start' },
+    { at: 4, pid: 11, step: 'source-census', event: 'progress', completedFiles: 1, totalFiles: 2 },
+    { at: 5, pid: 12, step: 'compiler', event: 'end', status: 0 },
+    { at: 6, pid: 11, step: 'source-census', event: 'progress', completedFiles: 2, totalFiles: 2 },
+  ];
+  expect(() => buildPrivateOperatorApiBundle(evidenceDir, evidenceDir, { command: process.execPath,
+    args: ['-e', 'require("node:fs").writeFileSync(process.argv[1], process.argv[2]); process.exit(17)',
+      journal, rows.map(row => JSON.stringify(row)).join('\n') + '\n'], timeoutMs: 2000 })).toThrow(/exited 17/);
+  const receipt = JSON.parse(readFileSync(join(evidenceDir, 'operator-api-build-result.json'), 'utf8'));
+  expect(receipt.steps).toMatchObject({ active: 'source-census',
+    activeSteps: [{ pid: 10, step: 'gate' }, { pid: 11, step: 'source-census' }],
+    durationsMs: [{ step: 'compiler', elapsedMs: 2000, status: 0 }] });
+});
+
+it.each(['advancing', 'repeated', 'regressed', 'changed-total', 'unpaired', 'ended'])(
+  'bounds the private builder using paired monotonic census progress: %s', async scenario => {
+    const evidenceDir = mkdtempSync(join(tmpdir(), 'private-builder-census-')); dirs.push(evidenceDir);
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+    const progress: unknown[] = [];
+    const build = buildPrivateOperatorApiBundle(evidenceDir, evidenceDir, { command: 'bash',
+      args: ['-c', 'sleep 60'], timeoutMs: 600, maxMs: 1800, pollMs: 20,
+      onProgress: row => progress.push(row) });
+    const outcome = build.catch(error => error as Error);
+    const journal = join(evidenceDir, 'hono-host.mjs.build-steps.jsonl');
+    const append = (event: string, completedFiles?: number, totalFiles = 10, pid = process.pid) =>
+      appendFileSync(journal, JSON.stringify({ at: Date.now() / 1000, pid, step: 'source-census', event,
+        ...(completedFiles === undefined ? {} : { completedFiles, totalFiles, bytesRead: completedFiles * 100 }) }) + '\n');
+    append('start');
+    append('progress', 0);
+    for (let tick = 1; tick <= 9; tick++) {
+      if (scenario === 'ended' && tick === 2) append('end');
+      append('progress', scenario === 'advancing' ? tick : tick === 1 ? 1 : scenario === 'regressed' ? 0 :
+        scenario === 'changed-total' || scenario === 'unpaired' || scenario === 'ended' ? tick : 1,
+      scenario === 'changed-total' && tick > 1 ? 11 : 10,
+      scenario === 'unpaired' && tick > 1 ? process.pid + 1 : process.pid);
+      await vi.advanceTimersByTimeAsync(200);
+    }
+    const error = await outcome;
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(scenario === 'advancing' ? /absolute-ceiling/ : /progress-stalled/);
+    const receipt = JSON.parse(readFileSync(join(evidenceDir, 'operator-api-build-result.json'), 'utf8'));
+    expect(receipt.watchdog).toMatchObject({ completedSteps: 0,
+      reason: scenario === 'advancing' ? 'absolute-ceiling' : 'progress-stalled' });
+    expect(receipt.steps.active).toBe(scenario === 'ended' ? null : 'source-census');
+    expect(progress).toEqual((scenario === 'advancing' ? Array.from({ length: 9 }, (_, i) => i + 1) : [1])
+      .map(completedFiles => ({ step: 'source-census', completedSteps: 0,
+        completedFiles, totalFiles: 10, bytesRead: completedFiles * 100 })));
+  });
 
 it('allows a progressing real build beyond its checkpoint and retains its bounded success', async () => {
   const evidenceDir = mkdtempSync(join(tmpdir(), 'private-builder-')); dirs.push(evidenceDir);

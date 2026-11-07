@@ -143,6 +143,24 @@ export function lintAsCommittedChildEnv(environment = process.env, repoRoot = nu
   // a frozen resolver may discover a desktop PG and publish proof elsewhere.
   // The shared resolver preserves explicit DSNs and dedicated-PG isolation.
   if (repoRoot) applyEnvLocal({ root: join(repoRoot, 'apps', 'operator'), env: child });
+  // Nested verifiers run from the independent reader, which has no persistent
+  // generation store of its own. Carry the donor's existing selection using
+  // the same read-only resolver that materializes the private dependencies.
+  if (repoRoot && !child.PAPERCUSP_DEPENDENCY_GENERATION_ROOT) {
+    const selected = spawnSync('bash', ['-c',
+      'source "$1"; dependency_generation_resolve_root "$2" "" 1',
+      'committed-generation-route',
+      fileURLToPath(new URL('../apps/operator/bin/release/dependency-generation.sh', import.meta.url)),
+      committedWorkRootDependencyDonor(repoRoot)], {
+      env: child, encoding: 'utf8', timeout: 10000,
+    });
+    const store = selected.stdout?.trim();
+    if (selected.error || selected.status !== 0 || !store || !isAbsolute(store)) {
+      throw new Error('lint-as-committed: persistent dependency generation route unavailable: ' +
+        (selected.error?.message || selected.stderr || `exit ${selected.status}`));
+    }
+    child.PAPERCUSP_DEPENDENCY_GENERATION_ROOT = store;
+  }
   if (testRunReceiptFile !== null) {
     if (typeof testRunReceiptFile !== 'string' || !testRunReceiptFile.trim())
       throw new Error('test-run receipt file must be an explicit path');
@@ -327,8 +345,13 @@ export function writePreparedWorkRootReceipt(workRoot, expectedSha, receiptPath)
   return resolvedReceiptPath;
 }
 
-/** A shadow install is a source reader, not a physical dependency donor. */
-export function committedWorkRootDependencyDonor(workRoot) {
+/**
+ * A shadow install is a source reader, not a physical dependency donor.
+ * Independent dependency copies still borrow Git objects from their original
+ * source, so Git clones must follow that provenance past the private install.
+ * @param {{ sourceObjects?: boolean }} [options]
+ */
+export function committedWorkRootDependencyDonor(workRoot, { sourceObjects = false } = {}) {
   let root = realpathSync(workRoot);
   const visited = new Set();
   while (existsSync(join(root, OWNER_MARKER))) {
@@ -336,7 +359,7 @@ export function committedWorkRootDependencyDonor(workRoot) {
     visited.add(root);
     const marker = JSON.parse(readFileSync(join(root, OWNER_MARKER), 'utf8'));
     verifyCommittedWorkRoot(root, marker.sha);
-    if (marker.dependencyMode === 'independent-copy-v1') return root;
+    if (marker.dependencyMode === 'independent-copy-v1' && !sourceObjects) return root;
     if (typeof marker.sourceRepoRoot !== 'string' || !isAbsolute(marker.sourceRepoRoot)) {
       throw new Error('lint-as-committed: retained source has no dependency donor provenance; rematerialize the recorded commit');
     }
@@ -1713,6 +1736,8 @@ async function main() {
 
     // Only snapshot acquisition borrows the mutable install. Commands use private
     // bytes, including after --keep/--materialize-only outlive this process.
+    // Resolve the nested generation route before paying for that snapshot.
+    const childEnvironment = lintAsCommittedChildEnv(process.env, repoRoot);
     let snapshot;
     let prerequisiteError;
     try {
@@ -1755,7 +1780,6 @@ async function main() {
       await bail(2);
     }
 
-    const childEnvironment = lintAsCommittedChildEnv(process.env, repoRoot);
     if (args.scripts.some((script) => script.startsWith('test:'))) {
       const mobileSource = materializeMobileSourceContract(repoRoot, workRoot, process.env);
       if (mobileSource) {

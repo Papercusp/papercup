@@ -5,6 +5,9 @@ import { basename, dirname, resolve, join } from 'node:path';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
+// Keep the subprocess fixture in this suite's compiler graph without running it
+// inside the Vitest worker (operator-core's roots include lib/**/*.ts).
+import type {} from '../test/fixtures/private-pg-confined-cleanup';
 import { observeIsolatedWorkerLifetime } from '../test/isolated-integration-proof';
 import { runVitestRootPreflight, RESTRICTED_HOLD_PREFLIGHT_ENV,
   RESTRICTED_HOLD_PREFLIGHT_MARKER } from '../../../scripts/lib/restricted-hold-preflight.mjs';

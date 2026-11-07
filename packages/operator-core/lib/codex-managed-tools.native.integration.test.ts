@@ -13,7 +13,7 @@ import { CODEX_MANAGED_DISPATCHER_APPROVAL_TOML, codexGatewayConfigToml,
 import type { CapabilityPolicyRequest, CapabilityPolicySurface } from '@papercusp/orchestrator/managed-capability-policy';
 import { resolveOnPath, wellKnownBackendBin } from './backend-bin-resolve.mjs';
 import { nativeToolInventory } from '../../../libs/papercusp/packages/orchestrator/src/managed-capability-client-inventory';
-import { captureIsolatedWorker, isolatedTestFileWorkerOptions, isolatedWorkerFailureDetail, isolatedWorkerReceipt,
+import { captureIsolatedWorker, codexManagedToolsNativeProofOptions, isolatedWorkerFailureDetail, isolatedWorkerReceipt,
   codexManagedToolsNativeIntegrationSourcePaths, recordIsolatedIntegrationProof } from '../test/isolated-integration-proof';
 import { preparePrivateOperatorApiBundle } from '../test/private-http-workspace-preflight';
 
@@ -411,11 +411,11 @@ describe('Codex managed replacement installed-client census', () => {
   // source/dependency verification phase that reports progress server-side;
   // this parent only observes the final worker output. The verifier owns its
   // measured-progress watchdog, so allow a bounded 12-minute outer silence window.
-  const workerOptions = isolatedTestFileWorkerOptions(process.env, 1,
-    { executeStallWindowMs: 12 * 60_000 }, 'runtime');
+  const { runtimeWorker: workerOptions } = codexManagedToolsNativeProofOptions();
   it('retains the installed Codex removal, resume, wake and drift controls with their original runtime', async context => {
     let prepared: Awaited<ReturnType<typeof preparePrivateOperatorApiBundle>> | undefined;
     const runId = await recordIsolatedIntegrationProof({ root, filePath,
+      minimumFileRunTimeoutMs: workerOptions.testTimeoutMs,
       sourcePaths: [...codexManagedToolsNativeIntegrationSourcePaths],
       retainedArtifacts: ['phases/execute/worker.log', 'phases/execute/census/worker.log',
         'phases/execute/census/managed-tool-replies.ndjson',

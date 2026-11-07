@@ -7,7 +7,7 @@ import { createServer, type Server } from 'node:http';
 import { join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { readProcessIdentity } from '../lib/process-identity';
-import { buildPrivateOperatorApiBundle, privateBundleRuntimeEnv, waitForPrivateOperator } from './private-http-workspace-preflight';
+import { resolvePreparedPrivateApiBundle, privateBundleRuntimeEnv, waitForPrivateOperator } from './private-http-workspace-preflight';
 
 let host: ChildProcess | undefined;
 let hostIdentity: ReturnType<typeof readProcessIdentity>;
@@ -47,7 +47,10 @@ async function main() {
   const evidenceDir = e.CONSULT_CASCADE_HTTP_EVIDENCE_DIR!;
   assert.ok(evidenceDir, 'retained evidence directory required');
   console.log('CONSULT_CASCADE_HTTP_PHASE bundle-start');
-  const { path: bundle } = await buildPrivateOperatorApiBundle(root, evidenceDir, { timeoutMs: 240_000, maxMs: 420_000 });
+  assert.equal(process.argv.filter(arg => arg.startsWith('--prepared-receipt-sha=')).length, 1,
+    'Consult HTTP worker requires its original prepared API receipt pin');
+  const bundle = resolvePreparedPrivateApiBundle(process.argv.slice(2), evidenceDir);
+  assert.ok(bundle, 'Consult HTTP worker requires its original prepared API bundle');
   const bytes = readFileSync(bundle);
   assert.ok(bytes.includes(Buffer.from('makeDeferredConsultReachDispatcher')), 'executed bundle lacks deferred cascade adapter');
   const bundleSha256 = createHash('sha256').update(bytes).digest('hex');

@@ -3,7 +3,9 @@
  * the process group mid-import, tsx's esbuild service died with it, and the phase
  * detail reported only "TransformError: The service is no longer running"). */
 import { describe, expect, it, vi } from 'vitest';
-import { assertIsolatedFileRunBudget, assertIsolatedIntegrationWorkerEnvironment, codexManagedToolsNativeIntegrationSourcePaths, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof } from './isolated-integration-proof';
+import { assertIsolatedFileRunBudget, assertIsolatedIntegrationWorkerEnvironment, codexManagedToolsNativeIntegrationSourcePaths, codexManagedToolsNativeProofOptions, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof } from './isolated-integration-proof';
+import { privateOperatorApiBuildBudget } from './private-http-workspace-preflight';
+import { RESTRICTED_HOLD_PREFLIGHT_TIMEOUT_MS } from '../../../scripts/lib/restricted-hold-preflight.mjs';
 
 describe('isolated integration worker environment', () => {
   const owned = { PAPERCUSP_WORKSPACE: 'test-runtime-private',
@@ -98,6 +100,65 @@ describe('isolatedWorkerOptions', () => {
 });
 
 describe('isolated proof enclosing file deadline', () => {
+  it('contains compilation and the final source census before reserving the original HTTP assertion lifetime', async () => {
+    const builder = privateOperatorApiBuildBudget();
+    const withoutPreparation = isolatedWorkerOptions(480_000, {});
+    const prepared = isolatedWorkerOptions(480_000, {}, 480_000, {}, builder.maxMs);
+    expect(builder.maxMs - 420_000).toBe(RESTRICTED_HOLD_PREFLIGHT_TIMEOUT_MS);
+    expect(prepared.phaseTimeouts).toEqual(withoutPreparation.phaseTimeouts);
+    expect(prepared.testTimeoutMs - withoutPreparation.testTimeoutMs).toBe(builder.maxMs);
+    expect(() => assertIsolatedFileRunBudget(prepared.testTimeoutMs,
+      { PAPERCUSP_TEST_FILE_TIMEOUT_MS: String(prepared.testTimeoutMs) })).not.toThrow();
+    const prepare = vi.fn();
+    const execute = vi.fn();
+    vi.stubEnv('PAPERCUSP_TEST_FILE_TIMEOUT_MS', String(prepared.testTimeoutMs - 1));
+    try {
+      await expect(recordIsolatedIntegrationProof({ root: '/must-not-allocate-consult-http-proof',
+        filePath: 'consult-cascade-http.integration.test.ts', sourcePaths: [],
+        minimumFileRunTimeoutMs: prepared.testTimeoutMs, prepare, execute,
+      })).rejects.toThrow('enclosing router has');
+      expect(prepare).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it('contains both Codex worker lifetimes without inheriting the encompassing file timeout', () => {
+    const original = codexManagedToolsNativeProofOptions();
+    vi.stubEnv('PAPERCUSP_TEST_FILE_TIMEOUT_MS', '7200000');
+    vi.stubEnv('PAPERCUSP_TEST_FILE_LIST_TIMEOUT_MS', '600000');
+    try {
+      expect(codexManagedToolsNativeProofOptions()).toEqual(original);
+      expect(original.routerEnv.PAPERCUSP_TEST_FILE_TIMEOUT_MS).toBe('600000');
+      // Existing assertion deadlines total 335s. Collection and lifecycle
+      // cleanup have their own maxima and cannot spend that assertion budget.
+      expect(Number(original.routerEnv.PAPERCUSP_TEST_FILE_TIMEOUT_MS)).toBeGreaterThan(335_000);
+      expect(original.runtimeWorker.phaseTimeouts.executeMs)
+        .toBeGreaterThan(original.censusWorker.testTimeoutMs);
+      for (const worker of [original.censusWorker, original.runtimeWorker]) {
+        expect(worker.phaseTimeouts.bootstrapMaxMs).toBe(600_000);
+        expect(worker.phaseTimeouts.finalizeMaxMs).toBe(600_000);
+        expect(worker.phaseTimeouts.teardownMaxMs).toBe(600_000);
+      }
+      expect(() => assertIsolatedFileRunBudget(original.runtimeWorker.testTimeoutMs,
+        { PAPERCUSP_TEST_FILE_TIMEOUT_MS: '7200000' })).not.toThrow();
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it('refuses an undersized Codex parent before preparing its API or observing source', async () => {
+    const { runtimeWorker } = codexManagedToolsNativeProofOptions();
+    const prepare = vi.fn();
+    const execute = vi.fn();
+    vi.stubEnv('PAPERCUSP_TEST_FILE_TIMEOUT_MS', String(runtimeWorker.testTimeoutMs - 1));
+    try {
+      await expect(recordIsolatedIntegrationProof({ root: '/must-not-allocate-codex-proof',
+        filePath: 'codex-managed-tools.native.integration.test.ts', sourcePaths: [],
+        minimumFileRunTimeoutMs: runtimeWorker.testTimeoutMs, prepare, execute,
+      })).rejects.toThrow('enclosing router has');
+      expect(prepare).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it.each([undefined, '600000'])('refuses an undersized file budget (%s) before source or worker allocation', async budget => {
     const options = isolatedWorkerOptions(480_000, {});
     const execute = vi.fn();

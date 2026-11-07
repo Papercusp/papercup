@@ -4660,6 +4660,56 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
     expect(capturedStderr).toContain(warning);
   });
 
+  it.each(['admission-starved', 'undetermined'])('preserves measured groups when another group has %s admission', async failureKind => {
+    const keys = ['PC_HEAVY_PREEMPT_READY_FILE', 'PC_HEAVY_PSI_FINALIZATION_FILE', 'PAPERCUSP_TEST_RUN_RECEIPT_FILE'];
+    const saved = keys.map(key => [key, process.env[key]] as const);
+    for (const key of keys) delete process.env[key];
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    let runs = 0;
+    try {
+      const code = await main([
+        'packages/operator-core/lib/__tests__/test-file-router.test.ts',
+        'libs/generic/cache/src/cache.test.ts',
+      ], {
+        createRouterProofCustodyImpl: () => null,
+        restrictedHoldPreflightImpl: () => ({ verdict: 'skip' }),
+        runVitestListImpl: async (_command: string, _args: string[], options: { cwd: string }) => ({
+          status: 0, stdout: options.cwd.endsWith('operator-core')
+            ? 'lib/__tests__/test-file-router.test.ts\n' : 'src/cache.test.ts\n',
+          stderr: '', error: null, timedOut: false,
+        }),
+        runCapturedTestProcessImpl: async (_command: string, args: string[], options: { cwd: string }) => {
+          runs++;
+          if (options.cwd.endsWith('operator-core')) return {
+            status: null, signal: null, stdout: '', stderr: '', timedOut: false,
+            error: Object.assign(new Error('admission unavailable'), { code: 'GOVERNED_ADMISSION_FAILED' }),
+            governedAdmissionError: true, governedAdmissionFailureKind: failureKind,
+          };
+          const reportPath = args.find(arg => arg.startsWith('--outputFile='))!.slice('--outputFile='.length);
+          writeFileSync(reportPath, JSON.stringify({ testResults: [{
+            name: join(options.cwd, 'src/cache.test.ts'),
+            assertionResults: [{ fullName: 'retained measurement', status: 'passed' }],
+          }] }));
+          return { status: 0, signal: null, stdout: '', stderr: '', error: null, timedOut: false };
+        },
+      });
+      expect(code).toBe(2);
+      expect(runs).toBe(2);
+      const marker = errSpy.mock.calls.map(([line]: unknown[]) => String(line))
+        .find(line => line.startsWith('TEST_FILE_NOT_MEASURED'));
+      expect(marker).toContain(`requested=2 executed=1 matched=2 measuredFiles=1 status=not-measured reason=${failureKind}`);
+      expect(marker).toContain('1 file(s) ran in other groups');
+      expect(marker).not.toContain('no test file ran');
+      expect(marker).toContain('retry only the unmeasured groups');
+    } finally {
+      stdout.mockRestore(); stderr.mockRestore();
+      for (const [key, value] of saved) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      }
+    }
+  });
+
   it.each(['admission-starved', 'undetermined'])('preserves the admission cause alongside NOT-MEASURED for %s', async (failureKind) => {
     const readyMarker = process.env.PC_HEAVY_PREEMPT_READY_FILE;
     const finalizationMarker = process.env.PC_HEAVY_PSI_FINALIZATION_FILE;

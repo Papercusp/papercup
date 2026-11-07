@@ -1650,7 +1650,9 @@ export function withInjectedJsonReport(vitestArgs, reportPath, {
   progressHeartbeat = true,
 } = {}) {
   const args = vitestArgs ?? [];
-  const humanReporters = new Set(['default', 'verbose', 'dot']);
+  // The built-in resource diagnostic also preserves human output. Enabling it
+  // must not discard the private assertion/skipped-test report (EI-28144496337606350).
+  const humanReporters = new Set(['default', 'verbose', 'dot', 'hanging-process']);
   const selectedReporters = [];
   let callerHasOutputFile = false;
   for (let i = 0; i < args.length; i++) {
@@ -1846,6 +1848,9 @@ export function aggregateGroupResults(groupResults) {
   const skippedNames = groupResults.flatMap((g) => g.skippedNames ?? []);
   const executedNames = groupResults.flatMap((g) => g.executedNames ?? []);
   const executedFiles = groupResults.flatMap((g) => g.executedFiles ?? []);
+  // Count only files with observed assertions. A later admission refusal must
+  // preserve earlier measurements without treating attempted files as proof.
+  const measuredFiles = new Set(executedFiles).size;
   return {
     ok,
     requested,
@@ -1858,6 +1863,7 @@ export function aggregateGroupResults(groupResults) {
     skippedNames,
     executedNames,
     executedFiles,
+    measuredFiles,
     anyUnmatched,
     anyFailed,
     launchError,
@@ -3090,7 +3096,7 @@ export function runCapturedTestProcess(command, args, options = {}) {
   } = options;
   const finalizationStartedAt = Date.now();
   const finalizationPhase = (phase) => onProgress('TEST_FILE_FINALIZATION ' + JSON.stringify({
-    pid: process.pid, cwd: cwdLabel, phase, elapsedMs: Date.now() - finalizationStartedAt,
+    pid: process.pid, cwd: cwdLabel, phase, scope: 'group', elapsedMs: Date.now() - finalizationStartedAt,
   }));
   // The launcher is resolved per spawn, inside runChild, against the env the child actually
   // gets (the governed env when admission supplies one) — see resolveTestChildLauncher.
@@ -4760,9 +4766,12 @@ export async function main(
     if (summary.governedAdmissionFailureKind) {
       console.error(
         `TEST_FILE_NOT_MEASURED requested=${summary.requested} executed=${summary.executed} ` +
-          `matched=${summary.matched} measuredFiles=0 status=not-measured ` +
+          `matched=${summary.matched} measuredFiles=${summary.measuredFiles} status=not-measured ` +
           `reason=${summary.governedAdmissionFailureKind} — governed test-process admission ` +
-          (summary.governedAdmissionFailureKind === 'admission-starved'
+          (summary.executed > 0
+            ? `failed for part of this request; ${summary.executed} file(s) ran in other groups. ` +
+              'Retain their individual reports; retry only the unmeasured groups.'
+            : summary.governedAdmissionFailureKind === 'admission-starved'
             ? 'was refused after retryable database contention; no test file ran. Retry when the admission queue clears.'
             : 'failed before a test process started; no test file ran. The cause is undetermined, so do not triage the named files.'),
       );

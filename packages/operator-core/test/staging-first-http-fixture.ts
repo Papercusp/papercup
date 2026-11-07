@@ -11,7 +11,7 @@ import { loadHarnessRegistry, saveHarnessRegistry } from '../lib/harness-registr
 import { readProcessIdentity } from '../lib/process-identity';
 import { resolvePlanScope } from '../lib/agent-tools/plans/source';
 import { buildPrivateOperatorApiBundle, privateBundleRuntimeEnv, privateNativeDockerHost, waitForPrivateOperator, stopPrivateOperatorHost, qualifyCommittedReaderSource, observeCommittedReaderLoadedSources, resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle } from './private-http-workspace-preflight';
-import { captureIsolatedWorker, isolatedTestFileWorkerOptions, isolatedWorkerOptions, isolatedWorkerFailureDetail, isolatedWorkerReceipt, retainIsolatedWorkerProgress } from './isolated-integration-proof';
+import { captureIsolatedWorker, codexManagedToolsNativeProofOptions, isolatedWorkerOptions, isolatedWorkerFailureDetail, isolatedWorkerReceipt, retainIsolatedWorkerProgress } from './isolated-integration-proof';
 import { measurePrivateUnrelatedCheckpointScenario } from './private-unrelated-write-http-scenario';
 
 let host: ChildProcess | undefined;
@@ -299,7 +299,8 @@ async function main() {
     assert.ok(token, 'private operator MCP bearer is required');
     const censusDir = join(evidenceDir, 'census');
     mkdirSync(censusDir);
-    const env = { ...e, PAPERCUSP_TEST_RUN_GROUP:
+    const codexBudget = isCodexManagedTools ? codexManagedToolsNativeProofOptions() : undefined;
+    const env = { ...e, ...codexBudget?.routerEnv, PAPERCUSP_TEST_RUN_GROUP:
       (e.PAPERCUSP_TEST_RUN_GROUP ?? '') + ':' + backend + '-managed-surface-worker',
       // The installed client's code-mode probe checks exit_code and exact output.
       // Foreground capability:bash exposes those fields through negotiated MCP
@@ -315,7 +316,7 @@ async function main() {
     // must not consume that allowance or inherit the enclosing proof's budget.
     const censusOptions = isOmpManagedTools
       ? { ...isolatedWorkerOptions(180_000, env), testFileExecutionFromStdout: 'case' as const }
-      : isolatedTestFileWorkerOptions(env, 1);
+      : codexBudget!.censusWorker;
     const result = await captureIsolatedWorker(child, censusDir, censusOptions);
     assert.equal(result.code, 0, isolatedWorkerFailureDetail(result.output, result));
     assert.equal(result.signal, null);

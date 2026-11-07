@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pruneRuns, runHarness } from '@papercusp/verification-harness';
-import { assertIsolatedFileRunBudget, assertIsolatedWorkerReaped, captureIsolatedWorker, isolatedIntegrationDiagnosticArtifacts, isolatedTestFileWorkerOptions, isolatedWorkerOptions, isolatedWorkerFailureDetail, isolatedWorkerReceipt, isolatedWorkerPendingStage, preflightCurrentSuNativeEgress, recordIsolatedIntegrationProof, retainIsolatedNativeTaskDiagnostics, retainIsolatedWorkerProgress, withIsolatedNativeLaunchDiagnostics } from '../test/isolated-integration-proof';
+import { assertIsolatedFileRunBudget, assertIsolatedWorkerReaped, captureIsolatedWorker, codexManagedToolsNativeProofOptions, isolatedIntegrationDiagnosticArtifacts, isolatedTestFileWorkerOptions, isolatedWorkerOptions, isolatedWorkerFailureDetail, isolatedWorkerReceipt, isolatedWorkerPendingStage, preflightCurrentSuNativeEgress, recordIsolatedIntegrationProof, retainIsolatedNativeTaskDiagnostics, retainIsolatedWorkerProgress, withIsolatedNativeLaunchDiagnostics } from '../test/isolated-integration-proof';
 import { assertPrivateUnrelatedCheckpointObservation, privateClaudeModelConfig, privateCodexModelConfig, privateNativeDockerHost, retainPrivateProviderResponse, stopPrivateOperatorHost, type PrivateUnrelatedCheckpointObservation } from '../test/private-http-workspace-preflight';
 const NEVER_EMIT_MARKER = 'never-emit-me';
 
@@ -228,6 +228,24 @@ async function withCapturedRouter(options: Parameters<typeof captureIsolatedWork
 
 const routerPhaseOptions = { phaseTimeouts: { bootstrapMs: 100, executeMs: 80, finalizeMs: 30, teardownMs: 30 },
   killGraceMs: 10, drainGraceMs: 10, testFileExecutionFromStdout: true };
+
+it('keeps Codex execution timeout in custody through its teardown and hard-stop grace', async () => {
+  const { runtimeWorker } = codexManagedToolsNativeProofOptions();
+  await withCapturedRouter(runtimeWorker, async (child, result) => {
+    child.emit('message', { kind: 'isolated-runtime-start' });
+    await vi.advanceTimersByTimeAsync(runtimeWorker.phaseTimeouts.executeMaxMs!);
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    child.emit('message', { kind: 'isolated-runtime-stopping' });
+    await vi.advanceTimersByTimeAsync(runtimeWorker.killGraceMs - 1);
+    expect(child.kill).not.toHaveBeenCalledWith('SIGKILL');
+    await vi.advanceTimersByTimeAsync(1);
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+    Object.assign(child, { signalCode: 'SIGKILL' });
+    child.emit('exit', null, 'SIGKILL');
+    child.emit('close', null, 'SIGKILL');
+    expect(await result).toMatchObject({ timedOut: true, timeoutPhase: 'execute', signal: 'SIGKILL' });
+  });
+});
 
 it('retains the first worker failure after cleanup chatter and temporary log removal', async () => {
   const packet = mkdtempSync(join(tmpdir(), 'isolated-failure-packet-'));

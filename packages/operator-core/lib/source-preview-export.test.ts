@@ -1419,6 +1419,30 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow('tampered verification Git checkout');
   });
 
+  it.each(['shadow', 'independent-copy-v1'] as const)(
+    'preserves verifier Git objects after removing an intermediate %s reader', async dependencyMode => {
+      const fixture = makeSuperproject(join(tmp, 'verifier-object-donor-' + dependencyMode));
+      git(fixture.repo, ['commit', '--allow-empty', '-qm', 'second verifier revision']);
+      const ref = git(fixture.repo, ['rev-parse', 'HEAD']);
+      const materialized = join(tmp, 'verifier-object-reader-' + dependencyMode);
+      git(fixture.repo, ['clone', '--local', '--shared', '--recurse-submodules', fixture.repo, materialized]);
+      const shadow = await import(new URL('../../../scripts/lint-as-committed.mjs', import.meta.url).href);
+      write(materialized, shadow.OWNER_MARKER, JSON.stringify({
+        sha: ref, sourceRepoRoot: fixture.repo,
+        ...(dependencyMode === 'independent-copy-v1' ? { dependencyMode } : {}),
+      }));
+      expect(shadow.committedWorkRootDependencyDonor(materialized)).toBe(
+        dependencyMode === 'independent-copy-v1' ? materialized : fixture.repo);
+      const input = SHIPPED.find(path => path.startsWith('apps/'))!;
+      const dest = join(tmp, 'verifier-object-export-' + dependencyMode);
+      const receipt = await prepareVerifierSource({ repo: materialized, ref,
+        dest, inputs: [input], gitCheckout: true });
+      rmSync(materialized, { recursive: true, force: true });
+      expect(git(dest, ['cat-file', '-t', receipt.sourceCommit])).toBe('commit');
+      await expect(verifyVerifierSource(dest, receipt)).resolves.toEqual(receipt);
+      expect(git(dest, ['status', '--porcelain', '--untracked-files=all'])).toBe('');
+    });
+
   it('keeps native preparation pinned when the canonical donor changes after admission, and refuses fixed-source drift', async () => {
     const fixture = makeSuperproject(join(tmp, 'verifier-native-race-fixture'));
     for (const path of TAURI_VERIFIER_INPUTS) write(fixture.repo, path, `// ${path}\n`);
@@ -3580,9 +3604,10 @@ describe('BG inherited manifest and original source boundaries', () => {
     } finally { process.env = originalEnv; stderr.mockRestore(); }
   });
 
-  async function compilerCandidate(artifactInputs = false, cliHarness = false, sourceOnly = false, protectedUnconsumed = false) {
+  async function compilerCandidate(artifactInputs = false, cliHarness = false, sourceOnly = false, protectedUnconsumed = false,
+    runtimeModules = false) {
     return makeBgCompilerCandidate(join(tmp, `bg-source-${++serial}`),
-      { artifactInputs, cliHarness, sourceOnly, protectedUnconsumed, trace: bgFixtureTrace });
+      { artifactInputs, cliHarness, sourceOnly, protectedUnconsumed, runtimeModules, trace: bgFixtureTrace });
   }
 
   it('bg-r1-compiler-resolver-metadata-transient-restored refuses publication after real resolution used changed package metadata then restored it', async () => {
@@ -3764,8 +3789,8 @@ describe('BG inherited manifest and original source boundaries', () => {
       } finally { wholeFileRead.mockRestore(); syncBuiltinESMExports(); }
     });
 
-  async function maintainedCompilerCandidate(sourceOnly = false, protectedUnconsumed = false) {
-    const { prepared } = await compilerCandidate(true, true, sourceOnly, protectedUnconsumed);
+  async function maintainedCompilerCandidate(sourceOnly = false, protectedUnconsumed = false, runtimeModules = false) {
+    const { prepared } = await compilerCandidate(true, true, sourceOnly, protectedUnconsumed, runtimeModules);
     const installed = dirname(createRequire(import.meta.url).resolve('@papercusp/host-esbuild/package.json'));
     const privateCompiler = join(prepared.root, 'node_modules/@papercusp/host-esbuild');
     bgFixtureTrace('private-compiler-copy:start');
@@ -3797,8 +3822,8 @@ describe('BG inherited manifest and original source boundaries', () => {
     return { prepared, dependencies, invocation, record, argv, entry, expectedVersion, replayIdentityDefine };
   }
 
-  async function partitionCompilation(sourceOnly = true, protectedUnconsumed = false) {
-    const fixture = await maintainedCompilerCandidate(sourceOnly, protectedUnconsumed);
+  async function partitionCompilation(sourceOnly = true, protectedUnconsumed = false, runtimeModules = false) {
+    const fixture = await maintainedCompilerCandidate(sourceOnly, protectedUnconsumed, runtimeModules);
     const bank = dirname(fixture.entry), stageLeaf = 'partition-generation';
     mkdirSync(bank, { recursive: true });
     const temporary = 'hono-host.mjs.tmp.@BG_PID@';
@@ -3817,25 +3842,60 @@ describe('BG inherited manifest and original source boundaries', () => {
   }
 
   let compilerExecutionFixture: ReturnType<typeof partitionCompilation> | undefined;
-  let runtimeCompilation: Promise<{
+  const runtimeCompilations: (Promise<{
     output: Awaited<ReturnType<typeof qualifyBgVerifierOutput>>;
     record: Awaited<ReturnType<typeof partitionCompilation>>['record'];
     invocation: Awaited<ReturnType<typeof partitionCompilation>>['args']['invocation'];
     execution: Parameters<typeof qualifyBgVerifierRuntimeSources>[0]['execution'];
-  }> | undefined;
-  async function compiledRuntime() {
-    return runtimeCompilation ??= (async () => {
-      const fixture = await partitionCompilation();
+  }> | undefined)[] = [];
+  async function compiledRuntime(transformed = false, native = false) {
+    return runtimeCompilations[Number(transformed) + Number(native) * 2] ??= (async () => {
+      // No CommonJS syntax-detection attempt precedes the original ESM bytes.
+      // A failed parse must continue to refuse qualification in the capture.
+      const fixture = await partitionCompilation(true, false, true);
       const output = await qualifyBgVerifierOutput(fixture.args);
       // Preserve the original temporary output and compiler custody separately.
-      const entry = join(tmp, 'runtime-compiled-output.mjs');
+      const prefix = native ? 'runtime-native-output' : transformed ? 'runtime-transformed-output' : 'runtime-compiled-output';
+      const entry = join(tmp, prefix + '.mjs');
       cpSync(output.entry.path, entry);
-      const capture = join(tmp, 'runtime-compiled-output.sources.jsonl');
-      const trace = join(tmp, 'runtime-compiled-output.trace');
+      const capture = join(tmp, prefix + '.sources.jsonl');
+      const trace = join(tmp, prefix + '.trace');
       const preload = join(SOURCE_ROOT, 'packages/operator-core/lib/memory/bench/runtime-source-capture.mjs');
+      const sourceInput = join(fixture.prepared.root, 'packages/core/runtime.' + (transformed ? 'ts' : 'mjs'));
+      const dependencyInput = join(fixture.prepared.root, 'node_modules/fixture-dependency/index.js');
+      // Preflight the two measured failure classes before running qualification:
+      // CommonJS format detection must not produce a failed parse, and a TS
+      // loader's transformed bytes must never become original file authority.
+      for (const packagePath of ['package.json', 'node_modules/fixture-dependency/package.json'])
+        expect(JSON.parse(readFileSync(join(fixture.prepared.root, packagePath), 'utf8')).type).toBe('module');
+      const nativePreload = join(tmp, prefix + '.native.mjs');
+      if (native) writeFileSync(nativePreload, `
+import { sampleNativeRuntime } from ${JSON.stringify(pathToFileURL(join(SOURCE_ROOT,
+  'libs/generic/memory/src/local-embedder-worker.script.mjs')).href)};
+import { writeSync } from 'node:fs';
+const runtime = sampleNativeRuntime('cpu');
+const identity = { processId: process.pid, nativeThreadId: process.pid, runTag: 'bg-no-op' };
+function marker(phase) {
+  const monotonicNs = process.hrtime.bigint().toString();
+  const bytes = Buffer.from('PC_NATIVE_RUN\\t' + JSON.stringify({ ...identity, phase, monotonicNs }) + '\\n');
+  if (writeSync(2, bytes) !== bytes.length) throw new Error('incomplete diagnostic marker');
+  return monotonicNs;
+}
+const startMonotonicNs = marker('start'), endMonotonicNs = marker('end');
+console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
+  windows: [{ ...identity, startMonotonicNs, endMonotonicNs }],
+  firstRun: { ...identity, runtime, monotonicNs: startMonotonicNs, phase: 'start', device: 'cpu',
+    requestId: 1, attempt: 1, workerThreadId: 0, model: 'diagnostic-no-op',
+    observedAt: new Date().toISOString(), clock: 'node-hrtime', runIndex: 1 }
+}));
+`);
       const result = spawnSync('strace', runtimeFileTraceArguments(trace,
-        [process.execPath, '--import', pathToFileURL(preload).href, entry]), {
-        env: { PATH: '/usr/bin:/bin', PAPERCUSP_RUNTIME_SOURCE_CAPTURE: capture },
+        [process.execPath, '--import', pathToFileURL(preload).href,
+          '--import', pathToFileURL(sourceInput).href,
+          '--import', pathToFileURL(dependencyInput).href,
+          ...(native ? ['--import', pathToFileURL(nativePreload).href] : []), entry]), {
+        env: { PATH: '/usr/bin:/bin', PAPERCUSP_RUNTIME_SOURCE_CAPTURE: capture,
+          ...(native ? { LD_DEBUG: 'files' } : {}) },
         encoding: 'utf8', timeout: 15_000, maxBuffer: 1024 * 1024,
       });
       const rows = existsSync(capture) ? readFileSync(capture, 'utf8').trim().split('\n').map(line => JSON.parse(line)) : [];
@@ -3844,12 +3904,66 @@ describe('BG inherited manifest and original source boundaries', () => {
         lifecycle: rows.filter(row => row.kind !== 'source') }));
       expect(result.status, result.stderr).toBe(0);
       expect(result.error).toBeUndefined();
+      expect(rows.at(-1), 'capture must settle successfully before any byte-origin assertion')
+        .toMatchObject({ kind: 'terminal', errors: 0, pending: 0 });
+      for (const path of [sourceInput, dependencyInput]) {
+        const source = rows.find(row => row.kind === 'source' && row.url === pathToFileURL(path).href);
+        expect(source, 'each original preload needs a parsed-source receipt').toBeDefined();
+        const original = digest(readFileSync(path));
+        if (transformed && path === sourceInput) expect(source.sha256).not.toBe(original);
+        else expect(source.sha256, 'positive fixture must parse the original file bytes').toBe(original);
+      }
+      const nativeCaptures = native ? [(() => {
+        const packet = JSON.parse(result.stdout.split('\n').find(line => line.startsWith('BG_NATIVE_CAPTURE\t'))!
+          .slice('BG_NATIVE_CAPTURE\t'.length));
+        const stderr = Buffer.from(result.stderr);
+        return { ...packet, stderr, receipt: { source: 'spawn-pipe' as const, captureStartedBeforeExec: true as const,
+          eof: true as const, processId: rows[0].processId, exitCode: result.status!, signal: result.signal,
+          bytes: stderr.length, sha256: digest(stderr) } };
+      })()] : undefined;
       return { output, record: fixture.record, invocation: fixture.args.invocation,
         execution: { entry, trace: readFileSync(trace, 'utf8'), captures: [rows],
+          ...(nativeCaptures ? { nativeCaptures } : {}),
           terminal: { processId: rows[0].processId, exitCode: result.status!, signal: result.signal,
             eof: true, captureStartedBeforeExec: true } } };
     })();
   }
+
+  it.each(['positive', 'absent', 'missing-process', 'duplicate-process', 'foreign-process',
+    'source-clock', 'early-sample', 'late-window', 'stderr-digest', 'stderr-eof',
+    'mapped-bytes', 'original-node'] as const)('compiled runtime native custody: %s', async variant => {
+    const fixture = await compiledRuntime(false, true);
+    const execution = JSON.parse(JSON.stringify(fixture.execution)) as typeof fixture.execution;
+    execution.nativeCaptures!.forEach((capture, index) => {
+      capture.stderr = Buffer.from(fixture.execution.nativeCaptures![index]!.stderr);
+    });
+    const capture = execution.nativeCaptures![0]!;
+    const record = JSON.parse(JSON.stringify(fixture.record)) as typeof fixture.record;
+    if (variant === 'absent') delete execution.nativeCaptures;
+    else if (variant === 'missing-process') execution.nativeCaptures = [];
+    else if (variant === 'duplicate-process') execution.nativeCaptures!.push(capture);
+    else if (variant === 'foreign-process') capture.firstRun.processId++;
+    else if (variant === 'source-clock') delete execution.captures[0]![0].monotonicNs;
+    else if (variant === 'early-sample') capture.firstRun.runtime.beforeNs = '1';
+    else if (variant === 'late-window') capture.windows[0].endMonotonicNs = '999999999999999999999';
+    else if (variant === 'stderr-digest') capture.receipt.sha256 = 'a'.repeat(64);
+    else if (variant === 'stderr-eof') capture.receipt.eof = false as any;
+    else if (variant === 'mapped-bytes') capture.firstRun.runtime.libraries[0].sha256 = 'a'.repeat(64);
+    else if (variant === 'original-node') record.invocation.node.sha256 = 'a'.repeat(64);
+    const qualify = () => qualifyBgVerifierRuntimeSources({ ...fixture, record, execution });
+    if (variant !== 'positive' && variant !== 'absent') { expect(qualify).toThrow(); return; }
+    const proof = qualify();
+    expect(proof.nativeBindings).toHaveLength(variant === 'positive' ? 1 : 0);
+    expect(proof.nativeQualification).toBe(variant === 'positive' ? 'selected-windows-only' : 'not-observed');
+    if (variant === 'positive') {
+      expect(proof.nativeBindings[0]!.closure.completeBeforeInferenceClosureVerified).toBe(true);
+      expect(proof.nativeBindings[0]!.expectedHostManifestQualified).toBe(false);
+      expect(proof.nativeBindings[0]!.files.some(file => file.origin === 'host-observed')).toBe(true);
+    }
+    expect(proof.completeRuntimeClosureVerified).toBe(false);
+    expect(proof.dependencyQualification).toBe('required');
+    expect(proof.creatorFence).toBe('required');
+  });
 
   it.each(['positive', 'missing-compiler', 'compiler-api', 'parsed-bytes', 'parsed-size',
     'missing-entry', 'query-alias', 'missing-process', 'unobserved-close'])(
@@ -3865,6 +3979,14 @@ describe('BG inherited manifest and original source boundaries', () => {
         expect(proof).toMatchObject({ compiledOutputBytesObserved: true, completeRuntimeClosureVerified: false,
           buildRecordSha256: fixture.output.buildRecordSha256, dependencyQualification: 'required', creatorFence: 'required' });
         expect(proof.bindings).toEqual([expect.objectContaining({ sha256: fixture.output.entry.sha256, target: 'main' })]);
+        expect(proof.inputBindings).toEqual(expect.arrayContaining([
+          expect.objectContaining({ origin: 'source', file: expect.objectContaining({
+            path: join(fixture.record.prepared.root, 'packages/core/runtime.mjs') }) }),
+          expect.objectContaining({ origin: 'dependency', file: expect.objectContaining({
+            path: join(fixture.record.prepared.root, 'node_modules/fixture-dependency/index.js') }) }),
+        ]));
+        expect(proof.unqualifiedSources.some(row => row.url === pathToFileURL(
+          join(fixture.record.prepared.root, 'node_modules/fixture-dependency/index.js')).href)).toBe(false);
         expect(proof.unqualifiedSources.length).toBeGreaterThan(0);
         expect(proof.population.parsedSourceProcessPopulationComplete).toBe(true);
         return;
@@ -3886,6 +4008,40 @@ describe('BG inherited manifest and original source boundaries', () => {
       };
       expect(() => qualifyBgVerifierRuntimeSources(args)).toThrow(reason[variant]);
     });
+
+  it.each(['source-bytes', 'dependency-bytes', 'dependency-query', 'uncensused-source',
+    'uncensused-dependency', 'foreign-file'] as const)(
+    'compiled runtime original input custody: %s', async variant => {
+      const fixture = await compiledRuntime();
+      const execution = JSON.parse(JSON.stringify(fixture.execution)) as typeof fixture.execution;
+      const rows = execution.captures[0]!;
+      const path = join(fixture.record.prepared.root, variant === 'source-bytes'
+        ? 'packages/core/runtime.mjs' : 'node_modules/fixture-dependency/index.js');
+      const source = rows.find(row => row.kind === 'source' && row.url === pathToFileURL(path).href)!;
+      expect(source).toBeDefined();
+      if (variant.endsWith('-bytes')) source.sha256 = 'a'.repeat(64);
+      else if (variant === 'dependency-query') source.url += '?loader-cache';
+      else source.url = pathToFileURL(variant === 'foreign-file' ? join(tmp, 'foreign-runtime.mjs')
+        : join(fixture.record.prepared.root, variant === 'uncensused-source'
+          ? 'packages/core/unrecorded.mjs' : 'node_modules/fixture-dependency/unrecorded.js')).href;
+      if (variant === 'foreign-file') {
+        const proof = qualifyBgVerifierRuntimeSources({ ...fixture, execution });
+        expect(proof.unqualifiedSources).toContainEqual(expect.objectContaining({ url: source.url }));
+        expect(proof.completeRuntimeClosureVerified).toBe(false);
+        expect(proof.dependencyQualification).toBe('required');
+        return;
+      }
+      expect(() => qualifyBgVerifierRuntimeSources({ ...fixture, execution })).toThrow(
+        variant.endsWith('-bytes') ? 'BG parsed runtime input differs from original input bytes'
+          : variant === 'dependency-query' ? 'BG runtime source URL is not canonical'
+            : 'BG runtime file is outside original input census');
+    });
+
+  it('compiled runtime original input custody: actual transformed TypeScript refuses original byte authority', async () => {
+    const fixture = await compiledRuntime(true);
+    expect(() => qualifyBgVerifierRuntimeSources(fixture))
+      .toThrow('BG parsed runtime input differs from original input bytes');
+  });
 
   it.each(['positive', 'api', 'binary', 'sealed-binary', 'output-inode', 'metafile-inode',
     'execution-omitted', 'execution-node', 'execution-api', 'execution-native', 'execution-launches'])(
