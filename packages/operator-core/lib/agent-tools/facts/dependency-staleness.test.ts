@@ -18,7 +18,7 @@ import {
   markStaleDependencyFacts,
   type CurrentCellObservation,
 } from './dependency-staleness';
-import { FACT_DEPENDENCY_OBSERVED_CHARS, type FactDependency } from '../../agent-facts/store';
+import { FACT_DEPENDENCY_OBSERVED_CHARS, type AgentFact, type FactDependency } from '../../agent-facts/store';
 import type { CellObservationAnchor } from '../../cell-contract';
 import type { CellRead } from '../../cell-read';
 
@@ -232,7 +232,7 @@ describe('P004 semantic dependency capture and reread', () => {
   };
   const reread = async (deps: FactDependency[], r: CellRead) => {
     readCellSpy.mockResolvedValue(r);
-    const fact = { body: 'retained conclusion', dependsOn: deps } as never;
+    const fact = { body: 'retained conclusion', dependsOn: deps } as AgentFact;
     return (await markStaleDependencyFacts([fact], {} as never, {} as never))[0];
   };
 
