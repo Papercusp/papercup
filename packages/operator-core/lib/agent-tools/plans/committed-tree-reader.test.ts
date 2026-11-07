@@ -377,6 +377,16 @@ describe('batched reads', () => {
       outcome: 'success',
     });
     expect(diagnostics.lsTreeRecords?.[0]).not.toHaveProperty('paths');
+    const failure = Object.assign(new Error('late Git deadline'), { code: 'ETIMEDOUT' });
+    await expect(readCommittedFiles(root, commit, ['src/a.ts'], {
+      diagnostics,
+      git: async () => { throw failure; },
+    })).rejects.toBe(failure);
+    expect(diagnostics.lsTreeRecords).toHaveLength(8);
+    expect(diagnostics.lsTreeRecordsDropped).toBe(3);
+    expect(diagnostics.lsTreeRecords?.at(-1)).toMatchObject({
+      outcome: 'error', failurePhase: 'git', errorCode: 'ETIMEDOUT',
+    });
   });
 
   it('records the batched ls-tree size and elapsed time when the git read times out', async () => {

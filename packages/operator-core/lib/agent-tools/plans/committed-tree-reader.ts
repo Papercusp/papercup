@@ -144,6 +144,12 @@ function recordLsTree(
   if (!records) return;
   if (records.length >= MAX_LS_TREE_RECORDS) {
     diagnostics!.lsTreeRecordsDropped = (diagnostics!.lsTreeRecordsDropped ?? 0) + 1;
+    // Keep the terminating read even when earlier successful reads filled the
+    // request's bounded trace. Otherwise a failed census looks entirely healthy.
+    if (record.outcome === 'error') {
+      records.shift();
+      records.push(record);
+    }
     return;
   }
   records.push(record);
