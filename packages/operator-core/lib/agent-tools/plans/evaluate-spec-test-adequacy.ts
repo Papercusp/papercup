@@ -8,7 +8,7 @@ import { resolveEffectiveHarnessSlug } from './_ctx-opts';
 import { getAcceptanceRubricsForPlan, getRetiredAcceptanceRubricsForPlan } from '../../rubrics';
 import { listSpecClauses } from './spec-clauses-store';
 import {
-  evidenceCurrentInputKey,
+  evidenceCurrentInputMeasurementKey,
   listSpecEvidence,
   readCurrentOperationalArtifactDisclosures,
   evidenceCurrentInputSchema,
@@ -1319,13 +1319,13 @@ export default defineTool({
         sourceBarTestRequirements,
         current: (() => {
           const merged = new Map<string, EvidenceCurrentInput>();
-          for (const input of current ?? []) merged.set(evidenceCurrentInputKey(input), input);
+          for (const input of current ?? []) merged.set(evidenceCurrentInputMeasurementKey(input), input);
           // The grade selects the newest append of each exact-clause binding.
           // Its replay must use that SAME measurement, not an older recipe that
           // happens to appear later in the newest-first evidence history.
           for (const row of clauseEvidence) {
             if (!latestClauseEvidence.has(row) || row.serverMeasurement?.status !== 'measured') continue;
-            merged.set(evidenceCurrentInputKey(row.serverMeasurement.current), row.serverMeasurement.current);
+            merged.set(evidenceCurrentInputMeasurementKey(row.serverMeasurement.current), row.serverMeasurement.current);
           }
           return merged.size > 0 ? [...merged.values()] : undefined;
         })(),

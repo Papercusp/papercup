@@ -59,6 +59,8 @@ export interface SpecClauseFalsifier {
   probeMethod?: string;
   /** Canonical acceptance scenarios every adequate proof cohort must execute successfully. */
   requiredScenarios?: string[];
+  /** Same-scope successful terminal receipts required in addition to executable proof. */
+  requiredSuccessfulWorkItemIds?: string[];
   /** Require one immutable negative and one repaired recurrence binding per causal pair id. */
   causalPairing?: SpecCausalPairingMode;
 }
@@ -68,6 +70,7 @@ export interface SpecClauseFalsifierWrite {
   observation: string;
   probeMethod?: string | null;
   requiredScenarios?: string[] | null;
+  requiredSuccessfulWorkItemIds?: string[] | null;
   causalPairing?: SpecCausalPairingMode | null;
 }
 
@@ -138,6 +141,9 @@ export const specWriteSchema = z.object({
       .min(1).max(100).refine((ids) => new Set(ids).size === ids.length, 'proof obligation ids must be unique')
       .nullable().optional(),
     causalPairing: z.enum(SPEC_CAUSAL_PAIRING_MODES).nullable().optional(),
+    requiredSuccessfulWorkItemIds: z.array(z.string().trim().regex(/^(?:WI|EI)-[0-9]+$/))
+      .min(1).max(64).refine((ids) => new Set(ids).size === ids.length, 'receipt work-item ids must be unique')
+      .nullable().optional(),
   }).nullable().optional(),
   acceptanceRef: z.string().trim().min(1).max(1000).nullable().optional(),
   sourceBar: z.object({
@@ -234,6 +240,7 @@ export type FalsifierIssue =
   | 'required_scenarios_empty'
   | 'required_scenario_invalid'
   | 'required_scenario_duplicate'
+  | 'required_successful_work_item_ids_invalid'
   | 'causal_pairing_invalid';
 
 /**
@@ -257,6 +264,12 @@ function falsifierIssueOf(value: SpecClauseWrite['falsifier']): FalsifierIssue |
     return 'probe_method_blank';
   }
   const scenarios = value.requiredScenarios;
+  const receipts = value.requiredSuccessfulWorkItemIds;
+  if (receipts !== undefined && receipts !== null && (
+    !Array.isArray(receipts) || receipts.length === 0 || receipts.length > 64 ||
+    receipts.some(id => typeof id !== 'string' || !/^(?:WI|EI)-[0-9]+$/.test(id.trim())) ||
+    new Set(receipts.map(id => id.trim())).size !== receipts.length
+  )) return 'required_successful_work_item_ids_invalid';
   if (scenarios !== undefined && scenarios !== null) {
     if (!Array.isArray(scenarios)) return 'required_scenarios_not_array';
     if (scenarios.length === 0) return 'required_scenarios_empty';
@@ -281,10 +294,12 @@ function normalizedFalsifier(value: SpecClauseWrite['falsifier']): SpecClauseFal
   const observation = value.observation.trim();
   const probeMethod = typeof value.probeMethod === 'string' ? value.probeMethod.trim() : '';
   const requiredScenarios = normalizedSet(value.requiredScenarios ?? undefined);
+  const requiredSuccessfulWorkItemIds = normalizedSet(value.requiredSuccessfulWorkItemIds ?? undefined);
   return {
     observation,
     ...(probeMethod ? { probeMethod } : {}),
     ...(requiredScenarios.length > 0 ? { requiredScenarios } : {}),
+    ...(requiredSuccessfulWorkItemIds.length > 0 ? { requiredSuccessfulWorkItemIds } : {}),
     ...(value.causalPairing ? { causalPairing: value.causalPairing } : {}),
   };
 }

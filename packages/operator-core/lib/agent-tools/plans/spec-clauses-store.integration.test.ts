@@ -750,7 +750,8 @@ describe('WI-6554700010017412 recorded layer declarations', () => {
   it('round-trips all recordable layers through the public reader and writer without losing proof obligations', async () => {
     const input = clause({
       requiredTestLayers: [...RECORDED_TEST_LAYERS],
-      falsifier: { observation: 'An acknowledged event is delivered twice.', requiredScenarios: ['concurrent-reconnect', 'cancellation'] },
+      falsifier: { observation: 'An acknowledged event is delivered twice.', requiredScenarios: ['concurrent-reconnect', 'cancellation'],
+        requiredSuccessfulWorkItemIds: ['WI-8', 'WI-7'] },
     });
     expect(await store.setSpecClause(input)).toMatchObject({ status: 'created', revision: 1 });
     const get = await getSpecsTool.handler(
@@ -769,8 +770,14 @@ describe('WI-6554700010017412 recorded layer declarations', () => {
     expect(set.data.results[0]).toMatchObject({ ok: true, status: 'unchanged', revision: 1 });
     expect(row.requiredTestLayers).toEqual([...RECORDED_TEST_LAYERS].sort());
     expect(row.falsifier?.requiredScenarios).toEqual(['cancellation', 'concurrent-reconnect']);
+    expect(row.falsifier?.requiredSuccessfulWorkItemIds).toEqual(['WI-7', 'WI-8']);
     expect(row.requiredEvidence).toEqual([...input.requiredEvidence!].sort());
     expect(row.mutationRequired).toBe(true);
+    const revised = await store.setSpecClause({ ...input, expectedRevision: 1,
+      falsifier: { ...input.falsifier!, requiredSuccessfulWorkItemIds: ['WI-9'] } });
+    expect(revised).toMatchObject({ status: 'revised', revision: 2 });
+    const [latest] = await store.listSpecClauses({ harnessSlug: HARNESS, planSlug: 'reconnect-plan' });
+    expect(latest.contentHash).not.toBe(row.contentHash);
   });
 });
 

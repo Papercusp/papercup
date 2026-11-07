@@ -22,7 +22,9 @@ const createArgs = { kind: 'task', title: 'Private report-only completion contro
   assign_to: 'self', state: 'wip', changeKinds: ['no-code-change'] };
 const publishArgs = { title: 'Private completion control', body_md: reportBody,
   visibility: 'workspace' };
-const completion: CompletionRecord = { summary: 'Published and read back the disposable report.',
+const completion: Pick<CompletionRecord, 'summary' | 'testsRun' | 'testResult'
+  | 'verifiedHow' | 'filesChanged' | 'verification'> = {
+  summary: 'Published and read back the disposable report.',
   testsRun: 'HTTP reports:publish followed by reports:get with exact body comparison',
   testResult: 'The complete report body and workspace visibility matched.',
   verifiedHow: 'manual', filesChanged: [],

@@ -488,6 +488,19 @@ function clause(over: Partial<SpecClauseRevision> = {}): SpecClauseRevision {
   };
 }
 
+describe('declared successful prerequisite receipts', () => {
+  it('keeps an omitted receipt a failure even when executable proof floors are inapplicable', () => {
+    const result = evaluateSpecTestAdequacy({
+      clause: clause({ behaviorClass: 'non-automated', requiredTestLayers: [],
+        falsifier: { observation: 'Final acceptance lacks its successful prerequisite.', requiredSuccessfulWorkItemIds: ['WI-7'] } }),
+      evidence: [], classRef: 'plan-class-feature-ship', codeDeliverable: false,
+    });
+    expect(result.ratings.freshness).toMatchObject({ rating: 'fail',
+      evidence: expect.stringContaining('missing current successful prerequisite receipt proof for WI-7') });
+    expect(result.verdict).not.toBe('pass');
+  });
+});
+
 function evidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForAdequacy {
   const defaultExecution: NonNullable<SpecEvidenceForAdequacy['testRunExecution']> = over.evidenceKind === 'mutation'
     ? { status: 'fail', passed: 0, failed: 1, skipped: 0, collectionFailed: false, testLayer: 'integration' }
@@ -5644,6 +5657,7 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
           ? original.scorecardDraft.rerunRecipe
           : asStructuredObservation({ rerunRecipe: original.scorecardDraft.rerunRecipe })?.rerunRecipe;
       expect(recipe).toBeDefined();
+      if (recipe?.evaluator !== 'plans:evaluate-spec-test-adequacy') throw new Error('expected an adequacy recipe');
       const args = evaluatorArgsSchema.parse(recipe!.args);
       expect(args.harness).toBe('papercusp');
       expect(args.evidenceRefs).toEqual([legacy.evidenceRef, selected.evidenceRef].sort());
@@ -5722,7 +5736,9 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
       const recipe = result.scorecardDraft.rerunRecipe;
       expect(recipe.current).toEqual({ supplied: true, fingerprints: current });
       expect(recipe.args.bindingIds).toEqual([41011, 41012]);
-      expect(asStructuredObservation({ rerunRecipe: recipe })?.rerunRecipe?.current).toEqual(recipe.current);
+      const readback = asStructuredObservation({ rerunRecipe: recipe })?.rerunRecipe;
+      if (readback?.evaluator !== 'plans:evaluate-spec-test-adequacy') throw new Error('expected an adequacy recipe');
+      expect(readback.current).toEqual(recipe.current);
       if (mode === 'measured') {
         expect(recipe.args).not.toHaveProperty('current');
         expect(asStructuredObservation({ rerunRecipe: recipe })?.rerunRecipe?.args).not.toHaveProperty('current');
@@ -5731,6 +5747,27 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
       }
     },
   );
+
+  it('retains distinct measured recipes sharing a canonical evidence reference through replay readback', () => {
+    const first = evidence({ id: 41021 });
+    const second = evidence({
+      id: 41022,
+      fingerprints: { ...first.fingerprints, sourceFingerprint: 'git:second-measurement-recipe' },
+      details: { ...first.details, adequacy: { causalPairIds: ['second-scenario'] } },
+    });
+    const current = [first, second].map((row) => ({
+      evidenceKind: row.evidenceKind, evidenceRef: row.evidenceRef, ...row.fingerprints,
+    }));
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(), evidence: [first, second], current, classRef: 'plan-class-feature-ship',
+    });
+    const recipe = result.scorecardDraft.rerunRecipe;
+    expect(recipe.current.fingerprints).toHaveLength(2);
+    expect(recipe.current.fingerprints).toEqual(expect.arrayContaining(current));
+    const readback = asStructuredObservation({ rerunRecipe: recipe })?.rerunRecipe;
+    if (readback?.evaluator !== 'plans:evaluate-spec-test-adequacy') throw new Error('expected an adequacy recipe');
+    expect(readback.current).toEqual(recipe.current);
+  });
 
   it('preserves an explicitly empty binding-id selector through recipe readback', () => {
     const result = evaluateSpecTestAdequacy({
@@ -5745,6 +5782,7 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
     expect(recipe.selection.bindingIds).toEqual([]);
     expect(evaluatorArgsSchema.parse(recipe.args).bindingIds).toEqual([]);
     const readback = asStructuredObservation({ rerunRecipe: recipe })?.rerunRecipe;
+    if (readback?.evaluator !== 'plans:evaluate-spec-test-adequacy') throw new Error('expected an adequacy recipe');
     expect(readback?.args.bindingIds).toEqual([]);
     expect(readback?.selection.bindingIds).toEqual([]);
   });

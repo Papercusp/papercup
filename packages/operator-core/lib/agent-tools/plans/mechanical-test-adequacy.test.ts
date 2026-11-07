@@ -96,6 +96,59 @@ describe('mechanical test adequacy', () => {
     expect(grade(rows)).toMatchObject({ verdict: 'fail' });
   });
 
+  it.each(['current', 'stale', 'unknown'] as const)(
+    'checks a %s successful prerequisite receipt alongside passing executable proof', state => {
+      const receipt = proof('test', 4);
+      receipt.evidenceKind = 'manual';
+      receipt.evidenceRef = 'work-item:WI-7';
+      receipt.testRunId = null;
+      receipt.testRunExecution = undefined;
+      receipt.testRunProvenance = undefined;
+      receipt.details.currentMeasurement = { schemaVersion: 1, kind: 'work-items',
+        workItemIds: ['WI-7'], successfulCompletionReceipts: true };
+      receipt.currentness.overall = state;
+      const result = grade([proof('test'), proof('mutation'), receipt]);
+      expect(result).toMatchObject({ verdict: state === 'current' ? 'pass' : 'fail' });
+      if (state !== 'current' && result.applicable) {
+        expect(result.gaps).toContainEqual(expect.stringContaining('successful prerequisite receipt binding 4'));
+      }
+    },
+  );
+
+  it.each(['current', 'missing', 'wrong', 'stale', 'unknown', 'ordinary', 'ambiguous', 'attested'] as const)(
+    'enforces declared successful prerequisite population with %s proof', state => {
+      const receipt = proof('test', 4);
+      receipt.evidenceKind = 'manual';
+      receipt.evidenceRef = 'work-item:WI-7';
+      receipt.testRunId = null;
+      receipt.testRunExecution = undefined;
+      receipt.testRunProvenance = undefined;
+      receipt.details.currentMeasurement = { schemaVersion: 1, kind: 'work-items',
+        workItemIds: [state === 'wrong' ? 'WI-8' : 'WI-7'],
+        ...(state === 'ordinary' ? {} : { successfulCompletionReceipts: true }) };
+      if (state === 'stale' || state === 'unknown') receipt.currentness.overall = state;
+      if (state === 'attested') receipt.currentness.provenance = 'attested-current';
+      const rows = [proof('test'), proof('mutation'), ...(state === 'missing' ? [] : [receipt])];
+      if (state === 'ambiguous') rows.push({ ...receipt, id: 5, evidenceRef: 'work-item:conflicting',
+        fingerprints: { ...receipt.fingerprints, sourceFingerprint: 'different-successful-receipt' } });
+      const result = evaluateMechanicalTestAdequacy({
+        clause: { ...clause, falsifier: { requiredSuccessfulWorkItemIds: ['WI-7'] } },
+        evidence: rows, sourceBarTestRequirements: { status: 'required', files: [file] },
+      });
+      expect(result).toMatchObject({ verdict: state === 'current' ? 'pass' : 'fail' });
+      if (state !== 'current' && result.applicable)
+        expect(result.gaps).toContainEqual(expect.stringContaining('prerequisite receipt'));
+    },
+  );
+
+  it('keeps ordinary disposition census semantics independent of successful prerequisite receipts', () => {
+    const census = proof('test', 4);
+    census.evidenceKind = 'manual';
+    census.details.currentMeasurement = { schemaVersion: 1, kind: 'work-items', workItemIds: ['WI-7'] };
+    census.currentness.overall = 'stale';
+    expect(grade([proof('test'), proof('mutation'), census])).toMatchObject({ verdict: 'pass' });
+  });
+
   it('rejects caller-replayed freshness instead of treating it as a measured pass', () => {
     const row = proof('test');
     row.currentness.provenance = 'replayed-snapshot';

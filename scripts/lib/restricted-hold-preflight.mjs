@@ -47,7 +47,8 @@ export const RESTRICTED_HOLD_PREFLIGHT_CLI = fileURLToPath(
   new URL('../../packages/operator-core/lib/agent-tools/testing/restricted-hold-preflight-cli.ts', import.meta.url),
 );
 
-const DEFAULT_TIMEOUT_MS = 120_000;
+export const RESTRICTED_HOLD_PREFLIGHT_TIMEOUT_MS = 120_000;
+const DEFAULT_TIMEOUT_MS = RESTRICTED_HOLD_PREFLIGHT_TIMEOUT_MS;
 
 /** Reuse the builder's retained step journal, including evidence from a killed census child. */
 export function recordBundleHoldProgress(progress, env = process.env) {

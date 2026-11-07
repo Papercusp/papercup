@@ -2777,7 +2777,7 @@ describe('listSpecEvidence timestamp normalization', () => {
     }
   });
 
-  it('matches scoped currentness by clause identity when two specs share one artifact reference', async () => {
+  it.each([false, true])('matches scoped currentness for a shared reference with distinct recipes (sameClause=%s)', async (sameClause) => {
     const shared = {
       work_item_id: 'WI-shared-proof',
       plan_slug: 'plan-one',
@@ -2811,8 +2811,8 @@ describe('listSpecEvidence timestamp normalization', () => {
       {
         ...shared,
         id: 11,
-        spec_id: 'SPEC-B',
-        spec_fingerprint: 'sha256:spec-b',
+        spec_id: sameClause ? 'SPEC-A' : 'SPEC-B',
+        spec_fingerprint: sameClause ? 'sha256:spec-a' : 'sha256:spec-b',
         source_fingerprint: 'git:source-b',
       },
     ];
@@ -2832,9 +2832,9 @@ describe('listSpecEvidence timestamp normalization', () => {
         },
         {
           planSlug: 'plan-one',
-          specId: 'SPEC-B',
+          specId: sameClause ? 'SPEC-A' : 'SPEC-B',
           specRevision: 1,
-          specFingerprint: 'sha256:spec-b',
+          specFingerprint: sameClause ? 'sha256:spec-a' : 'sha256:spec-b',
           evidenceKind: 'test',
           evidenceRef: 'artifact:shared-index',
           sourceFingerprint: 'git:source-b',
@@ -2862,7 +2862,7 @@ describe('listSpecEvidence timestamp normalization', () => {
         comparisonSupplied: true,
       },
       {
-        specId: 'SPEC-B',
+        specId: sameClause ? 'SPEC-A' : 'SPEC-B',
         overall: 'unknown',
         source: 'current',
         provenance: 'attested-current',

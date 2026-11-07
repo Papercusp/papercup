@@ -148,6 +148,8 @@ export interface CommittedGlobLimits {
 }
 
 const BLOB_BATCH_TIMEOUT_MS = 15_000;
+// Bound transport memory without making callers repeat Git-tree resolution.
+const MAX_BLOBS_PER_BATCH = 256;
 const MAX_MEMOIZED_BLOBS = 50_000;
 const COMMIT_RE = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 
@@ -692,7 +694,8 @@ export async function readCommittedFiles(
     let batchBytes = 0;
     for (const blob of blobs) {
       const bytes = sizes.get(blob) ?? 0;
-      if (limits && batch.length && batchBytes + bytes > limits.maxBatchBytes) {
+      if (batch.length >= MAX_BLOBS_PER_BATCH ||
+          (limits && batch.length && batchBytes + bytes > limits.maxBatchBytes)) {
         batches.push(batch);
         batch = [];
         batchBytes = 0;

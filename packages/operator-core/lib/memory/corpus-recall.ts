@@ -516,7 +516,6 @@ function inHarnessScope(hit: CorpusHit, harnessSlugs: readonly string[]): boolea
   return harnessSlugs.some((slug) => scope === `harness:${slug}` || (hit.source === 'report' && scope === slug));
 }
 
-const oneLine = (s: string): string => s.replace(/\s+/g, ' ').trim();
 
 /** Strip ts_headline's `<mark>` wrappers — the emphasis is markup for a web
  *  surface, noise in a prompt. PURE. */

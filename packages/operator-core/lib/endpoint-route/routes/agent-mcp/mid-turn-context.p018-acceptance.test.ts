@@ -562,27 +562,15 @@ describe('P-018 TRANSPORT half — firing early stays CHEAP across the whole rep
     expect(corpusLedger.size).toBe(1);
   });
 
-  // ⚠ DO NOT SKIP THIS TEST. It briefly was, on 2026-08-02 21:46Z, on my (su-5ca1d)
-  // reading that it was parked on the known WI-6857 retrieval gap. That was WRONG:
-  // it was catching a REAL production regression, WI-7163 — commit 0da8ebaab9
-  // (WI-6870, 20:51:40Z) dropped the `&& lines.length > 0` first-row budget exemption
-  // in injection.ts, so a caller with a small budget (mid-turn passes 350 chars
-  // against a ~3,700-char record) got NOTHING instead of one whole row. Restored in
-  // a046942e43. Un-skipped 21:59Z so that fix is actually exercised.
-  //
-  // The lesson worth keeping: this assertion is the ONLY one here that requires the
-  // MEM0 record specifically, because it matches on the id — every sibling can be
-  // satisfied by the corpus leg alone, whose fixture text also mentions WI-6512 and
-  // "ruled out". So this is the case that fails first when mid-turn injection breaks,
-  // and a green file with this one skipped is indistinguishable from a working one.
-  it('keeps a clipped memory eligible while suppressing complete emitted corpus pointers', async () => {
+  // Require the memory specifically: corpus text alone must not hide a lost
+  // memory leg. An oversized body now yields an intact provenance-only pointer.
+  it('keeps a provenance-only memory eligible while suppressing complete emitted corpus fragments', async () => {
     const pushes = await replay(newOwner());
     const carrying = pushes.filter((p) => p.includes(ANSWER_ID));
-    // The tiny mid-turn clamp cuts this long operative body. Seeing its ID
-    // does not prove the complete offered fragment was emitted, so suppressing
-    // it here would hide an unprinted condition at every later port.
+    // A pointer proves no operative source text was printed, so the original
+    // memory remains eligible at every later port.
     expect(carrying.length).toBeGreaterThan(1);
-    expect(carrying.every(p => p.includes('(clipped; id retained)'))).toBe(true);
+    expect(carrying.every(p => p.includes('source-pointer'))).toBe(true);
     // The independently bounded corpus pointer survives intact and DOES have
     // a matching stdout receipt: only that exact fragment becomes ineligible.
     expect(pushes.filter(p => p.includes('- WI-6512 (bug, open)'))).toHaveLength(1);

@@ -1745,17 +1745,24 @@ describe('P-043: adequacy cards across an evaluator rule revision', () => {
     stampedAt: '2026-08-20T00:02:00.000Z',
   };
 
-  function stampedCard(recordedRevision: number | undefined, over: Partial<ScorecardRow> = {}): ScorecardRow {
+  type AdequacyCard = ScorecardRow & {
+    rerunRecipe: ReturnType<typeof evaluateSpecTestAdequacy>['scorecardDraft']['rerunRecipe'];
+  };
+
+  function stampedCard(recordedRevision: number | undefined, over: Partial<AdequacyCard> = {}): AdequacyCard {
     const live = evaluateSpecTestAdequacy({
       clause: clause(),
       evidence: passingEvidence(),
       classRef: 'plan-class-feature-ship',
     });
     expect(live.scorecardDraft.rerunRecipe.evaluatorRevision).toBe(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION);
-    const recipe: ScorecardRow['rerunRecipe'] = { ...live.scorecardDraft.rerunRecipe };
+    const recipe = { ...live.scorecardDraft.rerunRecipe };
     if (recordedRevision === undefined) delete recipe!.evaluatorRevision;
     else recipe!.evaluatorRevision = recordedRevision;
-    return matchingCard({ rerunRecipe: recipe, gradingAudit: PASSED_AUDIT, ...over });
+    return {
+      ...matchingCard({ rerunRecipe: recipe, gradingAudit: PASSED_AUDIT, ...over }),
+      rerunRecipe: over.rerunRecipe ?? recipe,
+    };
   }
 
   function proofCohort(rows: ListedEvidence[]) {
@@ -1845,7 +1852,12 @@ describe('P-043: adequacy cards across an evaluator rule revision', () => {
     expect(result).toMatchObject({ ok: true, applicable: true, checked: ['SPEC-003-01@1'] });
   });
 
-  it.each([false, true])('compares shared scenario receipt fingerprints without losing drift (changed=%s)', async (changed) => {
+  it.each([
+    { changed: false, distinctRecipes: false },
+    { changed: true, distinctRecipes: false },
+    { changed: false, distinctRecipes: true },
+    { changed: true, distinctRecipes: true },
+  ])('compares shared scenario receipt fingerprints without losing drift (changed=$changed, distinctRecipes=$distinctRecipes)', async ({ changed, distinctRecipes }) => {
     const scenarios = ['admin-account', 'unrelated-account'];
     const testCases = scenarios.map((scenario) => `${scenario}: unauthorized events are refused`);
     const scenarioClause = clause({
@@ -1866,6 +1878,9 @@ describe('P-043: adequacy cards across an evaluator rule revision', () => {
       const row = counterexampleEvidence({ id: 2 + index });
       return {
         ...row,
+        fingerprints: distinctRecipes && index === 1
+          ? { ...row.fingerprints, sourceFingerprint: 'git:distinct-scenario-recipe' }
+          : row.fingerprints,
         testRunExecution: { ...row.testRunExecution!, failed: testCases.length },
         testRunProvenance: {
           ...row.testRunProvenance!,
@@ -1890,7 +1905,7 @@ describe('P-043: adequacy cards across an evaluator rule revision', () => {
       ratings: live.ratings,
       rerunRecipe: {
         ...live.scorecardDraft.rerunRecipe,
-        current: { supplied: true, fingerprints: proofCohort([baseline, mutations[0]]) },
+        current: { supplied: true, fingerprints: proofCohort(distinctRecipes ? rows : [baseline, mutations[0]]) },
       },
     });
     const deps = passingDeps();

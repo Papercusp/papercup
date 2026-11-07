@@ -31,6 +31,7 @@ import { evaluateAcceptanceBarLifecycle } from '../../acceptance-bar-lifecycle-e
 import { specTestAdequacyCompletionGate } from '../work_items/spec-test-adequacy-gate';
 import complete from '../work_items/complete';
 import { evaluateSpecTestAdequacy } from './spec-test-adequacy';
+import { resolveSourceBarTestRequirements } from './source-bar-test-requirements';
 import type { ScorecardRow } from '../../scorecards';
 import { reconcilePlanAuthoredDependenciesNow } from '../../plan-items/reconcile-linked-work-items';
 import { deployTriggerRefusalReason } from '../../release/deploy-trigger-refusal';
@@ -40,6 +41,7 @@ import { assertDiscoveryShippedIdentity, type DiscoveryShippedTarget } from '../
 import { listRuntimeVintage, reportRuntimeVintage } from '../../runtime-vintage';
 import { measureRuntimeEnvironment } from '../../remote-runtime-identity';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import { getBuildInfo } from '../../build-info';
 import { mutateWorkItemDependenciesInTransaction, withWorkItemDependencyAdmissionTransaction } from '../../dbos/work-item-deps-store';
 
 // Select the private repository, as the production registry selects a checkout.
@@ -215,9 +217,13 @@ async function deliveryFixture() {
   const prerequisite = nodes.find(node => node.id === 'P-007')!.featureId;
   const finalItem = nodes.find(node => node.id === 'P-008')!.featureId;
   expect(nodes.find(node => node.id === 'P-008')?.blockedBy).toEqual(['P-007']);
+  const [subject] = await fx.admin`SELECT version FROM harness_shared.harness_plans
+    WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness} AND plan_slug=${slug}`;
+  const subjectVersion = Number(subject?.version);
+  expect(subjectVersion).toBeGreaterThan(0);
   const seeded = await fx.admin.begin(tx => seedAcceptanceBarsInTransaction({ executor: tx as unknown as SpecClauseSql,
     workspaceId: fx.workspaceId, harnessSlug: harness, planSlug: slug, planContent: content,
-    planTitle: 'Discovery delivery fixture', planStatus: 'active', planVersion: 2,
+    planTitle: 'Discovery delivery fixture', planStatus: 'active', planVersion: subjectVersion,
     adoptionEpoch: 1, cohort: 'post-epoch', classRef: 'plan-class-feature-ship', actorId: OWNER, now: new Date() }));
   expect(seeded, JSON.stringify(seeded)).toMatchObject({ ok: true });
   const [draft] = await listSpecClauses({ harnessSlug: harness, planSlug: slug, specIds: [finalSpec] });
@@ -226,7 +232,8 @@ async function deliveryFixture() {
     expectedRevision: draft.revision, planItemId: 'P-008', behavior: draft.behavior,
     behaviorClass: draft.behaviorClass, requiredEvidence: draft.requiredEvidence,
     requiredTestLayers: draft.requiredTestLayers, mutationRequired: draft.mutationRequired,
-    falsifier: draft.falsifier!, sourceBar: draft.sourceBar!, acceptanceRef: draft.acceptanceRef!,
+    falsifier: { ...draft.falsifier!, requiredSuccessfulWorkItemIds: [prerequisite] },
+    sourceBar: draft.sourceBar!, acceptanceRef: draft.acceptanceRef!,
     lifecycleStatus: 'active', actorId: 'su-independent-fixture-reviewer' });
   await setSpecClause({ harnessSlug: harness, planSlug: slug, specId: ordinary, expectedRevision: 0,
     planItemId: 'P-007', behavior: 'The same served caller receives current-build discovery guidance.',
@@ -253,31 +260,34 @@ async function deliveryFixture() {
     testCommandSha256: 'a'.repeat(64),
     testFileSha256: createHash('sha256').update(await readFile(join(root, testPath))).digest('hex') };
   async function execution(status: 'pass' | 'fail', leg?: 'baseline' | 'mutant') {
+    // The real closure gate also reads clean build and per-case identities.
+    const commitSha = getBuildInfo().sha;
+    expect(commitSha).toMatch(/^[a-f0-9]{7,64}$/);
     const details = { schemaVersion: 1, root, filePath: testPath, runGroupId: null,
       workspaceId: fx.workspaceId, harnessSlug: harness, testNamePattern: null, testLayer: 'integration',
       passed: status === 'pass' ? 1 : 0, failed: status === 'fail' ? 1 : 0, skipped: 0,
-      collectionFailed: false, mutationPhase: leg ?? null, commitSha: null, worktreeDirty: false,
+      collectionFailed: false, mutationPhase: leg ?? null, commitSha, worktreeDirty: false,
       runtimeEnvironmentBefore: runtimeWitness, runtimeEnvironmentAfter: runtimeWitness,
       passedCaseTitles: status === 'pass' ? [title] : [], failedCaseTitles: status === 'fail' ? [title] : [],
       ...(leg ? { mutation: { ...mutation, leg } } : {}) };
     const [run] = await fx.admin`INSERT INTO harness_shared.test_runs
-      (workspace_id,harness_slug,file_path,framework,source,status,finished_at,worktree_dirty,execution_details)
+      (workspace_id,harness_slug,file_path,framework,source,status,finished_at,worktree_dirty,commit_sha,execution_details)
       VALUES (${fx.workspaceId},${harness},${testPath},'vitest',${leg ? 'mutation-probe' : 'local'},${status},
-        now(),false,${JSON.stringify(details)}::jsonb) RETURNING id`;
+        now(),false,${commitSha},${JSON.stringify(details)}::jsonb) RETURNING id`;
+    await fx.admin`INSERT INTO harness_shared.test_case_runs
+      (test_run_id,case_index,case_key,occurrence,status,duration_ms)
+      VALUES (${Number(run!.id)},0,${title},1,${status},1)`;
     return Number(run!.id);
   }
   await execution('pass', 'baseline');
   const mutant = await execution('fail', 'mutant');
   const passed = await execution('pass');
-  async function bind(item: string, specId: string, kind: 'test' | 'counterexample',
-    receipt?: { measurement: Parameters<typeof measureWorkItemsEvidenceForScope>[2]; sourceFingerprint: string;
-      environmentFingerprint?: string | null }) {
+  async function bind(item: string, specId: string, kind: 'test' | 'counterexample') {
     const result = await bindSpecEvidence({ workspaceId: fx.workspaceId, harnessSlug: harness,
       planSlug: slug, workItemId: item, specId, evidenceKind: kind, evidenceRef: `${kind}:${testPath}`,
-      ...(receipt ? { sourceFingerprint: receipt.sourceFingerprint,
-        environmentFingerprint: receipt.environmentFingerprint } : pins),
+      ...pins,
       testRunId: kind === 'test' ? passed : mutant, actorId: OWNER,
-      details: { currentMeasurement: receipt?.measurement ?? recipe, evidencePlane: 'live',
+      details: { currentMeasurement: recipe, evidencePlane: 'live',
         evidenceRuntime: item === prerequisite ? 'staging-operator' : 'release-operator',
         adequacy: { targeted: specId, fixtureCalibrated: true, falsifiable: true, testLayer: 'integration',
           pathReachable: true, oracleIndependent: true, collected: true, skipped: false, executed: true,
@@ -316,8 +326,11 @@ async function deliveryFixture() {
     const receipt = await getWorkItem(prerequisite, harness);
     if (!receipt) throw new Error('canonical close lost the prerequisite');
     expect(receipt).toMatchObject({ state: 'done' });
-    expect(receipt.terminalCompletionRef).toBeTruthy();
-    return receipt;
+    // The canonical handler persists _completionEvidence without a free-text
+    // terminalCompletionRef. Pin that measured evidence, owner and authority.
+    const pin = await measureWorkItemsEvidenceForScope(fx.workspaceId, harness, receiptRecipe);
+    expect(pin.sourceFingerprint).toMatch(/^sha256-work-item-receipts-v1:/);
+    return pin;
   }
   async function close(id: string) {
     const result = await complete.handler(complete.args.parse({ id, harness, state: 'done', assumptions: 'none',
@@ -325,9 +338,18 @@ async function deliveryFixture() {
       specAdequacy: { classRef: 'plan-class-feature-ship' },
       completion: { summary: 'Private discovery delivery contract calibration', testsRun: testPath,
         testResult: 'Recorded private fixture execution passed', verifiedHow: 'integration', filesChanged: [],
+        verification: { workOutcome: 'verified-existing' },
         ...(id === finalItem ? { discharges: ['R-11'] } : {}) },
     }), { uiClientId: OWNER, isSuperuser: true, workspaceId: fx.workspaceId } as never);
     return (result as { data: { results: Array<Record<string, unknown>> } }).data.results[0]!;
+  }
+  async function expectFinalRefused() {
+    const result = await close(finalItem);
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: false, specAdequacy: { applicable: true } });
+    const retained = await getWorkItem(finalItem, harness);
+    expect(retained).toMatchObject({ state: 'open', terminalCompletionRef: null });
+    expect((retained?.payload as Record<string, unknown> | undefined)?._completion).toBeUndefined();
+    expect((await acceptance(true)).verdict.satisfied).toBe(false);
   }
   const receiptRecipe = { schemaVersion: 1 as const, kind: 'work-items' as const,
     workItemIds: [prerequisite], successfulCompletionReceipts: true as const, runtimeUnits };
@@ -335,18 +357,33 @@ async function deliveryFixture() {
     source: { entry: '/release/hono-host.mjs', sha256: 'a'.repeat(64) },
     artifact: { status: 'measured', sourceSha: 'b'.repeat(40), bundleSha256: 'a'.repeat(64) },
     health: { sha: 'b'.repeat(10), service: 'papercusp-operator' } } as DiscoveryShippedTarget;
-  async function bindFinal(selected = target) {
+  async function bindFinal(selected = target, includeReceipt = true) {
     // The existing runner's identity predicate runs before a successful exact
     // release execution can be bound. Wrong/private candidates create no proof.
     assertDiscoveryShippedIdentity(selected);
     const pin = await measureWorkItemsEvidenceForScope(fx.workspaceId, harness, receiptRecipe);
-    await bind(finalItem, finalSpec, 'test', { measurement: receiptRecipe, ...pin });
+    // Keep executable test/fixture identity and the successful prerequisite
+    // receipt as separate measured bindings; neither substitutes for the other.
+    const retained = includeReceipt ? await bindSpecEvidence({ workspaceId: fx.workspaceId, harnessSlug: harness,
+      planSlug: slug, workItemId: finalItem, specId: finalSpec, evidenceKind: 'manual',
+      evidenceRef: `work-item:${prerequisite}`, ...pin, actorId: OWNER,
+      // This row measures a stored record; executable live proof is separate.
+      details: { currentMeasurement: receiptRecipe } }) : null;
+    if (includeReceipt) expect(retained, JSON.stringify(retained)).toMatchObject({ status: 'created' });
+    await bind(finalItem, finalSpec, 'test');
     await bind(finalItem, finalSpec, 'counterexample');
     const [clause] = await listSpecClauses({ harnessSlug: harness, planSlug: slug, specIds: [finalSpec] });
     const evidence = await listSpecEvidence({ workspaceId: fx.workspaceId, harnessSlug: harness,
       planSlugs: [slug], workItemIds: [finalItem] });
-    const evaluation = evaluateSpecTestAdequacy({ clause: clause!, evidence, classRef: 'plan-class-feature-ship' });
-    expect(evaluation.verdict, JSON.stringify(evaluation)).toBe('pass');
+    const sourceBarTestRequirements = await resolveSourceBarTestRequirements(clause!.sourceBar);
+    expect(sourceBarTestRequirements).toMatchObject({ status: 'required', files: [testPath] });
+    const evaluation = evaluateSpecTestAdequacy({ clause: clause!, evidence, classRef: 'plan-class-feature-ship',
+      sourceBarTestRequirements });
+    expect(evaluation.verdict, JSON.stringify({ verdict: evaluation.verdict,
+      blocked: Object.fromEntries(Object.entries(evaluation.ratings)
+        .filter(([, rating]) => !['pass', 'not-applicable'].includes(rating.rating))
+        .map(([key, rating]) => [key, { rating: rating.rating, evidence: rating.evidence.slice(0, 1200) }])) }))
+      .toBe(includeReceipt ? 'pass' : 'fail');
     const card = { ...ordinaryCard, issueId: `SC-FINAL-${sequence}`, subject: evaluation.scorecardDraft.subject,
       ratings: evaluation.ratings, rerunRecipe: evaluation.scorecardDraft.rerunRecipe };
     await fx.admin`UPDATE harness_shared.work_items SET payload=payload||${JSON.stringify({ fixtureCard: card })}::jsonb
@@ -377,7 +414,7 @@ async function deliveryFixture() {
     }, { harnessSlug: harness });
     return { snapshot, verdict: evaluateAcceptanceBarLifecycle(snapshot, 'ship') };
   }
-  return { prerequisite, finalItem, finalSpec, closeCurrent, close, completionGate, bindFinal, receiptRecipe,
+  return { prerequisite, finalItem, finalSpec, closeCurrent, close, expectFinalRefused, completionGate, bindFinal, receiptRecipe,
     acceptance, target };
 }
 
@@ -393,25 +430,31 @@ describe('original proof-warming discovery before review and implementation', ()
       expect((await getWorkItem(delivery.finalItem, harness))?.state).toBe('open');
       expect((await delivery.acceptance(false)).verdict.satisfied).toBe(false);
       expect(await delivery.completionGate(delivery.finalItem)).toMatchObject({ ok: false });
+      await delivery.expectFinalRefused();
       // The production green-deploy predicate consumes pipeline state, not a
       // plan's final acceptance. No live gate is read or changed by this fixture.
       const deploy = computeDeployStatus({ gate: { consecutiveReds: 0, stalled: false, fireStale: false,
         lastGreenAtMs: Date.now(), verdictStale: false, flakyWorkspaces: [], failingTests: [] },
         deploy: { ready: { sha: 'b'.repeat(40) }, deployed: { sha: 'c'.repeat(40) },
           deployedBehindGreenPin: 1, greenPinBehindStaging: 0, deployedBehindStaging: 1,
-          greenPinAtStagingHead: true, errors: [] }, routines: {}, recent: [], activeRun: null,
+          greenPinAtStagingHead: true, errors: [] },
+        routines: { releaseTrigger: { name: 'release-trigger', active: true, cron: '0 */15 * * * *',
+          lastFiredAtMs: Date.now(), nextFireAtMs: Date.now() + 900_000, pause: null } },
+        recent: [], activeRun: null,
       } as unknown as GitPipelineSnapshot);
       expect(deploy.canTriggerGreen, JSON.stringify(deploy)).toBe(true);
       expect(deployTriggerRefusalReason(deploy)).toBeNull();
       for (const wrong of [
         { ...delivery.target, runtime: 'staging-operator' },
+        { ...delivery.target, runtime: 'private-source-fixture' },
         { ...delivery.target, health: { ...delivery.target.health, sha: 'd'.repeat(10) } },
+        // A verification rebuild differs from the bundle already loaded at
+        // deployment, even when it claims the same source commit.
         { ...delivery.target, source: { ...delivery.target.source, sha256: 'e'.repeat(64) } },
       ]) {
         await expect(delivery.bindFinal(wrong as DiscoveryShippedTarget)).rejects.toThrow();
         expect(await delivery.completionGate(delivery.finalItem)).toMatchObject({ ok: false });
-        expect((await delivery.acceptance(true)).verdict.satisfied).toBe(false);
-        expect((await getWorkItem(delivery.finalItem, harness))?.state).toBe('open');
+        await delivery.expectFinalRefused();
       }
       await delivery.bindFinal();
       expect(await delivery.completionGate(delivery.finalItem)).toMatchObject({ ok: true, applicable: true });
@@ -420,8 +463,8 @@ describe('original proof-warming discovery before review and implementation', ()
       const closed = await delivery.close(delivery.finalItem);
       expect(closed, JSON.stringify(closed)).toMatchObject({ ok: true });
       expect(await getWorkItem(delivery.finalItem, harness)).toMatchObject({ state: 'done' });
-      expect((await getWorkItem(delivery.prerequisite, harness))?.terminalCompletionRef)
-        .toBe(receipt.terminalCompletionRef);
+      expect((await measureWorkItemsEvidenceForScope(fx.workspaceId, harness, delivery.receiptRecipe)).sourceFingerprint)
+        .toBe(receipt.sourceFingerprint);
     });
   }, 120_000);
 
@@ -431,7 +474,12 @@ describe('original proof-warming discovery before review and implementation', ()
       // A missing successful receipt cannot be measured or admitted.
       await expect(delivery.bindFinal()).rejects.toThrow('successful_completion_receipt_unavailable');
       expect(await delivery.completionGate(delivery.finalItem)).toMatchObject({ ok: false });
+      await delivery.expectFinalRefused();
       await delivery.closeCurrent();
+      // Passing exact-artifact tests without the declared receipt must still fail.
+      await delivery.bindFinal(delivery.target, false);
+      expect(await delivery.completionGate(delivery.finalItem)).toMatchObject({ ok: false });
+      await delivery.expectFinalRefused();
       await delivery.bindFinal();
       expect(await delivery.completionGate(delivery.finalItem)).toMatchObject({ ok: true });
       const [pin] = await listSpecEvidence({ workspaceId: fx.workspaceId, harnessSlug: harness,
@@ -441,17 +489,17 @@ describe('original proof-warming discovery before review and implementation', ()
       await fx.admin`UPDATE harness_shared.work_items SET terminal_completion_ref='test-run:wrong-current-build'
         WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness} AND feature_id=${delivery.prerequisite}`;
       expect(await delivery.completionGate(delivery.finalItem)).toMatchObject({ ok: false });
-      expect((await delivery.acceptance(true)).verdict.satisfied).toBe(false);
-      expect((await getWorkItem(delivery.finalItem, harness))?.state).toBe('open');
+      await delivery.expectFinalRefused();
       // Ordinary terminal scheduling is preserved, without buying final proof.
-      await setWorkItemState(delivery.prerequisite, 'dropped', { harness, by: OWNER, family: 'feature' });
+      await setWorkItemState(delivery.prerequisite, 'dropped', { harness, by: OWNER, family: 'feature',
+        completionRef: 'private-fixture:abandoned-prerequisite', completionAuthority: 'committed',
+        completionEvidence: { summary: 'Abandoned contribution calibration; never successful delivery proof.' } });
       expect(await reconcilePlanAuthoredDependenciesNow(slug, 'P-008', harness, OWNER))
         .toMatchObject({ resolved: [] });
       await expect(measureWorkItemsEvidenceForScope(fx.workspaceId, harness, delivery.receiptRecipe))
         .rejects.toThrow('successful_completion_receipt_unavailable');
       expect(await delivery.completionGate(delivery.finalItem)).toMatchObject({ ok: false });
-      expect((await delivery.acceptance(true)).verdict.satisfied).toBe(false);
-      expect((await getWorkItem(delivery.finalItem, harness))?.state).toBe('open');
+      await delivery.expectFinalRefused();
     });
   }, 120_000);
 

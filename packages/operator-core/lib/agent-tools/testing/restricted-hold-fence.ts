@@ -360,23 +360,23 @@ export async function restrictedHoldBundleRefusal(
       // repository's commit through the selected parent's actual Git links.
       const repositories = new Set((source.submodules ?? []).map(row => row.path));
       await phase('git-origin', async () => {
-        for (let start = 0; start < paths.length; start += 256) {
-          const diagnostics = deps.progress
-            ? createCommittedTreeDiagnostics({ toolName: 'restricted-hold-git-origin' })
-            : undefined;
-          try {
-            const committed = await readCommittedFiles(realRoot, source.sourceCommit, paths.slice(start, start + 256),
-              { exists: async repo => repositories.has(repo), diagnostics });
-            for (const [path, file] of committed) {
-              if (!file || file.sha256 !== byPath.get(path)?.sha256)
-                throw new Error(`bundle input differs from committed source: ${path}`);
-            }
-          } finally {
-            // The existing build journal must retain the read timing and route
-            // even when Git throws before returning any committed inputs.
-            if (diagnostics) deps.progress!({ step: 'restricted-hold-git-origin', event: 'progress',
-              gitDiagnostics: diagnostics });
+        const diagnostics = deps.progress
+          ? createCommittedTreeDiagnostics({ toolName: 'restricted-hold-git-origin' })
+          : undefined;
+        try {
+          // Resolve Git links and source locations once for the whole bundle.
+          // The reader bounds blob batches internally; splitting this call would
+          // repeat repository metadata work for every group of source paths.
+          const committed = await readCommittedFiles(realRoot, source.sourceCommit, paths,
+            { exists: async repo => repositories.has(repo), diagnostics });
+          for (const [path, file] of committed) {
+            if (!file || file.sha256 !== byPath.get(path)?.sha256)
+              throw new Error(`bundle input differs from committed source: ${path}`);
           }
+        } finally {
+          // Preserve timing and route evidence even when Git fails mid-read.
+          if (diagnostics) deps.progress!({ step: 'restricted-hold-git-origin', event: 'progress',
+            gitDiagnostics: diagnostics });
         }
       });
       return null;

@@ -2419,8 +2419,8 @@ describe('getFeedbackCore — honest no_qualified_responder', () => {
     expect(r.unmeasured_candidates).toEqual([]);
     expect(reached).toHaveLength(0);
     const row = await stateRow(r.conversation_id);
+    expect(row.routing).not.toHaveProperty('degraded');
     expect(row.routing).toMatchObject({
-      degraded: undefined,
       subjectValidation: { evaluated: 8, unmeasured: 2, budgetLimited: 2 },
     });
   });

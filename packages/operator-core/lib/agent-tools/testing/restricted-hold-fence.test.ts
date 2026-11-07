@@ -208,6 +208,28 @@ describe('restrictedHoldBundleRefusal — independent verifier archive', () => {
     expect(refusal?.hint).toContain('differs from committed source: vendor/library/clean.ts');
   });
 
+  it('resolves a large bundle once and still refuses a forged input after the first blob batch', async () => {
+    const a = archive(true, 513);
+    const inputs = { files: [join(a.selectedRoot, 'vendor/library/clean.ts')], dirs: [join(a.selectedRoot, 'src')] };
+    const git = vi.spyOn(evidenceMeasurement, 'defaultGitRunner');
+    try {
+      expect(await restrictedHoldBundleRefusal(a.selectedRoot, inputs)).toBeNull();
+      // One parent Git-link read and one source listing per owning repository.
+      expect(git).toHaveBeenCalledTimes(3);
+      const lateInput = join(a.selectedRoot, 'src/0512.ts');
+      writeFileSync(lateInput, 'export const planted = true;\n');
+      const forged = { ...a.receipt, files: verifierSourceFiles(a.selectedRoot,
+        { gitMetadataPaths: ['.git', 'vendor/library/.git'] }) };
+      writeFileSync(a.receiptPath, JSON.stringify(forged));
+      writeFileSync(join(a.selectedRoot, '.verifier-source.json'), JSON.stringify(forged));
+      expect(await restrictedHoldBundleRefusal(a.selectedRoot, inputs))
+        .toMatchObject({ error: 'restricted_hold_state_unknown',
+          hint: expect.stringContaining('differs from committed source: src/0512.ts') });
+    } finally {
+      git.mockRestore();
+    }
+  });
+
   it('retains ordered phase boundaries for an admitted archive and localizes a forged receipt refusal', async () => {
     const a = archive();
     const records: Array<{ step: string; event: string; status?: number; error?: string }> = [];

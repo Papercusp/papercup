@@ -1769,6 +1769,7 @@ async function buildBlockInner(
       input.budgetChars && input.budgetChars > 0 ? input.budgetChars : injectBudgetChars(),
       input.identityRecall,
     );
+    const heading = input.heading ?? 'Operator memory (relevant entries)';
     let spent = 0;
     const lines: string[] = [];
     const admit = (line: string): boolean => {
@@ -1800,11 +1801,12 @@ async function buildBlockInner(
         const fullText = hit.text ?? '';
         const displayText = hit.injectionText ?? fullText;
         const annotatedText = annotateSupersededMemory(displayText, hit.metadata);
+        const prefix = `- ${fmtScope(hit, label)}${fmtId(hit)} `;
         const unit = renderContextSourceUnit(annotatedText, {
           kind: 'memory', ref: hit.id ?? 'unknown', link: `memory:${encodeURIComponent(hit.id ?? '')}`,
-        }, MAX_ENTRY_CHARS, displayText !== fullText);
+        }, Math.min(MAX_ENTRY_CHARS, Math.max(0, budget - prefix.length - heading.length - 5)), displayText !== fullText);
         return {
-          line: `- ${fmtScope(hit, label)}${fmtId(hit)} ${unit.text}`,
+          line: prefix + unit.text,
           id: hit.id,
           text: fullText,
           entry: hit,
@@ -1879,7 +1881,6 @@ async function buildBlockInner(
     // watermark or the warm-epoch ledger here would suppress an unseen fact
     // after a lost response. Emission-confirming sinks own those writes.
 
-    const heading = input.heading ?? 'Operator memory (relevant entries)';
     return rendered(`## ${heading}\n\n${lines.join('\n')}`);
   } finally {
     // ONE row per recall, on EVERY exit path — the several `return null`s above,

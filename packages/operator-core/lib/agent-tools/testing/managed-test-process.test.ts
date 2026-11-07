@@ -311,6 +311,55 @@ it.each([true, false])('preserves foreground task ownership with parent context 
   });
 });
 
+it.each([false, true])('honors the cleanup reserve and original deadline during escalation (confined=%s)', async confined => {
+  const outputDir = await mkdtemp(join(tmpdir(), 'papercusp-testing-reserved-cleanup-'));
+  directories.push(outputDir);
+  const now = Date.now();
+  vi.useFakeTimers();
+  vi.setSystemTime(now);
+  try {
+    for (const [cooperative, remaining, reserve, expected] of [
+      [true, 60_000, 30_000, 30_000],
+      [true, 8_000, 30_000, 8_000],
+      [true, 60_000, 0, 1],
+      [true, 60_000, undefined, 5_000],
+      [false, 60_000, 30_000, 5_000],
+    ] as const) {
+      vi.setSystemTime(now);
+      const child = Object.assign(new EventEmitter(), { pid: 4242, kill: vi.fn(() => true) }) as unknown as ChildProcess;
+      const killScope = vi.fn(async () => ({ ok: true as const, scopeUnit: 'pc-reservedcleanup.scope', action: 'kill' }));
+      const killGroup = vi.fn();
+      const launched = await launchManagedTestProcess({
+        command: process.execPath, args: [], cwd: process.cwd(), timeoutMs: 60_000,
+        env: { PAPERCUSP_TEST_TASK_DEADLINE_AT_MS: String(now + remaining),
+          ...(reserve === undefined ? {} : { PAPERCUSP_TEST_CLEANUP_RESERVE_MS: String(reserve) }) },
+        cooperativeTermination: cooperative, runGroup: 'reserved-cleanup', workspaceId: 'papercusp-workspace',
+        outputPath: join(outputDir, 'router.log'),
+      }, {
+        managedSpawnFn: async (_command, _args, spec) => {
+          expect(spec.runtimeMaxSec).toBeLessThanOrEqual(Math.ceil(remaining / 1_000));
+          return { child, taskId: 'reservedcleanup', confined,
+            scopeUnit: confined ? 'pc-reservedcleanup.scope' : null,
+            waitForCompletion: async () => ({ status: 'recorded' }) };
+        },
+        killScopeUnitFn: killScope, killProcessGroupFn: killGroup,
+      });
+      launched.terminate();
+      if (confined) {
+        expect(killScope).toHaveBeenCalledWith('pc-reservedcleanup.scope', expect.objectContaining({
+          signal: 'SIGTERM', escalateAfterMs: expected,
+        }));
+      } else {
+        await vi.advanceTimersByTimeAsync(expected - 1);
+        expect(killGroup).not.toHaveBeenCalledWith(4242, 'SIGKILL');
+        await vi.advanceTimersByTimeAsync(1);
+        expect(killGroup).toHaveBeenCalledWith(4242, 'SIGKILL');
+      }
+      vi.clearAllTimers();
+    }
+  } finally { vi.useRealTimers(); }
+});
+
 it.each([false, true])('preserves ordered wrapper cleanup with bounded escalation (confined=%s)', async confined => {
   const outputDir = await mkdtemp(join(tmpdir(), 'papercusp-testing-ordered-cleanup-'));
   directories.push(outputDir);

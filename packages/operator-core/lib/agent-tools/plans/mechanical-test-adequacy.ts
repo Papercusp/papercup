@@ -23,7 +23,7 @@
  * A clause whose source BAR has another check kind, or whose pin cannot be resolved, is not
  * applicable here and keeps the evaluator + scorecard path.
  */
-import { hasLinkedMutationBaseline, latestLogicalEvidence, type SpecEvidenceForAdequacy } from './spec-test-adequacy';
+import { hasLinkedMutationBaseline, latestLogicalEvidence, successfulPrerequisiteReceiptGaps, type SpecEvidenceForAdequacy } from './spec-test-adequacy';
 import { hasMatchingDeclaredCaseTitle, repoFilesEvidenceMeasurementSchema } from './spec-evidence-store';
 import type { SourceBarTestRequirements } from './source-bar-test-requirements';
 import { CALIBRATION_LEGS } from '@papercusp/test-config/mutation-descriptor';
@@ -35,6 +35,7 @@ export interface MechanicalAdequacyClause {
   revision: number;
   /** When given, only rows bound to this exact clause content count. */
   contentHash?: string;
+  falsifier?: { requiredSuccessfulWorkItemIds?: string[] } | null;
 }
 
 export type MechanicalTestAdequacy =
@@ -169,7 +170,7 @@ export function evaluateMechanicalTestAdequacy(input: {
     ...[...testAttempts.values()].flatMap(attempt => latestLogicalEvidence(attempt)),
   ];
 
-  const gaps: string[] = [];
+  const gaps = successfulPrerequisiteReceiptGaps(clause, clauseRows);
   const passingTestBindingIds: Record<string, number> = {};
   const sourceBarCases = sourceBarTestRequirements.cases ?? [];
   const requiredFileSet = new Set(requiredFiles);

@@ -390,8 +390,7 @@ function scorecardProofCohortMatches(
   const cohort = (rows: (string | number | null)[][]) =>
     [...new Set(rows.map((row) => JSON.stringify(row)))].sort();
   const liveCohort = cohort(live);
-  return liveCohort.length === selectedKeys.size &&
-    JSON.stringify(liveCohort) === JSON.stringify(cohort(prior));
+  return JSON.stringify(liveCohort) === JSON.stringify(cohort(prior));
 }
 
 function scorecardMatches(

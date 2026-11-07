@@ -23,7 +23,11 @@ import type {
   ProvisionalScorecardProof,
   SpecEvidenceKind,
 } from './spec-evidence-store';
-import { evidenceCurrentInputKey } from './spec-evidence-store';
+import {
+  createEvidenceCurrentInputLookup,
+  evidenceCurrentInputKey,
+  evidenceCurrentInputMeasurementKey,
+} from './spec-evidence-store';
 import type {
   SpecTestAdequacyCurrentFingerprint,
   SpecTestAdequacyRerunRecipe,
@@ -2581,21 +2585,17 @@ function rerunRecipeFor(
         : evidence.length === 0
           ? []
           : undefined;
-  const currentByKey = new Map((current ?? []).map((row) => [evidenceCurrentInputKey(row), row]));
+  const findCurrent = createEvidenceCurrentInputLookup(current ?? []);
   const currentForEvidence = (row: SpecEvidenceForAdequacy): EvidenceCurrentInput | undefined => {
-    const scopedCurrentKey = evidenceCurrentInputKey({
+    return findCurrent({
       planSlug: row.planSlug,
       specId: row.specId,
       specRevision: row.specRevision,
       specFingerprint: row.specFingerprint,
       evidenceKind: row.evidenceKind,
       evidenceRef: row.evidenceRef,
+      ...row.fingerprints,
     });
-    const legacyCurrentKey = evidenceCurrentInputKey({
-      evidenceKind: row.evidenceKind,
-      evidenceRef: row.evidenceRef,
-    });
-    return currentByKey.get(scopedCurrentKey) ?? currentByKey.get(legacyCurrentKey);
   };
   const remeasureCurrent = evidence.length > 0 && evidence.every((row) =>
     row.serverMeasurement?.status === 'measured' &&
@@ -2607,7 +2607,7 @@ function rerunRecipeFor(
       evidence
         .map(currentForEvidence)
         .filter((row): row is EvidenceCurrentInput => row !== undefined)
-        .map((row) => [evidenceCurrentInputKey(row), row] as const),
+        .map((row) => [evidenceCurrentInputMeasurementKey(row), row] as const),
     ).values(),
   ]
     .map((row) => ({
@@ -2630,7 +2630,7 @@ function rerunRecipeFor(
       rubricFingerprint: row.rubricFingerprint ?? null,
       environmentFingerprint: row.environmentFingerprint ?? null,
     }))
-    .sort((a, b) => evidenceCurrentInputKey(a).localeCompare(evidenceCurrentInputKey(b)));
+    .sort((a, b) => evidenceCurrentInputMeasurementKey(a).localeCompare(evidenceCurrentInputMeasurementKey(b)));
   return {
     schemaVersion: 1,
     evaluator: 'plans:evaluate-spec-test-adequacy',
@@ -3268,6 +3268,30 @@ export function adequacyCardRevisionDisposition(input: {
     changed,
     state: changed.length > 0 ? 'verdict-changed' : recordedRevision < currentRevision ? 'carried' : 'current',
   };
+}
+
+/** A test pass cannot substitute for the clause's declared upstream completion receipts. */
+export function successfulPrerequisiteReceiptGaps(
+  clause: { falsifier?: { requiredSuccessfulWorkItemIds?: string[] } | null },
+  evidence: readonly SpecEvidenceForAdequacy[],
+): string[] {
+  const required = [...new Set(clause.falsifier?.requiredSuccessfulWorkItemIds ?? [])].sort();
+  const receipts = evidence.flatMap(row => {
+    const parsed = workItemsEvidenceMeasurementSchema.safeParse(row.details.currentMeasurement);
+    return parsed.success && parsed.data.successfulCompletionReceipts
+      ? [{ row, ids: [...new Set(parsed.data.workItemIds)].sort() }] : [];
+  });
+  const gaps = receipts.filter(({ row }) => row.currentness.overall !== 'current' ||
+    row.currentness.provenance !== 'server-measured').map(({ row }) =>
+    `successful prerequisite receipt binding ${row.id ?? '?'} is no longer current — ${row.currentness.overall}`);
+  if (!required.length) return gaps;
+  const matches = receipts.filter(({ ids }) => JSON.stringify(ids) === JSON.stringify(required));
+  const current = matches.filter(({ row }) => row.currentness.overall === 'current' &&
+    row.currentness.provenance === 'server-measured');
+  if (!current.length) gaps.push(`missing current successful prerequisite receipt proof for ${required.join(', ')}`);
+  if (new Set(current.map(({ row }) => row.fingerprints.sourceFingerprint)).size > 1)
+    gaps.push(`ambiguous successful prerequisite receipt proof for ${required.join(', ')}`);
+  return gaps;
 }
 
 /** Grade one clause/evidence row into the exact ratings map accepted by scorecards:emit. */
@@ -3943,13 +3967,13 @@ export function evaluateSpecTestAdequacy(input: {
   const unknownPlaneRows = exactEvidence.filter((row) => {
     const plane = readSpecEvidencePlane(row.details);
     return typeof plane === 'string' &&
-      requiredPlanes.includes(plane.trim().toLowerCase()) &&
+      requiredPlanes.some((requiredPlane) => requiredPlane === plane.trim().toLowerCase()) &&
       row.currentness.overall === 'unknown';
   });
   const unknownPlanes = [...new Set(unknownPlaneRows.flatMap((row) => {
     const plane = readSpecEvidencePlane(row.details);
     const normalized = typeof plane === 'string' ? plane.trim().toLowerCase() : null;
-    return normalized !== null && missingPlanes.includes(normalized) ? [normalized] : [];
+    return normalized !== null && missingPlanes.some((missingPlane) => missingPlane === normalized) ? [normalized] : [];
   }))];
   const definitelyMissingPlanes = missingPlanes.filter((plane) => !unknownPlanes.includes(plane));
   const planeBlockerRows = missingPlanes.length === 0 ? [] : exactEvidence.filter((row) => {
@@ -4356,6 +4380,11 @@ export function evaluateSpecTestAdequacy(input: {
   // without the disclosure. Keep that gap attached to the active logical
   // reference while its run/fingerprints are unchanged, and until changed proof
   // is server-current. A stale or unknown replacement has not closed the gap.
+  const receiptGaps = successfulPrerequisiteReceiptGaps(clause, evidence);
+  if (receiptGaps.length) ratings.freshness = {
+    rating: 'fail', evidence: receiptGaps.join('; '),
+    suggestion: 'Bind the exact required successful work-item receipts with a server-measured work-items recipe.',
+  };
   const disclosedGapRows = exactDisclosedGapMatches.filter((row) => {
     if ((detailsOf(row).disclosedGap ?? []).length === 0) return false;
     const active = activeDisclosedGapByLogicalReference.get(logicalEvidenceReferenceKey(row));

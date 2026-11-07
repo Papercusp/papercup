@@ -345,6 +345,25 @@ describe('fingerprintRepoFileSetAtCommit', () => {
 });
 
 describe('batched reads', () => {
+  it('bounds blob transport while resolving a large file population only once', async () => {
+    const files = Array.from({ length: 513 }, (_, index) => `src/bounded-${index}.ts`);
+    for (const [index, file] of files.entries()) writeFileSync(join(root, file), `export const value = ${index};\n`);
+    git(root, 'add', 'src');
+    git(root, 'commit', '-q', '-m', 'large source population');
+    const batches: number[] = [];
+    const treeReads = vi.fn(defaultGitRunner);
+    const committed = await readCommittedFiles(root, git(root, 'rev-parse', 'HEAD'), files, {
+      git: treeReads,
+      readBlobs: async (dir, ids) => {
+        batches.push(ids.length);
+        return defaultBlobBatchReader(dir, ids);
+      },
+    });
+    expect(treeReads).toHaveBeenCalledTimes(1);
+    expect(batches).toEqual([256, 256, 1]);
+    for (const file of files) expect(committed.get(file)?.sha256).toBe(sha256(file));
+  });
+
   it('records a bounded spawn-boundary trace with request identity, caller PID, and route', async () => {
     const commit = git(root, 'rev-parse', 'HEAD');
     const diagnostics = createCommittedTreeDiagnostics({

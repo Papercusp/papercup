@@ -2549,7 +2549,14 @@ export async function launchManagedTestProcess(
   let terminationStarted = false;
   const terminationGraceMs = (): number => {
     const deadline = Number(opts.env.PAPERCUSP_TEST_TASK_DEADLINE_AT_MS);
-    return deadline > 0 ? Math.max(1, Math.min(FOREGROUND_TERMINATION_GRACE_MS, deadline - Date.now()))
+    const cleanupReserve = Number(opts.env.PAPERCUSP_TEST_CLEANUP_RESERVE_MS);
+    // The foreground response grace bounds observation, not the PG owner's
+    // cleanup. Honor its existing reserve while retaining the original kernel
+    // deadline; a short response must not hard-kill ordered directory removal.
+    const grace = opts.cooperativeTermination && deadline > 0
+      && Number.isFinite(cleanupReserve) && cleanupReserve >= 0
+      ? cleanupReserve : FOREGROUND_TERMINATION_GRACE_MS;
+    return deadline > 0 ? Math.max(1, Math.min(grace, deadline - Date.now()))
       : FOREGROUND_TERMINATION_GRACE_MS;
   };
   const terminateProcessGroup = (): void => {
@@ -4709,7 +4716,7 @@ export default defineTool({
       }
       const identity = resolveAgentIdentity(ctx);
       const refusal = await loopLaunchRefusal({ workspaceId: ctx.workspaceId,
-        workItemId: args.work_item_id, background: true, timeoutMs: MAX_TIMEOUT_MS });
+        workItemId: args.work_item_id, background: true, timeoutMs: DETACHED_RECOVERY_TIMEOUT_MS });
       if (refusal) return { data: refusal };
       try {
         const { acceptNativeConsultScenario } = await import('./native-consult');

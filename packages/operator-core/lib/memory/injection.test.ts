@@ -1016,7 +1016,7 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
         queryContext: 'why is the recall empty',
         harnessSlugs: ['papercusp'],
         potSlugs: [],
-        budgetChars: 120,
+        budgetChars: 160,
       });
       await flush();
 
@@ -1894,7 +1894,7 @@ describe('buildMemoryContextBlock', () => {
 
   it('budget: hive-pack rows yield first under the cap; truncation is announced; only injected ids get watermarked (P-011)', async () => {
     const prev = process.env.PAPERCUSP_MEMORY_INJECT_BUDGET_CHARS;
-    process.env.PAPERCUSP_MEMORY_INJECT_BUDGET_CHARS = '120';
+    process.env.PAPERCUSP_MEMORY_INJECT_BUDGET_CHARS = '160';
     try {
       const organic = { id: 'org-1', text: 'this project tests via make test', kind: 'reference' };
       const packed = {

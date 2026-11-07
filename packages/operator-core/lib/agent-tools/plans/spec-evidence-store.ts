@@ -2672,6 +2672,37 @@ export function evidenceCurrentInputKey(input: EvidenceCurrentInputIdentity & {
   );
 }
 
+function evidenceFingerprintTuple(input: EvidenceFingerprints): string {
+  return JSON.stringify([
+    input.sourceFingerprint, input.testFingerprint ?? null, input.fixtureFingerprint ?? null,
+    input.rubricFingerprint ?? null, input.environmentFingerprint ?? null,
+  ]);
+}
+
+/** One proof reference can have several immutable scenario measurement recipes. */
+export function evidenceCurrentInputMeasurementKey(input: EvidenceCurrentInput): string {
+  return JSON.stringify([evidenceCurrentInputKey(input), evidenceFingerprintTuple(input)]);
+}
+
+export function createEvidenceCurrentInputLookup(inputs: readonly EvidenceCurrentInput[]) {
+  const byIdentity = new Map<string, Map<string, EvidenceCurrentInput>>();
+  for (const input of inputs) {
+    const key = evidenceCurrentInputKey(input);
+    const measurements = byIdentity.get(key) ?? new Map<string, EvidenceCurrentInput>();
+    measurements.set(evidenceFingerprintTuple(input), input);
+    byIdentity.set(key, measurements);
+  }
+  return (input: EvidenceCurrentInput): EvidenceCurrentInput | undefined => {
+    const measurements = byIdentity.get(evidenceCurrentInputKey(input)) ?? byIdentity.get(evidenceCurrentInputKey({
+      evidenceKind: input.evidenceKind, evidenceRef: input.evidenceRef,
+    }));
+    // A single changed comparison must still report drift. Several conflicting
+    // comparisons without an exact recipe match remain unknown, never guessed.
+    return measurements?.get(evidenceFingerprintTuple(input)) ??
+      (measurements?.size === 1 ? measurements.values().next().value : undefined);
+  };
+}
+
 /**
  * Provenance of the comparison used to classify a binding. Public tool inputs are
  * necessarily caller-attested: the caller supplies both fingerprints and the
@@ -5187,7 +5218,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
   );
   recordPhase('workspaceRead', workspaceReadStartedAt);
 
-  const currentByKey = new Map((metadataOnly ? [] : replayCurrent).map((c) => [evidenceCurrentInputKey(c), c]));
+  const findCurrent = createEvidenceCurrentInputLookup(metadataOnly ? [] : replayCurrent);
   // The server-measured replay opt-out is explained at its use in the loop below.
   const recipeBuildStartedAt = diagnostics ? Date.now() : 0;
   const recipes = rows.map((row) =>
@@ -5567,19 +5598,19 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       ? undefined
       : parseTestRunExecutionDetails(row.test_run_execution_details);
     const baselineExecution = parseTestRunExecutionDetails(row.mutation_baseline_execution_details);
-    const scopedCurrentKey = evidenceCurrentInputKey({
+    const callerCurrent = findCurrent({
       planSlug: row.plan_slug,
       specId: row.spec_id,
       specRevision: Number(row.spec_revision),
       specFingerprint: row.spec_fingerprint,
       evidenceKind: row.evidence_kind,
       evidenceRef: row.evidence_ref,
+      sourceFingerprint: row.source_fingerprint,
+      testFingerprint: row.test_fingerprint,
+      fixtureFingerprint: row.fixture_fingerprint,
+      rubricFingerprint: row.rubric_fingerprint,
+      environmentFingerprint: row.environment_fingerprint,
     });
-    const legacyCurrentKey = evidenceCurrentInputKey({
-      evidenceKind: row.evidence_kind,
-      evidenceRef: row.evidence_ref,
-    });
-    const callerCurrent = currentByKey.get(scopedCurrentKey) ?? currentByKey.get(legacyCurrentKey);
     const attestedDimensions: OpaqueFingerprintDimension[] =
       measured?.status === 'measured'
         ? [
