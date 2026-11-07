@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import { defaultEvidenceRoot, parseSelectionArgs, runHarness } from '@papercusp/verification-harness';
 import { bridgeEval } from '../libs/generic/tauri-verify/src/bridge-client';
-import { isCliEntry } from '../packages/operator-core/lib/util/cli-entry';
+import { isBundledEntry, isCliEntry } from '../packages/operator-core/lib/util/cli-entry';
 import { verifyVerifierSourceSync } from '../packages/operator-core/lib/verifier-source';
 
 export interface NativeLiveProfile {
@@ -632,4 +632,6 @@ async function main() {
   console.log(`REPORTS_LIBRARY_TAURI_${result.verdict.toUpperCase()} evidence=${result.evidenceDir}`);
   process.exitCode = result.verdict === 'pass' ? 0 : 1;
 }
-if (isCliEntry(import.meta.url)) void main().catch(error => { console.error(error); process.exitCode = 1; });
+if (isCliEntry(import.meta.url) || isBundledEntry('native-tauri-surface-verify-reports.mjs')) {
+  void main().catch(error => { console.error(error); process.exitCode = 1; });
+}

@@ -1284,6 +1284,31 @@ export function publishBgVerifierLogicalOutputSet(args: {
                 realpath: string;
                 sha256: string;
             }[];
+            compilerExecution: {
+                node: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                api: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                binary: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                compilerBinary: {
+                    kind: string;
+                    sha256: string;
+                    bytes: string;
+                    dev: string;
+                    ino: string;
+                    launches: number;
+                };
+            };
             transactionSha256: string | null;
             entry: string;
             argv: string[];
@@ -1631,6 +1656,31 @@ export function verifyBgVerifierPublication(publication: ReturnType<typeof publi
                 realpath: string;
                 sha256: string;
             }[];
+            compilerExecution: {
+                node: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                api: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                binary: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                compilerBinary: {
+                    kind: string;
+                    sha256: string;
+                    bytes: string;
+                    dev: string;
+                    ino: string;
+                    launches: number;
+                };
+            };
             transactionSha256: string | null;
             entry: string;
             argv: string[];
@@ -1990,6 +2040,31 @@ export function runBgVerifierBuildRecipe(args: Parameters<typeof beginBgVerifier
                 realpath: string;
                 sha256: string;
             }[];
+            compilerExecution: {
+                node: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                api: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                binary: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                compilerBinary: {
+                    kind: string;
+                    sha256: string;
+                    bytes: string;
+                    dev: string;
+                    ino: string;
+                    launches: number;
+                };
+            };
             transactionSha256: string | null;
             entry: string;
             argv: string[];
@@ -2102,6 +2177,31 @@ export function compileBgVerifierInvocation({ record, invocation, argv, expected
             realpath: string;
             sha256: string;
         }[];
+        compilerExecution: {
+            node: {
+                path: string;
+                realpath: string;
+                sha256: string;
+            };
+            api: {
+                path: string;
+                realpath: string;
+                sha256: string;
+            };
+            binary: {
+                path: string;
+                realpath: string;
+                sha256: string;
+            };
+            compilerBinary: {
+                kind: string;
+                sha256: string;
+                bytes: string;
+                dev: string;
+                ino: string;
+                launches: number;
+            };
+        };
         transactionSha256: string | null;
         entry: string;
         argv: string[];
