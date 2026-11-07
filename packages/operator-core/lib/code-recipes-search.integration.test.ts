@@ -17,7 +17,8 @@ import type postgres from 'postgres';
 import { runHybridSearch } from '@papercusp/search';
 import type { OrgTestDb } from '../test/_org-test-db';
 import { upsertRecipe } from './code-recipes-store';
-import { codeRecipesSource, searchSimilarRecipes } from './code-recipes-search';
+import { buildRecipeMatchingEvidence, codeRecipesSource, searchSimilarRecipes } from './code-recipes-search';
+import { selectRecipeCaptureTarget } from './agent-tools/code/capture-recipe';
 import { stampEmbedderMode } from './search/embedder-mode-registry';
 import { EMBEDDING_FLOOR_GEMMA } from './search/prose-min-score';
 import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
@@ -51,6 +52,47 @@ describe('code_recipes hybrid search (real PG)', () => {
   afterAll(async () => {
     await db?.cleanup();
   }, 60_000);
+
+  it('enriches stored composition candidates with compiler/clone/retrieval provenance without certifying aliases or effects', async () => {
+    const tools = ['state:read', 'facts:list'].map(name => ({ expose: { mcp: { name } } })) as never;
+    const script = 'const state = await tools.state.read({cell: "example"}); return state;';
+    await upsertRecipe(db.adminSql, { id: 'p008-zircon-match', potSlug: null,
+      title: 'P008 zircon compiler candidate', description: 'Read the example state cell',
+      script, toolsUsed: ['state:read'] });
+    const query = async (source: string) => searchSimilarRecipes(db.adminSql, {
+      title: 'P008 zircon compiler candidate', description: 'Read the example state cell',
+      embedding: null, toolsUsed: ['state:read'], source: { script: source, tools }, limit: 5,
+    });
+    const exact = (await query(script)).find(row => row.id === 'p008-zircon-match')!;
+    expect(exact.matchingEvidence).toMatchObject({ compiler: { status: 'measured', currentTools: ['state:read'], candidateTools: ['state:read'] },
+      clone: { status: 'measured', candidateOnly: true }, domain: { verdict: 'equivalent' }, retrieval: { candidateOnly: true, scale: 'rrf' } });
+    expect(selectRecipeCaptureTarget({ proposedId: 'new', similarRecipes: [exact] }).id).toBe(exact.id);
+    const alias = 'const { read: inspect } = tools.state; const value = await inspect({cell: "example"}); return value;';
+    const related = (await query(alias)).find(row => row.id === exact.id)!;
+    expect(related.matchingEvidence).toMatchObject({ compiler: { status: 'measured', currentTools: ['state:read'] }, domain: { verdict: 'unknown' } });
+    expect(selectRecipeCaptureTarget({ proposedId: 'alias', similarRecipes: [related] }).id).toBe('alias');
+    const different = (await query(script.replace('example', 'different'))).find(row => row.id === exact.id)!;
+    expect(different.matchingEvidence).toMatchObject({ clone: { similarity: 1 }, domain: { verdict: 'unknown' } });
+    expect(selectRecipeCaptureTarget({ proposedId: 'different', similarRecipes: [different] }).id).toBe('different');
+    const incomplete = await buildRecipeMatchingEvidence({ source: { script: 'return tools.dynamic[inputs.name]({});', tools },
+      candidate: { script }, rankers: [], score: 0 });
+    expect(incomplete.compiler.status).toBe('partial');
+    expect(incomplete.domain.verdict).toBe('unknown');
+  });
+
+  it('cannot certify private SQL/shell wrapper clones or contract changes from retrieval evidence', async () => {
+    const tools = ['dev:pg_query', 'capability:bash'].map(name => ({ expose: { mcp: { name } } })) as never;
+    for (const script of ['return await tools.dev.pgQuery(inputs.operation);', 'return await tools.capability.bash(inputs.operation);']) {
+      const evidence = await buildRecipeMatchingEvidence({ source: { script, tools, capabilityManifest: { sourceOperation: { revision: 'a' } } },
+        candidate: { script, capabilityManifest: { sourceOperation: { revision: 'b' } } }, rankers: ['embeddings'], score: 0.032 });
+      expect(evidence).toMatchObject({ clone: { similarity: 1 }, domain: { verdict: 'unknown' } });
+      expect(selectRecipeCaptureTarget({ proposedId: 'new', similarRecipes: [{ id: 'private', similarity: 1, matchingEvidence: evidence }] }).id).toBe('new');
+    }
+    const script = 'return 1;';
+    const evidence = await buildRecipeMatchingEvidence({ source: { script, tools, bindingSchema: { version: 1 } },
+      candidate: { script, bindingSchema: { version: 2 } }, rankers: ['lexical'], score: 0.016 });
+    expect(evidence.domain).toMatchObject({ verdict: 'different', basis: 'contract-identity-differs' });
+  });
 
   it('ranks the same-use-case recipe top (lexical + structural)', async () => {
     const ws = 'ws-crs-rank';

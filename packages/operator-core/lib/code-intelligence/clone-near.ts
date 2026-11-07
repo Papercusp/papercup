@@ -3,6 +3,7 @@
  * Scores describe ordered AST shape similarity, never semantic equivalence.
  */
 import * as ts from 'typescript';
+import { createHash } from 'node:crypto';
 
 export const CLONE_NEAR_POLICY = Object.freeze({
   version: 'minhash-ordered-subtree-v1', seeds: 32, rowsPerBand: 4, shingleWidth: 3, threshold: 0.8,
@@ -57,4 +58,30 @@ function distance(a: Shape, b: Shape): number {
 export function compareCloneNear(a: CloneNearFingerprint, b: CloneNearFingerprint): { candidate: boolean; similarity: number | null } {
   const candidate = a.bands.some((band, i) => band === b.bands[i]);
   return { candidate, similarity: candidate ? Math.max(0, 1 - distance(a.tree, b.tree) / Math.max(a.tree.mass, b.tree.mass)) : null };
+}
+
+/** Bounded pair inspection for existing consumers which already own their
+ * candidate population. This creates no index and certifies no equivalence.
+ * Unknown inputs must not look like a measured zero or a complete census. */
+export function measureCloneNearSources(left: string, right: string) {
+  const provenance = {
+    engine: CLONE_NEAR_POLICY.version,
+    leftSha256: createHash('sha256').update(left).digest('hex'),
+    rightSha256: createHash('sha256').update(right).digest('hex'),
+  };
+  const unknown = (reason: string) => ({ status: 'unknown' as const, candidateOnly: true as const,
+    candidate: null, similarity: null, reason, provenance });
+  if (Buffer.byteLength(left) > 16_384 || Buffer.byteLength(right) > 16_384) return unknown('source-budget');
+  const parse = (source: string) => {
+    const tree = ts.createSourceFile('recipe.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    if ((tree as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] }).parseDiagnostics?.length) return null;
+    let count = 0;
+    const visit = (node: ts.Node) => { if (++count <= 384) ts.forEachChild(node, visit); };
+    visit(tree);
+    return count <= 384 ? tree : null;
+  };
+  const a = parse(left), b = parse(right);
+  if (!a || !b) return unknown('syntax-or-node-budget');
+  return { status: 'measured' as const, candidateOnly: true as const,
+    ...compareCloneNear(fingerprintCloneNear(a), fingerprintCloneNear(b)), reason: null, provenance };
 }

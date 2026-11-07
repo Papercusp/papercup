@@ -7249,6 +7249,7 @@ const CODEX_AUTH_FAILURE_PATTERNS = [
 const CLAUDE_AUTH_FAILURE_PATTERNS = [
   /OAuth\s*token\s*revoked\s*[·.]?\s*Please\s*run\s*\/login/i,
   /Login\s*expired\s*[·.]?\s*Please\s*run\s*\/login/i,
+  /Not\s*logged\s*in\s*[·.]?\s*Please\s*run\s*\/login/i,
 ];
 
 /** Match the backend's own auth-failure copy; retain the existing export for callers. */

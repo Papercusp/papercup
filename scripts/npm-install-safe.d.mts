@@ -31,6 +31,8 @@ export function verificationScopeForNpmArgs({ repoRoot, npmArgs, deps, }?: {
     workspaceDirs: any[];
     repairWorkspaceArgs: string[];
 };
+/** Reuse install admission for consumers of an independently pinned source tree. */
+export function assertRootLockManifestMatches(repoRoot?: string): void;
 /**
  * Verify and repair npm's content-addressed cache before reification. npm's
  * cache verifier removes index entries whose content blobs disappeared, so a
@@ -181,7 +183,7 @@ export function verifyDepsExtracted({ repoRoot, npmArgs, runNpm, probeSpecifiers
 /** Restore the root's committed patches after reify, while the install writer is held. */
 export function restoreInstalledPatchPostimages({ repoRoot, env }?: {
     env?: NodeJS.ProcessEnv | undefined;
-}): Promise<0 | 1>;
+}): Promise<1 | 0>;
 export function repoLockName(repoRoot?: string): string;
 /**
  * Hold a shared host-wide cache lease while a package manager may read/write

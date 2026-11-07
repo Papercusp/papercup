@@ -245,12 +245,14 @@ export interface RecipeCaptureTarget {
   matchedSimilarity: number | null;
 }
 
-/** Deterministic P-014 target selection: exact structure, then strongest near
- * match above the existing merge threshold, otherwise a new candidate. */
+/** Exact adapter identity, then a source/contract-certified near-search target.
+ * A similarity score alone cannot collapse distinct behavior into one recipe. */
 export function selectRecipeCaptureTarget(input: {
   proposedId: string;
   exactRecipeId?: string | null;
-  similarRecipes: ReadonlyArray<Pick<SimilarRecipe, 'id' | 'similarity'>>;
+  similarRecipes: ReadonlyArray<Pick<SimilarRecipe, 'id' | 'similarity'> & {
+    matchingEvidence?: Pick<NonNullable<SimilarRecipe['matchingEvidence']>, 'domain'>;
+  }>;
   nearDuplicateThreshold?: number;
 }): RecipeCaptureTarget {
   if (input.exactRecipeId) {
@@ -263,7 +265,8 @@ export function selectRecipeCaptureTarget(input: {
 
   const threshold = input.nearDuplicateThreshold ?? RECIPE_CAPTURE_NEAR_DUPLICATE_THRESHOLD;
   const near = input.similarRecipes
-    .filter((candidate) => candidate.id !== input.proposedId && candidate.similarity >= threshold)
+    .filter((candidate) => candidate.id !== input.proposedId && candidate.similarity >= threshold
+      && candidate.matchingEvidence?.domain.verdict === 'equivalent')
     .sort((a, b) => b.similarity - a.similarity || a.id.localeCompare(b.id))[0];
   if (near) {
     return {
@@ -376,6 +379,8 @@ export async function captureRecipe(
           embeddingProfile: embedded?.profile ?? null,
           excludeId: exactRecipe?.id ?? id,
           limit: 5,
+          source: { script: input.script, tools: input.tools, allowed: input.allowed,
+            bindingSchema: input.bindingSchema, capabilityManifest: input.capabilityManifest },
           recommendationContext:
             input.recommendationContext ??
             recipeAuthorityContextFromDescriptor(sourceAuthority, {
@@ -406,6 +411,12 @@ export async function captureRecipe(
       : exactRecipe?.id === target.id
         ? exactRecipe
         : await getRecipe(deps.sql, target.id);
+    // Re-read after search: a concurrent revision cannot retain an earlier
+    // near target's equivalence proof after its source/contract changes.
+    if (target.disposition === 'near-similarity-reuse' && row
+      && (row.script !== input.script
+        || canonicalJson(row.bindingSchema ?? null) !== canonicalJson(input.bindingSchema ?? null)
+        || canonicalJson(row.capabilityManifest ?? null) !== canonicalJson(input.capabilityManifest ?? null))) row = null;
     if (!row || row.status !== 'active' || definition
       && row.capabilityManifest?.sourceOperation?.revision !== definition.sourceOperation.revision) {
       if (!row || row.status !== 'active') target = { id, disposition: 'created', matchedSimilarity: null };

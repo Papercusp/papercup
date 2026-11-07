@@ -27,6 +27,10 @@
  * Server-only.
  */
 import type postgres from 'postgres';
+import { checkScript, ensureParseCheckReady } from '@papercusp/tooldef';
+import type { ProjectedTool } from '@papercusp/agent-mcp';
+import { measureCloneNearSources } from './code-intelligence/clone-near';
+import { canonicalJson } from './authority/authority-rpc-envelope';
 import type { EmbedderMode } from '@papercusp/memory';
 import './search/configure-search-defaults';
 import { runHybridSearch, withIterativeScan, type SearchSource, type SearchSourceParams, type Listing } from '@papercusp/search';
@@ -161,6 +165,8 @@ export interface SimilarRecipe {
   toolsUsed: string[];
   /** Blended 0..1 similarity (fused hybrid score normalized + tool-set Jaccard). */
   similarity: number;
+  /** Candidate evidence is separate from the adapter's equivalence decision. */
+  matchingEvidence?: RecipeMatchingEvidence;
   /** Content-revision + matched context. Pass this unchanged to recipes:run. */
   authority: RecipeAuthorityProof;
   /** The concrete entity bindings derived from the current stored script. */
@@ -187,6 +193,63 @@ export interface SearchSimilarRecipesInput {
   /** Live/source context used as a HARD recommendation filter. A recipe with
    * concrete entity refs is omitted unless every ref is present here. */
   recommendationContext?: RecipeAuthorityContext;
+  /** Host-owned source/catalog, never reconstructed from tools_used metadata. */
+  source?: RecipeMatchingSource;
+}
+
+export interface RecipeMatchingSource {
+  script: string;
+  tools: readonly ProjectedTool[];
+  allowed?: ReadonlySet<string>;
+  bindingSchema?: unknown;
+  capabilityManifest?: unknown;
+}
+
+export interface RecipeMatchingEvidence {
+  compiler: { status: 'measured' | 'partial' | 'unknown'; currentTools: string[]; candidateTools: string[] };
+  clone: ReturnType<typeof measureCloneNearSources> | { status: 'unknown'; candidateOnly: true; reason: string };
+  domain: { verdict: 'equivalent' | 'different' | 'unknown'; basis: string };
+  retrieval: { candidateOnly: true; rankers: string[]; score: number; scale: 'rrf' };
+}
+
+/** Reuse the existing compiler and clone engine on a bounded pair. Shape and
+ * retrieval never upgrade the domain verdict, and static calls are not runs.
+ * Only identical source AND contract can certify a generic near-search target;
+ * private SQL/shell wrappers still require their source adapter's exact key. */
+export async function buildRecipeMatchingEvidence(input: {
+  source?: RecipeMatchingSource;
+  candidate: { script: string; bindingSchema?: unknown; capabilityManifest?: unknown };
+  rankers: string[];
+  score: number;
+}): Promise<RecipeMatchingEvidence> {
+  const evidence: RecipeMatchingEvidence = {
+    compiler: { status: 'unknown', currentTools: [], candidateTools: [] },
+    clone: { status: 'unknown', candidateOnly: true, reason: 'source-or-budget-unavailable' },
+    domain: { verdict: 'unknown', basis: 'domain-adapter-required' },
+    retrieval: { candidateOnly: true, rankers: input.rankers, score: input.score, scale: 'rrf' },
+  };
+  const source = input.source;
+  if (!source || Buffer.byteLength(source.script) > 16_384 || Buffer.byteLength(input.candidate.script) > 16_384) return evidence;
+  evidence.clone = measureCloneNearSources(source.script, input.candidate.script);
+  // The same AST/node budget bounds compiler work as well as clone rescoring.
+  if (evidence.clone.status !== 'measured') return evidence;
+  await ensureParseCheckReady();
+  const current = checkScript(source.script, source.tools, source.allowed);
+  const candidate = checkScript(input.candidate.script, source.tools, source.allowed);
+  evidence.compiler = {
+    status: current.ok && candidate.ok && !current.hasParseErrors && !candidate.hasParseErrors ? 'measured' : 'partial',
+    currentTools: [...new Set(current.calls.map(call => call.tool))].sort(),
+    candidateTools: [...new Set(candidate.calls.map(call => call.tool))].sort(),
+  };
+  const privateAdapter = (value: unknown) => !!(value && typeof value === 'object' && 'sourceOperation' in value);
+  if (privateAdapter(source.capabilityManifest) || privateAdapter(input.candidate.capabilityManifest)) return evidence;
+  if (canonicalJson(source.bindingSchema ?? null) !== canonicalJson(input.candidate.bindingSchema ?? null)
+    || canonicalJson(source.capabilityManifest ?? null) !== canonicalJson(input.candidate.capabilityManifest ?? null)) {
+    evidence.domain = { verdict: 'different', basis: 'contract-identity-differs' };
+  } else if (evidence.compiler.status === 'measured' && source.script === input.candidate.script) {
+    evidence.domain = { verdict: 'equivalent', basis: 'exact-source-and-contract' };
+  }
+  return evidence;
 }
 
 /** Jaccard overlap of two tool-sets — |A∩B| / |A∪B|, 0 when both empty. */
@@ -319,5 +382,17 @@ export async function searchSimilarRecipes(
   }
 
   blended.sort((a, b) => b.similarity - a.similarity);
-  return blended.slice(0, limit);
+  const selected = blended.slice(0, limit);
+  for (const [index, candidate] of selected.entries()) {
+    const meta = metaById.get(candidate.id)!;
+    const hit = results.find(row => row.source_id === candidate.id)!;
+    candidate.matchingEvidence = await buildRecipeMatchingEvidence({
+      // At most eight returned candidates consume compiler/AST work. Other
+      // returned candidates retain explicit unknown evidence, never a false 0.
+      source: index < 8 ? input.source : undefined,
+      candidate: { script: meta.script, bindingSchema: meta.binding_schema, capabilityManifest: meta.capability_manifest },
+      rankers: hit.rankers, score: hit.score,
+    });
+  }
+  return selected;
 }

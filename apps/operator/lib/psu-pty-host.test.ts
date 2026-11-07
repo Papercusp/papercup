@@ -8968,8 +8968,12 @@ describe('makeCarryRearmController — R-1 deferral→outcome join key (rubric r
 });
 
 describe('codex auth-failure detector (parked-agent-census P-004)', () => {
-  it('detects confirmed Claude auth errors, while quoted prose and unknown transcripts cannot block', () => {
-    const copy = 'OAuth token revoked · Please run /login';
+  it.each([
+    'OAuth token revoked · Please run /login',
+    'Login expired · Please run /login',
+    'Not logged in · Please run /login',
+    'Notlogged\nin · Pleaserun /login',
+  ])('detects confirmed Claude auth errors, while quoted prose and unknown transcripts cannot block: %s', (copy) => {
     const native = { type: 'assistant', isApiErrorMessage: true, message: { model: '<synthetic>', content: [{ type: 'text', text: copy }] } };
     const echo = { type: 'assistant', message: { content: [{ type: 'text', text: copy }] } };
     expect(realHost.codexAuthFailureMatch(copy, 'claude').matched).toBe(true);

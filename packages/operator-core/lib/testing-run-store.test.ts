@@ -1838,11 +1838,12 @@ describe('durable detached snapshot lifecycle', () => {
       const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
         const statement = strings.join(' ');
         if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')) {
+          const persisted = updates.at(-1);
           return [{
             run_id: run.runId, task_id: run.taskId, kind: run.kind, label: run.label,
-            file_path: null, command: run.command, status: 'running', exit_code: null,
-            started_at: new Date(run.startedAt), finished_at: null,
-            output: 'retained partial output', truncated: false,
+            file_path: null, command: run.command, status: persisted?.[0] ?? 'running', exit_code: null,
+            started_at: new Date(run.startedAt), finished_at: persisted?.[2] ?? null,
+            output: persisted?.[3] ?? 'retained partial output', truncated: false,
             task_state: taskState, task_deadline_at: null,
           }];
         }
@@ -1865,6 +1866,106 @@ describe('durable detached snapshot lifecycle', () => {
       expect(store.getRun(run.runId)?.status).toBe('error');
     },
   );
+
+  it.each([
+    { name: 'complete pass', issue: null, verdict: 'pass' },
+    { name: 'complete failure', issue: 'failure', verdict: 'fail' },
+    { name: 'missing requested file', issue: 'missing', verdict: null },
+    { name: 'different run identity', issue: 'wrong-run', verdict: null },
+    { name: 'different file identity', issue: 'wrong-file', verdict: null },
+    { name: 'missing execution measurements', issue: 'unmeasured', verdict: null },
+    { name: 'zero executed cases', issue: 'zero', verdict: null },
+  ] as const)('reports exact file evidence without inventing a detached process exit: $name', async ({ issue, verdict }) => {
+    const runId = 'unobserved-file-evidence';
+    const requestedFiles = ['first.test.ts', 'second.test.ts'];
+    const rows = requestedFiles.map((file_path, index) => ({
+      file_path, status: issue === 'failure' && index === 1 ? 'fail' : 'pass',
+      finished_at: new Date(1_700_000_001_000 + index), output_tail: null,
+      execution_details: index === 1 && issue === 'unmeasured' ? null : {
+        ...measuredPass(file_path, runId),
+        passed: 1, skipped: 0,
+        ...(index === 1 && issue === 'failure' ? { passed: 0, failed: 1 } : {}),
+        ...(index === 1 && issue === 'wrong-run' ? { runGroupId: 'another-run' } : {}),
+        ...(index === 1 && issue === 'wrong-file' ? { filePath: 'another.test.ts' } : {}),
+        ...(index === 1 && issue === 'zero' ? { passed: 0 } : {}),
+      },
+    }));
+    if (issue === 'missing') rows.pop();
+    let snapshot = {
+      run_id: runId, task_id: 'unobserved-task', kind: 'vitest', label: 'unobserved', file_path: null,
+      command: ['node', 'scripts/test-files.mjs'], status: 'running', exit_code: null,
+      started_at: new Date(1_700_000_000_000), finished_at: null as Date | null,
+      output: '', truncated: false, task_state: 'ended_unobserved', task_exit_code: null,
+      task_ended_at: new Date(1_700_000_002_000), task_detail: { requestedFiles },
+    };
+    const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const statement = strings.join(' ');
+      if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')) return [snapshot];
+      if (statement.includes('FROM harness_shared.test_runs')) return rows;
+      if (statement.includes('UPDATE harness_shared.testing_run_snapshots')) {
+        snapshot = { ...snapshot, status: values[0] as string, exit_code: values[1] as null,
+          finished_at: new Date(values[2] as string), output: values[3] as string };
+        return [{ run_id: runId }];
+      }
+      return [];
+    }) as unknown as Sql;
+
+    const recovered = await store.getRunAsync(runId, sql);
+    if (verdict) {
+      expect(recovered).toMatchObject({ status: 'error', exitCode: null, provisionalVerdict: {
+        status: verdict, fileCount: 2, passed: verdict === 'pass' ? 2 : 1,
+        failed: verdict === 'fail' ? 1 : 0, skipped: 0,
+      } });
+      expect(recovered?.output).toContain('process exit code was not observed');
+      expect(recovered?.output).not.toContain('no test verdict was observed');
+      // Re-reading a persisted error must reconstruct the qualified evidence without growing output.
+      const reread = await store.getRunAsync(runId, sql);
+      expect(reread?.provisionalVerdict).toEqual(recovered?.provisionalVerdict);
+      expect(reread?.output).toEqual(recovered?.output);
+    } else {
+      expect(recovered?.provisionalVerdict).toBeUndefined();
+      expect(recovered?.status).not.toBe('pass');
+      expect(recovered?.exitCode).toBeNull();
+    }
+  });
+
+  it('recovers late exact file evidence after caching a missing-verdict error', async () => {
+    const run = store.startRun(req());
+    const requestedFiles = ['late.test.ts'];
+    let rows: Record<string, unknown>[] = [];
+    let snapshot = {
+      run_id: run.runId, task_id: run.taskId, kind: run.kind, label: run.label, file_path: null,
+      command: run.command, status: 'running', exit_code: null,
+      started_at: new Date(run.startedAt), finished_at: null as Date | null,
+      output: 'retained output', truncated: false, task_state: 'ended_unobserved',
+      task_exit_code: null, task_ended_at: new Date(), task_detail: { requestedFiles },
+    };
+    const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const statement = strings.join(' ');
+      if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')) return [snapshot];
+      if (statement.includes('FROM harness_shared.test_runs')) return rows;
+      if (statement.includes('UPDATE harness_shared.testing_run_snapshots')) {
+        snapshot = { ...snapshot, status: values[0] as string, exit_code: values[1] as null,
+          finished_at: new Date(values[2] as string), output: values[3] as string };
+        return [{ run_id: run.runId }];
+      }
+      return [];
+    }) as unknown as Sql;
+
+    const initial = await store.getRunAsync(run.runId, sql);
+    expect(initial).toMatchObject({ status: 'error', exitCode: null });
+    expect(initial?.output).toContain('no test verdict was observed');
+    rows = [{ file_path: requestedFiles[0], status: 'pass', finished_at: new Date(), output_tail: null,
+      execution_details: { ...measuredPass(requestedFiles[0]!, run.runId), passed: 1, skipped: 0 } }];
+    const recovered = await store.getRunAsync(run.runId, sql);
+    expect(recovered).toMatchObject({ status: 'error', exitCode: null,
+      provisionalVerdict: { status: 'pass', fileCount: 1, passed: 1, failed: 0 } });
+    expect(recovered?.output).not.toContain('no test verdict was observed');
+    expect(recovered?.finishedAt).toBe(initial?.finishedAt);
+    expect(store.getRun(run.runId)?.provisionalVerdict).toEqual(recovered?.provisionalVerdict);
+    lastChild._emitClose(0);
+    expect(store.getRun(run.runId)).toMatchObject({ status: 'error', exitCode: null });
+  });
 
   it('preserves newer local output while the linked durable task is still running', async () => {
     const run = store.startRun(req());

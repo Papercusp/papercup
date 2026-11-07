@@ -226,19 +226,30 @@ describe('selectRecipeCaptureTarget (P-014)', () => {
     });
   });
 
-  it('reuses the strongest deterministic near match at the existing 0.8 threshold', () => {
+  it('reuses the strongest certified near match at the existing 0.8 threshold', () => {
+    const matchingEvidence = { domain: { verdict: 'equivalent' as const, basis: 'exact-source-and-contract' } };
     expect(selectRecipeCaptureTarget({
       proposedId: 'new-candidate',
       similarRecipes: [
-        { id: 'z-candidate', similarity: 0.8 },
-        { id: 'a-candidate', similarity: 0.8 },
-        { id: 'below', similarity: 0.799 },
+        { id: 'z-candidate', similarity: 0.8, matchingEvidence },
+        { id: 'a-candidate', similarity: 0.8, matchingEvidence },
+        { id: 'below', similarity: 0.799, matchingEvidence },
       ],
     })).toEqual({
       id: 'a-candidate',
       disposition: 'near-similarity-reuse',
       matchedSimilarity: 0.8,
     });
+  });
+
+  it('does not merge a perfect clone or semantic neighbor without domain equivalence', () => {
+    for (const verdict of ['unknown', 'different'] as const) {
+      expect(selectRecipeCaptureTarget({ proposedId: 'new', similarRecipes: [{ id: 'neighbor', similarity: 1,
+        matchingEvidence: { domain: { verdict, basis: 'domain-adapter-required' } } }] })).toEqual({
+        id: 'new', disposition: 'created', matchedSimilarity: null,
+      });
+    }
+    expect(selectRecipeCaptureTarget({ proposedId: 'new', similarRecipes: [{ id: 'legacy', similarity: 1 }] }).id).toBe('new');
   });
 
   it('creates the proposed candidate when no exact or qualifying near match exists', () => {

@@ -22,7 +22,7 @@
  * from a fixture in which nothing was ever actually shared.
  */
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -178,6 +178,29 @@ describe('setup-*-runtime.sh never writes through a hard-linked destination (WI-
       run(f, script);
       targets.forEach((rel, i) => expectIsolated(f, rel, seeded[i], OLD));
       expectNoSharedInodes(join(f.app, 'public'));
+    },
+  );
+
+  it.each(['setup-wake-runtime.sh', 'setup-vad-runtime.sh'])(
+    '%s replaces identical symlinks without changing their targets', script => {
+      const { f, targets } = preparedRuntime(script);
+      const shared = join(f.sibling, 'identical-asset');
+      put(shared, OLD);
+      for (const rel of targets) {
+        mkdirSync(dirname(join(f.app, rel)), { recursive: true });
+        symlinkSync(shared, join(f.app, rel));
+      }
+      const before = statSync(shared);
+      run(f, script);
+      expect(statSync(shared).ino).toBe(before.ino);
+      expect(statSync(shared).mtimeMs).toBe(before.mtimeMs);
+      expect(readFileSync(shared, 'utf8')).toBe(OLD);
+      for (const rel of targets) {
+        const own = join(f.app, rel);
+        expect(lstatSync(own).isSymbolicLink()).toBe(false);
+        expect(statSync(own).ino).not.toBe(before.ino);
+        expect(readFileSync(own, 'utf8')).toBe(OLD);
+      }
     },
   );
 

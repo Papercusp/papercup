@@ -137,7 +137,7 @@ export interface RunSnapshot {
   requestedFiles?: string[];
   command: string[];
   status: RunStatus;
-  /** Exact requested-file reporter result observed before the linked process exits. */
+  /** Exact requested-file reporter result, independent of an unobserved process exit. */
   provisionalVerdict?: ProvisionalTestVerdict;
   exitCode: number | null;
   startedAt: number;
@@ -876,18 +876,34 @@ function provisionalVerdictFromLedger(
 function withProvisionalVerdict(
   snapshot: RunSnapshot,
   provisionalVerdict: ProvisionalTestVerdict,
+  processState: 'running' | 'ended_unobserved' = 'running',
 ): RunSnapshot {
-  const message = '[detached-report] Vitest reported ' + provisionalVerdict.status + ' across '
+  const message = (processState === 'running' ? '[detached-report]' : '[detached-recovery]')
+    + ' Vitest reported ' + provisionalVerdict.status + ' across '
     + provisionalVerdict.fileCount + ' requested file(s) (' + provisionalVerdict.passed + ' passed, '
     + provisionalVerdict.failed + ' failed, ' + provisionalVerdict.skipped
-    + ' skipped); the task manager still reports the process as running, so the overall run remains nonterminal.';
+    + ' skipped); ' + (processState === 'running'
+      ? 'the task manager still reports the process as running, so the overall run remains nonterminal.'
+      : 'the process exit code was not observed, so the overall run remains error.');
+  const baseOutput = processState === 'ended_unobserved'
+    ? snapshot.output.replaceAll('no test verdict was observed',
+      'per-file results were reported; the process exit code was not observed')
+    : snapshot.output;
+  const output = baseOutput.includes(message) ? baseOutput : [baseOutput, message].filter(Boolean).join('\n');
   return {
     ...snapshot,
     provisionalVerdict,
-    output: snapshot.output.includes(message)
-      ? snapshot.output
-      : [snapshot.output, message].filter(Boolean).join('\n'),
+    output: output.length > OUTPUT_CAP_BYTES ? output.slice(-OUTPUT_CAP_BYTES) : output,
+    truncated: snapshot.truncated || output.length > OUTPUT_CAP_BYTES,
   };
+}
+
+function isDetachedNoVerdictError(snapshot: RunSnapshot): boolean {
+  return snapshot.status === 'error' && snapshot.exitCode === null
+    && snapshot.output.includes('[detached-recovery]')
+    && (snapshot.output.includes('no test verdict was observed')
+      || snapshot.output.includes('the process exit code was not observed, so the overall run remains error.')
+      || snapshot.output.includes('per-file results were reported; the process exit code was not observed'));
 }
 
 interface PersistedDetachedTaskRow {
@@ -1061,6 +1077,22 @@ async function reconcilePersistedTestRun(
   taskLinked: boolean,
   sql: SqlLike,
 ): Promise<RunSnapshot> {
+  if (taskLinked && task?.state === 'ended_unobserved' && task.exit_code === null
+    && (snapshot.status === 'running' || isDetachedNoVerdictError(snapshot))) {
+    const rows = await readPersistedTestRunLedgerRows(snapshot.runId, sql);
+    const recovery = rows && deriveDetachedRunLedgerRecovery(snapshot.runId, rows);
+    const requestedFiles = requestedFilesFromValue(task.requested_files)
+      ?? requestedFilesFromValue(snapshot.requestedFiles);
+    const verdict = recovery && requestedFiles && provisionalVerdictFromLedger(requestedFiles, recovery);
+    if (verdict) {
+      // Exact reporter evidence proves file outcomes, never the missing wrapper exit.
+      const observed = withProvisionalVerdict({
+        ...snapshot, status: 'error', exitCode: null, finishedAt: snapshot.finishedAt ?? Date.now(),
+      }, verdict, 'ended_unobserved');
+      if (observed.status === snapshot.status && observed.output === snapshot.output) return observed;
+      return persistReconciledSnapshot(snapshot, observed, sql);
+    }
+  }
   if (snapshot.status === 'fail' || snapshot.status === 'error') {
     // The snapshot's terminal verdict is already authoritative, but its
     // router output can omit the per-file failure detail persisted by the
@@ -1512,8 +1544,7 @@ async function reconcilePersistedReportArtifact(
   snapshot: RunSnapshot, row: DurableRunSnapshotRow, sql: SqlLike,
   environment?: Readonly<Record<string, string | undefined>>,
 ): Promise<RunSnapshot> {
-  const noVerdict = snapshot.status === 'error' && snapshot.exitCode === null
-    && snapshot.output.includes('[detached-recovery]') && snapshot.output.includes('no test verdict was observed');
+  const noVerdict = isDetachedNoVerdictError(snapshot);
   const closed = snapshot.status === 'pass' || snapshot.status === 'fail';
   // The task manager independently confirms ended_unobserved scopes are gone,
   // but has no process exit code. A complete reporter can still supply the test
@@ -2382,7 +2413,8 @@ async function withholdUnverifiedVitestPass(
 }
 
 /**
- * Async local-first reader for status surfaces. A cached running child still
+ * Async local-first reader for status surfaces. A cached running child or
+ * synthetic missing-verdict error still
  * consults the shared lifecycle ledger: its close callback may have been lost
  * even though the task manager has already observed the scope ending.
  * Missing/expired/unreadable durable rows retain their existing semantics.
@@ -2397,13 +2429,13 @@ export async function getRunAsync(
   const local = _runs.get(runId);
   if (local) {
     let provisionalVerdict: ProvisionalTestVerdict | undefined;
-    if (local.snapshot.status === 'running' && local.snapshot.taskId) {
+    if ((local.snapshot.status === 'running' || isDetachedNoVerdictError(local.snapshot)) && local.snapshot.taskId) {
       const persisted = await readPersistedRunSnapshot(
         runId, sqlOverride ?? local.snapshotSql, recoveryScope, local.childEnv,
       );
       // Preserve fresher local progress while the task is live, and never
       // overwrite a cancellation/close that completed during the durable read.
-      if (local.snapshot.status === 'running' && persisted) {
+      if ((local.snapshot.status === 'running' || isDetachedNoVerdictError(local.snapshot)) && persisted) {
         if (persisted.status !== 'running') {
           Object.assign(local.snapshot, persisted);
           stopProgressSnapshot(local);

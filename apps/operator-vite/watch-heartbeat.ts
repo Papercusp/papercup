@@ -28,6 +28,7 @@
 import type { Plugin } from 'vite';
 import { writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
+import { managedSetInterval, type ManagedHandle } from '../../libs/generic/scheduled-registry/src/index';
 
 const DEFAULT_LOCK_PATH = '/tmp/papercup-operator-vite-watch.lock';
 
@@ -68,22 +69,79 @@ export function resolveGitShaBestEffort(cwd: string): string | null {
 }
 
 /**
- * Vite plugin: after every build (initial + each watch rebuild), write the
- * heartbeat file. Active only for `--watch` builds — a no-op for a one-shot
- * production/CI build, which has its own freshness (it just ran once).
+ * Watch builds retain their completion file. One-shot builds report lifecycle
+ * boundaries and periodic progress into the caller's existing build log. A
+ * deadline after "modules transformed" otherwise hides whether linking,
+ * rendering, or output hooks were reached (EI-28171117618903276).
  */
 export function watchHeartbeatPlugin(): Plugin {
   let active = false;
   let root = process.cwd();
+  let log: (line: string) => void = () => {};
+  let timer: ManagedHandle | undefined;
+  let phase = 'build-start';
+  let startedAt = 0;
+  let phaseStartedAt = 0;
+  let startedCpu = process.cpuUsage();
+  const stop = () => {
+    timer?.stop();
+    timer = undefined;
+  };
+  const report = (event: 'phase' | 'progress') => {
+    const now = performance.now();
+    const cpu = process.cpuUsage(startedCpu);
+    log(`[vite-build-progress] ${JSON.stringify({
+      event, phase, pid: process.pid,
+      elapsedMs: Math.round(now - startedAt),
+      phaseElapsedMs: Math.round(now - phaseStartedAt),
+      cpuUserMs: Math.round(cpu.user / 1000),
+      cpuSystemMs: Math.round(cpu.system / 1000),
+    })}`);
+  };
+  const enter = (next: string) => {
+    if (active) return;
+    phase = next;
+    phaseStartedAt = performance.now();
+    report('phase');
+  };
   return {
     name: 'papercusp-watch-heartbeat',
     apply: 'build',
     configResolved(config) {
       active = Boolean(config.build.watch);
       root = config.root;
+      log = (line) => config.logger.info(line);
+    },
+    buildStart() {
+      stop();
+      if (active) return;
+      startedAt = performance.now();
+      startedCpu = process.cpuUsage();
+      enter('build-start');
+      timer = managedSetInterval('vite-build-progress', 30_000, () => report('progress'), {
+        category: 'external-process', classification: 'must-sample', instanced: true,
+      });
+    },
+    buildEnd(error) {
+      enter(error ? 'build-error' : 'build-end');
+      if (error) stop();
+    },
+    renderStart() {
+      enter('render-start');
+    },
+    generateBundle: {
+      order: 'post',
+      handler() { enter('generate-end'); },
+    },
+    renderError() {
+      enter('render-error');
+      stop();
     },
     async writeBundle() {
-      if (!active) return;
+      if (!active) {
+        enter('write-end');
+        return;
+      }
       const path = resolveHeartbeatPath(process.env);
       const payload = buildHeartbeatPayload(Date.now(), resolveGitShaBestEffort(root));
       try {
@@ -92,6 +150,10 @@ export function watchHeartbeatPlugin(): Plugin {
         // Best-effort — a heartbeat write failure (e.g. /tmp unwritable) must
         // never fail the actual rebuild it is reporting on.
       }
+    },
+    closeBundle() {
+      enter('close');
+      stop();
     },
   };
 }

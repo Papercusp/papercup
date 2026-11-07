@@ -201,7 +201,7 @@ function sourceBytes(root: string, sha: string, path: string): Buffer {
   }
   return execFileSync('git', ['-C', root, 'show', sha + ':' + path], { timeout: 20_000, maxBuffer: 16 * 1024 * 1024 });
 }
-type CensusCandidate = { path: string; ref: string; sourceRefs?: string[]; blobSha?: string; externalEvidence?: string };
+type CensusCandidate = { path: string; ref: string; sourceRefs?: string[]; blobSha?: string; externalEvidence?: string; exclusionReason?: string };
 function censusRow(candidate: CensusCandidate, bytes: Buffer): Source {
   const excluded = /(?:^|\/)(?:test|tests|docs)\/|\.(?:test|spec)\.[cm]?[jt]sx?$|\.(?:md|mdx)$/.test(candidate.path);
   const auditedBlob = createHash(candidate.blobSha?.length === 64 ? 'sha256' : 'sha1')
@@ -229,7 +229,95 @@ function linkedCensusSql(workspace: string, harness: string, planSlug: string) {
       AND (wi.source_plan_slug=${literal(planSlug)} OR wi.feature_id IN (SELECT src_ref FROM refs)
         OR wi.harness_slug||'#'||wi.feature_id IN (SELECT src_ref FROM refs))`;
 }
-type NativePatch = { command: string; refs: string[] };
+type NativePatch = { command: string; refs: string[]; diagnostic?: { prefix: string; expressionSha256: string } };
+/** Prove the complete path set of a generated diagnostic patch, without evaluating
+ * its payload. A JSON scalar cannot introduce a newline; split/map-plus/join can
+ * introduce only added lines. Neither can introduce another patch header.
+ * This proof is deliberately unavailable to executing source files. */
+function diagnosticPatch(expression: ts.Expression, syntax: ts.SourceFile): Omit<NativePatch, 'refs'> | null {
+  for (let node: ts.Node | undefined = expression.parent; node; node = node.parent)
+    if (ts.isFunctionLike(node)) return null;
+  const bindings = new Map<string, ts.Expression[]>();
+  const shadowed = new Set<string>();
+  let unsafeJson = false;
+  const scan = (node: ts.Node) => {
+    if (ts.isIdentifier(node) && node.text === 'JSON' &&
+        !(ts.isPropertyAccessExpression(node.parent) && node.parent.expression === node)) unsafeJson = true;
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+        ts.isPropertyAccessExpression(node.left) && ts.isIdentifier(node.left.expression) && node.left.expression.text === 'JSON') unsafeJson = true;
+    if ((ts.isVariableDeclaration(node) || ts.isParameter(node)) && ts.isIdentifier(node.name) &&
+        !(ts.isVariableDeclaration(node) && ts.isVariableDeclarationList(node.parent) &&
+          (node.parent.flags & ts.NodeFlags.Const) && ts.isVariableStatement(node.parent.parent) &&
+          ts.isSourceFile(node.parent.parent.parent))) shadowed.add(node.name.text);
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer &&
+        ts.isVariableDeclarationList(node.parent) && (node.parent.flags & ts.NodeFlags.Const) &&
+        ts.isVariableStatement(node.parent.parent) && ts.isSourceFile(node.parent.parent.parent)) {
+      bindings.set(node.name.text, [...(bindings.get(node.name.text) ?? []), node.initializer]);
+    }
+    ts.forEachChild(node, scan);
+  };
+  scan(syntax);
+  const string = (node: ts.Node, depth = 0): boolean => {
+    if (depth > 12) return false;
+    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return true;
+    if (ts.isIdentifier(node)) {
+      const values = bindings.get(node.text);
+      return !shadowed.has(node.text) && values?.length === 1 && string(values[0]!, depth + 1);
+    }
+    return ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken &&
+      (string(node.left, depth + 1) || string(node.right, depth + 1));
+  };
+  const method = (node: ts.Node, name: string): node is ts.CallExpression & { expression: ts.PropertyAccessExpression } =>
+    ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === name;
+  const literalString = (node: ts.Node | undefined, value: string) => !!node && ts.isStringLiteral(node) && node.text === value;
+  const json = (node: ts.Node) => !unsafeJson && method(node, 'stringify') &&
+    ts.isIdentifier(node.expression.expression) && node.expression.expression.text === 'JSON' && node.arguments.length === 1;
+  const addedLines = (node: ts.Node) => {
+    if (!method(node, 'join') || node.arguments.length !== 1 || !literalString(node.arguments[0], '\n')) return false;
+    const map = node.expression.expression;
+    if (!method(map, 'map') || map.arguments.length !== 1) return false;
+    const callback = map.arguments[0]!;
+    if (!ts.isArrowFunction(callback) || callback.parameters.length !== 1 || !ts.isIdentifier(callback.parameters[0]!.name) ||
+        !ts.isBinaryExpression(callback.body) || callback.body.operatorToken.kind !== ts.SyntaxKind.PlusToken ||
+        !literalString(callback.body.left, '+') || !ts.isIdentifier(callback.body.right) ||
+        callback.body.right.text !== callback.parameters[0]!.name.text) return false;
+    let split: ts.Expression = map.expression.expression;
+    // These exact operations preserve the immutable strings returned by split.
+    if (method(split, 'slice') && split.arguments.map(arg => arg.getText(syntax)).join(',') === '0,-1') split = split.expression.expression;
+    else if (method(split, 'filter') && split.arguments.length === 1 &&
+        split.arguments[0]!.getText(syntax).replace(/\s/g, '') === '(_,i,a)=>i<a.length-1') split = split.expression.expression;
+    return method(split, 'split') && split.arguments.length === 1 && literalString(split.arguments[0], '\n') &&
+      string(split.expression.expression);
+  };
+  const pieces: Array<{ text: string; dynamic?: boolean }> = [];
+  const flatten = (node: ts.Expression): boolean => {
+    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) { pieces.push({ text: node.text }); return true; }
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) return flatten(node.left) && flatten(node.right);
+    if (json(node)) { pieces.push({ text: '__JSON_SCALAR__', dynamic: true }); return true; }
+    if (addedLines(node)) { pieces.push({ text: '+__ADDED_LINES__', dynamic: true }); return true; }
+    return false;
+  };
+  if (!flatten(expression) || !pieces.some(piece => piece.dynamic)) return null;
+  const command = pieces.map(piece => piece.text).join('');
+  const lines = command.split('\n');
+  if (lines.shift() !== '*** Begin Patch' || lines.pop() !== '*** End Patch') return null;
+  const paths: string[] = [];
+  for (const line of lines) {
+    const header = /^\*\*\* (?:Add|Update|Delete) File: (.+)$/.exec(line);
+    if (header) {
+      // No absolute-root assumption: retain the exact native spelling, then
+      // resolve it against the canonical harness root in collectCensus.
+      if (!/(?:^|\/)\.papercusp\/evidence\/.+\.json$/.test(header[1]!) ||
+          header[1]!.includes('__JSON_SCALAR__') || header[1]!.includes('__ADDED_LINES__') ||
+          header[1]!.includes('\\') || header[1]!.split('/').some(part => part === '..' || part === '.')) return null;
+      paths.push(header[1]!);
+    } else if (line !== '@@' && !/^[+ -]/.test(line)) return null;
+  }
+  if (!paths.length) return null;
+  return { command, diagnostic: { prefix: pieces.slice(0, pieces.findIndex(piece => piece.dynamic)).map(piece => piece.text).join(''),
+    expressionSha256: digest(expression.getText(syntax)) } };
+}
 function nativePatches(bytes: Buffer, sourceSha: string, sourceWarnings: Json[] = []): NativePatch[] {
   const patches: NativePatch[] = [];
   for (const [index, line] of bytes.toString('utf8').trimEnd().split('\n').entries()) {
@@ -268,6 +356,10 @@ function nativePatches(bytes: Buffer, sourceSha: string, sourceWarnings: Json[] 
           node.expression.name.text === 'apply_patch' && node.arguments.length === 1) {
         const value = node.arguments[0]!;
         if (ts.isStringLiteral(value) || ts.isNoSubstitutionTemplateLiteral(value)) patches.push({ command: value.text, refs: [ref] });
+        else {
+          const diagnostic = diagnosticPatch(value, syntax);
+          if (diagnostic) patches.push({ ...diagnostic, refs: [ref, 'native-expression-sha256:' + diagnostic.diagnostic!.expressionSha256] });
+        }
       }
       ts.forEachChild(node, visit);
     };
@@ -277,7 +369,8 @@ function nativePatches(bytes: Buffer, sourceSha: string, sourceWarnings: Json[] 
 }
 function resolveNativePatch(preview: string, patches: NativePatch[], identity?: { activityId: string; sessionId: string }): NativePatch {
   const prefix = preview.endsWith('…') ? preview.slice(0, -1) : preview;
-  const matches = patches.filter(patch => patch.command.startsWith(prefix) &&
+  const matches = patches.filter(patch => (patch.diagnostic ?
+    prefix.startsWith(patch.diagnostic.prefix) : patch.command.startsWith(prefix)) &&
     patch.command.startsWith('*** Begin Patch\n') && patch.command.trimEnd().endsWith('\n*** End Patch'));
   // Retrying the identical patch does not create a second possible source body.
   // Preserve every call citation while refusing distinct bodies sharing a preview.
@@ -287,7 +380,7 @@ function resolveNativePatch(preview: string, patches: NativePatch[], identity?: 
     candidateCount: patches.length, matchingRefs: matches.slice(0, 8).flatMap(patch => patch.refs), matchCount: matches.length,
     distinctCommands: commands.size,
   }));
-  return { command: matches[0]!.command, refs: [...new Set(matches.flatMap(patch => patch.refs))].sort() };
+  return { ...matches[0]!, refs: [...new Set(matches.flatMap(patch => patch.refs))].sort() };
 }
 async function collectCensus(fixture: Fixture, started: string): Promise<Census> {
   const proposed = tool('plans:audit', { slug: plan, harness: 'papercusp', phase: 'completion', dryRun: true, proposeCitations: true });
@@ -333,6 +426,7 @@ async function collectCensus(fixture: Fixture, started: string): Promise<Census>
   for (const row of native) {
     let command = String(row.detail?.command ?? '');
     let sourceRefs: string[] = [];
+    let diagnostic: NativePatch['diagnostic'];
     if (command.startsWith('*** Begin Patch')) {
       requireProof(row.agent === 'codex' && typeof row.session_id === 'string', 'native patch session identity is missing');
       if (!nativeSources.has(row.session_id)) {
@@ -357,6 +451,7 @@ async function collectCensus(fixture: Fixture, started: string): Promise<Census>
       const patch = resolveNativePatch(command, nativeSource.patches, { activityId: row.id, sessionId: row.session_id });
       command = patch.command;
       sourceRefs = patch.refs;
+      diagnostic = patch.diagnostic;
       row.sourceRefs = sourceRefs;
     }
     const paths = [...command.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)].map(match => match[1]!);
@@ -364,14 +459,18 @@ async function collectCensus(fixture: Fixture, started: string): Promise<Census>
     for (const path of paths) {
       requireProof(!path.includes('…'), 'native edit path is a truncated preview');
       const local = isAbsolute(path) ? relative(fixture.root, path) : path;
+      if (diagnostic) requireProof(normalized(local) && local.startsWith('.papercusp/evidence/'),
+        'generated diagnostic patch is outside the harness evidence directory');
       candidates.push({ path: normalized(local) ? local : path, ref: 'native:' + row.id + ':' + parent, sourceRefs,
-        ...(!normalized(local) ? { externalEvidence: JSON.stringify(row) } : {}) });
+        ...(diagnostic ? { externalEvidence: JSON.stringify({ activity: row, diagnostic }),
+          exclusionReason: 'Non-executing diagnostic JSON artifact. Complete edit paths are proven from static patch headers and newline-contained payload expressions; the digest identifies retained native provenance, not reconstructed artifact bytes.' } :
+          !normalized(local) ? { externalEvidence: JSON.stringify(row) } : {}) });
     }
   }
   const rows = [...recordedRows, ...candidates.slice(recordedCount).map(candidate => {
     if (candidate.externalEvidence) return { path: candidate.path, sha256: digest(candidate.externalEvidence),
       refs: [candidate.ref, ...(candidate.sourceRefs ?? [])], classification: 'excluded' as const,
-      reason: 'Native edit outside the harness repository (for example an isolated mutation fixture). The digest identifies its retained edit evidence, not an accepted production file.' };
+      reason: candidate.exclusionReason ?? 'Native edit outside the harness repository (for example an isolated mutation fixture). The digest identifies its retained edit evidence, not an accepted production file.' };
     requireProof(normalized(candidate.path), 'native edit is outside the audited repository: ' + candidate.path);
     const bytes = sourceBytes(fixture.root, audit.audited_sha, candidate.path);
     return censusRow(candidate, bytes);
@@ -613,6 +712,67 @@ describe('EGM exact released artifact acceptance', () => {
     expect(nativePatches(bytes, 'a'.repeat(64))).toEqual([]);
     expect(() => resolveNativePatch('*** Begin Patch\n', [{ command: '*** Begin Patch\n*** Update File: clipped…', refs: ['incomplete'] }]))
       .toThrow(/missing or ambiguous/);
+  });
+  it('conserves every generated diagnostic edit path without evaluating native payloads', () => {
+    const sourceSha = 'd'.repeat(64);
+    const first = '/repo/.papercusp/evidence/probe/request.json';
+    const second = '/repo/.papercusp/evidence/probe/status.json';
+    const header = '*** Begin Patch\n*** Add File: ' + first + '\n';
+    const content = JSON.stringify({ script: '*** Update File: hidden-production.ts\n' + 'x'.repeat(600) }, null, 2) + '\n';
+    const body = content.split('\n').slice(0, -1).map(line => '+' + line).join('\n');
+    const tail = '\n*** Add File: ' + second + '\n+{}\n*** End Patch';
+    const native = (input: string, id: string) => JSON.stringify({ type: 'response_item', payload: {
+      type: 'custom_tool_call', name: 'exec', call_id: id, input } });
+    for (const trim of ['slice(0,-1)', 'filter((_,i,a)=>i<a.length-1)']) {
+      const input = 'const content=JSON.stringify(load("unavailable-payload"),null,2)+"\\n";\n' +
+        'tools.apply_patch(' + JSON.stringify(header) + '+content.split("\\n").' + trim +
+        '.map(l=>"+"+l).join("\\n")+' + JSON.stringify(tail) + ')';
+      const resolved = resolveNativePatch((header + body + tail).slice(0, 500) + '…',
+        nativePatches(Buffer.from(native(input, 'generated') + '\n'), sourceSha));
+      expect([...resolved.command.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)].map(match => match[1]))
+        .toEqual([first, second]);
+      expect(resolved.diagnostic).toEqual({ prefix: header,
+        expressionSha256: expect.stringMatching(sha256) });
+      expect(resolved.refs).toEqual(expect.arrayContaining(['native-source:' + sourceSha + ':generated']));
+      expect(resolved.command).not.toContain('hidden-production.ts');
+    }
+    const updateHeader = '*** Begin Patch\n*** Update File: ' + first + '\n@@\n-  "command": ';
+    const updateTail = '\n*** End Patch';
+    const update = 'tools.apply_patch(' + JSON.stringify(updateHeader) + '+JSON.stringify(load("old"))+' +
+      JSON.stringify(',\n+  "command": ') + '+JSON.stringify(load("new"))+' + JSON.stringify(',' + updateTail) + ')';
+    const resolved = resolveNativePatch(updateHeader + '"saved-old-command",\n+  "command": "saved-new-command",' + updateTail,
+      nativePatches(Buffer.from(native(update, 'update') + '\n'), sourceSha));
+    expect(resolved.command.match(/^\*\*\* Update File: (.+)$/m)?.[1]).toBe(first);
+    expect(resolved.diagnostic?.expressionSha256).toMatch(sha256);
+  });
+  it('refuses generated diagnostics that cannot prove the complete non-executing path population', () => {
+    const header = '*** Begin Patch\n*** Add File: /repo/.papercusp/evidence/probe/request.json\n';
+    const tail = '\n*** End Patch';
+    const safe = 'content.split("\\n").slice(0,-1).map(l=>"+"+l).join("\\n")';
+    const attempts = [
+      JSON.stringify(header) + '+unknown+' + JSON.stringify(tail),
+      JSON.stringify(header) + '+JSON.stringify(load("payload"),null,2)+' + JSON.stringify(tail),
+      JSON.stringify(header) + '+' + safe.replace('"+"+l', 'l') + '+' + JSON.stringify(tail),
+      JSON.stringify(header) + '+' + safe.replace('content.split', 'unknown.split') + '+' + JSON.stringify(tail),
+      JSON.stringify(header.replace('request.json', '')) + '+JSON.stringify(load("path"))+' + JSON.stringify('.json\n+{}' + tail),
+      JSON.stringify(header.replace('.papercusp/evidence/probe/request.json', 'packages/production.json')) + '+' + safe + '+' + JSON.stringify(tail),
+      JSON.stringify(header) + '+' + safe + '+' + JSON.stringify('\n*** Update File: packages/production.ts\n@@\n+changed' + tail),
+      JSON.stringify(header.replace('/probe/', '/../')) + '+' + safe + '+' + JSON.stringify(tail),
+    ];
+    for (const expression of attempts) {
+      const input = 'const content=JSON.stringify(load("payload"),null,2)+"\\n";tools.apply_patch(' + expression + ')';
+      const bytes = Buffer.from(JSON.stringify({ type: 'response_item', payload: {
+        type: 'custom_tool_call', name: 'exec', call_id: 'unsafe', input } }) + '\n');
+      expect(nativePatches(bytes, 'e'.repeat(64)), expression).toEqual([]);
+    }
+    for (const prefix of ['JSON.stringify = value => value; ', '{ let content=load("unknown"); ']) {
+      const input = 'const content="safe\\n"; ' + prefix + 'tools.apply_patch(' + JSON.stringify(header) + '+' +
+        (prefix.startsWith('JSON') ? 'JSON.stringify(load("unknown"))' : safe) + '+' + JSON.stringify(tail) + ')' +
+        (prefix.startsWith('{') ? '}' : '');
+      const bytes = Buffer.from(JSON.stringify({ type: 'response_item', payload: {
+        type: 'custom_tool_call', name: 'exec', call_id: 'shadowed', input } }) + '\n');
+      expect(nativePatches(bytes, 'f'.repeat(64)), input).toEqual([]);
+    }
   });
   it('retains complete native patch provenance after malformed native usage telemetry', () => {
     const sourceSha = 'a'.repeat(64);

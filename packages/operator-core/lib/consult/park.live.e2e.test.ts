@@ -22,9 +22,11 @@ function call(name: string, args: Record<string, unknown>, origin: string) {
   const env: NodeJS.ProcessEnv = { ...process.env, PAPERCUSP_CONTEXT_TIER: 'full' };
   delete env.PAPERCUSP_SCRATCH_ROOT;
   const result = spawnSync(process.execPath, [resolve(root, 'apps/operator/scripts/ptool.mjs'),
-    'tools:invoke', `--url=${origin}`, '--json', '-'], {
+    name, `--url=${origin}`, '--json', '-'], {
     cwd: root, env, encoding: 'utf8', timeout: 180_000, maxBuffer: 2 * 1024 * 1024,
-    input: JSON.stringify({ name, args: { ...args, payloadTier: 'full' } }),
+    // Named CLI dispatch lists the serving generation before the call; a
+    // stateless tools:invoke envelope can carry a stale MCP contract.
+    input: JSON.stringify({ ...args, payloadTier: 'full' }),
   });
   expect(result.status, result.stderr || result.stdout).toBe(0);
   const value = JSON.parse(result.stdout);

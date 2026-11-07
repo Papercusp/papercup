@@ -2641,7 +2641,7 @@ export function preflightWindowGuard({ personaBytes, contextSize, model, agent, 
     agent?: string | undefined;
     budget?: null | undefined;
 }): {
-    level: "ok" | "refuse" | "warn";
+    level: "refuse" | "ok" | "warn";
     pct: number;
     estTokens: number;
     window: number;
@@ -2693,7 +2693,7 @@ export function runLaunchPreflight({ promptFile, contextSize, model, agent, budg
     budget?: null | undefined;
     force: any;
 }): {
-    level: "ok" | "refuse" | "warn";
+    level: "refuse" | "ok" | "warn";
     pct: number;
     estTokens: number;
     window: number;

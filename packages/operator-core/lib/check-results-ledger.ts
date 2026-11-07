@@ -350,10 +350,11 @@ export interface RubricCheckLedgerRow {
 /** Build the test_runs row for one check result. Throws if the details would not read back. */
 export function buildRubricCheckLedgerRow(result: RubricCheckResult, scope: RubricCheckLedgerScope): RubricCheckLedgerRow {
   const filePath = rubricCheckLedgerPath(result.check.rubricRef, result.check.id, result.check.subject);
-  const finishedAt = result.measuredAt;
-  const startedAt = result.durationMs === null
+  const execution = result.check.provenance ? parseRecordedMeasurementProvenance(result.check.provenance) : null;
+  const finishedAt = execution?.finishedAt ?? result.measuredAt;
+  const startedAt = execution?.startedAt ?? (result.durationMs === null
     ? finishedAt
-    : new Date(Date.parse(finishedAt) - result.durationMs).toISOString();
+    : new Date(Date.parse(finishedAt) - result.durationMs).toISOString());
   const executionDetails: TestRunExecutionDetails = {
     schemaVersion: TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION,
     root: scope.root ?? process.cwd(),

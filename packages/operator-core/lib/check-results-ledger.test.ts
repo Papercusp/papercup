@@ -19,6 +19,24 @@ import { measurementJsonBytes } from '@papercusp/test-config/execution-details';
 const AT = '2026-10-13T04:00:00.000Z';
 const adoption = { key: 'r-31', check: { kind: 'instrument', instrumentKey: 'code-intel:native-adoption-good-use' } };
 
+describe('rubric check execution timestamps', () => {
+  it('writes the execution bounds retained in measurement provenance', () => {
+    const startedAt = '2026-11-07T16:22:00.000Z';
+    const finishedAt = '2026-11-07T16:22:06.500Z';
+    const provenance = retainMeasurementProvenance({
+      procedure: { kind: 'tool', tool: 'status:read', args: { id: 'x' } },
+      result: { value: 1 }, startedAt, finishedAt,
+    });
+    const row = buildRubricCheckLedgerRow({
+      check: { id: 'R-1:instrument', rubricRef: 'timing', criterionKey: 'R-1', kind: 'instrument',
+        value: 1, unit: 'count', provenance },
+      verdict: 'pass', measuredAt: AT, durationMs: 6_500,
+    }, { workspaceId: 'ws', harnessSlug: 'papercusp' });
+
+    expect(row).toMatchObject({ startedAt, finishedAt, durationMs: 6_500 });
+  });
+});
+
 describe('historical measurement writer-reader-scorecard roundtrip', () => {
   it('replays original descriptor, window and diagnostics after live source changes', async () => {
     const live = { value: 42, sample_count: 7 };

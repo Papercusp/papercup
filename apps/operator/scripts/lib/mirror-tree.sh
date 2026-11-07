@@ -33,6 +33,14 @@
 # complete asset, never a missing or partially copied file.
 mirror_copy_unlinked() {
   local source="$1" destination="$2"
+  # Avoid rewriting unchanged assets on every prebuild. Equal bytes alone are
+  # insufficient: hard links and symlinks still need an independent atomic copy.
+  # find -links works on GNU and BSD, unlike their incompatible stat flags.
+  if [ -f "$destination" ] && [ ! -L "$destination" ] &&
+    [ -n "$(find "$destination" -prune -type f -links 1 -print)" ] &&
+    cmp -s "$source" "$destination"; then
+    return 0
+  fi
   local staged
   staged="$(mktemp "${PWD}/.mirror-tree.tmp.XXXXXX")"
   if ! cp -p "$source" "$staged" || ! touch "$staged" || ! mv -f "$staged" "$destination"; then
