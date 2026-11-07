@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { getRequestListener } from '@hono/node-server';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -17,11 +18,16 @@ import { readSuperuserToken, superuserTokenPath } from '../lib/superuser-token';
 import { getServingHostIdentity } from '../lib/serving-host-identity';
 import { readProcessIdentity } from '../lib/process-identity';
 import { runEmbedSidecarServer } from '../lib/memory/embed-sidecar-server';
+import { registerGitSyncResource } from '../lib/harness/git-sync/git-sync-action';
+import { inWorkspaceTxn } from '../lib/agent-tools/locks/in-workspace-txn';
+import { registerAwait, listActiveAwaits } from '../lib/events/await/store';
+import { emitAwaitedEvent } from '../lib/events/await/engine';
 
 const root = process.env.FRICTION_SOURCE_ROOT!;
 assert.ok(root, 'explicit source root required for the bundled private fixture');
 const workspace = process.env.PAPERCUSP_WORKSPACE_ID!;
 const workerMode = process.argv.includes('--worker');
+const releaseScenario = process.env.FRICTION_RELEASE_CONTINUATION === '1';
 const privateRoot = dirname(process.env.HOME!);
 assert.match(workspace, /^test-runtime-/);
 assert.notEqual(process.env.PAPERCUSP_PG_PORT, '5432');
@@ -79,7 +85,7 @@ export async function runGitSyncTargetWorkerFixture() {
     const descriptor = JSON.parse(readFileSync(join(process.env.PAPERCUSP_HOME!, `endpoint-ipc.${port}.json`), 'utf8'));
     assert.equal(descriptor.processRole, 'bg-host');
     assert.equal(descriptor.executionProcessId, readProcessIdentity(process.pid));
-    assert.ok(descriptor.executionTarget?.buildSha);
+    if (!releaseScenario) assert.ok(descriptor.executionTarget?.buildSha);
     process.send?.({ kind: 'worker-ready', port, target: descriptor.executionTarget, pid: process.pid,
       identity: descriptor.executionProcessId });
     return;
@@ -165,7 +171,10 @@ export async function runGitSyncTargetWorkerFixture() {
     assert.equal(requestOnly.reason, 'request-only-host', JSON.stringify(requestOnly));
     assert.equal(git('rev-parse', 'HEAD'), before);
     phase('request-only-refused');
-    const client = await connect(proxyPort);
+    // The release-only case measures current artifact bytes through the retained
+    // build receipt and connects directly to this child's private port. The
+    // original exact-target case still requires a source commit identity.
+    const client = await connect(releaseScenario ? ready.port : proxyPort);
     phase('preview-start');
     const preview = parse(await client.callTool({ name: 'git-sync:run', arguments: { installSlug: slug, target: ready.target, dryRun: true } }, undefined, requestOptions));
     assert.equal(preview.fired, false);
@@ -182,6 +191,71 @@ export async function runGitSyncTargetWorkerFixture() {
         params: { name: 'tools:invoke', arguments: { name: 'git-sync:run', args: { installSlug: slug, target: ready.target }, authenticatedPrincipal: {} } } }) });
     assert.equal(principal.status, 400);
     assert.equal(git('rev-parse', 'HEAD'), before);
+    let releaseContinuation: Record<string, unknown> | undefined;
+    if (releaseScenario) {
+    // Register only this disposable harness's resource. Acquisition and release
+    // go through the real MCP handlers in the private runtime.
+    const resource = `git-sync:${slug}`;
+    await inWorkspaceTxn(workspace, 'friction-private-setup', tx => registerGitSyncResource(tx, slug));
+    const lease = parse(await client.callTool({ name: 'locks:acquire_resource', arguments: {
+      resource, mode: 'exclusive', reason: 'private release-continuation acceptance', ttl_sec: 300,
+      wait: { max_drain_sec: 0 },
+    } }, undefined, requestOptions));
+    assert.equal(lease.ok, true, JSON.stringify(lease));
+    assert.ok(lease.lock_id, JSON.stringify(lease));
+    const blocked = parse(await client.callTool({ name: 'git-sync:run', arguments: {
+      installSlug: slug, target: ready.target,
+    } }, undefined, requestOptions));
+    assert.equal(blocked.outcome?.reason, 'held_exclusive', JSON.stringify(blocked));
+    assert.equal(git('rev-parse', 'HEAD'), before, 'a blocked fire must not commit');
+    const holder = blocked.outcome.holders.find((entry: any) => entry.lock_id === lease.lock_id);
+    assert.ok(holder, JSON.stringify(blocked));
+    const acquiredAtMs = Date.parse(holder.acquired_ts);
+    assert.ok(Number.isFinite(acquiredAtMs));
+    const completion = blocked.continuation.completion_event;
+    assert.equal(completion.key, `resource:released:${resource}`);
+    assert.deepEqual(completion.payload_filter, { all: [
+      { resource: { equals: resource } }, { workspaceId: { equals: workspace } },
+      { releasedAtMs: { gte: acquiredAtMs } },
+    ] });
+    const subscriberId = 'friction-private-release';
+    const waiting = await registerAwait({ subscriberId, eventKey: completion.key,
+      policy: 'notify', once: true, timeoutSec: 60, timeoutBehavior: 'expire',
+      payloadFilter: completion.payload_filter });
+    // A delayed old release uses the real event engine and migrated await store.
+    // Its timestamp must not consume the continuation for the current lease.
+    const stale = await emitAwaitedEvent({ key: completion.key, workspaceId: workspace,
+      source: 'resource-locks', payload: { resource, workspaceId: workspace, releasedAtMs: acquiredAtMs - 1 } });
+    assert.equal(stale.latchRecorded, true);
+    assert.equal(stale.waiters, 0, JSON.stringify(stale));
+    assert.ok((await listActiveAwaits(subscriberId)).some(row => row.id === waiting.id));
+    assert.equal(git('rev-parse', 'HEAD'), before);
+    phase('stale-release-rejected');
+    const release = parse(await client.callTool({ name: 'locks:release_resource', arguments: {
+      lock_id: lease.lock_id,
+    } }, undefined, requestOptions));
+    assert.equal(release.ok, true, JSON.stringify(release));
+    assert.equal(release.results[0]?.released, 1, JSON.stringify(release));
+    const deadline = Date.now() + 30_000;
+    let released: any;
+    while (Date.now() < deadline) {
+      const rows = await getOrgPg().sql`
+        SELECT fired_at, fired_reason, fired_payload FROM harness_shared.event_awaits WHERE id = ${waiting.id}
+      `;
+      released = rows[0];
+      if (released?.fired_at) break;
+      await delay(25);
+    }
+    assert.equal(released?.fired_reason, 'event', JSON.stringify(released));
+    assert.equal(released.fired_payload.resource, resource);
+    assert.equal(released.fired_payload.workspaceId, workspace);
+    assert.ok(released.fired_payload.releasedAtMs >= acquiredAtMs, JSON.stringify(released));
+    assert.equal((await listActiveAwaits(subscriberId)).length, 0);
+    phase('real-release-consumed');
+    releaseContinuation = { resource, lockId: lease.lock_id, acquiredAtMs,
+      staleReleaseRejected: true, actualReleaseConsumed: true,
+      releasedAtMs: released.fired_payload.releasedAtMs, awaitId: waiting.id };
+    }
     phase('mutation-start');
     const result = parse(await client.callTool({ name: 'git-sync:run', arguments: { installSlug: slug, target: ready.target } }, undefined,
       { timeout: 60_000, maxTotalTimeout: 60_000, resetTimeoutOnProgress: false }));
@@ -208,6 +282,7 @@ export async function runGitSyncTargetWorkerFixture() {
       before, after, committed: true, wrongTargetDispatched: false, principalDispatched: false,
       requestOnlyRefused: true, workerStopped: true, resultStatus: result.status,
       remoteConfirmed: true, nonTargetUnchanged: true, commits: 1,
+      ...(releaseContinuation ? { releaseContinuation } : {}),
       sourceHost: getServingHostIdentity() }));
   } catch (error) {
     scenarioFailure = error;

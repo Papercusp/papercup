@@ -1,18 +1,20 @@
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { symlink } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { expect, it } from 'vitest';
+import { expect, it, type TestContext } from 'vitest';
 import { captureIsolatedWorker, isolatedWorkerOptions, isolatedWorkerFailureDetail, recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
 import { preparePrivateOperatorApiBundle } from '../../../test/private-http-workspace-preflight';
 
 const root = resolve(import.meta.dirname, '../../../../..');
 const filePath = 'packages/operator-core/lib/agent-tools/git_sync/target-worker.integration.test.ts';
 const fixture = 'packages/operator-core/test/git-sync-target-worker-fixture.ts';
+const snapshotLauncher = 'apps/operator/scripts/systemd/papercusp-script-snapshot.sh';
+const bundleScript = 'apps/operator/bin/bundle-host.sh';
 const options = isolatedWorkerOptions(360_000);
 let bundle: string;
 
-it('routes a real authorized git-sync mutation to the exact private worker and removes private state', async context => {
+async function verifyPrivateWorker(context: TestContext, releaseContinuation = false) {
   const runId = await recordIsolatedIntegrationProof({ root, filePath,
     sourcePaths: [fixture, 'scripts/with-test-pg.mjs',
       'packages/operator-core/test/isolated-integration-proof.ts',
@@ -20,14 +22,24 @@ it('routes a real authorized git-sync mutation to the exact private worker and r
       'apps/operator/lib/mcp-proxy/build-routing.ts', 'apps/operator/lib/mcp-proxy/proxy.ts',
       'packages/operator-core/lib/agent-tools/git_sync/run.ts',
       'packages/operator-core/lib/harness/git-sync/git-sync-action.ts',
+      'packages/operator-core/lib/harness/git-sync/git-sync-events.ts',
+      'packages/operator-core/lib/agent-tools/locks/acquire_resource.ts',
+      'packages/operator-core/lib/agent-tools/locks/release_resource.ts',
+      'packages/operator-core/lib/events/await/engine.ts',
+      'packages/operator-core/lib/events/await/store.ts',
+      'packages/operator-core/lib/events/await/pattern.ts',
       'packages/operator-core/lib/endpoint-ipc-discovery.ts',
       'packages/operator-core/lib/serving-build.ts', 'apps/operator/bin/host-handler.ts',
-      'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh'],
+      snapshotLauncher, bundleScript, 'apps/operator/bin/bundle-host-common.sh'],
     prepare: async evidenceDir => {
       await symlink(resolve(root, 'node_modules'), resolve(evidenceDir, 'node_modules'), 'dir');
+      // Fail before compilation on malformed recipes, and use the maintained
+      // immutable launcher so a shared-tree edit cannot change a running shell.
+      execFileSync('bash', ['-n', resolve(root, bundleScript)], { cwd: root, stdio: 'pipe' });
       const prepared = await preparePrivateOperatorApiBundle(root, evidenceDir, { builder: {
-        command: 'bash', args: [resolve(root, 'apps/operator/bin/bundle-host.sh'), resolve(root, fixture),
+        command: 'bash', args: [resolve(root, snapshotLauncher), resolve(root, bundleScript), resolve(root, fixture),
           resolve(evidenceDir, 'hono-host.mjs'), 'development'], timeoutMs: 240_000, maxMs: 420_000,
+        env: { ...process.env, BUNDLE_HOST_OPERATOR_DIR: resolve(root, 'apps/operator') },
       } });
       bundle = prepared.path;
     },
@@ -35,7 +47,8 @@ it('routes a real authorized git-sync mutation to the exact private worker and r
       const child = spawn(process.execPath, [resolve(root, 'scripts/with-test-pg.mjs'), '--isolated-runtime', '--',
         process.execPath, bundle], {
         cwd: root, detached: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
-        env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FRICTION_WORKER_EVIDENCE: evidenceDir, FRICTION_SOURCE_ROOT: root },
+        env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FRICTION_WORKER_EVIDENCE: evidenceDir,
+          FRICTION_SOURCE_ROOT: root, FRICTION_RELEASE_CONTINUATION: releaseContinuation ? '1' : '0' },
       });
       observe(child);
       const result = await captureIsolatedWorker(child, evidenceDir, options);
@@ -48,9 +61,21 @@ it('routes a real authorized git-sync mutation to the exact private worker and r
         principalDispatched: false, workerStopped: true, requestOnlyRefused: true,
         resultStatus: 'synced', remoteConfirmed: true, nonTargetUnchanged: true, commits: 1 });
       expect(receipt.workspace).toMatch(/^test-runtime-/);
+      if (releaseContinuation) {
+        expect(receipt.releaseContinuation).toMatchObject({
+          resource: 'git-sync:friction-private-repository', staleReleaseRejected: true, actualReleaseConsumed: true,
+        });
+        expect(receipt.releaseContinuation.releasedAtMs).toBeGreaterThanOrEqual(receipt.releaseContinuation.acquiredAtMs);
+      }
       expect(existsSync(receipt.runtimeRoot)).toBe(false);
       console.info('FRICTION_WORKER_VERIFIED ' + JSON.stringify(receipt));
     },
   });
   Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
-}, options.testTimeoutMs);
+}
+
+it('routes a real authorized git-sync mutation to the exact private worker and removes private state',
+  context => verifyPrivateWorker(context), options.testTimeoutMs);
+
+it('rejects a stale release continuation, consumes the real private release and commits once with cleanup',
+  context => verifyPrivateWorker(context, true), options.testTimeoutMs);
