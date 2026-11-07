@@ -68,6 +68,45 @@ describe('proxyOpenAi — Codex OAuth reachability and quota failover', () => {
     expect(stats).toMatchObject({ codexHealthyAccounts: 0, codexUnserviceableCause: 'accounts-unserviceable' });
   });
 
+  it('recovers a healthy account after a transport cooldown instead of shedding on a usage-walled sibling', async () => {
+    const accounts = await Promise.all(['chatgpt-a', 'walled-b'].map(async accountId => ({
+      accountId, home: await codexHome(accountId),
+    })));
+    const routed: string[] = [];
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      routed.push(new Headers(init?.headers).get('chatgpt-account-id') ?? '');
+      if (routed.length === 1) {
+        throw new TypeError('fetch failed', { cause: Object.assign(new Error('Connect Timeout Error'), {
+          code: 'UND_ERR_CONNECT_TIMEOUT',
+        }) });
+      }
+      return new Response('data: ' + JSON.stringify({ type: 'response.completed', response: {
+        id: 'recovered-after-connect-timeout', status: 'completed', output: [],
+      } }) + '\n\n', { headers: { 'content-type': 'text/event-stream' } });
+    }) as typeof fetch;
+    gateway = createInferenceGateway({
+      accountId: 'unused', token: async () => 'unused', fetchImpl,
+      codexCliAccounts: () => accounts,
+      codexCliPool: createFailoverPool(accounts.map(({ accountId }) => ({ accountId, token: async () => '' }))),
+      codexOAuthProxy: true, bare429FailoverBackoffMs: 40, selfHeal: { enabled: false },
+    });
+    gateway.setAccountRateHints([
+      { accountId: 'chatgpt-a', utilization7d: 0.05 },
+      { accountId: 'walled-b', utilization7d: 1, windowResetAt7d: Date.now() + 3600_000 },
+    ]);
+    const port = await gateway.listen(0);
+    const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+      method: 'POST', headers: { 'content-type': 'application/json', [OWNER_HEADER]: 'transport-cooldown-owner' },
+      body: JSON.stringify({ model: 'gpt-6.1-sol', input: [], stream: true }),
+    });
+    const wire = await response.text();
+
+    expect(response.status, wire).toBe(200);
+    expect(wire).toContain('recovered-after-connect-timeout');
+    expect(routed).toEqual(['chatgpt-a', 'chatgpt-a']);
+    expect(gateway.stats().codex.upstream429).toBe(0);
+  });
+
   it.each([false, true])('surfaces a generic context SSE error to the native client (after output: %s)', async afterOutput => {
     const account = { accountId: 'context-account', home: await codexHome('context-account') };
     const output = afterOutput ? 'data: ' + JSON.stringify({ type: 'response.output_text.delta', delta: 'visible once' }) + '\n\n' : '';
