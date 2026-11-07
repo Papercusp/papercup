@@ -577,16 +577,76 @@ describe('bounded subject evidence against real transcript SQL', () => {
     expect(result.qualified.map(candidate => candidate.ownerId)).toContain('subject-timeout-fast');
   }, 15_000);
 
-  it('caps scored owners and leaves overflow explicitly unmeasured', async () => {
+  it('keeps healthy bounded scoring distinct from evidence unavailable', async () => {
     for (let i = 0; i < SUBJECT_EVIDENCE_OWNER_LIMIT + 2; i++) await passage(`subject-cap-${i}`, 'virtual screen lease diagnosis', i * 0.01);
     let pairs = 0;
     const result = await routeConsult({ ...baseParams, question }, deps(0, {
       scoreSubjectEvidence: async (_q, texts) => { pairs = texts.length; return texts.map(() => 0.9); },
     }));
     expect(pairs).toBeLessThanOrEqual(SUBJECT_EVIDENCE_OWNER_LIMIT * 3);
-    expect(result.snapshot.subjectValidation?.unmeasured).toBeGreaterThan(0);
-    expect(result.snapshot.degraded).toBe('evidence-unavailable');
+    expect(result.snapshot.subjectValidation).toMatchObject({
+      evaluated: SUBJECT_EVIDENCE_OWNER_LIMIT,
+      budgetLimited: result.snapshot.subjectValidation?.unmeasured,
+    });
+    expect(result.snapshot.subjectValidation?.budgetLimited).toBeGreaterThan(0);
+    expect(result.snapshot.degraded).toBeUndefined();
+    expect(result.verdict).toBe('routed');
     expect(result.qualified.length).toBeGreaterThan(0);
+  });
+
+  it('preserves unknown relevance when bounded scoring finds no supported responder', async () => {
+    for (let i = 0; i < SUBJECT_EVIDENCE_OWNER_LIMIT + 2; i++) await passage(`subject-cap-mismatch-${i}`, 'virtual screen lease diagnosis', i * 0.01);
+    const result = await routeConsult({ ...baseParams, question }, deps(0, {
+      scoreSubjectEvidence: async (_q, texts) => texts.map(() => 0.1),
+    }));
+    expect(result.snapshot.subjectValidation).toMatchObject({
+      evaluated: SUBJECT_EVIDENCE_OWNER_LIMIT,
+      budgetLimited: result.snapshot.subjectValidation?.unmeasured,
+    });
+    expect(result.snapshot.subjectValidation?.budgetLimited).toBeGreaterThan(0);
+    expect(result.snapshot.degraded).toBeUndefined();
+    expect(result.verdict).toBe('relevance_unmeasured');
+    expect(result.qualified).toHaveLength(0);
+  });
+
+  it('keeps a valid expert beyond the scoring slice unknown, with an in-slice positive control', async () => {
+    const relevantText = 'Fixed computer:provision_desktop stale desktop rows by verifying the former display process died before reclaiming its lease.';
+    for (let i = 0; i < SUBJECT_EVIDENCE_OWNER_LIMIT; i++) {
+      await passage(`subject-slice-decoy-${i}`,
+        'The computer:provision_desktop question mentions soleOwner, but this transcript only establishes the sole live release-gate owner.',
+        (i + 1) * 0.01);
+    }
+    const expert = 'subject-slice-late-expert';
+    await passage(expert, relevantText, 0.2);
+    const params = { ...baseParams, question,
+      subjectRefs: ['computer:provision_desktop'],
+      maxCandidates: SUBJECT_EVIDENCE_OWNER_LIMIT + 1,
+      excludeOwners: ['agent-alpha', 'agent-beta', 'agent-subfloor'] };
+    const checked: string[] = [];
+    const scorer = async (_subject: string, texts: string[]) => {
+      checked.push(...texts);
+      return texts.map(text => text === relevantText ? 0.9 : 0.1);
+    };
+
+    const outside = await routeConsult(params, deps(0, { scoreSubjectEvidence: scorer }));
+    expect(checked).not.toContain(relevantText);
+    expect(outside.snapshot.subjectValidation).toMatchObject({
+      evaluated: SUBJECT_EVIDENCE_OWNER_LIMIT, unmeasured: 1, budgetLimited: 1,
+    });
+    expect(outside.snapshot.candidates.find(candidate => candidate.ownerId === expert)
+      ?.subjectEvidenceCoverage?.status).toBe('unmeasured');
+    expect(outside.snapshot.degraded).toBeUndefined();
+    expect(outside.verdict).toBe('relevance_unmeasured');
+    expect(outside.qualified).toHaveLength(0);
+
+    // Move only the query vector: the same real transcript now enters the
+    // bounded slice, proving the outside expert was a missed positive.
+    checked.length = 0;
+    const inside = await routeConsult(params, deps(0.2, { scoreSubjectEvidence: scorer }));
+    expect(checked).toContain(relevantText);
+    expect(inside.qualified.map(candidate => candidate.ownerId)).toEqual([expert]);
+    expect(inside.verdict).toBe('routed');
+    expect(inside.snapshot.degraded).toBeUndefined();
   });
 });
 
