@@ -518,6 +518,64 @@ describe('identity hook ports through the real CLI (P-011)', () => {
     }
   });
 
+  it('pre-tool: unavailable authority permits pinned scorecard evidence paging without admitting writes or shell execution', async () => {
+    const { runInjection } = await import('../core.mjs');
+    const command = (header: string, args: unknown = { issueId: 'EI-123', rerunRecipeOffset: 2580 }) =>
+      [header + " <<'JSON'", JSON.stringify(args), 'JSON'].join('\n');
+    const pinned = 'node scripts/mcp-call.mjs --port 38453 scorecards:get --json -';
+    const safe = [
+      command('ptool scorecards:get --json -'),
+      command('ptool scorecards:get --json - --url=http://127.0.0.1:3170'),
+      command(pinned),
+      command(pinned + ' --allow-partial'),
+      command('node scripts/mcp-call.mjs --port=38453 capability:read --json -', {
+        file_path: 'papercusp://scratch/papercusp-workspace/scorecards:get/evidence.spill',
+        byte_offset: 0, byte_limit: 3072,
+      }),
+      command('ptool tools:invoke --json -', { name: 'scorecards:get', args: { issueId: 'EI-123' } }),
+    ];
+    const unsafe = [
+      command(pinned.replace('scorecards:get', 'scorecards:emit')),
+      command(pinned.replace('scorecards:get', 'work_items:complete')),
+      command(pinned.replace('scorecards:get', 'tools:invoke'), {
+        name: 'scorecards:get', args: { issueId: 'EI-123' },
+      }),
+      command(pinned + ' --client=someone-else'),
+      command(pinned.replace('38453', '65536')),
+      command(pinned.replace('38453', '0')),
+      command(pinned.replace('scripts/mcp-call.mjs', '/tmp/mcp-call.mjs')),
+      command(pinned.replace('node ', 'node --eval ')),
+      command(pinned).replace("<<'JSON'", '<<JSON'),
+      command(pinned) + '\ntouch source.ts',
+      command(pinned + ' > source.ts'),
+      command('ptool scorecards:get --json - --url=http://elsewhere:3170'),
+      command('ptool scorecards:get --json - --url=http://127.0.0.1:3170/path'),
+    ];
+    const fetchImpl = (async () => { throw Error('authority unavailable'); }) as typeof fetch;
+    for (const [adapter, nativeEvent] of [[claude, 'PreToolUse'], [codex, 'pre-tool-use']] as const) {
+      for (const cmd of safe) {
+        expect(await runInjection({ adapter, nativeEvent,
+          event: { tool_name: 'exec_command', tool_input: { cmd } },
+          env: { PAPERCUSP_SID: 'sid-reviewer' }, fetchImpl }), cmd).toBeNull();
+        const refusal = await runInjection({ adapter, nativeEvent,
+          event: { tool_name: 'exec_command', tool_input: { cmd } },
+          env: { PAPERCUSP_SID: 'sid-reviewer' },
+          fetchImpl: (async () => new Response(JSON.stringify({ text: 'Explicit operator refusal' }), {
+            status: 200, headers: { 'Content-Type': 'application/json' },
+          })) as typeof fetch });
+        expect(JSON.parse(refusal!).hookSpecificOutput, cmd).toMatchObject({
+          permissionDecision: 'deny', permissionDecisionReason: 'Explicit operator refusal',
+        });
+      }
+      for (const cmd of unsafe) {
+        const output = await runInjection({ adapter, nativeEvent,
+          event: { tool_name: 'exec_command', tool_input: { cmd } },
+          env: { PAPERCUSP_SID: 'sid-reviewer' }, fetchImpl });
+        expect(JSON.parse(output!).hookSpecificOutput, cmd).toMatchObject({ permissionDecision: 'deny' });
+      }
+    }
+  });
+
   it('pre-tool: unavailable authority accepts only validated quoted scope refs for typed ptool reads', async () => {
     const { runInjection } = await import('../core.mjs');
     const fetchImpl = (async () => { throw Error('authority unavailable'); }) as typeof fetch;

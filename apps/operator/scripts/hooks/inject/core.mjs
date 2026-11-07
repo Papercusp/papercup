@@ -96,11 +96,12 @@ export function operatorBases(env = process.env) {
   return pinnedPort === proxyPort ? [pinned] : [pinned, `http://127.0.0.1:${proxyPort}`];
 }
 
-/** The native tool guard is an idempotent read; reserve a bounded direct route
- * when a session is pinned to the standard local proxy and that proxy stalls. */
+/** The native tool guard is an idempotent read; reserve time for each loopback
+ * route so a stalled first origin cannot consume the hard wall before its
+ * configured fallback is tried. */
 function preToolGuardRoute(env = process.env) {
   const bases = operatorBases(env);
-  if (bases.length !== 1) return { bases, splitWall: false };
+  if (bases.length > 1) return { bases, splitWall: true };
   let pinned;
   try { pinned = new URL(operatorBase(env)); }
   catch { return { bases, splitWall: false }; }
@@ -905,9 +906,21 @@ function isCanonicalReviewPtoolCommand(command, env) {
   const lines = normalized.split('\n');
   if (lines.at(-1) === '') lines.pop();
   if (lines.length < 3) return false;
-  const header = lines.shift();
+  let header = lines.shift();
   const closingDelimiter = lines.pop();
-  const match = /^ptool[ \t]+([a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*)[ \t]+--json[ \t]+-((?:[ \t]+--(?:workspace|harness)=(?:"[^"\r\n]*"|'[^'\r\n]*'|[A-Za-z0-9._-]+))*)[ \t]+<<'([A-Za-z_][A-Za-z0-9_]*)'[ \t]*$/.exec(header);
+  // ptool's explicit staging route never forwards the bearer to another host.
+  // Remove at most one exact flag; duplicates and all other URLs still fail
+  // the canonical header parser below.
+  if (header.startsWith('ptool ')) {
+    header = header.replace(/[ \t]+--url=http:\/\/(?:localhost|127\.0\.0\.1|\[::1\]):3170\/?(?=[ \t])/, '');
+  }
+  const pinned = /^node[ \t]+scripts\/mcp-call\.mjs[ \t]+--port(?:[ \t]+|=)([1-9][0-9]{0,4})[ \t]+([a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*)[ \t]+--json[ \t]+-(?:[ \t]+--allow-partial)?[ \t]+<<'([A-Za-z_][A-Za-z0-9_]*)'[ \t]*$/.exec(header);
+  if (pinned && (Number(pinned[1]) > 65535 ||
+      !['scorecards:get', 'capability:read'].includes(pinned[2]))) return false;
+  // mcp-call validates its explicit port as a loopback-only destination. Keep
+  // this recovery form limited to evidence reads and the inherited identity.
+  const match = pinned ? [pinned[0], pinned[2], '', pinned[3]] :
+    /^ptool[ \t]+([a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*)[ \t]+--json[ \t]+-((?:[ \t]+--(?:workspace|harness)=(?:"[^"\r\n]*"|'[^'\r\n]*'|[A-Za-z0-9._-]+))*)[ \t]+<<'([A-Za-z_][A-Za-z0-9_]*)'[ \t]*$/.exec(header);
   if (!match || closingDelimiter !== match[3] || lines.includes(match[3])) return false;
   const seenScopes = new Set();
   for (const argument of match[2].trim().split(/[ \t]+/).filter(Boolean)) {
@@ -944,6 +957,7 @@ function isCanonicalReviewPtoolCommand(command, env) {
     }
     if (tool === 'events:await') return isCanonicalGradingAuditAwait(toolArgs);
     return ['tools:find', 'dev:pg_query', 'plans:get', 'plans:items', 'work_items:get', 'events:status', 'reports:get',
+      'scorecards:get', 'capability:read',
       'conversations:get', 'coord:inbox', 'coord:read', 'docs:get', 'docs:search',
       'consult:reply', 'consult:decline'].includes(tool);
   } catch {
