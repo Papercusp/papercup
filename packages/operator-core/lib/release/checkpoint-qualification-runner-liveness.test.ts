@@ -77,6 +77,73 @@ describe('independent qualification semantic progress (P-002)', () => {
       monotonicAtMs: sequence * 1000, telemetryHealthy }).transaction;
   }
 
+  it.each(['suite', 'isolating', 'delivering', 'finalizing'] as const)(
+    'empty-frontier: %s stays unknown before its first declared durable completion', phase => {
+      let tx = fixture();
+      tx.currentPhysicalRunner!.phase = phase;
+      const held = structuredClone(tx.currentPhysicalRunner);
+      tx = sample(tx, 1);
+      tx.currentPhysicalRunner!.heartbeatAtMs = 12_000;
+      tx.lastProgressAtMs = 12_000;
+      const active = structuredClone(tx.currentPhysicalRunner);
+      tx = sample(tx, 2);
+      expect(tx.progressObservation).toMatchObject({ health: 'healthy', semantic: 'unknown',
+        completedUnits: [], lastUsefulProgressMonotonicMs: null });
+      expect(tx.currentPhysicalRunner).toEqual(active);
+      expect(tx.currentPhysicalRunner?.childScopeUnits).toEqual(held?.childScopeUnits);
+      expect(tx.phase).toBe('running');
+      expect(tx.outcome).toEqual({ kind: 'pending' });
+    });
+
+  it.each([
+    ['launching', 'candidate-checkout', 'guard'],
+    ['materializing', 'dependency-materialization', 'guard'],
+    ['materializing', 'selected-setup', 'guard'],
+    ['suite', 'selected-test', 'test'],
+    ['isolating', 'rescue', 'guard'],
+    ['isolating', 'confirmation', 'test'],
+    ['delivering', 'result-acknowledgment', 'post-suite'],
+    ['finalizing', 'result-manifest', 'post-suite'],
+    ['finalizing', 'verdict', 'post-suite'],
+    ['delivering', 'promotion', 'post-suite'],
+    ['delivering', 'deployment', 'post-suite'],
+    ['finalizing', 'notification', 'post-suite'],
+  ] as const)('phase-milestone: %s %s accepts only a declared durable completion', (phase, operation, kind) => {
+    let tx = fixture();
+    tx.currentPhysicalRunner!.phase = phase;
+    const held = structuredClone(tx.currentPhysicalRunner);
+    const unrelatedKind = kind === 'post-suite' ? 'test' : 'post-suite';
+    tx.continuation!.manifest.units = [
+      { id: operation, kind, path: 'selected-operation.ts' },
+      { id: 'pending', kind, path: 'pending-operation.ts' },
+      { id: 'other-phase', kind: unrelatedKind, path: 'other-phase.ts' },
+      { id: 'excluded', kind, path: 'excluded.ts', exclusion: { reason: 'outside selection', policyRef: 'test-policy' } },
+    ];
+    tx = sample(sample(tx, 1), 2);
+    expect(tx.progressObservation).toMatchObject({ health: 'healthy', semantic: 'unknown',
+      completedUnits: [], lastUsefulProgressMonotonicMs: null });
+    tx.continuation!.receipts.push(
+      { unitId: 'other-phase', completionId: 'other', observedAtMs: 12_500, state: 'pass' },
+      { unitId: 'undeclared', completionId: 'unselected', observedAtMs: 12_500, state: 'pass' },
+      { unitId: 'excluded', completionId: 'excluded', observedAtMs: 12_500, state: 'pass' },
+      { unitId: operation, completionId: 'before-phase', observedAtMs: 999, state: 'pass' },
+      { unitId: 'pending', completionId: 'future', observedAtMs: 99_000, state: 'pass' });
+    tx = sample(tx, 3);
+    expect(tx.progressObservation).toMatchObject({ semantic: 'unknown', completedUnits: [],
+      lastUsefulProgressMonotonicMs: null });
+    tx.continuation!.receipts.push({ unitId: operation, completionId: 'first', observedAtMs: 13_500, state: 'pass' });
+    tx = sample(tx, 4);
+    expect(tx.progressObservation).toMatchObject({ health: 'healthy', semantic: 'advancing',
+      completedUnits: [operation], lastUsefulProgressMonotonicMs: 4000 });
+    tx.continuation!.receipts.push({ unitId: operation, completionId: 'duplicate', observedAtMs: 14_500, state: 'pass' });
+    tx = sample(tx, 5);
+    expect(tx.progressObservation).toMatchObject({ semantic: 'unchanged', completedUnits: [operation],
+      lastUsefulProgressMonotonicMs: 4000 });
+    expect(tx.currentPhysicalRunner).toEqual(held);
+    expect(tx.phase).toBe('running');
+    expect(tx.outcome).toEqual({ kind: 'pending' });
+  });
+
   it('quiet-progress: only a new relevant selected completion renews useful progress', () => {
     let tx = sample(fixture(), 1);
     expect(tx.progressObservation).toMatchObject({ health: 'baseline', semantic: 'unknown' });

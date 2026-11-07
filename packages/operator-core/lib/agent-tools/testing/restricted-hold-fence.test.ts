@@ -11,6 +11,8 @@ import { dirname, join } from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { verifierGitCheckoutSync, verifierSourceFiles } from '@papercusp/test-config/verifier-source';
 import type { RestrictedEditHolding } from '../../personal-vault/git-sync-hold';
+import * as evidenceMeasurement from '../plans/evidence-measurement-pin';
+import type { BundleHoldProgress } from '../../../../../scripts/lib/restricted-hold-preflight.mjs';
 import { restrictedHoldBundleRefusal, restrictedHoldRefusal, TEST_ROUTER_PATH } from './restricted-hold-fence';
 
 vi.mock('node:fs/promises', async importOriginal => {
@@ -233,6 +235,29 @@ describe('restrictedHoldBundleRefusal — independent verifier archive', () => {
       .toMatchObject({ error: 'restricted_hold_state_unknown' });
     expect(records.at(-1)).toMatchObject({ step: 'restricted-hold-git-origin', event: 'end', status: 3,
       error: expect.stringContaining('differs from committed source') });
+  });
+
+  it('retains the failed Git read diagnostics before refusing the archive bundle', async () => {
+    const a = archive();
+    const records: BundleHoldProgress[] = [];
+    const failure = Object.assign(new Error('fixture Git deadline'), { code: 'ETIMEDOUT' });
+    const git = vi.spyOn(evidenceMeasurement, 'defaultGitRunner').mockRejectedValueOnce(failure);
+    try {
+      const refusal = await restrictedHoldBundleRefusal(a.selectedRoot, { files: [a.file], dirs: [] },
+        { progress: record => records.push(record) });
+      expect(refusal).toMatchObject({ error: 'restricted_hold_state_unknown',
+        hint: expect.stringContaining('fixture Git deadline') });
+      const diagnostic = records.find(record => record.gitDiagnostics)?.gitDiagnostics;
+      expect(diagnostic?.lsTreeRecords).toEqual([expect.objectContaining({
+        repository: '.', commit: a.receipt.sourceCommit, pathCount: 1,
+        outcome: 'error', failurePhase: 'git', errorCode: 'ETIMEDOUT',
+        durationMs: expect.any(Number), argumentSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      })]);
+      expect(diagnostic?.lsTreeRecords?.[0]).not.toHaveProperty('paths');
+      expect(records.at(-1)).toMatchObject({ step: 'restricted-hold-git-origin', event: 'end', status: 3 });
+    } finally {
+      git.mockRestore();
+    }
   });
 
   it('records receipt failure before either input traversal or Git origin begins', async () => {

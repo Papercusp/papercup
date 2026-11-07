@@ -12,6 +12,7 @@ import { closeSync, fchmodSync, openSync, readFileSync, readdirSync, readlinkSyn
 import { isAbsolute } from 'node:path';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { parseArgs } from 'node:util';
+import { performance } from 'node:perf_hooks';
 import {
   closeInspector,
   createCdpClient,
@@ -73,11 +74,13 @@ export function readInspectorProcessIdentity({ pid, port, expectedEntry, expecte
  * it disconnects its own socket without closing the target's pre-opened inspector.
  * @param {{ pid: number, durationMs?: number, startPort?: number, attachExisting?: boolean,
  *   expectedEntry?: string, expectedArg?: string, deadlineMs?: number, procIdentity?: boolean,
- *   resumeStartup?: boolean, requestTimeoutMs?: number }} options
+ *   resumeStartup?: boolean, requestTimeoutMs?: number,
+ *   onReady?: (ready: { target: any, inspector: string, startedAtMs: number,
+ *     signal: AbortSignal }) => unknown | Promise<unknown> }} options
  */
 export async function captureCpuProfile({ pid, durationMs = 30000, startPort = 9229,
   attachExisting = false, expectedEntry, expectedArg, deadlineMs = 50000, procIdentity = false,
-  resumeStartup = false, requestTimeoutMs = 2000 }) {
+  resumeStartup = false, requestTimeoutMs = 2000, onReady }) {
   if (!Number.isInteger(pid) || pid < 0 || (!attachExisting && pid === 0))
     throw new TypeError('a positive target pid is required unless attaching by exact entry');
   // The inspector answers CDP requests on the target's MAIN thread, so a busy target
@@ -95,6 +98,8 @@ export async function captureCpuProfile({ pid, durationMs = 30000, startPort = 9
     throw new TypeError('proc identity requires an existing Linux inspector and absolute expected entry');
   if (resumeStartup && !procIdentity)
     throw new TypeError('startup resume requires kernel process identity');
+  if (onReady !== undefined && typeof onReady !== 'function')
+    throw new TypeError('onReady must be a function');
 
   const deadline = Date.now() + deadlineMs;
   if (!attachExisting) {
@@ -127,6 +132,7 @@ export async function captureCpuProfile({ pid, durationMs = 30000, startPort = 9
     webSocketOptions: { handshakeTimeout: 2000, maxPayload: 64 * 1024 * 1024 },
   });
   let startupResumed = false;
+  let profiling = false;
   try {
     await client.connect();
     // --inspect starts listening before Node has initialized process.argv.
@@ -148,16 +154,42 @@ export async function captureCpuProfile({ pid, durationMs = 30000, startPort = 9
     await client.send('Profiler.enable');
     await client.send('Profiler.setSamplingInterval', { interval: attachExisting ? 1000 : 200 });
     await client.send('Profiler.start');
+    profiling = true;
+    const startedAtMs = Date.now();
+    const captureStarted = performance.now();
+    const captureMs = Math.min(durationMs, deadline - Date.now() - 5000);
+    if (captureMs <= 0) throw new Error('no capture window remains before the deadline');
+    // A trigger must wait for the actual Profiler.start ACK, not a launch receipt.
+    // Bound it separately and revoke its IO if it fails to finish.
+    if (onReady) {
+      const controller = new AbortController();
+      let timer;
+      try {
+        await Promise.race([
+          Promise.resolve().then(() => onReady({ target,
+            inspector: redactDiagnosticUrl(inspector.wsUrl), startedAtMs, signal: controller.signal })),
+          new Promise((_, reject) => {
+            timer = setTimeout(() => {
+              const error = new Error('CPU profile readiness callback timed out');
+              controller.abort(error);
+              reject(error);
+            }, Math.min(requestTimeoutMs, deadline - Date.now() - 5000));
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+        controller.abort();
+      }
+    }
     // Configure profiling while Node services inspector requests at its startup
     // wait, before synchronous compilation/initialization can stall the protocol.
     if (resumeStartup) {
       await client.send('Runtime.runIfWaitingForDebugger');
       startupResumed = true;
     }
-    const captureMs = Math.min(durationMs, deadline - Date.now() - 5000);
-    if (captureMs <= 0) throw new Error('no capture window remains before the deadline');
-    await sleep(captureMs);
+    await sleep(Math.max(0, captureMs - (performance.now() - captureStarted)));
     const { profile } = await client.send('Profiler.stop');
+    profiling = false;
     if (!profile?.nodes?.length || !profile.samples?.length)
       throw new Error('inspector returned an empty CPU profile');
     if (procIdentity) {
@@ -168,6 +200,11 @@ export async function captureCpuProfile({ pid, durationMs = 30000, startPort = 9
     return { profile, target, captureMs, startupResumed, inspector: redactDiagnosticUrl(inspector.wsUrl) };
   } finally {
     try {
+      // Stop our session even when the trigger rejects or times out. Preserve
+      // the original failure if the target also refuses cleanup.
+      if (profiling) {
+        try { await client.send('Profiler.stop'); } catch { /* disconnect revokes this session too */ }
+      }
       // A failed profiler setup must not strand the owned child at Node's wait.
       // Preserve a failed release as an error; the caller still owns termination.
       if (resumeStartup && !startupResumed) {
@@ -178,7 +215,7 @@ export async function captureCpuProfile({ pid, durationMs = 30000, startPort = 9
       }
     } finally {
       if (attachExisting) client.close();
-      else await closeInspector(client, inspector.port);
+      else await closeInspector(client, inspector.port, { expectedPid: pid });
     }
   }
 }

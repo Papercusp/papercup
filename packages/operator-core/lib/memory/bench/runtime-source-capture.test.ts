@@ -1,11 +1,12 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, onTestFailed, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import inspector from 'node:inspector';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { bindRuntimeSourcePopulation, validateRuntimeSourceCapture } from './runtime-source-capture.mjs';
+import { bindRuntimeSourcePopulation, startRuntimeSourceCapture, validateRuntimeSourceCapture } from './runtime-source-capture.mjs';
 import { runtimeFileTraceArguments } from './runtime-file-opens.mjs';
 
 const roots: string[] = [];
@@ -23,8 +24,62 @@ function run(program: string, extraArgs: string[] = []) {
     { env, encoding: 'utf8', timeout: 15_000, maxBuffer: 1024 * 1024 });
   expect(result.error, result.stderr).toBeUndefined();
   const rows = fs.readFileSync(output, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  // Preserve the failure discriminator before afterEach removes the receipt.
+  onTestFailed(() => console.error('RUNTIME_SOURCE_CAPTURE_DIAGNOSTICS ' + JSON.stringify({
+    exitCode: result.status, signal: result.signal, lifecycle: rows.filter(row => row.kind !== 'source'),
+  })));
   return { result, rows, fixture, source, output };
 }
+describe('worker detach protocol evidence', () => {
+  it.each(['Debugger.resume', 'Debugger.getScriptSource'])(
+    'retains the outstanding %s method and source count without accepting incomplete evidence', pendingMethod => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'runtime-source-protocol-')); roots.push(root);
+      const output = path.join(root, 'sources.jsonl');
+      let notify!: (message: {method: string; params: Record<string, unknown>}) => void;
+      let finish!: (code: number) => void;
+      const notification = (method: string, params: Record<string, unknown>) => notify({method, params});
+      const workerMessage = (message: Record<string, unknown>) => notification('NodeWorker.receivedMessageFromWorker', {
+        sessionId: 'worker-session', message: JSON.stringify(message),
+      });
+      const session = {
+        connect() {}, disconnect() {},
+        on(_event: string, listener: typeof notify) { notify = listener; },
+        post(method: string, params: Record<string, unknown>, callback: (error: null, result: object) => void) {
+          callback(null, method === 'Debugger.getScriptSource' ? {scriptSource: 'main source'} : {});
+          if (method !== 'NodeWorker.sendMessageToWorker') return;
+          const request = JSON.parse(String(params.message));
+          if (request.method !== pendingMethod) workerMessage({id: request.id,
+            result: request.method === 'Debugger.getScriptSource' ? {scriptSource: 'worker source'} : {}});
+        },
+      };
+      // Drive the recorder's actual protocol handler, not a manufactured receipt.
+      // Capture only its own exit hook; never emit process.exit in the test runner.
+      const originalOnce = process.once.bind(process);
+      const constructor = vi.spyOn(inspector, 'Session').mockImplementation(function () { return session; } as never);
+      const once = vi.spyOn(process, 'once').mockImplementation(((event: string, listener: (...args: any[]) => void) => {
+        if (event === 'exit') { finish = listener; return process; }
+        return originalOnce(event, listener);
+      }) as typeof process.once);
+      try { startRuntimeSourceCapture(output); }
+      finally { constructor.mockRestore(); once.mockRestore(); }
+      try {
+        notification('Debugger.scriptParsed', {scriptId: 'main-script', url: 'file:///main.js'});
+        notification('NodeWorker.attachedToWorker', {sessionId: 'worker-session', waitingForDebugger: true,
+          workerInfo: {workerId: 'worker', url: 'file:///worker.js'}});
+        workerMessage({method: 'Debugger.scriptParsed', params: {scriptId: 'worker-script', url: 'file:///worker.js'}});
+        workerMessage({method: 'Debugger.paused', params: {}});
+        notification('NodeWorker.detachedFromWorker', {sessionId: 'worker-session'});
+      } finally { finish(0); }
+      const rows = fs.readFileSync(output, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+      const sourcePending = pendingMethod === 'Debugger.getScriptSource' ? 1 : 0;
+      expect(rows.filter(row => row.kind === 'error')).toEqual([{kind: 'error', target: 'worker',
+        message: 'worker detached with pending source/protocol requests: ' +
+          JSON.stringify({methods: [pendingMethod], sources: sourcePending})}]);
+      expect(rows.at(-1)).toMatchObject({errors: 1, pending: 1 + sourcePending, liveWorkers: 0});
+      expect(() => validateRuntimeSourceCapture(rows)).toThrow('incomplete or failed');
+    });
+});
+
 describe('actual runtime parsed-source capture', () => {
   it('captures a file worker with inherited preloads without reopening the parent receipt', () => {
     const { result, rows, fixture, source, output } = run(`

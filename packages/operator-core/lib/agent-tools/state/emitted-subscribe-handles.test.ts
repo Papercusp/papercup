@@ -27,6 +27,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import subscribeTool from './subscribe';
+import { emittedSubscribeSelectors } from '../plans/tree-instruments';
 
 const AGENT_TOOLS_ROOT = join(__dirname, '..');
 
@@ -50,12 +51,10 @@ interface EmittedHandle {
  * it is evaluated rather than JSON-parsed. The input is this repo's own source.
  */
 function collectEmittedHandles(): EmittedHandle[] {
-  const re = /tool:\s*'state:subscribe'\s*,\s*selector:\s*(['"`])([\s\S]*?)\1/g;
   return walk(AGENT_TOOLS_ROOT).flatMap((file) => {
     const src = readFileSync(file, 'utf8');
     const found: EmittedHandle[] = [];
-    for (const m of src.matchAll(re)) {
-      const selector = m[2];
+    for (const { selector } of emittedSubscribeSelectors(file.slice(AGENT_TOOLS_ROOT.length + 1), src)) {
       let args: unknown;
       try {
         args = new Function(`return (${selector})`)();

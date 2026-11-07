@@ -881,7 +881,10 @@ export function observeQualificationProgress(
   const ordered = sameFence && elapsed > 0 && wallElapsed > 0 && elapsed <= 125_000 &&
     Math.abs(wallElapsed - elapsed) <= 5_000;
   const work = current.continuation;
-  const relevant = runner.phase === 'suite' || runner.phase === 'isolating' ? ['test', 'guard']
+  // Setup/checkout guards use the same frozen work manifest and durable receipts
+  // as suite guards. Activity alone still supplies no semantic milestone.
+  const relevant = runner.phase === 'launching' || runner.phase === 'materializing' ? ['guard']
+    : runner.phase === 'suite' || runner.phase === 'isolating' ? ['test', 'guard']
     : runner.phase === 'delivering' || runner.phase === 'finalizing' ? ['post-suite'] : [];
   const workBound = work && work.attemptId === current.attemptId && work.candidate === current.candidate &&
     work.repairHead === current.repairHead && relevant.length > 0;
@@ -904,7 +907,8 @@ export function observeQualificationProgress(
     reason: !sample.telemetryHealthy ? 'observer-probe-failed' : !bound ? 'observer-identity-incomplete'
       : manifestChanged ? 'observer-manifest-changed' : regressed ? 'observer-receipts-regressed'
       : continuing ? 'ordered-independent-sample' : 'fresh-baseline-required',
-    controller, semantic: !continuing || manifestHash === null ? 'unknown' : advancing ? 'advancing' : 'unchanged',
+    controller, semantic: !continuing || manifestHash === null || completedUnits.length === 0
+      ? 'unknown' : advancing ? 'advancing' : 'unchanged',
     manifestHash: manifestChanged ? prior.manifestHash : manifestHash,
     completedUnits: regressed ? prior.completedUnits : completedUnits,
     lastUsefulProgressMonotonicMs: advancing ? sample.monotonicAtMs

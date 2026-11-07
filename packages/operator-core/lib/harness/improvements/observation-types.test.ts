@@ -548,6 +548,15 @@ describe('asStructuredObservation — read-side payload surfacing', () => {
       replaySnapshot: true,
       current: fingerprints,
     });
+
+    const { current: _snapshotArgument, ...measuredArgs } = recipe.args;
+    const measured = asStructuredObservation({ rerunRecipe: { ...recipe, args: measuredArgs } })?.rerunRecipe;
+    expect(measured?.args).not.toHaveProperty('current');
+    expect(measured?.current).toEqual(recipe.current);
+    // The historical audit can still reconstruct the emission-time tuple, and
+    // old recipes that predate args retain their existing snapshot fallback.
+    const { args: _legacyArgs, ...legacy } = recipe;
+    expect(asStructuredObservation({ rerunRecipe: legacy })?.rerunRecipe?.args.current).toEqual(fingerprints);
   });
 
   it('rejects a partially scoped currentness fingerprint instead of silently falling back to legacy identity', () => {

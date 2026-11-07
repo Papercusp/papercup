@@ -24,9 +24,11 @@ export function readInspectorProcessIdentity({ pid, port, expectedEntry, expecte
  * it disconnects its own socket without closing the target's pre-opened inspector.
  * @param {{ pid: number, durationMs?: number, startPort?: number, attachExisting?: boolean,
  *   expectedEntry?: string, expectedArg?: string, deadlineMs?: number, procIdentity?: boolean,
- *   resumeStartup?: boolean, requestTimeoutMs?: number }} options
+ *   resumeStartup?: boolean, requestTimeoutMs?: number,
+ *   onReady?: (ready: { target: any, inspector: string, startedAtMs: number,
+ *     signal: AbortSignal }) => unknown | Promise<unknown> }} options
  */
-export function captureCpuProfile({ pid, durationMs, startPort, attachExisting, expectedEntry, expectedArg, deadlineMs, procIdentity, resumeStartup, requestTimeoutMs }: {
+export function captureCpuProfile({ pid, durationMs, startPort, attachExisting, expectedEntry, expectedArg, deadlineMs, procIdentity, resumeStartup, requestTimeoutMs, onReady }: {
     pid: number;
     durationMs?: number;
     startPort?: number;
@@ -37,6 +39,12 @@ export function captureCpuProfile({ pid, durationMs, startPort, attachExisting, 
     procIdentity?: boolean;
     resumeStartup?: boolean;
     requestTimeoutMs?: number;
+    onReady?: (ready: {
+        target: any;
+        inspector: string;
+        startedAtMs: number;
+        signal: AbortSignal;
+    }) => unknown | Promise<unknown>;
 }): Promise<{
     profile: any;
     target: any;

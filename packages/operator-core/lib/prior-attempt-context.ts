@@ -1050,7 +1050,7 @@ function goalHistorySource(goalId: string, entry: GoalHistoryEntry): PriorAttemp
   };
 }
 
-function planItemIdsOf(item: WorkItem): string[] {
+function planItemIdsOf(item: Partial<Pick<WorkItem, 'payload' | 'sourcePlanItemIds'>>): string[] {
   if (item.sourcePlanItemIds?.length) return item.sourcePlanItemIds;
   const payload = item.payload && typeof item.payload === 'object' ? (item.payload as Record<string, unknown>) : null;
   const pointer =
@@ -1846,6 +1846,34 @@ export async function resolvePriorAttemptRefs(
   try {
     const { compilation, candidateRecords } = await Promise.race([
       (async () => {
+        // Exact comments on the requested item need only its admitted thread.
+        // Rebuilding the plan/spec/sibling census first can exhaust the read
+        // budget and make an immutable approval source permanently unreadable.
+        const commentPrefix = `${workItemId}#comment:`;
+        if (deps.threadPost && wanted.every((ref) => {
+          const suffix = ref.startsWith(commentPrefix) ? ref.slice(commentPrefix.length) : '';
+          return /^[1-9]\d*$/.test(suffix) && Number.isSafeInteger(Number(suffix));
+        })) {
+          const workspaceId = resolveConcreteWorkspaceId();
+          if (!workspaceId) throw new Error('exact-comment-workspace-unavailable');
+          const item = opts.workItem ?? await deps.item(workItemId, opts.harness ?? undefined);
+          if (!item || item.id !== workItemId) throw new Error('exact-comment-item-unavailable');
+          const thread = await deps.thread(workItemId, 1, opts.harness ?? item.harness ?? undefined);
+          if (!thread) throw new Error('exact-comment-thread-unavailable');
+          const posts = await expandExactComments(commentPrefix, thread.posts, wanted, workspaceId, deps.threadPost);
+          const exact = compilePriorAttempts(posts.filter((post) => wanted.includes(`${commentPrefix}${post.id}`)).map((post) => ({
+            scope: 'self' as const,
+            authority: retractionText(post.body) ? 'retraction' as const : 'comment' as const,
+            rawRef: `${commentPrefix}${post.id}`,
+            workItemId,
+            planItemId: planItemIdsOf(item)[0] ?? null,
+            at: post.created_ts,
+            actor: post.author_id,
+            text: post.body,
+            depth: 0,
+          })));
+          return { compilation: exact, candidateRecords: exact.records };
+        }
         const compilation = await collectPriorAttempts(
           {
             harnessSlug: opts.harness ?? opts.workItem?.harness ?? undefined,

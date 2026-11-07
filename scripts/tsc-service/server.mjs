@@ -182,6 +182,9 @@ async function refresh(projects, trace) {
     ...(toOpen.length > 0 ? { openProjects: toOpen } : {}),
     ...(previous ? { fileChanges: { invalidateAll: true } } : {}),
   });
+  // Keep native RPC latency separate from the synchronous artifact check below.
+  // A timeout between these phases must not be attributed to native snapshot work.
+  trace('snapshot-rpc-completed');
   assertTscCompilerIdentityCurrent();
   trace('snapshot-updated');
   // invalidateAll does not re-evaluate a tsconfig's include globs. Re-parse each config and tell

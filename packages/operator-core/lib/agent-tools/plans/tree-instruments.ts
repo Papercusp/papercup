@@ -53,7 +53,7 @@ import {
   type PlanContentWriter,
 } from './plan-content-writer-census';
 
-export const TREE_INSTRUMENT_KEYS = ['provider-specific-census', 'deliverable-kind-branch-census', 'notification-classification-census', 'embedded-terminal-host-census', 'plan-content-writer-census'] as const;
+export const TREE_INSTRUMENT_KEYS = ['provider-specific-census', 'deliverable-kind-branch-census', 'notification-classification-census', 'embedded-terminal-host-census', 'plan-content-writer-census', 'state-subscribe-handle-census'] as const;
 export const treeInstrumentKeySchema = z.enum(TREE_INSTRUMENT_KEYS);
 export type TreeInstrumentKey = z.infer<typeof treeInstrumentKeySchema>;
 
@@ -185,6 +185,26 @@ async function forEachCommittedBody(
       }
     }
   }
+}
+
+/** Shared with emitted-subscribe-handles.test.ts: preserve its exact literal matcher. */
+export function emittedSubscribeSelectors(file: string, source: string): Array<{ file: string; selector: string }> {
+  const pattern = /tool:\s*'state:subscribe'\s*,\s*selector:\s*(['"`])([\s\S]*?)\1/g;
+  return [...source.matchAll(pattern)].map(match => ({ file, selector: match[2]! }));
+}
+
+/** Fingerprint every selector the real schema-compatibility test walks, without
+ * making unrelated edits in the same large source tree invalidate its proof. */
+async function stateSubscribeHandleCensusAtCommit(root: string, commit: string, deps: CommittedTreeDeps): Promise<unknown> {
+  const prefix = 'packages/operator-core/lib/agent-tools';
+  const reaches = (path: string) => path.startsWith(prefix + '/');
+  const files = (await listCommittedFilesUnder(root, commit, [prefix], reaches, deps))
+    .filter(file => file.path.endsWith('.ts') && !file.path.endsWith('.test.ts'));
+  const handles: Array<{ file: string; selector: string }> = [];
+  await forEachCommittedBody(root, files, (file, source) => {
+    handles.push(...emittedSubscribeSelectors(file.path.slice(prefix.length + 1), source));
+  }, deps);
+  return { schemaVersion: 1, handles };
 }
 
 /** The provider-specific census (integrations/provider-census.ts) over a committed tree. */
@@ -374,6 +394,7 @@ const TREE_INSTRUMENTS: Record<TreeInstrumentKey, (root: string, commit: string,
   'notification-classification-census': notificationCensusAtCommit,
   'embedded-terminal-host-census': embeddedTerminalCensusAtCommit,
   'plan-content-writer-census': planContentWriterCensusAtCommit,
+  'state-subscribe-handle-census': stateSubscribeHandleCensusAtCommit,
 };
 
 /**

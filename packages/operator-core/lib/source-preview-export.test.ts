@@ -20,7 +20,8 @@ import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, onTestFailed, vi } from 'vitest';
+import { runtimeFileTraceArguments } from './memory/bench/runtime-file-opens.mjs';
 import {
   ROOT as SOURCE_ROOT,
   ADDED_FILES,
@@ -52,6 +53,7 @@ import {
   compileBgVerifierInvocation,
   qualifyBgVerifierOutput,
   verifyBgVerifierOutputRecord,
+  qualifyBgVerifierRuntimeSources,
   prepareVerifierDependencies,
   runVerifierDependencyCommand,
   captureVerifierDependencies,
@@ -927,6 +929,38 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       env: { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(nowMs + child.remainingMs) } }))
       .toThrow('TASK_DEADLINE_REFUSAL');
     expect(child.cleanupMs).toBe(slowerPhases['deps.snapshot']);
+  });
+
+  it.each([
+    ['deps.preflight', 64_468], ['deps.runtime-assets', 65], ['deps.source.after-runtime-assets', 43_666],
+  ] as const)('includes completed optional native preparation %s without requiring it in legacy receipts', (phase, duration) => {
+    const legacy = estimateVerifierCommandBudget(budgetPhases, 600_000);
+    const measured = estimateVerifierCommandBudget({ ...budgetPhases, [phase]: duration }, 600_000);
+    expect(measured.preparationMs).toBe(legacy.preparationMs + duration);
+    expect(measured.sourceCheckMs).toBe(phase === 'deps.source.after-runtime-assets' ? duration : legacy.sourceCheckMs);
+    expect(measured.childEstimateMs).toBe(600_000);
+    expect(measured.dependencyCheckMs).toBe(legacy.dependencyCheckMs);
+    expect(measured.cleanupMs).toBe(legacy.cleanupMs);
+  });
+
+  it('refuses the old envelope before native preparation when its completed phases need more time', () => {
+    // Retained native attempt: the old forecast omitted 108,199ms of completed
+    // work and the slowest source check. Preserve its census, child and cleanup.
+    const nativePhases = { 'source.freeze': 233_718, 'receipt.write': 100,
+      'deps.source.before': 41_845, 'deps.snapshot': 381_219, 'deps.source.after-snapshot': 39_664,
+      'deps.inputs': 42_642, 'deps.measure': 72_055, 'deps.source.after-preflight': 32_464,
+      'deps.census': 209_257, 'deps.receipt.write': 6_908, cleanup: 86_122,
+      'deps.preflight': 64_468, 'deps.runtime-assets': 65, 'deps.source.after-runtime-assets': 43_666 };
+    const estimate = estimateVerifierCommandBudget(nativePhases, 600_000);
+    expect(estimate).toMatchObject({ preparationMs: 1_168_071, sourceCheckMs: 43_666,
+      dependencyCheckMs: 209_257, childEstimateMs: 600_000, cleanupMs: 381_219,
+      unknownChild: false, requiredTimeoutMs: 3_487_000 });
+    expect(() => estimateVerifierCommandBudget(nativePhases, 600_000, { maxTimeoutMs: 3_346_000 }))
+      .toThrow('VERIFIER_LAUNCH_BUDGET_REFUSAL');
+    expect(() => admitVerifierCommandBudget(estimate, { nowMs: 30_000, preparation: true,
+      env: { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: '3346000' } })).toThrow('TASK_DEADLINE_REFUSAL');
+    expect(() => admitVerifierCommandBudget(estimate, { nowMs: 30_000, preparation: true,
+      env: { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(estimate.requiredTimeoutMs) } })).not.toThrow();
   });
 
   it('does not count failed or unfinished phase records as completed budget observations', () => {
@@ -3783,6 +3817,76 @@ describe('BG inherited manifest and original source boundaries', () => {
   }
 
   let compilerExecutionFixture: ReturnType<typeof partitionCompilation> | undefined;
+  let runtimeCompilation: Promise<{
+    output: Awaited<ReturnType<typeof qualifyBgVerifierOutput>>;
+    record: Awaited<ReturnType<typeof partitionCompilation>>['record'];
+    invocation: Awaited<ReturnType<typeof partitionCompilation>>['args']['invocation'];
+    execution: Parameters<typeof qualifyBgVerifierRuntimeSources>[0]['execution'];
+  }> | undefined;
+  async function compiledRuntime() {
+    return runtimeCompilation ??= (async () => {
+      const fixture = await partitionCompilation();
+      const output = await qualifyBgVerifierOutput(fixture.args);
+      // Preserve the original temporary output and compiler custody separately.
+      const entry = join(tmp, 'runtime-compiled-output.mjs');
+      cpSync(output.entry.path, entry);
+      const capture = join(tmp, 'runtime-compiled-output.sources.jsonl');
+      const trace = join(tmp, 'runtime-compiled-output.trace');
+      const preload = join(SOURCE_ROOT, 'packages/operator-core/lib/memory/bench/runtime-source-capture.mjs');
+      const result = spawnSync('strace', runtimeFileTraceArguments(trace,
+        [process.execPath, '--import', pathToFileURL(preload).href, entry]), {
+        env: { PATH: '/usr/bin:/bin', PAPERCUSP_RUNTIME_SOURCE_CAPTURE: capture },
+        encoding: 'utf8', timeout: 15_000, maxBuffer: 1024 * 1024,
+      });
+      const rows = existsSync(capture) ? readFileSync(capture, 'utf8').trim().split('\n').map(line => JSON.parse(line)) : [];
+      onTestFailed(() => console.error('compiled-runtime-capture', { status: result.status,
+        signal: result.signal, error: result.error?.message, stderr: result.stderr,
+        lifecycle: rows.filter(row => row.kind !== 'source') }));
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.error).toBeUndefined();
+      return { output, record: fixture.record, invocation: fixture.args.invocation,
+        execution: { entry, trace: readFileSync(trace, 'utf8'), captures: [rows],
+          terminal: { processId: rows[0].processId, exitCode: result.status!, signal: result.signal,
+            eof: true, captureStartedBeforeExec: true } } };
+    })();
+  }
+
+  it.each(['positive', 'missing-compiler', 'compiler-api', 'parsed-bytes', 'parsed-size',
+    'missing-entry', 'query-alias', 'missing-process', 'unobserved-close'])(
+    'compiled runtime source custody: %s', async variant => {
+      const fixture = await compiledRuntime();
+      const args = { ...fixture, output: JSON.parse(JSON.stringify(fixture.output)) as typeof fixture.output,
+        execution: JSON.parse(JSON.stringify(fixture.execution)) as typeof fixture.execution };
+      const rows = args.execution.captures[0]!;
+      const source = rows.find(row => row.kind === 'source' && row.url === pathToFileURL(args.execution.entry).href)!;
+      expect(source).toBeDefined();
+      if (variant === 'positive') {
+        const proof = qualifyBgVerifierRuntimeSources(args);
+        expect(proof).toMatchObject({ compiledOutputBytesObserved: true, completeRuntimeClosureVerified: false,
+          buildRecordSha256: fixture.output.buildRecordSha256, dependencyQualification: 'required', creatorFence: 'required' });
+        expect(proof.bindings).toEqual([expect.objectContaining({ sha256: fixture.output.entry.sha256, target: 'main' })]);
+        expect(proof.unqualifiedSources.length).toBeGreaterThan(0);
+        expect(proof.population.parsedSourceProcessPopulationComplete).toBe(true);
+        return;
+      }
+      if (variant === 'missing-compiler') delete args.output.compilerReceipt;
+      else if (variant === 'compiler-api') args.output.compilerReceipt!.compilerApi.sha256 = 'a'.repeat(64);
+      else if (variant === 'parsed-bytes') source.sha256 = 'a'.repeat(64);
+      else if (variant === 'parsed-size') source.bytes++;
+      else if (variant === 'missing-entry') { rows.splice(rows.indexOf(source), 1); rows.at(-1)!.sources--; }
+      else if (variant === 'query-alias') source.url += '?loader-cache';
+      else if (variant === 'missing-process') args.execution.captures = [];
+      else args.execution.terminal.eof = false;
+      const reason: Record<string, string> = {
+        'missing-compiler': 'BG complete compiler consumption is UNKNOWN',
+        'compiler-api': 'BG retained compiler API changed',
+        'parsed-bytes': 'BG parsed runtime bytes differ', 'parsed-size': 'BG parsed runtime size differs',
+        'missing-entry': 'BG original compiler output was not observed', 'query-alias': 'BG runtime source URL is not canonical',
+        'missing-process': 'runtime source process population differs', 'unobserved-close': 'independent successful close/EOF',
+      };
+      expect(() => qualifyBgVerifierRuntimeSources(args)).toThrow(reason[variant]);
+    });
+
   it.each(['positive', 'api', 'binary', 'sealed-binary', 'output-inode', 'metafile-inode',
     'execution-omitted', 'execution-node', 'execution-api', 'execution-native', 'execution-launches'])(
     'original compiler execution custody: %s', async variant => {

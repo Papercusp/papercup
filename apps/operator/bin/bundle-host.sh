@@ -170,9 +170,10 @@ OUTFILE="${2:-dist-host/hono-host.mjs}"
 [[ "$ENTRY" = /* ]] || ENTRY="$OPERATOR_DIR/$ENTRY"
 [[ "$OUTFILE" = /* ]] || OUTFILE="$OPERATOR_DIR/$OUTFILE"
 OUTDIR="$(dirname "$OUTFILE")"
-# Node gate and census children append their phases to the same retained log.
-export BUNDLE_HOST_STEP_LOG="$OUTFILE.build-steps.jsonl"
-mkdir -p "$OUTDIR"
+# A verifier retains its journal outside the disposable source checkout.
+# Gate and census children inherit the same destination, including failures.
+export BUNDLE_HOST_STEP_LOG="${BUNDLE_HOST_STEP_LOG:-$OUTFILE.build-steps.jsonl}"
+mkdir -p "$OUTDIR" "$(dirname "$BUNDLE_HOST_STEP_LOG")"
 bundle_host_init_step_log "$BUNDLE_HOST_STEP_LOG"
 # >>> custom-output runtime dependencies (EI-25510203057543967)
 # Bare ESM imports resolve beside the generated file, independently of cwd.

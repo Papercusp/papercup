@@ -17,6 +17,7 @@ import { readFileSync, realpathSync, rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isGateEnrolled } from "../check-vitest-config-enrollment.mjs";
+import { workspaceTestInvocation } from "./workspace-test-invocation.mjs";
 import {
   packageLockInstallView,
   rootPackageJsonChangeIsInert,
@@ -94,10 +95,10 @@ export function resolveExecutedMapPgUrl(env = process.env) {
  * Open a short-lived `pg` client for the selection read. Bounded: a database that does not
  * answer within `timeoutMs` is "no map", never a stalled selection.
  *
- * @param {{ env?: Record<string, string | undefined>, timeoutMs?: number }} [o]
+ * @param {{ env?: Record<string, string | undefined>, timeoutMs?: number, onProgress?: (event: string) => void }} [o]
  * @returns {Promise<import('pg').Client>}
  */
-export async function connectExecutedMapPg({ env = process.env, timeoutMs = 5_000 } = {}) {
+export async function connectExecutedMapPg({ env = process.env, timeoutMs = 5_000, onProgress } = {}) {
   const { Client } = await import("pg");
   const { url } = resolveExecutedMapPgUrl(env);
   const client = new Client({
@@ -106,6 +107,13 @@ export async function connectExecutedMapPg({ env = process.env, timeoutMs = 5_00
     statement_timeout: 15_000,
     application_name: "affected-tests executed-source-map",
   });
+  // Opt-in protocol witnesses. Never forward authentication message payloads.
+  if (onProgress) {
+    for (const event of ["connect", "sslconnect", "authenticationCleartextPassword",
+      "authenticationMD5Password", "authenticationSASL", "authenticationSASLContinue",
+      "authenticationSASLFinal", "authenticationOk", "readyForQuery", "error", "end"])
+      client.connection.on(event, () => onProgress(event));
+  }
   await client.connect();
   return client;
 }
@@ -814,8 +822,8 @@ function configFlag(words) {
  * takes part in the gate (`isGateEnrolled`, the same rule scripts/check-vitest-config-enrollment.mjs
  * enforces). Config resolution: an explicit `--config` / `-c` flag, else the workspace's default
  * `vitest.config.{ts,mts,js,mjs}`. A missing config, an unreadable wrapper, a non-vitest program and
- * a compound shell command all resolve to NOT expected — a false alarm on a task that never could
- * report is the failure this split exists to remove.
+ * an opaque compound shell command all resolve to NOT expected. The canonical
+ * node-maintenance suffix preserves the preceding Vitest producer's expectation.
  *
  * @param {{ command: string | null | undefined, wsDir: string, readFile?: (p: string) => string, isEnrolled?: (source: string, fileName: string) => boolean }} o
  *   `wsDir` is the workspace directory (absolute, or relative to the process cwd); config paths
@@ -829,6 +837,12 @@ export function resolveTaskReportExpectation({
   isEnrolled = isGateEnrolled,
 }) {
   const no = (reason, config = null) => ({ expectsReport: false, reason, config });
+  // The maintained workspace scripts run Node maintenance tests AFTER Vitest.
+  // That tail cannot change which Vitest config produces the pass-proof report.
+  // Recognize this one supported composition; arbitrary shell stays opaque.
+  const maintenanceTail = /\s+&&\s+npm\s+run\s+test:node-maintenance\s*$/;
+  if (typeof command === "string" && maintenanceTail.test(command))
+    return resolveTaskReportExpectation({ command: command.replace(maintenanceTail, ""), wsDir, readFile, isEnrolled });
   if (/[;&|`]|\$\(/.test(String(command ?? ""))) return no("compound-command");
   const words = scriptCommandWords(command);
   if (words.length === 0) return no("no-command");
@@ -848,8 +862,18 @@ export function resolveTaskReportExpectation({
     } catch {
       return no("wrapper-unreadable");
     }
-    if (!/\bvitest\b/.test(wrapper)) return no("not-vitest");
-    rest = args.slice(scriptIndex + 1);
+    if (path.resolve(wsDir, scriptArg) === fileURLToPath(new URL("../workspace-test.mjs", import.meta.url))
+      && /\bworkspaceTestInvocation\b/.test(wrapper)) {
+      // Use the launcher's maintained routing decision, not a second inference
+      // from words in its entry file. Explicit file routes can span configs.
+      const invocation = workspaceTestInvocation(args.slice(scriptIndex + 1));
+      if (invocation.routed || invocation.command !== "npx" || invocation.args[0] !== "vitest")
+        return no("not-vitest");
+      rest = invocation.args.slice(1);
+    } else {
+      if (!/\bvitest\b/.test(wrapper)) return no("not-vitest");
+      rest = args.slice(scriptIndex + 1);
+    }
   } else {
     return no("not-vitest");
   }

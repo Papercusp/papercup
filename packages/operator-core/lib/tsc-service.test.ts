@@ -266,6 +266,11 @@ describe('bundled typecheck service identity', () => {
       });
       const before = await runCaller();
       expect(before.result).toMatchObject({ ok: true, kind: 'result', errorCount: 0 });
+      const controlPrefix = `requestId=${before.requestId} project=tsconfig.json named=1 phase=`;
+      const rpcCompleted = output.indexOf(`${controlPrefix}snapshot-rpc-completed`);
+      const snapshotVerified = output.indexOf(`${controlPrefix}snapshot-updated`);
+      expect(rpcCompleted).toBeGreaterThan(output.indexOf(`${controlPrefix}snapshot-update `));
+      expect(snapshotVerified).toBeGreaterThan(rpcCompleted);
       writeFileSync(faultMarker, 'stall once');
       const hanging = runCaller(['hang.ts'], clientTimeoutMs);
       await expect.poll(() => output, { timeout: 5000 }).toContain('HUNG_OPERATION_READY');
@@ -287,8 +292,13 @@ describe('bundled typecheck service identity', () => {
       } else {
         expect(output).toContain(`${prefix}compiler-initialized`);
         expect(output).toContain(`${prefix}snapshot-update`);
-        if (faultPhase === 'snapshot') expect(output).not.toContain(`${prefix}snapshot-updated`);
-        else expect(output).toContain(`${prefix}snapshot-updated`);
+        if (faultPhase === 'snapshot') {
+          expect(output).not.toContain(`${prefix}snapshot-rpc-completed`);
+          expect(output).not.toContain(`${prefix}snapshot-updated`);
+        } else {
+          expect(output).toContain(`${prefix}snapshot-rpc-completed`);
+          expect(output).toContain(`${prefix}snapshot-updated`);
+        }
       }
       // Exercise a previously loaded caller's identity, after the API has
       // already reset once. Alter only the PRIVATE executable, preserving its

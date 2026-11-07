@@ -4240,13 +4240,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
    *  a governor pause, a full 5h/7d window that has not reset, a burn SHED, an open egress circuit —
    *  read back as a RECOVERY INSTANT rather than a boolean, so the codex ladder can ask "when", not
    *  just "whether" (codex-auto-route-all-walled-fail-fast-2026-09-05, P-003). */
-  const hintRecoveryAt = (accountId: string, at: number): number | undefined => {
+  const hintRecoveryAt = (accountId: string, at: number, governor = liveCodexGovernor(accountId)): number | undefined => {
     const h = accountRateHints.get(accountId);
     let recoverAt = 0;
     const consider = (value: number | undefined) => {
       if (value !== undefined && Number.isFinite(value) && value > at) recoverAt = Math.max(recoverAt, value);
     };
-    consider(liveCodexGovernor(accountId)?.state.pausedUntil);
+    consider(governor?.state.pausedUntil);
     if (h) {
       consider(h.pausedUntil);
       if (h.usageCreditsAvailable !== true) {
@@ -4337,24 +4337,35 @@ export function createInferenceGateway(deps: GatewayDeps) {
   };
   /** WI-6554700010042440: the longest a Codex request waits for a TRANSIENT account pause (an
    *  upstream burst 429 with a few-second reset) instead of being shed with a gateway 429. */
-  const CODEX_TRANSIENT_RECOVERY_WAIT_MAX_MS = 15_000;
+  const TRANSIENT_ACCOUNT_RECOVERY_WAIT_MAX_MS = 15_000;
   /** Spread held requests' wake-ups over this window so they do not re-trip the burst limit together. */
   const CODEX_TRANSIENT_HOLD_JITTER_MS = 1_500;
-  /** When NO codex account can serve now but one returns within the transient bound, name it and
-   *  its return instant. Null when a sibling is serviceable now (legacy rotation is correct) or
-   *  every return is far off (a usage wall: shedding with retry-after is correct). */
-  const codexTransientRecovery = (
+  /** After untried serviceable routes are exhausted, retry an eligible account that has recovered
+   *  or returns within the transient bound. Pool parks and governor/store pauses are independent:
+   *  a transport cooldown can park an otherwise healthy account without changing its health key. */
+  const transientAccountRecovery = (
     source: AccountPool | null | undefined,
     at: number,
-    maxWaitMs = CODEX_TRANSIENT_RECOVERY_WAIT_MAX_MS,
-  ): { accountId: string; recoverAt: number } | null => {
+    model?: string | null,
+    backend: 'claude-code' | 'codex' = 'codex',
+    maxWaitMs = TRANSIENT_ACCOUNT_RECOVERY_WAIT_MAX_MS,
+  ): { account: ActiveAccount; accountId: string; recoverAt: number } | null => {
+    // Repeated transport failures with no HTTP response are an upstream outage,
+    // not a short account pause. Preserve that failure instead of cycling cooldowns.
+    if (backend === 'codex' && codexReachability.snapshot(at).unreachable) return null;
     const entries = source?.entries?.() ?? [];
-    if (entries.some((account) => accountHealthKey(account, at) < Infinity)) return null;
-    let best: { accountId: string; recoverAt: number } | null = null;
+    let best: { account: ActiveAccount; accountId: string; recoverAt: number } | null = null;
     for (const account of entries) {
-      const recoverAt = hintRecoveryAt(account.accountId, at);
-      if (recoverAt === undefined || recoverAt - at > maxWaitMs) continue;
-      if (!best || recoverAt < best.recoverAt) best = { accountId: account.accountId, recoverAt };
+      const park = source?.parkState?.(account.accountId);
+      if (park?.cause === 'auth' || backend === 'codex' && model && codexModelRefusals.isRefused(account.accountId, model)) continue;
+      const governor = backend === 'codex' ? liveCodexGovernor(account.accountId)
+        : governorForAccount(model || SERVICEABLE_CLAMP_MODEL, account.accountId);
+      const hint = hintRecoveryAt(account.accountId, at, governor);
+      // A short transport park cannot make an unknown/long-lived usage wall recoverable.
+      if (accountHealthKey(account, at, governor) === Infinity && hint === undefined) continue;
+      const recoverAt = Math.max(at, park?.until ?? 0, hint ?? 0);
+      if (recoverAt - at > maxWaitMs) continue;
+      if (!best || recoverAt < best.recoverAt) best = { account, accountId: account.accountId, recoverAt };
     }
     return best;
   };
@@ -7368,7 +7379,35 @@ export function createInferenceGateway(deps: GatewayDeps) {
           // adapter replays the resolved account so a double-advance is structurally
           // impossible rather than merely avoided.
           initialAccount: active,
-          pool: hardPin ? undefined : pool,
+          pool: hardPin ? undefined : {
+            ...pool,
+            onExhausted: (id, resetAt) => pool.onExhausted(id, resetAt, account =>
+              accountHealthKey(account, Date.now(), governorForAccount(model, account.accountId))),
+          },
+          ...(pool.entries ? {
+            selectRotation: (exclude: ReadonlySet<string>) => {
+              const at = Date.now();
+              let best: ActiveAccount | null = null;
+              let bestKey = Infinity;
+              for (const account of pool.entries?.() ?? []) {
+                if (exclude.has(account.accountId) || pool.parkState?.(account.accountId)) continue;
+                const key = accountHealthKey(account, at, governorForAccount(model, account.accountId));
+                if (key < bestKey) { best = account; bestKey = key; }
+              }
+              return best;
+            },
+            transientRecovery: () => {
+              // A failed proxy keeps its existing circuit/probe recovery; never retry it early.
+              if (lastTransportHadProxy) return null;
+              const at = Date.now();
+              const remaining = retryDeadlineAt - at - 50;
+              if (remaining <= 0) return null;
+              const recovery = transientAccountRecovery(pool, at, model, 'claude-code',
+                Math.min(TRANSIENT_ACCOUNT_RECOVERY_WAIT_MAX_MS, remaining));
+              if (recovery) log('warn', `inference-gateway: Claude retry recovery → holding for '${recovery.accountId}' (${Math.max(0, recovery.recoverAt - at)}ms) instead of walking unavailable accounts`);
+              return recovery;
+            },
+          } : {}),
           upstreamUrl: `${upstreamBase}${url}`,
           method: req.method ?? 'POST',
           baseHeaders,
@@ -9392,34 +9431,31 @@ export function createInferenceGateway(deps: GatewayDeps) {
         accounts: () => codexCliAccounts(),
         pool: codexCliPool ? healthAwareCodexPool(codexCliPool) : undefined,
         transientRecovery: () => {
-          const recovery = codexTransientRecovery(codexCliPool, Date.now());
+          const recovery = transientAccountRecovery(codexCliPool, Date.now(), bodyModel);
           if (recovery) {
-            log('warn', `inference-gateway: every Codex account is briefly paused → holding for '${recovery.accountId}' (${Math.max(0, recovery.recoverAt - Date.now())}ms) instead of shedding 429`);
+            log('warn', `inference-gateway: Codex retry recovery → holding for '${recovery.accountId}' (${Math.max(0, recovery.recoverAt - Date.now())}ms) instead of walking unavailable accounts`);
           }
           return recovery;
         },
         transientHoldJitterMs: CODEX_TRANSIENT_HOLD_JITTER_MS,
-        // WI-6554700010042440: rotate a paced-out request onto the health-best UNTRIED account that
+        // Rotate a retryable failure onto the health-best UNTRIED account that
         // can serve now — never walk usage-walled ones (each a permit wait that can only fail again).
-        // Null sheds at once with the pool horizon. Auth-parked accounts stay out; a model-refusing
+        // With no such route, use bounded recovery or retain the original failure. Parked accounts stay out; a model-refusing
         // account is skipped for this request's model.
         selectRotation: (exclude) => {
           if (!codexCliPool) return null;
           const at = Date.now();
           let best: ActiveAccount | null = null;
-          let bestParked = Infinity;
           let bestKey = Infinity;
           for (const account of codexCliPool.entries?.() ?? []) {
             if (exclude.has(account.accountId)) continue;
             if (bodyModel && codexModelRefusals.isRefused(account.accountId, bodyModel)) continue;
             const park = codexCliPool.parkState?.(account.accountId);
-            if (park?.cause === 'auth') continue;
+            if (park) continue;
             const key = accountHealthKey(account, at);
             if (key === Infinity) continue;
-            const parked = park ? 1 : 0;
-            if (!best || parked < bestParked || (parked === bestParked && key < bestKey)) {
+            if (!best || key < bestKey) {
               best = account;
-              bestParked = parked;
               bestKey = key;
             }
           }

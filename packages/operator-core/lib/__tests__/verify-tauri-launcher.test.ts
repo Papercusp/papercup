@@ -9,6 +9,108 @@ const source = readFileSync(process.env.VERIFY_TAURI_SOURCE_PATH || resolve(repo
 const launcher = source.match(/write_and_launch_tauri\(\) \{[\s\S]*?\n\}/)?.[0];
 if (!launcher) throw new Error('Maintained native launcher was not found');
 
+describe('native host bundle evidence lifetime', () => {
+  const build = source.match(/^build_verifier_operator_host\(\) \{[\s\S]*?^\}/m)?.[0];
+  const cleanup = source.match(/^cleanup_operator_source_snapshot\(\) \{[\s\S]*?^\}/m)?.[0];
+  if (!build || !cleanup) throw new Error('Maintained native bundle lifecycle was not found');
+
+  function probe(failure: 'none' | 'host' | 'fixture' | 'fixture-early' | 'evidence') {
+    const dir = mkdtempSync(resolve(tmpdir(), 'tauri-bundle-evidence-'));
+    const work = resolve(dir, 'private');
+    const root = resolve(work, 'operator-source');
+    const phase = resolve(dir, 'retained/prepare');
+    mkdirSync(resolve(root, 'apps/operator/bin'), { recursive: true });
+    mkdirSync(phase, { recursive: true });
+    if (failure === 'evidence') writeFileSync(resolve(phase, 'host-bundle'), 'not a directory');
+    writeFileSync(resolve(root, 'apps/operator/bin/bundle-host.sh'), [
+      '#!/bin/bash', 'set -euo pipefail',
+      'printf "%s\\n" "$1" >> "$TEST_ATTEMPTS"',
+      'mkdir -p "$(dirname "$2")"',
+      'printf \'{"step":"restricted-hold-source-receipt","event":"start"}\\n\' >> "$BUNDLE_HOST_STEP_LOG"',
+      'if [[ "$TEST_FAILURE" == fixture-early && "$1" == e2e/* ]]; then exit 24; fi',
+      'printf \'{"files":["%s"]}\\n\' "$1" > "$(dirname "$2")/bundle-restricted-hold-inputs.json"',
+      'if [[ "$TEST_FAILURE" == host && "$1" == bin/* ]] || [[ "$TEST_FAILURE" == fixture && "$1" == e2e/* ]]; then exit 23; fi',
+      'printf compiled > "$2"',
+    ].join('\n'), { mode: 0o755 });
+    try {
+      const result = spawnSync('bash', ['-c', [
+        'set -euo pipefail', build, cleanup,
+        'log() { :; }', 'release_verifier_disk_reservations() { :; }',
+        'reap_frozen_source_survivors() { :; }',
+        'rc=0; build_verifier_operator_host || rc=$?',
+        'cleanup_operator_source_snapshot || exit 99', 'exit "$rc"',
+      ].join('\n')], { encoding: 'utf8', timeout: 10_000, env: { ...process.env,
+        WORK: dir, VH_PHASE_DIR: phase, OPERATOR_SOURCE_ROOT: root, OPERATOR_SOURCE_WORK: work,
+        TAURI_LAUNCH_PROVENANCE: 'fixture', TEST_FAILURE: failure, TEST_ATTEMPTS: resolve(dir, 'attempts'),
+      } });
+      const evidence = resolve(phase, 'host-bundle');
+      const read = (name: string) => failure !== 'evidence' && existsSync(resolve(evidence, name))
+        ? readFileSync(resolve(evidence, name), 'utf8') : null;
+      return { ...result, sourceExists: existsSync(root),
+        attempts: existsSync(resolve(dir, 'attempts')) ? readFileSync(resolve(dir, 'attempts'), 'utf8').trim().split('\n') : [],
+        host: read('hono-host.build-steps.jsonl'), fixture: read('fake-llm-fixture-child.build-steps.jsonl'),
+        hostInputs: read('hono-host.inputs.json'), fixtureInputs: read('fake-llm-fixture-child.inputs.json') };
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
+
+  it.each(['none', 'host', 'fixture'] as const)('retains per-entry custody evidence after source cleanup (%s)', failure => {
+    const result = probe(failure);
+    expect(result.status, result.stderr).toBe(failure === 'none' ? 0 : 23);
+    expect(result.sourceExists).toBe(false);
+    expect(JSON.parse(result.host!)).toMatchObject({ step: 'restricted-hold-source-receipt', event: 'start' });
+    expect(JSON.parse(result.hostInputs!)).toEqual({ files: ['bin/hono-host.ts'] });
+    if (failure === 'host') {
+      expect(result.attempts).toEqual(['bin/hono-host.ts']);
+      expect(result.fixture).toBeNull();
+    } else {
+      expect(result.attempts).toEqual(['bin/hono-host.ts', 'e2e/_fake-llm-fixture-child.ts']);
+      expect(JSON.parse(result.fixture!)).toMatchObject({ step: 'restricted-hold-source-receipt', event: 'start' });
+      expect(JSON.parse(result.fixtureInputs!)).toEqual({ files: ['e2e/_fake-llm-fixture-child.ts'] });
+    }
+  });
+
+  it('refuses an unusable evidence directory before compiling either entry', () => {
+    const result = probe('evidence');
+    expect(result.status).toBe(1);
+    expect(result.attempts).toEqual([]);
+    expect(result.sourceExists).toBe(false);
+  });
+
+  it('does not misattribute the host census to a fixture that failed before creating its request', () => {
+    const result = probe('fixture-early');
+    expect(result.status, result.stderr).toBe(24);
+    expect(result.sourceExists).toBe(false);
+    expect(JSON.parse(result.hostInputs!)).toEqual({ files: ['bin/hono-host.ts'] });
+    expect(result.fixture).not.toBeNull();
+    expect(result.fixtureInputs).toBeNull();
+  });
+});
+
+describe('host bundle journal destination', () => {
+  const bundleSource = readFileSync(resolve(repo, 'apps/operator/bin/bundle-host.sh'), 'utf8');
+  const setup = bundleSource.match(/^export BUNDLE_HOST_STEP_LOG=.*\nmkdir -p .*\nbundle_host_init_step_log .*$/m)?.[0];
+  const common = readFileSync(resolve(repo, 'apps/operator/bin/bundle-host-common.sh'), 'utf8');
+  const init = common.match(/^bundle_host_init_step_log\(\) \{[\s\S]*?^\}/m)?.[0];
+  if (!setup || !init) throw new Error('Maintained bundle journal initialization was not found');
+
+  it.each([false, true])('initializes the actual journal destination (external=%s)', external => {
+    const dir = mkdtempSync(resolve(tmpdir(), 'bundle-journal-destination-'));
+    const out = resolve(dir, 'private/dist/host.mjs');
+    const destination = external ? resolve(dir, 'retained/host.jsonl') : `${out}.build-steps.jsonl`;
+    try {
+      const result = spawnSync('bash', ['-c', [
+        'set -euo pipefail', init, setup,
+        'printf \'{"step":"restricted-hold-census"}\\n\' >> "$BUNDLE_HOST_STEP_LOG"',
+      ].join('\n')], { encoding: 'utf8', timeout: 5_000, env: { ...process.env,
+        OUTFILE: out, OUTDIR: resolve(dir, 'private/dist'), BUNDLE_HOST_STEP_LOG: external ? destination : '',
+      } });
+      expect(result.status, result.stderr).toBe(0);
+      if (external) rmSync(resolve(dir, 'private'), { recursive: true, force: true });
+      expect(JSON.parse(readFileSync(destination, 'utf8'))).toEqual({ step: 'restricted-hold-census' });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
 describe('verifier disk reservation cleanup', () => {
   const cleanup = source.match(/^release_verifier_disk_reservations\(\) \{[\s\S]*?^\}/m)?.[0];
   if (!cleanup) throw new Error('Maintained verifier reservation cleanup was not found');

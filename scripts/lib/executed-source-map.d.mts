@@ -31,12 +31,13 @@ export function resolveExecutedMapPgUrl(env?: Record<string, string | undefined>
  * Open a short-lived `pg` client for the selection read. Bounded: a database that does not
  * answer within `timeoutMs` is "no map", never a stalled selection.
  *
- * @param {{ env?: Record<string, string | undefined>, timeoutMs?: number }} [o]
+ * @param {{ env?: Record<string, string | undefined>, timeoutMs?: number, onProgress?: (event: string) => void }} [o]
  * @returns {Promise<import('pg').Client>}
  */
-export function connectExecutedMapPg({ env, timeoutMs }?: {
+export function connectExecutedMapPg({ env, timeoutMs, onProgress }?: {
     env?: Record<string, string | undefined>;
     timeoutMs?: number;
+    onProgress?: (event: string) => void;
 }): Promise<import("pg").Client>;
 /**
  * Turn stored rows into the selector's map. Pure — exported for the unit tests.
@@ -336,8 +337,8 @@ export function scriptCommandWords(command: string | null | undefined): string[]
  * takes part in the gate (`isGateEnrolled`, the same rule scripts/check-vitest-config-enrollment.mjs
  * enforces). Config resolution: an explicit `--config` / `-c` flag, else the workspace's default
  * `vitest.config.{ts,mts,js,mjs}`. A missing config, an unreadable wrapper, a non-vitest program and
- * a compound shell command all resolve to NOT expected — a false alarm on a task that never could
- * report is the failure this split exists to remove.
+ * an opaque compound shell command all resolve to NOT expected. The canonical
+ * node-maintenance suffix preserves the preceding Vitest producer's expectation.
  *
  * @param {{ command: string | null | undefined, wsDir: string, readFile?: (p: string) => string, isEnrolled?: (source: string, fileName: string) => boolean }} o
  *   `wsDir` is the workspace directory (absolute, or relative to the process cwd); config paths

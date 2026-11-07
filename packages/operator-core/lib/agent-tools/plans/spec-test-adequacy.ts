@@ -2597,6 +2597,11 @@ function rerunRecipeFor(
     });
     return currentByKey.get(scopedCurrentKey) ?? currentByKey.get(legacyCurrentKey);
   };
+  const remeasureCurrent = evidence.length > 0 && evidence.every((row) =>
+    row.serverMeasurement?.status === 'measured' &&
+    row.currentness.provenance === 'server-measured' &&
+    currentForEvidence(row) !== undefined,
+  );
   const fingerprints: SpecTestAdequacyCurrentFingerprint[] = [
     ...new Map(
       evidence
@@ -2669,7 +2674,11 @@ function rerunRecipeFor(
       // Fingerprints classify the selected bindings; the selectors above define
       // the population. Keeping those roles separate prevents a partial current[]
       // input from silently excluding an unmeasured historical binding.
-      ...(current !== undefined ? { current: fingerprints } : {}),
+      // A wholly server-measured population must be measured again by the public
+      // replay. Forwarding its snapshot as caller input loses that provenance.
+      // Keep the historical snapshot below for the separate creation-time audit;
+      // explicit empty, partial and caller-attested inputs retain their semantics.
+      ...(current !== undefined && !remeasureCurrent ? { current: fingerprints } : {}),
     },
     selection: {
       planSlug: clause.planSlug,

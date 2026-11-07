@@ -1,10 +1,10 @@
 /**
- * WI-2037678 (P-521 J8 offline-restore): `downloadCoreRange` — used by the seed
+ * WI-2037678 (P-521 offline restore): `downloadCoreRange` — used by the seed
  * RESTORE path and the cutter — must fetch `[from, length)` as ONE batched,
  * pipelined `core.download(range)`, never a sequential `await core.get(i)` per
- * block. The sequential form paid a replication round-trip per block (measured
- * 677us/block vs 149us/block batched on the dev tower), which pushed the packaged
- * offline seed restore past the installer journey's 180s budget on a QEMU guest.
+ * block. This regression verifies batching and complete restoration; it does
+ * not establish the cause of the original J8 timeout. Endgame decisions D272
+ * and D276 withdrew that attribution and retain the separate restore diagnosis.
  */
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';

@@ -125,7 +125,8 @@ describe.runIf(process.platform === 'linux' && userManagerBusReachable())('quali
       expect((await sweep(1)).progressObservation).toMatchObject({
         health: 'baseline', controller: 'silent', semantic: 'unknown', completedUnits: [] });
       expect((await sweep(2)).progressObservation).toMatchObject({
-        health: 'healthy', controller: 'silent', semantic: 'unchanged', lastUsefulProgressMonotonicMs: null });
+        health: 'healthy', controller: 'silent', semantic: 'unknown', completedUnits: [],
+        lastUsefulProgressMonotonicMs: null });
       expect(existsSync(receipt)).toBe(false); // the manifest and baseline precede completion
       writeFileSync(trigger, 'complete selected work');
       await vi.waitFor(() => expect(existsSync(receipt)).toBe(true), { timeout: 3000 });

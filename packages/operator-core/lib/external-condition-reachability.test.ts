@@ -8,6 +8,8 @@ import {
 } from './external-condition-reachability';
 import { EVENT_CATALOG, buildKey, subjectScopeOf, type EventCatalogEntry } from './events/await/catalog';
 import type { ComposedNodeRow } from './events/await/compose-store';
+import * as eventStore from './events/await/store';
+import { buildDurableParkReleaseContract } from './durable-park-release-contract';
 
 /** A concrete key for a family: every param filled, so it is never the bare prefix. */
 function concreteKeyFor(entry: EventCatalogEntry): string {
@@ -168,7 +170,10 @@ describe('external condition reachability', () => {
       requireSpecificCondition: true,
       now: new Date(NOW),
       inspect: async () => ({
-        announcements: [{ firedAt: '2026-08-27T11:30:00.000Z', firedReason: 'event', supersededAt: null }] as never,
+        announcements: [{
+          firedAt: '2026-08-27T11:30:00.000Z', firedReason: 'event', supersededAt: null,
+          expectedCondition: { kind: 'sha', sha: 'abc123' }, firedPayload: { sha: 'abc123' },
+        }] as never,
         waiters: [],
         deliveries: [],
         fireLatch: null,
@@ -231,6 +236,67 @@ describe('external condition reachability', () => {
         fireLatch: { lastFiredAt: '2026-08-27T11:30:00.000Z' } as never }),
     });
     expect(reachability).toMatchObject({ verdict: 'reachable', basis: 'fired', authoritative: true });
+  });
+
+  describe('announced release-condition proof (EI-28151351859660198)', () => {
+    const trigger = 'owner-resume:papercusp-pause-20260908T234015Z';
+    const scopedResume = { scope: 'desktop-agent-mcp-uds-2026-09-08', ownerDirected: true };
+    const systemResume = { scope: 'system-wide', ownerDirected: true };
+    const expected = { kind: 'predicate', predicate: { scope: { eq: 'system-wide' } } };
+    const snapshot = (expectedCondition: unknown, firedPayload: unknown) => ({
+      announcements: [{
+        causalGeneration: 1, supersededAt: null, cancelledAt: null,
+        firedAt: '2026-09-09T00:00:00.000Z', firedReason: 'event',
+        expectedCondition, firedPayload,
+      }] as never,
+      waiters: [], deliveries: [], composedRoot: null,
+      fireLatch: { lastFiredAt: '2026-09-09T00:00:00.000Z' } as never,
+    });
+
+    it.each([
+      ['absent', null, scopedResume],
+      ['mismatched', expected, scopedResume],
+      ['invalid', { kind: 'unknown' }, systemResume],
+    ])('keeps an %s expected condition unverified despite a post-park fire', async (_label, condition, payload) => {
+      const inspect = async () => snapshot(condition, payload);
+      // A notification is still a real fire; it is insufficient release evidence.
+      expect((await readEventConditionReachability(trigger, { inspect })).basis).toBe('fired');
+      const result = await readEventConditionReachability(trigger, { inspect, requireSpecificCondition: true });
+      expect(result).toMatchObject({
+        verdict: 'unknown', basis: 'unmeasured', authoritative: false,
+        uncertifiedReason: 'expected-condition-unproven',
+      });
+      expect(result.evidence).toContain('expected condition');
+    });
+
+    it('keeps the original system-wide park blocked when its declared fire has no expected-condition proof', async () => {
+      const inspect = vi.spyOn(eventStore, 'inspectEventKey').mockResolvedValue(snapshot(null, scopedResume));
+      try {
+        expect(await buildDurableParkReleaseContract({
+          condition: 'A new owner-verified system-wide resume is required.',
+          trigger, parkId: 'EI-22728510169731463', parkedAt: '2026-09-08T23:40:15.000Z',
+        }, 'pause-driver')).toMatchObject({
+          reachability: 'blocked', evidence: expect.stringContaining('expected condition'),
+        });
+      } finally {
+        inspect.mockRestore();
+      }
+    });
+
+    it('accepts a fired declaration with a matching expected payload', async () => {
+      expect(await readEventConditionReachability(trigger, {
+        inspect: async () => snapshot(expected, systemResume), requireSpecificCondition: true,
+      })).toMatchObject({ verdict: 'reachable', basis: 'fired', authoritative: true });
+    });
+
+    it('honors an explicit expectation even for a catalogue completion key', async () => {
+      expect(await readEventConditionReachability('release:deployed:abc123', {
+        inspect: async () => snapshot({ kind: 'sha', sha: 'abc123' }, { sha: 'def456' }),
+        requireSpecificCondition: true,
+      })).toMatchObject({
+        verdict: 'unknown', basis: 'unmeasured', uncertifiedReason: 'expected-condition-unproven',
+      });
+    });
   });
 
   // event-wait-settlement-2026-10-20 D-005: the deploy family's <sha> is optional, so the

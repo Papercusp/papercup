@@ -2546,35 +2546,42 @@ verifier_run_step verifier-native-cli verify_frozen_native_cli || { native_cli_r
 # Node entry is private to this run and is deleted with the source snapshot.
 build_verifier_operator_host() {
   local bundle_script="$OPERATOR_SOURCE_ROOT/apps/operator/bin/bundle-host.sh"
+  local evidence_dir="${VH_PHASE_DIR:-$WORK}/host-bundle"
   OPERATOR_HOST_BUNDLE="$OPERATOR_SOURCE_ROOT/apps/operator/dist-verify/hono-host.mjs"
   [ -x "$bundle_script" ] || {
     echo "FATAL: frozen verifier snapshot is missing executable host bundler: $bundle_script" >&2
     return 1
   }
+  mkdir -p -- "$evidence_dir" || return 1
   log "building frozen plain-node operator host (tsx runtime loader excluded)"
   # The dependency graph is a private immutable hardlink snapshot that was
   # completed under npm-install-safe's donor mutex immediately above. The
   # bundler's normal guard keys its lease to this private snapshot; it neither
   # re-enters the donor lock nor grants a blanket exemption to other roots.
-  bash "$bundle_script" \
-    bin/hono-host.ts "$OPERATOR_HOST_BUNDLE" || {
-      echo "FATAL: could not build the frozen verifier operator host bundle" >&2
+  # Stream each journal outside source cleanup, even if a deadline kills a child.
+  # Preserve each exact census request before the next entry can replace it.
+  local name entry bundle bundle_rc
+  for name in hono-host fake-llm-fixture-child; do
+    entry=bin/hono-host.ts
+    [ "$name" = hono-host ] || entry=e2e/_fake-llm-fixture-child.ts
+    bundle="$OPERATOR_SOURCE_ROOT/apps/operator/dist-verify/$name.mjs"
+    rm -f -- "${bundle%/*}/bundle-restricted-hold-inputs.json" || return 1
+    bundle_rc=0
+    BUNDLE_HOST_STEP_LOG="$evidence_dir/$name.build-steps.jsonl" \
+      bash "$bundle_script" "$entry" "$bundle" || bundle_rc=$?
+    if [ -f "${bundle%/*}/bundle-restricted-hold-inputs.json" ]; then
+      cp -- "${bundle%/*}/bundle-restricted-hold-inputs.json" "$evidence_dir/$name.inputs.json" || return 1
+    fi
+    if [ "$bundle_rc" -ne 0 ]; then
+      echo "FATAL: could not build frozen verifier entry $entry (exit $bundle_rc); evidence: $evidence_dir" >&2
+      return "$bundle_rc"
+    fi
+    [ -s "$bundle" ] || {
+      echo "FATAL: verifier bundler returned without a non-empty bundle: $bundle" >&2
       return 1
     }
-  [ -s "$OPERATOR_HOST_BUNDLE" ] || {
-    echo "FATAL: verifier operator host bundler returned without a non-empty bundle: $OPERATOR_HOST_BUNDLE" >&2
-    return 1
-  }
+  done
   log "frozen plain-node operator host ready at $OPERATOR_HOST_BUNDLE"
-  local fixture_bundle="$OPERATOR_SOURCE_ROOT/apps/operator/dist-verify/fake-llm-fixture-child.mjs"
-  bash "$bundle_script" e2e/_fake-llm-fixture-child.ts "$fixture_bundle" || {
-    echo "FATAL: could not build frozen isolated fixture child" >&2
-    return 1
-  }
-  [ -s "$fixture_bundle" ] || {
-    echo "FATAL: isolated fixture child bundle is empty" >&2
-    return 1
-  }
 }
 
 smoke_verifier_operator_host() {

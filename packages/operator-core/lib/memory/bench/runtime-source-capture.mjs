@@ -210,7 +210,10 @@ export function startRuntimeSourceCapture(destination) {
       const child = [...targets.values()].find(item => item.parent === target && item.sessionId === params.sessionId);
       if (!child) return fail(target.id, 'detached unknown worker');
       child.live = false;
-      if (child.pending.size || child.sourcePending) fail(child.id, 'worker detached with pending source/protocol requests');
+      if (child.pending.size || child.sourcePending) fail(child.id,
+        'worker detached with pending source/protocol requests: ' + JSON.stringify({
+          methods: [...child.pending.values()].map(request => request.method), sources: child.sourcePending ?? 0,
+        }));
       emit({ kind: 'worker-detached', workerId: child.id });
     } else if (method === 'NodeWorker.receivedMessageFromWorker') {
       const child = [...targets.values()].find(item => item.parent === target && item.sessionId === params.sessionId);
@@ -218,10 +221,10 @@ export function startRuntimeSourceCapture(destination) {
       let message;
       try { message = JSON.parse(params.message); } catch { return fail(child.id, 'invalid worker protocol message'); }
       if (message.id !== undefined) {
-        const callback = child.pending.get(message.id);
+        const request = child.pending.get(message.id);
         child.pending.delete(message.id);
-        if (!callback) return fail(child.id, 'unknown worker protocol response');
-        callback(message.error ? new Error(message.error.message) : null, message.result);
+        if (!request) return fail(child.id, 'unknown worker protocol response');
+        request.callback(message.error ? new Error(message.error.message) : null, message.result);
       } else notification(child, message.method, message.params);
     }
   };
@@ -235,7 +238,7 @@ export function startRuntimeSourceCapture(destination) {
     if (!params.waitingForDebugger) fail(id, 'worker was not paused before application execution');
     target.post = (method, args, callback) => {
       const requestId = ++target.nextId;
-      target.pending.set(requestId, callback);
+      target.pending.set(requestId, { method, callback });
       parent.post('NodeWorker.sendMessageToWorker', { sessionId: target.sessionId,
         message: JSON.stringify({ id: requestId, method, params: args }) }, error => {
         if (error && target.pending.delete(requestId)) callback(error);

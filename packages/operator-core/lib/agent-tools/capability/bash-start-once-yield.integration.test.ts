@@ -91,16 +91,28 @@ describe('capability:bash start-once response yield — integration', () => {
   });
 
   it('returns a usable full-output reference when its response window expires', async () => {
+    const barrier = join(STATE, `reference-barrier-${crypto.randomUUID()}`);
     const launch = payload(await bash.handler(
-      { command: 'printf REFERENCE-PREFIX; exec sleep 30', timeout: 60_000, yield_after_ms: 25 },
+      {
+        command: `printf REFERENCE-PREFIX; while [ ! -e ${JSON.stringify(barrier)} ]; do sleep 0.02; done; ` +
+          'printf REFERENCE-COMPLETE',
+        timeout: 10_000,
+        yield_after_ms: 25,
+      },
       ctx(),
     ));
     const job = getJob(String(launch.bash_id));
     try {
       expect(launch.log_path).toEqual(expect.any(String));
+      expect(launch.log_path).toBe(job?.logPath);
+      expect(existsSync(String(launch.log_path))).toBe(true);
+      // The reference must exist on return, while an unfinished credential-like
+      // token may legitimately remain in the redactor until command completion.
+      writeFileSync(barrier, 'release');
       await expect.poll(() => readFileSync(String(launch.log_path), 'utf8'), { timeout: 5_000 })
-        .toContain('REFERENCE-PREFIX');
+        .toContain('REFERENCE-PREFIXREFERENCE-COMPLETE');
     } finally {
+      writeFileSync(barrier, 'release');
       if (job) killJob(job);
     }
   });
@@ -131,55 +143,51 @@ describe('capability:bash start-once response yield — integration', () => {
   });
 
   it('kills the running command descendant through the managed kill handler', async () => {
-    const pidFile = join(STATE, `kill-descendant-${crypto.randomUUID()}`);
-    const launch = payload(await bash.handler(
-      {
-        command: `sleep 30 & printf '%s' "$!" > ${JSON.stringify(pidFile)}; wait`,
-        timeout: 60_000,
-        yield_after_ms: 25,
-      },
-      ctx(),
-    ));
-    const job = getJob(String(launch.bash_id));
-    let descendant: { pid: number; started: string } | undefined;
-    const identity = (pid: number) => {
-      try {
-        const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
-        const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
-        return { state: fields[0], started: fields[19] };
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
-        throw error;
-      }
+    const barrier = join(STATE, `descendant-barrier-${crypto.randomUUID()}`);
+    const killedMarker = join(STATE, `killed-descendant-${crypto.randomUUID()}`);
+    const controlMarker = join(STATE, `control-descendant-${crypto.randomUUID()}`);
+    const jobs: Array<NonNullable<ReturnType<typeof getJob>>> = [];
+    const launchDescendant = async (marker: string) => {
+      const ready = `${marker}.ready`;
+      const launch = payload(await bash.handler(
+        {
+          command: `( printf ready > ${JSON.stringify(ready)}; ` +
+            `while [ ! -e ${JSON.stringify(barrier)} ]; do sleep 0.02; done; ` +
+            `printf survived > ${JSON.stringify(marker)} ) & wait`,
+          timeout: 10_000,
+          yield_after_ms: 25,
+        },
+        ctx(),
+      ));
+      const job = getJob(String(launch.bash_id));
+      if (job) jobs.push(job);
+      expect(job).toBeDefined();
+      await expect.poll(() => existsSync(ready), { timeout: 5_000 }).toBe(true);
+      return { launch, job: job! };
     };
     try {
-      await expect.poll(() => existsSync(pidFile) && readFileSync(pidFile, 'utf8'), { timeout: 5_000 })
-        .toMatch(/^[1-9][0-9]*$/);
-      const pid = Number(readFileSync(pidFile, 'utf8'));
-      const before = identity(pid);
-      expect(before).toBeDefined();
-      expect(['Z', 'X']).not.toContain(before!.state);
-      descendant = { pid, started: before!.started! };
-
+      const { launch, job } = await launchDescendant(killedMarker);
+      await launchDescendant(controlMarker);
       const killed = payload(await bashKill.handler({ bash_id: launch.bash_id }, ctx()));
       expect(killed).toMatchObject({ ok: true, status: 'killed' });
-      // A ledger status is kill intent. Observe the actual owned descendant;
-      // killing only the parent leaves this sleep alive and fails the test.
-      await expect.poll(() => {
-        const current = identity(pid);
-        return !current || current.started !== descendant!.started || ['Z', 'X'].includes(current.state!);
-      }, { timeout: 5_000 }).toBe(true);
-    } finally {
-      if (job) killJob(job);
-      // A regressed parent-only kill must not strand the test's child. Pin its
-      // lifetime before cleanup so a reused PID can never target another task.
-      if (descendant && identity(descendant.pid)?.started === descendant.started) {
-        try { process.kill(descendant.pid, 'SIGKILL'); } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
-        }
+      // Kill intent alone is insufficient. Wait for the launching process to
+      // close, then release both descendants through the same filesystem gate.
+      // A parent-only kill leaves its orphan able to write the forbidden marker.
+      await expect.poll(() => job.endedAt, { timeout: 5_000 }).not.toBeNull();
+      writeFileSync(barrier, 'release');
+      await expect.poll(() => existsSync(controlMarker), { timeout: 5_000 }).toBe(true);
+      const until = Date.now() + 1_000;
+      while (Date.now() < until) {
+        expect(existsSync(killedMarker)).toBe(false);
+        await new Promise((resolve) => setTimeout(resolve, 20));
       }
+    } finally {
+      // Namespace-local PIDs are never interpreted or signalled by the host.
+      // Release first so even a regressed orphan can terminate naturally.
+      writeFileSync(barrier, 'release');
+      for (const job of jobs) killJob(job);
     }
-  });
+  }, 20_000);
 
   it('completes later through the yielded task without running the marker body twice', async () => {
     const marker = join(STATE, `integration-marker-${crypto.randomUUID()}.txt`);

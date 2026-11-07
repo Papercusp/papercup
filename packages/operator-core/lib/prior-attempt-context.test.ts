@@ -397,6 +397,49 @@ describe('resolvePriorAttemptRefs (P-017 raw drill-down)', () => {
     expect(resolved).toBeNull();
   });
 
+  it('recovers an exact immutable self comment without waiting for unrelated plan history', async () => {
+    const archive = { id: 1, thread_id: 'issue-thread-WI-9', author_id: 'su-original',
+      body: `Pinned complete source: ${'preserved λ '.repeat(400)}`.trimEnd(), created_ts: '2026-08-20T08:00:00Z' };
+    const getPlan = vi.fn(() => new Promise<never>(() => {}));
+    const specs = vi.fn(() => new Promise<never>(() => {}));
+    const thread = vi.fn(async () => ({ posts: [{ ...archive, id: 2, body: 'Later post' }],
+      total: 2, topics: [], createdAt: archive.created_ts }));
+    const threadPost = vi.fn(async () => archive);
+    const resolved = await resolvePriorAttemptRefs({ ...pointer, rawRefs: ['WI-9#comment:1'], timeoutMs: 100 }, {
+      ...deps, getPlan, specs, thread, threadPost,
+    } as never);
+    expect(resolved?.records).toHaveLength(1);
+    expect(resolved?.records[0]).toMatchObject({ rawRef: 'WI-9#comment:1', text: archive.body,
+      scope: 'self', actor: archive.author_id, at: archive.created_ts });
+    expect(resolved?.unresolved).toEqual([]);
+    expect(getPlan).not.toHaveBeenCalled();
+    expect(specs).not.toHaveBeenCalled();
+    expect(thread).toHaveBeenCalledWith('WI-9', 1, 'papercusp');
+  });
+
+  it('keeps exact self-comment recovery scoped to the admitted thread and workspace', async () => {
+    const post = { id: 2, thread_id: 'issue-thread-WI-9', author_id: 'su-original',
+      body: 'Admitted thread', created_ts: '2026-08-20T08:00:00Z' };
+    const threadPost = vi.fn(async (_input: { workspaceId: string; postId: number }) =>
+      ({ ...post, id: 1, thread_id: 'foreign-thread' }));
+    const resolved = await resolvePriorAttemptRefs({ ...pointer, rawRefs: ['WI-9#comment:1'] }, {
+      ...deps, thread: async () => ({ posts: [post], total: 1, topics: [], createdAt: post.created_ts }), threadPost,
+    } as never);
+    expect(resolved?.records).toEqual([]);
+    expect(resolved?.unresolved).toEqual(['WI-9#comment:1']);
+    expect(threadPost.mock.calls[0]?.[0]).toMatchObject({ postId: 1, workspaceId: expect.any(String) });
+  });
+
+  it('does not admit a guessed comment when the requested item has no thread', async () => {
+    const threadPost = vi.fn();
+    const resolved = await resolvePriorAttemptRefs({ ...pointer, rawRefs: ['WI-9#comment:1'] }, {
+      ...deps, threadPost,
+    } as never);
+    expect(resolved?.records).toEqual([]);
+    expect(resolved?.unresolved).toEqual(['WI-9#comment:1']);
+    expect(threadPost).not.toHaveBeenCalled();
+  });
+
   it('stamps the fingerprint it resolved against so a caller can detect history moving under it', async () => {
     const brief = await getClaimTimePriorAttemptBrief(pointer, deps as never);
     const resolved = await resolvePriorAttemptRefs({ ...pointer, rawRefs: ['WI-9#checkpoint'] }, deps as never);

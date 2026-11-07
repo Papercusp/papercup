@@ -5704,6 +5704,34 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
     ).not.toHaveProperty('current');
   });
 
+  it.each(['measured', 'partial', 'attested', 'unavailable', 'empty'] as const)(
+    'keeps historical fingerprints without turning %s measurements into public replay attestations',
+    (mode) => {
+      const rows = [evidence({ id: 41011 }), evidence({ id: 41012, evidenceRef: 'surface:second' })];
+      for (const row of rows) {
+        row.serverMeasurement = { status: mode === 'unavailable' ? 'unavailable' : 'measured' };
+        if (mode === 'attested') row.currentness.provenance = 'replayed-snapshot';
+      }
+      const inputs: EvidenceCurrentInput[] = rows.map((row) => ({
+        evidenceKind: row.evidenceKind, evidenceRef: row.evidenceRef, ...row.fingerprints,
+      }));
+      const current = mode === 'empty' ? [] : mode === 'partial' ? inputs.slice(0, 1) : inputs;
+      const result = evaluateSpecTestAdequacy({
+        clause: clause(), evidence: rows, current, classRef: 'plan-class-feature-ship',
+      });
+      const recipe = result.scorecardDraft.rerunRecipe;
+      expect(recipe.current).toEqual({ supplied: true, fingerprints: current });
+      expect(recipe.args.bindingIds).toEqual([41011, 41012]);
+      expect(asStructuredObservation({ rerunRecipe: recipe })?.rerunRecipe?.current).toEqual(recipe.current);
+      if (mode === 'measured') {
+        expect(recipe.args).not.toHaveProperty('current');
+        expect(asStructuredObservation({ rerunRecipe: recipe })?.rerunRecipe?.args).not.toHaveProperty('current');
+      } else {
+        expect(recipe.args.current).toEqual(current);
+      }
+    },
+  );
+
   it('preserves an explicitly empty binding-id selector through recipe readback', () => {
     const result = evaluateSpecTestAdequacy({
       clause: clause(),

@@ -8,6 +8,7 @@ import {
 } from './events/await/catalog';
 import { findRootAnchor, loadNode } from './events/await/compose-store';
 import { inspectEventKey } from './events/await/store';
+import { announcementExpectedVerdict } from './events/await/announcement-verdict';
 import type { PredicateWatchRow } from './events/await/predicate-watch';
 
 export type ExternalConditionReachabilityVerdict = 'reachable' | 'impossible' | 'unknown';
@@ -41,8 +42,10 @@ export interface ExternalConditionReachability {
  *  - 'broad': a catalogued key that names no subject (a global, owner or fleet wake such as
  *    `coord:inbox-wake:<owner>` or `git-sync:committed`) — it fires for unrelated reasons;
  *  - 'change-notification': names a subject, but a fire says only that it changed.
+ *  - 'expected-condition-unproven': a declared fire lacks the matching expected
+ *    payload required to certify its condition.
  */
-export type UncertifiedConditionReason = 'uncatalogued' | 'broad' | 'change-notification';
+export type UncertifiedConditionReason = 'uncatalogued' | 'broad' | 'change-notification' | 'expected-condition-unproven';
 
 export interface ExternalConditionReachabilityInput {
   firedAt?: string | null;
@@ -341,6 +344,23 @@ export async function readEventConditionReachability(
         ? currentAnnouncement.firedAt
         : null
       : snapshot.fireLatch?.lastFiredAt ?? null;
+    // EI-28151351859660198: an announcement binds a generation, not proof that
+    // its payload satisfied the declared condition. Reuse events:status's verdict
+    // rather than promoting any post-park fire (including a narrower owner resume)
+    // to success. Catalogue completion keys can prove their intrinsic condition
+    // without an expectation, but an explicit expectation must always match.
+    if (opts.requireSpecificCondition && firedAt && currentAnnouncement
+        && (currentAnnouncement.expectedCondition != null || !fireCertifiesCondition(eventKey))) {
+      const expected = announcementExpectedVerdict(currentAnnouncement);
+      if (expected !== 'matched') {
+        return {
+          ...classifyExternalConditionReachability({ registration: 'unmeasured' }, now.toISOString()),
+          evidence: `trigger "${eventKey}" fired but its expected condition is ${expected}; ` +
+            'the fire cannot establish the specific release condition without matching proof',
+          uncertifiedReason: 'expected-condition-unproven',
+        };
+      }
+    }
     const composedRootReachable = await hasActiveComposedRootAnchor(
       eventKey,
       loadComposedRoot,

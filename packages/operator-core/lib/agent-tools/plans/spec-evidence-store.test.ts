@@ -3726,6 +3726,33 @@ describe('ledger-state server measurement', () => {
       evidenceMeasurementSchema.safeParse({ schemaVersion: 1, kind: 'work-items', workItemIds: ['not a ref'] }).success,
     ).toBe(false);
   });
+
+  it('pins successful completion receipts without changing ordinary census fingerprints', async () => {
+    h.rows = [{ feature_id: 'EI-1', status: 'done', terminal_owner: 'su-finisher', authority: 'committed',
+      terminal_completion_ref: 'test-run:current-build-1', completion: { summary: 'current build verified' } }];
+    const census = { ...recipe, workItemIds: ['EI-1'] };
+    const receipt = { ...census, successfulCompletionReceipts: true as const };
+    const ordinary = await measureWorkItemsEvidenceForScope('workspace-test', 'papercusp', census);
+    const pinned = await measureWorkItemsEvidenceForScope('workspace-test', 'papercusp', receipt);
+    expect(pinned.sourceFingerprint).toMatch(/^sha256-work-item-receipts-v1:/);
+    h.rows = [{ ...h.rows[0], terminal_completion_ref: 'test-run:replacement',
+      completion: { summary: 'different current-build receipt' } }];
+    expect((await measureWorkItemsEvidenceForScope('workspace-test', 'papercusp', receipt)).sourceFingerprint)
+      .not.toBe(pinned.sourceFingerprint);
+    expect(await measureWorkItemsEvidenceForScope('workspace-test', 'papercusp', census)).toEqual(ordinary);
+  });
+
+  it.each(['dropped', 'open', 'missing', 'proposed', 'no-receipt'])(
+    'refuses %s as a successful completion receipt', async state => {
+      h.rows = state === 'missing' ? [] : [{ feature_id: 'EI-1',
+        status: ['dropped', 'open'].includes(state) ? state : 'done', terminal_owner: 'su-finisher',
+        authority: state === 'proposed' ? 'proposed' : 'committed',
+        terminal_completion_ref: state === 'no-receipt' ? null : 'test-run:current-build-1' }];
+      await expect(measureWorkItemsEvidenceForScope('workspace-test', 'papercusp', {
+        ...recipe, workItemIds: ['EI-1'], successfulCompletionReceipts: true,
+      })).rejects.toThrow('successful_completion_receipt_unavailable:EI-1');
+    },
+  );
 });
 
 describe('batched spec evidence supersession', () => {

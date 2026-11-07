@@ -39,6 +39,7 @@ import assert from 'node:assert/strict';
 import { createInferenceGateway, ACCOUNT_HEADER, ACCOUNT_PIN_HEADER, ROUTED_ACCOUNT_HEADER } from './gateway';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
 import { RateLimitGovernor, resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
+import { createFailoverPool } from './account-failover';
 import {
   configureGatewayRequestOutcomeStore,
   InMemoryGatewayRequestOutcomeStore,
@@ -81,6 +82,48 @@ const post = (extraHeaders: Record<string, string> = {}) => ({
   method: 'POST',
   headers: { 'content-type': 'application/json', ...extraHeaders },
   body: messagesBody,
+});
+
+test.each([true, false])('transport failure never rotates onto a known usage wall (short recovery: %s)', async recoverSoon => {
+  const A = acct('healthy-a', 0);
+  const B = acct('walled-b', 0);
+  const routed: string[] = [];
+  gw = createInferenceGateway({
+    accountId: A.accountId, token: A.token,
+    pool: createFailoverPool([A, B]),
+    requestAbsorbMs: 0, internalRetryDeadlineMs: 500,
+    bare429FailoverBackoffMs: recoverSoon ? 20 : 60_000,
+    selfHeal: { enabled: false },
+    fetchImpl: (async (_url: unknown, init?: RequestInit) => {
+      const auth = new Headers(init?.headers).get('authorization') ?? '';
+      routed.push(auth);
+      if (auth.includes(B.accountId)) {
+        return new Response(JSON.stringify({ type: 'error', error: {
+          type: 'rate_limit_error', message: 'account usage limit reached',
+        } }), { status: 429, headers: { 'content-type': 'application/json', 'retry-after': '3600' } });
+      }
+      if (routed.length === 1 || !recoverSoon) {
+        throw new TypeError('fetch failed', { cause: Object.assign(new Error('Connect Timeout Error'), {
+          code: 'UND_ERR_CONNECT_TIMEOUT',
+        }) });
+      }
+      return ok200();
+    }) as typeof fetch,
+  });
+  gw.setAccountRateHints([
+    { accountId: A.accountId, utilization7d: 0.05 },
+    { accountId: B.accountId, utilization7d: 1, windowResetAt7d: Date.now() + 3600_000 },
+  ]);
+  port = await gw.listen(0);
+  const response = await ask('/v1/messages', {
+    ...post(), body: JSON.stringify({ model: 'claude-sonnet-4', max_tokens: 8,
+      messages: [{ role: 'user', content: 'x' }] }),
+  });
+  const body = await response.text();
+
+  assert.equal(response.status, recoverSoon ? 200 : 502, body);
+  assert.deepEqual(routed, recoverSoon ? ['Bearer healthy-a-tok', 'Bearer healthy-a-tok'] : ['Bearer healthy-a-tok']);
+  assert.equal(gw.stats().upstream429, 0);
 });
 
 test('EI-25729445450023140: failed absorb reacquire attributes the forwarded response to its upstream account', async () => {

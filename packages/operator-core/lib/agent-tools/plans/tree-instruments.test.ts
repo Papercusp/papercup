@@ -7,6 +7,7 @@ import { defaultBlobBatchReader, type BlobBatchReader } from './committed-tree-r
 import { scanRepository } from '../../../../../scripts/check-fire-and-forget-classification.mjs';
 import {
   __resetTreeInstrumentMemoForTest,
+  emittedSubscribeSelectors,
   foldTreeInstrumentFingerprint,
   measureTreeInstrumentAtCommit,
 } from './tree-instruments';
@@ -128,6 +129,76 @@ describe('provider-specific-census tree instrument', () => {
     const commit = await put({ 'bin/tool.mjs': 'export {};\n' });
     expect(await measureTreeInstrumentAtCommit('provider-specific-census', root, commit))
       .toEqual({ providerSpecificPaths: [], strictViolations: [] });
+  });
+});
+
+describe('state-subscribe-handle-census tree instrument', () => {
+  const key = 'state-subscribe-handle-census' as const;
+  const prefix = 'packages/operator-core/lib/agent-tools/';
+  const emitter = prefix + 'dev/pipeline_position.ts';
+  const handle = "tool: 'state:subscribe', selector: \"{ cell: 'gate.greenCheckpoint.verdict' }\"";
+  const fp = (output: unknown) => foldTreeInstrumentFingerprint('sha256-file-set-v1:x', key, output);
+
+  it('shares the exact selector matcher and records committed bytes in the scanner population', async () => {
+    expect(emittedSubscribeSelectors('a.ts', handle + '\n' + "tool: 'other', selector: '{}'")).toEqual([
+      { file: 'a.ts', selector: "{ cell: 'gate.greenCheckpoint.verdict' }" },
+    ]);
+    const commit = await put({
+      [emitter]: handle,
+      [prefix + 'release/checkpoint-run.ts']: "tool: 'state:subscribe', selector: '{ cell: \"other\" }'",
+      [prefix + 'ignored.test.ts']: handle,
+      [prefix + 'ignored.js']: handle,
+      'apps/operator/lib/outside.ts': handle,
+    });
+    await writeFile(join(root, emitter), "tool: 'state:subscribe', selector: '{}'");
+    await writeFile(join(root, prefix + 'untracked.ts'), handle);
+    expect(await measureTreeInstrumentAtCommit(key, root, commit)).toEqual({
+      schemaVersion: 1,
+      handles: [
+        { file: 'dev/pipeline_position.ts', selector: "{ cell: 'gate.greenCheckpoint.verdict' }" },
+        { file: 'release/checkpoint-run.ts', selector: '{ cell: "other" }' },
+      ],
+    });
+  });
+
+  it('retains unrelated edits but changes the witness for new, changed and removed selectors', async () => {
+    const base = await put({ [emitter]: handle });
+    const before = await measureTreeInstrumentAtCommit(key, root, base);
+    const unrelated = await put({ [emitter]: '// moved\n' + handle, [prefix + 'unrelated.ts']: 'export {};' });
+    expect(fp(await measureTreeInstrumentAtCommit(key, root, unrelated))).toBe(fp(before));
+    const changed = await put({ [emitter]: handle.replace('gate.greenCheckpoint.verdict', 'different') });
+    const afterChange = await measureTreeInstrumentAtCommit(key, root, changed);
+    expect(fp(afterChange)).not.toBe(fp(before));
+    const planted = await put({ [prefix + 'new/emitter.ts']: handle });
+    const afterPlant = await measureTreeInstrumentAtCommit(key, root, planted);
+    expect(fp(afterPlant)).not.toBe(fp(afterChange));
+    const removed = await put({ [prefix + 'new/emitter.ts']: 'export {};' });
+    expect(fp(await measureTreeInstrumentAtCommit(key, root, removed))).toBe(fp(afterChange));
+  });
+
+  it('measures the full population beyond the ordinary glob bound and retains invalid literals', async () => {
+    const commit = await put(Object.fromEntries(Array.from({ length: 150 }, (_, i) => [
+      prefix + 'emit-' + String(i).padStart(3, '0') + '.ts',
+      "tool: 'state:subscribe', selector: '{ invalid'",
+    ])));
+    const output = await measureTreeInstrumentAtCommit(key, root, commit) as { handles: Array<{ selector: string }> };
+    expect(output.handles).toHaveLength(150);
+    expect(output.handles.every(site => site.selector === '{ invalid')).toBe(true);
+  });
+
+  it('refuses a symlink or gitlink reached by the real recursive scanner', async () => {
+    await put({ [emitter]: handle });
+    await symlink('dev/pipeline_position.ts', join(root, prefix + 'linked.ts'));
+    git('add', '-A');
+    git('commit', '-qm', 'symlink');
+    await expect(measureTreeInstrumentAtCommit(key, root, git('rev-parse', 'HEAD')))
+      .rejects.toThrow('tree_instrument_symlink_unsupported:' + prefix + 'linked.ts');
+    await rm(join(root, prefix + 'linked.ts'));
+    git('add', '-A');
+    git('update-index', '--add', '--cacheinfo', '160000,' + git('rev-parse', 'HEAD') + ',' + prefix + 'vendored');
+    git('commit', '-qm', 'gitlink');
+    await expect(measureTreeInstrumentAtCommit(key, root, git('rev-parse', 'HEAD')))
+      .rejects.toThrow('tree_instrument_nested_submodule_unsupported:' + prefix + 'vendored');
   });
 });
 

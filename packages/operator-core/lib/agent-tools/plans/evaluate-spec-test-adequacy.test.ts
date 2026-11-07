@@ -2208,8 +2208,28 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     expect(result.rows[0].ratings.freshness.rating).toBe('pass');
     const recipe = result.rows[0].scorecardDraft.rerunRecipe;
     expect(recipe.current.fingerprints).toHaveLength(1);
-    expect(recipe.args.current).toEqual(recipe.current.fingerprints);
+    expect(recipe.args).not.toHaveProperty('current');
     expect(recipe.current.fingerprints[0].sourceFingerprint).toBe('sha256:latest-recipe');
+
+    // Exercise the public tool with its emitted args. The store treats supplied
+    // replay tuples as attestations, even when their bytes match its measurement.
+    listEvidence.mockImplementation(async (args) => [
+      {
+        ...binding(2, 'sha256:latest-recipe'),
+        ...(args.current !== undefined ? {
+          currentness: {
+            overall: 'unknown', provenance: 'replayed-snapshot',
+            staleReasons: [], unknownReasons: ['caller-attested'],
+          },
+        } : {}),
+      },
+    ] as unknown as Awaited<ReturnType<typeof listSpecEvidence>>);
+    const replay = await call({ ...recipe.args, detail: 'full' });
+    expect(replay.rows[0].ratings.freshness.rating).toBe('pass');
+    expect(listEvidence).toHaveBeenLastCalledWith(expect.objectContaining({ current: undefined }));
+    expect(replay.rows[0].scorecardDraft.rerunRecipe.current.fingerprints).toEqual(recipe.current.fingerprints);
+    const attested = await call({ ...recipe.args, current: recipe.current.fingerprints, detail: 'full' });
+    expect(attested.rows[0].ratings.freshness.rating).toBe('unknown');
   });
 
   // Renamed from 'no eligible clauses' (EI-23420771213407749): this mocks ZERO clauses, which

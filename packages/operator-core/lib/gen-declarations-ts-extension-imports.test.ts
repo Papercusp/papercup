@@ -73,6 +73,19 @@ function programForInput(input: string): ts.Program {
 }
 
 describe('tsconfig.declarations.json — imports in an input graph', () => {
+  it('keeps standalone preflight declarations outside the application implementation graph', () => {
+    const program = programForInput('scripts/lib/restricted-hold-preflight.d.mts');
+    // A diagnostics-only type must not import the reader's sidecar/task/DBOS
+    // implementation. skipLibCheck does not skip TS sources reached from a .d.mts.
+    const implementations = [
+      'packages/operator-core/lib/agent-tools/plans/committed-tree-reader.ts',
+      'packages/operator-core/lib/agent-tools/index.ts',
+      'libs/test-config/src/admin-test-runs-reporter.ts',
+    ];
+    expect(implementations.filter(input => program.getSourceFile(resolve(ROOT, input))))
+      .toEqual([]);
+  }, 120_000);
+
   it('rejects a .ts-suffixed relative import (TS5097), so a source must not use one', () => {
     expect(declarationsCompilerOptions().allowImportingTsExtensions).toBeUndefined();
     const codes = diagnosticsFor(fixturePackage('./leaf.ts')).map((d) => d.code);

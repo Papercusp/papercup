@@ -396,6 +396,8 @@ export const workItemsEvidenceMeasurementSchema = z
      * enough to recompute on every evidence read.
      */
     workItemIds: z.array(ledgerMeasurementIdSchema).min(1).max(64),
+    /** Pin successful terminal receipts as well as disposition. Ordinary census recipes stay status-only. */
+    successfulCompletionReceipts: z.literal(true).optional(),
     /** Optional local runtime units; live/deployed evidence remeasures them independently of ledger state. */
     runtimeUnits: runtimeUnitsSchema.optional(),
   })
@@ -1248,10 +1250,13 @@ export async function measureAndPinRepoFilesEvidence(
 /**
  * Recompute a bounded ledger-state evidence tuple from the CURRENT work-item rows.
  *
- * Only the disposition-bearing column is hashed. Hashing the whole row would make the binding
+ * Ordinary census recipes hash only disposition. Hashing the whole row would make the binding
  * go stale on any incidental touch (a comment, a re-checkpoint), which would train readers to
  * ignore staleness; hashing `status` alone means the digest changes exactly when the claim
- * "these rows reached a recorded disposition" stops being true.
+ * "these rows reached a recorded disposition" stops being true. Consumers requiring a successful
+ * prerequisite opt into successfulCompletionReceipts: terminal owner, authority, reference and
+ * stored completion evidence then enter the digest. A replacement receipt on the same done row
+ * invalidates that binding; comments, checkpoints and other incidental touches still do not.
  *
  * A row that is ABSENT is hashed as an explicit `null` rather than skipped, so a deleted row —
  * or a typo'd id that never existed — cannot silently produce the same digest as a present one.
@@ -1265,21 +1270,41 @@ export async function measureWorkItemsEvidenceForScope(
   const parsed = workItemsEvidenceMeasurementSchema.parse(measurement);
   const ids = [...new Set(parsed.workItemIds)].sort();
   const rows = await withWorkspace(workspaceId, async (tx) => {
-    return tx<{ feature_id: string; status: string | null }[]>`
-      SELECT feature_id, status
+    type ReceiptRow = { feature_id: string; status: string | null; terminal_owner?: string | null;
+      terminal_completion_ref?: string | null; authority?: string | null; completion?: unknown };
+    if (!parsed.successfulCompletionReceipts) return tx<ReceiptRow[]>`
+      SELECT feature_id, status FROM harness_shared.work_items
+       WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+         AND feature_id = ANY(${ids}::text[])`;
+    return tx<ReceiptRow[]>`
+      SELECT feature_id, status, terminal_owner, terminal_completion_ref, authority,
+             payload->'_completionEvidence' AS completion
         FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId}
          AND harness_slug = ${harnessSlug}
          AND feature_id = ANY(${ids}::text[])`;
   });
-  const statusById = new Map(rows.map((row) => [row.feature_id, row.status]));
-  const entries = ids.map((id) => ({ id, status: statusById.get(id) ?? null }));
-  const digest = createHash('sha256').update(JSON.stringify(entries)).digest('hex');
+  const rowById = new Map(rows.map(row => [row.feature_id, row]));
+  const entries = ids.map(id => {
+    const row = rowById.get(id);
+    if (!parsed.successfulCompletionReceipts) return { id, status: row?.status ?? null };
+    if (row?.status !== 'done' || !row.terminal_owner?.trim() ||
+      !['validated', 'committed'].includes(row.authority ?? '') ||
+      (!row.terminal_completion_ref?.trim() && (!row.completion || typeof row.completion !== 'object' ||
+        Array.isArray(row.completion) || Object.keys(row.completion).length === 0))) {
+      throw new Error(`successful_completion_receipt_unavailable:${id}`);
+    }
+    return { id, status: row.status, terminalOwner: row.terminal_owner,
+      authority: row.authority, completionRef: row.terminal_completion_ref ?? null,
+      completion: row.completion ?? null };
+  });
+  const digest = createHash('sha256').update(JSON.stringify(parsed.successfulCompletionReceipts
+    ? canonicalJson(entries) : entries)).digest('hex');
   const environmentFingerprint = parsed.runtimeUnits
     ? await measureRuntimeEnvironment(runtimeRows ?? await listRuntimeVintage(workspaceId), parsed.runtimeUnits)
     : undefined;
   return {
-    sourceFingerprint: `sha256-work-item-set-v1:${digest}`,
+    sourceFingerprint: `${parsed.successfulCompletionReceipts ? 'sha256-work-item-receipts-v1' : 'sha256-work-item-set-v1'}:${digest}`,
     testFingerprint: null,
     ...(parsed.runtimeUnits ? { environmentFingerprint } : {}),
   };

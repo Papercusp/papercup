@@ -20,6 +20,10 @@ import { persistResearchBatch, researchSubjects, suggestResearchAnchors } from '
 import { acceptFeedbackRequestCore, getFeedbackCore, type GetFeedbackDeps, type GetFeedbackRequest } from '../../consult/get-feedback-core';
 import { BAR_CRITIQUE_POLICY } from '../../consult/selection-policies';
 import { evaluateBarCritiqueGate, type BarCritiqueClause } from './plan-start-critique-gate';
+import { bindSpecEvidence, listSpecEvidence, measureWorkItemsEvidenceForScope } from './spec-evidence-store';
+import { setSpecClause } from './spec-clauses-store';
+import { setWorkItemState } from '../../work-items';
+import { runWithWorkspace } from '../../workspace-als';
 
 // Exact quoted owner text, including indentation and line breaks. The later
 // plan revision is a different fixture and cannot stand in for this source.
@@ -125,6 +129,52 @@ beforeEach(async () => {
 });
 
 describe('original proof-warming discovery before review and implementation', () => {
+  it('retains and remeasures successful prerequisite receipts through the canonical evidence store', async () => {
+    await runWithWorkspace(fx.workspaceId, async () => {
+    await revision(plan(revisedFindings(), true));
+    const prerequisite = `WI-700${sequence}7`;
+    const finalItem = `WI-700${sequence}8`;
+    await fx.admin`INSERT INTO harness_shared.work_items
+      (workspace_id,harness_slug,feature_id,kind,title,status,taken_by,source_plan_slug,source_plan_item_ids)
+      VALUES (${fx.workspaceId},${harness},${prerequisite},'feature','current-build contribution','open',${OWNER},${slug},ARRAY['P-002']::text[]),
+             (${fx.workspaceId},${harness},${finalItem},'feature','final delivery','open',${OWNER},${slug},ARRAY['P-002']::text[])`;
+    // Real terminal writer; the receipt is synthetic, confined to this private DB.
+    // It verifies receipt composition only and cannot serve as live delivery evidence.
+    const closed = await setWorkItemState(prerequisite, 'done', { harness, by: OWNER, family: 'feature',
+      completionRef: 'test-run:immutable-current-build', completionAuthority: 'committed',
+      completionEvidence: { summary: 'current-build fixture verified', testsRun: 'private fixture',
+        testResult: 'passed', verifiedHow: 'isolated gate inputs', filesChanged: [] } });
+    expect(closed).toMatchObject({ state: 'done', terminalCompletionRef: 'test-run:immutable-current-build' });
+    const measurement = { schemaVersion: 1 as const, kind: 'work-items' as const,
+      workItemIds: [prerequisite], successfulCompletionReceipts: true as const };
+    const pin = await measureWorkItemsEvidenceForScope(fx.workspaceId, harness, measurement);
+    await setSpecClause({ harnessSlug: harness, planSlug: slug,
+      specId: 'DISCOVERY-PREREQUISITE-RECEIPT', expectedRevision: 0, planItemId: 'P-002',
+      behavior: 'Final delivery consumes the same successful current-build receipt.',
+      behaviorClass: 'non-automated', requiredTestLayers: [], mutationRequired: false,
+      lifecycleStatus: 'active', actorId: OWNER });
+    expect(await bindSpecEvidence({ workspaceId: fx.workspaceId, harnessSlug: harness, planSlug: slug,
+      workItemId: finalItem, specId: 'DISCOVERY-PREREQUISITE-RECEIPT', evidenceKind: 'manual',
+      evidenceRef: `work-item:${prerequisite}`, sourceFingerprint: pin.sourceFingerprint,
+      actorId: OWNER, details: { currentMeasurement: measurement } })).toMatchObject({ status: 'created' });
+    const read = async () => (await listSpecEvidence({ workspaceId: fx.workspaceId, harnessSlug: harness,
+      planSlugs: [slug], workItemIds: [finalItem] }))[0]!;
+    expect((await read()).currentness.overall).toBe('current');
+    // Neither a checkpoint nor unrelated payload bookkeeping changes the receipt.
+    await fx.admin`UPDATE harness_shared.work_items SET payload=COALESCE(payload,'{}'::jsonb)||'{"checkpoint":"new note"}'::jsonb
+      WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness} AND feature_id=${prerequisite}`;
+    expect((await read()).currentness.overall).toBe('current');
+    await fx.admin`UPDATE harness_shared.work_items SET terminal_completion_ref='test-run:replacement'
+      WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness} AND feature_id=${prerequisite}`;
+    expect((await read()).currentness.overall).toBe('stale');
+    await fx.admin`UPDATE harness_shared.work_items SET status='dropped'
+      WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness} AND feature_id=${prerequisite}`;
+    expect((await read()).currentness.overall).not.toBe('current');
+    await expect(measureWorkItemsEvidenceForScope(fx.workspaceId, harness, measurement))
+      .rejects.toThrow(`successful_completion_receipt_unavailable:${prerequisite}`);
+    });
+  });
+
   it('DISCOVERY-R4 current reconciled discovery permits amended full BAR review while a new start waits for current independent clearance', async () => {
     const review = reviewDeps();
     expect(await review.attempt()).toMatchObject({ error: 'discovery_not_ready' });

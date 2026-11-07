@@ -1790,8 +1790,9 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
         ...(evaluatorBuild ? { evaluatorBuild } : {}),
         ...(typeof evaluatorRevision === 'number' ? { evaluatorRevision } : {}),
         classRef: recipe.classRef as string,
-        // Reconstruct from the validated selection AND currentness inputs, never
-        // from stored args, so readback preserves the original evidence cohort.
+        // Reconstruct validated selectors, but preserve an explicit args object's
+        // omitted current input: public replay then remeasures independently.
+        // Legacy recipes without args still derive their tuple from the snapshot.
         args: {
           ...(recipeHarness ? { harness: recipeHarness } : {}),
           slug: selection.planSlug,
@@ -1806,7 +1807,9 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
           ...(specFingerprint !== undefined ? { specFingerprint } : {}),
           ...(replaySnapshot === true ? { replaySnapshot: true as const } : {}),
           includeDraft: true,
-          ...(current.supplied ? { current: fingerprints } : {}),
+          ...(current.supplied && (!rawArgs || Object.prototype.hasOwnProperty.call(rawArgs, 'current'))
+            ? { current: fingerprints }
+            : {}),
         },
         selection: {
           planSlug: selection.planSlug,

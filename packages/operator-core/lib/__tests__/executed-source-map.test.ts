@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { createServer, type Socket } from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
@@ -10,6 +11,7 @@ import {
   EXECUTED_MAP_RECORD_ENV,
   EXECUTED_MAP_RESULT_ENV,
   EXECUTED_MAP_WORKSPACE_ENV,
+  connectExecutedMapPg,
   executedMapEnabled,
   executedMapRecordingEnabled,
   formatExecutedMapAlarmLines,
@@ -46,6 +48,29 @@ const REAL_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../../../..');
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const ROOT = '/repo';
+
+describe('executed-map connection protocol diagnostics', () => {
+  it('observes a real TCP connection and error without forwarding server payloads', async () => {
+    const sockets = new Set<Socket>();
+    // Accept TCP but never answer Postgres startup, so the real pg deadline fires.
+    const server = createServer(socket => { sockets.add(socket); socket.on('error', () => {}); });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Expected TCP listener');
+      const events: string[] = [];
+      await expect(connectExecutedMapPg({ env: {
+        PAPERCUSP_TEST_RUNS_DB_URL: `postgresql://fixture@127.0.0.1:${address.port}/ledger`,
+      }, timeoutMs: 250, onProgress: event => events.push(event) })).rejects.toThrow();
+      expect(events).toContain('connect');
+      expect(events).toContain('error');
+      expect(events.every(event => typeof event === 'string')).toBe(true);
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  });
+});
 
 describe('named first-attempt audit results', () => {
   const file = 'packages/operator-core/lib/example.test.ts';
@@ -835,6 +860,36 @@ describe('resolveTaskReportExpectation', () => {
       expectsReport: false,
       reason: 'wrapper-unreadable',
     });
+  });
+
+  it('retains the producer config across the canonical node-maintenance tail only', () => {
+    const files = { [`${WS}/vitest.config.ts`]: ENROLLED, [`${WS}/plain.ts`]: PLAIN };
+    expect(resolveWith('vitest run && npm run test:node-maintenance', files))
+      .toMatchObject({ expectsReport: true, reason: 'enrolled-config' });
+    expect(resolveWith('vitest run --config plain.ts && npm run test:node-maintenance', files))
+      .toMatchObject({ expectsReport: false, reason: 'unenrolled-config', config: 'plain.ts' });
+    for (const command of ['node --test x.mjs && npm run test:node-maintenance',
+      'astro check && npm run test:node-maintenance'])
+      expect(resolveWith(command, files).expectsReport).toBe(false);
+    for (const command of ['vitest run && echo done && npm run test:node-maintenance',
+      'vitest run && npm run test:node-maintenance -- --config plain.ts',
+      'vitest run || npm run test:node-maintenance'])
+      expect(resolveWith(command, files)).toMatchObject({ expectsReport: false, reason: 'compound-command' });
+  });
+
+  it('uses the maintained canonical launcher routing and its exact config', () => {
+    const wrapper = join(REPO_ROOT, 'scripts/workspace-test.mjs');
+    const files = { [wrapper]: 'workspaceTestInvocation(argv)', [`${WS}/vitest.config.ts`]: ENROLLED,
+      [`${WS}/vitest.integration.config.ts`]: PLAIN };
+    expect(resolveWith(`node ${wrapper} --passWithNoTests`, files))
+      .toMatchObject({ expectsReport: true, reason: 'enrolled-config', config: 'vitest.config.ts' });
+    expect(resolveWith(`node ${wrapper} --workspace-integration`, files))
+      .toMatchObject({ expectsReport: false, reason: 'unenrolled-config', config: 'vitest.integration.config.ts' });
+    expect(resolveWith(`node ${wrapper} lib/explicit.test.ts`, files))
+      .toMatchObject({ expectsReport: false, reason: 'not-vitest' });
+    expect(resolveWith('node /foreign/workspace-test.mjs', { ...files,
+      '/foreign/workspace-test.mjs': 'workspaceTestInvocation(argv)' }))
+      .toMatchObject({ expectsReport: false, reason: 'not-vitest' });
   });
 
   it('calibrates against the real tree: operator-core expects reports, the astro docs check does not', () => {

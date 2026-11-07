@@ -499,6 +499,7 @@ test('classifyProxyHandlerError — a non-abort error with a destroyed downstrea
 });
 
 test('WI-3150: the internal-retry 429 log names the THROTTLED account with ITS util headers, not the rotated-to account', async () => {
+  resetGovernorRegistry();
   // A 2-account pool where account A throws a rate-window 429 (util7d=0.95) and the gateway fails over to B.
   // The retry log line is built from A's response headers (shape429Suffix) but is emitted AFTER the rotate
   // branch has reassigned `active` to B — so it MUST name A (throttled429AccountId), or A's util headers get
@@ -528,7 +529,7 @@ test('WI-3150: the internal-retry 429 log names the THROTTLED account with ITS u
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
     },
-    { pool, log: (_level, msg) => logs.push(msg) },
+    { pool, governorFor: undefined, log: (_level, msg) => logs.push(msg) },
   );
   const res = await post({ model: 'claude-sonnet-5', max_tokens: 8, messages: [{ role: 'user', content: 'ping' }] });
   assert.equal(res.status, 200, `failover A→B ultimately succeeds; status=${res.status}\nLOGS:\n${logs.join('\n')}`);
@@ -758,6 +759,7 @@ test('backpressure — an upstream unified-429 pauses the governor; the next req
 });
 
 test('a BARE upstream 429 (no rate-limit headers) fails over to the next account — the stuck-loop fix', async () => {
+  resetGovernorRegistry();
   const acct = (id: string): ActiveAccount => ({ accountId: id, token: async () => 't', invalidateToken: () => {} });
   const pool = createFailoverPool([acct('A'), acct('B')]);
   let attempt = 0;
@@ -774,7 +776,7 @@ test('a BARE upstream 429 (no rate-limit headers) fails over to the next account
         res.end(JSON.stringify({ ok: true, content: 'recovered' }));
       }
     },
-    { pool },
+    { pool, governorFor: undefined },
   );
   const res = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
   assert.equal(res.status, 200, 'gateway fails over off the throttled account on a bare 429 and retries → 200');

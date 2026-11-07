@@ -34,7 +34,7 @@ import { existsSync } from 'node:fs';
 import { readFile, readdir, realpath, stat } from 'node:fs/promises';
 import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { readVerifierSourceReceiptSync, type VerifierSourceReceipt } from '@papercusp/test-config/verifier-source';
-import { defaultBlobBatchReader, locateCommittedBlobs, readCommittedFiles } from '../plans/committed-tree-reader';
+import { createCommittedTreeDiagnostics, defaultBlobBatchReader, locateCommittedBlobs, readCommittedFiles } from '../plans/committed-tree-reader';
 import type { BundleHoldProgress } from '../../../../../scripts/lib/restricted-hold-preflight.mjs';
 import {
   listDirtyFilesRecursive,
@@ -361,11 +361,21 @@ export async function restrictedHoldBundleRefusal(
       const repositories = new Set((source.submodules ?? []).map(row => row.path));
       await phase('git-origin', async () => {
         for (let start = 0; start < paths.length; start += 256) {
-          const committed = await readCommittedFiles(realRoot, source.sourceCommit, paths.slice(start, start + 256),
-            { exists: async repo => repositories.has(repo) });
-          for (const [path, file] of committed) {
-            if (!file || file.sha256 !== byPath.get(path)?.sha256)
-              throw new Error(`bundle input differs from committed source: ${path}`);
+          const diagnostics = deps.progress
+            ? createCommittedTreeDiagnostics({ toolName: 'restricted-hold-git-origin' })
+            : undefined;
+          try {
+            const committed = await readCommittedFiles(realRoot, source.sourceCommit, paths.slice(start, start + 256),
+              { exists: async repo => repositories.has(repo), diagnostics });
+            for (const [path, file] of committed) {
+              if (!file || file.sha256 !== byPath.get(path)?.sha256)
+                throw new Error(`bundle input differs from committed source: ${path}`);
+            }
+          } finally {
+            // The existing build journal must retain the read timing and route
+            // even when Git throws before returning any committed inputs.
+            if (diagnostics) deps.progress!({ step: 'restricted-hold-git-origin', event: 'progress',
+              gitDiagnostics: diagnostics });
           }
         }
       });

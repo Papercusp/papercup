@@ -135,6 +135,89 @@ it('requires an exact entry when the pid is unknown', async () => {
     durationMs: 250 })).rejects.toThrow('exact expected entry');
 });
 
+it('preserves a foreign inspector when the requested process does not own it', async () => {
+  await withTarget(async ({ pid, port }) => {
+    // Simulate the signal having reached a different process while discovery
+    // finds this fixture's inspector first. Never signal an unrelated real PID.
+    const signal = vi.spyOn(process, 'kill').mockImplementationOnce(() => true);
+    try {
+      await expect(captureCpuProfile({ pid: pid + 1_000_000, startPort: port,
+        durationMs: 100, deadlineMs: 7000 })).rejects.toThrow(/mismatch/);
+    } finally { signal.mockRestore(); }
+    const inspector = await cdpInspector.discoverInspector({ startPort: port, portCount: 1 });
+    expect(inspector).not.toBeNull();
+    const client = cdpInspector.createCdpClient(inspector!.wsUrl);
+    try {
+      await client.connect();
+      const result = await client.evaluate('process.pid', { returnByValue: true });
+      expect(result.result?.value).toBe(pid);
+    } finally { client.close(); }
+  });
+}, 15000);
+
+it('triggers only after the profiler acknowledges readiness', async () => {
+  const createClient = cdpInspector.createCdpClient;
+  const methods: string[] = [];
+  const spy = vi.spyOn(cdpInspector, 'createCdpClient').mockImplementationOnce((...args) => {
+    const client = createClient(...args);
+    const send = client.send;
+    client.send = async (method, ...params) => {
+      const result = await send(method, ...params);
+      methods.push(method);
+      return result;
+    };
+    return client;
+  });
+  let readySignal: AbortSignal | undefined;
+  try {
+    await withTarget(async ({ pid, port }) => {
+      const result = await captureCpuProfile({ pid, startPort: port, attachExisting: true,
+        expectedEntry: 'cpu-sample-target', durationMs: 100, deadlineMs: 7000,
+        onReady: async ({ target, signal, startedAtMs }) => {
+          expect(target.pid).toBe(pid);
+          expect(methods.at(-1)).toBe('Profiler.start');
+          expect(signal.aborted).toBe(false);
+          expect(startedAtMs).toBeLessThanOrEqual(Date.now());
+          readySignal = signal;
+          methods.push('trigger');
+        } });
+      expect(result.profile.samples.length).toBeGreaterThan(0);
+      expect(methods.indexOf('Profiler.start')).toBeLessThan(methods.indexOf('trigger'));
+      expect(methods.indexOf('trigger')).toBeLessThan(methods.indexOf('Profiler.stop'));
+      expect(readySignal?.aborted).toBe(true);
+    });
+  } finally { spy.mockRestore(); }
+}, 15000);
+
+it.each(['reject', 'timeout'])('stops the recording when its readiness callback fails: %s', async failure => {
+  const createClient = cdpInspector.createCdpClient;
+  const methods: string[] = [];
+  const spy = vi.spyOn(cdpInspector, 'createCdpClient').mockImplementationOnce((...args) => {
+    const client = createClient(...args);
+    const send = client.send;
+    client.send = async (method, ...params) => {
+      methods.push(method);
+      return send(method, ...params);
+    };
+    return client;
+  });
+  let readySignal: AbortSignal | undefined;
+  try {
+    await withTarget(async ({ pid, port }) => {
+      await expect(captureCpuProfile({ pid, startPort: port, attachExisting: true,
+        expectedEntry: 'cpu-sample-target', durationMs: 100, deadlineMs: 7000,
+        requestTimeoutMs: 500,
+        onReady: ({ signal }) => {
+          readySignal = signal;
+          if (failure === 'reject') throw new Error('trigger refused');
+          return new Promise(() => {});
+        } })).rejects.toThrow(failure === 'reject' ? 'trigger refused' : 'readiness callback timed out');
+      expect(methods.filter(method => method === 'Profiler.stop')).toHaveLength(1);
+      expect(readySignal?.aborted).toBe(true);
+    });
+  } finally { spy.mockRestore(); }
+}, 15000);
+
 async function withBusyTarget(run: (target: { pid: number; port: number; entry: string;
   output: () => string }) => Promise<void>, waitForStartup = false) {
   const out = mkdtempSync(join(tmpdir(), 'cpu-sample-busy-'));
