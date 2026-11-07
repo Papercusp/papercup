@@ -343,6 +343,7 @@ pub struct OperatorClient {
 /// assert the exact owning verbs/arguments without a fake HTTP server.
 #[derive(Debug, Clone, PartialEq)]
 enum InboxActionStep {
+    CanonicalTerminal(serde_json::Value),
     Tool {
         name: &'static str,
         args: serde_json::Value,
@@ -374,12 +375,28 @@ fn with_harness(mut args: serde_json::Value, harness: Option<&str>) -> serde_jso
     args
 }
 
+/// Match attentionItemToCardSpec: an escalation's Resolve expands into its
+/// named choices, or Answer when its question survives as a linked conversation.
+/// The generic source action is required; refs alone never grant an action.
+fn inbox_action_is_offered(target: &InboxActionTarget, action_id: &str) -> bool {
+    let escalation = target_ref_str(target, "kind") == "coord-escalation";
+    let options: Vec<_> = target.reference["options"].as_array().into_iter().flatten()
+        .filter_map(|row| row["id"].as_str()).filter(|id| !id.is_empty()).collect();
+    target.actions.iter().any(|action| {
+        if escalation && matches!(action.id.as_str(), "resolve" | "mark-done") {
+            if !options.is_empty() { return options.contains(&action_id); }
+            if !target_ref_str(target, "conversationId").trim().is_empty() { return action_id == "answer"; }
+        }
+        action.id == action_id
+    })
+}
+
 fn inbox_action_steps(
     target: &InboxActionTarget,
     action_id: &str,
     answer_text: Option<&str>,
 ) -> Result<Vec<InboxActionStep>> {
-    if !target.actions.iter().any(|action| action.id == action_id) {
+    if !inbox_action_is_offered(target, action_id) {
         anyhow::bail!(
             "attention action '{action_id}' was not offered by {}",
             target.id
@@ -424,7 +441,7 @@ fn inbox_action_steps(
                 },
             ])
         }
-        ("conversation", "answer") => {
+        ("conversation" | "coord-escalation", "answer") => {
             let body = answer.ok_or_else(|| anyhow!("conversation answer cannot be blank"))?;
             let conversation_id = target_ref_str(target, "conversationId");
             if conversation_id.is_empty() {
@@ -492,7 +509,14 @@ fn inbox_action_steps(
                 },
             ])
         }
-        _ => anyhow::bail!("unsupported PUI attention action {kind}/{action_id}"),
+        _ => {
+            anyhow::ensure!(!matches!(action_id, "answer" | "chat" | "discuss" | "open" | "view-log" | "message-owner"),
+                "attention action {action_id} opens a surface; it is not a terminal resolution");
+            Ok(vec![InboxActionStep::CanonicalTerminal(serde_json::json!({
+                "expected": {"id":target.id,"kind":target.kind,"ref":target.reference},
+                "actionId":action_id,"confirmed":true,
+            }))])
+        }
     }
 }
 
@@ -1898,6 +1922,11 @@ impl OperatorClient {
     ) -> Result<()> {
         for step in inbox_action_steps(target, action_id, answer_text)? {
             match step {
+                InboxActionStep::CanonicalTerminal(body) => {
+                    let result = self.post_json("/api/admin/inbox/execute", body).await?;
+                    anyhow::ensure!(result["ok"] == true && result["resolved"] == true && result["itemId"] == target.id,
+                        "canonical Inbox action was not resolved: {result}");
+                }
                 InboxActionStep::Tool { name, args } => {
                     let envelope = self.run_tool(name, args).await?;
                     let inner = run_tool_inner_json(&envelope)?;
@@ -4427,15 +4456,26 @@ mod tests {
         use super::*;
         use serde_json::{json, Value};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        for scenario in ["start", "stale-seed", "apply", "action-denied", "record-denied", "owner-only", "changed-detail", "unoffered", "auth-denied", "changed-environment"] {
+        for scenario in ["start", "stale-seed", "apply", "action-denied", "record-denied", "owner-only", "changed-detail", "unoffered", "auth-denied", "changed-environment", "canonical", "canonical-denied", "canonical-wrong-item", "canonical-unresolved", "named", "named-stale", "named-unoffered", "linked", "linked-denied"] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let base = format!("http://{}", listener.local_addr().unwrap());
             let identity = json!({"schemaVersion":1,"workspaceId":"isolated","store":{"id":"fixture","target":"test","source":"test"},
                 "build":{"version":"test","sha":null},"agentChat":{"scope":"workspace:isolated","route":"test"},"capabilities":{}});
             let mut environment = identity.clone();
             environment["endpoint"] = json!(base); environment["selectionSource"] = json!("test"); environment["transport"] = json!("http");
-            let item = json!({"id":"question +/=& λ","kind":"coord-message","title":"Literal question","ownerAgentId":"su-asker",
+            let mut item = json!({"id":"question +/=& λ","kind":"coord-message","title":"Literal question","ownerAgentId":"su-asker",
                 "ref":{"kind":"coord-message","msgId":"message +/=& λ"},"actions":[{"id":"ack","label":"Acknowledge"}]});
+            let canonical = scenario.starts_with("canonical");
+            if canonical { item["kind"] = json!("operator-report"); item["ref"] = json!({"kind":"operator-report","reportId":"report +/=& λ"}); }
+            let named = scenario.starts_with("named");
+            let linked = scenario.starts_with("linked");
+            let action_id = if named { "choice +/=& λ" } else if linked { "answer" } else { "ack" };
+            if named || linked {
+                item["kind"] = json!("coord-escalation");
+                item["ref"] = json!({"kind":"coord-escalation","msgId":"message +/=& λ","conversationId":"conversation +/=& λ",
+                    "options":if named {json!([{"id":action_id,"label":"Use the exact choice"}])} else {json!([])}});
+                item["actions"] = json!([{"id":"resolve","label":"Resolve"}]);
+            }
             let seed = json!({"itemId":item["id"],"kind":item["kind"],"title":item["title"],"ref":item["ref"],"ownerAgentId":item["ownerAgentId"]});
             let filter = json!({"query":"λ","shownCount":1,"tier":null,"kinds":[]});
             let launch = json!({"model":"test-model","effort":"high","account":"auto"});
@@ -4445,7 +4485,8 @@ mod tests {
             let start = matches!(scenario, "start" | "stale-seed");
             let request = if start { json!({"environment":environment,"operation":"start","confirmed":true,"items":[seed],"filter":filter}) }
                 else { json!({"environment":environment,"operation":"apply","confirmed":true,"runId":"run +/=& λ",
-                    "expected":{"id":item["id"],"kind":item["kind"],"ref":item["ref"]},"actionId":"ack"}) };
+                    "expected":{"id":item["id"],"kind":item["kind"],"ref":item["ref"]},"actionId":action_id,
+                    "answer":if linked {json!(" literal answer λ ")} else {Value::Null}}) };
             if scenario != "auth-denied" {
                 steps.push(("GET", "/api/tui/identity", None, 200, identity.clone()));
                 if start {
@@ -4467,18 +4508,28 @@ mod tests {
                         steps.push(("GET", "/api/tui/identity", None, 200, identity.clone()));
                         let mut live = item.clone();
                         if scenario == "changed-detail" { live["ref"]["msgId"] = json!("different"); }
-                        if scenario == "unoffered" { live["actions"] = json!([]); }
+                        if scenario == "named-stale" { live["ref"]["options"][0]["id"] = json!("different"); }
+                        if matches!(scenario, "unoffered" | "named-unoffered") { live["actions"] = json!([]); }
                         steps.push(("GET", "/api/zero-harness/rest-query", Some(json!({"name":"plans.attentionItem","args":{"id":item["id"]}})), 200, json!({"rows":[live]})));
-                        if scenario != "changed-detail" {
+                        if !matches!(scenario, "changed-detail" | "named-stale") {
                             let mut before_write = identity.clone();
                             if scenario == "changed-environment" { before_write["store"]["id"] = json!("replaced"); }
                             steps.push(("GET", "/api/tui/identity", None, 200, before_write));
-                            if !matches!(scenario, "unoffered" | "changed-environment") {
-                                let response = json!({"ok":scenario != "action-denied","error":if scenario == "action-denied" {json!("canonical refusal")} else {Value::Null}});
-                                steps.push(("POST", "/api/agent-mcp/run-tool", Some(run_tool_body("coord:ack", json!({"msg_id":"message +/=& λ"}), false)), 200,
-                                    json!({"ok":true,"result":{"content":[{"type":"text","text":response.to_string()}]}})));
-                                if scenario != "action-denied" {
-                                    steps.push(("POST", "/api/admin/attention-bulk-resolve", Some(json!({"op":"accept","runId":"run +/=& λ","itemId":item["id"],"actionId":"ack"})),
+                            if !matches!(scenario, "unoffered" | "named-unoffered" | "changed-environment") {
+                                let denied = matches!(scenario, "action-denied" | "linked-denied");
+                                let response = json!({"ok":!denied,"error":if denied {json!("canonical refusal")} else {Value::Null}});
+                                if canonical || named {
+                                    steps.push(("POST", "/api/admin/inbox/execute", Some(json!({"expected":{"id":item["id"],"kind":item["kind"],"ref":item["ref"]},
+                                        "actionId":action_id,"confirmed":true})), if scenario == "canonical-denied" {403} else {200},
+                                        json!({"ok":true,"resolved":scenario != "canonical-unresolved","itemId":if scenario == "canonical-wrong-item" {json!("foreign")} else {item["id"].clone()}})));
+                                } else {
+                                    let (tool, args) = if linked { ("conversations:resolve", json!({"conversation_id":"conversation +/=& λ","accepted_answer":"literal answer λ"})) }
+                                        else { ("coord:ack", json!({"msg_id":"message +/=& λ"})) };
+                                    steps.push(("POST", "/api/agent-mcp/run-tool", Some(run_tool_body(tool, args, false)), 200,
+                                        json!({"ok":true,"result":{"content":[{"type":"text","text":response.to_string()}]}})));
+                                }
+                                if !matches!(scenario, "action-denied" | "linked-denied" | "canonical-denied" | "canonical-wrong-item" | "canonical-unresolved") {
+                                    steps.push(("POST", "/api/admin/attention-bulk-resolve", Some(json!({"op":"accept","runId":"run +/=& λ","itemId":item["id"],"actionId":action_id})),
                                         200, json!({"ok":scenario != "record-denied"})));
                                 }
                             }
@@ -4515,7 +4566,7 @@ mod tests {
             });
             let client = OperatorClient { transport:Transport::Http(HttpClient::new(base.clone(),Some("native-inbox-fixture".into()))), endpoint:base, selection_source:"test".into() };
             let result = client.native_inbox_action(&serde_json::from_value(request).unwrap()).await;
-            if matches!(scenario, "start" | "apply" | "record-denied") {
+            if matches!(scenario, "start" | "apply" | "record-denied" | "canonical" | "named" | "linked") {
                 let result = result.unwrap(); assert_eq!(result["rows"][0]["ok"], true);
                 if scenario == "record-denied" { assert_eq!(result["rows"][0]["recorded"], false); assert!(result["rows"][0]["warning"].as_str().unwrap().contains("do not repeat")); }
             } else { assert!(result.is_err(), "accepted {scenario}"); }
@@ -4864,6 +4915,29 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn native_inbox_named_choices_and_linked_answer_require_offered_source_actions() {
+        let choice = "pick +/=& ' $() λ";
+        let mut target = inbox_target("escalation", "coord-escalation", "resolve", serde_json::json!({
+            "kind":"coord-escalation", "msgId":"message +/=& λ", "conversationId":"conversation +/=& λ",
+            "options":[{"id":choice,"label":"Use the exact choice"}],
+        }));
+        assert_eq!(inbox_action_steps(&target, choice, None).unwrap(), vec![InboxActionStep::CanonicalTerminal(
+            serde_json::json!({"expected":{"id":target.id,"kind":target.kind,"ref":target.reference},"actionId":choice,"confirmed":true}))]);
+        for rejected in ["resolve", "answer", "unoffered"] { assert!(inbox_action_steps(&target, rejected, Some("text")).is_err()); }
+        target.reference["options"] = serde_json::json!([]);
+        assert_eq!(inbox_action_steps(&target, "answer", Some(" literal answer λ ")).unwrap(), vec![InboxActionStep::Tool {
+            name:"conversations:resolve", args:serde_json::json!({"conversation_id":"conversation +/=& λ","accepted_answer":"literal answer λ"}),
+        }]);
+        for rejected in ["resolve", choice] { assert!(inbox_action_steps(&target, rejected, None).is_err()); }
+        assert!(inbox_action_steps(&target, "answer", Some("  ")).is_err());
+        target.actions.clear();
+        assert!(inbox_action_steps(&target, "answer", Some("text")).is_err());
+        target.actions = vec![inbox_action("resolve")]; target.reference["conversationId"] = serde_json::json!("");
+        assert!(inbox_action_steps(&target, "resolve", None).is_ok());
+        assert!(inbox_action_steps(&target, "answer", Some("text")).is_err());
     }
 
     #[test]

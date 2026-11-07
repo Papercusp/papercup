@@ -79,7 +79,7 @@ const RUBRIC = 'papercusp-app-performance';
 const WATCH_PATTERN = 'rubric:criterion-regressed:papercusp-app-performance';
 
 /** A probe criterion whose single child passes when the observed scalar is >= 1. */
-function probeCriterion(key: string): CheckedCriterion {
+function probeCriterion(key: string) {
   return {
     key,
     check: {
@@ -92,7 +92,7 @@ function probeCriterion(key: string): CheckedCriterion {
         expect: { path: '$.n', op: 'gte', value: 1 },
       }],
     },
-  };
+  } satisfies CheckedCriterion;
 }
 
 function row(criterionKey: string, value: number | null, testRunId: number, status: 'pass' | 'fail' | 'error' = 'pass'): LatestRubricCheckResult {
@@ -110,7 +110,7 @@ function ledger(entries: LatestRubricCheckResult[]): Map<string, LatestRubricChe
 
 /** Deps with a before/after ledger pair; the runner writes one row so the record path runs. */
 function depsFor(
-  criteria: ReturnType<typeof probeCriterion>[],
+  criteria: CheckedCriterion[],
   before: LatestRubricCheckResult[],
   after: LatestRubricCheckResult[],
 ) {
@@ -351,7 +351,7 @@ describe('grading schedule freshness policy', () => {
     kind: 'rrule' as const, rrule: 'FREQ=MINUTELY',
     action: { system: RUBRIC_RESCORE_ACTION,
       input: { rubricRef: RUBRIC, maxRuntimeMs: 40, maxSchedulingDelayMs: 10 } },
-  };
+  } satisfies NonNullable<PlanRow['schedule']>;
 
   it('grading system rejects cadence incompatible with evidence freshness', () => {
     expect(() => validateRescoreCadence(schedule, [live])).not.toThrow();
@@ -412,22 +412,23 @@ describe('grading schedule freshness policy', () => {
     const clock = '2026-10-13T00:00:00.000Z';
     const measured = row('artifact', 1, 5);
     const criterion = probeCriterion('artifact');
-    measured.check.subject = { kind: 'artifact', ref: 'build:A/input:A' };
+    const subject = { ref: 'build:A/input:A' };
+    measured.check.subject = subject;
     measured.check.provenance = retainMeasurementProvenance({ procedure: criterion.check,
       result: { value: 1 }, startedAt: clock, finishedAt: clock });
     measured.provenanceStatus = 'retained';
     const latest = ledger([measured]);
     const filled = fillRatingsFromLedger({ criteria: [criterion], callerRatings: undefined, latest, nowMs: Date.parse(clock) });
     if (!filled.ok) throw new Error('artifact fixture must fill');
-    const observation = { rubricRef: RUBRIC, subject: measured.check.subject, ratings: filled.ratings };
+    const observation = { rubricRef: RUBRIC, subject, ratings: filled.ratings };
     const before = JSON.stringify({ measured, observation });
     const rubric = { rubricId: RUBRIC, criteria: [criterion] } as Rubric;
     expect(projectScorecardLedgerDiagnostics({ observation, rubric, comparisonTime: clock, latest })
       .supportByKey.artifact?.support).toBe('current');
     const changedArtifact = projectScorecardLedgerDiagnostics({ observation: { ...observation,
-      subject: { kind: 'artifact', ref: 'build:B/input:A' } }, rubric, comparisonTime: clock, latest });
+      subject: { ref: 'build:B/input:A' } }, rubric, comparisonTime: clock, latest });
     const changedInput = projectScorecardLedgerDiagnostics({ observation: { ...observation,
-      subject: { kind: 'artifact', ref: 'build:A/input:B' } }, rubric, comparisonTime: clock, latest });
+      subject: { ref: 'build:A/input:B' } }, rubric, comparisonTime: clock, latest });
     expect(changedArtifact.findingsByKey.artifact?.[0]?.reason).toBe('identity-mismatch');
     expect(changedInput.findingsByKey.artifact?.[0]?.reason).toBe('identity-mismatch');
     expect(changedArtifact.supportByKey.artifact).toBeUndefined();
@@ -437,7 +438,13 @@ describe('grading schedule freshness policy', () => {
     const changed = { ...live, check: { ...live.check, maxAgeMs: 60_049 } };
     vi.mocked(getRubric).mockResolvedValue({ rubricId: RUBRIC, criteria: [changed] } as never);
     mockResolvedTyped(vi.mocked(getPlanRow), { workspaceId: 'ws-test', harnessSlug: 'papercusp',
-      planSlug: 'private-policy', schedule, scheduledAt: null, content: '' } as PlanRow);
+      planSlug: 'private-policy', schedule, scheduledAt: null, content: '', contentHash: 'private',
+      version: 1, title: 'Private policy', status: 'active', created: null, updated: null, owner: null,
+      initiative: null, template: null, templateData: null, inputSchema: null, outputSchema: null,
+      supersedes: [], supersededBy: null, opStatus: null, opStartedAt: null, opUpdatedAt: null,
+      currentWave: null, opPriority: null, archived: false, isLegacy: false, updatedAt: clock,
+      items: [], decisions: [], nowState: null, nowNext: null, nowNote: null, promotePolicy: null,
+      forcedPast: null, scheduleActive: false, expiresAt: null, tzid: null, templateSlug: null, runSeq: null });
     const armed = body(await armSchedTool.handler({ harness: 'papercusp', slug: 'private-policy' } as never, {} as never) as Out);
     expect(armed.results[0].ok).toBe(false);
     expect(fakeSql).not.toHaveBeenCalled();
