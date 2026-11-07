@@ -1864,8 +1864,10 @@ describe('retention on a real fixture tree', () => {
       expect(receipt.entries.filter(entry => entry.status === 'removed')).toHaveLength(1);
     } finally { now.mockRestore(); }
   });
-  it('charges durable intent waits to the effect budget before launching another safety check', async () => {
-    const { root, options } = await setup(); const path = join(root, 'old'); await writeFile(path, 'expired');
+  it('finishes one admitted candidate after a slow durable intent without admitting another', async () => {
+    const { root, options } = await setup();
+    const paths = [join(root, 'old-a'), join(root, 'old-b')];
+    for (const path of paths) await writeFile(path, 'expired');
     let clock = Date.now();
     const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
     const scanHolders = vi.fn(options.scanHolders);
@@ -1874,11 +1876,58 @@ describe('retention on a real fixture tree', () => {
         record: async (phase) => { if (phase === 'remove-intent') clock += 100; },
       });
       expect(receipt.complete).toBe(false); expect(receipt.policyExhausted).toBeNull();
-      expect(receipt.effects?.[0]).toMatchObject({ processed: 0, remaining: 1, nextPath: path, stopped: true });
-      expect(scanHolders).toHaveBeenCalledOnce();
-      await expect(stat(path)).resolves.toBeDefined();
+      expect(receipt.effects?.[0]).toMatchObject({ processed: 1, remaining: 1, nextPath: paths[1], stopped: true });
+      expect(scanHolders).toHaveBeenCalledTimes(2);
+      await expect(stat(paths[0]!)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await readFile(paths[1]!, 'utf8')).toBe('expired');
     } finally { now.mockRestore(); }
   });
+  it('makes one verified effect after a slow first holder preflight without admitting the next candidate', async () => {
+    const { root, options } = await setup();
+    const paths = ['old-a', 'old-b', 'pinned'].map(name => join(root, name));
+    for (const path of paths) { await mkdir(path); await writeFile(join(path, 'data'), 'expired'); }
+    let clock = Date.now();
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const checks: string[][] = [];
+    try {
+      const receipt = await runDiskReclaimOnce({ ...options, runBudgetMs: 1_000, effectBudgetMs: 100,
+        protectedPaths: [paths[2]!],
+        scanHolders: async wanted => {
+          checks.push([...wanted]); clock += checks.length === 1 ? 150 : 20;
+          return { complete: true, byPath: new Map<string, string[]>() };
+        },
+      });
+      expect(receipt.complete).toBe(false);
+      expect(receipt.effects?.[0]).toMatchObject({ processed: 1, remaining: 1, nextPath: paths[1], stopped: true,
+        timings: { initialHolderScanMs: 150, freshHolderScanMs: 20 } });
+      expect(checks).toEqual([[paths[0]!], [paths[0]!]]);
+      expect(receipt.entries.filter(entry => entry.status === 'removed').map(entry => entry.path)).toEqual([paths[0]]);
+      await expect(stat(paths[0]!)).rejects.toMatchObject({ code: 'ENOENT' });
+      for (const path of paths.slice(1)) expect(await readFile(join(path, 'data'), 'utf8')).toBe('expired');
+    } finally { now.mockRestore(); }
+  });
+  it.each(['held', 'incomplete', 'initial-deadline', 'fresh-deadline'] as const)(
+    'preserves fresh holder proof and the absolute pass deadline after a slow preflight (%s)', async failure => {
+      const { root, options } = await setup(); const path = join(root, 'old');
+      await mkdir(path); await writeFile(join(path, 'data'), 'expired');
+      let clock = Date.now(), calls = 0;
+      const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+      const removeEntry = vi.fn(async (entry: RetentionEntry) => { await rm(entry.path, { recursive: true }); });
+      try {
+        const receipt = await runDiskReclaimOnce({ ...options,
+          runBudgetMs: failure === 'initial-deadline' ? 100 : 1_000, effectBudgetMs: 100, removeEntry,
+          scanHolders: async () => {
+            calls++; clock += calls === 1 ? 150 : failure === 'fresh-deadline' ? 1_000 : 20;
+            return { complete: calls === 1 || failure !== 'incomplete',
+              byPath: calls > 1 && failure === 'held' ? new Map([[path, ['123']]]) : new Map<string, string[]>() };
+          },
+        });
+        expect(removeEntry).not.toHaveBeenCalled();
+        expect(calls).toBe(failure === 'initial-deadline' ? 1 : 2);
+        expect(await readFile(join(path, 'data'), 'utf8')).toBe('expired');
+        if (failure !== 'held') expect(receipt.complete).toBe(false);
+      } finally { now.mockRestore(); }
+    });
   it('lets an admitted native removal finish within the pass deadline before stopping root admissions', async () => {
     const { root, options } = await setup();
     const paths = [join(root, 'old-a'), join(root, 'old-b')];

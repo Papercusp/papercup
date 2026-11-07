@@ -1415,6 +1415,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
           finally { timings[phase] += Math.max(0, Date.now() - began); }
         };
         let lastProgressAt = effectStarted;
+        let firstCandidateAdmitted = false;
         const updateEffectProgress = () => {
           effect.remaining = selected.length - effect.processed;
           effect.nextPath = selected[effect.processed]?.path ?? null;
@@ -1427,7 +1428,12 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
           effect.elapsedMs = Math.max(0, lastProgressAt - effectStarted);
         };
         const stopEffects = () => {
-          if (Date.now() < effectDeadline) return false;
+          const now = Date.now();
+          // The root allowance governs admission. Once its first candidate is
+          // admitted, finish that one safety-checked unit within the absolute
+          // pass deadline. Otherwise a slow complete holder preflight can
+          // repeatedly spend every batch without ever reaching an effect.
+          if (now < effectDeadline || (firstCandidateAdmitted && effect.processed === 0 && now < runDeadline)) return false;
           effect.stopped = true;
           receipt.errors.push(effectBudgetError(root.path));
           return true;
@@ -1435,6 +1441,8 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         await recordProgress();
         if (stopEffects()) { await recordProgress(); continue; }
         yield* yieldEffects();
+        if (stopEffects()) { await recordProgress(); continue; }
+        firstCandidateAdmitted = true;
         // This is only an early skip for the first candidate. Every candidate
         // still receives a fresh holder check immediately before its effect.
         // A bulk proc scan of hundreds of thousands of paths forced the slow
