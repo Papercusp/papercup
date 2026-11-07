@@ -140,6 +140,8 @@ async function getRuntimeVersion(): Promise<string> {
 
 export interface LoadedPlugin {
   plugin: Plugin;
+  /** Source returned by Node during this synchronous import, never a disk rescan. */
+  importCustody?: PluginImportCustody;
   path: string;             // absolute dir of the plugin
   source: 'project' | 'harness' | 'global';
   /** Tool declarations parsed from the plugin's papercusp.json manifest. */
@@ -287,14 +289,71 @@ export async function locatePluginEntry(dir: string): Promise<string | null> {
 // CJS (or ship .cjs alongside .mjs). For the v1 plugin loader, plugins are
 // expected to ship CJS-compatible artifacts.
 import { createRequire } from 'node:module';
+import * as nodeModule from 'node:module';
+import { createHash } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
+
+export interface PluginImportCustody {
+  readonly scope: 'synchronous-entry-import';
+  /** Deferred, cached and native dependency closure is not established here. */
+  readonly closure: 'unknown';
+  readonly entryUrl: string;
+  readonly entryState: 'source-observed' | 'cached' | 'unobserved';
+  readonly sources: readonly Readonly<{
+    url: string; format: string; sourceEncoding: 'utf8' | 'bytes'; sourceBytes: number; sourceSha256: string;
+  }>[];
+  readonly gaps: readonly string[];
+}
+
+const pluginImportCustody = new WeakMap<object, PluginImportCustody>();
 
 async function importPluginEntry(entryPath: string): Promise<Plugin | { error: string } | null> {
   try {
     const req = createRequire(entryPath);
-    const mod = req(entryPath);
+    const entryUrl = pathToFileURL(req.resolve(entryPath)).href;
+    const cached = !!req.cache[req.resolve(entryPath)];
+    const sources: PluginImportCustody['sources'][number][] = [];
+    const gaps = new Set<string>(['deferred-cached-and-native-dependency-closure-unmeasured']);
+    let bytes = 0;
+    let hooks: ReturnType<typeof nodeModule.registerHooks> | undefined;
+    if (typeof nodeModule.registerHooks === 'function') {
+      try {
+        hooks = nodeModule.registerHooks({ load(url, context, nextLoad) {
+          const result = nextLoad(url, context);
+          // Hash only the source the next loader returned. Never read the path:
+          // it may already differ from cached or transformed executable source.
+          try {
+            if (sources.length >= 256 || url.length > 8192) gaps.add('module-limit');
+            else if (result.source == null) gaps.add('source-unavailable');
+            else {
+              const source = result.source;
+              const size = typeof source === 'string' ? Buffer.byteLength(source) : source.byteLength;
+              if (size > 32 * 1024 * 1024 - bytes) gaps.add('byte-limit');
+              else {
+                const input = typeof source === 'string' ? source : ArrayBuffer.isView(source)
+                  ? Buffer.from(source.buffer, source.byteOffset, source.byteLength) : Buffer.from(source);
+                bytes += size;
+                sources.push(Object.freeze({ url, format: result.format ?? 'unknown',
+                  sourceEncoding: typeof source === 'string' ? 'utf8' : 'bytes', sourceBytes: size,
+                  sourceSha256: createHash('sha256').update(input).digest('hex') }));
+              }
+            }
+          } catch { gaps.add('source-observation-failed'); }
+          return result;
+        } });
+      } catch { gaps.add('hook-unavailable'); }
+    } else gaps.add('hook-unavailable');
+    let mod: any;
+    try { mod = req(entryPath); }
+    finally { hooks?.deregister(); }
     const candidate = mod?.default ?? mod;
     if (!candidate || typeof candidate !== 'object') return null;
     if (typeof (candidate as any).name !== 'string') return null;
+    const entryState = cached ? 'cached' : sources.some(source => source.url === entryUrl)
+      ? 'source-observed' : 'unobserved';
+    if (entryState !== 'source-observed') gaps.add(entryState === 'cached' ? 'cached-entry' : 'entry-source-unobserved');
+    pluginImportCustody.set(candidate, Object.freeze({ scope: 'synchronous-entry-import', closure: 'unknown',
+      entryUrl, entryState, sources: Object.freeze(sources), gaps: Object.freeze([...gaps]) }));
     return candidate as Plugin;
   } catch (e: any) {
     return { error: e?.message ?? String(e) };
@@ -648,6 +707,7 @@ function toLoadedPlugin(r: CoreLoadedPlugin<Plugin, ManifestShape>): LoadedPlugi
   }
   return {
     plugin: reconcileManifestDeclarations(r.plugin, manifest),
+    importCustody: pluginImportCustody.get(r.plugin),
     path: r.path,
     source: r.source as LoadedPlugin['source'],
     toolDefinitions: manifest.tools ?? [],

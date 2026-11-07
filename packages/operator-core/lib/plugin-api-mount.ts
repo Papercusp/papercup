@@ -180,6 +180,14 @@ export async function dispatchPluginApiRoute(req: Request): Promise<Response | n
   // standalone tests.
   const rest = m[2] ?? '/';
   const innerReq = new Request(url.origin + rest + url.search, req);
+  // Discovery can have cached an inline handler before enforcement changed.
+  // Recheck immediately before dispatch; unavailable policy must also refuse.
+  let allowUnconfined = false;
+  try { allowUnconfined = (await getFlag(FLAGS.PLUGIN_INVOCATION_POLICY, 'system')) === false; } catch { /* fail closed */ }
+  if (!allowUnconfined) return Response.json({
+    error: 'plugin_invocation_authority_required',
+    detail: 'Plugin HTTP handlers require a confined execution route.',
+  }, { status: 403 });
   return handle.fetch(innerReq);
 }
 

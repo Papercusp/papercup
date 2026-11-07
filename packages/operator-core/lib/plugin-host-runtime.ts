@@ -1493,6 +1493,8 @@ export function inspectPluginHostSecurityPopulation() {
     const path = Object.getOwnPropertyDescriptor(record, 'path')?.value;
     const source = Object.getOwnPropertyDescriptor(record, 'source')?.value;
     const runtime = Object.getOwnPropertyDescriptor(record, 'runtime')?.value;
+    const importCustody = Object.getOwnPropertyDescriptor(record, 'importCustody')?.value;
+    if (!importCustody) unresolved.push(`plugin-runtime-import-custody-unavailable:${index}`);
     const runtimeKind = runtime && typeof runtime === 'object'
       ? Object.getOwnPropertyDescriptor(runtime, 'kind')?.value : undefined;
     const loadedPath = typeof path === 'string' && path ? path : null;
@@ -1504,6 +1506,10 @@ export function inspectPluginHostSecurityPopulation() {
       sourceFile: null, fidelity: 'observed' as const, attrs: {
         loaderId: 'plugin-runtime', loaderRoot: __cache.rootAtCache, phase, path: loadedPath,
         source: typeof source === 'string' ? source : null,
+        // Loader-owned frozen source observations, detached for census readers.
+        // This does not qualify the installation, dependency closure or effects.
+        importCustody: importCustody ? structuredClone(importCustody) : null,
+        importCustodyCoverage: importCustody ? 'synchronous-entry-import-only' : 'unknown',
         runtimeKind: typeof runtimeKind === 'string' ? runtimeKind : null,
         loadedArtifactCoverage: 'unknown', initializationEffectCoverage: 'unknown',
       } };

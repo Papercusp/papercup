@@ -8,6 +8,9 @@ import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { pathToFileURL } from 'node:url';
+import { createHash } from 'node:crypto';
+import { registerHooks } from 'node:module';
 import { loadPluginFromDir, loadPlugins } from './index.ts';
 
 const ROOT = join(tmpdir(), `papercusp-loader-test-${process.pid}`);
@@ -56,6 +59,82 @@ after(async () => {
 });
 
 describe('loadPluginFromDir', () => {
+  it('binds cold CJS entry and dependency source to actual import effects', async () => {
+    const dir = await makePlugin({ name: 'import-custody-cold', noEntry: true });
+    const marker = join(dir, 'executed');
+    const dep = "module.exports = 'dependency-effect';\n";
+    const entry = `require('node:fs').writeFileSync(${JSON.stringify(marker)}, require('./dep.cjs'));
+module.exports = { name: 'import-custody-cold', version: '0.1.0', papercusp: '^0.1.0', capabilities: [] };\n`;
+    await fs.writeFile(join(dir, 'dep.cjs'), dep);
+    await fs.writeFile(join(dir, 'index.cjs'), entry);
+    const result = await loadPluginFromDir(dir, 'project');
+    assert.ok(result && 'plugin' in result);
+    assert.equal(await fs.readFile(marker, 'utf8'), 'dependency-effect');
+    const custody = result.importCustody;
+    assert.ok(custody);
+    assert.equal(custody.entryState, 'source-observed');
+    assert.equal(custody.closure, 'unknown');
+    for (const [name, source] of [['index.cjs', entry], ['dep.cjs', dep]]) {
+      const observed: (typeof custody.sources)[number] | undefined = custody.sources.find(row => row.url === pathToFileURL(join(dir, name!)).href);
+      assert.ok(observed);
+      assert.equal(observed.sourceSha256, createHash('sha256').update(source!).digest('hex'));
+      assert.equal(observed.sourceBytes, Buffer.byteLength(source!));
+      assert.ok(Object.isFrozen(observed));
+    }
+    assert.ok(Object.isFrozen(custody) && Object.isFrozen(custody.sources) && Object.isFrozen(custody.gaps));
+    const before = JSON.stringify(custody);
+    await fs.writeFile(marker, 'cached-control');
+    await fs.writeFile(join(dir, 'index.cjs'), entry.replace("require('./dep.cjs')", "'changed-after-load'"));
+    const cached = await loadPluginFromDir(dir, 'project');
+    assert.ok(cached && 'plugin' in cached);
+    assert.equal(cached.importCustody?.entryState, 'cached');
+    assert.ok(cached.importCustody?.gaps.includes('cached-entry'));
+    assert.equal(await fs.readFile(marker, 'utf8'), 'cached-control');
+    assert.equal(JSON.stringify(custody), before);
+  });
+
+  it('measures transformed loader source rather than the bytes still on disk', async () => {
+    const dir = await makePlugin({ name: 'import-custody-transform', noEntry: true });
+    const marker = join(dir, 'transformed-effect');
+    const entryPath = join(dir, 'index.cjs');
+    const disk = `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'disk');
+module.exports = { name: 'import-custody-transform', version: '0.1.0', papercusp: '^0.1.0', capabilities: [] };`;
+    const transformed = disk.replace("'disk'", "'transformed'");
+    await fs.writeFile(entryPath, disk);
+    const hooks = registerHooks({ load(url, context, nextLoad) {
+      const result = nextLoad(url, context);
+      return url === pathToFileURL(entryPath).href ? { ...result, source: transformed } : result;
+    } });
+    try {
+      const result = await loadPluginFromDir(dir, 'project');
+      assert.ok(result && 'plugin' in result);
+      assert.equal(await fs.readFile(marker, 'utf8'), 'transformed');
+      assert.equal(await fs.readFile(entryPath, 'utf8'), disk);
+      const entry = result.importCustody?.sources.find(row => row.url === pathToFileURL(entryPath).href);
+      assert.equal(entry?.sourceSha256, createHash('sha256').update(transformed).digest('hex'));
+      assert.notEqual(entry?.sourceSha256, createHash('sha256').update(disk).digest('hex'));
+    } finally { hooks.deregister(); }
+  });
+
+  it('keeps deferred imports outside synchronous custody', async () => {
+    const dir = await makePlugin({ name: 'import-custody-deferred', noEntry: true });
+    const marker = join(dir, 'deferred-executed');
+    await fs.writeFile(join(dir, 'later.cjs'), `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'later');`);
+    await fs.writeFile(join(dir, 'index.cjs'), `module.exports = { name: 'import-custody-deferred',
+version: '0.1.0', papercusp: '^0.1.0', capabilities: [], hooks: { afterDone: () => require('./later.cjs') } };`);
+    const result = await loadPluginFromDir(dir, 'project');
+    assert.ok(result && 'plugin' in result);
+    const custody = result.importCustody;
+    assert.ok(custody);
+    const before = JSON.stringify(custody);
+    await assert.rejects(fs.access(marker));
+    await (result.plugin.hooks!.afterDone as () => unknown)();
+    assert.equal(await fs.readFile(marker, 'utf8'), 'later');
+    assert.equal(JSON.stringify(custody), before);
+    assert.ok(!custody.sources.some(row => row.url.endsWith('/later.cjs')));
+    assert.equal(custody.closure, 'unknown');
+  });
+
   it('discovers and registers manifest tools without executing the entry or transitive dependencies', async () => {
     const dir = join(ROOT, 'metadata-boundary');
     await fs.mkdir(dir, { recursive: true });
@@ -70,6 +149,7 @@ describe('loadPluginFromDir', () => {
     const r = await loadPluginFromDir(dir, 'project', { metadataOnly: true });
     assert.ok('plugin' in r, JSON.stringify(r));
     assert.equal(r.plugin.name, 'metadata-boundary');
+    assert.equal(r.importCustody, undefined);
     assert.equal(r.plugin.getDynamicTools, undefined);
     assert.equal(r.toolDefinitions?.[0]?.name, 'read');
     await assert.rejects(fs.stat(marker), { code: 'ENOENT' });

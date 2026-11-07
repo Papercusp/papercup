@@ -41,6 +41,43 @@ describe('dispatchPluginApiRoute', () => {
     expect(existsSync(marker)).toBe(false);
   });
 
+  it.each(['enabled', 'unavailable'])('refuses cached HTTP effects when confinement becomes %s', async state => {
+    const effectDir = mkdtempSync(join(tmpdir(), 'papercusp-http-cutover-'));
+    const marker = join(effectDir, 'handler-ran');
+    const tmp = await makeTempPlugin(`cached-api-${state}`, {
+      fetch() {
+        writeFileSync(marker, 'handler effect');
+        return new Response('ok');
+      },
+    });
+    try {
+      const mounted = await mountPluginApiRoutes({ globalPluginsDir: tmp.dir, harnessSlugs: [] });
+      expect(mounted).toMatchObject({ mounted: 1, errors: [] });
+      const request = () => new Request(`http://x/api/plugins/cached-api-${state}/write`);
+      const allowed = await dispatchPluginApiRoute(request());
+      expect(allowed?.status).toBe(200);
+      expect(existsSync(marker)).toBe(true);
+      rmSync(marker);
+
+      if (state === 'enabled') cutover.read.mockResolvedValue(true);
+      else cutover.read.mockRejectedValue(new Error('flag storage unavailable'));
+
+      const refused = await dispatchPluginApiRoute(request());
+      // Check the real effect first: a nominal error response is insufficient.
+      expect(existsSync(marker)).toBe(false);
+      expect(refused?.status).toBe(403);
+      expect(await refused!.json()).toMatchObject({ error: 'plugin_invocation_authority_required' });
+      expect(await dispatchPluginApiRoute(new Request('http://x/api/plugins/unregistered/write'))).toBeNull();
+
+      cutover.read.mockResolvedValue(false);
+      expect((await dispatchPluginApiRoute(request()))?.status).toBe(200);
+      expect(existsSync(marker)).toBe(true);
+    } finally {
+      rmSync(effectDir, { recursive: true, force: true });
+      rmSync(tmp.dir, { recursive: true, force: true });
+    }
+  });
+
   it('captures actual mounted prefixes and declared subroutes without dropping opaque handlers', async () => {
     expect(enumerateMountedPluginHttpSurfaces()).toMatchObject({ initialized: false,
       unresolved: ['plugin-http-registry-not-initialized'] });
@@ -158,7 +195,7 @@ describe('dispatchPluginApiRoute', () => {
  * Test helpers
  * ───────────────────────────────────────────────────────────────────── */
 
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 

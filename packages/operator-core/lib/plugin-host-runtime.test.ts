@@ -81,6 +81,27 @@ beforeEach(() => {
 });
 
 describe('plugin host security discovery', () => {
+  it('projects detached import custody while retaining unknown artifact and effect coverage', () => {
+    const record = makePlugin();
+    record.importCustody = Object.freeze({ scope: 'synchronous-entry-import', closure: 'unknown',
+      entryUrl: 'file:///plugin/index.cjs', entryState: 'source-observed',
+      sources: Object.freeze([Object.freeze({ url: 'file:///plugin/index.cjs', format: 'commonjs',
+        sourceEncoding: 'utf8', sourceBytes: 17, sourceSha256: 'a'.repeat(64) })]),
+      gaps: Object.freeze(['deferred-cached-and-native-dependency-closure-unmeasured']) });
+    _injectPluginHostForTests([record]);
+    const row = inspectPluginHostSecurityPopulation().surfaces.find(row => row.kind === 'loaded-plugin-module')!;
+    expect(row.attrs).toMatchObject({ importCustody: record.importCustody,
+      importCustodyCoverage: 'synchronous-entry-import-only', loadedArtifactCoverage: 'unknown',
+      initializationEffectCoverage: 'unknown' });
+    const copy = row.attrs!.importCustody as { sources: Array<{ sourceSha256: string }> };
+    copy.sources[0]!.sourceSha256 = 'consumer mutation';
+    expect(record.importCustody.sources[0]!.sourceSha256).toBe('a'.repeat(64));
+    Object.defineProperty(record, 'importCustody', { get() { throw Error('custody getter must not run'); } });
+    const absent = inspectPluginHostSecurityPopulation();
+    expect(absent.surfaces[0]!.attrs).toMatchObject({ importCustody: null, importCustodyCoverage: 'unknown' });
+    expect(absent.unresolved).toContain('plugin-runtime-import-custody-unavailable:0');
+  });
+
   it('retains configured and unloaded candidates from the original walk without discovering plugins', () => {
     const discovery = {
       roots: [{ pluginsDir: '/configured/plugins', source: 'project' }],
