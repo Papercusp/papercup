@@ -18,6 +18,11 @@ import * as fs from 'node:fs';
 import { StringDecoder } from 'node:string_decoder';
 import { SpawnerIpcClient } from './spawner-ipc-client';
 
+vi.mock('node:net', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:net')>();
+  return { ...actual, createConnection: vi.fn(actual.createConnection) };
+});
+
 // Short tmpdir socket path (Unix socket paths cap ~108 chars; the scratchpad path
 // is too long).
 function socketPath(): string {
@@ -72,11 +77,12 @@ function startServer(sock: string): Promise<net.Server> {
 }
 
 function deferClientConnect(immediates: Array<() => void>): void {
-  vi.spyOn(net.Socket.prototype, 'connect').mockImplementation(function (this: net.Socket, ...args: unknown[]) {
+  vi.mocked(net.createConnection).mockImplementationOnce(((...args: unknown[]) => {
+    const socket = new net.Socket();
     const listener = args.find((arg): arg is () => void => typeof arg === 'function');
-    if (listener) this.once('connect', listener);
-    return this;
-  } as never);
+    if (listener) socket.once('connect', listener);
+    return socket;
+  }) as typeof net.createConnection);
   vi.spyOn(globalThis, 'setImmediate').mockImplementation(((_callback: (...args: unknown[]) => void, ...args: unknown[]) => {
     immediates.push(() => _callback(...args));
     return {} as NodeJS.Immediate;

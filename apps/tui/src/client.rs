@@ -4422,6 +4422,107 @@ mod tests {
         server.await.unwrap();
     }
 
+    #[tokio::test]
+    async fn native_inbox_wire_freezes_start_and_resolves_before_recording_acceptance() {
+        use super::*;
+        use serde_json::{json, Value};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for scenario in ["start", "stale-seed", "apply", "action-denied", "record-denied", "owner-only", "changed-detail", "unoffered", "auth-denied", "changed-environment"] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let identity = json!({"schemaVersion":1,"workspaceId":"isolated","store":{"id":"fixture","target":"test","source":"test"},
+                "build":{"version":"test","sha":null},"agentChat":{"scope":"workspace:isolated","route":"test"},"capabilities":{}});
+            let mut environment = identity.clone();
+            environment["endpoint"] = json!(base); environment["selectionSource"] = json!("test"); environment["transport"] = json!("http");
+            let item = json!({"id":"question +/=& λ","kind":"coord-message","title":"Literal question","ownerAgentId":"su-asker",
+                "ref":{"kind":"coord-message","msgId":"message +/=& λ"},"actions":[{"id":"ack","label":"Acknowledge"}]});
+            let seed = json!({"itemId":item["id"],"kind":item["kind"],"title":item["title"],"ref":item["ref"],"ownerAgentId":item["ownerAgentId"]});
+            let filter = json!({"query":"λ","shownCount":1,"tier":null,"kinds":[]});
+            let launch = json!({"model":"test-model","effort":"high","account":"auto"});
+            // method, path, expected body/query args, response status, response
+            let mut steps: Vec<(&str, &str, Option<Value>, u16, Value)> = vec![("GET", "/api/tui/identity", None,
+                if scenario == "auth-denied" {401} else {200}, identity.clone())];
+            let start = matches!(scenario, "start" | "stale-seed");
+            let request = if start { json!({"environment":environment,"operation":"start","confirmed":true,"items":[seed],"filter":filter}) }
+                else { json!({"environment":environment,"operation":"apply","confirmed":true,"runId":"run +/=& λ",
+                    "expected":{"id":item["id"],"kind":item["kind"],"ref":item["ref"]},"actionId":"ack"}) };
+            if scenario != "auth-denied" {
+                steps.push(("GET", "/api/tui/identity", None, 200, identity.clone()));
+                if start {
+                    let mut live = item.clone(); if scenario == "stale-seed" { live["ref"]["msgId"] = json!("different"); }
+                    steps.push(("GET", "/api/zero-harness/rest-query", Some(json!({"name":"plans.attention","args":{}})), 200,
+                        json!({"rows":[{"items":[live]}]})));
+                    if scenario == "start" {
+                        steps.push(("GET", "/api/agent-config", None, 200, json!({"config":{"resolverProfiles":{"inbox-resolve":launch}}})));
+                        steps.push(("GET", "/api/tui/identity", None, 200, identity.clone()));
+                        steps.push(("POST", "/api/admin/attention-bulk-resolve", Some(json!({"items":[seed],"filter":filter,"launch":launch})), 200,
+                            json!({"ok":true,"runId":"run +/=& λ","phase":"pending"})));
+                    }
+                } else {
+                    let mut recommendation = json!({"itemId":item["id"],"ref":item["ref"],"outcome":"recommended","disposition":"recommended"});
+                    if scenario == "owner-only" { recommendation["recommendation"] = json!({"kind":"owner_action"}); }
+                    steps.push(("GET", "/api/zero-harness/rest-query", Some(json!({"name":"plans.attentionBulkRun","args":{"runId":"run +/=& λ"}})), 200,
+                        json!({"rows":[{"run":{"runId":"run +/=& λ","phase":"review"},"items":[recommendation]}]})));
+                    if scenario != "owner-only" {
+                        steps.push(("GET", "/api/tui/identity", None, 200, identity.clone()));
+                        let mut live = item.clone();
+                        if scenario == "changed-detail" { live["ref"]["msgId"] = json!("different"); }
+                        if scenario == "unoffered" { live["actions"] = json!([]); }
+                        steps.push(("GET", "/api/zero-harness/rest-query", Some(json!({"name":"plans.attentionItem","args":{"id":item["id"]}})), 200, json!({"rows":[live]})));
+                        if scenario != "changed-detail" {
+                            let mut before_write = identity.clone();
+                            if scenario == "changed-environment" { before_write["store"]["id"] = json!("replaced"); }
+                            steps.push(("GET", "/api/tui/identity", None, 200, before_write));
+                            if !matches!(scenario, "unoffered" | "changed-environment") {
+                                let response = json!({"ok":scenario != "action-denied","error":if scenario == "action-denied" {json!("canonical refusal")} else {Value::Null}});
+                                steps.push(("POST", "/api/agent-mcp/run-tool", Some(run_tool_body("coord:ack", json!({"msg_id":"message +/=& λ"}), false)), 200,
+                                    json!({"ok":true,"result":{"content":[{"type":"text","text":response.to_string()}]}})));
+                                if scenario != "action-denied" {
+                                    steps.push(("POST", "/api/admin/attention-bulk-resolve", Some(json!({"op":"accept","runId":"run +/=& λ","itemId":item["id"],"actionId":"ack"})),
+                                        200, json!({"ok":scenario != "record-denied"})));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            let server = tokio::spawn(async move {
+                for (method, path, expected, status, payload) in steps {
+                    let (mut socket, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept()).await.unwrap().unwrap();
+                    let mut bytes = Vec::new();
+                    let (head, body_offset) = loop {
+                        let mut chunk = [0; 4096]; let n = socket.read(&mut chunk).await.unwrap(); assert!(n > 0); bytes.extend_from_slice(&chunk[..n]);
+                        if let Some(offset) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                            let head = String::from_utf8(bytes[..offset].to_vec()).unwrap();
+                            let length = head.lines().find_map(|line| line.to_lowercase().strip_prefix("content-length: ").and_then(|n| n.parse::<usize>().ok())).unwrap_or(0);
+                            if bytes.len() >= offset + 4 + length { break (head, offset + 4); }
+                        }
+                    };
+                    assert!(head.to_lowercase().contains("authorization: bearer native-inbox-fixture"));
+                    let mut parts = head.lines().next().unwrap().split_whitespace(); assert_eq!(parts.next(), Some(method), "{scenario}");
+                    let url = reqwest::Url::parse(&format!("http://fixture{}", parts.next().unwrap())).unwrap(); assert_eq!(url.path(), path, "{scenario}");
+                    if let Some(expected) = expected {
+                        if method == "POST" { assert_eq!(serde_json::from_slice::<Value>(&bytes[body_offset..]).unwrap(), expected, "{scenario}"); }
+                        else {
+                            let params: std::collections::HashMap<_, _> = url.query_pairs().collect();
+                            assert_eq!(params.get("name").unwrap().as_ref(), expected["name"].as_str().unwrap());
+                            assert_eq!(serde_json::from_str::<Value>(params.get("args").unwrap()).unwrap(), expected["args"]);
+                        }
+                    }
+                    let body = payload.to_string(); socket.write_all(format!("HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+                }
+                assert!(tokio::time::timeout(Duration::from_millis(250), listener.accept()).await.is_err(), "unexpected request after refusal or final receipt: {scenario}");
+            });
+            let client = OperatorClient { transport:Transport::Http(HttpClient::new(base.clone(),Some("native-inbox-fixture".into()))), endpoint:base, selection_source:"test".into() };
+            let result = client.native_inbox_action(&serde_json::from_value(request).unwrap()).await;
+            if matches!(scenario, "start" | "apply" | "record-denied") {
+                let result = result.unwrap(); assert_eq!(result["rows"][0]["ok"], true);
+                if scenario == "record-denied" { assert_eq!(result["rows"][0]["recorded"], false); assert!(result["rows"][0]["warning"].as_str().unwrap().contains("do not repeat")); }
+            } else { assert!(result.is_err(), "accepted {scenario}"); }
+            server.await.unwrap();
+        }
+    }
+
     #[test]
     fn agent_sidebar_rejects_missing_duplicate_foreign_and_error_rows() {
         use serde_json::json;

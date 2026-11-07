@@ -323,7 +323,9 @@ impl InboxRequest {
                 || row["disposition"] == "retry_needed"))
     }
     pub fn reviewable(row: &Value) -> bool {
-        row["outcome"] == "recommended" && matches!(row["disposition"].as_str(), None | Some("recommended"))
+        let disposition = row["recommendation"]["kind"].as_str()
+            .filter(|kind| !kind.is_empty()).or_else(|| row["disposition"].as_str());
+        row["outcome"] == "recommended" && matches!(disposition, None | Some("recommended"))
     }
 }
 
@@ -636,6 +638,8 @@ mod tests {
         for disposition in ["owner_action", "cleanup_candidate", "routed", "investigate", "legacy_skipped"] {
             assert!(!InboxRequest::retryable(&json!({"outcome":"skipped","disposition":disposition})));
             assert!(!InboxRequest::reviewable(&json!({"outcome":"recommended","disposition":disposition})));
+            assert!(!InboxRequest::reviewable(&json!({"outcome":"recommended","disposition":"recommended",
+                "recommendation":{"kind":disposition}})));
         }
         for outcome in ["auto_resolved", "dismissed", "recommended"] {
             assert!(!InboxRequest::retryable(&json!({"outcome":outcome})));

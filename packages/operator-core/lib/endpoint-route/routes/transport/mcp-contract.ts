@@ -1,10 +1,9 @@
 /** Shared, side-effect-free MCP transport contract values. */
 
 /**
- * One connection-level bootstrap, shared by HTTP and native MCP transports.
- * Keep policy here concise: some deferred clients copy initialize.instructions
- * into exported tool metadata. Tool descriptions and argument schemas remain
- * owned by their existing registry entries.
+ * Common guidance shared by HTTP and native MCP transports. Export it on one
+ * discovery tool per batch, not initialize.instructions: deferred clients may
+ * prepend initialize.instructions to EVERY exported tool description.
  */
 export function mcpBootstrapInstructions(capabilityMap: string): string {
   return `Papercusp MCP — shared connection guidance
@@ -18,6 +17,31 @@ Work: follow the session's approved route, work-item and file-lock rules. A comp
 Knowledge: read runbooks with docs:search/docs:get and author them with docs:author; generated .mdx files are projections, never the authoring surface. Workspace-scoped framework docs use harness:'engineering'. Keep personal conventions in shared memory and in-flight evidence on the work-item. Live presence answers who is active now; coord:catch-up/coord:feed answer audience history. Report prepared, emitted and verified evidence distinctly.
 
 ${capabilityMap}`;
+}
+
+const BOOTSTRAP_START = '<!-- papercusp-mcp-bootstrap:v1 -->';
+const BOOTSTRAP_END = '<!-- /papercusp-mcp-bootstrap:v1 -->';
+
+/** Decorate the existing listing, without changing order, schemas or registry
+ * entries. Prefer the stable discovery front door; restricted catalogs without
+ * it still receive guidance on their first visible tool. Empty catalogs reveal
+ * nothing. Removing only our marked block makes re-projection idempotent. */
+export function mcpToolsWithBootstrap<T extends { name?: unknown; description?: unknown }>(
+  tools: readonly T[], guidance: string | undefined,
+): T[] {
+  if (!guidance || !tools.length) return [...tools];
+  const cleaned = tools.map(tool => {
+    if (typeof tool.description !== 'string' || !tool.description.startsWith(`${BOOTSTRAP_START}\n`)) return tool;
+    const end = tool.description.indexOf(`\n${BOOTSTRAP_END}\n\n`, BOOTSTRAP_START.length);
+    return end < 0 ? tool : { ...tool, description: tool.description.slice(end + BOOTSTRAP_END.length + 3) };
+  });
+  const discovery = cleaned.findIndex(tool => typeof tool.name === 'string' &&
+    /^(?:mcp__.+__)?tools[:_]find$/.test(tool.name));
+  const anchor = discovery < 0 ? 0 : discovery;
+  return cleaned.map((tool, index) => index !== anchor ? tool : {
+    ...tool,
+    description: `${BOOTSTRAP_START}\n${guidance}\n${BOOTSTRAP_END}\n\n${typeof tool.description === 'string' ? tool.description : ''}`,
+  });
 }
 
 /**
