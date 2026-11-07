@@ -58,6 +58,9 @@ function fixture(script: string): Fixture {
   mkdirSync(join(app, 'scripts', 'lib'), { recursive: true });
   copyFileSync(join(SCRIPTS, script), join(app, 'scripts', script));
   copyFileSync(join(SCRIPTS, 'lib', 'mirror-tree.sh'), join(app, 'scripts', 'lib', 'mirror-tree.sh'));
+  mkdirSync(join(root, 'scripts', 'lib'), { recursive: true });
+  copyFileSync(resolve(SCRIPTS, '../../../scripts/lib/fs-mutex.mjs'), join(root, 'scripts/lib/fs-mutex.mjs'));
+  copyFileSync(join(SCRIPTS, 'lib/with-runtime-mirror-lock.mjs'), join(app, 'scripts/lib/with-runtime-mirror-lock.mjs'));
   return { root, app, sibling: join(root, 'sibling-release-tree') };
 }
 

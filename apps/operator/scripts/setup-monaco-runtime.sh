@@ -44,6 +44,13 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# Install and prebuild can overlap even while the package installer owns its
+# own writer lease. Hold the destination lock through prune, copy and stamp.
+if [ "${PAPERCUSP_RUNTIME_MIRROR_LOCK:-}" != "$(pwd -P)/public/monaco" ]; then
+  exec node scripts/lib/with-runtime-mirror-lock.mjs \
+    "$(pwd -P)/public/monaco" "$(pwd -P)/scripts/setup-monaco-runtime.sh"
+fi
+
 # shellcheck source=lib/mirror-tree.sh
 . scripts/lib/mirror-tree.sh
 

@@ -32,9 +32,13 @@ afterEach(() => {
 });
 
 function fixtureRoot(script: string): string {
-  const root = mkdtempSync(join(tmpdir(), 'papercusp-mirror-reconcile-'));
-  roots.push(root);
+  const repository = mkdtempSync(join(tmpdir(), 'papercusp-mirror-reconcile-'));
+  roots.push(repository);
+  const root = join(repository, 'apps', 'operator');
   mkdirSync(join(root, 'scripts', 'lib'), { recursive: true });
+  mkdirSync(join(repository, 'scripts', 'lib'), { recursive: true });
+  copyFileSync(resolve(SCRIPTS, '../../../scripts/lib/fs-mutex.mjs'), join(repository, 'scripts/lib/fs-mutex.mjs'));
+  copyFileSync(join(SCRIPTS, 'lib/with-runtime-mirror-lock.mjs'), join(root, 'scripts/lib/with-runtime-mirror-lock.mjs'));
   copyFileSync(join(SCRIPTS, script), join(root, 'scripts', script));
   copyFileSync(join(SCRIPTS, 'lib', 'mirror-tree.sh'), join(root, 'scripts', 'lib', 'mirror-tree.sh'));
   return root;
@@ -106,6 +110,61 @@ describe('setup-monaco-runtime.sh reconciles the mirror file set (WI-10004074)',
     expect(run(root, SCRIPT)).toContain('re-copying');
     expect(existsSync(join(root, 'public/monaco/vs/basic-languages/sql-Def456.js'))).toBe(true);
   });
+
+  it('serializes overlapping install and prebuild mirror transactions', async () => {
+    const root = monacoRoot();
+    const bin = join(root, 'bin');
+    const entered = join(root, 'copy-entered');
+    const release = join(root, 'copy-release');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'cp'), [
+      '#!/bin/sh',
+      'if ! mkdir "$MIRROR_TEST_ENTERED" 2>/dev/null; then',
+      '  echo "overlapping mirror writes" >&2; exit 78',
+      'fi',
+      'while [ ! -e "$MIRROR_TEST_RELEASE" ]; do sleep 0.01; done',
+      'exec /bin/cp "$@"',
+      '',
+    ].join('\n'), { mode: 0o755 });
+    const env = {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH ?? ''}`,
+      MIRROR_TEST_ENTERED: entered,
+      MIRROR_TEST_RELEASE: release,
+      PAPERCUSP_FS_MUTEX_LOCK_DIR: join(root, 'mutex'),
+      PAPERCUSP_DISABLE_FS_MUTEX: '0',
+    };
+    const start = () => {
+      const child = spawn('bash', [join(root, 'scripts', SCRIPT)], { env });
+      let output = '';
+      child.stdout.on('data', (chunk) => { output += String(chunk); });
+      child.stderr.on('data', (chunk) => { output += String(chunk); });
+      const exited = new Promise<number | null>((resolveExit) => child.once('close', resolveExit));
+      return { child, exited, output: () => output };
+    };
+    const first = start();
+    let second: ReturnType<typeof start> | undefined;
+    let codes: (number | null)[] = [];
+    try {
+      for (let attempt = 0; attempt < 1000 && !existsSync(entered); attempt += 1) {
+        if (first.child.exitCode !== null) throw new Error(first.output());
+        await delay(5);
+      }
+      expect(existsSync(entered), first.output()).toBe(true);
+      second = start();
+      for (let attempt = 0; attempt < 1000; attempt += 1) {
+        if (second.child.exitCode !== null || second.output().includes('runtime-mirror: waiting')) break;
+        await delay(5);
+      }
+    } finally {
+      writeFileSync(release, 'continue');
+      codes = await Promise.all([first.exited, ...(second ? [second.exited] : [])]);
+    }
+    expect(codes, first.output() + '\n' + (second?.output() ?? '')).toEqual([0, 0]);
+    expect(fileSet(join(root, 'public/monaco/vs'))).toEqual(fileSet(join(root, 'node_modules/monaco-editor/min/vs')));
+    expect(readFileSync(join(root, 'public/monaco/.version'), 'utf8').trim()).toBe('9.9.9');
+    expect(run(root, SCRIPT)).toContain('already current');
+  }, 20_000);
 });
 
 describe('setup-excalidraw-runtime.sh reconciles the mirror file set (WI-10004074)', () => {
