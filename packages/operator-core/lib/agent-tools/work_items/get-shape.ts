@@ -659,6 +659,7 @@ function projectWorkItem(
  * stub summary so the authoritative bit does not repeat 100 times on a floor read.
  */
 function stubRow(r: Row, dropped: Set<string>, completionEvidenceIds: unknown[]): Row {
+  if (r.blockerResolution !== undefined) dropped.add("blockerResolution");
   const w = (r.workItem ?? {}) as Row;
   const id = r.id ?? w.id ?? null;
   const rawCompletion = r.completion !== undefined ? r.completion : w.terminalCompletionEvidence;
@@ -781,6 +782,7 @@ function compactSingleRow(
       completionPresent && sameCompletionRecord(r.completion, w?.terminalCompletionEvidence),
       true,
     ),
+    ...(r.blockerResolution !== undefined ? { blockerResolution: r.blockerResolution } : {}),
     ...(completionRelevant ? { completion, hasCompletionEvidence: completionPresent } : {}),
     ...projectAssumptionFlags(r.assumptionFlags, caps, dropped, true),
     // `threadLimit` is an explicit bounded diagnostic request, not incidental
@@ -1344,6 +1346,7 @@ function projectRow(
       includeLifecycleCandidatePayload,
     ),
     ...(operationalBrief !== undefined ? { operationalBrief } : {}),
+    ...(r.blockerResolution !== undefined ? { blockerResolution: r.blockerResolution } : {}),
     ...(r.touchHistory !== undefined ? { touchHistory: r.touchHistory } : {}),
     ...(r.threadWindow !== undefined
       ? {

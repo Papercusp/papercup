@@ -13,7 +13,15 @@ import { buildSidecarAwareReranker, resolveProcessSidecarUrl } from '../memory/e
 import { isEmbedSidecarRunning, probeSidecarHealth, readEmbedSidecarRecord, stopEmbedSidecar } from '../memory/embed-sidecar-spawn';
 import { scoreSubjectEvidence, subjectContrasts, subjectEvidenceQuery, SUBJECT_EVIDENCE_MIN_SCORE } from './relevance-router';
 import { evaluateSubjectCases, HELD_OUT_SUBJECT_CASES, NATURAL_QUESTION_SUBJECT_CASES } from './subject-evidence.fixtures';
-import '../agent-tools/index';
+
+async function observeScorerSetup<T>(phase: string, action: () => Promise<T>): Promise<T> {
+  const startedAt = performance.now();
+  const emit = (event: 'start' | 'end') => console.info('subject-scorer-setup-phase',
+    JSON.stringify({ phase, event, elapsedMs: Math.round(performance.now() - startedAt) }));
+  emit('start');
+  try { return await action(); }
+  finally { emit('end'); }
+}
 
 describe('registered subject evidence with the real local scorer', () => {
   let configuredPrivateWarmup = false;
@@ -26,6 +34,9 @@ describe('registered subject evidence with the real local scorer', () => {
     'DATABASE_URL', 'PAPERCUSP_PGBOUNCER', 'PAPERCUSP_SKIP_PG_DISCOVERY'] as const;
   const savedDatabaseEnv = databaseEnvKeys.map(key => [key, process.env[key]] as const);
   beforeAll(async () => {
+    // Preserve the complete production registry, but load it inside a timed
+    // fixture phase so a cold import cannot disappear into test collection.
+    await observeScorerSetup('tool-registry', () => import('../agent-tools/index'));
     // A plain test:file invocation must exercise an owned source runtime too.
     // Preserve explicit in-process/shared-runtime choices as distinct evidence.
     if (savedEnable === undefined && !process.env.PAPERCUSP_EMBED_SIDECAR_URL) {
@@ -40,7 +51,7 @@ describe('registered subject evidence with the real local scorer', () => {
       // This test changes the product DB URL so its spawned sidecar cannot
       // escape into the live/native database. Retire any process-wide pools
       // created during module setup before changing that target.
-      await _resetForTests();
+      await observeScorerSetup('retire-module-pools', () => _resetForTests());
       // No explicit URL does not imply a private scorer: the spawner otherwise
       // adopts a sibling from the tenant's home or its inherited fixed port.
       // Reuse its maintained tenant boundary so this run executes source code.
@@ -50,9 +61,9 @@ describe('registered subject evidence with the real local scorer', () => {
       // The non-Vitest child opens the admission governor's real PG pool.
       // An ambient explicit DSN outranks the wrapper's private port, so pin
       // every product resolver to an owned, fully migrated database instead.
-      privateDb = await createFreshTestDb({ prefix: 'subjectscorer', template: {
+      privateDb = await observeScorerSetup('private-database', () => createFreshTestDb({ prefix: 'subjectscorer', template: {
         key: orgTemplateKey(), provision: provisionOrgTemplate,
-      } });
+      } }));
       process.env.HARNESS_ADMIN_DATABASE_URL = privateDb.url;
       process.env.HARNESS_DATABASE_URL = privateDb.url;
       process.env.DATABASE_URL = privateDb.url;
@@ -102,12 +113,15 @@ describe('registered subject evidence with the real local scorer', () => {
     else process.env.PAPERCUSP_EMBED_SIDECAR = savedEnable;
   });
 
-  it('measures labelled held-out top choice, recall and explicit no-expert outcomes', async () => {
+  it('initializes the complete registered contract corpus before model scoring', () => {
     for (const name of ['computer:provision_desktop', 'computer:observe', 'db:migrate']) {
       expect(lookupByMcpName(name)?.description).toBeTruthy();
     }
     expect(listAllProjectedTools().length).toBeGreaterThan(100);
-    const url = await resolveProcessSidecarUrl(undefined, ['POST /rerank']);
+  });
+
+  it('measures labelled held-out top choice, recall and explicit no-expert outcomes', async () => {
+    const url = await observeScorerSetup('scorer-ready', () => resolveProcessSidecarUrl(undefined, ['POST /rerank']));
     const health = url ? await (await fetch(`${url}/healthz`, { signal: AbortSignal.timeout(5000) })).json() : null;
     const runtime = { endpoint: url, engine: url ? 'sidecar' : 'in-process',
       warmProfile: process.env.PAPERCUSP_EMBED_SIDECAR_WARM ?? 'default',
