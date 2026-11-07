@@ -378,6 +378,55 @@ describe('bounded scheduled retention drain', () => {
     expect(run.mock.calls).toEqual([[0, undefined], [1, 900_000]]);
     expect(awaitPendingCensus).not.toHaveBeenCalled();
   });
+  const reacquisitionBudgetStop = (): DiskReclaimReceipt => partial({
+    errors: ['Timed out after 10ms waiting for fs-mutex "papercusp-disk-retention" (/retention/lock); holder: unavailable'],
+    mutexTimeout: { phase: 'reacquire', remainingRunBudgetMs: 10, timeoutMs: 10, waitedMs: 10 },
+    scan: { inspectedNodes: 2, retainedRecentTrees: 0, stoppedAtRoot: '/scratch', incompleteRoots: ['/scratch'] },
+    effects: [{ root: '/scratch', selected: 2, processed: 1, remaining: 1, nextPath: '/scratch/next', elapsedMs: 1000, stopped: false }],
+  });
+  it('resumes a productive pass whose remaining run budget expired during mutex reacquisition', async () => {
+    const receipt = reacquisitionBudgetStop();
+    receipt.delegates = [pendingDelegate()];
+    const original = structuredClone(receipt);
+    const run = vi.fn().mockResolvedValueOnce(receipt)
+      .mockResolvedValueOnce(partial({ id: 'done', complete: true, errors: [] }));
+    expect(await drainScheduledDiskReclaim(run)).toEqual({ batches: 2, lastReceiptId: 'done', stop: 'complete' });
+    expect(run.mock.calls).toEqual([[0, undefined], [1, 900_000]]);
+    expect(receipt).toEqual(original);
+  });
+  it.each(['initial', 'missing-timeout', 'different-mutex', 'unrelated-error', 'mixed-error', 'short-wait',
+    'different-budget', 'invalid-timeout', 'no-remaining-effects', 'different-root', 'missing-scan', 'failed-entry', 'failed-delegate'])(
+    'refuses unproven or unsafe reacquisition budget continuation: %s', async mode => {
+      const receipt = reacquisitionBudgetStop();
+      if (mode === 'initial') receipt.mutexTimeout!.phase = 'initial';
+      if (mode === 'missing-timeout') delete receipt.mutexTimeout;
+      if (mode === 'different-mutex') receipt.errors[0] = receipt.errors[0]!.replace('papercusp-disk-retention', 'another-lock');
+      if (mode === 'unrelated-error') receipt.errors = ['retention protection unreadable'];
+      if (mode === 'mixed-error') receipt.errors.push('incomplete process-holder scan:/scratch');
+      if (mode === 'short-wait') receipt.mutexTimeout!.waitedMs = 9;
+      if (mode === 'different-budget') receipt.mutexTimeout!.remainingRunBudgetMs = 11;
+      if (mode === 'invalid-timeout') receipt.mutexTimeout!.timeoutMs = Number.NaN;
+      if (mode === 'no-remaining-effects') receipt.effects![0]!.remaining = 0;
+      if (mode === 'different-root') receipt.scan!.stoppedAtRoot = '/other';
+      if (mode === 'missing-scan') delete receipt.scan;
+      if (mode === 'failed-entry') receipt.entries[0]!.status = 'failed';
+      if (mode === 'failed-delegate') receipt.delegates = [{ classId: 'other-owner', ok: false, detail: 'failed' }];
+      const run = vi.fn().mockResolvedValue(receipt);
+      expect((await drainScheduledDiskReclaim(run)).stop).toBe('error');
+      expect(run).toHaveBeenCalledOnce();
+    },
+  );
+  it('keeps reacquisition recovery inside its original time, batch and progress bounds', async () => {
+    const run = vi.fn().mockResolvedValue(reacquisitionBudgetStop());
+    expect((await drainScheduledDiskReclaim(run, { maxElapsedMs: 1000 })).stop).toBe('time-limit');
+    expect(run).toHaveBeenCalledOnce();
+    run.mockClear();
+    expect((await drainScheduledDiskReclaim(run, { maxBatches: 1 })).stop).toBe('batch-limit');
+    expect(run).toHaveBeenCalledOnce();
+    run.mockClear().mockResolvedValue({ ...reacquisitionBudgetStop(), entries: [] });
+    expect((await drainScheduledDiskReclaim(run)).stop).toBe('no-progress');
+    expect(run).toHaveBeenCalledOnce();
+  });
   it.each(['missing-lineage', 'mixed-error', 'unknown-owner'])(
     'refuses capped continuation past an unrecognized delegate failure: %s', async mode => {
       const receipt = cappedPartial(), delegate = pendingDelegate();

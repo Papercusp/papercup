@@ -22,7 +22,8 @@ import type { RubricCriterionCheck } from "@papercusp/operator-core/lib/agent-to
 import * as Collapsible from "@radix-ui/react-collapsible";
 import { ChevronDown, Minus, TrendingDown, TrendingUp, X } from "lucide-react";
 import { Table, type TableColumn } from "../harness/Table";
-import { filterCountLabel, type CountEvidence } from "../harness/filters";
+import { filterCountLabel } from "../harness/filters/filter-count-label";
+import type { CountEvidence } from "../harness/filters/count-evidence";
 import ScorecardDetail, {
   RatingChip,
   ScorecardCoverageSummary,

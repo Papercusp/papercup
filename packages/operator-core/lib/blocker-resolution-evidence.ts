@@ -43,7 +43,7 @@ export async function preflightBlockerDecision(
   item: BoundaryItem,
   input: unknown,
   context: BlockerBoundaryContext,
-  options: { effect: unknown; enteringDeferral?: boolean;
+  options: { effect: unknown; enteringDeferral?: boolean; requireResolution?: boolean;
     /** Host-validated proposed conditions, checked before their first write. */
     additionalBlockers?: readonly ExternalBlockerRecord[];
     /** Canonical prospective dependency identities from the relation writer. */
@@ -54,6 +54,9 @@ export async function preflightBlockerDecision(
     prepared = prepareBlockerDecision(item.payload, input, { ownerId: context.ownerId,
       sessionId: context.sessionId, workItemId: item.id, custodianId: item.assignee }, { effect: options.effect });
     if (!prepared.ok || prepared.replayed) return prepared;
+    if (options.requireResolution && prepared.record.decision.disposition !== 'self_resolve') {
+      return boundaryProblem(['measured self-resolution before a terminal transition; deferral retains the unresolved work']);
+    }
   }
   try {
     const { activeWorkspaceId } = await import('./workspace-registry');

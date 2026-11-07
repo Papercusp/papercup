@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { fingerprintSqlIntent, type SqlIntentScope } from './sql-intent-fingerprint';
-import { recommendSqlTool, sqlRecommendationCandidates,
+import { recommendSqlTool, sqlRecommendationCandidates, sqlCoverageRows, sqlCoverageToken,
   type SqlCoverageAudit, type SqlRecommendationInput, type SqlToolCatalog } from './sql-tool-recommendations';
 
 // Fixture identities are explicit; these simulate two registry/build reads, never
@@ -36,6 +36,30 @@ function fixture(sql = queries.proof, name = 'testing:runs'): SqlRecommendationI
 }
 
 describe('SQL tool recommendations', () => {
+  it('compares complete ordered named rows without accepting clipped, empty or lossy output', () => {
+    const rows = [{ id: 1, value: null }, { id: 2, value: 'private fixture' }];
+    const body = { rows, rowCount: 2, truncated: false };
+    for (const output of [body, { data: body }, { structuredContent: body },
+      { content: [{ type: 'text', text: JSON.stringify(body) }] }]) expect(sqlCoverageRows(output)).toEqual(rows);
+    for (const output of [{ ...body, truncated: true }, { rows }, { ...body, rowCount: 3 },
+      { ...body, _partial: true }, { ...body, _projection: { truncated: true } },
+      { rows: [], truncated: false }, { rows: [1], truncated: false },
+      { rows: [{ value: Infinity }], truncated: false }, { data: body, isError: true }])
+      expect(sqlCoverageRows(output)).toBeNull();
+    expect(sqlCoverageToken(scope, 'repo', 'rows', rows)).not.toBe(sqlCoverageToken(scope, 'repo', 'rows', [...rows].reverse()));
+  });
+
+  it('keys private evidence by scope and domain, refusing credentials and noncanonical values', () => {
+    const value = { limit: 5, sql: 'SELECT id FROM jobs' };
+    expect(sqlCoverageToken(scope, 'repo', 'args', value)).toMatch(/^[a-f0-9]{64}$/);
+    expect(sqlCoverageToken(scope, 'repo', 'args', value)).not.toBe(sqlCoverageToken(scope, 'other', 'args', value));
+    expect(sqlCoverageToken(scope, 'repo', 'args', value)).not.toBe(sqlCoverageToken(scope, 'repo', 'rows', value));
+    expect(sqlCoverageToken({ ...scope, epoch: 'next' }, 'repo', 'args', value))
+      .not.toBe(sqlCoverageToken(scope, 'repo', 'args', value));
+    expect(sqlCoverageToken(scope, 'repo', 'args', { password: 'synthetic' })).toBeNull();
+    expect(sqlCoverageToken({ ...scope, knownSecrets: ['fixture-secret'] }, 'repo', 'rows', [{ value: 'fixture-secret' }])).toBeNull();
+    expect(sqlCoverageToken(scope, 'repo', 'rows', [NaN])).toBeNull();
+  });
   it('P006 review editions follow material compared contracts and ignore fresh result receipts', () => {
     const input = fixture();
     input.audits = [{ ...input.audits[0]!, verdict: 'none', missingFeatures: ['output:id'] }];

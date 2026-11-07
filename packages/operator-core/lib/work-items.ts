@@ -4168,7 +4168,8 @@ export async function setWorkItemState(
       { state: targetState, patch, unset, ...(terminalEffect ? { terminal: terminalEffect } : {}) };
     const prepared = opts.blockerEvidenceContext
       ? await preflightBlockerDecision(wi, opts.blockerDecision.input, opts.blockerEvidenceContext, { effect,
-          enteringDeferral: ['blocked', 'needs-human'].includes(targetState) })
+          enteringDeferral: ['blocked', 'needs-human'].includes(targetState),
+          requireResolution: isSettledWorkItemState(targetState) })
       : prepareBlockerDecision(wi.payload, opts.blockerDecision.input, {
           ownerId: opts.by ?? '', sessionId: opts.blockerDecision.sessionId, workItemId: id, custodianId: wi.assignee,
         }, { effect });

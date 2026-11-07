@@ -161,16 +161,46 @@ export function nativeLedgerEnvironment(env = process.env): NodeJS.ProcessEnv {
 export function checkNativeLedger(sourceRoot = process.cwd(), env = process.env): void {
   assert.ok(env.PAPERCUSP_TEST_RUN_GROUP?.trim(),
     'Use PAPERCUSP_TEST_RUN_GROUP to retain native ledger attribution before allocation');
-  execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', `
-    const { getOrgPg } = await import('@papercusp/db-org');
-    const { sql } = getOrgPg();
-    try { await sql\`SELECT 1\`; }
-    finally { await sql.end({ timeout: 2 }); }
+  // This checks the recorder's endpoint, so reuse its small pg client rather
+  // than loading the application's schema, adapter and pool for one SELECT.
+  execFileSync(process.execPath, ['--input-type=module', '-e', `
+    const started = performance.now();
+    let stage;
+    const mark = next => {
+      stage = next;
+      console.log('NATIVE_LEDGER_PREFLIGHT ' + JSON.stringify({ stage,
+        elapsedMs: Math.round(performance.now() - started) }));
+    };
+    const fail = error => {
+      console.error('NATIVE_LEDGER_PREFLIGHT ' + JSON.stringify({ stage, status: 'failed',
+        elapsedMs: Math.round(performance.now() - started), code: error?.code ?? null }));
+      process.exitCode = 1;
+    };
+    try {
+      mark('import');
+      const { connectExecutedMapPg } = await import('./scripts/lib/executed-source-map.mjs');
+      mark('connect');
+      const client = await connectExecutedMapPg({ env: process.env, timeoutMs: 5_000 });
+      try {
+        mark('query');
+        await client.query('SELECT 1');
+      } catch (error) {
+        fail(error);
+      } finally {
+        mark('close');
+        await client.end();
+      }
+      if (process.exitCode !== 1) mark('complete');
+    } catch (error) {
+      fail(error);
+    }
   `], { cwd: sourceRoot, stdio: 'inherit', timeout: 10_000, env: nativeLedgerEnvironment(env) });
 }
 
 /** Preserve startup stdout/stderr and the original stack in the test failure. */
-export function runNativeChild(profile: NativeLiveProfile, sourceRoot: string, script: string, args: string[] = []) {
+export function runNativeChild(profile: NativeLiveProfile, sourceRoot: string, script: string, args: string[] = [], timeoutMs = 300_000) {
+  assert.ok(Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 300_000,
+    'Native child deadline must fit the bounded journey');
   const env = nativeChildEnvironment(profile);
   const prepared = profile.nativeChildren?.find(child => child.script === script);
   assert.ok(prepared, 'Native child must be bundled from the verified source before the test starts');
@@ -185,7 +215,7 @@ export function runNativeChild(profile: NativeLiveProfile, sourceRoot: string, s
     // Compilation belongs to preparation, outside the bounded native journey.
     // Keep inherited identity/source guards; only the runtime tsx loader goes away.
     execFile(process.execPath, [bundle, ...args], {
-      cwd: sourceRoot, env, timeout: 300_000, maxBuffer: 4 * 1024 * 1024,
+      cwd: sourceRoot, env, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024,
     }, (error, stdout, stderr) => {
       if (!error) { resolve({ stdout, stderr }); return; }
       reject(new Error(`Native child ${script} failed (workspace=${profile.workspaceId}, pid=${profile.tauriPID}, elapsedMs=${Date.now() - started}, bundleSha256=${prepared.sha256}):\n`
@@ -373,7 +403,7 @@ async function verifyReports(evidenceDir: string) {
         && query?.requests > query?.failures; })()`);
     const transportBefore = transportSnapshot();
     save('transport-before.json', transportBefore);
-    const original = publish({ title, body_md: body, kind: 'audit', subject,
+    const original = publish({ title, body_md: body, kind: 'audit', subject, visibility: 'owner',
       request_key: 'reports-native-original', tags: ['native-fixture'] });
     // No refresh/navigation between publish and this assertion: arrival exercises SSE.
     poll(`Array.from(document.querySelectorAll('.reports-list-item')).some(n => n.textContent.includes(${JSON.stringify(title)}))`);
@@ -432,7 +462,7 @@ async function verifyReports(evidenceDir: string) {
       && document.querySelector('.reports-reader h2')?.textContent === ${JSON.stringify(title)}`);
     const correctedTitle = `${title} corrected`;
     const correction = publish({ title: correctedTitle, body_md: body + '\nA correction.\n', supersedes: original.report_id,
-      kind: 'audit', subject, request_key: 'reports-native-correction', tags: ['native-fixture'] });
+      kind: 'audit', subject, visibility: 'owner', request_key: 'reports-native-correction', tags: ['native-fixture'] });
     poll(`Array.from(document.querySelectorAll('.reports-list-item')).filter(n => n.textContent.includes('Reports native verification')).length === 1
       && document.querySelector('.reports-list-item')?.textContent.includes(${JSON.stringify(correctedTitle)})`);
     // Original citation remains pinned even after the superseding publication.
@@ -589,7 +619,10 @@ async function main() {
   if (process.argv.includes('--check-ledger')) {
     checkNativeLedger(); console.log('REPORTS_NATIVE_LEDGER_PREFLIGHT_OK'); return;
   }
-  if (process.argv.includes('--e2e')) { await runNativeE2e(); return; }
+  if (process.argv.includes('--e2e')) {
+    await runNativeE2e(undefined, { nativeScripts: ['scripts/tauri-surface-verify-reports.mts'] });
+    return;
+  }
   const selection = parseSelectionArgs(process.argv.slice(2));
   const result = await runHarness({ contract: { name: 'reports-library-tauri',
   phases: [{ id: 'native', description: 'Real Reports publication, SSE and native reader' }] },

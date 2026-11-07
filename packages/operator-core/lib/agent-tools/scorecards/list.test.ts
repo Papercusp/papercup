@@ -52,7 +52,7 @@ const makeDispatchContext = (): UnifiedToolContext => ({
 describe('scorecards:list correctness payload', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('review history returns an older accepted result independently of the pending page cursor', async () => {
+  it('grading system exposes pending history without relaxing accepted selection', async () => {
     const pending = { issueId: 'EI-pending', createdAt: '2026-11-01T12:00:00Z',
       ratings: { a: { rating: 'unknown', evidence: 'Awaiting collection.' } },
       exclusionReasons: ['audit-pending'] } as unknown as ScorecardRow;

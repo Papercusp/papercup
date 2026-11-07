@@ -257,6 +257,17 @@ describe('atomic blocker decision lifecycle', () => {
   const transition = (id: string, input = decision(), payloadPatch = patch) => wi.setWorkItemState(id, 'blocked', {
     harness: 'papercup', by: 'agA', blockerDecision: { input, sessionId: 'authenticated-session-a', payloadPatch },
   });
+  it.each(['task', 'feature'] as const)('retains decision history checkpoint and custody when a terminal transition supplies deferral for %s', async (kind) => {
+    const item = await setup(kind);
+    const before = await snapshot(item.id);
+    await expect(wi.setWorkItemState(item.id, 'done', { harness: 'papercup', by: 'agA',
+      blockerDecision: { input: decision('terminal-deferral'), sessionId: 'authenticated-session-a' },
+      blockerEvidenceContext: { ownerId: 'agA', sessionId: 'authenticated-session-a', workspaceId: 'default',
+        harnessSlug: 'papercup', role: 'su', root: null },
+    })).rejects.toMatchObject({ code: 'blocker_decision_evidence',
+      missing: [expect.stringContaining('self-resolution before a terminal transition')] });
+    expect(await snapshot(item.id)).toEqual(before);
+  });
   async function relationSetup(kind: 'task' | 'feature') {
     const item = await setup(kind);
     const blocker = await wi.createWorkItem({ kind: 'task', title: 'dependency repair', harness: 'papercup', createdBy: 'agB' });

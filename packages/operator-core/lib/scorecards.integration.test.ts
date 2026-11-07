@@ -15,8 +15,14 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import type { OrgTestDb } from '../test/_org-test-db';
 import type { OrgSql } from './work-items';
+import type { ScorecardEvidenceCriterion } from './scorecards';
 import { composeCompanionSummary } from '@papercusp/facets';
 import type { StructuredObservation } from './harness/improvements/observation-types';
+import { recordRubricCheckResults, readLatestRubricCheckResults } from './check-results-ledger';
+import { fillRatingsFromLedger } from './scorecard-ledger-fill';
+import { retainMeasurementProvenance } from './measurement-provenance';
+import { SQL_PROBE_TOOL, continuityProbeRevision } from './continuity-probes';
+import './agent-tools/dev/pg_query';
 
 const h = vi.hoisted(() => ({ sql: null as unknown }));
 
@@ -1202,8 +1208,11 @@ describe('readScorecardEvidence audit-target status (EI-24583166035391772) — r
       if (barSetHash !== undefined) expect(result.scorecard.barSetHash).toBe(barSetHash);
       expect(result.scorecard.auditTarget).toMatchObject({ current: purpose !== 'diagnostic' });
       if (purpose) expect(result.scorecard.auditTarget.purpose).toBe(purpose);
-      if ('criteria' in result.scorecard) {
-        expect(result.scorecard.criteria).toEqual([{ key: 'measured', ...observation.ratings.measured }]);
+      if (Array.isArray(result.scorecard.criteria)) {
+        const criteria = result.scorecard.criteria as ScorecardEvidenceCriterion[];
+        expect(criteria.map(({ evidenceAction: _action, ...entry }) => entry))
+          .toEqual([{ key: 'measured', ...observation.ratings.measured }]);
+        expect(criteria[0]!.evidenceAction?.criterionKey).toBe('measured');
       }
     });
   });
@@ -1514,7 +1523,8 @@ describe('readScorecardEvidence audit-target status (EI-24583166035391772) — r
     });
 
     const issueIds = records.map(([id]) => id);
-    const visibleByDefault = await listScorecards({ issueIds });
+    const comparisonTime = '2026-11-07T00:00:00Z';
+    const visibleByDefault = await listScorecards({ issueIds, comparisonTime });
     expect(visibleByDefault.map((card) => card.issueId)).not.toContain('EI-spec-quality-old');
     expect(visibleByDefault.map((card) => card.issueId)).not.toContain('EI-spec-quality-explicit-old');
     expect(visibleByDefault.map((card) => card.issueId).sort()).toEqual([
@@ -1525,8 +1535,8 @@ describe('readScorecardEvidence audit-target status (EI-24583166035391772) — r
       'EI-spec-quality-other-plan',
     ]);
     expect(visibleByDefault.every((card) => card.supersededBy === undefined)).toBe(true);
-    expect(await listScorecards({ issueIds, includeSuperseded: false })).toEqual(visibleByDefault);
-    const all = await listScorecards({ issueIds, includeSuperseded: true });
+    expect(await listScorecards({ issueIds, comparisonTime, includeSuperseded: false })).toEqual(visibleByDefault);
+    const all = await listScorecards({ issueIds, comparisonTime, includeSuperseded: true });
     expect(all).toHaveLength(records.length);
     expect(all.find((card) => card.issueId === 'EI-spec-quality-old')?.supersededBy)
       .toBe('EI-spec-quality-new-duplicate');
@@ -1603,6 +1613,179 @@ describe('human market canonical review readers — real PG', () => {
       receiptRef: 'test-only-manual-receipt' });
     expect(readHumanMarketJob(paid)!.payment).toMatchObject({ paidBy: owner, amountCents: 500, currency: 'USD' });
     // This fixture attests persistence only; it never transfers money or accepts E3.
+  });
+});
+
+describe('pinned historical evidence action readers — real PG', () => {
+  let db: OrgTestDb;
+  beforeAll(async () => { db = await createOrgTestDb(); h.sql = db.adminSql; });
+  afterAll(async () => db?.cleanup());
+
+  it('grading history keeps latest attempt and last measurement in the same subject', async () => {
+    const rubricRef = 'grading-history-clock';
+    const at = '2026-11-01T12:00:00Z';
+    const clock = '2026-11-01T12:01:00.001Z';
+    const subject = { kind: 'pot' as const, ref: 'history:clock', windowStart: at, windowEnd: clock };
+    const criterion = { key: 'latency', title: 'Latency', model: 'Retain the last value.',
+      method: 'Read retained rows at the requested clock.', driftMarkers: 'A failed attempt erases the old value.',
+      check: { kind: 'probe', maxAgeMs: 60_000, probe: { kind: 'sql', sql: 'SELECT 1',
+        schemaRevision: continuityProbeRevision(SQL_PROBE_TOOL)!, expect: { path: '$.rowCount', op: 'eq', value: 1 } } } } as const;
+    await proposeRubric({ rubricId: rubricRef, characteristic: 'history', title: 'Reader clock fixture',
+      criteria: [criterion], status: 'active', by: 'su-fixture' });
+    const rubric = (await getRubric(rubricRef))!;
+    const check = { id: 'latency:0', rubricRef, criterionKey: 'latency', kind: 'probe' as const,
+      value: 1, unit: null, subject: { kind: subject.kind, ref: subject.ref } };
+    const scope = { workspaceId: issuesScopeWorkspace(), harnessSlug: 'papercusp' };
+    const [measuredId] = await recordRubricCheckResults([{ check, verdict: 'pass', measuredAt: at, durationMs: 1 }], scope, db.adminSql);
+    const [failedId] = await recordRubricCheckResults([{ check: { ...check, value: null }, verdict: 'error',
+      measuredAt: '2026-11-01T12:00:30Z', durationMs: 1, detail: 'Collection unavailable.' }], scope, db.adminSql);
+    await recordRubricCheckResults([{ check: { ...check, value: 999, subject: { ...check.subject, ref: 'other:subject' } },
+      verdict: 'pass', measuredAt: '2026-11-01T12:00:59Z', durationMs: 1 }], scope, db.adminSql);
+    const latest = await readLatestRubricCheckResults({ rubricRef, workspaceId: issuesScopeWorkspace(),
+      asOf: clock, subject: check.subject }, db.adminSql);
+    const fill = fillRatingsFromLedger({ criteria: rubric.criteria, callerRatings: {}, latest,
+      rubricRatingScale: rubric.ratingScale, nowMs: Date.parse('2026-11-01T12:00:31Z') });
+    if (!fill.ok) throw new Error('Historical fixture did not fill');
+    const cardId = await fileScorecard(db, { id: 'reader-clock', rubricRef, rubricRevision: rubric.revision,
+      criteriaHash: rubric.criteriaHash, ratings: fill.ratings, subject, createdAt: '2026-11-01T12:00:31Z' });
+    const before = await db.adminSql`SELECT payload FROM harness_shared.engineer_issues WHERE issue_id = ${cardId}`;
+    const read = async () => {
+      const listed = (await listScorecards({ issueIds: [cardId], comparisonTime: clock, includeGeneration: false }))[0]!;
+      const detail = await readScorecardEvidence(cardId, clock);
+      if (detail.kind !== 'found') throw new Error('Historical card missing');
+      const { key: _key, evidenceAction: _action, ...rating } = detail.scorecard.criteria[0]!;
+      expect(rating).toEqual(listed.ratings.latency);
+      expect(listed.ratings.latency).toMatchObject({ rating: 'unknown',
+        ledgerResult: { testRunId: failedId, value: null, status: 'error', ageMs: 30_001, freshness: 'failed', comparisonTime: clock },
+        lastMeasurement: { testRunId: measuredId, value: 1, status: 'pass', ageMs: 60_001, freshness: 'stale', comparisonTime: clock } });
+      expect(detail.scorecard.coverage).toEqual(listed.coverage);
+      expect(listed.coverage?.evidence.current).toEqual([]);
+      return listed;
+    };
+    expect(await read()).toEqual(await read());
+    expect(await db.adminSql`SELECT payload FROM harness_shared.engineer_issues WHERE issue_id = ${cardId}`).toEqual(before);
+  });
+
+  it('grading persisted history preserves last accepted across pagination', async () => {
+    const rubricRef = 'grading-history-pending-pages';
+    await seedAuditRubric();
+    await proposeRubric({ rubricId: rubricRef, characteristic: 'history', title: 'Pending page fixture',
+      criteria: CRITERIA, status: 'active', by: 'su-fixture' });
+    const ratings = Object.fromEntries(CRITERIA.map(criterion => [criterion.key,
+      { rating: 'healthy', evidence: 'Retained result.' }]));
+    const acceptedId = await fileScorecard(db, { id: 'accepted-before-pending', rubricRef, finalized: true,
+      ratings, createdAt: '2026-10-01T12:00:00Z' });
+    for (let index = 0; index < 4; index++) await fileScorecard(db, { id: `pending-page-${index}`, rubricRef,
+      ratings, createdAt: `2026-11-01T12:00:0${index}Z`, observationExtra: {
+        gradingAudit: { state: 'pending', metaRubricRef: 'grading-integrity', stampedAt: '2026-11-01T12:00:00Z' } } });
+    const comparisonTime = '2026-11-01T12:01:00Z';
+    const history = await readScorecardHistoryPage(buildScorecardHistoryPredicate(normalizeScorecardHistoryArgs({
+      rubricRef, mode: 'review-history', comparisonTime, limit: 2 })), { listPage: listScorecardPage });
+    expect(history.rows).toHaveLength(2);
+    expect(history.hasMore).toBe(true);
+    for (const row of history.rows) {
+      expect(Object.keys(row.ratings)).toEqual(CRITERIA.map(criterion => criterion.key));
+      expect(row.exclusionReasons).toContain('grading-audit-pending');
+    }
+    const accepted = await readScorecardHistoryPage(buildScorecardHistoryPredicate(normalizeScorecardHistoryArgs({
+      rubricRef, mode: 'accepted', comparisonTime, limit: 1 })), { listPage: listScorecardPage });
+    expect(accepted.rows.map(row => row.issueId)).toEqual([acceptedId]);
+    expect(accepted.rows[0]!.createdAt).toBe('2026-10-01T12:00:00.000Z');
+    expect(accepted.rows[0]!.exclusionReasons).toEqual([]);
+    expect(accepted.hasMore).toBe(false);
+  });
+
+  it('projects exact retained ledger support on both readers without replacing it with a later run or rewriting the card', async () => {
+    const rubricRef = 'historical-ledger-support';
+    const at = '2026-11-01T12:00:00Z';
+    const clock = '2026-11-02T00:00:00Z';
+    const subject = { kind: 'pot' as const, ref: 'fleet:retained', windowStart: '2026-11-01T00:00:00Z', windowEnd: clock };
+    const schemaRevision = continuityProbeRevision(SQL_PROBE_TOOL);
+    if (!schemaRevision) throw new Error('The maintained SQL probe must be registered for this fixture');
+    await proposeRubric({ rubricId: rubricRef, characteristic: 'history', title: 'Retained ledger fixture',
+      criteria: [{ key: 'retained', title: 'Retained result', model: 'Exact historical result',
+        method: 'Inspect the cited test_runs receipt.', replication: 'Preserve the historical subject and clock.',
+        driftMarkers: 'A later successful run replaces an old failure.',
+        check: { kind: 'probe', probe: { kind: 'sql', sql: 'SELECT 3 AS n', schemaRevision,
+          expect: { path: '$.rowCount', op: 'gte', value: 10 } } } }], status: 'active', by: 'su-fixture' });
+    const rubric = (await getRubric(rubricRef))!;
+    const provenance = retainMeasurementProvenance({ startedAt: at, finishedAt: at,
+      procedure: { kind: 'command', argv: ['retained-fixture-check'] }, result: { value: 3 } });
+    const check = { id: 'retained:0', rubricRef, criterionKey: 'retained', kind: 'probe' as const,
+      value: 3, unit: null, subject: { kind: subject.kind, ref: subject.ref }, provenance };
+    const [oldId] = await recordRubricCheckResults([{ check, verdict: 'fail', measuredAt: at, durationMs: 1 }],
+      { workspaceId: issuesScopeWorkspace(), harnessSlug: 'papercusp' }, db.adminSql);
+    await recordRubricCheckResults([{ check: { ...check, value: 99 }, verdict: 'pass',
+      measuredAt: '2026-11-03T12:00:00Z', durationMs: 1 }],
+      { workspaceId: issuesScopeWorkspace(), harnessSlug: 'papercusp' }, db.adminSql);
+    const old = (await readLatestRubricCheckResults({ rubricRef, workspaceId: issuesScopeWorkspace(),
+      asOf: clock, testRunIds: [oldId!], subject: check.subject }, db.adminSql)).get(check.id)!;
+    const ratings = { retained: { rating: 'degraded', evidence: 'The retained adverse result.',
+      ratedFrom: 'ledger' as const, ledgerResult: { testRunId: oldId!, value: 3, unit: null,
+        provenance: old.check.provenance, provenanceStatus: old.provenanceStatus } } };
+    const cardId = await fileScorecard(db, { id: 'retained-ledger', rubricRef,
+      rubricRevision: rubric.revision, criteriaHash: rubric.criteriaHash, ratings, subject, createdAt: clock });
+    const before = await db.adminSql`SELECT payload FROM harness_shared.engineer_issues WHERE issue_id = ${cardId}`;
+    const listed = (await listScorecards({ issueIds: [cardId], includeGeneration: false, comparisonTime: clock }))[0]!;
+    const read = await readScorecardEvidence(cardId, clock);
+    if (read.kind !== 'found') throw new Error('Historical ledger fixture missing');
+    expect(listed.coverage!.evidence.current).toEqual(['retained']);
+    expect(listed.evidenceActions![0]).toMatchObject({ category: 'repair-subject', sourceRefs: [`test_runs:${oldId}`] });
+    expect(read.scorecard.coverage).toEqual(listed.coverage);
+    expect(read.scorecard.criteria[0]!.evidenceAction).toEqual(listed.evidenceActions![0]);
+    expect(listed.ratings).toEqual(ratings);
+    expect(listed.coverage!.fulfillment).toBe('unknown');
+    expect(await db.adminSql`SELECT payload FROM harness_shared.engineer_issues WHERE issue_id = ${cardId}`).toEqual(before);
+    // Removing the retained receipt cannot make the later pass prove this card.
+    await db.adminSql`DELETE FROM harness_shared.test_runs WHERE id = ${oldId!}`;
+    const missing = (await listScorecards({ issueIds: [cardId], includeGeneration: false }))[0]!;
+    expect(missing.coverage!.evidence.unknown).toEqual(['retained']);
+    expect(missing.evidenceActions![0]!.category).toBe('recover-historical');
+  });
+
+  it('reads old procedures after a live amendment, bounds list actions and preserves persisted ratings and acceptance', async () => {
+    const rubricRef = 'historical-actions-fixture';
+    const criteria = Array.from({ length: 5 }, (_, index) => ({ key: `criterion-${index}`,
+      title: `Criterion ${index}`, model: 'Original historical evidence.', method: `Recover original archive ${index}.`,
+      replication: 'Use the pinned November window.', driftMarkers: 'Missing original records.', instrumentKey: 'none' }));
+    await proposeRubric({ rubricId: rubricRef, characteristic: 'history', title: 'History fixture',
+      criteria, status: 'active', by: 'su-fixture' });
+    const original = (await getRubric(rubricRef))!;
+    const ratings = Object.fromEntries(criteria.map(criterion => [criterion.key, {
+      rating: 'unknown', evidence: 'Original retained sources missing.', unknownReason: 'retention-gap' as const,
+      nextEvidenceAction: `Original grader text ${criterion.key}; literal $(unchanged).`,
+    }]));
+    const cardId = await fileScorecard(db, { id: 'historical-actions', rubricRef,
+      rubricRevision: original.revision, criteriaHash: original.criteriaHash, ratings,
+      subject: { ref: 'fleet:history-fixture', windowStart: '2026-11-01T00:00:00Z', windowEnd: '2026-11-02T00:00:00Z' },
+      createdAt: '2026-11-02T00:00:00Z' });
+    // Deliberately retain an old author verdict as bytes. Reader guidance cannot
+    // repair, endorse or erase a stored verdict, even on an all-unknown card.
+    const acceptance = { verdict: 'reject', reasoning: 'Historical evidence remains unresolved.' };
+    await db.adminSql`UPDATE harness_shared.engineer_issues SET payload = jsonb_set(payload,
+      '{observation,acceptance}', ${JSON.stringify(acceptance)}::text::jsonb) WHERE issue_id = ${cardId}`;
+    const before = await db.adminSql`SELECT payload FROM harness_shared.engineer_issues WHERE issue_id = ${cardId}`;
+    await proposeRubric({ rubricId: rubricRef, characteristic: 'history', title: 'Changed live fixture',
+      criteria: criteria.map(criterion => ({ ...criterion, method: 'CURRENT method must not leak into historical guidance.' })),
+      status: 'active', by: 'su-fixture' });
+    const comparisonTime = '2026-11-02T00:00:00Z';
+    const listed = (await listScorecards({ issueIds: [cardId], includeGeneration: false, comparisonTime }))[0]!;
+    const read = await readScorecardEvidence(cardId, comparisonTime);
+    expect(read.kind).toBe('found');
+    if (read.kind !== 'found') throw new Error('Missing persisted historical fixture');
+    expect(listed.ratings).toEqual(ratings);
+    expect(listed.acceptance).toEqual(acceptance);
+    expect(listed.evidenceActions).toHaveLength(3);
+    expect(listed.omittedActionCount).toBe(2);
+    expect(listed.evidenceActions).toEqual(read.scorecard.criteria.slice(0, 3).map(criterion => criterion.evidenceAction));
+    expect(listed.evidenceActions![0]).toMatchObject({ snapshot: 'resolved', category: 'recover-historical',
+      procedure: { excerpt: 'Recover original archive 0.\nUse the pinned November window.' },
+      provenance: { rubricRevision: original.revision, criteriaHash: original.criteriaHash } });
+    expect(listed.coverage?.denominator).toBe(5);
+    expect(read.scorecard.coverage).toEqual(listed.coverage);
+    const after = await db.adminSql`SELECT payload FROM harness_shared.engineer_issues WHERE issue_id = ${cardId}`;
+    expect(after).toEqual(before);
+    expect(read.scorecard.criteria.map(({ key, evidenceAction: _action, ...rating }) => [key, rating])).toEqual(Object.entries(ratings));
   });
 });
 

@@ -28,6 +28,9 @@
  */
 
 import { z } from 'zod';
+import { blockerDecisionInputSchema, hasUnresolvedBlockerObligation, prepareBlockerDecision,
+  type BlockerDecisionRecord } from '../../blocker-resolution-decision';
+import { blockerBoundaryContext, preflightBlockerDecision } from '../../blocker-resolution-evidence';
 import { trackDetached } from '../../detached-imports';
 import { existsSync, readdirSync, readFileSync, type Dirent } from 'node:fs';
 import * as nodePath from 'node:path';
@@ -1079,6 +1082,7 @@ const itemSpec = z.object({
       "Terminal lifecycle intent. Feature/chunk success: 'passed'; issue success: 'resolved'. Unified 'done'/'dropped' aliases are accepted and preserve success vs discard semantics. Legacy 'deprecated'/'closed' are discard/wontfix. Never use 'closed' as a generic synonym for successful work. To omit state deliberately, pass recordOnly:true.",
     ),
   recordOnly: z.boolean().optional().describe('Explicitly record and emit a completion without changing lifecycle state.'),
+  blockerDecision: blockerDecisionInputSchema.optional(),
   /** The structured completion record (D-004). `workItem` defaults to this item's `id`. */
   completion: completionSpec,
   /**
@@ -3696,6 +3700,15 @@ async function completeOneTracked(
   const { value: sanitizedCompletion, stripped: nulBytesStripped } = stripNulBytesDeep(it.completion);
   if (nulBytesStripped) it.completion = sanitizedCompletion;
 
+  // Bind only caller intent. Inferred state, proof stamps and resolved facts can
+  // change after commit; none may invalidate an exact historical receipt.
+  const blockerEffect = structuredClone({ operation: 'complete', state: it.state ?? null,
+    recordOnly: it.recordOnly === true, completion: it.completion, statusWasDefaulted,
+    outputPayload: it.outputPayload ?? null, specAdequacy: it.specAdequacy ?? null,
+    assumptions: it.assumptions ?? null, boundaryNote: it.boundaryNote ?? null,
+    changeKinds: it.changeKinds ?? null, changeKindReason: it.changeKindReason ?? null });
+  let blockerReceipt: { record: BlockerDecisionRecord; replayed: boolean } | undefined;
+
   const existing = await track('work-item', () => getWorkItem(it.id, it.harness));
   if (existing && recoveredAttempt) {
     (await import('../../blueprint/operation-service')).assertDeferredOperationCompletionFence(recoveredAttempt, existing);
@@ -3740,6 +3753,14 @@ async function completeOneTracked(
     })();
     const notFound = `work_item '${it.id}' not found`;
     return { ok: false, id: it.id, error: heldIdHint ? `${notFound}.${heldIdHint}` : notFound };
+  }
+  if (it.blockerDecision) {
+    const prepared = prepareBlockerDecision(existing.payload, it.blockerDecision, {
+      ownerId: ident.ownerId, sessionId: ident.ownerId, workItemId: it.id, custodianId: existing.assignee,
+    }, { effect: blockerEffect });
+    if (!prepared.ok) return { ...prepared, id: it.id, error: prepared.code };
+    if (prepared.replayed) return { ok: true, id: it.id, workItem: existing,
+      blockerDecision: prepared.record, replayed: true };
   }
   // D-035 (WI-10005358): before ANY completion record, evidence or state write — a row that is
   // not agent work by category (record, document, event, human-audience) is refused exactly as
@@ -3955,6 +3976,17 @@ async function completeOneTracked(
   // intent can be inferred from completion.status after the schema has parsed.
   const closeIntentRequested =
     Boolean(effectiveState) && CLOSE_INTENT_STATES.has(String(effectiveState).trim().toLowerCase());
+  if (it.blockerDecision && !effectiveState) return { ok: false, id: it.id,
+    error: 'blocker_decision_requires_transition',
+    nextAction: 'Use a lifecycle transition to persist the decision atomically; record-only completion does not settle a blocker.' };
+  if (effectiveState && (it.blockerDecision || hasUnresolvedBlockerObligation(existing.payload, existing.state))) {
+    const checked = await preflightBlockerDecision(existing, it.blockerDecision,
+      await blockerBoundaryContext(ctx, ident.ownerId, existing.harness),
+      { effect: blockerEffect, requireResolution: closeIntentRequested });
+    if (!checked.ok) return { ...checked, id: it.id, error: checked.code };
+    if (!('ordinary' in checked) && checked.replayed) return { ok: true, id: it.id, workItem: existing,
+      blockerDecision: checked.record, replayed: true };
+  }
   // EI-23476131268587322: issue coalescing may refresh an open row's title/body
   // and watchdog identity after a worker claimed it. The claim path stamps the
   // subject baseline atomically and refreshes it only when an explicit same-holder
@@ -5826,6 +5858,7 @@ async function completeOneTracked(
       // brief lock-timeout dip does not record completion evidence while leaving the
       // item claimable. Non-contention errors still propagate immediately through the
       // shared helper and land in stateError below.
+      const blockerEvidenceContext = await blockerBoundaryContext(ctx, ident.ownerId, existing.harness);
       const res = await track('state-transition', () =>
         acquireWithContentionRetry(() =>
           setWorkItemStateWithAliasInfo(it.id, effectiveState, {
@@ -5833,6 +5866,10 @@ async function completeOneTracked(
             // Reuse family identity, but keep the writer's fresh state/owner reads.
             family: existing.family,
             by: ident.ownerId,
+            blockerEvidenceContext,
+            ...(it.blockerDecision ? { blockerDecision: { input: it.blockerDecision,
+              sessionId: ident.ownerId, effect: blockerEffect } } : {}),
+            onBlockerDecision: (receipt) => { blockerReceipt = receipt; },
             // NO `completionRef` — see the block comment above. The narrative is not
             // lost: `completionEvidenceToPersist` (EI-19319623239777505) carries the
             // caller's free-text `summary` alongside whatever structured fields exist,
@@ -5851,6 +5888,8 @@ async function completeOneTracked(
           }),
         ),
       );
+      if (blockerReceipt?.replayed) return { ok: true, id: it.id, workItem: res.workItem ?? existing,
+        blockerDecision: blockerReceipt.record, replayed: true };
       workItem = res.workItem ?? existing;
       aliasNote = res.aliasNote;
       aliased = res.aliased;
@@ -6647,6 +6686,7 @@ async function completeOneTracked(
     ...(boundaryNoteEligible ? { boundaryNotePosted, ...(boundaryNoteError ? { boundaryNoteError } : {}) } : {}),
     ...(stateWarning ? { stateWarning } : {}),
     ...(planGateParkWarning ? { planGateParkWarning } : {}),
+    ...(blockerReceipt ? { blockerDecision: blockerReceipt.record, replayed: false } : {}),
     ...(completionPrefill ? { completionPrefill } : {}),
     ...(completionBrief ? { completionBrief } : {}),
     ...(anchorAdvisory ? { planAnchorAdvisory: anchorAdvisory } : {}),
@@ -7043,6 +7083,7 @@ const workItemsCompleteTool = defineTool({
                 "Terminal intent: feature/chunk uses 'passed'|'deprecated' and issue uses 'resolved'|'closed'; unified 'done'|'dropped' aliases are also accepted. 'dropped'/'closed'/'deprecated' mean discard or wontfix; never use them for successful work.",
               ),
             recordOnly: z.boolean().optional().describe('Explicitly record and emit without changing lifecycle state.'),
+            blockerDecision: blockerDecisionInputSchema.optional(),
             /** Optional successor/boundary note for a successful terminal finish. */
             boundaryNote: z
               .string()
@@ -7093,6 +7134,7 @@ const workItemsCompleteTool = defineTool({
                 "Default terminal intent for items that omit one. Feature/chunk success: 'passed'; issue success: 'resolved'. Legacy discard/wontfix: 'deprecated' or 'closed'; unified aliases 'done'|'dropped' are also accepted.",
               ),
             recordOnly: z.boolean().optional().describe('Default record-only intent for items that omit their own state.'),
+            blockerDecision: blockerDecisionInputSchema.optional(),
             /** Optional default successor/boundary note for items that omit their own. */
             boundaryNote: z
               .string()
@@ -7173,6 +7215,7 @@ const workItemsCompleteTool = defineTool({
           harness: it.harness ?? args.harness,
           state: it.state ?? args.state,
           recordOnly: it.recordOnly ?? args.recordOnly,
+          blockerDecision: it.blockerDecision ?? args.blockerDecision,
           boundaryNote: it.boundaryNote ?? args.boundaryNote,
           validateOnly: it.validateOnly ?? args.validateOnly,
           changeKinds: it.changeKinds ?? args.changeKinds,
@@ -7184,6 +7227,7 @@ const workItemsCompleteTool = defineTool({
             harness: args.harness,
             state: args.state,
             recordOnly: args.recordOnly,
+            blockerDecision: args.blockerDecision,
             completion: args.completion!,
             outputPayload: args.outputPayload,
             specAdequacy: 'specAdequacy' in args ? args.specAdequacy : undefined,

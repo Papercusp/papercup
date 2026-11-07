@@ -67,15 +67,28 @@ function withGoalQueryCancellation<T>(query: PromiseLike<T>, signal?: AbortSigna
   return Promise.resolve(query).finally(() => signal.removeEventListener('abort', cancel));
 }
 
-/** Preserve the Sql tag's other methods while attaching cancellation to each query. */
+/** Preserve lazy SQL fragments; attach cancellation only when a query is consumed. */
 function withGoalQuerySignal(sql: Sql, signal?: AbortSignal): Sql {
   if (!signal) return sql;
   return new Proxy(sql, {
     apply(target, thisArg, args) {
-      return withGoalQueryCancellation(
-        Reflect.apply(target, thisArg, args) as PromiseLike<unknown>,
-        signal,
-      );
+      const query = Reflect.apply(target, thisArg, args) as CancellableGoalQuery<unknown>;
+      // Identifiers/builders are synchronous helpers, and tagged queries can be
+      // nested predicate fragments. Promise.resolve here would execute those
+      // fragments eagerly and remove the Query identity Postgres uses to compose them.
+      if (typeof query?.cancel !== 'function') return query;
+      return new Proxy(query, {
+        get(pending, property, receiver) {
+          if (property === 'then' || property === 'catch' || property === 'finally') {
+            const consumed = () => withGoalQueryCancellation(pending, signal);
+            return (...callbacks: unknown[]) => {
+              const promise = consumed();
+              return Reflect.apply(promise[property], promise, callbacks);
+            };
+          }
+          return Reflect.get(pending, property, receiver);
+        },
+      });
     },
   });
 }

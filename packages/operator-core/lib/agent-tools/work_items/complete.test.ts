@@ -18,6 +18,15 @@ import { join } from 'node:path';
 import { blankPng, contentPng } from '@papercusp/image-blankness/testing';
 import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/agent-mcp';
 import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
+import { prepareBlockerDecision } from '../../blocker-resolution-decision';
+
+const blockerPreflight = vi.hoisted(() => ({
+  read: vi.fn<typeof import('../../blocker-resolution-evidence').preflightBlockerDecision>(),
+}));
+vi.mock('../../blocker-resolution-evidence', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../blocker-resolution-evidence')>(),
+  preflightBlockerDecision: (...args: Parameters<typeof blockerPreflight.read>) => blockerPreflight.read(...args),
+}));
 
 const dbMocks = vi.hoisted(() => ({
   planItemStatusRows: vi.fn(),
@@ -445,6 +454,7 @@ function okState(workItem: Record<string, unknown>) {
 }
 
 beforeEach(() => {
+  blockerPreflight.read.mockReset().mockResolvedValue({ ok: true, ordinary: true });
   directiveRecovery.closureError.mockReset().mockResolvedValue(null);
   contentIdentityPreview.stamp.mockReset();
   completionBriefPort.read.mockReset();
@@ -507,6 +517,77 @@ beforeEach(() => {
   attachCompletionEvidenceToSettledItem.mockResolvedValue({ outcome: 'recorded', workItem: null });
   commentWorkItem.mockReset();
   commentWorkItem.mockResolvedValue({ id: 'post-1' });
+});
+
+describe('blocker decisions at the completion boundary', () => {
+  const ref = { kind: 'state' as const, ref: 'state:dependency.health#/ready=true' };
+  const decision = { schemaVersion: 1 as const, idempotencyKey: 'completion-boundary-1',
+    symptom: 'Dependency unavailable', investigation: [{ action: 'Read canonical health',
+      outcome: 'Measured ready after repair', evidenceRefs: [ref] }], attempts: [], evidenceRefs: [ref],
+    disposition: 'self_resolve' as const, verification: { outcome: 'Health ready', evidenceRefs: [ref] } };
+  const request = { id: 'F-12', state: 'passed', assumptions: 'none', blockerDecision: decision,
+    completion: { summary: 'Repaired dependency', status: 'done', testsRun: 'maintained health regression',
+      testResult: 'passed', verifiedHow: 'unit', filesChanged: [] } };
+
+  function historicalRow() {
+    const parsed = complete.args.parse(request);
+    const { __statusDefaulted, ...completion } = parsed.completion! as NonNullable<typeof parsed.completion>
+      & { __statusDefaulted?: boolean };
+    const effect = { operation: 'complete', state: parsed.state ?? null, recordOnly: parsed.recordOnly === true,
+      completion, statusWasDefaulted: __statusDefaulted === true, outputPayload: parsed.outputPayload ?? null,
+      specAdequacy: 'specAdequacy' in parsed ? parsed.specAdequacy ?? null : null,
+      assumptions: parsed.assumptions ?? null, boundaryNote: parsed.boundaryNote ?? null,
+      changeKinds: parsed.changeKinds ?? null, changeKindReason: parsed.changeKindReason ?? null };
+    const prepared = prepareBlockerDecision({}, decision, { ownerId: 'su-tester', sessionId: 'su-tester',
+      workItemId: item.id, custodianId: 'su-tester' }, { effect });
+    if (!prepared.ok) throw new Error('invalid receipt fixture');
+    return { row: { ...item, state: 'done', assignee: 'su-successor', payload: prepared.patch }, receipt: prepared.record };
+  }
+
+  it('replays the original receipt before current custody and live evidence without another write', async () => {
+    const { row, receipt } = historicalRow();
+    getWorkItem.mockResolvedValue(row);
+    blockerPreflight.read.mockRejectedValue(new Error('live evidence unavailable'));
+    expect(await oneRaw(request)).toMatchObject({ ok: true, replayed: true, blockerDecision: receipt,
+      workItem: { state: 'done', assignee: 'su-successor' } });
+    expect(blockerPreflight.read).not.toHaveBeenCalled();
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    expect(attachCompletionEvidenceToSettledItem).not.toHaveBeenCalled();
+    expect(commentWorkItem).not.toHaveBeenCalled();
+  });
+
+  it('rejects a changed completion request with the same decision key', async () => {
+    getWorkItem.mockResolvedValue(historicalRow().row);
+    expect(await oneRaw({ ...request, completion: { ...request.completion, summary: 'Changed proof' } }))
+      .toMatchObject({ ok: false, code: 'blocker_decision_conflict' });
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
+  it('refuses an unresolved terminal escape with specific remediation before recording completion', async () => {
+    getWorkItem.mockResolvedValue({ ...item, state: 'blocked', assignee: 'su-tester', payload: {} });
+    blockerPreflight.read.mockResolvedValue({ ok: false, code: 'blocker_decision_evidence',
+      missing: ['measured self-resolution'], nextAction: 'Investigate and repair the canonical condition; retain custody.' });
+    expect(await oneRaw({ ...request, blockerDecision: undefined })).toMatchObject({ ok: false,
+      code: 'blocker_decision_evidence', missing: ['measured self-resolution'], nextAction: expect.stringContaining('retain custody') });
+    expect(blockerPreflight.read).toHaveBeenCalledWith(expect.anything(), undefined, expect.objectContaining({ ownerId: 'su-tester' }),
+      expect.objectContaining({ requireResolution: true }));
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    expect(commentWorkItem).not.toHaveBeenCalled();
+  });
+
+  it('refuses a new decision on a record-only completion instead of returning an unsaved receipt', async () => {
+    getWorkItem.mockResolvedValue({ ...item, assignee: 'su-tester', payload: {} });
+    expect(await oneRaw({ ...request, state: undefined, recordOnly: true }))
+      .toMatchObject({ ok: false, error: 'blocker_decision_requires_transition' });
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
+  it('retains blocker decisions in inline and bulk-default schemas', () => {
+    expect(complete.args.parse(request).blockerDecision).toEqual(decision);
+    const bulk = complete.args.parse({ blockerDecision: decision, state: 'passed',
+      items: [{ id: item.id, assumptions: 'none', completion: request.completion }] });
+    expect(bulk.blockerDecision).toEqual(decision);
+  });
 });
 
 // ── EI-20286699547467039: unmet completion gates accumulate into ONE refusal ──────────

@@ -110,6 +110,20 @@ beforeAll(async () => {
       ADD COLUMN plan_owner_gate_marker text, ADD COLUMN plan_seq integer;
     CREATE TABLE harness_shared.work_item_deps (workspace_id text, dep_type text,
       blocked_kind text, blocked_ref text, blocker_kind text, blocker_ref text);
+    -- Exercise every goal-source leg with real SQL, including the facts reader's
+    -- nested tagged predicates; unavailable-schema fallbacks must not hide errors.
+    ALTER TABLE harness_shared.work_items
+      ADD COLUMN taken_at timestamptz, ADD COLUMN payload jsonb;
+    ALTER TABLE harness_shared.plan_item_claims
+      ADD COLUMN acquired_ts timestamptz, ADD COLUMN intent text, ADD COLUMN last_activity_ts timestamptz;
+    CREATE TABLE harness_shared.fleet_membership_events
+      (id bigint, workspace_id text, owner_id text, fleet_slug text, event text, at timestamptz);
+    CREATE TABLE harness_shared.agent_facts
+      (id bigint, workspace_id text, scope text, scope_ref text, key text, body text,
+       source_ref text, audience_scope text, source_provenance jsonb, confidence text,
+       measurement jsonb, recheck jsonb, kind text, depends_on jsonb, claim jsonb,
+       enforcement jsonb, settled_by jsonb, created_by text, updated_at timestamptz,
+       expires_at timestamptz, fed_hlc text, superseded_at timestamptz, retracted_at timestamptz);
   `);
 }, 120_000);
 afterAll(async () => { connection.sql = null; await db?.cleanup(); });
@@ -119,7 +133,7 @@ beforeEach(async () => {
   policy.readQuality.mockImplementation(async () => ({ satisfied: true, applicable: policy.qualityApplicable, mode: 'enforced' }));
   policy.readAdmission.mockReset();
   policy.critique.mockReset();
-  await db.sql.unsafe('TRUNCATE harness_shared.session_briefs, harness_shared.adv_sessions, harness_shared.plan_item_claims, harness_shared.work_items, harness_shared.harness_plans, harness_shared.plan_audits, harness_shared.plan_revisions');
+  await db.sql.unsafe('TRUNCATE harness_shared.session_briefs, harness_shared.adv_sessions, harness_shared.plan_item_claims, harness_shared.work_items, harness_shared.harness_plans, harness_shared.plan_audits, harness_shared.plan_revisions, harness_shared.agent_facts, harness_shared.fleet_membership_events');
   await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id,harness_slug,plan_slug,content,content_hash,op_status) VALUES (${WS}, 'project', 'draft-feature',
     ${'---\ntitle: Draft\nstatus: draft\n---\n# Draft\n'}, 'draft-hash', NULL)`;
 });
@@ -255,6 +269,18 @@ describe('real write-boundary bypass regression', () => {
       'goal_pool_acquire_fleet', 'goal_pool_acquire_override',
     ]));
     expect(timings.every(timing => Number.isFinite(timing.durationMs) && timing.durationMs >= 0)).toBe(true);
+  });
+  it('preserves composable fact predicates in cancellable measured goal queries', async () => {
+    const { runWithWorkspace } = await import('../../workspace-als');
+    const { resolveOwnerGoalWithAssessment } = await import('../coordination/agent-goal-sources');
+    await db.sql`INSERT INTO harness_shared.agent_facts
+      (id, workspace_id, scope, scope_ref, key, body, updated_at, expires_at)
+      VALUES (1, ${WS}, 'owner', ${OWNER}, 'goal.override', 'WI-fragment-regression', now(), 'infinity')`;
+    const controller = new AbortController();
+    const result = await runWithWorkspace(WS, () => resolveOwnerGoalWithAssessment(
+      OWNER, 'self', () => {}, controller.signal));
+    expect(result.diagnostics).toEqual([]);
+    expect(result.goal?.ref).toBe('WI-fragment-regression');
   });
   it('denies native patches and shell writes despite an unrelated held WI and no worn identity', async () => {
     await db.sql`INSERT INTO harness_shared.session_briefs VALUES (${OWNER}, ${WS}, 'draft-feature', 'project',

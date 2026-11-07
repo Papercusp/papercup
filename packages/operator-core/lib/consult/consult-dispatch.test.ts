@@ -824,6 +824,37 @@ describe('dispatchConsultResponder — the walk', () => {
     expect(calls.stopped).toHaveLength(0);
   });
 
+  it('carries the cascade token to the final process boundary after async launch preparation', async () => {
+    const fence = { cursor: 2, responder: OPTS.sourceOwnerId, leaseToken: 'original-dispatch' };
+    let currentToken = fence.leaseToken;
+    const reserveConsultSpawnLease = vi.fn(async (_workspace: string, _conversation: string,
+      expected?: typeof fence & { answeringOwnerId: string }) =>
+      expected?.leaseToken === currentToken ? { release: async () => {} } : null);
+    const { deps, calls } = makeFakes({
+      loadRanks: async () => [{ rank: 1, agent: 'claude', model: 'opus' }],
+      readDispatchChoice: async () => ({ reviewerModel: null, nativeConsult: null }),
+      reserveConsultSpawnLease,
+    });
+    const spawn = deps.spawnHeadless!;
+    deps.spawnHeadless = async (options) => {
+      // Simulate recovery during console-spawn's awaited install boundary.
+      currentToken = 'replacement-dispatch';
+      if (await options.beforeSpawn?.() === false) {
+        return { status: 'error', code: 409, error: 'launch fenced out', cancelled: true };
+      }
+      return spawn(options);
+    };
+    const result = await makeConsultReachDispatcher(CTX, deps)({
+      responder: OPTS.sourceOwnerId, conversationId: OPTS.conversationId,
+      summary: 'fenced launch', body: 'review the current contract', spawnFence: fence,
+      onAnsweringOwner: async () => {},
+    });
+    expect(reserveConsultSpawnLease).toHaveBeenCalledExactlyOnceWith(CTX.workspaceId, OPTS.conversationId,
+      { ...fence, answeringOwnerId: 'su-answer-1' });
+    expect(result).toMatchObject({ woke: 0, answeringOwnerId: null });
+    expect(calls.spawn).toHaveLength(0);
+  });
+
   it('releases the consult spawn lease when headless launch fails after the final check', async () => {
     const release = vi.fn(async () => {});
     const { deps } = makeFakes({

@@ -612,6 +612,8 @@ describe('code:run → recipe capture (P-003)', () => {
         args: family === 'sql' ? { sql: 'SELECT $1::text AS value', parameters: ['PRIVATE'] }
           : { command: 'echo PRIVATE', cwd: '/tmp' } };
       const result = { ok: true, logs: [], dryRun: false, plannedMutations: [], dispatchCount: 1, callRecords: [call],
+        runtimeObservations: { authorizationObservationCount: 1, authorityWideningDetected: false,
+          midTurnPromptInjectionObservability: 'not-observable' as const },
         dispatchTimings: { calls: [{ ...call, callId: 'host:source', elapsedMs: 1 }], totalCount: 1, omittedCount: 0, maxCalls: 24 } };
       const run = vi.spyOn(agentMcp, 'runToolOrchestration').mockResolvedValue(result);
       const script = family === 'sql' ? "return await tools.dev.pgQuery({sql:'SELECT 1'});"

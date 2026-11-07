@@ -299,6 +299,7 @@ export function prepareBgVerifierBuildRecord({ prepared, dependencies, invocatio
         outputNamespace?: {
             bank: BgDirectoryIdentity;
             stage: BgDirectoryIdentity;
+            transactionSha256?: string;
         } | undefined;
         builder: {
             path: string;
@@ -364,6 +365,7 @@ export function verifyBgVerifierBuildRecord(record: ReturnType<typeof prepareBgV
         outputNamespace?: {
             bank: BgDirectoryIdentity;
             stage: BgDirectoryIdentity;
+            transactionSha256?: string;
         } | undefined;
         builder: {
             path: string;
@@ -436,6 +438,7 @@ export function prepareBgVerifierBuildContexts({ prepared, dependencies, invocat
             outputNamespace?: {
                 bank: BgDirectoryIdentity;
                 stage: BgDirectoryIdentity;
+                transactionSha256?: string;
             } | undefined;
             builder: {
                 path: string;
@@ -474,6 +477,7 @@ export function prepareBgVerifierBuildContexts({ prepared, dependencies, invocat
             outputNamespace?: {
                 bank: BgDirectoryIdentity;
                 stage: BgDirectoryIdentity;
+                transactionSha256?: string;
             } | undefined;
             builder: {
                 path: string;
@@ -582,6 +586,7 @@ export function prepareBgVerifierBuildTransaction({ prepared, dependencies, invo
                 outputNamespace?: {
                     bank: BgDirectoryIdentity;
                     stage: BgDirectoryIdentity;
+                    transactionSha256?: string;
                 } | undefined;
                 builder: {
                     path: string;
@@ -620,6 +625,7 @@ export function prepareBgVerifierBuildTransaction({ prepared, dependencies, invo
                 outputNamespace?: {
                     bank: BgDirectoryIdentity;
                     stage: BgDirectoryIdentity;
+                    transactionSha256?: string;
                 } | undefined;
                 builder: {
                     path: string;
@@ -713,6 +719,7 @@ export function beginBgVerifierBuildTransaction({ transaction, ownerPid }: {
                     outputNamespace?: {
                         bank: BgDirectoryIdentity;
                         stage: BgDirectoryIdentity;
+                        transactionSha256?: string;
                     } | undefined;
                     builder: {
                         path: string;
@@ -751,6 +758,7 @@ export function beginBgVerifierBuildTransaction({ transaction, ownerPid }: {
                     outputNamespace?: {
                         bank: BgDirectoryIdentity;
                         stage: BgDirectoryIdentity;
+                        transactionSha256?: string;
                     } | undefined;
                     builder: {
                         path: string;
@@ -823,6 +831,7 @@ export function beginBgVerifierBuildTransaction({ transaction, ownerPid }: {
                 outputNamespace?: {
                     bank: BgDirectoryIdentity;
                     stage: BgDirectoryIdentity;
+                    transactionSha256?: string;
                 } | undefined;
                 builder: {
                     path: string;
@@ -861,6 +870,7 @@ export function beginBgVerifierBuildTransaction({ transaction, ownerPid }: {
                 outputNamespace?: {
                     bank: BgDirectoryIdentity;
                     stage: BgDirectoryIdentity;
+                    transactionSha256?: string;
                 } | undefined;
                 builder: {
                     path: string;
@@ -1048,6 +1058,7 @@ export function publishBgVerifierLogicalOutputSet(args: {
                         outputNamespace?: {
                             bank: BgDirectoryIdentity;
                             stage: BgDirectoryIdentity;
+                            transactionSha256?: string;
                         } | undefined;
                         builder: {
                             path: string;
@@ -1086,6 +1097,7 @@ export function publishBgVerifierLogicalOutputSet(args: {
                         outputNamespace?: {
                             bank: BgDirectoryIdentity;
                             stage: BgDirectoryIdentity;
+                            transactionSha256?: string;
                         } | undefined;
                         builder: {
                             path: string;
@@ -1158,6 +1170,7 @@ export function publishBgVerifierLogicalOutputSet(args: {
                     outputNamespace?: {
                         bank: BgDirectoryIdentity;
                         stage: BgDirectoryIdentity;
+                        transactionSha256?: string;
                     } | undefined;
                     builder: {
                         path: string;
@@ -1196,6 +1209,7 @@ export function publishBgVerifierLogicalOutputSet(args: {
                     outputNamespace?: {
                         bank: BgDirectoryIdentity;
                         stage: BgDirectoryIdentity;
+                        transactionSha256?: string;
                     } | undefined;
                     builder: {
                         path: string;
@@ -1264,6 +1278,40 @@ export function publishBgVerifierLogicalOutputSet(args: {
             realpath: string;
             sha256: string;
         }[];
+        consumption: {
+            consumed: {
+                path: string;
+                realpath: string;
+                sha256: string;
+            }[];
+            transactionSha256: string | null;
+            entry: string;
+            argv: string[];
+            compilerToolchain: {
+                compiler: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                node: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                packageManager: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                environment: {
+                    [k: string]: string;
+                };
+            };
+            sourceGeneration: string;
+            dependencyGeneration: string;
+            buildRecordSha256: string;
+            schemaVersion: string;
+        };
         output: {
             path: string;
             realpath: string;
@@ -1357,6 +1405,7 @@ export function verifyBgVerifierPublication(publication: ReturnType<typeof publi
                         outputNamespace?: {
                             bank: BgDirectoryIdentity;
                             stage: BgDirectoryIdentity;
+                            transactionSha256?: string;
                         } | undefined;
                         builder: {
                             path: string;
@@ -1395,6 +1444,7 @@ export function verifyBgVerifierPublication(publication: ReturnType<typeof publi
                         outputNamespace?: {
                             bank: BgDirectoryIdentity;
                             stage: BgDirectoryIdentity;
+                            transactionSha256?: string;
                         } | undefined;
                         builder: {
                             path: string;
@@ -1467,6 +1517,7 @@ export function verifyBgVerifierPublication(publication: ReturnType<typeof publi
                     outputNamespace?: {
                         bank: BgDirectoryIdentity;
                         stage: BgDirectoryIdentity;
+                        transactionSha256?: string;
                     } | undefined;
                     builder: {
                         path: string;
@@ -1505,6 +1556,7 @@ export function verifyBgVerifierPublication(publication: ReturnType<typeof publi
                     outputNamespace?: {
                         bank: BgDirectoryIdentity;
                         stage: BgDirectoryIdentity;
+                        transactionSha256?: string;
                     } | undefined;
                     builder: {
                         path: string;
@@ -1573,6 +1625,40 @@ export function verifyBgVerifierPublication(publication: ReturnType<typeof publi
             realpath: string;
             sha256: string;
         }[];
+        consumption: {
+            consumed: {
+                path: string;
+                realpath: string;
+                sha256: string;
+            }[];
+            transactionSha256: string | null;
+            entry: string;
+            argv: string[];
+            compilerToolchain: {
+                compiler: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                node: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                packageManager: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                environment: {
+                    [k: string]: string;
+                };
+            };
+            sourceGeneration: string;
+            dependencyGeneration: string;
+            buildRecordSha256: string;
+            schemaVersion: string;
+        };
         output: {
             path: string;
             realpath: string;
@@ -1678,6 +1764,7 @@ export function runBgVerifierBuildRecipe(args: Parameters<typeof beginBgVerifier
                         outputNamespace?: {
                             bank: BgDirectoryIdentity;
                             stage: BgDirectoryIdentity;
+                            transactionSha256?: string;
                         } | undefined;
                         builder: {
                             path: string;
@@ -1716,6 +1803,7 @@ export function runBgVerifierBuildRecipe(args: Parameters<typeof beginBgVerifier
                         outputNamespace?: {
                             bank: BgDirectoryIdentity;
                             stage: BgDirectoryIdentity;
+                            transactionSha256?: string;
                         } | undefined;
                         builder: {
                             path: string;
@@ -1788,6 +1876,7 @@ export function runBgVerifierBuildRecipe(args: Parameters<typeof beginBgVerifier
                     outputNamespace?: {
                         bank: BgDirectoryIdentity;
                         stage: BgDirectoryIdentity;
+                        transactionSha256?: string;
                     } | undefined;
                     builder: {
                         path: string;
@@ -1826,6 +1915,7 @@ export function runBgVerifierBuildRecipe(args: Parameters<typeof beginBgVerifier
                     outputNamespace?: {
                         bank: BgDirectoryIdentity;
                         stage: BgDirectoryIdentity;
+                        transactionSha256?: string;
                     } | undefined;
                     builder: {
                         path: string;
@@ -1894,6 +1984,40 @@ export function runBgVerifierBuildRecipe(args: Parameters<typeof beginBgVerifier
             realpath: string;
             sha256: string;
         }[];
+        consumption: {
+            consumed: {
+                path: string;
+                realpath: string;
+                sha256: string;
+            }[];
+            transactionSha256: string | null;
+            entry: string;
+            argv: string[];
+            compilerToolchain: {
+                compiler: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                node: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                packageManager: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                environment: {
+                    [k: string]: string;
+                };
+            };
+            sourceGeneration: string;
+            dependencyGeneration: string;
+            buildRecordSha256: string;
+            schemaVersion: string;
+        };
         output: {
             path: string;
             realpath: string;
@@ -1972,6 +2096,40 @@ export function compileBgVerifierInvocation({ record, invocation, argv, expected
         realpath: string;
         sha256: string;
     }[];
+    consumption: {
+        consumed: {
+            path: string;
+            realpath: string;
+            sha256: string;
+        }[];
+        transactionSha256: string | null;
+        entry: string;
+        argv: string[];
+        compilerToolchain: {
+            compiler: {
+                path: string;
+                realpath: string;
+                sha256: string;
+            };
+            node: {
+                path: string;
+                realpath: string;
+                sha256: string;
+            };
+            packageManager: {
+                path: string;
+                realpath: string;
+                sha256: string;
+            };
+            environment: {
+                [k: string]: string;
+            };
+        };
+        sourceGeneration: string;
+        dependencyGeneration: string;
+        buildRecordSha256: string;
+        schemaVersion: string;
+    };
     output: {
         path: string;
         realpath: string;
@@ -1989,16 +2147,19 @@ export function compileBgVerifierInvocation({ record, invocation, argv, expected
  * @typedef {{ schemaVersion: 'bg-build-output-v1', buildRecordSha256: string,
  *   originalSourceReceiptSha256: string, entry: ReturnType<typeof readBgFileIdentity>,
  *   manifest: ReturnType<typeof readBgFileIdentity>,
+ *   compilerReceipt?: Awaited<ReturnType<typeof compileBgVerifierInvocation>>,
  *   artifact: Extract<import('@papercusp/operator-core/lib/release/operator-artifact').OperatorArtifactIdentity,
  *     { status: 'measured' }> }} BgVerifierOutputRecord
  * @param {{ record: ReturnType<typeof prepareBgVerifierBuildRecord>,
- *   invocation: BgBuildInvocation, entry: string }} options
+ *   invocation: BgBuildInvocation, entry: string,
+ *   compilerReceipt?: Awaited<ReturnType<typeof compileBgVerifierInvocation>> }} options
  * @returns {Promise<BgVerifierOutputRecord>}
  */
-export function qualifyBgVerifierOutput({ record, invocation, entry }: {
+export function qualifyBgVerifierOutput({ record, invocation, entry, compilerReceipt }: {
     record: ReturnType<typeof prepareBgVerifierBuildRecord>;
     invocation: BgBuildInvocation;
     entry: string;
+    compilerReceipt?: Awaited<ReturnType<typeof compileBgVerifierInvocation>>;
 }): Promise<BgVerifierOutputRecord>;
 /** Recheck the same detached output immediately before publication; never
  * regenerate a source receipt, input record or manifest to bless replacement.
@@ -2689,6 +2850,7 @@ export type BgAcceptedManifest = {
     sha256: string;
     schemaVersion: 1;
     members: Record<string, string>;
+    authorityKind?: "source-only" | "full-output";
 };
 /**
  * The expected population comes from the parent's accepted evidence, never
@@ -2718,6 +2880,7 @@ export type BgBuildInvocation = {
     outputNamespace?: {
         bank: BgDirectoryIdentity;
         stage: BgDirectoryIdentity;
+        transactionSha256?: string;
     };
 };
 /**
@@ -2731,6 +2894,7 @@ export type BgVerifierOutputRecord = {
     originalSourceReceiptSha256: string;
     entry: ReturnType<typeof readBgFileIdentity>;
     manifest: ReturnType<typeof readBgFileIdentity>;
+    compilerReceipt?: Awaited<ReturnType<typeof compileBgVerifierInvocation>>;
     artifact: Extract<import("@papercusp/operator-core/lib/release/operator-artifact").OperatorArtifactIdentity, {
         status: "measured";
     }>;

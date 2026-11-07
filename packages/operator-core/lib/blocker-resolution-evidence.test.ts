@@ -2,9 +2,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { createBlockerEvidenceReader, preflightBlockerDecision } from './blocker-resolution-evidence';
 import { prepareBlockerDecision } from './blocker-resolution-decision';
 import { activeExternalBlockers } from './external-blockers';
+import type { UnresolvedDepBlocker } from './work-items';
 
 const mocks = vi.hoisted(() => ({ item: vi.fn(), presence: vi.fn(), cell: vi.fn(), event: vi.fn(),
-  doc: vi.fn(), session: vi.fn(), test: vi.fn(), deps: vi.fn(async () => []),
+  doc: vi.fn(), session: vi.fn(), test: vi.fn(), deps: vi.fn(async (): Promise<UnresolvedDepBlocker[]> => []),
   workspace: vi.fn(() => 'workspace-a'), hoist: vi.fn((): string | null => null) }));
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: mocks.workspace }));
 vi.mock('./work-items', () => ({ getWorkItem: mocks.item, readUnresolvedDepBlockers: mocks.deps }));
@@ -98,7 +99,7 @@ describe('canonical blocker boundary preflight', () => {
       expect(await preflightBlockerDecision({ ...item, state }, undefined, context, { effect })).toMatchObject({ ok: false });
     }
     expect(await preflightBlockerDecision(item, undefined, context, { effect, enteringDeferral: true })).toMatchObject({ ok: false });
-    mocks.deps.mockResolvedValueOnce([{ ref: 'harness-a#WI-2', kind: 'feature', satisfaction: 'settled' }] as never);
+    mocks.deps.mockResolvedValueOnce([{ ref: 'harness-a#WI-2', kind: 'feature', satisfaction: 'settled' }]);
     expect(await preflightBlockerDecision(item, undefined, context, { effect })).toMatchObject({ ok: false });
   });
 
@@ -123,6 +124,8 @@ describe('canonical blocker boundary preflight', () => {
     const prepared = prepareBlockerDecision({}, defer, { ownerId: 'su-a', sessionId: context.sessionId,
       workItemId: item.id, custodianId: 'su-a' }, { effect });
     if (!prepared.ok) throw new Error('fixture invalid');
+    expect(await preflightBlockerDecision(item, defer, context, { effect, requireResolution: true }))
+      .toMatchObject({ ok: false, missing: [expect.stringContaining('self-resolution before a terminal transition')] });
     expect(await preflightBlockerDecision({ ...item, payload: prepared.patch }, undefined, context, { effect })).toMatchObject({ ok: false });
     mocks.cell.mockResolvedValue({ status: 'value', value: { ready: false } });
     expect(await preflightBlockerDecision({ ...item, payload: prepared.patch }, { ...decision, idempotencyKey: 'resolve-1', priorRevision: 1 },
@@ -135,7 +138,7 @@ describe('canonical blocker boundary preflight', () => {
   it('fails closed on an unreadable or potentially truncated canonical dependency census', async () => {
     mocks.deps.mockRejectedValueOnce(new Error('unavailable'));
     expect(await preflightBlockerDecision(item, undefined, context, { effect })).toMatchObject({ ok: false });
-    mocks.deps.mockResolvedValueOnce(Array.from({ length: 25 }, () => ({ ref: 'WI-2' })) as never);
+    mocks.deps.mockResolvedValueOnce(Array.from({ length: 25 }, () => ({ ref: 'WI-2', kind: 'feature' })));
     expect(await preflightBlockerDecision(item, undefined, context, { effect })).toMatchObject({ ok: false,
       missing: [expect.stringContaining('complete dependency census')] });
   });

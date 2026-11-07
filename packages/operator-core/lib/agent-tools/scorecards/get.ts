@@ -117,14 +117,14 @@ function inlineResultBudgetChars(ownerId?: string | null): number {
   );
 }
 
-const evidenceReadCall = (issueId: string, criterionKey: string, evidenceOffset = 0) => ({
+const evidenceReadCall = (issueId: string, criterionKey: string, evidenceOffset = 0, comparisonTime?: string) => ({
   tool: 'scorecards:get',
-  args: { issueId, criterionKey, evidenceOffset },
+  args: { issueId, criterionKey, evidenceOffset, ...(comparisonTime ? { comparisonTime } : {}) },
 });
 
-const criterionIndexReadCall = (issueId: string, indexOffset: number) => ({
+const criterionIndexReadCall = (issueId: string, indexOffset: number, comparisonTime?: string) => ({
   tool: 'scorecards:get',
-  args: { issueId, indexOffset },
+  args: { issueId, indexOffset, ...(comparisonTime ? { comparisonTime } : {}) },
 });
 
 const rerunRecipeReadCall = (issueId: string, rerunRecipeOffset = 0) => ({
@@ -531,12 +531,12 @@ function boundedEvidenceRead(
           instruction: 'Evidence has NOT been read. For a criterion-index page, follow evidenceRead.next until the full index is assembled; then read every indexed criterion and concatenate its pages before grading.',
           criteria: scorecard.criteria.slice(indexOffset, endOffset).map(({ key, rating, evidence }) => ({
             key, rating, evidenceChars: evidence.length,
-            read: evidenceReadCall(issueId, key),
+            read: evidenceReadCall(issueId, key, 0, args.comparisonTime),
           })),
           scope: 'criterion-index' as const,
           offset: indexOffset,
           totalCriteria: scorecard.criteria.length,
-          ...(!completeIndex ? { next: criterionIndexReadCall(issueId, endOffset) } : {}),
+          ...(!completeIndex ? { next: criterionIndexReadCall(issueId, endOffset, args.comparisonTime) } : {}),
         },
       };
     };
@@ -581,7 +581,7 @@ function boundedEvidenceRead(
         offset,
         totalChars: criterion.evidence.length,
         instruction: 'Concatenate this criterion’s pages in offset order. Complete applies only to this criterion; audit every key from the card index.',
-        ...(!complete ? { next: evidenceReadCall(issueId, criterion.key, nextOffset) } : {}),
+        ...(!complete ? { next: evidenceReadCall(issueId, criterion.key, nextOffset, args.comparisonTime) } : {}),
       },
     };
   };

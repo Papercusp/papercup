@@ -261,6 +261,18 @@ export async function drainScheduledDiskReclaim(
     }
     const budgetErrors = new Set(receipt.effects?.filter((effect) => effect.stopped && effect.remaining > 0)
       .map((effect) => effectBudgetError(effect.root)));
+    // A cooperative yield can spend the pass's remaining budget reacquiring
+    // the mutex, before the effect loop records its ordinary budget stop.
+    // Resume only that measured timeout and interrupted root; the next pass
+    // rebuilds protection and eligibility within the original drain deadline.
+    const timeout = receipt.mutexTimeout;
+    if (timeout?.phase === 'reacquire' && Number.isFinite(timeout.timeoutMs) && timeout.timeoutMs > 0 &&
+        timeout.timeoutMs === timeout.remainingRunBudgetMs && Number.isFinite(timeout.waitedMs) &&
+        timeout.waitedMs >= timeout.timeoutMs && receipt.effects?.some(effect =>
+          effect.remaining > 0 && effect.root === receipt.scan?.stoppedAtRoot)) {
+      const prefix = `Timed out after ${timeout.timeoutMs}ms waiting for fs-mutex "papercusp-disk-retention" (`;
+      for (const error of receipt.errors) if (error.startsWith(prefix)) budgetErrors.add(error);
+    }
     // A budget-stopped capped root reports its measured remaining overage too.
     // Resume only that exact companion error; permanent or unrelated cap
     // failures still stop, and the original deadline and safety checks apply.

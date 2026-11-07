@@ -39,6 +39,10 @@ export type RuntimeResourceIntent = {
   id: string; lease_id: string; kind: RuntimeResourceKind; slot: string; ownership_tag: string;
   identity: Record<string, unknown> | null;
 };
+/** Shared by the session creator lock and transaction-local adoption fence. */
+export function runtimeLifecycleLockKey(workspaceId: string, leaseId: string): string {
+  return z.string().min(1).max(200).parse(workspaceId) + ':runtime-lifecycle:' + z.string().uuid().parse(leaseId);
+}
 /** Recovery uses the immutable consumed tuple, never a replacement's identity. */
 export function runtimeReviewerIdentityFromLease(lease: RuntimeLease): RuntimeReviewerIdentity {
   return identitySchema.parse({ workspaceId: lease.workspace_id, bindingId: Number(lease.binding_id),
@@ -153,7 +157,7 @@ export function createRuntimeCustodyStore(deps: {
       const connection = await (deps.lifecycleSql ?? getLongLivedAdminPool('blind-review-runtime-lifecycle', {
         max: 8, idle_timeout: 0,
       })).reserve();
-      const key = identity.workspaceId + ':runtime-lifecycle:' + leaseId;
+      const key = runtimeLifecycleLockKey(identity.workspaceId, leaseId);
       let held = false;
       try {
         const [lock] = await connection<Array<{ held: boolean }>>`

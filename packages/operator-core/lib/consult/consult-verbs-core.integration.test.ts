@@ -689,6 +689,150 @@ describe('durable cascade acknowledgement and restart recovery', () => {
     expect(called).toBe(false);
   });
 
+  it('recovers an unentered reservation and fences its old dispatcher at actual spawn', async () => {
+    const id = await queue();
+    const spawnSql = postgres(fixtureDb.url, { max: 4, onnotice: () => {} });
+    let time = NOW;
+    let entered!: () => void;
+    let resume!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const held = new Promise<void>((resolve) => { resume = resolve; });
+    let oldFence!: NonNullable<Parameters<typeof acquireConsultSpawnLease>[3]>;
+    let oldCurrent = true;
+    const first = continueCascadeDispatchCore(WS, id, {
+      getSql: () => rootSql, now: () => time,
+      dispatch: (isCurrent) => async (opts) => {
+        await opts.onAnsweringOwner?.('reserved-before-install');
+        oldFence = { ...opts.spawnFence!, answeringOwnerId: 'reserved-before-install' };
+        entered();
+        await held;
+        oldCurrent = await isCurrent();
+        return { woke: 0 };
+      },
+    });
+    try {
+      await started;
+      const replay = vi.fn(async () => ({ woke: 0 }));
+      expect(await continueCascadeDispatchCore(WS, id, {
+        getSql: () => rootSql, now: () => time, dispatch: () => replay,
+      })).toBe(false);
+      expect(replay).not.toHaveBeenCalled();
+      time = new Date(NOW.getTime() + 120_001);
+      expect(await continueCascadeDispatchCore(WS, id, {
+        getSql: () => rootSql, now: () => time,
+        dispatch: () => async (opts) => {
+          await opts.onAnsweringOwner?.('replacement-answerer');
+          // Still open at the same cursor: a close-only guard would allow it.
+          expect(await acquireConsultSpawnLease(WS, id, spawnSql, oldFence)).toBeNull();
+          const lease = await acquireConsultSpawnLease(WS, id, spawnSql,
+            { ...opts.spawnFence!, answeringOwnerId: 'replacement-answerer' });
+          expect(lease).not.toBeNull();
+          try {
+            expect((await queuedRow(id)).routing.cascadeDispatch).toMatchObject({
+              spawn: { protocol: 1, phase: 'entered', answeringOwnerId: 'replacement-answerer' },
+            });
+          } finally { await lease?.release(); }
+          expect(await opts.onKickoff?.(time.toISOString(), 'replacement-answerer')).toBe(true);
+          return { woke: 1, answeringOwnerId: 'replacement-answerer' };
+        },
+      })).toBe(true);
+      const row = await queuedRow(id);
+      expect(row.routing.selection.selected[1]).toMatchObject({
+        answeringOwnerId: 'replacement-answerer',
+        supersededReservations: [{ answeringOwnerId: 'reserved-before-install',
+          leaseToken: oldFence.leaseToken, recoveredAt: time.toISOString(), reason: 'not-entered-spawn-fence-v1' }],
+      });
+      expect(row.routing.cascadeDispatch).toBeUndefined();
+    } finally {
+      resume();
+      await first;
+      await spawnSql.end({ timeout: 5 });
+    }
+    expect(oldCurrent).toBe(false);
+  });
+
+  it('recovers a thrown reserved launch after backoff and retains the old reservation', async () => {
+    const id = await queue();
+    await expect(continueCascadeDispatchCore(WS, id, {
+      getSql: () => rootSql, now: () => NOW,
+      dispatch: () => async (opts) => {
+        await opts.onAnsweringOwner?.('failed-before-spawn');
+        throw new Error('pre-spawn interruption');
+      },
+    })).rejects.toThrow('pre-spawn interruption');
+    const replay = vi.fn(async () => ({ woke: 0 }));
+    expect(await continueCascadeDispatchCore(WS, id, {
+      getSql: () => rootSql, now: () => NOW, dispatch: () => replay,
+    })).toBe(false);
+    expect(replay).not.toHaveBeenCalled();
+    expect(await continueCascadeDispatchCore(WS, id, {
+      getSql: () => rootSql, now: () => new Date(NOW.getTime() + 30_001),
+      dispatch: () => async (opts) => {
+        await opts.onAnsweringOwner?.('recovered-answerer');
+        return { woke: 1, answeringOwnerId: 'recovered-answerer' };
+      },
+    })).toBe(true);
+    expect((await queuedRow(id)).routing.selection.selected[1]).toMatchObject({
+      answeringOwnerId: 'recovered-answerer',
+      supersededReservations: [{ answeringOwnerId: 'failed-before-spawn', reason: 'not-entered-spawn-fence-v1' }],
+    });
+  });
+
+  it('keeps an entered but unconfirmed launch uncertain after dispatcher death', async () => {
+    const id = await queue();
+    const spawnSql = postgres(fixtureDb.url, { max: 4, onnotice: () => {} });
+    try {
+      await expect(continueCascadeDispatchCore(WS, id, {
+        getSql: () => rootSql, now: () => NOW,
+        dispatch: () => async (opts) => {
+          await opts.onAnsweringOwner?.('possibly-spawned');
+          const fence = { ...opts.spawnFence!, answeringOwnerId: 'possibly-spawned' };
+          const lease = await acquireConsultSpawnLease(WS, id, spawnSql, fence);
+          expect(lease).not.toBeNull();
+          await lease?.release();
+          // A repeated participant stamp must not reset entered to reserved.
+          await opts.onAnsweringOwner?.('possibly-spawned');
+          expect((await queuedRow(id)).routing.cascadeDispatch).toMatchObject({ spawn: { phase: 'entered' } });
+          expect(await acquireConsultSpawnLease(WS, id, spawnSql, fence)).toBeNull();
+          throw new Error('dispatcher died without a launch receipt');
+        },
+      })).rejects.toThrow('dispatcher died without a launch receipt');
+      const dispatch = vi.fn(async () => ({ woke: 0 }));
+      expect(await continueCascadeDispatchCore(WS, id, {
+        getSql: () => rootSql, now: () => new Date(NOW.getTime() + 300_000), dispatch: () => dispatch,
+      })).toBe(false);
+      expect(dispatch).not.toHaveBeenCalled();
+      expect((await queuedRow(id)).routing.selection.selected[1].answeringOwnerId).toBe('possibly-spawned');
+    } finally { await spawnSql.end({ timeout: 5 }); }
+  });
+
+  it.each(['cursor', 'responder', 'answerer', 'token', 'closed'] as const)(
+    'refuses the final spawn when %s changed after the answering-owner stamp', async (changed) => {
+      const id = await queue();
+      await continueCascadeDispatchCore(WS, id, {
+        getSql: () => rootSql, now: () => NOW,
+        dispatch: () => async (opts) => {
+          await opts.onAnsweringOwner?.('fenced-answerer');
+          if (changed === 'cursor') await rootSql`UPDATE harness_shared.consult_state SET cascade_cursor = 0
+            WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+          if (changed === 'responder') await rootSql`UPDATE harness_shared.consult_state SET responder_id = 'another-source'
+            WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+          if (changed === 'answerer') await rootSql`UPDATE harness_shared.consult_state
+            SET routing = jsonb_set(routing, '{selection,selected,1,answeringOwnerId}', '"another-answerer"'::jsonb)
+            WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+          if (changed === 'token') await rootSql`UPDATE harness_shared.consult_state
+            SET routing = jsonb_set(routing, '{cascadeDispatch,leaseToken}', '"another-token"'::jsonb)
+            WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+          if (changed === 'closed') await rootSql`UPDATE harness_shared.consult_state SET state = 'closed_cant_help', closed_at = ${NOW.toISOString()}::timestamptz
+            WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+          expect(await acquireConsultSpawnLease(WS, id, rootSql,
+            { ...opts.spawnFence!, answeringOwnerId: 'fenced-answerer' })).toBeNull();
+          return { woke: 0 };
+        },
+      });
+    },
+  );
+
   it('persists thrown pre-launch recovery and retries only after its backoff', async () => {
     const id = await queue();
     const fail = { getSql: () => rootSql, now: () => NOW, dispatch: () => async () => { throw new Error('pre-launch fault'); } };

@@ -305,7 +305,7 @@ const testingRunResultSchema = z
     isScratchConfig: z.boolean(),
     outputTailTruncated: z.boolean().optional(),
     cases: z.array(testCaseResultSchema).nullable().optional(),
-    casesUnavailableReason: z.enum(['not-recorded', 'not-migrated']).optional(),
+    casesUnavailableReason: z.enum(['not-recorded', 'not-migrated', 'incomplete']).optional(),
   })
   .passthrough();
 
@@ -994,10 +994,21 @@ export default defineTool({
           () => loadTestCaseResults(sql, rows.map((r) => Number(r.id))),
         )
       : null;
-    const casesFor = (id: number) => {
+    const casesFor = (id: number, executionDetails: ReturnType<typeof parseStoredExecutionDetails>) => {
       if (!caseResults) return {};
       if (caseResults.notMigrated) return { cases: null, casesUnavailableReason: 'not-migrated' as const };
       const list = caseResults.byRun.get(id);
+      // Case batches are best-effort secondary writes; a committed prefix is
+      // not a complete measurement. Only compare counts from this row's
+      // validated execution details, never untrusted or mismatched metadata.
+      if (list && executionDetails) {
+        const counts = { pass: 0, fail: 0, skip: 0 };
+        for (const testCase of list) counts[testCase.status]++;
+        if (counts.pass !== executionDetails.passed || counts.fail !== executionDetails.failed
+          || counts.skip !== executionDetails.skipped) {
+          return { cases: null, casesUnavailableReason: 'incomplete' as const };
+        }
+      }
       return list ? { cases: list } : { cases: null, casesUnavailableReason: 'not-recorded' as const };
     };
     return {
@@ -1042,7 +1053,7 @@ export default defineTool({
           saturationSuspect: isSaturationSuspect(r.loop_lag_p95_ms),
           worktreeDirty: r.worktree_dirty,
           isScratchConfig: r.is_scratch_config,
-          ...casesFor(Number(r.id)),
+          ...casesFor(Number(r.id), executionDetails),
           };
         }),
       },

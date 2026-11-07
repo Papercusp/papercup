@@ -918,7 +918,7 @@ describe('sweepExpiredConsults — cascade advance (D-005/P-013)', () => {
     expect(reachCalls[0]).toMatchObject({ responder: 'resp-2', conversationId: id, workspaceId: WS });
   });
 
-  it.each(['resp-prior-fork', 'resp-prior', 'req-1'])('recovers a reserved cascade answerer after a thrown launch with non-answerer posts from %s', async (priorAuthor) => {
+  it.each(['resp-prior-fork', 'resp-prior', 'req-1'])('recovers a legacy reserved answerer only with terminal evidence and non-answerer posts from %s', async (priorAuthor) => {
     const id = await seedConsult({
       expiresAt: FUTURE,
       cascadeCursor: 1,
@@ -937,6 +937,11 @@ describe('sweepExpiredConsults — cascade advance (D-005/P-013)', () => {
       },
     };
     await expect(continueCascadeDispatchCore(WS, id, continuation)).rejects.toThrow('failed after reservation');
+    // Historical dispatchers (including the incident row) did not record the
+    // actual-spawn fence. Missing evidence must retain the legacy reservation.
+    await rootSql`UPDATE harness_shared.consult_state
+      SET routing = jsonb_set(routing, '{cascadeDispatch}', (routing->'cascadeDispatch') - 'spawn')
+      WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
     const recoveryAt = new Date(NOW.getTime() + 30_001);
     expect(await continueCascadeDispatchCore(WS, id, {
       ...continuation, now: () => recoveryAt,

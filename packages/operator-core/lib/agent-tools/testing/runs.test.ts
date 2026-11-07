@@ -15,6 +15,7 @@ import {
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
 import { PAYLOAD_TIER_RATCHET_CHARS } from '@papercusp/tooldef';
+import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-details';
 import {
   defaultRollupSource,
   foregroundRunMetadata,
@@ -282,6 +283,41 @@ describe('testing:runs evidence identity', () => {
     expect(shapeTestingRuns({ runs: [row] }, 'trimmed')).toMatchObject({
       runs: [{ executionDetailsUnavailableReason: reason }],
     });
+  });
+
+  it.each([
+    { name: 'a committed prefix', statuses: ['pass'] },
+    { name: 'the right total with different outcomes', statuses: ['pass', 'pass'] },
+    { name: 'complete matching outcomes', statuses: ['pass', 'fail'] },
+  ])('checks recorded case counts for $name', async ({ statuses }) => {
+    const details = { ...cappedDetails, passed: 1, failed: 1, skipped: 0,
+      passedCaseTitles: ['suite > case 0'], passedCaseTitlesTruncated: undefined };
+    expect(parseTestRunExecutionDetails(details)).toBeDefined();
+    sqlMock.mockImplementation((strings: TemplateStringsArray) => {
+      const query = Array.from(strings).join(' ');
+      if (query.includes('WITH filtered')) return Promise.resolve([{
+        id: '17692433', execution_details: details, file_path: details.filePath,
+        status: 'fail', framework: 'vitest', run_group_id: null, source: 'local',
+        total: '1', started_at: null, finished_at: null,
+      }]);
+      if (query.includes('FROM harness_shared.test_case_runs')) return Promise.resolve(statuses.map((status, index) => ({
+        test_run_id: '17692433', case_key: `suite > case ${index}`, occurrence: 1,
+        status, duration_ms: 1, error_tail: null,
+      })));
+      return Promise.resolve([]);
+    });
+
+    const result = await runsTool.handler({ testRunIds: [17692433], cases: true } as never, {} as never) as {
+      data: { runs: Array<Record<string, unknown>> };
+    };
+    const row = result.data.runs[0];
+    expect(row?.executionDetails).toMatchObject({ passed: 1, failed: 1, skipped: 0 });
+    if (statuses.includes('fail')) {
+      expect(row?.cases).toHaveLength(2);
+      expect(row).not.toHaveProperty('casesUnavailableReason');
+    } else {
+      expect(row).toMatchObject({ cases: null, casesUnavailableReason: 'incomplete' });
+    }
   });
 
   it.each([false, true])('retains capped integration counts and root with serialized=%s', async serialized => {

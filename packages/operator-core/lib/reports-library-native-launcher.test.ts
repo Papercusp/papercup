@@ -95,7 +95,7 @@ describe('Reports native launcher at the Vitest temp-directory boundary', () => 
     vi.stubEnv('HARNESS_ADMIN_DATABASE_URL', 'postgresql://fixture@localhost:37461/papercusp');
     const source = 'a'.repeat(40);
     sourceRoot = join(root, 'source');
-    const files = ['packages/operator-core/lib/reports-library-native.e2e.test.ts',
+    const files = ['packages/operator-core/lib/reports-library-native.e2e.test.ts', 'scripts/tauri-surface-verify-reports.mts',
       'packages/operator-core/lib/blueprint/morning-ai-intelligence.native.e2e.test.ts', 'scripts/native.mts',
       'scripts/lib/native-controls.mts', 'scripts/mutation-probe.sh'];
     for (const file of files) {
@@ -126,12 +126,12 @@ describe('Reports native launcher at the Vitest temp-directory boundary', () => 
     rmSync(root, { recursive: true, force: true });
   });
 
-  const preparedProfile = () => {
-    const bundle = join(sourceRoot, 'apps/operator/dist-verify/native-native.mjs');
+  const preparedProfile = (script = 'scripts/native.mts') => {
+    const bundle = join(sourceRoot, 'apps/operator/dist-verify', `native-${script.split('/').at(-1)!.replace('.mts', '')}.mjs`);
     mkdirSync(join(bundle, '..'), { recursive: true });
     writeFileSync(bundle, 'console.log("prepared native child");\n');
     return { tauriPID: process.pid, nativeTmpDir: nativeRoot, workspaceId: 'verify-tauri-isolated-90',
-      nativeChildren: [{ script: 'scripts/native.mts', bundle,
+      nativeChildren: [{ script, bundle,
         sha256: createHash('sha256').update(readFileSync(bundle)).digest('hex') }] };
   };
 
@@ -154,8 +154,10 @@ describe('Reports native launcher at the Vitest temp-directory boundary', () => 
     else expect(check).not.toThrow();
     const [command, args, options] = seams.execute.mock.calls[0];
     expect(command).toBe(process.execPath);
-    expect(args.slice(0, 4)).toEqual(['--import', 'tsx', '--input-type=module', '-e']);
-    expect(args[4]).toContain('SELECT 1');
+    expect(args.slice(0, 2)).toEqual(['--input-type=module', '-e']);
+    expect(args[2]).toContain('connectExecutedMapPg');
+    expect(args[2]).toContain('SELECT 1');
+    expect(args[2]).not.toContain('@papercusp/db-org');
     expect(options.cwd).toBe(sourceRoot);
     expect(options.timeout).toBe(10_000);
     expect(options.env.DATABASE_URL).toBe('postgresql://fixture@localhost:6432/ledger');
@@ -164,6 +166,57 @@ describe('Reports native launcher at the Vitest temp-directory boundary', () => 
     expect(seams.authenticate).not.toHaveBeenCalled();
     expect(seams.reportRuntime).not.toHaveBeenCalled();
     expect(seams.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([null, 'connect', 'query', 'close'])('executes the ledger child and retains failure stage %s', async failure => {
+    const { execFileSync } = await vi.importActual<typeof import('node:child_process')>('node:child_process');
+    const trace = join(root, 'ledger-calls');
+    mkdirSync(join(sourceRoot, 'scripts/lib'), { recursive: true });
+    writeFileSync(join(sourceRoot, 'scripts/lib/executed-source-map.mjs'), `
+      import assert from 'node:assert/strict';
+      import { appendFileSync } from 'node:fs';
+      const call = stage => {
+        appendFileSync(${JSON.stringify(trace)}, stage + '\\n');
+        if (stage === ${JSON.stringify(failure)})
+          throw Object.assign(new Error('sensitive-fixture-credential'), { code: 'E_LEDGER_FIXTURE' });
+      };
+      export async function connectExecutedMapPg({ env, timeoutMs }) {
+        assert.equal(env.PAPERCUSP_TEST_RUNS_DB_URL, 'postgresql://fixture@localhost:5432/ledger');
+        assert.equal(env.HARNESS_ADMIN_DATABASE_URL, env.PAPERCUSP_TEST_RUNS_DB_URL);
+        assert.equal(env.DATABASE_URL, env.PAPERCUSP_TEST_RUNS_DB_URL);
+        assert.equal(env.PAPERCUSP_PGBOUNCER, '0');
+        assert.equal(env.PAPERCUSP_PG_PORT, undefined);
+        assert.equal(timeoutMs, 5000);
+        call('connect');
+        return { query: async sql => { assert.equal(sql, 'SELECT 1'); call('query'); },
+          end: async () => call('close') };
+      }
+    `);
+    let output = '';
+    let childError: { status: number; stdout: string; stderr: string } | undefined;
+    seams.execute.mockImplementation((command, args, options) => {
+      try { output = execFileSync(command, args, { ...options, stdio: 'pipe', encoding: 'utf8' }); }
+      catch (error) { childError = error as typeof childError; throw error; }
+    });
+    const check = () => checkNativeLedger(sourceRoot, { ...process.env,
+      PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://fixture@localhost:5432/ledger' });
+    if (failure) {
+      expect(check).toThrow();
+      expect(childError?.status).toBe(1);
+      expect(childError?.stderr).toContain('E_LEDGER_FIXTURE');
+      expect(childError?.stderr).not.toContain('sensitive-fixture-credential');
+      // Query failures still close the connection; report the original stage.
+      const failed = JSON.parse(childError!.stderr.trim().replace('NATIVE_LEDGER_PREFLIGHT ', ''));
+      expect(failed).toMatchObject({ stage: failure, status: 'failed' });
+      expect(childError?.stdout).not.toContain('"stage":"complete"');
+    } else {
+      expect(check).not.toThrow();
+      expect(output).toContain('"stage":"complete"');
+    }
+    expect(readFileSync(trace, 'utf8').trim().split('\n')).toEqual(
+      failure === 'connect' ? ['connect'] : ['connect', 'query', 'close']);
+    expect(seams.authenticate).not.toHaveBeenCalled();
+    expect(seams.reportRuntime).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -276,26 +329,28 @@ describe('Reports native launcher at the Vitest temp-directory boundary', () => 
       .rejects.toThrow('tampered verification source archive');
   });
 
-  it('prepares and hashes the frozen child before launching the test runner', async () => {
+  it.each(['scripts/native.mts', 'scripts/tauri-surface-verify-reports.mts'])(
+    'prepares and hashes %s before launching the test runner', async script => {
+    const bundle = join(sourceRoot, 'apps/operator/dist-verify', `native-${script.split('/').at(-1)!.replace('.mts', '')}.mjs`);
     const order: string[] = [];
     seams.execute.mockImplementation((command, args, options) => {
       order.push(command);
       if (command === 'bash') {
         expect(args).toEqual([join(sourceRoot, 'apps/operator/bin/bundle-host.sh'),
-          join(sourceRoot, 'scripts/native.mts'), join(sourceRoot, 'apps/operator/dist-verify/native-native.mjs')]);
+          join(sourceRoot, script), bundle]);
         expect(options.env.PAPERCUSP_WORKSPACE_ID).toBe('verify-tauri-isolated-90');
         mkdirSync(join(args[2], '..'), { recursive: true });
         writeFileSync(args[2], 'console.log("frozen child");\n');
       }
       if (command === 'npm') {
         const profile = JSON.parse(readFileSync(options.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE, 'utf8'));
-        expect(profile.nativeChildren).toEqual([{ script: 'scripts/native.mts',
-          bundle: join(sourceRoot, 'apps/operator/dist-verify/native-native.mjs'),
+        expect(profile.nativeChildren).toEqual([{ script,
+          bundle,
           sha256: createHash('sha256').update('console.log("frozen child");\n').digest('hex') }]);
       }
       return '';
     });
-    await runNativeE2e(undefined, { nativeScripts: ['scripts/native.mts'] });
+    await runNativeE2e(undefined, { nativeScripts: [script] });
     expect(order).toEqual([process.execPath, 'bash', 'npm']);
   });
 
@@ -415,12 +470,22 @@ describe('Reports native launcher at the Vitest temp-directory boundary', () => 
     expect(seams.child).not.toHaveBeenCalled();
   });
 
-  it('retains the child startup stack, stdout and stderr when execution fails', async () => {
+  it.each(['scripts/native.mts', 'scripts/tauri-surface-verify-reports.mts'])(
+    'retains the startup stack, stdout and stderr when %s fails', async script => {
     const failure = Object.assign(new Error('child startup'), { code: 1, signal: null });
-    seams.child.mockImplementation((_command, _args, _options, callback) => callback(failure, 'child manifest', 'assert.match: undefined workspace'));
-    const profile = preparedProfile();
-    await expect(runNativeChild(profile, sourceRoot, 'scripts/native.mts')).rejects.toThrow(
+    seams.child.mockImplementation((_command, _args, options, callback) => {
+      expect(options.timeout).toBe(280_000);
+      callback(failure, 'child manifest', 'assert.match: undefined workspace');
+    });
+    const profile = preparedProfile(script);
+    await expect(runNativeChild(profile, sourceRoot, script, [], 280_000)).rejects.toThrow(
       /child startup[\s\S]*stdout:\nchild manifest[\s\S]*stderr:\nassert.match: undefined workspace/);
+  });
+
+  it.each([0, 300_001, NaN])('refuses unbounded child deadline %s before launch', timeout => {
+    expect(() => runNativeChild(preparedProfile(), sourceRoot, 'scripts/native.mts', [], timeout))
+      .toThrow('deadline must fit');
+    expect(seams.child).not.toHaveBeenCalled();
   });
 
   it.each(['missing preparation', 'changed bytes', 'foreign path', 'missing hash'])(

@@ -63,6 +63,7 @@ import {
 } from '../claude-resume-tool-references.mjs';
 import { buildConsoleEnvelope } from '../console-launcher';
 import { spawnHeadless, type SpawnChildExit } from '../console-spawn';
+import type { CascadeSpawnFence } from './cascade-core';
 import { resolveSpawnHostOperatorBaseUrl } from '../mcp-base-url';
 import { hostname } from 'node:os';
 import { papercuspPathForWorkspace } from '../papercusp-root';
@@ -823,7 +824,7 @@ export function applyCodexGatewayRefusal(
   };
 }
 
-/** Read-only consult row lock held only until the answering OS child exists. */
+/** Consult row lock held only until the answering OS child exists. */
 export interface ConsultSpawnLease {
   release: () => Promise<void>;
 }
@@ -843,7 +844,8 @@ export interface ConsultDispatchDeps extends ExpertModelAllowlistDeps {
   /** Re-read the consult before launching a reviewer; cascades can race closure. */
   isConsultOpen: (workspaceId: string, conversationId: string) => Promise<boolean>;
   /** Hold the consult row against terminal close until the OS child exists. */
-  reserveConsultSpawnLease: (workspaceId: string, conversationId: string) => Promise<ConsultSpawnLease | null>;
+  reserveConsultSpawnLease: (workspaceId: string, conversationId: string,
+    fence?: CascadeSpawnFence & { answeringOwnerId: string }) => Promise<ConsultSpawnLease | null>;
   resolveResumeTarget: typeof resolveResumeTarget;
   /** Reuse the port route's exact backend/owner guard for an older incarnation. */
   checkEvidenceIncarnationOwnedBy: (target: ResumeTarget, sessionId: string) => Promise<boolean>;
@@ -1625,8 +1627,31 @@ export async function acquireConsultSpawnLease(
   workspaceId: string,
   conversationId: string,
   sql?: Sql,
+  fence?: CascadeSpawnFence & { answeringOwnerId: string },
 ): Promise<ConsultSpawnLease | null> {
   const dbSql = sql ?? ((await import('@papercusp/db-org')).getOrgPg().sql as unknown as Sql);
+  if (fence) {
+    // Commit BEFORE spawn and before the read-lock transaction: a crash must
+    // never roll this back to "reserved" after a child may have been created.
+    // An entered-but-unconfirmed launch stays uncertain; absence of a task or
+    // presence row is not process-death evidence. Recovery can supersede only
+    // the still-reserved phase, and its token change fences this writer out.
+    const entered = await dbSql`
+      UPDATE harness_shared.consult_state
+         SET routing = jsonb_set(routing, '{cascadeDispatch,spawn,phase}', '"entered"'::jsonb)
+       WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
+         AND closed_at IS NULL AND state IN ('awaiting_responder', 'active')
+         AND cascade_cursor = ${fence.cursor} AND responder_id = ${fence.responder}
+         AND routing #>> '{cascadeDispatch,leaseToken}' = ${fence.leaseToken}
+         AND routing #>> ARRAY['selection', 'selected', cascade_cursor::text, 'ownerId'] = ${fence.responder}
+         AND routing #>> ARRAY['selection', 'selected', cascade_cursor::text, 'answeringOwnerId'] = ${fence.answeringOwnerId}
+         AND routing #>> '{cascadeDispatch,spawn,protocol}' = '1'
+         AND routing #>> '{cascadeDispatch,spawn,phase}' = 'reserved'
+         AND routing #>> '{cascadeDispatch,spawn,answeringOwnerId}' = ${fence.answeringOwnerId}
+         AND routing #>> '{cascadeDispatch,spawn,leaseToken}' = ${fence.leaseToken}
+      RETURNING conversation_id`;
+    if (!entered.length) return null;
+  }
   const connection = await dbSql.reserve();
   let transactionOpen = false;
   let released = false;
@@ -1647,8 +1672,9 @@ export async function acquireConsultSpawnLease(
   try {
     await connection.unsafe('BEGIN');
     transactionOpen = true;
-    const [row] = await connection<Array<{ state: string; closed_at: Date | string | null }>>`
-      SELECT state, closed_at
+    const [row] = await connection<Array<{ state: string; closed_at: Date | string | null;
+      cascade_cursor: number; responder_id: string; routing: unknown }>>`
+      SELECT state, closed_at, cascade_cursor, responder_id, routing
         FROM harness_shared.consult_state
        WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
        FOR UPDATE
@@ -1656,6 +1682,21 @@ export async function acquireConsultSpawnLease(
     if (!row || row.closed_at != null || (row.state !== 'awaiting_responder' && row.state !== 'active')) {
       await release();
       return null;
+    }
+    if (fence) {
+      const routing = (typeof row.routing === 'string' ? JSON.parse(row.routing) : row.routing) as {
+        cascadeDispatch?: { leaseToken?: string; spawn?: { phase?: string; answeringOwnerId?: string; leaseToken?: string } };
+        selection?: { selected?: Array<{ ownerId?: string; answeringOwnerId?: string }> };
+      };
+      const selected = routing?.selection?.selected?.[fence.cursor];
+      const dispatch = routing?.cascadeDispatch;
+      if (row.cascade_cursor !== fence.cursor || row.responder_id !== fence.responder ||
+          selected?.ownerId !== fence.responder || selected?.answeringOwnerId !== fence.answeringOwnerId ||
+          dispatch?.leaseToken !== fence.leaseToken || dispatch.spawn?.phase !== 'entered' ||
+          dispatch.spawn.answeringOwnerId !== fence.answeringOwnerId || dispatch.spawn.leaseToken !== fence.leaseToken) {
+        await release();
+        return null;
+      }
     }
     return { release };
   } catch (error) {
@@ -1792,6 +1833,7 @@ export async function dispatchConsultResponder(
     /** Called only after the launcher proves the native kickoff was persisted.
      * False means this dispatch no longer owns the selected reply window. */
     onKickoff?: (kickoffAt: string, answeringOwnerId: string) => boolean | Promise<boolean>;
+    spawnFence?: CascadeSpawnFence;
   },
   ctx: ConsultDispatchContext,
   deps: Partial<ConsultDispatchDeps> = {},
@@ -1809,7 +1851,8 @@ export async function dispatchConsultResponder(
       return checkConsultSessionPortTranscript(target, transcript, evidenceSpan);
     },
     isConsultOpen: defaultIsConsultOpen,
-    reserveConsultSpawnLease: acquireConsultSpawnLease,
+    reserveConsultSpawnLease: (workspaceId, conversationId, fence) =>
+      acquireConsultSpawnLease(workspaceId, conversationId, undefined, fence),
     analyzeClaudeTranscript: analyzeClaudeResumeTranscriptFile,
     analyzeCodexRollout: analyzeCodexRolloutFile,
     buildAgentLaunchCommand,
@@ -2344,6 +2387,7 @@ async function launchAnsweringSession(
     brief: string | ((operation: DispatchOperation) => string);
     onAnsweringOwner?: (answeringOwnerId: string) => void | Promise<void>;
     onKickoff?: (kickoffAt: string, answeringOwnerId: string) => boolean | Promise<boolean>;
+    spawnFence?: CascadeSpawnFence;
     checkApprover?: import('./acceptance-bar-amendment-review').AmendmentReviewerScreen;
   },
   ctx: ConsultDispatchContext,
@@ -2558,7 +2602,8 @@ async function launchAnsweringSession(
     },
     kickoffProof: true,
     beforeSpawn: async () => {
-      spawnLease = await d.reserveConsultSpawnLease(ctx.workspaceId, opts.conversationId);
+      spawnLease = await d.reserveConsultSpawnLease(ctx.workspaceId, opts.conversationId,
+        opts.spawnFence ? { ...opts.spawnFence, answeringOwnerId } : undefined);
       return spawnLease !== null;
     },
     afterSpawn: releaseSpawnLease,
@@ -2912,6 +2957,7 @@ export function makeConsultReachDispatcher(
   onAnsweringOwner?: (answeringOwnerId: string) => void | Promise<void>;
   /** Refresh a cascade reply deadline after native kickoff persistence. */
   onKickoff?: (kickoffAt: string, answeringOwnerId: string) => boolean | Promise<boolean>;
+  spawnFence?: CascadeSpawnFence;
 }) => Promise<{
   queued: number;
   woke: number;
@@ -2955,6 +3001,7 @@ export function makeConsultReachDispatcher(
         ...(opts.evidence ? { evidence: opts.evidence } : {}),
         ...(opts.onAnsweringOwner ? { onAnsweringOwner: opts.onAnsweringOwner } : {}),
         ...(opts.onKickoff ? { onKickoff: opts.onKickoff } : {}),
+        ...(opts.spawnFence ? { spawnFence: opts.spawnFence } : {}),
         // Per-rank, because a walled rank-1 can turn a fork into a conversion and
         // the two inherit history differently.
         brief: (operation) =>
