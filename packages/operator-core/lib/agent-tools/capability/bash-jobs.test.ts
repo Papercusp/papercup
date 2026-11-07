@@ -2225,6 +2225,29 @@ describe('background job deadlines (WI-6677)', () => {
   });
 
   it.each([
+    ['direct', 'node scripts/source-preview.mjs verifier-run --repo . --ref pinned -- bash scripts/verify-tauri-headless.sh', true],
+    ['TypeScript loader', 'node --import tsx scripts/source-preview.mjs verifier-run --source-archive /tmp/source --receipt-sha256 pinned -- bash scripts/verify-tauri-headless.sh', true],
+    ['equals loader', 'node --import=tsx ./scripts/source-preview.mjs verifier-run -- true', true],
+    ['absolute path and timeout', 'timeout 30m env VERIFY_TAURI_ISOLATED_DB=1 node --import tsx /workspace/scripts/source-preview.mjs verifier-run -- true', true],
+    ['diagnostic mention', 'printf "node --import tsx scripts/source-preview.mjs verifier-run"', false],
+    ['input check', 'node --import tsx scripts/source-preview.mjs verifier-inputs-check --repo .', false],
+    ['source preparation', 'node --import tsx scripts/source-preview.mjs verifier-prepare --repo .', false],
+    ['other script', 'node --import tsx scripts/source-preview.mjs-other verifier-run -- true', false],
+    ['other operation', 'node --import tsx scripts/source-preview.mjs verifier-runner -- true', false],
+  ])('classifies frozen-source verifier-run %s', (_label, command, expected) => {
+    expect(isBackgroundTestCommand(command)).toBe(expected);
+  });
+
+  it('bounds a frozen-source verifier-run path near miss', () => {
+    const command = 'node --import tsx /' + 'segment/'.repeat(256) + 'scripts/source-preview.mjs-other verifier-run';
+    expect(runInNewContext('classify(command)', {
+      classify: isBackgroundTestCommand,
+      command,
+    }, { timeout: 200 })).toBe(false);
+  });
+
+  it.each([
+    'node --import tsx scripts/source-preview.mjs verifier-run --repo . --ref pinned --source-archive /tmp/source --receipt-sha256 pinned -- bash scripts/verify-tauri-headless.sh',
     "env PAPERCUSP_TEST_RUN_HARNESS=papercusp bash scripts/run-operator-e2e-isolated.sh e2e/ongoing-work-ui.spec.ts --grep 'ongoing work stays visible|mobile strip preserves' --workers=1",
     'bash scripts/verify-tauri-headless.sh --boot-only-i-accept-task-lifetime',
     'timeout --signal=TERM --kill-after=60s 2700s scripts/verify-tauri-headless.sh --boot-only-i-accept-task-lifetime',
