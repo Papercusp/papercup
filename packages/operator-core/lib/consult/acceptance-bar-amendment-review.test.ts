@@ -26,7 +26,9 @@ import {
 } from './acceptance-bar-amendment-review';
 import { ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY } from './selection-policies';
 import { analyzeClaudeResumeTranscript } from '../claude-resume-tool-references.mjs';
-import { acceptanceBarReviewSourceHash } from '../acceptance-bar-amendment';
+import {
+  acceptanceBarReviewPostBody, acceptanceBarReviewSourceHash, readAcceptanceBarReviewSource,
+} from '../acceptance-bar-amendment';
 
 describe('P-003 compact immutable amendment packet', () => {
   function packet() {
@@ -70,6 +72,24 @@ describe('P-003 compact immutable amendment packet', () => {
     expect(brief).toContain(`candidate/source SHA-256 ${input.preview.approval.reviewSourceHash}`);
     expect(brief).not.toContain('COMPLETE_CONTEXT_');
     expect(brief.length).toBeLessThan(5000);
+  });
+
+  it('compacts amendment sources while exposing removals and complete pinned context', () => {
+    const { input, source } = packet();
+    const hash = input.preview.approval.reviewSourceHash!;
+    const retained = acceptanceBarReviewPostBody(input.preview.approval, source);
+    const brief = buildAmendmentReviewBrief(input);
+    expect(brief).toContain('Removals: ["R-2"]');
+    expect(brief).toContain('"method":{"before":"Old detector","after":"New detector"}');
+    expect(brief).toContain("sourceRef:'WI-42#comment:42'");
+    expect(brief).toContain(`candidate/source SHA-256 ${hash}`);
+    expect(brief).not.toContain(source.subjectPlan.content);
+    expect(retained.split(source.subjectPlan.content)).toHaveLength(2);
+    expect(readAcceptanceBarReviewSource(retained, hash)).toEqual(source);
+    expect(() => readAcceptanceBarReviewSource(retained.slice(0, -10), hash))
+      .toThrow('acceptance_bar_review_source_incomplete');
+    expect(() => readAcceptanceBarReviewSource(retained.replace('Old detector', 'Altered detector'), hash))
+      .toThrow('acceptance_bar_review_source_mismatched');
   });
 
   it('requires full paged retrieval and the same signed source hash on both review routes', () => {
