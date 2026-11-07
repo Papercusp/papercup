@@ -280,7 +280,7 @@ describe('public blocker resolution boundaries', () => {
       investigation: [{ action: 'Read canonical peer work', outcome: 'Live repair owner retains custody', evidenceRefs: [peerRef] }],
       deferral: { reason: 'active-peer', responsibleParty: 'agent-repair', reasonEvidenceRefs: [peerRef],
         nextAction: 'Resume when the owned dependency settles', recheckRef: peerRef } };
-    const peerMeasurement = await createBlockerEvidenceReader({ ownerId: OWNER, sessionId: OWNER,
+    const peerMeasurement = await createBlockerEvidenceReader({ ownerId: OWNER,
       workspaceId: 'default', harnessSlug: HARNESS, role: 'su', root: null,
       workItemId: id, blockers: [] })(peerRef);
     expect(peerMeasurement, JSON.stringify(peerMeasurement)).toMatchObject({ status: 'available',
@@ -387,9 +387,9 @@ describe('public blocker resolution boundaries', () => {
       kind: 'human', capability: 'physical-device', ref: 'fixture:physical-acceptance',
       summary: 'Device holder must accept' }, OWNER).blockers;
     await db.sql`UPDATE harness_shared.work_items SET taken_by=${OWNER}, taken_at=now(),
-      payload=${db.sql.json({ externalBlockers: blockers, planLaneParkedFrom: 'open',
+      payload=${db.sql.json(JSON.parse(JSON.stringify({ externalBlockers: blockers, planLaneParkedFrom: 'open',
         _claimHold: true, claim_hold_by: OWNER, claim_hold_reason: 'Independent physical acceptance',
-        held_open_by: 'system:plan-item-lane-sync', keep: 'original' })}
+        held_open_by: 'system:plan-item-lane-sync', keep: 'original' })))}
       WHERE workspace_id='default' AND harness_slug=${HARNESS} AND feature_id=${node}`;
     const before = await snapshot(node);
     const result = await syncLinkedWorkItemsToPlanLane(lane, 'actionable');
