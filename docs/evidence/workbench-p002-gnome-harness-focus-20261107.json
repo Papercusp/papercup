@@ -1,0 +1,169 @@
+{
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "workItem": "WI-6554700010029573",
+  "defect": "EI-28117398452726513",
+  "plane": "current-build private GNOME virtual seat, fixture PUI; dirty worktree",
+  "focus": {
+    "ok": true,
+    "error": null,
+    "phase": "exact native agent focus",
+    "journey": "focus",
+    "inputLog": [
+      {
+        "key": 65307,
+        "mode": 2
+      },
+      {
+        "focusStep": "before mapped fixture activation",
+        "currentTime": 0,
+        "windows": [
+          {
+            "title": "Needle agent [adv:42420]",
+            "mapped": true,
+            "userTime": 461104046,
+            "focused": false
+          },
+          {
+            "title": "Needle agent [adv:4242]",
+            "mapped": true,
+            "userTime": 461104038,
+            "focused": true
+          }
+        ]
+      },
+      {
+        "focusStep": "distractor focus verified",
+        "currentTime": 0,
+        "windows": [
+          {
+            "title": "Needle agent [adv:4242]",
+            "mapped": true,
+            "userTime": 461104038,
+            "focused": false
+          },
+          {
+            "title": "Needle agent [adv:42420]",
+            "mapped": true,
+            "userTime": 461104143,
+            "focused": true
+          }
+        ]
+      }
+    ],
+    "actionMode": 1,
+    "overview": false,
+    "windows": [
+      {
+        "title": "Needle agent [adv:42420]",
+        "minimized": false,
+        "focused": false
+      },
+      {
+        "title": "Needle agent [adv:4242]",
+        "minimized": false,
+        "focused": true
+      }
+    ],
+    "states": [
+      {
+        "surface": "quick-access",
+        "visible": true,
+        "pinned": false,
+        "selection": "[\"agents\",\"adv\",4242]",
+        "detail": null
+      },
+      {
+        "surface": "goals",
+        "visible": false,
+        "pinned": false,
+        "selection": null,
+        "detail": null
+      },
+      {
+        "surface": "inbox",
+        "visible": false,
+        "pinned": false,
+        "selection": null,
+        "detail": null
+      }
+    ],
+    "assertions": [
+      "native shortcut acquisition",
+      "native seat supports input injection",
+      "native input methods exist",
+      "desktop ready for normal shortcuts",
+      "native activation refuses a newer session behind the same selected owner",
+      "stale selection leaves the previously focused terminal unchanged",
+      "native activation observes exact launch window despite shared process and similar titles",
+      "verified terminal focus dismisses its native launcher",
+      "verified terminal focus clears transient loading detail",
+      "reopened native launcher shows results after verified focus",
+      "reopened native launcher renders a current agent control"
+    ],
+    "sourceCustody": {
+      "archiveSha256": "81250b8d15aed0198ea2841bf3b29db2021b579a48794e2ca8cd1c0efbbef22a",
+      "journey": "focus",
+      "files": {
+        "extension.js": "508170676f0413d909978ce9f609c988e452e2837045316a93a5d30cb5e6000c",
+        "workbench.js": "bf325cbc9e75b9f408cb237e10ce48e2061ff1000b34d374c77fceaeb022658a",
+        "panel-model.mjs": "ed2ad7f07af3843d93d868841e25d8ac3c6d6806e0a0b5dd7028da468fb59502",
+        "bridge.js": "fc1447f2cafe557d6e093427a0854f0b552b7ef0f06cdc391444ee514c1046ec",
+        "helper.js": "b0c1069d87138b21870314f9a581adb6b49697b6877c40a800f8b2bda4cfc36f",
+        "schemas/org.gnome.shell.extensions.papercusp-workbench.gschema.xml": "ebf371d51ab2cf2570fe03726af9a6d448b3d4ce8dbb2b7ddfd4d1a2f93c5782"
+      },
+      "testSha256": "0919e67cd73ca9951446c9f24a21724679c5c4732121be4934a910da7700b0cf"
+    },
+    "plane": "private GNOME virtual seat; fixture PUI; current build"
+  },
+  "focusTest": {
+    "command": "PAPERCUSP_GNOME_JOURNEY=focus PAPERCUSP_NATIVE_EVIDENCE_DIR=/tmp/wb-gnome-focus-20261107-v5 node bin/run-node-test-suite.mjs --test-global-setup=test/monorepo-host-preflight.mjs --test-name-pattern='private GNOME Shell' test/native-workbench-gnome-live.test.mjs",
+    "cwd": "papercusp-desktop",
+    "exitCode": 0,
+    "testsPassed": 1,
+    "testsFailed": 0,
+    "ledgerId": 23546154,
+    "ledgerWorktreeDirty": true,
+    "ledgerCommitSha": "0b4017defb6858aac8544a0ec697d7c2abe860bc"
+  },
+  "harnessRepair": {
+    "cause": "The fixture deleted failed temporary directories and only exported evidence when explicitly configured; hard process deadlines produced no completed result and lost the last phase. Sequential independent scenarios also consumed the shared 45-second Shell budget.",
+    "fix": "Always retain failed source, progress, process error and output; snapshot monotonic phases; split independent input, focus and resume Shells without increasing their deadlines; resolve current actors after pointer motion; run real GIO preflight for resume.",
+    "recurrenceTests": [
+      "native harness retains generated source, progress and output after a process deadline",
+      "native harness deletes successful fixtures",
+      "private GIO terminal preflight preserves quoted argv and real PTYs without service activation"
+    ],
+    "proofLedgerIds": [
+      23545575,
+      23545576,
+      23545588,
+      23545589
+    ],
+    "retainedDeadlineDirectory": "/tmp/workbench-shell-blkA16"
+  },
+  "focusRepair": {
+    "cause": "Successful Main.activateWindow emits focus notification, hiding the unpinned launcher and invalidating its detail generation before callback cleanup. Generation-only cleanup leaves the activation transient detail behind.",
+    "fix": "After exact focus verification, clear only the activation-owned loadingDetail object; preserve a newer detail.",
+    "before": "/tmp/wb-gnome-harness-split-20261107-v3.log",
+    "after": "/tmp/wb-gnome-focus-20261107-v5/gnome-native-focus/gnome-native-input.json"
+  },
+  "priorSplitProof": {
+    "log": "/tmp/wb-gnome-harness-split-20261107-v3.log",
+    "inputAssertionsPassed": 36,
+    "resumeAssertionsPassed": 16,
+    "modelTestsPassed": 24,
+    "focusFailure": "Subsequently fixed and verified in the focused run above."
+  },
+  "sha256": {
+    "/tmp/wb-gnome-focus-final-20261107-v5.log": "ffbe90706df0853309ffd90d1a6dc73e8825e3d83311fea78609261ac577aa46",
+    "/tmp/wb-gnome-harness-preflight-20261107-v1.log": "9ad39a9adfa8ab8a7ee33a83d7c9fcf67591ed060fb11228009036ae40d7c090",
+    "/tmp/wb-gnome-harness-split-20261107-v3.log": "97a5fa9fa353ef91232bbaa81929c66a648b354385dcf13ee8706ff5f6c2247e",
+    "/tmp/wb-gnome-focus-20261107-v5/gnome-native-focus/gnome-native-input.json": "ebe661f70e00d79b82d8d2bd3741f9b2288f3c763289c7f8c423d657c6631c13",
+    "/tmp/wb-gnome-focus-20261107-v5/gnome-native-focus/gnome-native-process.json": "5fa2cd13f64126ebd8772077768781dd30f52b4d8a1352f5bbfb51ae4aa92ace"
+  },
+  "limits": [
+    "Original missing terminal receipt in the older v1 combined journey remains unexplained; no missing D-Bus service or resource root cause is claimed.",
+    "Input/resume/model prior proof predates the focus-only cleanup repair and corrected focus test oracle.",
+    "Current-build fixture proof does not establish canonical successful vendor resume, independent acceptance, exact installed artifacts, three-OS installation/login/upgrade or shipment."
+  ]
+}

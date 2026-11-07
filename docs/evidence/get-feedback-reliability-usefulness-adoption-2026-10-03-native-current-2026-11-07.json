@@ -1,0 +1,400 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "Current native consult matrix: two delivered answers, Claude fork launch failure retained",
+  "command": [
+    "node apps/operator/scripts/ptool.mjs testing:run --url=http://127.0.0.1:3170 --workspace=papercusp-workspace --harness=papercusp with nativeConsult and the fixed request keys in matrix.cells",
+    "conversations:get for each conversation; dev:pg_query over exact consult_state and session_ports identities",
+    "dev:pipeline_position operator-api; compare committed and physical staging source blobs; hash the source transcript prefix"
+  ],
+  "startedAt": "2026-11-07T08:22:39.446Z",
+  "finishedAt": "2026-11-07T08:57:44.191Z",
+  "exitCode": 1,
+  "summary": "The current controlled matrix measured substantive native Codex answers for the Claude-to-Codex conversion and the non-Claude source session-port case. The Claude fork case is a checked failure: account walls, an archive-restore launch failure and pickup-stalled recovery occurred; the consult expired without a verified successful native dispatch or answer after eight walks. The matrix is not healthy. These controlled fixtures do not extend the usefulness cohort.",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "planItem": "P-006",
+  "workItemId": "WI-6554700010046171",
+  "requesterId": "su-d243560f-b1c1-4edb-a274-48af04b04486",
+  "runtime": {
+    "route": "http://127.0.0.1:3170",
+    "evidencePlane": "serving-operator",
+    "builds": [
+      "07dd865f59a459c9ecdbcef002dd4719cec4a694",
+      "15e04a8c1a3da1830ab925c5c3f24732777ae182"
+    ],
+    "rollForward": "The maintained operator advanced during the matrix. Persisted routing.measurement.buildSha (written by getBuildInfo().sha) is 07dd865f59 for fixture2 and 15e04a8c1a for fixture3. Fresh pipeline containment reports the latter serving build contains the requester change. These are recorded separately.",
+    "physicalRoot": "~/papercupai-workspace/papercusp-staging.generations/.candidate-15e04a8c1a3d.wXjumc/checkout",
+    "matchingFiles": [
+      {
+        "path": "packages/operator-core/lib/consult/get-feedback-core.ts",
+        "blob": "0c5d4a939424e433debb1825f7f970dbc21358d5"
+      },
+      {
+        "path": "packages/operator-core/lib/consult/get-feedback-core.integration.test.ts",
+        "blob": "40d1fea1af2a60ea4b99fb98c18802e788505dc7"
+      },
+      {
+        "path": "packages/operator-core/lib/consult/relevance-router.ts",
+        "blob": "8e1a2a21d78d4cd82efb65e4283e97a304a90f77"
+      },
+      {
+        "path": "packages/operator-core/lib/consult/relevance-router.integration.test.ts",
+        "blob": "71ad5cb46d691223d441db729095bcf5a2e969f9"
+      },
+      {
+        "path": "apps/operator/scripts/psu-launcher.mjs",
+        "blob": "ab5fee52518340d20e95db3f4fe003f0217075f1"
+      }
+    ],
+    "fileEquality": "All five recorded blobs match in both named commits and in the physical 15e04 staging generation.",
+    "launcherSha256": "8b978100d2c9d36127605bb3c4fe5ae1f1df30aa1876f0c996f27db27b20e8c8",
+    "release": "Not shipped: the current pipeline read reports release build d740fc3802 does not contain the requester change. No live-gate or deploy action was taken."
+  },
+  "matrix": {
+    "definition": "Exactly three mechanism rows; preserve checked failures and measured capacity walls without relabeling a launch failure as unavailable.",
+    "partition": {
+      "checked": [
+        "claude-ended-to-claude-fork",
+        "claude-ended-to-codex-conversion",
+        "codex-live-to-codex-session-port"
+      ],
+      "unavailable": [],
+      "residual": []
+    },
+    "cells": [
+      {
+        "cell": "claude-ended-to-claude-fork",
+        "status": "checked",
+        "passed": false,
+        "terminalClassification": "expired without verified native dispatch or substantive answer",
+        "requestKey": "wi6171-r6-20261107-07dd-fixture-claude-fork-v1",
+        "conversationId": "conv-request-92ac59fd0775fa13ff16469b0c7de5c4acd6b57347e549991c1fb0ced3a94415",
+        "nativeKickoff": null,
+        "answerPostIds": [],
+        "stateSnapshot": {
+          "updatedAt": "2026-11-07T08:39:12.341Z",
+          "expiresAt": "2026-11-07T12:39:12.341Z",
+          "wakesUsed": 3,
+          "wakeBudget": 4,
+          "cascadeCursor": 2,
+          "selectedCount": 3,
+          "dispatchWalks": 4
+        },
+        "attempts": [
+          {
+            "at": "2026-11-07T08:26:15.534Z",
+            "sourceOwnerId": "su-880a1084-7f21-4f62-840a-782389834070",
+            "outcomes": [
+              "claude/fable fork: account-walled",
+              "claude/opus fork: account-walled"
+            ]
+          },
+          {
+            "at": "2026-11-07T08:32:20.747Z",
+            "sourceOwnerId": "su-81ffb8ce-24d2-4e77-ad7c-fe5afe43e39a",
+            "sourceNativeSessionId": "ad9967b8-af57-4a07-9cdf-bdfc7c9f2708",
+            "outcomes": [
+              "claude/fable fork: launch-failed, archive restore pending",
+              "claude/opus fork: account-walled"
+            ],
+            "launchLogPath": "~/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-fork-su-ef3a3d4b-6a74-1824631-1794040077802.log"
+          },
+          {
+            "at": "2026-11-07T08:37:08.370Z",
+            "outcomes": [
+              "answer-window-expired; task already gone"
+            ]
+          },
+          {
+            "at": "2026-11-07T08:47:57.316Z",
+            "sourceOwnerId": "su-b0451bbf-8d54-498c-9454-79a46ccf8ed1",
+            "answeringOwnerId": "su-3189a603-7976-47fd-99a3-f831eecdf475",
+            "outcomes": [
+              "answer-pickup-stalled; dispatched false"
+            ]
+          },
+          {
+            "at": "2026-11-07T08:55:48.672Z",
+            "sourceOwnerId": "su-14d44480-1901-45bd-9a1a-9d538bc87e8c",
+            "outcomes": [
+              "claude/fable convert: account-walled",
+              "claude/opus convert: account-walled"
+            ]
+          },
+          {
+            "at": "2026-11-07T08:57:44.191Z",
+            "outcomes": [
+              "answer-window-expired; terminal expired"
+            ]
+          }
+        ],
+        "followup": {
+          "id": "EI-28117756199478310",
+          "assignee": "su-d243560f-b1c1-4edb-a274-48af04b04486",
+          "rootCause": "unknown",
+          "evidence": "The one-file archive (3562917 raw bytes) subsequently restored with exact manifest SHA256 e2c59f5e4c6ac1eb476cb428b1e0c778b60b077a2a3c43f0c205529db77eb2aa. Eventual restoration is not a durable fix or a native fork receipt."
+        },
+        "terminalSnapshot": {
+          "state": "expired",
+          "closedAt": "2026-11-07T08:57:44.191Z",
+          "dispatchWalks": 8,
+          "verifiedDispatchedWalks": 0,
+          "substantiveAnswerPosts": 0
+        }
+      },
+      {
+        "cell": "codex-live-to-codex-session-port",
+        "status": "checked",
+        "passed": true,
+        "requestKey": "wi6171-r6-20261107-07dd-fixture-codex-port-v1",
+        "nativeProof": {
+          "id": "conv-request-116c5685d1ce3b33aeb0ca69591265dbad91c607b29ed60a46a5c191b7b260de",
+          "state": "closed_answered",
+          "constraints": {
+            "sourceState": "live",
+            "sourceBackend": "codex",
+            "targetBackend": "codex"
+          },
+          "launchBase": "http://localhost:3170",
+          "measurementBuild": "15e04a8c1a",
+          "source": {
+            "claims": {
+              "scope": "canonical nonterminal held work-item references; plan claims are recorded separately",
+              "checked": [],
+              "truncated": false
+            },
+            "status": "measured",
+            "snapshot": {
+              "kind": "live-jsonl",
+              "sha256": "e7028e25e3bb181db34e462a1343c5ef7b25d754c220ae9bcb57567d909d8ce5",
+              "fileIdentity": {
+                "path": "~/.papercusp/su-codex-homes/session-53043/sessions/2026/10/28/rollout-2026-10-28T20-14-35-01a18502-257a-73e1-a76b-d82e4b834e10.jsonl",
+                "inode": 37236065,
+                "links": 1,
+                "device": 66307
+              },
+              "completeBytes": 3505694,
+              "archiveRelpath": null,
+              "highWaterBytes": 3505694
+            },
+            "readScope": "sequential source and claim endpoint reads; not an atomic snapshot or transition/actor/wake history",
+            "capturedAt": "2026-11-07T08:35:01.789Z",
+            "planClaims": {
+              "scope": "exact-workspace owner plan-claim endpoints across harnesses, including lapsed leases; equality does not exclude mutate-then-revert or attribute actors",
+              "checked": [],
+              "truncated": false
+            },
+            "completedAt": "2026-11-07T08:35:01.847Z",
+            "sourceOwnerId": "su-c5b20036-1420-45e1-a14b-60fd21571af8",
+            "sourceAdvSessionId": 53043,
+            "sourceNativeSessionId": "01a18502-257a-73e1-a76b-d82e4b834e10"
+          },
+          "at": "2026-11-07T08:36:43.266Z",
+          "sourceOwner": "su-c5b20036-1420-45e1-a14b-60fd21571af8",
+          "answeringOwner": "su-5b85a13b-2ffd-415b-8912-3dae99e4e908",
+          "nativeVerified": true,
+          "operation": "convert",
+          "agent": "codex",
+          "model": "sol",
+          "answeringTurn": {
+            "agent": "codex",
+            "kickoffAt": "2026-11-07T08:36:23.261Z",
+            "transcriptPath": "~/.papercusp/su-codex-homes/session-57384/sessions/2026/11/07/rollout-2026-11-07T03-36-12-01a1b526-a9be-7521-808c-ee1332572be4.jsonl"
+          },
+          "detail": "convert of su-c5b20036-1420-45e1-a14b-60fd21571af8 → codex/sol as su-5b85a13b-2ffd-415b-8912-3dae99e4e908: live host registered after 3ms (log ~/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-convert-su-5b85a13b-2ffd-2621042-1794040507488.log). First reply not written 20004ms after kickoff, so it was not checked for a provider rejection yet; the consult expiry sweep re-checks it."
+        },
+        "sessionPort": {
+          "id": "3b0f671b-10a9-4bbd-8606-53476d287022",
+          "workspace_id": "papercusp-workspace",
+          "source_adv_session_id": "53043",
+          "target_adv_session_id": "57384",
+          "source_backend": "codex",
+          "target_backend": "codex",
+          "target_model": "gpt-5.6-sol",
+          "status": "delivered",
+          "source_hash": "e7028e25e3bb181db34e462a1343c5ef7b25d754c220ae9bcb57567d909d8ce5",
+          "artifact_path": "~/.papercusp/session-ports/3b0f671b-10a9-4bbd-8606-53476d287022.seed.md",
+          "prepared_at": "2026-11-07 08:35:15.646267+00",
+          "delivered_at": "2026-11-07 08:36:23.3347+00"
+        },
+        "answerPosts": [
+          {
+            "id": 1218118,
+            "authorId": "su-5b85a13b-2ffd-415b-8912-3dae99e4e908",
+            "createdAt": "2026-11-07T08:39:45.420Z",
+            "chars": 2886,
+            "substantive": true,
+            "excerpt": "Supported tolerance uses bounded per-binding file-set scoping and one-commit-per-evaluation pinning. No general semantic-delta waiver or ship-time grace window exists; rerun and rebind when the relevant committed closure changes."
+          }
+        ],
+        "closePostId": 1218122
+      },
+      {
+        "cell": "claude-ended-to-codex-conversion",
+        "status": "checked",
+        "passed": true,
+        "requestKey": "wi6171-r6-20261107-07dd-fixture-claude-codex-v1",
+        "nativeProof": {
+          "id": "conv-request-f470fbd322eeae0208cf7dc448bf33c255e41c45b1a0793bd115cde4f260f4cf",
+          "state": "closed_answered",
+          "constraints": {
+            "sourceState": "ended",
+            "sourceBackend": "claude",
+            "targetBackend": "codex"
+          },
+          "launchBase": "http://localhost:3170",
+          "measurementBuild": "07dd865f59",
+          "source": {
+            "claims": {
+              "scope": "canonical nonterminal held work-item references; plan claims are recorded separately",
+              "checked": [],
+              "truncated": false
+            },
+            "status": "measured",
+            "snapshot": {
+              "kind": "archive-manifest",
+              "sha256": "58a5d18ed0e17f7e1f01abf2d74c4704876f1a66b1b41455cc9ee683e445740e",
+              "fileIdentity": null,
+              "completeBytes": 2267091,
+              "archiveRelpath": "projects/-HOME-papercupai-workspace-papercusp/c60c4031-4753-4050-b7bb-42d1437e0c0b.jsonl",
+              "highWaterBytes": 2267091
+            },
+            "readScope": "sequential source and claim endpoint reads; not an atomic snapshot or transition/actor/wake history",
+            "capturedAt": "2026-11-07T08:24:46.933Z",
+            "planClaims": {
+              "scope": "exact-workspace owner plan-claim endpoints across harnesses, including lapsed leases; equality does not exclude mutate-then-revert or attribute actors",
+              "checked": [],
+              "truncated": false
+            },
+            "completedAt": "2026-11-07T08:24:47.185Z",
+            "sourceOwnerId": "su-ffacf48e-095b-4eba-89c6-8ec92d0564d8",
+            "sourceAdvSessionId": 39747,
+            "sourceNativeSessionId": "c60c4031-4753-4050-b7bb-42d1437e0c0b"
+          },
+          "at": "2026-11-07T08:34:09.975Z",
+          "sourceOwner": "su-ffacf48e-095b-4eba-89c6-8ec92d0564d8",
+          "answeringOwner": "su-4007a03b-bebb-4072-b90a-4eb57041ff4d",
+          "nativeVerified": true,
+          "operation": "convert",
+          "agent": "codex",
+          "model": "sol",
+          "answeringTurn": {
+            "agent": "codex",
+            "kickoffAt": "2026-11-07T08:33:42.805Z",
+            "transcriptPath": "~/.papercusp/su-codex-homes/session-57382/sessions/2026/11/07/rollout-2026-11-07T03-33-36-01a1b524-4a80-7043-a704-4b14da898899.jsonl"
+          },
+          "detail": "convert of su-ffacf48e-095b-4eba-89c6-8ec92d0564d8 → codex/sol as su-4007a03b-bebb-4072-b90a-4eb57041ff4d: live host registered after 192ms (log ~/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-convert-su-4007a03b-bebb-1824631-1794040366076.log). First reply not written 27169ms after kickoff, so it was not checked for a provider rejection yet; the consult expiry sweep re-checks it."
+        },
+        "sessionPort": {
+          "id": "85d10442-67f3-47d1-8a74-19b583dcf514",
+          "workspace_id": "papercusp-workspace",
+          "source_adv_session_id": "39747",
+          "target_adv_session_id": "57382",
+          "source_backend": "claude",
+          "target_backend": "codex",
+          "target_model": "gpt-5.6-sol",
+          "status": "delivered",
+          "source_hash": "58a5d18ed0e17f7e1f01abf2d74c4704876f1a66b1b41455cc9ee683e445740e",
+          "artifact_path": "~/.papercusp/session-ports/85d10442-67f3-47d1-8a74-19b583dcf514.seed.md",
+          "prepared_at": "2026-11-07 08:32:52.563692+00",
+          "delivered_at": "2026-11-07 08:33:42.81411+00"
+        },
+        "answerPosts": [
+          {
+            "id": 1218113,
+            "authorId": "su-4007a03b-bebb-4072-b90a-4eb57041ff4d",
+            "createdAt": "2026-11-07T08:36:41.789Z",
+            "chars": 2203,
+            "substantive": true,
+            "excerpt": "I concur with the first reviewer. The carried transcript is relevant but narrow: c60c4031-4753-4050-b7bb-42d1437e0c0b#11 establishes that overlay relocation bind-mounts the mutant at the subject's own path in a private namespace."
+          },
+          {
+            "id": 1218102,
+            "authorId": "su-0f416b4e-5445-4e62-a4b3-b75faef1347a",
+            "createdAt": "2026-11-07T08:28:01.997Z",
+            "chars": 2223,
+            "substantive": true,
+            "note": "Earlier successful answering session; preserve this receipt alongside the later recovery walk."
+          }
+        ],
+        "closePostId": 1218117
+      }
+    ]
+  },
+  "sourcePrefixAfter": {
+    "sourceNativeSessionId": "01a18502-257a-73e1-a76b-d82e4b834e10",
+    "prefixBytes": 3505694,
+    "prefixSha256": "e7028e25e3bb181db34e462a1343c5ef7b25d754c220ae9bcb57567d909d8ce5",
+    "expectedSha256": "e7028e25e3bb181db34e462a1343c5ef7b25d754c220ae9bcb57567d909d8ce5",
+    "equal": true
+  },
+  "sourceIsolationLimits": [
+    "Native source and claim observations are sequential endpoint reads, not atomic snapshots or actor/wake history.",
+    "Both selected successful sources had empty held-work and plan-claim endpoints at the saved before cut. This does not establish preservation of a populated plan lease.",
+    "The non-Claude source's complete prefix was re-read after dispatch and matched the before hash. No universal source-mutation or claim-history conclusion is made."
+  ],
+  "qualityReview": {
+    "status": "historical-shortfall-and-unknowns-preserved",
+    "sourceArtifact": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-native-live-h-2026-10-28.json",
+    "sourceSha256": "6354925c32d64552967c37d3c8dcb6a4b7f219783cb50665c8b4b2a47c0c1f85",
+    "deterministicReview": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-live.json qualityReview",
+    "windowStart": "2026-10-03T05:21:32.561Z",
+    "windowEnd": "2026-10-05T20:27:24Z",
+    "eligible": 4,
+    "target": 8,
+    "shortfall": 4,
+    "knownRequesterDecisions": 2,
+    "unknownRequesterDecisions": 2,
+    "note": "This immutable original cut is not overwritten or regraded by the new mechanism fixtures. Ordinary requester-authored project decision evidence is accepted; missing evidence remains unknown. No calls were created to reach a usefulness quota."
+  },
+  "priorTrialPartition": {
+    "codeSpecificNoQualified": [
+      "conv-request-0078eea90ea54131e179acf791262bed9e1a0a88b89dc60b12b08652b824c74e",
+      "conv-request-9b728f439ec3274cf407b9dc13d33a94ce50c447b7c70a7fb8dd7710bea63779",
+      "conv-request-ccc48964854c506dbcf2309dcfe94a8233c00e82a68c00d1f7c18b44c07eaabf"
+    ],
+    "classification": "These stopped below the relevance floor before native source qualification or dispatch; not backend failures or capacity-unavailable proofs.",
+    "retraction": "The proposed positive control did not contain the inferred exact subject path. A production source-eligibility defect was not established. Preserve the correction recorded in WI-6554700010046171 checkpoint74fe46e723f5; do not reintroduce a floor or eligibility change."
+  },
+  "assertions": [
+    {
+      "id": "matrix-claude-fork-native-answer",
+      "passed": false,
+      "evidence": "Archive-pending launch failure and no native kickoff or substantive answer at the snapshot."
+    },
+    {
+      "id": "matrix-claude-to-codex-native-answer",
+      "passed": true,
+      "evidence": "Delivered session port85d10442 and native answering session57382; post1218113 by the dispatched distinct owner; closed_answered."
+    },
+    {
+      "id": "matrix-non-claude-session-port-native-answer",
+      "passed": true,
+      "evidence": "Delivered session port3b0f671b and native answering session57384; post1218118 by the dispatched distinct owner; closed_answered."
+    },
+    {
+      "id": "current-measured-source-generation-contained",
+      "passed": true,
+      "evidence": "Four consult source/test blobs and launcher blob match both measured builds and the physical current staging generation."
+    },
+    {
+      "id": "original-quality-sample-complete-and-known",
+      "passed": false,
+      "evidence": "Original cut has4/8 eligible threads and2 unknown requester decisions; no new usefulness cohort is claimed."
+    }
+  ],
+  "details": {
+    "residue": [
+      "EI-28117756199478310: archive restore deadline root cause and recurrence guard remain open.",
+      "Independent current acceptance and author verdict remain pending.",
+      "R7 exact promoted artifact, live behavior equality and normal ship receipt remain pending."
+    ]
+  },
+  "pathEncoding": {
+    "homeRelative": "A leading ~/ denotes the measured runtime home directory. Expand it using the runtime's home resolver when reproducing file reads.",
+    "claudeProjectSlug": "Within a Claude projects path, -HOME- denotes the measured home directory slug. Expand using the home path with each non-alphanumeric character replaced by a hyphen. IDs and recorded content hashes are unchanged.",
+    "rawReceiptReproduction": "Re-read the exact consult_state dispatch and session_ports rows named by conversation, port and native session IDs for their environment-local paths. This artifact normalizes only documentary path text."
+  }
+}
+
