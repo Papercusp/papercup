@@ -12,6 +12,7 @@ import { stampEmbedderMode } from '../../search/embedder-mode-registry';
 import { buildCoverageQuery,coverageTargets,surfaceKey } from '../../search/embed-coverage';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { resolveNamedQueryV2 } from '../../sync-resolver';
+import { selectCorpusLines } from '../../memory/corpus-recall';
 
 const flag = vi.hoisted(() => ({ enabled: true }));
 const ui = vi.hoisted(() => ({ sql: undefined as unknown as import('postgres').Sql, workspaceId: '' }));
@@ -47,6 +48,27 @@ describe('Reports shared search (migrated PostgreSQL)', () => {
     await indexReport(db.adminSql, report, documentEmbedder);
     return report;
   }
+
+  it('never presents a clipped report command without its late approval condition', async () => {
+    for (const body of ['Apply zephyrquartz recovery. Only after approval.',
+      `Apply zephyrquartz recovery. ${'padding '.repeat(300)}Only after approval.`]) {
+      const report = await publish('workspace', body);
+      const rows = await createReportSearchSource().lexical(context());
+      const row = rows.find(row => row.row.source_id === report.reportId)!;
+      expect(row).toBeDefined();
+      const { lines } = selectCorpusLines({ queryText: 'zephyrquartz', budgetChars: 3000, hits: [{
+        source: 'report', sourceId: row.row.source_id, excerpt: row.row.excerpt ?? '',
+        highlight: row.row.highlight, meta: row.row.meta, score: row.score,
+      }] });
+      expect(lines).toHaveLength(1);
+      expect(lines[0].operative).toBe(body.length < 1500);
+      if (body.length < 1500) expect(lines[0].line).toContain('Only after approval.');
+      else {
+        expect(lines[0].line).toContain('source-pointer');
+        expect(lines[0].line).not.toContain('Apply zephyrquartz');
+      }
+    }
+  });
 
   it('registers report scope and derives its sweep coverage mapping', () => {
     expect(SEARCH_SOURCES.some(s => s.name === 'report')).toBe(true);

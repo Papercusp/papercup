@@ -13,6 +13,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { resetBuildStampResolver, setBuildStampResolver } from '@papercusp/db-org';
 import {
   createStageAttempt,
+  currentStageDiagnosticContext,
   logIfStageStalls,
   STAGE_STALL_LOG_MS,
   traceStageSync,
@@ -29,6 +30,53 @@ afterEach(() => {
 });
 
 describe('logIfStageStalls — named-hop pipeline observability (P-012)', () => {
+  it('creates dependencies inside the exact named hop and isolates concurrent rows', async () => {
+    const events: StageDiagnosticEvent[] = [];
+    const attempts = [41, 42].map(rowId => createStageAttempt({
+      rowId, onEvent: event => { events.push(event); },
+    }));
+    try {
+      const results = await Promise.all(attempts.map(attempt =>
+        logIfStageStalls('scope', 'mark-drained', async () => {
+          const created = currentStageDiagnosticContext();
+          await Promise.resolve();
+          expect(currentStageDiagnosticContext()).toEqual(created);
+          expect(created).toMatchObject({ ...attempt.context, stage: 'mark-drained', boundary: 'await' });
+          return created;
+        }, 1000, { attempt, stage: 'mark-drained' }),
+      ));
+      expect(results.map(result => result?.rowId)).toEqual(['41', '42']);
+      expect(new Set(results.map(result => result?.attemptId)).size).toBe(2);
+      for (const result of results) {
+        expect(events).toContainEqual(expect.objectContaining({
+          event: 'hop-end', attemptId: result?.attemptId, hopId: result?.hopId, outcome: 'fulfilled',
+        }));
+      }
+      expect(currentStageDiagnosticContext()).toBeNull();
+    } finally {
+      attempts.forEach(attempt => attempt.finish());
+    }
+  });
+
+  it('preserves a synchronous factory failure and cleans up its hop and timer', async () => {
+    vi.useFakeTimers();
+    const events: StageDiagnosticEvent[] = [];
+    const attempt = createStageAttempt({ rowId: 43, onEvent: event => { events.push(event); } });
+    const error = new Error('business failure');
+    const factory = vi.fn(() => { throw error; });
+    try {
+      await expect(logIfStageStalls('scope', 'mark-drained', factory, 10,
+        { attempt, stage: 'mark-drained' })).rejects.toBe(error);
+      expect(factory).toHaveBeenCalledTimes(1);
+      expect(attempt.snapshot().activeHops).toEqual([]);
+      expect(events).toContainEqual(expect.objectContaining({ event: 'hop-end', outcome: 'rejected' }));
+      expect(currentStageDiagnosticContext()).toBeNull();
+    } finally {
+      attempt.finish('rejected');
+    }
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('a promise that settles BEFORE the threshold never logs', async () => {
     vi.useFakeTimers();
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});

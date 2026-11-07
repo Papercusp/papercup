@@ -39,7 +39,6 @@ import { isSessionClosedError } from './own-log-fork-guard';
 import { redactContentOpValueForEgress } from './content-op-egress-guard';
 import {
   createStageAttempt,
-  withStageAttempt,
   logIfStageStalls,
   STAGE_STALL_LOG_MS,
   type StageDiagnosticEvent,
@@ -567,10 +566,12 @@ export interface DrainOptions {
    *  Default `FANOUT_ROW_TIMEOUT_MS`; `<= 0` disables the bound. */
   fanoutTimeoutMs?: number;
   /** Optional local diagnostic sink for per-row attempt and named-hop events.
+   * Without a sink, row/hop context still links the existing bounded PG records;
+   * no event history is retained here.
    * The sink is observational: it is detached from the business path and any
    * throw/rejection is swallowed by the stage-attempt helper. */
   onDiagnosticEvent?: (event: StageDiagnosticEvent) => void | Promise<void>;
-  /** Disable local per-row diagnostic attempts even when a sink is supplied. */
+  /** Disable local per-row diagnostic attempts and PG correlation. */
   diagnosticsEnabled?: boolean;
 }
 
@@ -812,7 +813,9 @@ export async function drainOutboxOnce(
     // share the same row-scoped context.
     const attempt = createStageAttempt({
       rowId: r.id,
-      onEvent: opts.onDiagnosticEvent,
+      // Correlation must not depend on a subscriber being present. The existing
+      // PG registry retains bounded query records; this default retains no events.
+      onEvent: opts.onDiagnosticEvent ?? (() => {}),
       enabled: opts.diagnosticsEnabled,
     });
 
@@ -852,7 +855,7 @@ export async function drainOutboxOnce(
           logIfStageStalls(
             scope,
             encryptStage,
-            withStageAttempt(attempt, () => epochEncrypt.encryptOp(op)),
+            () => epochEncrypt.encryptOp(op),
             STAGE_STALL_LOG_MS,
             {
               attempt,
@@ -883,7 +886,7 @@ export async function drainOutboxOnce(
         logIfStageStalls(
           scope,
           appendStage,
-          withStageAttempt(attempt, () => handle.append(op)),
+          () => handle.append(op),
           STAGE_STALL_LOG_MS,
           {
             attempt,
@@ -979,7 +982,7 @@ export async function drainOutboxOnce(
       await logIfStageStalls(
         scope,
         `mark-drained (row id=${r.id})`,
-        pg`
+        () => pg`
         UPDATE harness_shared.substrate_outbox
            SET drained_at = ${now},
                drained_log_key = ${handle.ownLog?.keyHex ?? null}
@@ -1006,9 +1009,9 @@ export interface StartDrainOptions {
   batch?: number;
   /** Local subscribe→inject fan-out consumer, run per row (Phase 2). */
   fanout?: OutboxFanoutFn;
-  /** Optional local diagnostic sink for per-row attempt and named-hop events. */
+  /** Optional event sink; PG row/hop correlation also works without a sink. */
   onDiagnosticEvent?: (event: StageDiagnosticEvent) => void | Promise<void>;
-  /** Disable local per-row diagnostic attempts even when a sink is supplied. */
+  /** Disable local per-row diagnostic attempts and PG correlation. */
   diagnosticsEnabled?: boolean;
   /** Re-key encrypt-on-capture capability (C-001) — threaded to each drain pass. */
   epochEncrypt?: EpochEncryptCapability;

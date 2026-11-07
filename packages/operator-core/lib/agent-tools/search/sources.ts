@@ -931,7 +931,10 @@ const workItem: SearchSource = {
           ts: r.updated_at,
           rankers: ['lexical'],
           // See WORK_ITEM_LANE_NOTE.
-          meta: { lane: r.lane, contextUnit: completeContextUnit(body) },
+          // engineer_issues.body is only work_items.summary. Checkpoints,
+          // discussion and completion metadata can qualify that summary, so
+          // even a short row is not a complete canonical operative unit.
+          meta: { lane: r.lane, contextUnit: null },
         },
       };
     });
@@ -1016,7 +1019,8 @@ const workItem: SearchSource = {
           ts: r.updated_at,
           rankers: ['embeddings'],
           // Mirrors the lexical leg — see WORK_ITEM_LANE_NOTE.
-          meta: { lane: r.lane, contextUnit: completeContextUnit(body) },
+          // The vector leg projects the same summary-only record as lexical.
+          meta: { lane: r.lane, contextUnit: null },
         },
       };
     });

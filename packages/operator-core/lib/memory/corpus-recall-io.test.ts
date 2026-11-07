@@ -104,6 +104,7 @@ const hit = (over: Record<string, unknown> = {}) => ({
   score: 0.032,
   ts: null,
   rankers: ['bm25'],
+  meta: { contextUnit: over.excerpt ?? '[bug/open/major] http2 transport regression on the sse endpoint' },
   ...over,
 });
 
@@ -332,7 +333,8 @@ describe('recallCorpusContext — the contract handed to the search engine', () 
       { harnessSlugs: ['papercusp'],automatic: true,excludedRefs: excluded });
     expect(result.block).toContain('doc:');
     expect(result.block).toContain('docs:get');
-    expect(result.block).toContain('keep snapshot');
+    expect(result.block).toContain('source-pointer');
+    expect(result.block).not.toContain('keep snapshot');
   });
 
   it('preserves the prose query profile across memoization instead of borrowing a mem0 profile', async () => {
@@ -501,7 +503,8 @@ describe('recallCorpusContext — the contract handed to the search engine', () 
     try {
       const result = await recallCorpusContext({ ...base,harnessSlugs: ['papercusp'],excludeOwnerId: 'su-me' });
       expect(result.outcome).toBe('ok');
-      expect(result.block).toContain('keep snapshot');
+      expect(result.block).toContain('source-pointer');
+      expect(result.block).not.toContain('keep snapshot');
       expect(stalledSignal?.aborted).toBe(true);
       expect(result.legs?.degraded).toBe(true);
       expect(result.partialSourceCalls).toEqual(expect.arrayContaining([
@@ -548,7 +551,8 @@ describe('recallCorpusContext — the contract handed to the search engine', () 
       const result = await recallCorpusContext({ ...base, harnessSlugs: ['papercusp'],
         excludeOwnerId: 'su-me', signal: deadline.signal, deadline });
       expect(result.outcome).toBe('ok');
-      expect(result.block).toContain('keep snapshot');
+      expect(result.block).toContain('source-pointer');
+      expect(result.block).not.toContain('keep snapshot');
       // The enlarged stage-1 source window lets healthy siblings finish; the
       // remaining caller budget is then below the conservative stage-2 gate.
       expect(result.stages).toHaveLength(1);
@@ -642,7 +646,8 @@ describe('recallCorpusContext — the contract handed to the search engine', () 
       const result = await recallCorpusContext({ ...base, harnessSlugs: ['papercusp'],
         signal: deadline.signal, deadline });
       expect(result.outcome).toBe('ok');
-      expect(result.block).toContain('keep snapshot');
+      expect(result.block).toContain('source-pointer');
+      expect(result.block).not.toContain('keep snapshot');
       expect(result.stages?.[0]?.lexical.sourceCalls).toEqual(expect.arrayContaining([
         expect.objectContaining({ source: 'doc', status: 'ran', rows: 1 }),
       ]));

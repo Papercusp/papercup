@@ -313,7 +313,9 @@ export const STAGE_STALL_LOG_MS = 15_000;
  * `thresholdMs`, emit a loud `console.error` naming `scope` + `stage` (so a
  * hung pipeline names the exact await that's wedged), then keep waiting for
  * `p` itself — this NEVER times out or rejects `p`; it only adds an
- * observability side-channel. Silent on the healthy path (the timer is
+ * observability side-channel. Pass a factory when dependency creation needs the
+ * named hop's local diagnostic context; an already-created promise cannot carry
+ * that context retroactively. Silent on the healthy path (the timer is
  * cleared as soon as `p` settles, one way or the other).
  *
  * `scope` should identify the pipeline instance (e.g.
@@ -325,7 +327,7 @@ export const STAGE_STALL_LOG_MS = 15_000;
 export async function logIfStageStalls<T>(
   scope: string,
   stage: string,
-  p: PromiseLike<T>,
+  p: PromiseLike<T> | (() => PromiseLike<T>),
   thresholdMs: number = STAGE_STALL_LOG_MS,
   diagnostic?: { attempt: StageAttempt; stage: StageDiagnosticName },
 ): Promise<T> {
@@ -339,7 +341,15 @@ export async function logIfStageStalls<T>(
   }, thresholdMs);
   timer.unref?.();
   try {
-    const value = await p;
+    const run = () => typeof p === 'function' ? p() : p;
+    const value = await (diagnostic && span?.hopId
+      ? withStageAttempt(diagnostic.attempt, () => hopContext.run({
+        attempt: diagnostic.attempt,
+        hopId: span.hopId!,
+        stage: diagnostic.stage,
+        boundary: 'await',
+      }, run))
+      : run());
     span?.end('fulfilled');
     return value;
   } catch (error) {

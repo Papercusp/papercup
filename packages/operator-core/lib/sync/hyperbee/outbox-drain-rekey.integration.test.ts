@@ -17,7 +17,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { drainOutboxOnce, startOutboxDrain, type EpochEncryptCapability } from './outbox-drain';
-import type { StageDiagnosticEvent } from './stage-stall-log';
+import { currentStageDiagnosticContext, type StageDiagnosticEvent } from './stage-stall-log';
 import type { BootedHarnessHandle, LocalWriteOp } from './boot';
 
 const WS = 'ws_rekey_drain';
@@ -136,6 +136,48 @@ describe('outbox-drain re-key capture-wire (real PG)', () => {
     expect(appends).toHaveLength(1);
     expect(appends[0]?.epoch).toBe(7);
     expect(appends[0]?.value).toEqual({ __rekey: 'CIPHER' });
+  });
+
+  it.each([true, false])('links dependency creation without an observer (diagnostics enabled=%s)', async enabled => {
+    const id = await seedOutbox(db.sql, {
+      table_name: 'harness_features_consolidated', op: 'put', key: 'F-correlation',
+      row: featureRow('F-correlation'),
+    });
+    const contexts: ReturnType<typeof currentStageDiagnosticContext>[] = [];
+    const { handle, appends } = makeFakeHandle();
+    const append = handle.append.bind(handle);
+    handle.append = async op => {
+      contexts.push(currentStageDiagnosticContext());
+      return append(op);
+    };
+    const observedPg = new Proxy(db.sql, {
+      apply(target, thisArg, args) {
+        if (Array.isArray(args[0]) && args[0].join('').includes('UPDATE harness_shared.substrate_outbox')) {
+          contexts.push(currentStageDiagnosticContext());
+        }
+        return Reflect.apply(target, thisArg, args);
+      },
+    });
+    await expect(drainOutboxOnce(handle, observedPg, {
+      diagnosticsEnabled: enabled,
+      epochEncrypt: { encryptOp: async () => {
+        contexts.push(currentStageDiagnosticContext());
+        return { epoch: 7, value: { __rekey: 'CIPHER' } };
+      } },
+    })).resolves.toBe(1);
+    expect(contexts).toHaveLength(3);
+    if (enabled) {
+      expect(contexts.map(context => context?.stage)).toEqual(['epoch-encrypt', 'hypercore-append', 'mark-drained']);
+      expect(contexts.every(context => context?.rowId === String(id))).toBe(true);
+      expect(new Set(contexts.map(context => context?.attemptId)).size).toBe(1);
+      expect(new Set(contexts.map(context => context?.hopId)).size).toBe(3);
+    } else expect(contexts).toEqual([null, null, null]);
+    expect(currentStageDiagnosticContext()).toBeNull();
+    expect(appends).toHaveLength(1);
+    expect(appends[0]).toMatchObject({ epoch: 7, value: { __rekey: 'CIPHER' } });
+    expect(appends[0]).not.toHaveProperty('attemptId');
+    const [row] = await db.sql`SELECT drained_at FROM harness_shared.substrate_outbox WHERE id=${id}`;
+    expect(row.drained_at).not.toBeNull();
   });
 
   it('emits distinct local attempt identities across rows without changing the wire op', async () => {

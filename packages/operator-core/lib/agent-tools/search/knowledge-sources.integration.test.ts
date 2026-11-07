@@ -11,6 +11,8 @@ import { runChunkSyncTick } from '../../search/chunks/tick';
 import { PLANS_CHUNK_SURFACE } from '../../search/chunks/registry';
 import { bm25Corpus } from '../../search/lexical/corpora';
 import { bm25IndexesFor, bm25Leg } from '../../search/lexical/rank';
+import { SEARCH_SOURCES } from './sources';
+import { selectCorpusLines } from '../../memory/corpus-recall';
 
 const profileId = EMBEDDER_DIM_SPECS.gemma.profileId;
 const vec = (match: boolean) => JSON.stringify([1, match ? 10 : 0, ...Array(766).fill(0)]);
@@ -64,6 +66,74 @@ describe('complete knowledge sections against canonical PostgreSQL', () => {
     }
   },180_000);
   afterAll(async () => { await db?.cleanup(); });
+
+  it.each(['plan', 'session_turn'] as const)('%s quotes a complete source or only a pointer after upstream clipping', async kind => {
+    const token = `zephyroperative${kind.replace('_', '')}`;
+    const command = `Apply ${token} recovery.`;
+    const short = `${command} Only after approval.`;
+    const long = `${command} ${'padding '.repeat(300)}Only after approval.`;
+    const source = kind === 'plan' ? createPlanSearchSource({ harnessSlugs: ['pot-a'], automatic: true })
+      : SEARCH_SOURCES.find(row => row.name === kind)!;
+    try {
+    for (const [index, body] of [short, long].entries()) {
+      const id = `operative-${kind}-${index}`;
+      if (kind === 'plan') await db.adminSql`INSERT INTO harness_shared.harness_plans
+        (workspace_id,harness_slug,plan_slug,title,content,status)
+        VALUES (${workspaceId},'pot-a',${id},'Approval-bound source',${body},'active')`;
+      else await db.adminSql`INSERT INTO harness_shared.session_turns
+        (workspace_id,source_kind,session_id,turn_idx,speaker,text)
+        VALUES (${workspaceId},'codex',${id},1,'user',${body})`;
+    }
+    const rows = await source.lexical({ ...params(), query: token, scopeFilter: 'pot-a', limit: 10,
+      ...(kind === 'session_turn' ? { scopeFilter: null } : {}) });
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      const isLong = row.row.source_id.includes(`${kind}-1`);
+      expect(row.row.meta?.contextUnit == null).toBe(isLong);
+      const { lines } = selectCorpusLines({ queryText: token, budgetChars: 3000, hits: [{
+        source: kind, sourceId: row.row.source_id, excerpt: row.row.excerpt ?? '',
+        highlight: row.row.highlight, meta: row.row.meta, score: row.score,
+      }] });
+      expect(lines).toHaveLength(1);
+      expect(lines[0].operative).toBe(!isLong);
+      if (isLong) {
+        expect(lines[0].line).toContain('source-pointer');
+        expect(lines[0].line).not.toContain(command);
+      } else {
+        expect(lines[0].line).toContain(command);
+        expect(lines[0].line).toContain('Only after approval.');
+      }
+    }
+    } finally {
+      // Later tests index every plan in this workspace. Keep this test's
+      // independent records out of their ambient-fence population.
+      if (kind === 'plan') await db.adminSql`DELETE FROM harness_shared.harness_plans
+        WHERE workspace_id = ${workspaceId} AND plan_slug IN ('operative-plan-0','operative-plan-1')`;
+    }
+  });
+
+  it('keeps short work-item summaries as pointers on both search legs', async () => {
+    const command = 'Apply zephyrsummaryonly recovery.';
+    await db.adminSql`INSERT INTO harness_shared.work_items
+      (workspace_id,harness_slug,feature_id,title,summary,item_kind,status,
+       embedding,embedding_profile,embedding_mode)
+      VALUES (${workspaceId},'pot-a','summary-only','Summary is not the full record',${command},'task','open',
+        ${vec(true)}::vector,${profileId},'gemma')`;
+    const source = SEARCH_SOURCES.find(row => row.name === 'work_item')!;
+    for (const leg of [source.lexical!, source.embedding!]) {
+      const rows = await leg({ ...params(), query: 'zephyrsummaryonly', scopeFilter: 'pot-a', limit: 10 });
+      const row = rows.find(hit => hit.row.source_id === 'summary-only')!;
+      expect(row).toBeDefined();
+      const { lines } = selectCorpusLines({ queryText: 'zephyrsummaryonly', budgetChars: 3000, hits: [{
+        source: 'work_item', sourceId: row.row.source_id, excerpt: row.row.excerpt ?? '',
+        highlight: row.row.highlight, meta: row.row.meta, score: row.score,
+      }] });
+      expect(lines).toHaveLength(1);
+      expect(lines[0].operative).toBe(false);
+      expect(lines[0].line).toContain('source-pointer');
+      expect(lines[0].line).not.toContain(command);
+    }
+  });
 
   it('retrieves a plan body beyond the old 32-window cap with its heading and prerequisite', async () => {
     const source = createPlanSearchSource({ harnessSlugs: ['pot-a'], automatic: true });
@@ -176,6 +246,14 @@ describe('complete knowledge sections against canonical PostgreSQL', () => {
       expect(rows[0].row.excerpt).toContain('retain the snapshot');
       expect(rows[0].row.meta?.section).toBe('procedure-299');
       expect(rows[0].row.meta?.path).toBe('/docs/late-doc#procedure-299');
+      expect(rows[0].row.meta?.contextUnit).toBeNull();
+      const { lines } = selectCorpusLines({ queryText: 'zephyrquartz', budgetChars: 3000, hits: [{
+        source: 'doc', sourceId: rows[0].row.source_id, excerpt: rows[0].row.excerpt ?? '',
+        highlight: rows[0].row.highlight, meta: rows[0].row.meta, score: rows[0].score,
+      }] });
+      expect(lines[0].operative).toBe(false);
+      expect(lines[0].line).not.toContain('Apply zephyrquartz');
+      expect(lines[0].line).toContain('source-pointer');
     }
   });
 

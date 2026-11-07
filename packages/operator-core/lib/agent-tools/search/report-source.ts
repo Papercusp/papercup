@@ -20,7 +20,7 @@ function hits(rows: HitRow[], ranker: string): Listing {
     ts: r.published_at, excerpt: `${r.title}${section ? ` › ${section}` : ''}\n${content || r.summary}`.slice(0, 1500),
     highlight: ranker === 'embeddings' ? content : r.highlight,
     score: Number(r.rank), rankers: [ranker], meta: {
-      contextUnit: r.body_md == null ? null : completeContextUnit(r.body_md),
+      contextUnit: r.body_md == null ? null : completeContextUnit(`${r.title}\n${r.body_md}`),
       path: `/reports?sel=${encodeURIComponent(r.report_id)}`, section, title: r.title,
       currentness: 'dated-evidence', lineageId: r.lineage_id ?? null,
     },
