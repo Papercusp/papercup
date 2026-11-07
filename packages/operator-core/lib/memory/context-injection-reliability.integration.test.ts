@@ -15,21 +15,32 @@ import * as corpusIo from './corpus-recall-io';
 import * as recallStats from './recall-stats';
 import { setSessionConfinementResolver } from '../capability-envelope/session-confinement-port';
 import { resetMemoryDegradedForTest } from './op-deadline';
-import { _resetSessionEpochLedgerForTests } from './session-epoch-ledger';
+import { _resetSessionEpochLedgerForTests, confirmMemoryEmission, type MemoryFragmentOffer } from './session-epoch-ledger';
+import { getOrgPg } from '@papercusp/db-org';
+import { selectCorpusLines, renderCorpusBlock } from './corpus-recall';
 import { configureReadCursorStore, InMemoryReadCursorStore, resetReadCursorStore } from '../agent-tools/coordination/read-cursors';
 import routes from '../endpoint-route/routes/agent-mcp/mid-turn-context';
 import { DELIVERY_MATRIX_CLIENTS, GROUNDED_QUERY_CASES, validateGroundedQueryArtifact,
   CACHE_IDENTITY_CASES, validateCacheIdentityArtifact, type CacheIdentityCell, type CacheIdentityArtifact,
+  OPERATIVE_UNIT_CONDITIONS, OPERATIVE_UNIT_BOUNDARIES, validateOperativeUnitArtifact,
+  type OperativeUnitCell, type OperativeUnitArtifact,
   type GroundedQueryArtifact, type GroundedQueryCell } from './injection-delivery-coverage';
 
 const services = vi.hoisted(() => ({
   unavailable: false,
   control: { generation: 1, applied: 'cache-fixture-identity', scope: 'cache-fixture-task' },
-  search: vi.fn(), lexical: vi.fn(), coverage: vi.fn(),
+  search: vi.fn(), lexical: vi.fn(), coverage: vi.fn(), writes: vi.fn(),
 }));
 vi.mock('@papercusp/db-org', async orig => ({ ...await orig<typeof import('@papercusp/db-org')>(),
-  getOrgPg: () => ({ sql: async (parts: TemplateStringsArray) =>
-    Array.isArray(parts) && parts.join('').includes('control_generation AS generation') ? [{ ...services.control }] : [] }),
+  getOrgPg: () => ({ sql: async (parts: TemplateStringsArray, ...values: unknown[]) => {
+    const query = parts.join('');
+    if (query.includes('control_generation AS generation')) return [{ ...services.control }];
+    if (/INSERT INTO harness_shared\.(memory|corpus)_session_surfaced/.test(query)) {
+      services.writes(query, values);
+      return [{}];
+    }
+    return [];
+  } }),
 }));
 vi.mock('./backend', () => ({ getMemoryBackend: () => ({ name: 'query-integration-fixture',
   available: async () => ({ ok: !services.unavailable }), search: services.search, searchLexical: services.lexical,
@@ -94,6 +105,7 @@ let sequence = 0;
 const sourceSnapshot = [
   './injection.ts', './injection-delivery-coverage.ts', './context-injection-reliability.integration.test.ts',
   './injection-block-cache.ts', '../auth.ts', '../agent-tools/coordination/control-anchor.ts',
+  './temporal-render.ts', './corpus-recall.ts', './session-epoch-ledger.ts', './corpus-surfaced-ledger.ts',
   '../endpoint-route/routes/agent-mcp/operator-converse.ts', '../agent-tools/operator/converse-prompt.ts',
   '../endpoint-route/routes/agent-mcp/turn-start-memory.ts', '../../../../libs/generic/cache/src/cache.ts',
   '../endpoint-route/routes/agent-mcp/mid-turn-context.ts', '../../vitest.config.ts',
@@ -110,6 +122,7 @@ beforeEach(() => {
   _resetSessionEpochLedgerForTests();
   resetMemoryDegradedForTest();
   services.unavailable = false;
+  services.writes.mockClear();
   services.control = { generation: 1, applied: 'cache-fixture-identity', scope: 'cache-fixture-task' };
   const rows = async (_query: string, opts: { scope: string[] }) => [
     { id: '11111111-1111-4111-8111-111111111111', text: 'grounded query fixture result', score: 0.95, scope: opts.scope[0] },
@@ -213,6 +226,122 @@ for (const scenario of GROUNDED_QUERY_CASES) it(`context reliability R-3: ${scen
     contentType: 'application/json', bodyEncoding: 'utf-8',
     body: JSON.stringify(observation),
   });
+});
+
+const operativeConditions: Record<typeof OPERATIVE_UNIT_CONDITIONS[number], string> = {
+  'late-negation': 'Do not apply it to production.',
+  approval: 'Only after explicit approval.',
+  exception: 'Except when the source is read-only.',
+  expiry: 'This authorization expires at 2026-01-01T00:00:00Z.',
+  supersession: 'Superseded by the replacement procedure; this command is obsolete.',
+};
+
+for (const condition of OPERATIVE_UNIT_CONDITIONS) for (const boundary of OPERATIVE_UNIT_BOUNDARIES)
+it(`context reliability R-4: ${condition} ${boundary}`, async ({ annotate, task }) => {
+  const observations: OperativeUnitCell[] = [];
+  for (const client of DELIVERY_MATRIX_CLIENTS) for (const source of ['memory', 'corpus'] as const)
+  for (const mode of ['fits', 'limited'] as const) {
+    services.writes.mockClear();
+    const command = 'Apply zephyrrepair recovery.';
+    const padding = mode === 'fits' ? '' : 'filler '.repeat(boundary === 'entry' ? 160 : 40);
+    const sourceText = `${command} ${padding}${operativeConditions[condition]}`;
+    const owner = `operative-fixture-${++sequence}`;
+    const id = '11111111-1111-4111-8111-111111111111';
+    services.search.mockResolvedValue(source === 'memory'
+      ? [{ id, text: sourceText, score: 0.95, scope: 'query-fixture-user' }] : []);
+    if (source === 'corpus') {
+      const selected = selectCorpusLines({ queryText: 'zephyrrepair', budgetChars: boundary === 'aggregate' && mode === 'limited' ? 1 : 3000,
+        hits: [{ source: 'plan', sourceId: 'query-fixture-harness:operative', excerpt: sourceText,
+          meta: { contextUnit: sourceText }, score: 0.95 }] });
+      vi.mocked(corpusIo.recallCorpusContext).mockResolvedValue({ ...selected, block: renderCorpusBlock(selected.lines),
+        outcome: 'ok', embedderAvailable: true, candidateCount: 1, legs: null, retrievalDepth: 1, rerank: 'nothing-to-reorder' });
+    } else {
+      vi.mocked(corpusIo.recallCorpusContext).mockResolvedValue({ lines: [], dropped: [], block: null,
+        outcome: 'ok', embedderAvailable: true, candidateCount: 0, legs: null, retrievalDepth: 0, rerank: 'nothing-to-reorder' });
+    }
+    // Exercise the real builder first. The endpoint then receives this exact
+    // prepared object, so its aggregate clamp and receipt filter remain real.
+    const prepare = injection.prepareMemoryContextBlock;
+    const prepared = await prepare({ userId: 'query-fixture-user', workspaceId: 'query-fixture-ws',
+      queryContext: 'zephyrrepair', harnessSlugs: [], hiveSlugs: [], budgetChars: 8000,
+      session: { sessionId: owner, port: 'mid-turn' } });
+    if (source === 'memory' && boundary === 'aggregate' && mode === 'limited')
+      expect(prepared?.fragments).toHaveLength(1);
+    vi.mocked(prepare).mockResolvedValueOnce(prepared);
+    const request = digest(client, nativeFixture(client, 'search'));
+    const response = await endpoint.handler(new Request('http://localhost/agent-mcp/mid-turn-context', { method: 'POST',
+      body: JSON.stringify({ ...request, owner, client, workspace: 'query-fixture-ws',
+        harness: 'query-fixture-harness', memoryReceiptMode: true }) }));
+    const result = await response.json() as { ok: boolean; text: string; deliveryToken?: string; memoryFragmentOffers?: MemoryFragmentOffer[] };
+    Object.assign(task.meta, { operativeUnitLastResponse: { client, source, mode, result } });
+    expect(result.ok).toBe(true);
+    const offers = result.memoryFragmentOffers ?? [];
+    if (mode === 'fits') {
+      expect(result.text).toContain(`source-evidence ${JSON.stringify(sourceText)}`);
+      expect(offers).toHaveLength(1);
+      expect(result.deliveryToken).toBeTruthy();
+    } else {
+      expect(result.text).not.toContain(command);
+      expect(offers).toEqual([]);
+      expect(result.deliveryToken).toBeUndefined();
+      // Preserve braces inside JSON strings while separating adjacent objects.
+      const pointers = result.text.matchAll(/source-pointer (\{(?:[^"{}]|"(?:\\.|[^"\\])*")*\})/g);
+      for (const pointer of pointers) expect(JSON.parse(pointer[1]!)).toMatchObject({
+        ref: expect.any(String), revision: 'unknown', passage: 'retrieved-unit',
+        unitHash: expect.stringMatching(/^[a-f0-9]{64}$/), omitted: true,
+      });
+    }
+    expect(services.writes).not.toHaveBeenCalled();
+    const committed = await confirmMemoryEmission(getOrgPg().sql, owner, {
+      token: result.deliveryToken ?? `absent-${sequence}`, fragments: offers,
+    });
+    expect(committed).toBe(mode === 'fits' ? 1 : 0);
+    expect(services.writes).toHaveBeenCalledTimes(committed);
+    observations.push({ client, condition, boundary, source, mode,
+      selector: `context reliability R-4: ${condition} ${boundary}`,
+      evidenceRefs: [`vitest:context-injection-reliability.integration.test.ts#R-4/${client}/${condition}/${boundary}/${source}/${mode}`],
+      inputHash: sha({ sourceText, client, condition, boundary, source, mode }), returnedText: result.text,
+      offeredHashes: offers.map(row => row.bodySha256), committedHashes: committed ? offers.map(row => row.bodySha256) : [], verdict: 'passed' });
+  }
+  const observation = { schemaVersion: 'operative-unit-observations-v1',
+    evidencePlane: 'current-tree-builder-endpoint-receipt-fixture', sourceSnapshot, cells: observations };
+  Object.assign(task.meta, { operativeUnitObservations: observation });
+  await annotate(`operative-unit-v1 observations: ${condition} ${boundary}`, {
+    contentType: 'application/json', bodyEncoding: 'utf-8', body: JSON.stringify(observation),
+  });
+});
+
+it('context reliability R-4: artifact-validator', () => {
+  const identity = { planRevision: 35, planHash: '1'.repeat(64), rubricRevision: 3, rubricHash: '2'.repeat(64),
+    barHash: '3'.repeat(64), specHash: '4'.repeat(64), sourceHash: '5'.repeat(64), testHash: '6'.repeat(64), runtimeGeneration: 'validator-fixture-only' };
+  const cells: OperativeUnitCell[] = [];
+  for (const client of DELIVERY_MATRIX_CLIENTS) for (const condition of OPERATIVE_UNIT_CONDITIONS)
+  for (const boundary of OPERATIVE_UNIT_BOUNDARIES) for (const source of ['memory', 'corpus'] as const)
+  for (const mode of ['fits', 'limited'] as const) cells.push({ client, condition, boundary, source, mode,
+    selector: `context reliability R-4: ${condition} ${boundary}`, evidenceRefs: ['validator-control-fixture'],
+    inputHash: sha({ client, condition, boundary, source, mode }), returnedText: mode === 'fits' ? 'complete quoted unit' : '',
+    offeredHashes: mode === 'fits' ? ['a'.repeat(64)] : [], committedHashes: mode === 'fits' ? ['a'.repeat(64)] : [], verdict: 'passed' });
+  const artifact: OperativeUnitArtifact = { schemaVersion: 'operative-unit-v1', identity, cells };
+  const expected = structuredClone({ identity, cells });
+  expect(validateOperativeUnitArtifact(artifact, expected)).toMatchObject({ valid: true, closed: true });
+  const reject = (mutate: (copy: OperativeUnitArtifact) => void) => {
+    const copy = structuredClone(artifact); mutate(copy);
+    expect(validateOperativeUnitArtifact(copy, expected).valid).toBe(false);
+  };
+  reject(copy => { copy.cells.pop(); });
+  reject(copy => { copy.cells.push(copy.cells[0]!); });
+  reject(copy => { copy.cells[0]!.condition = 'unknown' as never; });
+  reject(copy => { copy.identity.sourceHash = 'b'.repeat(64); });
+  reject(copy => { copy.identity.runtimeGeneration = 'stale-runtime'; });
+  reject(copy => { copy.cells[0]!.inputHash = 'c'.repeat(64); });
+  reject(copy => { copy.cells[0]!.returnedText = 'truncated imperative'; });
+  reject(copy => { copy.cells[0]!.offeredHashes = []; });
+  reject(copy => { copy.cells[0]!.committedHashes = []; });
+  reject(copy => { copy.cells.find(cell => cell.mode === 'limited')!.committedHashes = ['d'.repeat(64)]; });
+  reject(copy => { copy.cells[0]!.verdict = 'UNKNOWN'; });
+  reject(copy => { copy.cells[0]!.evidenceRefs = []; });
+  expect(validateOperativeUnitArtifact(null, expected).valid).toBe(false);
+  expect(validateOperativeUnitArtifact(artifact, { identity, cells: [] }).valid).toBe(false);
 });
 
 it('context reliability R-3: artifact-validator', () => {
