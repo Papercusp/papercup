@@ -205,6 +205,35 @@ for (const scenario of GROUNDED_QUERY_CASES) it(`context reliability R-3: ${scen
   });
 });
 
+it('context reliability R-7: immutable-native-baseline', ({ task }) => {
+  const bytes = readFileSync(new URL('./fixtures/r7-native-pre-change.json', import.meta.url));
+  expect(bytes.byteLength).toBe(1228154);
+  const artifactHash = createHash('sha256').update(bytes).digest('hex');
+  expect(artifactHash).toBe('986f440eeaf59cf02a400fcd1caf206edae88cc7b04ccd95a91ba29235560ed4');
+  const baseline = JSON.parse(bytes.toString('utf8')) as {
+    toolCount: number; toolOrder: string[]; wireSha256: string; wireBytes: number;
+    schemaSetSha256: string; descriptionBytes: number;
+    tools: Array<{ name: string; description: string }>;
+  };
+  expect(baseline.tools).toHaveLength(55);
+  expect(baseline.toolCount).toBe(55);
+  expect(new Set(baseline.toolOrder).size).toBe(55);
+  expect(baseline.tools.map(tool => tool.name)).toEqual(baseline.toolOrder);
+  const wire = JSON.stringify(baseline.tools);
+  const wireHash = createHash('sha256').update(wire).digest('hex');
+  expect(Buffer.byteLength(wire, 'utf8')).toBe(1225418);
+  expect(baseline.wireBytes).toBe(1225418);
+  expect(wireHash).toBe('ff92740e7592370b394c85044dd925d17d9a2200379c0cd89827319fbef67e85');
+  expect(baseline.wireSha256).toBe(wireHash);
+  expect(baseline.tools.reduce((sum, tool) => sum + Buffer.byteLength(tool.description, 'utf8'), 0)).toBe(1205060);
+  expect(baseline.descriptionBytes).toBe(1205060);
+  expect(baseline.schemaSetSha256).toBe('f21fd4cbc08b6b17642588472c6b4db2ff1fc2e0023e7151f02a01863edb9d56');
+  for (const tool of baseline.tools) expect(tool.description).toContain('exec tool declaration:');
+  Object.assign(task.meta, { bootstrapBaseline: { artifactHash, wireHash,
+    fixture: 'r7-native-pre-change.json', evidencePlane: 'immutable-native-metadata-baseline',
+    tools: baseline.tools.length, artifactBytes: bytes.byteLength, wireBytes: Buffer.byteLength(wire, 'utf8') } });
+});
+
 it('context reliability R-3: artifact-validator', () => {
   // Validator controls are synthetic; successful scenario evidence above is
   // separately asserted and retained by the canonical runner, not invented here.
