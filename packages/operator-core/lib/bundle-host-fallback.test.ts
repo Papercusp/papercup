@@ -144,6 +144,7 @@ describe('shared bundle compiler pin', () => {
     ].join('\n'), { mode: 0o755 });
     const compiles = join(dir, 'compiles.log');
     const resolves = join(dir, 'resolves.log');
+    const stepLog = join(dir, 'compiler-steps.jsonl');
     const result = execFileSyncResult('bash', ['-c', [
       'set -euo pipefail',
       'source "$1"',
@@ -152,9 +153,12 @@ describe('shared bundle compiler pin', () => {
       ...(removeBetweenUses ? ['rm "$3"'] : []),
       'bundle_host_esbuild "$2" second',
     ].join('\n'), 'pin-guard', join(REPO_ROOT, 'apps/operator/bin/bundle-host-common.sh'), REPO_ROOT, compiler],
-    { ...process.env, PATH: `${shimDir}:${process.env.PATH}`, BUNDLE_TEST_COMPILES: compiles, BUNDLE_TEST_RESOLVES: resolves });
+    { ...process.env, PATH: `${shimDir}:${process.env.PATH}`, BUNDLE_TEST_COMPILES: compiles, BUNDLE_TEST_RESOLVES: resolves,
+      BUNDLE_HOST_STEP_LOG: stepLog });
     return { ...result, compiles: existsSync(compiles) ? readFileSync(compiles, 'utf8') : '',
-      resolves: existsSync(resolves) ? readFileSync(resolves, 'utf8') : '' };
+      resolves: existsSync(resolves) ? readFileSync(resolves, 'utf8') : '',
+      steps: existsSync(stepLog) ? readFileSync(stepLog, 'utf8').trim().split('\n')
+        .map(line => JSON.parse(line) as { step: string; event: string; status?: number }) : [] };
   }
 
   function execFileSyncResult(command: string, args: string[], env: NodeJS.ProcessEnv) {
@@ -169,7 +173,50 @@ describe('shared bundle compiler pin', () => {
     const result = runPinnedCompiler('0.25.0');
     expect(result.code, result.output).toBe(0);
     expect(result.resolves.trim().split('\n')).toEqual(['--yes --package=esbuild@0.25.0 -c command -v esbuild']);
-    expect(result.compiles.trim().split('\n')).toEqual(['first', 'second']);
+    expect(result.compiles.trim().split('\n')).toEqual([
+      expect.stringMatching(/^first --define:__PAPERCUSP_RETAINED_REPLAY_SOURCE_SHA256__="[a-f0-9]{64}"$/),
+      expect.stringMatching(/^second --define:__PAPERCUSP_RETAINED_REPLAY_SOURCE_SHA256__="[a-f0-9]{64}"$/),
+    ]);
+    expect(result.steps).toEqual(['first', 'second'].flatMap(() => [
+      { step: 'replay-identity-before', event: 'start' },
+      { step: 'replay-identity-before', event: 'end', status: 0 },
+      { step: 'compiler-cache-call', event: 'start' },
+      { step: 'compiler-cache-call', event: 'end', status: 0 },
+      { step: 'replay-identity-after', event: 'start' },
+      { step: 'replay-identity-after', event: 'end', status: 0 },
+    ].map(row => expect.objectContaining(row))));
+  });
+
+  it('preserves the interrupted attempt and records the next command failure separately', () => {
+    const stepLog = join(dir, 'retry-steps.jsonl');
+    const interrupted = '{"at":1,"pid":42,"step":"host-compile","event":"start"}\n';
+    writeFileSync(stepLog, interrupted);
+    const result = execFileSyncResult('bash', ['-c', [
+      'set -euo pipefail',
+      'source "$1"',
+      'bundle_host_init_step_log "$BUNDLE_HOST_STEP_LOG"',
+      'bundle_host_run_step failed-command bash -c "exit 23"',
+    ].join('\n'), 'step-log-retry', join(REPO_ROOT, 'apps/operator/bin/bundle-host-common.sh')],
+    { ...process.env, BUNDLE_HOST_STEP_LOG: stepLog });
+    expect(result.code, result.output).toBe(23);
+    expect(readFileSync(stepLog + '.previous', 'utf8')).toBe(interrupted);
+    expect(readFileSync(stepLog, 'utf8').trim().split('\n').map(line => JSON.parse(line))).toEqual([
+      expect.objectContaining({ step: 'failed-command', event: 'start' }),
+      expect.objectContaining({ step: 'failed-command', event: 'end', status: 23 }),
+    ]);
+  });
+
+  it('retains the original evidence when the prior-attempt destination cannot be replaced', () => {
+    const stepLog = join(dir, 'blocked-rotation.jsonl');
+    writeFileSync(stepLog, 'interrupted attempt\n');
+    mkdirSync(stepLog + '.previous');
+    const result = execFileSyncResult('bash', ['-c',
+      'source "$1"; bundle_host_init_step_log "$BUNDLE_HOST_STEP_LOG"',
+      'step-log-refusal', join(REPO_ROOT, 'apps/operator/bin/bundle-host-common.sh')],
+    { ...process.env, BUNDLE_HOST_STEP_LOG: stepLog });
+    expect(result.code).not.toBe(0);
+    expect(readFileSync(stepLog, 'utf8')).toBe('interrupted attempt\n');
+    expect(readdirSync(stepLog + '.previous')).toEqual([]);
   });
 
   it('refuses a newer resolved compiler before compiling', () => {
@@ -182,7 +229,7 @@ describe('shared bundle compiler pin', () => {
   it('fails closed if cache cleanup removed the resolved compiler between uses', () => {
     const result = runPinnedCompiler('0.25.0', true);
     expect(result.code).toBe(78);
-    expect(result.compiles.trim()).toBe('first');
+    expect(result.compiles.trim()).toMatch(/^first --define:__PAPERCUSP_RETAINED_REPLAY_SOURCE_SHA256__="[a-f0-9]{64}"$/);
     expect(result.resolves.trim().split('\n')).toHaveLength(1);
   });
 });

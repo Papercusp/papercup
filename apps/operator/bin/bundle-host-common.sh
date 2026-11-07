@@ -44,6 +44,17 @@ NODE
   fi
 }
 
+# Keep one prior attempt: systemd can retry before anyone reads a killed build's
+# journal. Rotate before truncating, and refuse to discard evidence if it fails.
+bundle_host_init_step_log() { # <step log>
+  local step_log="$1"
+  if [[ -e "$step_log" || -L "$step_log" ]]; then
+    [[ -f "$step_log" ]] || return 1
+    mv -fT -- "$step_log" "$step_log.previous" || return 1
+  fi
+  : > "$step_log"
+}
+
 # Keep step boundaries outside redirected compiler logs. A killed parent cannot
 # print those logs afterward; the private builder reads this retained journal.
 # Packaging callers without a journal keep the same command/exit contract.
@@ -123,19 +134,19 @@ bundle_host_esbuild() { # <repo root> [compiler args...]
   local repo_root="$1"
   shift
   local replay_identity_define replay_identity_after compiler_rc=0
-  replay_identity_define="$(bundle_host_replay_identity_define "$repo_root")" || return 78
+  replay_identity_define="$(bundle_host_run_step replay-identity-before bundle_host_replay_identity_define "$repo_root")" || return 78
   if [[ -n "${BUNDLE_HOST_BG_BUILD_CONTEXT:-}" ]]; then
     # BG preparation supplies an ORIGINAL per-invocation record and a private
     # pinned compiler. Never fall through to npx on a custody refusal.
     local -a guarded_node=("${COMMITTED_NODE[@]:-node}")
-    "${guarded_node[@]}" "$repo_root/scripts/source-preview.mjs" bg-compiler \
+    bundle_host_run_step compiler-private-call "${guarded_node[@]}" "$repo_root/scripts/source-preview.mjs" bg-compiler \
       --context "$BUNDLE_HOST_BG_BUILD_CONTEXT" -- "$@" "$replay_identity_define" || compiler_rc=$?
   else
     bundle_host_prepare_esbuild "$repo_root" || return 1
     # Each use holds the maintained cache lease through version validation AND
     # compilation. Cache cleanup between uses can remove the memoized path; that
     # fails closed instead of substituting the installed (possibly newer) tool.
-    bundle_host_cached_package "$repo_root" bash -c '
+    bundle_host_run_step compiler-cache-call bundle_host_cached_package "$repo_root" bash -c '
       compiler="$1"; shift
       version="$("$compiler" --version)" || exit 78
       if [[ "$version" != 0.25.0 ]]; then
@@ -146,7 +157,7 @@ bundle_host_esbuild() { # <repo root> [compiler args...]
     ' bundle-host-esbuild "$BUNDLE_HOST_ESBUILD_PATH" "$@" "$replay_identity_define" || compiler_rc=$?
   fi
   (( compiler_rc == 0 )) || return "$compiler_rc"
-  replay_identity_after="$(bundle_host_replay_identity_define "$repo_root")" || return 78
+  replay_identity_after="$(bundle_host_run_step replay-identity-after bundle_host_replay_identity_define "$repo_root")" || return 78
   if [[ "$replay_identity_after" != "$replay_identity_define" ]]; then
     echo 'ERROR: replay implementation sources changed during compilation; refusing the bundle' >&2
     return 78

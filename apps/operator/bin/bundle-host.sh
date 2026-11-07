@@ -173,7 +173,7 @@ OUTDIR="$(dirname "$OUTFILE")"
 # Node gate and census children append their phases to the same retained log.
 export BUNDLE_HOST_STEP_LOG="$OUTFILE.build-steps.jsonl"
 mkdir -p "$OUTDIR"
-: > "$BUNDLE_HOST_STEP_LOG"
+bundle_host_init_step_log "$BUNDLE_HOST_STEP_LOG"
 # >>> custom-output runtime dependencies (EI-25510203057543967)
 # Bare ESM imports resolve beside the generated file, independently of cwd.
 # Default outputs inherit this checkout's node_modules; an explicit output

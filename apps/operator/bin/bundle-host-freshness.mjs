@@ -172,6 +172,10 @@ function transientOutputName(path, manifestPath, outfile) {
     name === ".bundle-stale.json" ||
     name.endsWith(".build.lock") ||
     name.endsWith(".build-error.log") ||
+    // Restart initialization rotates these diagnostics before checking reuse.
+    // Their bytes describe build attempts, not the executable runtime tree.
+    name === `${basename(outfile)}.build-steps.jsonl` ||
+    name === `${basename(outfile)}.build-steps.jsonl.previous` ||
     // bundle-host.sh stamps before its EXIT trap removes the esbuild tmp
     // metafile. It is build-private state, not part of the runnable output
     // tree, so its later cleanup must not invalidate an otherwise exact proof.
