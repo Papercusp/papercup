@@ -956,8 +956,11 @@ function isCanonicalReviewPtoolCommand(command, env) {
       !['scorecards:get', 'capability:read'].includes(pinned[2]))) return false;
   // mcp-call validates its explicit port as a loopback-only destination. Keep
   // this recovery form limited to evidence reads and the inherited identity.
+  const scoped = /^ptool[ \t]+([a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*)((?:[ \t]+--(?:workspace|harness)=(?:"[^"\r\n]*"|'[^'\r\n]*'|[A-Za-z0-9._-]+))*)[ \t]+--json[ \t]+-((?:[ \t]+--(?:workspace|harness)=(?:"[^"\r\n]*"|'[^'\r\n]*'|[A-Za-z0-9._-]+))*)[ \t]+<<'([A-Za-z_][A-Za-z0-9_]*)'[ \t]*$/.exec(header);
+  // ptool accepts scopes on either side of --json -. Validate their combined
+  // set so reordering cannot evade duplicate-scope or environment checks.
   const match = pinned ? [pinned[0], pinned[2], '', pinned[3]] :
-    /^ptool[ \t]+([a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*)[ \t]+--json[ \t]+-((?:[ \t]+--(?:workspace|harness)=(?:"[^"\r\n]*"|'[^'\r\n]*'|[A-Za-z0-9._-]+))*)[ \t]+<<'([A-Za-z_][A-Za-z0-9_]*)'[ \t]*$/.exec(header);
+    scoped ? [scoped[0], scoped[1], scoped[2] + scoped[3], scoped[4]] : null;
   if (!match || closingDelimiter !== match[3] || lines.includes(match[3])) return false;
   const seenScopes = new Set();
   for (const argument of match[2].trim().split(/[ \t]+/).filter(Boolean)) {

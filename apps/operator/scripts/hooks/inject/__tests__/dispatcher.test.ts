@@ -616,6 +616,52 @@ describe('identity hook ports through the real CLI (P-011)', () => {
     }
   });
 
+  it('pre-tool: typed read scopes may precede JSON flags without admitting writes or shell effects', async () => {
+    const { runInjection } = await import('../core.mjs');
+    const command = (header: string, args: unknown = { id: 'WI-123' }) =>
+      [header + " <<'JSON'", JSON.stringify(args), 'JSON'].join('\n');
+    const safe = [
+      command('ptool work_items:get --workspace=papercusp-workspace --harness=papercusp --json -'),
+      command('ptool work_items:get --harness=papercusp --json - --workspace=papercusp-workspace'),
+      command('ptool work_items:get --url=http://127.0.0.1:3170 --workspace=papercusp-workspace --json -'),
+      command('ptool work_items:get --workspace="$PAPERCUSP_WORKSPACE" --json - --harness="${PAPERCUSP_HARNESS_SLUG}"'),
+      command('ptool tools:invoke --workspace=papercusp-workspace --json -', {
+        name: 'work_items:get', args: { id: 'WI-123' },
+      }),
+    ];
+    const unsafe = [
+      command('ptool work_items:complete --workspace=papercusp-workspace --json -'),
+      command('ptool work_items:get --workspace=papercusp-workspace --json - --workspace=papercusp-workspace'),
+      command('ptool work_items:get --workspace="$HOME" --json -'),
+      command('ptool work_items:get --workspace=papercusp-workspace --json - --json -'),
+      command('ptool work_items:get --url=http://elsewhere:3170 --workspace=papercusp-workspace --json -'),
+      command('ptool work_items:get --workspace=papercusp-workspace --json - > source.ts'),
+      command('ptool work_items:get --workspace=papercusp-workspace --json -') + '\ntouch source.ts',
+      command('ptool work_items:get --workspace=papercusp-workspace --json -').replace("<<'JSON'", '<<JSON'),
+    ];
+    const env = { PAPERCUSP_SID: 'sid-reviewer', PAPERCUSP_WORKSPACE: 'papercusp-workspace',
+      PAPERCUSP_HARNESS_SLUG: 'papercusp' };
+    const unavailable = (async () => { throw Error('authority unavailable'); }) as typeof fetch;
+    for (const [adapter, nativeEvent] of [[claude, 'PreToolUse'], [codex, 'pre-tool-use']] as const) {
+      for (const cmd of safe) {
+        const event = { tool_name: 'exec_command', tool_input: { cmd } };
+        expect(await runInjection({ adapter, nativeEvent, event, env, fetchImpl: unavailable }), cmd).toBeNull();
+        const refusal = await runInjection({ adapter, nativeEvent, event, env,
+          fetchImpl: (async () => new Response(JSON.stringify({ text: 'Explicit operator refusal' }), {
+            status: 200, headers: { 'Content-Type': 'application/json' },
+          })) as typeof fetch });
+        expect(JSON.parse(refusal!).hookSpecificOutput, cmd).toMatchObject({
+          permissionDecision: 'deny', permissionDecisionReason: 'Explicit operator refusal',
+        });
+      }
+      for (const cmd of unsafe) {
+        const output = await runInjection({ adapter, nativeEvent,
+          event: { tool_name: 'exec_command', tool_input: { cmd } }, env, fetchImpl: unavailable });
+        expect(JSON.parse(output!).hookSpecificOutput, cmd).toMatchObject({ permissionDecision: 'deny' });
+      }
+    }
+  });
+
   it('pre-tool: unavailable authority permits read-only diagnostics and exact grading-audit recovery waits', async () => {
     const { runInjection } = await import('../core.mjs');
     const fetchImpl = (async () => { throw Error('authority unavailable'); }) as typeof fetch;
