@@ -154,6 +154,16 @@ done
 work="$(mktemp -d "${TMPDIR:-/tmp}/run-in-isolated-netns.XXXXXX")" || fallback mktemp-failed
 mkfifo "$work/info" "$work/block" || fallback mkfifo-failed
 
+# systemd-resolved's loopback stub belongs to the host network namespace.
+# Reuse its maintained uplink list in this mount namespace only; keep both
+# directions of UDP port forwarding disabled and preserve other resolver setups.
+resolver_mount_args=()
+if [ -r /run/systemd/resolve/resolv.conf ] \
+  && awk '$1 == "nameserver" { seen = 1; if ($2 !~ /^127[.]0[.]0[.]5[34]$/) other = 1 } END { exit !(seen && !other) }' /etc/resolv.conf \
+  && awk '$1 == "nameserver" && $2 !~ /^127[.]/ && $2 != "::1" { uplink = 1 } END { exit !uplink }' /run/systemd/resolve/resolv.conf; then
+  resolver_mount_args=(--ro-bind /run/systemd/resolve/resolv.conf /etc/resolv.conf)
+fi
+
 # The user namespace cannot dereference a host process's /proc/<pid>/exe.
 # Preserve the reporter's original custody checks in an observer outside it.
 # Preparation is a hard native precondition, before browser/test execution.
@@ -227,6 +237,7 @@ exec "$@"
 # stdin through fd 7 instead.
 exec 7<&0
 bwrap --dev-bind / / --unshare-user --unshare-net --die-with-parent \
+  "${resolver_mount_args[@]}" \
   --info-fd 8 --block-fd 9 \
   -- bash -c "$inner" run-in-isolated-netns-inner "$SETTLE_SEC" "${CMD[@]}" \
   8>"$work/info" 9<"$work/block" <&7 7<&- &

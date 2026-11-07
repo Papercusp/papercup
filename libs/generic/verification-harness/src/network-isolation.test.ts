@@ -1,13 +1,44 @@
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const wrapper = fileURLToPath(import.meta.resolve('@papercusp/verification-harness/network-isolation'));
+const namespaceProbe = spawnSync('/bin/bash', [wrapper, '--', 'true'], {
+  encoding: 'utf8', env: { ...process.env, PAPERCUSP_E2E_NETNS: 'required', VERIFY_TAURI_PID: undefined }, timeout: 30000,
+});
+const resolverMountsAvailable = namespaceProbe.status === 0 && existsSync('/run/systemd/resolve/resolv.conf');
 
 describe('installed network isolation entry point', () => {
+  it.skipIf(!resolverMountsAvailable).each([
+    { resolver: '127.0.0.53', uplink: '192.0.2.53', expected: '192.0.2.53' },
+    { resolver: '192.0.2.54', uplink: '192.0.2.53', expected: '192.0.2.54' },
+    { resolver: '127.0.0.53', uplink: '127.0.0.53', expected: '127.0.0.53' },
+  ])('keeps DNS reachable without replacing non-stub resolvers: $resolver / $uplink', ({ resolver, uplink, expected }) => {
+    const dir = mkdtempSync(join(tmpdir(), 'netns-resolver-'));
+    try {
+      const original = join(dir, 'original.conf');
+      const upstream = join(dir, 'uplink.conf');
+      writeFileSync(original, `nameserver ${resolver}\nsearch original.example\n`);
+      writeFileSync(upstream, `nameserver ${uplink}\nsearch uplink.example\n`);
+      // Synthetic resolver views are private mounts. No host resolver or
+      // network interface is modified, and the command makes no DNS request.
+      const result = spawnSync('bwrap', ['--dev-bind', '/', '/', '--unshare-user',
+        '--ro-bind', original, '/etc/resolv.conf',
+        '--ro-bind', upstream, '/run/systemd/resolve/resolv.conf',
+        '--', '/bin/bash', wrapper, '--', 'cat', '/etc/resolv.conf'], {
+        encoding: 'utf8', timeout: 30000,
+        env: { ...process.env, PAPERCUSP_E2E_NETNS: 'required', VERIFY_TAURI_PID: undefined },
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stderr).toContain('isolated=1 mode=required');
+      expect(result.stdout).toBe(`nameserver ${expected}\nsearch ${expected === uplink && resolver !== uplink ? 'uplink' : 'original'}.example\n`);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }, 35000);
+
   it('preserves command arguments and exit status through the package export', () => {
     const result = spawnSync('/bin/bash', [wrapper, '--', process.execPath, '-e',
       'process.stdout.write(JSON.stringify(process.argv.slice(1))); process.exit(39)', 'a b', '$literal'], {

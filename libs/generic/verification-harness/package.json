@@ -1,6 +1,6 @@
 {
   "name": "@papercusp/verification-harness",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "type": "module",
   "description": "Verification-harness contract + shared runner for expensive harnesses (drills, release cuts, headless UI runs, LLM batteries): declared phases with dependencies and a fast preflight, structured per-phase results {phase, step, reasonCode, evidenceDir}, one retained evidence dir per run, --only/--from re-runs that reuse passed setup from a prior run, and never-abort continuation past failures later phases do not depend on. bin/vh.sh gives shell harnesses the same contract.",
