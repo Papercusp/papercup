@@ -238,7 +238,7 @@ describe('adapters/omp.mjs — parse (mid-turn)', () => {
         ),
       ),
     );
-    expect(req?.toolCalls).toEqual([
+    expect(req?.toolCalls).toMatchObject([
       { tool: 'bash', toolInput: JSON.stringify({ command: 'ls -la' }), toolResponse: 'total 12' },
     ]);
   });
@@ -271,7 +271,7 @@ describe('adapters/omp.mjs — parse (mid-turn)', () => {
       ),
     );
 
-    expect(req?.toolCalls).toEqual([
+    expect(req?.toolCalls).toMatchObject([
       {
         tool: 'write',
         toolInput: JSON.stringify(inbox),
@@ -290,7 +290,7 @@ describe('adapters/omp.mjs — parse (mid-turn)', () => {
     const req = withSid(() =>
       parse('mid-turn', turnEnd([{ toolCallId: 'orphan', toolName: 'grep', content: [{ type: 'text', text: 'hit' }] }])),
     );
-    expect(req?.toolCalls).toEqual([{ tool: 'grep', toolInput: '', toolResponse: 'hit' }]);
+    expect(req?.toolCalls).toMatchObject([{ tool: 'grep', toolInput: '', toolResponse: 'hit' }]);
   });
   it('keeps edited paths from full OMP arguments before clamping recall input', () => {
     const req = withSid(() => parse('mid-turn', turnEnd(
@@ -299,6 +299,21 @@ describe('adapters/omp.mjs — parse (mid-turn)', () => {
     )));
     expect(req?.toolCalls?.[0]).toMatchObject({ editedPaths: ['/repo/lib/target.ts'] });
     expect(req?.toolCalls?.[0].toolInput).toHaveLength(400);
+  });
+
+  it('extracts grounded query signals before clipping OMP serialized arguments', () => {
+    const req = withSid(() => parse('mid-turn', turnEnd(
+      [{ toolCallId: 'grounded', toolName: 'bash', content: [{ type: 'text', text: 'TypeError' }] }],
+      [{ type: 'toolCall', id: 'grounded', name: 'bash', arguments: {
+        command: 'node -e "' + 'x'.repeat(2000) + '"', description: 'repair WI-6512 delivery',
+      } }],
+    )));
+    expect(req?.toolCalls?.[0]?.toolInput).toHaveLength(400);
+    expect(req?.toolCalls?.[0]?.querySignals).toMatchObject({
+      ids: ['WI-6512'], task: ['repair delivery'], errors: ['TypeError'],
+      semantic: 'repair delivery TypeError', lexical: 'WI-6512 repair delivery TypeError',
+      fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
   });
 
   it('clamps to 12 calls and 400 chars per field', () => {
@@ -354,7 +369,9 @@ describe('adapters/omp.mjs — parse (mid-turn)', () => {
         ),
       ),
     );
-    expect(req?.toolCalls?.[0]).toEqual({ tool: 'x', toolInput: '', toolResponse: 'ok' });
+    expect(req?.toolCalls?.[0]).toMatchObject({ tool: 'x', toolInput: '', toolResponse: 'ok',
+      querySignals: { semantic: '', lexical: '' },
+    });
   });
 });
 
@@ -642,7 +659,10 @@ describe('inject-hook — mid-turn delivery rides in a tool result, never a mess
 
   it('appends to array content instead of replacing it (emitToolResult REPLACES what we return)', async () => {
     await withEcho(async handlers => {
-      await handlers.get('turn_end')!({ type: 'turn_end', toolResults: [{ toolCallId: 'call-1' }] });
+      // Fetch/calibration is tested above. This case owns the delivery contract;
+      // use its existing stash seam so optional subprocess silence cannot turn
+      // an append assertion into an unrelated transport assertion.
+      stashMidTurn('INJECTED CONTEXT');
       expect(await handlers.get('tool_result')!({ content: [{ type: 'text', text: 'REAL OUTPUT' }] })).toEqual({
         content: [{ type: 'text', text: 'REAL OUTPUT' }, { type: 'text', text: 'INJECTED CONTEXT' }],
       });
@@ -651,7 +671,7 @@ describe('inject-hook — mid-turn delivery rides in a tool result, never a mess
 
   it('delivers to exactly ONE tool result — the stash is take-and-clear', async () => {
     await withEcho(async handlers => {
-      await handlers.get('turn_end')!({ type: 'turn_end', toolResults: [{ toolCallId: 'call-1' }] });
+      stashMidTurn('INJECTED CONTEXT');
       const toolResult = handlers.get('tool_result')!;
       expect(await toolResult({ content: 'FIRST' })).toEqual({ content: 'FIRST\n\nINJECTED CONTEXT' });
       expect(await toolResult({ content: 'SECOND' })).toBeUndefined();

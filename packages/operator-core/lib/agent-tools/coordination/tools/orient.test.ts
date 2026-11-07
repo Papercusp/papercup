@@ -4307,6 +4307,17 @@ describe('memory-recall relevance floor — P-004 fleet-member-dx (EI-9017)', ()
     'coord:declare-intent': () => ({ ok: true }),
   };
 
+  it('does not suppress a memory merely because the orient response was prepared', async () => {
+    const ledger = await import('../../../memory/session-epoch-ledger');
+    vi.mocked(ledger.stampSurfaced).mockClear();
+    const { call } = fakeCall({ ...CORE_FLOOR, 'memory:search': () => ({ ok: true,
+      results: [{ id: '11111111-1111-1111-1111-111111111111', memory: 'approval condition', score: 0.8 }] }) });
+    const result = await composeOrient({ intent: 'review approval' }, call, 'su-unprinted');
+    expect(result.memory?.hits).toHaveLength(1);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(ledger.stampSurfaced).not.toHaveBeenCalled();
+  });
+
   // orient-recall-quality-2026-07-12 (live finding): the EI-9017 noise floor is
   // REGIME-SCOPED — it applies only to a DEGRADED response (the lexical-fallback
   // noise it was written for). A healthy hybrid response returns RRF rank-fusion
@@ -6031,11 +6042,61 @@ describe('EI-18725816532600240: never-drop facts survive a monitor tick', () => 
       expect(writeWatermarkMock).not.toHaveBeenCalled();
     });
 
-    it('DOES advance it on a full fold (the control — proves the assertion above can fail)', async () => {
+    it('does not consume the facts cursor merely by constructing a full fold', async () => {
       foldFactsMock.mockResolvedValue([VERSIONED]);
       const { call } = fakeCall({ ...CORE });
-      await composeOrient({}, call, 'me');
-      expect(writeWatermarkMock).toHaveBeenCalledWith('me', { cursors: { facts: 'hlc-9' } });
+      const r = await composeOrient({}, call, 'me');
+      expect(r.facts).toHaveLength(1);
+      expect(r.facts?.[0]?.changed).toBeUndefined(); // bootstrap remains silent
+      expect(writeWatermarkMock).not.toHaveBeenCalled();
+    });
+
+    it.each(['dropped', 'truncated', 'budget-omitted'])(
+      'replays changed facts after %s output without delivery proof', async (delivery) => {
+        // Model the real write side too: an early write would suppress the
+        // second fold, even though nothing acknowledged the first response.
+        let cursor = 'hlc-1';
+        readWatermarkMock.mockImplementation(async () => ({ cursors: { facts: cursor } }));
+        writeWatermarkMock.mockImplementation(async (...args: unknown[]) => {
+          const patch = args[1] as { cursors?: { facts?: string } };
+          cursor = patch.cursors?.facts ?? cursor;
+        });
+        const sibling = factAt({ key: 'ordinary:sibling', body: 'sibling', cellVersion: 'hlc-9' });
+        const older = factAt({ key: 'ordinary:older', body: 'older', cellVersion: 'hlc-5' });
+        foldFactsMock.mockResolvedValue([VERSIONED, sibling, older]);
+        const { call } = fakeCall({ ...CORE });
+        try {
+          const first = await composeOrient({}, call, 'me');
+          expect(first.facts?.every((f) => f.changed)).toBe(true);
+          // Final output is outside composition. Neither a missing response nor
+          // a returned subset proves the omitted bodies reached the caller.
+          if (delivery === 'dropped') first.facts = undefined;
+          else if (delivery === 'truncated') first.facts = first.facts?.slice(0, 1);
+          else first.facts = [];
+          const retry = await composeOrient({}, call, 'me');
+          expect(retry.facts?.map((f) => [f.body, f.changed])).toEqual([
+            ['d', true], ['sibling', true], ['older', true],
+          ]);
+          expect(cursor).toBe('hlc-1');
+          expect(writeWatermarkMock).not.toHaveBeenCalled();
+        } finally {
+          readWatermarkMock.mockResolvedValue({ cursors: {} });
+          writeWatermarkMock.mockImplementation(async () => {});
+        }
+      },
+    );
+
+    it('a narrowed fold cannot consume a later full fold at the same HLC', async () => {
+      readWatermarkMock.mockResolvedValue({ cursors: { facts: 'hlc-1' } });
+      foldNeverDropFactsMock.mockResolvedValue([VERSIONED]);
+      foldFactsMock.mockResolvedValue([
+        VERSIONED, factAt({ key: 'ordinary:sibling', body: 'sibling', cellVersion: 'hlc-9' }),
+      ]);
+      const { call } = fakeCall({ ...CORE });
+      await composeOrient({ mode: 'monitor' }, call, 'me');
+      const full = await composeOrient({}, call, 'me');
+      expect(full.facts?.map((f) => f.changed)).toEqual([true, true]);
+      expect(writeWatermarkMock).not.toHaveBeenCalled();
     });
 
     // Found by writing the assertion above: the SET was keyed with `\x00`

@@ -19,13 +19,15 @@ import {
 // dedup test sets it to mark a memory id as recently-surfaced.
 const sqlMockState = vi.hoisted(() => ({
   rows: [] as Array<Record<string, unknown>>,
+  statements: [] as string[],
   failure: null as Error | null,
   delayMs: 0,
 }));
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({
-    sql: async () => {
+    sql: async (chunks: TemplateStringsArray | string) => {
+      sqlMockState.statements.push(typeof chunks === 'string' ? chunks : chunks.join('?'));
       if (sqlMockState.delayMs > 0) await new Promise((resolve) => setTimeout(resolve, sqlMockState.delayMs));
       if (sqlMockState.failure) throw sqlMockState.failure;
       return sqlMockState.rows;
@@ -171,6 +173,7 @@ vi.mock('../harness-registry', () => ({
 
 import {
   buildMemoryContextBlock,
+  prepareMemoryContextBlock,
   lastUserContext,
   MEMORY_INJECTION_COSINE_FLOOR,
   MEMORY_INJECTION_LEX_FLOOR,
@@ -379,6 +382,7 @@ beforeEach(() => {
   jev.decide = null;
   jev.clientBuilt = 0;
   sqlMockState.rows = [];
+  sqlMockState.statements = [];
   sqlMockState.failure = null;
   sqlMockState.delayMs = 0;
   registryProjects = [];
@@ -1545,6 +1549,24 @@ describe('lastUserContext', () => {
 });
 
 describe('buildMemoryContextBlock', () => {
+  it.each(['', 'repair delivery'])('preserves an exact lexical-only query when the semantic backend is unavailable: %s', async userText => {
+    const backend = { ...mockBackend([], { ok: false, reason: 'embedder unavailable' }),
+      searchLexical: vi.fn(async (query: string) => [
+        { id: 'exact-id', text: query + ' delivery recovery', score: 0.9, scope: 'user:u1' },
+        { id: 'below-floor', text: 'unrelated lexical entry', score: 0.01, scope: 'user:u1' },
+      ]),
+    };
+    useBackend(backend);
+    const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', potSlugs: [],
+      queryContext: { userText, lexicalText: 'WI-6512', fingerprint: 'normalized-signal' },
+    });
+    expect(backend.available).toHaveBeenCalledTimes(userText ? 1 : 0);
+    expect(backend.search).not.toHaveBeenCalled();
+    expect(backend.searchLexical).toHaveBeenCalledWith('WI-6512', expect.objectContaining({ scope: expect.any(Array) }));
+    expect(block).toContain('WI-6512');
+    expect(block).not.toContain('unrelated lexical entry');
+  });
+
   it('returns null when query context is empty', async () => {
     useBackend(mockBackend([]));
     const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: '' });
@@ -2053,6 +2075,59 @@ describe('buildMemoryContextBlock', () => {
  * rendering assertions live in the P-003 describe below.
  */
 describe('corpus leg carries its own retrieval health (P-001)', () => {
+  it('prepares complete memory/corpus fragments with the exact rendered text and captured epoch, without stamping delivery', async () => {
+    useBackend(mockBackend([{
+      id: '11111111-1111-4111-8111-111111111111', text: 'retain verified delivery evidence ☃',
+    }]));
+    corpusIoResult = {
+      block: null, dropped: [], embedderAvailable: true, candidateCount: 1,
+      lines: [{ line: '- [doc fixture] cited delivery procedure', score: 1,
+        handle: { kind: 'doc', ref: 'doc:fixture', query: ['delivery'], resolve: 'docs:get' } }],
+    };
+    const prepared = await prepareMemoryContextBlock({ userId: 'u1', workspaceId: 'ws',
+      queryContext: 'retain verified delivery evidence', harnessSlugs: ['papercusp'], potSlugs: [], budgetChars: 1800,
+      session: { sessionId: 'su-prepared', epoch: 7, port: 'turn-start' } });
+    expect(prepared?.fragments.map(row => row.kind).sort()).toEqual(['corpus', 'memory']);
+    for (const row of prepared!.fragments) {
+      expect(row.epoch).toBe(7);
+      expect(row.port).toBe('turn-start');
+      expect(row.bodyBytes).toBe(Buffer.byteLength(row.rendered));
+      expect(row.bodySha256).toMatch(/^[a-f0-9]{64}$/);
+      expect(`\n${prepared!.text}\n`).toContain(`\n${row.rendered}\n`);
+    }
+    expect(sqlMockState.statements.some(statement => /INSERT\s+INTO\s+harness_shared\.(memory_session_surfaced|corpus_session_surfaced)/i.test(statement))).toBe(false);
+  });
+
+  it.each([
+    'initialize', 'orient', 'claim', 'create', 'turn-start', 'mid-turn', 'compact-reprime',
+    'operator', 'architect', 'oracle', 'agent-chats', 'system-launch', 'system-wake',
+  ])('context reliability: %s preparation cannot suppress a lost response', async (port) => {
+    useBackend(mockBackend([{
+      id: '11111111-1111-4111-8111-111111111111', text: 'retain verified delivery evidence',
+    }]));
+    corpusIoResult = {
+      block: null, dropped: [], embedderAvailable: true, candidateCount: 1,
+      lines: [{ line: '- [doc fixture] cited delivery procedure', score: 1,
+        handle: { kind: 'doc', ref: 'doc:fixture', query: ['delivery'], resolve: 'docs:get' } }],
+    };
+    const native = ['initialize', 'orient', 'claim', 'create', 'turn-start', 'mid-turn', 'compact-reprime'].includes(port);
+    const input = {
+      userId: 'u1', workspaceId: 'ws', queryContext: 'retain verified delivery evidence',
+      harnessSlugs: ['papercusp'], potSlugs: [], budgetChars: 1800,
+      ...(native ? { session: { sessionId: 'su-lost-response', epoch: 0, port } } : {}),
+    };
+    // The first prepared response is intentionally never emitted or confirmed.
+    const lost = await buildMemoryContextBlock(input);
+    const retry = await buildMemoryContextBlock(input);
+    for (const block of [lost, retry]) {
+      expect(block).toContain('retain verified delivery evidence');
+      expect(block).toContain('[doc fixture] cited delivery procedure');
+    }
+    const suppressionWrites = sqlMockState.statements.filter(statement =>
+      /\b(?:INSERT\s+INTO\s+harness_shared\.(?:memory_session_surfaced|corpus_session_surfaced)|UPDATE\s+harness_shared\.memory_canonical)\b/i.test(statement));
+    expect(suppressionWrites).toEqual([]);
+  });
+
   it('retains eligible mem0 alongside new plan/doc/report contributions without expanding the memory budget', async () => {
     useBackend(mockBackend([{ id: 'm-knowledge-control',text: 'retain verified snapshot' }]));
     corpusIoResult = { block: null,dropped: [],embedderAvailable: true,candidateCount: 3,

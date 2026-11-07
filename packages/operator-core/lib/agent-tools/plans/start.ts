@@ -60,6 +60,7 @@ import {
 } from './plan-candidate-dependencies';
 import { evaluatePlanSpecQualityGate, type PlanSpecQualityGateVerdict } from './plan-spec-quality-gate';
 import { evaluatePlanStartBarCritique, type PlanStartBarCritiqueOutcome } from './plan-start-critique-gate';
+import { ownerSelectedReviewSchema, registerOwnerSelectedReview } from './plan-start-owner-review';
 import { specQualityPlanItemIds } from './spec-quality';
 import { mugKettleSystemEnabled } from '../../pot/started';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
@@ -84,6 +85,10 @@ const stringTolerantBool = z.preprocess((v) => (v === 'true' ? true : v === 'fal
 // flat MCP deadline so a legitimate long saga returns its structured outcome
 // instead of an ambiguous timeout (EI-22583060887975914).
 export const PLANS_START_TIMEOUT_SEC = 120;
+
+import { createPlanActivationReadinessRequest, unavailableActivationReadiness,
+  type PlanActivationConsultReceipt } from './get-activation-readiness';
+import { resolveAgentIdentity as readinessRequesterIdentity } from '../coordination/identity';
 
 /**
  * Requirement-contract refusals plans:start returns itself (the gates it calls
@@ -116,9 +121,15 @@ const argsSchema = z
         'Consult you requested and proceeded on (full id or unique prefix). Recorded as the consultation that informed this plan. Needs `consulted`.',
       ),
     harness: harnessArg,
+    owner_review: ownerSelectedReviewSchema.optional().describe(
+      'An authenticated owner-selected replacement for this pre-implementation review only. Resolves the canonical report, exact reviewed contract and real independent author; never creates consult answers or waives other gates.',
+    ),
   })
   .refine((a) => Boolean(a.slug) || (a.slugs?.length ?? 0) > 0, {
     message: 'pass `slug` or `slugs`',
+  })
+  .refine((a) => !a.owner_review || Boolean(a.slug) && !a.slugs?.length, {
+    message: 'owner_review requires one explicit slug; a review cannot authorize a bulk start',
   })
   .refine((a) => a.consult_id === undefined || a.consulted !== undefined, {
     message: 'consult_id needs `consulted` — it names the consult behind your override/acknowledgement',
@@ -197,6 +208,12 @@ export default defineTool({
     const env = await runBulk(
       slugs,
       async (slug) => {
+        let readinessRequest: Promise<Awaited<ReturnType<typeof createPlanActivationReadinessRequest>>> | undefined;
+        let activationConsult: PlanActivationConsultReceipt | undefined;
+        const diagnosticRequest = (planRead?: Awaited<ReturnType<typeof readPlanBySlug>>) =>
+          readinessRequest ??= createPlanActivationReadinessRequest({ workspaceId: startWorkspaceId, harnessSlug,
+            planSlug: slug, requesterId: readinessRequesterIdentity(ctx).ownerId, planRead });
+        const attempt = async () => {
         const now = new Date().toISOString();
 
         const read = await readPlanBySlug(slug, await ctxToPlanSourceOpts(sctx));
@@ -290,14 +307,7 @@ export default defineTool({
         // plans with zero first-class clauses remain explicitly report-only.
         let specQuality: PlanSpecQualityGateVerdict | undefined;
         if (read) {
-          const planItems = read.row.items.length ? read.row.items : read.parsed.items;
-          const planItemIds = specQualityPlanItemIds(planItems);
-          specQuality = await evaluatePlanSpecQualityGate({
-            harnessSlug,
-            planSlug: slug,
-            planItemIds,
-            planItems,
-          });
+          specQuality = await (await diagnosticRequest(read)).quality();
           ctxAny.metadata?.({
             slug,
             harnessSlug,
@@ -322,6 +332,14 @@ export default defineTool({
         // contract. Plans created before the cohort boundary, or whose contract the
         // spec-quality gate does not enforce, record the verdict here and never refuse.
         let barCritique: PlanStartBarCritiqueOutcome | null = null;
+        if (args.owner_review) {
+          const { resolveAgentIdentity } = await import('../coordination/identity');
+          const selected = await registerOwnerSelectedReview(
+            { workspaceId: startWorkspaceId, harnessSlug, planSlug: slug }, args.owner_review, resolveAgentIdentity(ctx),
+          );
+          if (!selected.ok) return { ok: false as const, slug, harnessSlug, error: 'critique_missing' as const,
+            message: `Owner-selected review refused: ${selected.reason}`, ownerSelectedReview: selected };
+        }
         if (read && specQuality?.applicable) {
           const planItems = read.row.items.length ? read.row.items : read.parsed.items;
           barCritique = await evaluatePlanStartBarCritique({
@@ -331,6 +349,7 @@ export default defineTool({
             nonDroppedItemCount: specQualityPlanItemIds(planItems).length,
             contractEnforced: specQuality.mode === 'enforced',
           });
+          (await diagnosticRequest(read)).recordCritique(barCritique);
           if (barCritique) {
             ctxAny.metadata?.({
               slug,
@@ -542,6 +561,7 @@ export default defineTool({
                 getExcerpts: (refs) => consult.fetchTurnExcerpts(getOrgPg().sql, startWorkspaceId, refs),
               },
             );
+            activationConsult = (await diagnosticRequest(read)).recordConsult(outcome);
             ctxAny.metadata?.({
               slug,
               harnessSlug,
@@ -649,6 +669,7 @@ export default defineTool({
               planItemIds: specQualityPlanItemIds(currentPlanItems),
               planItems: currentPlanItems,
             });
+            (await diagnosticRequest(read)).recordQuality(currentSpecQuality);
             if (!currentSpecQuality.satisfied) return {
               ok: false as const,
               slug,
@@ -659,6 +680,17 @@ export default defineTool({
               detail: currentSpecQuality,
             };
             specQuality = currentSpecQuality;
+            const currentBarCritique = barCritique?.mode === 'enforced' ? await evaluatePlanStartBarCritique({
+              workspaceId: startWorkspaceId, harnessSlug, planSlug: slug,
+              nonDroppedItemCount: specQualityPlanItemIds(currentPlanItems).length,
+              contractEnforced: currentSpecQuality.mode === 'enforced',
+            }) : barCritique;
+            (await diagnosticRequest(read)).recordCritique(currentBarCritique);
+            if (currentBarCritique?.mode === 'enforced' && !currentBarCritique.verdict.satisfied) return {
+              ok: false as const, slug, harnessSlug, error: currentBarCritique.verdict.code ?? 'critique_stale',
+              barCritique: currentBarCritique, message: 'The reviewed contract changed before approval; no approval or promotion was written.',
+            };
+            barCritique = currentBarCritique;
           }
           const flipResult = await withPlanLock<boolean | CommitRefusal>(
             ctx as never,
@@ -692,6 +724,18 @@ export default defineTool({
                   message: `Plan '${slug}' changed after preflight. Retry against the current revision; no approval or promotion was written.`,
                 },
               };
+              if (barCritique?.ownerSelectedReview?.ok) {
+                const lockedCritique = await evaluatePlanStartBarCritique({
+                  workspaceId: startWorkspaceId, harnessSlug, planSlug: slug,
+                  nonDroppedItemCount: specQualityPlanItemIds(lockedPlan.items).length,
+                  contractEnforced: true,
+                });
+                (await diagnosticRequest(read)).recordCritique(lockedCritique);
+                if (!lockedCritique?.ownerSelectedReview?.ok || !lockedCritique.verdict.satisfied) return {
+                  newBody: null, value: { ok: false, code: 'critique_stale',
+                    message: 'Owner-selected review is no longer current at the locked approval boundary.', detail: lockedCritique },
+                };
+              }
               const flip = flipPlanFrontmatterStatus(current, 'ready', 'draft');
               if (flip.newBody === null) return { newBody: null, value: false };
               return { newBody: bumpUpdatedDate(flip.newBody), value: true };
@@ -1058,6 +1102,7 @@ export default defineTool({
           slug,
           harnessSlug,
           executionStart,
+          ...(activationConsult ? { activationConsult } : {}),
           // NOT 'started' while retired — reporting a status the row does not
           // carry is precisely the "announced a start that never happened" bug
           // WI-5825 fixed one layer down.
@@ -1087,6 +1132,16 @@ export default defineTool({
                 opStatusRetired: true as const,
               }),
         };
+        };
+        const result = await attempt();
+        if (result.ok !== false) return result;
+        // Add information after the canonical outcome is known. Never replace
+        // its primary refusal or its already committed partial-effect receipt.
+        try {
+          return { ...result, activationReadiness: await (await diagnosticRequest()).collect() };
+        } catch (error) {
+          return { ...result, activationReadiness: unavailableActivationReadiness(error) };
+        }
       },
       { keyOf: (slug) => ({ slug }) },
     );

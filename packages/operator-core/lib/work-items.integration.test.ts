@@ -87,6 +87,12 @@ vi.mock('./workspace-registry', async () => {
   const actual = await vi.importActual<typeof import('./workspace-registry')>('./workspace-registry');
   return { ...actual, activeWorkspaceId: () => h.activeWorkspace };
 });
+// These lifecycle fixtures exercise local event delivery. Keep federation
+// discovery outside this boundary: its Hive registry is not part of this DB.
+vi.mock('./agent-tools/coordination/federation-scope', async (orig) => ({
+  ...(await orig<typeof import('./agent-tools/coordination/federation-scope')>()),
+  resolveWorkspaceHiveScope: async () => ({ kind: 'none' as const }),
+}));
 vi.mock('./harness-core', async () => {
   const actual = await vi.importActual<typeof import('./harness-core')>('./harness-core');
   return { ...actual, resolveProject: async (slug: string) => ({ slug, path: `/tmp/${slug}` }) };
@@ -125,6 +131,7 @@ vi.mock('./scheduler/plan-item-lane-guard', () => ({
 
 const wi = await import('./work-items');
 const checkpointStore = await import('./work-item-checkpoint');
+const blockerPersistence = await import('./blocker-resolution-persistence');
 
 let db: FreshPgDb;
 let links: PgLinkStore;
@@ -215,6 +222,788 @@ beforeEach(async () => {
   planItemLaneBlockReasonMock.mockReset().mockResolvedValue(null);
   planItemLiveClaimReasonMock.mockReset().mockResolvedValue(null);
   planItemNeedsHumanContradictionMock.mockReset().mockResolvedValue(null);
+});
+
+describe('atomic blocker decision lifecycle', () => {
+  const decision = (key = 'atomic-1') => ({
+    schemaVersion: 1, idempotencyKey: key, disposition: 'defer', symptom: 'Dependency is unavailable',
+    investigation: [{ action: 'Read dependency state', outcome: 'Repair is owned by another agent',
+      evidenceRefs: [{ kind: 'state', ref: 'state:dependency.health' }] }],
+    attempts: [], evidenceRefs: [{ kind: 'state', ref: 'state:dependency.health' }],
+    deferral: { reason: 'active-peer', responsibleParty: 'agB', nextAction: 'Wait for the repair receipt',
+      reasonEvidenceRefs: [{ kind: 'work-item', ref: 'WI-repair' }],
+      recheckRef: { kind: 'event', ref: 'dependency:repaired' } },
+  });
+  const patch = { blockedReason: 'Repair owner is working on dependency',
+    externalBlockers: [{ kind: 'event', ref: 'dependency:repaired', status: 'active',
+      createdBy: 'agA', createdAt: '2026-11-07T02:00:00Z', updatedAt: '2026-11-07T02:00:00Z' }] };
+  async function setup(kind: 'task' | 'feature') {
+    const item = await wi.createWorkItem({ kind, title: 'atomic blocker decision', harness: 'papercup', createdBy: 'agA' });
+    await db.sql`UPDATE harness_shared.work_items SET status = 'wip', taken_by = 'agA', taken_at = now(),
+      payload = COALESCE(payload, '{}'::jsonb) || '{"keep":"original","_claimHold":true,"claim_hold_by":"agA"}'::jsonb
+      WHERE workspace_id = 'default' AND harness_slug = 'papercup' AND feature_id = ${item.id}`;
+    // Keep the fixture on its explicit workspace: mocking activeWorkspaceId
+    // does not replace workspace-registry's internal ambient resolver binding.
+    expect(await checkpointStore.setWorkItemCheckpoint(checkpointRef(item.id), 'original checkpoint'))
+      .toBe('original checkpoint');
+    return item;
+  }
+  async function snapshot(id: string) {
+    const [row] = await db.sql`SELECT to_jsonb(w) AS row FROM harness_shared.work_items w
+      WHERE workspace_id = 'default' AND harness_slug = 'papercup' AND feature_id = ${id}`;
+    const events = await db.sql`SELECT * FROM harness_shared.coord_event_log ORDER BY id`;
+    return { row: row.row, events: [...events], checkpoint: await checkpointStore.getWorkItemCheckpoint(checkpointRef(id)) };
+  }
+  const transition = (id: string, input = decision(), payloadPatch = patch) => wi.setWorkItemState(id, 'blocked', {
+    harness: 'papercup', by: 'agA', blockerDecision: { input, sessionId: 'authenticated-session-a', payloadPatch },
+  });
+  async function relationSetup(kind: 'task' | 'feature') {
+    const item = await setup(kind);
+    const blocker = await wi.createWorkItem({ kind: 'task', title: 'dependency repair', harness: 'papercup', createdBy: 'agB' });
+    const dst = (await wi.resolveWorkItemRef(item.id, 'papercup'))!;
+    return { item, blocker, dst };
+  }
+  const relationOptions = (key = 'dependency-decision') => ({ harness: 'papercup', by: 'agA',
+    blockerDecision: { input: decision(key), sessionId: 'authenticated-session-a' } });
+  async function relationSnapshot(id: string) {
+    return { ...await snapshot(id), edges: [...await db.sql`SELECT * FROM harness_shared.work_item_deps ORDER BY id`] };
+  }
+
+  it.each(['task', 'feature'] as const)('pairs dependency edges and decisions once, preserving successor custody on historical retry for %s', async (kind) => {
+    const { item, blocker, dst } = await relationSetup(kind);
+    const opts = relationOptions();
+    expect(await wi.linkWorkItem(blocker.id, dst, 'blocks', opts)).toMatchObject({ ok: true });
+    const stored = await relationSnapshot(item.id);
+    expect(stored.edges).toHaveLength(1);
+    expect(stored.row.payload.blockerResolution.history).toHaveLength(1);
+    await db.sql`UPDATE harness_shared.work_items SET status = 'done', taken_by = 'agB'
+      WHERE feature_id = ${item.id} AND workspace_id = 'default' AND harness_slug = 'papercup'`;
+    const before = await relationSnapshot(item.id);
+    expect(await wi.linkWorkItem(blocker.id, dst, 'blocks', { ...opts,
+      blockerEvidenceContext: { ownerId: 'agA', sessionId: 'agA', workspaceId: 'unavailable',
+        harnessSlug: 'papercup', role: 'su', root: null },
+    })).toMatchObject({ ok: true, replayed: true });
+    expect(await relationSnapshot(item.id)).toEqual(before);
+    await expect(wi.linkWorkItem(blocker.id, dst, 'blocks', { ...opts, satisfaction: 'success' }))
+      .rejects.toMatchObject({ code: 'blocker_decision_conflict' });
+  });
+
+  it.each(['task', 'feature'] as const)('rolls back dependency edges on decision custody refusal for %s', async (kind) => {
+    const { item, blocker, dst } = await relationSetup(kind);
+    const before = await relationSnapshot(item.id);
+    await expect(wi.linkWorkItem(blocker.id, dst, 'blocks', { ...relationOptions(), by: 'agB' }))
+      .rejects.toMatchObject({ code: 'blocker_decision_custody' });
+    expect(await relationSnapshot(item.id)).toEqual(before);
+  });
+
+  it.each(['task', 'feature'] as const)('rolls back tentative dependency changes when decision persistence fails for %s', async (kind) => {
+    const { item, blocker, dst } = await relationSetup(kind);
+    const before = await relationSnapshot(item.id);
+    await db.sql.unsafe(`CREATE OR REPLACE FUNCTION harness_shared.reject_dependency_decision() RETURNS trigger LANGUAGE plpgsql AS $fn$
+      BEGIN IF NEW.payload ? 'blockerResolution' THEN RAISE EXCEPTION 'injected dependency decision failure'; END IF; RETURN NEW; END $fn$;
+      CREATE TRIGGER reject_dependency_decision BEFORE UPDATE ON harness_shared.work_items
+      FOR EACH ROW EXECUTE FUNCTION harness_shared.reject_dependency_decision()`);
+    try {
+      await expect(wi.linkWorkItem(blocker.id, dst, 'blocks', relationOptions())).rejects.toThrow('injected dependency decision failure');
+      expect(await relationSnapshot(item.id)).toEqual(before);
+    } finally { await db.sql.unsafe('DROP TRIGGER reject_dependency_decision ON harness_shared.work_items'); }
+    expect(await wi.linkWorkItem(blocker.id, dst, 'blocks', relationOptions())).toMatchObject({ ok: true });
+  });
+
+  it.each(['task', 'feature'] as const)('rolls back decision history on deferred dependency commit failure for %s', async (kind) => {
+    const { item, blocker, dst } = await relationSetup(kind);
+    const before = await relationSnapshot(item.id);
+    await db.sql.unsafe(`CREATE OR REPLACE FUNCTION harness_shared.reject_dependency_commit() RETURNS trigger LANGUAGE plpgsql AS $fn$
+      BEGIN RAISE EXCEPTION 'injected dependency commit failure'; END $fn$;
+      CREATE CONSTRAINT TRIGGER reject_dependency_commit AFTER INSERT ON harness_shared.work_item_deps
+      DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION harness_shared.reject_dependency_commit()`);
+    try {
+      await expect(wi.linkWorkItem(blocker.id, dst, 'blocks', relationOptions())).rejects.toThrow('injected dependency commit failure');
+      expect(await relationSnapshot(item.id)).toEqual(before);
+    } finally { await db.sql.unsafe('DROP TRIGGER reject_dependency_commit ON harness_shared.work_item_deps'); }
+  });
+
+  it.each(['task', 'feature'] as const)('preserves dependency decision history through edge removal and concurrent contenders for %s', async (kind) => {
+    const { item, blocker, dst } = await relationSetup(kind);
+    const contenders = await Promise.allSettled(['dependency-a', 'dependency-b'].map((key) =>
+      wi.linkWorkItem(blocker.id, dst, 'blocks', relationOptions(key))));
+    expect(contenders.filter((value) => value.status === 'fulfilled')).toHaveLength(1);
+    expect(contenders.filter((value) => value.status === 'rejected')).toHaveLength(1);
+    const opts = { ...relationOptions('dependency-remove'), blockerDecision: {
+      input: { ...decision('dependency-remove'), priorRevision: 1 }, sessionId: 'authenticated-session-a' } };
+    expect(await wi.unlinkWorkItem(blocker.id, dst, 'blocks', opts)).toMatchObject({ ok: true });
+    const stored = await relationSnapshot(item.id);
+    expect(stored.edges).toHaveLength(0);
+    expect(stored.row.payload.blockerResolution.history).toHaveLength(2);
+    expect(stored.row.taken_by).toBe('agA');
+    expect(await wi.unlinkWorkItem(blocker.id, dst, 'blocks', opts)).toMatchObject({ ok: true, replayed: true });
+    expect(await relationSnapshot(item.id)).toEqual(stored);
+  });
+  it.each(['task', 'feature'] as const)('pairs typed blocker history with lifecycle while preserving an independent hold for %s', async (kind) => {
+    const item = await setup(kind);
+    const other = { ...patch.externalBlockers[0], ref: 'independent:pending' };
+    const first = { ...patch, externalBlockers: [...patch.externalBlockers, other] };
+    await transition(item.id, decision('typed-set'), first);
+    const next = { ...decision('typed-partial-clear'), priorRevision: 1 };
+    const partial = { externalBlockers: [{ ...patch.externalBlockers[0], status: 'cleared' }, other] };
+    const effect = { setBlocker: { id: item.id, ref: 'dependency:repaired', clear: true } };
+    const opts = { harness: 'papercup', by: 'agA', blockerDecision: {
+      input: next, sessionId: 'authenticated-session-a', effect, payloadPatch: partial,
+    } };
+    const updated = await wi.setWorkItemState(item.id, 'blocked', opts);
+    expect(updated).toMatchObject({ state: 'blocked', assignee: 'agA', payload: {
+      _claimHold: true, claim_hold_by: 'agA', externalBlockers: partial.externalBlockers,
+      blockerResolution: { history: [expect.any(Object), expect.objectContaining({ revision: 2 })] },
+    } });
+    await db.sql`UPDATE harness_shared.work_items SET taken_by = 'agB', status = 'done'
+      WHERE workspace_id = 'default' AND harness_slug = 'papercup' AND feature_id = ${item.id}`;
+    const beforeReplay = await snapshot(item.id);
+    expect(await wi.setWorkItemState(item.id, 'blocked', { ...opts,
+      blockerEvidenceContext: { ownerId: 'agA', sessionId: 'agA', workspaceId: 'unavailable', root: null, harnessSlug: 'papercup', role: 'su' },
+    })).toMatchObject({ state: 'done', assignee: 'agB' });
+    expect(await snapshot(item.id)).toEqual(beforeReplay);
+  });
+
+  it.each(['task', 'feature'] as const)('rolls back typed blocker history and lifecycle if the paired decision fails at commit for %s', async (kind) => {
+    const item = await setup(kind);
+    const before = await snapshot(item.id);
+    await db.sql.unsafe(`CREATE OR REPLACE FUNCTION harness_shared.reject_typed_blocker_commit() RETURNS trigger LANGUAGE plpgsql AS $fn$
+      BEGIN
+        IF NEW.payload ? 'blockerResolution' THEN RAISE EXCEPTION 'injected typed blocker decision commit failure'; END IF;
+        RETURN NEW;
+      END $fn$;
+      CREATE CONSTRAINT TRIGGER reject_typed_blocker_commit AFTER UPDATE ON harness_shared.work_items
+        DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION harness_shared.reject_typed_blocker_commit()`);
+    try {
+      await expect(transition(item.id, decision('typed-failure'))).rejects.toThrow('injected typed blocker decision commit failure');
+      expect(await snapshot(item.id)).toEqual(before);
+    } finally {
+      await db.sql.unsafe('DROP TRIGGER reject_typed_blocker_commit ON harness_shared.work_items');
+    }
+    expect(await transition(item.id, decision('typed-failure'))).toMatchObject({ state: 'blocked', assignee: 'agA' });
+  });
+  const resolution = (key = 'atomic-close') => {
+    const { deferral: _deferral, ...common } = decision(key);
+    return { ...common, disposition: 'self_resolve',
+      verification: { outcome: 'Dependency recovered and the original operation passed',
+        evidenceRefs: [{ kind: 'test', ref: 'test:dependency-recovery' }] } };
+  };
+  const close = (id: string, input = resolution(), completionRef = 'test:dependency-recovery') =>
+    wi.setWorkItemState(id, 'done', {
+      harness: 'papercup', by: 'agA', completionRef,
+      blockerDecision: { input, sessionId: 'authenticated-session-a',
+        payloadPatch: { externalBlockers: [] }, unset: ['blockedReason'] },
+    });
+
+  it.each(['task', 'feature'] as const)('replays a stable public state effect across regenerated evidence and successor custody for %s', async (kind) => {
+    const item = await setup(kind);
+    const effect = { state: 'blocked', force: false, completionRef: null, assumptions: null,
+      transitionNote: 'Wait for the existing recovery owner', decision: null };
+    const opts = { harness: 'papercup', by: 'agA',
+      blockerDecision: { input: decision('public-state'), sessionId: 'authenticated-session-a',
+        payloadPatch: patch, effect } };
+    await wi.setWorkItemState(item.id, 'blocked', opts);
+    await db.sql`UPDATE harness_shared.work_items SET taken_by = 'agB', status = 'done'
+      WHERE workspace_id = 'default' AND harness_slug = 'papercup' AND feature_id = ${item.id}`;
+    const before = await snapshot(item.id);
+    expect(await wi.setWorkItemState(item.id, 'blocked', { ...opts,
+      // Host-derived evidence can change without changing the public request.
+      assumptions: { declared: ['none'], resolvedAt: 'later' } as never,
+      blockerEvidenceContext: { ownerId: 'agA', sessionId: 'agA', workspaceId: 'unavailable-tenant', root: null, harnessSlug: 'papercup', role: 'su' },
+    })).toMatchObject({ state: 'done', assignee: 'agB' });
+    expect(await snapshot(item.id)).toEqual(before);
+    await expect(wi.setWorkItemState(item.id, 'blocked', { ...opts, blockerDecision: {
+      ...opts.blockerDecision, effect: { ...effect, force: true },
+    } })).rejects.toMatchObject({ code: 'blocker_decision_conflict' });
+    expect(await snapshot(item.id)).toEqual(before);
+  });
+
+  const checkpointRef = (id: string) => ({ harness: 'papercup', workItemId: id, workspaceId: 'default' });
+  const checkpointDecision = (key = 'checkpoint-1') => ({
+    input: decision(key), ownerId: 'agA', sessionId: 'authenticated-session-a',
+  });
+  async function checkpointSnapshot(id: string) {
+    const carry = await db.sql`SELECT to_jsonb(c) AS row FROM harness_shared.carry_notes c
+      WHERE workspace_id = 'default' AND scope = ${checkpointStore.workItemCheckpointScope('papercup', id)}`;
+    return { ...await snapshot(id), carry: [...carry] };
+  }
+
+  it.each(['task', 'feature'] as const)('commits checkpoint and decision once without rewinding a successor for %s', async (kind) => {
+    const item = await setup(kind);
+    const opts = { blockerDecision: checkpointDecision() };
+    expect((await checkpointStore.setWorkItemCheckpointWithPrior(checkpointRef(item.id), 'investigated checkpoint', opts)).stored)
+      .toBe('investigated checkpoint');
+    const stored = await wi.getWorkItem(item.id, 'papercup');
+    expect(stored).toMatchObject({ state: 'wip', assignee: 'agA', payload: {
+      keep: 'original', _claimHold: true,
+      blockerResolution: { history: [{ authorId: 'agA', sessionId: 'authenticated-session-a' }] },
+    } });
+    await checkpointStore.setWorkItemCheckpointWithPrior(checkpointRef(item.id), 'successor checkpoint');
+    const before = await checkpointSnapshot(item.id);
+    const transform = vi.fn();
+    expect((await checkpointStore.setWorkItemCheckpointWithPrior(checkpointRef(item.id), 'investigated checkpoint', {
+      ...opts, transform,
+    })).stored).toBe('successor checkpoint');
+    expect(transform).not.toHaveBeenCalled();
+    expect(await checkpointSnapshot(item.id)).toEqual(before);
+    await expect(checkpointStore.setWorkItemCheckpointWithPrior(checkpointRef(item.id), 'changed request', opts))
+      .rejects.toMatchObject({ code: 'blocker_decision_conflict' });
+    expect(await checkpointSnapshot(item.id)).toEqual(before);
+  });
+
+  it.each(['task', 'feature'] as const)('preserves decision custody and checkpoint when its guard refuses for %s', async (kind) => {
+    const item = await setup(kind);
+    const before = await checkpointSnapshot(item.id);
+    const transform = vi.fn();
+    expect(await checkpointStore.setWorkItemCheckpointWithPrior(checkpointRef(item.id), 'refused checkpoint', {
+      blockerDecision: checkpointDecision(), guard: () => 'retain prior evidence', transform,
+    })).toMatchObject({ stored: 'original checkpoint', blockedReason: 'retain prior evidence' });
+    expect(transform).not.toHaveBeenCalled();
+    expect(await checkpointSnapshot(item.id)).toEqual(before);
+    await expect(checkpointStore.setWorkItemCheckpointWithPrior(checkpointRef(item.id), 'unauthorized checkpoint', {
+      blockerDecision: { ...checkpointDecision(), ownerId: 'agB' },
+    })).rejects.toMatchObject({ code: 'blocker_decision_custody' });
+    expect(await checkpointSnapshot(item.id)).toEqual(before);
+  });
+
+  it.each(['task', 'feature'] as const)('rolls back decision when checkpoint transform fails for %s', async (kind) => {
+    const item = await setup(kind);
+    const before = await checkpointSnapshot(item.id);
+    await expect(checkpointStore.setWorkItemCheckpointWithPrior(checkpointRef(item.id), 'failed checkpoint', {
+      blockerDecision: checkpointDecision(), transform: async (_prior, _incoming, tx) => {
+        const [tentative] = await tx`SELECT payload FROM harness_shared.work_items
+          WHERE workspace_id = 'default' AND harness_slug = 'papercup' AND feature_id = ${item.id}`;
+        expect(tentative.payload.blockerResolution.history).toHaveLength(1);
+        throw new Error('injected checkpoint transform failure');
+      },
+    })).rejects.toThrow('injected checkpoint transform failure');
+    expect(await checkpointSnapshot(item.id)).toEqual(before);
+    expect((await checkpointStore.setWorkItemCheckpointWithPrior(checkpointRef(item.id), 'failed checkpoint', {
+      blockerDecision: checkpointDecision(),
+    })).stored).toBe('failed checkpoint');
+  });
+
+  it.each(['task', 'feature'] as const)('rolls back checkpoint when decision commit fails for %s', async (kind) => {
+    const item = await setup(kind);
+    const before = await checkpointSnapshot(item.id);
+    await db.sql.unsafe(`CREATE OR REPLACE FUNCTION harness_shared.reject_checkpoint_decision_commit() RETURNS trigger LANGUAGE plpgsql AS $fn$
+      BEGIN
+        IF NEW.payload ? 'blockerResolution' THEN RAISE EXCEPTION 'injected checkpoint decision commit failure'; END IF;
+        RETURN NEW;
+      END $fn$;
+      CREATE CONSTRAINT TRIGGER reject_checkpoint_decision_commit AFTER UPDATE ON harness_shared.work_items
+        DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION harness_shared.reject_checkpoint_decision_commit()`);
+    try {
+      await expect(checkpointStore.setWorkItemCheckpointWithPrior(checkpointRef(item.id), 'uncommitted checkpoint', {
+        blockerDecision: checkpointDecision(),
+      })).rejects.toThrow('injected checkpoint decision commit failure');
+      expect(await checkpointSnapshot(item.id)).toEqual(before);
+    } finally {
+      await db.sql.unsafe('DROP TRIGGER reject_checkpoint_decision_commit ON harness_shared.work_items');
+    }
+    expect((await checkpointStore.setWorkItemCheckpointWithPrior(checkpointRef(item.id), 'uncommitted checkpoint', {
+      blockerDecision: checkpointDecision(),
+    })).stored).toBe('uncommitted checkpoint');
+  });
+
+  it.each(['task', 'feature'] as const)('commits one concurrent checkpoint decision predecessor for %s', async (kind) => {
+    const item = await setup(kind);
+    const results = await Promise.allSettled(['a', 'b'].map((key) =>
+      checkpointStore.setWorkItemCheckpointWithPrior(checkpointRef(item.id), `checkpoint-${key}`, {
+        blockerDecision: checkpointDecision(`checkpoint-${key}`),
+      })));
+    // The carry store can refuse an older admission before the decision CAS
+    // runs. Its structured no-op is as authoritative as a rejected revision.
+    expect(results.filter((result) => result.status === 'fulfilled' && !result.value.blockedReason)).toHaveLength(1);
+    for (const result of results) {
+      if (result.status === 'rejected') expect(result.reason).toMatchObject({ code: 'blocker_decision_revision_conflict' });
+      else if (result.value.blockedReason) expect(result.value.blockedReason).toBe('stale_write_older_than_current');
+    }
+    const stored = await wi.getWorkItem(item.id, 'papercup');
+    const history = ((stored?.payload as Record<string, unknown>).blockerResolution as {
+      history: { decision: { idempotencyKey: string } }[];
+    }).history;
+    expect(history).toHaveLength(1);
+    expect(await checkpointStore.getWorkItemCheckpoint(checkpointRef(item.id))).toBe(history[0].decision.idempotencyKey);
+    expect(stored).toMatchObject({ state: 'wip', assignee: 'agA', payload: { keep: 'original', _claimHold: true } });
+  });
+
+  const releaseDecision = (id: string, key = 'release-1', payloadPatch = patch) => wi.releaseWorkItem(id, {
+    harness: 'papercup', expectedAssignee: 'agA', releasingOwnerId: 'agA',
+    blockerDecision: { input: decision(key), sessionId: 'authenticated-session-a', payloadPatch },
+  });
+
+  const park = (id: string, key = 'park-1', options: NonNullable<NonNullable<Parameters<typeof wi.releaseWorkItem>[1]>['checkpoint']>['options'] = {}) =>
+    wi.releaseWorkItem(id, { harness: 'papercup', expectedAssignee: 'agA', releasingOwnerId: 'agA',
+      blockerDecision: { input: decision(key), sessionId: 'authenticated-session-a',
+        effect: { park: true, checkpoint: 'Resume after dependency repair', reason: 'dependency' } },
+      checkpoint: { update: 'Resume after dependency repair', options: { latestUpdate: 'Resume after dependency repair',
+        transform: (prior, incoming) => `${prior}\n\n${incoming}`, ...options } },
+    });
+
+  it.each(['task', 'feature'] as const)('commits park checkpoint decision and custody once and preserves a successor on retry for %s', async (kind) => {
+    const item = await setup(kind);
+    expect(await park(item.id)).toMatchObject({ assignee: null, state: 'open', payload: {
+      keep: 'original', _claimHold: true, blockerResolution: { history: [{ authorId: 'agA' }] },
+    } });
+    expect(await checkpointStore.getWorkItemCheckpoint(checkpointRef(item.id)))
+      .toBe('original checkpoint\n\nResume after dependency repair');
+    await checkpointStore.setWorkItemCheckpoint(checkpointRef(item.id), 'successor checkpoint');
+    await db.sql`UPDATE harness_shared.work_items SET taken_by = 'agB', status = 'done'
+      WHERE workspace_id = 'default' AND harness_slug = 'papercup' AND feature_id = ${item.id}`;
+    const before = await checkpointSnapshot(item.id);
+    const guard = vi.fn(() => 'must not execute on replay');
+    expect(await park(item.id, 'park-1', { guard })).toMatchObject({ assignee: 'agB', state: 'done' });
+    expect(guard).not.toHaveBeenCalled();
+    expect(await checkpointSnapshot(item.id)).toEqual(before);
+  });
+
+  it.each(['task', 'feature'] as const)('rolls back park decision and release when the checkpoint guard refuses for %s', async (kind) => {
+    const item = await setup(kind);
+    const before = await checkpointSnapshot(item.id);
+    const lane = vi.spyOn(await import('./plan-items/release-linked-lane'), 'releaseLinkedPlanLane');
+    try {
+      await expect(park(item.id, 'park-guard', { guard: () => 'checkpoint_capacity_exceeded' }))
+        .rejects.toMatchObject({ code: 'checkpoint_capacity_exceeded' });
+      expect(lane).not.toHaveBeenCalled();
+      expect(await checkpointSnapshot(item.id)).toEqual(before);
+    } finally { lane.mockRestore(); }
+  });
+
+  it.each(['task', 'feature'] as const)('rolls back park decision and custody after tentative lifecycle mutation for %s', async (kind) => {
+    const item = await setup(kind);
+    const before = await checkpointSnapshot(item.id);
+    await expect(park(item.id, 'park-transform', { transform: async (_prior, _incoming, tx) => {
+      const [tentative] = await tx`SELECT taken_by, payload FROM harness_shared.work_items
+        WHERE workspace_id = 'default' AND harness_slug = 'papercup' AND feature_id = ${item.id}`;
+      expect(tentative.taken_by).toBeNull();
+      expect(tentative.payload.blockerResolution.history).toHaveLength(1);
+      throw new Error('injected park checkpoint failure');
+    } })).rejects.toThrow('injected park checkpoint failure');
+    expect(await checkpointSnapshot(item.id)).toEqual(before);
+  });
+
+  it.each(['task', 'feature'] as const)('rolls back the paired park checkpoint when decision commit fails for %s', async (kind) => {
+    const item = await setup(kind);
+    const before = await checkpointSnapshot(item.id);
+    await db.sql.unsafe(`CREATE OR REPLACE FUNCTION harness_shared.reject_park_decision_commit() RETURNS trigger LANGUAGE plpgsql AS $fn$
+      BEGIN
+        IF NEW.payload ? 'blockerResolution' THEN RAISE EXCEPTION 'injected park decision commit failure'; END IF;
+        RETURN NEW;
+      END $fn$;
+      CREATE CONSTRAINT TRIGGER reject_park_decision_commit AFTER UPDATE ON harness_shared.work_items
+        DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION harness_shared.reject_park_decision_commit()`);
+    try {
+      await expect(park(item.id, 'park-commit')).rejects.toThrow('injected park decision commit failure');
+      expect(await checkpointSnapshot(item.id)).toEqual(before);
+    } finally {
+      await db.sql.unsafe('DROP TRIGGER reject_park_decision_commit ON harness_shared.work_items');
+    }
+    expect(await park(item.id, 'park-commit')).toMatchObject({ assignee: null });
+    expect(await checkpointStore.getWorkItemCheckpoint(checkpointRef(item.id)))
+      .toBe('original checkpoint\n\nResume after dependency repair');
+  });
+
+  it.each(['task', 'feature'] as const)('commits one concurrent park checkpoint and decision predecessor for %s', async (kind) => {
+    const item = await setup(kind);
+    const results = await Promise.allSettled(['park-a', 'park-b'].map((key) => park(item.id, key)));
+    expect(results.filter((r) => r.status === 'fulfilled' && r.value)).toHaveLength(1);
+    const stored = await wi.getWorkItem(item.id, 'papercup');
+    expect(stored?.assignee).toBeNull();
+    expect(((stored?.payload as Record<string, unknown>).blockerResolution as { history: unknown[] }).history).toHaveLength(1);
+    expect(await checkpointStore.getWorkItemCheckpoint(checkpointRef(item.id)))
+      .toBe('original checkpoint\n\nResume after dependency repair');
+  });
+
+  it.each(['task', 'feature'] as const)('preserves ordinary shelving custody and checkpoint on paired write failure for %s', async (kind) => {
+    const item = await setup(kind);
+    const before = await checkpointSnapshot(item.id);
+    await expect(wi.releaseWorkItem(item.id, { harness: 'papercup', expectedAssignee: 'agA', releasingOwnerId: 'agA',
+      checkpoint: { update: 'ordinary priority shelf', options: { transform: () => { throw new Error('shelf failure'); } } },
+    })).rejects.toThrow('shelf failure');
+    expect(await checkpointSnapshot(item.id)).toEqual(before);
+    expect(await wi.releaseWorkItem(item.id, { harness: 'papercup', expectedAssignee: 'agB', releasingOwnerId: 'agB',
+      checkpoint: { update: 'must not replace the holder checkpoint' },
+    })).toBeNull();
+    expect(await checkpointSnapshot(item.id)).toEqual(before);
+  });
+
+  it.each(['task', 'feature'] as const)('commits decision and voluntary release once without replaying side effects for %s', async (kind) => {
+    const item = await setup(kind);
+    const lane = vi.spyOn(await import('./plan-items/release-linked-lane'), 'releaseLinkedPlanLane');
+    try {
+      expect(await releaseDecision(item.id)).toMatchObject({ assignee: null, payload: {
+        ...patch, keep: 'original', _claimHold: true,
+        blockerResolution: { history: [{ authorId: 'agA', sessionId: 'authenticated-session-a' }] },
+      } });
+      expect(lane).toHaveBeenCalledTimes(1);
+      await db.sql`UPDATE harness_shared.work_items SET taken_by = 'agB', status = 'wip'
+        WHERE workspace_id = 'default' AND harness_slug = 'papercup' AND feature_id = ${item.id}`;
+      const before = await checkpointSnapshot(item.id);
+      // Historical receipt replay preserves the successor even when the old
+      // request carried an expected holder. No lifecycle effect is repeated.
+      expect(await releaseDecision(item.id)).toMatchObject({ assignee: 'agB', state: 'wip' });
+      expect(await wi.releaseWorkItem(item.id, { harness: 'papercup', releasingOwnerId: 'agA',
+        blockerDecision: { input: decision('release-1'), sessionId: 'authenticated-session-a', payloadPatch: patch },
+      })).toMatchObject({ assignee: 'agB', state: 'wip' });
+      await expect(wi.releaseWorkItem(item.id, { harness: 'papercup', releasingOwnerId: 'agA',
+        blockerDecision: { input: decision('release-1'), sessionId: 'authenticated-session-a', payloadPatch: { ...patch, changed: true } },
+      })).rejects.toMatchObject({ code: 'blocker_decision_conflict' });
+      expect(lane).toHaveBeenCalledTimes(1);
+      expect(await checkpointSnapshot(item.id)).toEqual(before);
+    } finally { lane.mockRestore(); }
+  });
+
+  it.each(['task', 'feature'] as const)('refuses invalid release decisions before touching custody or the lane for %s', async (kind) => {
+    const item = await setup(kind);
+    const before = await checkpointSnapshot(item.id);
+    const lane = vi.spyOn(await import('./plan-items/release-linked-lane'), 'releaseLinkedPlanLane');
+    try {
+      await expect(wi.releaseWorkItem(item.id, { harness: 'papercup', releasingOwnerId: 'agB',
+        blockerDecision: { input: decision(), sessionId: 'authenticated-session-b' },
+      })).rejects.toMatchObject({ code: 'blocker_decision_custody' });
+      await expect(wi.releaseWorkItem(item.id, { harness: 'papercup', releasingOwnerId: 'agA',
+        blockerDecision: { input: {}, sessionId: 'authenticated-session-a' },
+      })).rejects.toMatchObject({ code: 'blocker_decision_invalid' });
+      expect(lane).not.toHaveBeenCalled();
+      expect(await checkpointSnapshot(item.id)).toEqual(before);
+    } finally { lane.mockRestore(); }
+  });
+
+  it.each(['task', 'feature'] as const)('pairs durable park payload with release and fingerprints the stable request for %s', async (kind) => {
+    const item = await setup(kind);
+    const releaseContract = { condition: 'Dependency repaired', owner: 'agB', trigger: 'dependency:repaired',
+      reachability: 'reachable' as const, evidence: 'Canonical condition resolver' };
+    const effect = { release: true, claimHold: true, claimHoldRelease: { condition: releaseContract.condition, trigger: releaseContract.trigger },
+      reason: 'Wait for dependency', force: false };
+    const mutation = await wi.prepareWorkItemDurableParkMutation(true, { parkedBy: 'agA', parkedReason: effect.reason, releaseContract });
+    const opts = { harness: 'papercup', expectedAssignee: 'agA', releasingOwnerId: 'agA',
+      blockerDecision: { input: decision('durable-release'), sessionId: 'authenticated-session-a', effect, ...mutation } };
+    expect(await wi.releaseWorkItem(item.id, opts)).toMatchObject({ assignee: null, payload: {
+      _claimHold: true, claim_hold_by: 'agA', claim_hold_reason: effect.reason, claim_hold_release: releaseContract,
+      blockerResolution: { history: [{ authorId: 'agA' }] },
+    } });
+    await db.sql`UPDATE harness_shared.work_items SET taken_by = 'agB', status = 'wip'
+      WHERE workspace_id = 'default' AND harness_slug = 'papercup' AND feature_id = ${item.id}`;
+    const before = await checkpointSnapshot(item.id);
+    const regenerated = await wi.prepareWorkItemDurableParkMutation(true, { parkedBy: 'agA', releaseContract });
+    expect(await wi.releaseWorkItem(item.id, { ...opts, blockerDecision: { ...opts.blockerDecision, ...regenerated } }))
+      .toMatchObject({ assignee: 'agB' });
+    await expect(wi.releaseWorkItem(item.id, { ...opts, blockerDecision: { ...opts.blockerDecision,
+      effect: { ...effect, reason: 'Different reason' } } })).rejects.toMatchObject({ code: 'blocker_decision_conflict' });
+    expect(await checkpointSnapshot(item.id)).toEqual(before);
+  });
+
+  it.each(['task', 'feature'] as const)('rolls back release custody when decision commit fails for %s', async (kind) => {
+    const item = await setup(kind);
+    const before = await checkpointSnapshot(item.id);
+    const lane = vi.spyOn(await import('./plan-items/release-linked-lane'), 'releaseLinkedPlanLane');
+    await db.sql.unsafe(`CREATE OR REPLACE FUNCTION harness_shared.reject_release_decision_commit() RETURNS trigger LANGUAGE plpgsql AS $fn$
+      BEGIN
+        IF NEW.payload ? 'blockerResolution' THEN RAISE EXCEPTION 'injected release decision commit failure'; END IF;
+        RETURN NEW;
+      END $fn$;
+      CREATE CONSTRAINT TRIGGER reject_release_decision_commit AFTER UPDATE ON harness_shared.work_items
+        DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION harness_shared.reject_release_decision_commit()`);
+    try {
+      await expect(releaseDecision(item.id)).rejects.toThrow('injected release decision commit failure');
+      expect(lane).not.toHaveBeenCalled();
+      expect(await checkpointSnapshot(item.id)).toEqual(before);
+    } finally {
+      lane.mockRestore();
+      await db.sql.unsafe('DROP TRIGGER reject_release_decision_commit ON harness_shared.work_items');
+    }
+    expect(await releaseDecision(item.id)).toMatchObject({ assignee: null });
+  });
+
+  it.each(['task', 'feature'] as const)('rolls back decision when voluntary claim release fails for %s', async (kind) => {
+    const item = await setup(kind);
+    const before = await checkpointSnapshot(item.id);
+    const lane = vi.spyOn(await import('./plan-items/release-linked-lane'), 'releaseLinkedPlanLane');
+    await db.sql.unsafe(`CREATE OR REPLACE FUNCTION harness_shared.reject_release_decision_state() RETURNS trigger LANGUAGE plpgsql AS $fn$
+      BEGIN
+        IF NEW.payload ? 'blockerResolution' AND NEW.taken_by IS NULL THEN
+          RAISE EXCEPTION 'injected claim release failure';
+        END IF;
+        RETURN NEW;
+      END $fn$;
+      CREATE TRIGGER reject_release_decision_state BEFORE UPDATE ON harness_shared.work_items
+        FOR EACH ROW EXECUTE FUNCTION harness_shared.reject_release_decision_state()`);
+    try {
+      await expect(releaseDecision(item.id)).rejects.toThrow('injected claim release failure');
+      expect(lane).not.toHaveBeenCalled();
+      expect(await checkpointSnapshot(item.id)).toEqual(before);
+    } finally {
+      lane.mockRestore();
+      await db.sql.unsafe('DROP TRIGGER reject_release_decision_state ON harness_shared.work_items');
+    }
+    expect(await releaseDecision(item.id)).toMatchObject({ assignee: null });
+  });
+
+  it.each(['task', 'feature'] as const)('commits only one concurrent decision release predecessor for %s', async (kind) => {
+    const item = await setup(kind);
+    const results = await Promise.allSettled([releaseDecision(item.id, 'release-a'), releaseDecision(item.id, 'release-b')]);
+    expect(results.filter((result) => result.status === 'fulfilled' && result.value?.assignee === null)).toHaveLength(1);
+    const stored = await wi.getWorkItem(item.id, 'papercup');
+    expect(stored).toMatchObject({ assignee: null, payload: { ...patch, keep: 'original', _claimHold: true } });
+    expect(((stored?.payload as Record<string, unknown>).blockerResolution as { history: unknown[] }).history).toHaveLength(1);
+    expect(await checkpointStore.getWorkItemCheckpoint(checkpointRef(item.id))).toBe('original checkpoint');
+  });
+
+  it.each(['task', 'feature'] as const)('commits terminal decision and claim release once for %s', async (kind) => {
+    const item = await setup(kind);
+    expect(await close(item.id)).toMatchObject({ state: 'done', assignee: null,
+      terminalOwner: 'agA', terminalCompletionRef: 'test:dependency-recovery', payload: {
+        externalBlockers: [], keep: 'original',
+        blockerResolution: { history: [{ authorId: 'agA', decision: { disposition: 'self_resolve' } }] },
+      } });
+    const before = await snapshot(item.id);
+    // Issue terminal writes retire holds; feature terminal writes retain their
+    // existing payload semantics. Refused writes above must preserve BOTH.
+    expect(before.row.payload._claimHold).toBe(kind === 'task' ? undefined : true);
+    expect(await close(item.id)).toMatchObject({ state: 'done', assignee: null });
+    expect(await snapshot(item.id)).toEqual(before);
+    await expect(close(item.id, resolution(), 'different completion identity'))
+      .rejects.toMatchObject({ code: 'blocker_decision_conflict' });
+    await expect(wi.setWorkItemState(item.id, 'resolved', {
+      harness: 'papercup', by: 'agA', completionRef: 'test:dependency-recovery',
+      blockerDecision: { input: resolution(), sessionId: 'authenticated-session-a',
+        payloadPatch: { externalBlockers: [] }, unset: ['blockedReason'] },
+    })).rejects.toMatchObject({ code: 'blocker_decision_conflict' });
+    expect(await snapshot(item.id)).toEqual(before);
+    expect(before.checkpoint).toBe('original checkpoint');
+  });
+
+  it.each(['task', 'feature'] as const)('rolls back terminal identity and custody when decision commit fails for %s', async (kind) => {
+    const item = await setup(kind);
+    const before = await snapshot(item.id);
+    await db.sql.unsafe(`CREATE OR REPLACE FUNCTION harness_shared.reject_terminal_decision_commit() RETURNS trigger LANGUAGE plpgsql AS $fn$
+      BEGIN
+        IF NEW.payload ? 'blockerResolution' THEN RAISE EXCEPTION 'injected terminal decision commit failure'; END IF;
+        RETURN NEW;
+      END $fn$;
+      CREATE CONSTRAINT TRIGGER reject_terminal_decision_commit AFTER UPDATE ON harness_shared.work_items
+        DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION harness_shared.reject_terminal_decision_commit()`);
+    try {
+      await expect(close(item.id)).rejects.toThrow('injected terminal decision commit failure');
+      expect(await snapshot(item.id)).toEqual(before);
+    } finally {
+      await db.sql.unsafe('DROP TRIGGER reject_terminal_decision_commit ON harness_shared.work_items');
+    }
+    expect(await close(item.id)).toMatchObject({ state: 'done', assignee: null });
+  });
+
+  it.each(['task', 'feature'] as const)('rolls back decision when terminal lifecycle fails for %s', async (kind) => {
+    const item = await setup(kind);
+    const before = await snapshot(item.id);
+    await db.sql.unsafe(`CREATE OR REPLACE FUNCTION harness_shared.reject_terminal_decision_state() RETURNS trigger LANGUAGE plpgsql AS $fn$
+      BEGIN
+        IF NEW.payload ? 'blockerResolution' AND NEW.status = 'done' THEN
+          RAISE EXCEPTION 'injected terminal lifecycle failure';
+        END IF;
+        RETURN NEW;
+      END $fn$;
+      CREATE TRIGGER reject_terminal_decision_state BEFORE UPDATE ON harness_shared.work_items
+        FOR EACH ROW EXECUTE FUNCTION harness_shared.reject_terminal_decision_state()`);
+    try {
+      await expect(close(item.id)).rejects.toThrow('injected terminal lifecycle failure');
+      expect(await snapshot(item.id)).toEqual(before);
+    } finally {
+      await db.sql.unsafe('DROP TRIGGER reject_terminal_decision_state ON harness_shared.work_items');
+    }
+    expect(await close(item.id)).toMatchObject({ state: 'done', assignee: null });
+  });
+
+  it.each(['task', 'feature'] as const)('allows one concurrent terminal decision and preserves the winning identity for %s', async (kind) => {
+    const item = await setup(kind);
+    const results = await Promise.allSettled([
+      close(item.id, resolution('close-a'), 'completion-a'),
+      close(item.id, resolution('close-b'), 'completion-b'),
+    ]);
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    const stored = await wi.getWorkItem(item.id, 'papercup');
+    expect(stored).toMatchObject({ state: 'done', assignee: null, terminalOwner: 'agA',
+      payload: { keep: 'original' } });
+    const payload = stored?.payload as Record<string, unknown> | undefined;
+    expect(payload?._claimHold).toBe(kind === 'task' ? undefined : true);
+    const history = (payload?.blockerResolution as { history: { decision: { idempotencyKey: string } }[] }).history;
+    expect(history).toHaveLength(1);
+    expect(stored?.terminalCompletionRef).toBe(history[0].decision.idempotencyKey === 'close-a' ? 'completion-a' : 'completion-b');
+    expect(await checkpointStore.getWorkItemCheckpoint(checkpointRef(item.id))).toBe('original checkpoint');
+  });
+
+  it.each(['task', 'feature'] as const)('commits paired decision and lifecycle with exact replay for %s', async (kind) => {
+    const item = await setup(kind);
+    const result = await transition(item.id);
+    expect(result).toMatchObject({ state: 'blocked', assignee: 'agA', payload: {
+      ...patch, keep: 'original', _claimHold: true, claim_hold_by: 'agA',
+      blockerResolution: { history: [{ revision: 1, authorId: 'agA', sessionId: 'authenticated-session-a', workItemId: item.id }] },
+    } });
+    const before = await snapshot(item.id);
+    expect(await transition(item.id)).not.toBeNull();
+    expect(await snapshot(item.id)).toEqual(before);
+    await expect(transition(item.id, decision(), { ...patch, blockedReason: 'different effect' }))
+      .rejects.toMatchObject({ code: 'blocker_decision_conflict' });
+    expect(await snapshot(item.id)).toEqual(before);
+    await db.sql`UPDATE harness_shared.work_items SET status = 'done', taken_by = 'agB'
+      WHERE workspace_id = 'default' AND harness_slug = 'papercup' AND feature_id = ${item.id}`;
+    const later = await snapshot(item.id);
+    expect((await transition(item.id))?.state).toBe('done');
+    expect(await snapshot(item.id)).toEqual(later);
+  });
+
+  it.each(['task', 'feature'] as const)('rolls back decision payload when lifecycle fails for %s', async (kind) => {
+    const item = await setup(kind);
+    const before = await snapshot(item.id);
+    await db.sql.unsafe(`CREATE OR REPLACE FUNCTION harness_shared.reject_atomic_decision_state() RETURNS trigger LANGUAGE plpgsql AS $fn$
+      BEGIN
+        IF NEW.payload ? 'blockerResolution' AND NEW.status = 'blocked' THEN
+          RAISE EXCEPTION 'injected lifecycle failure after decision write';
+        END IF;
+        RETURN NEW;
+      END $fn$;
+      CREATE TRIGGER reject_atomic_decision_state BEFORE UPDATE ON harness_shared.work_items
+        FOR EACH ROW EXECUTE FUNCTION harness_shared.reject_atomic_decision_state()`);
+    try {
+      await expect(transition(item.id)).rejects.toThrow('injected lifecycle failure after decision write');
+      expect(await snapshot(item.id)).toEqual(before);
+    } finally {
+      await db.sql.unsafe('DROP TRIGGER reject_atomic_decision_state ON harness_shared.work_items');
+    }
+    expect((await transition(item.id))?.state).toBe('blocked');
+  });
+
+  it.each(['task', 'feature'] as const)('rolls back lifecycle when decision commit fails for %s', async (kind) => {
+    const item = await setup(kind);
+    const before = await snapshot(item.id);
+    // A deferred trigger runs at COMMIT, after both the decision and lifecycle
+    // statements. This proves the reverse half-commit fence against real PG.
+    await db.sql.unsafe(`CREATE OR REPLACE FUNCTION harness_shared.reject_atomic_decision_commit() RETURNS trigger LANGUAGE plpgsql AS $fn$
+      BEGIN
+        IF NEW.payload ? 'blockerResolution' THEN RAISE EXCEPTION 'injected decision commit failure'; END IF;
+        RETURN NEW;
+      END $fn$;
+      CREATE CONSTRAINT TRIGGER reject_atomic_decision_commit AFTER UPDATE ON harness_shared.work_items
+        DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION harness_shared.reject_atomic_decision_commit()`);
+    try {
+      await expect(transition(item.id)).rejects.toThrow('injected decision commit failure');
+      expect(await snapshot(item.id)).toEqual(before);
+    } finally {
+      await db.sql.unsafe('DROP TRIGGER reject_atomic_decision_commit ON harness_shared.work_items');
+    }
+    expect((await transition(item.id))?.state).toBe('blocked');
+  });
+
+  it.each(['task', 'feature'] as const)('allows one concurrent decision lifecycle predecessor for %s', async (kind) => {
+    const item = await setup(kind);
+    const results = await Promise.allSettled([transition(item.id, decision('race-a')), transition(item.id, decision('race-b'))]);
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    const stored = await wi.getWorkItem(item.id, 'papercup');
+    expect(stored).toMatchObject({ state: 'blocked', assignee: 'agA', payload: { ...patch, keep: 'original', _claimHold: true } });
+    expect(((stored?.payload as Record<string, unknown>)?.blockerResolution as { history: unknown[] }).history).toHaveLength(1);
+    expect(await checkpointStore.getWorkItemCheckpoint(checkpointRef(item.id))).toBe('original checkpoint');
+  });
+
+  it.each(['task', 'feature'] as const)('refuses concurrent custody transfer before any paired write for %s', async (kind) => {
+    const item = await setup(kind);
+    const before = await snapshot(item.id);
+    const real = blockerPersistence.applyBlockerDecisionMutation;
+    const spy = vi.spyOn(blockerPersistence, 'applyBlockerDecisionMutation').mockImplementationOnce(async (tx, identity, mutation) => {
+      await db.sql`UPDATE harness_shared.work_items SET taken_by = 'agB'
+        WHERE workspace_id = ${identity.workspace} AND harness_slug = ${identity.harness} AND feature_id = ${identity.id}`;
+      return real(tx, identity, mutation);
+    });
+    try {
+      await expect(transition(item.id)).rejects.toMatchObject({ code: 'blocker_decision_revision_conflict' });
+      expect(await snapshot(item.id)).toEqual({ ...before, row: { ...before.row, taken_by: 'agB' } });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it.each(['task', 'feature'] as const)('pairs the decision only with the scoped physical lifecycle row for %s', async (kind) => {
+    const item = await setup(kind);
+    // The maintained base schema's primary key is (harness_slug, feature_id),
+    // including across workspaces. Give each shadow a distinct harness so these
+    // are representable physical rows rather than a fixture uniqueness failure.
+    for (const [workspace, harness] of [['other-workspace', 'workspace-shadow'], ['default', 'harness-shadow']]) {
+      await db.sql`
+        INSERT INTO harness_shared.work_items
+          (workspace_id, harness_slug, feature_id, title, status, item_kind, origin,
+           taken_by, payload, terminal_owner, terminal_completion_ref, authority)
+        SELECT ${workspace}, ${harness}, feature_id, title, 'done', item_kind, origin,
+               'agB', payload || '{"shadow":"preserve"}'::jsonb, 'agB', 'shadow completion', 'committed'
+          FROM harness_shared.work_items
+         WHERE workspace_id = 'default' AND harness_slug = 'papercup' AND feature_id = ${item.id}`;
+    }
+    const shadows = () => db.sql`
+      SELECT to_jsonb(w) AS row FROM harness_shared.work_items w
+       WHERE feature_id = ${item.id} AND (workspace_id <> 'default' OR harness_slug <> 'papercup')
+       ORDER BY workspace_id, harness_slug`;
+    const before = [...await shadows()];
+    expect(before).toHaveLength(2);
+    expect(await transition(item.id)).toMatchObject({ state: 'blocked', assignee: 'agA',
+      payload: { blockerResolution: { history: [{ workItemId: item.id, authorId: 'agA' }] } } });
+    expect([...await shadows()]).toEqual(before);
+    expect(await checkpointStore.getWorkItemCheckpoint(checkpointRef(item.id))).toBe('original checkpoint');
+  });
+
+  it.each(['task', 'feature'] as const)('rolls back the decision on a lifecycle no-op for %s', async (kind) => {
+    const item = await setup(kind);
+    const before = await snapshot(item.id);
+    const real = blockerPersistence.applyBlockerDecisionMutation;
+    const spy = vi.spyOn(blockerPersistence, 'applyBlockerDecisionMutation').mockImplementationOnce(async (tx, identity, mutation) => {
+      await real(tx, identity, mutation);
+      // Fault injection inside the SAME transaction makes the lifecycle UPDATE
+      // find no row. Both the deletion and decision must roll back on refusal.
+      await tx`DELETE FROM harness_shared.work_items WHERE workspace_id = ${identity.workspace}
+        AND harness_slug = ${identity.harness} AND feature_id = ${identity.id}`;
+    });
+    try {
+      await expect(transition(item.id)).rejects.toMatchObject({ code: 'blocker_decision_revision_conflict' });
+      expect(await snapshot(item.id)).toEqual(before);
+    } finally {
+      spy.mockRestore();
+    }
+    expect((await transition(item.id))?.state).toBe('blocked');
+  });
+});
+
+describe('blocker decision payload CAS', () => {
+  it.each(['task', 'feature'] as const)('allows only one concurrent predecessor for %s payloads', async (kind) => {
+    const item = await wi.createWorkItem({ kind, title: 'decision predecessor race', harness: 'papercup', createdBy: 'agA' });
+    await wi.mergeWorkItemPayload(item.id, { retained: 'original' }, { harness: 'papercup' });
+    const contenders = [{ schemaVersion: 1, history: [{ revision: 1, writer: 'a' }] },
+      { schemaVersion: 1, history: [{ revision: 1, writer: 'b' }] }];
+    const outcomes = await Promise.all(contenders.map((blockerResolution, index) => wi.mergeWorkItemPayload(
+      item.id, { blockerResolution, winner: index }, {
+        harness: 'papercup', expectedBlockerResolution: undefined, expectedCustodianId: null, requireNonTerminal: true,
+      },
+    )));
+    expect(outcomes.filter(Boolean)).toHaveLength(1);
+    const winner = outcomes.findIndex(Boolean);
+    const before = await wi.getWorkItem(item.id, 'papercup');
+    expect(before?.payload).toMatchObject({ retained: 'original', winner, blockerResolution: contenders[winner] });
+    expect(await wi.mergeWorkItemPayload(item.id, { wrong: true }, {
+      harness: 'papercup', expectedBlockerResolution: undefined, unset: ['retained'],
+    })).toBeNull();
+    expect((await wi.getWorkItem(item.id, 'papercup'))?.payload).toEqual(before?.payload);
+  });
+
+  it.each(['task', 'feature'] as const)('fences a changed custodian before writing a %s decision', async (kind) => {
+    const item = await wi.createWorkItem({ kind, title: 'decision custody race', harness: 'papercup', createdBy: 'agA' });
+    await db.sql`UPDATE harness_shared.work_items SET taken_by = 'new-custodian'
+                   WHERE workspace_id = 'default' AND feature_id = ${item.id} AND harness_slug = 'papercup'`;
+    const before = await wi.getWorkItem(item.id, 'papercup');
+    expect(await wi.mergeWorkItemPayload(item.id, { blockerResolution: { revision: 1 } }, {
+      harness: 'papercup', expectedBlockerResolution: undefined, expectedCustodianId: null,
+    })).toBeNull();
+    const after = await wi.getWorkItem(item.id, 'papercup');
+    expect(after?.payload).toEqual(before?.payload);
+    expect(after?.assignee).toBe('new-custodian');
+  });
 });
 
 describe('blocker history CAS (EI-25362976472267628, real PG)', () => {

@@ -76,6 +76,28 @@ vi.mock('./expert-routing-settings', async (importOriginal) => {
 import { acceptFeedbackRequestProd, continueFeedbackRequestProd, getFeedbackProd } from './get-feedback-prod';
 
 describe('getFeedbackProd expert-routing settings', () => {
+  it.each([false, true])('keeps same-question accepted requests distinct in routing telemetry, failure=%s', async (fails) => {
+    const request = { workspaceId: 'ws-trace', requesterId: 'requester', question: 'same question' };
+    const failure = Object.assign(new Error('write CONNECTION_CLOSED'), { code: 'CONNECTION_CLOSED' });
+    for (const conversationId of ['accepted-first', 'accepted-second']) {
+      await getFeedbackProd(request, { ownerId: 'requester' } as never, {
+        allowDispatch: false,
+        acceptedRequest: { conversation_id: conversationId, thread_id: `thr-${conversationId}`, leaseToken: 'lease' },
+      });
+      const deps = h.getFeedbackCore.mock.lastCall![1] as { route: (params: unknown) => Promise<unknown> };
+      if (fails) {
+        h.routeConsult.mockRejectedValueOnce(failure);
+        await expect(deps.route({ question: request.question })).rejects.toBe(failure);
+      } else {
+        await deps.route({ question: request.question });
+      }
+      expect(h.routeConsult.mock.lastCall![0]).toMatchObject({
+        telemetry: { correlationId: conversationId, caller: 'consult:get_feedback' },
+      });
+    }
+    expect(h.makeConsultReachDispatcher).not.toHaveBeenCalled();
+  });
+
   it.each([undefined, Date.now() + 120_000, 0, Number.NaN])('uses only the internal accepted lease for query inference and scoring: %s', async leaseUntilMs => {
     const request = { workspaceId: 'ws-budget', requesterId: 'requester', question: 'same question' };
     await getFeedbackProd(request, { ownerId: 'requester' } as never, {

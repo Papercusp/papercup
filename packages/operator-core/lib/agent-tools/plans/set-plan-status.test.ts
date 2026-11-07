@@ -20,6 +20,15 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
 const preflightMocks = vi.hoisted(() => ({
   acceptance: vi.fn(), admission: vi.fn(), row: vi.fn(), scope: vi.fn(),
   write: vi.fn(), capture: vi.fn(), launch: vi.fn(), resolveGrader: vi.fn(),
+  preGrading: vi.fn(), verification: vi.fn(),
+}));
+vi.mock('../../acceptance-bar-lifecycle-evaluator', async (original) => ({
+  ...await original<typeof import('../../acceptance-bar-lifecycle-evaluator')>(),
+  readAndEvaluateAcceptanceBarLifecycle: preflightMocks.preGrading,
+}));
+vi.mock('../../independent-verification-gate', async (original) => ({
+  ...await original<typeof import('../../independent-verification-gate')>(),
+  evaluateIndependentVerificationGate: preflightMocks.verification,
 }));
 vi.mock('../../plan-acceptance-gate', async (original) => ({
   ...await original<typeof import('../../plan-acceptance-gate')>(),
@@ -58,12 +67,13 @@ describe('set-plan-status handler independent ship guards (PVFR G1/G2)', () => {
     hint: 'Renew the promotion admission certificate.', detail: 'Old certificate.',
     planRevisionHash: 'revision-current', policyVersion: 1,
   };
-  async function run(over: Record<string, unknown> = {}) {
+  async function run(over: Record<string, unknown> = {}, caller: Record<string, unknown> = {}) {
     const res = await setPlanStatusTool.handler(setPlanStatusTool.args.parse({
       harness: 'member', slug: 'plan-a', status: 'shipped', dryRun: true, ...over,
     }), {
       workspaceId: 'ws-test', harnessSlug: 'member', uiClientId: 'su-shipper',
       signal: new AbortController().signal, log: vi.fn(), progress: vi.fn(), metadata: vi.fn(),
+      ...caller,
     } as never);
     return (res as { data: { results: Record<string, unknown>[] } }).data.results[0]!;
   }
@@ -147,6 +157,27 @@ describe('set-plan-status handler independent ship guards (PVFR G1/G2)', () => {
     expect(result).toMatchObject({ ok: false, error: 'acceptance_ungraded' });
     expect(preflightMocks.resolveGrader).toHaveBeenCalledWith('plan-a', expect.objectContaining({
       acceptancePendingDeliveryBarKeys: ['R-15'], ownerId: ACCEPTANCE_GRADING_SWEEP_ACTOR,
+    }));
+    expect(preflightMocks.write).not.toHaveBeenCalled();
+    expect(preflightMocks.capture).not.toHaveBeenCalled();
+  });
+
+  it('a qualified preclosure verifier request still returns the original ship refusal without writing status', async () => {
+    const blockers = [{ code: 'plan_items_unfinished' }, { code: 'independent_verification_missing' }];
+    preflightMocks.acceptance.mockResolvedValue({ satisfied: false, code: 'plan_items_unfinished',
+      message: 'Implementation items remain unfinished.', blockers });
+    preflightMocks.preGrading.mockResolvedValue({ applicable: true, satisfied: true });
+    preflightMocks.verification.mockResolvedValue({ applicable: true, satisfied: false,
+      code: 'independent_verification_missing', gaps: [{ specId: 'live-proof', revision: 3,
+        evidencePlane: 'live', barKey: 'R-1', reason: 'no-independent-binding',
+        rejectedBindingIds: [], citableBindingIds: [42] }] });
+    preflightMocks.resolveGrader.mockResolvedValue({ state: 'settled', idempotencyKey: '', label: '' });
+    const result = await run({ dryRun: false }, { isSuperuser: true });
+    expect(result).toMatchObject({ ok: false, satisfied: false, error: 'plan_items_unfinished', blockers });
+    expect(preflightMocks.resolveGrader).toHaveBeenCalledOnce();
+    expect(preflightMocks.resolveGrader).toHaveBeenCalledWith('plan-a', expect.objectContaining({
+      acceptanceIndependentVerificationBrief: expect.stringContaining('42'),
+      ownerId: ACCEPTANCE_GRADING_SWEEP_ACTOR, acceptanceShipperOwnerId: 'su-shipper',
     }));
     expect(preflightMocks.write).not.toHaveBeenCalled();
     expect(preflightMocks.capture).not.toHaveBeenCalled();
@@ -480,6 +511,114 @@ describe('flipPlanFrontmatterStatus accepted YAML styles', () => {
 });
 
 describe('launchAcceptanceGraderForGate (D-006)', () => {
+  describe('qualified preclosure independent verification (WI-6554700010046275)', () => {
+    const strict = () => ({ satisfied: false, code: 'plan_items_unfinished', blockers: [
+      { code: 'plan_items_unfinished' }, { code: 'independent_verification_missing' },
+    ] });
+    const gap = { specId: 'live-proof', revision: 3, evidencePlane: 'live', barKey: 'R-1',
+      reason: 'no-independent-binding', rejectedBindingIds: [], citableBindingIds: [42] };
+    const context = { workspaceId: 'ws-test', harnessSlug: 'wrong-ambient',
+      uiClientId: 'su-implementer', isSuperuser: true, isPowerUser: true };
+    const current = [{ planSlug: 'plan-a', specId: 'live-proof', specRevision: 3, specFingerprint: 'spec-current',
+      evidenceKind: 'operational' as const, evidenceRef: 'receipt',
+      sourceFingerprint: 'source-current', environmentFingerprint: 'runtime-current' }];
+    beforeEach(() => {
+      preflightMocks.write.mockReset();
+      preflightMocks.preGrading.mockReset().mockResolvedValue({
+        applicable: true, satisfied: true, phase: 'pre-grading', codes: [],
+      });
+      preflightMocks.verification.mockReset().mockResolvedValue({ applicable: true,
+        satisfied: false, code: 'independent_verification_missing', inScope: 1, gaps: [gap] });
+    });
+    const recruit = (gate = strict(), ctx = context, recruitmentCode = 'plan_items_unfinished') => {
+      const launch = vi.fn(async (_slug: string, _ctx: Record<string, unknown>) => ({ state: 'launched' as const,
+        idempotencyKey: 'acceptance-grader:key', label: 'acceptance-grader:rubric:key' }));
+      const evaluate = vi.fn(async () => ({ satisfied: false, code: recruitmentCode }));
+      return { gate, launch, evaluate, result: launchAcceptanceGraderForGate('plan-a', gate,
+        ctx as never, 'papercusp', launch as never, evaluate as never, current) };
+    };
+
+    it('requests re-observation before item closure without changing the strict verdict or author authority', async () => {
+      const run = recruit();
+      expect((await run.result)?.state).toBe('launched');
+      expect(run.gate).toEqual(strict());
+      expect(preflightMocks.preGrading).toHaveBeenCalledWith('plan-a', 'pre-grading', {
+        harnessSlug: 'papercusp', expectedApplicable: true, current,
+      });
+      expect(preflightMocks.verification).toHaveBeenCalledWith({ planSlug: 'plan-a',
+        harnessSlug: 'papercusp', workspaceId: 'ws-test' });
+      expect(run.launch).toHaveBeenCalledTimes(1);
+      expect(run.launch).toHaveBeenCalledWith('plan-a', expect.objectContaining({
+        ownerId: ACCEPTANCE_GRADING_SWEEP_ACTOR, uiClientId: null,
+        acceptanceShipperOwnerId: 'su-implementer', isSuperuser: false, isPowerUser: false,
+        acceptanceIndependentVerificationBrief: expect.stringContaining('42'),
+        principal: { kind: 'system', slug: ACCEPTANCE_GRADING_SWEEP_ACTOR, workspaceId: 'ws-test' },
+      }));
+      expect(run.launch.mock.calls[0]?.[1]).not.toHaveProperty('acceptanceGateFoundNoAdmissibleGrading');
+      expect(preflightMocks.write).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { applicable: true, satisfied: false, codes: ['bar_snapshot_proof_stale'] },
+      { applicable: true, satisfied: false, codes: ['bar_snapshot_source_unavailable'] },
+      { applicable: false, satisfied: true, codes: [] },
+      undefined,
+    ])('does not recruit from blocked or unknown pregrading: %j', async verdict => {
+      preflightMocks.preGrading.mockResolvedValue(verdict);
+      const run = recruit();
+      expect(await run.result).toBeUndefined();
+      expect(run.launch).not.toHaveBeenCalled();
+      expect(preflightMocks.verification).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { applicable: true, satisfied: false, code: 'independent_verification_unavailable', gaps: [], readFailure: 'lineage read failed' },
+      { applicable: true, satisfied: false, code: 'independent_verification_missing', gaps: [{ ...gap, citableBindingIds: [] }] },
+      { applicable: true, satisfied: false, code: 'independent_verification_missing', gaps: [] },
+      { applicable: false, satisfied: true, gaps: [] },
+    ])('does not recruit from unreadable lineage or uncitable proof: %j', async verdict => {
+      preflightMocks.verification.mockResolvedValue(verdict);
+      const run = recruit();
+      expect(await run.result).toBeUndefined();
+      expect(run.launch).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when the fresh proof read throws', async () => {
+      preflightMocks.preGrading.mockRejectedValue(new Error('unavailable'));
+      const run = recruit();
+      expect(await run.result).toBeUndefined();
+      expect(run.launch).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when the verifier lineage read throws', async () => {
+      preflightMocks.verification.mockRejectedValue(new Error('lineage unavailable'));
+      const run = recruit();
+      expect(await run.result).toBeUndefined();
+      expect(run.launch).not.toHaveBeenCalled();
+    });
+
+    it.each(['', '*'])('requires a concrete workspace for system recruitment: %j', async workspaceId => {
+      const run = recruit(strict(), { ...context, workspaceId });
+      expect(await run.result).toBeUndefined();
+      expect(preflightMocks.preGrading).not.toHaveBeenCalled();
+      expect(run.launch).not.toHaveBeenCalled();
+    });
+
+    it.each(['acceptance_unaudited', 'acceptance_bar_contract_not_ready'])('preserves an independent recruitment refusal: %s', async code => {
+      const run = recruit(strict(), context, code);
+      expect(await run.result).toBeUndefined();
+      expect(preflightMocks.preGrading).not.toHaveBeenCalled();
+      expect(run.launch).not.toHaveBeenCalled();
+    });
+
+    it('requires the collected IV blocker rather than treating unfinished work as reviewer work', async () => {
+      const run = recruit({ ...strict(), blockers: [{ code: 'plan_items_unfinished' }] });
+      expect(await run.result).toBeUndefined();
+      expect(preflightMocks.preGrading).not.toHaveBeenCalled();
+      expect(run.launch).not.toHaveBeenCalled();
+    });
+  });
+
   it.each([true, false])('boolean current=%s reaches the recruitment gate without caller testimony', async (current) => {
     const parsed = setPlanStatusTool.args.parse({ slug: 'plan-a', status: 'shipped', current });
     const evaluate = vi.fn(async (_slug: string, _options: { current?: unknown }) => ({ satisfied: true }));

@@ -18,6 +18,7 @@ import {
   type RecipeUnresolvedCause,
 } from './recipe-authority-derive';
 import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
+import { resolveStoredSourceOperation } from './recipe-source-operation';
 
 // P-007: the pure static derivation lives in `recipe-authority-derive.ts` so the
 // Cupboard Worker can run the SAME analysis at publish time (this module pulls
@@ -401,6 +402,20 @@ export function recipeRevisionDiagnostics(input: {
   };
 }
 
+/** The Worker-shared derivation continues to reject opaque calls. Only this
+ * host path can recognize the exact generated source adapter after renewing its
+ * current source authority. No receipt or author privilege travels in a proof. */
+export async function deriveStoredRecipeAuthority(input: {
+  script: string; bindingSchema?: unknown; capabilityManifest?: unknown;
+  context?: RecipeAuthorityContext; validatedInputs?: Readonly<Record<string, unknown>>;
+}): Promise<RecipeAuthorityDescriptor | null> {
+  const manifest = input.capabilityManifest as { sourceOperation?: unknown } | null | undefined;
+  if (!manifest?.sourceOperation) return deriveRecipeAuthority(input.script, input.validatedInputs);
+  if (!await resolveStoredSourceOperation(input, input.context)) return null;
+  return { refs: { workspaces: [input.context!.workspace!], harnesses: [input.context!.harness!],
+    fleets: [], plans: [], items: [], resources: [] }, unresolved: false, unresolvedCause: null, bound: true };
+}
+
 export async function buildRecipeAuthorityRecommendation(input: {
   script: string;
   updatedAt: string;
@@ -408,7 +423,8 @@ export async function buildRecipeAuthorityRecommendation(input: {
   capabilityManifest?: unknown | null;
   context?: RecipeAuthorityContext;
 }): Promise<RecipeAuthorityRecommendation | null> {
-  const descriptor = await deriveRecipeAuthority(input.script);
+  const descriptor = await deriveStoredRecipeAuthority(input);
+  if (!descriptor) return null;
   // Server-derived: this context is built from the live session, not caller input.
   if (!recipeAuthorityMatches(descriptor, input.context, { operatorScope: true })) return null;
   return {
@@ -595,6 +611,8 @@ export async function validateRecipeAuthorityProof(input: {
   capabilityManifest?: unknown | null;
   proof?: RecipeAuthorityProof | null;
   liveContext?: RecipeAuthorityContext;
+  /** Supplied only after the current recipe binding contract validates. */
+  validatedInputs?: Readonly<Record<string, unknown>>;
 }): Promise<{ ok: true; descriptor: RecipeAuthorityDescriptor } | { ok: false; error: string; reason: string }> {
   // WI-4946: `authority_unresolved` reports WHICH construct fired; every other
   // code keeps its static text.
@@ -609,7 +627,9 @@ export async function validateRecipeAuthorityProof(input: {
         ? unresolvedReason(cause)
         : (AUTHORITY_ERROR_REASONS[error] ?? error),
   });
-  const descriptor = await deriveRecipeAuthority(input.script);
+  const descriptor = await deriveStoredRecipeAuthority({ ...input, context: input.liveContext });
+  if (!descriptor) return { ok: false, error: 'authority_source_unavailable',
+    reason: 'The private operation source is unavailable, expired, changed, or outside the current caller scope. No operation was dispatched.' };
   if (descriptor.unresolved) return fail('authority_unresolved', descriptor.unresolvedCause);
   if (!input.proof) {
     return descriptor.bound ? fail('authority_required') : { ok: true, descriptor };

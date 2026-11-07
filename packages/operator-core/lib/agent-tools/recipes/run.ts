@@ -58,6 +58,7 @@ import { readIdentity } from '../locks/identity';
 import { FOREGROUND_TIMEOUT_CEILING_MS } from '../capability/foreground-transport-cap';
 import { validateRecipeScriptAgainstCatalog } from './recipe-schema-validation';
 import { bindCurrentCallerDispatch } from '../orchestration/current-caller-dispatch';
+import { resolveStoredSourceOperation } from '../../recipe-source-operation';
 import { normalizeExecutionTrace } from '../../orchestration-trace';
 import {
   deriveLegacyForegroundManifest,
@@ -379,8 +380,15 @@ export default defineTool({
           catalog: currentCallerRecipeCatalog(all, allowed),
         });
         if (!contract.ok) return refused(preflightResult(it.id, contract));
+        const sourceOperation = recipe.capabilityManifest?.sourceOperation
+          ? await resolveStoredSourceOperation(recipe, liveAuthorityContext) : null;
+        const sourceArgs = sourceOperation?.prepare(contract.value.bindings.inputs);
+        if (recipe.capabilityManifest?.sourceOperation && !sourceArgs) {
+          return refused({ ok: false, id: it.id, error: 'authority_source_unavailable' });
+        }
         const authority = await validateRecipeAuthorityProof({
           script: recipe.script,
+          validatedInputs: contract.value.bindings.inputs,
           updatedAt: recipe.updatedAt,
           bindingSchema: recipe.bindingSchema,
           capabilityManifest: recipe.capabilityManifest,
@@ -456,8 +464,17 @@ export default defineTool({
           allowed,
           dryRun,
           timeoutMs,
-          wrapDispatch: bindCurrentCallerDispatch,
-          inputs: contract.value.bindings.inputs,
+          wrapDispatch: sourceOperation ? async (tool, name, _args, childCtx, next) => {
+            // Re-read after the VM boundary too. A warm preflight cannot keep a
+            // revoked/deleted/key-rotated source executable.
+            const current = await resolveStoredSourceOperation(recipe, liveAuthorityContext);
+            const args = current?.prepare(contract.value.bindings.inputs);
+            const expectedTool = sourceOperation.family === 'sql' ? 'dev:pg_query' : 'capability:bash';
+            if (!args || name !== expectedTool) throw new Error('authority_source_unavailable');
+            return bindCurrentCallerDispatch(tool, name, args, childCtx, next);
+          } : bindCurrentCallerDispatch,
+          inputs: sourceArgs ? { ...contract.value.bindings.inputs, __sourceOperation: sourceArgs }
+            : contract.value.bindings.inputs,
         });
         // P-012: counted before any early return below — a failed item's dispatches
         // still wrote their own telemetry rows.

@@ -30,6 +30,7 @@
 /** D-001 invariant 5 — CLAMP BEFORE SENDING. These bound the SERVER's query
  *  construction, so they are contract, not tuning. Do not "optimize" them. */
 import { editedPathsFor, incidentResultFor, unwrapInvokedCall } from '../core.mjs';
+import { extractRecallSignals } from '../recall-query.mjs';
 const TURN_START_PROMPT_CLAMP = 4000;
 const MID_TURN_MAX_CALLS = 12;
 const MID_TURN_FIELD_CLAMP = 400;
@@ -119,6 +120,7 @@ function buildToolCallDigest(event) {
     const editedPaths = editedPathsFor(tool, toolInput);
     digest.push({
       tool: typeof tool === 'string' ? tool : '',
+      querySignals: extractRecallSignals(tool, toolInput, contentToText(result.content)),
       toolInput: clamp(toolInput, MID_TURN_FIELD_CLAMP),
       toolResponse: clamp(contentToText(result.content), MID_TURN_FIELD_CLAMP),
       ...(incidentResult ? { incidentResult } : {}),

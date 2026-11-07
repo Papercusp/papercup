@@ -14,6 +14,7 @@ import type { SearchCorpusOptions } from './search-reformulation';
 import { readSqlIntentRetention } from '../bash-substitution/sql-intent-corpus';
 import type { MonitoredFamily } from './pipeline';
 import { canonicalNativeRuntimeSources, readAuthorizedNativeDispatch, reconcileNativeCapture } from './native-capture';
+import type { RecipeOperationSource } from '../recipe-source-operation';
 
 type Client = ReturnType<typeof getOrgPg>['sql'];
 export interface OpportunityReaderOptions {
@@ -114,6 +115,54 @@ export function productionOpportunityReaders(opts: OpportunityReaderOptions, dep
       if (JSON.stringify(before) !== JSON.stringify(await load())) return [];
       return evidence;
     } catch { return []; }
+  };
+  /** Reuse the same source ACL and settled host-receipt rules for executable
+   * recipe references. Text never leaves the host without a fresh source read. */
+  const readRecipeOperation = async (input: { scope: SqlIntentScope } & (
+    { id: string; callId?: never } |
+    { id?: never; callId: string; actor: string; parentCallId: string; since: string; until: string }
+  )): Promise<RecipeOperationSource | null> => {
+    try {
+      let id = input.id;
+      if (input.callId !== undefined) {
+        if (!/^[A-Za-z0-9][A-Za-z0-9_:/.@-]{0,399}$/.test(input.callId)
+          || !input.actor || !input.parentCallId || !Number.isFinite(Date.parse(input.since))
+          || !Number.isFinite(Date.parse(input.until)) || Date.parse(input.until) < Date.parse(input.since)
+          || Date.parse(input.until) - Date.parse(input.since) > 3600_000 || !await scopeAllowed()) return null;
+        const matches = await sql<{ id: string }[]>`SELECT id::text FROM harness_shared.tool_invocations
+          WHERE workspace_id=${opts.workspaceId} AND harness_slug=${opts.harnessSlug}
+            AND coord_owner_id=${input.actor} AND invoked_at>=${input.since}::timestamptz
+            AND invoked_at<=${input.until}::timestamptz
+            AND metadata_json->'managedOperation'->>'callId'=${input.callId}
+            AND metadata_json->'managedOperation'->>'parentCallId'=${input.parentCallId} LIMIT 2`;
+        if (matches.length !== 1) return null;
+        id = matches[0]!.id;
+      }
+      if (input.scope.workspaceId !== opts.workspaceId || input.scope.sourceBoundary !== opts.sourceBoundary
+        || !id || !await ledger(id)) return null;
+      const load = () => sql<{ id: string; at: string; tool: string; args: unknown; actor: string;
+        verified: boolean; status: string; metadata: Record<string, unknown> }[]>`
+        SELECT id::text,to_char(invoked_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS at,
+          tool_name AS tool,args_json AS args,coord_owner_id AS actor,
+          harness_shared.is_agent_coord_owner_id(coord_owner_id,role) AS verified,status,metadata_json AS metadata
+        FROM harness_shared.tool_invocations WHERE id=${id}::bigint
+          AND workspace_id=${opts.workspaceId} AND harness_slug=${opts.harnessSlug}`;
+      const [before] = await load();
+      if (!before || !['dev:pg_query', 'capability:bash'].includes(before.tool)) return null;
+      if (input.callId !== undefined && (before.actor !== input.actor
+        || (before.metadata?.managedOperation as { callId?: unknown; parentCallId?: unknown })?.callId !== input.callId
+        || (before.metadata?.managedOperation as { parentCallId?: unknown })?.parentCallId !== input.parentCallId
+        || Date.parse(before.at) < Date.parse(input.since) || Date.parse(before.at) > Date.parse(input.until))) return null;
+      const evidence = managedOperationEvidence([{ ...before, workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug,
+        sourceBoundary: opts.sourceBoundary, verifiedAgent: before.verified,
+        receipt: before.metadata?.managedOperation, choice: 'unknown' }], input.scope);
+      if (evidence.length !== 1 || !evidence[0]!.outcome.final || evidence[0]!.outcome.status !== 'success'
+        || !await ledger(id)) return null;
+      const [after] = await load();
+      if (JSON.stringify(before) !== JSON.stringify(after) || !await scopeAllowed()) return null;
+      return { id: before.id, workspaceId: opts.workspaceId, harness: opts.harnessSlug,
+        at: before.at, tool: before.tool, args: before.args };
+    } catch { return null; }
   };
   const readOutput: SearchCorpusOptions['readOutput'] = async input => {
     try {
@@ -220,7 +269,7 @@ export function productionOpportunityReaders(opts: OpportunityReaderOptions, dep
     return window.family === 'native-operation' ? reconcileNativeCapture({ ...opts, ...window, authorize: scopeAllowed })
       : readSqlIntentRetention({ ...opts, ...window });
   };
-  return { authorizeLedgerSource: ledger, authorizeActivitySource: activity, readManagedOperations, readOutput, readTranscript, readContinuity,
+  return { authorizeLedgerSource: ledger, authorizeActivitySource: activity, readManagedOperations, readRecipeOperation, readOutput, readTranscript, readContinuity,
     /** @internal Candidate pairing only; never use as a production source authority. */
     readTranscriptCandidate };
 }

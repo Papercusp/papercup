@@ -20,6 +20,17 @@ import {
 } from './observation-types';
 
 describe('OBSERVATION_KINDS', () => {
+  it('round-trips failed latest attempts and immutable prior measurements with their assessment clock', () => {
+    const latest = { testRunId: 2, value: null, unit: 'ms', status: 'error' as const,
+      finishedAt: '2026-11-01T12:00:30Z', comparisonTime: '2026-11-01T12:01:01Z', ageMs: 31_000,
+      maxAgeMs: 60_000, freshness: 'failed' as const, provenanceStatus: 'legacy-missing' as const };
+    const lastMeasurement = { ...latest, testRunId: 1, value: 42, status: 'pass' as const,
+      finishedAt: '2026-11-01T12:00:00Z', ageMs: 61_000, freshness: 'stale' as const };
+    const saved = asStructuredObservation({ ratings: { c: { rating: 'unknown', evidence: 'producer failed',
+      ratedFrom: 'ledger', ledgerResult: latest, lastMeasurement } } })!;
+    expect(saved.ratings!.c).toMatchObject({ rating: 'unknown', ledgerResult: latest, lastMeasurement });
+    expect(asStructuredObservation(saved)).toEqual(saved);
+  });
   it('round-trips the explicit file and case selectors of a multi-file tests check', () => {
     const proof = { kind: 'tests', files: ['unit.test.ts', 'flow.integration.test.ts'], cases: [
       { file: 'unit.test.ts', testName: 'unit control' },

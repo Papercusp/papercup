@@ -111,6 +111,7 @@ const M = vi.hoisted(() => {
     resolveCtxHarnessSlug: vi.fn(() => 'papercup'),
     resolveEffectiveHarnessSlug: vi.fn(() => 'papercup'),
     previewPlanStartConsult: vi.fn(),
+    readCurrentMissionContinuity: vi.fn(),
     checkExecutionPlan: vi.fn(async (): Promise<string[]> => []),
     derivePlanLifecycleForRead: vi.fn(async () => null),
     getAcceptanceRubricForPlan: vi.fn(async (slug: string) => ({
@@ -224,12 +225,23 @@ vi.mock('../../plan-audits', () => ({
   getLatestPlanAudit: M.getLatestPlanAudit,
   getLatestActivationAudit: M.getLatestActivationAudit,
 }));
-vi.mock('./get-activation-readiness', () => ({
+vi.mock('./get-activation-readiness', async (orig) => ({
+  ...(await orig<typeof import('./get-activation-readiness')>()),
   previewPlanStartConsult: M.previewPlanStartConsult,
+  readPlanActivationReadiness: vi.fn(async (params) => {
+    const read = await M.readPlanBySlug(params.planSlug);
+    return { schemaVersion: 1, advisory: true, ready: false, freshness: 'current',
+      stages: [{ id: 'inputs', status: 'unknown', codes: ['unmeasured'], dependencies: [],
+        nextAction: 'Restore inputs.' }], counts: { total: 1, returned: 1, omitted: 0 },
+      consult: await M.previewPlanStartConsult({ workspaceId: params.workspaceId, requesterId: params.requesterId,
+        planSlug: params.planSlug, planContent: read?.row.content }),
+      declarations: { ready: false, applies: true, reuse: 'missing', libraries: 'missing', blockers: [], diagnostics: [] } };
+  }),
   activationDeclarationReadiness: () => ({
     ready: false, applies: true, reuse: 'missing', libraries: 'missing', blockers: [], diagnostics: [],
   }),
 }));
+vi.mock('../../session-brief-mission', () => ({ readCurrentMissionContinuity: M.readCurrentMissionContinuity }));
 vi.mock('./plan-execution-guard', () => ({ checkExecutionPlan: M.checkExecutionPlan }));
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-reader' }),
@@ -282,6 +294,7 @@ beforeEach(async () => {
   M.overlayIssueBlocksForPlan.mockClear();
   M.derivePlanLifecycleForRead.mockClear();
   M.previewPlanStartConsult.mockClear();
+  M.readCurrentMissionContinuity.mockReset().mockResolvedValue({ availability: 'absent' });
   M.checkExecutionPlan.mockReset().mockResolvedValue([]);
   M.previewPlanStartConsult.mockResolvedValue({
     outcome: 'proceed',
@@ -302,6 +315,18 @@ afterEach(async () => {
 });
 
 describe('plans:get — cache wiring', () => {
+  it('refreshes caller mission authority on cached Now reads without leaking it to another plan', async () => {
+    const mission = (disposition: string) => ({ availability: 'available', revision: 4,
+      projection: { assignmentRef: 'plan:papercup:alpha', accountableOwner: 'su-reader', disposition } });
+    M.readCurrentMissionContinuity.mockResolvedValueOnce(mission('ready'))
+      .mockResolvedValueOnce(mission('blocked')).mockResolvedValueOnce(mission('blocked'));
+    expect((await run({ slug: 'alpha', heading: 'Now' })).results[0].missionContinuity).toEqual(mission('ready'));
+    expect((await run({ slug: 'alpha', heading: 'Now' })).results[0].missionContinuity).toEqual(mission('blocked'));
+    expect((await run({ slug: 'other', heading: 'Now' })).results[0]).not.toHaveProperty('missionContinuity');
+    expect(M.readCurrentMissionContinuity).toHaveBeenLastCalledWith({ ownerId: 'su-reader', workspaceId: 'ws-get' });
+    expect(M.readPlanBySlug.mock.calls.filter(([slug]) => slug === 'alpha')).toHaveLength(1);
+  });
+
   it.each([
     { mode: 'meta' },
     { mode: 'sections' },
@@ -697,6 +722,9 @@ describe('plans:get — cache wiring', () => {
     // The ordinary plan body remains cached; the preview's uncached source read
     // is the deliberate time-varying boundary.
     expect(M.readPlanBySlug).toHaveBeenCalledTimes(3);
+    const ordinary = await run({ slug: 'alpha' });
+    expect(ordinary.results[0]).not.toHaveProperty('activationReadiness');
+    expect(M.previewPlanStartConsult).toHaveBeenCalledTimes(2);
   });
 
   it('does not evaluate activation readiness unless explicitly requested', async () => {

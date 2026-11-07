@@ -144,7 +144,13 @@ export async function getFeedbackProd(
       const routed = await routeConsult({
         ...params,
         ...(request.nativeConsult ? { nativeConsult: request.nativeConsult } : {}),
-        telemetry: { caller: 'consult:get_feedback', policy: request.policy ?? CONSULT_DEFAULT_POLICY, buildSha: getBuildInfo().sha },
+        telemetry: {
+          caller: 'consult:get_feedback', policy: request.policy ?? CONSULT_DEFAULT_POLICY, buildSha: getBuildInfo().sha,
+          // Accepted preparation runs after the MCP acknowledgement. Keep its
+          // stage receipts joinable to the durable request, including failures
+          // and recovery attempts; an unrelated random trace loses that join.
+          ...(options.acceptedRequest ? { correlationId: options.acceptedRequest.conversation_id } : {}),
+        },
         // ⚠ STAGE-2 ONLY [owner 2026-09-22]: "recently should only be considered
         // when comparing... If we have like any expert floor that an agent has to
         // pass, the recency shouldnt be considered for this." This tunes how

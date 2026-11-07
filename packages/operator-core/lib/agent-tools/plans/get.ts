@@ -53,7 +53,7 @@ import { getStalePathRefsForSubjects, stalePathRefsNote } from '../../stale-path
 import { evidenceCurrentInputSchema } from './spec-evidence-store';
 import { readPlanHistoryContext, resolvePriorAttemptRefs } from '../../prior-attempt-context';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { activationDeclarationReadiness, previewPlanStartConsult } from './get-activation-readiness';
+import { readPlanActivationReadiness, unavailableActivationReadiness } from './get-activation-readiness';
 import { getBuildInfo } from '../../build-info';
 import { readPlanItemAnchors } from '../../plan-items/anchor-store';
 import { renderAnchorLine } from '../../plan-items/anchors';
@@ -262,7 +262,7 @@ const argsSchema = z
       .boolean()
       .optional()
       .describe(
-        "Read-only activation preview: activationReadiness.consult gives plans:start's candidates, evidence, provenance and no-responder/degraded outcome, without opening a consult. Read before activation audit/start to shape clauses.",
+        "Read-only activation diagnostic: bounded stages report independent blockers, dependencies, unknowns and next actions, plus plans:start consult advice. Read before audit/start; this advisory never grants execution authority.",
       ),
     executionReadiness: z
       .boolean()
@@ -1802,6 +1802,21 @@ export default defineTool({
         result.operationalBrief = { ...brief, text: renderOperationalBrief(brief) };
       }
     }
+    // P-020: Now and operational reads share recovery's current parent view.
+    // Caller-specific custody must stay outside the shared plan cache.
+    if ((args.operationalBrief || args.heading?.toLowerCase() === 'now') && opts.workspaceId) {
+      const { readCurrentMissionContinuity } = await import('../../session-brief-mission');
+      const ownerId = resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]).ownerId;
+      const mission = await readCurrentMissionContinuity({ ownerId, workspaceId: opts.workspaceId });
+      for (const [index, result] of (env.results as Array<Record<string, unknown>>).entries()) {
+        if (result.ok !== true || typeof result.slug !== 'string' || typeof result.harness !== 'string') continue;
+        const root = `plan:${encodeURIComponent(result.harness)}:${encodeURIComponent(result.slug)}`;
+        if (mission.availability === 'unknown' ||
+          (mission.availability === 'available' && mission.projection.assignmentRef === root)) {
+          env.results[index] = { ...result, ok: true, missionContinuity: mission } as typeof env.results[number];
+        }
+      }
+    }
     // EI-22638466916646751: the plan-start consult used to be visible only as a
     // late `plans:start` refusal, after activation/BAR/spec-quality work had
     // already been committed. Keep the preview opt-in because routing embeds
@@ -1809,43 +1824,20 @@ export default defineTool({
     // time-varying and must never be cached with the ordinary read.
     if (args.activationReadiness) {
       const requesterId = resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]).ownerId;
-      for (const result of env.results as Array<Record<string, unknown>>) {
-        if (result.ok !== true) continue;
+      for (const [index, cachedResult] of (env.results as Array<Record<string, unknown>>).entries()) {
+        if (cachedResult.ok !== true) continue;
+        const result = { ...cachedResult };
+        env.results[index] = result as typeof env.results[number];
         const slug = typeof result.slug === 'string' ? result.slug : null;
         if (!slug) continue;
         try {
-          const previewRead = await readPlanBySlug(slug, opts);
-          if (!previewRead?.row.content) {
-            result.activationReadiness = {
-              consult: {
-                outcome: 'unavailable',
-                error: 'consult_preview_unavailable',
-                message: 'Consult candidate preview could not be evaluated because the canonical plan content was unavailable.',
-              },
-            };
-            continue;
-          }
-          result.activationReadiness = {
-            consult: await previewPlanStartConsult({
-              workspaceId: previewRead.row.workspaceId,
-              requesterId,
-              planSlug: slug,
-              planContent: previewRead.row.content,
-            }),
-            // plan-reuse-and-library-declarations-2026-10-20 R-3: the activation
-            // audit's declaration gate, previewed with the same verdict.
-            declarations: activationDeclarationReadiness(previewRead.row.content, previewRead.row.status),
-          };
+          const scope = await resolvePlanScope({ ...opts,
+            ...(typeof result.harness === 'string' ? { harnessSlug: result.harness } : {}) });
+          result.activationReadiness = await readPlanActivationReadiness({ ...scope, requesterId, planSlug: slug });
         } catch (error) {
           // Keep the advisory read useful if a plan disappears between the
           // cached detail read and this explicitly requested live preview.
-          result.activationReadiness = {
-            consult: {
-              outcome: 'unavailable',
-              error: 'consult_preview_unavailable',
-              message: `Consult candidate preview could not be evaluated (${error instanceof Error ? error.message : String(error)}).`,
-            },
-          };
+          result.activationReadiness = unavailableActivationReadiness(error);
         }
       }
     }

@@ -1098,7 +1098,7 @@ export async function runVerifierDependencyCommand(command, args, { cwd, env,
  * the candidate or compiler metafile. `path` retains the original artifact
  * bytes; `members` is the independently accepted literal source-blob map.
  * @typedef {{ path: string, evidenceRef: string, sha256: string, schemaVersion: 1,
- *   members: Record<string, string> }} BgAcceptedManifest
+ *   members: Record<string, string>, authorityKind?: 'source-only' | 'full-output' }} BgAcceptedManifest
  * @typedef {{ schemaVersion: 'bg-verifier-source-v1', root: string,
  *   acceptedManifest: BgAcceptedManifest,
  *   source: Awaited<ReturnType<typeof prepareVerifierSource>>,
@@ -1108,6 +1108,8 @@ export async function runVerifierDependencyCommand(command, args, { cwd, env,
 /** @param {BgAcceptedManifest} expected @param {string} root */
 function readBgAcceptedManifest(expected, root) {
   assert.ok(expected && typeof expected === 'object', 'BG parent manifest authority is UNKNOWN');
+  assert.ok(expected.authorityKind === undefined || ['source-only', 'full-output'].includes(expected.authorityKind),
+    'BG parent manifest authority kind is UNKNOWN');
   assert.ok(typeof expected.evidenceRef === 'string' && expected.evidenceRef.trim()
     && !/^(?:unknown|absent|unresolved)$/i.test(expected.evidenceRef.trim()),
   'BG parent manifest authority is UNKNOWN');
@@ -1333,7 +1335,7 @@ function bgVerifierCompilerCustody({ prepared, dependencies }, verifyBoundary) {
 /** @typedef {{ path: string, dev: string, ino: string }} BgDirectoryIdentity */
 /** @typedef {{ builder: string, argv: string[], node: string, compiler: string,
  *   packageManager: string, configuration: string[], environment: Record<string, string>,
- *   outputNamespace?: { bank: BgDirectoryIdentity, stage: BgDirectoryIdentity } }} BgBuildInvocation
+ *   outputNamespace?: { bank: BgDirectoryIdentity, stage: BgDirectoryIdentity, transactionSha256?: string } }} BgBuildInvocation
  */
 
 /** Record actual command inputs before effects. The caller executes exactly this
@@ -1622,9 +1624,19 @@ function validateBgVerifierBuildTransaction(transaction) {
   }
   // Exact equality makes the original logical population authoritative.
   assert.deepEqual(compilerOutputs.sort(), outputs.map(row => row.temporary).sort(), 'BG transaction compiler output membership mismatch');
+  // A full-output expectation must contain the main entry before any effects.
+  // Explicit source-only authority protects its original subset; the separate
+  // complete original source census must still contain the new main entry.
+  const main = bgCompilerOptions(contexts.invocations[0].original.argv, contexts.record.prepared.root);
+  const mainSource = relative(contexts.record.prepared.root,
+    resolve(contexts.record.prepared.root, main.options.entryPoints[0])).split(sep).join('/');
+  if (contexts.record.prepared.acceptedManifest.authorityKind === 'source-only') {
+    assert.ok(contexts.record.prepared.source.files.some(row => row.path === mainSource && row.kind === 'file'),
+      'BG main entry is outside original source census');
+  } else assert.ok(Object.hasOwn(contexts.record.prepared.acceptedManifest.members, mainSource),
+    'BG artifact accepted membership omits main entry');
   if (transaction.recipe) {
     const { entry, outfile, profile } = transaction.recipe;
-    const main = bgCompilerOptions(contexts.invocations[0].original.argv, contexts.record.prepared.root);
     assert.ok(isAbsolute(entry) && dirname(outfile) === stage && ['development', 'release'].includes(profile),
       'BG recipe original command is invalid');
     assert.deepEqual(main.options.entryPoints, [entry], 'BG recipe entry differs from original main invocation');
@@ -1646,7 +1658,8 @@ export function beginBgVerifierBuildTransaction({ transaction, ownerPid }) {
   // Never use recursive mkdir: it could adopt another attempt's stage.
   mkdirSync(transaction.stage, { mode: 0o700 });
   assert.deepEqual(readBgDirectoryIdentity(transaction.bank.path), transaction.bank, 'BG transaction bank identity changed');
-  const outputNamespace = { bank: transaction.bank, stage: readBgDirectoryIdentity(transaction.stage) };
+  const outputNamespace = { bank: transaction.bank, stage: readBgDirectoryIdentity(transaction.stage),
+    transactionSha256: createHash('sha256').update(JSON.stringify(transaction)).digest('hex') };
   const contexts = prepareBgVerifierBuildContexts({ ...transaction.contexts.record,
     invocations: transaction.contexts.invocations.map(entry => ({ ...entry.invocation, outputNamespace,
       argv: entry.original.argv.map(arg => arg.replaceAll('@BG_PID@', String(ownerPid))) })) });
@@ -1805,6 +1818,7 @@ function verifyBgVerifierOutputBinding(binding) {
   assert.equal(binding.transactionSha256, hash(transaction), 'BG output original transaction changed');
   const namespace = binding.contexts.record.invocation.outputNamespace;
   assert.ok(namespace && namespace.stage.path === transaction.stage, 'BG output original stage changed');
+  assert.equal(namespace.transactionSha256, binding.transactionSha256, 'BG output compiler transaction changed');
   assert.deepEqual(namespace.bank, transaction.bank, 'BG output original bank changed');
   // Transaction validation refreshed the common census above. Reconstruct the
   // exact PID-bound commands and read all live identities without rescanning
@@ -1864,7 +1878,7 @@ export function verifyBgVerifierBuildOutputSet(output, args) {
  *   Parameters<typeof qualifyBgVerifierBuildOutputSet>[0]} args
  */
 export async function qualifyBgVerifierLogicalOutputSet(args) {
-  const { output, binding } = args;
+  const { output, binding, receipts } = args;
   verifyBgVerifierBuildOutputSet(output, args);
   // The complete output fence just validated these same immutable records.
   const { transaction, contexts } = binding;
@@ -1889,7 +1903,8 @@ export async function qualifyBgVerifierLogicalOutputSet(args) {
     unlinkSync(join(stage, row.temporary));
   }
   const artifact = await qualifyBgVerifierOutput({ record: { ...contexts.record, invocation: main.original },
-    invocation: main.invocation, entry: join(stage, entry.final) });
+    invocation: main.invocation, entry: join(stage, entry.final),
+    compilerReceipt: receipts.find(receipt => JSON.stringify(receipt.argv) === JSON.stringify(main.original.argv)) });
   const controls = ['.bg-build-binding.json', '.bg-build-context.json']
     .filter(path => existsSync(join(stage, path))).map(path => readBgIndependentOutputIdentity(join(stage, path)));
   const logical = freezeBgExpectation({ schemaVersion: 'bg-logical-output-set-v1',
@@ -2170,7 +2185,11 @@ export async function compileBgVerifierInvocation({ record, invocation, argv, ex
     const result = await runPhase('bg.compiler.build', () => activeCompiler.build({ ...options, plugins: [custody.plugin] }));
     const consumed = await runPhase('bg.compiler.verify', () => {
       assert.equal(binaryLaunches, 1, 'BG compiler native consumption is UNKNOWN');
-      return custody.verifyBeforePublication();
+      const consumed = custody.verifyBeforePublication();
+      if (result.metafile) assert.deepEqual(Object.keys(result.metafile.inputs).map(path =>
+        relative(record.prepared.root, resolve(record.prepared.root, path)).split(sep).join('/')).sort(),
+      consumed.map(row => row.path).sort(), 'BG compiler complete consumption membership mismatch');
+      return consumed;
     });
     return await runPhase('bg.compiler.output', async () => {
       // esbuild write:false leaves failed or incoherent attempts unpublished.
@@ -2180,14 +2199,17 @@ export async function compileBgVerifierInvocation({ record, invocation, argv, ex
         await fs.writeFile(file.path, file.contents, { flag: 'wx' });
       }
       assert.equal(result.outputFiles?.length, 1, 'BG compiler output is UNKNOWN');
-      if (metafile) await fs.writeFile(metafile, JSON.stringify(result.metafile), { flag: 'wx' });
+      const consumption = freezeBgExpectation({ schemaVersion: 'bg-compiler-consumption-v1',
+        ...bgCompilerConsumptionIdentity(record), consumed });
+      if (metafile) await fs.writeFile(metafile, JSON.stringify({ ...result.metafile,
+        papercuspCompilerConsumption: consumption }), { flag: 'wx' });
       return freezeBgExpectation({ schemaVersion: 'bg-compiler-invocation-v1', argv: record.invocation.argv,
         buildRecordSha256: createHash('sha256').update(JSON.stringify(record)).digest('hex'),
         originalSourceReceiptSha256: record.originalSourceReceiptSha256, compilerVersion: activeCompiler.version,
         compilerApi: compilerApi.identity, binary,
         compilerBinary: { kind: 'kernel-sealed-fd-v1', sha256: binary.sha256, bytes: String(sealedInfo.size),
           dev: String(sealedInfo.dev), ino: String(sealedInfo.ino), launches: binaryLaunches },
-        consumed, output: readBgIndependentOutputIdentity(options.outfile),
+        consumed, consumption, output: readBgIndependentOutputIdentity(options.outfile),
         ...(metafile ? { metafile: readBgIndependentOutputIdentity(metafile) } : {}) });
     });
   } finally {
@@ -2254,19 +2276,84 @@ function readBgFileIdentity(path) {
   } finally { closeSync(fd); }
 }
 
+/** Bind the complete consumption packet to the original invocation, including
+ * the transaction frozen before stage creation. The packet is sealed inside
+ * the compiler's already retained metafile, rather than a rewritten input record.
+ * @param {ReturnType<typeof prepareBgVerifierBuildRecord>} record */
+function bgCompilerConsumptionIdentity(record) {
+  const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  return { transactionSha256: record.invocation.outputNamespace?.transactionSha256 ?? null,
+    entry: resolve(record.prepared.root, bgCompilerOptions(record.invocation.argv, record.prepared.root).options.entryPoints[0]),
+    argv: record.invocation.argv,
+    compilerToolchain: { compiler: record.invocation.compiler, node: record.invocation.node,
+      packageManager: record.invocation.packageManager, environment: record.invocation.environment },
+    sourceGeneration: hash(record.prepared), dependencyGeneration: hash(record.dependencies),
+    buildRecordSha256: hash(record) };
+}
+
+/** Source-only parent authority never expands to bless new bundle membership.
+ * Independently reconcile the compiler's complete sealed consumption packet
+ * with the original source/dependency census and the maintained writer's map.
+ * @param {BgVerifierOutputRecord} output
+ * @param {ReturnType<typeof prepareBgVerifierBuildRecord>} record */
+function verifyBgOutputAuthority(output, record) {
+  const accepted = record.prepared.acceptedManifest;
+  if (accepted.authorityKind !== 'source-only') {
+    assert.deepEqual(output.artifact.sourceBlobs, accepted.members, 'BG output accepted member census mismatch');
+    return;
+  }
+  const receipt = output.compilerReceipt;
+  assert.ok(receipt?.metafile && receipt.consumption, 'BG complete compiler consumption is UNKNOWN');
+  const expected = bgCompilerConsumptionIdentity(record);
+  assert.match(expected.transactionSha256 ?? '', /^[a-f0-9]{64}$/, 'BG compiler original transaction is UNKNOWN');
+  for (const [key, value] of Object.entries(expected))
+    assert.deepEqual(receipt.consumption[key], value, `BG compiler consumption ${key} mismatch`);
+  assert.equal(receipt.buildRecordSha256, expected.buildRecordSha256, 'BG compiler consumption original record mismatch');
+  assert.deepEqual(receipt.argv, expected.argv, 'BG compiler consumption argv mismatch');
+  const meta = readBgFileIdentity(output.entry.path + '.meta.json');
+  assert.equal(meta.sha256, receipt.metafile.sha256, 'BG sealed compiler consumption metafile changed');
+  const sealed = JSON.parse(readFileSync(meta.path, 'utf8')).papercuspCompilerConsumption;
+  assert.deepEqual(sealed, receipt.consumption, 'BG sealed compiler consumption receipt changed');
+  assert.deepEqual(receipt.consumed, sealed.consumed, 'BG sealed complete compiler consumption changed');
+  assert.ok(Array.isArray(receipt.consumed) && receipt.consumed.length > 0,
+    'BG complete compiler consumption is UNKNOWN');
+  const files = new Map(record.prepared.source.files.map(row => [row.path, row]));
+  for (const tree of record.dependencies.trees) for (const row of tree.files) {
+    const path = `${tree.path}/${row.path}`;
+    assert.ok(!files.has(path), 'BG compiler consumption census overlap');
+    files.set(path, { ...row, path });
+  }
+  const sourceBlobs = {}, seen = new Set(), trees = new Map();
+  for (const row of receipt.consumed) {
+    assert.ok(!seen.has(row.path), 'BG compiler consumption member duplicated');
+    seen.add(row.path);
+    const original = files.get(row.path);
+    assert.ok(original?.kind === 'file', 'BG compiler consumption is outside original census');
+    assert.equal(row.sha256, original.sha256, 'BG compiler consumption bytes mismatch');
+    assert.equal(row.realpath, join(record.prepared.root, row.path), 'BG compiler consumption physical path mismatch');
+    if (!row.path.split('/').includes('node_modules')) sourceBlobs[row.path] =
+      committedInputBlob(record.prepared.root, record.prepared.source.sourceCommit, row.path, trees);
+  }
+  for (const [path, blob] of Object.entries(accepted.members))
+    assert.equal(sourceBlobs[path], blob, 'BG protected source was not consumed by main compiler');
+  assert.deepEqual(output.artifact.sourceBlobs, sourceBlobs, 'BG output complete compiler consumption mismatch');
+}
+
 /** Bind the maintained artifact writer's measured output to the ORIGINAL build
  * record. Builder exit status alone is never artifact qualification. This is a
  * separate output fence, not proof of compiler consumption or service readiness.
  * @typedef {{ schemaVersion: 'bg-build-output-v1', buildRecordSha256: string,
  *   originalSourceReceiptSha256: string, entry: ReturnType<typeof readBgFileIdentity>,
  *   manifest: ReturnType<typeof readBgFileIdentity>,
+ *   compilerReceipt?: Awaited<ReturnType<typeof compileBgVerifierInvocation>>,
  *   artifact: Extract<import('@papercusp/operator-core/lib/release/operator-artifact').OperatorArtifactIdentity,
  *     { status: 'measured' }> }} BgVerifierOutputRecord
  * @param {{ record: ReturnType<typeof prepareBgVerifierBuildRecord>,
- *   invocation: BgBuildInvocation, entry: string }} options
+ *   invocation: BgBuildInvocation, entry: string,
+ *   compilerReceipt?: Awaited<ReturnType<typeof compileBgVerifierInvocation>> }} options
  * @returns {Promise<BgVerifierOutputRecord>}
  */
-export async function qualifyBgVerifierOutput({ record, invocation, entry }) {
+export async function qualifyBgVerifierOutput({ record, invocation, entry, compilerReceipt }) {
   verifyBgVerifierBuildRecord(record, invocation, 'before-publication');
   const file = readBgFileIdentity(entry);
   const local = relative(record.prepared.root, file.realpath);
@@ -2276,13 +2363,12 @@ export async function qualifyBgVerifierOutput({ record, invocation, entry }) {
     sourceSha: record.prepared.source.sourceCommit });
   assert.equal(artifact.status, 'measured', 'BG output artifact is UNKNOWN');
   if (artifact.status !== 'measured') throw new Error('BG output artifact is UNKNOWN');
-  assert.deepEqual(artifact.sourceBlobs, record.prepared.acceptedManifest.members,
-    'BG output accepted member census mismatch');
   /** @type {BgVerifierOutputRecord} */
   const output = freezeBgExpectation({ schemaVersion: 'bg-build-output-v1',
     buildRecordSha256: createHash('sha256').update(JSON.stringify(record)).digest('hex'),
     originalSourceReceiptSha256: record.originalSourceReceiptSha256,
-    entry: file, manifest: readBgFileIdentity(artifact.evidenceRef), artifact });
+    entry: file, manifest: readBgFileIdentity(artifact.evidenceRef), artifact,
+    ...(compilerReceipt ? { compilerReceipt } : {}) });
   verifyBgVerifierOutputRecord(output, record, invocation);
   return output;
 }
@@ -2308,8 +2394,7 @@ export function verifyBgVerifierOutputRecord(output, record, invocation) {
   assert.equal(output.artifact.manifestSha256, output.manifest.sha256, 'BG output manifest digest mismatch');
   assert.equal(output.artifact.evidenceRef, `${output.entry.path}.artifact-${output.entry.sha256}.json`,
     'BG output manifest identity mismatch');
-  assert.deepEqual(output.artifact.sourceBlobs, record.prepared.acceptedManifest.members,
-    'BG output accepted member census mismatch');
+  verifyBgOutputAuthority(output, record);
   return output;
 }
 

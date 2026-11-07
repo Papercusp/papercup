@@ -100,7 +100,8 @@ import { stagingFirstActivationProblems } from './staging-first-activation-guard
 import { conformanceActivationVerdict } from '../../spec-conformance/activation-gate';
 import { PLAN_CLASS_RUBRIC_REFS } from './spec-test-adequacy';
 import { resolveActivationClassRef } from './activation-class-ref';
-import { previewPlanStartConsult } from './get-activation-readiness';
+import { readPlanActivationReadiness, unavailableActivationReadiness } from './get-activation-readiness';
+import type { AutoStartOutcome } from './auto-start-after-audit';
 import { discoveryWorkflow, previewProductShaping } from './product-shaping';
 import {
   checkLibraryDeclarations,
@@ -479,7 +480,7 @@ export default defineTool({
       barSeed: z.unknown().optional(),
       barSeedPendingAmendment: z.unknown().optional(),
       barSeedPendingRepair: z.unknown().optional(),
-      activationReadiness: z.object({ consult: z.unknown() }).optional(),
+      activationReadiness: z.object({ consult: z.unknown() }).passthrough().optional(),
       // P-003: which class seeded the BARs, and whether the caller supplied it or it was
       // derived from the plan's latest plans:evaluate-spec-quality card.
       classRefResolution: z.object({
@@ -531,6 +532,7 @@ export default defineTool({
     }
     const harnessSlug = resolveCtxHarnessSlug(sctx);
     const dryRun = args.dryRun === true;
+    const attempt = async () => {
 
     if (args.phase === 'discovery') {
       const identity = resolveAgentIdentity(sctx);
@@ -1158,25 +1160,6 @@ export default defineTool({
         /* best-effort — the panel refreshes on its next mount */
       }
 
-      // EI-22638466916646751: surface the same side-effect-free checkpoint
-      // consult preview that plans:start would evaluate. The audit is already
-      // durable at this point, so an unavailable advisory preview must remain
-      // visible without changing the successful audit outcome.
-      const activationReadiness = {
-        consult: currentPlan?.content
-          ? await previewPlanStartConsult({
-              workspaceId,
-              requesterId: resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]).ownerId,
-              planSlug: args.slug,
-              planContent: currentPlan.content,
-            })
-          : {
-              outcome: 'unavailable' as const,
-              error: 'consult_preview_unavailable' as const,
-              message: 'Consult candidate preview could not be evaluated because the canonical plan content was unavailable.',
-            },
-      };
-
       // P-019 / D-047: derive DRAFT spec clauses from the realizing mappings this audit
       // just recorded, so the design→code contract exists BY DEFAULT rather than by
       // opt-in. Safe to run unconditionally: a `draft` clause is outside the coverage
@@ -1353,7 +1336,8 @@ export default defineTool({
         planContent: currentPlan?.content,
         start: async (startArgs) => {
           const { default: startTool } = await import('./start');
-          return startTool.handler(startArgs as never, ctx as never);
+          // A machine-consumed nested call retains the full canonical receipt.
+          return startTool.handler(startArgs as never, { ...ctx, transport: undefined } as never);
         },
       });
 
@@ -1377,7 +1361,6 @@ export default defineTool({
         rejectedOrSuperseded: activation.rejectedOrSuperseded.length,
         itemProvenance: itemProvenanceResult,
         derivedSpecClauses,
-        activationReadiness,
         classRefResolution: {
           classRef: classResolution.classRef,
           source: classResolution.source,
@@ -1963,5 +1946,25 @@ export default defineTool({
       ...(resultNote ? { note: resultNote } : {}),
       libraryShipCheck: libraryShipCheckSummary,
     } };
+    };
+    const result = await attempt();
+    if (args.phase !== 'activation') return result;
+    const autoStart = 'autoStart' in result.data ? result.data.autoStart as AutoStartOutcome : undefined;
+    if (autoStart?.attempted && !autoStart.started && autoStart.receipt?.activationReadiness) {
+      return { ...result, data: { ...result.data, activationReadiness: autoStart.receipt.activationReadiness } };
+    }
+    // Preserve the audit's original refusal and any writes already recorded.
+    // Validation previews suppress advisory routing as well as audit writes.
+    let activationReadiness;
+    try {
+      activationReadiness = await readPlanActivationReadiness({
+        workspaceId: sctx.workspaceId ?? activeWorkspaceId(), harnessSlug: harnessSlug ?? '',
+        planSlug: args.slug, requesterId: resolveAgentIdentity(sctx).ownerId,
+        ...(autoStart?.attempted && autoStart.started ? { consultReceipt: autoStart.activationConsult } : {}),
+        ...(dryRun ? { consult: { outcome: 'unavailable' as const, error: 'consult_preview_unavailable' as const,
+          message: 'Consult routing is not measured in a validation preview.' } } : {}),
+      });
+    } catch (error) { activationReadiness = unavailableActivationReadiness(error); }
+    return { ...result, data: { ...result.data, activationReadiness } };
   },
 });

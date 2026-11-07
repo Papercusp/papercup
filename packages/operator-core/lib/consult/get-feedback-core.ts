@@ -442,7 +442,8 @@ async function acceptReadyFeedbackRequestCore(req: GetFeedbackRequest,
     hint: 'This request_key already names a different question or options. Reuse its original payload for recovery, or use a new key for a fresh consult.',
   };
   const previous = row.routing.request.result;
-  if (previous && 'verdict' in previous && previous.verdict === 'relevance_unmeasured') {
+  if (previous && 'verdict' in previous && previous.verdict === 'relevance_unmeasured' &&
+      (previous.degraded === 'embed-unavailable' || previous.degraded === 'evidence-unavailable')) {
     const retryPayload = { ...req,
       launchOperatorBaseUrl: stored.payload.launchOperatorBaseUrl ?? req.launchOperatorBaseUrl,
       launchOperatorHost: stored.payload.launchOperatorHost ?? req.launchOperatorHost };
@@ -469,6 +470,8 @@ async function acceptReadyFeedbackRequestCore(req: GetFeedbackRequest,
          AND routing->'request' = ${sql.json(row.routing.request as never)}
          AND routing #>> '{request,version}' = '1'
          AND routing #>> '{request,result,reason}' IN ('embed_unavailable', 'evidence_unavailable')
+         AND routing #>> '{request,result,degraded}' = routing->>'degraded'
+         AND routing->>'degraded' IN ('embed-unavailable', 'evidence-unavailable')
          AND routing #>> '{request,result,state}' = 'no_qualified_responder'
          AND routing #> '{request,result,responder}' = 'null'::jsonb
          AND routing #> '{request,result,wake}' @> '{"attempted":false,"queued":0,"woke":0}'::jsonb
@@ -595,9 +598,10 @@ export interface GetFeedbackResult {
   /**
    * `no_qualified_responder` is a measured finding: relevance WAS computed and
    * no peer cleared the floor, so proceeding alone is correct and a retry buys
-   * nothing. `relevance_unmeasured` is not a finding at all — the embedder was
-   * unavailable, so no similarity was ever computed and this result makes no
-   * claim about who knows what; a retry is exactly the right response. They were
+   * nothing. `relevance_unmeasured` makes no claim about who knows what: either
+   * an instrument was unavailable or subject validation reached its bound.
+   * An explicit retry can recover an instrument outage; it does not expand a
+   * healthy validation bound. These outcomes were
    * one value until EI-21485716602970457, which made a cold-start latency breach
    * read as "no one knows more than you do": the same question, re-asked minutes
    * later, routed to a peer at similarity 0.864.
@@ -613,10 +617,10 @@ export interface GetFeedbackResult {
    * reports, so the two never share a verdict or a stored state. */
   verdict: 'routed' | 'no_qualified_responder' | 'no_launchable_responder' | 'served_from_archive' | 'relevance_unmeasured' | 'retrieval_only';
   /** WHY, honestly (D-003: distinct causes must stay distinguishable).
-   * `embed_unavailable` / `evidence_unavailable` accompany verdict
+   * `embed_unavailable` / `evidence_unavailable` / `evidence_budget_limited` accompany verdict
    * `relevance_unmeasured`; `below_floor` accompanies `no_qualified_responder`;
    * `no_available_responder` accompanies `no_launchable_responder`. */
-  reason?: 'below_floor' | 'no_available_responder' | 'embed_unavailable' | 'evidence_unavailable' | 'retrieval_only';
+  reason?: 'below_floor' | 'no_available_responder' | 'embed_unavailable' | 'evidence_unavailable' | 'evidence_budget_limited' | 'retrieval_only';
   conversation_id: string;
   thread_id: string;
   /** 'served_from_archive' is a TS-surface state only — the DB row reuses
@@ -640,7 +644,7 @@ export interface GetFeedbackResult {
     via: SelectionVia;
     fallback?: 'lexical';
   }>;
-  /** Retrieval references only: subject qualification could not be measured.
+  /** Retrieval references from the bounded routing snapshot only: subject qualification could not be measured.
    * These candidates are never added to the selected dispatch/cascade menu. */
   unmeasured_candidates?: Array<{
     ownerId: string;
@@ -1825,6 +1829,10 @@ async function getReadyFeedbackCore(req: GetFeedbackRequest, deps: GetFeedbackDe
         ? 'embed_unavailable'
         : route.snapshot.degraded === 'evidence-unavailable'
           ? 'evidence_unavailable'
+        : route.verdict === 'relevance_unmeasured'
+          ? route.snapshot.subjectValidation?.budgetLimited
+            ? 'evidence_budget_limited'
+            : 'evidence_unavailable'
         : 'below_floor';
 
   // 4) Delivery gating is SELECTION only — the per-task wake budget is REMOVED
@@ -2028,14 +2036,14 @@ async function getReadyFeedbackCore(req: GetFeedbackRequest, deps: GetFeedbackDe
   const autoExcludedNoteText = autoExcludedNote.length
     ? ` ⚠ ${autoExcludedNote.join(', ')} already told you "not this one" on this EXACT question (closed_cant_help / declined) and ${autoExcludedNote.length === 1 ? 'was' : 'were'} excluded from this re-route — any conversation id you previously published for ${autoExcludedNote.length === 1 ? 'that consult' : 'those consults'} is now stale.`
     : '';
-  // Keep the router's transcript references when subject scoring fails. The
+  // Keep the router's transcript references when subject scoring is incomplete. The
   // qualified pool is empty on this path, so remaining_candidates cannot carry
   // them without pretending that unmeasured candidates were selected.
-  const unmeasuredCandidates = reason === 'evidence_unavailable'
+  const unmeasuredCandidates = reason === 'evidence_unavailable' || reason === 'evidence_budget_limited'
     ? route.snapshot.candidates.filter(candidate =>
       candidate.subjectEvidenceCoverage?.status === 'unmeasured' ||
       candidate.subjectEvidence?.status === 'unmeasured')
-      .slice(0, 3).map(candidate => ({
+      .map(candidate => ({
         ownerId: candidate.ownerId,
         qualification: 'unmeasured' as const,
         evidence: candidate.evidence.slice(0, 3),
@@ -2049,8 +2057,10 @@ async function getReadyFeedbackCore(req: GetFeedbackRequest, deps: GetFeedbackDe
       ? 'Retrieval-only: dispatch was disabled. No answering session was requested; do not park. Read remaining_candidates with sessions:read / sessions:search and decide from their transcript evidence.'
     : reason === 'embed_unavailable'
       ? `The embedder is unavailable on this host — similarity could NOT be measured, so there is no ranking to fill a minimum from (cannot-measure ≠ measured-nothing). Proceed on your own judgment; retry later if the answer matters.`
-      : reason === 'evidence_unavailable'
-        ? 'Problem-specific expertise could not be fully measured within the bounded evidence check. This does not prove no expert exists. ' +
+      : reason === 'evidence_unavailable' || reason === 'evidence_budget_limited'
+        ? (reason === 'evidence_budget_limited'
+          ? `Subject evidence validation reached its ${route.snapshot.subjectValidation!.limit}-owner bound; ${route.snapshot.subjectValidation!.budgetLimited} candidates remain unmeasured. The instrument is healthy; retrying the same request does not expand this bound. This does not prove no expert exists. `
+          : 'Problem-specific expertise could not be fully measured within the bounded evidence check. This does not prove no expert exists. ') +
           (unmeasuredCandidates?.length
             ? 'Read unmeasured_candidates transcript references with sessions:read; these are retrieval evidence, not selected or dispatchable responders.'
             : 'No unmeasured candidate transcript references are available in this routing snapshot.')
@@ -2072,7 +2082,7 @@ async function getReadyFeedbackCore(req: GetFeedbackRequest, deps: GetFeedbackDe
       ? 'retrieval_only'
       : finalChosen
         ? 'routed'
-        : reason === 'embed_unavailable' || reason === 'evidence_unavailable'
+        : reason === 'embed_unavailable' || reason === 'evidence_unavailable' || reason === 'evidence_budget_limited'
           ? 'relevance_unmeasured'
           : reason === 'no_available_responder'
             ? 'no_launchable_responder'

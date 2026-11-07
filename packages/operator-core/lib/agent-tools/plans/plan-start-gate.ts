@@ -123,14 +123,18 @@ export async function checkPlanStartable(
   door: PlanAdmissionDoor = 'start',
   evaluationOptions: Pick<AcceptanceBarLifecycleOptions, 'proofMode' | 'onRead'> & {
     discoveryAdmission?: 'start' | 'continuation';
+    /** Diagnostic evaluation must never repair pins or record admission shadows. */
+    readOnly?: boolean;
+    /** A request may supply the exact row it already read. */
+    row?: PlanRow | null;
   } = {},
 ): Promise<PlanStartGateResult> {
-  const row = await getPlanRow(slug, opts);
+  const row = 'row' in evaluationOptions ? evaluationOptions.row : await getPlanRow(slug, opts);
   // Absent plan: not this gate's error to report (see the module header).
   if (!row) return { ok: true, row: null, inputs: overrides ?? null };
   const verdict = startVerdictForRow(row, slug, overrides);
   if (!verdict.ok) return verdict;
-  const { discoveryAdmission = 'start', ...lifecycleOptions } = evaluationOptions;
+  const { discoveryAdmission = 'start', readOnly = false, row: _row, ...lifecycleOptions } = evaluationOptions;
   // Source changes are expected during admitted implementation. Preserve its
   // discovery baseline only while the immutable canonical start still matches.
   const discovery = await (async () => {
@@ -193,7 +197,7 @@ export async function checkPlanStartable(
   // ONCE from the activation-audit witness, then re-judge. The reconciler defers to the
   // synchronizer's own rules, so a Requirements/map change, a missing witness, or a busy
   // lock changes nothing and the refusal below is byte-for-byte what it was before.
-  if (!lifecycle.satisfied && lifecycle.codes.includes('bar_snapshot_rubric_revision_mismatch')) {
+  if (!readOnly && !lifecycle.satisfied && lifecycle.codes.includes('bar_snapshot_rubric_revision_mismatch')) {
     const reconciled = await reconcileStaleAcceptanceBarSubjectPin({
       workspaceId: row.workspaceId, harnessSlug: row.harnessSlug, planSlug: slug,
     }).catch(() => null);
@@ -229,7 +233,7 @@ export async function checkPlanStartable(
   //
   // The row loaded above is passed through so the verdict is about the revision this
   // call is acting on — re-reading here could admit a revision the door never saw.
-  const admission = await checkPlanAdmission({ slug, door, opts, row });
+  const admission = await checkPlanAdmission({ slug, door, opts, row, ...(readOnly ? { readOnly: true } : {}) });
   if (!admission.admitted) return { ok: false, kind: 'admission', row, refusal: admission.refusal };
   return verdict;
 }

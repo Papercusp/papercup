@@ -7,6 +7,11 @@ const mergeWorkItemPayload = vi.fn();
 const setWorkItemClaimHold = vi.fn();
 const setWorkItemStateWithAliasInfo = vi.fn();
 const getModes = vi.fn();
+const preflightBlockerDecision = vi.fn();
+vi.mock('../../blocker-resolution-evidence', () => ({
+  blockerBoundaryContext: async () => ({ ownerId: 'su-a', sessionId: 'su-a', workspaceId: 'default', root: null }),
+  preflightBlockerDecision: (...args: unknown[]) => preflightBlockerDecision(...args),
+}));
 const planItemNeedsHumanContradiction = vi.fn();
 const resolvePlanItemStamp = vi.fn();
 const resyncPlanItemLaneNow = vi.fn();
@@ -91,6 +96,7 @@ vi.mock('../../external-condition-reachability', async (importOriginal) => {
 import tool, { ownerActionFlagsReleasedByClear } from './set_blocker';
 import { activeExternalBlockers } from '../../external-blockers';
 import { BUDGET, promptWeight } from '../tool-guidance-budget';
+import { prepareBlockerDecision } from '../../blocker-resolution-decision';
 
 const ctx = { uiClientId: 'su-a', isSuperuser: true, workspaceId: 'default' } as never;
 const parse = (value: unknown) => (tool.args as { parse: (v: unknown) => unknown }).parse(value);
@@ -101,6 +107,9 @@ async function one(value: unknown, handlerCtx: unknown = ctx) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // These older tests exercise the existing capability/hold guards. Dedicated
+  // boundary tests below cover refusal and the decision-bearing atomic path.
+  preflightBlockerDecision.mockReset().mockResolvedValue({ ok: true, ordinary: true });
   setWorkItemStateWithAliasInfo.mockResolvedValue({
     workItem: { id: 'WI-1', state: 'open' },
     aliased: true,
@@ -119,6 +128,80 @@ beforeEach(() => {
   parkNotify.mockResolvedValue(undefined);
   announcedKeys.clear();
   firedKeys.clear();
+});
+
+describe('work_items:set_blocker decision boundary', () => {
+  const ref = { kind: 'event' as const, ref: 'event:ready' };
+  const decision = { schemaVersion: 1 as const, idempotencyKey: 'typed-blocker-1', disposition: 'defer' as const,
+    symptom: 'Dependency is still unavailable', investigation: [{ action: 'Read event ledger',
+      outcome: 'The dependency owner is still repairing it', evidenceRefs: [ref] }], attempts: [], evidenceRefs: [ref],
+    deferral: { reason: 'active-peer' as const, responsibleParty: 'su-b', nextAction: 'Resume after the repair',
+      reasonEvidenceRefs: [{ kind: 'work-item' as const, ref: 'WI-repair' }], recheckRef: ref } };
+  const request = { id: 'WI-1', kind: 'event' as const, ref: ref.ref, summary: 'Wait for repair' };
+  const item = { id: 'WI-1', harness: 'papercusp', family: 'feature', state: 'wip', assignee: 'su-a', payload: {} };
+  beforeEach(() => {
+    getWorkItem.mockResolvedValue(item);
+    announcedKeys.set(ref.ref, {});
+  });
+  it('refuses missing evidence before blocker, lifecycle, relation or ask writes', async () => {
+    preflightBlockerDecision.mockResolvedValue({ ok: false, code: 'blocker_decision_evidence',
+      missing: ['measured investigation'], nextAction: 'Investigate while retaining custody' });
+    expect(await one(request)).toMatchObject({ ok: false, code: 'blocker_decision_evidence', missing: ['measured investigation'] });
+    expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    expect(linkWorkItemRefDependencies).not.toHaveBeenCalled();
+    expect(ownerAskRun).not.toHaveBeenCalled();
+    expect(parkConsult).not.toHaveBeenCalled();
+  });
+  it('pairs history, decision and lifecycle in the existing state transaction', async () => {
+    setWorkItemStateWithAliasInfo.mockImplementation(async (_id, state, opts) => ({
+      workItem: { ...item, state, payload: opts.blockerDecision.payloadPatch },
+    }));
+    expect(await one({ ...request, blockerDecision: decision })).toMatchObject({ ok: true, workItem: { state: 'blocked' } });
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith('WI-1', 'blocked', expect.objectContaining({
+      by: 'su-a', blockerEvidenceContext: expect.any(Object),
+      blockerDecision: expect.objectContaining({ input: decision, effect: { setBlocker: request },
+        payloadPatch: { externalBlockers: [expect.objectContaining({ ref: ref.ref, status: 'active' })] } }),
+    }));
+    expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+    expect(setWorkItemClaimHold).not.toHaveBeenCalled();
+    expect(preflightBlockerDecision).toHaveBeenCalledWith(item, decision, expect.any(Object), expect.objectContaining({
+      additionalBlockers: [expect.objectContaining({ ref: ref.ref })],
+    }));
+  });
+  it('returns the original receipt before modes, evidence and successor terminal checks', async () => {
+    const prepared = prepareBlockerDecision({}, decision, { ownerId: 'su-a', sessionId: 'su-a',
+      workItemId: item.id, custodianId: 'su-a' }, { effect: { setBlocker: request } });
+    if (!prepared.ok) throw new Error('fixture decision invalid');
+    getWorkItem.mockResolvedValue({ ...item, state: 'done', assignee: 'su-b', payload: prepared.patch });
+    expect(await one({ ...request, blockerDecision: decision })).toMatchObject({ ok: true, replayed: true, blockerDecision: prepared.record });
+    expect(preflightBlockerDecision).not.toHaveBeenCalled();
+    expect(getModes).not.toHaveBeenCalled();
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+  it.each([{ summary: 'changed request' }, { clear: true }, { nextVerb: 'different action' }])(
+    'rejects changed public intent on the original key: %j', async (change) => {
+      const prepared = prepareBlockerDecision({}, decision, { ownerId: 'su-a', sessionId: 'su-a',
+        workItemId: item.id, custodianId: 'su-a' }, { effect: { setBlocker: request } });
+      if (!prepared.ok) throw new Error('fixture decision invalid');
+      getWorkItem.mockResolvedValue({ ...item, payload: prepared.patch });
+      expect(await one({ ...request, ...change, blockerDecision: decision })).toMatchObject({ ok: false, code: 'blocker_decision_conflict' });
+      expect(preflightBlockerDecision).not.toHaveBeenCalled();
+      expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+  it('does not separately persist history or clear independent holds when lifecycle refuses', async () => {
+    setWorkItemStateWithAliasInfo.mockRejectedValueOnce(Object.assign(new Error('lane is still blocked'), { code: 'lane_blocked' }));
+    expect(await one({ ...request, blockerDecision: decision })).toMatchObject({ ok: false, code: 'lane_blocked' });
+    expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+    expect(setWorkItemClaimHold).not.toHaveBeenCalled();
+  });
+  it.each([{ id: 'WI-1', clear: true }, { id: 'WI-1', clear: true, ref: 'missing:condition' }])(
+    'does not report a new decision saved when clear has no canonical identity: %j', async (clear) => {
+      expect(await one({ ...clear, blockerDecision: decision })).toMatchObject({ ok: false, code: 'blocker_identity_required' });
+      expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
 });
 
 describe('work_items:set_blocker', () => {

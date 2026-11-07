@@ -12,6 +12,8 @@
  * plan-item reflect + rationale-reproject reactions fire per item (D-007).
  */
 import { z } from 'zod';
+import { blockerDecisionInputSchema, prepareBlockerDecision, type BlockerDecisionRecord } from '../../blocker-resolution-decision';
+import { blockerBoundaryContext } from '../../blocker-resolution-evidence';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
@@ -261,6 +263,7 @@ const aliasAwareUnionError = (issue: { input?: unknown; errors?: unknown }): str
 };
 
 const itemBase = z.object({
+  blockerDecision: blockerDecisionInputSchema.optional(),
   id: z.string().min(1),
   harness: z.string().max(80).optional().describe('per-item harness (else the batch `harness` default)'),
   decision: decisionSpec.optional(),
@@ -338,6 +341,7 @@ function addTerminalRequirements(
 }
 
 const terminalInlineShape = {
+  blockerDecision: blockerDecisionInputSchema.optional(),
   state: z.preprocess(foldStateCase, z.enum(asEnumValues(TERMINAL_INPUT_STATES))),
   harness: z.string().max(80).optional().describe('default harness for the inline id / ids'),
   decision: decisionSpec.optional().describe('P-114 risk/authority for the inline id / every id in `ids`'),
@@ -365,6 +369,7 @@ const terminalMany = z
   .superRefine((it, ctx) => addTerminalRequirements(it, ctx));
 
 const nonTerminalInlineCommon = {
+  blockerDecision: blockerDecisionInputSchema.optional(),
   harness: z.string().max(80).optional().describe('default harness for the inline id / ids'),
   decision: decisionSpec.optional().describe('P-114 risk/authority for the inline id / every id in `ids`'),
   force: z
@@ -532,6 +537,7 @@ export default defineTool({
             state: it.state as string,
             harness: it.harness,
             decision: it.decision,
+            blockerDecision: it.blockerDecision,
             force: it.force,
             // EI-19961538712475843: resolve the alias HERE, at the one place the three
             // spellings collapse into the single value every downstream reader consumes —
@@ -554,6 +560,7 @@ export default defineTool({
             state: input.state as string,
             harness: input.harness,
             decision: input.decision,
+            blockerDecision: input.blockerDecision,
             ...inlineTerminalEvidence(input),
             force: input.force,
           }))
@@ -562,6 +569,7 @@ export default defineTool({
             state: input.state as string,
             harness: input.harness,
             decision: input.decision,
+            blockerDecision: input.blockerDecision,
             ...inlineTerminalEvidence(input),
             force: input.force,
           }];
@@ -569,6 +577,23 @@ export default defineTool({
       list,
       async (it) => {
         const harness = it.harness ?? input.harness;
+        // Bind the public request, not generated assumption snapshots. Replay
+        // before current category/plan/authority checks: a committed receipt is
+        // historical and cannot authorize another state write or reclaim.
+        const blockerEffect = { state: it.state, force: it.force === true,
+          completionRef: it.completionRef ?? null, assumptions: it.assumptions ?? null,
+          transitionNote: it.transitionNote ?? null, decision: it.decision ?? null };
+        if (it.blockerDecision) {
+          const current = await getWorkItem(it.id, harness);
+          if (current) {
+            const prepared = prepareBlockerDecision(current.payload, it.blockerDecision, {
+              ownerId: ident.ownerId, sessionId: ident.ownerId, workItemId: it.id, custodianId: current.assignee,
+            }, { effect: blockerEffect });
+            if (!prepared.ok) return { ...prepared, id: it.id, error: prepared.code };
+            if (prepared.replayed) return { ok: true as const, id: it.id, workItem: current,
+              blockerDecision: prepared.record, replayed: true };
+          }
+        }
         // D-035 (WI-10005358): FIRST, before any arm/assumption/state write — a row that is not
         // agent work by category (a record, document, event or human-audience row) is refused
         // here exactly as the by-id claim refuses it (D-024). Typed, no agent-passable override.
@@ -668,10 +693,15 @@ export default defineTool({
         // (`terminalConflictWarning` + raw `terminalConflict`) so the two tools do not disagree
         // about whether a stranded close is visible to the caller.
         let terminalConflict: TerminalCompletionConflict | undefined;
+        let blockerReceipt: { record: BlockerDecisionRecord; replayed: boolean } | undefined;
         const { workItem, aliased, requestedState, expectedState, appliedState, aliasNote } =
           await setWorkItemStateWithAliasInfo(it.id, it.state, {
             harness,
             by: ident.ownerId,
+            blockerEvidenceContext: await blockerBoundaryContext(ctx, ident.ownerId, harness),
+            ...(it.blockerDecision ? { blockerDecision: { input: it.blockerDecision,
+              sessionId: ident.ownerId, effect: blockerEffect } } : {}),
+            onBlockerDecision: (receipt) => { blockerReceipt = receipt; },
             completionRef: it.completionRef,
             assumptions,
             force: it.force,
@@ -679,6 +709,8 @@ export default defineTool({
               terminalConflict = info;
             },
           });
+        if (blockerReceipt?.replayed) return { ok: true as const, id: it.id, workItem,
+          blockerDecision: blockerReceipt.record, replayed: true };
         const canonicalExpectedState = expectedState ?? requestedState ?? it.state;
         // A second terminal close can be intentionally attested while the existing
         // terminal state remains authoritative. The writer reports that outcome through
@@ -743,6 +775,7 @@ export default defineTool({
           ? {
               ok: true as const,
               id: it.id,
+              ...(blockerReceipt ? { blockerDecision: blockerReceipt.record } : {}),
               // Ahead of the echoed `workItem` row for the same EI-15982 reason as the
               // warnings below: this is the field a caller must not lose to tail truncation.
               ...(harnessMismatchWarning ? { harnessMismatchWarning } : {}),

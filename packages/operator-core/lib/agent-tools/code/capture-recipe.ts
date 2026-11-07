@@ -29,7 +29,11 @@ import {
   type RecipeRunEvidence,
 } from '../../code-recipes-store';
 import type { NormalizedExecutionTrace } from '../../orchestration-trace';
-import type { CapabilityManifestV1, RecipeBindingSchemaV1 } from '../../recipe-contract';
+import { deriveLegacyForegroundManifest, preflightRecipeContract, type CapabilityManifestV1, type RecipeBindingSchemaV1 } from '../../recipe-contract';
+import { currentCallerRecipeCatalog } from '../orchestration/contract-preflight';
+import { compileSourceOperation, describeRecipeSourceOperation, type RecipeOperationSource } from '../../recipe-source-operation';
+import type { SqlIntentScope } from '../../bash-substitution/sql-intent-fingerprint';
+import { canonicalJson } from '../../authority/authority-rpc-envelope';
 import { searchSimilarRecipes, type SimilarRecipe } from '../../code-recipes-search';
 import { resolveLearningPotSlug } from '../../learning/pot-scope';
 import {
@@ -178,6 +182,8 @@ export interface CaptureRecipeDeps {
 
 export interface CaptureRecipeInput {
   script: string;
+  /** Host-only, freshly authorized settled operation. Never public code:run arguments. */
+  operationSource?: { source: RecipeOperationSource; scope: SqlIntentScope };
   workspaceId: string;
   harness: string | null;
   /** The acting agent's coord ownerId (distinct-agent + author attribution). */
@@ -288,6 +294,23 @@ export async function captureRecipe(
 ): Promise<CaptureRecipeResult | null> {
   const log = deps.log ?? (() => {});
   try {
+    const privateInput = input.operationSource;
+    const definition = privateInput ? describeRecipeSourceOperation(privateInput.source, privateInput.scope) : null;
+    if (privateInput) {
+      if (!definition || privateInput.source.workspaceId !== input.workspaceId || privateInput.source.harness !== input.harness) return null;
+      const tool = privateInput.source.tool;
+      const manifest: CapabilityManifestV1 = { ...deriveLegacyForegroundManifest([tool]),
+        sourceOperation: definition.sourceOperation, replay: { class: 'read-only' } };
+      const operation = compileSourceOperation(privateInput.source, privateInput.scope)!;
+      const check = preflightRecipeContract({ manifest, bindingSchema: definition.bindingSchema,
+        bindings: { values: operation.initialValues }, staticToolNames: [tool], derivedReplayClass: 'read-only',
+        catalog: currentCallerRecipeCatalog(input.tools, input.allowed ?? new Set()), lifecycle: 'foreground' });
+      if (!check.ok) return null;
+      // Do not derive ANY public prose, tags or embeddings from the private
+      // wrapper or example values, including an author-supplied title.
+      input = { ...input, script: definition.script, bindingSchema: definition.bindingSchema, capabilityManifest: manifest,
+        title: `Private ${definition.sourceOperation.family} operation`, description: 'Authorized source-backed operation with typed runtime bindings.', tags: [] };
+    }
     await ensureParseCheckReady(); // lazy-load the TS compiler before extractToolsUsed→checkScript (kept out of the eager client bundle)
     const toolsUsed = safe(() => extractToolsUsed(input.script, input.tools, input.allowed), []);
     const { title, description } = deriveTitleDescription(input.script, toolsUsed, {
@@ -295,7 +318,8 @@ export async function captureRecipe(
       description: input.description,
     });
     // P-003 collision-fix: explicit title ⇒ slug; auto-derived ⇒ slug+scriptHash.
-    const id = recipeId(title, description, input.script, { title: input.title });
+    const id = definition ? `source-${definition.sourceOperation.family}-${definition.captureKey}`
+      : recipeId(title, description, input.script, { title: input.title });
 
     // P-002 (pot-scope-all-learnings): the shared resolution order — explicit →
     // harness's owning pot → the harness itself when it IS a hive home → env home
@@ -314,7 +338,16 @@ export async function captureRecipe(
     // This indexed lookup rides the P-013 run ledger; failure remains soft so a
     // capture still falls through to hybrid matching / creation.
     let exactRecipe: CodeRecipeRow | null = null;
-    if (input.executionTrace?.structuralFingerprint) {
+    if (definition) {
+      // Generated adapters share their script bytes. Never merge them by that
+      // wrapper fingerprint or by their deliberately generic public prose.
+      exactRecipe = await getRecipe(deps.sql, id);
+      if (exactRecipe && (exactRecipe.status !== 'active' || exactRecipe.script !== input.script
+        || canonicalJson(exactRecipe.bindingSchema) !== canonicalJson(input.bindingSchema)
+        || exactRecipe.capabilityManifest?.sourceOperation?.workspaceId !== input.workspaceId
+        || exactRecipe.capabilityManifest.sourceOperation.harness !== input.harness
+        || exactRecipe.capabilityManifest.sourceOperation.family !== definition.sourceOperation.family)) return null;
+    } else if (input.executionTrace?.structuralFingerprint) {
       try {
         exactRecipe = await findActiveRecipeByStructuralFingerprint(
           deps.sql,
@@ -330,8 +363,9 @@ export async function captureRecipe(
     // the advisory search so the remaining results stay useful.
     let similarRecipes: SimilarRecipe[] = [];
     try {
-      const sourceAuthority = await deriveRecipeAuthority(input.script);
-      similarRecipes = await searchSimilarRecipes(
+      if (!definition) {
+        const sourceAuthority = await deriveRecipeAuthority(input.script);
+        similarRecipes = await searchSimilarRecipes(
         deps.sql,
         {
           title,
@@ -350,7 +384,8 @@ export async function captureRecipe(
             }),
         },
         { log },
-      );
+        );
+      }
     } catch (err) {
       log(`code:run recipe dedup failed (swallowed): ${(err as Error)?.message ?? String(err)}`);
     }
@@ -371,8 +406,9 @@ export async function captureRecipe(
       : exactRecipe?.id === target.id
         ? exactRecipe
         : await getRecipe(deps.sql, target.id);
-    if (!row || row.status !== 'active') {
-      target = { id, disposition: 'created', matchedSimilarity: null };
+    if (!row || row.status !== 'active' || definition
+      && row.capabilityManifest?.sourceOperation?.revision !== definition.sourceOperation.revision) {
+      if (!row || row.status !== 'active') target = { id, disposition: 'created', matchedSimilarity: null };
       row = await upsertRecipe(deps.sql, {
         id,
         title,

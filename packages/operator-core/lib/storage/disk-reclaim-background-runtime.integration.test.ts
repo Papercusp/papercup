@@ -229,7 +229,7 @@ it('checkpoints productive scheduled effects and preserves standalone fairness i
 it('continues pending census passes with fresh effect guards in the observed private background runtime',
   context => runSelection({ reclaimTitles: [
     'continues a pending census outside admission and rechecks',
-  ], expectedReclaimCases: 3, census: false,
+  ], expectedReclaimCases: 6, census: false,
   observedSources: ['packages/operator-core/lib/storage/retention-census-walk.ts',
     'packages/operator-core/lib/storage/disk-census-detached-walk.ts'] }, context), options.testTimeoutMs);
 it('prepares independent census walks after a delegate failure in the observed private background runtime',

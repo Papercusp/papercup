@@ -15,6 +15,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import type { OrgTestDb } from '../../test/_org-test-db';
 import type { MemoryEntry } from './backend';
+import { sessionAllowsAmbientContext, setSessionConfinementResolver } from '../capability-envelope/session-confinement-port';
 
 const h = vi.hoisted(() => ({ sql: null as unknown, entries: [] as MemoryEntry[] }));
 
@@ -29,6 +30,13 @@ vi.mock('./backend', () => ({
     search: async () => h.entries,
   }),
 }));
+// This suite owns the memory/receipt ledgers, not external corpus retrieval.
+// Keep that unrelated leg empty and healthy; otherwise its five-second wall
+// emits a degradation notice even when the tested memory dedup is correct.
+vi.mock('./corpus-recall-io', () => ({
+  recallCorpusContext: async () => ({ heading: 'Related context', outcome: 'ok', lines: [], dropped: [],
+    embedderAvailable: true, candidateCount: 0, retrievalDepth: 0, rerank: 'nothing-to-reorder', legs: null }),
+}));
 // The workspace-scope read is flag-server-backed (not best-effort-wrapped);
 // pin it OFF so the test exercises the dedup path, not flag plumbing.
 vi.mock('./workspace-scope-recall', () => ({
@@ -36,8 +44,9 @@ vi.mock('./workspace-scope-recall', () => ({
   keepUserPoolHitForWorkspace: () => true,
 }));
 
-const { buildMemoryContextBlock } = await import('./injection');
-const { bumpSessionEpoch } = await import('./session-epoch-ledger');
+const { buildMemoryContextBlock, prepareMemoryContextBlock } = await import('./injection');
+const { bumpSessionEpoch, memoryFragmentOffer, stageMemoryEmission, confirmMemoryEmission } = await import('./session-epoch-ledger');
+const { configureReadCursorStore, InMemoryReadCursorStore, resetReadCursorStore } = await import('../agent-tools/coordination/read-cursors');
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 
 const SID = `sid-cross-port-${Date.now()}`;
@@ -74,8 +83,10 @@ describe('cross-port session-epoch dedup (real PG — P-004a)', () => {
   let db: OrgTestDb;
 
   beforeAll(async () => {
+    setSessionConfinementResolver(() => null);
     db = await createOrgTestDb();
     h.sql = db.adminSql;
+    configureReadCursorStore(new InMemoryReadCursorStore());
     h.entries = [
       { id: randomUUID(), text: 'always pass argShape Z to the fixture step', scope: 'u-test', score: 0.9 },
       { id: randomUUID(), text: 'the promotion pipeline FFs main from staging', scope: 'u-test', score: 0.8 },
@@ -83,11 +94,17 @@ describe('cross-port session-epoch dedup (real PG — P-004a)', () => {
   }, 120_000);
 
   afterAll(async () => {
+    setSessionConfinementResolver(undefined);
+    resetReadCursorStore();
     await db?.cleanup();
   });
 
-  it("port A delivers + stamps; port B for the SAME session is suppressed; an epoch bump re-primes", async () => {
-    // Port 'initialize' delivers both memories…
+  it('lost preparation stays eligible; proven final emission suppresses another port; a new epoch re-primes', async () => {
+    // A unit/integration worker does not boot the host's authoritative policy
+    // reader. Assert that fixture prerequisite before interpreting no recall.
+    expect(await sessionAllowsAmbientContext({ ownerId: SID, workspaceId: 'ws-test' })).toBe(true);
+    // Initialize has no native stdout oracle: preparing its response cannot
+    // suppress a later native hook, even when the response is lost.
     const first = await buildMemoryContextBlock({
       userId: 'u-test',
       workspaceId: 'ws-test',
@@ -96,18 +113,25 @@ describe('cross-port session-epoch dedup (real PG — P-004a)', () => {
     });
     expect(first).toBeTruthy();
     expect(first).toContain('argShape Z');
-    // …and stamps them (fire-and-forget → poll the real table).
-    await waitForStamps(db.adminSql as never, 2);
+    expect(await db.adminSql`SELECT memory_id FROM harness_shared.memory_session_surfaced WHERE session_id = ${SID}`).toHaveLength(0);
 
     // A DIFFERENT port, same session + epoch: fully suppressed (null, not a
     // thinner block) — the D-006 "orient-then-claim never double-injects" pin.
-    const second = await buildMemoryContextBlock({
+    const second = await prepareMemoryContextBlock({
       userId: 'u-test',
       workspaceId: 'ws-test',
       queryContext: 'fixture conventions',
       session: { sessionId: SID, port: 'turn-start' },
     });
-    expect(second).toBeNull();
+    expect(second?.text).toContain('argShape Z');
+    expect(second?.fragments).toHaveLength(2);
+    await stageMemoryEmission(db.adminSql as never, SID, 'cross-port-proof', second!.fragments);
+    expect(await db.adminSql`SELECT memory_id FROM harness_shared.memory_session_surfaced WHERE session_id = ${SID}`).toHaveLength(0);
+    const fragments = second!.fragments.map(({ rendered: _text, ...row }) => row);
+    expect(await confirmMemoryEmission(db.adminSql as never, SID, { token: 'cross-port-proof', fragments })).toBe(2);
+    await waitForStamps(db.adminSql as never, 2);
+    expect(await buildMemoryContextBlock({ userId: 'u-test', workspaceId: 'ws-test',
+      queryContext: 'fixture conventions', session: { sessionId: SID, port: 'mid-turn' } })).toBeNull();
 
     // Compaction boundary: the epoch bump makes the WHOLE pool eligible again.
     await bumpSessionEpoch(db.adminSql as never, SID);
@@ -122,7 +146,7 @@ describe('cross-port session-epoch dedup (real PG — P-004a)', () => {
     // Observe every eligible port's telemetry before closing its SQL handle.
     // The writer is asynchronous: ledger uniqueness alone says nothing about a
     // missing recall row, and early teardown can manufacture CONNECTION_ENDED.
-    const expectedSurfaces = ['initialize', 'turn-start', 'compact'];
+    const expectedSurfaces = ['initialize', 'turn-start', 'mid-turn', 'compact'];
     let observedSurfaces: string[] = [];
     for (let i = 0; i < 200; i++) {
       const rows = await db.adminSql<{ surface: string }[]>`
@@ -134,6 +158,32 @@ describe('cross-port session-epoch dedup (real PG — P-004a)', () => {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
     expect(observedSurfaces).toEqual(expect.arrayContaining(expectedSurfaces));
-    await waitForStamps(db.adminSql as never, 4);
+    // Compaction preparation also cannot stamp the newly eligible epoch.
+    expect(await db.adminSql`SELECT memory_id FROM harness_shared.memory_session_surfaced WHERE session_id = ${SID}`).toHaveLength(2);
+  });
+
+  it.each(['memory', 'corpus'] as const)('atomically commits a competing %s fragment once across two proven ports', async kind => {
+    const sid = `${SID}-${kind}-race`;
+    const id = kind === 'memory' ? randomUUID() : 'WI-race';
+    const a = memoryFragmentOffer(kind, id, 3, 'turn-start', '- exact complete body');
+    const b = memoryFragmentOffer(kind, id, 3, 'mid-turn', '- exact complete body');
+    await stageMemoryEmission(db.adminSql as never, sid, `race-${kind}-a`, [a]);
+    await stageMemoryEmission(db.adminSql as never, sid, `race-${kind}-b`, [b]);
+    const manifest = ({ rendered: _text, ...row }: typeof a) => row;
+    const committed = await Promise.all([
+      confirmMemoryEmission(db.adminSql as never, sid, { token: `race-${kind}-a`, fragments: [manifest(a)] }),
+      confirmMemoryEmission(db.adminSql as never, sid, { token: `race-${kind}-b`, fragments: [manifest(b)] }),
+    ]);
+    expect(committed.sort()).toEqual([0, 1]);
+    const rows = kind === 'memory'
+      ? await db.adminSql`SELECT port FROM harness_shared.memory_session_surfaced WHERE session_id = ${sid}`
+      : await db.adminSql`SELECT port FROM harness_shared.corpus_session_surfaced WHERE session_id = ${sid}`;
+    expect(rows).toHaveLength(1);
+    const original = rows[0].port;
+    expect(await confirmMemoryEmission(db.adminSql as never, sid, { token: `race-${kind}-b`, fragments: [manifest(b)] })).toBe(0);
+    const after = kind === 'memory'
+      ? await db.adminSql`SELECT port FROM harness_shared.memory_session_surfaced WHERE session_id = ${sid}`
+      : await db.adminSql`SELECT port FROM harness_shared.corpus_session_surfaced WHERE session_id = ${sid}`;
+    expect(after[0].port).toBe(original);
   });
 });

@@ -107,6 +107,8 @@ export interface CompactionRecovery {
    *  scope. Rendered before carried summaries so an older checkpoint cannot
    *  silently outrank the plan revision, decisions, item state, or specs. */
   planAuthority?: CompactionPlanAuthority | null;
+  /** Fresh read of the retained parent, separate from current activity and CTRL route. */
+  mission?: Exclude<import('../../session-brief-mission').CurrentMissionContinuity, { availability: 'absent' }>;
   /** WI-7302 part 2: fires when this session is registered in an autonomy mode
    *  (modeImpliesAutonomy — the registry's derived set) while NOTHING will wake
    *  it unprompted — no
@@ -310,6 +312,16 @@ export async function buildCompactionRecovery(
   } catch {
     recovery.loop = null;
     recovery.control = null;
+  }
+
+  // P-020: a bounded child close is not a release of its unfinished parent.
+  // This is an observational read: recovery never starts a workflow or changes route.
+  try {
+    const { readCurrentMissionContinuity } = await import('../../session-brief-mission');
+    const mission = await readCurrentMissionContinuity({ ownerId, workspaceId });
+    if (mission.availability !== 'absent') recovery.mission = mission;
+  } catch (error) {
+    recovery.mission = { availability: 'unknown', reason: error instanceof Error ? error.message : String(error) };
   }
 
   // P-006 — an explicit CTRL plan is the current lane authority. A fleet member

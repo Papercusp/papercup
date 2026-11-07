@@ -34,7 +34,7 @@ import { getMemoryBackend, type MemoryEntry, type SearchLegStats } from './backe
 // Type-only: erased at build, so `recall-stats` stays a dynamic import on the
 // telemetry path (see the writer below) rather than being pulled in eagerly.
 import type { CorpusAdmissionDropReason, CorpusAdmissionStats, RecallAdmissionStats } from './recall-stats';
-import { pushSearchFloors } from './push-search-floors';
+import { pushSearchFloors, MEMORY_INJECTION_LEX_FLOOR } from './push-search-floors';
 export { MEMORY_INJECTION_COSINE_FLOOR, MEMORY_INJECTION_LEX_FLOOR, pushSearchFloors } from './push-search-floors';
 export type { PushSearchFloors } from './push-search-floors';
 import { admittedByLeg, collapseNearDuplicates } from './recall-admission';
@@ -43,8 +43,8 @@ import { admittedByLeg, collapseNearDuplicates } from './recall-admission';
 // remains dynamic below, beside the rest of the corpus leg's dynamic imports.
 import { assessCorpusCoverageGate, CORPUS_GATE_SOURCES, type CorpusGateDecision } from './corpus-coverage-gate';
 import { isMemoryWorkspaceScopedRecallOn, keepUserPoolHitForWorkspace } from './workspace-scope-recall';
-import { bumpLastSurfacedSql, recentlySurfacedIds } from './bump-last-surfaced';
-import { alreadySurfacedIds, currentSessionEpoch, stampSurfaced } from './session-epoch-ledger';
+import { recentlySurfacedIds } from './bump-last-surfaced';
+import { alreadySurfacedIds, currentSessionEpoch, memoryFragmentOffer, type MemoryFragmentOffer, type PreparedMemoryBlock } from './session-epoch-ledger';
 import { hiveScopeKey, potSlugFromScope, resolvePotSlugsForHarnesses } from './hive-scope';
 import {
   recallsMemoryPool,
@@ -432,7 +432,16 @@ const MAX_ENTRY_CHARS = 450;
  */
 const SLOW_INJECTION_LOG_MS = 750;
 
-export async function buildMemoryContextBlock(input: MemoryInjectionInput): Promise<string | null> {
+/** Structured preparation travels through caches with the exact text it names.
+ * A caller using the string convenience API cannot accidentally confirm it. */
+export async function prepareMemoryContextBlock(input: MemoryInjectionInput): Promise<PreparedMemoryBlock | null> {
+  const fragments: MemoryFragmentOffer[] = [];
+  const text = await buildMemoryContextBlock(input, fragments);
+  if (!text) return null;
+  return { text, fragments: fragments.filter(row => (`\n${text}\n`).includes(`\n${row.rendered}\n`)) };
+}
+
+export async function buildMemoryContextBlock(input: MemoryInjectionInput, fragments?: MemoryFragmentOffer[]): Promise<string | null> {
   const { sessionAllowsAmbientContext } = await import('../capability-envelope/session-confinement-port');
   if (!await sessionAllowsAmbientContext({ ownerId: input.session?.sessionId, workspaceId: input.workspaceId })) return null;
   const ownsDeadline = !input.deadline;
@@ -465,7 +474,7 @@ export async function buildMemoryContextBlock(input: MemoryInjectionInput): Prom
     let memoryTimedOut = false;
     let renderedMemory: string | null | undefined;
     const memoryBlock = await deadline.run(
-      () => buildBlockInner(input, (label, ms) => marks.push([label, ms]), corpusP, (block) => { renderedMemory = block; }), 'memory leg',
+      () => buildBlockInner(input, (label, ms) => marks.push([label, ms]), corpusP, (block) => { renderedMemory = block; }, fragments), 'memory leg',
     ).catch((error) => {
       if (!(error instanceof MemoryTimeoutError)) throw error;
       // Scheduling the joint telemetry row may still be awaiting the slower
@@ -479,6 +488,7 @@ export async function buildMemoryContextBlock(input: MemoryInjectionInput): Prom
     // assembled, and the `finally` below has to be able to report it. The await
     // point is unchanged, so the two legs still overlap exactly as before.
     corpus = await corpusP.catch(() => null);
+    if (corpus?.fragments) fragments?.push(...corpus.fragments);
     noteCorpusLegHealth(corpus);
     const block = composeWithCorpus(memoryBlock, corpus);
     if (!memoryTimedOut) return block;
@@ -500,6 +510,7 @@ export async function buildMemoryContextBlock(input: MemoryInjectionInput): Prom
 
 /** What the corpus leg hands back to the composer. */
 interface CorpusLegResult {
+  fragments?: MemoryFragmentOffer[];
   heading: string;
   lines: string[];
   refs: string[];
@@ -792,7 +803,7 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
 
     try {
       const query = toRecallQuery(input.queryContext);
-      const queryText = retrievalQueryText(query);
+      const queryText = retrievalQueryText(query).trim() || lexicalQueryText(query) || '';
       if (!queryText.trim()) return null;
 
       const declaredWorkItemId =
@@ -913,7 +924,7 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
       if (sessionId) {
         try {
           const { sql } = getOrgPg();
-          const { alreadySurfacedRefs, stampSurfacedRefs } = await import('./corpus-surfaced-ledger');
+          const { alreadySurfacedRefs } = await import('./corpus-surfaced-ledger');
           const seen = await deadline.run(() => alreadySurfacedRefs(
             sql,
             sessionId,
@@ -925,15 +936,9 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
             lines = lines.filter((l) => !seen.has(l.handle.ref));
             sessionDedup = before - lines.length;
           }
-          if (lines.length > 0 && !deadline.signal.aborted) {
-            void stampSurfacedRefs(
-              sql,
-              sessionId,
-              epoch,
-              lines.map((l) => l.handle.ref),
-              input.session?.port ?? 'injection',
-            ).catch(() => undefined);
-          }
+          // Selection is preparation, before final packing and native stdout.
+          // Only a sink's exact-fragment emission receipt may stamp these refs.
+          // An uninstrumented sink remains eligible to retry.
         } catch {
           /* dedup is hygiene — a failure delivers a duplicate, never nothing */
         }
@@ -949,6 +954,8 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
         heading: CORPUS_BLOCK_HEADING,
         lines: lines.map((l) => l.line),
         refs: lines.map((l) => l.handle.ref),
+        fragments: sessionId ? lines.map(l => memoryFragmentOffer('corpus', l.handle.ref, epoch,
+          input.session?.port ?? 'injection', l.line)) : [],
         embedderAvailable: res.embedderAvailable,
         candidateCount: res.candidateCount,
         gate,
@@ -1031,6 +1038,7 @@ async function buildBlockInner(
   mark: (label: string, ms: number) => void,
   corpusP: Promise<CorpusLegResult | null> = Promise.resolve(null),
   onRendered: (block: string | null) => void = () => {},
+  fragments?: MemoryFragmentOffer[],
 ): Promise<string | null> {
   const deadline = input.deadline!;
   const rendered = (block: string | null) => {
@@ -1055,9 +1063,11 @@ async function buildBlockInner(
   const query = toRecallQuery(input.queryContext);
   const queryText = retrievalQueryText(query);
   const lexText = lexicalQueryText(query);
-  if (!queryText.trim()) return rendered(null);
+  if (!queryText.trim() && !lexText?.trim()) return rendered(null);
 
   const backend = getMemoryBackend();
+  let lexicalOnly = !queryText.trim() && !!lexText?.trim();
+  if (lexicalOnly && !backend.searchLexical) return rendered(null);
   const earlyTotalLimit = input.limit ?? INJECTION_TOTAL_LIMIT;
   const earlyHarnessSlugs = (input.harnessSlugs ?? [])
     .filter((slug) => typeof slug === 'string' && slug.length > 0)
@@ -1086,7 +1096,7 @@ async function buildBlockInner(
           client: input.session?.client ?? null,
           workspaceId: input.workspaceId ?? null,
           potSlug: earlyHarnessSlugs[0] ?? null,
-          scoreScale: backend.scoreScale ?? null,
+          scoreScale: (lexicalOnly ? backend.lexicalScoreScale : backend.scoreScale) ?? null,
           query: queryText,
           sessionId: input.session?.sessionId ?? null,
           pools: {
@@ -1137,21 +1147,29 @@ async function buildBlockInner(
     })();
     return earlyStatsSchedule;
   };
-  if (isMemoryDegraded()) {
+  if (!lexicalOnly && isMemoryDegraded() && lexText?.trim() && backend.searchLexical) lexicalOnly = true;
+  if (!lexicalOnly && isMemoryDegraded()) {
     await writeEarlyZeroRecallStats();
     return null;
   }
   const tAvail = Date.now();
   try {
-    const avail = await deadline.run(() => backend.available(), 'available()', MEMORY_INJECT_TIMEOUT_MS);
+    const avail = lexicalOnly ? { ok: true }
+      : await deadline.run(() => backend.available(), 'available()', MEMORY_INJECT_TIMEOUT_MS);
     if (!avail.ok) {
-      await writeEarlyZeroRecallStats();
-      return null;
+      if (lexText?.trim() && backend.searchLexical) lexicalOnly = true;
+      else {
+        await writeEarlyZeroRecallStats();
+        return null;
+      }
     }
   } catch (err) {
     noteMemoryFailure(err);
-    await writeEarlyZeroRecallStats(memoryTimeoutTelemetry(err));
-    return null;
+    if (lexText?.trim() && backend.searchLexical) lexicalOnly = true;
+    else {
+      await writeEarlyZeroRecallStats(memoryTimeoutTelemetry(err));
+      return null;
+    }
   } finally {
     mark('availableMs', Date.now() - tAvail);
   }
@@ -1243,7 +1261,7 @@ async function buildBlockInner(
           client: input.session?.client ?? null,
           workspaceId: input.workspaceId ?? null,
           potSlug: harnessSlugs[0] ?? null,
-          scoreScale: backend.scoreScale ?? null,
+          scoreScale: (lexicalOnly ? backend.lexicalScoreScale : backend.scoreScale) ?? null,
           query: queryText,
           sessionId: input.session?.sessionId ?? null,
           pools: {
@@ -1337,7 +1355,13 @@ async function buildBlockInner(
     const doSearch = async (): Promise<MemoryEntry[]> =>
       scopes.length === 0
         ? []
-        : backend.search(queryText, {
+        : lexicalOnly
+          ? backend.searchLexical!(lexText!, {
+              signal: deadline.signal, scope: scopes, limit: totalLimit,
+              ...packageRecallEligibility(pinnedPackResources),
+              ...(input.includeSuperseded ? { includeSuperseded: true } : {}),
+            }).then(hits => hits.filter(hit => (hit.score ?? 0) >= (minLexScore ?? MEMORY_INJECTION_LEX_FLOOR)).slice(0, totalLimit))
+          : backend.search(queryText, {
             signal: deadline.signal,
             scope: scopes,
             limit: totalLimit,
@@ -1747,8 +1771,7 @@ async function buildBlockInner(
     );
     let spent = 0;
     const lines: string[] = [];
-    const surfacedIds: string[] = [];
-    const admit = (line: string, id?: string): boolean => {
+    const admit = (line: string): boolean => {
       // The `&& lines.length > 0` is the ALWAYS-EMIT-ONE-ROW contract, and it is
       // load-bearing across modules — do not "tighten" it again without reading
       // mid-turn-context.ts:174-190, which documents this exact clause and depends on it:
@@ -1772,7 +1795,6 @@ async function buildBlockInner(
       if (spent + line.length > budget && lines.length > 0) return false;
       lines.push(line);
       spent += line.length;
-      if (id) surfacedIds.push(id);
       return true;
     };
     // Walk the ONE ranked result in relevance order, keeping only entries that
@@ -1830,19 +1852,22 @@ async function buildBlockInner(
     const { kept: dedupedRendered } = collapseNearDuplicates(renderedRows, (r) => r.text);
     funnel.dropped.nearDuplicate = renderedRows.length - dedupedRendered.length;
     let truncated = false;
-    for (const { line, id, entry } of dedupedRendered) {
+    for (const { line, entry } of dedupedRendered) {
       // WI-6870: skip-and-continue instead of a hard break. A `break` here discarded every
       // remaining (lower-ranked but possibly SMALLER) entry once ONE entry didn't fit —
       // measured mean 849 chars (21%) of the budget left on the table per turn, worst case
       // 2,675 (67%). The result stays in relevance order (admitted entries are pushed in
       // `dedupedRendered`'s rank order); this only lets a later, smaller entry fill space a
       // single earlier oversized one would otherwise have wasted.
-      if (!admit(line, id)) {
+      if (!admit(line)) {
         truncated = true;
         funnel.dropped.budget += 1;
         continue;
       }
       admittedEntries.push(entry);
+      if (input.session?.sessionId && sessionEpoch !== null && typeof entry.id === 'string') {
+        fragments?.push(memoryFragmentOffer('memory', entry.id, sessionEpoch, input.session.port ?? 'injection', redactSensitiveText(line)));
+      }
     }
     // P-002: the delivered end of the funnel. `admitted` counts CONTENT lines, so
     // it is taken from admittedEntries rather than `lines` — the withheld-notice
@@ -1871,36 +1896,10 @@ async function buildBlockInner(
       );
     }
 
-    // Phase 5 P-021: stamp last_surfaced_at on every memory we surfaced — this is
-    // ALSO the dedup watermark the next turn reads. Fire-and-forget: bumpLastSurfacedSql
-    // is fully defensive and its outcome doesn't affect the block we return.
-    // (Only ACTUALLY-injected ids are stamped — a budget-dropped memory must not
-    // be dedup-suppressed next turn.)
-    if (surfacedIds.length > 0) {
-      const session = input.session;
-      const epochForStamp = sessionEpoch;
-      void (async () => {
-        try {
-          const { sql } = getOrgPg();
-          // last_surfaced_at stays stamped for EVERY path — it feeds the
-          // Layer-3 "recently used" pickers, not just the chat dedup.
-          await bumpLastSurfacedSql(sql, surfacedIds);
-          // P-002: warm sessions ALSO stamp the port-agnostic epoch ledger so
-          // every later injection moment of this epoch dedups against it.
-          if (session?.sessionId) {
-            await stampSurfaced(
-              sql,
-              session.sessionId,
-              epochForStamp ?? (await currentSessionEpoch(sql, session.sessionId)),
-              surfacedIds,
-              session.port ?? 'injection',
-            );
-          }
-        } catch {
-          /* swallow — never load-bearing */
-        }
-      })();
-    }
+    // This function prepares context; it cannot observe final composition,
+    // response delivery or a complete stdout write. Updating either the chat
+    // watermark or the warm-epoch ledger here would suppress an unseen fact
+    // after a lost response. Emission-confirming sinks own those writes.
 
     const heading = input.heading ?? 'Operator memory (relevant entries)';
     return rendered(`## ${heading}\n\n${lines.join('\n')}`);

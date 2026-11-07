@@ -164,12 +164,16 @@ import {
   classifyRubricEvidenceCurrentness,
   getRubric,
   getRubricWithoutSeeding,
+  projectCriterionEvidenceProcedure,
   rubricInstrumentContract,
   type Rubric,
   type RubricEvidenceCurrentness,
   type RubricEvidenceIdentity,
   type RubricStatus,
 } from './rubrics';
+import { selectCriterionEvidenceAction, ledgerCheckBindings, ledgerRowMatchesBinding, projectScorecardRatingsAtTime,
+  judgeLedgerRow, type EvidenceActionReason } from './scorecard-ledger-fill';
+import { readLatestRubricCheckResults, type LatestRubricCheckResult } from './check-results-ledger';
 import type { OrgSql } from './work-items';
 import { pgTimestampToIso } from './pg-timestamp';
 import {
@@ -1518,6 +1522,10 @@ export function builtInCriterionKeysForRubric(rubricRef: string): string[] | nul
 
 /** One scorecard row — a rubric-graded observation projected for monitoring. */
 export interface ScorecardRow {
+  evidenceActions?: ScorecardEvidenceAction[];
+  omittedActionCount?: number;
+  /** Independent rubric-wide axes; neither a complete record nor an audit is fulfillment. */
+  coverage?: ScorecardCoverage;
   purpose?: 'diagnostic' | 'grading';
   barSetHash?: string | null;
   /** Explicit history explains why a row cannot participate in settled comparisons. */
@@ -1790,9 +1798,11 @@ export function classifyScorecardGenerationFreshness(
  */
 export type ScorecardEvidenceCriterion = ObservationRatings[string] & {
   key: string;
+  evidenceAction?: ScorecardEvidenceAction;
 };
 
 export interface ScorecardEvidenceRow {
+  coverage?: ScorecardCoverage;
   purpose?: 'diagnostic' | 'grading';
   barSetHash?: string | null;
   baselineRef?: string;
@@ -2128,8 +2138,8 @@ function classifyScorecardEvidenceBindingCurrentness(
  * keeps the exact evidence available while making the bounded wire contract
  * independent of those unrelated fields (EI-22710824425098387).
  */
-export function readScorecardEvidence(issueId: string): Promise<ScorecardEvidenceReadResult> {
-  return readScorecard(issueId, 'evidence') as Promise<ScorecardEvidenceReadResult>;
+export function readScorecardEvidence(issueId: string, comparisonTime?: string): Promise<ScorecardEvidenceReadResult> {
+  return readScorecard(issueId, 'evidence', comparisonTime) as Promise<ScorecardEvidenceReadResult>;
 }
 
 /**
@@ -2144,6 +2154,7 @@ export function readScorecardRecipeHeader(issueId: string): Promise<ScorecardRec
 async function readScorecard(
   issueId: string,
   mode: 'evidence' | 'recipe-header',
+  comparisonTime = new Date().toISOString(),
 ): Promise<ScorecardReadResult> {
   const rows = await acquireWithContentionRetry(() =>
     boundedPgReadTxn<ScorecardEvidenceDb[]>((tx) => tx<ScorecardEvidenceDb[]>`
@@ -2386,14 +2397,24 @@ async function readScorecard(
   };
   if (mode === 'recipe-header') return { kind: 'found', scorecard: header };
 
+  // Currentness compares with the live definition; historical guidance and its
+  // denominator must instead use the exact recorded snapshot. A missing pin is
+  // unknown, never permission to substitute today's methods or population.
+  const pinnedRubric = await readScorecardRubricSnapshot(observation);
+  const diagnostics = await readScorecardEvidenceDiagnostics(observation, pinnedRubric, comparisonTime);
+  const evidenceActions = projectScorecardEvidenceActions({
+    issueId, observation, rubric: pinnedRubric, comparisonTime,
+    findingsByKey: diagnostics.findingsByKey,
+  });
+  const actionByKey = new Map(evidenceActions.map(action => [action.criterionKey, action]));
   const criteriaKeys = rubric
     ? rubric.criteria.map((criterion) => criterion.key)
     : builtInCriterionKeysForRubric(observation.rubricRef);
   const rubricResolved = criteriaKeys !== null;
-  const normalizedRatings = normalizeScorecardRatings(
+  const normalizedRatings = projectScorecardRatingsAtTime(normalizeScorecardRatings(
     observation.ratings!,
     rubric ? { ratingScale: rubric.ratingScale, criteria: rubric.criteria } : null,
-  );
+  ), comparisonTime);
   const ratedKeys = new Set(Object.keys(normalizedRatings));
   const missingKeys = rubricResolved ? criteriaKeys!.filter((key) => !ratedKeys.has(key)) : [];
   const criterionKeySet = rubricResolved ? new Set(criteriaKeys!) : null;
@@ -2406,7 +2427,7 @@ async function readScorecard(
   ];
   const criteria = orderedKeys.flatMap((key) => {
     const rating = normalizedRatings[key];
-    return rating ? [{ key, ...rating }] : [];
+    return rating ? [{ key, ...rating, ...(actionByKey.has(key) ? { evidenceAction: actionByKey.get(key)! } : {}) }] : [];
   });
 
   return {
@@ -2418,6 +2439,8 @@ async function readScorecard(
       missingKeys,
       extraKeys,
       rubricResolved,
+      coverage: projectScorecardCoverage(normalizedRatings, pinnedRubric?.criteria.map(criterion => criterion.key) ?? null,
+        diagnostics.supportByKey, comparisonTime),
     },
   };
 }
@@ -3916,6 +3939,285 @@ export function scorecardScore10(
   return Math.round((nums.reduce((a, b) => a + b, 0) / nums.length) * 10) / 10;
 }
 
+/** Evidence states supplied by the canonical evidence reader, never inferred from prose. */
+export interface ScorecardCriterionSupport {
+  support: 'current' | 'stale' | 'absent' | 'unknown';
+  freshness: 'current' | 'stale' | 'unknown';
+  evidenceRef?: string | null;
+  observedAt?: string | null;
+}
+
+export interface ScorecardCoverage {
+  population: 'rubric';
+  denominator: number | null;
+  record: { expected: number | null; present: number | null; missingKeys: string[]; extraKeys: string[] };
+  rating: { known: string[]; unknown: string[]; missing: string[]; inapplicable: string[] };
+  evidence: { current: string[]; stale: string[]; absent: string[]; unknown: string[] };
+  freshness: { current: string[]; stale: string[]; unknown: string[] };
+  unresolvedKeys: string[];
+  /** No caller-authored subset can narrow this population. See EI-28017561467711444. */
+  requestedScope: { state: 'unknown'; denominator: null; reason: 'canonical-scope-authority-unavailable' };
+  fulfillment: 'unknown';
+}
+
+/**
+ * A projection of one pinned rubric population. Each axis partitions that same
+ * population, in declaration order. Unknown identity yields null denominators;
+ * neither extra rating keys nor nonempty evidence prose establishes support.
+ * Evidence/currentness resolution remains the existing evidence reader's job.
+ */
+export function projectScorecardCoverage(
+  ratings: ObservationRatings,
+  criterionKeys: readonly string[] | null,
+  evidenceByKey: Readonly<Record<string, ScorecardCriterionSupport | undefined>> = {},
+  comparisonTime?: string,
+): ScorecardCoverage {
+  const keys = criterionKeys === null ? null : [...new Set(criterionKeys)];
+  const declared = keys === null ? null : new Set(keys);
+  const result: ScorecardCoverage = {
+    population: 'rubric',
+    denominator: keys?.length ?? null,
+    record: {
+      expected: keys?.length ?? null,
+      present: keys === null ? null : keys.filter(key => Object.hasOwn(ratings, key)).length,
+      missingKeys: [],
+      extraKeys: declared === null ? [] : Object.keys(ratings).filter(key => !declared.has(key)),
+    },
+    rating: { known: [], unknown: [], missing: [], inapplicable: [] },
+    evidence: { current: [], stale: [], absent: [], unknown: [] },
+    freshness: { current: [], stale: [], unknown: [] },
+    unresolvedKeys: [],
+    requestedScope: { state: 'unknown', denominator: null, reason: 'canonical-scope-authority-unavailable' },
+    fulfillment: 'unknown',
+  };
+  for (const key of keys ?? []) {
+    const entry = Object.hasOwn(ratings, key) ? ratings[key] : undefined;
+    const rating = entry?.rating?.trim().toLowerCase();
+    const ratingState = !entry ? 'missing' : !rating || rating === 'unknown' ? 'unknown' : 'known';
+    result.rating[ratingState].push(key);
+    if (ratingState === 'missing') result.record.missingKeys.push(key);
+    const evidence = evidenceByKey[key];
+    // An inconsistent snapshot proves neither freshness nor admissibility.
+    const recordedAt = evidence?.observedAt ? Date.parse(evidence.observedAt) : NaN;
+    const clock = comparisonTime ? Date.parse(comparisonTime) : NaN;
+    const hasSupport = evidence?.support === 'current' || evidence?.support === 'stale';
+    const consistent = evidence && (!hasSupport || (Boolean(evidence.evidenceRef?.trim())
+      && Number.isFinite(recordedAt) && Number.isFinite(clock) && recordedAt <= clock))
+      && (evidence.support !== 'current' || evidence.freshness === 'current')
+      && (evidence.support !== 'stale' || evidence.freshness === 'stale');
+    const support = consistent ? evidence.support : 'unknown';
+    result.evidence[support].push(key);
+    result.freshness[consistent ? evidence.freshness : 'unknown'].push(key);
+    if (ratingState !== 'known' || support !== 'current') result.unresolvedKeys.push(key);
+  }
+  return result;
+}
+
+type ScorecardEvidenceActionObservation = Pick<StructuredObservation,
+  'rubricRef' | 'rubricRevision' | 'criteriaHash' | 'subject' | 'ratings'>;
+
+/** Compose retained ledger receipts with the existing binding and threshold judges.
+ * Only a receipt actually cited by this card can establish historical support.
+ * The stored rating, authored procedure and completion authority are untouched. */
+export function projectScorecardLedgerDiagnostics(input: {
+  observation: ScorecardEvidenceActionObservation;
+  rubric: Rubric;
+  comparisonTime: string;
+  latest: ReadonlyMap<string, LatestRubricCheckResult>;
+}) {
+  const findingsByKey: Record<string, { reason: EvidenceActionReason; sourceRef: string }[]> = {};
+  const supportByKey: Record<string, ScorecardCriterionSupport> = {};
+  for (const criterion of input.rubric.criteria) {
+    const rating = input.observation.ratings?.[criterion.key];
+    const receipt = rating?.ratedFrom === 'ledger' ? rating.ledgerResult : undefined;
+    if (!receipt) continue;
+    const sourceRef = `test_runs:${receipt.testRunId}`;
+    const bindings = ledgerCheckBindings(criterion);
+    const rows = [...input.latest.values()].filter(row => row.testRunId === receipt.testRunId);
+    let reason: EvidenceActionReason | null = null;
+    const row = rows[0];
+    if (!row) reason = 'historical-missing';
+    else if (rows.length !== 1 || row.check.criterionKey !== criterion.key ||
+        row.check.rubricRef !== input.rubric.rubricId || row.check.value !== receipt.value ||
+        row.check.unit !== receipt.unit || !bindings || bindings.length !== 1 ||
+        !ledgerRowMatchesBinding(bindings[0]!, row) || row.check.id !== bindings[0]!.id ||
+        (row.check.subject && (row.check.subject.ref !== input.observation.subject?.ref ||
+          (row.check.subject.kind ?? null) !== (input.observation.subject?.kind ?? null)))) reason = 'identity-mismatch';
+    else {
+      const measured = Date.parse(row.finishedAt);
+      const clock = Date.parse(input.comparisonTime);
+      const binding = bindings[0]!;
+      if (!Number.isFinite(measured) || !Number.isFinite(clock) || measured > clock) reason = 'identity-mismatch';
+      else if (row.provenanceStatus !== 'retained' || receipt.provenanceStatus !== 'retained' ||
+          JSON.stringify(row.check.provenance) !== JSON.stringify(receipt.provenance)) reason = 'unknown';
+      else if (binding.maxAgeMs !== undefined && clock - measured > binding.maxAgeMs) {
+        reason = 'stale';
+        supportByKey[criterion.key] = { support: 'stale', freshness: 'stale', evidenceRef: sourceRef, observedAt: row.finishedAt };
+      } else {
+        const verdict = judgeLedgerRow(binding, row, clock);
+        if (verdict === 'error') reason = 'instrument-unavailable';
+        else {
+          supportByKey[criterion.key] = { support: 'current', freshness: 'current', evidenceRef: sourceRef, observedAt: row.finishedAt };
+          if (verdict === 'fail') reason = 'adverse';
+        }
+      }
+    }
+    if (reason) findingsByKey[criterion.key] = [{ reason, sourceRef }];
+  }
+  return { findingsByKey, supportByKey };
+}
+
+async function readScorecardEvidenceDiagnostics(observation: ScorecardEvidenceActionObservation,
+  rubric: Rubric | null, comparisonTime: string) {
+  if (!rubric) return { findingsByKey: {}, supportByKey: {} };
+  const ids = Object.values(observation.ratings ?? {}).flatMap(rating =>
+    rating.ratedFrom === 'ledger' && Number.isSafeInteger(rating.ledgerResult?.testRunId)
+      ? [rating.ledgerResult!.testRunId] : []);
+  const diagnostics: ReturnType<typeof projectScorecardLedgerDiagnostics> = { findingsByKey: {}, supportByKey: {} };
+  if (ids.length) {
+    try {
+      const latest = await readLatestRubricCheckResults({ rubricRef: rubric.rubricId,
+        workspaceId: issuesScopeWorkspace(),
+        ...(observation.subject ? { subject: { ref: observation.subject.ref,
+          ...(observation.subject.kind ? { kind: observation.subject.kind } : {}) } } : {}),
+        asOf: comparisonTime, testRunIds: [...new Set(ids)],
+      });
+      Object.assign(diagnostics, projectScorecardLedgerDiagnostics({ observation, rubric, comparisonTime, latest }));
+    } catch {
+      // An unavailable ledger is not proof that the cited historical row is absent.
+      for (const [key, rating] of Object.entries(observation.ratings ?? {})) {
+        if (rating.ratedFrom === 'ledger' && rating.ledgerResult) diagnostics.findingsByKey[key] =
+          [{ reason: 'unknown', sourceRef: `test_runs:${rating.ledgerResult.testRunId}` }];
+      }
+    }
+  }
+  if (rubric.subjectPlan && rubric.subjectHarnessSlug) {
+    const sourceRef = `plans:get-spec-evidence:${rubric.subjectHarnessSlug}/${rubric.subjectPlan}`;
+    try {
+      const [{ listSpecClauses }, { listSpecEvidence, projectSpecCriterionApplicability }] = await Promise.all([
+        import('./agent-tools/plans/spec-clauses-store'), import('./agent-tools/plans/spec-evidence-store'),
+      ]);
+      const clauses = await listSpecClauses({ planSlug: rubric.subjectPlan, harnessSlug: rubric.subjectHarnessSlug,
+        workspaceId: issuesScopeWorkspace(), asOf: comparisonTime, limit: 201 });
+      const matching = clauses.filter(clause => clause.sourceBar?.rubricSlug === rubric.rubricId &&
+        clause.sourceBar.rubricRevision === rubric.revision && clause.sourceBar.barSetHash === rubric.barSetHash);
+      if (matching.length) {
+        // History is selected at the card's clock. Metadata-only reads deliberately
+        // leave freshness unknown: measuring today's files cannot establish a past pass.
+        const evidence = await listSpecEvidence({ planSlugs: [rubric.subjectPlan], harnessSlug: rubric.subjectHarnessSlug,
+          workspaceId: issuesScopeWorkspace(), specIds: matching.map(clause => clause.specId),
+          ...(observation.subject?.kind === 'work-item' ? { workItemIds: [observation.subject.ref] } : {}),
+          includeRetracted: true, auditAsOf: new Date(comparisonTime), measurementMode: 'metadata', limit: 201 });
+        const byKey = new Map<string, typeof matching>();
+        for (const clause of matching) {
+          const key = clause.sourceBar!.barKey;
+          byKey.set(key, [...(byKey.get(key) ?? []), clause]);
+        }
+        for (const criterion of rubric.criteria) {
+          const applicable = byKey.get(criterion.key);
+          if (!applicable?.length || diagnostics.supportByKey[criterion.key]) continue;
+          const projected = applicable.map(clause => projectSpecCriterionApplicability(clause, evidence,
+            comparisonTime, { planSlug: rubric.subjectPlan!,
+              workItemId: observation.subject?.kind === 'work-item' ? observation.subject.ref : null },
+            clauses.length > 200 || evidence.length > 200));
+          const reasons: Record<string, EvidenceActionReason> = { missing: 'missing-binding',
+            incompatible: 'identity-mismatch', rejected: 'identity-mismatch', unavailable: 'instrument-unavailable',
+            stale: 'stale', unknown: 'unknown' };
+          diagnostics.findingsByKey[criterion.key] = projected.flatMap(row => reasons[row.state]
+            ? [{ reason: reasons[row.state]!, sourceRef: `${sourceRef}#${row.spec.specId}@${row.spec.revision}` }] : []);
+          if (projected.every(row => row.state === 'missing')) {
+            diagnostics.supportByKey[criterion.key] = { support: 'absent', freshness: 'unknown' };
+          }
+        }
+      }
+    } catch {
+      for (const criterion of rubric.criteria) if (!diagnostics.supportByKey[criterion.key] &&
+        !diagnostics.findingsByKey[criterion.key]) diagnostics.findingsByKey[criterion.key] = [{ reason: 'unknown', sourceRef }];
+    }
+  }
+  return diagnostics;
+}
+
+async function readScorecardRubricSnapshot(observation: ScorecardEvidenceActionObservation): Promise<Rubric | null> {
+  if (!Number.isSafeInteger(observation.rubricRevision) || observation.rubricRevision! < 1 ||
+      !observation.criteriaHash || !observation.rubricRef) return null;
+  // An explicit revision takes the SELECT-only history path, before any seeding.
+  const snapshot = await getRubric(observation.rubricRef, observation.rubricRevision);
+  return snapshot && snapshot.revision === observation.rubricRevision && snapshot.criteriaHash === observation.criteriaHash
+    ? snapshot : null;
+}
+
+export type ScorecardEvidenceAction = ReturnType<typeof projectScorecardEvidenceActions>[number];
+
+/** Compose existing selector/procedure projections without resolving new evidence,
+ * parsing prose, changing a rating, or granting execution/completion authority. */
+export function projectScorecardEvidenceActions(input: {
+  issueId: string;
+  observation: ScorecardEvidenceActionObservation;
+  rubric: Rubric | null;
+  comparisonTime: string;
+  findingsByKey?: Readonly<Record<string, readonly { reason: EvidenceActionReason; sourceRef: string }[]>>;
+}) {
+  const { observation } = input;
+  const rubric = input.rubric && input.rubric.rubricId === observation.rubricRef &&
+    input.rubric.revision === observation.rubricRevision &&
+    Boolean(observation.criteriaHash) && input.rubric.criteriaHash === observation.criteriaHash ? input.rubric : null;
+  const context = {
+    subjectRef: observation.subject?.ref ?? null,
+    windowStart: observation.subject?.windowStart ?? null,
+    windowEnd: observation.subject?.windowEnd ?? null,
+    rubricRef: observation.rubricRef ?? null,
+    rubricRevision: observation.rubricRevision ?? null,
+    criteriaHash: observation.criteriaHash ?? null,
+    comparisonTime: input.comparisonTime,
+  };
+  const criteria = rubric?.criteria.map(definition => ({ key: definition.key, definition }))
+    ?? Object.keys(observation.ratings ?? {}).map(key => ({ key, definition: null }));
+  return criteria.map(criterion => {
+    const rating = observation.ratings?.[criterion.key];
+    const sourceRef = `scorecard:${input.issueId}#${criterion.key}`;
+    const findings = [...(input.findingsByKey?.[criterion.key] ?? [])];
+    if (!rubric) findings.push({ reason: 'identity-mismatch', sourceRef });
+    // These are recorded diagnostic reasons, not inferences from evidence prose.
+    const recordedReason: Partial<Record<NonNullable<typeof rating>['unknownReason'] & string, EvidenceActionReason>> = {
+      'retention-gap': 'historical-missing', 'generation-mismatch': 'identity-mismatch',
+      'scope-mismatch': 'identity-mismatch', 'instrument-unavailable': 'instrument-unavailable',
+    };
+    if (rating?.unknownReason && recordedReason[rating.unknownReason]) {
+      findings.push({ reason: recordedReason[rating.unknownReason]!, sourceRef });
+    } else if (!findings.length && (rating?.rating.toLowerCase() === 'unknown' || !rating)) {
+      // not-assessed/idle/not-exercised alone prove neither a failed producer nor
+      // the absence of a historical result. Require the canonical diagnosis.
+      findings.push({ reason: 'unknown', sourceRef });
+    }
+    const authored = rubric && criterion.definition ? projectCriterionEvidenceProcedure(rubric, criterion.definition) : null;
+    if (!findings.length && authored && (authored.instrumentKey === 'none' || !authored.check)) {
+      findings.push({ reason: 'manual', sourceRef });
+    }
+    const shared = selectCriterionEvidenceAction({ criterionKey: criterion.key, context, findings });
+    const excerpt = [authored?.method, authored?.replication].filter(Boolean).join('\n').slice(0, 240);
+    return {
+      ...shared,
+      snapshot: rubric ? 'resolved' as const : 'unavailable' as const,
+      procedure: {
+        source: authored?.procedure.source ?? 'shared', excerpt,
+        methodRef: authored?.methodRef ?? null,
+        missingSpecificity: authored?.missingSpecificity ?? true,
+      },
+      readiness: !authored ? 'unknown' as const : authored.instrumentKey === 'none' || !authored.check
+        ? 'manual' as const : 'typed-check' as const,
+      provenance: { shared: 'scorecard-ledger-fill', rubricRef: context.rubricRef,
+        rubricRevision: context.rubricRevision, criteriaHash: context.criteriaHash },
+      read: { tool: 'scorecards:get' as const, args: { issueId: input.issueId,
+        ...(rating ? { criterionKey: criterion.key } : {}) } },
+      definitionRead: context.rubricRef && context.rubricRevision !== null
+        ? { tool: 'rubrics:get' as const, args: { rubricRef: context.rubricRef,
+            revision: context.rubricRevision, detail: 'full' as const } } : null,
+      finishCondition: 'Resolve the referenced evidence gap under this pinned definition; ordinary acceptance checks still apply.',
+    };
+  });
+}
+
 /**
  * TRUE, unbounded per-rubric scorecard counts (WI-5415 owner surprise-check: "do we
  * really have 17 rubrics ratified but never scored?"). A raw grouped `COUNT(*)` over
@@ -3984,6 +4286,8 @@ export interface ScorecardListCursor {
 }
 
 export interface ListScorecardsFilter {
+  /** One UTC comparison clock for this request's evidence selection and age projection. */
+  comparisonTime?: string;
   /** Exclude incomplete and unsettled observations BEFORE counting page slots. */
   finalizedOnly?: boolean;
   /** Trend comparison: require the current exact rubric identity before limiting. */
@@ -4247,6 +4551,7 @@ function scorecardHistoryExclusions(
 async function listScorecardsAtLimit(
   filter: ListScorecardsFilter, limit: number, selection?: ScorecardSelection,
 ): Promise<ScorecardRow[]> {
+  const comparisonTime = filter.comparisonTime ?? new Date().toISOString();
   // EI-21592547181442895: the primary scorecard SELECT is a correctness read that
   // can overlap grading/audit writes. Keep it in a READ ONLY transaction with a
   // DB-side timeout, retry transient lock/statement contention, and only normalize
@@ -4430,6 +4735,7 @@ async function listScorecardsAtLimit(
     }
   >();
   const out: ScorecardRow[] = [];
+  const pinnedRubrics = new Map<string, Rubric | null>();
   // WI-3594: when links ARE wanted, batch-fetch every row's in ONE query (no N+1)
   // rather than a per-row listOut — a scorecard page can be up to `limit` (500) rows.
   // WI-6124: ...and skip that query ENTIRELY unless the caller asked for links. Batching
@@ -4475,6 +4781,12 @@ async function listScorecardsAtLimit(
       });
     }
     const meta = rubricMeta.get(observation.rubricRef)!;
+    const pin = JSON.stringify([observation.rubricRef, observation.rubricRevision, observation.criteriaHash]);
+    if (!pinnedRubrics.has(pin)) pinnedRubrics.set(pin, await readScorecardRubricSnapshot(observation));
+    const pinnedRubric = pinnedRubrics.get(pin) ?? null;
+    const diagnostics = await readScorecardEvidenceDiagnostics(observation, pinnedRubric, comparisonTime);
+    const evidenceActions = projectScorecardEvidenceActions({ issueId: row.issue_id,
+      observation, rubric: pinnedRubric, comparisonTime, findingsByKey: diagnostics.findingsByKey });
     const gradingAudit = storedGradingAudit(observation, row);
     if (gradingAudit && !gradingAuditRubricRead) {
       gradingAuditRubricRead = true;
@@ -4495,7 +4807,7 @@ async function listScorecardsAtLimit(
     // Canonical READ boundary: historic `PASS`/`pass` rows project to the rubric's
     // exact scale spelling, so distributions, RLE, and direction math never split a
     // semantic rating merely because an older writer used different case.
-    const ratings = normalizeScorecardRatings(observation.ratings, meta.ratingRubric);
+    const ratings = projectScorecardRatingsAtTime(normalizeScorecardRatings(observation.ratings, meta.ratingRubric), comparisonTime);
     const ratedKeys = new Set(Object.keys(ratings));
     const criteriaKeys = meta.keys;
     const rubricResolved = criteriaKeys !== null;
@@ -4562,6 +4874,10 @@ async function listScorecardsAtLimit(
       missingKeys,
       extraKeys,
       rubricResolved,
+      coverage: projectScorecardCoverage(ratings, pinnedRubric?.criteria.map(criterion => criterion.key) ?? null,
+        diagnostics.supportByKey, comparisonTime),
+      evidenceActions: evidenceActions.slice(0, 3),
+      omittedActionCount: Math.max(0, evidenceActions.length - 3),
       exclusionReasons: scorecardHistoryExclusions(observation, meta.keys,
         needsGradingAudit({ rubricKind: meta.kind,
           rubricRef: observation.rubricRef, provisional: observation.provisional !== undefined }),

@@ -76,7 +76,7 @@ export type {
 /** Live subprocess runner — `execFile` (no shell); resolves with streams + exit code, never rejects on exit≠0. */
 export const liveProcExec: ProcExec = (cmd, args, opts) =>
   new Promise((resolve) => {
-    execFile(
+    const child = execFile(
       cmd,
       args,
       { cwd: opts?.cwd, env: { ...process.env, ...opts?.env }, maxBuffer: 256 * 1024 * 1024,
@@ -94,6 +94,9 @@ export const liveProcExec: ProcExec = (cmd, args, opts) =>
           stderr: [stderr?.toString() ?? '', detail].filter(Boolean).join('\n'), code });
       },
     );
+    // ProcExec has no stdin payload: commands must observe EOF rather than wait
+    // on the parent's unused pipe until their execution deadline kills them.
+    child.stdin?.end();
   });
 
 /** Live fs port for the grader (scratch predictions JSON + output dir). */

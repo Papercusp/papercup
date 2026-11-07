@@ -38,8 +38,36 @@ describe('implementation authority before direct writes (EI-27540173897381380)',
       planSlug: binding.planSlug, blockers: ['plan_not_started'],
     });
     expect(readBindings).toHaveBeenCalledTimes(2);
-    expect(resolveGoal).toHaveBeenCalledTimes(1);
+    expect(resolveGoal).not.toHaveBeenCalled();
     expect(checkPlan).toHaveBeenCalledWith(binding, 'ws', undefined);
+  });
+  it('bounds multi-plan goal selection and cancels its pending read before the native hook wall', async () => {
+    const other = { planSlug: 'other-plan', harnessSlug: 'other-project' };
+    let resolverSignal: AbortSignal | undefined;
+    let aborted = false;
+    const checkPlan = vi.fn();
+    const result = await checkPlanExecutionGuard(call(), {
+      readBindings: async () => [binding, other],
+      resolveGoal: async (_owner, _workspace, _observe, signal) => {
+        resolverSignal = signal;
+        return new Promise((_resolve, reject) => {
+          signal?.addEventListener('abort', () => {
+            aborted = true;
+            reject(new Error('goal selector aborted'));
+          }, { once: true });
+        });
+      },
+      checkPlan,
+      goalResolutionBudgetMs: 5,
+    });
+
+    expect(result).toMatchObject({
+      code: 'plan_execution_not_ready',
+      blockers: ['plan_goal_resolution_timeout'],
+    });
+    expect(resolverSignal?.aborted).toBe(true);
+    expect(aborted).toBe(true);
+    expect(checkPlan).not.toHaveBeenCalled();
   });
   it.each(['activation_audit_stale', 'conversation_audit_required', 'acceptance_bar_contract_not_ready'])('retains %s as an actionable blocker', async blocker => {
     expect(await checkPlanExecutionGuard(call(), { readBindings: async () => [binding], checkPlan: async () => [blocker] }))
@@ -82,7 +110,7 @@ describe('implementation authority before direct writes (EI-27540173897381380)',
       const result = await checkPlanExecutionGuard({ ...call(), observeTiming: timing => {
         timings.push(timing); throw Error('broken timing sink');
       } }, {
-        readBindings: async () => [binding],
+        readBindings: async () => [binding, { planSlug: 'other-plan', harnessSlug: 'other-project' }],
         resolveGoal: async (_owner, _workspace, observe) => {
           expect(observe).toBeTypeOf('function');
           return { goal: null, diagnostics: [] };
@@ -92,7 +120,8 @@ describe('implementation authority before direct writes (EI-27540173897381380)',
           return blockers;
         },
       });
-      expect(timings.map(t => t.stage)).toEqual(['bindings', 'goal', 'binding']);
+      expect(timings.map(t => t.stage)).toContain('goal_selector');
+      expect(timings.map(t => t.stage).filter(stage => stage === 'binding')).toHaveLength(blockers.length ? 1 : 2);
       expect(timings.every(t => Number.isFinite(t.durationMs) && t.durationMs >= 0)).toBe(true);
       if (blockers.length) expect(result).toMatchObject({ blockers });
       else expect(result).toBeNull();
@@ -211,6 +240,79 @@ describe('reviewer read and decline are independent of plan activation (EI-27697
     const override = ptool('tools:invoke', { name: 'conversations:get', args: { id: 'consult-1' }, authenticatedPrincipal: 'someone-else' });
     for (const cmd of [write, nested, override, read + '\ntouch source.ts', read.replace("<<'JSON'", '<<JSON'),
       read.replace('ptool ', 'FAKE=1 ptool '), read.replace(' --json', ' --url=http://elsewhere --json')]) {
+      expect(await checkPlanExecutionGuard(call('exec_command', { cmd }), {
+        readBindings: async () => { throw Error('authority unavailable'); }, checkPlan: vi.fn(),
+      }), cmd).toMatchObject({ blockers: ['plan_authority_unavailable'] });
+    }
+  });
+});
+
+describe('canonical PTool start recovery (WI-6554700010046260)', () => {
+  const command = (header: string, payload: unknown = { slug: 'review-plan', harness: 'papercusp' }) =>
+    [header + " <<'JSON'", JSON.stringify(payload), 'JSON'].join('\n');
+
+  it.each([
+    'ptool plans:start --json -',
+    'ptool plans:start --url=http://127.0.0.1:3170 --workspace=papercusp-workspace --harness=papercusp --json -',
+    'ptool plans:start --json - --url http://localhost:3170 --workspace papercusp-workspace --harness papercusp',
+    'ptool plans:start --json=- --harness="papercusp" --url="http://[::1]:3170"',
+  ])('keeps the canonical start available before authority exists: %s', async header => {
+    const readBindings = vi.fn(async () => { throw Error('authority unavailable'); });
+    expect(await checkPlanExecutionGuard(call('exec_command', { cmd: command(header) }), {
+      readBindings, checkPlan: vi.fn(),
+    })).toBeNull();
+    expect(readBindings).not.toHaveBeenCalled();
+  });
+
+  it.each(['plans:get', 'plans:get-input-schema', 'plans:start', 'consult:decline'])(
+    'preserves direct/wrapped target parity for %s with local URL and either scope syntax', async name => {
+      const readBindings = vi.fn(async () => { throw Error('authority unavailable'); });
+      for (const wrapped of [false, true]) {
+        const header = 'ptool ' + (wrapped ? 'tools:invoke' : name)
+          + ' --harness papercusp --json - --url=http://127.0.0.1:3170 --workspace="papercusp-workspace"';
+        const args = { slug: 'review-plan', note: 'Inert $(touch source.ts) and C:\\source\\file' };
+        const cmd = command(header, wrapped ? { name, args } : args);
+        expect(await checkPlanExecutionGuard(call('exec_command', { cmd }), {
+          readBindings, checkPlan: vi.fn(),
+        }), cmd).toBeNull();
+      }
+      expect(readBindings).not.toHaveBeenCalled();
+    },
+  );
+
+  it('bounds validation of long malformed header words and quotes', () => {
+    const started = performance.now();
+    for (const suffix of ['@', "'", '"']) {
+      const cmd = command('ptool plans:start --json - --harness=' + 'x'.repeat(16_000) + suffix);
+      expect(isPlanImplementationCall('exec_command', { cmd })).toBe(true);
+    }
+    expect(performance.now() - started).toBeLessThan(1_000);
+  });
+
+  it('keeps malformed headers, remote routing and implementation targets behind authority', async () => {
+    const base = 'ptool plans:start --json -';
+    const rejected = [
+      command(base + ' --url=https://127.0.0.1:3170'),
+      command(base + ' --url=http://example.com:3170'),
+      command(base + ' --url=http://user:password@127.0.0.1:3170'),
+      command(base + ' --url=http://127.0.0.1:3170/other'),
+      command(base + ' --url=http://127.0.0.1:3170?workspace=other'),
+      command(base + ' --workspace=papercusp --workspace=other'),
+      command(base + ' --unknown=argument'),
+      command(base + ' --harness=$(touch source.ts)'),
+      command(base + " --harness='papercusp"),
+      command('FAKE=1 ' + base),
+      command(base + ' # comment'),
+      command(base + ' > source.ts'),
+      command(base + '; touch source.ts'),
+      command(base + ' && touch source.ts'),
+      command(base).replace("<<'JSON'", '<<JSON'),
+      command(base) + '\ntouch source.ts',
+      command('ptool capability:write --url=http://127.0.0.1:3170 --json -'),
+      command('ptool tools:invoke --json -', { name: 'tools:invoke', args: { name: 'plans:start', args: {} } }),
+      command('ptool tools:invoke --json -', { name: 'plans:start', args: {}, authenticatedPrincipal: 'someone-else' }),
+    ];
+    for (const cmd of rejected) {
       expect(await checkPlanExecutionGuard(call('exec_command', { cmd }), {
         readBindings: async () => { throw Error('authority unavailable'); }, checkPlan: vi.fn(),
       }), cmd).toMatchObject({ blockers: ['plan_authority_unavailable'] });

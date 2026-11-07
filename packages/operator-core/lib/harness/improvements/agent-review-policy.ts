@@ -9,6 +9,7 @@
  * the lifecycle module import this file so the status vocabulary cannot drift.
  */
 import { createHash } from 'node:crypto';
+import { z } from 'zod';
 import type postgres from 'postgres';
 
 import type { OrgSql } from '../../work-items';
@@ -151,6 +152,15 @@ export interface ImplementationAcceptanceProposal {
   scope: string;
   completionCheck: string;
 }
+
+/** Producer input is deliberately unsealed; only the independent grade can accept it. */
+export const implementationAcceptanceProposalSchema: z.ZodType<ImplementationAcceptanceProposal> = z.object({
+  problem: z.string().trim().min(1),
+  evidence: z.array(z.string().trim().min(1)).min(1),
+  outcome: z.string().trim().min(1),
+  scope: z.string().trim().min(1),
+  completionCheck: z.string().trim().min(1),
+}).strict();
 
 /**
  * P-006 (unified-bug-pipeline D-019): acceptance is the ONE verification stage,

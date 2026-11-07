@@ -1119,6 +1119,7 @@ async function verifyPreviewPostWithApplyResolver(args: {
   workspaceId: string;
   previewPostRef: string;
   approval: AcceptanceBarAmendmentPreview['approval'];
+  reviewSource?: AcceptanceBarAmendmentPreview['reviewSource'];
 }): Promise<void> {
   const [{ getOrgPg }, { resolveAcceptanceBarApproval }] = await Promise.all([
     import('@papercusp/db-org'),
@@ -1128,6 +1129,7 @@ async function verifyPreviewPostWithApplyResolver(args: {
     workspaceId: args.workspaceId,
     approvalRef: args.previewPostRef,
     expected: args.approval,
+    ...(args.reviewSource ? { expectedSource: args.reviewSource } : {}),
   });
 }
 
@@ -1331,6 +1333,7 @@ export async function openAcceptanceBarAmendmentReview(
       workspaceId: input.workspaceId,
       previewPostRef,
       approval: input.preview.approval,
+      ...(input.preview.reviewSource ? { reviewSource: input.preview.reviewSource } : {}),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

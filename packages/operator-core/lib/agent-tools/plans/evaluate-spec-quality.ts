@@ -90,7 +90,14 @@ export default defineTool({
       ratings: z.unknown().optional(),
       verdict: z.string().optional(),
       details: z.unknown().optional(),
-      scorecardDraft: z.unknown().optional(),
+      // The draft stays opaque beyond the identity used by exact publication.
+      scorecardDraft: z.object({ rubricRef: z.string(),
+        subject: z.object({ kind: z.literal('plan'), ref: z.string() }),
+      }).passthrough().optional(),
+      // Result-door incompleteness is fail-closed for saved publication too.
+      partial: z.boolean().optional(),
+      _partial: z.boolean().optional(),
+      _projection: z.object({ truncated: z.boolean().optional() }).passthrough().optional(),
       scorecardBinding: z.object({
         subject: z.object({ kind: z.literal('plan'), ref: z.string() }),
         evidenceFingerprint: z.string().regex(/^[a-f0-9]{64}$/),

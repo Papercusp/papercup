@@ -76,7 +76,7 @@ import {
   type ExpertModelAllowlistDeps,
 } from './expert-model-allowlist';
 import type { ConsultReviewerModel } from './get-feedback-core';
-import { ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY, RUBRIC_VETTING_POLICY } from './selection-policies';
+import { ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY, BAR_CRITIQUE_POLICY, RUBRIC_VETTING_POLICY } from './selection-policies';
 import { consultResponderVerbMenu } from './responder-verb-menu';
 import { captureNativeConsultBoundary, nativePlanClaimRequirementMismatch, nativeConsultConstraintsSchema, type NativeConsultConstraints, type NativeConsultSourceObservation } from './native-consult';
 
@@ -3053,7 +3053,7 @@ async function readPersistedDispatchChoice(workspaceId: string, conversationId: 
     ...(row.launch_host != null ? { launchOperatorHost: row.launch_host } : {}) } : {};
   if (row?.reviewer_model == null) return { reviewerModel: null, nativeConsult,
     ...(methodReview ? { methodReview } : {}), ...launchRuntime };
-  if (row.policy !== ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY && row.policy !== RUBRIC_VETTING_POLICY) {
+  if (row.policy !== ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY && row.policy !== RUBRIC_VETTING_POLICY && row.policy !== BAR_CRITIQUE_POLICY) {
     throw new Error('reviewer model exists outside an authorized review policy');
   }
   const raw = typeof row.reviewer_model === 'string' ? JSON.parse(row.reviewer_model) as unknown : row.reviewer_model;

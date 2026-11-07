@@ -20,7 +20,9 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { disclosureSubject } from '../_disclosure-subject';
 import { COORD_ROLES } from '../coordination/roles';
 import { sendMessage } from '../coordination/messages';
-import { setWorkItemCheckpointWithPrior } from '../../work-item-checkpoint';
+import type { WorkItemCheckpointWithPriorResult } from '../../work-item-checkpoint';
+import { blockerDecisionInputSchema, prepareBlockerDecision, type BlockerDecisionRecord } from '../../blocker-resolution-decision';
+import { blockerBoundaryContext } from '../../blocker-resolution-evidence';
 import {
   CHECKPOINT_BODY_CAP_CHARS,
   mergeCarryRows,
@@ -31,7 +33,6 @@ import {
 } from '../../carry-note';
 import { releaseWorkItem } from '../../work-items';
 import { lookupWorkItem } from './_lookup';
-import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 
 /**
  * WI-10004456: park used to REPLACE the whole checkpoint, destroying the history and
@@ -80,6 +81,7 @@ export default defineTool({
       .describe('resume update (done / left / approach / gotchas), appended to the existing checkpoint'),
     reason: z.string().min(1).max(500).describe('why you are parking it — broadcast to peers in the park note'),
     harness: z.string().max(80).optional().describe('harness the item lives under (else resolved from the item)'),
+    blockerDecision: blockerDecisionInputSchema.optional().describe('Required when parking work with an unresolved blocker; investigation and evidenced resolution or deferral.'),
   }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
@@ -124,43 +126,53 @@ export default defineTool({
       };
     }
     const harness: string | null = item ? item.harness ?? null : hintHarness ?? null;
+    if (!item) return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, id: args.id,
+      error: 'not_found', note: 'Checkpoint unchanged; no canonical work-item to park.' }) }] };
+    const effect = { park: true, checkpoint: args.checkpoint, reason: args.reason };
+    if (args.blockerDecision) {
+      const prepared = prepareBlockerDecision(item.payload, args.blockerDecision, {
+        ownerId: ident.ownerId, sessionId: ident.ownerId, workItemId: args.id, custodianId: item.assignee,
+      }, { effect });
+      if (!prepared.ok) return { content: [{ type: 'text' as const, text: JSON.stringify({ ...prepared, id: args.id }) }] };
+      if (prepared.replayed) return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true,
+        id: args.id, blockerDecision: prepared.record, replayed: true }) }] };
+    }
     // EI-8824: same wildcard-workspace bug as work_items:checkpoint — c.workspaceId
     // is '*' for an unscoped superuser session and must never be persisted literally.
-    const { stored, priorLength, blockedReason } = await setWorkItemCheckpointWithPrior(
-      { harness, workItemId: args.id, workspaceId: resolveConcreteWorkspaceId(c.workspaceId) },
-      args.checkpoint,
-      {
-        latestUpdate: args.checkpoint,
-        // Compose against the authoritative locked prior, never a racy pre-read.
-        guard: (prior) => {
-          const merged = appendParkCheckpoint(prior, args.checkpoint);
-          return merged.length > CHECKPOINT_BODY_CAP_CHARS ? 'checkpoint_capacity_exceeded' : null;
-        },
-        transform: (prior) => appendParkCheckpoint(prior, args.checkpoint),
-        // P-012 / D-006: a parker holding a restricted disclosure stores a sealed stub.
-        writerOwnerId: disclosureSubject(c),
-      },
-    );
-    if (blockedReason) {
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify({
-              ok: false,
-              id: args.id,
-              priorLength,
-              error: blockedReason,
-              note: 'Checkpoint unchanged and claim retained; compact the checkpoint explicitly before parking.',
-            }),
+    let saved: WorkItemCheckpointWithPriorResult | undefined;
+    let receipt: { record: BlockerDecisionRecord; replayed: boolean } | undefined;
+    let released;
+    try {
+      released = await releaseWorkItem(args.id, {
+        harness: harness ?? undefined, expectedAssignee: ident.ownerId, releasingOwnerId: ident.ownerId,
+        blockerEvidenceContext: await blockerBoundaryContext(ctx, ident.ownerId, harness),
+        ...(args.blockerDecision ? { blockerDecision: { input: args.blockerDecision,
+          sessionId: ident.ownerId, effect } } : {}),
+        onBlockerDecision: (value) => { receipt = value; },
+        checkpoint: { update: args.checkpoint, onStored: (value) => { saved = value; }, options: {
+          latestUpdate: args.checkpoint,
+          // Compose against the authoritative locked prior, never a racy pre-read.
+          guard: (prior) => {
+            const merged = appendParkCheckpoint(prior, args.checkpoint);
+            return merged.length > CHECKPOINT_BODY_CAP_CHARS ? 'checkpoint_capacity_exceeded' : null;
           },
-        ],
-      };
+          transform: (prior) => appendParkCheckpoint(prior, args.checkpoint),
+          // P-012 / D-006: a parker holding a restricted disclosure stores a sealed stub.
+          writerOwnerId: disclosureSubject(c),
+        } },
+      });
+    } catch (error) {
+      const problem = error as Error & { code?: string; missing?: unknown; nextAction?: unknown; priorLength?: number };
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, id: args.id,
+        error: problem.code ?? problem.message, missing: problem.missing, nextAction: problem.nextAction,
+        priorLength: problem.priorLength,
+        note: 'Park did not return a commit receipt; read the canonical work-item and checkpoint before retrying.' }) }] };
     }
-    const released = await releaseWorkItem(args.id, {
-      harness: harness ?? undefined,
-      releasingOwnerId: ident.ownerId,
-    });
+    if (receipt?.replayed) return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true,
+      id: args.id, blockerDecision: receipt.record, replayed: true }) }] };
+    if (!released || !saved) return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false,
+      id: args.id, error: 'not_holder', note: 'Checkpoint unchanged and current custody retained.' }) }] };
+    const { stored, priorLength } = saved;
     // Best-effort lifecycle note (never un-parks on failure).
     let noted = false;
     try {
@@ -185,7 +197,7 @@ export default defineTool({
             released: Boolean(released),
             noted,
             by: ident.ownerId,
-            note: released ? undefined : 'item was not claimed (or not found for release) — checkpoint still saved',
+            ...(receipt ? { blockerDecision: receipt.record } : {}),
           }),
         },
       ],

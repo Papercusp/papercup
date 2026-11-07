@@ -8,7 +8,7 @@ import {
   listSpecEvidence,
   SPEC_EVIDENCE_KINDS,
   evidenceCurrentInputSchema,
-  readSpecEvidencePlane,
+  projectSpecCriterionApplicability,
   type ListSpecEvidenceDiagnostics,
 } from './spec-evidence-store';
 import { fullBodyRef, isFullDetail, reviewReadDetailArg } from '../_review-read-detail';
@@ -92,62 +92,6 @@ function byClause(evidence: EvidenceRow[]) {
     clauses.set(key, entry);
   }
   return [...clauses.values()];
-}
-
-/** Read-time diagnosis only: this projection never grants proof or changes a gate. */
-function criterionApplicability(clause: SpecClauseRevision, evidence: EvidenceRow[], evaluatedAt: string,
-  target: { workItemId: string | null; planSlug: string | null }, incomplete: boolean) {
-  const receipts = evidence.filter(row => row.planSlug === clause.planSlug && row.specId === clause.specId &&
-    (target.workItemId === null || row.workItemId === target.workItemId)).map(row => {
-    const reasons = [...row.currentness.staleReasons, ...row.currentness.unknownReasons];
-    const plane = readSpecEvidencePlane(row.details);
-    const subject = row.details?.subject;
-    const subjectRecord = subject && typeof subject === 'object' && !Array.isArray(subject)
-      ? subject as Record<string, unknown> : null;
-    const window = row.details?.window ?? (subjectRecord?.windowStart && subjectRecord?.windowEnd
-      ? { from: subjectRecord.windowStart, to: subjectRecord.windowEnd } : null);
-    const missingLiveIdentity = (plane === 'live' || plane === 'deployed') && (!subjectRecord || !window);
-    const incompatible = row.specRevision !== clause.revision || row.specFingerprint !== clause.contentHash;
-    const state = row.withdrawal ? 'rejected' : incompatible ? 'incompatible'
-      : row.serverMeasurement?.status === 'unavailable' ? 'unavailable'
-      : row.currentness.overall === 'stale' ? 'stale'
-      : row.currentness.overall !== 'current' || !plane || missingLiveIdentity ? 'unknown' : 'current';
-    if (row.withdrawal) reasons.push('evidence-withdrawn');
-    if (incompatible) reasons.push('spec-identity-incompatible');
-    if (!plane) reasons.push('evidence-plane-unmeasured');
-    if (missingLiveIdentity) reasons.push('applicable-live-target-or-window-unmeasured');
-    if (state === 'unavailable') reasons.push('measurement-instrument-unavailable');
-    return {
-      bindingId: row.id, evidenceRef: row.evidenceRef, evidenceKind: row.evidenceKind,
-      testRunId: row.testRunId, observedAt: row.observedAt, state, reasons,
-      target: subject ?? null, window,
-      evidencePlane: plane ?? null, fingerprints: row.fingerprints,
-      currentness: row.currentness, freshnessBasis: row.serverMeasurement ?? null,
-      ...(row.withdrawal ? { withdrawal: row.withdrawal } : {}),
-    };
-  });
-  const states = new Set(receipts.map(row => row.state));
-  const state = incomplete ? 'unknown' : receipts.length === 0 ? 'missing'
-    : ['rejected', 'incompatible', 'unavailable', 'stale', 'unknown'].find(value => states.has(value)) ?? 'current';
-  const reasons = [...new Set(receipts.flatMap(row => row.reasons))];
-  if (!receipts.length) reasons.push('no-bindings-in-requested-selection');
-  if (incomplete) reasons.push('evidence-selection-incomplete');
-  const nextEvidenceAction = state === 'current' ? 'Use these receipts only within their measured scope; ordinary acceptance checks still apply.'
-    : state === 'missing' ? 'Run the criterion check and bind its exact current spec identity.'
-    : state === 'incompatible' ? 'Measure and bind the current spec revision; preserve the incompatible receipt as history.'
-    : state === 'rejected' ? 'Read the withdrawal reason and produce replacement proof; withdrawn receipts cannot satisfy a gate.'
-    : state === 'unavailable' ? 'Restore the named measurement instrument and remeasure; no current pass is established.'
-    : state === 'stale' ? 'Rerun the check against the changed fingerprint dimensions and bind the new result.'
-    : 'Resolve the listed unknown dimensions or narrow the bounded selection, then remeasure.';
-  return {
-    evaluatedAt, criterionKey: clause.sourceBar?.barKey ?? clause.specId,
-    spec: { planSlug: clause.planSlug, specId: clause.specId, revision: clause.revision, fingerprint: clause.contentHash },
-    rubric: clause.sourceBar ?? null, target,
-    window: { evaluatedAt, evidenceObservedAt: receipts.map(receipt => receipt.observedAt),
-      subjectWindows: receipts.map(receipt => receipt.window) },
-    state, reasons, nextEvidenceAction, responsibleRole: 'evidence-producer',
-    coverage: { scope: 'requested-selection', bindings: receipts.length, complete: !incomplete }, receipts,
-  };
 }
 
 const argsSchema = z.object({
@@ -296,7 +240,7 @@ export default defineTool({
     const applicabilityRows = clauses.flatMap(clause => {
       const clauseTargets = args.workItemIds ? targets.filter(target => target.specIds.includes(clause.specId))
         : [{ workItemId: null, planSlug: args.slug === ADHOC_WORK_ITEM_SPEC_SCOPE ? null : args.slug }];
-      return clauseTargets.map(target => criterionApplicability(clause, evidence, evaluatedAt,
+      return clauseTargets.map(target => projectSpecCriterionApplicability(clause, evidence, evaluatedAt,
         { workItemId: target.workItemId, planSlug: target.planSlug }, incomplete));
     });
     const applicability = {

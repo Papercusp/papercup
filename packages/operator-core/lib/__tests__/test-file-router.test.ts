@@ -9,6 +9,13 @@ import { basename, join, relative, resolve } from 'node:path';
 import { transformSync } from 'esbuild';
 import { mockImplementationTyped } from '../testing/typed-mock';
 import { stripVitestAnsi } from '../../../../scripts/lib/vitest-summary.mjs';
+import AdminTestRunsReporter, {
+  appendTestRunReceipts,
+  missingTestRunReceiptPaths,
+  reporterWriteBudget,
+  testRunReceiptBaseFor,
+  type TestRunRow,
+} from '@papercusp/test-config/admin-test-runs-reporter';
 
 it('records a real node:test child when the focused router starts without a TS loader', () => {
   const router = new URL('../../../../scripts/test-files.mjs', import.meta.url).href;
@@ -55,6 +62,7 @@ import {
   aggregateGroupResults,
   assertCommittedTestConfigCoverageExports,
   assertExecutedProofOutputCustody,
+  assertMutationLauncherSubjectIsolation,
   assertPrivateIntegrationEvidence,
   assertionOutcomesFromReport,
   buildNodeTestArgs,
@@ -94,6 +102,7 @@ import {
   suppressInjectedJsonReportNotice,
   defaultTestFileRunTimeoutMs,
   resolveTestChildLauncher,
+  resolveVitestCli,
   testFileRunTimeoutMs,
   testFileListTimeoutMs,
   testsExecutedFrom,
@@ -276,6 +285,77 @@ afterEach(() => {
   else process.env.PAPERCUSP_TEST_RUN_HARNESS = callerHarness;
   if (callerReceiptFile === undefined) delete process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
   else process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE = callerReceiptFile;
+});
+
+function fixtureVitestCli(root: string) {
+  const pkg = join(root, 'node_modules/vitest');
+  mkdirSync(pkg, { recursive: true });
+  writeFileSync(join(pkg, 'package.json'), JSON.stringify({ name: 'vitest', version: '4.0.0' }));
+  const cli = join(pkg, 'vitest.mjs');
+  writeFileSync(cli, 'throw new Error("synthetic child must not execute");');
+  return cli;
+}
+
+describe('installed Vitest CLI routing', () => {
+  it('selects the owning package installation over the repository installation', () => {
+    const root = mkdtempSync(join(tmpdir(), 'router-installed-vitest-'));
+    try {
+      const parentCli = fixtureVitestCli(root);
+      const workspace = join(root, 'packages/child');
+      const childCli = fixtureVitestCli(workspace);
+      expect(resolveVitestCli(root)).toBe(parentCli);
+      expect(resolveVitestCli(workspace)).toBe(childCli);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('fails before collection or execution when the owning package has no installed CLI', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'router-missing-vitest-'));
+    const list = vi.fn();
+    const run = vi.fn();
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      writeFileSync(join(root, 'vitest.config.ts'), 'export default {};');
+      writeFileSync(join(root, 'selected.test.ts'), '');
+      expect(await main(['selected.test.ts'], { repoRoot: root,
+        createRouterProofCustodyImpl: () => null,
+        restrictedHoldPreflightImpl: () => ({ verdict: 'skip' }),
+        runVitestListImpl: list, runCapturedTestProcessImpl: run })).toBe(2);
+      expect(list).not.toHaveBeenCalled();
+      expect(run).not.toHaveBeenCalled();
+      expect(error.mock.calls.flat().join('\n')).toContain('Cannot resolve installed Vitest CLI');
+      // A present package with a missing executable must fail just as clearly.
+      const cli = fixtureVitestCli(root);
+      rmSync(cli);
+      expect(() => resolveVitestCli(root)).toThrow('Cannot resolve installed Vitest CLI');
+    } finally {
+      error.mockRestore(); log.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('uses the same installed CLI for collection and failed-collection attribution', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'router-attribution-vitest-'));
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const cli = fixtureVitestCli(root);
+      writeFileSync(join(root, 'vitest.config.ts'), 'export default {};');
+      for (const name of ['a.test.ts', 'b.test.ts']) writeFileSync(join(root, name), '');
+      const list = vi.fn(async (command: string, args: string[], options: { cwd: string }) => {
+        expect(command).toBe(process.execPath);
+        expect(args.slice(0, 3)).toEqual([cli, 'list', '--filesOnly']);
+        expect(options.cwd).toBe(root);
+        return { status: 0, stdout: `${join(root, 'a.test.ts')}\n`, stderr: '', timedOut: false };
+      });
+      expect(await main(['--dry', 'a.test.ts', 'b.test.ts'], { repoRoot: root,
+        restrictedHoldPreflightImpl: () => ({ verdict: 'skip' }), runVitestListImpl: list })).toBe(2);
+      expect(list).toHaveBeenCalledTimes(3);
+    } finally {
+      log.mockRestore(); error.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('test-files router', () => {
@@ -1172,6 +1252,7 @@ describe('test-files router', () => {
       const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
       const captures: Array<{ path: string; files: string[] }> = [];
       try {
+        const cli = fixtureVitestCli(root);
         for (const dir of ['one', 'two', 'three']) {
           mkdirSync(join(root, dir));
           writeFileSync(join(root, dir, 'vitest.config.ts'), 'export default {};');
@@ -1183,12 +1264,16 @@ describe('test-files router', () => {
           // those fixtures do not produce native custody evidence.
           createRouterProofCustodyImpl: () => null,
           restrictedHoldPreflightImpl: () => ({ verdict: 'skip' }),
-          runVitestListImpl: async (_command: string, args: string[], options: { env: NodeJS.ProcessEnv }) => {
+          runVitestListImpl: async (command: string, args: string[], options: { env: NodeJS.ProcessEnv }) => {
+            expect(command).toBe(process.execPath);
+            expect(args.slice(0, 3)).toEqual([cli, 'list', '--filesOnly']);
             expect(options.env.NODE_ENV).toBe('test');
             return { status: 0, signal: null,
               stdout: args.filter(arg => arg.endsWith('.test.ts')).join('\n'), stderr: '', timedOut: false };
           },
-          runCapturedTestProcessImpl: async (_command: string, args: string[], options: { env: NodeJS.ProcessEnv }) => {
+          runCapturedTestProcessImpl: async (command: string, args: string[], options: { env: NodeJS.ProcessEnv }) => {
+            expect(command).toBe(process.execPath);
+            expect(args.slice(0, 2)).toEqual([cli, 'run']);
             expect(options.env.NODE_ENV).toBe('test');
             const requested = args.filter(arg => arg.endsWith('.test.ts'));
             const path = options.env.PC_EXECUTED_SOURCE_MAP_OUT!;
@@ -2313,13 +2398,14 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
         : [`--json=${form === 'equals-dash' ? '--protected.test.ts' : source}`];
       await expect(Promise.resolve().then(() => runVitestList('npx', ['vitest', 'list', ...jsonArgs], {
         cwd: root, spawnImpl, systemdRunPath: null, setsidPath: null,
-      }))).rejects.toThrow('use --json=true for stdout');
+      }))).rejects.toThrow('use bare --json last');
       expect(spawnImpl).not.toHaveBeenCalled();
       expect(readFileSync(source, 'utf8')).toBe(original);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it.each(['--json', '--json=true'])('collects named cases through stdout with %s', async (jsonArg) => {
+  it.each(['--json', '--json=true', '--json true'])('collects named cases through stdout with %s', async (jsonArg) => {
+    const { parseCLI } = await import('vitest/node');
     const child = new EventEmitter() as EventEmitter & {
       pid: number; stdout: PassThrough; stderr: PassThrough; kill: ReturnType<typeof vi.fn>;
     };
@@ -2328,14 +2414,20 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
     child.stderr = new PassThrough();
     child.kill = vi.fn();
     const cases = [{ name: 'suite > selected case', file: '/repo/protected.test.ts' }];
-    const spawnImpl = vi.fn(() => {
+    const spawnImpl = vi.fn((_command: string, args: string[]) => {
+      // Use the installed parser: a mocked stdout alone hides the string "true"
+      // filename branch that overwrote collection output between workspaces.
+      const parsed = parseCLI([...args]);
+      expect(parsed.options.json).toBe(true);
+      expect(parsed.filter).toEqual(['protected.test.ts']);
       queueMicrotask(() => {
         child.stdout.end(JSON.stringify(cases));
         child.emit('close', 0, null);
       });
       return child;
     });
-    const result = await runVitestList('npx', ['vitest', 'list', 'protected.test.ts', jsonArg], {
+    const jsonArgs = jsonArg === '--json true' ? ['--json', 'true'] : [jsonArg];
+    const result = await runVitestList('npx', ['vitest', 'list', 'protected.test.ts', ...jsonArgs], {
       cwd: '/repo', env: { PATH: '/usr/bin' }, spawnImpl, systemdRunPath: null,
       setsidPath: null, onProgress: vi.fn(), readProcessDiagnosticImpl: null,
     });
@@ -2877,7 +2969,7 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
 
   it('wires the real Vitest run through the async seam rather than a blocking spawnSync', () => {
     const source = readFileSync(new URL('../../../../scripts/test-files.mjs', import.meta.url), 'utf8');
-    const runStart = source.search(/const result = await runCapturedTestProcessImpl\(\s*["']npx["']/);
+    const runStart = source.search(/const result = await runCapturedTestProcessImpl\(\s*process.execPath,\s*\[vitestCli, 'run'/);
     const runEnd = source.indexOf('const runOutput =', runStart);
     expect(runStart).toBeGreaterThan(0);
     expect(runEnd).toBeGreaterThan(runStart);
@@ -2886,7 +2978,7 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
 
   it('wires the collection preflight through the bounded async list seam', () => {
     const source = readFileSync(new URL('../../../../scripts/test-files.mjs', import.meta.url), 'utf8');
-    const listStart = source.search(/const listed = await runVitestListImpl\(\s*["']npx["']/);
+    const listStart = source.search(/const listed = await runVitestListImpl\(\s*process.execPath,\s*\[vitestCli, 'list'/);
     const listEnd = source.indexOf('const listedOutput =', listStart);
     expect(listStart).toBeGreaterThan(0);
     expect(listEnd).toBeGreaterThan(listStart);
@@ -3773,6 +3865,134 @@ describe('main() — evidence runs require inserted Vitest ledger receipts', () 
     }
   });
 
+  it('keeps the reporter failure receipt when Vitest also reports a close timeout', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'test-file-reporter-close-timeout-'));
+    const receiptFile = join(dir, 'receipts.jsonl');
+    const priorReceiptFile = process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
+    const priorReporterDisabled = process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER;
+    const priorRunGroup = process.env.PAPERCUSP_TEST_RUN_GROUP;
+    const priorWorkItem = process.env.PAPERCUSP_TEST_RUN_WORK_ITEM;
+    process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE = receiptFile;
+    delete process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER;
+    delete process.env.PAPERCUSP_TEST_RUN_GROUP;
+    delete process.env.PAPERCUSP_TEST_RUN_WORK_ITEM;
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const receiptReporter = {
+      shouldRecordTestRunPath: () => true,
+      reporterWriteBudget: (env: NodeJS.ProcessEnv) => reporterWriteBudget(env),
+      missingTestRunReceiptPaths: (receiptLog: string, expectedPaths: string[]) =>
+        missingTestRunReceiptPaths(receiptLog, expectedPaths, REPO_ROOT),
+      // The reporter already inserted its failure row; the reconciliation fallback is not reached.
+      reconcileTimedOutTestRunReceipts: async () => [],
+    };
+    let childRunGroup: string | undefined;
+    vi.useFakeTimers();
+    const runCapturedTestProcessImpl = vi.fn(async (_command: string, _args: string[], options: any) => {
+      childRunGroup = options.env.PAPERCUSP_TEST_RUN_GROUP;
+      if (!childRunGroup) throw new Error('router did not assign a test run group');
+      const priorChildRunGroup = process.env.PAPERCUSP_TEST_RUN_GROUP;
+      process.env.PAPERCUSP_TEST_RUN_GROUP = childRunGroup;
+      let snapshotReads = 0;
+      let releaseSnapshot: (value: { commit: string; porcelain: string }) => void = () => undefined;
+      const writeRows = vi.fn(async (rows: readonly TestRunRow[]) => {
+        appendTestRunReceipts(options.env, rows.map((row, index) => ({
+          ...testRunReceiptBaseFor(row),
+          outcome: 'inserted' as const,
+          id: 'reporter-router-' + (index + 1),
+        })));
+      });
+      const reporter = new AdminTestRunsReporter(async (_phase, signal) => ++snapshotReads === 1
+        ? { commit: 'abc', porcelain: '' }
+        : new Promise(resolve => {
+          releaseSnapshot = resolve;
+          signal?.addEventListener('abort', () => releaseSnapshot({ commit: 'abc', porcelain: '' }), { once: true });
+        }), undefined, writeRows);
+      try {
+        await reporter.onInit({
+          vite: { config: { configFile: join(REPO_ROOT, 'packages/operator-core/vitest.config.ts') } },
+        } as never);
+        reporter.onTestModuleEnd({
+          moduleId: join(REPO_ROOT, file),
+          state: () => 'failed',
+          diagnostic: () => ({ duration: 1 }),
+          errors: () => [],
+          children: { allTests: () => [] },
+        } as never);
+        await vi.advanceTimersByTimeAsync(0);
+        const closeStartedAt = Date.now();
+        const finalization = reporter.onTestRunEnd();
+        await vi.advanceTimersByTimeAsync(reporterWriteBudget(options.env).flushBudgetMs + 3_000);
+        await finalization;
+        expect(Date.now() - closeStartedAt).toBeLessThan(10_000);
+        expect(writeRows).toHaveBeenCalledTimes(1);
+        const receiptLog = readFileSync(receiptFile, 'utf8');
+        const receipts = receiptLog.trim().split(/\r?\n/).map(line => JSON.parse(line));
+        expect(receipts).toEqual([expect.objectContaining({
+          filePath: file,
+          status: 'fail',
+          outcome: 'inserted',
+          id: 'reporter-router-1',
+          row: expect.objectContaining({
+            executionDetails: expect.objectContaining({ runGroupId: childRunGroup }),
+          }),
+        })]);
+        expect(missingTestRunReceiptPaths(receiptLog, [file], REPO_ROOT)).toEqual([]);
+        await reporter.onExit();
+        expect(writeRows).toHaveBeenCalledTimes(1);
+      } finally {
+        releaseSnapshot({ commit: 'abc', porcelain: '' });
+        if (priorChildRunGroup === undefined) delete process.env.PAPERCUSP_TEST_RUN_GROUP;
+        else process.env.PAPERCUSP_TEST_RUN_GROUP = priorChildRunGroup;
+      }
+      return {
+        status: 0,
+        signal: null,
+        stdout: 'Test Files 1 failed (1)\nTests 1 failed (1)\nclose timed out after 10000ms\n',
+        stderr: '',
+        timedOut: false,
+        error: null,
+      };
+    });
+
+    try {
+      const code = await main([file], {
+        createRouterProofCustodyImpl: () => null,
+        restrictedHoldPreflightImpl: () => ({ verdict: 'skip' }),
+        loadVitestReceiptReporterImpl: async () => receiptReporter,
+        testConfigExportPreflightImpl: () => {},
+        runVitestListImpl: async () => ({ status: 0, signal: null,
+          stdout: 'lib/__tests__/test-file-router.test.ts\n', stderr: '', timedOut: false, error: null }),
+        runCapturedTestProcessImpl,
+      });
+      const errors = errorSpy.mock.calls.map(([line]) => String(line)).join('\n');
+      expect(stdoutSpy.mock.calls.map(([chunk]) => String(chunk)).join('\n'))
+        .toContain('close timed out after 10000ms');
+      expect(code).not.toBe(0);
+      expect(childRunGroup).toEqual(expect.any(String));
+      expect(errors).toContain('TEST_FILE_CLOSE_TIMEOUT_FINALIZATION_ERROR');
+      expect(errors).not.toContain('TEST_FILE_LEDGER_RECEIPT_MISSING');
+    } finally {
+      await vi.runAllTimersAsync();
+      vi.useRealTimers();
+      logSpy.mockRestore();
+      errorSpy.mockRestore();
+      stdoutSpy.mockRestore();
+      stderrSpy.mockRestore();
+      if (priorReceiptFile === undefined) delete process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
+      else process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE = priorReceiptFile;
+      if (priorReporterDisabled === undefined) delete process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER;
+      else process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER = priorReporterDisabled;
+      if (priorRunGroup === undefined) delete process.env.PAPERCUSP_TEST_RUN_GROUP;
+      else process.env.PAPERCUSP_TEST_RUN_GROUP = priorRunGroup;
+      if (priorWorkItem === undefined) delete process.env.PAPERCUSP_TEST_RUN_WORK_ITEM;
+      else process.env.PAPERCUSP_TEST_RUN_WORK_ITEM = priorWorkItem;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('does not create or require a receipt sink for ordinary focused runs', async () => {
     const priorReceiptFile = process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
     const priorReporterDisabled = process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER;
@@ -4120,6 +4340,40 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
     expect(result.governedAdmissionError).not.toBe(true);
     expect(result.governedFinalizationError.cause).toBe(origin);
     expect(result.actualDemand).toBeDefined();
+  });
+
+  it('refuses a mutation subject imported lazily by admission before starting the test child', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'mutation-launcher-boundary-'));
+    const repoRoot = resolve(__dirname, '../../../..');
+    const noticePath = join(root, 'notices.jsonl');
+    const descriptor = { schemaVersion: 1, probeInvocationId: 'launcher-boundary-0001', mode: 'copy-out',
+      subjectPath: 'packages/agent-mcp/src/delta-eval-harness.ts', mutateExpression: 's/old/new/', againstCommit: null,
+      subjectBeforeSha256: 'a'.repeat(64), subjectAfterSha256: 'b'.repeat(64),
+      mutantDiff: '', mutantDiffTruncated: false, testCommandSha256: 'c'.repeat(64),
+      testCommand: 'test -f {}' };
+    const env = { PAPERCUSP_MUTATION_PROBE: '1', PAPERCUSP_MUTATION_DESCRIPTOR: JSON.stringify(descriptor),
+      PAPERCUSP_COMMITTED_SOURCE_NOTICES: noticePath };
+    const notice = { schemaVersion: 'committed-source-notice-v1', kind: 'substituted', via: 'esm',
+      top: repoRoot, rel: descriptor.subjectPath, pid: process.pid, entry: 'scripts/test-files.mjs' };
+    const child = vi.fn(() => ({ status: 0 }));
+    try {
+      const result = await runGovernedTestFileProcess(async (_options: unknown, callback: Function) => {
+        // The dependency arrives during admission, after startup preflight.
+        writeFileSync(noticePath, JSON.stringify(notice) + '\n');
+        return callback();
+      }, { env }, child);
+      expect(child).not.toHaveBeenCalled();
+      expect(result.governedAdmissionError).toBe(true);
+      expect(result.error.cause.message).toContain('launcher-subject-substituted');
+      for (const safe of [{ ...notice, rel: 'support.ts' }, { ...notice, pid: process.pid + 1 }]) {
+        writeFileSync(noticePath, JSON.stringify(safe) + '\n');
+        expect(() => assertMutationLauncherSubjectIsolation(env, repoRoot)).not.toThrow();
+      }
+      writeFileSync(noticePath, 'not-json\n');
+      expect(() => assertMutationLauncherSubjectIsolation(env, repoRoot)).toThrow('malformed');
+      expect(() => assertMutationLauncherSubjectIsolation({ ...env, PAPERCUSP_MUTATION_DESCRIPTOR: '{}' }, repoRoot))
+        .toThrow('invalid mutation descriptor');
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
   it('distinguishes a returned child from pending governed finalization without running it again', async () => {

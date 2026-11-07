@@ -10,7 +10,7 @@ import type {} from '../../test/current-su-native-http-scenario';
 import type {} from '../../test/staging-first-http-fixture';
 import { captureIsolatedWorker, currentSuNativeRetainedArtifacts, isolatedWorkerFailureDetail, isolatedWorkerOptions,
   preflightCurrentSuNativeEgress, recordIsolatedIntegrationProof } from '../../test/isolated-integration-proof';
-import { preparePrivateOperatorApiBundle, privateNativeDockerHost } from '../../test/private-http-workspace-preflight';
+import { preparePrivateOperatorApiBundle, privateMcpSourceSha, privateNativeDockerHost } from '../../test/private-http-workspace-preflight';
 import { CC_HOOK_FILES } from '../desktop-install/papercusp-files';
 
 const root = resolve(import.meta.dirname, '../../../..');
@@ -51,6 +51,9 @@ async function nativeScenario(scenario: 'current-su-native' | 'current-su-native
     retainedArtifacts: [...currentSuNativeRetainedArtifacts(scenario !== 'current-su-native'),
       ...(scenario.includes('-frozen-carry-') ? ['phases/execute/native-frozen-carry-delivery.json'] : [])],
     prepare: async evidenceDir => {
+      // The native MCP handshake requires a known serving generation. Reject
+      // unqualified working source before the expensive build or allocation.
+      privateMcpSourceSha(root);
       await preflightCurrentSuNativeEgress(evidenceDir);
       // Compilation and every guard must finish before the disposable native
       // runtime/database exists. The worker consumes only these pinned bytes.

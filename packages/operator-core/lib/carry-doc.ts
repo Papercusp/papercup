@@ -749,6 +749,7 @@ export async function buildCarryDoc(ownerId: string, opts: BuildCarryDocOpts = {
         loop: null,
         control: null,
         planAuthority: null,
+        mission: undefined,
         wakeSourceLostWarning: undefined,
         coverage: {
           ...automaticRecovery.recovery.coverage,
@@ -1694,6 +1695,11 @@ export function renderAutomaticCompactionRecovery(
   }
   if (recovery.planAuthority) {
     lines.push(renderCompactionPlanAuthority(recovery.planAuthority));
+  }
+  if (recovery.mission && !judgeSafe) {
+    lines.push(recovery.mission.availability === 'available'
+      ? `- remaining mission (current authority; CTRL preserves the selected route): ${JSON.stringify(recovery.mission.projection)}`
+      : `- remaining mission authority UNKNOWN: ${recovery.mission.reason}. Do not infer completion, a successor, or permission to resume.`);
   }
   if (recovery.staleness_warnings?.warnings.length) {
     lines.push(

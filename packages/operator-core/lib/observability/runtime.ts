@@ -5,8 +5,9 @@ import { createHash } from 'node:crypto';
 import { canonicalJson } from '@papercusp/hash-chain';
 import type { ObservedSurface } from '@papercusp/testing-shell/census';
 import { context, trace, TraceFlags } from '@opentelemetry/api';
-import type { ExecutionBoundaryReceipt } from '@papercusp/test-config/execution-details';
-import type { DispatchProjectedDeps } from '@papercusp/agent-mcp';
+import { parseSqlCoverageExecutionReceipt, type ExecutionBoundaryReceipt,
+  type SqlCoverageExecutionReceipt } from '@papercusp/test-config/execution-details';
+import { projectedToolRegistryRevision, type DispatchProjectedDeps } from '@papercusp/agent-mcp';
 import type { GatewayRequestTimeline } from '../inference-gateway/request-stage-telemetry';
 import { createTracing } from './tracing';
 import { PosthogSpanExporter } from './posthog-exporter';
@@ -15,6 +16,10 @@ import { measureBootOperatorArtifact, type OperatorArtifactIdentity,
 import { getBuildInfo } from '../build-info';
 import { resolveConcreteHarnessSlug } from '../agent-tools/_harness-scope';
 import { SECURITY_POPULATIONS } from '../coverage-census/security-manifest';
+import type { SqlIntentScope } from '../bash-substitution/sql-intent-fingerprint';
+import { miningScopeId } from '../agent-opportunities/privacy';
+import { sqlCoverageRows, sqlCoverageToken, sqlToolContractIdentity } from '../bash-substitution/sql-tool-recommendations';
+import { readServingGeneration } from '../serving-generation';
 
 type DispatchStart = Parameters<NonNullable<DispatchProjectedDeps['onDispatchStart']>>[0];
 type InvokeRequest = Parameters<NonNullable<DispatchProjectedDeps['aroundInvoke']>>[0];
@@ -22,6 +27,8 @@ type Invocation = Parameters<NonNullable<DispatchProjectedDeps['recordInvocation
 
 interface BoundaryContext { callId: string; workspaceId: string; harness: string; tool: string;
   receipts: ExecutionBoundaryReceipt[] }
+interface SqlCoverageContext { scope: SqlIntentScope; harness: string; active: boolean;
+  executions: SqlCoverageExecutionReceipt[]; gaps: string[] }
 
 interface DispatchReceipt {
   callId: string; tool: string; workspaceId: string; harness: string; startedAt: number;
@@ -104,12 +111,16 @@ const state = pinModuleState('@papercusp/operator-core.otel-runtime', () => ({
   registration: null as ReturnType<ReturnType<typeof createTracing>['register']> | null,
   boundaryContext: new AsyncLocalStorage<BoundaryContext>(),
   boundaryReceipts: new Map<string, ExecutionBoundaryReceipt[]>(),
+  sqlCoverageContext: new AsyncLocalStorage<SqlCoverageContext>(),
+  sqlCoverageReceipts: new Map<string, { receipt: SqlCoverageExecutionReceipt; scope: SqlIntentScope }>(),
   dispatchReceipts: new Map<string, DispatchReceipt>(),
   securityCapture: null as SecurityCapture | null,
 }));
 // An already running development host can retain the pre-extension singleton.
 state.boundaryContext ??= new AsyncLocalStorage<BoundaryContext>();
 state.boundaryReceipts ??= new Map<string, ExecutionBoundaryReceipt[]>();
+state.sqlCoverageContext ??= new AsyncLocalStorage<SqlCoverageContext>();
+state.sqlCoverageReceipts ??= new Map<string, { receipt: SqlCoverageExecutionReceipt; scope: SqlIntentScope }>();
 state.dispatchReceipts ??= new Map<string, DispatchReceipt>();
 
 /** The actual request host registers once on the existing observability state;
@@ -126,6 +137,11 @@ export async function captureRuntimeSecurityCensus() {
     status: 'measured' as const, sourceSha: state.artifact.sourceSha,
     bundleSha256: state.artifact.bundleSha256, manifestSha256: state.artifact.manifestSha256,
     evidenceRef: state.artifact.evidenceRef,
+    // Preserve the boot verifier's correspondence in immutable captures: a
+    // generation-local evidenceRef can disappear after that build is collected.
+    // Never reread current files to reconstruct what this process loaded.
+    sourceBlobs: { ...state.artifact.sourceBlobs },
+    sourceBindingScope: 'boot-bundle-tracked-inputs-only' as const,
   } : { status: 'unknown' as const, reason: state.artifact?.reason ?? 'boot-artifact-not-measured' };
   const runtimeIdentity = { processId: process.pid, platform: process.platform,
     arch: process.arch, nodeVersion: process.version, artifact };
@@ -246,8 +262,85 @@ export function runToolTrace(request: InvokeRequest, invoke: () => ReturnType<In
     // A receipt's harness is an identity: the operator `'*'` scope is not one, so it stays ''
     // (receipt validation then rejects it, exactly as the consumer's scope check did for '*').
     workspaceId: request.ctx.workspaceId ?? '', harness: resolveConcreteHarnessSlug(undefined, request.ctx) ?? '',
-    tool: request.toolName, receipts }, invoke);
+    tool: request.toolName, receipts }, () => state.sqlCoverageContext.getStore()
+      ? observeSqlCoverageInvocation(request, invoke) : invoke());
   return state.runtime ? state.runtime.run(request.callId, run) : run();
+}
+
+/** Internal maintained-fixture scope, never a tool argument or metadata grant.
+ * Captures executions only; the passing fixture and canonical reader decide
+ * coverage. Ordinary calls pay no identity IO and cannot mint these receipts. */
+export async function observeSqlCoverageFixture<T>(scope: SqlIntentScope, harness: string,
+  work: () => Promise<T>): Promise<{ result: T; executions: SqlCoverageExecutionReceipt[]; gaps: string[] }> {
+  const current: SqlCoverageContext = { scope: { ...scope, key: scope.key.slice(),
+    knownSecrets: scope.knownSecrets ? [...scope.knownSecrets] : undefined }, harness, active: true, executions: [], gaps: [] };
+  try {
+    const result = await state.sqlCoverageContext.run(current, work);
+    return { result, executions: [...current.executions], gaps: [...current.gaps] };
+  } finally { current.active = false; }
+}
+
+async function observeSqlCoverageInvocation(request: InvokeRequest,
+  invoke: () => ReturnType<InvokeRequest['invoke']>): ReturnType<InvokeRequest['invoke']> {
+  const current = state.sqlCoverageContext.getStore()!;
+  const gap = (reason: string) => { if (!current.gaps.includes(reason)) current.gaps.push(reason); };
+  let before: Awaited<ReturnType<typeof readServingGeneration>> | undefined;
+  let argsToken: string | null = null, sourceFingerprint: string | null = null, contractRef: string | undefined;
+  let artifactFingerprint: string | undefined;
+  try {
+    if (!current.active || request.ctx.workspaceId !== current.scope.workspaceId
+      || resolveConcreteHarnessSlug(undefined, request.ctx) !== current.harness
+      || current.executions.length >= 32 || state.sqlCoverageReceipts.size >= 1024 || request.tool.pluginInstallation
+      || state.sqlCoverageReceipts.has(request.callId) || request.tool.expose?.mcp?.name !== request.toolName)
+      throw new Error('sql-coverage-scope-unavailable');
+    before = await readServingGeneration();
+    if (before.state !== 'known' || state.artifact?.status !== 'measured') throw new Error('sql-coverage-runtime-unmeasured');
+    artifactFingerprint = state.artifact.bundleSha256;
+    argsToken = sqlCoverageToken(current.scope, current.harness, 'args', request.input);
+    sourceFingerprint = loadedHandlerFingerprint(request.tool.fn as (...args: never[]) => unknown);
+    contractRef = sqlToolContractIdentity(before.revision, projectedToolRegistryRevision([request.tool]));
+  } catch { gap('sql-coverage-runtime-unmeasured'); }
+  const startedAt = Date.now();
+  const result = await invoke(); // Exactly one invocation, even when measurement fails.
+  const endedAt = Date.now();
+  try {
+    if (before?.state !== 'known' || !argsToken || !sourceFingerprint || !artifactFingerprint || !contractRef) return result;
+    const after = await readServingGeneration();
+    const rows = sqlCoverageRows(result);
+    const resultToken = rows && sqlCoverageToken(current.scope, current.harness, 'rows', rows);
+    if (!current.active || after.state !== 'known' || after.revision !== before.revision || !resultToken
+      || sourceFingerprint !== loadedHandlerFingerprint(request.tool.fn as (...args: never[]) => unknown)
+      || state.artifact?.status !== 'measured' || state.artifact.bundleSha256 !== artifactFingerprint
+      || argsToken !== sqlCoverageToken(current.scope, current.harness, 'args', request.input)) {
+      gap('sql-coverage-execution-incomplete'); return result;
+    }
+    const receipt = parseSqlCoverageExecutionReceipt({ schemaVersion: 1, callId: request.callId,
+      workspaceId: current.scope.workspaceId, harness: current.harness, scopeId: miningScopeId(current.scope, current.harness),
+      toolName: request.toolName, contractRef, startedAt, endedAt, outcome: 'ok', argsToken, resultToken, sourceFingerprint,
+      buildSha: before.buildSha, artifactFingerprint,
+      environmentFingerprint: createHash('sha256').update(canonicalJson({ node: process.version,
+        platform: process.platform, arch: process.arch, processId: process.pid, generation: before.revision,
+        artifactFingerprint })).digest('hex') });
+    if (!receipt) { gap('sql-coverage-receipt-invalid'); return result; }
+    current.executions.push(receipt);
+    state.sqlCoverageReceipts.set(request.callId, { receipt, scope: current.scope });
+  } catch { gap('sql-coverage-execution-unmeasured'); }
+  return result;
+}
+
+/** Only the invocation writer can take this process-owned settlement. Caller
+ * metadata is stripped even when no valid observation exists. */
+export function finishSqlCoverageExecution(input: Invocation): SqlCoverageExecutionReceipt | undefined {
+  if (!input.callId) return undefined;
+  const own = state.sqlCoverageReceipts.get(input.callId);
+  state.sqlCoverageReceipts.delete(input.callId);
+  if (!own || input.status !== 'ok' || own.receipt.toolName !== input.toolName
+    || own.receipt.workspaceId !== input.ctx.workspaceId
+    || own.receipt.harness !== resolveConcreteHarnessSlug(undefined, input.ctx)
+    || own.receipt.argsToken !== sqlCoverageToken(own.scope, own.receipt.harness, 'args', input.args)) return undefined;
+  const rows = sqlCoverageRows(input.resultSnapshot);
+  return rows && own.receipt.resultToken === sqlCoverageToken(own.scope, own.receipt.harness, 'rows', rows)
+    ? own.receipt : undefined;
 }
 
 /** Local dispatch evidence survives disabled/export-failed tracing. Neither a
@@ -325,5 +418,6 @@ export async function shutdownRuntimeObservability(): Promise<void> {
   state.exporter = null;
   state.registration = null;
   state.boundaryReceipts.clear();
+  state.sqlCoverageReceipts.clear();
   state.dispatchReceipts.clear();
 }

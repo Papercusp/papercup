@@ -539,6 +539,20 @@ export async function stopPrivateOperatorHost(host: ChildProcess, afterExit?: ()
   }
 }
 
+/** MCP needs an attributable serving generation. Use the bundler's own source
+ * resolver before compilation, private PG or native launch; a dirty checkout
+ * cannot be relabelled with an inherited environment SHA. */
+export function privateMcpSourceSha(root: string, env: NodeJS.ProcessEnv = process.env): string {
+  const common = resolve(import.meta.dirname, '../../../apps/operator/bin/bundle-host-common.sh');
+  const sourceSha = execFileSync('bash', ['-c',
+    'source "$1"; shift; bundle_host_source_sha "$@"', 'private-mcp-source', common, root,
+    process.execPath, '--import', join(root, 'scripts/lib/committed-source-loader.mjs')],
+  { env, encoding: 'utf8', timeout: 60_000 }).trim();
+  assert.match(sourceSha, /^[a-f0-9]{7,64}$/,
+    'Private MCP requires attributable source before compilation; run through scripts/source-preview.mjs verifier-run');
+  return sourceSha;
+}
+
 /** Prepared ESM bundles must not inherit test transformers or Vitest's passive
  * startup tracer into their confined native descendants. Keep source guards,
  * unrelated preloads and all resource limits. */
@@ -576,6 +590,7 @@ export function privateBundleRuntimeEnv(env: NodeJS.ProcessEnv,
 export async function waitForPrivateOperator(options: {
   host: ChildProcess; base: string; headers?: Record<string, string>; evidenceDir: string;
   hostIdentity?: string | null; environment: NodeJS.ProcessEnv; timeoutMs?: number;
+  requireBuildIdentity?: boolean;
 }) {
   const { host, base, headers, evidenceDir, environment } = options;
   const started = Date.now();
@@ -606,6 +621,8 @@ export async function waitForPrivateOperator(options: {
       await new Promise(done => setTimeout(done, 250));
     }
     assert.equal(health?.service, 'papercusp-operator', 'private operator never became ready');
+    if (options.requireBuildIdentity) assert.ok(typeof health.sha === 'string' && /^[a-f0-9]{7,64}$/.test(health.sha),
+      'Private MCP requires an attributable serving build before native launch; use the verified-source route');
     return health;
   } catch (error) { failure = error; throw error; }
   finally {
@@ -614,6 +631,7 @@ export async function waitForPrivateOperator(options: {
       hostIdentity: options.hostIdentity, mallocArenaMax: environment.MALLOC_ARENA_MAX ?? null,
       nodeOptions: environment.NODE_OPTIONS ?? null, exitCode: host.exitCode, signalCode: host.signalCode,
       elapsedMs: Date.now() - started, attempts, probes: probes.slice(-24),
+      ...(options.requireBuildIdentity ? { buildSha: health?.sha ?? null } : {}),
       failure: failure instanceof Error ? failure.message : failure === undefined ? undefined : String(failure) }));
   }
 }

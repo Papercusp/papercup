@@ -4,7 +4,10 @@ import {
   inspectFreshAmendmentReviewer, openAcceptanceBarAmendmentReview, previewThreadHasLaterPost, resolveAmendmentReviewEvidence,
   verifyAmendmentReviewCandidate, type OpenAmendmentReviewInput,
 } from './acceptance-bar-amendment-review';
-import { validateAcceptanceBarRevisionProjectionPreview } from '../acceptance-bar-amendment';
+import {
+  acceptanceBarReviewPostBody, acceptanceBarReviewSourceHash,
+  validateAcceptanceBarRevisionProjectionPreview,
+} from '../acceptance-bar-amendment';
 import { buildAcceptanceBarSeed } from '../acceptance-bar-seed';
 import type { AcceptanceBarAmendmentPreview } from '../rubrics';
 import { rubricTemplateDataAuthoringSchema } from '../agent-tools/plans/rubric-template';
@@ -227,5 +230,87 @@ updated: 2026-11-06
       previewPostRef: refs.preview!,
       excludeAuthorId: 'applier',
     }, db.adminSql)).toBe(true);
+  });
+});
+
+describe('retained preview recovery across generated declaration times (EI-28093704785598030)', () => {
+  let db: OrgTestDb;
+  const workspaceId = 'retained-preview-declaration-times';
+
+  beforeAll(async () => {
+    db = await createOrgTestDb();
+    vi.doMock('@papercusp/db-org', async (original) => ({
+      ...(await original<typeof import('@papercusp/db-org')>()),
+      getOrgPg: () => ({ sql: db.adminSql }),
+    }));
+  });
+  afterAll(async () => {
+    vi.doUnmock('@papercusp/db-org');
+    await db?.cleanup();
+  });
+
+  function source() {
+    const existing = { key: 'r-1', barKey: 'R-1', model: 'Existing outcome',
+      barProvenance: { lifecycle: 'legacy-backfilled', declaredBy: 'applier', declaredAt: '2026-11-06T00:00:00.000Z' } };
+    const added = { key: 'r-2', barKey: 'R-2', model: 'Added outcome',
+      barProvenance: { lifecycle: 'legacy-backfilled', declaredBy: 'applier', declaredAt: '2026-11-07T00:00:00.000Z' } };
+    return { schemaVersion: 1 as const,
+      rubric: { ref: 'acceptance-source-time', revision: 1,
+        baseline: { criteria: [existing] }, candidate: { criteria: [structuredClone(existing), added] } },
+      subjectPlan: { slug: 'source-time', harness: 'papercusp', revision: 3,
+        content: 'Plan source', proposedContent: 'Plan source' },
+      reason: 'Add the second outcome', mappingDelta: [] as unknown[] };
+  }
+
+  function preview(reviewSource: ReturnType<typeof source>): AcceptanceBarAmendmentPreview {
+    return { approvalRequired: true, rubricRevision: 1, subjectPlanRevision: 3,
+      changes: [{ barKey: 'R-2' }], criterionChanges: [], reviewSource,
+      candidateValidation: { candidateHash: 'a'.repeat(64), generatedSpecCount: 1 },
+      approval: { schemaVersion: 1, kind: 'acceptance-bar-amendment-approval',
+        rubricRef: 'acceptance-source-time', subjectPlan: 'source-time', proposedPatchHash: 'c'.repeat(64),
+        reviewSourceHash: acceptanceBarReviewSourceHash(reviewSource),
+        bars: [{ barKey: 'R-2', priorBarHash: null, nextBarHash: 'b'.repeat(64) }] },
+    } as unknown as AcceptanceBarAmendmentPreview;
+  }
+
+  async function fixture() {
+    const reviewed = source();
+    const body = acceptanceBarReviewPostBody(preview(reviewed).approval, reviewed);
+    const [post] = await db.adminSql<Array<{ id: number }>>`
+      INSERT INTO harness_shared.coord_thread_posts (workspace_id, thread_id, author_id, body, origin)
+      VALUES (${workspaceId}, 'retained-time-preview', 'applier', ${body}, 'local') RETURNING id`;
+    const current = source();
+    current.rubric.candidate.criteria[1]!.barProvenance.declaredAt = '2026-11-07T00:10:00.000Z';
+    const route = vi.fn(async () => ({ state: 'routed' as const, conversationId: 'retained-time-review',
+      responderId: 'independent-reviewer', screenedOut: [] }));
+    const input = (): OpenAmendmentReviewInput => ({
+      rubricRef: 'acceptance-source-time', previewPostRef: `thread-post:${post!.id}`,
+      preview: preview(current), workspaceId,
+      identity: { ownerId: 'applier', workspaceId } as OpenAmendmentReviewInput['identity'],
+      patch: { criteria: [] },
+    });
+    // Candidate compilation, target lookup and recruitment are outside this
+    // guard. The default verifier reads the real PG post and runs the resolver.
+    const deps = { route, verifyCandidate: async () => {},
+      resolveSourceTarget: async () => ({ workItemId: 'WI-preview-source-time', harness: 'papercusp' }) };
+    return { current, route, input, deps };
+  }
+
+  it('routes the original immutable preview when only a new BAR declaration time changed', async () => {
+    const { input, deps, route } = await fixture();
+    await expect(openAcceptanceBarAmendmentReview(input(), deps)).resolves.toMatchObject({ state: 'routed' });
+    expect(route).toHaveBeenCalledOnce();
+  });
+
+  it.each<[string, (current: ReturnType<typeof source>) => void]>([
+    ['criterion meaning', (s) => { s.rubric.candidate.criteria[1]!.model = 'Different outcome'; }],
+    ['existing declaration time', (s) => { s.rubric.candidate.criteria[0]!.barProvenance.declaredAt = '2026-11-07T00:10:00.000Z'; }],
+    ['new declaration author', (s) => { s.rubric.candidate.criteria[1]!.barProvenance.declaredBy = 'other'; }],
+    ['plan revision', (s) => { s.subjectPlan.revision++; }],
+  ])('refuses a changed %s before recruiting a reviewer', async (_name, mutate) => {
+    const { current, input, deps, route } = await fixture();
+    mutate(current);
+    await expect(openAcceptanceBarAmendmentReview(input(), deps)).rejects.toThrow('acceptance_bar_review_source_mismatched');
+    expect(route).not.toHaveBeenCalled();
   });
 });

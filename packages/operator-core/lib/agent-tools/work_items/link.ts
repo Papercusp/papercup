@@ -18,6 +18,8 @@ import { guardFeatureBlockEdgeAcyclic } from '../../dbos/feature-blockers-edges'
 import { EVENT_SUBSCRIPTION_KIND } from '../coordination/event-subscriptions';
 import type { ObjectRef } from '@papercusp/coordination/capabilities';
 import { runBulk, bulkContent } from '../_bulk';
+import { blockerDecisionInputSchema, type BlockerDecisionRecord } from '../../blocker-resolution-decision';
+import { blockerBoundaryContext } from '../../blocker-resolution-evidence';
 
 /**
  * The typed-link vocabulary (WI-3956). `coord_links.rel` is free-form text at the
@@ -86,6 +88,7 @@ const itemSpec = z.object({
   target_ref: z.string().max(160).optional().describe('explicit coord ObjectRef ref — use with target_kind'),
   harness: z.string().max(80).optional().describe('harness for the source id (feature disambiguation)'),
   remove: z.boolean().optional(),
+  blockerDecision: blockerDecisionInputSchema.optional(),
   satisfaction: z
     .enum(['settled', 'success'])
     .optional()
@@ -136,6 +139,7 @@ export default defineTool({
       target_ref: z.string().max(160).optional(),
       harness: z.string().max(80).optional().describe('default harness for the source id / items that omit one'),
       remove: z.boolean().optional(),
+      blockerDecision: blockerDecisionInputSchema.optional(),
       satisfaction: z
         .enum(['settled', 'success'])
         .optional()
@@ -182,6 +186,7 @@ export default defineTool({
             harness: args.harness,
             remove: args.remove,
             satisfaction: args.satisfaction,
+            blockerDecision: args.blockerDecision,
           },
         ];
     const env = await runBulk(
@@ -217,20 +222,37 @@ export default defineTool({
         // syncFeatureBlockEdges' replace-semantics guard), so reject the cycle-closing edge here.
         // The coord_links convention is src=blocker → dst=blocked, so the SOURCE work-item is the
         // blocker and `dst` is the blocked feature.
-        if (!it.remove && it.rel === 'blocks') {
+        if (!it.remove && it.rel === 'blocks' && !it.blockerDecision) {
           const srcRef = await resolveWorkItemRef(it.id, harness);
           if (srcRef) {
             const cycleErr = await guardFeatureBlockEdgeAcyclic(srcRef.ref, dst.ref);
             if (cycleErr) return { ok: false as const, id: it.id, rel: it.rel, error: cycleErr };
           }
         }
-        const res = it.remove
-          ? await unlinkWorkItem(it.id, dst, it.rel, { harness })
+        if (it.blockerDecision && it.rel !== 'blocks') return {
+          ok: false as const, id: it.id, rel: it.rel, error: 'blockerDecision is valid only for rel=blocks',
+        };
+        let receipt: { record: BlockerDecisionRecord; replayed: boolean } | undefined;
+        const decisionOptions = it.rel === 'blocks' ? {
+          by: ident.ownerId,
+          blockerEvidenceContext: await blockerBoundaryContext(ctx, ident.ownerId, it.target_harness ?? harness),
+          ...(it.blockerDecision ? { blockerDecision: { input: it.blockerDecision, sessionId: ident.ownerId } } : {}),
+          onBlockerDecision: (value: { record: BlockerDecisionRecord; replayed: boolean }) => { receipt = value; },
+        } : {};
+        let res;
+        try { res = it.remove
+          ? await unlinkWorkItem(it.id, dst, it.rel, { harness, ...decisionOptions })
           : await linkWorkItem(it.id, dst, it.rel, {
               harness,
               by: ident.ownerId,
+              ...decisionOptions,
               ...(it.satisfaction ? { satisfaction: it.satisfaction } : {}),
             });
+        } catch (error) {
+          const problem = error as { code?: string; missing?: string[]; nextAction?: string; message?: string };
+          return { ok: false as const, id: it.id, rel: it.rel, error: problem.message ?? String(error),
+            ...(problem.code ? { code: problem.code, missing: problem.missing, nextAction: problem.nextAction } : {}) };
+        }
         return 'error' in res
           ? { ok: false as const, id: it.id, rel: it.rel, error: res.error }
           : {
@@ -238,6 +260,7 @@ export default defineTool({
               id: it.id,
               rel: it.rel,
               dst,
+              ...(receipt ? { blockerDecision: receipt.record, replayed: receipt.replayed } : {}),
               ...(normalizedFrom
                 ? {
                     targetKindNormalized: {

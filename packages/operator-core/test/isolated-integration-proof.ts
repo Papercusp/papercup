@@ -265,21 +265,25 @@ export function retainIsolatedNativeTaskDiagnostics(evidenceDir: string, task: R
   }), { mode: 0o600 });
 }
 
-/** Launch may return a refusal receipt or throw after enrolling a task. Capture
- * either outcome before the caller can dispose of its native home. A failed
- * diagnostic must remain visible without replacing the original launch error. */
+/** Launch or validation can fail before the caller disposes of its native
+ * home. Keep a successful launch's output when validation rejects it, too.
+ * A failed diagnostic must not replace the original launch/validation error. */
 export async function withIsolatedNativeLaunchDiagnostics<T>(evidenceDir: string,
   launch: () => Promise<T>, capture: (outcome:
-    { status: 'fulfilled'; result: T } | { status: 'rejected'; error: unknown }) => Promise<void>): Promise<T> {
+    { status: 'fulfilled'; result: T } | { status: 'rejected'; error: unknown; result?: T }) => Promise<void>,
+  validate?: (result: T) => Promise<void> | void): Promise<T> {
   let launchFailed = false;
-  let outcome!: { status: 'fulfilled'; result: T } | { status: 'rejected'; error: unknown };
+  let completed: { result: T } | undefined;
+  let outcome!: { status: 'fulfilled'; result: T } | { status: 'rejected'; error: unknown; result?: T };
   try {
     const result = await launch();
+    completed = { result };
+    await validate?.(result);
     outcome = { status: 'fulfilled', result };
     return result;
   } catch (error) {
     launchFailed = true;
-    outcome = { status: 'rejected', error };
+    outcome = { status: 'rejected', error, ...completed };
     throw error;
   }
   finally {

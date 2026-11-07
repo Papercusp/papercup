@@ -929,7 +929,7 @@ describe('work_items:burn_down', () => {
       workspaceId: 'ws-test',
       harnessSlug: 'papercusp',
       since: '2026-08-13T09:00:00.000Z',
-    });
+    }, undefined); // The transaction-helper mock supplies this SQL override.
     expect(res.data).toMatchObject({
       drainFlow: drainFlowReport,
       issueOccurrences: issueOccurrenceCounts,

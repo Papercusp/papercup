@@ -14,7 +14,8 @@ const h = vi.hoisted(() => ({
   identity: vi.fn(() => ({ ownerId: 'su-reviewer' })),
 }));
 
-vi.mock('../../harness/improvements/agent-review', () => ({
+vi.mock('../../harness/improvements/agent-review', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../harness/improvements/agent-review')>(),
   claimAgentReview: h.claim,
   claimNextAgentReview: h.claimNext,
   resubmitAgentReview: h.resubmit,
@@ -45,6 +46,30 @@ beforeEach(() => {
 });
 
 describe('improvements:agent-review public door', () => {
+  const acceptance = {
+    problem: 'An adopted revision cannot supply its missing proposal.',
+    evidence: ['The current resubmit schema has no proposal input.'],
+    outcome: 'The revision can submit an unsealed proposal for independent review.',
+    scope: 'The existing resubmit lifecycle only.',
+    completionCheck: 'The next independent review can seal the submitted proposal.',
+  };
+
+  it('accepts and forwards an unsealed proposal under the authenticated submitter identity', async () => {
+    const args = tool.args.parse({ mode: 'resubmit', id: 'WI-7', acceptance });
+    await call(args);
+    expect(h.resubmit).toHaveBeenCalledWith({ id: 'WI-7', submittedBy: 'su-reviewer', acceptance });
+  });
+
+  it.each([
+    { ...acceptance, authority: { kind: 'policy', policy: 'trusted-tool-failure-promotion' } },
+    { ...acceptance, sourceRevision: 'src-v1:' + 'a'.repeat(64) },
+    { ...acceptance, evidence: [] },
+    { ...acceptance, completionCheck: '   ' },
+  ])('refuses sealed or incomplete producer proposal input', (proposal) => {
+    expect(tool.args.safeParse({ mode: 'resubmit', id: 'WI-7', acceptance: proposal }).success).toBe(false);
+    expect(h.resubmit).not.toHaveBeenCalled();
+  });
+
   it('uses the caller canonical filter, and refuses a missing inherited fleet spec', async () => {
     const filter = { not: { field: 'plan', op: 'glob', value: 'p2p-*' } };
     h.claimSpec.mockResolvedValueOnce({ source: 'fleet', fleetSlug: 'verifiers', spec: { view: { filter } } });

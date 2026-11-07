@@ -19,7 +19,8 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { getRecipe } from '../../code-recipes-store';
 import { mergeIds, runBulk, bulkContent } from '../_bulk';
-import { deriveRecipeAuthority, recipeRevisionDiagnostics, toRecipeAuthorityMetadata } from '../../recipe-authority';
+import { deriveStoredRecipeAuthority, recipeRevisionDiagnostics, toRecipeAuthorityMetadata } from '../../recipe-authority';
+import { resolveConcreteHarnessSlug } from '../_harness-scope';
 
 export default defineTool({
   name: 'recipes:get',
@@ -64,7 +65,7 @@ export default defineTool({
     .refine((a) => Boolean(a.id) || (a.ids?.length ?? 0) > 0, {
       message: 'pass `id` (one) or `ids` (many)',
     }),
-  async handler(args) {
+  async handler(args, ctx) {
     const sql = getOrgPg().sql;
     const ids = mergeIds(args.id, args.ids);
     const env = await runBulk(
@@ -74,7 +75,9 @@ export default defineTool({
         if (!recipe) {
           return { ok: false as const, id, error: 'not_found' };
         }
-        const authority = await deriveRecipeAuthority(recipe.script);
+        const authority = await deriveStoredRecipeAuthority({ ...recipe,
+          context: { workspace: ctx.workspaceId, harness: resolveConcreteHarnessSlug(undefined, ctx) } });
+        if (!authority) return { ok: false as const, id, error: 'not_found' };
         const updatedAt = recipe.updatedAt ?? recipe.createdAt ?? '';
         const authorityDiagnostics = recipeRevisionDiagnostics({
           script: recipe.script,

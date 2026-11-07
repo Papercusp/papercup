@@ -2401,7 +2401,64 @@ describe('getFeedbackCore — honest no_qualified_responder', () => {
     expect((await stateRow(r.conversation_id)).routing).toMatchObject({ degraded: 'evidence-unavailable' });
   });
 
-  it('returns bounded unmeasured transcript refs without selecting or dispatching them', async () => {
+  it('preserves bounded subject uncertainty without claiming an instrument outage or measured absence', async () => {
+    const route = routeOf([]);
+    route.verdict = 'relevance_unmeasured';
+    route.snapshot.subjectValidation = {
+      subjects: ['consult routing'], threshold: 0.6, evaluated: 8,
+      unmeasured: 2, budgetLimited: 2, limit: 8, unresolved: [],
+    };
+    const { deps, reached } = makeDeps(route);
+    const r = asOk(await getFeedbackCore(baseReq, deps));
+    expect(r).toMatchObject({ verdict: 'relevance_unmeasured', reason: 'evidence_budget_limited',
+      state: 'no_qualified_responder', responder: null });
+    expect(r.degraded).toBeUndefined();
+    expect(r.hint).toContain('does not prove no expert exists');
+    expect(r.hint).toContain('8-owner bound; 2 candidates remain unmeasured');
+    expect(r.hint).toContain('retrying the same request does not expand this bound');
+    expect(r.unmeasured_candidates).toEqual([]);
+    expect(reached).toHaveLength(0);
+    const row = await stateRow(r.conversation_id);
+    expect(row.routing.degraded).toBeUndefined();
+    expect(row.routing.subjectValidation).toMatchObject({ evaluated: 8, unmeasured: 2, budgetLimited: 2 });
+  });
+
+  it.each([false, true])('does not rearm healthy bounded uncertainty on same-key retries (legacy label: %s)', async (legacy) => {
+    const route = routeOf([]);
+    route.verdict = 'relevance_unmeasured';
+    route.snapshot.subjectValidation = {
+      subjects: ['consult routing'], threshold: 0.6, evaluated: 8,
+      unmeasured: 2, budgetLimited: 2, limit: 8, unresolved: [],
+    };
+    const fixture = makeDeps(route);
+    const request = { ...baseReq, requestKey: `budget-limited-retry-${legacy}` };
+    const accepted = await acceptFeedbackRequestCore(request, fixture.deps);
+    if ('error' in accepted) throw new Error(accepted.error);
+    await continueFeedbackRequestCore(WS, accepted.conversation_id, {
+      getSql: () => rootSql, now: () => NOW,
+      execute: (payload, context) => getFeedbackCore(payload, { ...fixture.deps, acceptedRequest: context }),
+    });
+    if (legacy) await rootSql`UPDATE harness_shared.consult_state
+      SET routing = jsonb_set(routing, '{request,result,reason}', '"evidence_unavailable"'::jsonb)
+      WHERE workspace_id = ${WS} AND conversation_id = ${accepted.conversation_id}`;
+    const before = await stateRow(accepted.conversation_id);
+    const retries = await Promise.all([
+      acceptFeedbackRequestCore(request, fixture.deps), acceptFeedbackRequestCore(request, fixture.deps),
+    ]);
+    for (const retry of retries) expect(retry).toMatchObject({
+      conversation_id: accepted.conversation_id, state: 'no_qualified_responder', pending: false,
+      result: { verdict: 'relevance_unmeasured', reason: legacy ? 'evidence_unavailable' : 'evidence_budget_limited' },
+    });
+    expect(await stateRow(accepted.conversation_id)).toEqual(before);
+    expect(await continueFeedbackRequestCore(WS, accepted.conversation_id, {
+      getSql: () => rootSql, execute: async () => { throw new Error('healthy budget must not reroute'); },
+    })).toBe(false);
+    expect(fixture.routeCalls).toHaveLength(1);
+    expect(fixture.reached).toHaveLength(0);
+  });
+
+  it.each(['evidence-unavailable', undefined] as const)(
+    'returns bounded unmeasured transcript refs without selecting or dispatching them (%s)', async (degraded) => {
     const subject = 'packages/operator-core/lib/agent-tools/plans/spec-quality.ts';
     const candidates = Array.from({ length: 5 }, (_, index) => cand(`unmeasured-${index}`, {
       evidence: Array.from({ length: 5 }, (_, turn) => ({
@@ -2414,13 +2471,20 @@ describe('getFeedbackCore — honest no_qualified_responder', () => {
       status: 'mismatch', required: [subject],
       evidence: [{ subject, status: 'mismatch', score: 0.1 }], unresolved: [],
     } });
-    const { deps, opened, reached } = makeDeps(routeOf([], {
-      degraded: 'evidence-unavailable', all: [mismatch, ...candidates],
-    }));
+    const route = routeOf([], { degraded, all: [mismatch, ...candidates] });
+    if (!degraded) {
+      route.verdict = 'relevance_unmeasured';
+      route.snapshot.subjectValidation = {
+        subjects: [subject], threshold: 0.6, evaluated: 8,
+        unmeasured: 5, budgetLimited: 5, limit: 8, unresolved: [],
+      };
+    }
+    const { deps, opened, reached } = makeDeps(route);
     const r = asOk(await getFeedbackCore({ ...baseReq, resolvedSubjectRefs: [subject] }, deps));
-    expect(r).toMatchObject({ verdict: 'relevance_unmeasured', reason: 'evidence_unavailable',
+    expect(r).toMatchObject({ verdict: 'relevance_unmeasured',
+      reason: degraded ? 'evidence_unavailable' : 'evidence_budget_limited',
       state: 'no_qualified_responder', responder: null, remaining_candidates: [] });
-    expect(r.unmeasured_candidates).toEqual(candidates.slice(0, 3).map(candidate => ({
+    expect(r.unmeasured_candidates).toEqual(candidates.map(candidate => ({
       ownerId: candidate.ownerId, qualification: 'unmeasured', evidence: candidate.evidence.slice(0, 3),
     })));
     expect(r.hint).toContain('sessions:read');

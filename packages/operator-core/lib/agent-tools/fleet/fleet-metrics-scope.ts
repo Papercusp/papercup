@@ -461,12 +461,22 @@ export interface FleetMetricSource {
 }
 
 /** Measured census policy, scoped to this transaction; it never changes the pool defaults. */
-export async function withFleetMetricReadSql<T>(read: (sql: OrgSql) => Promise<T>): Promise<T> {
+export async function withFleetMetricReadSql<T>(
+  read: (sql: OrgSql) => Promise<T>,
+  options: { occurrenceCensus?: boolean } = {},
+): Promise<T> {
   return getOrgPg().sql.begin('isolation level repeatable read read only', async tx => {
     await tx`SELECT set_config(name, value, true) FROM (VALUES
       ('max_parallel_workers_per_gather','4'), ('min_parallel_table_scan_size','0'),
       ('min_parallel_index_scan_size','0'), ('parallel_setup_cost','0'),
       ('parallel_tuple_cost','0')) AS policy(name, value)`;
+    if (options.occurrenceCensus) {
+      // Measured broad occurrence reads pay for cold B-tree/heap access even
+      // through the covering index. Prefer sequential access while retaining
+      // bitmap index scans for selective windows. Item readers keep their
+      // existing policy; this setting resets on both commit and rollback.
+      await tx`SET LOCAL enable_indexscan = off`;
+    }
     return read(tx as unknown as OrgSql);
   }) as Promise<T>;
 }

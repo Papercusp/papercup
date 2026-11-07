@@ -30,6 +30,15 @@ import {
   type CursorState,
 } from '../../../agent-tools/coordination/read-cursors';
 import type { PackageOrientationClass } from '../../../agent-identities/package-orientation-classes';
+import { factCellKey, readFactBodyCursor, type FactBodyOffer } from '../../../agent-facts/cells';
+import { memoryFragmentOffer, type MemoryFragmentOffer } from '../../../memory/session-epoch-ledger';
+
+const memoryReceiptSqlMock = vi.hoisted(() => vi.fn(async (chunks: TemplateStringsArray, ..._values: unknown[]) =>
+  Array.isArray(chunks) && chunks.join('?').includes('RETURNING memory_id') ? [{ memory_id: 'inserted' }] : []));
+vi.mock('@papercusp/db-org', async orig => ({
+  ...await orig<typeof import('@papercusp/db-org')>(),
+  getOrgPg: () => ({ sql: memoryReceiptSqlMock }),
+}));
 
 const {
   buildMemoryContextBlockMock,
@@ -59,6 +68,7 @@ const {
   getLoopCarryNoteWithMetaMock,
   shortCarryHashMock,
   clipLoopCheckpointForWakeMock,
+  foldNeverDropFactsMock,
 } = vi.hoisted(() => ({
   buildMemoryContextBlockMock: vi.fn(),
   preparePendingControlTransitionMock: vi.fn(),
@@ -87,14 +97,20 @@ const {
   getLoopCarryNoteWithMetaMock: vi.fn(),
   shortCarryHashMock: vi.fn(),
   clipLoopCheckpointForWakeMock: vi.fn(),
+  foldNeverDropFactsMock: vi.fn(),
 }));
 
 // Same relative specifiers the source's dynamic imports use (this test is
 // colocated under routes/agent-mcp/).
 vi.mock('../../../memory/injection', () => ({
   buildMemoryContextBlock: buildMemoryContextBlockMock,
+  prepareMemoryContextBlock: async (...args: unknown[]) => {
+    const text = await buildMemoryContextBlockMock(...args);
+    return text ? { text, fragments: [] } : null;
+  },
 }));
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
+vi.mock('../../../agent-facts/store', () => ({ foldNeverDropFacts: foldNeverDropFactsMock }));
 vi.mock('../../../harness/routines/loop-turn-start-stamp', () => ({
   isLoopFirePrompt: isLoopFirePromptMock,
   isLoopTurnStartCandidate: isLoopTurnStartCandidateMock,
@@ -181,6 +197,7 @@ const post = async (body: unknown): Promise<{
   ok: boolean;
   text: string;
   deliveryToken?: string;
+  memoryFragmentOffers?: MemoryFragmentOffer[];
   turnStartOutcome?: {
     requestId: string;
     ambientGate: string;
@@ -218,6 +235,7 @@ it('suppresses all live turn-start context before recall, control or package rea
 });
 
 beforeEach(() => {
+  memoryReceiptSqlMock.mockClear();
   setSessionConfinementResolver(() => null);
   configureReadCursorStore(new InMemoryReadCursorStore());
   buildMemoryContextBlockMock.mockReset().mockResolvedValue('MEM-BLOCK');
@@ -266,6 +284,7 @@ beforeEach(() => {
   getLoopCarryNoteWithMetaMock.mockReset().mockResolvedValue({ note: null, updatedAtMs: null, readFailed: false });
   shortCarryHashMock.mockReset().mockReturnValue('abcdef012345');
   clipLoopCheckpointForWakeMock.mockReset().mockImplementation((note: string) => note);
+  foldNeverDropFactsMock.mockReset().mockResolvedValue([]);
 });
 afterEach(() => resetReadCursorStore());
 
@@ -278,6 +297,30 @@ afterEach(() => resetReadCursorStore());
 const settle = () => new Promise((r) => setTimeout(r, 0));
 
 describe('turn-start-memory admission (F-E: no length floor)', () => {
+  it('stages the cached text and its fragments together, then stamps only the next native emission proof', async () => {
+    const row = memoryFragmentOffer('memory', '11111111-1111-4111-8111-111111111111', 7, 'turn-start', '- complete operative memory ☃');
+    getMemoryBlockBoundedResultMock.mockResolvedValue({ status: 'ready', block: { text: row.rendered, fragments: [row] } });
+    buildTurnStartOrientationBlockMock.mockResolvedValue({ block: '## Orientation', deliveryToken: 'orientation-token' });
+    const out = await post({ owner: 'su-receipt', prompt: 'relevant query', client: 'codex' });
+    expect(out.text).toContain(row.rendered);
+    expect(out.deliveryToken).toBe('orientation-token');
+    expect(out.memoryFragmentOffers).toEqual([row]);
+    const stamps = () => memoryReceiptSqlMock.mock.calls.filter(([chunks]) => chunks.join('?').includes('INSERT INTO harness_shared.memory_session_surfaced'));
+    expect(stamps()).toHaveLength(0);
+    const { rendered: _text, ...manifest } = row;
+    await post({ owner: 'su-receipt', prompt: 'continue', memoryEnabled: false,
+      confirmedMemoryDeliveries: [{ token: out.deliveryToken, fragments: [manifest] }] });
+    expect(stamps()).toHaveLength(1);
+  });
+
+  it('offers no memory receipt when the bounded memory response misses its deadline', async () => {
+    getMemoryBlockBoundedResultMock.mockResolvedValue({ status: 'deadline', block: null });
+    const out = await post({ owner: 'su-no-memory', prompt: 'relevant query', client: 'codex' });
+    expect(out.memoryFragmentOffers).toBeUndefined();
+    expect(memoryReceiptSqlMock.mock.calls.filter(([chunks]) =>
+      chunks.join('?').includes('INSERT INTO harness_shared.memory_session_surfaced'))).toHaveLength(0);
+  });
+
   it('preserves bound-plan orientation and eligible memory alongside cited knowledge with server-bound agent scope', async () => {
     detectHarnessSlugSyncMock.mockReturnValue({ slug: 'papercusp',source: 'meta-papercup' });
     buildTurnStartOrientationBlockMock.mockResolvedValue({ block: '## Orientation\nBound plan: current repair requirement',deliveryToken: null });
@@ -322,7 +365,7 @@ describe('turn-start-memory admission (F-E: no length floor)', () => {
 
     expect(out.text).toContain('improvement triage: top EI-1');
     expect(out.text).not.toContain('MEM-BLOCK');
-    expect(getMemoryBlockBoundedResultMock).toHaveBeenCalledWith('ws-test', 'turn-start:sess-1', expect.any(Function), { sessionId: 'sess-1' });
+    expect(getMemoryBlockBoundedResultMock).toHaveBeenCalledWith('ws-test', 'turn-start:sess-1:receipts-v1', expect.any(Function), { sessionId: 'sess-1' });
     expect(recordInjectionCoverageMock).not.toHaveBeenCalled();
   });
 
@@ -740,6 +783,33 @@ describe('granted-sources leg (Personal Vault + subscribed sources + pot)', () =
  * argument at all, not with a null that would discard its every delivery.
  */
 describe('orientation delivery token relay (P-005)', () => {
+  it('stages complete native bodies, then confirms only the emitted manifest subset', async () => {
+    const a = { scope: 'workspace', scopeRef: null, key: 'guard-rail:a', cellVersion: '0003:0:node', body: 'full a' };
+    const b = { ...a, key: 'guard-rail:b', body: 'full b' };
+    const long = { ...a, key: 'guard-rail:long', body: 'x'.repeat(5000) };
+    foldNeverDropFactsMock.mockResolvedValue([a, b, long]);
+    const first = await post({ owner: 'native-body', prompt: 'go', confirmedDelivery: null, confirmedFactBodies: [] });
+    const offers = (first as typeof first & { factBodyOffers: FactBodyOffer[] }).factBodyOffers;
+    expect(offers.map(row => row.key)).toEqual([a.key, b.key]);
+    expect(first.text).toContain(offers[0].rendered);
+    expect(first.text).toContain('1 standing fact bodies omitted');
+    // Compose/return alone is not a read. Missing proof retains the replay floor.
+    expect(await readFactBodyCursor('native-body')).toBeNull();
+    const retry = await post({ owner: 'native-body', prompt: 'go', confirmedDelivery: null, confirmedFactBodies: [] });
+    await post({ owner: 'native-body', prompt: 'confirm', confirmedDelivery: retry.deliveryToken,
+      confirmedFactBodies: [offers[0]] });
+    const cursor = await readFactBodyCursor('native-body');
+    expect(cursor?.versions).toEqual({ [factCellKey(a)]: a.cellVersion });
+    expect(cursor?.versions[factCellKey(b)]).toBeUndefined();
+    expect(cursor?.versions[factCellKey(long)]).toBeUndefined();
+  });
+
+  it('keeps old key-only hosts unsupported for body confirmation', async () => {
+    await post({ owner: 'legacy-body', prompt: 'go', confirmedDelivery: 'keys-only' });
+    expect(foldNeverDropFactsMock).not.toHaveBeenCalled();
+    expect(await readFactBodyCursor('legacy-body')).toBeNull();
+  });
+
   it('relays a confirmed token in and the new delivery token out', async () => {
     buildTurnStartOrientationBlockMock.mockResolvedValue({ block: '## Orientation\n- x', deliveryToken: 'tok-2' });
 

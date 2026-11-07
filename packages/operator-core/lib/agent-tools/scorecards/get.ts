@@ -46,6 +46,8 @@ const SCORECARD_GET_DIAGNOSTIC_STAGE = {
 type ScorecardGetDiagnosticStage = (typeof SCORECARD_GET_DIAGNOSTIC_STAGE)[keyof typeof SCORECARD_GET_DIAGNOSTIC_STAGE];
 
 export const scorecardGetArgs = z.object({
+  comparisonTime: z.string().datetime({ offset: true }).optional()
+    .describe('Read evidence age/currentness at one UTC clock; defaults to request time. Historical values and ratings stay immutable.'),
   issueId: z
     .string()
     .min(1)
@@ -733,7 +735,8 @@ export default defineTool({
             const recipePage = args.rerunRecipeOffset !== undefined;
             const result = await runDiagnosticStage(
               SCORECARD_GET_DIAGNOSTIC_STAGE.evidenceRead,
-              () => recipePage ? readScorecardRecipeHeader(issueId) : readScorecardEvidence(issueId),
+              () => recipePage ? readScorecardRecipeHeader(issueId) : args.comparisonTime
+                ? readScorecardEvidence(issueId, args.comparisonTime) : readScorecardEvidence(issueId),
             );
             if (result.kind === 'not_found') {
               return respond({ ok: false, error: `scorecard '${issueId}' not found` });

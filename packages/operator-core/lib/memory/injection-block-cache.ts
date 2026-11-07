@@ -70,8 +70,8 @@ export interface MemoryBlockBoundedOpts {
   hardTtlMs?: number;
 }
 
-export type MemoryBlockBoundedResult =
-  | { status: 'ready'; block: string | null }
+export type MemoryBlockBoundedResult<T = string> =
+  | { status: 'ready'; block: T | null }
   | { status: 'deadline'; block: null }
   | { status: 'error'; block: null };
 
@@ -82,12 +82,12 @@ export type MemoryBlockBoundedResult =
  * `scopeKey` must isolate conversations — stale recall must never bleed across
  * a different role/user/conversation.
  */
-export async function getMemoryBlockBoundedResult(
+export async function getMemoryBlockBoundedResult<T = string>(
   workspaceId: string,
   scopeKey: string,
-  build: (deadline: MemoryWorkDeadline, ctx: MemoryBlockBuildContext) => Promise<string | null>,
+  build: (deadline: MemoryWorkDeadline, ctx: MemoryBlockBuildContext) => Promise<T | null>,
   opts: MemoryBlockBoundedOpts = {},
-): Promise<MemoryBlockBoundedResult> {
+): Promise<MemoryBlockBoundedResult<T>> {
   if (opts.sessionId) {
     const { sessionAllowsAmbientContext } = await import('../capability-envelope/session-confinement-port');
     if (!await sessionAllowsAmbientContext({ ownerId: opts.sessionId, workspaceId }))
@@ -102,7 +102,7 @@ export async function getMemoryBlockBoundedResult(
   let callerAnswered = false;
   const ctx: MemoryBlockBuildContext = { callerWaiting: () => !callerAnswered };
 
-  const res = await getOrSetBounded<string | null>(
+  const res = await getOrSetBounded<T | null>(
     cache,
     workspaceId,
     `memory-inject-block:${scopeKey}`,

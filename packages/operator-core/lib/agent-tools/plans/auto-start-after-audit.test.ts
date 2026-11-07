@@ -4,6 +4,21 @@ import { autoStartAfterActivationAudit } from './auto-start-after-audit';
 const plan = (status: string) => `---\ntitle: T\nstatus: ${status}\n---\n\n## Items\n\n- [ ] **P-001** — one\n`;
 
 describe('autoStartAfterActivationAudit (WI-10008137)', () => {
+  it('retains the full failed-start diagnostic and partial promotion receipt', async () => {
+    const receipt = { ok: false, error: 'admission_refused', promotion: { promoted: 2 },
+      activationReadiness: { schemaVersion: 1, advisory: true, ready: false } };
+    const out = await autoStartAfterActivationAudit({ slug: 's', planContent: plan('draft'),
+      start: vi.fn().mockResolvedValue({ data: { results: [receipt] } }) });
+    expect(out).toEqual({ attempted: true, started: false,
+      refusal: { error: 'admission_refused' }, receipt });
+  });
+
+  it('retains actual consultation provenance after a successful nested start', async () => {
+    const activationConsult = { basis: { planHash: 'same-plan' }, consult: { outcome: 'proceed' } };
+    const out = await autoStartAfterActivationAudit({ slug: 's', planContent: plan('draft'),
+      start: vi.fn().mockResolvedValue({ data: { results: [{ ok: true, activationConsult }] } }) });
+    expect(out).toEqual({ attempted: true, started: true, transitioned: false, autoApproved: false, activationConsult });
+  });
   it('runs plans:start for a draft plan and reports a start', async () => {
     const start = vi.fn().mockResolvedValue({
       data: { ok: true, results: [{ ok: true, slug: 's', transitioned: true, autoApproved: true }] },

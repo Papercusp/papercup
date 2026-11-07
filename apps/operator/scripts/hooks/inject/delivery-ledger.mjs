@@ -36,7 +36,9 @@ import { join } from 'node:path';
 /**
  * @typedef {object} DeliveryLedger
  * @property {() => string | null} confirmed  the token this session last proved it emitted
- * @property {(token: unknown, emission?: { payload?: string, client?: string, nativeSessionId?: string | null, control?: object | null }) => void} offer
+ * @property {() => object[]} confirmedFactBodies private manifests from that token's immutable stdout receipt
+ * @property {() => object[]} confirmedMemoryDeliveries exact fragments from recent immutable stdout receipts
+ * @property {(token: unknown, emission?: { payload?: string, client?: string, nativeSessionId?: string | null, control?: object | null, factBodyOffers?: object[] }) => void} offer
  *   remember the returned token and the exact payload that the caller will emit
  * @property {() => boolean} commit           record the offered token; call ONLY after emitting
  */
@@ -46,6 +48,67 @@ export const MAX_TURN_START_OUTCOME_RECEIPTS = 128;
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const isHash = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+
+function factManifest(row) {
+  if (!row || typeof row.scope !== 'string' || typeof row.key !== 'string' ||
+      !(row.ref === null || typeof row.ref === 'string') ||
+      typeof row.cellVersion !== 'string' || !row.cellVersion || !isHash(row.bodySha256) ||
+      !Number.isSafeInteger(row.bodyBytes) || row.bodyBytes <= 0) return null;
+  return { scope: row.scope, ref: row.ref, key: row.key, cellVersion: row.cellVersion,
+    bodySha256: row.bodySha256, bodyBytes: row.bodyBytes };
+}
+
+function memoryManifest(row) {
+  if (!row || !['memory', 'corpus'].includes(row.kind) || typeof row.id !== 'string' || !row.id || row.id.length > 1000 ||
+      !Number.isSafeInteger(row.epoch) || row.epoch < 0 || typeof row.port !== 'string' || !row.port || row.port.length > 100 ||
+      !isHash(row.bodySha256) || !Number.isSafeInteger(row.bodyBytes) || row.bodyBytes <= 0) return null;
+  return { kind: row.kind, id: row.id, epoch: row.epoch, port: row.port,
+    bodySha256: row.bodySha256, bodyBytes: row.bodyBytes };
+}
+
+function emittedMemoryFragments(payload, client, offers) {
+  if (typeof payload !== 'string' || !Array.isArray(offers) || offers.length > 128) return [];
+  let context;
+  try {
+    if (client === 'omp') context = payload;
+    else if (client === 'claude' || client === 'codex') {
+      const output = JSON.parse(payload);
+      const expected = client === 'codex' ? 'PostToolUse' : 'PostToolBatch';
+      if (!['UserPromptSubmit', expected].includes(output?.hookSpecificOutput?.hookEventName)) return [];
+      context = output.hookSpecificOutput.additionalContext;
+    }
+  } catch { return []; }
+  if (typeof context !== 'string') return [];
+  return offers.flatMap(offer => {
+    const manifest = memoryManifest(offer);
+    return manifest && typeof offer.rendered === 'string' && offer.rendered &&
+      (`\n${context.trimEnd()}\n`).includes(`\n${offer.rendered}\n`) &&
+      hash(offer.rendered) === manifest.bodySha256 && Buffer.byteLength(offer.rendered) === manifest.bodyBytes
+      ? [manifest] : [];
+  });
+}
+
+/** Inspect the final adapter output, never its input or a server fingerprint. */
+function emittedFactBodies(payload, client, offers) {
+  if (typeof payload !== 'string' || !Array.isArray(offers)) return [];
+  let context;
+  try {
+    if (client === 'omp') context = payload;
+    else if (client === 'claude' || client === 'codex') {
+      const output = JSON.parse(payload);
+      if (output?.hookSpecificOutput?.hookEventName !== 'UserPromptSubmit') return [];
+      context = output.hookSpecificOutput.additionalContext;
+    } else return [];
+  } catch { return []; }
+  if (typeof context !== 'string') return [];
+  const lines = new Set(context.trimEnd().split('\n'));
+  return offers.flatMap(offer => {
+    const manifest = factManifest(offer);
+    return manifest && typeof offer.rendered === 'string' && lines.has(offer.rendered) &&
+      hash(offer.rendered) === manifest.bodySha256 && Buffer.byteLength(offer.rendered) === manifest.bodyBytes
+      ? [manifest] : [];
+  });
+}
 const revision = value => value && isHash(value.specificationRevision) && isHash(value.stateRevision)
   ? { specificationRevision: value.specificationRevision, stateRevision: value.stateRevision }
   : null;
@@ -72,6 +135,8 @@ function emissionMetadata(owner, emission) {
     nativeSessionId: typeof emission?.nativeSessionId === 'string' && emission.nativeSessionId.length <= 200
       ? emission.nativeSessionId : null,
     control,
+    factBodies: emittedFactBodies(payload, emission?.client, emission?.factBodyOffers),
+    memoryFragments: emittedMemoryFragments(payload, emission?.client, emission?.memoryFragmentOffers),
   };
 }
 
@@ -159,10 +224,11 @@ export function ledgerDir(env = process.env) {
  * Open the ledger for one session, or null when it cannot be written.
  * @param {string | null | undefined} owner  PAPERCUSP_SID
  * @param {NodeJS.ProcessEnv} [env]
+ * @param {'turn-start' | 'mid-turn'} [port]
  * @returns {DeliveryLedger | null}
  */
-export function openDeliveryLedger(owner, env = process.env) {
-  if (typeof owner !== 'string' || !owner) return null;
+export function openDeliveryLedger(owner, env = process.env, port = 'turn-start') {
+  if (typeof owner !== 'string' || !owner || !['turn-start', 'mid-turn'].includes(port)) return null;
   const dir = ledgerDir(env);
   try {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -173,8 +239,11 @@ export function openDeliveryLedger(owner, env = process.env) {
   // Session ids are `su-<uuid>`; anything else is flattened so it cannot name a
   // path outside the ledger directory.
   const key = owner.replace(/[^A-Za-z0-9._-]/g, '_');
-  const file = join(dir, `${key}.token`);
-  const receipts = join(dir, `${key}.emissions`);
+  // Mid-turn must never replace the orientation ACK token. Both ports retain
+  // the real recipient in their immutable receipts and share fragment proofs.
+  const namespace = port === 'turn-start' ? key : `${key}.mid-turn`;
+  const file = join(dir, `${namespace}.token`);
+  const receipts = join(dir, `${namespace}.emissions`);
   /** @type {{ token: string, metadata: ReturnType<typeof emissionMetadata> } | null} */
   let offered = null;
   return {
@@ -185,6 +254,37 @@ export function openDeliveryLedger(owner, env = process.env) {
       } catch {
         return null;
       }
+    },
+    confirmedFactBodies() {
+      try {
+        const token = readFileSync(file, 'utf8').trim();
+        const receipt = JSON.parse(readFileSync(join(receipts, `${hash(token)}.json`), 'utf8'));
+        if (receipt.stage !== 'stdout-emitted' || receipt.owner !== owner || receipt.token !== token ||
+            !Array.isArray(receipt.factBodies)) return [];
+        return receipt.factBodies.map(factManifest).filter(Boolean);
+      } catch { return []; }
+    },
+    confirmedMemoryDeliveries() {
+      // Read immutable receipts rather than only the last-writer token pointer:
+      // overlapping hooks can finish and return their proofs in either order.
+      try {
+        const files = [join(dir, `${key}.emissions`), join(dir, `${key}.mid-turn.emissions`)].flatMap(directory => {
+          try { return readdirSync(directory).filter(name => /^[a-f0-9]{64}\.json$/.test(name))
+            .map(name => ({ name, directory, mtime: statSync(join(directory, name)).mtimeMs })); }
+          catch { return []; }
+        })
+          .sort((a, b) => b.mtime - a.mtime || a.name.localeCompare(b.name)).slice(0, 16);
+        return files.flatMap(({ name, directory }) => {
+          try {
+            const receipt = JSON.parse(readFileSync(join(directory, name), 'utf8'));
+            if (receipt.stage !== 'stdout-emitted' || receipt.owner !== owner || typeof receipt.token !== 'string' ||
+                hash(receipt.token) + '.json' !== name || !Array.isArray(receipt.memoryFragments) ||
+                receipt.memoryFragments.length > 128) return [];
+            const fragments = receipt.memoryFragments.map(memoryManifest).filter(Boolean);
+            return fragments.length ? [{ token: receipt.token, fragments }] : [];
+          } catch { return []; }
+        });
+      } catch { return []; }
     },
     offer(token, emission) {
       offered = typeof token === 'string' && token

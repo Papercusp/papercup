@@ -333,38 +333,110 @@ describe('default fleet reports over the real current-spec queue', () => {
     expect(current[0]?.failedFloors).not.toContain('claim-hold');
   }, 60_000);
 
-  it('aggregates uncapped terminal stock with exact report, actor and verification-service identity parity', async ({ onTestFailed }) => {
+  it('uses sequential broad occurrence reads and indexed narrow reads without leaking the census policy', async () => {
+    await sql`INSERT INTO harness_shared.work_item_occurrences
+      (workspace_id, canonical_harness_slug, canonical_work_item_id, source_tool,
+       report_kind, reported_title, evidence, occurred_at)
+      SELECT 'default', CASE WHEN n % 5 = 0 THEN 'other-harness' ELSE ${HARNESS} END,
+        'EI-' || (n % 1000), 'system',
+        CASE WHEN n % 4 = 0 THEN 'canonical-created' ELSE 'duplicate' END,
+        repeat('report ', 100), jsonb_build_object('source', md5(n::text)),
+        '2026-10-09T12:00:00Z'::timestamptz + n * interval '1 second'
+      FROM generate_series(1, 20000) n`;
+    // A second harness can reuse a canonical id: the census must retain the
+    // composite identity rather than collapsing it across harnesses.
+    await sql`INSERT INTO harness_shared.work_item_occurrences
+      (workspace_id, canonical_harness_slug, canonical_work_item_id, source_tool,
+       report_kind, reported_title, occurred_at)
+      VALUES ('default', 'other-harness', 'EI-1', 'system', 'duplicate', 'other harness',
+        '2026-10-09T12:00:00Z'),
+        ('foreign', ${HARNESS}, 'EI-1', 'system', 'duplicate', 'other workspace',
+        '2026-10-09T12:00:00Z')`;
+    await sql`ANALYZE harness_shared.work_item_occurrences`;
+    type PlanNode = { 'Node Type': string; 'Index Name'?: string; Plans?: PlanNode[] };
+    // A one-connection pool supports begin() and makes setting restoration
+    // observable on the same backend; ReservedSql does not provide begin().
+    const reader = (await import('postgres')).default(db.adminDsn, { max: 1, prepare: false });
+    h.sql = reader;
+    try {
+      const before = await reader`SELECT current_setting('enable_indexscan') value`;
+      expect(before[0]?.value).toBe('on');
+      const census = (since: string, harnessSlug: string | null) => withFleetMetricReadSql(async tx => {
+        let query: ReturnType<typeof tx> | undefined;
+        const observed = new Proxy(tx, { apply(target, thisArg, args) {
+          query = Reflect.apply(target, thisArg, args);
+          return query;
+        } });
+        const counts = await readIssueOccurrenceCounts({ workspaceId: 'default', harnessSlug, since }, observed);
+        if (!query) throw new Error('canonical occurrence query was not captured');
+        const plans = await tx`EXPLAIN (FORMAT JSON) ${query}`;
+        const nodes: PlanNode[] = [];
+        const visit = (node: PlanNode) => { nodes.push(node); node.Plans?.forEach(visit); };
+        visit(plans[0]['QUERY PLAN'][0].Plan);
+        return { counts, nodes };
+      }, { occurrenceCensus: true });
+      const broad = await census('2026-10-09T11:00:00Z', HARNESS);
+      expect(broad.counts).toMatchObject({ canonicalClusters: 800, rawOccurrences: 16000, duplicateOccurrences: 12000 });
+      expect(broad.nodes).toContainEqual(expect.objectContaining({ 'Node Type': 'Seq Scan' }));
+      expect(broad.nodes.some(node => ['Index Scan', 'Index Only Scan'].includes(node['Node Type']))).toBe(false);
+      const narrow = await census('2026-10-09T17:33:00Z', HARNESS);
+      expect(narrow.counts).toMatchObject({ canonicalClusters: 16, rawOccurrences: 16, duplicateOccurrences: 12 });
+      expect(narrow.nodes).toContainEqual(expect.objectContaining({ 'Node Type': 'Bitmap Index Scan',
+        'Index Name': 'work_item_occurrences_flow_idx' }));
+      expect((await census('2026-10-09T11:00:00Z', null)).counts).toMatchObject({
+        canonicalClusters: 1001, rawOccurrences: 20001, duplicateOccurrences: 15001 });
+      expect(await reader`SELECT current_setting('enable_indexscan') value`).toEqual(before);
+      expect(await withFleetMetricReadSql(async tx =>
+        (await tx`SELECT current_setting('enable_indexscan') value`)[0]?.value)).toBe('on');
+      const failure = new Error('occurrence census failure');
+      await expect(withFleetMetricReadSql(async tx => {
+        expect((await tx`SELECT current_setting('enable_indexscan') value`)[0]?.value).toBe('off');
+        throw failure;
+      }, { occurrenceCensus: true })).rejects.toBe(failure);
+      expect(await reader`SELECT current_setting('enable_indexscan') value`).toEqual(before);
+    } finally {
+      h.sql = sql;
+      await reader.end();
+    }
+  }, 30_000);
+
+  it('aggregates nested bug-lane terminal stock with exact report, actor and verification-service identity parity', async ({ onTestFailed }) => {
     const timings: { phase: string; elapsedMs: number }[] = [];
     let activePhase: { phase: string; startedAt: number } | null = null;
     const phase = async <T>(name: string, work: () => PromiseLike<T>): Promise<T> => {
       const startedAt = Date.now();
       activePhase = { phase: name, startedAt };
-      console.error(`FLEET_AGGREGATE_PHASE ${JSON.stringify({ phase: name, event: 'started' })}`);
+      // Fixture diagnostics follow the test harness stderr sink; unexpected
+      // product console errors must still fail through vitest-fail-on-console.
+      process.stderr.write(`FLEET_AGGREGATE_PHASE ${JSON.stringify({ phase: name, event: 'started' })}\n`);
       const result = await work();
       const timing = { phase: name, elapsedMs: Date.now() - startedAt };
       timings.push(timing);
       activePhase = null;
-      console.error(`FLEET_AGGREGATE_PHASE ${JSON.stringify({ ...timing, event: 'completed' })}`);
+      process.stderr.write(`FLEET_AGGREGATE_PHASE ${JSON.stringify({ ...timing, event: 'completed' })}\n`);
       return result;
     };
     onTestFailed(() => {
-      console.error(`FLEET_AGGREGATE_FAILURE ${JSON.stringify({ completed: timings,
-        active: activePhase && { phase: activePhase.phase, elapsedMs: Date.now() - activePhase.startedAt } })}`);
+      process.stderr.write(`FLEET_AGGREGATE_FAILURE ${JSON.stringify({ completed: timings,
+        active: activePhase && { phase: activePhase.phase, elapsedMs: Date.now() - activePhase.startedAt } })}\n`);
     });
-    const filter: FilterNode = { all: [
+    // Lane exclusions wrap the positive bug predicate in nested conjunctions
+    // and alternatives. Keep this real-store parity check on that serving shape.
+    const filter: FilterNode = { all: [{ any: [{ all: [
       { field: 'kind', op: '=', value: 'bug' },
       { any: [{ field: 'id', op: 'in', value: ids },
         { field: 'title', op: 'contains', value: 'aggregate census' }] },
-    ] };
+    ] }] }] };
     await phase('seed-fleet', () => seedFleet('verification', filter));
     await phase('seed-queue', () => seedQueue());
     const oldAt = createdAt - 86_400_000;
-    // More than the display cap, with large bodies that must be evaluated by
-    // the source predicate without crossing the client in terminal rows.
+    // More than the display cap, preserving nested selection and all identity
+    // combinations. Keep this cardinality/parity fixture compact: the separate
+    // body-projection and raw-payload TOAST tests exercise large envelopes.
     await phase('seed-terminal-stock', () => sql`INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, title, summary, status, item_kind,
        created_ts, updated_ts, closed_ts, terminal_owner, authority, payload)
-      SELECT 'default', ${HARNESS}, 'WI-aggregate-' || n, 'aggregate census', repeat('body ', 1000),
+      SELECT 'default', ${HARNESS}, 'WI-aggregate-' || n, 'aggregate census', 'terminal body ' || n,
         'done', 'bug', ${createdAt}, ${createdAt}, ${createdAt},
         CASE n % 4 WHEN 0 THEN 'system:fixture' WHEN 1 THEN 'su-outsider' WHEN 2 THEN NULL ELSE 'su-member' END,
         CASE n % 6 WHEN 0 THEN NULL WHEN 1 THEN 'committed' WHEN 2 THEN 'validated'

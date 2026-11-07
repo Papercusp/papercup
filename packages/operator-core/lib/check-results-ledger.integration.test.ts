@@ -105,6 +105,63 @@ function sqlProbe(expectValue: number) {
   };
 }
 
+it('reads exact historical rubric-check receipts without substituting later or other-subject results', async () => {
+  const rubricRef = 'historical-receipt-fixture';
+  const subject = { kind: 'fleet', ref: 'fleet:historical' };
+  const results: RubricCheckResult[] = [
+    { check: { id: 'history:0', rubricRef, criterionKey: 'history', kind: 'probe', value: 3, unit: null, subject },
+      verdict: 'fail', measuredAt: '2026-11-01T12:00:00Z', durationMs: 1 },
+    { check: { id: 'history:0', rubricRef, criterionKey: 'history', kind: 'probe', value: 99, unit: null, subject },
+      verdict: 'pass', measuredAt: '2026-11-03T12:00:00Z', durationMs: 1 },
+    { check: { id: 'history:0', rubricRef, criterionKey: 'history', kind: 'probe', value: 100, unit: null,
+        subject: { ...subject, ref: 'fleet:other' } },
+      verdict: 'pass', measuredAt: '2026-11-01T12:00:00Z', durationMs: 1 },
+  ];
+  const recorded = await recordRubricCheckResults(results, SCOPE, sql());
+  const oldId = recorded[0]!;
+  const input = { rubricRef, workspaceId: WS, subject, asOf: '2026-11-02T00:00:00Z' };
+  const old = (await readLatestRubricCheckResults(input, sql())).get('history:0')!;
+  expect(old.testRunId).toBe(oldId);
+  expect(old.check.value).toBe(3);
+  expect((await readLatestRubricCheckResults({ ...input, testRunIds: [oldId] }, sql())).get('history:0')).toEqual(old);
+  expect(await readLatestRubricCheckResults({ ...input, testRunIds: [recorded[1]!] }, sql())).toEqual(new Map());
+  expect(await readLatestRubricCheckResults({ ...input, testRunIds: [recorded[2]!] }, sql())).toEqual(new Map());
+  expect(await readLatestRubricCheckResults({ ...input, testRunIds: [] }, sql())).toEqual(new Map());
+  await expect(readLatestRubricCheckResults({ ...input, asOf: 'invalid' }, sql())).rejects.toThrow('valid timestamp');
+});
+
+it('grading history keeps latest attempt and last measurement in the same subject', async () => {
+  const rubricRef = 'grading-subject-history';
+  const subject = { kind: 'artifact', ref: 'build-a' };
+  const criterion = { key: 'history', check: { kind: 'probe', probe: {
+    expect: { path: '$.value', op: 'eq', value: 42 } }, maxAgeMs: 60_000 } };
+  const check = { id: 'history:0', rubricRef, criterionKey: 'history', kind: 'probe' as const, unit: 'ms', subject };
+  const ids = await recordRubricCheckResults([
+    { check: { ...check, value: 42 }, verdict: 'pass', measuredAt: '2026-11-01T12:00:00Z', durationMs: 1 },
+    { check: { ...check, value: null }, verdict: 'error', measuredAt: '2026-11-01T12:00:30Z', durationMs: 1 },
+    { check: { ...check, value: 999, subject: { ...subject, ref: 'build-b' } }, verdict: 'pass',
+      measuredAt: '2026-11-01T12:00:40Z', durationMs: 1 },
+    { check: { ...check, value: 123 }, verdict: 'pass', measuredAt: '2026-11-01T13:00:00Z', durationMs: 1 },
+  ], SCOPE, sql());
+  const input = { rubricRef, workspaceId: WS, subject, asOf: '2026-11-01T12:01:01Z' };
+  const latest = await readLatestRubricCheckResults(input, sql());
+  expect(latest.get(check.id)).toMatchObject({ testRunId: ids[1], status: 'error',
+    lastMeasurement: { testRunId: ids[0], check: { value: 42, subject } } });
+  const grade = (rows: typeof latest) => fillRatingsFromLedger({ criteria: [criterion], callerRatings: {},
+    latest: rows, nowMs: Date.parse(input.asOf) });
+  expect(grade(latest)).toMatchObject({ ok: true, ratings: { history: { rating: 'unknown',
+    ledgerResult: { testRunId: ids[1], value: null, freshness: 'failed' },
+    lastMeasurement: { testRunId: ids[0], value: 42, freshness: 'stale', ageMs: 61_000 } } } });
+  expect(grade(await readLatestRubricCheckResults(input, sql()))).toEqual(grade(latest));
+  expect(await readLatestRubricCheckResults({ ...input, subject: { ...subject, ref: 'never-measured' } }, sql())).toEqual(new Map());
+  expect(await readLatestRubricCheckResults({ ...input, workspaceId: OTHER_WS }, sql())).toEqual(new Map());
+  expect((await readLatestRubricCheckResults({ ...input, testRunIds: [ids[1]!] }, sql())).get(check.id))
+    .not.toHaveProperty('lastMeasurement');
+  const newer = await readLatestRubricCheckResults({ rubricRef, workspaceId: WS, subject }, sql());
+  expect(newer.get(check.id)).toMatchObject({ testRunId: ids[3], status: 'pass', check: { value: 123 } });
+  expect(newer.get(check.id)).not.toHaveProperty('lastMeasurement');
+});
+
 /** Answers like dev:pg_query: one row. */
 async function dispatchTool(name: string): Promise<unknown> {
   if (name !== SQL_PROBE_TOOL) throw new Error(`unexpected tool ${name}`);

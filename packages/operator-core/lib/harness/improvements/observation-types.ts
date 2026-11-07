@@ -120,6 +120,8 @@ export interface ObservationRatingEntry {
   ratedFrom?: 'ledger';
   /** The ledger row that decided a `ratedFrom:'ledger'` rating. */
   ledgerResult?: ObservationLedgerResult;
+  /** Historical measurement displayed beside a failed latest attempt, never used as its rating. */
+  lastMeasurement?: ObservationLedgerResult;
 }
 
 /** One harness_shared.test_runs rubric-check row, as cited by a ledger-filled rating. */
@@ -129,6 +131,12 @@ export interface ObservationLedgerResult {
   unit: string | null;
   provenance?: RecordedMeasurementProvenance;
   provenanceStatus?: 'retained' | 'partial' | 'legacy-missing';
+  finishedAt?: string;
+  status?: 'pass' | 'fail' | 'error';
+  comparisonTime?: string;
+  ageMs?: number | null;
+  maxAgeMs?: number;
+  freshness?: 'fresh' | 'stale' | 'failed' | 'invalid' | 'unbounded';
 }
 
 /**
@@ -1385,6 +1393,13 @@ function asLedgerResult(v: unknown): ObservationLedgerResult | null {
   if (!(r.unit === null || typeof r.unit === 'string')) return null;
   const provenance = parseRecordedMeasurementProvenance(r.provenance);
   return { testRunId: r.testRunId, value, unit: r.unit,
+    ...(typeof r.finishedAt === 'string' ? { finishedAt: r.finishedAt } : {}),
+    ...(['pass', 'fail', 'error'].includes(String(r.status)) ? { status: r.status as ObservationLedgerResult['status'] } : {}),
+    ...(typeof r.comparisonTime === 'string' ? { comparisonTime: r.comparisonTime } : {}),
+    ...(r.ageMs === null || (typeof r.ageMs === 'number' && Number.isFinite(r.ageMs)) ? { ageMs: r.ageMs as number | null } : {}),
+    ...(typeof r.maxAgeMs === 'number' && Number.isSafeInteger(r.maxAgeMs) && r.maxAgeMs > 0 ? { maxAgeMs: r.maxAgeMs } : {}),
+    ...(['fresh', 'stale', 'failed', 'invalid', 'unbounded'].includes(String(r.freshness))
+      ? { freshness: r.freshness as ObservationLedgerResult['freshness'] } : {}),
     ...(provenance ? { provenance } : {}), provenanceStatus: measurementProvenanceStatus(provenance) };
 }
 
@@ -1489,6 +1504,7 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
           ...(typeof e.disregard === 'string' && e.disregard.trim() ? { disregard: e.disregard } : {}),
           ...(e.ratedFrom === 'ledger' ? { ratedFrom: 'ledger' as const } : {}),
           ...(asLedgerResult(e.ledgerResult) ? { ledgerResult: asLedgerResult(e.ledgerResult)! } : {}),
+          ...(asLedgerResult(e.lastMeasurement) ? { lastMeasurement: asLedgerResult(e.lastMeasurement)! } : {}),
         };
       }
     }

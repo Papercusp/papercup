@@ -61,6 +61,7 @@ import {
   evaluateIndependentVerificationGate,
   renderIndependentVerificationBrief,
 } from '../../independent-verification-gate';
+import { readAndEvaluateAcceptanceBarLifecycle } from '../../acceptance-bar-lifecycle-evaluator';
 import { restoreHistoricalShipment } from './restore-historical-shipment';
 import {
   settleAcceptanceReviewReservationsForPlan,
@@ -457,7 +458,8 @@ async function defaultIndependentVerificationBrief(slug: string, harnessSlug: st
  * all dead / degraded) does it fall through to the original fresh-judge launch. */
 export async function launchAcceptanceGraderForGate(
   slug: string,
-  gate: { satisfied: boolean; code?: string; staleGradingScorecardId?: string; staleGradingScorecardIds?: readonly string[] },
+  gate: { satisfied: boolean; code?: string; staleGradingScorecardId?: string; staleGradingScorecardIds?: readonly string[];
+    blockers?: ReadonlyArray<{ code: string }> },
   ctx: Parameters<typeof launchAcceptanceGrader>[1],
   harness: string | undefined,
   launch: typeof launchAcceptanceGrader = resolveAcceptanceGrader,
@@ -468,7 +470,9 @@ export async function launchAcceptanceGraderForGate(
     defaultIndependentVerificationBrief,
   pendingDeliveryBarKeys?: string[],
 ): Promise<AcceptanceGraderLifecycle | undefined> {
+  let preclosureVerificationBrief = '';
   if (!gate.satisfied && gate.code === 'plan_items_unfinished') {
+    const needsPreclosureVerification = gate.blockers?.some(blocker => blocker.code === 'independent_verification_missing');
     // The real ship gate stays strict. Its not-code ceremony tail can still
     // need a grade before completion, so use the existing recruitment-only
     // gate to decide whether the immediate retry may launch that judge.
@@ -480,6 +484,39 @@ export async function launchAcceptanceGraderForGate(
       ...(Array.isArray(current) ? { current } : {}),
       ...(pendingDeliveryBarKeys ? { pendingDeliveryBarKeys } : {}),
     });
+    // WI-6554700010046275: a code item's acceptance can itself require an
+    // independent live receipt. Recruit its verifier before closure only when
+    // the strict gate reported that gap and fresh pre-grading proof qualifies.
+    // This changes recruitment alone; the caller returns the original refusal.
+    if (!gate.satisfied && gate.code === 'plan_items_unfinished' && needsPreclosureVerification) {
+      const scoped = harnessScopedCtx(harness, ctx);
+      const workspace = scoped.workspaceId?.trim();
+      const verifyHarness = scoped.harnessSlug?.trim();
+      if (!workspace || workspace === '*' || !verifyHarness) return undefined;
+      try {
+        const preGrading = await readAndEvaluateAcceptanceBarLifecycle(slug, 'pre-grading', {
+          expectedApplicable: true, harnessSlug: verifyHarness,
+          ...(Array.isArray(current) ? { current } : {}),
+          ...(pendingDeliveryBarKeys ? { pendingDeliveryBarKeys } : {}),
+        });
+        if (preGrading?.applicable !== true || preGrading.satisfied !== true) return undefined;
+        const verification = await evaluateIndependentVerificationGate({
+          planSlug: slug, harnessSlug: verifyHarness, workspaceId: workspace,
+        });
+        if (verification.applicable !== true || verification.satisfied ||
+            verification.code !== 'independent_verification_missing' || verification.readFailure ||
+            verification.gaps.length === 0 || verification.gaps.some(gap =>
+              gap.citableBindingIds.length === 0 || gap.citableBindingIds.some(id => !Number.isSafeInteger(id) || id <= 0))) {
+          return undefined;
+        }
+        preclosureVerificationBrief = renderIndependentVerificationBrief(slug, verifyHarness, verification.gaps);
+        gate = { ...gate, code: 'independent_verification_missing' };
+      } catch {
+        // A failed measurement grants no reviewer authority. Preserve the
+        // existing ship refusal and let its ordinary repair path explain it.
+        return undefined;
+      }
+    }
   }
   if (gate.satisfied || !gate.code || !ACCEPTANCE_GRADER_GATE_CODES.has(gate.code)) return undefined;
   // The tool accepts a per-call harness override. Keep the scoping at this
@@ -521,9 +558,9 @@ export async function launchAcceptanceGraderForGate(
     ),
   ];
   const verifyHarness = scopedCtx.harnessSlug?.trim();
-  const verificationBrief = gate.code === 'independent_verification_missing' && verifyHarness
+  const verificationBrief = preclosureVerificationBrief || (gate.code === 'independent_verification_missing' && verifyHarness
     ? await renderVerification(slug, verifyHarness, workspaceId)
-    : '';
+    : '');
   return launch(slug, {
     ...scopedCtx,
     acceptanceShipperOwnerId,

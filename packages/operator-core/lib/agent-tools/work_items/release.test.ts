@@ -11,6 +11,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ExternalConditionReachability } from '../../external-condition-reachability';
+import { prepareBlockerDecision } from '../../blocker-resolution-decision';
 
 const identity = vi.hoisted(() => ({ ownerId: 'me' }));
 vi.mock('../coordination/identity', () => ({
@@ -20,6 +21,10 @@ vi.mock('../coordination/identity', () => ({
 vi.mock('../../work-items', () => ({
   releaseWorkItem: vi.fn(),
   setWorkItemClaimHold: vi.fn(),
+  prepareWorkItemDurableParkMutation: vi.fn(async (hold: boolean) => ({
+    payloadPatch: hold ? { _claimHold: true, claim_hold_by: 'me' } : {},
+    unset: hold ? ['claim_hold_recheck'] : ['_claimHold'],
+  })),
   getWorkItem: vi.fn(),
   commentWorkItem: vi.fn(),
   isClaimHoldParked: vi.fn((payload: unknown) => {
@@ -186,6 +191,61 @@ beforeEach(() => {
 });
 
 describe('work_items:release handler (keyed-array)', () => {
+  const decision = {
+    schemaVersion: 1, idempotencyKey: 'public-release', disposition: 'self_resolve', symptom: 'Dependency unavailable',
+    investigation: [{ action: 'Inspect dependency', outcome: 'Measured recovery',
+      evidenceRefs: [{ kind: 'test', ref: 'testing:runs:repair:42' }] }],
+    evidenceRefs: [{ kind: 'test', ref: 'testing:runs:repair:42' }],
+    verification: { outcome: 'Original operation now passes', evidenceRefs: [{ kind: 'test', ref: 'testing:runs:repair:42' }] },
+  };
+  it('replays the exact public park receipt before reading its event or changing successor custody', async () => {
+    const contract = { condition: 'Repair accepted', trigger: 'dependency:repaired:42' };
+    const effect = { release: true, claimHold: true, claimHoldRelease: contract, reason: 'Await repair', force: false };
+    const prepared = prepareBlockerDecision({}, decision, { ownerId: 'me', sessionId: 'me', workItemId: 'WI-1', custodianId: 'me' }, { effect });
+    if (!prepared.ok) throw new Error(prepared.nextAction);
+    getM.mockResolvedValueOnce(workItemFixture({ id: 'WI-1', assignee: 'successor', payload: prepared.patch }));
+    const b = await body({ id: 'WI-1', blockerDecision: decision, claimHold: true, claimHoldRelease: contract, reason: 'Await repair' });
+    expect(b.results[0]).toMatchObject({ ok: true, replayed: true, blockerDecision: prepared.record, workItem: { assignee: 'successor' } });
+    expect(releaseM).not.toHaveBeenCalled();
+    expect(holdM).not.toHaveBeenCalled();
+    expect(reachabilityM).not.toHaveBeenCalled();
+    expect(checkpointStore.setWorkItemCheckpoint).not.toHaveBeenCalled();
+  });
+  it.each(['reason', 'force', 'claimHold', 'claimHoldRelease'])('rejects changed public %s on the original key before any write', async (field) => {
+    const original = { release: true, claimHold: false, claimHoldRelease: null, reason: 'Recovered', force: false };
+    const prepared = prepareBlockerDecision({}, decision, { ownerId: 'me', sessionId: 'me', workItemId: 'WI-1', custodianId: 'me' }, { effect: original });
+    if (!prepared.ok) throw new Error(prepared.nextAction);
+    getM.mockResolvedValueOnce(workItemFixture({ id: 'WI-1', assignee: 'successor', payload: prepared.patch }));
+    const changed = { reason: 'Different reason', force: true, claimHold: true,
+      claimHoldRelease: { condition: 'Different condition', trigger: 'dependency:repaired:43' } };
+    const b = await body({ id: 'WI-1', blockerDecision: decision, claimHold: false, reason: 'Recovered', [field]: changed[field as keyof typeof changed] });
+    expect(b.results[0]).toMatchObject({ ok: false, code: 'blocker_decision_conflict' });
+    expect(releaseM).not.toHaveBeenCalled();
+    expect(holdM).not.toHaveBeenCalled();
+    expect(reachabilityM).not.toHaveBeenCalled();
+  });
+  it('passes a durable park to the decision transaction and never writes that hold a second time', async () => {
+    getM.mockResolvedValueOnce(workItemFixture({ id: 'WI-1', assignee: 'me' }));
+    releaseM.mockResolvedValueOnce(workItemFixture({ id: 'WI-1', payload: { _claimHold: true, claim_hold_by: 'me' } }));
+    const b = await body({ id: 'WI-1', blockerDecision: decision, claimHold: true, reason: 'Await repair',
+      claimHoldRelease: { condition: 'Repair accepted', trigger: 'dependency:repaired:42' } });
+    expect(b.results[0]).toMatchObject({ ok: true, claimHold: true });
+    expect(releaseM).toHaveBeenCalledWith('WI-1', expect.objectContaining({ enteringBlockerDeferral: true,
+      blockerDecision: expect.objectContaining({ payloadPatch: { _claimHold: true, claim_hold_by: 'me' },
+        unset: ['claim_hold_recheck'], effect: expect.objectContaining({ claimHold: true, reason: 'Await repair' }) }) }));
+    expect(holdM).not.toHaveBeenCalled();
+  });
+  it('returns a stored blocker receipt without repeating durable hold writes', async () => {
+    const record = { id: 'receipt-1', revision: 1 };
+    releaseM.mockImplementationOnce(async (_id, opts) => {
+      opts?.onBlockerDecision?.({ record: record as never, replayed: true });
+      return { id: 'WI-1', assignee: null } as never;
+    });
+    const b = await body({ id: 'WI-1', claimHold: false });
+    expect(b.results[0]).toMatchObject({ ok: true, replayed: true, blockerDecision: record });
+    expect(setWorkItemClaimHold).not.toHaveBeenCalled();
+  });
+
   it('releases one inline and returns the workItem', async () => {
     const b = await body({ id: 'WI-1' });
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
@@ -195,6 +255,8 @@ describe('work_items:release handler (keyed-array)', () => {
       expectedAssignee: 'me',
       releasingOwnerId: 'me',
       onPriorState: expect.any(Function),
+      blockerEvidenceContext: expect.objectContaining({ ownerId: 'me', sessionId: 'me', role: '' }),
+      onBlockerDecision: expect.any(Function),
     });
   });
 
@@ -206,6 +268,8 @@ describe('work_items:release handler (keyed-array)', () => {
       expectedAssignee: 'me',
       releasingOwnerId: 'me',
       onPriorState: expect.any(Function),
+      blockerEvidenceContext: expect.objectContaining({ ownerId: 'me', sessionId: 'me', role: '' }),
+      onBlockerDecision: expect.any(Function),
     });
   });
 
@@ -300,6 +364,8 @@ describe('work_items:release holder guard (EI-7588)', () => {
       expectedAssignee: 'me',
       releasingOwnerId: 'me',
       onPriorState: expect.any(Function),
+      blockerEvidenceContext: expect.objectContaining({ ownerId: 'me', sessionId: 'me', role: '' }),
+      onBlockerDecision: expect.any(Function),
     });
     expect(b).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 } });
     expect(b.results[0]).toMatchObject({ ok: false, id: 'WI-HELD', error: 'not_holder', holder: 'peer' });
@@ -317,12 +383,16 @@ describe('work_items:release holder guard (EI-7588)', () => {
       expectedAssignee: undefined,
       releasingOwnerId: 'me',
       onPriorState: expect.any(Function),
+      blockerEvidenceContext: expect.objectContaining({ ownerId: 'me', sessionId: 'me', role: '' }),
+      onBlockerDecision: expect.any(Function),
     });
     expect(releaseM).toHaveBeenNthCalledWith(2, 'WI-2', {
       harness: undefined,
       expectedAssignee: 'me',
       releasingOwnerId: 'me',
       onPriorState: expect.any(Function),
+      blockerEvidenceContext: expect.objectContaining({ ownerId: 'me', sessionId: 'me', role: '' }),
+      onBlockerDecision: expect.any(Function),
     });
     expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1' });
     expect(b.results[1]).toMatchObject({ ok: false, id: 'WI-2', error: 'not_holder', holder: 'peer' });
@@ -481,6 +551,8 @@ describe('work_items:release force guard (WI-4198)', () => {
       expectedAssignee: 'peer',
       releasingOwnerId: 'me',
       onPriorState: expect.any(Function),
+      blockerEvidenceContext: expect.objectContaining({ ownerId: 'me', sessionId: 'me', role: '' }),
+      onBlockerDecision: expect.any(Function),
     });
     expect(b.results[0]).toMatchObject({
       ok: true,
@@ -541,6 +613,8 @@ describe('work_items:release force guard (WI-4198)', () => {
       expectedAssignee: 'peer',
       releasingOwnerId: 'me',
       onPriorState: expect.any(Function),
+      blockerEvidenceContext: expect.objectContaining({ ownerId: 'me', sessionId: 'me', role: '' }),
+      onBlockerDecision: expect.any(Function),
     });
     expect(releaseRequest.resolveWorkItemReleaseRequest).toHaveBeenCalledWith('WI-EXPIRED', {
       harness: 'h',
@@ -577,6 +651,8 @@ describe('work_items:release force guard (WI-4198)', () => {
       expectedAssignee: undefined,
       releasingOwnerId: 'me',
       onPriorState: expect.any(Function),
+      blockerEvidenceContext: expect.objectContaining({ ownerId: 'me', sessionId: 'me', role: '' }),
+      onBlockerDecision: expect.any(Function),
     });
     expect(b.results[0].forced).toBeUndefined();
   });
@@ -617,9 +693,12 @@ describe('work_items:release { claimHold } (WI-2797 claim-hold lever)', () => {
       // releaseWorkItem emits from the pre-hold snapshot; the handler must keep the
       // parked item out of the broad claimable pool wake.
       announceClaimable: false,
+      enteringBlockerDeferral: true,
       expectedAssignee: 'me',
       releasingOwnerId: 'me',
       onPriorState: expect.any(Function),
+      blockerEvidenceContext: expect.objectContaining({ ownerId: 'me', sessionId: 'me', role: '' }),
+      onBlockerDecision: expect.any(Function),
     });
     // WI-321 boomerang fix: park provenance goes in claim_hold_* (parkedBy), never held_open_*
     // — a held_open lease dies ~2h after the parker's session ends (WI-4531 reaper), which made

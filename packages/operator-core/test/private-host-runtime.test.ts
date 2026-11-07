@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { afterEach, expect, it, vi } from 'vitest';
 import { runHarness } from '@papercusp/verification-harness';
 import * as ts from 'typescript';
-import { archivePrivateOperatorApiBuild, buildPrivateOperatorApiBundle, censusPrivateRuntimeArtifact, preparePrivateOperatorApiBundle, privateBundleRuntimeEnv, privateGitCloneBundleEnv, privatePgStartupIdentity, stopPrivateOperatorHost, waitForPrivateOperator, type PrivateHostStopObservation } from './private-http-workspace-preflight';
+import { archivePrivateOperatorApiBuild, buildPrivateOperatorApiBundle, censusPrivateRuntimeArtifact, preparePrivateOperatorApiBundle, privateBundleRuntimeEnv, privateGitCloneBundleEnv, privateMcpSourceSha, privatePgStartupIdentity, stopPrivateOperatorHost, waitForPrivateOperator, type PrivateHostStopObservation } from './private-http-workspace-preflight';
 import { createHash, randomUUID } from 'node:crypto';
 import { readProcessIdentity } from '../lib/process-identity';
 import { hashNativeArtifactBytes, readNativeProcessTraceArtifacts } from '../../../scripts/lib/budgeted-task-scheduler.mjs';
@@ -1240,6 +1240,21 @@ it('hands a verified Git clone to the real source guard without its donor archiv
   expect(() => privateGitCloneBundleEnv(root, selectedCommit, env)).toThrow('not an archive');
 });
 
+it('rejects dirty MCP source with the real bundler resolver before private allocation', () => {
+  const root = mkdtempSync(join(tmpdir(), 'private-mcp-source-')); dirs.push(root);
+  execFileSync('git', ['init', '--quiet', '--initial-branch=main', root]);
+  execFileSync('git', ['-C', root, 'fast-import', '--quiet'], { input:
+    'blob\nmark :1\ndata 7\nbefore\n\ncommit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1577836800 +0000\ndata 6\nfrozen\nM 100644 :1 answer.txt\n\ndone\n' });
+  execFileSync('git', ['-C', root, 'reset', '--hard', 'HEAD'], { stdio: 'ignore' });
+  const sourceSha = execFileSync('git', ['-C', root, 'rev-parse', '--short', 'HEAD'], { encoding: 'utf8' }).trim();
+  const env = { PATH: process.env.PATH, PAPERCUSP_BUILD_SHA: 'stale-inherited-sha' };
+  expect(privateMcpSourceSha(root, env)).toBe(sourceSha);
+  writeFileSync(join(root, 'answer.txt'), 'changed\n');
+  expect(() => privateMcpSourceSha(root, env)).toThrow('Private MCP requires attributable source before compilation');
+  expect(() => privateMcpSourceSha(mkdtempSync(join(root, 'nested-')), env))
+    .toThrow('Private MCP requires attributable source before compilation');
+});
+
 it.each(['--import=tsx', '--import "tsx"', '--loader=tsx/esm', '--require tsx/cjs',
   '--import="file:///repo/node_modules/tsx/dist/loader.mjs"'])('removes %s and preserves guarded plain Node options', preload => {
   const guard = '--import="/repo with spaces/scripts/lib/committed-source-loader.mjs"';
@@ -1319,3 +1334,23 @@ it('retains the successful health probe and actual launch options', async () => 
     server.close(); await once(server, 'close');
   }
 });
+
+it.each([null, 'abcdef123456'])(
+  'requires measured build identity before native MCP launch (sha=%s)', async sha => {
+    const evidenceDir = mkdtempSync(join(tmpdir(), 'private-mcp-readiness-')); dirs.push(evidenceDir);
+    const server = createServer((_, response) => response.end(JSON.stringify({ service: 'papercusp-operator', sha })));
+    server.listen(0, '127.0.0.1'); await once(server, 'listening');
+    const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { env: privateBundleRuntimeEnv(process.env) });
+    try {
+      const address = server.address() as { port: number };
+      const ready = waitForPrivateOperator({ host: child, base: `http://127.0.0.1:${address.port}`, evidenceDir,
+        environment: {}, timeoutMs: 1000, requireBuildIdentity: true });
+      if (sha === null) await expect(ready).rejects.toThrow('attributable serving build before native launch');
+      else await expect(ready).resolves.toMatchObject({ sha });
+      expect(JSON.parse(readFileSync(join(evidenceDir, 'readiness.json'), 'utf8'))).toMatchObject({ buildSha: sha,
+        ...(sha === null ? { failure: expect.stringContaining('attributable serving build') } : {}) });
+    } finally {
+      const closed = once(child, 'close'); child.kill('SIGTERM'); await closed;
+      server.close(); await once(server, 'close');
+    }
+  });

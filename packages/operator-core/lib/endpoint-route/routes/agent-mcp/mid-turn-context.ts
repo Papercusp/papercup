@@ -62,6 +62,8 @@ import { recordInjectionCoverage, type InjectionDeliveryOutcome } from '../../..
 import { takePendingFailureLoopHint, type FailureLoopHint } from '../../../failure-loop-circuit-breaker';
 import { turnStartRespondBy } from './turn-start-memory';
 import { createMemoryWorkDeadline } from '../../../memory/op-deadline';
+import { randomUUID } from 'node:crypto';
+import type { PreparedMemoryBlock, MemoryEmissionConfirmation } from '../../../memory/session-epoch-ledger';
 
 /**
  * Query clamp — embed the head of a long command, not a pasted heredoc.
@@ -199,12 +201,12 @@ function asRecord(input: unknown): Record<string, unknown> | null {
   if (typeof input === 'string') {
     try {
       const parsed: unknown = JSON.parse(input);
-      return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
     } catch {
       return null;
     }
   }
-  return input && typeof input === 'object' ? (input as Record<string, unknown>) : null;
+  return input && typeof input === 'object' && !Array.isArray(input) ? (input as Record<string, unknown>) : null;
 }
 
 type ToolQuerySpec = {
@@ -318,309 +320,8 @@ type ToolQuerySpec = {
  * These are known tools with no fields, so they classify as 'no-signal' rather
  * than 'unknown-tool' — the alarm must not read a deliberate omission as drift.
  */
-export const TOOL_QUERY_VOCABULARY: Readonly<Record<string, ToolQuerySpec>> = {
-  // ── claude (PascalCase) ──
-  // The description is the agent's own words for what it is doing — often a
-  // better recall signal than the command's flags.
-  //
-  // ⚠ These four were frozen during the seam cut-over by D-003's equivalence
-  // proof — a METHODOLOGICAL freeze ("prove claude UNCHANGED before any new
-  // client lands"), NOT a standing ban on widening. That migration shipped, so
-  // the entries below it are a deliberate, measured widening (WI-37587).
-  Bash: { fields: ['command', 'description'], join: ' — ' },
-  Grep: { fields: ['pattern', 'path', 'glob'] },
-  Glob: { fields: ['pattern', 'path'] },
-  Read: { fields: ['file_path'] },
-  // Edit/Write carry the SAME `file_path` signal as Read and were simply never
-  // added. Measured 957 claude native calls/day deriving nothing, of which
-  // Edit alone was 581 — see WI-37587.
-  // ⚠ `old_string` / `new_string` / `content` are DELIBERATELY excluded: they
-  // are FILE BODIES — unbounded, and credential-bearing on exactly the
-  // `write_stdin` precedent below (the derived query is EMBEDDED, and
-  // detectPossibleSecrets guards the text table but not the embed).
-  Edit: { fields: ['file_path'] },
-  Write: { fields: ['file_path'] },
-  // A literal search query the agent typed — the strongest signal class here.
-  ToolSearch: { fields: ['query'] },
-  WebSearch: { fields: ['query'] },
-  WebFetch: { fields: ['url', 'prompt'], join: ' — ' },
-  // Known-and-considered, no investigation signal; see DELIBERATE OMISSIONS.
-  AskUserQuestion: { fields: [] },
-  Artifact: { fields: [] },
-  Skill: { fields: [] },
-  Monitor: { fields: [] },
-  TaskCreate: { fields: [] },
-  TaskUpdate: { fields: [] },
-  TaskStop: { fields: [] },
-
-  // ── codex (snake_case) ──
-  exec_command: { fields: ['cmd', 'workdir', 'justification'], join: ' — ' },
-  apply_patch: { fields: [], freeform: true },
-  exec: { fields: [], freeform: true },
-  view_image: { fields: ['path'] },
-  update_plan: { fields: ['plan'] },
-  wait: { fields: [] },
-  list_mcp_resources: { fields: [] },
-  write_stdin: { fields: [] }, // credential-shaped; see DELIBERATE OMISSIONS
-  // ── codex goal extension (0.146.0; postdates the rollout census above) ──
-  // `objective` is the agent's own statement of what it is trying to achieve —
-  // the same class of signal as claude's `description` and `update_plan.plan`.
-  // ⚠ SCHEMA-MEASURED, NOT YET OBSERVED LIVE (unlike `get_goal`, which the
-  // drift alarm caught twice). If a real `create_goal` call ever derives ''
-  // here, suspect this field name FIRST — a wrong name looks exactly like the
-  // deliberate omissions below, so it will not re-raise the alarm.
-  create_goal: { fields: ['objective'] },
-  get_goal: { fields: [] }, // no arguments at all; see DELIBERATE OMISSIONS
-  update_goal: { fields: [] }, // `status` enum only; see DELIBERATE OMISSIONS
-
-  // ── omp (lowercase) — `read`/`edit`/`write` key on `path`, not claude's
-  //    `file_path`, so both spellings are accepted rather than assumed ──
-  bash: { fields: ['command', 'description'], join: ' — ' },
-  read: { fields: ['path', 'file_path'] },
-  grep: { fields: ['pattern', 'path', 'glob'] },
-  glob: { fields: ['pattern', 'path'] },
-  find: { fields: ['pattern', 'path', 'glob'] },
-  search: { fields: ['pattern', 'path', 'query'] },
-  edit: { fields: ['path', 'file_path'] },
-  write: { fields: ['path', 'file_path'] },
-  ast_grep: { fields: ['pattern', 'path'] },
-  ast_edit: { fields: ['pattern', 'path'] },
-  yield: { fields: [] },
-  submit_result: { fields: [] },
-  report_finding: { fields: [] },
-};
-
-/** The one MCP tool whose signal is not in its OWN arguments — see {@link PAPERCUSP_TOOL_VOCABULARY}. */
-const TOOLS_INVOKE = 'tools:invoke';
-
-/**
- * THE PAPERCUSP MCP VOCABULARY — keyed by the tool's REAL colon name (WI-37589).
- *
- * Separate from the table above for one structural reason, not for tidiness: a
- * client mangles these names (`dev:pg_query` -> `mcp__papercusp-su__dev_pg_query`,
- * every ':' -> '_'), so the key an incoming call arrives under is NOT the key
- * `tools:invoke` carries for the same tool. Keying on the colon form and
- * resolving BOTH spellings to it is what lets the recursion below share one
- * table with direct calls instead of maintaining two.
- *
- * ── WHY THIS EXISTS ──
- * Measured 2026-08-09 (context_injection_coverage, workspace papercusp-workspace,
- * outcome='unknown-tool'): 79 distinct `mcp__papercusp-su__*` tools, 2,424
- * calls/day deriving NOTHING — i.e. after WI-37587 fixed claude's NATIVE tools,
- * the MCP namespace was still ~97% of the remaining drift-alarm noise. An alarm
- * whose output is ~100% noise is functionally OFF: a genuine future drift event
- * is unfindable in it.
- *
- * ── PROVENANCE: FIELD NAMES MEASURED FROM REAL CALLS, NOT FROM SCHEMAS ──
- * Every field below was read off `harness_shared.tool_invocations.args_json`
- * over a 3-day window — the keys agents ACTUALLY pass, ranked by frequency —
- * not from the `defineTool` schema. That distinction matters here: a schema
- * lists every OPTIONAL arg, so it cannot tell you which ones callers really
- * populate, and it cannot tell you which carry signal at all.
- *
- * ── WHY NOT DERIVE THIS FROM THE TOOL REGISTRY (the obvious idea; REFUTED) ──
- * WI-37589 proposed auto-deriving the vocabulary from `defineTool` schemas so it
- * could never drift. Measuring the population refutes it: the registry supplies
- * field NAMES but not the signal-vs-bookkeeping judgement, which is the whole
- * problem. Auto-derivation would map `work_items:get` -> `id` and embed
- * "WI-37589" as a recall query, `plans:get` -> `slug`, `coord:ack` -> `msg_id`.
- * Those are not weak signals, they are ANTI-signals: opaque identifiers that
- * retrieve on token overlap with unrelated records. A generic prefix-probe over
- * {query, sql, command, ...} fails the same way from the other side — it is a
- * guess about names, and a WRONG name derives '' and classifies 'no-signal',
- * indistinguishable from a deliberate omission (see the asymmetry above).
- *
- * ── THE TAIL IS DELIBERATELY LEFT LOUD ──
- * These entries cover ~2,364 of the 2,424 measured calls (~97.5%). The residue
- * is ~60 calls/day across ~40 tools called once each. That residue stays
- * 'unknown-tool' ON PURPOSE: with the floor at ~60/day a genuinely new tool
- * arriving at 100+/day is now VISIBLE, which is the alarm doing its job. A
- * blanket `mcp__*` -> no-signal rule would have silenced the floor AND the
- * signal together, permanently.
- *
- * ⚠ EVERY `fields: []` HERE IS A NO-SIGNAL DECLARATION, NOT AN UNMEASURED ONE.
- * It carries none of the guessed-field-name risk, because there is no field
- * name in it to be wrong. It says only "this tool was looked at and carries no
- * INVESTIGATION signal" — bookkeeping the agent is writing, not a question it
- * is asking. Recalling on an agent's own checkpoint/completion prose would also
- * be circular: that text is downstream of the work, not a search for it.
- */
-export const PAPERCUSP_TOOL_VOCABULARY: Readonly<Record<string, ToolQuerySpec>> = {
-  // ── SIGNAL: the agent is interrogating the system ──
-  // The richest recall signal anywhere in this file: an agent's actual SQL.
-  'dev:pg_query': { fields: ['sql', 'describe'] },
-  // Exact analogue of claude's `Bash` — same two fields, same em-dash join.
-  'capability:bash': { fields: ['command', 'description'], join: ' — ' },
-  'capability:read': { fields: ['file_path'] },
-  'capability:git': { fields: ['args'] },
-  'testing:run': { fields: ['files', 'testNamePattern'] },
-  'build:typecheck': { fields: ['project', 'files'] },
-  'dev:pipeline_position': { fields: ['path'] },
-  // A literal search query the agent typed — the strongest signal class.
-  'tools:find': { fields: ['query', 'intent'] },
-  'docs:search': { fields: ['query'] },
-  'search:fulltext': { fields: ['query'] },
-  'memory:search': { fields: ['query'] },
-  'sessions:search': { fields: ['query'] },
-  'work_items:search': { fields: ['query'] },
-  'fleet:invariant': { fields: ['description', 'sql'], join: ' — ' },
-  // `title`/`description` are the agent's own words for the problem it is
-  // looking at. `script` and `body` are deliberately NOT here — unbounded
-  // bodies, on the same argument that excludes claude's `new_string`.
-  'code:run': { fields: ['title', 'description'] },
-  'improvements:capture': { fields: ['title'] },
-  'work_items:create': { fields: ['title'] },
-
-  // ── NO SIGNAL: bookkeeping the agent WRITES, not a question it asks ──
-  'loop:checkpoint': { fields: [] },
-  'loop:status': { fields: [] },
-  'loop:arm': { fields: [] },
-  'loop:end': { fields: [] },
-  // ⚠ `intent` IS strong signal — and is deliberately dropped anyway: orient
-  // ALREADY runs its own memory recall on that exact string, so deriving it
-  // here would re-embed the same query and inject the same records twice.
-  'coord:orient': { fields: [] },
-  'coord:send': { fields: [] },
-  'coord:inbox': { fields: [] },
-  'coord:presence': { fields: [] },
-  'coord:glance': { fields: [] },
-  'coord:thread': { fields: [] },
-  'coord:read': { fields: [] },
-  'coord:ack': { fields: [] },
-  'coord:whoami': { fields: [] },
-  'coord:ask-owner': { fields: [] },
-  'work_items:get': { fields: [] },
-  'work_items:checkpoint': { fields: [] },
-  'work_items:complete': { fields: [] },
-  'work_items:comment': { fields: [] },
-  'work_items:list': { fields: [] },
-  'work_items:claim': { fields: [] },
-  'work_items:claim_next': { fields: [] },
-  'work_items:claimable': { fields: [] },
-  'work_items:release': { fields: [] },
-  'work_items:set_state': { fields: [] },
-  'work_items:update': { fields: [] },
-  'work_items:link': { fields: [] },
-  'plans:get': { fields: [] },
-  'plans:get-item': { fields: [] },
-  'plans:items': { fields: [] },
-  'plans:list': { fields: [] },
-  'plans:new': { fields: [] },
-  'plans:add-item': { fields: [] },
-  'plans:add-decision': { fields: [] },
-  'plans:set-decision-body': { fields: [] },
-  'plans:set-status': { fields: [] },
-  'plans:set-now': { fields: [] },
-  'facts:assert': { fields: [] },
-  'facts:list': { fields: [] },
-  'facts:retract': { fields: [] },
-  'memory:remember': { fields: [] },
-  'sessions:read': { fields: [] },
-  'sessions:timeline': { fields: [] },
-  'session:request-compaction': { fields: [] },
-  'scheduler:get_next': { fields: [] },
-  'state:read': { fields: [] },
-  'mode:set': { fields: [] },
-  'locks:list': { fields: [] },
-  'locks:queue': { fields: [] },
-  'fleet:leader-brief': { fields: [] },
-  'fleet:status': { fields: [] },
-  'fleet:wind-down': { fields: [] },
-  'db:migrate': { fields: [] },
-  'db:next-migration': { fields: [] },
-  'conversations:get': { fields: [] },
-  'conversations:post': { fields: [] },
-  'activity:recent': { fields: [] },
-  'journal:recent': { fields: [] },
-  'release:deploy': { fields: [] },
-  'gateway:status': { fields: [] },
-  // `capability:bash_output` reads a job's log; `filter` is a bare regex like
-  // "ERROR". A lone regex retrieves on a token that carries no topic — the
-  // same argument that keeps codex's `update_goal.status` unmapped.
-  'capability:bash_output': { fields: [] },
-  // Handled by RECURSION, not by fields — see deriveQueryDetailed. Present so
-  // the name resolves to a KNOWN tool rather than falling through to the alarm.
-  [TOOLS_INVOKE]: { fields: [] },
-};
-
-/**
- * Mangled spelling -> colon name, built from the table above so it cannot drift.
- *
- * ⚠ TWO SPELLINGS PER TOOL — THE CLIENTS DO NOT MANGLE ALIKE (EI-21905492455933253):
- *   - claude / omp mangle ':' ONLY        -> `session_request-compaction`
- *   - codex mangles '-' AS WELL AS ':'    -> `session_request_compaction`
- * Registering only the first made every DECLARED tool whose colon name contains a
- * HYPHEN unresolvable from codex: `specFor` missed, and the call was classified
- * `unknown-tool` — i.e. the drift alarm fired on tools sitting in this very table.
- * Measured before the fix (context_injection_coverage, port='mid-turn',
- * outcome='unknown-tool', 3 days): `mcp__papercusp_su__session_request_compaction`
- * 4,760 calls, `mcp__papercusp_su__fleet_leader_brief` 170.
- *
- * No recall was being lost — every hyphenated entry above is a `fields: []`
- * no-signal declaration, and both outcomes derive '' — so the cost was precision:
- * ~1.6k/day of false drift signal in the alarm that WI-37587 and WI-37589 were both
- * filed to de-noise, plus a trap primed for whoever first adds a SIGNAL-bearing
- * hyphenated tool (it would derive nothing for codex, and per this file's own
- * asymmetry a missing mapping is indistinguishable from a deliberate omission, so
- * it would never re-raise the alarm).
- *
- * Inverting a mangled name in general is AMBIGUOUS (`work_items_get` could be
- * `work_items:get` or `work:items_get`), which is exactly why this is built
- * FORWARD from the declared set instead of parsed. A collision would make one
- * of two declared tools silently unreachable, so it throws at module load
- * rather than resolving to whichever happened to be inserted last. That guard is
- * also what makes registering a SECOND spelling safe rather than reckless: a
- * hyphen-free name yields two identical spellings, which is a same-value re-set,
- * while two DIFFERENT tools colliding on the codex spelling still throws.
- */
-const MANGLED_TO_COLON: ReadonlyMap<string, string> = (() => {
-  const map = new Map<string, string>();
-  const register = (mangled: string, colon: string): void => {
-    const prior = map.get(mangled);
-    if (prior && prior !== colon) {
-      throw new Error(`mid-turn vocabulary: '${prior}' and '${colon}' mangle to the same '${mangled}'`);
-    }
-    map.set(mangled, colon);
-  };
-  for (const colon of Object.keys(PAPERCUSP_TOOL_VOCABULARY)) {
-    register(colon.replace(/:/g, '_'), colon); // claude / omp
-    register(colon.replace(/[:-]/g, '_'), colon); // codex mangles '-' too
-  }
-  return map;
-})();
-
-/**
- * Resolve a spec for a tool name in EITHER spelling.
- *
- * ⚠ The `mcp__` guard is load-bearing, not decoration. Stripping the server
- * prefix off any name would let a THIRD-PARTY MCP tool collide with this file's
- * lowercase omp entries — `mcp__some-server__read` would resolve to omp's
- * `read: { fields: ['path','file_path'] }` and derive from fields it does not
- * have. That is the "a wrong mapping is worse than none" failure, so the
- * papercusp table is consulted ONLY for mcp-prefixed names, and the bare
- * lowercase client tools can never reach it.
- */
-function specFor(tool: string): ToolQuerySpec | undefined {
-  const direct = TOOL_QUERY_VOCABULARY[tool];
-  if (direct) return direct;
-  // `tools:invoke` hands us the inner tool under its real colon name.
-  const byColon = PAPERCUSP_TOOL_VOCABULARY[tool];
-  if (byColon) return byColon;
-  if (!tool.startsWith('mcp__')) return undefined;
-  // Prefix is `mcp__<server>__`; a server name may contain '-' but never '__'.
-  const end = tool.indexOf('__', 'mcp__'.length);
-  if (end < 0) return undefined;
-  const colon = MANGLED_TO_COLON.get(tool.slice(end + 2));
-  return colon ? PAPERCUSP_TOOL_VOCABULARY[colon] : undefined;
-}
-
-/** Normalize either spelling to the colon name, for the recursion's own guard. */
-function colonNameFor(tool: string): string {
-  if (PAPERCUSP_TOOL_VOCABULARY[tool]) return tool;
-  if (!tool.startsWith('mcp__')) return tool;
-  const end = tool.indexOf('__', 'mcp__'.length);
-  return end < 0 ? tool : (MANGLED_TO_COLON.get(tool.slice(end + 2)) ?? tool);
-}
+import { TOOL_QUERY_VOCABULARY, PAPERCUSP_TOOL_VOCABULARY, TOOLS_INVOKE, MANGLED_TO_COLON, specFor, colonNameFor, extractRecallSignals, readRecallSignals, combineRecallSignals } from '../../../../../../apps/operator/scripts/hooks/inject/recall-query.mjs';
+export { TOOL_QUERY_VOCABULARY, PAPERCUSP_TOOL_VOCABULARY };
 
 /**
  * OMP exposes an MCP dynamic-device call as a native `write` to an `xd://`
@@ -724,24 +425,12 @@ function deriveQueryAtDepth(tool: string, input: unknown, depth: number): Derive
     return inner.miss === 'unknown-tool' ? { ...inner, missTool: innerName } : inner;
   }
 
-  // The hook clamps tool_input to a string before sending, so accept either the
-  // structured object (unit tests, future callers) or that clamped JSON text.
-  let io: Record<string, unknown>;
-  if (typeof input === 'string') {
-    // A freeform tool never carries JSON; the raw body IS the signal.
-    if (spec.freeform) return done(input.trim());
-    try {
-      io = JSON.parse(input) as Record<string, unknown>;
-    } catch {
-      // A clamped/truncated blob is still usable as raw query text — but only
-      // for a tool we recognise, so an unmapped tool cannot smuggle a JSON blob
-      // into the embedder.
-      return done(input.trim());
-    }
-  } else {
-    if (spec.freeform) return done(str(input));
-    io = (input ?? {}) as Record<string, unknown>;
-  }
+  // Native freeform calls have a separate wire contract. Object-based tools
+  // must supply a complete object: a truncated envelope is transport debris,
+  // never a fallback semantic query. The same parser guards nested dispatch.
+  if (spec.freeform) return done(str(input).trim());
+  const io = asRecord(input);
+  if (!io) return done('');
 
   const parts: string[] = [];
   for (const field of spec.fields) {
@@ -895,6 +584,7 @@ export interface BatchCall {
   tool?: string;
   toolInput?: unknown;
   toolResponse?: unknown;
+  querySignals?: unknown;
   editedPaths?: string[];
   interfaceEdits?: unknown[];
 }
@@ -947,6 +637,23 @@ export function deriveBatchQueryDetailed(calls: BatchCall[]): DerivedBatch {
 /** String-only view, for callers that only need the query. */
 export function deriveBatchQuery(calls: BatchCall[]): string {
   return deriveBatchQueryDetailed(calls).query;
+}
+
+/** Production query: normalized before transport loss, never reconstructed from a clipped blob. */
+export function deriveGroundedBatch(calls: BatchCall[]) {
+  const unknown = new Set<string>();
+  const quiet = new Set<string>();
+  const signals = [...calls].reverse().map(call => {
+    const tool = (call.tool ?? '').trim();
+    const { miss, missTool } = deriveQueryDetailed(tool, call.toolInput);
+    if (miss === 'unknown-tool') unknown.add(missTool || tool || '(empty)');
+    const signal = miss === 'unknown-tool' ? extractRecallSignals('', null)
+      : call.querySignals === undefined ? extractRecallSignals(tool, call.toolInput, call.toolResponse)
+        : readRecallSignals(call.querySignals) ?? extractRecallSignals('', null);
+    if (!signal.lexical && miss !== 'unknown-tool') quiet.add(tool);
+    return signal;
+  });
+  return { ...combineRecallSignals(signals), unknownTools: [...unknown], noSignalTools: [...quiet] };
 }
 
 /**
@@ -1068,6 +775,7 @@ const midTurnContext = defineTool({
       // Single-call form, kept for a direct caller / probe. The hook sends a batch.
       tool?: string;
       toolInput?: unknown;
+      querySignals?: unknown;
       workspace?: string;
       harness?: string;
       cwd?: string;
@@ -1075,6 +783,9 @@ const midTurnContext = defineTool({
       client?: string;
       /** Native hook response wall, shared with both retrieval legs. */
       wallMs?: number;
+      /** Only a native hook with a writable stdout receipt ledger opts in. */
+      memoryReceiptMode?: boolean;
+      confirmedMemoryDeliveries?: MemoryEmissionConfirmation[];
       /** Bounded, caller-measured P-018 attribution; never inferred here. */
       incidentAttribution?: import('../../../code-intelligence/push-channel').IncidentAttribution;
     };
@@ -1112,6 +823,17 @@ const midTurnContext = defineTool({
       return Response.json({ ok: true, text: '' });
     }
 
+    // Confirm previous complete writes before every recall/admission branch.
+    // Tokens, recipient, captured epoch and exact fragments are server-fenced.
+    if (Array.isArray(body.confirmedMemoryDeliveries) && body.confirmedMemoryDeliveries.length <= 16) {
+      try {
+        const [{ confirmMemoryEmission }, { getOrgPg }] = await Promise.all([
+          import('../../../memory/session-epoch-ledger'), import('@papercusp/db-org'),
+        ]);
+        for (const proof of body.confirmedMemoryDeliveries) await confirmMemoryEmission(getOrgPg().sql, owner, proof);
+      } catch { /* A missed ACK costs a replay, never a false suppression. */ }
+    }
+
     // Drain before any query/admission branch. A repeated-failure advisory is
     // orthogonal to memory recall, so it must still be delivered when this
     // batch has no recall signal, is a duplicate, or the recall lane is full.
@@ -1136,7 +858,7 @@ const midTurnContext = defineTool({
     // hook sends empty, so its snapshot resolved to null on every leg; only the
     // recall below recovered harness from cwd, after the push had already run.
     const harnessResolved = resolveMidTurnHarness(body);
-    const respond = async (memoryBlock = ''): Promise<Response> => {
+    const respond = async (prepared: PreparedMemoryBlock | null = null): Promise<Response> => {
       const [failureHint, ruleContext] = await Promise.all([failureHintText, ruleContextText]);
       const { codeIntelPushText } = await import('../../../code-intelligence/push-channel');
       const codeIntel = await codeIntelPushText({ owner, workspace: await workspaceIdResolved,
@@ -1144,9 +866,24 @@ const midTurnContext = defineTool({
         incidentAttribution: body.incidentAttribution,
         calls: Array.isArray(body.toolCalls) && body.toolCalls.length ? body.toolCalls : [{ tool: body.tool, toolInput: body.toolInput }],
       }).catch(() => ''); // Its own reserved budget: the memory block never shrinks it (P-005).
+      const text = composeMidTurnContextText(prepared?.text ?? '', failureHint, ruleContext, codeIntel);
+      const respondBy = turnStartRespondBy(arrivedAt, body.wallMs);
+      const fragments = prepared?.fragments.filter(row => (`\n${text}\n`).includes(`\n${row.rendered}\n`)) ?? [];
+      let delivery: object = {};
+      if (body.memoryReceiptMode === true && ['codex', 'claude', 'omp'].includes(body.client ?? '') &&
+          fragments.length && !req.signal.aborted && (respondBy === null || Date.now() < respondBy)) {
+        try {
+          const [{ stageMemoryEmission }, { getOrgPg }] = await Promise.all([
+            import('../../../memory/session-epoch-ledger'), import('@papercusp/db-org'),
+          ]);
+          const deliveryToken = randomUUID();
+          await stageMemoryEmission(getOrgPg().sql, owner, deliveryToken, fragments);
+          delivery = { deliveryToken, memoryFragmentOffers: fragments };
+        } catch { /* Without a staged candidate the response cannot suppress recall. */ }
+      }
       return Response.json({
         ok: true,
-        text: composeMidTurnContextText(memoryBlock, failureHint, ruleContext, codeIntel),
+        text, ...delivery,
       });
     };
 
@@ -1156,11 +893,10 @@ const midTurnContext = defineTool({
       // nothing, which is precisely why "the hook fired but the server derived
       // no query" was indistinguishable from "the hook never fired" and let
       // codex/omp sit structurally zeroed on this port without a fault.
-      const detail =
-        Array.isArray(body.toolCalls) && body.toolCalls.length
-          ? deriveBatchQueryDetailed(body.toolCalls)
-          : singleCallDetail((body.tool ?? '').trim(), body.toolInput);
-      const derived = detail.query.slice(0, QUERY_CLAMP);
+      const grounded = deriveGroundedBatch(Array.isArray(body.toolCalls) && body.toolCalls.length
+        ? body.toolCalls : [{ tool: body.tool, toolInput: body.toolInput, querySignals: body.querySignals }]);
+      const detail = grounded;
+      const derived = grounded.lexical;
 
       // Resolved BEFORE the first coverage write, not at the recall site, so a
       // miss row and a recall row for the same session key on the same
@@ -1195,12 +931,13 @@ const midTurnContext = defineTool({
       // difference from before is that the drop is now RECORDED above.
       if (!derived) return respond();
       // P-044: one derived signal, two per-leg queries. See splitLegQueries().
-      const { cosine: query, lexical: lexicalQuery } = splitLegQueries(derived);
+      const query = grounded.semantic;
+      const lexicalQuery = grounded.lexical;
       // The cost guards key on the FULL derived text, not the stripped cosine
       // half — two batches that differ only in which files were read are
       // genuinely different questions for the lexical leg, and collapsing them
       // here would suppress the second one's recall entirely.
-      const callAdmission = admitCall(owner, derived, Date.now());
+      const callAdmission = admitCall(owner, grounded.fingerprint, Date.now());
       if (callAdmission !== 'admitted') {
         recordSuppression(callAdmission === 'duplicate-query'
           ? 'suppressed-duplicate-query'
@@ -1231,7 +968,7 @@ const midTurnContext = defineTool({
       // bounds as turn start; an unreadable applied identity sheds it.
       const admitted = await withIdentityBoundedMemoryAdmission(
         () => readAppliedIdentityRecall(owner, workspaceId), async (identityRecall) => {
-        const [{ buildMemoryContextBlock }, { getSessionUserOrDefault }, { resolveClaimedWorkItemIdForOwner }] =
+        const [{ prepareMemoryContextBlock }, { getSessionUserOrDefault }, { resolveClaimedWorkItemIdForOwner }] =
           await Promise.all([
             import('../../../memory/injection'),
             import('../../../auth'),
@@ -1254,7 +991,7 @@ const midTurnContext = defineTool({
         const deadline = respondBy === null ? undefined
           : createMemoryWorkDeadline(Math.max(1, respondBy - Date.now()), req.signal);
         try { return (
-          (await buildMemoryContextBlock({
+          (await prepareMemoryContextBlock({
             ...(deadline ? { deadline, respondByMs: respondBy! } : {}),
             userId: user?.id ?? null,
             workspaceId,
@@ -1263,7 +1000,7 @@ const midTurnContext = defineTool({
             // `lexicalText` is the full derived signal, identifiers and all, for
             // the leg that actually wins on them. When the strip finds no prose to
             // protect the two are the same string and nothing changes.
-            queryContext: { userText: query, lexicalText: lexicalQuery },
+            queryContext: { userText: query, lexicalText: lexicalQuery, fingerprint: grounded.fingerprint },
             // Free-text port; the epoch ledger is port-agnostic (D-006), so this
             // inherits turn-start's dedup instead of needing one of its own.
             // P-005 / migration 770: recorded on memory_recall_stats, never
@@ -1278,7 +1015,7 @@ const midTurnContext = defineTool({
             budgetChars: MID_TURN_BUDGET_CHARS,
             heading: 'Possibly relevant (mid-turn)',
             identityRecall,
-          })) ?? ''
+          }))
         ); } finally { deadline?.close(); }
       });
       if (!admitted.admitted) {

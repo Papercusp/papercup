@@ -13,6 +13,9 @@ const seams = vi.hoisted(() => ({
   pollParks: vi.fn(async (_args: unknown) => undefined),
   makeSeams: vi.fn(() => ({})),
   makeConsultReachDispatcher: vi.fn(() => ({})),
+  makeDeferredConsultReachDispatcher: vi.fn(() => ({})),
+  continueCascadeDispatch: vi.fn(async (_workspaceId: string, _conversationId: string) => true),
+  continueRequest: vi.fn(async (_workspaceId: string, _conversationId: string) => true),
   rejudgeFirstTurn: vi.fn(),
   resolveResumeTarget: vi.fn(),
   checkTranscript: vi.fn(),
@@ -46,10 +49,19 @@ vi.mock('@papercusp/db-org', () => ({
   getOrgPg: () => ({ sql: {} }),
 }));
 vi.mock('../../consult/consult-expiry-core', () => ({ sweepExpiredConsults: seams.sweep }));
+// The real expiry adapters only need these routing constants. Loading the full
+// routing engine here bootstraps the live tool registry against the fake DB.
+vi.mock('../../consult/get-feedback-core', () => ({
+  HARD_BLOCKED_EXPIRY_MS: 30 * 60_000,
+  DEAD_RESPONDER_STATES: new Set(['ended', 'recorded']),
+}));
 vi.mock('../../consult/consult-dispatch', () => ({
   makeConsultReachDispatcher: seams.makeConsultReachDispatcher,
+  makeDeferredConsultReachDispatcher: seams.makeDeferredConsultReachDispatcher,
+  continueCascadeDispatchProd: seams.continueCascadeDispatch,
   rejudgeFirstTurn: seams.rejudgeFirstTurn,
 }));
+vi.mock('../../consult/get-feedback-prod', () => ({ continueFeedbackRequestProd: seams.continueRequest }));
 vi.mock('../../agent-launch-core', () => ({ resolveResumeTarget: seams.resolveResumeTarget }));
 vi.mock('../../consult/resume-transcript-preflight', () => ({ checkConsultResumeTranscript: seams.checkTranscript }));
 vi.mock('@papercusp/coordination/capabilities', () => ({
@@ -64,6 +76,61 @@ vi.mock('../../agent-tools/coordination/presence', () => ({ getPresence: seams.g
 vi.mock('../../agent-tools/coordination/liveness-oracle', () => ({ resolveSessionStates: seams.resolveSessionStates }));
 
 describe('consult expiry production wiring', () => {
+  it.each(['cascade recovery', 'request recovery', 'due dispatch'] as const)(
+    'finishes later rows and park recovery while %s has a blocked launcher', async (leg) => {
+      let release!: () => void;
+      const held = new Promise<boolean>((resolve) => { release = () => resolve(true); });
+      const launch = vi.fn(() => held);
+      const fullDispatch = vi.fn(async () => { await launch(); return { woke: 1 }; });
+      const deferredDispatch = vi.fn(async () => {
+        void launch();
+        return { woke: 0, pending: true };
+      });
+      seams.makeConsultReachDispatcher.mockReturnValue(fullDispatch);
+      seams.makeDeferredConsultReachDispatcher.mockReturnValue(deferredDispatch);
+      seams.continueCascadeDispatch.mockImplementation(launch);
+      seams.continueRequest.mockImplementation(launch);
+      const laterRow = vi.fn();
+      let dispatchResult: unknown;
+      seams.sweep.mockImplementationOnce(async (deps) => {
+        if (leg === 'cascade recovery') await deps.resumeCascadeDispatch!('row-workspace', 'conv-pending');
+        else if (leg === 'request recovery') await deps.resumeRequest!('row-workspace', 'conv-routing');
+        else dispatchResult = await deps.dispatch!({
+          workspaceId: 'row-workspace', conversationId: 'conv-due', responder: 'su-next',
+          summary: 'expiry advance', body: 'answer the saved question',
+        });
+        laterRow();
+      });
+      seams.pollParks.mockClear();
+      seams.sweepParks.mockClear();
+      seams.sweepDeliveries.mockClear();
+      await import('./consult-expiry-action');
+      let finished = false;
+      const sweep = seams.register.mock.calls.find(([name]) => name === 'consult-expiry-sweep')![1]()
+        .then(() => { finished = true; });
+      try {
+        await vi.waitFor(() => expect(finished).toBe(true), { timeout: 1000 });
+        expect(launch).toHaveBeenCalled();
+        expect(laterRow).toHaveBeenCalledOnce();
+        expect(seams.pollParks).toHaveBeenCalledOnce();
+        expect(seams.sweepParks).toHaveBeenCalledOnce();
+        expect(seams.sweepDeliveries).toHaveBeenCalledOnce();
+        if (leg === 'due dispatch') {
+          expect(dispatchResult).toMatchObject({ woke: 0, pending: true });
+          expect(seams.makeDeferredConsultReachDispatcher).toHaveBeenCalledWith({
+            workspaceId: 'row-workspace', harnessSlug: null, launchedBy: 'system:consult-expiry-sweep',
+          });
+        }
+      } finally {
+        release();
+        await sweep;
+        seams.continueCascadeDispatch.mockReset();
+        seams.continueRequest.mockReset();
+        for (const mock of [seams.sweep, seams.pollParks, seams.sweepParks, seams.sweepDeliveries]) mock.mockClear();
+      }
+    },
+  );
+
   it('binds the exact task native classifier before recent activity can hide a refusal', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'consult-expiry-native-'));
     const logPath = join(directory, 'answer.log');

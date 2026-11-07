@@ -1234,6 +1234,22 @@ describe('evaluatePlanAcceptanceGate', () => {
     expect(v).toMatchObject({ satisfied: true, rubricId: 'ar-some-plan', gradedBy: 'su-grader' });
   });
 
+  it('a diagnostic cannot authorize plan promotion even when returned by a historical reader', async () => {
+    mockRubric.mockResolvedValue(acceptanceRubric());
+    const independent = scorecard({ createdBy: 'su-grader', purpose: 'diagnostic' });
+    mockScorecards.mockResolvedValue([independent]);
+
+    const refused = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    expect(refused).toMatchObject({ satisfied: false, code: 'acceptance_ungraded' });
+    expect(refused.gradingRef).toBeUndefined();
+
+    // The same complete independent record qualifies when it is ordinary grading.
+    mockScorecards.mockResolvedValue([{ ...independent, purpose: 'grading' }]);
+    expect(await evaluatePlanAcceptanceGate('some-plan-2026-08-11')).toMatchObject({
+      satisfied: true, rubricId: 'ar-some-plan', gradedBy: 'su-grader',
+    });
+  });
+
   it('excludes principal plan implementers while preserving the acceptance-author seat', async () => {
     mockRubric.mockResolvedValue(
       acceptanceRubric({

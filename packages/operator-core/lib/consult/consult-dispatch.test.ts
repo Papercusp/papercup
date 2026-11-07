@@ -22,7 +22,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY, RUBRIC_VETTING_POLICY } from './selection-policies';
+import { ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY, BAR_CRITIQUE_POLICY, RUBRIC_VETTING_POLICY } from './selection-policies';
 import type { NativeConsultBoundary } from './native-consult';
 import {
   analyzeClaudeResumeTranscriptFile,
@@ -2411,7 +2411,7 @@ describe('makeConsultReachDispatcher (D-010: the seam shape survives, its meanin
     expect(calls.spawn[0]!.envelope.greetingCmd).toContain('sol');
   });
 
-  it.each([RUBRIC_VETTING_POLICY, ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY])(
+  it.each([RUBRIC_VETTING_POLICY, ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY, BAR_CRITIQUE_POLICY])(
     'loads the persisted %s reviewer choice on a later dispatch without substituting the default rank', async (policy) => {
       const db = await import('@papercusp/db-org');
       const sql = vi.fn(async () => [{ policy,

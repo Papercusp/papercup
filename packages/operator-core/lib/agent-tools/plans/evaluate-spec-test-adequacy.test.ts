@@ -29,7 +29,15 @@ vi.mock('../../work-items', async () => {
   const { ISSUE_FAMILY_ROUTE_KINDS } = await import('../../work-nature/agent-work-predicate');
   return {
     ISSUE_FAMILY_KINDS: ISSUE_FAMILY_ROUTE_KINDS,
+    claimWorkItem: vi.fn(),
+    commentWorkItem: vi.fn(),
+    depsBlockedExclusionSql: vi.fn(() => ''),
     getWorkItem: adhocContractMocks.workItem,
+    getWorkItemDetail: vi.fn(),
+    mergeWorkItemPayload: vi.fn(),
+    releaseWorkItem: vi.fn(),
+    isClaimHoldParked: vi.fn(() => false),
+    claimHoldExclusionSql: vi.fn(() => ''),
   };
 });
 vi.mock('./behavior-contract-resolver', () => ({ resolveWorkItemBehaviorContract: adhocContractMocks.contract }));
@@ -362,8 +370,8 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     expect(result.rows[0].wouldBlock).toContain('freshness');
   });
 
-  it('marks a replay with unavailable server measurements as degraded in summary and full results', async () => {
-    listClauses.mockResolvedValue([clause('active')]);
+  it('keeps an unavailable replayed required plane unknown instead of treating it as absent', async () => {
+    listClauses.mockResolvedValue([{ ...clause('active'), requiredEvidence: ['deployed'] }] as never);
     listEvidence.mockResolvedValue([{
       id: 91,
       workItemId: 'WI-123',
@@ -385,7 +393,10 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
       coverageEvidenceRef: null,
       testRunId: 42,
       testRunProvenance: null,
-      details: { adequacy: { testLayer: 'integration', outcome: 'pass', executed: true } },
+      details: {
+        evidencePlane: 'deployed',
+        adequacy: { testLayer: 'integration', outcome: 'pass', executed: true },
+      },
       observedAt: '2026-09-07T00:00:00.000Z',
       bindingFingerprint: 'sha256:binding-91',
       createdBy: 'su-test',
@@ -435,11 +446,17 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     expect(summary.rows[0].measurementEvidence).toEqual(expectedMeasurementEvidence);
     expect(full.rows[0].measurementEvidence).toEqual(expectedMeasurementEvidence);
     expect(summary.rows[0].ratings.freshness.rating).toBe('unknown');
+    expect(summary.rows[0].ratings['correct-layer'].rating).toBe('unknown');
+    expect(full.rows[0].ratings['correct-layer'].rating).toBe('unknown');
     expect(listEvidence).toHaveBeenCalledWith(expect.objectContaining({
       replaySnapshot: true,
       specRevision: 1,
       specFingerprint: 'sha256:spec-001',
     }));
+
+    listEvidence.mockResolvedValue([]);
+    const absentPlane = await call({ ...base, detail: 'summary' });
+    expect(absentPlane.rows[0].ratings['correct-layer'].rating).toBe('fail');
   });
 
   it('derives omitted classRef from the persisted subject class without waiving proof', async () => {

@@ -147,6 +147,13 @@ describe('consultExpiryEmitReplyEvent', () => {
 });
 
 describe('consultExpiryDispatch', () => {
+  it('preserves durable pending dispatch so the cascade does not advance a queued launch as a failure', async () => {
+    const dispatch = consultExpiryDispatch(() => async () => ({ woke: 0, pending: true }));
+    expect(await dispatch({
+      workspaceId: ROW_WS, responder: 'su-next', conversationId: 'conv-queued', summary: 's', body: 'b',
+    })).toMatchObject({ woke: 0, pending: true });
+  });
+
   it('builds the dispatcher from the ROW workspace, not an ambient one', async () => {
     let ctxArg: Record<string, unknown> = {};
     const makeDispatcher = ((ctx: Record<string, unknown>) => {

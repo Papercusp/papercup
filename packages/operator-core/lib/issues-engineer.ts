@@ -56,6 +56,7 @@ import { type InjectEvent } from './agent-tools/coordination/fanout-delivery';
 import { coordScopeWorkspace } from './agent-tools/coordination/log';
 import { fanoutForObject } from './sync/hyperbee/fanout-projection';
 import { boundedOrgTxn, withOrgTxnTimeoutPhase } from './pg-bounded-txn';
+import { applyBlockerDecisionMutation, BlockerDecisionMutationConflict, type BlockerDecisionMutation } from './blocker-resolution-persistence';
 import { lockGoalPlanClaimSelections, goalPlanClaimFragments, assertGoalPlanClaimSelection } from './typed-properties-db';
 import { sealSharedTextInTxOrRefuse } from './personal-vault/shared-store-seal';
 import { boundedPgReadTxn } from './pg-read-query';
@@ -3599,7 +3600,8 @@ export async function recordWorkItemReleaseCooldown(opts: {
 
 export async function releaseIssue(
   id: string,
-  opts: { expectedAssignee?: string } = {},
+  opts: { expectedAssignee?: string; blockerDecisionMutation?: BlockerDecisionMutation;
+    afterWrite?: (tx: Sql | TransactionSql) => Promise<void> } = {},
 ): Promise<EngineerIssue | null> {
   // EI-23215738429986679: resolve the issue workspace, capture its prior holder, perform the
   // compare-and-release UPDATE, and persist release cooldown in ONE bounded admin transaction.
@@ -3624,6 +3626,10 @@ export async function releaseIssue(
          AND item_kind IN (${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})`;
     const formerAssignee = prev[0]?.taken_by ?? null;
     const formerHarnessSlug = prev[0]?.harness_slug ?? null;
+    if (opts.blockerDecisionMutation) {
+      releasePhase = 'blocker-decision-cas';
+      await applyBlockerDecisionMutation(tx, { workspace: ws, harness: formerHarnessSlug, id }, opts.blockerDecisionMutation);
+    }
     // EI-7588: when `expectedAssignee` is given (the work_items:release TOOL's holder guard),
     // the UPDATE itself only touches the row when it is unclaimed OR already held by the
     // expected caller — atomic compare-and-release, no fetch-then-write race. A row held by
@@ -3650,8 +3656,12 @@ export async function releaseIssue(
        WHERE workspace_id = ${ws} AND issue_id = ${id}
          AND (${opts.expectedAssignee ?? null}::text IS NULL OR assignee IS NULL OR assignee = ${opts.expectedAssignee ?? null})
        RETURNING ${tx.unsafe(ISSUE_COLS)}`;
-    if (!rows[0]) return null;
+    if (!rows[0]) {
+      if (opts.blockerDecisionMutation) throw new BlockerDecisionMutationConflict();
+      return null;
+    }
     const issue = toIssue(rows[0]);
+    await opts.afterWrite?.(tx);
     if (formerAssignee && formerHarnessSlug) {
       releasePhase = 'persist-release-cooldown';
       await recordWorkItemReleaseCooldown(
@@ -3775,6 +3785,8 @@ export async function setIssueState(
     unclaimedSnapshotTs?: number;
     /** Internal lifecycle restore guard: require no active typed external blocker under the row lock. */
     requireNoActiveExternalBlockers?: boolean;
+    /** Internal handoff from the unified, validated decision boundary. */
+    blockerDecisionMutation?: BlockerDecisionMutation;
   } = {},
 ): Promise<EngineerIssue | null> {
   const isTerminal = ISSUE_TERMINAL_STATUSES.has(state);
@@ -3885,7 +3897,7 @@ export async function setIssueState(
   let priorAssignee: string | null = null;
   let terminalWriteSucceeded = false;
   let terminalWriteWasAttested = false;
-  const rows = await boundedOrgTxn(async (tx) => {
+  const writeState = async (tx: OrgSql) => {
     // WI-10006010: physical identity is (workspace_id, harness_slug, feature_id). Pin ONE row
     // and scope every statement below to it; keyed on feature_id alone, a close of one row
     // rewrote every slug twin (3 done/committed twins flipped to dropped on 2026-10-03).
@@ -3893,6 +3905,10 @@ export async function setIssueState(
     // physical-row predicate". Always resolve one slug so reopen and completion updates
     // cannot fan out to same-id twins.
     const slug = await resolveIssuePhysicalSlug(tx, ws, id, opts.harnessSlug);
+    if (opts.blockerDecisionMutation) {
+      if (!slug) throw new BlockerDecisionMutationConflict();
+      await applyBlockerDecisionMutation(tx, { workspace: ws, harness: slug, id }, opts.blockerDecisionMutation);
+    }
     const onBaseRow = () => (slug ? tx`AND harness_slug = ${slug}` : tx``);
     const onAliasedRow = () => (slug ? tx`AND wi.harness_slug = ${slug}` : tx``);
     const onViewRow = () => (slug ? tx`AND base_harness_slug = ${slug}` : tx``);
@@ -4233,6 +4249,11 @@ export async function setIssueState(
          ${onViewRow()}
          AND ${currentEffect}
       RETURNING ${tx.unsafe(ISSUE_COLS)}`;
+  };
+  const rows = await boundedOrgTxn(async (tx) => {
+    const updated = await writeState(tx);
+    if (opts.blockerDecisionMutation && !updated.length) throw new BlockerDecisionMutationConflict();
+    return updated;
   });
   if (isTerminal && terminalWriteSucceeded && priorAssignee) {
     clearGoalClaimedIfMatches(priorAssignee, id);
@@ -4357,6 +4378,8 @@ export async function mergeIssuePayload(
     unset?: readonly string[];
     harnessSlug?: string | null;
     expectedExternalBlockers?: unknown;
+    expectedBlockerResolution?: unknown;
+    expectedCustodianId?: string | null;
     requireNonTerminal?: boolean;
   } = {},
 ): Promise<EngineerIssue | null> {
@@ -4381,6 +4404,9 @@ export async function mergeIssuePayload(
   const settingPlanItem = clearingPlanItem ? null : planItemSourceFromPayloadPatch(payloadPatch);
   const fenceBlockers = Object.hasOwn(opts, 'expectedExternalBlockers');
   const expectedBlockers = JSON.stringify(opts.expectedExternalBlockers === undefined ? [] : opts.expectedExternalBlockers);
+  const fenceDecision = Object.hasOwn(opts, 'expectedBlockerResolution');
+  const expectedDecision = JSON.stringify(opts.expectedBlockerResolution ?? null);
+  const fenceCustodian = Object.hasOwn(opts, 'expectedCustodianId');
   // EI-21215793636294109: write the CANONICAL base table, never the engineer_issues
   // COMPATIBILITY VIEW — a key removal is not expressible through that view. Its
   // INSTEAD OF trigger re-merges the incoming payload into the stored one
@@ -4422,6 +4448,8 @@ export async function mergeIssuePayload(
        AND feature_id = ${id}
        AND item_kind = ANY (ARRAY[${db.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
        AND (${!fenceBlockers} OR COALESCE(payload->'externalBlockers', '[]'::jsonb) = ${expectedBlockers}::text::jsonb)
+       AND (${!fenceDecision} OR COALESCE(payload->'blockerResolution', 'null'::jsonb) = ${expectedDecision}::text::jsonb)
+       AND (${!fenceCustodian} OR taken_by IS NOT DISTINCT FROM ${opts.expectedCustodianId ?? null})
        AND (${!opts.requireNonTerminal} OR NOT (status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[])))
        -- The federation stamp treats ANY payload change as a local content
        -- write. Corroboration of an imported report belongs in the occurrence

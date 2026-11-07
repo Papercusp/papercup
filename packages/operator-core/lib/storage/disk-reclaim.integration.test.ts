@@ -18,7 +18,7 @@ import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { createWorkspaceHostCutRetentionDelegate, drainScheduledDiskReclaim, nativeRetentionCommand, readReclaimReceipt, removePrivilegedRetentionEntry, runDiskReclaimOnce, runScheduledDiskReclaimWithFailureReceipt, writeReclaimAudit, type DiskReclaimReceipt, type NativeRetentionTiming, type ReclaimSql, type RetentionEntry } from './disk-reclaim';
 import { CACHEDIR_TAG_SIGNATURE, type RetentionClass } from './retention-policy';
 import { inspectRetentionTrees } from './disk-consumer-census';
-import { awaitRetentionCensusCompletion, inspectDetachedRetentionTrees, withRetentionMutex } from './retention-census-walk';
+import { awaitRetentionCensusCompletion, inspectDetachedRetentionTrees, RETENTION_CENSUS_LIFETIME_MS, withRetentionMutex } from './retention-census-walk';
 import { DetachedWalkAbandoned, readWalkState, walkAttemptFiles } from './disk-census-detached-walk';
 import { readDiskHeadroomSoakEvidence } from './retention-interval-evidence';
 import { scanProcHolders } from '../release-cut-reclaim';
@@ -821,7 +821,63 @@ describe('retention on a real fixture tree', () => {
     for (const path of [root, later]) expect(await readFile(join(path, 'data'), 'utf8')).toBe('retain until a fresh complete pass');
   });
 
-  it.each(['remove', 'new-pin', 'changed-entry'] as const)('continues a pending census outside admission and rechecks %s before effects', async mode => {
+  it('reclaims a ready root without aging its census behind an independent delegate', async () => {
+    const { root, options } = await setup();
+    const source = join(root, 'expired'); await mkdir(source); await writeFile(join(source, 'data'), 'old');
+    const slot = join(fixture!, 'slot');
+    const selected = await inspectRetentionTrees(root, { retainAfterMs: Infinity, includeRecent: true });
+    let clock = options.nowMs;
+    const readyAt = clock + 1000;
+    const delegatePending = { root: join(fixture!, 'cuts'), dir: join(fixture!, 'cut-slot'),
+      attempt: 1, requestKey: 'cut-request', launchedAt: clock };
+    const receipts: DiskReclaimReceipt[] = [];
+    vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(clock);
+    try {
+      const summary = await drainScheduledDiskReclaim(async () => {
+        const receipt = await runDiskReclaimOnce({ ...options, nowMs: clock,
+          policy: options.policy.map(cls => ({ ...cls, maxBytes: 1 })),
+          previousReceipt: receipts.at(-1), yieldAfterPendingCensus: true, inspectTrees: inspectRetentionTrees,
+          delegates: [{ classId: 'release-cut-worktrees', run: async () => ({ ok: false,
+            detail: { pendingWalk: delegatePending, errors: ['release-cut usage before reclaim: ' + JSON.stringify({
+              message: 'release-cut usage pending; managed census continues for adoption',
+            })] } }) }],
+          inspectInitialCappedTrees: (path, input, retentionMutex) => inspectDetachedRetentionTrees(path, input, {
+            retentionMutex, dir: slot, prepareOnly: input.prepareOnly, waitMs: 60_000, pollMs: 2,
+            launch: async () => ({ pid: 999_999_999, taskId: 'fixture-pending', confined: true }),
+            isAlive: () => receipts.length === 0,
+            sleep: async () => { throw new DetachedWalkAbandoned(); },
+          }),
+        });
+        receipts.push(receipt);
+        if (receipts.length === 1) {
+          const state = (await readWalkState(slot))!;
+          const files = walkAttemptFiles(slot, state.attempt);
+          await writeFile(files.out, JSON.stringify({ version: 1, requestKey: state.requestKey,
+            startedAt: state.launchedAt, finishedAt: readyAt, result: selected }));
+          await writeFile(files.exit, '0');
+        }
+        return receipt;
+      }, { maxBatches: 2, maxElapsedMs: 30 * 60_000, awaitPendingCensus: async (pending, deadline) => {
+        if (pending.root === delegatePending.root) {
+          // This independent scan takes longer than the ready root's proof lifetime.
+          clock += RETENTION_CENSUS_LIFETIME_MS + 60_000; vi.setSystemTime(clock);
+          return true;
+        }
+        clock = Math.max(clock, readyAt); vi.setSystemTime(clock);
+        return awaitRetentionCensusCompletion(pending, deadline);
+      } });
+      expect(receipts).toHaveLength(2);
+      expect(receipts[1]!.entries).toContainEqual(expect.objectContaining({ path: source, status: 'removed' }));
+      await expect(stat(source)).rejects.toMatchObject({ code: 'ENOENT' });
+      // Progress on the root never turns the unresolved native owner's receipt green.
+      expect(receipts[1]!.complete).toBe(false);
+      expect(receipts[1]!.delegates).toContainEqual(expect.objectContaining({ classId: 'release-cut-worktrees', ok: false }));
+      expect(summary.stop).toBe('batch-limit');
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each(['remove', 'new-pin', 'changed-entry', 'mixed-remove', 'mixed-new-pin', 'mixed-changed-entry'] as const)('continues a pending census outside admission and rechecks %s before effects', async mode => {
+    const mixed = mode.startsWith('mixed-'), action = mode.replace('mixed-', '');
     const { root, options } = await setup();
     const source = join(root, 'expired'); await mkdir(source); await writeFile(join(source, 'data'), 'old');
     const later = join(fixture!, 'later'); await mkdir(later);
@@ -837,11 +893,15 @@ describe('retention on a real fixture tree', () => {
       const summary = await drainScheduledDiskReclaim(async () => {
         const receipt = await runDiskReclaimOnce({ ...options, nowMs: clock,
           policy: options.policy.map(cls => ({ ...cls, roots: [root, later], maxBytes: 1 })),
-          roots: [...options.roots, { path: later, classId: 'fixture' }],
+          roots: mixed ? [{ path: later, classId: 'fixture' }, ...options.roots] : [...options.roots, { path: later, classId: 'fixture' }],
           previousReceipt: receipts.at(-1), yieldAfterPendingCensus: true, inspectTrees: inspectRetentionTrees,
           readProtection: async () => { protections.push(pinned); return { paths: pinned ? [source] : [] }; },
           inspectInitialCappedTrees: async (path, input, retentionMutex) => {
             if (!input.prepareOnly) inspections.push(path);
+            if (mixed && path === later && !input.prepareOnly && receipts.length === 0) {
+              return { entries: [], retained: [], inspectedNodes: 0, retainedRecentTrees: 0,
+                error: 'stale or changed retention census result' };
+            }
             return path === root ? inspectDetachedRetentionTrees(path, input, { retentionMutex, dir: slot,
               prepareOnly: input.prepareOnly, waitMs: 60_000, pollMs: 2, launch: launcher, isAlive: () => receipts.length === 0,
               // Abandon after enrollment reaches its wait, independently of
@@ -852,14 +912,17 @@ describe('retention on a real fixture tree', () => {
         });
         receipts.push(receipt); return receipt;
       }, { awaitPendingCensus: async (pending, deadline) => {
-        expect(inspections).toEqual([root]);
-        expect(receipts[0]!.errors).toEqual([`inspect:${root}: retention census pending; managed walk continues for adoption`]);
+        expect(inspections).toEqual(mixed ? [later, root] : [root]);
+        expect(receipts[0]!.errors).toEqual([
+          ...(mixed ? [`inspect:${later}: stale or changed retention census result`] : []),
+          `inspect:${root}: retention census pending; managed walk continues for adoption`,
+        ]);
         expect(receipts[0]!.entries).toEqual([]);
-        expect(receipts[0]!.censuses?.find(row => !row.preparationOnly)?.pendingWalk).toEqual(pending);
+        expect(receipts[0]!.censuses?.find(row => !row.preparationOnly && row.root === root)?.pendingWalk).toEqual(pending);
         // A pin writer obtains the actual mutex while the workflow is paused.
         await withRetentionMutex(async () => {
-          pinned = mode === 'new-pin';
-          if (mode === 'changed-entry') await writeFile(join(source, 'data'), 'new'.repeat(8192));
+          pinned = action === 'new-pin';
+          if (action === 'changed-entry') await writeFile(join(source, 'data'), 'new'.repeat(8192));
         });
         clock += 16_000; vi.setSystemTime(clock);
         const state = (await readWalkState(slot))!;
@@ -871,9 +934,10 @@ describe('retention on a real fixture tree', () => {
       } });
       expect(receipts).toHaveLength(2);
       expect(launcher).toHaveBeenCalledOnce();
-      expect(protections).toEqual([false, mode === 'new-pin']);
+      expect(protections).toEqual([false, action === 'new-pin']);
       expect(await readFile(join(slot, 'consumed'), 'utf8')).toBe('consumed\n');
-      if (mode === 'remove') {
+      if (mixed) expect(inspections.filter(path => path === later)).toHaveLength(2);
+      if (action === 'remove') {
         expect(summary.stop).toBe('complete');
         expect(receipts[1]!.entries).toContainEqual(expect.objectContaining({ path: source, status: 'removed' }));
         await expect(stat(source)).rejects.toMatchObject({ code: 'ENOENT' });

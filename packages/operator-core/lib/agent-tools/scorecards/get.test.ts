@@ -46,7 +46,8 @@ vi.mock('../../scorecards', async (importOriginal) => {
   };
 });
 
-import { readScorecardEvidence, readScorecardRecipeHeader } from '../../scorecards';
+import { readScorecardEvidence, readScorecardRecipeHeader, projectScorecardEvidenceActions } from '../../scorecards';
+import type { Rubric } from '../../rubrics';
 import { runInstrument } from '../../rubric-instrument-registry';
 import { retainedProbeProcedure } from '../../continuity-probes';
 import { retainMeasurementProvenance } from '../../measurement-provenance';
@@ -841,6 +842,39 @@ describe('scorecards:get evidence-first projection', () => {
       expect(recovered).toBe(large.criteria.find((criterion) => criterion.key === entry.key)!.evidence);
       expect(recovered).toContain(`Re-run exact-probe ${entry.key}`);
     }
+  });
+
+  it('preserves pinned composed guidance and literal historical actions through criterion evidence pages', async () => {
+    const definition = { rubricId: scorecard.rubricRef, revision: 2, criteriaHash: scorecard.criteriaHash, methodRef: null,
+      criteria: [{ key: 'history', method: 'Recover archive; literal $(never-execute).', replication: 'Use original window.',
+        instrumentKey: 'none', driftMarkers: 'Missing retained sources.' }] } as Rubric;
+    const rating = { rating: 'unknown', evidence: 'historical evidence '.repeat(900),
+      unknownReason: 'retention-gap' as const, nextEvidenceAction: 'Original action $(unchanged); preserve bytes.' };
+    const observation = { rubricRef: definition.rubricId, rubricRevision: 2, criteriaHash: definition.criteriaHash,
+      subject: { ref: 'fleet:paged', windowStart: '2026-11-01T00:00:00Z', windowEnd: '2026-11-02T00:00:00Z' },
+      ratings: { history: rating } };
+    const action = projectScorecardEvidenceActions({ issueId: scorecard.issueId, observation, rubric: definition,
+      comparisonTime: observation.subject.windowEnd })[0]!;
+    const card = { ...scorecard, rerunRecipe: undefined, criteria: [{ key: 'history', ...rating, evidenceAction: action }], nKeys: 1 };
+    readScorecardEvidenceM.mockResolvedValue({ kind: 'found', scorecard: card });
+    let offset = 0;
+    let recovered = '';
+    for (let pages = 0; pages < 30; pages++) {
+      const response = await getTool.handler({ issueId: card.issueId, criterionKey: 'history', evidenceOffset: offset }, makeDispatchContext());
+      const responseData = 'data' in response ? response.data : null;
+      expect(resultContract.safeParse(responseData).success).toBe(true);
+      const data = responseData as { ok: boolean; scorecard: typeof card;
+        evidenceRead: { complete: boolean; next?: { args: { evidenceOffset: number } } } };
+      expect(data.ok).toBe(true);
+      const selected = data.scorecard.criteria[0]!;
+      expect(selected.evidenceAction).toEqual(action);
+      expect(selected.nextEvidenceAction).toBe(rating.nextEvidenceAction);
+      recovered += selected.evidence;
+      if (data.evidenceRead.complete) break;
+      expect(data.evidenceRead.next!.args.evidenceOffset).toBeGreaterThan(offset);
+      offset = data.evidenceRead.next!.args.evidenceOffset;
+    }
+    expect(recovered).toBe(rating.evidence);
   });
 
   it('bounds parallel criterion reads and explains how to recover output-door envelopes', () => {

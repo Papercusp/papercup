@@ -30,7 +30,9 @@ vi.mock('../../consult/plan-start-consult', () => ({
 // runner's Git state by injecting a stable value.
 vi.mock('../../build-info', () => ({ getBuildInfo: () => ({ sha: 'abc1234', version: '0.0.0' }) }));
 
-import { activationDeclarationReadiness, previewPlanStartConsult } from './get-activation-readiness';
+import { ACTIVATION_STAGE_IDS, activationDeclarationReadiness, collectActivationReadiness,
+  previewPlanStartConsult, unavailableActivationReadiness, matchingActivationConsult,
+  type ActivationReadinessBasis, type ActivationReadinessReaders } from './get-activation-readiness';
 
 const params = {
   workspaceId: 'workspace-a',
@@ -79,6 +81,14 @@ beforeEach(() => {
 });
 
 describe('previewPlanStartConsult', () => {
+  it('preserves every unknown stage and dependency when diagnostic setup is unavailable', () => {
+    const result = unavailableActivationReadiness(new Error('reader offline'));
+    expect(result.stages.map(s => s.id)).toEqual([...ACTIVATION_STAGE_IDS]);
+    expect(result.stages.every(s => s.status === 'unknown' && s.detail === 'reader offline')).toBe(true);
+    expect(result.stages.find(s => s.id === 'quality-audit')?.dependencies).toEqual(['spec-quality']);
+    expect(result).toMatchObject({ ready: false, freshness: 'unknown', basis: null,
+      counts: { total: 13, returned: 13, omitted: 0 }, consult: { outcome: 'unavailable' } });
+  });
   it('wires production routing, liveness, and excerpt callbacks without opening a consult', async () => {
     M.planStartConsult.mockImplementation(async (consultParams, deps) => {
       await deps.route({
@@ -182,5 +192,77 @@ describe('activationDeclarationReadiness', () => {
     expect(activationDeclarationReadiness(plan(), 'active')).toMatchObject({
       ready: true, applies: false, reuse: 'missing', libraries: 'missing', blockers: [],
     });
+  });
+});
+
+describe('collectActivationReadiness', () => {
+  const basis: ActivationReadinessBasis = { workspaceId: 'w', harnessSlug: 'h', planSlug: 'p',
+    planRevision: 1, planHash: 'plan', requesterId: 'reader', policyHash: 'policy',
+    specSetHash: 'specs', evidenceHash: 'evidence' };
+  function readers(): ActivationReadinessReaders {
+    return { readBasis: vi.fn().mockResolvedValue({ ...basis }),
+      stages: Object.fromEntries(ACTIVATION_STAGE_IDS.map(id => [id,
+        vi.fn().mockResolvedValue({ status: 'pass', codes: [`${id}_ready`], nextAction: 'Continue canonical start.' })])) };
+  }
+  it.each(['workspaceId', 'harnessSlug', 'planSlug', 'planHash', 'requesterId', 'policyHash'] as const)(
+    'never reuses consultation advice across a changed %s', key => {
+      const consult = { outcome: 'unavailable' as const, error: 'consult_preview_unavailable' as const, message: 'honest failure' };
+      const receipt = { basis, consult };
+      expect(matchingActivationConsult(receipt, { ...basis })).toBe(consult);
+      expect(matchingActivationConsult(receipt, { ...basis, [key]: 'different' })).toBeUndefined();
+      expect(matchingActivationConsult(undefined, basis)).toBeUndefined();
+      expect(matchingActivationConsult(receipt, undefined)).toBeUndefined();
+    });
+  it('reports three independent blockers without an early return', async () => {
+    const r = readers();
+    for (const id of ['source-discovery', 'inputs', 'anchors'] as const)
+      r.stages[id] = vi.fn().mockResolvedValue({ status: 'blocked', codes: [id + '_missing'], nextAction: 'Repair ' + id });
+    const result = await collectActivationReadiness(r);
+    expect(result.stages.filter(s => s.status === 'blocked').map(s => s.id)).toEqual(['source-discovery', 'inputs', 'anchors']);
+    expect(result).toMatchObject({ schemaVersion: 1, advisory: true, ready: false, freshness: 'current',
+      counts: { total: 13, returned: 13, omitted: 0 } });
+  });
+  it('waits on quality dependencies while admission, lane and promotion remain independently visible', async () => {
+    const r = readers();
+    r.stages['bar-contract'] = vi.fn().mockResolvedValue({ status: 'blocked', codes: ['bar_contract_missing'], nextAction: 'Repair BAR.' });
+    r.stages.lane = vi.fn().mockResolvedValue({ status: 'blocked', codes: ['floor-gated'], nextAction: 'Inspect named floor.' });
+    r.stages.promotion = vi.fn().mockResolvedValue({ status: 'waiting', codes: ['waiting-for-promotion'], nextAction: 'Use canonical start.' });
+    const result = await collectActivationReadiness(r);
+    expect(r.stages['spec-quality']).not.toHaveBeenCalled();
+    expect(result.stages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'admission', status: 'pass' }),
+      expect.objectContaining({ id: 'lane', status: 'blocked', codes: ['floor-gated'] }),
+      expect.objectContaining({ id: 'promotion', status: 'waiting' }),
+      expect.objectContaining({ id: 'contract-critique', status: 'waiting', dependencies: ['spec-quality', 'quality-audit'] }),
+    ]));
+  });
+  it.each(['planRevision', 'planHash', 'requesterId', 'policyHash', 'specSetHash', 'evidenceHash'] as const)(
+    'invalidates successful observations when %s moves', async key => {
+      const r = readers();
+      vi.mocked(r.readBasis).mockResolvedValueOnce({ ...basis }).mockResolvedValueOnce({ ...basis,
+        [key]: key === 'planRevision' ? 2 : 'changed' });
+      const result = await collectActivationReadiness(r);
+      expect(result).toMatchObject({ ready: false, freshness: 'changed' });
+      expect(result.stages.every(s => s.status === 'unknown' && s.codes[0] === 'activation_basis_changed')).toBe(true);
+    });
+  it('does not treat an unavailable reader, malformed observation or absent fingerprint as passed', async () => {
+    const r = readers();
+    delete r.stages.inputs;
+    r.stages.anchors = vi.fn().mockResolvedValue({ status: 'pass', codes: [], nextAction: 'Continue.' });
+    let result = await collectActivationReadiness(r);
+    expect(result.stages.filter(s => s.status === 'unknown').map(s => s.id)).toEqual(['inputs', 'anchors']);
+    vi.mocked(r.readBasis).mockRejectedValue(new Error('identity store unavailable'));
+    result = await collectActivationReadiness(r);
+    expect(result).toMatchObject({ ready: false, freshness: 'unknown', basis: null });
+    expect(result.stages.every(s => s.status === 'unknown')).toBe(true);
+  });
+  it('bounds detail without silently removing stages', async () => {
+    const r = readers();
+    r.stages.inputs = vi.fn().mockResolvedValue({ status: 'blocked', codes: Array(30).fill('x'.repeat(300)),
+      evidenceRefs: Array(20).fill('y'.repeat(400)), detail: 'z'.repeat(4000), nextAction: 'a'.repeat(3000) });
+    const result = await collectActivationReadiness(r);
+    expect(result.counts).toEqual({ total: 13, returned: 13, omitted: 0 });
+    expect(result.stages[2]).toMatchObject({ omittedDetail: { codes: 22, evidenceRefs: 12 } });
+    expect(JSON.stringify(result).length).toBeLessThan(11000);
   });
 });

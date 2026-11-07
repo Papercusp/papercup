@@ -8,6 +8,8 @@
  * item back to todo + drop the lease) fire per released item (D-007).
  */
 import { z } from 'zod';
+import { blockerDecisionInputSchema, prepareBlockerDecision, type BlockerDecisionRecord } from '../../blocker-resolution-decision';
+import { blockerBoundaryContext } from '../../blocker-resolution-evidence';
 import { defineTool } from '@papercusp/agent-mcp';
 import type { CoordEnvelope } from '@papercusp/coordination/core';
 import { WORK_ITEM_LIFECYCLE_ROLES } from '../coordination/roles';
@@ -15,6 +17,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import {
   releaseWorkItem,
   setWorkItemClaimHold,
+  prepareWorkItemDurableParkMutation,
   getWorkItem,
   commentWorkItem,
   isClaimHoldParked,
@@ -372,6 +375,7 @@ function openEscalationReader(): (itemId: string) => Promise<OpenEscalationRef |
 }
 
 const itemSpec = z.object({
+  blockerDecision: blockerDecisionInputSchema.optional(),
   id: z.string().min(1),
   harness: z.string().max(80).optional().describe('per-item harness (else the batch `harness` default)'),
   claimHold: z.boolean().optional().describe('per-item claim-hold override (else the batch `claimHold` default)'),
@@ -434,6 +438,7 @@ export default defineTool({
         .describe('release many work-items at once (homogeneous)'),
       items: z.array(itemSpec).min(1).max(200).optional().describe('release many, each { id, harness?, claimHold? }'),
       harness: z.string().max(80).optional().describe('default harness for the inline id / ids / items that omit one'),
+      blockerDecision: blockerDecisionInputSchema.optional(),
       claimHold: z
         .boolean()
         .optional()
@@ -495,6 +500,7 @@ export default defineTool({
             id,
             harness: args.harness,
             claimHold: args.claimHold,
+            blockerDecision: args.blockerDecision,
             claimHoldRelease: args.claimHoldRelease,
             force: args.force,
             reason: args.reason,
@@ -504,6 +510,7 @@ export default defineTool({
               id: args.id as string,
               harness: args.harness,
               claimHold: args.claimHold,
+              blockerDecision: args.blockerDecision,
               claimHoldRelease: args.claimHoldRelease,
               force: args.force,
               reason: args.reason,
@@ -520,6 +527,22 @@ export default defineTool({
         const reasonDisclosure = reasonTruncated ? { reasonTruncated: true as const } : {};
         const claimHold = it.claimHold ?? args.claimHold;
         const claimHoldReleaseInput = it.claimHoldRelease ?? args.claimHoldRelease;
+        const blockerInput = it.blockerDecision ?? args.blockerDecision;
+        const blockerEffect = { release: true, claimHold: claimHold ?? null,
+          claimHoldRelease: claimHoldReleaseInput ?? null, reason: reason ?? null, force };
+        // Replay the original receipt before event admission, force assessment or
+        // any checkpoint/hold write. A successor may now own this canonical row.
+        if (blockerInput) {
+          const current = await getWorkItem(it.id, harness);
+          if (current) {
+            const prepared = prepareBlockerDecision(current.payload, blockerInput, {
+              ownerId: ident.ownerId, sessionId: ident.ownerId, workItemId: it.id, custodianId: current.assignee,
+            }, { effect: blockerEffect });
+            if (!prepared.ok) return { ...prepared, id: it.id, error: prepared.code };
+            if (prepared.replayed) return { ok: true as const, id: it.id, workItem: current,
+              blockerDecision: prepared.record, replayed: true };
+          }
+        }
         // event-wait-settlement-2026-10-20 P-006 (D-001 item 2; R-11, R-20): a durable park's
         // trigger is the key every park-settlement path releases on, so it must be one a fire
         // can prove — refused, with the options, before anything is released or written.
@@ -540,6 +563,9 @@ export default defineTool({
           claimHold === true && claimHoldReleaseInput
             ? await buildClaimHoldReleaseContract(claimHoldReleaseInput, ident.ownerId, it.id)
             : undefined;
+        const pairedHold = blockerInput && claimHold !== undefined
+          ? await prepareWorkItemDurableParkMutation(claimHold, { parkedBy: ident.ownerId,
+              parkedReason: reason, releaseContract }) : undefined;
         // WI-4198: force is a CHECKED override, not a bypass. Before releasing,
         // identify the holder; a cross-holder force must pass the authority/liveness
         // guard, carry a reason, and leave an audit + notification trail.
@@ -616,6 +642,7 @@ export default defineTool({
         // so `previousAssignee` could describe a state the release never acted on. A fix
         // for silent wrong answers must not itself be able to report one.
         const prior: { assignee: string | null; wasClaimed: boolean } = { assignee: null, wasClaimed: false };
+        let blockerReceipt: { record: BlockerDecisionRecord; replayed: boolean } | undefined;
 
         // EI-7588: compare-and-release — the UPDATE itself only touches an unclaimed row
         // or one already held by `ident.ownerId` (unless `force`), so a peer's live claim
@@ -633,12 +660,20 @@ export default defineTool({
           // the authorization can never be cleared.
           expectedAssignee: forced ? forced.holder : force ? undefined : ident.ownerId,
           releasingOwnerId: ident.ownerId,
+          blockerEvidenceContext: await blockerBoundaryContext(ctx, ident.ownerId, harness),
+          ...(claimHold === true ? { enteringBlockerDeferral: true } : {}),
+          ...(blockerInput ? { blockerDecision: {
+            input: blockerInput, sessionId: ident.ownerId, effect: blockerEffect, ...pairedHold,
+          } } : {}),
+          onBlockerDecision: (receipt) => { blockerReceipt = receipt; },
           onPriorState: (p) => {
             prior.assignee = p.assignee;
             prior.wasClaimed = p.wasClaimed;
           },
         };
         let workItem = await releaseWorkItem(it.id, releaseOpts);
+        if (blockerReceipt?.replayed) return { ok: true as const, id: it.id, workItem,
+          blockerDecision: blockerReceipt.record, replayed: true };
         // WI-10006515: a null release on an OWN-NODE issue row stranded at origin='remote' is
         // the view trigger no-op'ing a write this node is entitled to make (`origin` records how
         // the row arrived, not who wrote it). Heal it and retry ONCE. The heal's WHERE clause is
@@ -1028,7 +1063,9 @@ export default defineTool({
         // (WI-4531 reaper), so every park placed by an ephemeral agent boomeranged back
         // into scheduler:get_next. Parks never gate terminal transitions, so durability
         // costs nothing WI-4531 was defending against.
-        const held = await setWorkItemClaimHold(it.id, claimHold, {
+        const held = pairedHold
+          ? { id: it.id, harness: workItem.harness, hold: claimHold!, applicable: true }
+          : await setWorkItemClaimHold(it.id, claimHold, {
           harness,
           parkedBy: ident.ownerId,
           parkedReason: reason,
@@ -1078,6 +1115,7 @@ export default defineTool({
           ok: true as const,
           id: it.id,
           workItem: postClaimHoldWorkItem,
+          ...(blockerReceipt ? { blockerDecision: blockerReceipt.record } : {}),
           forced,
           ...delta,
           ...stranding,

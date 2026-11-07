@@ -412,7 +412,7 @@ export function createFleetRosterPresenceTimingRecorder(
 const LEADER_BRIEF_FLEET_METRICS_DEPS: LeaderBriefFleetMetricsDeps = {
   resolveScope: resolveFleetMetricScope,
   listItems: input => readFleetMetricSource(input.resolution),
-  readOccurrences: input => withFleetMetricReadSql(sql => readIssueOccurrenceCounts(input, sql)),
+  readOccurrences: input => withFleetMetricReadSql(sql => readIssueOccurrenceCounts(input, sql), { occurrenceCensus: true }),
   build: buildFleetMetricsResult,
 };
 

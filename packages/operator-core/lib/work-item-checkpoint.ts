@@ -55,6 +55,17 @@ import { parseCarryRefStamps, stampCarryRefs } from './carry-ref-stamps';
 import type { DepStamp } from './freshness/index';
 
 import { ISSUE_FAMILY_KINDS_SQL_LIST } from './work-nature/agent-work-predicate';
+import { prepareBlockerDecision } from './blocker-resolution-decision';
+import { applyBlockerDecisionMutation, BlockerDecisionMutationConflict } from './blocker-resolution-persistence';
+import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
+
+/** Abort the carry transaction on an exact retry, including its journal and
+ * any caller transform. A receipt never rewinds a successor's checkpoint. */
+class BlockerCheckpointReplay extends Error {
+  constructor(readonly result: WorkItemCheckpointWithPriorResult) {
+    super('Exact blocker checkpoint retry');
+  }
+}
 export interface WorkItemCheckpointRef {
   /**
    * The harness the item lives under. May be `null` for a harness-null item — an
@@ -185,6 +196,8 @@ export async function setWorkItemCheckpointWithPrior(
   ref: WorkItemCheckpointRef,
   checkpoint: string | null | undefined,
   opts?: {
+    /** Internal paired lifecycle write; the caller owns commit and progress. */
+    transaction?: Sql | TransactionSql;
     /** Latest authored update before history/check-row preservation transforms. */
     latestUpdate?: string;
     /** Authoritative work-item subject bound to any newly appended journal entry. */
@@ -217,6 +230,10 @@ export async function setWorkItemCheckpointWithPrior(
     writerOwnerId?: string | null;
     /** Internal: host respawn only; capture one wait sample on a bounded timeout. */
     captureWaitSnapshot?: boolean;
+    /** Internal authenticated handoff after public evidence validation. Decision
+     * persistence shares the carry transaction; a refusal retains the old note,
+     * journal, claim and decision. No independent checkpoint store is added. */
+    blockerDecision?: { input: unknown; ownerId: string; sessionId: string };
   },
 ): Promise<WorkItemCheckpointWithPriorResult> {
   // EI-9013: canonicalize the workspace AT THE SUBSTRATE — a caller that passes
@@ -314,18 +331,46 @@ export async function setWorkItemCheckpointWithPrior(
         exclude: [`work-item:${ref.workItemId}`],
       })
     : undefined;
-  const { stored, priorLength, blockedReason } = await setCarryNoteWithPrior(
+  const transform: NonNullable<Parameters<typeof setCarryNoteWithPrior>[2]>['transform'] =
+    opts?.blockerDecision ? async (prior, incoming, tx) => {
+      const actor = opts.blockerDecision!;
+      const [row] = await tx<{ payload: unknown; status: string; taken_by: string | null }[]>`
+        SELECT payload, status, taken_by FROM harness_shared.work_items
+         WHERE workspace_id = ${ws} AND harness_slug IS NOT DISTINCT FROM ${ref.harness}
+           AND feature_id = ${ref.workItemId} FOR UPDATE`;
+      if (!row) throw new BlockerDecisionMutationConflict();
+      const prepared = prepareBlockerDecision(row.payload, actor.input, {
+        ownerId: actor.ownerId, sessionId: actor.sessionId, workItemId: ref.workItemId, custodianId: row.taken_by,
+      }, { effect: { checkpoint: checkpoint ?? null, latestUpdate: opts.latestUpdate ?? null,
+        dependsSpecified: depsSpecified, dependsOn: opts.dependsOn ?? null } });
+      if (!prepared.ok) throw Object.assign(new Error(prepared.nextAction), prepared);
+      if (prepared.replayed) throw new BlockerCheckpointReplay({ stored: prior, priorLength: prior?.length ?? 0 });
+      if ((ANY_FAMILY_TERMINAL_STATES as readonly string[]).includes(row.status)) {
+        throw new BlockerDecisionMutationConflict();
+      }
+      await applyBlockerDecisionMutation(tx, { workspace: ws, harness: ref.harness, id: ref.workItemId }, {
+        prepared, expectedState: row.status, expectedCustodianId: actor.ownerId,
+        expectedExternalBlockers: row.payload && typeof row.payload === 'object'
+          ? (row.payload as Record<string, unknown>).externalBlockers : undefined,
+        payloadPatch: {}, unset: [],
+      });
+      return opts.transform ? opts.transform(prior, incoming, tx) : incoming;
+    } : opts?.transform;
+  let result: Awaited<ReturnType<typeof setCarryNoteWithPrior>>;
+  try {
+    result = await setCarryNoteWithPrior(
     { scope: workItemScope(checkpointScopeHarness(ref.harness), ref.workItemId), workspaceId: ws },
     checkpoint,
     // Only pass `deps` when the caller spoke — otherwise the substrate preserves
     // the existing declaration (see setCarryNoteWithPrior's `deps` tri-state).
     {
+      ...(opts?.transaction ? { transaction: opts.transaction } : {}),
       journal: true,
       latestUpdate: typeof (opts?.latestUpdate ?? checkpoint) === 'string'
         ? splitCarryNoteWalls(splitCarryNoteChecks(opts?.latestUpdate ?? checkpoint!).body).body.trim()
         : undefined,
       guard: opts?.guard,
-      ...(opts?.transform ? { transform: opts.transform } : {}),
+      ...(transform ? { transform } : {}),
       ...(depsSpecified ? { deps: depsPayload } : {}),
       ...(refStamps ? { refStamps } : {}),
       ...(opts?.workItem ? { workItem: opts.workItem } : {}),
@@ -346,9 +391,14 @@ export async function setWorkItemCheckpointWithPrior(
       bounded: true,
       ...(opts?.captureWaitSnapshot ? { captureWaitSnapshot: true } : {}),
     },
-  );
+    );
+  } catch (error) {
+    if (error instanceof BlockerCheckpointReplay) return error.result;
+    throw error;
+  }
+  const { stored, priorLength, blockedReason } = result;
   // A blocked write is a no-op — never bump the progress anchor for it.
-  if (stored !== null && !blockedReason) await bumpCheckpointProgressAnchor(ref, ws);
+  if (stored !== null && !blockedReason && !opts?.transaction) await bumpCheckpointProgressAnchor(ref, ws);
   return {
     stored,
     priorLength,

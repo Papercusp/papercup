@@ -5,6 +5,14 @@ import { liveProcExec } from './index';
 // runner's Node bootstrap would measure that bootstrap instead of the child.
 const childEnv = { NODE_OPTIONS: '' };
 
+it('closes noninteractive subprocess stdin so an EOF-dependent command can finish', async () => {
+  const result = await liveProcExec(process.execPath, ['-e',
+    'process.stdin.resume(); process.stdin.on("end",()=>process.stdout.write("stdin-ended"))'],
+  { timeoutMs: 2_000, env: childEnv });
+  expect(result).toMatchObject({ stdout: 'stdin-ended', code: 0 });
+  expect(result.stderr).not.toContain('timed out');
+}, 10_000);
+
 it('kills a subprocess that ignores SIGTERM at its declared deadline', async () => {
   const result = await liveProcExec(process.execPath, ['-e',
     'process.on("SIGTERM",()=>{}); process.stdout.write(String(process.pid)); setInterval(()=>{},1000)'],

@@ -153,7 +153,10 @@ describe('consult:get_feedback requester interest handle (P-024)', () => {
     expect(out).toMatchObject({ verdict: 'accepted', state: 'routing', pending: true });
     expect(order).toEqual(['arm-start', 'arm-ready', 'dispatch-start', 'reply-event-emitted']);
     await vi.waitFor(() => expect(h.interactiveEmbedAcquireBudgetMs).toHaveBeenCalledTimes(1));
-    expect(h.buildQueryEmbedderResolved).toHaveBeenCalledWith({ acquireBudgetMs: 4000 });
+    expect(h.buildQueryEmbedderResolved).toHaveBeenCalledWith(expect.objectContaining({
+      acquireBudgetMs: 4000,
+      onAcquisition: expect.any(Function),
+    }));
     expect(h.reconcileInterestEventAwaits).toHaveBeenCalledWith({
       ownerId: 'requester-1',
       eventKeys: ['consult:reply:consult-1'],
@@ -170,23 +173,23 @@ describe('consult:get_feedback requester interest handle (P-024)', () => {
     expect(out).not.toHaveProperty('interest_watch');
   });
 
-  it('retains an explicit rubric-vetting model in the durable request and routing continuation', async () => {
+  it.each(['rubric-vetting', 'bar-critique'])('retains an explicit %s model in the durable request and routing continuation', async (policy) => {
     const reviewerModel = { agent: 'codex', model: 'sol', effort: 'xhigh' };
     const args = (tool as any).args.parse({ question: 'Vet the current acceptance rubric',
-      policy: 'rubric-vetting', reviewerModel });
+      policy, origin_task_ref: 'contract-plan', reviewerModel });
     h.getFeedbackCore.mockResolvedValue(routed('proceed'));
     await call('proceed', args);
     expect(h.acceptFeedbackRequestCore).toHaveBeenCalledWith(
-      expect.objectContaining({ policy: 'rubric-vetting', reviewerModel }), expect.anything(),
+      expect.objectContaining({ policy, reviewerModel }), expect.anything(),
     );
     await vi.waitFor(() => expect(h.getFeedbackCore).toHaveBeenCalledWith(
-      expect.objectContaining({ policy: 'rubric-vetting', reviewerModel }), expect.anything(),
+      expect.objectContaining({ policy, reviewerModel }), expect.anything(),
     ));
   });
 
-  it('refuses reviewer model steering outside rubric vetting before creating or dispatching a consult', async () => {
+  it('refuses reviewer model steering outside review policies before creating or dispatching a consult', async () => {
     const out = await call('hard-blocked', { reviewerModel: { agent: 'codex', model: 'sol' } });
-    expect(out).toMatchObject({ error: 'reviewer_model_requires_rubric_vetting' });
+    expect(out).toMatchObject({ error: 'reviewer_model_requires_review_policy' });
     expect(h.acceptFeedbackRequestCore).not.toHaveBeenCalled();
     expect(h.continueFeedbackRequestCore).not.toHaveBeenCalled();
     expect(h.reconcileInterestEventAwaits).not.toHaveBeenCalled();

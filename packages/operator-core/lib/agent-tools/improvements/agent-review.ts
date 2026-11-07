@@ -16,7 +16,7 @@ import {
   resubmitAgentReview,
   type AgentReviewClaimNextDiagnostics,
 } from '../../harness/improvements/agent-review';
-import { readAgentReviewState } from '../../harness/improvements/agent-review-policy';
+import { implementationAcceptanceProposalSchema, readAgentReviewState } from '../../harness/improvements/agent-review-policy';
 import type { WorkItem } from '../../work-items';
 import { asRecord, completedResultPayload } from '../abort-completion-payload';
 import { resolveAgentIdentity } from '../coordination/identity';
@@ -151,7 +151,7 @@ export default defineTool({
     notWhen:
       'Do not use this to grade or approve — blender:grade-idea is the sole grade authority. Do not use ordinary scheduler:get_next for pending review work; that lane excludes it until approval.',
     chaining:
-      "improvements:agent-review { mode:'claim', id, harness? } (directed) OR { mode:'claim-next', harness? } (queue order) → use returned gradeWith.ideaId or ledgerIdeaId with blender:grade-idea { ideaId, grade, feedback? }; revision author fixes → improvements:agent-review { mode:'resubmit', id }.",
+      "improvements:agent-review { mode:'claim', id, harness? } (directed) OR { mode:'claim-next', harness? } (queue order) → use returned gradeWith.ideaId or ledgerIdeaId with blender:grade-idea { ideaId, grade, feedback? }; revision author fixes → improvements:agent-review { mode:'resubmit', id, acceptance?:{problem,evidence,outcome,scope,completionCheck} }. acceptance is an unsealed proposal; independent grading still owns acceptance. Never write implementationReadiness through generic update.",
     seeAlso: [
       'blender:grade-idea (record the peer grade and drive approval/revision)',
       'work_items:get (read the claimed work and its checkpoint)',
@@ -197,6 +197,8 @@ export default defineTool({
         .min(1)
         .max(80)
         .describe("The revision-requested work-item id — yours, or an orphan whose submitter is gone."),
+      acceptance: implementationAcceptanceProposalSchema.optional()
+        .describe('Unsealed five-field proposal for this revision: problem, nonempty evidence, outcome, scope and completionCheck. Only independent review can seal it.'),
       reproduction: z
         .object({
           kind: z.enum(['failing-test', 'scripted-repro', 'current-build-observation']),
@@ -290,6 +292,7 @@ export default defineTool({
     const result = await resubmitAgentReview({
       id: args.id,
       submittedBy: identity.ownerId,
+      ...(args.acceptance ? { acceptance: args.acceptance } : {}),
       ...(args.reproduction ? { reproduction: args.reproduction } : {}),
     });
     return {

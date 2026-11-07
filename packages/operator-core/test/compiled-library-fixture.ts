@@ -2,7 +2,9 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-export async function compileLibraryFixture(root: string, source: string, output: string) {
+export async function compileLibraryFixture(root: string, source: string, output: string,
+  options: { sourceSha?: string } = {}) {
+  if (options.sourceSha && !/^[a-f0-9]{40,64}$/.test(options.sourceSha)) throw Error('invalid fixture source SHA');
   const metafile = `${output}.meta.json`;
   const script = [
     'set -euo pipefail',
@@ -18,5 +20,7 @@ export async function compileLibraryFixture(root: string, source: string, output
     'node "$root/scripts/check-bundled-cli-entry-guards.mjs" --metafile "$metafile" --base-dir "$root"',
   ].join('\n');
   await promisify(execFile)('bash', ['-c', script, 'compile-library-fixture', root, metafile, source,
-    `--outfile=${output}`], { cwd: root, timeout: 180_000, maxBuffer: 16_000_000 });
+    `--outfile=${output}`, ...(options.sourceSha
+      ? [`--define:__PAPERCUSP_BUNDLED_SOURCE_SHA__=${JSON.stringify(options.sourceSha)}`] : [])],
+  { cwd: root, timeout: 180_000, maxBuffer: 16_000_000 });
 }

@@ -6,6 +6,7 @@ import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import { parsePlan } from './parser';
 import { getPlanRow } from './source';
 import { planExecutionMeaning } from './plan-execution-meaning';
+import { withBoundedTimeout } from '../../bounded-timeout';
 import type { ResolvedGoal } from '../../agent-goal-ref';
 import type { AcceptanceBarSnapshotSource } from '../../acceptance-bar-contract-snapshot';
 export { planExecutionMeaning } from './plan-execution-meaning';
@@ -86,9 +87,14 @@ export interface ExecutionPlanGoalResolution {
 }
 export interface PlanExecutionGuardDeps {
   readBindings: (ownerId: string, workspaceId: string) => Promise<ExecutionPlanBinding[]>;
-  resolveGoal?: (ownerId: string, workspaceId: string, observe?: PlanExecutionTimingObserver) => Promise<ExecutionPlanGoalResolution>;
+  resolveGoal?: (ownerId: string, workspaceId: string, observe?: PlanExecutionTimingObserver,
+    signal?: AbortSignal) => Promise<ExecutionPlanGoalResolution>;
   checkPlan: (binding: ExecutionPlanBinding, workspaceId: string, observe?: PlanExecutionTimingObserver) => Promise<string[]>;
+  /** Test seam for the bounded selector path; production uses the fixed 650ms budget. */
+  goalResolutionBudgetMs?: number;
 }
+
+const GOAL_RESOLUTION_BUDGET_MS = 650;
 
 const fileTools = new Set(['Edit', 'Write', 'MultiEdit', 'edit', 'write', 'apply_patch', 'capability:edit',
   'capability:write', 'locks:acquire', 'locks:acquire_granular']);
@@ -121,7 +127,7 @@ export function isPlanResearchCommand(command: unknown): boolean {
 }
 
 const readOnlyPtoolTools = new Set([
-  'tools:find', 'plans:get', 'plans:items', 'work_items:get', 'reports:get',
+  'tools:find', 'plans:get', 'plans:get-input-schema', 'plans:items', 'work_items:get', 'reports:get',
   'consult:get_feedback', 'conversations:get', 'coord:inbox', 'coord:read', 'docs:get', 'docs:search',
 ]);
 
@@ -139,13 +145,51 @@ function ptoolJsonHeredocTool(command: unknown): string | null {
 
   const header = lines.shift()!;
   const closingDelimiter = lines.pop()!;
-  const match = /^ptool[ \t]+([a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*)[ \t]+--json[ \t]+-((?:[ \t]+--(?:workspace|harness)=(?:"[A-Za-z0-9._-]+"|'[A-Za-z0-9._-]+'|[A-Za-z0-9._-]+))*)[ \t]+<<'([A-Za-z_][A-Za-z0-9_]*)'[ \t]*$/.exec(header);
-  if (!match || closingDelimiter !== match[3] || lines.includes(match[3])) return null;
+  const match = /^(.*?)[ \t]+<<'([A-Za-z_][A-Za-z0-9_]*)'[ \t]*$/.exec(header);
+  if (!match || closingDelimiter !== match[2] || lines.includes(match[2]!)) return null;
+
+  // Validate complete, balanced shell words before parsing: shell-quote is
+  // permissive about unfinished quotes. No expansions, comments or operators
+  // belong in this header; the quoted JSON body remains inert data.
+  // Consume one lexical chunk at a time. An anchored repetition of these
+  // variable-length alternatives backtracks exponentially on malformed input.
+  const headerWords = /[A-Za-z0-9_./:=\[\]-]+|'[A-Za-z0-9_./:=\[\]-]*'|"[A-Za-z0-9_./:=\[\]-]*"|[ \t]+/y;
+  while (headerWords.lastIndex < match[1]!.length) {
+    if (!headerWords.exec(match[1]!)) return null;
+  }
+  let words: string[];
+  try {
+    const tokens = parseShell(match[1]!);
+    if (tokens.some(token => typeof token !== 'string')) return null;
+    words = tokens as string[];
+  } catch { return null; }
+  if (words[0] !== 'ptool' || !/^[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*$/.test(words[1] ?? '')) return null;
+  const flags = new Set<string>();
+  for (let index = 2; index < words.length; index++) {
+    const token = words[index]!;
+    const equals = token.indexOf('=');
+    const flag = equals < 0 ? token : token.slice(0, equals);
+    if (!['--json', '--workspace', '--harness', '--url'].includes(flag) || flags.has(flag)) return null;
+    const value = equals < 0 ? words[++index] : token.slice(equals + 1);
+    if (value === undefined) return null;
+    flags.add(flag);
+    if (flag === '--json') {
+      if (value !== '-') return null;
+    } else if (flag === '--url') {
+      try {
+        const url = new URL(value);
+        if (url.protocol !== 'http:' || !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
+          || url.username || url.password || url.pathname !== '/' || url.search || url.hash
+          || url.port === '0') return null;
+      } catch { return null; }
+    } else if (!/^[A-Za-z0-9._-]+$/.test(value)) return null;
+  }
+  if (!flags.has('--json')) return null;
 
   try {
     const payload: unknown = JSON.parse(lines.join('\n'));
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
-    if (match[1] !== 'tools:invoke') return match[1];
+    if (words[1] !== 'tools:invoke') return words[1]!;
     const nested = payload as Record<string, unknown>;
     if (Object.keys(nested).some(key => !['name', 'args', 'projection'].includes(key))) return null;
     return typeof nested.name === 'string' && nested.args && typeof nested.args === 'object' && !Array.isArray(nested.args)
@@ -160,9 +204,9 @@ function isPlanPtoolReadCommand(command: unknown): boolean {
   return tool !== null && readOnlyPtoolTools.has(tool);
 }
 
-function isPlanPtoolConsultControl(command: unknown): boolean {
+function isPlanPtoolControlCommand(command: unknown): boolean {
   const tool = ptoolJsonHeredocTool(command);
-  return tool === 'consult:reply' || tool === 'consult:decline';
+  return tool === 'consult:reply' || tool === 'consult:decline' || tool === 'plans:start';
 }
 
 export function isPlanImplementationCall(toolName: string, args: unknown): boolean {
@@ -177,7 +221,7 @@ export function isPlanImplementationCall(toolName: string, args: unknown): boole
   const command = input.command ?? input.cmd;
   return !isPlanResearchCommand(command) &&
     !isPlanPtoolReadCommand(command) &&
-    !isPlanPtoolConsultControl(command);
+    !isPlanPtoolControlCommand(command);
 }
 
 /** Read durable authority, never coord_presence or caller-supplied plan/force/purpose. */
@@ -269,11 +313,12 @@ export function selectExecutionPlanBindings(
 }
 
 async function readExecutionPlanGoal(ownerId: string, workspaceId: string,
-  observe?: PlanExecutionTimingObserver): Promise<ExecutionPlanGoalResolution> {
+  observe?: PlanExecutionTimingObserver, signal?: AbortSignal): Promise<ExecutionPlanGoalResolution> {
   return runWithWorkspace(workspaceId, async () => {
     const { resolveOwnerGoalWithAssessment } = await measurePlanStage('goal_module', observe,
       () => import('../coordination/agent-goal-sources'));
-    return measurePlanStage('goal_read', observe, () => resolveOwnerGoalWithAssessment(ownerId, 'self', observe));
+    return measurePlanStage('goal_read', observe,
+      () => resolveOwnerGoalWithAssessment(ownerId, 'self', observe, signal));
   });
 }
 
@@ -411,22 +456,33 @@ export async function checkPlanExecutionGuard(input: PlanExecutionGuardInput,
     const allBindings = await measurePlanStage('bindings', input.observeTiming,
       () => deps.readBindings(input.ownerId, input.workspaceId));
     // Goal selection only narrows this authoritative census; it cannot add a
-    // bound plan. Avoid its store reads when there is nothing to select. The
-    // census is still read afresh on every call, and read failures refuse below.
-    if (allBindings.length === 0) return null;
+    // bound plan. Avoid its store reads when there is nothing to select or only
+    // one unique plan remains. The census is still read afresh on every call.
+    const uniqueBindings = uniquePlanBindings(allBindings);
+    if (uniqueBindings.length === 0) return null;
     let resolution: ExecutionPlanGoalResolution | null = null;
-    if (deps.resolveGoal) {
-      try {
-        resolution = await measurePlanStage('goal', input.observeTiming,
-          () => deps.resolveGoal!(input.ownerId, input.workspaceId, input.observeTiming));
-      } catch {
-        // An unreadable selector cannot narrow authority. Check the entire durable
-        // census instead, preserving the existing fail-closed behavior.
+    if (uniqueBindings.length === 1) {
+      try { input.observeTiming?.({ stage: 'goal_selector_skipped', durationMs: 0 }); }
+      catch { /* diagnostics cannot change the guard verdict */ }
+    } else if (deps.resolveGoal) {
+      const budgetMs = Math.max(1, deps.goalResolutionBudgetMs ?? GOAL_RESOLUTION_BUDGET_MS);
+      const bounded = await measurePlanStage('goal_selector', input.observeTiming, () =>
+        withBoundedTimeout(
+          signal => deps.resolveGoal!(input.ownerId, input.workspaceId, input.observeTiming, signal),
+          { fallback: null, timeoutMs: budgetMs, label: 'plan-execution-guard:goal-selector', warn: false },
+        ));
+      if (bounded.reason === 'timeout') {
+        return {
+          code: 'plan_execution_not_ready',
+          blockers: ['plan_goal_resolution_timeout'],
+          reason: `Owner-goal selection exceeded the ${budgetMs}ms guard budget. This implementation write is refused fail-closed before the native pre-tool deadline; retry after goal reads respond within budget.`,
+        };
       }
+      if (!bounded.degraded) resolution = bounded.value;
     }
     const bindings = resolution && resolution.diagnostics.length === 0
       ? selectExecutionPlanBindings(allBindings, resolution.goal)
-      : uniquePlanBindings(allBindings);
+      : uniqueBindings;
     for (const binding of bindings) {
       const blockers = await measurePlanStage('binding', input.observeTiming,
         () => deps.checkPlan(binding, input.workspaceId, input.observeTiming));

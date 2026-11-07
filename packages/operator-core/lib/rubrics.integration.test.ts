@@ -27,6 +27,7 @@ import { PLAN_ADVISORY_LOCK_NAMESPACE, planAdvisoryLockKey } from './agent-tools
 import { hashPlanContent } from './agent-tools/plans/content-hash';
 import { listLocalRubrics } from './cupboard/rubric-store';
 import setTemplateDataTool from './agent-tools/plans/set-template-data';
+import { selectCriterionEvidenceAction } from './scorecard-ledger-fill';
 
 const h = vi.hoisted(() => ({
   sql: undefined as unknown as postgres.Sql,
@@ -469,6 +470,75 @@ describe('rubric refs are workspace-unique — a slug held by two harnesses refu
 });
 
 describe('writes — propose / ratify author + promote a rubric-template plan', () => {
+  it('preserves authored evidence procedures across definitions, amendments and pinned reads without granting execution', async () => {
+    const commandShaped = '  delete-all --subject=$SUBJECT\n`do-not-execute` ${WINDOW}  ';
+    const replication = 'Recover the original archive; do not replace the historical cohort.\n$SUBJECT stays literal.';
+    const check = { kind: 'tests' as const, files: ['packages/operator-core/lib/rubrics.integration.test.ts'] };
+    const first = await rubrics.proposeRubric({
+      rubricId: 'authored-procedure-first', characteristic: 'procedure-projection',
+      title: 'Executable evidence procedure', by: 'procedure-author',
+      methodRef: 'agent-insights/first-procedure',
+      criteria: [{ ...sampleCriteria[0], method: commandShaped, replication, check,
+        window: { kind: 'post-watermark' as const, watermarkRef: 'original-assessment-window' } }],
+    });
+    const second = await rubrics.proposeRubric({
+      rubricId: 'authored-procedure-second', characteristic: 'procedure-projection',
+      title: 'Manual evidence procedure', by: 'procedure-author',
+      methodRef: 'agent-insights/second-procedure',
+      criteria: [{ ...sampleCriteria[0], method: 'Inspect the signed original review and record its cohort.',
+        replication: 'Recover the review from the declared historical archive.', instrumentKey: 'none' }],
+    });
+    const context = {
+      subjectRef: 'audit:procedure-fixture', windowStart: '2026-11-01T00:00:00Z',
+      windowEnd: '2026-11-02T00:00:00Z', comparisonTime: '2026-11-02T00:00:00Z',
+      rubricRef: first.rubricId, rubricRevision: first.revision!, criteriaHash: first.criteriaHash!,
+    };
+    const actions = [first, second].map((rubric) => selectCriterionEvidenceAction({
+      criterionKey: rubric.criteria[0].key,
+      context: { ...context, rubricRef: rubric.rubricId, rubricRevision: rubric.revision!, criteriaHash: rubric.criteriaHash! },
+      findings: [{ reason: 'historical-missing', sourceRef: 'archive:original-window' }],
+    }));
+    expect(actions.map((action) => action.reason)).toEqual(['historical-missing', 'historical-missing']);
+    const initial = rubrics.projectCriterionEvidenceProcedure(first, first.criteria[0]);
+    const manual = rubrics.projectCriterionEvidenceProcedure(second, second.criteria[0]);
+    expect(initial).toMatchObject({
+      procedure: { source: 'criterion', method: commandShaped, replication },
+      method: commandShaped, replication, methodRef: 'agent-insights/first-procedure', check,
+      window: first.criteria[0].window, missingSpecificity: false,
+      provenance: { rubricRef: first.rubricId, rubricRevision: first.revision, criteriaHash: first.criteriaHash },
+    });
+    expect(manual.procedure).toEqual({ source: 'criterion', method: second.criteria[0].method,
+      replication: second.criteria[0].replication });
+    expect(manual.check).toBeNull();
+    expect(manual.instrumentKey).toBe('none');
+    expect(initial.method).not.toBe(manual.method);
+    for (const projection of [initial, manual]) {
+      expect(projection).not.toHaveProperty('command');
+      expect(projection).not.toHaveProperty('arguments');
+      expect(projection).not.toHaveProperty('authorized');
+      expect(projection.procedure).not.toHaveProperty('check');
+      expect(projection.procedure).not.toHaveProperty('command');
+    }
+    const amended = await rubrics.amendRubric({
+      rubricId: first.rubricId, by: 'procedure-author',
+      criterion: { key: first.criteria[0].key, field: 'method', mode: 'append', text: 'Retain the archive receipt.' },
+    });
+    expect(amended!.criteria[0].method).toContain(commandShaped);
+    expect(amended!.criteria[0].replication).toBe(replication);
+    expect(amended!.criteria[0].check).toEqual(check);
+    const historical = await rubrics.getRubric(first.rubricId, first.revision!);
+    expect(rubrics.projectCriterionEvidenceProcedure(historical!, historical!.criteria[0])).toEqual(initial);
+    const current = await rubrics.getRubric(first.rubricId);
+    expect(current!.criteria[0]).toEqual(amended!.criteria[0]);
+    const legacy = { ...second.criteria[0], method: '', replication: undefined };
+    expect(rubrics.projectCriterionEvidenceProcedure(second, legacy)).toMatchObject({
+      procedure: { source: 'rubric', methodRef: second.methodRef }, missingSpecificity: true, check: null,
+    });
+    expect(rubrics.projectCriterionEvidenceProcedure({ ...second, methodRef: null }, legacy)).toMatchObject({
+      procedure: { source: 'shared' }, missingSpecificity: true, check: null,
+    });
+  });
+
   it('refuses to overwrite an ordinary plan whose slug collides with rubricId', async () => {
     const body = `---
 title: Existing work plan

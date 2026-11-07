@@ -2302,6 +2302,57 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(retry[2].transform).toBeTypeOf('function');
     });
 
+    it('EI-27984043412808290: refuses a capped append after an auto-appended refresh without losing the newest head', async () => {
+      const id = 'WI-279840-HEAD-APPEND';
+      getWorkItem.mockResolvedValue({ id, harness: 'papercup' });
+      const heading = '## ORIGINAL CHECKPOINT\n';
+      // Leave room for the 47-character auto-append wrapper in the persisted refresh.
+      let stored: string | null = heading + 'O'.repeat(CHECKPOINT_BODY_CAP_CHARS - 47 - heading.length);
+      setWorkItemCheckpointWithPrior.mockImplementation(
+        async (
+          _ref: unknown,
+          incoming: string | null | undefined,
+          opts?: {
+            guard?: (priorNote: string | null, priorLength: number) => string | null;
+            transform?: LockedCheckpointTransform;
+          },
+        ) => {
+          const prior = stored;
+          const priorLength = prior?.length ?? 0;
+          const blockedReason = opts?.guard?.(prior, priorLength) ?? undefined;
+          if (blockedReason) return { stored: prior, priorLength, blockedReason };
+          const next = opts?.transform
+            ? await opts.transform(prior, incoming, checkpointTransaction)
+            : incoming;
+          stored = (next ?? '').trim() || null;
+          return { stored, priorLength };
+        },
+      );
+      getWorkItemCheckpoint.mockImplementation(async () => stored);
+
+      const refresh = '## CURRENT HANDOFF\nnewest verified state';
+      const refreshed = await one({ id, checkpoint: refresh });
+      expect(refreshed).toMatchObject({ ok: true, autoAppended: true });
+      const afterRefresh = stored;
+      expect(afterRefresh).not.toBeNull();
+      expect(afterRefresh).toContain(refresh);
+      expect(afterRefresh?.startsWith(refresh)).toBe(true);
+      expect(afterRefresh?.length).toBeLessThanOrEqual(CHECKPOINT_BODY_CAP_CHARS);
+
+      const receipt = '## LATEST RECEIPT\n' + 'R'.repeat(96);
+      const append = await one({ id, checkpoint: receipt, append: true });
+
+      expect(append).toMatchObject({
+        ok: false,
+        errorCode: 'append_prior_body_overflow',
+        appendPriorBodyOverflowDiagnostics: {
+          priorNarrativeRetained: false,
+          submittedAppendRetained: true,
+        },
+      });
+      expect(stored).toBe(afterRefresh);
+    });
+
     /**
      * EI-20745229385305334 — the WI-39655 repro. The preserve-by-default is inverted for a
      * checkpoint that RETRACTS its own prior conclusion: a correction is systematically

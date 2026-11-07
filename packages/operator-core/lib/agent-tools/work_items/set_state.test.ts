@@ -26,6 +26,7 @@ import { resolvePlanItemStamp } from '../../scheduler/plan-item-lane-guard';
 import { mockResolvedTyped } from '../../testing/typed-mock';
 import { planWorkItemArm } from './arm-reversible-work-item';
 import { BUDGET, promptWeight } from '../tool-guidance-budget';
+import { prepareBlockerDecision } from '../../blocker-resolution-decision';
 const getM = vi.mocked(getWorkItem);
 const setM = vi.mocked(setWorkItemStateWithAliasInfo);
 const planStampM = vi.mocked(resolvePlanItemStamp);
@@ -124,13 +125,86 @@ const workItem = (overrides: Partial<WorkItem> & Pick<WorkItem, 'id' | 'state'>)
 
 beforeEach(() => {
   vi.clearAllMocks();
+  readNonAgentWorkCategory.mockReset().mockResolvedValue(null);
   armM.mockResolvedValue(null as never);
   getM.mockResolvedValue(null);
-  planStampM.mockResolvedValue(null);
+  planStampM.mockReset().mockResolvedValue(null);
   setM.mockImplementation(async (id: string, state: string) => noAlias(id, state));
 });
 
 describe('work_items:set_state handler (keyed-array)', () => {
+  const decisionInput = {
+    schemaVersion: 1, idempotencyKey: 'state-receipt', disposition: 'defer', symptom: 'Dependency pending',
+    investigation: [{ action: 'Read dependency', outcome: 'Peer owns recovery',
+      evidenceRefs: [{ kind: 'work-item', ref: 'WI-repair' }] }],
+    attempts: [], evidenceRefs: [{ kind: 'work-item', ref: 'WI-repair' }],
+    deferral: { reason: 'active-peer', reasonEvidenceRefs: [{ kind: 'work-item', ref: 'WI-repair' }],
+      responsibleParty: 'peer', nextAction: 'Resume after recovery',
+      recheckRef: { kind: 'event', ref: 'work-item:done:WI-repair' } },
+  };
+  function receipt(state: string, extra: Record<string, unknown> = {}) {
+    const effect = { state, force: false, completionRef: null, assumptions: null,
+      transitionNote: null, decision: null, ...extra };
+    const prepared = prepareBlockerDecision({}, decisionInput, {
+      ownerId: 'me', sessionId: 'me', workItemId: 'WI-1', custodianId: 'me',
+    }, { effect });
+    if (!prepared.ok) throw new Error(prepared.code);
+    return prepared;
+  }
+
+  it.each([
+    ['blocked', {}],
+    ['done', { completionRef: 'test:verified', assumptions: ['fact:retired-after-commit'] }],
+  ])('replays a committed %s receipt before live plan and assumption checks, preserving successor custody', async (state, extra) => {
+    const saved = receipt(state, extra);
+    const current = workItem({ id: 'WI-1', state: 'done', assignee: 'successor', payload: saved.patch });
+    getM.mockResolvedValue(current);
+    readNonAgentWorkCategory.mockRejectedValueOnce(new Error('live category evidence unavailable'));
+    planStampM.mockRejectedValueOnce(new Error('live plan evidence unavailable'));
+    const b = await body({ id: 'WI-1', state, ...extra, blockerDecision: decisionInput });
+    expect(b.results[0]).toMatchObject({ ok: true, replayed: true, blockerDecision: saved.record,
+      workItem: { state: 'done', assignee: 'successor' } });
+    expect(readNonAgentWorkCategory).not.toHaveBeenCalled();
+    expect(planStampM).not.toHaveBeenCalled();
+    expect(armM).not.toHaveBeenCalled();
+    expect(setM).not.toHaveBeenCalled();
+    expect(commentWorkItem).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { force: true }, { reason: 'A different transition note' }, { state: 'open' },
+  ])('rejects a changed same-key public state request before preflight: %j', async (change) => {
+    const saved = receipt('wip');
+    getM.mockResolvedValue(workItem({ id: 'WI-1', state: 'wip', assignee: 'successor', payload: saved.patch }));
+    const b = await body({ id: 'WI-1', state: 'wip', blockerDecision: decisionInput, ...change });
+    expect(b.results[0]).toMatchObject({ ok: false, code: 'blocker_decision_conflict' });
+    expect(readNonAgentWorkCategory).not.toHaveBeenCalled();
+    expect(armM).not.toHaveBeenCalled();
+    expect(setM).not.toHaveBeenCalled();
+    expect(commentWorkItem).not.toHaveBeenCalled();
+  });
+
+  it('passes the stable public state effect to the atomic writer', async () => {
+    getM.mockResolvedValue(workItem({ id: 'WI-1', state: 'open', assignee: 'me' }));
+    const b = await body({ id: 'WI-1', state: 'wip', reason: 'Recovery needs more work', blockerDecision: decisionInput });
+    expect(b.results[0].ok).toBe(true);
+    expect(setM).toHaveBeenCalledWith('WI-1', 'wip', expect.objectContaining({ blockerDecision: {
+      input: decisionInput, sessionId: 'me', effect: { state: 'wip', force: false,
+        completionRef: null, assumptions: null, transitionNote: 'Recovery needs more work', decision: null },
+    } }));
+  });
+
+  it('returns a stored blocker receipt without appending another state-change reason', async () => {
+    const record = { id: 'receipt-1', revision: 1 };
+    setM.mockImplementationOnce(async (id, state, opts) => {
+      opts?.onBlockerDecision?.({ record: record as never, replayed: true });
+      return noAlias(id, state);
+    });
+    const b = await body({ id: 'WI-1', state: 'wip', reason: 'Already investigated' });
+    expect(b.results[0]).toMatchObject({ ok: true, replayed: true, blockerDecision: record });
+    expect(commentWorkItem).not.toHaveBeenCalled();
+  });
+
   it('sets one inline and returns the workItem', async () => {
     const b = await body({ id: 'WI-1', state: 'passed' });
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
@@ -141,6 +215,8 @@ describe('work_items:set_state handler (keyed-array)', () => {
       completionRef: undefined,
       force: undefined,
       onTerminalConflict: expect.any(Function),
+      blockerEvidenceContext: expect.objectContaining({ ownerId: 'me', sessionId: 'me', role: '' }),
+      onBlockerDecision: expect.any(Function),
     });
   });
 
@@ -155,6 +231,8 @@ describe('work_items:set_state handler (keyed-array)', () => {
       completionRef: undefined,
       force: undefined,
       onTerminalConflict: expect.any(Function),
+      blockerEvidenceContext: expect.objectContaining({ ownerId: 'me', sessionId: 'me', role: '' }),
+      onBlockerDecision: expect.any(Function),
     });
   });
 
@@ -254,6 +332,8 @@ describe('work_items:set_state handler (keyed-array)', () => {
       completionRef: undefined,
       force: undefined,
       onTerminalConflict: expect.any(Function),
+      blockerEvidenceContext: expect.objectContaining({ ownerId: 'me', sessionId: 'me', role: '' }),
+      onBlockerDecision: expect.any(Function),
     });
   });
 

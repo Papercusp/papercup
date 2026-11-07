@@ -243,8 +243,23 @@ export async function runSecurityQualification<T>(ctx: UnifiedToolContext, harne
   approvalRef: string; manifestSha256: string; ledgerSha256: string;
 }, execute: (pins: { manifestSha256: string; ledgerSha256: string; startRef: string }) => Promise<T>,
 captureResult?: (value: T) => unknown) {
+  // Keep the transport's original cancellation source across custody awaits.
+  // Replacing ctx.signal must not revive a cancelled qualification invocation.
+  const signal = ctx.signal;
+  const assertActive = () => {
+    if (signal.aborted || ctx.signal !== signal) refuse('invocation_cancelled');
+  };
+  assertActive();
   input = z.object({ approvalRef: hash, manifestSha256: hash, ledgerSha256: hash }).strict().parse(input);
-  const executor = actor(ctx, harness), approval = await read(harness, input.approvalRef);
+  const executor = actor(ctx, harness);
+  // Keep admission bound to the authenticated transport across custody IO.
+  const transportIdentity = () => canonicalJson({ identity: resolveAgentIdentity(ctx),
+    harnessSlug: ctx.harnessSlug, role: ctx.role, isSuperuser: ctx.isSuperuser, isPowerUser: ctx.isPowerUser,
+    principal: ctx.principal && { ...ctx.principal, capabilities: [...ctx.principal.capabilities].sort(),
+      allowedTools: ctx.principal.allowedTools && [...ctx.principal.allowedTools].sort(),
+      roles: ctx.principal.roles && [...ctx.principal.roles].sort() } });
+  const originalIdentity = transportIdentity();
+  const approval = await read(harness, input.approvalRef);
   if (approval.phase !== 'approval' || approval.ordinal !== 1 || approval.parent !== null || approval.result !== null ||
       approval.manifestSha256 !== input.manifestSha256 || approval.ledgerSha256 !== input.ledgerSha256 ||
       approval.executor !== executor || !approval.manifestProducerRef || !approval.ledgerProducerRef || !approval.reviewRef) {
@@ -271,7 +286,11 @@ captureResult?: (value: T) => unknown) {
   }
   const pins = Object.freeze({ manifestSha256: input.manifestSha256, ledgerSha256: input.ledgerSha256, startRef });
   let value: T;
-  try { value = await execute(pins); }
+  try {
+    assertActive();
+    if (transportIdentity() !== originalIdentity) refuse('invocation_identity_changed');
+    value = await execute(pins);
+  }
   catch (error) {
     await persist(event(harness, executor, 'result', {
       manifestSha256: pins.manifestSha256, ledgerSha256: pins.ledgerSha256,

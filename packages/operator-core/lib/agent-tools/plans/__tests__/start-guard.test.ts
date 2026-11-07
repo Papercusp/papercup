@@ -183,6 +183,11 @@ vi.mock('../plan-spec-quality-gate', () => ({
 }));
 
 const barCritiqueMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]): Promise<unknown> => null));
+const ownerReviewMock = vi.hoisted(() => vi.fn());
+vi.mock('../plan-start-owner-review', async orig => ({
+  ...await orig<typeof import('../plan-start-owner-review')>(),
+  registerOwnerSelectedReview: (...args: unknown[]) => ownerReviewMock(...args),
+}));
 vi.mock('../plan-start-critique-gate', () => ({
   evaluatePlanStartBarCritique: (...args: unknown[]) => barCritiqueMock(...args),
 }));
@@ -316,6 +321,7 @@ beforeEach(() => {
   // before the bar-critique gate cannot leak its verdict into the next test.
   barCritiqueMock.mockReset();
   barCritiqueMock.mockResolvedValue(null);
+  ownerReviewMock.mockReset();
   // plans:start runs checkPlanStartable -> checkPlanAdmission, whose DEFAULT policy
   // source resolves the pot via potHomeSlugForHarness — a real-PG read this suite has
   // no database for (the rail census refused it, red-pinning every test here). Install
@@ -706,8 +712,10 @@ describe('plans:start terminal guard', () => {
         },
       ],
     });
-    expect(activationMocks.gate).not.toHaveBeenCalled();
-    expect(H.state.txCalls).toEqual([]);
+    // The appended diagnostic may read independent gates after the primary
+    // dependency refusal. It cannot execute the start or write application rows.
+    expect(result.data.results[0].activationReadiness.advisory).toBe(true);
+    expect(H.state.txCalls.filter(call => /\b(?:INSERT|UPDATE|DELETE)\b/.test(call.strings.join('')))).toEqual([]);
     expect(promotePlanItemsMock).not.toHaveBeenCalled();
   });
 
@@ -805,6 +813,53 @@ describe('plans:start terminal guard', () => {
     expect(res.data.results[0]).toMatchObject({ ok: false, error: 'critique_stale', message: 'stale' });
     expect(promotePlanItemsMock).not.toHaveBeenCalled();
     expect(() => planRowRead()).toThrow();
+  });
+
+  it('refuses an unverified owner-selected review before approval or promotion', async () => {
+    ownerReviewMock.mockResolvedValue({ ok: false, reason: 'owner_selection_unverified' });
+    const res = await run({ slug: 'mock', owner_review: { directiveId: 42, reportId: 'report',
+      bodySha256: 'a'.repeat(64), barSetHash: 'b'.repeat(64), specSetHash: 'c'.repeat(64),
+      selectionText: 'Accept your review as adequate.', reviewConclusion: 'APPROVE implementation.',
+      dispositions: 'All adverse findings accepted.' } });
+    expect(res.data.results[0]).toMatchObject({ ok: false, error: 'critique_missing',
+      ownerSelectedReview: { reason: 'owner_selection_unverified' } });
+    expect(planLockMocks.withPlanLock).not.toHaveBeenCalled();
+    expect(promotePlanItemsMock).not.toHaveBeenCalled();
+  });
+
+  it('still refuses a later spec-quality change after accepting the selected review', async () => {
+    ownerReviewMock.mockResolvedValue({ ok: true, receipt: { reviewerId: 'real-reviewer' } });
+    H.state.specQuality = { satisfied: true, applicable: true, mode: 'enforced' };
+    barCritiqueMock.mockImplementation(async () => {
+      H.state.specQuality = { satisfied: false, applicable: true, mode: 'enforced', code: 'spec_quality_not_current' };
+      return { mode: 'enforced', verdict: { satisfied: true }, ownerSelectedReview: { ok: true } };
+    });
+    const res = await run({ slug: 'mock', consulted: false, consult_reason: 'Selected real review already read.' });
+    expect(res.data.results[0]).toMatchObject({ ok: false, error: 'spec_quality_not_current' });
+    expect(promotePlanItemsMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a contract change after selected-review preflight and before approval', async () => {
+    H.state.specQuality = { satisfied: true, applicable: true, mode: 'enforced' };
+    barCritiqueMock.mockResolvedValueOnce({ mode: 'enforced', verdict: { satisfied: true }, ownerSelectedReview: { ok: true } });
+    barCritiqueMock.mockResolvedValueOnce({ mode: 'enforced', verdict: { satisfied: false, code: 'critique_stale' } });
+    const res = await run({ slug: 'mock', consulted: false, consult_reason: 'Selected review already read.' });
+    expect(res.data.results[0]).toMatchObject({ ok: false, error: 'critique_stale' });
+    expect(planLockMocks.withPlanLock).not.toHaveBeenCalled();
+    expect(promotePlanItemsMock).not.toHaveBeenCalled();
+  });
+
+  it('revalidates the selected review inside the locked approval boundary', async () => {
+    H.state.specQuality = { satisfied: true, applicable: true, mode: 'enforced' };
+    const accepted = { mode: 'enforced', verdict: { satisfied: true }, ownerSelectedReview: { ok: true } };
+    barCritiqueMock.mockResolvedValueOnce(accepted).mockResolvedValueOnce(accepted)
+      .mockResolvedValueOnce({ mode: 'enforced', verdict: { satisfied: false, code: 'critique_stale' } });
+    planLockMocks.withPlanLock.mockImplementationOnce(async (_ctx, _opts, write) => ({ kind: 'noop',
+      value: (await write('---\ntitle: Fixture\nstatus: ready\n---\n', { version: 1 })).value }));
+    const res = await run({ slug: 'mock', consulted: false, consult_reason: 'Selected review already read.' });
+    expect(res.data.results[0]).toMatchObject({ ok: false, error: 'critique_stale' });
+    expect(barCritiqueMock).toHaveBeenCalledTimes(3);
+    expect(promotePlanItemsMock).not.toHaveBeenCalled();
   });
 
   it('SPEC-P-007 cohort: a report-only bar-critique verdict is surfaced but never refuses', async () => {
@@ -1040,6 +1095,8 @@ describe('plans:start — the retired op_status axis (P-047)', () => {
       opStatusRetired: true,
       promotion: { promoted: 0, skipped: 0, flagOff: false },
       admission: { ready: false, reason: 'promotion-lag' },
+      activationReadiness: { schemaVersion: 1, advisory: true, ready: false,
+        counts: { total: 13, returned: 13, omitted: 0 } },
     });
     expect(res.data.results[0].message).toContain('Actionable plan items lack a promoted row: P-002.');
     expect(promotePlanItemsMock).toHaveBeenCalledTimes(1);

@@ -15,6 +15,7 @@
  * to the auditor verbatim, so the response names what is still missing.
  */
 import { parsePlan } from './parser';
+import type { PlanActivationConsultReceipt } from './get-activation-readiness';
 
 /** Calls `plans:start` for one slug; returns its raw handler response. */
 export type PlanStartInvoker = (args: { slug: string; harness?: string }) => Promise<unknown>;
@@ -32,21 +33,26 @@ export type AutoStartOutcome =
       /** False when plans:start found the plan already started (idempotent no-op). */
       transitioned: boolean;
       autoApproved: boolean;
+      activationConsult?: PlanActivationConsultReceipt;
     }
   | {
       attempted: true;
       started: false;
       /** plans:start's own refusal, e.g. consult_available / spec_quality_not_current. */
       refusal: { error: string; message?: string };
+      /** Full canonical receipt retains diagnostics and any partial effects. */
+      receipt?: StartItemResult;
     };
 
 interface StartItemResult {
+  [key: string]: unknown;
   ok?: boolean;
   error?: unknown;
   message?: unknown;
   hint?: unknown;
   transitioned?: unknown;
   autoApproved?: unknown;
+  activationConsult?: PlanActivationConsultReceipt;
 }
 
 function firstResultFromEnvelope(value: unknown): StartItemResult | null {
@@ -133,6 +139,7 @@ export async function autoStartAfterActivationAudit(input: {
         error: asText(result.error) ?? 'plans_start_refused',
         ...(message ? { message } : {}),
       },
+      ...('activationReadiness' in result || 'promotion' in result || 'admission' in result ? { receipt: result } : {}),
     };
   }
   return {
@@ -140,5 +147,6 @@ export async function autoStartAfterActivationAudit(input: {
     started: true,
     transitioned: result.transitioned === true,
     autoApproved: result.autoApproved === true,
+    ...(result.activationConsult ? { activationConsult: result.activationConsult } : {}),
   };
 }

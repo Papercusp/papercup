@@ -110,7 +110,16 @@
  * this very file walked into on its first draft. The acceptance number comes from
  * replaying REPLAY against the live endpoint, and from nowhere else.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Writable } from 'node:stream';
+import { configureReadCursorStore, InMemoryReadCursorStore, resetReadCursorStore } from '../../../agent-tools/coordination/read-cursors';
+// @ts-ignore -- reuse the maintained JavaScript native-hook receipt writer.
+import { openDeliveryLedger } from '../../../../../../apps/operator/scripts/hooks/inject/delivery-ledger.mjs';
+// @ts-ignore -- reuse the maintained JavaScript native-hook renderer.
+import { render } from '../../../../../../apps/operator/scripts/hooks/inject/adapters/codex.mjs';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Host seams. Everything below the endpoint is faked; the pipeline itself is real.
@@ -130,7 +139,7 @@ vi.mock('../../../harness-registry', async (orig) => ({
 // wholesale replacement fails the import before a single test runs.
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  getOrgPg: () => ({ sql: async () => [] }),
+  getOrgPg: () => ({ sql: receiptSql }),
 }));
 
 /**
@@ -142,8 +151,39 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
  */
 const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ledger = new Set<string>();
+const corpusLedger = new Set<string>();
 const ledgerKey = (session: string, epoch: number, id: string): string => `${session}|${epoch}|${id}`;
-vi.mock('../../../memory/session-epoch-ledger', () => ({
+// Only the database is simulated. The receipt preparation/confirmation and
+// exact fragment constructor remain production code, including atomic counts.
+async function receiptSql(chunks: TemplateStringsArray, ...values: unknown[]) {
+  // postgres-js also calls sql(identifier/rows) to construct fragments. Those
+  // are not database queries and must not turn detached telemetry into errors.
+  if (!Array.isArray(chunks)) return [];
+  const text = chunks.join('?');
+  if (text.includes('INSERT INTO harness_shared.memory_session_surfaced')) {
+    const [session, epoch, ids] = values as [string, number, string[]];
+    return ids.filter(id => {
+      const key = ledgerKey(session, epoch, id);
+      if (ledger.has(key)) return false;
+      ledger.add(key); return true;
+    }).map(memory_id => ({ memory_id }));
+  }
+  if (text.includes('INSERT INTO harness_shared.corpus_session_surfaced')) {
+    const [session, epoch, _port, refs] = values as [string, number, string, string[]];
+    return refs.filter(ref => {
+      const key = ledgerKey(session, epoch, ref);
+      if (corpusLedger.has(key)) return false;
+      corpusLedger.add(key); return true;
+    }).map(ref => ({ ref }));
+  }
+  if (text.includes('SELECT ref FROM harness_shared.corpus_session_surfaced')) {
+    const [session, epoch, refs] = values as [string, number, string[]];
+    return refs.filter(ref => corpusLedger.has(ledgerKey(session, epoch, ref))).map(ref => ({ ref }));
+  }
+  return [];
+}
+vi.mock('../../../memory/session-epoch-ledger', async original => ({
+  ...await original<typeof import('../../../memory/session-epoch-ledger')>(),
   currentSessionEpoch: async () => 0,
   alreadySurfacedIds: async (_sql: unknown, sessionId: string, epoch: number, ids: readonly string[]) =>
     new Set(ids.filter((id) => UUID_SHAPE.test(id) && ledger.has(ledgerKey(sessionId, epoch, id)))),
@@ -367,17 +407,34 @@ import { REPLAY } from '../../../memory/bench/wi-6512-replay';
 
 const endpoint = routes[0] as unknown as { handler: (req: Request) => Promise<Response> };
 
-/** The injection path stamps the epoch ledger fire-and-forget; let it settle. */
+/** Let optional telemetry settle; delivery itself requires explicit proof. */
 const settle = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+const receiptHome = mkdtempSync(join(tmpdir(), 'mid-replay-receipts-'));
+afterAll(() => { resetReadCursorStore(); rmSync(receiptHome, { recursive: true, force: true }); });
 
-async function post(owner: string, calls: BatchCall[]): Promise<string> {
+async function post(owner: string, calls: BatchCall[], emit = true): Promise<string> {
+  const ledger = openDeliveryLedger(owner, { PAPERCUSP_HOME: receiptHome }, 'mid-turn')!;
   const res = await endpoint.handler(
     new Request('http://localhost/agent-mcp/mid-turn-context', {
       method: 'POST',
-      body: JSON.stringify({ owner, toolCalls: calls, harness: 'papercusp', workspace: 'papercusp-workspace' }),
+      body: JSON.stringify({ owner, toolCalls: calls, harness: 'papercusp', workspace: 'papercusp-workspace',
+        client: 'codex', memoryReceiptMode: true, confirmedMemoryDeliveries: ledger.confirmedMemoryDeliveries() }),
     }),
   );
-  const out = (await res.json()) as { ok: boolean; text: string };
+  const out = (await res.json()) as { ok: boolean; text: string; deliveryToken?: string; memoryFragmentOffers?: object[] };
+  if (out.deliveryToken) {
+    const payload = render('mid-turn', out.text)! + '\n';
+    ledger.offer(out.deliveryToken, { payload, client: 'codex', memoryFragmentOffers: out.memoryFragmentOffers });
+    if (!emit) return out.text;
+    // This replay's terminal is an in-process writable fixture. The real
+    // process.stdout callback is independently exercised by dispatcher.test.ts;
+    // this fixture is not evidence of an installed or deployed native client.
+    const sink = new Writable({ write(_bytes, _encoding, done) { done(); } });
+    let committed = false;
+    await new Promise<void>(resolve => sink.write(payload, () => { committed = ledger.commit(); resolve(); }));
+    sink.destroy();
+    expect(committed).toBe(true);
+  }
   await settle();
   return out.text;
 }
@@ -393,8 +450,10 @@ let seq = 0;
 const newOwner = (): string => `p018-sess-${++seq}`;
 
 beforeEach(() => {
+  configureReadCursorStore(new InMemoryReadCursorStore());
   setSessionConfinementResolver(() => null);
   ledger.clear();
+  corpusLedger.clear();
   backend.search.mockClear();
   getMemoryBackendMock.mockReset().mockReturnValue(backend);
   withMidTurnMemoryAdmissionMock
@@ -486,6 +545,23 @@ describe('P-018 TRANSPORT half — replaying the WI-6512 investigation (retrieva
 });
 
 describe('P-018 TRANSPORT half — firing early stays CHEAP across the whole replay', () => {
+  it('keeps a lost response eligible until the real writable confirms its exact fragment', async () => {
+    const owner = newOwner();
+    const pointer = '- WI-6512 (bug, open)';
+    // An endpoint response and a local offer are both preparation. Dropping
+    // stdout leaves the exact corpus fragment eligible on the next query.
+    expect(await post(owner, REPLAY[0].calls, false)).toContain(pointer);
+    expect(corpusLedger.size).toBe(0);
+    expect(await post(owner, REPLAY[1].calls)).toContain(pointer);
+    // The real writable has committed, but only the next request carries its
+    // receipt back to the host. That acknowledgment suppresses the fragment.
+    expect(corpusLedger.size).toBe(0);
+    expect(await post(owner, REPLAY[2].calls)).not.toContain(pointer);
+    expect(corpusLedger.size).toBe(1);
+    expect(await post(owner, REPLAY[3].calls)).not.toContain(pointer);
+    expect(corpusLedger.size).toBe(1);
+  });
+
   // ⚠ DO NOT SKIP THIS TEST. It briefly was, on 2026-08-02 21:46Z, on my (su-5ca1d)
   // reading that it was parked on the known WI-6857 retrieval gap. That was WRONG:
   // it was catching a REAL production regression, WI-7163 — commit 0da8ebaab9
@@ -499,10 +575,17 @@ describe('P-018 TRANSPORT half — firing early stays CHEAP across the whole rep
   // satisfied by the corpus leg alone, whose fixture text also mentions WI-6512 and
   // "ruled out". So this is the case that fails first when mid-turn injection breaks,
   // and a green file with this one skipped is indistinguishable from a working one.
-  it('pays for the answer ONCE, not on all thirteen calls (D-006 epoch dedup)', async () => {
+  it('keeps a clipped memory eligible while suppressing complete emitted corpus pointers', async () => {
     const pushes = await replay(newOwner());
     const carrying = pushes.filter((p) => p.includes(ANSWER_ID));
-    expect(carrying).toHaveLength(1);
+    // The tiny mid-turn clamp cuts this long operative body. Seeing its ID
+    // does not prove the complete offered fragment was emitted, so suppressing
+    // it here would hide an unprinted condition at every later port.
+    expect(carrying.length).toBeGreaterThan(1);
+    expect(carrying.every(p => p.includes('(clipped; id retained)'))).toBe(true);
+    // The independently bounded corpus pointer survives intact and DOES have
+    // a matching stdout receipt: only that exact fragment becomes ineligible.
+    expect(pushes.filter(p => p.includes('- WI-6512 (bug, open)'))).toHaveLength(1);
   });
 
   it('keeps the whole investigation under one turn-start block', async () => {

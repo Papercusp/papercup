@@ -2546,11 +2546,11 @@ export default defineTool({
     })();
     // P-004 / D-002 / D-004: read the append-only writer directly. Never infer
     // occurrence flow from created work-item rows or the capped census above.
-    const issueOccurrences = await readIssueOccurrenceCounts({
+    const issueOccurrences = await withFleetMetricReadSql(sql => readIssueOccurrenceCounts({
       workspaceId: occurrenceWorkspaceId,
       harnessSlug: args.harness,
       since: args.since ?? null,
-    });
+    }, sql), { occurrenceCensus: true });
     const fleetMetrics = await (async (): Promise<FleetMetricsResult | null> => {
       if (!fleetMetricResolution) return null;
       if (!fleetMetricResolution.ok) return parseFleetMetricsResult(fleetMetricResolution);
@@ -2559,7 +2559,7 @@ export default defineTool({
         workspaceId: occurrenceWorkspaceId,
         harnessSlug: args.harness,
         since: fleetMetricResolution.scope.window.startAt,
-      }, sql));
+      }, sql), { occurrenceCensus: true });
       return buildFleetMetricsResult(fleetMetricResolution, fleetMetricSourceItems.items, {
         terminalContributions: fleetMetricSourceItems.terminalContributions,
         issueOccurrences: metricOccurrences,

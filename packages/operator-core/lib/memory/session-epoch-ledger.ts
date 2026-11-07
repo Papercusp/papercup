@@ -26,6 +26,89 @@
  */
 
 import type { SqlTag } from './bump-last-surfaced';
+import { createHash } from 'node:crypto';
+
+/** Private host metadata; no recalled plaintext is persisted in a receipt. */
+export type MemoryFragmentManifest = {
+  kind: 'memory' | 'corpus'; id: string; epoch: number; port: string;
+  bodySha256: string; bodyBytes: number;
+};
+export type MemoryFragmentOffer = MemoryFragmentManifest & { rendered: string };
+export type PreparedMemoryBlock = { text: string; fragments: MemoryFragmentOffer[] };
+export type MemoryEmissionConfirmation = { token: string; fragments: MemoryFragmentManifest[] };
+
+export function memoryFragmentOffer(
+  kind: MemoryFragmentManifest['kind'], id: string, epoch: number, port: string, rendered: string,
+): MemoryFragmentOffer {
+  return { kind, id, epoch, port, rendered,
+    bodySha256: createHash('sha256').update(rendered).digest('hex'), bodyBytes: Buffer.byteLength(rendered) };
+}
+
+const EMISSION_SURFACE_PREFIX = 'memory-emission:';
+export const MEMORY_EMISSION_TTL_MS = 24 * 60 * 60 * 1000;
+const emissionToken = (token: unknown): token is string => typeof token === 'string' && /^[A-Za-z0-9:_-]{1,200}$/.test(token);
+function validFragment(row: MemoryFragmentManifest): boolean {
+  return !!row && (row.kind === 'memory' || row.kind === 'corpus') && typeof row.id === 'string' &&
+    row.id.length > 0 && row.id.length <= 1000 && Number.isSafeInteger(row.epoch) && row.epoch >= 0 &&
+    typeof row.port === 'string' && row.port.length > 0 && row.port.length <= 100 &&
+    /^[a-f0-9]{64}$/.test(row.bodySha256) && Number.isSafeInteger(row.bodyBytes) && row.bodyBytes > 0;
+}
+const sameFragment = (a: MemoryFragmentManifest, b: MemoryFragmentManifest) =>
+  a.kind === b.kind && a.id === b.id && a.epoch === b.epoch && a.port === b.port &&
+  a.bodySha256 === b.bodySha256 && a.bodyBytes === b.bodyBytes;
+
+/** Extend coord_read_cursors, with one surface per token so competing ports
+ * cannot replace each other's candidate. Unsupported sinks never call this. */
+export async function stageMemoryEmission(
+  sql: SqlTag, ownerId: string, token: string, offers: readonly MemoryFragmentOffer[],
+): Promise<void> {
+  if (!emissionToken(token) || offers.length > 128) throw new Error('Invalid memory emission offer');
+  const fragments = offers.filter(validFragment).map(({ rendered: _text, ...manifest }) => manifest);
+  if (!fragments.length) return;
+  const { stage } = await import('../agent-tools/coordination/read-cursors');
+  await stage(ownerId, EMISSION_SURFACE_PREFIX + token,
+    { schemaVersion: 2, expiresAt: Date.now() + MEMORY_EMISSION_TTL_MS, fragments }, { deliveryToken: token });
+  // Age-based cleanup reuses the existing cursor table and owning call, with
+  // no scheduler. Expired proofs cost a replay, never a false suppression.
+  try {
+    const { coordScopeWorkspace } = await import('../agent-tools/coordination/log');
+    await sql`DELETE FROM harness_shared.coord_read_cursors
+      WHERE workspace_id = ${coordScopeWorkspace()} AND owner_id = ${ownerId} AND surface LIKE 'memory-emission:%'
+        AND updated_at < now() - interval '1 day'`;
+  } catch { /* optional retention cannot turn a prepared block into delivery */ }
+}
+
+/** Only the native stdout receipt's exact subset advances the existing ledgers.
+ * Keep the candidate after a failed stamp so a later receipt can retry it. */
+export async function confirmMemoryEmission(
+  sql: SqlTag, ownerId: string, proof: MemoryEmissionConfirmation,
+): Promise<number> {
+  if (!proof || !emissionToken(proof.token) || !Array.isArray(proof.fragments) || proof.fragments.length > 128) return 0;
+  const { ackAndRead, clearReadCursor } = await import('../agent-tools/coordination/read-cursors');
+  const surface = EMISSION_SURFACE_PREFIX + proof.token;
+  const ack = await ackAndRead(ownerId, surface, { confirmedToken: proof.token });
+  const candidate = ack.committed;
+  if (candidate?.schemaVersion !== 2 || !Array.isArray(candidate.fragments)) return 0;
+  if (typeof candidate.expiresAt !== 'number' || !Number.isSafeInteger(candidate.expiresAt) || candidate.expiresAt <= Date.now()) {
+    await clearReadCursor(ownerId, surface);
+    return 0;
+  }
+  const delivered = (candidate.fragments as MemoryFragmentManifest[]).filter(row => validFragment(row) &&
+    proof.fragments.some(actual => validFragment(actual) && sameFragment(row, actual)));
+  if (!delivered.length) return 0;
+  const { stampSurfacedRefsResult } = await import('./corpus-surfaced-ledger');
+  let succeeded = true;
+  let inserted = 0;
+  for (const row of delivered) {
+    const stamped = row.kind === 'memory'
+      ? await stampSurfacedResult(sql, ownerId, row.epoch, [row.id], row.port)
+      : await stampSurfacedRefsResult(sql, ownerId, row.epoch, [row.id], row.port);
+    succeeded = stamped.ok && succeeded;
+    inserted += stamped.inserted;
+  }
+  if (succeeded) await clearReadCursor(ownerId, surface);
+  return succeeded ? inserted : 0;
+}
 
 let relationMissing = false;
 
@@ -144,19 +227,28 @@ export async function stampSurfaced(
   memoryIds: readonly string[],
   port: string,
 ): Promise<boolean> {
-  if (!sessionId || relationMissing) return false;
+  return (await stampSurfacedResult(sql, sessionId, epoch, memoryIds, port)).ok;
+}
+
+/** Preserve the boolean writer API while exposing the DB's atomic insert count
+ * to receipt confirmation. An ON CONFLICT no-op is not a second commit. */
+export async function stampSurfacedResult(
+  sql: SqlTag, sessionId: string, epoch: number, memoryIds: readonly string[], port: string,
+): Promise<{ ok: boolean; inserted: number }> {
+  if (!sessionId || relationMissing) return { ok: false, inserted: 0 };
   const ids = memoryIds.filter((id) => typeof id === 'string' && UUID_SHAPE.test(id));
-  if (ids.length === 0) return true;
+  if (ids.length === 0) return { ok: true, inserted: 0 };
   try {
-    await sql`
+    const rows = await sql<unknown[]>`
       INSERT INTO harness_shared.memory_session_surfaced (session_id, epoch, memory_id, port)
       SELECT ${sessionId}, ${epoch}, unnest(${ids}::uuid[]), ${port}
       ON CONFLICT (session_id, epoch, memory_id) DO NOTHING
+      RETURNING memory_id
     `;
-    return true;
+    return { ok: true, inserted: rows.length };
   } catch (err) {
     noteMissingRelation(err);
-    return false;
+    return { ok: false, inserted: 0 };
   }
 }
 

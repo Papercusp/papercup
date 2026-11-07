@@ -31,7 +31,11 @@ import { runWithWorkspaceIfConcrete } from '../../workspace-als';
  * (rating, unknownReason, remediation, disregard), and drops only the evidence-bearing ones.
  * `nKeys` / `missingKeys` are untouched, so completeness reads exactly as in full mode.
  */
-const SCORES_ONLY_ENTRY_KEYS = ['rating', 'unknownReason', 'remediation', 'disregard'] as const;
+const SCORES_ONLY_ENTRY_KEYS = [
+  'rating', 'unknownReason', 'attribution', 'remediation', 'disregard',
+  'nextEvidenceAction', 'evidenceRef', 'evidenceKind', 'positiveControlRef', 'absenceClaim',
+  'ratedFrom', 'ledgerResult', 'lastMeasurement',
+] as const;
 
 /**
  * WI-6554700010009929: in 'scores' mode the rerun recipe was still ~70% of every row
@@ -128,6 +132,10 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES, 'judge'],
   args: z.object({
+    historyMode: z.enum(['accepted', 'review-history']).optional().describe(
+      'accepted keeps the normal settled eligibility filter. review-history includes pending, failed, provisional and diagnostic cards with exclusionReasons and a separately queried lastAccepted card, independent of the current page.',
+    ),
+    comparisonTime: z.string().datetime({ offset: true }).optional().describe('One UTC comparison clock for evidence selection and age/currentness; defaults to request time.'),
     rubricRef: z
       .string()
       .optional()
@@ -204,15 +212,17 @@ export default defineTool({
     const identity = resolveAgentIdentity(ctx);
     return runWithWorkspaceIfConcrete(identity.workspaceId ?? undefined, async () => {
       try {
+        const comparisonTime = args.comparisonTime ?? new Date().toISOString();
+        const reviewHistory = args.historyMode === 'review-history';
+        const filter = {
+          rubricRef: args.rubricRef, sourceHive: args.sourceHive, subjectRef: args.subjectRef,
+          since: args.since, includeSynthesized: args.includeSynthesized, comparisonTime,
+        };
         const page = await listScorecardPage({
-          rubricRef: args.rubricRef,
-          sourceHive: args.sourceHive,
-          subjectRef: args.subjectRef,
-          since: args.since,
+          ...filter,
           limit: args.limit,
-          includeSynthesized: args.includeSynthesized,
-          includeDiagnostics: args.includeDiagnostics,
-          finalizedOnly: !(args.includeUnfinalized || args.includeDiagnostics || args.provisional),
+          includeDiagnostics: reviewHistory || args.includeDiagnostics,
+          finalizedOnly: args.historyMode === 'accepted' || !(reviewHistory || args.includeUnfinalized || args.includeDiagnostics || args.provisional),
           includeSuperseded: args.includeSuperseded,
           includeRetracted: args.includeRetracted,
           provisionalOnly: args.provisional,
@@ -229,9 +239,18 @@ export default defineTool({
           ? { createdAt: lastRow!.createdAt, issueId: lastRow!.issueId }
           : null;
         const detail = resolveScorecardListDetail(args.detail, args.subjectRef);
+        // No history cursor/provisional filter: recent pending pages must never
+        // conceal an older accepted result. Reuse canonical pre-limit admission.
+        const lastAccepted = reviewHistory
+          ? (await listScorecardPage({ ...filter, finalizedOnly: true, limit: 1, includeLinks: true })).rows[0] ?? null
+          : undefined;
         return {
           data: {
             ok: true,
+            comparisonTime,
+            ...(args.historyMode ? { historyMode: args.historyMode } : {}),
+            ...(lastAccepted !== undefined ? { lastAccepted: detail === 'scores' && lastAccepted
+              ? toScoresOnlyRow(lastAccepted) : lastAccepted } : {}),
             count: page.rows.length,
             hasMore: page.hasMore,
             truncatedByLimit: page.hasMore,

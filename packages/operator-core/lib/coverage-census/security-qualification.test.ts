@@ -1,12 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash, createHmac } from 'node:crypto';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { canonicalJson } from '@papercusp/hash-chain';
 import type { UnifiedToolContext } from '@papercusp/tooldef';
 import { SECURITY_POPULATIONS, securityTupleId, type SecurityTuple } from './security-manifest';
 
 const h = vi.hoisted(() => ({ artifacts: new Map<string, string>(), claims: new Map<string, string>(),
   related: vi.fn(async (_a: string, _b: string) => false), keyAvailable: true,
-  secret: Buffer.alloc(32, 7), now: 1000, captureRuntimeSecurityCensus: vi.fn() }));
+  secret: Buffer.alloc(32, 7), now: 1000, captureRuntimeSecurityCensus: vi.fn(), onStart: vi.fn() }));
 vi.mock('../observability/runtime', () => ({ captureRuntimeSecurityCensus: h.captureRuntimeSecurityCensus }));
 // Runtime custody must load and work even when source-only scanning cannot load.
 // In particular, a relocated host bundle has no sibling source checkout.
@@ -19,6 +22,7 @@ vi.mock('../text-artifacts', () => ({
   saveImmutableTextArtifact: async (harness: string, bytes: string) => {
     const sha256 = createHash('sha256').update(bytes).digest('hex');
     h.artifacts.set(`${harness}:${sha256}`, bytes);
+    if (JSON.parse(bytes)?.event?.phase === 'start') h.onStart();
     return { sha256 };
   },
   loadImmutableTextArtifact: async (harness: string, ref: string) => h.artifacts.get(`${harness}:${ref}`) ?? null,
@@ -39,7 +43,7 @@ const { captureAuthenticatedSecurityManifest, prepareAuthenticatedSecurityLedger
 const ids = { producer: 'su-11111111-1111-4111-8111-111111111111',
   ledger: 'su-22222222-2222-4222-8222-222222222222', reviewer: 'su-33333333-3333-4333-8333-333333333333',
   executor: 'su-44444444-4444-4444-8444-444444444444' };
-function ctx(ownerId: string, harnessSlug: string | null = 'test'): UnifiedToolContext {
+function ctx(ownerId: string, harnessSlug: UnifiedToolContext['harnessSlug'] = 'test'): UnifiedToolContext {
   return { uiClientId: ownerId, workspaceId: 'ws-security', harnessSlug, isSuperuser: true,
     log: () => {}, signal: new AbortController().signal, progress: async () => {}, emit: async () => {},
     principal: { kind: 'system', slug: 'system:superuser', workspaceId: 'ws-security',
@@ -92,6 +96,7 @@ beforeEach(() => {
   vi.restoreAllMocks(); h.artifacts.clear(); h.claims.clear();
   h.related.mockReset().mockResolvedValue(false); h.keyAvailable = true; h.now = 1000;
   h.captureRuntimeSecurityCensus.mockReset();
+  h.onStart.mockReset();
   vi.spyOn(Date, 'now').mockImplementation(() => h.now);
 });
 
@@ -157,6 +162,79 @@ describe('authenticated host discovery custody', () => {
 });
 
 describe('host-authenticated pre-execution applicability commitment', () => {
+  it.each(['executor', 'principal', 'capabilities', 'harness'] as const)(
+    'refuses an actual callback effect after the transport %s changes during custody', async field => {
+      const directory = mkdtempSync(join(tmpdir(), 'security-qualification-identity-'));
+      const marker = join(directory, 'effect');
+      const effect = async () => { writeFileSync(marker, 'authorized'); return 'performed'; };
+      try {
+        const control = await approved();
+        await runSecurityQualification(ctx(ids.executor), 'test', control.input, effect);
+        expect(readFileSync(marker, 'utf8')).toBe('authorized');
+        rmSync(marker);
+
+        const { input } = await approved(), context = ctx(ids.executor);
+        h.onStart.mockImplementation(() => {
+          if (field === 'executor') context.uiClientId = ids.producer;
+          else if (field === 'principal') context.principal = { ...context.principal!, slug: 'system:replacement' };
+          else if (field === 'capabilities') context.principal = { ...context.principal!,
+            capabilities: new Set([...context.principal!.capabilities, 'replacement-authority']) };
+          else context.harnessSlug = 'other';
+        });
+        const outcome = await runSecurityQualification(context, 'test', input, effect)
+          .then(() => undefined, (error: unknown) => error);
+        expect(existsSync(marker)).toBe(false);
+        expect(outcome).toBeInstanceOf(Error);
+        expect((outcome as Error).message).toContain('security_qualification_invocation_identity_changed');
+        const startRef = h.claims.get(`test:security-qualification:start:${input.approvalRef}`);
+        expect(startRef).toBeTypeOf('string');
+        expect([...h.artifacts.values()].map(bytes => JSON.parse(bytes)).some(record =>
+          record?.event?.phase === 'result' && record.event.parent === startRef && record.event.result === 'failed'))
+          .toBe(true);
+        await expect(runSecurityQualification(ctx(ids.executor), 'test', input, effect))
+          .rejects.toThrow('execution_already_consumed');
+        expect(existsSync(marker)).toBe(false);
+      } finally { rmSync(directory, { recursive: true, force: true }); }
+    });
+
+  it.each(['before-entry', 'during-start', 'during-start-replaced'] as const)(
+    'refuses an actual callback effect when cancellation occurs %s', async phase => {
+      const directory = mkdtempSync(join(tmpdir(), 'security-qualification-cancel-'));
+      const marker = join(directory, 'effect');
+      const effect = async () => { writeFileSync(marker, 'authorized'); return 'performed'; };
+      try {
+        const control = await approved();
+        await runSecurityQualification(ctx(ids.executor), 'test', control.input, effect);
+        expect(readFileSync(marker, 'utf8')).toBe('authorized');
+        rmSync(marker);
+
+        const { input } = await approved(), controller = new AbortController();
+        const context = { ...ctx(ids.executor), signal: controller.signal };
+        const artifactsBefore = h.artifacts.size;
+        if (phase === 'before-entry') controller.abort();
+        else h.onStart.mockImplementation(() => {
+          controller.abort();
+          if (phase === 'during-start-replaced') context.signal = new AbortController().signal;
+        });
+        const outcome = await runSecurityQualification(context, 'test', input, effect)
+          .then(() => undefined, (error: unknown) => error);
+        expect(existsSync(marker)).toBe(false);
+        expect(outcome).toBeInstanceOf(Error);
+        expect((outcome as Error).message).toContain('security_qualification_invocation_cancelled');
+        if (phase === 'before-entry') expect(h.artifacts.size).toBe(artifactsBefore);
+        else {
+          const startRef = h.claims.get(`test:security-qualification:start:${input.approvalRef}`);
+          expect(startRef).toBeTypeOf('string');
+          expect([...h.artifacts.values()].map(bytes => JSON.parse(bytes)).some(record =>
+            record?.event?.phase === 'result' && record.event.parent === startRef && record.event.result === 'failed'))
+            .toBe(true);
+          await expect(runSecurityQualification(ctx(ids.executor), 'test', input, effect))
+            .rejects.toThrow('execution_already_consumed');
+          expect(existsSync(marker)).toBe(false);
+        }
+      } finally { rmSync(directory, { recursive: true, force: true }); }
+    });
+
   it('pins the independently authenticated reviewer comparison in immutable approval evidence', async () => {
     const { input, request } = await approved();
     const approval = load(input.approvalRef).event;

@@ -558,6 +558,51 @@ describe('identity hook ports through the real CLI (P-011)', () => {
     }
   });
 
+  it('pre-tool: unavailable authority permits read-only diagnostics and exact grading-audit recovery waits', async () => {
+    const { runInjection } = await import('../core.mjs');
+    const fetchImpl = (async () => { throw Error('authority unavailable'); }) as typeof fetch;
+    const ptool = (name: string, scopeArgs: string, args: unknown) => [
+      'ptool ' + name + ' --json -' + scopeArgs + " <<'JSON'",
+      JSON.stringify(args),
+      'JSON',
+    ].join('\n');
+    const auditEvent = 'scorecard:grading-audit:EI-27971621607670989';
+    const auditAwait = { event: auditEvent, timeout_sec: 600, on_timeout: 'wake' };
+    const safe = [
+      ptool('dev:pg_query', ' --workspace="$PAPERCUSP_WORKSPACE"', { sql: 'SELECT 1' }),
+      ptool('tools:invoke', ' --workspace="$PAPERCUSP_WORKSPACE"', {
+        name: 'dev:pg_query', args: { sql: 'SELECT 1' },
+      }),
+      ptool('events:await', '', auditAwait),
+      ptool('tools:invoke', '', { name: 'events:await', args: auditAwait }),
+      ptool('tools:find', '', { query: 'capability:bash' }),
+    ];
+    const unsafe = [
+      ptool('events:await', '', { ...auditAwait, event: 'unrelated:event' }),
+      ptool('events:await', '', { ...auditAwait, event: auditEvent + ':suffix' }),
+      ptool('events:await', '', { ...auditAwait, timeout_sec: 3601 }),
+      ptool('events:await', '', { ...auditAwait, on_timeout: 'expire' }),
+      ptool('events:await', '', { ...auditAwait, payload_filter: { ok: true } }),
+      ptool('watch:create', '', { targetKind: 'event', pattern: auditEvent, wake: true, once: true }),
+      ptool('tools:invoke', '', {
+        name: 'events:await', args: auditAwait, authenticatedPrincipal: 'someone-else',
+      }),
+    ];
+    for (const [adapter, nativeEvent] of [[claude, 'PreToolUse'], [codex, 'pre-tool-use']] as const) {
+      const env = { PAPERCUSP_SID: 'sid-recovery', PAPERCUSP_WORKSPACE: 'papercusp-workspace' };
+      for (const cmd of safe) expect(await runInjection({ adapter, nativeEvent,
+        event: { tool_name: 'exec_command', tool_input: { cmd } }, env, fetchImpl }), cmd).toBeNull();
+      for (const cmd of unsafe) {
+        const output = await runInjection({ adapter, nativeEvent,
+          event: { tool_name: 'exec_command', tool_input: { cmd } }, env, fetchImpl });
+        expect(JSON.parse(output!).hookSpecificOutput, cmd).toMatchObject({
+          permissionDecision: 'deny',
+          permissionDecisionReason: expect.stringContaining('no server verdict was received'),
+        });
+      }
+    }
+  });
+
   it('pre-tool: a wall during authority fetch permits grouped read-only inspection but still denies writes', async () => {
     const { runInjection } = await import('../core.mjs');
     const stalledFetch = ((_url: unknown, init: RequestInit) => new Promise((_resolve, reject) => {
@@ -598,6 +643,16 @@ describe('identity hook ports through the real CLI (P-011)', () => {
         '{"conversation_id":"consult-1","kind":"answer","body":"Reviewed.","evidence":[{"session_id":"session-1","turn_idx":3}]}',
         'JSON',
       ].join('\n'),
+      [
+        "ptool dev:pg_query --json - --workspace=\"$PAPERCUSP_WORKSPACE\" <<'JSON'",
+        '{"sql":"SELECT 1"}',
+        'JSON',
+      ].join('\n'),
+      [
+        "ptool events:await --json - <<'JSON'",
+        '{"event":"scorecard:grading-audit:EI-27971621607670989","timeout_sec":600,"on_timeout":"wake"}',
+        'JSON',
+      ].join('\n'),
     ];
     const refusedPtoolWrite = [
       "ptool work_items:set_state --json - <<'JSON'",
@@ -611,9 +666,10 @@ describe('identity hook ports through the real CLI (P-011)', () => {
         for (const cmd of readOnlyCommands) {
           const read = runInjection({ adapter, nativeEvent,
             event: { tool_name: 'exec_command', tool_input: { cmd } },
-            env: { PAPERCUSP_SID: 'sid-guard' }, fetchImpl: stalledFetch });
+            env: { PAPERCUSP_SID: 'sid-guard', PAPERCUSP_WORKSPACE: 'papercusp-workspace' },
+            fetchImpl: stalledFetch });
           await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs);
-          expect(await read).toBeNull();
+          expect(await read, cmd).toBeNull();
         }
 
         const pipeline = runInjection({ adapter, nativeEvent,
@@ -634,6 +690,19 @@ describe('identity hook ports through the real CLI (P-011)', () => {
           permissionDecision: 'deny',
           permissionDecisionReason: expect.stringContaining('plan_execution_not_ready'),
         });
+        const nativePatch = runInjection({ adapter, nativeEvent,
+          event: { tool_name: 'apply_patch', tool_input: {
+            patch: '*** Begin Patch\n*** Update File: source.ts\n@@\n-old\n+new\n*** End Patch',
+          } },
+          env: { PAPERCUSP_SID: 'sid-guard' }, fetchImpl: stalledFetch });
+        await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs);
+        const patchDecision = JSON.parse((await nativePatch)!).hookSpecificOutput;
+        expect(patchDecision).toMatchObject({
+          permissionDecision: 'deny',
+          permissionDecisionReason: expect.stringContaining('plan_execution_not_ready'),
+        });
+        expect(patchDecision.permissionDecisionReason).toContain('stage=wall-during-fetch');
+        expect(patchDecision.permissionDecisionReason).toContain('timeoutMs=1500');
         const ptoolWrite = runInjection({ adapter, nativeEvent,
           event: { tool_name: 'exec_command', tool_input: { cmd: refusedPtoolWrite } },
           env: { PAPERCUSP_SID: 'sid-guard' }, fetchImpl: stalledFetch });

@@ -45,6 +45,80 @@ export interface LedgerFillCriterion {
   ratingScale?: string[];
 }
 
+/** Reasons supplied by the existing evidence/currentness and producer readers.
+ * This selector composes their findings; it does not resolve or authorize evidence. */
+export type EvidenceActionReason = 'identity-mismatch' | 'historical-missing' | 'stale'
+  | 'producer-failed' | 'instrument-unavailable' | 'insufficient-sample'
+  | 'missing-binding' | 'never-run' | 'manual' | 'adverse' | 'unknown' | 'conflicting';
+
+export interface EvidenceActionContext {
+  subjectRef: string | null;
+  windowStart: string | null;
+  windowEnd: string | null;
+  rubricRef: string | null;
+  rubricRevision: number | null;
+  criteriaHash: string | null;
+  comparisonTime: string | null;
+}
+
+const EVIDENCE_ACTION_RULES = [
+  ['identity-mismatch', 'diagnose-identity', 'Resolve the referenced evidence identity mismatch before using its value.'],
+  ['historical-missing', 'recover-historical', 'Recover the declared historical evidence; a new run cannot recreate the pinned past window.'],
+  ['stale', 'refresh-evidence', 'Obtain admissible evidence for the pinned assessment under its freshness policy; retain the old result as history.'],
+  ['producer-failed', 'diagnose-producer', 'Diagnose the referenced failed attempt, repair and verify its producer, then retry once.'],
+  ['instrument-unavailable', 'diagnose-producer', 'Restore and verify the named instrument before one bounded measurement attempt.'],
+  ['insufficient-sample', 'collect-samples', 'Meet the declared cohort and minimum sample requirement; preserve an explicit gap when that is infeasible.'],
+  ['missing-binding', 'repair-binding', 'Repair the intended check binding or document the deliberate manual method.'],
+  ['never-run', 'run-check', 'Recover an existing matching result first, or run the named registered check for the pinned assessment.'],
+  ['manual', 'manual-review', 'Follow the authored manual method and retain its sources and reviewer judgment.'],
+  ['adverse', 'repair-subject', 'Follow the accountable remediation for the supported finding, then verify recovery with the declared check.'],
+] as const;
+
+/** Select guidance at one explicit clock from already diagnosed, pinned inputs.
+ * No wall clock, source query, prose-to-command conversion or completion write. */
+export function selectCriterionEvidenceAction(input: {
+  criterionKey: string;
+  context: EvidenceActionContext;
+  findings: readonly { reason: EvidenceActionReason; sourceRef: string }[];
+}) {
+  const { context } = input;
+  const start = Date.parse(context.windowStart ?? '');
+  const end = Date.parse(context.windowEnd ?? '');
+  const clock = Date.parse(context.comparisonTime ?? '');
+  const identityMissing = !input.criterionKey.trim() || !context.subjectRef?.trim() || !context.rubricRef?.trim()
+    || !context.criteriaHash?.trim() || !Number.isSafeInteger(context.rubricRevision)
+    || context.rubricRevision! < 1 || !Number.isFinite(start) || !Number.isFinite(end)
+    || !Number.isFinite(clock) || start >= end;
+  const findings = input.findings;
+  const refs = (selected: readonly typeof findings[number][]) =>
+    [...new Set(selected.map(finding => finding.sourceRef).filter(ref => ref.trim()))].sort();
+  const project = (category: string, reason: string, nextEvidenceAction: string,
+    selected: readonly typeof findings[number][]) => ({
+    criterionKey: input.criterionKey,
+    category, reason, sourceRefs: refs(selected), nextEvidenceAction,
+    context: { ...context },
+  });
+  if (identityMissing) return project('diagnose-identity', 'missing-required-identity',
+    'Resolve the missing or invalid subject, window, rubric revision/hash and comparison clock before selecting a procedure.', findings);
+  if (findings.some(finding => !finding.sourceRef.trim()
+    || ![...EVIDENCE_ACTION_RULES.map(rule => rule[0]), 'unknown', 'conflicting'].includes(finding.reason))) {
+    return project('diagnose-evidence', 'unresolved-diagnostics',
+      'Resolve the incomplete diagnostic source or unsupported reason; no executable procedure has been established.', findings);
+  }
+  const mismatches = findings.filter(finding => finding.reason === 'identity-mismatch');
+  if (mismatches.length) return project('diagnose-identity', 'identity-mismatch',
+    EVIDENCE_ACTION_RULES[0][2], mismatches);
+  const uncertain = findings.filter(finding => finding.reason === 'unknown' || finding.reason === 'conflicting');
+  if (uncertain.length) return project('diagnose-evidence', 'unresolved-diagnostics',
+    'Resolve the referenced unknown or conflicting diagnostics before selecting a repair or measurement procedure.', uncertain);
+  for (const [reason, category, action] of EVIDENCE_ACTION_RULES) {
+    const selected = findings.filter(finding => finding.reason === reason);
+    if (selected.length) return project(category, reason, action, selected);
+  }
+  return project('none', 'no-evidence-gap-reported',
+    'No evidence action is established by this snapshot; ordinary assessment and acceptance checks still apply.', []);
+}
+
 export interface LedgerRatingBand {
   rating: string;
   expect: { op: 'lt' | 'lte' | 'gt' | 'gte' | 'eq'; value: number };
@@ -154,10 +228,8 @@ export function ledgerCheckBindings(criterion: LedgerFillCriterion): LedgerCheck
 
 /** Re-judge one stored row against the binding's CURRENT threshold. */
 export function judgeLedgerRow(binding: LedgerCheckBinding, row: LatestRubricCheckResult, nowMs = Date.now()): Verdict {
-  if (binding.maxAgeMs !== undefined) {
-    const ageMs = nowMs - Date.parse(row.finishedAt);
-    if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs > binding.maxAgeMs) return 'error';
-  }
+  const ageMs = nowMs - Date.parse(row.finishedAt);
+  if (!Number.isFinite(ageMs) || ageMs < 0 || (binding.maxAgeMs !== undefined && ageMs > binding.maxAgeMs)) return 'error';
   if (row.status === 'error') return 'error';
   const value = row.check.value;
   if (binding.kind === 'instrument') {
@@ -291,10 +363,32 @@ function describeRow(binding: LedgerCheckBinding, row: LatestRubricCheckResult, 
   return `${binding.id}=${shown} → ${verdict}${rated} (test_runs #${row.testRunId}, ${row.finishedAt})${detail}${context}`;
 }
 
-function ledgerResultOf(row: LatestRubricCheckResult): ObservationLedgerResult {
-  return { testRunId: row.testRunId, value: row.check.value, unit: row.check.unit,
+/** Read-time projection only: keep the cited measurement and stored rating immutable. */
+export function projectLedgerResultAtTime(result: ObservationLedgerResult, comparisonTime: string): ObservationLedgerResult {
+  // A legacy receipt without a timestamp cannot establish a measured age.
+  if (!result.finishedAt) return result;
+  const age = Date.parse(comparisonTime) - Date.parse(result.finishedAt ?? '');
+  const valid = Number.isFinite(age) && age >= 0;
+  return { ...result, comparisonTime,
+    ageMs: Number.isFinite(age) ? age : null,
+    freshness: !valid ? 'invalid' : result.status === 'error' ? 'failed'
+      : result.maxAgeMs === undefined ? 'unbounded' : age <= result.maxAgeMs ? 'fresh' : 'stale' };
+}
+
+export function projectScorecardRatingsAtTime(ratings: ObservationRatings, comparisonTime: string): ObservationRatings {
+  return Object.fromEntries(Object.entries(ratings).map(([key, entry]) => [key, { ...entry,
+    ...(entry.ledgerResult ? { ledgerResult: projectLedgerResultAtTime(entry.ledgerResult, comparisonTime) } : {}),
+    ...(entry.lastMeasurement ? { lastMeasurement: projectLedgerResultAtTime(entry.lastMeasurement, comparisonTime) } : {}),
+  }]));
+}
+
+function ledgerResultOf(row: LatestRubricCheckResult, binding: LedgerCheckBinding, nowMs: number): ObservationLedgerResult {
+  return projectLedgerResultAtTime({ testRunId: row.testRunId, value: row.check.value, unit: row.check.unit,
+    finishedAt: row.finishedAt, status: row.status,
+    ...(binding.maxAgeMs === undefined ? {} : { maxAgeMs: binding.maxAgeMs }),
     ...(row.check.provenance ? { provenance: row.check.provenance } : {}),
-    provenanceStatus: measurementProvenanceStatus(row.check.provenance) };
+    provenanceStatus: measurementProvenanceStatus(row.check.provenance) },
+    Number.isFinite(nowMs) ? new Date(nowMs).toISOString() : 'invalid');
 }
 
 /** Grader-owned fields a caller may add to a ledger-filled rating that agrees with the ledger. */
@@ -411,11 +505,15 @@ export function fillRatingsFromLedger(input: {
         const levels = ratingScale.filter((level) => level !== 'unknown');
         return levels.indexOf(current.rating) > levels.indexOf(worst.rating) ? current : worst;
       });
+      const historical = deciding.row.status === 'error' && deciding.row.lastMeasurement
+        && ledgerRowMatchesBinding(deciding.binding, deciding.row.lastMeasurement)
+        ? deciding.row.lastMeasurement : undefined;
       const evidence = `fromLedger: ${judged.map((j) => describeRow(j.binding, j.row, j.verdict, j.rating) +
         (j.binding.maxAgeMs === undefined ? '' : `; ageMs=${nowMs - Date.parse(j.row.finishedAt)}, maxAgeMs=${j.binding.maxAgeMs}`)).join('; ')}`;
       const provenance = {
         ratedFrom: 'ledger' as const,
-        ledgerResult: ledgerResultOf(deciding.row),
+        ledgerResult: ledgerResultOf(deciding.row, deciding.binding, nowMs),
+        ...(historical ? { lastMeasurement: ledgerResultOf(historical, deciding.binding, nowMs) } : {}),
         evidenceRef: `test_runs:${deciding.row.testRunId}`,
         evidenceKind: 'test-run',
       };
@@ -423,7 +521,8 @@ export function fillRatingsFromLedger(input: {
         ? {
             rating: 'unknown',
             ...unknownLedgerGuidance(deciding.binding, deciding.row, nowMs),
-            evidence,
+            evidence: evidence + (historical ? `; Historical measurement only: ${describeRow(deciding.binding, historical,
+              judgeLedgerRow(deciding.binding, historical, nowMs))}; latest attempt remains unknown.` : ''),
             ...provenance,
           }
         : { rating: deciding.rating, evidence, ...provenance };

@@ -453,6 +453,8 @@ export interface LatestRubricCheckResult {
    */
   detail?: string | null;
   provenanceStatus?: 'retained' | 'partial' | 'legacy-missing';
+  /** Prior non-error measurement of this exact ledger file; never a replacement verdict. */
+  lastMeasurement?: LatestRubricCheckResult;
 }
 
 /**
@@ -466,18 +468,28 @@ export interface LatestRubricCheckResult {
  * never filled from another subject's row or from an unscoped one — it is simply absent.
  */
 export async function readLatestRubricCheckResults(
-  input: { rubricRef: string; workspaceId: string | null; subject?: RecordedRubricCheckSubject },
+  input: { rubricRef: string; workspaceId: string | null; subject?: RecordedRubricCheckSubject;
+    /** Historical readers must not substitute a later run for the recorded assessment. */
+    asOf?: string;
+    /** Exact retained receipts cited by a historical scorecard. An empty list selects none. */
+    testRunIds?: number[] },
   sql: SqlLike = getOrgPg().sql,
 ): Promise<Map<string, LatestRubricCheckResult>> {
+  if (input.asOf !== undefined && !Number.isFinite(Date.parse(input.asOf))) {
+    throw new Error('A rubric-check historical cutoff must be a valid timestamp');
+  }
+  if (input.testRunIds?.length === 0) return new Map();
   const prefix = `rubric-check/${input.rubricRef}/`;
   const rows = (await sql`
-    SELECT DISTINCT ON (file_path) id, file_path, status, finished_at, output_tail, execution_details
+    SELECT DISTINCT ON (file_path, (status = 'error')) id, file_path, status, finished_at, output_tail, execution_details
       FROM harness_shared.test_runs
      WHERE framework = ${RUBRIC_CHECK_FRAMEWORK}
        AND workspace_id IS NOT DISTINCT FROM ${input.workspaceId}
        AND left(file_path, ${prefix.length}) = ${prefix}
        AND status IN ('pass', 'fail', 'error')
-     ORDER BY file_path, finished_at DESC NULLS LAST, id DESC
+       AND (${input.asOf ?? null}::timestamptz IS NULL OR finished_at <= ${input.asOf ?? null}::timestamptz)
+       AND (${input.testRunIds ?? null}::bigint[] IS NULL OR id = ANY(${input.testRunIds ?? null}::bigint[]))
+     ORDER BY file_path, (status = 'error'), finished_at DESC NULLS LAST, id DESC
   `) as Array<{
     id: number | string; file_path: string; status: string; finished_at: Date | string | null;
     output_tail: string | null; execution_details: unknown;
@@ -485,6 +497,10 @@ export async function readLatestRubricCheckResults(
   const out = new Map<string, LatestRubricCheckResult>();
   const own = new Map<string, LatestRubricCheckResult>();
   const perSubjectChecks = new Set<string>();
+  const files = new Map<string, { latest: LatestRubricCheckResult; measured?: LatestRubricCheckResult }>();
+  const newer = (a: LatestRubricCheckResult, b: LatestRubricCheckResult) =>
+    Date.parse(a.finishedAt) > Date.parse(b.finishedAt)
+      || (Date.parse(a.finishedAt) === Date.parse(b.finishedAt) && a.testRunId > b.testRunId);
   for (const row of rows) {
     const check = parseTestRunExecutionDetails(row.execution_details)?.check;
     if (!check || check.rubricRef !== input.rubricRef) continue;
@@ -496,6 +512,17 @@ export async function readLatestRubricCheckResults(
       detail: typeof row.output_tail === 'string' && row.output_tail.length > 0 ? row.output_tail : null,
       provenanceStatus: measurementProvenanceStatus(check.provenance),
     };
+    const file = files.get(row.file_path);
+    if (!file) files.set(row.file_path, { latest: result, ...(result.status !== 'error' ? { measured: result } : {}) });
+    else {
+      if (newer(result, file.latest)) file.latest = result;
+      if (result.status !== 'error' && (!file.measured || newer(result, file.measured))) file.measured = result;
+    }
+  }
+  for (const file of files.values()) {
+    const result = file.latest.status === 'error' && file.measured
+      ? { ...file.latest, lastMeasurement: file.measured } : file.latest;
+    const check = result.check;
     if (check.subject) {
       perSubjectChecks.add(check.id);
       if (input.subject && sameRecordedSubject(check.subject, input.subject)) own.set(check.id, result);

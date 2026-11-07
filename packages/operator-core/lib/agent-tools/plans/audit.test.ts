@@ -73,8 +73,10 @@ vi.mock('./spec-clauses-store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./spec-clauses-store')>()),
   setSpecClause: vi.fn(),
 }));
-vi.mock('./get-activation-readiness', () => ({
+vi.mock('./get-activation-readiness', async (orig) => ({
+  ...(await orig<typeof import('./get-activation-readiness')>()),
   previewPlanStartConsult: vi.fn(),
+  readPlanActivationReadiness: vi.fn(),
 }));
 // plan-reuse-and-library-declarations-2026-10-20 R-4: no real fs / LSP / registry lookups
 // in this unit file; with no lookups configured every reuse entry is unverified.
@@ -131,7 +133,7 @@ import {
 import { ensureActivationAuditRepairFiling } from './activation-audit-repair';
 import { getPlanRow } from './source';
 import { setSpecClause } from './spec-clauses-store';
-import { previewPlanStartConsult } from './get-activation-readiness';
+import { previewPlanStartConsult, readPlanActivationReadiness, unavailableActivationReadiness } from './get-activation-readiness';
 import { defaultReuseReferenceResolvers, readPlanCompletionFilesChanged } from './plan-declaration-resolvers';
 import { dependencyBaselineFrom, runLibraryShipCheck, type LibraryShipCheckReport } from './plan-library-ship-check';
 import { resolveSessionTurnRefs } from '../sessions/_shared';
@@ -284,6 +286,12 @@ beforeEach(() => {
     outcome: 'proceed',
     verdict: 'no_qualified_responder',
   });
+  vi.mocked(readPlanActivationReadiness).mockImplementation(async params => ({
+    ...unavailableActivationReadiness('fixture deliberately does not measure other gates'),
+    consult: params.consult ?? await mockPreviewPlanStartConsult({ workspaceId: params.workspaceId,
+      requesterId: params.requesterId, planSlug: params.planSlug,
+      planContent: (await mockGetPlanRow(params.planSlug))?.content ?? '' }),
+  }));
   mockRepairFiling.mockResolvedValue({
     conditionKey: 'activation-audit:papercusp/plan-a',
     id: 'EI-ACTIVATION-REPAIR',
@@ -1412,6 +1420,8 @@ describe('plans:audit phase:activation', () => {
       ok: true,
       phase: 'activation',
       activationReadiness: {
+        schemaVersion: 1, advisory: true, freshness: 'unknown',
+        counts: { total: 13, returned: 13, omitted: 0 },
         consult: { outcome: 'proceed', verdict: 'no_qualified_responder' },
       },
     });
@@ -1424,6 +1434,15 @@ describe('plans:audit phase:activation', () => {
     expect(mockRecordActivation.mock.invocationCallOrder[0]!).toBeLessThan(
       mockPreviewPlanStartConsult.mock.invocationCallOrder[0]!,
     );
+  });
+
+  it('retains a primary activation refusal when the complete diagnostic cannot initialize', async () => {
+    vi.mocked(readPlanActivationReadiness).mockRejectedValueOnce(new Error('diagnostic reader offline'));
+    const result = ((await tool.handler({ ...activationArgs(), unresolvedBlockers: ['missing source'] } as never, ctx)) as { data: any }).data;
+    expect(result.ok).toBe(false);
+    expect(result.activationReadiness).toMatchObject({ ready: false, freshness: 'unknown',
+      counts: { total: 13, returned: 13, omitted: 0 } });
+    expect(mockRecordActivation).not.toHaveBeenCalled();
   });
 
   it('previews activation validation without recording audit, repair, clause, consult, or event writes', async () => {

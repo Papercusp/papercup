@@ -15,6 +15,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { ROOT as SOURCE_ROOT, prepareBgVerifierSource, captureVerifierDependencies } from '../../../scripts/source-preview.mjs';
 import type { TestCasePopulationMember } from './testing-case-filter';
+import { RETAINED_REPLAY_SOURCE_FILES } from './retained-replay-identity';
 
 // Registration data is deliberately independent of the literal reviewed BAR
 // fixture. The source guard compares them; post-run ledger census proves execution.
@@ -62,10 +63,59 @@ export const BG_R1_CENSUS_CASE = r1Case('bg-r1-census', R1_SOURCE_FILE,
   'bg-r1-census requires exact predeclared selector and branch population');
 export const BG_R1_COMPILER_POSITIVE_CASE = r1Case('bg-r1-compiler-immutable-input-positive-control', R1_ARTIFACT_FILE,
   'bg-r1-compiler-immutable-input-positive-control qualifies ordinary real compilation from the frozen accepted source and dependency bytes');
+export const BG_R1_PARTITION_CASES = Object.freeze([
+  r1Case("bg-r1-partition-extra-consumed-positive-control", "packages/operator-core/lib/source-preview-export.test.ts",
+    "bg-r1-partition-extra-consumed-positive-control qualifies real compilation with additional frozen committed sources"),
+  r1Case("bg-r1-partition-protected-source-unconsumed", "packages/operator-core/lib/source-preview-export.test.ts",
+    "bg-r1-partition-protected-source-unconsumed rejects a protected historical source omitted from real compiler consumption"),
+  r1Case("bg-r1-partition-consumption-added", "packages/operator-core/lib/source-preview-export.test.ts",
+    "bg-r1-partition-consumption-added rejects added in the sealed complete compiler consumption receipt"),
+  r1Case("bg-r1-partition-artifact-added", "packages/operator-core/lib/source-preview-export.test.ts",
+    "bg-r1-partition-artifact-added rejects added between the new artifact source map and complete compiler consumption"),
+  r1Case("bg-r1-partition-consumption-omitted", "packages/operator-core/lib/source-preview-export.test.ts",
+    "bg-r1-partition-consumption-omitted rejects omitted in the sealed complete compiler consumption receipt"),
+  r1Case("bg-r1-partition-artifact-omitted", "packages/operator-core/lib/source-preview-export.test.ts",
+    "bg-r1-partition-artifact-omitted rejects omitted between the new artifact source map and complete compiler consumption"),
+  r1Case("bg-r1-partition-consumption-hash-drift", "packages/operator-core/lib/source-preview-export.test.ts",
+    "bg-r1-partition-consumption-hash-drift rejects hash-drift in the sealed complete compiler consumption receipt"),
+  r1Case("bg-r1-partition-artifact-hash-drift", "packages/operator-core/lib/source-preview-export.test.ts",
+    "bg-r1-partition-artifact-hash-drift rejects hash-drift between the new artifact source map and complete compiler consumption"),
+  r1Case("bg-r1-partition-uncensused-source", "packages/operator-core/lib/source-preview-export.test.ts",
+    "bg-r1-partition-uncensused-source rejects compiler consumption outside the original frozen source census"),
+  r1Case("bg-r1-partition-uncensused-dependency", "packages/operator-core/lib/source-preview-export.test.ts",
+    "bg-r1-partition-uncensused-dependency rejects compiler consumption outside the original frozen dependency census"),
+  r1Case("bg-r1-partition-virtual-consumption", "packages/operator-core/lib/source-preview-export.test.ts",
+    "bg-r1-partition-virtual-consumption rejects a virtual compiler input without original physical custody"),
+  r1Case("bg-r1-partition-receipt-transaction-substitution", "packages/operator-core/lib/source-preview-export.test.ts",
+    "bg-r1-partition-receipt-transaction-substitution rejects transaction substitution on the complete compiler consumption receipt"),
+  r1Case("bg-r1-partition-receipt-entry-substitution", "packages/operator-core/lib/source-preview-export.test.ts",
+    "bg-r1-partition-receipt-entry-substitution rejects entry substitution on the complete compiler consumption receipt"),
+  r1Case("bg-r1-partition-receipt-argv-substitution", "packages/operator-core/lib/source-preview-export.test.ts",
+    "bg-r1-partition-receipt-argv-substitution rejects argv substitution on the complete compiler consumption receipt"),
+  r1Case("bg-r1-partition-receipt-compiler-toolchain-substitution", "packages/operator-core/lib/source-preview-export.test.ts",
+    "bg-r1-partition-receipt-compiler-toolchain-substitution rejects compiler-toolchain substitution on the complete compiler consumption receipt"),
+  r1Case("bg-r1-partition-receipt-source-generation-substitution", "packages/operator-core/lib/source-preview-export.test.ts",
+    "bg-r1-partition-receipt-source-generation-substitution rejects source-generation substitution on the complete compiler consumption receipt"),
+  r1Case("bg-r1-partition-receipt-dependency-generation-substitution", "packages/operator-core/lib/source-preview-export.test.ts",
+    "bg-r1-partition-receipt-dependency-generation-substitution rejects dependency-generation substitution on the complete compiler consumption receipt"),
+  r1Case("bg-r1-partition-full-parent-census-mismatch", "packages/operator-core/lib/source-preview-export.test.ts",
+    "bg-r1-partition-full-parent-census-mismatch rejects extra output members when independent authority is a complete parent output census"),
+  r1Case("bg-r1-partition-new-boot-positive-control", "packages/operator-core/lib/release/operator-artifact.test.ts",
+    "bg-r1-partition-new-boot-positive-control qualifies the actual new service boot against its exact full new artifact authority"),
+  r1Case("bg-r1-partition-new-boot-source-only-substitution", "packages/operator-core/lib/release/operator-artifact.test.ts",
+    "bg-r1-partition-new-boot-source-only-substitution rejects historical source-only authority substituted for the full new artifact authority at actual service boot"),
+  r1Case("bg-r1-partition-new-boot-member-added", "packages/operator-core/lib/release/operator-artifact.test.ts",
+    "bg-r1-partition-new-boot-member-added rejects added full new artifact authority members at actual service boot"),
+  r1Case("bg-r1-partition-new-boot-member-omitted", "packages/operator-core/lib/release/operator-artifact.test.ts",
+    "bg-r1-partition-new-boot-member-omitted rejects omitted full new artifact authority members at actual service boot"),
+  r1Case("bg-r1-partition-new-boot-member-changed", "packages/operator-core/lib/release/operator-artifact.test.ts",
+    "bg-r1-partition-new-boot-member-changed rejects changed full new artifact authority members at actual service boot"),
+]);
+
 export const BG_R1_CASE_REGISTRY = Object.freeze([
   ...Object.values(BG_R1_PARENT_SELECTORS), ...BG_R1_SOURCE_CASES, ...BG_R1_MEMBER_CASES,
   ...BG_R1_BUILDER_CASES, ...BG_R1_PARENT_CASES, BG_R1_CENSUS_CASE,
-  ...BG_R1_COMPILER_CASES, BG_R1_COMPILER_POSITIVE_CASE,
+  ...BG_R1_COMPILER_CASES, BG_R1_COMPILER_POSITIVE_CASE, ...BG_R1_PARTITION_CASES,
 ].map(({ rowId, file, testName }) => r1Case(rowId, file, testName)));
 
 // Reuse R1's selector shape; completed ledger rows establish execution.
@@ -270,7 +320,8 @@ export function makeBgCandidate(base: string) {
 
 /** Real compiler inputs, retained independently of the suite registering a case. */
 export async function makeBgCompilerCandidate(base: string, {
-  artifactInputs = false, cliHarness = false, trace = (_stage: string) => {},
+  artifactInputs = false, cliHarness = false, sourceOnly = false, protectedUnconsumed = false,
+  trace = (_stage: string) => {},
 } = {}) {
   trace('compiler-fixture:start');
   const c = makeBgCandidate(base);
@@ -278,22 +329,32 @@ export async function makeBgCompilerCandidate(base: string, {
   for (const path of ['papercusp-desktop/bin/lib/pinned-deps.sh', 'apps/operator/bin/release/dependency-generation.sh',
     'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh'])
     write(c.fixture.repo, path, readFileSync(join(SOURCE_ROOT, path), 'utf8'));
-  if (cliHarness) write(c.fixture.repo, 'scripts/source-preview.mjs',
-    `const { runCli } = await import(${JSON.stringify(new URL('../../../scripts/source-preview.mjs', import.meta.url).href)});\nprocess.exitCode = await runCli(process.argv.slice(2));\n`);
+  if (cliHarness) {
+    write(c.fixture.repo, 'scripts/source-preview.mjs',
+      `const { runCli } = await import(${JSON.stringify(new URL('../../../scripts/source-preview.mjs', import.meta.url).href)});\nprocess.exitCode = await runCli(process.argv.slice(2));\n`);
+    // The maintained shell measures these data inputs before and after every
+    // compile. Freeze the same population in the synthetic source archive.
+    for (const path of RETAINED_REPLAY_SOURCE_FILES)
+      write(c.fixture.repo, path, readFileSync(join(SOURCE_ROOT, path), 'utf8'));
+  }
   write(c.fixture.repo, BG_INPUTS[0]!, "export { y } from '../../../packages/core/index'; export { default as dep } from 'fixture-dependency';\n");
   git(c.fixture.repo, ['add', '-A']);
   git(c.fixture.repo, ['commit', '-qm', 'BG compiler input custody fixture']);
   c.options.ref = git(c.fixture.repo, ['rev-parse', 'HEAD']);
   c.options.acceptedManifest.members[BG_INPUTS[0]!] = git(c.fixture.repo, ['rev-parse', `${c.options.ref}:${BG_INPUTS[0]}`]);
   if (artifactInputs) {
-    c.options.inputs = [BG_INPUTS[0]!, 'packages/core/index.ts'];
+    c.options.inputs = sourceOnly
+      ? [protectedUnconsumed ? 'package.json' : 'packages/core/index.ts']
+      : [BG_INPUTS[0]!, 'packages/core/index.ts'];
     c.options.acceptedManifest.members = Object.fromEntries(c.options.inputs.map(path =>
       [path, git(c.fixture.repo, ['rev-parse', `${c.options.ref}:${path}`])])) as typeof c.options.acceptedManifest.members;
   }
   const manifest = JSON.stringify({ schemaVersion: 1, sourceBlobs: c.options.acceptedManifest.members });
   writeFileSync(c.options.acceptedManifest.path, manifest);
   c.options.acceptedManifest.sha256 = createHash('sha256').update(manifest).digest('hex');
-  const prepared = await prepareBgVerifierSource(c.options);
+  const prepared = await prepareBgVerifierSource({ ...c.options, acceptedManifest: {
+    ...c.options.acceptedManifest, ...(sourceOnly ? { authorityKind: 'source-only' as const } : {}),
+  } });
   trace('compiler-fixture:source-ready');
   write(prepared.root, 'node_modules/fixture-dependency/package.json', '{"name":"fixture-dependency","main":"index.js"}');
   write(prepared.root, 'node_modules/fixture-dependency/index.js', 'export default 41;\n');

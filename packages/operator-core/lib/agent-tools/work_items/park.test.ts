@@ -23,6 +23,7 @@ vi.mock('../coordination/messages', () => ({
 }));
 import park from './park';
 import { withCarryNoteChecks } from '../../carry-note';
+import { prepareBlockerDecision } from '../../blocker-resolution-decision';
 
 const parse = (x: unknown) => (park.args as { parse: (x: unknown) => unknown }).parse(x);
 const call = async (x: unknown, ctx: unknown) => {
@@ -54,7 +55,16 @@ beforeEach(() => {
   sendMessage.mockReset();
   getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
   setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: 'state', priorLength: 0 });
-  releaseWorkItem.mockResolvedValue(true);
+  releaseWorkItem.mockImplementation(async (id, opts) => {
+    const { update, options, onStored } = opts.checkpoint;
+    const saved = await setWorkItemCheckpointWithPrior({ harness: opts.harness, workItemId: id,
+      workspaceId: opts.blockerEvidenceContext.workspaceId }, update, options);
+    if (saved.blockedReason) throw Object.assign(new Error(saved.blockedReason), {
+      code: saved.blockedReason, priorLength: saved.priorLength,
+    });
+    onStored(saved);
+    return true;
+  });
   sendMessage.mockResolvedValue(undefined);
 });
 
@@ -93,7 +103,7 @@ describe('work_items:park', () => {
       { uiClientId: 'a1', sigVerifiedSpawn: true, workspaceId: 'default' },
     );
     expect(out).toMatchObject({ ok: false, priorLength: 32000, error: 'checkpoint_capacity_exceeded' });
-    expect(releaseWorkItem).not.toHaveBeenCalled();
+    expect(releaseWorkItem).toHaveBeenCalledTimes(1);
     expect(sendMessage).not.toHaveBeenCalled();
   });
 
@@ -141,10 +151,11 @@ describe('work_items:park', () => {
   it('releases the claim and sends a best-effort lifecycle note', async () => {
     const ctx = { uiClientId: 'a1', sigVerifiedSpawn: true, workspaceId: 'default', harnessSlug: 'papercup' };
     await call({ id: 'WI-7', checkpoint: 'did x; left y for continuity', reason: 'higher-priority item' }, ctx);
-    expect(releaseWorkItem).toHaveBeenCalledWith('WI-7', {
+    expect(releaseWorkItem).toHaveBeenCalledWith('WI-7', expect.objectContaining({
       harness: 'papercup',
       releasingOwnerId: 'a1',
-    });
+      expectedAssignee: 'a1', checkpoint: expect.objectContaining({ update: 'did x; left y for continuity' }),
+    }));
     expect(sendMessage).toHaveBeenCalled();
   });
 
@@ -153,5 +164,53 @@ describe('work_items:park', () => {
     const ctx = { uiClientId: 'a1', sigVerifiedSpawn: true, workspaceId: 'default', harnessSlug: 'papercup' };
     const out = await call({ id: 'WI-7', checkpoint: 'did x; left y for continuity', reason: 'r' }, ctx);
     expect(out).toMatchObject({ ok: true, released: true, noted: false });
+  });
+
+  it('preserves checkpoint and custody on missing canonical blocker evidence', async () => {
+    releaseWorkItem.mockRejectedValue(Object.assign(new Error('Investigate before deferring'), {
+      code: 'blocker_decision_evidence', missing: ['blockerDecision with investigation and evidence'],
+      nextAction: 'Read the dependency and attempt a safe remedy',
+    }));
+    const out = await call({ id: 'WI-7', checkpoint: 'Resume after dependency repair', reason: 'dependency' },
+      { uiClientId: 'a1', sigVerifiedSpawn: true, workspaceId: 'default' });
+    expect(out).toMatchObject({ ok: false, error: 'blocker_decision_evidence',
+      missing: ['blockerDecision with investigation and evidence'], nextAction: expect.stringContaining('safe remedy') });
+    expect(setWorkItemCheckpointWithPrior).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  const decision = {
+    schemaVersion: 1, idempotencyKey: 'park-1', disposition: 'defer', symptom: 'Dependency unavailable',
+    investigation: [{ action: 'Read dependency state', outcome: 'Existing repair owner is progressing',
+      evidenceRefs: [{ kind: 'work-item', ref: 'WI-repair' }] }], attempts: [],
+    evidenceRefs: [{ kind: 'work-item', ref: 'WI-repair' }],
+    deferral: { reason: 'active-peer', responsibleParty: 'agB', nextAction: 'Resume on repair receipt',
+      reasonEvidenceRefs: [{ kind: 'work-item', ref: 'WI-repair' }], recheckRef: { kind: 'event', ref: 'dependency:repaired' } },
+  };
+
+  it('returns an exact historical receipt before checkpoint, evidence or successor custody writes', async () => {
+    const args = { id: 'WI-7', checkpoint: 'Resume after dependency repair', reason: 'dependency', blockerDecision: decision };
+    const effect = { park: true, checkpoint: args.checkpoint, reason: args.reason };
+    const prepared = prepareBlockerDecision({}, decision, { ownerId: 'a1', sessionId: 'a1',
+      workItemId: args.id, custodianId: 'a1' }, { effect });
+    if (!prepared.ok) throw new Error(JSON.stringify(prepared));
+    getWorkItem.mockResolvedValue({ id: args.id, harness: 'papercup', state: 'done', assignee: 'successor', payload: prepared.patch });
+    const out = await call(args, { uiClientId: 'a1', sigVerifiedSpawn: true, workspaceId: 'default' });
+    expect(out).toMatchObject({ ok: true, replayed: true, blockerDecision: { id: prepared.record.id } });
+    expect(releaseWorkItem).not.toHaveBeenCalled();
+    expect(setWorkItemCheckpointWithPrior).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
+    const changed = await call({ ...args, reason: 'changed reason' },
+      { uiClientId: 'a1', sigVerifiedSpawn: true, workspaceId: 'default' });
+    expect(changed).toMatchObject({ ok: false, code: 'blocker_decision_conflict' });
+  });
+
+  it('does not checkpoint or announce when the release custody fence refuses', async () => {
+    releaseWorkItem.mockResolvedValue(null);
+    const out = await call({ id: 'WI-7', checkpoint: 'Resume after dependency repair', reason: 'dependency' },
+      { uiClientId: 'a1', sigVerifiedSpawn: true, workspaceId: 'default' });
+    expect(out).toMatchObject({ ok: false, error: 'not_holder' });
+    expect(setWorkItemCheckpointWithPrior).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
   });
 });

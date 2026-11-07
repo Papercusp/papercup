@@ -1782,6 +1782,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
   const scorecards = await listScorecards({ rubricRef: rubric.rubricId, limit: 50, includeSuperseded: true });
   const allComplete = scorecards.filter(
     (s) =>
+      s.purpose !== 'diagnostic' &&
       s.rubricResolved &&
       s.missingKeys.length === 0 &&
       !s.synthesized &&

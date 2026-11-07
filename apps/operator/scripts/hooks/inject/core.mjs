@@ -28,6 +28,7 @@ import { execFile } from 'node:child_process';
 import { join } from 'node:path';
 import { parse as parseShellCommand } from './shell-quote.mjs';
 import { codeIntelDelivery } from './delivery-ledger.mjs';
+import { extractRecallSignals } from './recall-query.mjs';
 
 /**
  * @typedef {import('./ports.mjs').InjectionPort} InjectionPort
@@ -46,6 +47,8 @@ import { codeIntelDelivery } from './delivery-ledger.mjs';
  * @property {boolean} [memoryEnabled]
  * @property {string} [detectorSessionKey] private failure-loop detector key
  * @property {string | null} [confirmedDelivery] turn-start ACK-ON-PROOF token (delivery-ledger.mjs)
+ * @property {object[]} [confirmedFactBodies] private manifests from this token's immutable stdout receipt
+ * @property {object[]} [confirmedMemoryDeliveries] exact memory/corpus fragments from recent stdout receipts
  * @property {string} [turnStartRequestId] opaque per-request receipt key
  * @property {string} [guardRequestId] opaque correlation key for one authority lookup
  */
@@ -194,7 +197,7 @@ export function baseRequest({ port, client, owner, cwd, env = process.env }) {
  * @param {{ env?: NodeJS.ProcessEnv, fetchImpl?: typeof fetch, now?: () => number,
  *   onTurnStartOutcome?: (outcome: object) => void,
  *   onHookOutcome?: (outcome: object) => void }} [opts]
- * @returns {Promise<{ text: string, deliveryToken: string | null } | null>} the text
+ * @returns {Promise<{ text: string, deliveryToken: string | null, factBodyOffers?: object[], memoryFragmentOffers?: object[] } | null>} the text
  *   to inject plus the turn-start orientation delivery token (delivery-ledger.mjs),
  *   or null to inject nothing
  */
@@ -292,10 +295,13 @@ export async function postInjection(port, body, opts = {}) {
   }
 
   if (port === 'turn-start' || port === 'compaction') codeIntelDelivery(body.owner, env, () => null, port);
-  const finish = (text = '', deliveryToken = null) => {
-    if (port !== 'mid-turn') return text.trim() ? { text, deliveryToken } : null;
+  const finish = (text = '', deliveryToken = null, factBodyOffers = [], memoryFragmentOffers = []) => {
+    if (port !== 'mid-turn') return text.trim() ? { text, deliveryToken,
+      ...(factBodyOffers.length ? { factBodyOffers } : {}),
+      ...(memoryFragmentOffers.length ? { memoryFragmentOffers } : {}) } : null;
     const merged = mergeCodeIntel(body, text, env);
-    return merged?.trim() ? { text: merged, deliveryToken } : null;
+    return merged?.trim() ? { text: merged, deliveryToken,
+      ...(memoryFragmentOffers.length ? { memoryFragmentOffers } : {}) } : null;
   };
 
   // AbortSignal.timeout is the hard wall (invariant 2). It bounds the whole
@@ -377,9 +383,11 @@ export async function postInjection(port, body, opts = {}) {
       return finish();
     }
     reportTurnStartOutcome('response-received', payload);
-    const { text, deliveryToken } = payload;
+    const { text, deliveryToken, factBodyOffers, memoryFragmentOffers } = payload;
     reportHookOutcome('response-received', { textChars: typeof text === 'string' ? text.length : 0 });
-    return finish(typeof text === 'string' ? text : '', typeof deliveryToken === 'string' && deliveryToken ? deliveryToken : null);
+    return finish(typeof text === 'string' ? text : '', typeof deliveryToken === 'string' && deliveryToken ? deliveryToken : null,
+      Array.isArray(factBodyOffers) ? factBodyOffers : [],
+      Array.isArray(memoryFragmentOffers) ? memoryFragmentOffers : []);
   } catch (err) {
     // Timeout, connection refused, malformed JSON, operator restarting mid-call.
     // All of it is "inject nothing" — never an error the turn can see.
@@ -561,7 +569,7 @@ function safeStringify(value) {
  * contract clamps. Shared by every adapter so the three clients cannot drift
  * into shipping different volumes of context for the same batch.
  * @param {Array<{ tool?: unknown, toolInput?: unknown, toolResponse?: unknown }>} calls
- * @returns {Array<{ tool: string, toolInput: string, toolResponse: string,
+ * @returns {Array<{ tool: string, toolInput: string, toolResponse: string, querySignals: import('./recall-query.mjs').RecallSignals,
  * incidentResult?: ReturnType<typeof incidentResultFor>, editedPaths?: string[], editedPath?: string }>}
  */
 export function buildDigest(calls) {
@@ -578,6 +586,7 @@ export function buildDigest(calls) {
     const editedPaths = editedPathsFor(call.tool, call.toolInput);
     digest.push({
       tool: typeof call.tool === 'string' ? call.tool : '',
+      querySignals: extractRecallSignals(call.tool, call.toolInput, call.toolResponse),
       toolInput: clampField(call.toolInput, spec.fieldClamp),
       toolResponse: clampField(call.toolResponse, spec.fieldClamp),
       ...(incidentResult ? { incidentResult } : {}),
@@ -682,6 +691,7 @@ export function clampPrompt(prompt) {
 
 const SHELL_PRE_TOOL_NAMES = new Set(['Bash', 'bash', 'exec_command', 'shell_command', 'shell']);
 const PLAN_ANCHOR_REPAIR_KEYS = new Set(['slug', 'harness', 'itemId', 'anchors', 'expectedHash', 'rationale']);
+const CANONICAL_GRADING_AUDIT_AWAIT_EVENT = /^scorecard:grading-audit:[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/;
 
 /**
  * Read the command carried by a native shell-tool event.
@@ -834,10 +844,27 @@ function isCanonicalPlanAnchorRepairCommand(command) {
 }
 
 /**
- * A bounded, single typed operator call cannot run arbitrary shell code. These
- * reads and consult dispositions still cross the authenticated operator, which
- * enforces role, participant and identity ceilings. Only the unavailable plan
- * lookup is independent of them; an actual guard refusal always wins.
+ * A recovery await is an operational subscription, not an implementation
+ * write. Keep the fallback narrower than events:await itself: only the
+ * canonical scorecard grading-audit family, with a one-shot wake and a
+ * bounded deadline, is safe when the authority lookup has no verdict.
+ * @param {unknown} args
+ */
+function isCanonicalGradingAuditAwait(args) {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return false;
+  const value = /** @type {Record<string, unknown>} */ (args);
+  if (Object.keys(value).some(key => !['event', 'timeout_sec', 'on_timeout'].includes(key))) return false;
+  if (typeof value.event !== 'string' || !CANONICAL_GRADING_AUDIT_AWAIT_EVENT.test(value.event)) return false;
+  if (typeof value.timeout_sec !== 'number' || !Number.isSafeInteger(value.timeout_sec) ||
+      value.timeout_sec < 1 || value.timeout_sec > 3600) return false;
+  return value.on_timeout === 'wake';
+}
+
+/**
+ * A bounded, single typed operator call cannot run arbitrary shell code. The
+ * read-only diagnostics enforce their own role and input constraints at the
+ * operator. These calls still cross the authenticated operator; an actual
+ * guard refusal always wins.
  * @param {string} command
  * @param {NodeJS.ProcessEnv} env
  */
@@ -877,13 +904,16 @@ function isCanonicalReviewPtoolCommand(command, env) {
     const payload = JSON.parse(lines.join('\n'));
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
     let tool = match[1];
+    let toolArgs = payload;
     if (tool === 'tools:invoke') {
       if (Object.keys(payload).some(key => !['name', 'args', 'projection'].includes(key)) ||
           typeof payload.name !== 'string' || !payload.args ||
           typeof payload.args !== 'object' || Array.isArray(payload.args)) return false;
       tool = payload.name;
+      toolArgs = payload.args;
     }
-    return ['tools:find', 'plans:get', 'plans:items', 'work_items:get', 'events:status', 'reports:get',
+    if (tool === 'events:await') return isCanonicalGradingAuditAwait(toolArgs);
+    return ['tools:find', 'dev:pg_query', 'plans:get', 'plans:items', 'work_items:get', 'events:status', 'reports:get',
       'conversations:get', 'coord:inbox', 'coord:read', 'docs:get', 'docs:search',
       'consult:reply', 'consult:decline'].includes(tool);
   } catch {
@@ -923,8 +953,8 @@ function isSafeWithoutExecutionAuthority(partial, env) {
  * @param {unknown} args.event
  * @param {NodeJS.ProcessEnv} [args.env]
  * @param {typeof fetch} [args.fetchImpl]
- * @param {(owner: string, env: NodeJS.ProcessEnv) => import('./delivery-ledger.mjs').DeliveryLedger | null} [args.openDeliveryLedger]
- *   turn-start only. Opts the request into ACK-ON-PROOF: the last confirmed token
+ * @param {(owner: string, env: NodeJS.ProcessEnv, port?: 'turn-start' | 'mid-turn') => import('./delivery-ledger.mjs').DeliveryLedger | null} [args.openDeliveryLedger]
+ *   Native context ports opt into ACK-ON-PROOF: the last confirmed orientation token
  *   rides as `confirmedDelivery`, and the returned token is OFFERED to the ledger
  *   once a payload exists. Committing it is the caller's job, after it has actually
  *   written the payload — only the process that prints knows the print succeeded.
@@ -981,7 +1011,8 @@ export async function runInjection({ adapter, nativeEvent, event, env = process.
       env.PAPERCUSP_FAILURE_LOOP_SESSION_KEY.trim()
         ? env.PAPERCUSP_FAILURE_LOOP_SESSION_KEY.trim()
         : owner;
-    const ledger = port === 'turn-start' && openDeliveryLedger ? openDeliveryLedger(owner, env) : null;
+    const ledger = (port === 'turn-start' || port === 'mid-turn') && openDeliveryLedger
+      ? openDeliveryLedger(owner, env, port) : null;
     const turnStartRequestId = port === 'turn-start' ? randomUUID() : null;
     const request = {
       ...baseRequest({ port, client: adapter.client, owner, cwd: partial.cwd, env }),
@@ -993,7 +1024,10 @@ export async function runInjection({ adapter, nativeEvent, event, env = process.
       // used to sign MCP `?detector=` into this env carrier; the owner fallback
       // preserves older hook launches that predate the carrier.
       ...(port === 'mid-turn' ? { detectorSessionKey } : {}),
-      ...(ledger ? { confirmedDelivery: ledger.confirmed() } : {}),
+      ...(ledger && port === 'turn-start' ? { confirmedDelivery: ledger.confirmed() } : {}),
+      ...(ledger && port === 'mid-turn' ? { memoryReceiptMode: true } : {}),
+      ...(port === 'turn-start' && typeof ledger?.confirmedFactBodies === 'function' ? { confirmedFactBodies: ledger.confirmedFactBodies() } : {}),
+      ...(typeof ledger?.confirmedMemoryDeliveries === 'function' ? { confirmedMemoryDeliveries: ledger.confirmedMemoryDeliveries() } : {}),
       ...(turnStartRequestId ? { turnStartRequestId } : {}),
     };
 
@@ -1012,6 +1046,8 @@ export async function runInjection({ adapter, nativeEvent, event, env = process.
     if (typeof payload !== 'string' || payload.length === 0) return done('render-empty', null, { port });
     if (ledger && response?.deliveryToken) ledger.offer(response.deliveryToken, {
       payload: payload + '\n',
+      factBodyOffers: response.factBodyOffers,
+      memoryFragmentOffers: response.memoryFragmentOffers,
       client: adapter.client,
       nativeSessionId: typeof event?.session_id === 'string' ? event.session_id
         : adapter.client === 'codex' ? env.CODEX_THREAD_ID : null,

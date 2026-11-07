@@ -65,6 +65,7 @@ import {
   evaluateImplementationAcceptance,
   type ImplementationAcceptanceContract,
   readImplementationAcceptanceProposal,
+  implementationAcceptanceProposalSchema,
   sealImplementationAcceptance,
   LEGACY_AGENT_REVIEW_SUBMITTER,
   mintAgentReviewClaimAdmission,
@@ -512,6 +513,7 @@ function reviewImplementationReadiness(
   // re-review judges it afresh rather than inheriting the old authority.
   const proposal = readImplementationAcceptanceProposal(payload);
   const acceptance = input.acceptance ?? (Object.keys(proposal).length > 0 ? proposal : undefined);
+  const { acceptance: _priorAcceptance, review: _priorReview, ...siblingEvidence } = existing?.evidence ?? {};
   if (
     existing?.source === 'agent-review' &&
     existing.status === input.status &&
@@ -530,6 +532,7 @@ function reviewImplementationReadiness(
     source: 'agent-review',
     reason: input.reason,
     evidence: {
+      ...siblingEvidence,
       review: {
         submittedBy: input.submittedBy,
         round: input.round,
@@ -1134,6 +1137,8 @@ export async function resubmitAgentReview(
      * verified against the current build by the next review round — never by this call.
      */
     reproduction?: unknown;
+    /** Unsealed producer proposal, recorded only after the current revision's authority checks. */
+    acceptance?: unknown;
   },
   deps: AgentReviewDeps = defaultDeps,
 ): Promise<{ resubmitted: boolean; state?: AgentReviewState; reason?: string }> {
@@ -1144,6 +1149,12 @@ export async function resubmitAgentReview(
   // both reviewer claim doors. Resolve the lifecycle restriction explicitly;
   // resubmission must neither erase that restriction nor report a queued round.
   if (workItem.state !== 'open') return { resubmitted: false, reason: 'not-open' };
+  const suppliedAcceptance = input.acceptance === undefined
+    ? undefined
+    : implementationAcceptanceProposalSchema.safeParse(input.acceptance);
+  if (suppliedAcceptance && !suppliedAcceptance.success) {
+    return { resubmitted: false, reason: 'acceptance-proposal-invalid' };
+  }
   let current = readAgentReviewState(workItem.payload);
   if (!current) {
     const recovered = await recoverMalformedAgentReview(workItem, deps);
@@ -1278,6 +1289,7 @@ export async function resubmitAgentReview(
         reason: 'agent-review-resubmitted',
         submittedBy: next.submittedBy,
         round: next.round,
+        ...(suppliedAcceptance?.success ? { acceptance: suppliedAcceptance.data } : {}),
       }),
     },
     {

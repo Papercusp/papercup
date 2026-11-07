@@ -17,6 +17,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlink
 import { createHash, randomUUID } from 'node:crypto';
 import { readVerifierSourceReceiptSync } from '@papercusp/test-config/verifier-source';
 import { REGISTERED_VITEST_FILE_PROJECTS } from '@papercusp/test-config/execution-details';
+import { readMutationInvocationDescriptor } from '@papercusp/test-config/mutation-descriptor';
 import { spawn, spawnSync } from 'node:child_process';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -2468,6 +2469,23 @@ export function readChildSourceNotices(sink, root = REPO_ROOT) {
   return { ...parseChildSourceNotices(bytes.subarray(sink.offset).toString('utf8'), root), unreadable: false };
 }
 
+/** Check after admission's lazy imports, before spending a test child on an unbindable probe. */
+export function assertMutationLauncherSubjectIsolation(env = process.env, root = REPO_ROOT, pid = process.pid) {
+  if (env.PAPERCUSP_MUTATION_PROBE !== '1' || !env.PAPERCUSP_MUTATION_DESCRIPTOR?.trim()) return;
+  const descriptor = readMutationInvocationDescriptor(env);
+  if (!descriptor) throw new Error('MUTATION_LAUNCHER_PREFLIGHT invalid mutation descriptor');
+  const notices = readChildSourceNotices({ path: env[CHILD_SOURCE_NOTICE_ENV], offset: 0 }, root);
+  if (notices.unreadable || notices.malformed) {
+    throw new Error('MUTATION_LAUNCHER_PREFLIGHT mutation source notices unavailable or malformed');
+  }
+  const canonical = path => { try { return realpathSync(path); } catch { return resolve(path); } };
+  const subject = canonical(resolve(root, descriptor.subjectPath));
+  if (notices.records.some(record => record.pid === pid
+    && canonical(resolve(record.top, record.rel)) === subject)) {
+    throw new Error(`MUTATION_LAUNCHER_PREFLIGHT launcher-subject-substituted subject=${descriptor.subjectPath}`);
+  }
+}
+
 /** The post-run report lines; none when no child substituted or refused anything. */
 export function formatChildSourceNotices(notices) {
   if (!notices || notices.unreadable) {
@@ -2858,6 +2876,7 @@ export async function runGovernedTestFileProcess(governedProcessImpl, options, r
   try {
     phase('governed-start');
     const result = await governedProcessImpl(options, (...args) => {
+      assertMutationLauncherSubjectIsolation(options.env ?? process.env);
       phase('child-start');
       return Promise.resolve(runChild(...args)).then((result) => {
         childResult = result;
@@ -3581,18 +3600,28 @@ export function runCapturedTestProcess(command, args, options = {}) {
 export function runVitestList(command, args, options = {}) {
   // Vitest's --json accepts an optional filename. A following positional test
   // filter is therefore an output path, and collection can overwrite that test.
-  // This preflight is read-only: callers must capture stdout themselves.
+  // Its parser also treats --json=true as the filename "true", not a boolean.
+  // Normalize stdout requests to a bare flag after every positional argument.
+  const listArgs = [];
+  let jsonStdout = false;
   for (let index = 0; index < args.length; index += 1) {
     const arg = String(args[index]);
     const explicitOutput = arg.startsWith('--json=');
+    if (arg !== '--json' && !explicitOutput) {
+      listArgs.push(args[index]);
+      continue;
+    }
     const output = arg === '--json'
       ? args[index + 1]
       : explicitOutput ? arg.slice('--json='.length) : undefined;
     if (output !== undefined && String(output) !== 'true'
       && (explicitOutput || !String(output).startsWith('-'))) {
-      throw new Error('Vitest collection must not write JSON files; use --json=true for stdout so a test filter cannot become an output path.');
+      throw new Error('Vitest collection must not write JSON files; use bare --json last, after all test filters, for stdout.');
     }
+    jsonStdout = true;
+    if (!explicitOutput && String(output) === 'true') index += 1;
   }
+  if (jsonStdout) listArgs.push('--json');
   const {
     cwd,
     env = process.env,
@@ -3610,7 +3639,7 @@ export function runVitestList(command, args, options = {}) {
     readProcessDiagnosticImpl = readTestChildDiagnostic,
     onProgress,
   } = options;
-  return runCapturedTestProcess(command, args, {
+  return runCapturedTestProcess(command, listArgs, {
     cwd,
     env,
     cwdLabel,
@@ -3861,6 +3890,19 @@ export function waitForTestRunReceiptUpdate(filePath, readState, {
     // Close the race between the first read and installing the directory watch.
     inspect();
   });
+}
+
+// Resolve from the owning workspace, as its package script would, without an
+// npm/npx bootstrap that can stall before Vitest starts or download a runner.
+export function resolveVitestCli(cwd) {
+  try {
+    const packagePath = createRequire(join(resolve(cwd), 'package.json')).resolve('vitest/package.json');
+    const cli = join(dirname(packagePath), 'vitest.mjs');
+    if (!statSync(cli).isFile()) throw new Error('vitest.mjs is not a file');
+    return cli;
+  } catch (cause) {
+    throw new Error(`Cannot resolve installed Vitest CLI from ${cwd}: ${cause.message}`, { cause });
+  }
 }
 
 export async function main(
@@ -4327,12 +4369,15 @@ export async function main(
     }
     for (const file of requested) console.log(`  requested ${file}`);
 
+    let vitestCli;
+    try { vitestCli = resolveVitestCli(group.cwd); }
+    catch (error) { console.error(formatRouteError(error.message)); return 2; }
     warnIfInstallInFlight(`\`vitest list\` (group cwd=${cwdLabel})`);
     // Vitest 4's default tree output omits files whose collected tests are all skipped.
     // File-level output keeps the route guard about requested FILES, not runnable tests.
     const listed = await runVitestListImpl(
-      'npx',
-      ['vitest', 'list', '--filesOnly', ...configArgs, ...requested],
+      process.execPath,
+      [vitestCli, 'list', '--filesOnly', ...configArgs, ...requested],
       {
         cwd: group.cwd,
         env: groupChildEnv,
@@ -4431,8 +4476,8 @@ export async function main(
         const perFile = [];
         for (const route of group.routes) {
           const singleListed = await runVitestListImpl(
-            'npx',
-            ['vitest', 'list', '--filesOnly', ...configArgs, route.requested],
+            process.execPath,
+            [vitestCli, 'list', '--filesOnly', ...configArgs, route.requested],
             {
               cwd: group.cwd,
               env: groupChildEnv,
@@ -4494,8 +4539,8 @@ export async function main(
     // gate `--related` list of a few hundred files must not inherit the single-file floor.
     const runTimeoutMs = testFileRunTimeoutMs(process.env, exact.length);
     const result = await runCapturedTestProcessImpl(
-      'npx',
-      ['vitest', 'run', ...configArgs, ...exact, ...groupVitestArgs],
+      process.execPath,
+      [vitestCli, 'run', ...configArgs, ...exact, ...groupVitestArgs],
       {
         cwd: group.cwd,
         env: groupChildEnv,
@@ -4576,7 +4621,8 @@ export async function main(
     // typically `null` — `null !== 0` would make vitestRunFailed() report a false FAILED verdict
     // for a run that produced no verdict at all. A reaped group is NOT MEASURED, never `failed`;
     // skip the classifier entirely rather than run it against a killed process's exit state.
-    proofCustody?.observe(`group-${groupIndex}`, result, 'npx', ['vitest', 'run', ...configArgs, ...exact, ...groupVitestArgs]);
+    proofCustody?.observe(`group-${groupIndex}`, result, process.execPath,
+      [vitestCli, 'run', ...configArgs, ...exact, ...groupVitestArgs]);
     const groupFailed = result.timedOut ? false : vitestRunFailed({ status: result.status, output: runOutput });
     const reportPath = outputFilePathFrom(groupVitestArgs);
     // EI-22591950423157299: the private report is removed in main()'s finally, so consume the
@@ -4635,8 +4681,8 @@ export async function main(
           const detailId = proofCustody?.detail(`group-${groupIndex}`, detailIndex, file,
             detailEnv.PC_EXECUTED_SOURCE_MAP_OUT ? resolve(detailEnv.PC_EXECUTED_SOURCE_MAP_OUT) : null);
           const detailResult = await runCapturedTestProcessImpl(
-            'npx',
-            ['vitest', 'run', ...configArgs, file, ...withoutOutputFileArg(vitestArgs)],
+            process.execPath,
+            [vitestCli, 'run', ...configArgs, file, ...withoutOutputFileArg(vitestArgs)],
             {
               cwd: group.cwd,
               env: detailEnv,
@@ -4646,8 +4692,8 @@ export async function main(
             },
           );
           if (detailResult.stdout) process.stdout.write(detailResult.stdout);
-          if (detailId) proofCustody.observe(detailId, detailResult, 'npx',
-            ['vitest', 'run', ...configArgs, file, ...withoutOutputFileArg(vitestArgs)]);
+          if (detailId) proofCustody.observe(detailId, detailResult, process.execPath,
+            [vitestCli, 'run', ...configArgs, file, ...withoutOutputFileArg(vitestArgs)]);
           if (detailResult.stderr) process.stderr.write(detailResult.stderr);
           printTestFinalizationError(detailResult);
           if (detailResult.timedOut) {

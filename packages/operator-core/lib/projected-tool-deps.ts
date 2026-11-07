@@ -106,9 +106,11 @@ import type { InvocationFrictionRef } from './harness/improvements/invocation-fr
 import { trackDetached } from './detached-imports';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { installedPerUseChokepoint, nativeCaptureChokepoint } from './agent-tools/per-use-chokepoint';
-import { beginToolTrace, runToolTrace, finishToolTrace, finishToolDispatchReceipt, markToolHandlerEntered } from './observability/runtime';
+import { beginToolTrace, runToolTrace, finishToolTrace, finishToolDispatchReceipt, markToolHandlerEntered,
+  finishSqlCoverageExecution } from './observability/runtime';
 import { captureManagedOperation } from './orchestration-trace';
 import { pluginInvocationChokepoint } from './plugin-invocation-policy';
+import { executeInstalledPluginHandler } from './plugin-handler-execution';
 
 /**
  * The role-scoped `papercusp` MCP surface can be discovered alongside the
@@ -2117,9 +2119,10 @@ async function recordInvocationImpl(input: RecordInvocationInput): Promise<void>
   const dispatchReceipt = finishToolDispatchReceipt(input);
   const otel = finishToolTrace(input);
   const managedOperation = dispatchReceipt ? captureManagedOperation({ ...input, receipt: dispatchReceipt }) : null;
+  const sqlCoverageExecution = finishSqlCoverageExecution(input);
   // OTel identity and child receipts are host-owned, including when tracing was
   // unavailable. Caller metadata must never survive as a guessed observation.
-  const { otel: _untrustedOtel, managedOperation: _untrustedOperation,
+  const { otel: _untrustedOtel, managedOperation: _untrustedOperation, sqlCoverageExecution: _untrustedSqlCoverage,
     [CODE_INTEL_RESULT_METADATA_KEY]: _untrustedCodeIntel, ...metadata } = input.metadataJson ?? {};
   const codeIntelResult = codeIntel
     ? classifyCodeIntelExit({
@@ -2137,6 +2140,7 @@ async function recordInvocationImpl(input: RecordInvocationInput): Promise<void>
       ...metadata,
       ...(otel ? { otel } : {}),
       ...(managedOperation ? { managedOperation } : {}),
+      ...(sqlCoverageExecution ? { sqlCoverageExecution } : {}),
       ...(codeIntelResult ? { [CODE_INTEL_RESULT_METADATA_KEY]: codeIntelResult } : {}),
     },
   };
@@ -2368,14 +2372,18 @@ export const PROJECTED_DEPS: DispatchProjectedDeps = {
       return handler();
     } };
     return runToolTrace(request, async () => {
-      const invoke = () => nativeCaptureChokepoint({ ...request,
-        invoke: () => installedPerUseChokepoint(request) });
+      const invoke = (handler = request.invoke) => nativeCaptureChokepoint({ ...request,
+        invoke: () => installedPerUseChokepoint({ ...request, invoke: handler }) });
       if (!request.tool.pluginInstallation) return invoke();
       // Registered security cutover: P-019 owns enabling after qualification.
       // Unknown control state enforces the strict adapter rather than authorizing.
       let enforce = true;
       try { enforce = await getFlag(FLAGS.PLUGIN_INVOCATION_POLICY, 'system'); } catch { /* fail closed */ }
-      return enforce ? pluginInvocationChokepoint({ ...request, invoke }) : invoke();
+      return enforce ? pluginInvocationChokepoint({ ...request, invoke: () => invoke() },
+        (invocation, assertActive) => invoke(() => {
+          markToolHandlerEntered(request.callId);
+          return executeInstalledPluginHandler(invocation, assertActive);
+        })) : invoke();
     });
   },
   // D-030 kernel seat: the generic dispatcher invokes this before any

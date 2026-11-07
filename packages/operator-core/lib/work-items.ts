@@ -69,6 +69,9 @@ import { normalizeTakenBy } from './sync/hyperbee/projections/harness-features';
 // Type-only: the auto-clear module imports this one at runtime.
 import type { SystemClearedBlockerItem } from './work-item-ref-blocker-auto-clear';
 import { boundedOrgTxn, withOrgTxnTimeoutPhase } from './pg-bounded-txn';
+import { prepareBlockerDecision, type BlockerDecisionRecord } from './blocker-resolution-decision';
+import { preflightBlockerDecision, type BlockerBoundaryContext } from './blocker-resolution-evidence';
+import { applyBlockerDecisionMutation, BlockerDecisionMutationConflict, type BlockerDecisionMutation } from './blocker-resolution-persistence';
 import { boundedPgReadTxn } from './pg-read-query';
 import type { ActiveOperationWorkerClaimRead } from './blueprint/operation-worker-binding';
 import { sealSharedTextInTxOrRefuse } from './personal-vault/shared-store-seal';
@@ -119,7 +122,9 @@ import {
   normalizeFeatureStateInput,
 } from './work-item-dispatch-states';
 import { createBlockingEdgeReader, ISSUE_TERMINAL_STATUSES } from './work-item-blocking';
-import { mirrorWorkItemBlockingEdge, removeMirroredWorkItemBlockingEdge } from './dbos/work-item-deps-store';
+import { mirrorWorkItemBlockingEdge, removeMirroredWorkItemBlockingEdge,
+  mutateWorkItemDependenciesInTransaction, withWorkItemDependencyAdmissionTransaction,
+  readWorkItemDependenciesForRefs } from './dbos/work-item-deps-store';
 import {
   COMPLETION_ATTESTATIONS_KEY,
   TERMINAL_ASSUMPTIONS_KEY,
@@ -4034,6 +4039,20 @@ export async function setWorkItemState(
     /** The item's family, when the caller has already read it from the `work_items`
      *  row in `harness`. `'feature'` skips the issue-family probe (WI-10003631). */
     family?: WorkItemFamily;
+    /** Host-only agent boundary context; absent on trusted system propagation. */
+    blockerEvidenceContext?: BlockerBoundaryContext;
+    onBlockerDecision?: (receipt: { record: BlockerDecisionRecord; replayed: boolean }) => void;
+    /** Internal validated decision handoff. Public tools must first measure
+     * evidence/authority; this writer never treats proof-shaped prose as proof. */
+    blockerDecision?: {
+      input: unknown;
+      sessionId: string;
+      payloadPatch?: Record<string, unknown>;
+      unset?: readonly string[];
+      /** Stable public request; excludes resolved fact timestamps and other
+       * generated measurements so exact retries survive later evidence drift. */
+      effect?: unknown;
+    };
     /** Internal issue lifecycle compare-and-set guard; not exposed by the tool surface. */
     expectedCurrentState?: string;
     /** Trusted system disposition: compare the read epoch and require no holder
@@ -4119,10 +4138,63 @@ export async function setWorkItemState(
   // WI-10003631: a caller that already read the row's family from work_items (the
   // accepted-program settle) skips the issue-view probe that always misses for a
   // feature-family item.
-  const wi = opts.family === 'feature'
+  let wi = opts.family === 'feature'
     ? await getFeatureWorkItemOnly(id, opts.harness)
     : await getWorkItem(id, opts.harness);
   if (!wi) return null;
+  let blockerMutation: BlockerDecisionMutation | undefined;
+  if (opts.blockerEvidenceContext && !opts.blockerDecision) {
+    const checked = await preflightBlockerDecision(wi, undefined, opts.blockerEvidenceContext, {
+      effect: { state }, enteringDeferral: ['blocked', 'needs-human'].includes(state.trim().toLowerCase()),
+    });
+    if (!checked.ok) throw Object.assign(new Error(checked.nextAction), checked);
+  }
+  if (opts.blockerDecision) {
+    const patch = opts.blockerDecision.payloadPatch ?? {};
+    const unset = [...new Set(opts.blockerDecision.unset ?? [])].sort();
+    const normalized = normalizeWorkItemState(wi.family, state);
+    const targetState = normalized.ok ? normalized.state : state;
+    const terminalEffect = isSettledWorkItemState(targetState) ? {
+      terminalReason: /^(passed|resolved|deprecated|closed)$/i.test(state.trim()) ? state.trim().toLowerCase() : null,
+      completionRef: opts.completionRef ?? null,
+      completionEvidence: opts.completionEvidence ?? null,
+      completionAuthority: opts.completionAuthority ?? null,
+      assumptions: opts.assumptions ?? null,
+      outputPayload: opts.outputPayload ?? null,
+      force: opts.force === true,
+      skipCompletionGate: opts.skipCompletionGate === true,
+    } : undefined;
+    const effect = opts.blockerDecision.effect ??
+      { state: targetState, patch, unset, ...(terminalEffect ? { terminal: terminalEffect } : {}) };
+    const prepared = opts.blockerEvidenceContext
+      ? await preflightBlockerDecision(wi, opts.blockerDecision.input, opts.blockerEvidenceContext, { effect,
+          enteringDeferral: ['blocked', 'needs-human'].includes(targetState) })
+      : prepareBlockerDecision(wi.payload, opts.blockerDecision.input, {
+          ownerId: opts.by ?? '', sessionId: opts.blockerDecision.sessionId, workItemId: id, custodianId: wi.assignee,
+        }, { effect });
+    if (!prepared.ok) throw Object.assign(new Error(prepared.nextAction), prepared);
+    if ('ordinary' in prepared) throw new BlockerDecisionMutationConflict();
+    opts.onBlockerDecision?.({ record: prepared.record, replayed: prepared.replayed });
+    if (prepared.replayed) return wi;
+    // A historical replay returns its receipt even after a later close or
+    // custody transfer. New decisions on an already-terminal row need the
+    // second-attestation/reopen archive path, which must never run ahead of CAS.
+    // A first close uses the existing transaction below, including its claim
+    // release and terminal identity, so a failed decision rolls those back too.
+    if (isSettledWorkItemState(wi.state)) {
+      throw new Error('a new blocker decision requires a currently nonterminal work item');
+    }
+    blockerMutation = { prepared, expectedState: wi.state, expectedCustodianId: opts.by!,
+      expectedExternalBlockers: (wi.payload as Record<string, unknown> | null)?.externalBlockers,
+      payloadPatch: patch, unset };
+    // Existing needs-human/hold/lane guards must assess the prospective payload;
+    // it is persisted only inside the paired transaction below.
+    const priorPayload = wi.payload && typeof wi.payload === 'object' && !Array.isArray(wi.payload)
+      ? wi.payload as Record<string, unknown> : {};
+    const payload: Record<string, unknown> = { ...priorPayload, ...patch, ...prepared.patch };
+    for (const key of unset) delete payload[key];
+    wi = { ...wi, payload };
+  }
   const runtimePayload = wi.payload && typeof wi.payload === 'object' && !Array.isArray(wi.payload)
     ? wi.payload as Record<string, unknown> : {};
   const hasExternalRuntimeProducer = Object.prototype.hasOwnProperty.call(runtimePayload, 'externalRuntimeProducer');
@@ -4677,6 +4749,7 @@ export async function setWorkItemState(
       expectedCurrentState: opts.expectedCurrentState,
       unclaimedSnapshotTs: opts.unclaimedSnapshotTs,
       requireNoActiveExternalBlockers: opts.requireNoActiveExternalBlockers,
+      blockerDecisionMutation: blockerMutation,
     });
     result = updated ? issueToWorkItem(updated) : null;
   } else {
@@ -4745,8 +4818,11 @@ export async function setWorkItemState(
     // typed OrgTxnTimeoutError instead — which the caller (work_items:complete/
     // set_state) already catches and reports as `stateError` (the completion record is
     // never lost, EI-24).
-    const rows = await boundedOrgTxn(async (tx) =>
-      isTerminal
+    const rows = await boundedOrgTxn(async (tx) => {
+      if (blockerMutation) await applyBlockerDecisionMutation(tx, {
+        workspace: activeWorkspaceId(), harness: wi.harness!, id,
+      }, blockerMutation);
+      const updated = isTerminal
         ? await tx<FeatureRowDb[]>`
       UPDATE harness_shared.harness_features_consolidated
          SET status = ${state},
@@ -4838,7 +4914,7 @@ export async function setWorkItemState(
                                       END
                                  )
                        END
-       WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
+       WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = ${wi.harness} AND feature_id = ${id}
          AND ${opts.unclaimedSnapshotTs !== undefined
            ? tx`taken_by IS NULL AND updated_ts = ${opts.unclaimedSnapshotTs}` : tx`TRUE`}
          AND ${opts.deferredOperationCompletion ? tx`
@@ -4869,13 +4945,15 @@ export async function setWorkItemState(
              requeue_count = CASE WHEN ${resetRequeue} THEN 0 ELSE requeue_count END,
              last_progress_at = CASE WHEN taken_by IS NOT NULL AND taken_by <> '' THEN now() ELSE last_progress_at END,
              updated_ts = ${Date.now()}
-       WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
+       WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = ${wi.harness} AND feature_id = ${id}
          AND ${operationClaims && operationEffectRead
            ? operationClaims.operationWorkerEffectWhereSql(tx, operationEffectRead, {
                payload: 'payload', id: 'feature_id', harness: 'harness_slug', holder: 'taken_by',
              }) : tx`TRUE`}
-      RETURNING ${tx.unsafe(FEATURE_COLS)}`,
-    );
+      RETURNING ${tx.unsafe(FEATURE_COLS)}`;
+      if (blockerMutation && !updated.length) throw new BlockerDecisionMutationConflict();
+      return updated;
+    });
     result = rows[0] ? featureRowToWorkItem(rows[0]) : null;
     // A terminal feature write releases the PRE-write holder. Clear only that
     // holder's matching cached goal: the same owner may have claimed newer work
@@ -5794,7 +5872,9 @@ export async function mergeWorkItemOutputPayload(
  * The SQL compares the RAW JSON (including unknown legacy fields); a mismatch
  * returns null without writing any patch/unset key. Missing history is an empty
  * array. `requireNonTerminal` fences adding a blocker against a concurrent close,
- * while clear/migration callers can still retain history on terminal items. */
+ * while clear/migration callers can still retain history on terminal items.
+ * Decision revisions additionally fence raw blockerResolution and the canonical
+ * custodian in this same update, including every other payload key/removal. */
 export async function mergeWorkItemPayload(
   id: string,
   patchValue: Record<string, unknown>,
@@ -5802,6 +5882,8 @@ export async function mergeWorkItemPayload(
     harness?: string;
     unset?: readonly string[];
     expectedExternalBlockers?: unknown;
+    expectedBlockerResolution?: unknown;
+    expectedCustodianId?: string | null;
     requireNonTerminal?: boolean;
   } = {},
 ): Promise<WorkItem | null> {
@@ -5825,6 +5907,9 @@ export async function mergeWorkItemPayload(
     const workspaceId = activeWorkspaceId();
     const fenceBlockers = Object.hasOwn(opts, 'expectedExternalBlockers');
     const expectedBlockers = JSON.stringify(opts.expectedExternalBlockers === undefined ? [] : opts.expectedExternalBlockers);
+    const fenceDecision = Object.hasOwn(opts, 'expectedBlockerResolution');
+    const expectedDecision = JSON.stringify(opts.expectedBlockerResolution ?? null);
+    const fenceCustodian = Object.hasOwn(opts, 'expectedCustodianId');
     let wrote = false;
     const updatePayload = (db: OrgSql) => db<{ ok: number }[]>`
       UPDATE harness_shared.harness_features_consolidated
@@ -5848,6 +5933,8 @@ export async function mergeWorkItemPayload(
          AND harness_slug = ${featureHarness}
          AND feature_id = ${id}
          AND (${!fenceBlockers} OR COALESCE(payload->'externalBlockers', '[]'::jsonb) = ${expectedBlockers}::text::jsonb)
+         AND (${!fenceDecision} OR COALESCE(payload->'blockerResolution', 'null'::jsonb) = ${expectedDecision}::text::jsonb)
+         AND (${!fenceCustodian} OR taken_by IS NOT DISTINCT FROM ${opts.expectedCustodianId ?? null})
          AND (${!opts.requireNonTerminal} OR NOT (status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[])))
       RETURNING 1 AS ok`;
 
@@ -8251,6 +8338,24 @@ export function alreadyTerminallyCompletedExclusionSql(sql: OrgSql) {
  *     deliberately (`claimHold:false` / hold-clear) — visible for triage via the
  *     burn_down 'claim-hold' bucket, never starved invisibly.
  */
+/** The durable park's existing payload representation, also used when a blocker
+ * decision must commit the park and claim release in the same transaction. */
+export async function prepareWorkItemDurableParkMutation(
+  hold: boolean,
+  opts: { parkedBy: string; parkedReason?: string; releaseContract?: NonNullable<Parameters<typeof setWorkItemClaimHold>[2]>['releaseContract'] },
+): Promise<{ payloadPatch: Record<string, unknown>; unset: string[] }> {
+  if (hold) {
+    const { assertDurableParkReleaseContract } = await import('./durable-park-release-contract');
+    assertDurableParkReleaseContract(opts.releaseContract);
+    return { payloadPatch: { _claimHold: true, claim_hold_by: opts.parkedBy,
+      claim_hold_at: new Date().toISOString(),
+      ...(opts.parkedReason ? { claim_hold_reason: opts.parkedReason } : {}),
+      claim_hold_release: opts.releaseContract }, unset: ['claim_hold_recheck'] };
+  }
+  return { payloadPatch: {}, unset: ['_claimHold', 'held_open_by', 'held_open_reason', 'held_open_at',
+    'claim_hold_by', 'claim_hold_reason', 'claim_hold_at', 'claim_hold_release', 'claim_hold_recheck'] };
+}
+
 export async function setWorkItemClaimHold(
   id: string,
   hold: boolean,
@@ -8319,6 +8424,9 @@ export async function setWorkItemClaimHold(
   if (!located[0]) return null;
   const ws = located[0].workspace_id;
   const expectedLeaseHolder = opts.expectedLeaseHolder?.trim() || null;
+  const parkMutation = hold && opts.parkedBy
+    ? await prepareWorkItemDurableParkMutation(true, { parkedBy: opts.parkedBy,
+        parkedReason: opts.parkedReason, releaseContract: opts.releaseContract }) : undefined;
   const holdPatch = JSON.stringify({
     _claimHold: true,
     ...(opts.by ? { held_open_by: opts.by, held_open_at: new Date().toISOString() } : {}),
@@ -8326,6 +8434,7 @@ export async function setWorkItemClaimHold(
     ...(opts.parkedBy ? { claim_hold_by: opts.parkedBy, claim_hold_at: new Date().toISOString() } : {}),
     ...(opts.parkedReason ? { claim_hold_reason: opts.parkedReason } : {}),
     ...(opts.releaseContract ? { claim_hold_release: opts.releaseContract } : {}),
+    ...parkMutation?.payloadPatch,
   });
   const rows = await sql<{ payload: Record<string, unknown> | null }[]>`
     UPDATE harness_shared.work_items
@@ -10358,6 +10467,27 @@ export async function releaseWorkItem(
      * other involuntary/internal release paths so the holder is notified.
      */
     releasingOwnerId?: string;
+    blockerEvidenceContext?: BlockerBoundaryContext;
+    /** A public durable park is a deferral even before a blocker flag exists. */
+    enteringBlockerDeferral?: boolean;
+    /** Park composes the existing carry store into this release transaction. */
+    checkpoint?: {
+      update: string;
+      options?: Omit<NonNullable<Parameters<typeof import('./work-item-checkpoint').setWorkItemCheckpointWithPrior>[2]>,
+        'transaction' | 'blockerDecision'>;
+      onStored?: (result: import('./work-item-checkpoint').WorkItemCheckpointWithPriorResult) => void;
+    };
+    onBlockerDecision?: (receipt: { record: BlockerDecisionRecord; replayed: boolean }) => void;
+    /** Internal handoff after shared evidence validation; paired with the claim
+     * release inside the existing lifecycle transaction. */
+    blockerDecision?: {
+      input: unknown;
+      sessionId: string;
+      payloadPatch?: Record<string, unknown>;
+      unset?: readonly string[];
+      /** Stable public request, excluding generated timestamps/measurements. */
+      effect?: unknown;
+    };
   } = {},
 ): Promise<WorkItem | null> {
   const wi = await boundedOrgTxn((tx) => getWorkItem(id, opts.harness, {}, tx), {
@@ -10390,6 +10520,33 @@ export async function releaseWorkItem(
   // A known foreign caller must not release the holder's linked plan lane.
   // The UPDATE below still performs the atomic check if ownership changes
   // after this read; this preflight does not replace that CAS.
+  if (!opts.blockerDecision && opts.expectedAssignee !== undefined && wi.assignee && wi.assignee !== opts.expectedAssignee) return null;
+  let blockerMutation: BlockerDecisionMutation | undefined;
+  if (opts.blockerEvidenceContext && !opts.blockerDecision) {
+    const checked = await preflightBlockerDecision(wi, undefined, opts.blockerEvidenceContext,
+      { effect: { release: true }, enteringDeferral: opts.enteringBlockerDeferral });
+    if (!checked.ok) throw Object.assign(new Error(checked.nextAction), checked);
+  }
+  if (opts.blockerDecision) {
+    const patch = opts.blockerDecision.payloadPatch ?? {};
+    const unset = [...new Set(opts.blockerDecision.unset ?? [])].sort();
+    const effect = opts.blockerDecision.effect ?? { release: true, patch, unset };
+    const prepared = opts.blockerEvidenceContext
+      ? await preflightBlockerDecision(wi, opts.blockerDecision.input, opts.blockerEvidenceContext,
+          { effect, enteringDeferral: opts.enteringBlockerDeferral })
+      : prepareBlockerDecision(wi.payload, opts.blockerDecision.input, {
+          ownerId: opts.releasingOwnerId ?? '', sessionId: opts.blockerDecision.sessionId,
+          workItemId: id, custodianId: wi.assignee,
+        }, { effect });
+    if (!prepared.ok) throw Object.assign(new Error(prepared.nextAction), prepared);
+    if ('ordinary' in prepared) throw new BlockerDecisionMutationConflict();
+    opts.onBlockerDecision?.({ record: prepared.record, replayed: prepared.replayed });
+    if (prepared.replayed) return wi;
+    if (isSettledWorkItemState(wi.state)) throw new BlockerDecisionMutationConflict();
+    blockerMutation = { prepared, expectedState: wi.state, expectedCustodianId: opts.releasingOwnerId!,
+      expectedExternalBlockers: (wi.payload as Record<string, unknown> | null)?.externalBlockers,
+      payloadPatch: patch, unset };
+  }
   if (opts.expectedAssignee !== undefined && wi.assignee && wi.assignee !== opts.expectedAssignee) return null;
   // P-105: claim:released:<id> — wake anyone awaiting this item's claim to free, the
   // moment it returns to the pool (both the voluntary work_items:release tool AND the
@@ -10468,14 +10625,31 @@ export async function releaseWorkItem(
   // where the item is already back in the pool for a peer to collide on. Fail-soft inside, so a
   // claims-store hiccup can never wedge a release: this same function carries the voluntary
   // release tool, the SessionEnd force-release, AND the stale-claim reaper.
-  if (wasClaimed) {
+  const releaseLane = async () => {
+    if (!wasClaimed) return;
     await import('./plan-items/release-linked-lane')
       .then((m) => m.releaseLinkedPlanLane(wi, wi.assignee))
       .catch(() => null);
-  }
+  };
+  // A decision-bearing release must not touch a remote lane before its local
+  // decision/claim transaction succeeds. Validation and CAS failures leave both
+  // halves intact; successful release uses the existing lane reconciler.
+  const afterWrite = opts.checkpoint ? async (tx: Sql | TransactionSql) => {
+    const { setWorkItemCheckpointWithPrior } = await import('./work-item-checkpoint');
+    const result = await setWorkItemCheckpointWithPrior({ workspaceId: activeWorkspaceId(), harness: wi.harness,
+      workItemId: id }, opts.checkpoint!.update, { ...opts.checkpoint!.options, transaction: tx });
+    if (result.blockedReason) throw Object.assign(new Error(result.blockedReason), {
+      code: result.blockedReason, priorLength: result.priorLength,
+    });
+    opts.checkpoint!.onStored?.(result);
+  } : undefined;
+  const paired = Boolean(blockerMutation || afterWrite);
+  if (!paired) await releaseLane();
   if (wi.family === 'issue') {
-    const updated = await releaseIssue(id, { expectedAssignee: opts.expectedAssignee });
+    const updated = await releaseIssue(id, { expectedAssignee: opts.expectedAssignee,
+      blockerDecisionMutation: blockerMutation, ...(afterWrite ? { afterWrite } : {}) });
     const released = updated ? issueToWorkItem(updated) : null;
+    if (released && paired) await releaseLane();
     await emitReleased(released);
     if (released && !opts.retainPausedCallerBindings) {
       await withOrgTxnTimeoutPhase(
@@ -10494,7 +10668,11 @@ export async function releaseWorkItem(
   // already-`todo` rows keep their status. Done in SQL off the live column so it
   // never depends on the JS-side state mapping.
   const nonRequeue = [...FEATURE_NON_REQUEUE_STATES];
-  const rows = await sql<FeatureRowDb[]>`
+  const write = async (tx: Sql | TransactionSql): Promise<WorkItem | null> => {
+    if (blockerMutation) await applyBlockerDecisionMutation(tx, {
+      workspace: activeWorkspaceId(), harness: wi.harness, id,
+    }, blockerMutation);
+    const rows = await tx<FeatureRowDb[]>`
     UPDATE harness_shared.harness_features_consolidated
        -- P-001: release clears the progress signal too — the next claimant starts fresh
        -- (a stale last_progress_at must not outlive the holder that earned it).
@@ -10512,13 +10690,20 @@ export async function releaseWorkItem(
            -- mid-flight rows (in_progress/validating/wip/failing).
            status = CASE WHEN status <> ALL(${nonRequeue}::text[]) THEN 'open' ELSE status END,
            updated_ts = ${Date.now()}
-     WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
+     WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = ${wi.harness} AND feature_id = ${id}
        -- EI-7588: same atomic compare-and-release guard as the issue-family path above —
        -- a row held by someone OTHER than expectedAssignee matches 0 rows (null return),
        -- not a silent steal.
        AND (${opts.expectedAssignee ?? null}::text IS NULL OR taken_by IS NULL OR taken_by = ${opts.expectedAssignee ?? null})
-    RETURNING ${sql.unsafe(FEATURE_COLS)}`;
-  const released = rows[0] ? featureRowToWorkItem(rows[0]) : null;
+    RETURNING ${tx.unsafe(FEATURE_COLS)}`;
+    if (blockerMutation && !rows.length) throw new BlockerDecisionMutationConflict();
+    if (rows.length) await afterWrite?.(tx);
+    return rows[0] ? featureRowToWorkItem(rows[0]) : null;
+  };
+  const released = paired
+    ? await boundedOrgTxn(write, { phase: 'work_items:release:feature:blocker-decision' })
+    : await write(sql);
+  if (released && paired) await releaseLane();
   if (released && wasClaimed && wi.assignee && wi.harness) {
     await recordWorkItemReleaseCooldown({
       workspaceId: activeWorkspaceId(),
@@ -10873,6 +11058,99 @@ export async function reorderWorkItem(
   };
 }
 
+interface WorkItemRelationOptions {
+  harness?: string;
+  by?: string;
+  satisfaction?: 'settled' | 'success';
+  blockerEvidenceContext?: BlockerBoundaryContext;
+  blockerDecision?: { input: unknown; sessionId: string };
+  onBlockerDecision?: (receipt: { record: BlockerDecisionRecord; replayed: boolean }) => void;
+}
+
+/** Pair agent decisions with the existing SERIALIZABLE dependency writer. The
+ * target is the dependent/custodian; the source is its blocker. System callers
+ * keep their existing provenance and never manufacture agent investigation. */
+async function mutateAgentBlockingRelation(
+  id: string, dst: ObjectRef, remove: boolean, opts: WorkItemRelationOptions,
+): Promise<{ ok: true; replayed?: boolean } | { error: string }> {
+  const dependentRef = await import('./work-items-events').then((m) => m.workItemIdFromRef(dst));
+  if (!dependentRef) return { error: 'A blocker decision requires a canonical work-item dependent; use its target_id.' };
+  const dependent = await getWorkItem(dependentRef.id, dependentRef.harness);
+  if (!dependent) return { error: `dependent work_item '${dependentRef.id}' not found` };
+  const effect = { link: { id, harness: opts.harness ?? null, dst, rel: 'blocks', remove,
+    satisfaction: opts.satisfaction ?? null } };
+  // Historical receipts precede source/evidence/custody reads and side effects.
+  if (opts.blockerDecision) {
+    const prior = prepareBlockerDecision(dependent.payload, opts.blockerDecision.input, {
+      ownerId: opts.by ?? '', sessionId: opts.blockerDecision.sessionId,
+      workItemId: dependent.id, custodianId: dependent.assignee,
+    }, { effect });
+    if (!prior.ok) throw Object.assign(new Error(prior.nextAction), prior);
+    if (prior.replayed) {
+      opts.onBlockerDecision?.({ record: prior.record, replayed: true });
+      return { ok: true, replayed: true };
+    }
+  }
+  const source = await getWorkItem(id, opts.harness);
+  if (!source) return { error: `work_item '${id}' not found` };
+  const blocker = workItemObjectRef(source);
+  const blocked = workItemObjectRef(dependent);
+  const { sql } = getOrgPg();
+  const dependencySnapshot = await readWorkItemDependenciesForRefs(sql, {
+    workspaceId: DEFAULT_COORD_WORKSPACE, refs: [blocked.ref],
+  });
+  const prepared = opts.blockerEvidenceContext
+    ? await preflightBlockerDecision(dependent, opts.blockerDecision?.input, opts.blockerEvidenceContext, {
+        effect, additionalDependencyRefs: remove ? [] : [blocker.ref],
+      })
+    : prepareBlockerDecision(dependent.payload, opts.blockerDecision?.input, {
+        ownerId: opts.by ?? '', sessionId: opts.blockerDecision?.sessionId ?? '',
+        workItemId: dependent.id, custodianId: dependent.assignee,
+      }, { effect });
+  if (!prepared.ok) throw Object.assign(new Error(prepared.nextAction), prepared);
+  if (!('ordinary' in prepared)) {
+    if (prepared.replayed) {
+      opts.onBlockerDecision?.({ record: prepared.record, replayed: true });
+      return { ok: true, replayed: true };
+    }
+    if (isSettledWorkItemState(dependent.state)) throw new BlockerDecisionMutationConflict();
+  }
+  await withWorkItemDependencyAdmissionTransaction(sql, async (tx) => {
+    if ('ordinary' in prepared) {
+      const rows = await tx`SELECT feature_id FROM harness_shared.work_items
+        WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug IS NOT DISTINCT FROM ${dependent.harness}
+          AND feature_id = ${dependent.id} AND status = ${dependent.state}
+          AND taken_by IS NOT DISTINCT FROM ${dependent.assignee}
+          AND COALESCE(payload, '{}'::jsonb) = ${JSON.stringify(dependent.payload ?? {})}::text::jsonb
+          AND origin <> 'remote' FOR UPDATE`;
+      if (!rows.length) throw new BlockerDecisionMutationConflict();
+    }
+    const current = await readWorkItemDependenciesForRefs(tx, {
+      workspaceId: DEFAULT_COORD_WORKSPACE, refs: [blocked.ref],
+    });
+    if (JSON.stringify(current) !== JSON.stringify(dependencySnapshot)) throw new BlockerDecisionMutationConflict();
+    await mutateWorkItemDependenciesInTransaction(tx, {
+      workspaceId: DEFAULT_COORD_WORKSPACE, itemWorkspaceId: activeWorkspaceId(),
+      mutations: [{ op: remove ? 'remove' : 'add', blocked, blocker,
+        createdBy: opts.by, satisfaction: opts.satisfaction }],
+    });
+    if (!('ordinary' in prepared)) await applyBlockerDecisionMutation(tx, {
+      workspace: activeWorkspaceId(), harness: dependent.harness, id: dependent.id,
+    }, { prepared, expectedState: dependent.state, expectedCustodianId: opts.by ?? '',
+      expectedExternalBlockers: (dependent.payload as Record<string, unknown> | null)?.externalBlockers,
+      payloadPatch: {}, unset: [] });
+  });
+  if (!('ordinary' in prepared)) opts.onBlockerDecision?.({ record: prepared.record, replayed: false });
+  if (remove) {
+    await subs.unsubscribeDerivedForEdge(blocked, blocker);
+    void trackDetached(import('./work-items-events').then((m) => m.emitUnblockedOnEdgeRemoved(blocked, id))).catch(() => {});
+  } else {
+    await syncDerivedBlockerSubscriptions(blocked);
+    if (dependent.assignee) await armWorkItemHolderInterests(dependent, dependent.assignee);
+  }
+  return { ok: true };
+}
+
 /** Linkable.link — an edge from this work-item to a target ObjectRef (rel blocks|relates|duplicates|fixes|…). */
 /**
  * WI-4119: materialize the one-hop blocker follows for every direct subscriber
@@ -10952,8 +11230,11 @@ export async function linkWorkItem(
   id: string,
   dst: ObjectRef,
   rel: string,
-  opts: { harness?: string; by?: string; satisfaction?: 'settled' | 'success' } = {},
+  opts: WorkItemRelationOptions = {},
 ): Promise<{ ok: true } | { error: string }> {
+  if (rel === 'blocks' && (opts.blockerEvidenceContext || opts.blockerDecision)) {
+    return mutateAgentBlockingRelation(id, dst, false, opts);
+  }
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return { error: `work_item '${id}' not found` };
   if (dst.kind === FEATURE_KIND && !isQualifiedFeatureRef(dst.ref)) {
@@ -10986,8 +11267,11 @@ export async function unlinkWorkItem(
   id: string,
   dst: ObjectRef,
   rel: string,
-  opts: { harness?: string } = {},
+  opts: WorkItemRelationOptions = {},
 ): Promise<{ ok: true } | { error: string }> {
+  if (rel === 'blocks' && (opts.blockerEvidenceContext || opts.blockerDecision)) {
+    return mutateAgentBlockingRelation(id, dst, true, opts);
+  }
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return { error: `work_item '${id}' not found` };
   if (wi.family === 'issue') await unlinkIssue(id, dst, rel);

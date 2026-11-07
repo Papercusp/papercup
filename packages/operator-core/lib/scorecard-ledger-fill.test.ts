@@ -3,7 +3,7 @@
  * The emit seam and the real ledger read are pinned by
  * agent-tools/scorecards/emit-from-ledger.integration.test.ts; this file pins the pure rules.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   LEDGER_EVIDENCE_DETAIL_CHARS,
   fillRatingsFromLedger,
@@ -11,7 +11,10 @@ import {
   ledgerCheckBindings,
   ledgerRatingLevel,
   ledgerRowMatchesBinding,
+  projectScorecardRatingsAtTime,
+  selectCriterionEvidenceAction,
 } from './scorecard-ledger-fill';
+import type { EvidenceActionReason } from './scorecard-ledger-fill';
 import type { LatestRubricCheckResult } from './check-results-ledger';
 import type { RecordedRubricCheck } from '@papercusp/test-config/execution-details';
 import { retainMeasurementProvenance } from './measurement-provenance';
@@ -19,6 +22,117 @@ import { rubricCriterionCheckSchema } from './agent-tools/plans/rubric-template'
 
 const RUBRIC = 'acceptance-ledger-fill-fixture';
 const SCALE = ['meets', 'near', 'misses'];
+
+describe('read-time historical measurement currentness', () => {
+  it('preserves a legacy missing timestamp without inventing an age', () => {
+    const legacy = { rating: 'unknown', evidence: 'Legacy receipt.', ledgerResult: { testRunId: 1, value: 2, unit: null } };
+    expect(projectScorecardRatingsAtTime({ a: legacy }, '2026-11-01T10:00:00Z').a).toEqual(legacy);
+  });
+  it('ages a failed attempt and prior measurement at one clock without changing either value or rating', () => {
+    const measured = { testRunId: 1, value: 840, unit: 'ms', status: 'pass' as const,
+      finishedAt: '2026-11-01T10:00:00Z', maxAgeMs: 60_000 };
+    const ratings = { journey: { rating: 'unknown', evidence: 'Latest collection failed.',
+      ledgerResult: { ...measured, testRunId: 2, value: null, status: 'error' as const,
+        finishedAt: '2026-11-01T10:00:30Z' }, lastMeasurement: measured },
+      manual: { rating: 'unknown', evidence: 'Manual collection required.' } };
+    const before = JSON.stringify(ratings);
+    const clock = '2026-11-01T10:01:00Z';
+    const atBoundary = projectScorecardRatingsAtTime(ratings, clock);
+    expect(atBoundary.journey).toMatchObject({ rating: 'unknown',
+      ledgerResult: { value: null, ageMs: 30_000, freshness: 'failed', comparisonTime: clock },
+      lastMeasurement: { value: 840, ageMs: 60_000, freshness: 'fresh', comparisonTime: clock } });
+    expect(projectScorecardRatingsAtTime(ratings, '2026-11-01T10:01:00.001Z').journey?.lastMeasurement)
+      .toMatchObject({ value: 840, ageMs: 60_001, freshness: 'stale' });
+    expect(projectScorecardRatingsAtTime(ratings, clock)).toEqual(atBoundary);
+    expect(atBoundary.manual).toEqual(ratings.manual);
+    expect(JSON.stringify(ratings)).toBe(before);
+  });
+
+  it.each(['invalid', '2026-11-01T09:59:59Z'])('refuses freshness for inconsistent comparison clock %s', clock => {
+    const ratings = { a: { rating: 'healthy', evidence: 'Historical value.', ledgerResult: {
+      testRunId: 1, value: 1, unit: null, finishedAt: '2026-11-01T10:00:00Z', status: 'pass' as const } } };
+    expect(projectScorecardRatingsAtTime(ratings, clock).a?.ledgerResult?.freshness).toBe('invalid');
+  });
+});
+
+describe('pinned criterion evidence action selection', () => {
+  const context = { subjectRef: 'fleet:luna-max-coverage-fixture',
+    windowStart: '2026-11-01T00:00:00Z', windowEnd: '2026-11-02T00:00:00Z',
+    rubricRef: 'fleet-fixture', rubricRevision: 3, criteriaHash: 'fixed-criteria-hash',
+    comparisonTime: '2026-11-02T00:00:00Z' };
+  const select = (reasons: EvidenceActionReason[]) => selectCriterionEvidenceAction({
+    criterionKey: 'activity', context,
+    findings: reasons.map(reason => ({ reason, sourceRef: `diagnostic:${reason}` })),
+  });
+
+  it('uses the prescribed precedence and exact selected sources as higher-priority reasons are removed', () => {
+    const reasons: EvidenceActionReason[] = ['identity-mismatch', 'historical-missing', 'stale',
+      'producer-failed', 'insufficient-sample'];
+    const categories = ['diagnose-identity', 'recover-historical', 'refresh-evidence',
+      'diagnose-producer', 'collect-samples'];
+    for (let index = 0; index < reasons.length; index++) {
+      const expected = { category: categories[index], reason: reasons[index],
+        sourceRefs: [`diagnostic:${reasons[index]}`] };
+      const remaining = reasons.slice(index);
+      expect(select(remaining)).toMatchObject(expected);
+      expect(select([...remaining].reverse())).toEqual(select(remaining));
+    }
+  });
+
+  it('uses the assessment clock rather than the ambient process clock', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime('2026-11-03T00:00:00Z');
+      const first = select(['stale', 'producer-failed']);
+      vi.setSystemTime('2027-01-01T00:00:00Z');
+      expect(select(['stale', 'producer-failed'])).toEqual(first);
+      expect(first.context.comparisonTime).toBe(context.comparisonTime);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ['instrument-unavailable', 'diagnose-producer'], ['missing-binding', 'repair-binding'],
+    ['never-run', 'run-check'], ['manual', 'manual-review'], ['adverse', 'repair-subject'],
+  ] as const)('selects %s without synthesizing command arguments', (reason, category) => {
+    const action = select([reason]);
+    expect(action).toMatchObject({ category, reason, sourceRefs: [`diagnostic:${reason}`], context });
+    expect(action).not.toHaveProperty('command');
+    expect(action).not.toHaveProperty('args');
+  });
+
+  it.each(['subjectRef', 'windowStart', 'windowEnd', 'rubricRef', 'rubricRevision',
+    'criteriaHash', 'comparisonTime'] as const)('keeps missing %s diagnostic even with an adverse finding', key => {
+    const action = selectCriterionEvidenceAction({ criterionKey: 'activity',
+      context: { ...context, [key]: null },
+      findings: [{ reason: 'adverse', sourceRef: 'test_runs:historical' }],
+    });
+    expect(action).toMatchObject({ category: 'diagnose-identity', reason: 'missing-required-identity' });
+    expect(action).not.toHaveProperty('command');
+  });
+
+  it('keeps conflicting or incomplete diagnostics bounded and preserves their exact references', () => {
+    expect(select(['producer-failed', 'conflicting'])).toMatchObject({ category: 'diagnose-evidence',
+      reason: 'unresolved-diagnostics', sourceRefs: ['diagnostic:conflicting'] });
+    expect(select(['unknown', 'stale'])).toMatchObject({ category: 'diagnose-evidence' });
+    expect(selectCriterionEvidenceAction({ criterionKey: 'activity', context,
+      findings: [{ reason: 'never-run', sourceRef: '' }] })).toMatchObject({ category: 'diagnose-evidence' });
+  });
+
+  it('sorts and deduplicates selected sources without mutating the pinned snapshot', () => {
+    const input = { criterionKey: 'activity', context, findings: [
+      { reason: 'stale' as const, sourceRef: 'test_runs:2' },
+      { reason: 'stale' as const, sourceRef: 'test_runs:1' },
+      { reason: 'stale' as const, sourceRef: 'test_runs:2' },
+    ] };
+    const before = JSON.stringify(input);
+    const action = selectCriterionEvidenceAction(input);
+    expect(action.sourceRefs).toEqual(['test_runs:1', 'test_runs:2']);
+    expect(action.context).toEqual(context);
+    expect(JSON.stringify(input)).toBe(before);
+  });
+});
 
 function row(id: string, value: RecordedRubricCheck['value'], status: LatestRubricCheckResult['status'], extra: Partial<RecordedRubricCheck> = {}, testRunId = 7): LatestRubricCheckResult {
   const criterionKey = id.split(':')[0]!;
@@ -46,6 +160,25 @@ describe('current measurement freshness', () => {
   const measured = row('rows:0', 1, 'pass');
   const grade = (nowMs: number, result = measured) => fillRatingsFromLedger({ criteria: [criterion],
     callerRatings: {}, rubricRatingScale: [...SCALE, 'unknown'], latest: new Map([['rows:0', result]]), nowMs });
+
+  it('grading system history retains stale values and latest failures', () => {
+    const at = Date.parse(measured.finishedAt);
+    const failed = { ...row('rows:0', null, 'error', {}, 8),
+      finishedAt: new Date(at + 30_000).toISOString(), lastMeasurement: measured };
+    const before = JSON.stringify(failed);
+    const first = grade(at + 60_001, failed);
+    expect(first.ok).toBe(true);
+    if (!first.ok) throw new Error(first.detail);
+    expect(first.ratings.rows).toMatchObject({ rating: 'unknown',
+      ledgerResult: { testRunId: 8, value: null, status: 'error', freshness: 'failed', ageMs: 30_001 },
+      lastMeasurement: { testRunId: 7, value: 1, status: 'pass', freshness: 'stale', ageMs: 60_001,
+        finishedAt: measured.finishedAt, comparisonTime: new Date(at + 60_001).toISOString() } });
+    expect(first.ratings.rows!.evidence).toContain('Historical measurement only');
+    expect(grade(at + 60_001, failed)).toEqual(first);
+    expect(JSON.stringify(failed)).toBe(before);
+    expect(grade(at + 59_999, failed)).toMatchObject({ ok: true, ratings: { rows: {
+      rating: 'unknown', lastMeasurement: { freshness: 'fresh', ageMs: 59_999 } } } });
+  });
 
   it('round-trips positive freshness limits through both executable check schemas', () => {
     expect(rubricCriterionCheckSchema.parse(criterion.check)).toMatchObject({ maxAgeMs: 60_000 });

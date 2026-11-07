@@ -8,6 +8,9 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import { cancelPendingGradingAuditsForBindingInTransaction, cancelStaleEvidencePendingGradingAuditAtomically, cancelSupersededPendingGradingAuditAtomically, classifyGradingAuditCurrentness, classifyScorecardGenerationFreshness, classifySubjectRubricCurrentness, computeTrendDirection, computeRubricStaleness, compressSeries, evaluateScorecardInstrumentContract, evaluateScorecardReleaseGateBinding, gradingAuditReplayBasisFingerprint, isCurrentSourceAuditResponder, isIdleUnknown, markGradingAuditAwaitingReemit, markGradingAuditReplayRefused, parseCriterionInstrumentKey, parseGradedGeneration, ratingScore10, recordGradingAudit, scorecardEvidenceFingerprint, scorecardScore10, scoreOverridesForScale, settlePendingGradingAuditAtomically } from './scorecards';
+import { projectScorecardCoverage, projectScorecardEvidenceActions, projectScorecardLedgerDiagnostics } from './scorecards';
+import type { LatestRubricCheckResult } from './check-results-ledger';
+import { retainMeasurementProvenance } from './measurement-provenance';
 import type { Rubric } from './rubrics';
 import { effectiveCriterionInstrumentKey } from './rubrics';
 import type { CriterionTrend, ScorecardReleaseGateSnapshot } from './scorecards';
@@ -18,6 +21,257 @@ import type { SpecTestAdequacyRerunRecipe } from './harness/improvements/observa
 function withUnsafe(tx: unknown): never {
   return Object.assign(tx as object, { unsafe: (text: string) => text }) as never;
 }
+
+describe('pinned scorecard evidence guidance', () => {
+  const subject = { ref: 'fleet:fixture', windowStart: '2026-11-01T00:00:00Z', windowEnd: '2026-11-02T00:00:00Z' };
+  const criterion = { key: 'history', title: 'History', model: 'Retained evidence',
+    method: 'Read archive A; literal $(do-not-execute) and `command`.',
+    replication: 'Recover the original window.', driftMarkers: 'Missing history.', instrumentKey: 'none' };
+  const rubric = { rubricId: 'pinned-guidance', revision: 3, criteriaHash: 'old-hash', methodRef: 'runbooks/history',
+    criteria: [criterion] } as Rubric;
+  const observation = { rubricRef: rubric.rubricId, rubricRevision: 3, criteriaHash: 'old-hash', subject,
+    ratings: { history: { rating: 'unknown', evidence: 'Missing retained inputs.', unknownReason: 'retention-gap' as const,
+      nextEvidenceAction: 'Original grader action; preserve verbatim.' } } };
+  const project = (definition: Rubric | null = rubric) => projectScorecardEvidenceActions({
+    issueId: 'EI-pinned-guidance', observation, rubric: definition, comparisonTime: subject.windowEnd,
+  });
+
+  it('composes the shared historical diagnosis with exact authored procedure and references without changing stored ratings', () => {
+    const before = JSON.stringify(observation);
+    const [action] = project();
+    expect(action).toMatchObject({ category: 'recover-historical', reason: 'historical-missing', snapshot: 'resolved',
+      readiness: 'manual', procedure: { source: 'criterion', missingSpecificity: false },
+      context: { subjectRef: subject.ref, windowStart: subject.windowStart, windowEnd: subject.windowEnd },
+      read: { tool: 'scorecards:get', args: { issueId: 'EI-pinned-guidance', criterionKey: 'history' } },
+      definitionRead: { tool: 'rubrics:get', args: { rubricRef: rubric.rubricId, revision: 3, detail: 'full' } } });
+    expect(action!.procedure.excerpt).toBe(`${criterion.method}\n${criterion.replication}`);
+    expect(action).not.toHaveProperty('command');
+    expect(action).not.toHaveProperty('authorized');
+    expect(JSON.stringify(observation)).toBe(before);
+    expect(project()).toEqual(project());
+  });
+
+  it.each([null, { ...rubric, revision: 4 }, { ...rubric, criteriaHash: 'new-hash' }])(
+    'fails closed when the historical definition is unavailable or mismatched', definition => {
+      const [action] = project(definition);
+      expect(action).toMatchObject({ category: 'diagnose-identity', snapshot: 'unavailable', readiness: 'unknown' });
+      expect(action!.procedure.excerpt).toBe('');
+    });
+
+  it('does not relabel unfinished grading as producer failure or a never-run check', () => {
+    const [action] = projectScorecardEvidenceActions({ issueId: 'EI-not-assessed', rubric,
+      observation: { ...observation, ratings: { history: { rating: 'unknown', evidence: 'Not assessed.', unknownReason: 'not-assessed' } } },
+      comparisonTime: subject.windowEnd });
+    expect(action).toMatchObject({ category: 'diagnose-evidence', reason: 'unresolved-diagnostics' });
+  });
+
+  it('keeps canonical diagnoses ahead of authored manual wording and bounds long procedure excerpts', () => {
+    const [action] = projectScorecardEvidenceActions({ issueId: 'EI-diagnosed', rubric: {
+      ...rubric, criteria: [{ ...criterion, method: 'Long procedure '.repeat(100) }] }, observation,
+      comparisonTime: subject.windowEnd,
+      findingsByKey: { history: [{ reason: 'identity-mismatch', sourceRef: 'binding:wrong-subject' }] } });
+    expect(action).toMatchObject({ category: 'diagnose-identity', sourceRefs: ['binding:wrong-subject'] });
+    expect(action!.procedure.excerpt).toHaveLength(240);
+  });
+});
+
+describe('rubric-wide scorecard coverage', () => {
+  const clock = '2026-11-02T00:00:00Z';
+  const observedAt = '2026-11-01T12:00:00Z';
+  const keys = Array.from({ length: 26 }, (_, index) => `criterion-${index + 1}`);
+  const unknowns = () => Object.fromEntries(keys.map(key => [key, {
+    rating: 'unknown', evidence: 'Not assessed in this pinned window.',
+  }]));
+  const partition = (axis: Record<string, string[]>) => Object.values(axis).flat();
+
+  it('keeps a 26-key all-unknown record distinct from assessed coverage and fulfillment', () => {
+    const ratings = unknowns();
+    const before = JSON.stringify(ratings);
+    const coverage = projectScorecardCoverage(ratings, keys);
+    expect(coverage.record).toEqual({ expected: 26, present: 26, missingKeys: [], extraKeys: [] });
+    expect(coverage.rating.unknown).toEqual(keys);
+    expect(coverage.evidence.unknown).toEqual(keys);
+    expect(coverage.freshness.unknown).toEqual(keys);
+    expect(coverage.unresolvedKeys).toEqual(keys);
+    expect(coverage.requestedScope.state).toBe('unknown');
+    expect(coverage.fulfillment).toBe('unknown');
+    expect(JSON.stringify(ratings)).toBe(before);
+  });
+
+  it('partitions the fixed fleet fixture independently without changing the existing average', () => {
+    const ratings = unknowns();
+    ratings[keys[0]!] = { rating: 'degraded', evidence: 'Recorded adverse measurement.' };
+    const support = Object.fromEntries(keys.map((key, index) => [key, {
+      support: index === 0 ? 'current' as const : 'absent' as const,
+      freshness: index === 0 ? 'current' as const : 'unknown' as const,
+      ...(index === 0 ? { evidenceRef: 'test_runs:fixture-fleet', observedAt } : {}),
+    }]));
+    const before = JSON.stringify(ratings);
+    const coverage = projectScorecardCoverage(ratings, keys, support, clock);
+    expect(coverage.rating.known).toEqual([keys[0]]);
+    expect(coverage.rating.unknown).toHaveLength(25);
+    expect(coverage.evidence.current).toEqual([keys[0]]);
+    expect(coverage.evidence.absent).toHaveLength(25);
+    expect(coverage.evidence.unknown).toEqual([]);
+    expect(coverage.evidence.stale).toEqual([]);
+    expect(coverage.freshness.current).toEqual([keys[0]]);
+    expect(coverage.freshness.stale).toEqual([]);
+    expect(coverage.freshness.unknown).toEqual(keys.slice(1));
+    expect(coverage.rating.missing).toEqual([]);
+    expect(coverage.rating.inapplicable).toEqual([]);
+    expect(coverage.requestedScope.state).toBe('unknown');
+    expect(coverage.fulfillment).toBe('unknown');
+    expect(JSON.stringify(ratings)).toBe(before);
+    expect(coverage.unresolvedKeys).toEqual(keys.slice(1));
+    for (const axis of [coverage.rating, coverage.evidence, coverage.freshness]) {
+      expect(partition(axis).sort()).toEqual([...keys].sort());
+      expect(new Set(partition(axis)).size).toBe(26);
+    }
+    expect(scorecardScore10(ratings)).toBe(scorecardScore10({ first: ratings[keys[0]!]! }));
+  });
+
+  it('counts missing and extra keys separately, preserving rubric order and denominator', () => {
+    const coverage = projectScorecardCoverage({
+      second: { rating: 'healthy', evidence: 'Historical prose is not a currentness verdict.' },
+      extra: { rating: 'healthy', evidence: 'Not a declared dimension.' },
+    }, ['first', 'second']);
+    expect(coverage.denominator).toBe(2);
+    expect(coverage.record).toEqual({ expected: 2, present: 1, missingKeys: ['first'], extraKeys: ['extra'] });
+    expect(coverage.rating.missing).toEqual(['first']);
+    expect(coverage.rating.known).toEqual(['second']);
+    expect(coverage.evidence.unknown).toEqual(['first', 'second']);
+    expect(coverage.unresolvedKeys).toEqual(['first', 'second']);
+  });
+
+  it('keeps stale admissible evidence separate from rating and fresh manual evidence', () => {
+    const ratings = {
+      historical: { rating: 'PASS', evidence: 'Archived result.' },
+      manual: { rating: 'healthy', evidence: 'Recorded manual review.' },
+      pending: { rating: 'unknown', evidence: 'No admissible result.' },
+    };
+    const coverage = projectScorecardCoverage(ratings, Object.keys(ratings), {
+      historical: { support: 'stale', freshness: 'stale', evidenceRef: 'archive:recorded', observedAt },
+      manual: { support: 'current', freshness: 'current', evidenceRef: 'manual:recorded', observedAt },
+      pending: { support: 'absent', freshness: 'unknown' },
+    }, clock);
+    expect(coverage.rating.known).toEqual(['historical', 'manual']);
+    expect(coverage.evidence.stale).toEqual(['historical']);
+    expect(coverage.evidence.current).toEqual(['manual']);
+    expect(coverage.freshness.unknown).toEqual(['pending']);
+    expect(coverage.unresolvedKeys).toEqual(['historical', 'pending']);
+  });
+
+  it('preserves custom categorical ratings and explicit unknowns without numeric coercion', () => {
+    const coverage = projectScorecardCoverage({
+      custom: { rating: 'Acceptable', evidence: 'Rubric-normalized custom rating.' },
+      unknown: { rating: 'UNKNOWN', evidence: 'Unmeasured.' },
+    }, ['custom', 'unknown']);
+    expect(coverage.rating.known).toEqual(['custom']);
+    expect(coverage.rating.unknown).toEqual(['unknown']);
+    expect(coverage.rating.inapplicable).toEqual([]);
+  });
+
+  it('uses null rather than zero when rubric identity cannot be resolved', () => {
+    const coverage = projectScorecardCoverage({ a: { rating: 'healthy', evidence: 'Text.' } }, null);
+    expect(coverage.denominator).toBeNull();
+    expect(coverage.record.expected).toBeNull();
+    expect(coverage.record.present).toBeNull();
+    expect(coverage.record.extraKeys).toEqual([]);
+    expect(coverage.requestedScope.denominator).toBeNull();
+    expect(coverage.fulfillment).toBe('unknown');
+  });
+
+  it('degrades contradictory evidence snapshots to unknown and ignores undeclared evidence keys', () => {
+    const coverage = projectScorecardCoverage({ a: { rating: 'healthy', evidence: 'Text.' } }, ['a'], {
+      a: { support: 'current', freshness: 'stale' },
+      extra: { support: 'current', freshness: 'current' },
+    });
+    expect(coverage.evidence.unknown).toEqual(['a']);
+    expect(coverage.evidence.current).toEqual([]);
+    expect(coverage.freshness.unknown).toEqual(['a']);
+    expect(coverage.unresolvedKeys).toEqual(['a']);
+  });
+
+  it.each([
+    { observedAt: undefined, evidenceRef: 'test_runs:recorded' },
+    { observedAt: 'not-a-timestamp', evidenceRef: 'test_runs:recorded' },
+    { observedAt: '2026-11-03T00:00:00Z', evidenceRef: 'test_runs:recorded' },
+    { observedAt, evidenceRef: undefined },
+  ])('refuses current support without a retained, usable source/time identity: %j', identity => {
+    const coverage = projectScorecardCoverage({ a: { rating: 'healthy', evidence: 'Prose.' } }, ['a'], {
+      a: { support: 'current', freshness: 'current', ...identity },
+    }, clock);
+    expect(coverage.evidence.current).toEqual([]);
+    expect(coverage.evidence.unknown).toEqual(['a']);
+    expect(coverage.unresolvedKeys).toEqual(['a']);
+  });
+});
+
+describe('retained scorecard ledger diagnostics', () => {
+  const at = '2026-11-01T12:00:00Z';
+  const clock = '2026-11-02T00:00:00Z';
+  const subject = { kind: 'pot' as const, ref: 'fleet:history', windowStart: '2026-11-01T00:00:00Z', windowEnd: clock };
+  const provenance = retainMeasurementProvenance({ startedAt: at, finishedAt: at,
+    procedure: { kind: 'command', argv: ['declared-fixture-check'] }, result: { value: 3 } });
+  const criterion = { key: 'history', title: 'History', model: 'Retained measurement', method: 'Read original receipt.',
+    replication: 'Use the recorded subject and clock.', driftMarkers: 'Missing receipt',
+    check: { kind: 'probe', probe: { expect: { path: '$', op: 'gte', value: 10 } } } };
+  const rubric = { rubricId: 'ledger-history', revision: 1, criteriaHash: 'history-hash', criteria: [criterion] } as Rubric;
+  const row: LatestRubricCheckResult = { testRunId: 42, status: 'fail', finishedAt: at, provenanceStatus: 'retained',
+    check: { id: 'history:0', rubricRef: rubric.rubricId, criterionKey: 'history', kind: 'probe',
+      value: 3, unit: null, subject: { kind: subject.kind, ref: subject.ref }, provenance } };
+  const observation = { rubricRef: rubric.rubricId, rubricRevision: 1, criteriaHash: rubric.criteriaHash, subject,
+    ratings: { history: { rating: 'degraded', evidence: 'Original adverse result.', ratedFrom: 'ledger' as const,
+      ledgerResult: { testRunId: 42, value: 3, unit: null, provenance, provenanceStatus: 'retained' as const } } } };
+  const project = (retained: LatestRubricCheckResult | null = row, definition = rubric) =>
+    projectScorecardLedgerDiagnostics({ observation, rubric: definition, comparisonTime: clock,
+      latest: new Map(retained ? [[retained.check.id, retained]] : []) });
+
+  it('supports the exact retained adverse receipt while leaving its rating and fulfillment unchanged', () => {
+    const before = JSON.stringify(observation);
+    const diagnosis = project();
+    expect(diagnosis.findingsByKey.history).toEqual([{ reason: 'adverse', sourceRef: 'test_runs:42' }]);
+    const coverage = projectScorecardCoverage(observation.ratings, ['history'], diagnosis.supportByKey, clock);
+    expect(coverage.evidence.current).toEqual(['history']);
+    expect(coverage.fulfillment).toBe('unknown');
+    const [action] = projectScorecardEvidenceActions({ issueId: 'EI-history', observation, rubric,
+      comparisonTime: clock, findingsByKey: diagnosis.findingsByKey });
+    expect(action).toMatchObject({ category: 'repair-subject', sourceRefs: ['test_runs:42'] });
+    expect(JSON.stringify(observation)).toBe(before);
+  });
+
+  it('recovers a missing cited receipt instead of substituting a later successful run', () => {
+    const diagnosis = project({ ...row, testRunId: 43, status: 'pass' });
+    expect(diagnosis.findingsByKey.history![0]!.reason).toBe('historical-missing');
+    expect(diagnosis.supportByKey).toEqual({});
+    const [action] = projectScorecardEvidenceActions({ issueId: 'EI-history', rubric,
+      observation: { ...observation, ratings: { history: { ...observation.ratings.history, rating: 'unknown' } } },
+      comparisonTime: clock, findingsByKey: diagnosis.findingsByKey });
+    expect(action!.category).toBe('recover-historical');
+  });
+
+  it.each([
+    { check: { ...row.check, value: 11 } },
+    { check: { ...row.check, criterionKey: 'other' } },
+    { check: { ...row.check, subject: { kind: 'fleet', ref: 'fleet:other' } } },
+    { finishedAt: '2026-11-03T00:00:00Z' },
+    { finishedAt: 'invalid' },
+  ])('refuses mismatched retained identity or measurement clocks: %j', change => {
+    expect(project({ ...row, ...change }).findingsByKey.history![0]!.reason).toBe('identity-mismatch');
+    expect(project({ ...row, ...change }).supportByKey).toEqual({});
+  });
+
+  it('separates stale support from absent provenance and failed measurement attempts', () => {
+    const stale = project(row, { ...rubric, criteria: [{ ...criterion,
+      check: { ...criterion.check, maxAgeMs: 1000 } }] } as Rubric);
+    expect(stale.supportByKey.history!.support).toBe('stale');
+    expect(stale.findingsByKey.history![0]!.reason).toBe('stale');
+    expect(project({ ...row, provenanceStatus: 'legacy-missing' }).findingsByKey.history![0]!.reason).toBe('unknown');
+    const failed = project({ ...row, status: 'error' });
+    expect(failed.supportByKey).toEqual({});
+    expect(failed.findingsByKey.history![0]!.reason).toBe('instrument-unavailable');
+  });
+});
 
 describe('superseding a pending grading-audit target', () => {
   it('atomically cancels the pending stamp and clears its live reservation only for the matching superseder', async () => {

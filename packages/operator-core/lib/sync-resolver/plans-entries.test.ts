@@ -20,10 +20,36 @@ vi.mock('../agent-tools/plans/read-dispatch', () => ({
 vi.mock('@papercusp/flags/server', () => ({ getFlag: async () => false }));
 
 import { resolveNamedQueryV2 } from '.';
+import {
+  namedQueryStageTimings,
+  withNamedQueryDiagnosticContext,
+} from '../agent-tools/db-diagnostic-correlation-wiring';
 
 beforeEach(() => callPlansRead.mockReset());
 
 describe('plans.* resolvers — verb dispatch + envelope unwrap', () => {
+  it('retains the pending canonical boundary and complete populated list in request diagnostics', async () => {
+    const plans = Array.from({ length: 2_500 }, (_, i) => ({ slug: `plan-${i}` }));
+    let pending: ReturnType<typeof namedQueryStageTimings>;
+    callPlansRead.mockImplementation(async () => {
+      pending = namedQueryStageTimings();
+      return { plans };
+    });
+    const result = await withNamedQueryDiagnosticContext('plans.list', async () => {
+      const rows = await resolveNamedQueryV2('plans.list', {});
+      return { rows, timings: namedQueryStageTimings() };
+    });
+    expect(pending!).toMatchObject({ stages: [
+      { stage: 'plans-list-canonical-read', outcome: 'pending' },
+    ] });
+    expect(result.rows).toEqual(plans);
+    expect(result.timings).toMatchObject({ stages: [
+      { stage: 'plans-list-canonical-read', outcome: 'fulfilled' },
+      { stage: 'plans-list-attribution-flag', outcome: 'fulfilled' },
+    ] });
+    expect(namedQueryStageTimings()).toBeNull();
+  });
+
   it('plans.list → list verb, unwraps .plans, passes args through', async () => {
     callPlansRead.mockResolvedValue({ plans: [{ slug: 'a' }, { slug: 'b' }] });
     const rows = await resolveNamedQueryV2('plans.list', { includeArchived: true });

@@ -3278,6 +3278,26 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     });
     expect(staleLive.ratings['correct-layer'].rating).toBe('fail');
 
+    const unknownLive = evaluateSpecTestAdequacy({
+      clause: liveClause,
+      evidence: [treeProof, {
+        ...liveProof,
+        currentness: {
+          ...liveProof.currentness,
+          overall: 'unknown',
+          provenance: 'server-measured',
+          comparisonSupplied: true,
+          unknownReasons: ['current-environment-measurement-unavailable'],
+        },
+      }],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(unknownLive.ratings['correct-layer'].rating).toBe('unknown');
+    expect(unknownLive.ratings['correct-layer'].evidence).toContain(
+      'Matching binding(s) exist for required evidence plane(s) live',
+    );
+    expect(unknownLive.ratings['correct-layer'].evidence).toContain('live:verified-report');
+
     const covered = evaluateSpecTestAdequacy({
       clause: liveClause,
       evidence: [treeProof, liveProof],
@@ -4313,7 +4333,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
   });
 
   it('pins the evaluator revision when an adequacy rule changes', () => {
-    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(39);
+    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(40);
   });
 
   it('accepts a non-automated ledger census without inventing executable fixture proof', () => {

@@ -19,15 +19,20 @@ import type {
 
 export const SCORECARD_HISTORY_PAGE_LIMIT = 500;
 export const SCORECARD_HISTORY_DEFAULT_PAGE = 100;
+const HISTORY_PAGE_BYTES = 240_000;
 
 export interface ScorecardHistoryWireArgs {
   rubricRef: string;
+  mode?: 'accepted' | 'review-history';
+  comparisonTime?: string;
   cursor?: string | null;
   limit?: number;
 }
 
 export interface NormalizedScorecardHistoryArgs {
   rubricRef: string;
+  mode?: 'accepted' | 'review-history';
+  comparisonTime?: string;
   cursor: ScorecardListCursor | null;
   limit: number;
 }
@@ -72,6 +77,8 @@ export function normalizeScorecardHistoryArgs(args: ScorecardHistoryWireArgs): N
   );
   return {
     rubricRef: args.rubricRef.trim(),
+    ...(args.mode ? { mode: args.mode } : {}),
+    ...(args.comparisonTime ? { comparisonTime: args.comparisonTime } : {}),
     cursor: decodeScorecardHistoryCursor(args.cursor),
     limit,
   };
@@ -88,17 +95,32 @@ export async function readScorecardHistoryPage(
   const args = predicate.args;
   const page = await deps.listPage({
     rubricRef: args.rubricRef,
+    ...(args.mode === 'accepted' ? { finalizedOnly: true } : {}),
+    ...(args.mode === 'review-history' ? { includeDiagnostics: true } : {}),
+    ...(args.comparisonTime ? { comparisonTime: args.comparisonTime } : {}),
     limit: args.limit,
     ...(args.cursor ? { before: args.cursor } : {}),
     // The history row opens ScorecardDetail, whose linked-items rail consumes
     // this field. Aggregate/trend callers continue to skip the join.
     includeLinks: true,
   });
-  const tail = page.rows[page.rows.length - 1];
+  // Enrichment can make a row larger without changing the requested row count.
+  // Bound the wire page by whole rows, and resume from the last row actually
+  // returned. Every criterion and all evidence remain intact. Always allow one
+  // row so an unusually large individual card cannot strand the cursor.
+  let bytes = 2;
+  const rows: ScorecardRow[] = [];
+  for (const row of page.rows) {
+    const size = Buffer.byteLength(JSON.stringify(row), 'utf8') + (rows.length ? 1 : 0);
+    if (rows.length && bytes + size > HISTORY_PAGE_BYTES) break;
+    rows.push(row); bytes += size;
+  }
+  const hasMore = page.hasMore || rows.length < page.rows.length;
+  const tail = rows[rows.length - 1];
   return {
-    rows: page.rows,
-    hasMore: page.hasMore,
-    nextCursor: page.hasMore && tail ? encodeScorecardHistoryCursor(tail) : null,
+    rows,
+    hasMore,
+    nextCursor: hasMore && tail ? encodeScorecardHistoryCursor(tail) : null,
     previousCursor: args.cursor ? JSON.stringify(args.cursor) : null,
   };
 }

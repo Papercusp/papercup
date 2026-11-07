@@ -218,6 +218,16 @@ describe('buildCarryDoc (seam-driven assembly)', () => {
     getModesFn: async () => [{ mode: 'auto', ownerDirected: true, reason: 'owner set it' }],
   };
 
+  it('delivers unavailable remaining authority without inventing a successor or changing route', async () => {
+    const recovery = automaticRecovery();
+    recovery.recovery.mission = { availability: 'unknown', reason: 'parent-read-unavailable' };
+    const doc = await buildCarryDoc('su-1', { ...base, buildAutomaticRecoveryFn: async () => recovery });
+    const text = renderCarryDoc(doc);
+    expect(text).toContain('remaining mission authority UNKNOWN: parent-read-unavailable');
+    expect(text).toContain('Do not infer completion, a successor, or permission to resume.');
+    expect(doc.automaticRecovery?.recovery.control?.state.route).toEqual({ kind: 'self' });
+  });
+
   it('assembles identity + session-mode from the brief + seams', async () => {
     const doc = await buildCarryDoc('su-1', base);
     expect(doc.identity).toMatchObject({ ownerId: 'su-1', harness: 'papercusp', workspaceId: 'ws-1', ownerLabel: 'su · su-1' });

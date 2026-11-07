@@ -69,11 +69,12 @@ import {
   sourceYear,
 } from '../../../scripts/source-preview.mjs';
 import { BG_INPUTS, DROPPED, INTERNAL_DOC_CONTENTS, SHIPPED, childEnv, git, makeBgCandidate, makeBgCompilerCandidate, makeSuperproject, write, type Superproject } from './source-preview.fixture';
-import { BG_R1_CASE_REGISTRY, BG_R1_SOURCE_CASES, BG_R1_MEMBER_CASES, BG_R1_PARENT_SELECTORS } from './source-preview.fixture';
+import { BG_R1_CASE_REGISTRY, BG_R1_SOURCE_CASES, BG_R1_MEMBER_CASES, BG_R1_PARENT_SELECTORS, BG_R1_PARTITION_CASES } from './source-preview.fixture';
 import r1Manifest from './source-preview.r1-cases.fixture.json';
 import { BG_R4_CASE_REGISTRY, BG_R4_CUSTODY_CASES, BG_R4_TEARDOWN_CASES } from './source-preview.fixture';
 import r4Manifest from './source-preview.r4-cases.fixture.json';
 import { captureTestSourceSnapshot } from './testing-worktree';
+import { measureRetainedReplaySourceIdentity } from './retained-replay-identity';
 import { measureBootOperatorArtifact } from './release/operator-artifact';
 import { cleanupEndedVerifierDirectories, verifierResourceInventory, verifierSourceFiles, writeVerifierTaskReceipt } from './verifier-source';
 import { readProcessIdentity } from './process-identity';
@@ -292,11 +293,11 @@ it('bg-r4-census requires exact predeclared selector and branch population', () 
 it('bg-r1-census requires exact predeclared selector and branch population', () => {
   const key = (row: { rowId: string; file: string; testName: string }) =>
     JSON.stringify([row.rowId, row.file, row.testName]);
-  expect(r1Manifest.revision).toBe(10);
-  expect(r1Manifest.cases).toHaveLength(32);
+  expect(r1Manifest.revision).toBe(14);
+  expect(r1Manifest.cases).toHaveLength(55);
   expect(BG_R1_CASE_REGISTRY.map(key).sort()).toEqual(r1Manifest.cases.map(key).sort());
-  expect(new Set(BG_R1_CASE_REGISTRY.map(row => row.rowId)).size).toBe(32);
-  expect(new Set(BG_R1_CASE_REGISTRY.map(row => JSON.stringify([row.file, row.testName]))).size).toBe(32);
+  expect(new Set(BG_R1_CASE_REGISTRY.map(row => row.rowId)).size).toBe(55);
+  expect(new Set(BG_R1_CASE_REGISTRY.map(row => JSON.stringify([row.file, row.testName]))).size).toBe(55);
   expect(new Set(BG_R1_CASE_REGISTRY.map(row => row.file))).toEqual(new Set([
     'packages/operator-core/lib/source-preview-export.test.ts',
     'apps/operator/lib/bundle-host-freshness.test.ts',
@@ -822,6 +823,57 @@ describe('verifier dependency staging preparation boundary', () => {
 });
 
 describe('EI-25303741091409100 — pinned verifier source identity', () => {
+  async function waitForVerifierFixtureReady(child: ReturnType<typeof spawn>, ready: string,
+    receiptPath: string, output: () => string, timeout: number) {
+    try {
+      await vi.waitFor(() => expect(existsSync(ready)).toBe(true), { timeout, interval: 20 });
+    } catch (cause) {
+      const tail = (path: string) => {
+        try { return readFileSync(path, 'utf8').slice(-4096); }
+        catch (error) { return { readError: (error as NodeJS.ErrnoException).code }; }
+      };
+      throw new Error('VERIFIER_FIXTURE_READY_FAILURE ' + JSON.stringify({ ready,
+        child: { pid: child.pid, exitCode: child.exitCode, signal: child.signalCode },
+        output: output().slice(-4096), task: tail(receiptPath + '.task.json'),
+        phases: tail(receiptPath + '.phases.jsonl'),
+      }), { cause });
+    }
+  }
+
+  it.each([78, null])('readiness failure retains child status %s and its last preparation evidence', async exitCode => {
+    const root = mkdtempSync(join(tmp, 'verifier-readiness-diagnostic-'));
+    const ready = join(root, 'ready'), receiptPath = join(root, 'source.json');
+    const script = [
+      "const fs = require('node:fs');",
+      `fs.writeFileSync(${JSON.stringify(receiptPath + '.task.json')}, JSON.stringify({ cleanup: 'pending' }));`,
+      `fs.writeFileSync(${JSON.stringify(receiptPath + '.phases.jsonl')}, JSON.stringify({ phase: 'deps.snapshot', event: 'started' }) + '\\n');`,
+      "console.error('fixture preparation diagnostic'); console.log('fixture-started');",
+      exitCode === null ? 'setInterval(() => {}, 1000);' : `process.exit(${exitCode});`,
+    ].join('\n');
+    const child = spawn(process.execPath, ['-e', script], { env: childEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
+    const closed = once(child, 'close');
+    let output = '';
+    child.stdout.on('data', bytes => { output += bytes; });
+    child.stderr.on('data', bytes => { output += bytes; });
+    try {
+      await once(child.stdout, 'data');
+      if (exitCode !== null) await closed;
+      let failure: Error | undefined;
+      try { await waitForVerifierFixtureReady(child, ready, receiptPath, () => output, 50); }
+      catch (error) { failure = error as Error; }
+      expect(failure).toBeInstanceOf(Error);
+      const diagnostic = JSON.parse(failure!.message.replace('VERIFIER_FIXTURE_READY_FAILURE ', ''));
+      expect(diagnostic.child).toMatchObject({ pid: child.pid, exitCode, signal: null });
+      expect(diagnostic.output).toContain('fixture preparation diagnostic');
+      expect(JSON.parse(diagnostic.task)).toEqual({ cleanup: 'pending' });
+      expect(JSON.parse(diagnostic.phases)).toEqual({ phase: 'deps.snapshot', event: 'started' });
+      expect(existsSync(ready)).toBe(false);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      await closed;
+    }
+  });
+
   const budgetPhases = { 'source.freeze': 103_607, 'receipt.write': 377,
     'deps.source.before': 11_836, 'deps.snapshot': 140_626, 'deps.source.after-snapshot': 22_222,
     'deps.inputs': 212, 'deps.measure': 3_197, 'deps.source.after-preflight': 9_789,
@@ -2648,7 +2700,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       let owned: string | undefined;
       let peer: string | undefined;
       try {
-        await vi.waitFor(() => expect(existsSync(ready), output).toBe(true), { timeout: 20_000, interval: 20 });
+        await waitForVerifierFixtureReady(child, ready, receiptPath, () => output, 20_000);
         owned = dirname(readFileSync(ready, 'utf8').trim());
         const receipt = JSON.parse(readFileSync(receiptPath + '.task.json', 'utf8'));
         expect(receipt).toMatchObject({ schemaVersion: 'verifier-task-v1', taskId: null,
@@ -2721,7 +2773,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     const closed = once(child, 'close');
     const cleanupPaths: string[] = [];
     try {
-      await vi.waitFor(() => expect(existsSync(ready), output).toBe(true), { timeout: 15_000, interval: 20 });
+      await waitForVerifierFixtureReady(child, ready, options.receiptPath, () => output, 15_000);
       let owned = dirname(readFileSync(ready, 'utf8').trim());
       const receipt = JSON.parse(readFileSync(join(owned, '.verifier-task.json'), 'utf8'));
       expect(receipt).toMatchObject({ taskId, pid: child.pid, repoRoot: fixture.repo });
@@ -3494,8 +3546,9 @@ describe('BG inherited manifest and original source boundaries', () => {
     } finally { process.env = originalEnv; stderr.mockRestore(); }
   });
 
-  async function compilerCandidate(artifactInputs = false, cliHarness = false) {
-    return makeBgCompilerCandidate(join(tmp, `bg-source-${++serial}`), { artifactInputs, cliHarness, trace: bgFixtureTrace });
+  async function compilerCandidate(artifactInputs = false, cliHarness = false, sourceOnly = false, protectedUnconsumed = false) {
+    return makeBgCompilerCandidate(join(tmp, `bg-source-${++serial}`),
+      { artifactInputs, cliHarness, sourceOnly, protectedUnconsumed, trace: bgFixtureTrace });
   }
 
   it('bg-r1-compiler-resolver-metadata-transient-restored refuses publication after real resolution used changed package metadata then restored it', async () => {
@@ -3677,8 +3730,8 @@ describe('BG inherited manifest and original source boundaries', () => {
       } finally { wholeFileRead.mockRestore(); syncBuiltinESMExports(); }
     });
 
-  async function maintainedCompilerCandidate() {
-    const { prepared } = await compilerCandidate(true, true);
+  async function maintainedCompilerCandidate(sourceOnly = false, protectedUnconsumed = false) {
+    const { prepared } = await compilerCandidate(true, true, sourceOnly, protectedUnconsumed);
     const installed = dirname(createRequire(import.meta.url).resolve('@papercusp/host-esbuild/package.json'));
     const privateCompiler = join(prepared.root, 'node_modules/@papercusp/host-esbuild');
     bgFixtureTrace('private-compiler-copy:start');
@@ -3691,10 +3744,12 @@ describe('BG inherited manifest and original source boundaries', () => {
     const dependencies = captureVerifierDependencies({ dest: prepared.root, receipt: prepared.source });
     bgFixtureTrace('private-compiler:dependencies-ready');
     const entry = join(prepared.root, 'apps/operator/dist-verify/guarded.mjs');
+    const replayIdentityDefine = '--define:__PAPERCUSP_RETAINED_REPLAY_SOURCE_SHA256__='
+      + JSON.stringify(measureRetainedReplaySourceIdentity(prepared.root));
     const argv = [join(prepared.root, inputs[0]!), '--bundle', '--platform=node', '--format=esm', '--target=node22',
       '--outfile=' + entry, '--metafile=' + entry + '.meta.json', '--log-level=silent',
       '--banner:js=/* retained banner */', '--define:__PAPERCUSP_BUNDLED_SIDECAR__=true',
-      '--external:unused-native/*', '--minify-whitespace', '--minify-syntax'];
+      '--external:unused-native/*', '--minify-whitespace', '--minify-syntax', replayIdentityDefine];
     const invocation = { builder: join(prepared.root, 'apps/operator/bin/bundle-host.sh'), argv,
       compiler: join(privateCompiler, 'lib/main.js'), node: process.execPath,
       packageManager: join(prepared.root, 'node_modules/fixture-package-manager/cli.js'),
@@ -3705,7 +3760,95 @@ describe('BG inherited manifest and original source boundaries', () => {
     bgFixtureTrace('private-compiler:record-ready');
     const expectedVersion = '0.25.0';
     expect(JSON.parse(readFileSync(join(privateCompiler, 'package.json'), 'utf8')).version).toBe(expectedVersion);
-    return { prepared, dependencies, invocation, record, argv, entry, expectedVersion };
+    return { prepared, dependencies, invocation, record, argv, entry, expectedVersion, replayIdentityDefine };
+  }
+
+  async function partitionCompilation(sourceOnly = true, protectedUnconsumed = false) {
+    const fixture = await maintainedCompilerCandidate(sourceOnly, protectedUnconsumed);
+    const bank = dirname(fixture.entry), stageLeaf = 'partition-generation';
+    mkdirSync(bank, { recursive: true });
+    const temporary = 'hono-host.mjs.tmp.@BG_PID@';
+    const invocation = { ...fixture.invocation,
+      argv: fixture.argv.map(arg => arg.replaceAll(fixture.entry, join(bank, stageLeaf, temporary))) };
+    const transaction = prepareBgVerifierBuildTransaction({ ...fixture, bank, stageLeaf, invocations: [invocation],
+      outputs: [{ temporary, final: 'hono-host.mjs' },
+        { temporary: temporary + '.meta.json', final: 'hono-host.mjs.meta.json' }] });
+    const binding = beginBgVerifierBuildTransaction({ transaction, ownerPid: process.pid });
+    const command = binding.contexts.invocations[0]!;
+    const record = { ...binding.contexts.record, invocation: command.original };
+    const compilerReceipt = await compileBgVerifierInvocation({ record, invocation: command.invocation,
+      argv: command.invocation.argv, expectedVersion: fixture.expectedVersion });
+    const args = { record, invocation: command.invocation, entry: compilerReceipt.output.path, compilerReceipt };
+    return { ...fixture, binding, compilerReceipt, args, record };
+  }
+
+  for (const { rowId, testName } of BG_R1_PARTITION_CASES.filter(row => row.file.endsWith('source-preview-export.test.ts'))) {
+    it(testName, async () => {
+      if (['bg-r1-partition-uncensused-source', 'bg-r1-partition-uncensused-dependency',
+        'bg-r1-partition-virtual-consumption'].includes(rowId)) {
+        const { prepared, dependencies } = await compilerCandidate(true);
+        const custody = createBgVerifierCompilerCustody({ prepared, dependencies });
+        const virtual = rowId.endsWith('virtual-consumption');
+        const path = join(prepared.root, rowId.endsWith('uncensused-dependency')
+          ? 'node_modules/fixture-dependency/uncensused.js' : 'apps/operator/dist-verify/uncensused.js');
+        write(prepared.root, path.slice(prepared.root.length + 1), 'export default 73;');
+        const { build } = await import('esbuild');
+        await expect(build({ absWorkingDir: prepared.root, entryPoints: ['partition-input'],
+          bundle: true, write: false, logLevel: 'silent', plugins: [custody.plugin,
+            { name: 'partition-input-selection', setup(builder) {
+              builder.onResolve({ filter: /^partition-input$/ }, () =>
+                ({ path: virtual ? 'virtual-input' : path, namespace: virtual ? 'unowned-virtual' : 'file' }));
+            } }] })).rejects.toThrow(virtual ? 'BG compiler virtual input is outside original census'
+          : 'BG compiler input is outside original census');
+        return;
+      }
+      const unconsumed = rowId.endsWith('protected-source-unconsumed');
+      const full = rowId.endsWith('full-parent-census-mismatch');
+      const fixture = await partitionCompilation(!full, unconsumed);
+      if (unconsumed) {
+        await expect(qualifyBgVerifierOutput(fixture.args)).rejects.toThrow('BG protected source was not consumed by main compiler');
+        return;
+      }
+      if (full) {
+        const path = fixture.args.entry + '.meta.json';
+        const meta = JSON.parse(readFileSync(path, 'utf8'));
+        meta.inputs['libs/papercusp/package.json'] = { bytes: 1 };
+        writeFileSync(path, JSON.stringify(meta));
+        await expect(qualifyBgVerifierOutput(fixture.args)).rejects.toThrow('BG output accepted member census mismatch');
+        return;
+      }
+      const output = await qualifyBgVerifierOutput(fixture.args);
+      if (rowId.endsWith('extra-consumed-positive-control')) {
+        expect(Object.keys(output.artifact.sourceBlobs).sort()).toEqual([inputs[0], 'packages/core/index.ts'].sort());
+        expect(Object.keys(fixture.prepared.acceptedManifest.members)).toEqual(['packages/core/index.ts']);
+        expect(verifyBgVerifierOutputRecord(output, fixture.record, fixture.args.invocation)).toBe(output);
+        return;
+      }
+      const changed = JSON.parse(JSON.stringify(output)) as typeof output;
+      const receipt = changed.compilerReceipt!;
+      const kind = rowId.split('-').slice(-1)[0]!;
+      if (rowId.includes('-artifact-')) {
+        const path = inputs[0]!;
+        if (kind === 'added') changed.artifact.sourceBlobs['libs/papercusp/package.json'] = 'a'.repeat(40);
+        else if (kind === 'omitted') delete changed.artifact.sourceBlobs[path];
+        else changed.artifact.sourceBlobs[path] = 'a'.repeat(40);
+        expect(() => verifyBgVerifierOutputRecord(changed, fixture.record, fixture.args.invocation))
+          .toThrow('BG output complete compiler consumption mismatch');
+      } else if (rowId.includes('-receipt-')) {
+        const field = rowId.includes('-transaction-') ? 'transactionSha256' : rowId.includes('-entry-') ? 'entry'
+          : rowId.includes('-argv-') ? 'argv' : rowId.includes('-compiler-toolchain-') ? 'compilerToolchain'
+            : rowId.includes('-source-generation-') ? 'sourceGeneration' : 'dependencyGeneration';
+        Object.assign(receipt.consumption, { [field]: field === 'argv' ? ['substituted'] : 'substituted' });
+        expect(() => verifyBgVerifierOutputRecord(changed, fixture.record, fixture.args.invocation))
+          .toThrow('BG compiler consumption ' + field + ' mismatch');
+      } else {
+        if (kind === 'added') receipt.consumed.push({ path: 'added.ts', realpath: join(fixture.prepared.root, 'added.ts'), sha256: 'a'.repeat(64) });
+        else if (kind === 'omitted') receipt.consumed.pop();
+        else receipt.consumed[0]!.sha256 = 'a'.repeat(64);
+        expect(() => verifyBgVerifierOutputRecord(changed, fixture.record, fixture.args.invocation))
+          .toThrow('BG sealed complete compiler consumption changed');
+      }
+    });
   }
 
   it('compiles exact maintained host switches using private real esbuild and retains original custody', async () => {
@@ -3909,7 +4052,7 @@ describe('BG inherited manifest and original source boundaries', () => {
     const common = join(fixture.prepared.root, 'apps/operator/bin/bundle-host-common.sh');
     const result = spawnSync('bash', ['-c',
       'source "$1"; shift; repo="$1"; shift; bundle_host_cached_package() { echo unexpected-cache-fallback >&2; return 99; }; bundle_host_esbuild "$repo" "$@"',
-      'real-guarded-compiler', common, fixture.prepared.root, ...fixture.argv],
+      'real-guarded-compiler', common, fixture.prepared.root, ...fixture.argv.slice(0, -1)],
     { env: childEnv({ BUNDLE_HOST_BG_BUILD_CONTEXT: context }), encoding: 'utf8', timeout: 60_000 });
     expect(result.stderr).not.toContain('unexpected-cache-fallback');
     expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: '' });
@@ -3931,9 +4074,12 @@ describe('BG inherited manifest and original source boundaries', () => {
     const contextPath = join(dirname(fixture.prepared.root), 'original-multi-entry-contexts.json');
     writeFileSync(contextPath, JSON.stringify(contexts));
     const common = join(fixture.prepared.root, 'apps/operator/bin/bundle-host-common.sh');
+    // The frozen compiler command includes the generated witness; the shell
+    // receives its user switches and appends that measured witness exactly once.
     const run = (argv: string[], check = false) => spawnSync('bash', ['-c',
       'source "$1"; shift; repo="$1"; shift; bundle_host_cached_package() { echo unexpected-cache-fallback >&2; return 99; }; if [[ "$1" == check ]]; then bundle_host_prepare_esbuild "$repo"; else shift; bundle_host_esbuild "$repo" "$@"; fi',
-      'guarded-multi-entry', common, fixture.prepared.root, check ? 'check' : 'compile', ...argv],
+      'guarded-multi-entry', common, fixture.prepared.root, check ? 'check' : 'compile',
+      ...(argv.at(-1) === fixture.replayIdentityDefine ? argv.slice(0, -1) : argv)],
     { env: childEnv({ BUNDLE_HOST_BG_BUILD_CONTEXT: contextPath }), encoding: 'utf8', timeout: 60_000 });
     return { ...fixture, worker, workerEntry, contexts, contextPath, run };
   }
@@ -4114,6 +4260,36 @@ describe('BG inherited manifest and original source boundaries', () => {
       expect(statSync(copied).ino).not.toBe(statSync(source).ino);
     }
     expect(verifyBgVerifierPublication(publication, publication)).toBe(publication);
+  });
+
+  it.each([true, false])('BG artifact admission rejects source-only membership omitting the main entry before effects (recipe=%s)', async withRecipe => {
+    const fixture = await transactionCandidate();
+    const original = prepareBgVerifierBuildTransaction(fixture.args);
+    // This committed, censused input is valid source, but it was never in the
+    // original accepted artifact population. Do not derive authority from it.
+    const entry = join(fixture.prepared.root, 'libs/papercusp/package.json');
+    expect(fixture.prepared.source.files.some(row => row.path === 'libs/papercusp/package.json')).toBe(true);
+    expect(Object.hasOwn(fixture.prepared.acceptedManifest.members, 'libs/papercusp/package.json')).toBe(false);
+    const invocations = fixture.args.invocations.map((invocation, index) => index ? invocation : {
+      ...invocation, argv: [entry, ...invocation.argv.slice(1)],
+    });
+    const recipe = withRecipe ? { ...fixture.args.recipe, entry } : undefined;
+    const args = { ...fixture.args, invocations, recipe };
+    const error = 'BG artifact accepted membership omits main entry';
+    expect(() => prepareBgVerifierBuildTransaction(args)).toThrow(error);
+    const contexts = prepareBgVerifierBuildContexts(args);
+    const transaction = { ...original, contexts, recipe };
+    expect(() => beginBgVerifierBuildTransaction({ transaction, ownerPid: process.pid })).toThrow(error);
+    const runPhase = vi.fn(async (_phase, operation) => operation());
+    await expect(runBgVerifierBuildRecipe({ transaction, ownerPid: process.pid, runPhase,
+      budget: { measurements: BG_RECIPE_BUDGET_MEASUREMENTS,
+        env: { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: '1000000000' }, now: () => 1_000 },
+    })).rejects.toThrow(error);
+    expect(runPhase.mock.calls.map(([phase]) => phase)).toEqual(['bg.recipe.validate']);
+    expect(existsSync(fixture.stage)).toBe(false);
+    expect(readdirSync(fixture.args.bank)).toEqual([]);
+    expect(existsSync(join(fixture.args.bank, fixture.args.publicationLeaf!))).toBe(false);
+    expect(() => prepareBgVerifierBuildTransaction(fixture.args)).not.toThrow();
   });
 
   it.each(['unknown', 'insufficient'] as const)(
@@ -4356,7 +4532,7 @@ describe('BG inherited manifest and original source boundaries', () => {
     const receipts = [];
     for (const entry of [...binding.contexts.invocations].reverse()) {
       const result = fixture.run(entry.invocation.argv);
-      expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: '' });
+      expectBgChild(result);
       receipts.push(JSON.parse(result.stdout) as Awaited<ReturnType<typeof compileBgVerifierInvocation>>);
       trace('compiler-ready');
     }
@@ -4432,7 +4608,7 @@ describe('BG inherited manifest and original source boundaries', () => {
     const original = JSON.stringify(fixture.binding);
     const sourceReceipt = readFileSync(join(fixture.prepared.root, '.verifier-source.json'));
     if (process.env.PAPERCUSP_BG_LOGICAL_TRACE) process.stderr.write(`BG_LOGICAL_STAGE ${Date.now()} logical-start\n`);
-    const logical = qualifyBgVerifierLogicalOutputSet(fixture);
+    const logical = await qualifyBgVerifierLogicalOutputSet(fixture);
     if (process.env.PAPERCUSP_BG_LOGICAL_TRACE) process.stderr.write(`BG_LOGICAL_STAGE ${Date.now()} logical-ready\n`);
     expect(verifyBgVerifierLogicalOutputSet(logical, fixture)).toBe(logical);
     expect(Object.isFrozen(logical.files[0]!.identity)).toBe(true);
@@ -4453,7 +4629,7 @@ describe('BG inherited manifest and original source boundaries', () => {
   });
 
   it('logical-output publication atomically exposes a complete independently readable receipt', async () => {
-    const fixture = await logicalTransaction(), logical = qualifyBgVerifierLogicalOutputSet(fixture);
+    const fixture = await logicalTransaction(), logical = await qualifyBgVerifierLogicalOutputSet(fixture);
     const publication = publishBgVerifierLogicalOutputSet({ ...fixture, logical });
     if (process.env.PAPERCUSP_BG_LOGICAL_TRACE) process.stderr.write(`BG_LOGICAL_STAGE ${Date.now()} publication-ready\n`);
     expect(publication.identity.path).toBe(join(fixture.args.bank, fixture.args.publicationLeaf!));
@@ -4465,7 +4641,7 @@ describe('BG inherited manifest and original source boundaries', () => {
   });
 
   it('logical-output publication replay preserves the original complete receipt', async () => {
-    const fixture = await logicalTransaction(), logical = qualifyBgVerifierLogicalOutputSet(fixture);
+    const fixture = await logicalTransaction(), logical = await qualifyBgVerifierLogicalOutputSet(fixture);
     const publication = publishBgVerifierLogicalOutputSet({ ...fixture, logical });
     const bytes = readFileSync(publication.identity.path);
     expect(() => publishBgVerifierLogicalOutputSet({ ...fixture, logical })).toThrow();
@@ -4482,7 +4658,7 @@ describe('BG inherited manifest and original source boundaries', () => {
           args.outputs[3]!.final = 'nested/worker.mjs.meta.json';
         }
       });
-      expect(() => qualifyBgVerifierLogicalOutputSet(fixture)).toThrow(/BG logical/);
+      await expect(qualifyBgVerifierLogicalOutputSet(fixture)).rejects.toThrow(/BG logical/);
       for (const row of fixture.output.files) expect(existsSync(join(fixture.stage, row.temporary))).toBe(true);
       expect(existsSync(join(fixture.args.bank, fixture.args.publicationLeaf!))).toBe(false);
     });
@@ -4491,7 +4667,7 @@ describe('BG inherited manifest and original source boundaries', () => {
     'identical-replacement', 'stage', 'receipt', 'output-record'] as const)(
     'logical-output refuses %s drift before publication and preserves its original qualification', async defect => {
       const fixture = await logicalTransaction();
-      const logical = qualifyBgVerifierLogicalOutputSet(fixture), original = JSON.stringify(logical);
+      const logical = await qualifyBgVerifierLogicalOutputSet(fixture), original = JSON.stringify(logical);
       if (defect === 'source') writeFileSync(join(fixture.prepared.root, inputs[0]!), 'export default 999;');
       if (defect === 'dependency') writeFileSync(join(fixture.prepared.root, 'node_modules/fixture-dependency/index.js'), 'changed');
       if (defect === 'bundle') writeFileSync(logical.files[0]!.identity.path, 'changed');
@@ -4522,7 +4698,7 @@ describe('BG inherited manifest and original source boundaries', () => {
       const fixture = await logicalTransaction(args => {
         if (defect === 'unnominated') args.publicationLeaf = undefined;
       });
-      const logical = qualifyBgVerifierLogicalOutputSet(fixture);
+      const logical = await qualifyBgVerifierLogicalOutputSet(fixture);
       const path = join(fixture.args.bank, 'published-build.json');
       const target = defect === 'unowned-temporary' ? path + '.tmp.' + fixture.binding.ownerPid : path;
       if (defect === 'file' || defect === 'unowned-temporary') writeFileSync(target, 'another producer');
@@ -4538,7 +4714,7 @@ describe('BG inherited manifest and original source boundaries', () => {
 
   it.each(['receipt-bytes', 'receipt-replacement', 'worker', 'binding-evidence', 'compiler-evidence', 'output-evidence'] as const)(
     'logical-output publication readback refuses later %s replacement', async defect => {
-      const fixture = await logicalTransaction(), logical = qualifyBgVerifierLogicalOutputSet(fixture);
+      const fixture = await logicalTransaction(), logical = await qualifyBgVerifierLogicalOutputSet(fixture);
       const publication = publishBgVerifierLogicalOutputSet({ ...fixture, logical });
       const path = publication.identity.path, bytes = readFileSync(path);
       if (defect === 'receipt-bytes') writeFileSync(path, '{}');

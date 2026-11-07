@@ -22,9 +22,9 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
 import { FIRST_TURN_REJUDGE_WINDOW_MS, sweepExpiredConsults, type ExpirySweepDeps } from './consult-expiry-core';
-import { launchLogFailureReason, rejudgeFirstTurn } from './consult-dispatch';
+import { launchLogFailureReason, makeDeferredConsultReachDispatcher, rejudgeFirstTurn } from './consult-dispatch';
 import { continueCascadeDispatchCore } from './cascade-core';
-import { consultExpiryFindSilentResponders, consultExpiryNotifyRequester, consultExpiryRejudgeAnsweringTask } from './consult-expiry-adapters';
+import { consultExpiryDispatch, consultExpiryFindSilentResponders, consultExpiryNotifyRequester, consultExpiryRejudgeAnsweringTask } from './consult-expiry-adapters';
 import { PgCoordLog, ensureCoordEventLogTable } from '@papercusp/coordination/event-log';
 import type { CoordEnvelope } from '@papercusp/coordination/core';
 import { currentRequestWorkspaceId } from '../workspace-als';
@@ -693,6 +693,59 @@ async function cascadeRow(id: string, ws = WS) {
 }
 
 describe('sweepExpiredConsults — cascade advance (D-005/P-013)', () => {
+  it('keeps a deferred expiry launch queued while recovering a later overdue requester', async () => {
+    async function rowOf(conversationId: string) {
+      const [row] = await rootSql<Array<Record<string, unknown> & { routing: Record<string, unknown> }>>`
+        SELECT * FROM harness_shared.consult_state
+         WHERE workspace_id = ${WS} AND conversation_id = ${conversationId}`;
+      expect(row).toBeDefined();
+      return row;
+    }
+    const id = await seedConsult({ routing: menuSnapshot(['resp-1', 'resp-next']) });
+    const terminal = await seedConsult({ latency: 'hard-blocked' });
+    const { deps, alerts, emits } = makeDeps();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const continuations: Promise<boolean>[] = [];
+    const launch = vi.fn(async (opts: Parameters<NonNullable<ExpirySweepDeps['dispatch']>>[0]) => {
+      await held;
+      await opts.onAnsweringOwner?.('expiry-next-fork');
+      return { woke: 1, answeringOwnerId: 'expiry-next-fork' };
+    });
+    const dispatch = consultExpiryDispatch((ctx) => makeDeferredConsultReachDispatcher(ctx, {
+      getSql: () => rootSql,
+      continueDispatch: (workspaceId, conversationId) => {
+        const pending = continueCascadeDispatchCore(workspaceId, conversationId, {
+          getSql: () => rootSql, now: () => NOW,
+          dispatch: () => (opts) => launch({ ...opts, workspaceId }),
+        });
+        continuations.push(pending);
+        return pending;
+      },
+    }));
+    deps.dispatch = (opts) => opts.conversationId === id ? dispatch(opts) : Promise.resolve({ woke: 1 });
+    try {
+      await sweepExpiredConsults(deps);
+      await vi.waitFor(() => expect(launch).toHaveBeenCalledOnce());
+      expect(await rowOf(id)).toMatchObject({
+        state: 'awaiting_responder', cascade_cursor: 1, responder_id: 'resp-next', closed_at: null,
+        routing: { cascadeDispatch: { version: 1, cursor: 1, responder: 'resp-next' } },
+        cascade_digest: [expect.objectContaining({ kind: 'expired' })],
+      });
+      expect(await stateOf(terminal)).toMatchObject({ state: 'expired' });
+      expect(alerts.some((alert) => alert.conversationId === terminal)).toBe(true);
+      expect(emits.some((event) => event.key === `consult:reply:${terminal}`)).toBe(true);
+    } finally {
+      release();
+      await Promise.all(continuations);
+    }
+    expect(await rowOf(id)).toMatchObject({
+      routing: { selection: { selected: [expect.anything(), expect.objectContaining({ answeringOwnerId: 'expiry-next-fork' })] } },
+    });
+    expect((await rowOf(id)).routing).not.toHaveProperty('cascadeDispatch');
+    expect(launch).toHaveBeenCalledOnce();
+  });
+
   it('recovers a reviewer whose thread read and durable decline were both denied (EI-27697470834897410)', async () => {
     const hookRoot = new URL('../../../../apps/operator/scripts/hooks/inject/', import.meta.url);
     const { runInjection } = await import(fileURLToPath(new URL('core.mjs', hookRoot)));

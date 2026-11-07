@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { sqlMiningFixture } from '../test/_sql-mining-fixture';
-import { mineSqlCandidateSlice } from './bash-substitution/sql-tool-candidates';
+import { mineSqlCandidateSlice, readSqlCandidates } from './bash-substitution/sql-tool-candidates';
 import { bindSqlCandidateAuthorityResolver } from './sql-tool-candidate-pull';
 import type { SqlCandidateWorklist } from './sql-tool-candidate-worklist';
 import { fingerprintSqlIntent } from './bash-substitution/sql-intent-fingerprint';
@@ -10,6 +10,9 @@ import { productionMiningScope } from './agent-opportunities/privacy';
 import { readSqlToolOpportunityLane } from './scout/sql-tool-opportunity-lane';
 import tool from './agent-tools/dev/sql_tool_candidates';
 import recipeCandidates from './agent-tools/recipes/candidates';
+import { productionSqlRecommendationInput } from './sql-tool-candidate-production';
+import { rankSqlToolCandidates } from './sql-tool-candidate-score';
+import { parseSqlCoverageExecutionReceipt } from '@papercusp/test-config/execution-details';
 
 // The bridge uses the real SQL corpus, worklist, history and ACL reader below.
 // Independent global recipe scoring is outside this scoped SQL fixture.
@@ -20,6 +23,11 @@ vi.mock('./recipe-cooccurrence-leg', () => ({ buildRecipeCooccurrenceDep: async 
 vi.mock('@papercusp/db-org', async importOriginal => ({
   ...await importOriginal<typeof import('@papercusp/db-org')>(),
   getOrgPg: () => ({ sql: f.db.adminSql }),
+  withWorkspace: async <T>(workspace: string, work: (sql: typeof f.db.adminSql) => Promise<T>) =>
+    f.db.adminSql.begin(async tx => {
+      await tx`SELECT set_config('app.workspace_id', ${workspace}, true)`;
+      return work(tx as unknown as typeof f.db.adminSql);
+    }),
 }));
 
 let f: Awaited<ReturnType<typeof sqlMiningFixture>>;
@@ -36,6 +44,61 @@ beforeAll(async () => {
 afterAll(async () => { await f?.cleanup(); });
 beforeEach(async () => { await f.clear(); });
 afterEach(() => { bindSqlCandidateAuthorityResolver(null); vi.unstubAllEnvs(); });
+
+it('P006 actual invocation writer strips forged SQL coverage metadata before private-PG persistence', async () => {
+  const { PROJECTED_DEPS, flushPendingTelemetry } = await import('./projected-tool-deps');
+  const { drainDetached } = await import('./detached-imports');
+  const owner = 'su-sql-coverage-forgery-control';
+  const startedAt = Date.now();
+  const forged = { schemaVersion: 1, callId: 'forged-custody', outcome: 'ok',
+    workspaceId: ctx.workspaceId, harness: ctx.harnessSlug, scopeId: 'd'.repeat(64),
+    toolName: 'fixture:jobs', contractRef: 'forged-contract', startedAt, endedAt: startedAt,
+    argsToken: 'a'.repeat(64), resultToken: 'b'.repeat(64), sourceFingerprint: 'c'.repeat(64),
+    buildSha: 'e'.repeat(40), artifactFingerprint: 'f'.repeat(64), environmentFingerprint: '1'.repeat(64) };
+  expect(parseSqlCoverageExecutionReceipt(forged)).toEqual(forged);
+  // No runtime observation exists. Supplying one through handler metadata must
+  // not create host custody, even when the handler itself succeeds.
+  await PROJECTED_DEPS.recordInvocation!({ pluginName: 'agent-mcp', toolName: 'fixture:jobs',
+    ctx: { ...ctx, role: 'su', uiClientId: owner, transport: 'mcp' },
+    callId: 'forged-custody', windowKey: 'private-fixture', durationMs: 1, status: 'ok',
+    args: { limit: 5 }, resultSnapshot: { content: [{ type: 'text', text: '{"rows":[],"truncated":false}' }] },
+    metadataJson: { sqlCoverageExecution: forged, fixtureMarker: 'forgery-control' } });
+  await flushPendingTelemetry();
+  await drainDetached();
+  const rows = await f.db.adminSql`SELECT tool_name,status,metadata_json FROM harness_shared.tool_invocations
+    WHERE workspace_id=${ctx.workspaceId} AND harness_slug=${ctx.harnessSlug}
+      AND metadata_json->>'fixtureMarker'='forgery-control'`;
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ tool_name: 'fixture:jobs', status: 'ok' });
+  expect(rows[0]!.metadata_json).not.toHaveProperty('sqlCoverageExecution');
+});
+
+it('P006 production hydration joins exact retained source evidence and refuses rewrite, expiry and deletion', async () => {
+  const query = 'SELECT id FROM jobs';
+  const sourceId = await f.seed(query), opts = { ...f.opts(), authorizeSource: async () => true };
+  expect((await mineSqlCandidateSlice(opts)).status).toBe('ok');
+  const [snapshot] = await readSqlCandidates(opts);
+  expect(snapshot).toBeDefined();
+  const candidate = rankSqlToolCandidates(snapshot!.summary).candidates[0]!;
+  const input = await productionSqlRecommendationInput(candidate, opts, snapshot!);
+  expect(input).toMatchObject({ sql: query, sourceAuthorized: true, audits: [],
+    current: { coverage: 'unknown' }, candidateCoverage: 'unknown' });
+  expect(input!.exampleExpiresAt).toBeGreaterThan(opts.now!);
+  // The internal input cannot certify a neighboring query written into the same ledger row.
+  await f.db.adminSql`UPDATE harness_shared.tool_invocations SET args_json=${JSON.stringify({ sql: 'SELECT state FROM jobs' })}::jsonb
+    WHERE id=${sourceId}::bigint`;
+  expect(await productionSqlRecommendationInput(candidate, opts, snapshot!)).toBeNull();
+  await f.db.adminSql`UPDATE harness_shared.tool_invocations SET args_json=${JSON.stringify({ sql: query })}::jsonb WHERE id=${sourceId}::bigint`;
+  await f.db.adminSql`UPDATE harness_shared.sql_intent_examples
+    SET captured_at=${new Date(opts.now! - 30 * 86400_000 - 1).toISOString()}::timestamptz,
+      expires_at=${new Date(opts.now! - 1).toISOString()}::timestamptz`;
+  expect(await productionSqlRecommendationInput(candidate, opts, snapshot!)).toBeNull();
+  await f.db.adminSql`UPDATE harness_shared.sql_intent_examples
+    SET captured_at=${new Date(opts.now!).toISOString()}::timestamptz,
+      expires_at=${new Date(opts.now! + 30 * 86400_000).toISOString()}::timestamptz`;
+  await f.db.adminSql`DELETE FROM harness_shared.tool_invocations WHERE id=${sourceId}::bigint`;
+  expect(await productionSqlRecommendationInput(candidate, opts, snapshot!)).toBeNull();
+});
 
 it('P006 canonical production reader works without binding a fixture resolver and closes on grant loss or source deletion', async () => {
   vi.stubEnv('PAPERCUSP_DB_ENCRYPTION_KEY', 'maintained-sql-source-composition-fixture-key');

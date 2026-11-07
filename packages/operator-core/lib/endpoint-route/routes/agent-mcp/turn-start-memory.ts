@@ -35,6 +35,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { randomUUID } from 'node:crypto';
 import type { ActivationRevision } from '../../../session-activation';
 import type { LaunchGovernanceTarget } from '../../../governance-policy/session-governance';
+import type { PreparedMemoryBlock, MemoryFragmentOffer, MemoryEmissionConfirmation } from '../../../memory/session-epoch-ledger';
 
 // Reuse the hook's emission ledger and the existing two-phase cursor store.
 // This surface is separate from orientation: CTRL may be the only emitted block.
@@ -224,6 +225,9 @@ const turnStartMemory = defineTool({
        * ack-on-arrival. See read-cursors.ts.
        */
       confirmedDelivery?: string | null;
+      /** Private stdout receipt extension; absent on unsupported/older hosts. */
+      confirmedFactBodies?: import('../../../agent-facts/cells').FactBodyManifest[];
+      confirmedMemoryDeliveries?: MemoryEmissionConfirmation[];
       /**
        * The hook's own wall for this request in ms (hooks/inject/core.mjs sends its
        * port's timeoutMs). Jev's memory filter waits only for what is left of it
@@ -652,7 +656,17 @@ const turnStartMemory = defineTool({
         };
       })();
 
+      const memoryPreparation = { value: null as PreparedMemoryBlock | null };
       const memoryPromise = (async (): Promise<string> => {
+        if (Array.isArray(body.confirmedMemoryDeliveries) && body.confirmedMemoryDeliveries.length <= 16) {
+          try {
+            const [{ confirmMemoryEmission }, { getOrgPg }] = await Promise.all([
+              import('../../../memory/session-epoch-ledger'), import('@papercusp/db-org'),
+            ]);
+            const { sql } = getOrgPg();
+            for (const proof of body.confirmedMemoryDeliveries) await confirmMemoryEmission(sql, owner, proof);
+          } catch { /* Unconfirmed fragments stay eligible; the receipt can retry. */ }
+        }
         if (body.memoryEnabled === false) {
           // The port fired and the caller opted out — a real reading, and NOT
           // an outage. Recording nothing here would make a client that always
@@ -662,7 +676,7 @@ const turnStartMemory = defineTool({
         }
         try {
           const [
-            { buildMemoryContextBlock },
+            { prepareMemoryContextBlock },
             { getMemoryBlockBoundedResult },
             { withIdentityBoundedMemoryAdmission },
             { readAppliedIdentityRecall, identityRecallCacheSuffix },
@@ -701,7 +715,7 @@ const turnStartMemory = defineTool({
           // identity's bounds is never served under another's; an undeclared
           // identity keeps the existing key and recall.
           const admitted = await withIdentityBoundedMemoryAdmission(() => readAppliedIdentityRecall(owner, workspaceId), (identityRecall) =>
-            getMemoryBlockBoundedResult(workspaceId, `turn-start:${owner}${identityRecallCacheSuffix(identityRecall)}`, async (deadline, { callerWaiting }) => {
+            getMemoryBlockBoundedResult(workspaceId, `turn-start:${owner}:receipts-v1${identityRecallCacheSuffix(identityRecall)}`, async (deadline, { callerWaiting }) => {
               // P-044 (F-L): resolve the agent's ACTION signals only when this
               // turn actually builds/revalidates memory. A stale cache hit must
               // return immediately rather than paying these lookups inline.
@@ -720,7 +734,7 @@ const turnStartMemory = defineTool({
               } catch {
                 agentSignals = undefined;
               }
-              return await buildMemoryContextBlock({
+              return await prepareMemoryContextBlock({
                 deadline,
                 // A stale serve answers this turn at once; the rebuild then runs for
                 // the next turn and the hook wall no longer bounds Jev in it.
@@ -766,7 +780,8 @@ const turnStartMemory = defineTool({
           // delivery-coverage detector sees the missing turn; only a completed
           // empty build earns `no-recall`.
           if (bounded.status !== 'ready') return '';
-          const block = bounded.block ?? '';
+          memoryPreparation.value = bounded.block;
+          const block = bounded.block?.text ?? '';
           // `no-signal` is reserved for a prompt that carried nothing to
           // retrieve ON — chrome-stripped to empty. A non-empty query that
           // simply matched nothing is `no-recall`: healthy quiet, and a
@@ -858,6 +873,36 @@ const turnStartMemory = defineTool({
         }
       })();
 
+      // Extend the existing never-drop fold and native receipt, not a model ACK.
+      // Unsupported hooks keep receiving their key-only orientation unchanged.
+      const factBodiesPromise = (async () => {
+        const none = { text: '', offers: [] as import('../../../agent-facts/cells').FactBodyOffer[] };
+        if (!('confirmedDelivery' in body) || !Array.isArray(body.confirmedFactBodies)) return none;
+        try {
+          const [{ confirmNativeFactBodyDelivery, factBodyOffer }, { foldNeverDropFacts }] = await Promise.all([
+            import('../../../agent-facts/cells'), import('../../../agent-facts/store'),
+          ]);
+          await confirmNativeFactBodyDelivery(owner,
+            typeof body.confirmedDelivery === 'string' ? body.confirmedDelivery : null, body.confirmedFactBodies);
+          const facts = await foldNeverDropFacts([
+            { scope: 'workspace' }, { scope: 'owner', scopeRef: owner },
+          ], { workspaceId });
+          const offers: import('../../../agent-facts/cells').FactBodyOffer[] = [];
+          let available = TURN_START_BUDGET_CHARS - 128;
+          for (const fact of facts) {
+            const offer = factBodyOffer(fact);
+            // Whole bodies only: a budget can omit a row, never shorten one.
+            if (!offer || offer.rendered.length + 1 > available) continue;
+            offers.push(offer);
+            available -= offer.rendered.length + 1;
+          }
+          const omitted = facts.length - offers.length;
+          const lines = offers.map(offer => offer.rendered);
+          if (omitted) lines.push(`- ${omitted} standing fact bodies omitted — read facts:list for complete bodies.`);
+          return { text: lines.length ? ['## Standing facts', ...lines].join('\n') : '', offers };
+        } catch { return none; }
+      })();
+
       // portable-identity P-010: every package contribution the wearer's stack
       // declares at the turn-start sink, evaluated under ONE aggregate budget
       // (agent-identities/turn-start-package-sink.ts). Concurrent with the
@@ -947,6 +992,7 @@ const turnStartMemory = defineTool({
         string | MissedDeadline,
         PackageSinkDelivery | MissedDeadline,
         string | MissedDeadline,
+        Awaited<typeof factBodiesPromise> | MissedDeadline,
       ];
       try {
         settled = await Promise.all([
@@ -956,6 +1002,7 @@ const turnStartMemory = defineTool({
           byDeadline(personalPromise),
           byDeadline(packagePromise),
           byDeadline(loopCheckpointPromise),
+          byDeadline(factBodiesPromise),
         ]);
       } finally {
         clearTimeout(deadlineTimer);
@@ -975,6 +1022,9 @@ const turnStartMemory = defineTool({
       const personal = ready('personal', settled[3], '');
       const packages = ready<PackageSinkDelivery>('packages', settled[4], { classes: [], receipt: null });
       const loopCheckpoint = ready('loop-checkpoint', settled[5], '');
+      const factBodies = ready('fact-bodies', settled[6], {
+        text: '', offers: [] as import('../../../agent-facts/cells').FactBodyOffer[],
+      });
       if (omitted.length > 0) {
         console.warn(
           `[turn-start] response deadline: omitted ${omitted.join(',')} ` +
@@ -1021,6 +1071,29 @@ const turnStartMemory = defineTool({
           // its own valid token. Keep delivering CTRL until staging succeeds.
         }
       }
+      let factBodyOffers: import('../../../agent-facts/cells').FactBodyOffer[] = [];
+      if (factBodies.offers.length > 0) {
+        const token = deliveryToken ?? randomUUID();
+        try {
+          const { stageNativeFactBodyDelivery } = await import('../../../agent-facts/cells');
+          await stageNativeFactBodyDelivery(owner, factBodies.offers, token);
+          factBodyOffers = factBodies.offers;
+          deliveryToken = token;
+        } catch { /* No candidate means no body confirmation; prefer replay. */ }
+      }
+      let memoryFragmentOffers: MemoryFragmentOffer[] = [];
+      const preparedMemory = memoryPreparation.value;
+      if (memory && preparedMemory && preparedMemory.text === memory && preparedMemory.fragments.length) {
+        const token = deliveryToken ?? randomUUID();
+        try {
+          const [{ stageMemoryEmission }, { getOrgPg }] = await Promise.all([
+            import('../../../memory/session-epoch-ledger'), import('@papercusp/db-org'),
+          ]);
+          await stageMemoryEmission(getOrgPg().sql, owner, token, preparedMemory.fragments);
+          memoryFragmentOffers = preparedMemory.fragments;
+          deliveryToken = token;
+        } catch { /* No durable offer means no suppression; prefer replay. */ }
+      }
       // ORDER IS DELIBERATE: control (a mode/route transition governs everything
       // after it) → orientation (what you hold and who is waiting on you) →
       // memory (background recall) -> explicitly granted private context.
@@ -1037,8 +1110,10 @@ const turnStartMemory = defineTool({
       await markerOutcomePromise;
       return Response.json({
         ok: true,
-        text: [control.text, loopCheckpoint, orientationBlock, memory, personal].filter(Boolean).join('\n\n'),
+        text: [control.text, loopCheckpoint, orientationBlock, factBodies.text, memory, personal].filter(Boolean).join('\n\n'),
         ...(deliveryToken ? { deliveryToken } : {}),
+        ...(factBodyOffers.length ? { factBodyOffers } : {}),
+        ...(memoryFragmentOffers.length ? { memoryFragmentOffers } : {}),
         ...(turnStartRequestId ? {
           turnStartOutcome: {
             requestId: turnStartRequestId,

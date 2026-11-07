@@ -52,6 +52,52 @@ const makeDispatchContext = (): UnifiedToolContext => ({
 describe('scorecards:list correctness payload', () => {
   beforeEach(() => vi.clearAllMocks());
 
+  it('review history returns an older accepted result independently of the pending page cursor', async () => {
+    const pending = { issueId: 'EI-pending', createdAt: '2026-11-01T12:00:00Z',
+      ratings: { a: { rating: 'unknown', evidence: 'Awaiting collection.' } },
+      exclusionReasons: ['audit-pending'] } as unknown as ScorecardRow;
+    const accepted = { ...pending, issueId: 'EI-accepted', createdAt: '2026-10-01T12:00:00Z',
+      exclusionReasons: [], ratings: { a: { rating: 'healthy', evidence: 'Retained measurement.' } } };
+    listScorecardPageM.mockResolvedValueOnce({ rows: [pending], hasMore: true })
+      .mockResolvedValueOnce({ rows: [accepted], hasMore: false });
+    const comparisonTime = '2026-11-01T12:01:00Z';
+    const cursor = { createdAt: '2026-11-01T13:00:00Z', issueId: 'EI-newer-pending' };
+    const result = await listTool.handler(listTool.args.parse({ rubricRef: 'history', historyMode: 'review-history',
+      cursor, comparisonTime, limit: 1, detail: 'scores' }) as never, makeDispatchContext() as never) as { data: Record<string, unknown> };
+    expect(result.data).toMatchObject({ comparisonTime, historyMode: 'review-history', hasMore: true,
+      scorecards: [{ issueId: 'EI-pending', exclusionReasons: ['audit-pending'], ratings: { a: { rating: 'unknown' } } }],
+      lastAccepted: { issueId: 'EI-accepted', createdAt: accepted.createdAt, exclusionReasons: [] } });
+    expect(listScorecardPageM.mock.calls[0]?.[0]).toMatchObject({ before: cursor,
+      finalizedOnly: false, includeDiagnostics: true, comparisonTime });
+    expect(listScorecardPageM.mock.calls[1]?.[0]).toMatchObject({ rubricRef: 'history',
+      finalizedOnly: true, limit: 1, comparisonTime });
+    expect(listScorecardPageM.mock.calls[1]?.[0]).not.toHaveProperty('before');
+    expect(listScorecardPageM.mock.calls[1]?.[0]).not.toHaveProperty('provisionalOnly');
+  });
+
+  it('explicit accepted mode keeps strict admission even if a legacy history flag is supplied', async () => {
+    listScorecardPageM.mockResolvedValueOnce({ rows: [], hasMore: false });
+    await listTool.handler(listTool.args.parse({ historyMode: 'accepted', includeUnfinalized: true }) as never,
+      makeDispatchContext() as never);
+    expect(listScorecardPageM.mock.lastCall?.[0]?.finalizedOnly).toBe(true);
+    expect(listScorecardPageM).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps historical measurements and failed attempts for every key in compact output', () => {
+    const latest = { testRunId: 2, value: null, unit: 'ms', status: 'error',
+      finishedAt: '2026-11-01T12:00:30Z', comparisonTime: '2026-11-01T12:01:01Z', ageMs: 31_000, freshness: 'failed' };
+    const historical = { ...latest, testRunId: 1, value: 42, status: 'pass',
+      finishedAt: '2026-11-01T12:00:00Z', ageMs: 61_000, freshness: 'stale' };
+    const full = { ratings: { measured: { rating: 'unknown', evidence: 'retained prose',
+      ledgerResult: latest, lastMeasurement: historical }, never: { rating: 'unknown', evidence: 'never measured' } },
+      nKeys: 2, missingKeys: [] };
+    const compact = toScoresOnlyRow(full);
+    expect(Object.keys(compact.ratings)).toEqual(['measured', 'never']);
+    expect(compact.ratings.measured).toEqual({ rating: 'unknown', ledgerResult: latest, lastMeasurement: historical });
+    expect(compact.nKeys).toBe(2);
+    expect(full.ratings.measured.evidence).toBe('retained prose');
+  });
+
   it('keeps every criterion through an ambient trimmed dispatch', async () => {
     const rerunRecipe = {
       schemaVersion: 1,
@@ -179,8 +225,8 @@ describe('scorecards:list correctness payload', () => {
     expect(Object.keys(card.ratings)).toHaveLength(7);
     expect(card.nKeys).toBe(7);
     expect(card.missingKeys).toEqual(['criterion-8']);
-    expect(card.ratings['criterion-1']).toEqual({ rating: 'healthy' });
-    expect(card.ratings['criterion-6']).toEqual({ rating: 'degraded', remediation: 'WI-1 tracks this' });
+    expect(card.ratings['criterion-1']).toEqual({ rating: 'healthy', evidenceRef: 'ref-1' });
+    expect(card.ratings['criterion-6']).toEqual({ rating: 'degraded', evidenceRef: 'ref-6', remediation: 'WI-1 tracks this' });
     expect(JSON.stringify(lean.data).length).toBeLessThan(2_000);
 
     // A subjectRef read drills into one subject's card: full evidence by default.
@@ -192,6 +238,27 @@ describe('scorecards:list correctness payload', () => {
     expect(drilled.data.detail).toBe('full');
     expect(drilled.data.evidenceOmitted).toBeUndefined();
     expect(drilled.data.scorecards[0].ratings['criterion-1'].evidence).toContain('evidence-1');
+  });
+
+  it('preserves exact evidence actions and their locators in compact rows without changing the stored ratings', () => {
+    const row = {
+      issueId: 'EI-action', rubricRef: 'procedure-rubric', rubricRevision: 7, criteriaHash: 'pinned-hash',
+      subject: { ref: 'audit:historical', windowStart: '2026-11-01T00:00:00Z', windowEnd: '2026-11-02T00:00:00Z' },
+      acceptance: { state: 'unresolved' },
+      ratings: { missing: { rating: 'unknown', evidence: 'Long authored historical evidence.',
+        unknownReason: 'retention-gap', nextEvidenceAction: 'Read archive:$SUBJECT\nKeep the exact window.',
+        evidenceRef: 'archive:original', evidenceKind: 'manual', positiveControlRef: 'archive:control',
+        ratedFrom: 'ledger', ledgerResult: { testRunId: 42, value: null, unit: null, provenanceStatus: 'legacy-missing' } } },
+    };
+    const before = JSON.stringify(row);
+    const compact = toScoresOnlyRow(row);
+    const { evidence: _evidence, ...expected } = row.ratings.missing;
+    expect(compact.ratings.missing).toEqual(expected);
+    expect(compact.subject).toEqual(row.subject);
+    expect(compact.rubricRevision).toBe(7);
+    expect(compact.criteriaHash).toBe('pinned-hash');
+    expect(compact.acceptance).toEqual(row.acceptance);
+    expect(JSON.stringify(row)).toBe(before);
   });
 
   it('resolveScorecardListDetail: explicit detail wins; otherwise subjectRef ⇒ full, browse ⇒ scores', () => {
@@ -350,6 +417,7 @@ describe('scorecards:list correctness payload', () => {
       rubricRef: 'acceptance-test-rubric',
       includeLinks: true,
       finalizedOnly: true,
+      comparisonTime: expect.any(String),
     });
   });
 

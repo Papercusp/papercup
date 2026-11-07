@@ -4672,6 +4672,13 @@ export default defineTool({
       ok: z.boolean(),
       created: z.boolean().optional(),
       issueId: z.string().nullable().optional(),
+      previousIssueId: z.string().nullable().optional(),
+      // attachScorecardCompletionReceipt writes this on every handler result.
+      completionReceipt: z.object({
+        status: z.enum(['recorded', 'not-recorded', 'recovery-incomplete']),
+        effectRef: z.string().optional(), reason: z.string().optional(),
+        failures: z.array(z.string()).optional(),
+      }).optional(),
       evidenceFingerprint: z.string().optional(),
       gradedGeneration: z
         .object({

@@ -39,7 +39,7 @@ registerSystemAction('consult-expiry-sweep', async () => {
       consultExpiryFileReviewWorkItem,
       consultExpiryStopAnsweringSession,
     },
-    { makeConsultReachDispatcher, rejudgeFirstTurn },
+    { makeDeferredConsultReachDispatcher, rejudgeFirstTurn },
     { upsertConditionWorkItem },
     { listLiveTasks, listTasks },
     { killTask },
@@ -58,11 +58,15 @@ registerSystemAction('consult-expiry-sweep', async () => {
     getSql: () => getOrgPg().sql,
     resumeCascadeDispatch: async (workspaceId, conversationId) => {
       const { continueCascadeDispatchProd } = await import('../../consult/consult-dispatch');
-      return continueCascadeDispatchProd(workspaceId, conversationId);
+      // The row already owns retry/lease/token fencing. A native launch may
+      // outlive this tick; it must not hold later rows or park recovery hostage.
+      void continueCascadeDispatchProd(workspaceId, conversationId).catch(() => {});
+      return true;
     },
     resumeRequest: async (workspaceId, conversationId) => {
       const { continueFeedbackRequestProd } = await import('../../consult/get-feedback-prod');
-      return continueFeedbackRequestProd(workspaceId, conversationId);
+      void continueFeedbackRequestProd(workspaceId, conversationId).catch(() => {});
+      return true;
     },
     // P-003 (WI-10003199): a slot whose window closes without a post has its
     // answering session stopped here, at the transition, instead of idling until
@@ -79,7 +83,7 @@ registerSystemAction('consult-expiry-sweep', async () => {
     // D-002/D-011: the sweep DISPATCHES the next selectee (fork/convert from
     // their transcript) instead of waking them. notifyAgents is no longer on
     // this binding at all, so the sweep cannot silently regain a wake.
-    dispatch: consultExpiryDispatch((ctx) => makeConsultReachDispatcher(ctx)),
+    dispatch: consultExpiryDispatch((ctx) => makeDeferredConsultReachDispatcher(ctx)),
     // EI-27111739698817170: a first reply that lands after the dispatcher's
     // first-turn window is judged here by the dispatcher's own classifier, so a
     // late provider refusal (model_not_found, a usage wall) advances the cascade

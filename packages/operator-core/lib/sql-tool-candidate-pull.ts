@@ -49,8 +49,10 @@ async function productionAuthority(ctx: SqlCandidatePullContext,
   const { productionOpportunityReaders } = await import('./agent-opportunities/source-readers');
   const readers = productionOpportunityReaders({ workspaceId: request.workspaceId,
     harnessSlug: request.harnessSlug, sourceBoundary: scope.sourceBoundary, authorize });
+  const { productionSqlRecommendationInput } = await import('./sql-tool-candidate-production');
   return { workspaceId: request.workspaceId, harnessSlug: request.harnessSlug, scope, authorize,
-    authorizeSource: async id => !!await readers.authorizeLedgerSource(id) };
+    authorizeSource: async id => !!await readers.authorizeLedgerSource(id),
+    recommendationInput: productionSqlRecommendationInput };
 }
 
 export async function pullSqlToolCandidates(ctx: SqlCandidatePullContext,

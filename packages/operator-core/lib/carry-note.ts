@@ -3090,6 +3090,8 @@ export async function setCarryNoteWithPrior(
   ref: CarryNoteRef | string,
   note: string | null | undefined,
   opts?: {
+    /** Internal lifecycle composition: use the caller's existing transaction. */
+    transaction?: Sql | TransactionSql;
     journal?: boolean;
     /** Authoritative work-item subject to bind to the newly appended journal entry. */
     workItem?: WorkItemSubject;
@@ -3272,7 +3274,7 @@ export async function setCarryNoteWithPrior(
   // (work-item-checkpoint.ts passes `bounded: true`), so they fail fast under
   // admin-pool/row-lock contention. Generic carry-note callers that omit `bounded`
   // retain the unbounded sql.begin(write) branch below.
-  const result = opts?.bounded
+  const result = opts?.transaction ? await write(opts.transaction) : opts?.bounded
     // `sql` above is getOrgPg().sql, not an injected backend. Let boundedOrgTxn
     // resolve that same pool itself so its acquire ticket is tagged org-admin.
     // Passing it as `client` hid queue/held measurements on a timeout.

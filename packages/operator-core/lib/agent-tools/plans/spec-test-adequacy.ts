@@ -2839,8 +2839,9 @@ function appendRatingRerunProbes(
  *  37 — files-only source BARs accept complete shared suites, rejecting filtered or skipped whole-file proof.
  *  38 — non-automated work-item census proof without test bytes does not require executable fixture evidence.
  *  39 — evidence-kind/plane compliance cannot turn unexercised layer reachability into a positive pass.
+ *  40 — unknown currentness on an exact required plane is indeterminate, not absent; known absence still fails.
  */
-export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 39;
+export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 40;
 
 /** One key on which a fixture-free review fails to pair with the binding it cites. */
 export type FixtureAbsencePairingKey =
@@ -3927,6 +3928,21 @@ export function evaluateSpecTestAdequacy(input: {
     return typeof plane === 'string' ? [plane.trim().toLowerCase()] : [];
   }));
   const missingPlanes = requiredPlanes.filter((plane) => !presentPlanes.has(plane));
+  // A replay measurement outage makes currentness unknown; an exact binding for
+  // that plane is not evidence that the plane is absent. Preserve unknown unless
+  // some required plane is definitely absent or only has known-stale evidence.
+  const unknownPlaneRows = exactEvidence.filter((row) => {
+    const plane = readSpecEvidencePlane(row.details);
+    return typeof plane === 'string' &&
+      requiredPlanes.includes(plane.trim().toLowerCase()) &&
+      row.currentness.overall === 'unknown';
+  });
+  const unknownPlanes = [...new Set(unknownPlaneRows.flatMap((row) => {
+    const plane = readSpecEvidencePlane(row.details);
+    const normalized = typeof plane === 'string' ? plane.trim().toLowerCase() : null;
+    return normalized !== null && missingPlanes.includes(normalized) ? [normalized] : [];
+  }))];
+  const definitelyMissingPlanes = missingPlanes.filter((plane) => !unknownPlanes.includes(plane));
   const planeBlockerRows = missingPlanes.length === 0 ? [] : exactEvidence.filter((row) => {
     const plane = readSpecEvidencePlane(row.details);
     const normalizedPlane = typeof plane === 'string' ? plane.trim().toLowerCase() : null;
@@ -3940,14 +3956,21 @@ export function evaluateSpecTestAdequacy(input: {
     );
   });
   const planeRating: CorrectLayerEvidencePart | null = requiredPlanes.length === 0 ? null : missingPlanes.length > 0
-    ? boundCorrectLayerPart(
+    ? definitelyMissingPlanes.length > 0
+      ? boundCorrectLayerPart(
         'fail',
-        `Required evidence plane(s) are absent from current bindings for ${clauseIdentity(clause)}: ${missingPlanes.join(', ')}. ` +
+        `Required evidence plane(s) are absent from current bindings for ${clauseIdentity(clause)}: ${definitelyMissingPlanes.join(', ')}. ` +
           (planeBlockerRows.length > 0
             ? 'Non-current or plane-mismatched manual/operational binding(s) are listed below for inspection.'
             : 'No current binding declares one of the required planes.'),
         planeBlockerRows,
         'Bind a current row with details.evidencePlane matching each requiredEvidence plane (for example, details: { evidencePlane: "live" }); live/deployed evidence also needs environmentFingerprint, or a validated ledger-only currentMeasurement, so environment currentness is known.',
+      )
+      : boundCorrectLayerPart(
+        'unknown',
+        `Matching binding(s) exist for required evidence plane(s) ${unknownPlanes.join(', ')} on ${clauseIdentity(clause)}, but their currentness is unknown. An unavailable server measurement cannot establish that the plane is absent.`,
+        unknownPlaneRows,
+        'Retry the current measurement for the retained binding before judging required-plane coverage.',
       )
     : boundCorrectLayerPart(
         'pass',
@@ -3959,10 +3982,12 @@ export function evaluateSpecTestAdequacy(input: {
     sourceBarTestSuiteRating(clause, evidence, input.sourceBarTestRequirements),
     scenarioRating,
   ].filter((part): part is CorrectLayerEvidencePart => part !== null);
+  // Keep explicit required-plane results first so bounded summaries retain
+  // them even when a long layer description follows.
   const parts = [
+    planeRating,
     ...reachabilityParts,
     evidenceKindRating,
-    planeRating,
   ]
     .filter((part): part is CorrectLayerEvidencePart => part !== null);
   const combinedRating: AdequacyRating = parts.some((part) => part.rating === 'fail')

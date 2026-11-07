@@ -237,6 +237,8 @@ const agentRunsListArgsSchema = z.object({
 
 const scorecardHistoryArgsSchema = z.object({
   rubricRef: z.string().trim().min(1).max(300),
+  mode: z.enum(['accepted', 'review-history']).optional(),
+  comparisonTime: z.string().datetime({ offset: true }).optional(),
   cursor: z.string().max(2_000).nullable().optional(),
   limit: clampedLimit(SCORECARD_HISTORY_PAGE_LIMIT, SCORECARD_HISTORY_DEFAULT_PAGE),
 });
@@ -4272,19 +4274,26 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // useSyncQuery `data: T[]` contract; the client unwraps `data[0]`.
   'plans.list': {
     resolve: async (args) => {
-      const { callPlansRead } = await import('../agent-tools/plans/read-dispatch');
-      const r = (await callPlansRead('list', (args ?? {}) as Record<string, unknown>)) as {
+      const r = (await traceNamedQueryStage('plans-list-canonical-read', async () => {
+        const { callPlansRead } = await import('../agent-tools/plans/read-dispatch');
+        return callPlansRead('list', (args ?? {}) as Record<string, unknown>);
+      })) as {
         plans?: unknown[];
       };
       const plans = Array.isArray(r?.plans) ? r.plans : [];
       if (plans.length === 0) return plans;
       // B1 (shared-hive-collaboration P-001): enrich rows with resolved owner +
       // last-editor identity for the ownership badges. Additive + best-effort.
-      const { getFlag } = await import('@papercusp/flags/server');
-      const { FLAGS } = await import('@papercusp/flags');
-      if (!(await getFlag(FLAGS.PLAN_ATTRIBUTION_BADGES, 'system'))) return plans;
-      const { enrichPlanListRows } = await import('./plan-attribution');
-      return enrichPlanListRows(plans);
+      const badges = await traceNamedQueryStage('plans-list-attribution-flag', async () => {
+        const { getFlag } = await import('@papercusp/flags/server');
+        const { FLAGS } = await import('@papercusp/flags');
+        return getFlag(FLAGS.PLAN_ATTRIBUTION_BADGES, 'system');
+      });
+      if (!badges) return plans;
+      return traceNamedQueryStage('plans-list-attribution', async () => {
+        const { enrichPlanListRows } = await import('./plan-attribution');
+        return enrichPlanListRows(plans);
+      });
     },
   },
   // plans.byHive — CROSS-MEMBER browse (WI-259 P-006, D-010). Reuses plans.list's read
@@ -4306,17 +4315,24 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     resolve: async (args) => {
       const { potHomeSlug, workspaceId } = args as { potHomeSlug: string; workspaceId?: string };
       const memberSlugs = await resolveHiveMemberSlugs(potHomeSlug, workspaceId);
-      const { callPlansRead } = await import('../agent-tools/plans/read-dispatch');
-      const r = (await callPlansRead('list', { harness_slugs: memberSlugs })) as {
+      const r = (await traceNamedQueryStage('plans-list-canonical-read', async () => {
+        const { callPlansRead } = await import('../agent-tools/plans/read-dispatch');
+        return callPlansRead('list', { harness_slugs: memberSlugs });
+      })) as {
         plans?: unknown[];
       };
       const plans = Array.isArray(r?.plans) ? r.plans : [];
       if (plans.length === 0) return plans;
-      const { getFlag } = await import('@papercusp/flags/server');
-      const { FLAGS } = await import('@papercusp/flags');
-      if (!(await getFlag(FLAGS.PLAN_ATTRIBUTION_BADGES, 'system'))) return plans;
-      const { enrichPlanListRows } = await import('./plan-attribution');
-      return enrichPlanListRows(plans);
+      const badges = await traceNamedQueryStage('plans-list-attribution-flag', async () => {
+        const { getFlag } = await import('@papercusp/flags/server');
+        const { FLAGS } = await import('@papercusp/flags');
+        return getFlag(FLAGS.PLAN_ATTRIBUTION_BADGES, 'system');
+      });
+      if (!badges) return plans;
+      return traceNamedQueryStage('plans-list-attribution', async () => {
+        const { enrichPlanListRows } = await import('./plan-attribution');
+        return enrichPlanListRows(plans);
+      });
     },
   },
   // plans.viewer — the current viewer's plan-OWNER identity (their git email),

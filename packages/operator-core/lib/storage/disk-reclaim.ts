@@ -215,6 +215,7 @@ export async function drainScheduledDiskReclaim(
   }
   let notAfterMs: number | undefined;
   let lastReceiptId: string | null = null;
+  const remeasuredRoots = new Set<string>();
   for (let batch = 0; batch < maxBatches; batch++) {
     const receipt = await runBatch(batch, notAfterMs);
     const result = { batches: batch + (receipt ? 1 : 0), lastReceiptId: receipt?.id ?? lastReceiptId };
@@ -228,10 +229,18 @@ export async function drainScheduledDiskReclaim(
     const rootWaits = receipt.censuses?.filter(census => !census.preparationOnly && census.error === RETENTION_CENSUS_PENDING_ERROR &&
       census.pendingWalk?.root === census.root && receipt.errors.includes(`inspect:${census.root}: ${RETENTION_CENSUS_PENDING_ERROR}`)) ?? [];
     const delegateWaits = receipt.delegates.map(delegate => ({ delegate, pending: pendingDelegateCensus(delegate) }));
-    const pending = [...delegateWaits.flatMap(wait => wait.pending ? [wait.pending] : []),
-      ...rootWaits.map(census => census.pendingWalk!)];
+    // A delegate's independent scan can outlive a completed root's proof.
+    // Resume root work first; the next pass still validates every owner and
+    // reports its pending result without treating partial progress as complete.
+    const pending = rootWaits.length ? rootWaits.map(census => census.pendingWalk!)
+      : delegateWaits.flatMap(wait => wait.pending ? [wait.pending] : []);
     const pendingErrors = new Set(rootWaits.map(census => `inspect:${census.root}: ${RETENTION_CENSUS_PENDING_ERROR}`));
-    if (pending.length && limits.awaitPendingCensus && receipt.errors.every(error => pendingErrors.has(error)) &&
+    const remeasure = receipt.censuses?.filter(census => !census.preparationOnly &&
+      census.error === 'stale or changed retention census result' && !remeasuredRoots.has(census.root) &&
+      receipt.errors.includes(`inspect:${census.root}: ${census.error}`)) ?? [];
+    const censusErrors = new Set([...pendingErrors, ...remeasure.map(census => `inspect:${census.root}: ${census.error}`)]);
+    if ((pending.length || remeasure.length) && (!pending.length || limits.awaitPendingCensus) &&
+        receipt.errors.every(error => censusErrors.has(error)) &&
         delegateWaits.every(wait => wait.delegate.ok || wait.pending) && receipt.entries.every(entry => entry.status !== 'failed')) {
       if (finished >= notAfterMs) return { ...result, stop: 'time-limit' };
       if (batch + 1 >= maxBatches) return { ...result, stop: 'batch-limit' };
@@ -242,8 +251,12 @@ export async function drainScheduledDiskReclaim(
         const identity = JSON.stringify([wait.root, wait.dir, wait.attempt, wait.requestKey, wait.launchedAt]);
         if (waited.has(identity)) continue;
         waited.add(identity);
-        if (!await limits.awaitPendingCensus(wait, notAfterMs)) return { ...result, stop: 'no-progress' };
+        if (!await limits.awaitPendingCensus!(wait, notAfterMs)) return { ...result, stop: 'no-progress' };
       }
+      // Rejected output never authorizes effects. The next pass builds fresh
+      // evidence under the same mutex/protection checks and original deadline.
+      // Refresh each root at most once so repeated rejection cannot spin.
+      for (const census of remeasure) remeasuredRoots.add(census.root);
       continue;
     }
     const budgetErrors = new Set(receipt.effects?.filter((effect) => effect.stopped && effect.remaining > 0)
@@ -256,8 +269,10 @@ export async function drainScheduledDiskReclaim(
         budgetErrors.add(sizeCapError(cap.root, cap.overByBytes));
       }
     }
+    // An exact pending owner census must not halt independent productive
+    // effects; unknown/permanent delegate failures still refuse continuation.
     if (!receipt.errors.length || receipt.errors.some((error) => !budgetErrors.has(error)) ||
-        receipt.delegates.some((delegate) => !delegate.ok) || receipt.entries.some((entry) => entry.status === 'failed')) {
+        delegateWaits.some((wait) => !wait.delegate.ok && !wait.pending) || receipt.entries.some((entry) => entry.status === 'failed')) {
       return { ...result, stop: 'error' };
     }
     if (!receipt.entries.some((entry) => entry.status === 'removed')) return { ...result, stop: 'no-progress' };

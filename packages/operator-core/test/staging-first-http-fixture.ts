@@ -273,7 +273,8 @@ async function main() {
       writeFileSync(join(evidenceDir, 'committed-reader-loaded-source.json'), JSON.stringify(observation), { mode: 0o600 });
     };
   }
-  const health = await waitForPrivateOperator({ host, base, headers, evidenceDir, hostIdentity, environment: hostEnv });
+  const health = await waitForPrivateOperator({ host, base, headers, evidenceDir, hostIdentity, environment: hostEnv,
+    requireBuildIdentity: isCurrentSuNative || isCodexManagedTools || isOmpManagedTools });
   console.log('STAGING_FIRST_HTTP_PHASE request-ready');
   if (isCodexManagedTools || isOmpManagedTools) {
     const backend = isOmpManagedTools ? 'omp' : 'codex';

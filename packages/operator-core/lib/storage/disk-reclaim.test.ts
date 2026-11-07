@@ -263,6 +263,57 @@ describe('bounded scheduled retention drain', () => {
     expect(run).toHaveBeenCalledOnce();
     expect(awaitPendingCensus).toHaveBeenCalledTimes(mode === 'failed-wait' ? 1 : 0);
   });
+  const mixedCensuses = (): DiskReclaimReceipt => partial({ entries: [], effects: [],
+    errors: ['inspect:/expired: stale or changed retention census result',
+      'inspect:/scratch: retention census pending; managed walk continues for adoption'],
+    censuses: [
+      { root: '/expired', classId: 'scratch', elapsedMs: 1000, inspectedNodes: 0,
+        error: 'stale or changed retention census result' },
+      { root: '/scratch', classId: 'scratch', elapsedMs: 1000, inspectedNodes: 0,
+        error: 'retention census pending; managed walk continues for adoption',
+        pendingWalk: { root: '/scratch', dir: '/retention/slot', attempt: 1, requestKey: 'exact', launchedAt: 0 } },
+    ],
+  });
+  it('adopts a pending walk and freshly remeasures an expired census in the same bounded drain', async () => {
+    const mixed = mixedCensuses();
+    const run = vi.fn().mockResolvedValueOnce(mixed)
+      .mockResolvedValueOnce(partial({ id: 'fresh', complete: true, errors: [] }));
+    const awaitPendingCensus = vi.fn(async () => true);
+    expect(await drainScheduledDiskReclaim(run, { awaitPendingCensus }))
+      .toEqual({ batches: 2, lastReceiptId: 'fresh', stop: 'complete' });
+    expect(awaitPendingCensus.mock.calls).toEqual([[mixed.censuses![1]!.pendingWalk, 900_000]]);
+    expect(run.mock.calls).toEqual([[0, undefined], [1, 900_000]]);
+  });
+  it('freshly remeasures a rejected census only once per root within the original deadline', async () => {
+    const expired = mixedCensuses();
+    expired.censuses!.pop();
+    expired.errors.pop();
+    const run = vi.fn().mockResolvedValue(expired);
+    expect(await drainScheduledDiskReclaim(run)).toEqual({ batches: 2, lastReceiptId: 'batch-receipt', stop: 'error' });
+    expect(run.mock.calls).toEqual([[0, undefined], [1, 900_000]]);
+  });
+  it.each(['wrong-root', 'wrong-error', 'preparation-only', 'holder-error', 'failed-entry', 'failed-delegate',
+    'failed-wait', 'expired-deadline', 'batch-limit', 'no-waiter'])(
+    'refuses unsafe mixed census continuation: %s', async mode => {
+      const mixed = mixedCensuses();
+      if (mode === 'wrong-root') mixed.censuses![0]!.root = '/other';
+      if (mode === 'wrong-error') mixed.censuses![0]!.error = 'invalid retention census worker result';
+      if (mode === 'preparation-only') mixed.censuses![0]!.preparationOnly = true;
+      if (mode === 'holder-error') mixed.errors.push('incomplete process-holder scan:/scratch');
+      if (mode === 'failed-entry') mixed.entries.push({ path: '/scratch/held', classId: 'scratch', status: 'failed', bytes: 1 });
+      if (mode === 'failed-delegate') mixed.delegates.push({ classId: 'other', ok: false, detail: 'unavailable' });
+      if (mode === 'expired-deadline') mixed.finishedAt = new Date(900_000).toISOString();
+      const run = vi.fn().mockResolvedValue(mixed);
+      const awaitPendingCensus = vi.fn(async () => false);
+      const result = await drainScheduledDiskReclaim(run, {
+        ...(mode === 'no-waiter' ? {} : { awaitPendingCensus }), ...(mode === 'batch-limit' ? { maxBatches: 1 } : {}),
+      });
+      expect(run).toHaveBeenCalledOnce();
+      expect(awaitPendingCensus).toHaveBeenCalledTimes(mode === 'failed-wait' ? 1 : 0);
+      expect(result.stop).toBe(mode === 'failed-wait' ? 'no-progress' : mode === 'expired-deadline' ? 'time-limit' :
+        mode === 'batch-limit' ? 'batch-limit' : 'error');
+    },
+  );
   const pendingDelegate = () => {
     const pendingWalk = { root: '/cuts', dir: '/retention/cut-usage', attempt: 1, requestKey: 'cut-request', launchedAt: 0 };
     return { classId: 'release-cut-worktrees', ok: false, detail: { pendingWalk,
@@ -270,7 +321,7 @@ describe('bounded scheduled retention drain', () => {
         message: 'release-cut usage pending; managed census continues for adoption',
       })] } };
   };
-  it.each([false, true])('adopts an exact pending delegate before a fresh pass (root pending: %s)', async rootPending => {
+  it.each([false, true])('adopts pending work without joining an independent scan (root pending: %s)', async rootPending => {
     const delegate = pendingDelegate();
     const pendingWalk = { root: '/scratch', dir: '/retention/root', attempt: 2, requestKey: 'root-request', launchedAt: 0 };
     const pending = partial({ entries: [], effects: [], delegates: [delegate],
@@ -279,11 +330,9 @@ describe('bounded scheduled retention drain', () => {
         pendingWalk, error: 'retention census pending; managed walk continues for adoption' }] : [],
     });
     const run = vi.fn().mockResolvedValueOnce(pending).mockResolvedValueOnce(partial({ id: 'fresh', complete: true, errors: [] }));
-    const awaitPendingCensus = vi.fn(async () => true);
+    const awaitPendingCensus = vi.fn(async (pending: { root: string }) => !rootPending || pending.root === pendingWalk.root);
     expect(await drainScheduledDiskReclaim(run, { awaitPendingCensus })).toEqual({ batches: 2, lastReceiptId: 'fresh', stop: 'complete' });
-    expect(awaitPendingCensus.mock.calls).toEqual([
-      [delegate.detail.pendingWalk, 900_000], ...(rootPending ? [[pendingWalk, 900_000]] : []),
-    ]);
+    expect(awaitPendingCensus.mock.calls).toEqual([[rootPending ? pendingWalk : delegate.detail.pendingWalk, 900_000]]);
     expect(run.mock.calls).toEqual([[0, undefined], [1, 900_000]]);
   });
   it.each(['missing-lineage', 'invalid-lineage', 'permanent-failure', 'unknown-owner', 'other-delegate',
@@ -318,6 +367,29 @@ describe('bounded scheduled retention drain', () => {
     expect(await drainScheduledDiskReclaim(run)).toEqual({ batches: 2, lastReceiptId: 'done', stop: 'complete' });
     expect(run.mock.calls).toEqual([[0, undefined], [1, 900_000]]);
   });
+  it('continues a productive capped root while an independent delegate census is pending', async () => {
+    const receipt = cappedPartial();
+    receipt.delegates = [pendingDelegate()];
+    const run = vi.fn().mockResolvedValueOnce(receipt)
+      .mockResolvedValueOnce(partial({ id: 'done', complete: true, errors: [] }));
+    const awaitPendingCensus = vi.fn(async () => false);
+    expect(await drainScheduledDiskReclaim(run, { awaitPendingCensus }))
+      .toEqual({ batches: 2, lastReceiptId: 'done', stop: 'complete' });
+    expect(run.mock.calls).toEqual([[0, undefined], [1, 900_000]]);
+    expect(awaitPendingCensus).not.toHaveBeenCalled();
+  });
+  it.each(['missing-lineage', 'mixed-error', 'unknown-owner'])(
+    'refuses capped continuation past an unrecognized delegate failure: %s', async mode => {
+      const receipt = cappedPartial(), delegate = pendingDelegate();
+      if (mode === 'missing-lineage') delete (delegate.detail as Partial<typeof delegate.detail>).pendingWalk;
+      if (mode === 'mixed-error') delegate.detail.errors.push('release-cut pin census unavailable');
+      if (mode === 'unknown-owner') delegate.classId = 'other-owner';
+      receipt.delegates = [delegate];
+      const run = vi.fn().mockResolvedValue(receipt);
+      expect((await drainScheduledDiskReclaim(run)).stop).toBe('error');
+      expect(run).toHaveBeenCalledOnce();
+    },
+  );
   it.each(['missing-cap', 'different-root', 'different-overage', 'no-budget-stop', 'pinned-only'])(
     'refuses a cap error without matching resumable evidence: %s', async (mismatch) => {
       const receipt = cappedPartial();

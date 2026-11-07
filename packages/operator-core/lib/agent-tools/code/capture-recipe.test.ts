@@ -8,7 +8,7 @@
  * integration test + the run.test.ts capture-trigger test; this file pins the
  * deterministic derivation logic with no PG.
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 import { ensureParseCheckReady } from '@papercusp/tooldef';
 import {
   recipeSlug,
@@ -16,7 +16,24 @@ import {
   deriveTitleDescription,
   extractToolsUsed,
   selectRecipeCaptureTarget,
+  captureRecipe,
 } from './capture-recipe';
+import type { CodeRecipeRow, UpsertCodeRecipeInput } from '../../code-recipes-store';
+
+const captureStore = vi.hoisted(() => ({ rows: new Map<string, CodeRecipeRow>(),
+  record: vi.fn(async () => {}), structural: vi.fn(async () => null), similar: vi.fn(async () => []) }));
+vi.mock('../../code-recipes-store', async original => ({
+  ...(await original<Record<string, unknown>>()),
+  getRecipe: async (_sql: unknown, id: string) => captureStore.rows.get(id) ?? null,
+  upsertRecipe: async (_sql: unknown, input: UpsertCodeRecipeInput) => {
+    const row = { ...input, status: 'active', runCount: 0, successCount: 0, updatedAt: new Date().toISOString() } as CodeRecipeRow;
+    captureStore.rows.set(input.id, row); return row;
+  },
+  recordRecipeRun: captureStore.record,
+  findActiveRecipeByStructuralFingerprint: captureStore.structural,
+}));
+vi.mock('../../code-recipes-search', () => ({ searchSimilarRecipes: captureStore.similar }));
+vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: async () => {} }));
 
 // extractToolsUsed → checkScript uses a lazy-loaded TS compiler (kept out of the
 // eager client bundle) — warm it once before the suite.
@@ -29,6 +46,65 @@ const TOOLS = [
   mkTool('coord:wake-queue'),
   mkTool('plans:set-status'),
 ];
+
+describe('automatic private operation capture through the shared store', () => {
+  const scope = { workspaceId: 'workspace-private', sourceBoundary: 'authorized-tool-ledger',
+    epoch: '2026-11', key: new Uint8Array(32).fill(57) };
+  beforeEach(() => { captureStore.rows.clear(); vi.clearAllMocks(); });
+  const deps = () => ({ sql: {} as never, embed: vi.fn(async () => null), resolveHive: async () => 'home' });
+  const make = (family: 'sql' | 'shell', id = '123', value = 'PRIVATE_SAMPLE') => ({
+    script: '/* PRIVATE_TITLE */ return "PRIVATE_WRAPPER";', workspaceId: scope.workspaceId, harness: 'alpha',
+    ownerId: 'agent-a', role: 'operator', title: 'PRIVATE_TITLE', description: 'PRIVATE_DESCRIPTION', tags: ['PRIVATE_TAG'],
+    tools: [mkTool('dev:pg_query'), mkTool('capability:bash')], allowed: new Set(['dev:pg_query', 'capability:bash']),
+    operationSource: { scope, source: { id, workspaceId: scope.workspaceId, harness: 'alpha', at: new Date().toISOString(),
+      tool: family === 'sql' ? 'dev:pg_query' : 'capability:bash',
+      args: family === 'sql' ? { sql: 'SELECT $1::text AS PRIVATE_COLUMN', parameters: [value] }
+        : { command: `printf '%s' '${value}'`, cwd: '/PRIVATE_PATH' } } },
+  });
+  for (const family of ['sql', 'shell'] as const) {
+    it(`${family}: stores only the adapter/ref/schema and deduplicates changed typed values`, async () => {
+      const d = deps();
+      const first = await captureRecipe(d, make(family));
+      expect(first?.disposition).toBe('created');
+      expect(first?.row.bindingSchema?.properties).toMatchObject({ value0: { type: 'string', required: true } });
+      expect(JSON.stringify(first?.row)).not.toContain('PRIVATE_');
+      expect(JSON.stringify(d.embed.mock.calls)).not.toContain('PRIVATE_');
+      const next = await captureRecipe(d, make(family, '124', 'ANOTHER_SAMPLE'));
+      expect(next?.disposition).toBe('exact-fingerprint-reuse');
+      expect(next?.row.id).toBe(first?.row.id);
+      expect(next?.row.capabilityManifest?.sourceOperation?.invocationId).toBe('124');
+      expect(captureStore.rows.size).toBe(1);
+      expect(captureStore.structural).not.toHaveBeenCalled();
+      expect(captureStore.similar).not.toHaveBeenCalled();
+      expect(captureStore.record).toHaveBeenCalledTimes(2);
+      expect(captureStore.record.mock.calls[1]).toEqual([expect.anything(), expect.objectContaining({ reused: true })]);
+    });
+
+    it(`${family}: distinguishes fixed semantics, binding types and source scope`, async () => {
+      const first = await captureRecipe(deps(), make(family));
+      const changed = make(family, '125');
+      changed.operationSource.source.args = family === 'sql'
+        ? { sql: 'SELECT $1::text AS DIFFERENT_COLUMN', parameters: ['PRIVATE_SAMPLE'] }
+        : { command: "printf '%s\\n' 'PRIVATE_SAMPLE'", cwd: '/PRIVATE_PATH' };
+      expect((await captureRecipe(deps(), changed))?.row.id).not.toBe(first?.row.id);
+      const foreign = make(family, '126'); foreign.harness = foreign.operationSource.source.harness = 'beta';
+      expect((await captureRecipe(deps(), foreign))?.row.id).not.toBe(first?.row.id);
+      const denied = make(family); denied.allowed.clear();
+      expect(await captureRecipe(deps(), denied)).toBeNull();
+      const mismatched = make(family); mismatched.operationSource.source.workspaceId = 'foreign';
+      expect(await captureRecipe(deps(), mismatched)).toBeNull();
+    });
+  }
+
+  it('does not turn unsupported or expired source evidence into a recipe', async () => {
+    const bad = make('shell'); bad.operationSource.source.args = { command: 'echo x; rm /tmp/x', cwd: '/tmp' };
+    expect(await captureRecipe(deps(), bad)).toBeNull();
+    const expired = make('sql'); expired.operationSource.source.at = '2000-01-01T00:00:00Z';
+    expect(await captureRecipe(deps(), expired)).toBeNull();
+    expect(captureStore.rows.size).toBe(0);
+    expect(captureStore.record).not.toHaveBeenCalled();
+  });
+});
 
 describe('recipeSlug', () => {
   it('kebab-cases a title into a stable slug', () => {

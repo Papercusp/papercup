@@ -176,6 +176,88 @@ function harness(initial: WorkItem = issue()) {
   };
 }
 
+describe('resubmitAgentReview producer proposal (EI-28088200627646233)', () => {
+  const acceptance = {
+    problem: 'The revision has no acceptance proposal.',
+    evidence: ['The existing revision has review evidence only.'],
+    outcome: 'An authorized revision can supply the missing proposal.',
+    scope: 'The current review subject only.',
+    completionCheck: 'An independent current-source review seals the proposal.',
+  };
+  const revision = () => issue({
+    kind: 'bug',
+    payload: {
+      agentReview: { status: 'revision-requested', revisionKind: 'content', submittedBy: 'su-filer', ledgerIdeaId: 'WI-7', round: 2 },
+      intakeReproduction: { receipt: { kind: 'failing-test', ref: 'test_runs:42', buildSha: 'abcdef1' } },
+      implementationReadiness: createImplementationReadiness({
+        status: 'not-ready', source: 'agent-review', reason: 'agent-review-revision-requested',
+        evidence: { deployment: { state: 'current', relPath: 'existing.ts' }, review: { submittedBy: 'su-filer', round: 2 } },
+      }),
+    },
+  });
+  const resubmit = (h: ReturnType<typeof harness>, extra: Record<string, unknown> = {}) =>
+    resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-filer', acceptance, ...extra } as never, h.deps);
+
+  it('records the proposal without changing sibling evidence, reproduction, source or acceptance authority', async () => {
+    const h = harness(revision());
+    const original = structuredClone(h.state.issue);
+    const source = acceptanceSourceRevision(original);
+    await expect(resubmit(h)).resolves.toMatchObject({ resubmitted: true, state: { status: 'pending', round: 3 } });
+    const readiness = readImplementationReadiness(h.state.issue.payload);
+    expect(readiness).toMatchObject({
+      status: 'unknown',
+      evidence: { acceptance, deployment: { state: 'current', relPath: 'existing.ts' }, review: { submittedBy: 'su-filer', round: 3 } },
+    });
+    expect(readiness?.evidence?.acceptance).toEqual(acceptance);
+    expect(h.state.issue.payload).toHaveProperty('intakeReproduction', (original.payload as Record<string, unknown>).intakeReproduction);
+    expect(acceptanceSourceRevision(h.state.issue)).toBe(source);
+    expect(evaluateImplementationAcceptance(h.state.issue.payload, h.state.issue).state).not.toBe('qualifying');
+
+    await claimAgentReview({ id: 'WI-7', reviewer: 'su-independent', harnessSlug: 'papercusp' }, h.deps);
+    h.state.ledger = { ideaId: 'WI-7', workItemId: 'WI-7', grade: 5, feedback: null, gradedBy: 'su-independent' };
+    h.deps.verifyReproduction = async () => ({ status: 'verified', detail: 'current build reproduction', checkedAt: new Date().toISOString() });
+    await expect(reconcileAgentReviewGrade({ ideaId: 'WI-7', gradedBy: 'su-independent' }, h.deps))
+      .resolves.toMatchObject({ status: 'approved' });
+    expect(evaluateImplementationAcceptance(h.state.issue.payload, h.state.issue)).toMatchObject({
+      state: 'qualifying', contract: { ...acceptance, sourceRevision: source, authority: { reviewer: 'su-independent', submittedBy: 'su-filer', round: 3 } },
+    });
+  });
+
+  it('lets the proven orphan adopter supply the missing proposal', async () => {
+    const h = harness(revision());
+    h.state.issue.assignee = null;
+    h.state.submitterLiveness = { sessionState: 'ended' };
+    await expect(adoptAgentReviewRevision({ id: 'WI-7', adopter: 'su-adopter', harnessSlug: 'papercusp' }, h.deps))
+      .resolves.toMatchObject({ adopted: true });
+    await expect(resubmit(h, { submittedBy: 'su-adopter' })).resolves.toMatchObject({ resubmitted: true });
+    expect(readImplementationReadiness(h.state.issue.payload)?.evidence?.acceptance).toEqual(acceptance);
+  });
+
+  it.each([
+    { actor: 'su-stranger', holder: 'su-filer', state: 'open', reason: 'not-submitter' },
+    { actor: 'su-filer', holder: 'su-other', state: 'open', reason: 'revision-held-by-other' },
+    { actor: 'su-filer', holder: 'su-filer', state: 'blocked', reason: 'not-open' },
+  ])('does not mutate the proposal or grade when authority/state refuses: $reason', async ({ actor, holder, state, reason }) => {
+    const h = harness({ ...revision(), assignee: holder, state } as WorkItem);
+    const before = structuredClone(h.state);
+    await expect(resubmit(h, { submittedBy: actor })).resolves.toMatchObject({ resubmitted: false, reason });
+    expect(h.state).toEqual(before);
+    expect(h.clearLedgerGrade).not.toHaveBeenCalled();
+    expect(h.deps.mergeWorkItemPayload).not.toHaveBeenCalled();
+    expect(h.releaseWorkItem).not.toHaveBeenCalled();
+  });
+
+  it.each([{ ...acceptance, authority: { reviewer: 'su-forged' } }, { ...acceptance, evidence: [] }])
+    ('rejects invalid proposal input before clearing the prior grade', async (proposal) => {
+      const h = harness(revision());
+      const before = structuredClone(h.state);
+      await expect(resubmit(h, { acceptance: proposal })).resolves.toMatchObject({ resubmitted: false, reason: 'acceptance-proposal-invalid' });
+      expect(h.state).toEqual(before);
+      expect(h.clearLedgerGrade).not.toHaveBeenCalled();
+      expect(h.deps.mergeWorkItemPayload).not.toHaveBeenCalled();
+    });
+});
+
 describe('approvalAcceptance — one verification stage, kind-specific checks (P-006 / D-019)', () => {
   const proposal = {
     problem: 'The floor admits unverified bugs.',

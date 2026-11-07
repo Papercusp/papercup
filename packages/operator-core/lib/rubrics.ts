@@ -267,6 +267,40 @@ export interface RubricCriterion {
   check?: RubricCriterionCheck;
 }
 
+/** Reader-only procedure projection. Authored prose never creates a check or tool authority. */
+export function projectCriterionEvidenceProcedure(
+  rubric: Pick<Rubric, 'rubricId' | 'revision' | 'criteriaHash' | 'methodRef'>,
+  criterion: RubricCriterion,
+) {
+  const hasText = (value: string | null | undefined): value is string => Boolean(value?.trim());
+  const method = hasText(criterion.method) ? criterion.method : null;
+  const replication = hasText(criterion.replication) ? criterion.replication : null;
+  const methodRef = hasText(rubric.methodRef) ? rubric.methodRef : null;
+  return {
+    criterionKey: criterion.key,
+    provenance: {
+      rubricRef: rubric.rubricId,
+      rubricRevision: rubric.revision ?? null,
+      criteriaHash: rubric.criteriaHash ?? null,
+    },
+    // Keep both criterion fields verbatim, with the runbook as a reference rather
+    // than fetched/invented instructions. The shared reason remains a separate layer.
+    procedure: method !== null || replication !== null
+      ? { source: 'criterion' as const, method, replication }
+      : methodRef !== null
+        ? { source: 'rubric' as const, methodRef }
+        : { source: 'shared' as const },
+    method,
+    replication,
+    methodRef,
+    check: criterion.check === undefined ? null : structuredClone(criterion.check),
+    instrumentKey: criterion.instrumentKey ?? null,
+    window: criterion.window === undefined ? null : structuredClone(criterion.window),
+    driftMarkers: criterion.driftMarkers,
+    missingSpecificity: method === null && replication === null,
+  };
+}
+
 export interface Rubric {
   rubricId: string;
   /** Current `harness_plans.version`; omitted for legacy/unversioned rows. */

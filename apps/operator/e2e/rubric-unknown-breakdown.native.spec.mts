@@ -79,8 +79,8 @@ test('rubric capture rejects a count row clipped below a scroll container', asyn
   expect(await page.evaluate(breakdownVisible(selector))).toBe(true);
 });
 
-test('rubric unknown reasons match the current native trend window', async ({}, info) => {
-  test.setTimeout(180_000);
+test('rubric unknown reasons, coverage and pinned procedures match the current native readers', async ({}, info) => {
+  test.setTimeout(300_000);
   expect(process.env.VERIFY_TAURI_ISOLATED_DB).toBe('1');
   expect(process.env.VERIFY_TAURI_SEED).toBe('ready');
   const workspace = process.env.PAPERCUSP_WORKSPACE_ID!;
@@ -206,6 +206,74 @@ test('rubric unknown reasons match the current native trend window', async ({}, 
   await wait(breakdownVisible(selector));
   await screenshot(tool, pid, screenshotPath);
   await info.attach('native rubric unknown breakdown screenshot', { path: screenshotPath, contentType: 'image/png' });
+
+  // Exercise the same real writers/readers used by the service integration
+  // suite. Confirm their resolved connection before any fixture write.
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const connection = await getOrgPg().sql`SELECT current_database() AS database, inet_server_port() AS port`;
+  expect(connection[0].database).toBe(decodeURIComponent(database.pathname.slice(1)));
+  expect(Number(connection[0].port)).toBe(Number(database.port));
+  const { proposeRubric, getRubric } = await import('@papercusp/operator-core/lib/rubrics');
+  const { createIssue, issuesScopeWorkspace } = await import('@papercusp/operator-core/lib/issues-engineer');
+  expect(issuesScopeWorkspace()).toBe(workspace);
+  const coverageRef = 'native-coverage-and-procedure';
+  const originalMethod = 'Read the original archive. Literal $(never-execute) remains procedure text.';
+  const criteria = Array.from({ length: 26 }, (_, index) => ({ key: `criterion-${index}`,
+    title: `Criterion ${index}`, model: 'Retained evidence for this criterion.',
+    method: originalMethod, replication: 'Recover the original November assessment window.',
+    driftMarkers: 'The retained source is missing.', instrumentKey: 'none' }));
+  await proposeRubric({ rubricId: coverageRef, title: 'Native coverage and procedure', characteristic: 'native-coverage',
+    criteria, status: 'active', by: 'native-fixture' });
+  const definition = (await getRubric(coverageRef))!;
+  const ratings = Object.fromEntries(criteria.map(criterion => [criterion.key, { rating: 'unknown',
+    evidence: 'The original historical receipt is missing.', unknownReason: 'retention-gap',
+    nextEvidenceAction: 'Original grader action must remain unchanged.' }]));
+  const card = await createIssue({ title: 'Native all-unknown coverage fixture', kind: 'change', createdBy: 'native-fixture',
+    payload: { observation: { purpose: 'diagnostic', rubricRef: coverageRef, rubricRevision: definition.revision,
+      criteriaHash: definition.criteriaHash, ratings,
+      subject: { kind: 'pot', ref: 'native-fixture', windowStart: '2026-11-01T00:00:00Z', windowEnd: '2026-11-02T00:00:00Z' } } } });
+  const before = await getOrgPg().sql`SELECT payload FROM harness_shared.engineer_issues WHERE issue_id = ${card.id}`;
+  await proposeRubric({ rubricId: coverageRef, title: 'Amended native coverage fixture', characteristic: 'native-coverage',
+    criteria: criteria.map(criterion => ({ ...criterion, method: 'New live procedure must not replace the pinned procedure.' })),
+    status: 'active', by: 'native-fixture' });
+  target.searchParams.set('rrubric', coverageRef);
+  await native('navigate', target.href);
+  const historyQuery = `/api/zero-harness/rest-query?name=scorecards.list&args=${encodeURIComponent(JSON.stringify({ rubricRef: coverageRef, limit: 50 }))}`;
+  let history: any;
+  await expect.poll(async () => {
+    history = await evaluate(`fetch(${JSON.stringify(historyQuery)}, {
+      headers: {'x-papercusp-workspace': ${JSON.stringify(workspace)}}
+    }).then(async response => ({status: response.status, body: await response.json()}))`);
+    return history?.status === 200 && history.body.rows.some((row: any) => row.issueId === card.id);
+  }, { timeout: 60_000 }).toBe(true);
+  const persisted = history.body.rows.find((row: any) => row.issueId === card.id);
+  expect(persisted.coverage.denominator).toBe(26);
+  expect(persisted.coverage.record.present).toBe(26);
+  expect(persisted.coverage.evidence.current).toEqual([]);
+  expect(persisted.coverage.unresolvedKeys).toHaveLength(26);
+  expect(persisted.coverage.fulfillment).toBe('unknown');
+  expect(persisted.evidenceActions).toHaveLength(3);
+  expect(persisted.omittedActionCount).toBe(23);
+  await wait(`!!document.querySelector('[aria-label="Rubric evidence"]')`);
+  await evaluate(`Array.from(document.querySelectorAll('button')).find(button => button.textContent.includes('Grading history'))?.click()`);
+  await wait(`!!document.querySelector('.pc-rubric-history tbody tr')`);
+  await evaluate(`document.querySelector('.pc-rubric-history tbody tr').click()`);
+  await wait(`!!document.querySelector('[aria-label="Next evidence actions"]')`);
+  const coverage = await evaluate(`document.querySelector('[aria-label="Assessment coverage"]').textContent`);
+  expect(coverage).toContain('26/26 rating keys present');
+  expect(coverage).toContain('0/26 supported');
+  expect(coverage).toContain('26 unresolved');
+  expect(coverage).toContain('Requested scope unknown');
+  expect(coverage).toContain('Fulfillment unknown');
+  await evaluate(`document.querySelector('[aria-label="Next evidence actions"] summary').click()`);
+  await evaluate(`Array.from(document.querySelectorAll('button')).find(button => button.textContent === 'Read full procedure for criterion-0')?.click()`);
+  await wait(`document.querySelector('[aria-label="Next evidence actions"] pre')?.textContent.includes(${JSON.stringify(originalMethod)}) === true`);
+  expect(await evaluate(`document.body.textContent.includes('New live procedure must not replace the pinned procedure.')`)).toBe(false);
+  expect(await getOrgPg().sql`SELECT payload FROM harness_shared.engineer_issues WHERE issue_id = ${card.id}`).toEqual(before);
+  const coverageReceipt = info.outputPath('rubric-coverage-and-procedure.json');
+  await writeFile(coverageReceipt, JSON.stringify({ history, coverage, originalRevision: definition.revision,
+    originalHash: definition.criteriaHash, source: JSON.parse(await readFile(source!, 'utf8')) }, null, 2));
+  await info.attach('native coverage and pinned procedure', { path: coverageReceipt, contentType: 'application/json' });
 });
 
 test.afterEach(async ({}, info) => {

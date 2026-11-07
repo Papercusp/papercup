@@ -26,7 +26,8 @@
  *     the adapter got it from.
  *   - `dispatch` must build its dispatcher per row from `opts.workspaceId` (D-011),
  *     stamp the sweep as `launchedBy`, and narrow the dispatcher's richer result down
- *     to the `{ woke, answeringOwnerId }` the core consumes. Hoisting the factory call
+ *     to the delivery receipt the core consumes, including durable `pending`.
+ *     Hoisting the factory call
  *     out of the returned lambda would bind every workspace's launches to the first
  *     row's tenant — and would still pass every core test.
  *
@@ -241,7 +242,8 @@ export function consultExpiryDispatch(
         harnessSlug: null,
         launchedBy: CONSULT_EXPIRY_SWEEP_OWNER_ID,
       })(request);
-      return { woke: r.woke, answeringOwnerId: r.answeringOwnerId };
+      return { woke: r.woke, answeringOwnerId: r.answeringOwnerId,
+        ...(r.pending !== undefined ? { pending: r.pending } : {}) };
     });
 }
 

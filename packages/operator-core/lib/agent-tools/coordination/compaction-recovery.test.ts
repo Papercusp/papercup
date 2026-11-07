@@ -18,6 +18,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ControlAnchor } from './control-anchor';
 
+vi.mock('../../session-brief-mission', () => ({
+  readCurrentMissionContinuity: vi.fn(async () => ({ availability: 'absent' as const })),
+}));
+
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   listAllProjectedTools: () => [{
@@ -141,6 +145,28 @@ describe('buildCompactionRecovery — held-item checkpoint fold', () => {
     expect(recovery.selfRecall).toContain("sessions:read { session:'self', tail:40 }");
     expect(recovery.selfRecall).not.toContain('sessions:search {');
   });
+
+  it.each(['ready', 'blocked', 'transferred', 'unknown'] as const)(
+    'recovers the remaining mission without replacing the selected route: %s', async disposition => {
+      const [{ readCurrentMissionContinuity }, { buildAndPersistControlAnchor }, { buildCompactionRecovery }] =
+        await Promise.all([import('../../session-brief-mission'), import('./control-anchor'), import('./compaction-recovery')]);
+      vi.mocked(buildAndPersistControlAnchor).mockResolvedValueOnce(CONTROL);
+      const projection = {
+        assignmentRef: 'plan:unfinished', ownerDirectiveRef: 'order:31', objectiveRefs: ['plan:unfinished'],
+        completionCriteriaRefs: ['plan:unfinished#Requirements'], accountableOwner: 'owner-x',
+        custodyGeneration: 1, assignmentRevision: 7, currentWorkRef: 'review:closed',
+        stateAvailability: disposition === 'unknown' ? 'unknown' as const : 'available' as const,
+        disposition, blockerRef: disposition === 'blocked' ? 'explicit-pause' : null,
+        nextActionRef: disposition === 'ready' ? 'plan:unfinished' : null,
+        interruptionFrames: [], omittedFrames: [], unknownReason: disposition === 'unknown' ? 'no-successor-receipt' : null,
+      };
+      vi.mocked(readCurrentMissionContinuity).mockResolvedValueOnce({ availability: 'available', revision: 4, projection });
+      const recovery = await buildCompactionRecovery('owner-x', 'ws-1');
+      expect(readCurrentMissionContinuity).toHaveBeenLastCalledWith({ ownerId: 'owner-x', workspaceId: 'ws-1' });
+      expect(recovery.mission).toEqual({ availability: 'available', revision: 4, projection });
+      expect(recovery.control?.state.route).toEqual(CONTROL.state.route);
+    },
+  );
 
   it('sanity: the incident shape exceeds CHECKPOINT_CAP(1200) and a plain cut lands before the superseding block', () => {
     expect(CHECKPOINT.length).toBeGreaterThan(1200);

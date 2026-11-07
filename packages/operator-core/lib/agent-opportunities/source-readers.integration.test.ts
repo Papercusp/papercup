@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { mkdtemp, readFile, rm, writeFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,6 +7,10 @@ import { sqlMiningFixture } from '../../test/_sql-mining-fixture';
 import { buildScratchUri, safeScratchFilesystemPath } from '../scratch-uri';
 import { writeScratchReference } from '../scratch-reference';
 import { productionOpportunityReaders } from './source-readers';
+import { captureRecipe } from '../agent-tools/code/capture-recipe';
+import { getRecipe } from '../code-recipes-store';
+import { resolveRecipeSourceOperation } from '../recipe-source-operation';
+vi.mock('../sync-sse', () => ({ notifySyncInvalidate: async () => {} }));
 
 let f: Awaited<ReturnType<typeof sqlMiningFixture>>, dir: string, oldRoot: string | undefined;
 const workspaceId = 'sql-mining-test', harnessSlug = 'mining-test', sourceBoundary = 'tool-ledger';
@@ -95,6 +99,95 @@ it('P005 managed hydration rechecks ACL and source content after awaited reads',
       return true;
     } });
   expect(await changing.readManagedOperations(input)).toEqual([]);
+});
+
+it('P007 private recipe source needs a settled successful host receipt and renews scope permission', async () => {
+  const { id } = await managedRow('host:recipe');
+  const input = { id, scope: managedScope };
+  expect(await readers().readRecipeOperation(input)).toMatchObject({ id, workspaceId, harness: harnessSlug,
+    tool: 'capability:bash', args: { command: 'echo PRIVATE' } });
+  permitted = false;
+  expect(await readers().readRecipeOperation(input)).toBeNull();
+  permitted = true;
+  expect(await readers().readRecipeOperation({ ...input, scope: { ...managedScope, workspaceId: 'foreign' } })).toBeNull();
+  await f.db.adminSql`UPDATE harness_shared.tool_invocations SET metadata_json='{}'::jsonb WHERE id=${id}::bigint`;
+  expect(await readers().readRecipeOperation(input)).toBeNull();
+});
+
+it('P007 automatic capture resolves only one exact host child in the current caller window', async () => {
+  const { id } = await managedRow('host:private-child');
+  const input = { scope: managedScope, callId: 'host:private-child', actor: 'su-private-actor',
+    parentCallId: 'host:parent', since: '2026-10-24T11:59:59Z', until: '2026-10-24T12:00:01Z' };
+  expect(await readers().readRecipeOperation(input)).toMatchObject({ id, tool: 'capability:bash' });
+  for (const wrong of [{ callId: 'host:absent' }, { actor: 'su-other' }, { parentCallId: 'host:other' },
+    { since: '2026-10-24T12:00:00.9Z' }, { until: '2026-10-25T12:00:01Z' },
+    { scope: { ...managedScope, workspaceId: 'foreign' } }])
+    expect(await readers().readRecipeOperation({ ...input, ...wrong })).toBeNull();
+  permitted = false;
+  expect(await readers().readRecipeOperation(input)).toBeNull();
+  permitted = true;
+  await managedRow('host:private-child');
+  expect(await readers().readRecipeOperation(input)).toBeNull();
+});
+
+for (const family of ['sql', 'shell'] as const) {
+  it(`P007 ${family}: authorized source capture/dedup survives real JSONB storage and source revocation`, async () => {
+    const scope = { ...managedScope, epoch: '2026-11' };
+    const tool = family === 'sql' ? 'dev:pg_query' : 'capability:bash';
+    const tools = [ { expose: { mcp: { name: tool } } } ] as never;
+    const capture = async (callId: string, value: string) => {
+      const { id } = await managedRow(callId);
+      const at = new Date().toISOString();
+      const args = family === 'sql' ? { sql: 'SELECT $1::text AS PRIVATE_COLUMN', parameters: [value] }
+        : { command: `printf '%s' '${value}'`, cwd: '/PRIVATE_PATH' };
+      await f.db.adminSql`UPDATE harness_shared.tool_invocations SET invoked_at=${at}::timestamptz,
+        tool_name=${tool}, args_json=${JSON.stringify(args)}::jsonb WHERE id=${id}::bigint`;
+      const source = await readers().readRecipeOperation({ id, scope });
+      expect(source).not.toBeNull();
+      return captureRecipe({ sql: f.db.adminSql, embed: async () => null, resolveHive: async () => null }, {
+        script: 'PRIVATE_WRAPPER', title: 'PRIVATE_TITLE', workspaceId, harness: harnessSlug,
+        ownerId: 'su-private-actor', role: 'operator', tools, allowed: new Set([tool]),
+        operationSource: { source: source!, scope },
+      });
+    };
+    const first = await capture('host:private-first', 'PRIVATE_FIRST');
+    expect(first?.disposition).toBe('created');
+    const second = await capture('host:private-second', 'PRIVATE_SECOND');
+    expect(second?.disposition).toBe('exact-fingerprint-reuse');
+    expect(second?.row.id).toBe(first?.row.id);
+    const saved = await getRecipe(f.db.adminSql, second!.row.id);
+    expect(saved?.runCount).toBe(2);
+    expect(JSON.stringify(saved)).not.toContain('PRIVATE_');
+    const input = { sourceOperation: saved!.capabilityManifest!.sourceOperation, script: saved!.script,
+      bindingSchema: saved!.bindingSchema, workspaceId, harness: harnessSlug, scope,
+      read: (id: string) => readers().readRecipeOperation({ id, scope }) };
+    const secondCallerOperation = await resolveRecipeSourceOperation(input);
+    const hostile = "'; printf INJECTED; # $(printf EXTRA)";
+    expect(secondCallerOperation?.prepare({ value0: hostile })).toMatchObject(family === 'sql'
+      ? { sql: 'SELECT $1::text AS PRIVATE_COLUMN', parameters: [hostile] } : { cwd: '/PRIVATE_PATH' });
+    permitted = false;
+    expect(await resolveRecipeSourceOperation(input)).toBeNull();
+  });
+}
+
+it('P007 private recipe source rejects mid-read revocation, mutation, yielded work and foreign harnesses', async () => {
+  const { id } = await managedRow('host:recipe');
+  const input = { id, scope: managedScope };
+  let reads = 0;
+  const revoking = productionOpportunityReaders({ workspaceId, harnessSlug, sourceBoundary, client: f.db.adminSql,
+    authorize: async () => ++reads < 2 });
+  expect(await revoking.readRecipeOperation(input)).toBeNull();
+  reads = 0;
+  const changing = productionOpportunityReaders({ workspaceId, harnessSlug, sourceBoundary, client: f.db.adminSql,
+    authorize: async () => {
+      if (++reads === 2) await f.db.adminSql`UPDATE harness_shared.tool_invocations SET args_json='{"command":"changed"}'::jsonb WHERE id=${id}::bigint`;
+      return true;
+    } });
+  expect(await changing.readRecipeOperation(input)).toBeNull();
+  const running = await managedRow('host:running', { yielded: true, outcome: { status: 'running', final: false } });
+  expect(await readers().readRecipeOperation({ ...input, id: running.id })).toBeNull();
+  await f.db.adminSql`UPDATE harness_shared.tool_invocations SET harness_slug='other' WHERE id=${id}::bigint`;
+  expect(await readers().readRecipeOperation(input)).toBeNull();
 });
 
 it('P005 a yielded managed job and its final poll produce one failed operation, without copying output', async () => {

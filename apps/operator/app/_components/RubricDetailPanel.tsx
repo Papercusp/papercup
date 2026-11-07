@@ -25,6 +25,7 @@ import { Table, type TableColumn } from "../harness/Table";
 import { filterCountLabel, type CountEvidence } from "../harness/filters";
 import ScorecardDetail, {
   RatingChip,
+  ScorecardCoverageSummary,
   type ScorecardRow,
 } from "./ScorecardDetail";
 
@@ -520,6 +521,7 @@ function RubricDetailPanelBody({ rubricId, onBack }: RubricDetailPanelProps) {
   const [stableOpen, setStableOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyCursor, setHistoryCursor] = useState<string | null>(null);
+  const [historyMode, setHistoryMode] = useState<'accepted' | 'review-history'>('review-history');
   const [historyRows, setHistoryRows] = useState<ScorecardRow[]>([]);
   const [nextHistoryCursor, setNextHistoryCursor] = useState<string | null>(
     null,
@@ -530,8 +532,13 @@ function RubricDetailPanelBody({ rubricId, onBack }: RubricDetailPanelProps) {
     args: {
       rubricRef: rubricId,
       limit: SCORECARD_HISTORY_PAGE,
+      mode: historyMode,
       ...(historyCursor ? { cursor: historyCursor } : {}),
     },
+  });
+  const acceptedScorecards = useSyncQuery<ScorecardRow>({
+    queryName: "scorecards.list",
+    args: { rubricRef: rubricId, mode: 'accepted', limit: 1 },
   });
   const scorecardSummary = useSyncQuery<CompanionListSummary>({
     queryName: "scorecards.summary",
@@ -582,10 +589,10 @@ function RubricDetailPanelBody({ rubricId, onBack }: RubricDetailPanelProps) {
     return {
       kind: "window",
       count: rows.length,
-      window: "loaded history pages",
-      ...(summary ? { corpusTotal: summary.matched } : {}),
+      window: historyMode === 'accepted' ? "loaded accepted history pages" : "loaded history pages",
+      ...(summary && historyMode === 'review-history' ? { corpusTotal: summary.matched } : {}),
     };
-  }, [pairedFetching, scorecards.error, rows.length, summary]);
+  }, [pairedFetching, scorecards.error, rows.length, summary, historyMode]);
   const trendSampleEvidence = useMemo<CountEvidence>(() => {
     if (trend.error) return { kind: "unknown", reason: "failed" };
     if (trend.loading || trend.fetching) {
@@ -739,13 +746,23 @@ function RubricDetailPanelBody({ rubricId, onBack }: RubricDetailPanelProps) {
     },
     {
       key: "completeness",
-      header: "Completeness",
+      header: "Rating keys",
       render: (row) =>
         row.rubricResolved
           ? row.missingKeys.length === 0
-            ? "complete"
+            ? "all present"
             : `${row.missingKeys.length} missing`
           : "rubric unresolved",
+    },
+    {
+      key: "assessmentCoverage",
+      header: "Assessment coverage",
+      render: (row) => <ScorecardCoverageSummary scorecard={row} />,
+    },
+    {
+      key: "integrity",
+      header: "Integrity audit",
+      render: (row) => row.gradingAudit?.state ?? "Not recorded",
     },
   ];
 
@@ -909,6 +926,24 @@ function RubricDetailPanelBody({ rubricId, onBack }: RubricDetailPanelProps) {
         </>
       )}
 
+      <label>History view{' '}
+        <select aria-label="History view" value={historyMode} onChange={event => {
+          setHistoryRows([]); setHistoryCursor(null); setNextHistoryCursor(null);
+          setHistoryMode(event.target.value as 'accepted' | 'review-history');
+        }}>
+          <option value="review-history">Review history, including excluded results</option>
+          <option value="accepted">Accepted results</option>
+        </select>
+      </label>
+      <div aria-label="Last accepted result">
+        {acceptedScorecards.error ? 'Last accepted result unavailable.'
+          : acceptedScorecards.loading || acceptedScorecards.fetching ? 'Loading last accepted result…'
+            : acceptedScorecards.data?.[0] ? <>
+              Last accepted: <button type="button" onClick={() => setSelected(acceptedScorecards.data![0]!)}>
+                {acceptedScorecards.data[0].issueId}
+              </button>{' · '}{new Date(acceptedScorecards.data[0].createdAt).toLocaleString()}
+            </> : 'No accepted result.'}
+      </div>
       {scorecards.loading && rows.length === 0 ? (
         <div role="status">Loading scorecards…</div>
       ) : scorecards.error ? (
@@ -916,7 +951,7 @@ function RubricDetailPanelBody({ rubricId, onBack }: RubricDetailPanelProps) {
           Scorecards unavailable — {String(scorecards.error)}
         </div>
       ) : rows.length === 0 ? (
-        <div role="status">No scorecards filed against this rubric yet.</div>
+        <div role="status">{historyMode === 'accepted' ? 'No accepted scorecards.' : 'No scorecards filed against this rubric yet.'}</div>
       ) : (
         <Collapsible.Root open={historyOpen} onOpenChange={setHistoryOpen}>
           <Collapsible.Trigger className="pc-rubric-detail__disclosure">

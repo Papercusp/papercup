@@ -15,6 +15,9 @@ vi.mock('../../work-items', () => ({
   resolveWorkItemRef: vi.fn(),
 }));
 vi.mock('../../dbos/feature-blockers-edges', () => ({ guardFeatureBlockEdgeAcyclic: vi.fn() }));
+vi.mock('../../blocker-resolution-evidence', () => ({ blockerBoundaryContext: vi.fn(async () => ({
+  ownerId: 'me', sessionId: 'me', workspaceId: 'default', harnessSlug: null, role: 'su', root: null,
+})) }));
 
 import { linkWorkItem, unlinkWorkItem, resolveWorkItemRef } from '../../work-items';
 import { guardFeatureBlockEdgeAcyclic } from '../../dbos/feature-blockers-edges';
@@ -123,6 +126,8 @@ describe('work_items:link handler (bulk keyed-array)', () => {
     expect(linkM).toHaveBeenCalledWith('WI-1', { kind: 'work_item', ref: 'WI-T' }, 'blocks', {
       harness: undefined,
       by: 'me',
+      blockerEvidenceContext: expect.objectContaining({ ownerId: 'me', sessionId: 'me' }),
+      onBlockerDecision: expect.any(Function),
     });
   });
 
@@ -139,6 +144,8 @@ describe('work_items:link handler (bulk keyed-array)', () => {
     expect(linkM).toHaveBeenCalledWith('WI-dependent', { kind: 'work_item', ref: 'WI-T' }, 'blocks', {
       harness: undefined,
       by: 'me',
+      blockerEvidenceContext: expect.objectContaining({ ownerId: 'me', sessionId: 'me' }),
+      onBlockerDecision: expect.any(Function),
     });
   });
 
@@ -148,6 +155,8 @@ describe('work_items:link handler (bulk keyed-array)', () => {
     expect(linkM).toHaveBeenCalledWith('WI-10002525', { kind: 'work_item', ref: 'WI-T' }, 'blocks', {
       harness: undefined,
       by: 'me',
+      blockerEvidenceContext: expect.objectContaining({ ownerId: 'me', sessionId: 'me' }),
+      onBlockerDecision: expect.any(Function),
     });
   });
 
@@ -159,6 +168,8 @@ describe('work_items:link handler (bulk keyed-array)', () => {
       harness: undefined,
       by: 'me',
       satisfaction: 'success',
+      blockerEvidenceContext: expect.objectContaining({ ownerId: 'me', sessionId: 'me' }),
+      onBlockerDecision: expect.any(Function),
     });
 
     const rejected = await body({ id: 'WI-1', rel: 'relates', target_id: 'WI-T', satisfaction: 'success' });
@@ -191,7 +202,10 @@ describe('work_items:link handler (bulk keyed-array)', () => {
 
   it('remove:true routes to unlinkWorkItem', async () => {
     await body({ id: 'WI-1', rel: 'blocks', target_kind: 'plan_item', target_ref: 'p#P-1', remove: true });
-    expect(unlinkM).toHaveBeenCalledWith('WI-1', { kind: 'plan_item', ref: 'p#P-1' }, 'blocks', { harness: undefined });
+    expect(unlinkM).toHaveBeenCalledWith('WI-1', { kind: 'plan_item', ref: 'p#P-1' }, 'blocks', {
+      harness: undefined, by: 'me', blockerEvidenceContext: expect.objectContaining({ ownerId: 'me' }),
+      onBlockerDecision: expect.any(Function),
+    });
     expect(linkM).not.toHaveBeenCalled();
   });
 
@@ -199,6 +213,45 @@ describe('work_items:link handler (bulk keyed-array)', () => {
     const b = await body({ id: 'WI-1', rel: 'fixes' });
     expect(b.results[0]).toMatchObject({ ok: false, id: 'WI-1', rel: 'fixes' });
     expect(String(b.results[0].error)).toMatch(/target_id.*target_kind/i);
+  });
+
+  const decision = { schemaVersion: 1, idempotencyKey: 'link-1', disposition: 'defer', symptom: 'Peer repair pending',
+    investigation: [{ action: 'Read repair', outcome: 'Peer holds repair', evidenceRefs: [{ kind: 'work-item', ref: 'WI-repair' }] }],
+    attempts: [], evidenceRefs: [{ kind: 'work-item', ref: 'WI-repair' }], deferral: { reason: 'active-peer',
+      responsibleParty: 'peer', nextAction: 'Continue after repair', reasonEvidenceRefs: [{ kind: 'work-item', ref: 'WI-repair' }],
+      recheckRef: { kind: 'event', ref: 'repair:done' } } };
+
+  it('threads authenticated decisions and returns historical receipts before advisory cycle checks', async () => {
+    const record = { workItemId: 'WI-T', revision: 1 };
+    linkM.mockImplementationOnce(async (_id, _dst, _rel, options) => {
+      options?.onBlockerDecision?.({ record: record as never, replayed: true });
+      return { ok: true };
+    });
+    expect(tool.args.safeParse({ id: 'WI-1', rel: 'blocks', target_id: 'WI-T', blockerDecision: decision }).success).toBe(true);
+    const result = await body({ id: 'WI-1', rel: 'blocks', target_id: 'WI-T', blockerDecision: decision });
+    expect(linkM).toHaveBeenCalledWith('WI-1', expect.anything(), 'blocks', expect.objectContaining({
+      blockerDecision: { input: decision, sessionId: 'me' }, by: 'me',
+    }));
+    expect(result.results[0]).toMatchObject({ ok: true, blockerDecision: record, replayed: true });
+    expect(guardM).not.toHaveBeenCalled();
+  });
+
+  it('preserves actionable decision refusals for removals and bulk siblings', async () => {
+    unlinkM.mockRejectedValueOnce(Object.assign(new Error('investigate first'), {
+      code: 'blocker_decision_evidence', missing: ['live repair owner'], nextAction: 'Keep custody and read repair',
+    }));
+    const result = await body({ items: [
+      { id: 'WI-1', rel: 'blocks', target_id: 'WI-T', remove: true, blockerDecision: decision },
+      { id: 'WI-1', rel: 'relates', target_id: 'WI-T' },
+    ] });
+    expect(result.counts).toEqual({ ok: 1, failed: 1 });
+    expect(result.results[0]).toMatchObject({ code: 'blocker_decision_evidence', missing: ['live repair owner'],
+      nextAction: 'Keep custody and read repair' });
+  });
+
+  it('refuses a decision attached to a descriptive relation instead of silently dropping it', async () => {
+    expect((await body({ id: 'WI-1', rel: 'relates', target_id: 'WI-T', blockerDecision: decision })).counts.failed).toBe(1);
+    expect(linkM).not.toHaveBeenCalled();
   });
 
   it('REJECTS a cycle-closing feature→feature blocks edge (F4) without writing it', async () => {

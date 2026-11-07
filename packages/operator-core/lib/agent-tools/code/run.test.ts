@@ -18,6 +18,7 @@ const {
   recordRecipeRunMock,
   normalizeExecutionTraceMock,
   readManagedOperationsMock,
+  readRecipeOperationMock,
   resolveLiveBoundRefsMock,
   resolvePresenceFleetMock,
   normalizedTrace,
@@ -38,6 +39,7 @@ const {
     recordRecipeRunMock: vi.fn(async () => {}),
     normalizeExecutionTraceMock: vi.fn<typeof import('../../orchestration-trace').normalizeExecutionTrace>(async () => trace),
     readManagedOperationsMock: vi.fn<ReturnType<typeof import('../../agent-opportunities/source-readers').productionOpportunityReaders>['readManagedOperations']>(async () => []),
+    readRecipeOperationMock: vi.fn<ReturnType<typeof import('../../agent-opportunities/source-readers').productionOpportunityReaders>['readRecipeOperation']>(async () => null),
     resolveLiveBoundRefsMock: vi.fn(async () => ({
       workspaces: [],
       fleets: [],
@@ -61,7 +63,7 @@ vi.mock('../../orchestration-trace', () => ({
   normalizeExecutionTrace: normalizeExecutionTraceMock,
 }));
 vi.mock('../../agent-opportunities/source-readers', () => ({
-  productionOpportunityReaders: () => ({ readManagedOperations: readManagedOperationsMock }),
+  productionOpportunityReaders: () => ({ readManagedOperations: readManagedOperationsMock, readRecipeOperation: readRecipeOperationMock }),
 }));
 vi.mock('../../agent-opportunities/privacy', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -155,6 +157,7 @@ beforeEach(() => {
   recordRecipeRunMock.mockClear();
   normalizeExecutionTraceMock.mockClear();
   readManagedOperationsMock.mockReset().mockResolvedValue([]);
+  readRecipeOperationMock.mockReset().mockResolvedValue(null);
 });
 
 /**
@@ -600,6 +603,37 @@ describe('code:run → recipe capture (P-003)', () => {
       expect(normalizeExecutionTraceMock).toHaveBeenCalledWith(expect.objectContaining({ operations: [] }));
     } finally { run.mockRestore(); }
   });
+
+  for (const family of ['sql', 'shell'] as const) {
+    it(`P007 ${family}: exact settled child capture uses host source evidence and keeps opaque calls fail-closed`, async () => {
+      const tool = family === 'sql' ? 'dev:pg_query' : 'capability:bash';
+      const call = { ordinal: 0, tool, effect: 'read' as const, disposition: 'settled' as const, outputReferences: [] };
+      const source = { id: '987', workspaceId: 'ws-test', harness: 'alpha', at: new Date().toISOString(), tool,
+        args: family === 'sql' ? { sql: 'SELECT $1::text AS value', parameters: ['PRIVATE'] }
+          : { command: 'echo PRIVATE', cwd: '/tmp' } };
+      const result = { ok: true, logs: [], dryRun: false, plannedMutations: [], dispatchCount: 1, callRecords: [call],
+        dispatchTimings: { calls: [{ ...call, callId: 'host:source', elapsedMs: 1 }], totalCount: 1, omittedCount: 0, maxCalls: 24 } };
+      const run = vi.spyOn(agentMcp, 'runToolOrchestration').mockResolvedValue(result);
+      const script = family === 'sql' ? "return await tools.dev.pgQuery({sql:'SELECT 1'});"
+        : "return await tools.capability.bash({command:'echo PRIVATE'});";
+      try {
+        readRecipeOperationMock.mockResolvedValueOnce(source);
+        const response = await codeRun().fn({ script }, { ...mkCtx(), dispatchCallId: 'host:parent' });
+        expect(JSON.parse((response as { content: { text: string }[] }).content[0]!.text).ok).toBe(true);
+        expect(readRecipeOperationMock).toHaveBeenCalledWith(expect.objectContaining({ callId: 'host:source',
+          actor: 'owner-x', parentCallId: 'host:parent' }));
+        expect(captureRecipeMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ operationSource: { source, scope: expect.anything() } }));
+        captureRecipeMock.mockClear(); readRecipeOperationMock.mockClear();
+        await codeRun().fn({ script }, { ...mkCtx(), dispatchCallId: 'host:parent' });
+        expect(captureRecipeMock).not.toHaveBeenCalled();
+        run.mockResolvedValueOnce({ ...result, callRecords: [] });
+        readRecipeOperationMock.mockClear();
+        await codeRun().fn({ script }, { ...mkCtx(), dispatchCallId: 'host:parent' });
+        expect(readRecipeOperationMock).not.toHaveBeenCalled();
+        expect(captureRecipeMock).not.toHaveBeenCalled();
+      } finally { run.mockRestore(); }
+    });
+  }
 
   it('P005 an unavailable optional ledger read preserves the actual run and base trace', async () => {
     const call = { ordinal: 0, tool: 'code:tools', effect: 'read' as const, disposition: 'settled' as const, outputReferences: [] };

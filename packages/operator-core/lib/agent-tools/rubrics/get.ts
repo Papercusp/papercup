@@ -43,7 +43,7 @@ import { resolveLiveAcceptanceRubric } from '../../acceptance-live-requirements'
  * projection; that still holds — `full` is never projected, and the summary names its
  * exact recovery call instead of silently dropping fields.
  */
-function summaryRubric(rubric: Rubric) {
+export function summaryRubric(rubric: Rubric) {
   return {
     rubricId: rubric.rubricId,
     ...(rubric.revision !== undefined ? { revision: rubric.revision } : {}),
@@ -62,11 +62,16 @@ function summaryRubric(rubric: Rubric) {
       title: criterion.title,
       ...(criterion.role ? { role: criterion.role } : {}),
       ...(criterion.barKey ? { barKey: criterion.barKey } : {}),
+      evidenceReadiness: criterion.instrumentKey === 'none' || !criterion.check ? 'manual' : 'typed-check',
+      procedureExcerpt: [criterion.method, criterion.replication].filter(Boolean).join('\n').slice(0, 240),
+      missingSpecificity: !criterion.method?.trim() && !criterion.replication?.trim(),
+      definitionRead: { tool: 'rubrics:get', args: { rubricRef: rubric.rubricId,
+        ...(rubric.revision !== undefined ? { revision: rubric.revision } : {}), detail: 'full' } },
     })),
   };
 }
 
-const RUBRIC_SUMMARY_OMITS = ['rubric.description', 'rubric.criteria[].model', 'rubric.criteria[].method', 'rubric.criteria[].driftMarkers', 'rubric.barContract'];
+const RUBRIC_SUMMARY_OMITS = ['rubric.description', 'rubric.criteria[].model', 'rubric.criteria[].method', 'rubric.criteria[].replication', 'rubric.criteria[].check', 'rubric.criteria[].window', 'rubric.criteria[].driftMarkers', 'rubric.barContract'];
 
 /**
  * `coord:send` provenance uses the typed dependency ref `plan:<slug>` for a

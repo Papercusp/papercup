@@ -1,6 +1,17 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import type { ObservedSurface } from '@papercusp/testing-shell/census';
-import { captureRuntimeSecurityCensus, readRuntimeSecurityCensus, registerRuntimeSecurityCapture } from './runtime';
+import { measureBootOperatorArtifact, writeOperatorArtifactManifest } from '../release/operator-artifact';
+import { captureRuntimeSecurityCensus, initializeRuntimeObservability, readRuntimeSecurityCensus,
+  registerRuntimeSecurityCapture, shutdownRuntimeObservability } from './runtime';
+
+vi.mock('../release/operator-artifact', async original => ({
+  ...await original<typeof import('../release/operator-artifact')>(),
+  measureBootOperatorArtifact: vi.fn(),
+}));
 
 const releases: Array<() => void> = [];
 afterEach(() => { for (const release of releases.splice(0)) release(); });
@@ -76,5 +87,47 @@ describe('owning-process security discovery', () => {
     }
     await expect(readRuntimeSecurityCensus(1, { expectedDiscoverySha256: 'not-a-digest' })).rejects.toThrow('invalid_discovery_digest');
     expect(captures).toBe(0);
+  });
+
+  it('retains boot-measured source correspondence after build files are removed without claiming closure', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'security-boot-source-'));
+    try {
+      const sourcePath = 'packages/operator-core/lib/observability/runtime.ts';
+      const source = 'export const bootSource = true;';
+      const sourceSha = 'a'.repeat(40);
+      const sourceBlob = createHash('sha1').update(`blob ${Buffer.byteLength(source)}\0${source}`).digest('hex');
+      const sourceBlobs = { [sourcePath]: sourceBlob };
+      const entry = join(root, 'apps/operator/dist-host/hono-host.mjs');
+      mkdirSync(dirname(entry), { recursive: true });
+      mkdirSync(dirname(join(root, sourcePath)), { recursive: true });
+      writeFileSync(join(root, sourcePath), source);
+      writeFileSync(entry, 'bundled fixture runtime');
+      writeFileSync(entry + '.meta.json', JSON.stringify({ inputs: { [sourcePath]: {} } }));
+      const git = async (_root: string, args: string[]) => args[0] === 'status' ? ''
+        : args[0] === 'ls-tree' ? `100644 blob ${sourceBlob}\t${sourcePath}\0` : sourceSha;
+      const built = await writeOperatorArtifactManifest({ root, entry, sourceSha }, git);
+      const real = await vi.importActual<typeof import('../release/operator-artifact')>('../release/operator-artifact');
+      // Model fresh boot after the fixture writer, using the real verifier.
+      const boot = real.measureBootOperatorArtifact(entry, sourceSha, Date.now() + 1000);
+      expect(boot).toEqual(built);
+      expect(boot.status).toBe('measured');
+      vi.mocked(measureBootOperatorArtifact).mockReturnValue(boot);
+      initializeRuntimeObservability();
+      rmSync(root, { recursive: true, force: true });
+      releases.push(registerRuntimeSecurityCapture(async () => ({
+        surfaces: [surface('boot-fixture')], declaredSurfaces: [], unresolved: ['dependency-closure-unmeasured'],
+      })));
+      const snapshot = await captureRuntimeSecurityCensus();
+      expect(snapshot.runtimeIdentity.artifact).toMatchObject({ status: 'measured', sourceSha, sourceBlobs });
+      expect(snapshot).toMatchObject({ populationComplete: false, closureAccepted: false, executionAdmitted: false });
+      expect(snapshot.unresolved).toContain('dependency-closure-unmeasured');
+      const artifact = snapshot.runtimeIdentity.artifact as { sourceBlobs: Record<string, string> };
+      artifact.sourceBlobs[sourcePath] = 'b'.repeat(40);
+      expect((await captureRuntimeSecurityCensus()).runtimeIdentity.artifact).toMatchObject({ sourceBlobs });
+    } finally {
+      await shutdownRuntimeObservability();
+      vi.mocked(measureBootOperatorArtifact).mockReset();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

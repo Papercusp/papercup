@@ -217,6 +217,20 @@ describe('bundle-host-freshness output-tree identity', () => {
     expect(check.status, check.stderr).toBe(0);
   });
 
+  it('preserves freshness across startup step journal rotation while rejecting runtime changes', () => {
+    const log = join(outdir, 'hono-host.mjs.build-steps.jsonl');
+    writeFileSync(log, '{"step":"host-compile","event":"end","status":0}\n');
+    expect(run('stamp').status).toBe(0);
+    writeFileSync(log + '.previous', readFileSync(log));
+    writeFileSync(log, '');
+    const check = run('check');
+    expect(check.status, check.stderr).toBe(0);
+    writeFileSync(join(outdir, 'worker.mjs'), 'console.log(3);\n');
+    const tampered = run('check');
+    expect(tampered.status).not.toBe(0);
+    expect(tampered.stderr).toContain('output-tree mismatch');
+  });
+
   it('still refuses when a real runtime sibling changes after the stamp (control)', () => {
     expect(run('stamp').status).toBe(0);
     writeFileSync(join(outdir, 'worker.mjs'), 'console.log(3);\n');

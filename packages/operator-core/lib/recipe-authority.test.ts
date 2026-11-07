@@ -13,6 +13,27 @@ import {
   validateRecipeAuthorityProof,
 } from './recipe-authority';
 
+describe('validated bound recipe authority (EI-28104391921574576)', () => {
+  const script = 'return await tools.plans.get({slug:inputs.plan,harness:inputs.harness});';
+  const updatedAt = '2026-11-07T05:00:00Z';
+  it('derives the exact supplied scope while keeping an unbound template unresolved', async () => {
+    expect(await deriveRecipeAuthority(script)).toMatchObject({ unresolved: true });
+    expect(await deriveRecipeAuthority(script, { plan: 'p', harness: 'h' })).toMatchObject({ unresolved: false,
+      refs: { plans: ['p'], harnesses: ['h'] } });
+  });
+  it('retains revision and live identity checks when runtime bindings change', async () => {
+    const proof = { version: 1 as const, revision: recipeRevision(script, updatedAt), context: { plan: 'p', harness: 'h' } };
+    const input = { script, updatedAt, proof, validatedInputs: { plan: 'p', harness: 'h' }, liveContext: { harness: 'h' } };
+    expect(await validateRecipeAuthorityProof(input)).toMatchObject({ ok: true });
+    expect(await validateRecipeAuthorityProof({ ...input, validatedInputs: { plan: 'other', harness: 'h' } }))
+      .toMatchObject({ ok: false, error: 'authority_entity_mismatch' });
+    expect(await validateRecipeAuthorityProof({ ...input, liveContext: { harness: 'other' } }))
+      .toMatchObject({ ok: false, error: 'authority_entity_mismatch' });
+    expect(await validateRecipeAuthorityProof({ ...input, proof: { ...proof, revision: '0'.repeat(64) } }))
+      .toMatchObject({ ok: false, error: 'authority_stale_revision' });
+  });
+});
+
 describe('recipe revision contract (P-015)', () => {
   it('preserves legacy hashes and binds proofs to canonical schema + manifest material', async () => {
     const script = 'return await tools.plans.list({});';

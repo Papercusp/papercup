@@ -11,6 +11,13 @@ vi.mock('@papercusp/db-org', async original => ({
 // Activation prerequisites have their own real-PG suite. This suite controls only that
 // verdict so the production revision comparison can be falsified against real rows.
 vi.mock('./plan-activation-gate', () => ({ evaluateConversationActivationGate: async () => ({ satisfied: true, auditSeq: 1 }) }));
+// Discovery's real schema/currentness contract has its own integration suite.
+// Keep these fixtures focused on the revision, BAR and admission boundaries.
+vi.mock('../../plan-audits', async original => ({
+  ...(await original<typeof import('../../plan-audits')>()),
+  withCurrentDiscovery: async (_scope: unknown, action: () => Promise<unknown>) =>
+    ({ ok: true, value: await action() }),
+}));
 // The real revision comparison must reach the next policy gate. Its explicit
 // refusal keeps this narrow fixture from claiming complete start admission or
 // provisioning the unrelated registry, scorecard and budget subsystems.
@@ -203,9 +210,13 @@ describe('real write-boundary bypass regression', () => {
     const { checkPlanExecutionReadiness } = await import('./plan-execution-guard');
     const attempt = checkPlanExecutionReadiness(binding, WS);
     try {
-      await scopeEntered;
+      await Promise.race([scopeEntered, attempt.then(() => {
+        throw new Error('Read completed before entering the scope census');
+      })]);
       expect(read).toHaveBeenCalledWith(binding.planSlug, { harnessSlug: binding.harnessSlug, workspaceId: WS });
-      await rowRendered;
+      await Promise.race([rowRendered, attempt.then(() => {
+        throw new Error('Read completed before rendering the plan');
+      })]);
       await db.sql`UPDATE harness_shared.harness_plans SET content_hash='changed-during-scoped-read'`;
       release();
       expect(await attempt).toEqual(['plan_revision_changed']);
@@ -227,9 +238,9 @@ describe('real write-boundary bypass regression', () => {
     } finally { read.mockRestore(); }
   });
 
-  it('separates goal module and read timing without allowing a broken diagnostic sink to change refusal', async () => {
+  it('separates multi-plan goal module and read timing without allowing a broken diagnostic sink to change refusal', async () => {
     await db.sql`INSERT INTO harness_shared.session_briefs VALUES (${OWNER}, ${WS}, 'draft-feature', 'project',
-      ${db.sql.json({ scope: { plan: 'draft-feature', harness: 'project' } })}, 1)`;
+      ${db.sql.json({ scope: { plan: 'other-feature', harness: 'project' } })}, 1)`;
     const timings: Array<{ stage: string; durationMs: number }> = [];
     const result = await checkPlanExecutionGuard({ ownerId: OWNER, workspaceId: WS,
       toolName: 'apply_patch', args: {}, observeTiming: timing => {
@@ -238,7 +249,7 @@ describe('real write-boundary bypass regression', () => {
       } });
     expect(result).toMatchObject({ planSlug: 'draft-feature', blockers: ['plan_status:draft'] });
     expect(timings.map(timing => timing.stage)).toEqual(expect.arrayContaining([
-      'goal_module', 'goal_read', 'goal',
+      'goal_module', 'goal_read', 'goal_selector',
       'goal_leg_work_items', 'goal_leg_plan_items', 'goal_leg_fleet', 'goal_leg_override', 'goal_leg_links',
       'goal_pool_acquire_work_items', 'goal_pool_acquire_plan_items',
       'goal_pool_acquire_fleet', 'goal_pool_acquire_override',
@@ -258,6 +269,31 @@ describe('real write-boundary bypass regression', () => {
     }
     expect(await toolGuardText({ ownerId: OWNER, workspaceId: WS,
       call: { tool: 'exec_command', input: { cmd: 'rg -n scope source.ts' }, client: 'codex' } }, async () => null)).toBe('');
+  });
+  it('keeps canonical CLI start recovery available through the native hook without granting implementation', async () => {
+    await db.sql`INSERT INTO harness_shared.session_briefs VALUES (${OWNER}, ${WS}, 'draft-feature', 'project',
+      ${db.sql.json({ scope: { plan: 'draft-feature', harness: 'project' } })}, 1)`;
+    const commands = [
+      ["ptool plans:start --url=http://127.0.0.1:3170 --harness project --json - <<'JSON'",
+        '{"slug":"draft-feature","harness":"project"}', 'JSON'].join('\n'),
+      ["ptool tools:invoke --json - --url http://localhost:3170 --harness=project <<'JSON'",
+        '{"name":"plans:start","args":{"slug":"draft-feature","harness":"project"}}', 'JSON'].join('\n'),
+    ];
+    for (const cmd of commands) {
+      expect(await toolGuardText({ ownerId: OWNER, workspaceId: WS,
+        call: { tool: 'exec_command', input: { cmd }, client: 'codex' } }, async () => null)).toBe('');
+    }
+    for (const cmd of [
+      commands[0]! + '\ntouch implementation.ts',
+      commands[0]!.replace('plans:start', 'capability:write'),
+      commands[0]!.replace('http://127.0.0.1:3170', 'http://example.com:3170'),
+      'touch implementation.ts',
+    ]) {
+      const text = await toolGuardText({ ownerId: OWNER, workspaceId: WS,
+        call: { tool: 'exec_command', input: { cmd }, client: 'codex' } }, async () => null);
+      expect(text).toContain('plan_execution_not_ready');
+      expect(text).toContain('plan_status:draft');
+    }
   });
   it('refuses platform dispatch before the implementation handler executes', async () => {
     // No session anchor: the linked work-item is independently authoritative.
@@ -417,7 +453,9 @@ describe('real write-boundary bypass regression', () => {
     const { checkPlanExecutionReadiness } = await import('./plan-execution-guard');
     const attempt = checkPlanExecutionReadiness(binding, WS);
     try {
-      await started;
+      await Promise.race([started, attempt.then(() => {
+        throw new Error('Read completed before entering the BAR evaluation');
+      })]);
       expect(policy.readQuality).toHaveBeenCalledTimes(1);
       expect(policy.readAdmission).toHaveBeenCalledWith(expect.objectContaining({ door: 'run-now' }));
       // The policy reads began under 'current'; changing it before their join must deny.

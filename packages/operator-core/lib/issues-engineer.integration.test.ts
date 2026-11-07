@@ -1417,6 +1417,19 @@ describe('engineer issues surface (real PG)', () => {
     expect(await issues.mergeIssuePayload('EI-404', { x: 1 })).toBeNull();
   });
 
+  it('decision predecessor CAS preserves raw history and every sibling on refusal', async () => {
+    const item = await issues.createIssue({ title: 'decision payload CAS', kind: 'bug', createdBy: 'agA' });
+    const raw = { schemaVersion: 1, history: [{ revision: 1, legacyExtra: 'keep raw' }] };
+    await issues.mergeIssuePayload(item.id, { blockerResolution: raw, sibling: 'retained' });
+    expect(await issues.mergeIssuePayload(item.id, { blockerResolution: { revision: 2 }, wrong: true }, {
+      expectedBlockerResolution: { schemaVersion: 1, history: [{ revision: 1 }] }, unset: ['sibling'],
+    })).toBeNull();
+    expect((await issues.getIssue(item.id))?.payload).toMatchObject({ blockerResolution: raw, sibling: 'retained' });
+    expect(await issues.mergeIssuePayload(item.id, { blockerResolution: { revision: 2 } }, {
+      expectedBlockerResolution: raw, expectedCustodianId: null,
+    })).not.toBeNull();
+  });
+
   it('WI-10007310: payload enrichment repairs own-node origin while preserving history and lifecycle', async () => {
     const own = await issues.createIssue({ kind: 'bug', title: 'own-key witness', createdBy: 'agA' });
     const item = await issues.createIssue({ kind: 'bug', title: 'own-key remote hold', createdBy: 'agA' });

@@ -50,6 +50,9 @@ import { OWNER_AUTHORITY_TOPICS, type OwnerAuthorityTopic } from '../../consult/
 import { asRecord, completedResultPayload } from '../abort-completion-payload';
 import { checkHoldLift, holdArg, ownerTurnRefField, prepareHoldPlacement, type HoldArg } from './set-blocker-hold';
 import type { RestrictionHold } from '../../restriction-holds';
+import { blockerDecisionInputSchema, prepareBlockerDecision, type BlockerDecisionInput,
+  type BlockerDecisionRecord } from '../../blocker-resolution-decision';
+import { blockerBoundaryContext, preflightBlockerDecision } from '../../blocker-resolution-evidence';
 
 // Older callers used the missing capability as `kind` (for example,
 // `kind:'credential'`). Keep accepting those inputs at the tool boundary, but
@@ -92,6 +95,7 @@ type BlockerInput = {
   /** one-work-graph-structured-holds-2026-10-26#D-014: the restriction a kind:'hold' row records. */
   hold?: HoldArg;
   ownerTurnRef?: string;
+  blockerDecision?: BlockerDecisionInput;
 };
 type NormalizedBlockerInput = Omit<BlockerInput, 'kind'> & { kind?: ExternalBlockerKind };
 const CAPABILITY_KIND_ALIASES = {
@@ -243,6 +247,7 @@ async function openDirectHumanCapabilityQuestion(
 }
 
 const fields = {
+  blockerDecision: blockerDecisionInputSchema.optional(),
   kind: BLOCKER_KIND.optional(),
   capability: BLOCKER_CAPABILITY.optional(),
   ref: z.string().min(1).max(300).optional(),
@@ -539,6 +544,7 @@ export default defineTool({
       migrateWorkItemRefs: fields.migrateWorkItemRefs,
       hold: fields.hold,
       ownerTurnRef: fields.ownerTurnRef,
+      blockerDecision: fields.blockerDecision,
       items: z.array(itemSpec).min(1).max(100).optional(),
     })
     .strict()
@@ -630,21 +636,11 @@ export default defineTool({
             migrateWorkItemRefs: args.migrateWorkItemRefs,
             hold: args.hold,
             ownerTurnRef: args.ownerTurnRef,
+            blockerDecision: args.blockerDecision,
           },
         ];
     const items: NormalizedBlockerInput[] = rawItems.map(normalizeBlockerInput);
-    const wantsAutoAuthority = items.some((input) => !input.clear && input.capability === 'approval-auto-clearable');
-    let autoAuthority = false;
-    if (wantsAutoAuthority) {
-      try {
-        const modes = await trackPhase(ctx.phases, 'set_blocker:get-modes', () =>
-          getModes(identity.workspaceId ?? 'default', identity.ownerId),
-        );
-        autoAuthority = modes.some((row) => modeImpliesAutonomy(row.mode));
-      } catch {
-        // Fail closed: a mode-read outage must never fabricate approval.
-      }
-    }
+    let modeRead: Promise<boolean> | undefined;
     const env = await runBulk(
       items,
       async (input) => {
@@ -652,6 +648,36 @@ export default defineTool({
           getWorkItem(input.id, input.harness),
         );
         if (!workItem) return { ok: false as const, id: input.id, error: `work_item '${input.id}' not found` };
+        // Bind caller intent, before generated timestamps/consult refs. Historical
+        // retries must precede live modes, evidence, terminal and custody checks.
+        const { blockerDecision: _decision, ...request } = input;
+        const effect = { setBlocker: request };
+        if (input.blockerDecision) {
+          const prepared = prepareBlockerDecision(workItem.payload, input.blockerDecision, {
+            ownerId: identity.ownerId, sessionId: identity.ownerId,
+            workItemId: input.id, custodianId: workItem.assignee,
+          }, { effect });
+          if (!prepared.ok) return { ...prepared, id: input.id, error: prepared.nextAction };
+          if (prepared.replayed) return { ok: true as const, id: input.id,
+            blockerDecision: prepared.record, replayed: true };
+        }
+        const boundary = await blockerBoundaryContext(ctx, identity.ownerId, workItem.harness);
+        if (!input.blockerDecision) {
+          const checked = await preflightBlockerDecision(workItem, undefined, boundary,
+            { effect, enteringDeferral: !input.clear && !input.migrateWorkItemRefs });
+          if (!checked.ok) return { ...checked, id: input.id, error: checked.nextAction };
+        }
+        if (input.blockerDecision && input.migrateWorkItemRefs) return {
+          ok: false as const, id: input.id, code: 'blocker_decision_relation_required',
+          error: 'Use the canonical work_items:link decision boundary for dependency migration; no history or relation was changed.',
+        };
+        let autoAuthority = false;
+        if (!input.clear && input.capability === 'approval-auto-clearable') {
+          modeRead ??= trackPhase(ctx.phases, 'set_blocker:get-modes', () =>
+            getModes(identity.workspaceId ?? 'default', identity.ownerId))
+            .then((modes) => modes.some((row) => modeImpliesAutonomy(row.mode))).catch(() => false);
+          autoAuthority = await modeRead;
+        }
         if (input.migrateWorkItemRefs) {
           return migrateWorkItemRefRows(input, workItem, identity.ownerId);
         }
@@ -717,6 +743,9 @@ export default defineTool({
           // A hold ref names its target (often a work-item id) but is not a dependency.
           const referents = existingSelfOwnerAsk || isHold ? null : pureWorkItemDependencyReferents(input.ref);
           if (referents) {
+            if (input.blockerDecision) return { ok: false as const, id: input.id,
+              code: 'blocker_decision_relation_required',
+              error: 'Use work_items:link for a work-item dependency and its decision; no relation or blocker was changed.' };
           const linked = await trackPhase(ctx.phases, 'set_blocker:link-dependency', () =>
             linkWorkItemRefDependencies({
               dependentId: input.id,
@@ -874,6 +903,22 @@ export default defineTool({
           }
         }
 
+        // Measure the proposed external condition before opening any consult or
+        // owner ask. Clearing still checks ALL prior obligations, including the
+        // condition being cleared; an agent's clear flag is not clearance proof.
+        if (input.blockerDecision) {
+          const proposed = !input.clear && input.kind && input.ref
+            ? applyExternalBlockerUpdate(workItem.payload, { kind: input.kind, capability: input.capability,
+                ref: input.ref, summary: input.summary, evidence: input.evidence, nextVerb: input.nextVerb,
+                recheckAt: input.recheckAt, defaultIfUnanswered: input.defaultIfUnanswered,
+                decideBy: input.decideBy, defaultAction: input.defaultAction,
+                ...(holdRow ? { hold: holdRow } : {}) }, identity.ownerId, { autoAuthority })
+                .blockers.filter((blocker) => blocker.status === 'active') : [];
+          const checked = await preflightBlockerDecision(workItem, input.blockerDecision, boundary,
+            { effect, enteringDeferral: !input.clear, additionalBlockers: proposed });
+          if (!checked.ok) return { ...checked, id: input.id, error: checked.nextAction };
+        }
+
         // consult-backed-parking-2026-10-12 P-005 (R-3, R-13, R-14): a NEW product-decision
         // blocker is a park. It opens a decision-review consult, and the stored blocker ref
         // becomes consult:<id>. Re-asserting an active park (ref already consult:<id>) skips this.
@@ -996,6 +1041,9 @@ export default defineTool({
           }
           const candidate = candidates[0];
           if (!candidate) {
+            if (input.blockerDecision) return { ok: false as const, id: input.id,
+              code: 'blocker_identity_required',
+              error: 'No active blocker identifies this clear. Pass its explicit kind and ref to record a new decision; no state or history was changed.' };
             return {
               ok: true as const,
               id: input.id,
@@ -1031,6 +1079,9 @@ export default defineTool({
           }
           resolvedKind = matchingKinds[0];
           if (!resolvedKind) {
+            if (input.blockerDecision) return { ok: false as const, id: input.id,
+              code: 'blocker_identity_required',
+              error: 'No active blocker identifies this clear. Pass its explicit kind and ref to record a new decision; no state or history was changed.' };
             return {
               ok: true as const,
               id: input.id,
@@ -1091,7 +1142,7 @@ export default defineTool({
           identity.ownerId,
           { autoAuthority },
         );
-        if (!history.changed) {
+        if (!history.changed && !input.blockerDecision) {
           return {
             ok: true as const,
             id: input.id,
@@ -1127,6 +1178,37 @@ export default defineTool({
           kind: resolvedKind,
           cleared: input.clear === true,
         });
+        if (input.blockerDecision) {
+          const targetState = active.length > 0 ? (remainingStrictHumanAsk ? 'needs-human' : 'blocked')
+            : workItem.state === 'blocked' || (workItem.family === 'issue' && workItem.state === 'needs-human')
+              ? 'open' : workItem.state;
+          let receipt: { record: BlockerDecisionRecord; replayed: boolean } | undefined;
+          try {
+            const lifecycle = await trackPhase(ctx.phases, 'set_blocker:set-lifecycle', () =>
+              setWorkItemStateWithAliasInfo(input.id, targetState, {
+                harness: workItem.harness ?? input.harness, by: identity.ownerId,
+                blockerEvidenceContext: boundary,
+                blockerDecision: { input: input.blockerDecision, sessionId: identity.ownerId,
+                  effect, payloadPatch: { externalBlockers: history.blockers }, unset: ownerFlagUnset },
+                onBlockerDecision: (value) => { receipt = value; },
+              }));
+            if (!lifecycle.workItem) return { ok: false as const, id: input.id,
+              code: 'blocker_history_conflict', error: 'The atomic blocker/lifecycle update was refused; read work_items:get before retrying.' };
+            return { ok: true as const, id: input.id, changed: !receipt?.replayed,
+              workItem: lifecycle.workItem, lifecycle, blockerDecision: receipt?.record,
+              replayed: receipt?.replayed ?? false,
+              activeBlockers: activeExternalBlockers(lifecycle.workItem.payload),
+              blockerHistory: readExternalBlockers(lifecycle.workItem.payload),
+              autoCleared: history.autoCleared, ...(ownerAsk ? { ownerAsk } : {}),
+              ...(parkOpened ? { park: parkOpened } : {}) };
+          } catch (error) {
+            const problem = error as { code?: string; missing?: unknown; nextAction?: string };
+            return { ok: false as const, id: input.id, code: problem.code ?? 'blocker_lifecycle_refused',
+              error: error instanceof Error ? error.message : String(error),
+              ...(problem.missing ? { missing: problem.missing, nextAction: problem.nextAction } : {}),
+              ...(ownerAsk ? { ownerAsk } : {}), ...(parkOpened ? { park: parkOpened } : {}) };
+          }
+        }
         const updated = await trackPhase(ctx.phases, 'set_blocker:merge-blocker-history', () =>
           mergeWorkItemPayload(
             input.id,

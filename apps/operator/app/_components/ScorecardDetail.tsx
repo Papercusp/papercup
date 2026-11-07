@@ -9,13 +9,23 @@
  */
 import { Table, type TableColumn } from '../harness/Table';
 import { useLexicon } from '@/lib/useLexicon';
+import { useState } from 'react';
+import { callTool } from '@papercusp/operator-core/lib/call-tool';
+import type { ScorecardRow as StoredScorecardRow, ScorecardEvidenceAction } from '@papercusp/operator-core/lib/scorecards';
+import type { Rubric } from '@papercusp/operator-core/lib/rubrics';
+import type { ObservationLedgerResult } from '@papercusp/operator-core/lib/harness/improvements/observation-types';
 
 export interface RatingEntry {
   rating: string;
   evidence?: string;
+  nextEvidenceAction?: string;
+  unknownReason?: string;
+  ledgerResult?: ObservationLedgerResult;
+  lastMeasurement?: ObservationLedgerResult;
 }
 
-export interface ScorecardRow {
+export interface ScorecardRow extends Pick<StoredScorecardRow,
+  'coverage' | 'evidenceActions' | 'omittedActionCount' | 'gradingAudit' | 'acceptance' | 'exclusionReasons'> {
   issueId: string;
   createdAt: string;
   createdBy: string | null;
@@ -35,6 +45,75 @@ export interface ScorecardRow {
    * work_items:link. Empty when nothing is linked.
    */
   linkedItems?: { rel: string; dst: { kind: string; ref: string } }[];
+}
+
+function MeasurementDetail({ result, label }: { result: ObservationLedgerResult; label: string }) {
+  return <div aria-label={label}>
+    {label}: {result.value === null ? 'unavailable' : String(result.value)} {result.unit ?? ''}
+    {' · '}{result.status ?? 'Outcome unavailable'}{' · measured '}{result.finishedAt ?? 'time unavailable'}
+    {' · age '}{result.ageMs == null ? 'unavailable' : `${result.ageMs} ms`}
+    {' · '}{result.freshness ?? 'Freshness unavailable'}
+    {result.comparisonTime && <> · compared at {result.comparisonTime}</>}
+    {' · source test_runs:'}{result.testRunId}
+  </div>;
+}
+
+/** Display the server's independent axes; never derive support from rating prose. */
+export function ScorecardCoverageSummary({ scorecard }: { scorecard: ScorecardRow }) {
+  const coverage = scorecard.coverage;
+  if (!coverage) return <span>Coverage unavailable</span>;
+  const denominator = coverage.denominator ?? '?';
+  return (
+    <span aria-label="Assessment coverage">
+      {coverage.record.present ?? '?'}/{denominator} rating keys present ·{' '}
+      {coverage.evidence.current.length}/{denominator} supported ·{' '}
+      {coverage.unresolvedKeys.length} unresolved · Requested scope unknown · Fulfillment unknown
+    </span>
+  );
+}
+
+function EvidenceActionDetail({ action }: { action: ScorecardEvidenceAction }) {
+  const [read, setRead] = useState<{ loading?: boolean; text?: string; error?: string }>({});
+  const readProcedure = async () => {
+    if (!action.definitionRead) return;
+    setRead({ loading: true });
+    try {
+      const response = await callTool(action.definitionRead.tool, action.definitionRead.args);
+      const block = response.content.find(item => item.type === 'text' && typeof item.text === 'string');
+      if (!block) throw new Error('Pinned procedure unavailable.');
+      const result = JSON.parse(block.text as string) as { results?: Array<{ ok?: boolean; rubric?: Rubric }> };
+      const rubric = result.results?.find(item => item.ok && item.rubric?.rubricId === action.context.rubricRef)?.rubric;
+      if (!rubric || rubric.revision !== action.context.rubricRevision || rubric.criteriaHash !== action.context.criteriaHash) {
+        throw new Error('The recorded rubric revision and hash could not be verified.');
+      }
+      const criterion = rubric.criteria.find(item => item.key === action.criterionKey);
+      if (!criterion) throw new Error('The recorded criterion is unavailable.');
+      setRead({ text: [criterion.method, criterion.replication].filter(Boolean).join('\n\n') || 'No specific procedure was authored.' });
+    } catch (error) {
+      setRead({ error: error instanceof Error ? error.message : 'Pinned procedure unavailable.' });
+    }
+  };
+  return (
+    <li>
+      <strong>{action.criterionKey}</strong>: {action.nextEvidenceAction}
+      <p>{action.procedure.excerpt || 'No specific procedure recorded.'}</p>
+      <details>
+        <summary>Procedure context</summary>
+        <p>Reason: {action.reason} · Readiness: {action.readiness}</p>
+        <p>Subject: {action.context.subjectRef ?? 'Unknown'}</p>
+        <p>Window: {action.context.windowStart ?? 'Unknown'} to {action.context.windowEnd ?? 'Unknown'}</p>
+        <p>Rubric: {action.context.rubricRef} · Revision: {action.context.rubricRevision ?? 'Unknown'}</p>
+        <p>{action.finishCondition}</p>
+        {action.definitionRead && (
+          <button type="button" onClick={readProcedure} disabled={read.loading}>
+            {read.loading ? 'Reading procedure…' : `Read full procedure for ${action.criterionKey}`}
+          </button>
+        )}
+        {read.error && <p role="status">{read.error}</p>}
+        {read.text && <pre style={{ whiteSpace: 'pre-wrap' }}>{read.text}</pre>}
+      </details>
+    </li>
+  );
 }
 
 /**
@@ -101,7 +180,12 @@ export default function ScorecardDetail({
     {
       key: 'evidence',
       header: 'Evidence',
-      render: ([, entry]) => entry.evidence ?? '',
+      render: ([, entry]) => <>
+        {entry.evidence ?? ''}
+        {entry.ledgerResult && <MeasurementDetail label="Latest attempt" result={entry.ledgerResult} />}
+        {entry.lastMeasurement && <MeasurementDetail label="Last measurement" result={entry.lastMeasurement} />}
+        {entry.nextEvidenceAction && <p>Next evidence action: {entry.nextEvidenceAction}</p>}
+      </>,
       cellStyle: { maxWidth: '48rem' },
     },
   ];
@@ -139,14 +223,23 @@ export default function ScorecardDetail({
         <dd title="Read-time 0–10 projection (scale-aware: 3-level pass=10/partial=5/fail=0; extended exemplary=10/pass=8/partial=5/fail=2/severe=0; unknown excluded) — grading stays categorical">
           {scorecard.score10 !== null ? `${scorecard.score10} / 10` : '— (no mappable ratings)'}
         </dd>
-        <dt style={{ opacity: 0.65 }}>Completeness</dt>
+        <dt style={{ opacity: 0.65 }}>Rating keys</dt>
         <dd>
           {complete
-            ? `complete — all ${scorecard.nKeys} criteria rated`
+            ? `${scorecard.nKeys} present · 0 missing`
             : scorecard.rubricResolved
               ? `incomplete — ${scorecard.missingKeys.length} unrated: ${scorecard.missingKeys.join(', ')}`
               : `rubric unresolved — ${scorecard.nKeys} rated (completeness unverifiable)`}
         </dd>
+        <dt style={{ opacity: 0.65 }}>Assessment</dt>
+        <dd><ScorecardCoverageSummary scorecard={scorecard} /></dd>
+        <dt style={{ opacity: 0.65 }}>Integrity audit</dt>
+        <dd>{scorecard.gradingAudit?.state ?? 'Not recorded'}</dd>
+        <dt style={{ opacity: 0.65 }}>Eligibility</dt>
+        <dd>{scorecard.exclusionReasons?.length ? `Excluded: ${scorecard.exclusionReasons.join(', ')}`
+          : scorecard.exclusionReasons ? 'Settled history eligibility passed' : 'Not recorded'}</dd>
+        <dt style={{ opacity: 0.65 }}>Author verdict</dt>
+        <dd>{scorecard.acceptance?.verdict ?? 'Not recorded'}</dd>
         {scorecard.linkedItems && scorecard.linkedItems.length > 0 && (
           <>
             <dt style={{ opacity: 0.65 }}>Linked items</dt>
@@ -161,6 +254,16 @@ export default function ScorecardDetail({
           </>
         )}
       </dl>
+
+      {scorecard.evidenceActions && scorecard.evidenceActions.length > 0 && (
+        <section aria-label="Next evidence actions">
+          <h3>Next evidence actions</h3>
+          <ul>{scorecard.evidenceActions.map(action => (
+            <EvidenceActionDetail key={`${action.criterionKey}:${action.context.rubricRevision}:${action.context.criteriaHash}`} action={action} />
+          ))}</ul>
+          {(scorecard.omittedActionCount ?? 0) > 0 && <p>{scorecard.omittedActionCount} more criterion actions in the full evidence read.</p>}
+        </section>
+      )}
 
       <div style={{ overflowX: 'auto' }}>
         <Table

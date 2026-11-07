@@ -695,15 +695,37 @@ export default defineTool({
     // can never run, then lets it accrue run/success counts that certify it.
     // A live cell depends on process-local objects; saving it as a portable recipe would lose that state.
     if (successfulAttempt && !args.kernel && codeRunCaptureMode(ctx) !== 'never' && !(args.dryRun ?? false) && isRecipeCaptureEligible(result, all)) {
+      // Only a single actual settled child can become a standalone operation.
+      // A timing/source mention, a wrapper, missing telemetry or a mixed script
+      // is never an executable source locator.
+      const privateSource = await runPostprocessing('private recipe source', async () => {
+        const call = result.callRecords?.length === 1 ? result.callRecords[0] : null;
+        const timings = result.dispatchTimings;
+        const timing = timings?.calls.length === 1 ? timings.calls[0] : null;
+        const workspaceId = ctx.workspaceId, harness = resolveConcreteHarnessSlug(undefined, ctx);
+        const actor = resolveAgentIdentity(ctx).ownerId, parentCallId = ctx.dispatchCallId;
+        if (result.dispatchCount !== 1 || !call || call.disposition !== 'settled'
+          || !['dev:pg_query', 'capability:bash'].includes(call.tool) || !timing?.callId || timings?.omittedCount
+          || timing.ordinal !== call.ordinal || timing.tool !== call.tool || timing.effect !== call.effect
+          || timing.disposition !== call.disposition || !workspaceId || !harness || !actor || !parentCallId) return null;
+        const scope = productionMiningScope(workspaceId, runStartedAtMs);
+        const source = await productionOpportunityReaders({ workspaceId, harnessSlug: harness, sourceBoundary: scope.sourceBoundary,
+          authorize: async boundary => boundary.workspaceId === ctx.workspaceId
+            && boundary.harnessSlug === resolveConcreteHarnessSlug(undefined, ctx)
+            && boundary.sourceBoundary === scope.sourceBoundary && resolveAgentIdentity(ctx).ownerId === actor,
+        }).readRecipeOperation({ scope, callId: timing.callId, actor, parentCallId,
+          since: new Date(runStartedAtMs).toISOString(), until: new Date().toISOString() });
+        return source && source.tool === call.tool ? { source, scope } : null;
+      }, null);
       const authority = await runPostprocessing(
         'recipe authority check',
         () => isRecipeCaptureAuthorityEligible(script),
         false,
       );
-      if (authority.value && !authority.degraded) {
+      if (privateSource.value || authority.value && !authority.degraded) {
         const capture = await runPostprocessing(
           'recipe capture',
-          () => maybeCaptureRecipe({ ...args, script }, ctx, all, allowed, executionTrace, contract, runEvidence),
+          () => maybeCaptureRecipe({ ...args, script }, ctx, all, allowed, executionTrace, contract, runEvidence, privateSource.value ?? undefined),
           null,
         );
         recipeCapture = capture.value;
@@ -3051,6 +3073,7 @@ async function maybeCaptureRecipe(
   executionTrace: NormalizedExecutionTrace | null,
   contract?: CodeRunContract,
   runEvidence?: RecipeRunEvidence,
+  operationSource?: import('./capture-recipe').CaptureRecipeInput['operationSource'],
 ): Promise<CodeRunRecipeCapture | null> {
   try {
     const workspaceId = ctx.workspaceId;
@@ -3120,6 +3143,7 @@ async function maybeCaptureRecipe(
       },
       {
         script: args.script,
+        ...(operationSource ? { operationSource } : {}),
         workspaceId,
         harness: ctx.harnessSlug ?? null,
         ownerId,

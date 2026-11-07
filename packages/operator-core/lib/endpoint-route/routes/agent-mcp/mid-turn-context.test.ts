@@ -20,10 +20,21 @@
  * nineteen. A time-based throttle would have suppressed exactly that, which is
  * why the rate guard is a rolling ceiling rather than a min-interval.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { configureReadCursorStore, InMemoryReadCursorStore, resetReadCursorStore } from '../../../agent-tools/coordination/read-cursors';
+import { memoryFragmentOffer, _resetSessionEpochLedgerForTests } from '../../../memory/session-epoch-ledger';
+import { buildDigest } from '../../../../../../apps/operator/scripts/hooks/inject/core.mjs';
+import { extractRecallSignals } from '../../../../../../apps/operator/scripts/hooks/inject/recall-query.mjs';
+
+const memoryReceiptSqlMock = vi.hoisted(() => vi.fn(async (chunks: TemplateStringsArray, ..._values: unknown[]) =>
+  Array.isArray(chunks) && chunks.join('?').includes('RETURNING memory_id') ? [{ memory_id: 'inserted' }] : []));
+vi.mock('@papercusp/db-org', async orig => ({
+  ...await orig<typeof import('@papercusp/db-org')>(),
+  getOrgPg: () => ({ sql: memoryReceiptSqlMock }),
+}));
 
 const {
   buildMemoryContextBlockMock,
@@ -36,6 +47,7 @@ const {
   buildFailureLoopHintTextMock,
   evaluateHookContextSinkMock,
   codeIntelPushTextMock,
+  preparedFragmentsMock,
 } = vi.hoisted(() => ({
   buildMemoryContextBlockMock: vi.fn(),
   withMidTurnMemoryAdmissionMock: vi.fn(),
@@ -47,11 +59,16 @@ const {
   buildFailureLoopHintTextMock: vi.fn(),
   evaluateHookContextSinkMock: vi.fn(),
   codeIntelPushTextMock: vi.fn(),
+  preparedFragmentsMock: vi.fn(),
 }));
 
 // Same relative specifiers the source's dynamic imports use (colocated).
 vi.mock('../../../memory/injection', () => ({
   buildMemoryContextBlock: buildMemoryContextBlockMock,
+  prepareMemoryContextBlock: async (input: unknown) => {
+    const text = await buildMemoryContextBlockMock(input);
+    return text ? { text, fragments: preparedFragmentsMock() } : null;
+  },
 }));
 vi.mock('../../../memory/injection-delivery-coverage', () => ({
   recordInjectionCoverage: recordInjectionCoverageMock,
@@ -131,6 +148,10 @@ const owner = (): string => `sess-${++seq}`;
 const firstCall = () => buildMemoryContextBlockMock.mock.calls[0]![0] as Record<string, unknown>;
 
 beforeEach(() => {
+  configureReadCursorStore(new InMemoryReadCursorStore());
+  _resetSessionEpochLedgerForTests();
+  memoryReceiptSqlMock.mockClear();
+  preparedFragmentsMock.mockReset().mockReturnValue([]);
   setSessionConfinementResolver(() => null);
   buildMemoryContextBlockMock.mockReset().mockResolvedValue('MEM');
   withMidTurnMemoryAdmissionMock
@@ -149,6 +170,50 @@ beforeEach(() => {
   buildFailureLoopHintTextMock.mockReset().mockResolvedValue('FAILURE LOOP HINT');
   evaluateHookContextSinkMock.mockReset().mockResolvedValue({ text: '', result: null });
   codeIntelPushTextMock.mockReset().mockResolvedValue('');
+});
+afterEach(() => resetReadCursorStore());
+
+describe('exact mid-turn emission receipts', () => {
+  const inserts = () => memoryReceiptSqlMock.mock.calls.filter(([chunks]) =>
+    chunks.join('?').includes('INSERT INTO harness_shared.memory_session_surfaced'));
+
+  it('stages only complete final fragments and confirms them before the next no-signal branch', async () => {
+    const who = owner();
+    const a = memoryFragmentOffer('memory', '11111111-1111-1111-1111-111111111111', 4, 'mid-turn', '- complete memory condition ☃');
+    const b = memoryFragmentOffer('corpus', 'WI-42', 4, 'mid-turn', '- ' + 'clipped condition '.repeat(35));
+    preparedFragmentsMock.mockReturnValue([a, b]);
+    buildMemoryContextBlockMock.mockResolvedValue(a.rendered + '\n' + b.rendered);
+    const res = await endpoint.handler(new Request('http://localhost/agent-mcp/mid-turn-context', {
+      method: 'POST', body: JSON.stringify({ owner: who, client: 'codex', memoryReceiptMode: true,
+        tool: 'Grep', toolInput: { pattern: 'receipt candidate' } }),
+    }));
+    const out = await res.json();
+    expect(out.text).toContain(a.rendered);
+    expect(out.text).not.toContain(b.rendered);
+    expect(out.memoryFragmentOffers).toEqual([a]);
+    expect(inserts()).toHaveLength(0);
+    const { rendered: _text, ...fragment } = a;
+    await post({ owner: who, tool: 'unknown-tool', confirmedMemoryDeliveries: [
+      { token: out.deliveryToken, fragments: [fragment] },
+    ] });
+    expect(inserts()).toHaveLength(1);
+    expect(inserts()[0]).toContain(4);
+    await post({ owner: who, tool: 'unknown-tool', confirmedMemoryDeliveries: [
+      { token: out.deliveryToken, fragments: [fragment] },
+    ] });
+    expect(inserts()).toHaveLength(1);
+  });
+
+  it.each([{ client: 'codex' }, { client: 'other', memoryReceiptMode: true },
+    { client: 'claude', memoryReceiptMode: true, wallMs: 1 }])('cannot stage without native writable proof or within an expired wall: %j', async fields => {
+    const a = memoryFragmentOffer('memory', '11111111-1111-1111-1111-111111111111', 4, 'mid-turn', '- condition');
+    preparedFragmentsMock.mockReturnValue([a]);
+    buildMemoryContextBlockMock.mockResolvedValue(a.rendered);
+    const out = await post({ owner: owner(), tool: 'Grep', toolInput: { pattern: 'receipt no stage' }, ...fields });
+    expect(out).not.toHaveProperty('deliveryToken');
+    expect(out).not.toHaveProperty('memoryFragmentOffers');
+    expect(inserts()).toHaveLength(0);
+  });
 });
 
 it('delivers code intelligence even when the memory query has no signal', async () => {
@@ -246,6 +311,32 @@ const coverageEvents = (): Array<Record<string, unknown>> =>
   recordInjectionCoverageMock.mock.calls.flatMap((call) => (call[0] ?? []) as Array<Record<string, unknown>>);
 const flushCoverage = async (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 
+it('context reliability: shell boilerplate abstains while grounded identifiers remain searchable', async () => {
+  for (const call of [
+    { tool: 'Bash', toolInput: { command: 'pwd && git status' } },
+    { tool: 'exec', toolInput: 'const x = await tools.exec_command({cmd: "echo debug"}); text(x)' },
+    { tool: 'Bash', toolInput: { command: "python3 - <<'PY'\nprint('WI-6512')\nPY" } },
+    { tool: 'Grep', toolInput: '{"pattern":"WI-6512"' },
+  ]) await post({ owner: owner(), ...call });
+  expect(buildMemoryContextBlockMock).not.toHaveBeenCalled();
+  const signal = extractRecallSignals('Grep', { pattern: 'WI-6512' });
+  await post({ owner: owner(), tool: 'Grep', toolInput: { pattern: 'WI-6512' } });
+  expect(firstCall().queryContext).toEqual({ userText: '', lexicalText: 'WI-6512', fingerprint: signal.fingerprint });
+  expect(buildMemoryContextBlockMock).toHaveBeenCalledTimes(1);
+});
+
+it('uses the pre-clamp normalized manifest and verifies its fingerprint at the production seam', async () => {
+  const toolCalls = buildDigest([{ tool: 'exec_command', toolInput: {
+    cmd: 'node -e "' + 'x'.repeat(2000) + '"', justification: 'repair WI-6512 delivery', workdir: 'src/memory',
+  } }]);
+  await post({ owner: owner(), toolCalls });
+  expect(firstCall().queryContext).toEqual({ userText: 'repair delivery',
+    lexicalText: 'WI-6512 src/memory repair delivery', fingerprint: toolCalls[0].querySignals.fingerprint });
+  buildMemoryContextBlockMock.mockClear();
+  await post({ owner: owner(), toolCalls: [{ ...toolCalls[0], querySignals: { ...toolCalls[0].querySignals, fingerprint: 'altered' } }] });
+  expect(buildMemoryContextBlockMock).not.toHaveBeenCalled();
+});
+
 describe('mid-turn-context — query derivation', () => {
   it("reads a Bash call as its command plus the agent's own description", () => {
     expect(deriveQuery('Bash', { command: 'rg WI-6512 packages', description: 'find the bug' })).toBe(
@@ -300,8 +391,17 @@ describe('mid-turn-context — batch folding (the PostToolBatch payload)', () =>
     expect(deriveQuery('Grep', JSON.stringify({ pattern: 'abc', path: 'packages' }))).toBe('abc packages');
   });
 
-  it('falls back to raw text when a clamp truncated the JSON mid-way', () => {
-    expect(deriveQuery('Bash', '{"command":"rg WI-65')).toContain('rg WI-65');
+  it.each(['{"command":"rg WI-65', 'null', '[{"pattern":"secret"}]', 'true', '42', '"serialized shell boilerplate"'])(
+    'context reliability R-3: malformed or non-object JSON abstains: %s', input => {
+      for (const tool of ['Bash', 'exec_command', 'Grep']) {
+        expect(deriveQueryDetailed(tool, input)).toEqual({ query: '', miss: 'no-signal' });
+      }
+    });
+
+  it('context reliability R-3: a truncated tool envelope never reaches retrieval', async () => {
+    const out = await post({ owner: owner(), tool: 'Bash', toolInput: '{"command":"rg WI-65' });
+    expect(buildMemoryContextBlockMock).not.toHaveBeenCalled();
+    expect(out.text).toBe('');
   });
 
   it('drops a batch whose calls carry no recall signal at all', async () => {
@@ -372,7 +472,7 @@ describe('mid-turn-context — the cost properties', () => {
 
   it('skips an IDENTICAL consecutive query for free — a retry loop costs one embed, not N', async () => {
     const o = owner();
-    const call = { owner: o, tool: 'Bash', toolInput: { command: 'npm test' } };
+    const call = { owner: o, tool: 'Bash', toolInput: { command: 'rg delivery packages' } };
     await post(call);
     await post(call);
     await post(call);
@@ -427,15 +527,11 @@ describe('mid-turn-context — the cost properties', () => {
     }));
   });
 
-  it('clamps a very long command rather than embedding a pasted heredoc', async () => {
+  it('abstains on a very long command with no grounded query signal', async () => {
     await post({ owner: owner(), tool: 'Bash', toolInput: { command: 'x'.repeat(5_000) } });
     // The clamp applies to the DERIVED text, before the P-044 per-leg split, so
     // both halves inherit it — neither leg can be handed a pasted heredoc.
-    const { queryContext } = firstCall() as {
-      queryContext: { userText: string; lexicalText: string };
-    };
-    expect(queryContext.userText).toHaveLength(1_000);
-    expect(queryContext.lexicalText).toHaveLength(1_000);
+    expect(buildMemoryContextBlockMock).not.toHaveBeenCalled();
   });
 });
 
@@ -618,7 +714,7 @@ describe('mid-turn-context — P-018 acceptance: fires EARLY, on the first grep'
     // the id, which is what this acceptance case is actually about, reaches
     // BOTH legs exactly as before.
     expect(firstCall()).toMatchObject({
-      queryContext: { userText: 'WI-6512 packages', lexicalText: 'WI-6512 packages' },
+      queryContext: { userText: '', lexicalText: 'WI-6512 packages' },
     });
   });
 });
@@ -1248,7 +1344,7 @@ describe('derive-miss leaves a trace (D-005 §3b)', () => {
   it("records 'no-recall' — healthy quiet — when it ran and found nothing", async () => {
     // The state an alarm must NOT fire on, and cannot see without this.
     buildMemoryContextBlockMock.mockResolvedValue('');
-    await post({ owner: owner(), client: 'omp', tool: 'bash', toolInput: { command: 'ls' } });
+    await post({ owner: owner(), client: 'omp', tool: 'bash', toolInput: { command: 'ls src/memory' } });
     expect(coverageEvents()).toContainEqual(expect.objectContaining({ outcome: 'no-recall' }));
     expect(coverageEvents()).not.toContainEqual(expect.objectContaining({ outcome: 'recalled' }));
   });

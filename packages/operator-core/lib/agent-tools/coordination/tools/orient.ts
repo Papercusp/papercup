@@ -1866,35 +1866,9 @@ export async function composeOrient(
         ...(memDegraded ? { degraded: true, ...(memDegradedReason ? { degradedReason: memDegradedReason } : {}) } : {}),
         ...(memScoreScale !== undefined ? { scoreScale: memScoreScale } : {}),
       };
-      // P-002 (memory-delivery-unification-2026-07-12 D-006): stamp the
-      // orient-DELIVERED hits on the session-epoch surfaced-ledger, keyed by
-      // the caller's ownerId (the same per-launch SID the MCP initialize
-      // prelude and the injection ports key on) — so orient-then-hook/port
-      // never double-injects the same memory within an epoch. Fire-and-forget,
-      // dynamic imports: never load-bearing for orientation. Only ADMITTED ids
-      // stamp (orient-recall-quality P-002): a budget-dropped hit was never
-      // delivered, so it must stay eligible at the next injection port.
-      if (ownerId && admitted.length > 0) {
-        const stampIds = admitted
-          .map((h) => h.id)
-          .filter((id): id is string => typeof id === 'string' && id.length > 0);
-        if (stampIds.length > 0) {
-          const sid = ownerId;
-          void (async () => {
-            try {
-              const [{ getOrgPg }, ledger] = await Promise.all([
-                import('@papercusp/db-org'),
-                import('../../../memory/session-epoch-ledger'),
-              ]);
-              const { sql } = getOrgPg();
-              const epoch = await ledger.currentSessionEpoch(sql, sid);
-              await ledger.stampSurfaced(sql, sid, epoch, stampIds, 'orient');
-            } catch {
-              /* never load-bearing */
-            }
-          })();
-        }
-      }
+      // This is response preparation. A successful inner call or admitted
+      // hit cannot prove the final tool body reached the native client. Until
+      // that sink has exact emission evidence it must leave recall eligible.
     } catch {
       result.memory = null;
     }
@@ -2073,26 +2047,23 @@ export async function composeOrient(
         let changedCells: ReadonlySet<string> = new Set();
         if (ownerId) {
           try {
-            const [{ factsCellDelta, FACTS_CELL_SURFACE }, { readWatermark, writeWatermark }] = await Promise.all([
+            const [{ factsCellDelta, FACTS_CELL_SURFACE, readFactBodyCursor }, { readWatermark }] = await Promise.all([
               import('../../../agent-facts/cells'),
               import('../watermarks'),
             ]);
-            const wm = await readWatermark(ownerId);
-            const delta = factsCellDelta(withDeps, wm.cursors?.[FACTS_CELL_SURFACE]);
+            const [wm, proven] = await Promise.all([
+              readWatermark(ownerId),
+              // A public orient call carries no trusted host emission proof.
+              // Explicit null prevents the store from ACKing on arrival.
+              readFactBodyCursor(ownerId, null).catch(() => null),
+            ]);
+            const delta = factsCellDelta(withDeps, proven ?? wm.cursors?.[FACTS_CELL_SURFACE]);
             changedCells = new Set(delta.changed.map(factCellKey));
-            // Advance deterministically at fold time, like messages_shown_ts (EI-2042)
-            // rather than at turn end: the agent HAS been shown these. Only write when
-            // the position actually moved, so a quiet fold costs no row write.
-            //
-            // ⚠ NEVER advance on a NARROWED fold. nextCursor is the MAX cell version
-            // across the folded rows, so a dead-end/wall-only fold would push the
-            // cursor PAST ordinary facts the caller was never shown — permanently
-            // suppressing their `changed` mark on the next FULL orient. A narrowed
-            // fold still READS the cursor (so the never-drop rows it did fold are
-            // marked correctly); it just must not claim the caller saw the rest.
-            if (factsFold === 'full' && delta.nextCursor && delta.nextCursor !== wm.cursors?.[FACTS_CELL_SURFACE]) {
-              await writeWatermark(ownerId, { cursors: { [FACTS_CELL_SURFACE]: delta.nextCursor } });
-            }
+            // Construction is not delivery. Projection, response budgeting, or a
+            // disconnected client can still omit any of these bodies. This tool
+            // has no host receipt for the final body subset, so retain the replay
+            // floor even on a full fold. A maximum HLC from one delivered fact
+            // would also skip an omitted sibling at the same or an older HLC.
           } catch {
             changedCells = new Set();
           }

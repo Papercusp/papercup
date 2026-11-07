@@ -1039,6 +1039,38 @@ it.for([0, 7])('retains real native command output before home cleanup on exit %
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+it('retains successful native command streams when acceptance validation rejects them', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'isolated-native-validation-'));
+  const evidenceDir = join(root, 'phases', 'prepare');
+  const nativeHome = join(root, 'native-home');
+  mkdirSync(evidenceDir, { recursive: true });
+  mkdirSync(nativeHome);
+  const refusal = new Error('native bypass unexpectedly available');
+  const sources = { stdout: join(nativeHome, 'stdout.log'), stderr: join(nativeHome, 'stderr.log') };
+  try {
+    const operation = withIsolatedNativeLaunchDiagnostics(evidenceDir, () => promisify(execFile)(process.execPath,
+      ['-e', "process.stdout.write('original native response'); process.stderr.write('original native warning');"],
+      { cwd: nativeHome, encoding: 'utf8', timeout: 5_000 }), async outcome => {
+      expect(outcome.status).toBe('rejected');
+      if (outcome.status !== 'rejected') throw new Error('validation failure was lost');
+      expect(outcome.error).toBe(refusal);
+      expect(outcome.result).toBeDefined();
+      writeFileSync(sources.stdout, outcome.result!.stdout);
+      writeFileSync(sources.stderr, outcome.result!.stderr);
+      retainIsolatedNativeTaskDiagnostics(evidenceDir, { state: 'failed', error: String(outcome.error) }, sources);
+    }, result => {
+      expect(result.stdout).toBe('original native response');
+      throw refusal;
+    }).finally(() => rmSync(nativeHome, { recursive: true, force: true }));
+    await expect(operation).rejects.toBe(refusal);
+    expect(existsSync(nativeHome)).toBe(false);
+    expect(readFileSync(join(evidenceDir, 'native-task-stdout.log'), 'utf8')).toBe('original native response');
+    expect(readFileSync(join(evidenceDir, 'native-task-stderr.log'), 'utf8')).toBe('original native warning');
+    expect(JSON.parse(readFileSync(join(evidenceDir, 'native-task-diagnostics.json'), 'utf8')))
+      .toMatchObject({ task: { state: 'failed', error: String(refusal) } });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 it('records failed launch diagnostics while preserving the original launch error', async () => {
   const evidenceDir = mkdtempSync(join(tmpdir(), 'isolated-native-launch-errors-'));
   const refusal = new Error('original native refusal');

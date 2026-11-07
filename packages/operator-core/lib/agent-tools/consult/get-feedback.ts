@@ -32,7 +32,7 @@ import { hardText, LIMITS } from '../limits';
 // The two "default N" figures in the arg descriptions below are RENDERED from the
 // registry, never typed: a tool description is prose that describes code, and P-006
 // found five hand-maintained copies of this same bound already stale in the tree.
-import { DEFAULT_MIN_RESPONDERS, DEFAULT_MAX_RESPONDERS, RUBRIC_VETTING_POLICY } from '../../consult/selection-policies';
+import { BAR_CRITIQUE_POLICY, DEFAULT_MIN_RESPONDERS, DEFAULT_MAX_RESPONDERS, RUBRIC_VETTING_POLICY } from '../../consult/selection-policies';
 import { AGENT_LAUNCH_HANDLER_TIMEOUT_SEC } from '../../agent-kickoff/launch-budgets.mjs';
 import { reconcileInterestEventAwaits } from '../../interest-auto-arm';
 import { consultFeedbackAbortCompletionReceipt } from './abort-completion';
@@ -115,7 +115,7 @@ export default defineTool({
       model: z.string().trim().min(1).max(80).regex(/^[A-Za-z0-9._-]+$/),
       effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
     }).strict().optional().describe(
-      "For policy:'rubric-vetting': preserve this allowed backend/model/effort through every reviewer dispatch; unavailable choices refuse without substitution. Provider accounts use auto routing.",
+      "For policy:'rubric-vetting' or 'bar-critique': preserve this allowed backend/model/effort through every reviewer dispatch; unavailable choices refuse without substitution. Provider accounts use auto routing.",
     ),
     archive_floor: z
       .number()
@@ -158,9 +158,9 @@ export default defineTool({
     })
     .passthrough(),
   async handler(args, ctx) {
-    if (args.reviewerModel && args.policy !== RUBRIC_VETTING_POLICY) {
-      return ok({ error: 'reviewer_model_requires_rubric_vetting',
-        hint: "Pass policy:'rubric-vetting' with reviewerModel." });
+    if (args.reviewerModel && args.policy !== RUBRIC_VETTING_POLICY && args.policy !== BAR_CRITIQUE_POLICY) {
+      return ok({ error: 'reviewer_model_requires_review_policy',
+        hint: "Pass policy:'rubric-vetting' or 'bar-critique' with reviewerModel." });
     }
     const identity = resolveAgentIdentity(ctx);
 

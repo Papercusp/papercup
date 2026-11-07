@@ -39,6 +39,13 @@ vi.mock('./agent-tools/coordination/dispatch-heartbeat', async (importOriginal) 
   ...(await importOriginal<typeof import('./agent-tools/coordination/dispatch-heartbeat')>()),
   maybeBeatPresenceOnDispatch: vi.fn(),
 }));
+vi.mock('./plugin-invocation-policy', async original => {
+  const module = await original<typeof import('./plugin-invocation-policy')>();
+  return { ...module, pluginInvocationChokepoint: vi.fn(module.pluginInvocationChokepoint) };
+});
+vi.mock('./plugin-handler-execution', async original => ({
+  ...await original<typeof import('./plugin-handler-execution')>(), executeInstalledPluginHandler: vi.fn(),
+}));
 
 import {
   PROJECTED_DEPS,
@@ -58,12 +65,34 @@ import { maybeBeatPresenceOnDispatch } from './agent-tools/coordination/dispatch
 import { PASS_THROUGH } from '@papercusp/agent-mcp';
 import type { PostInvokeEvent, UnifiedToolContext } from '@papercusp/agent-mcp';
 import { __resetFailureLoopCircuitBreakerForTests, takePendingFailureLoopHint } from './failure-loop-circuit-breaker';
+import { pluginInvocationChokepoint } from './plugin-invocation-policy';
+import { executeInstalledPluginHandler } from './plugin-handler-execution';
 
 function ctx(over: Partial<UnifiedToolContext> = {}): UnifiedToolContext {
   return { workspaceId: 'default', ...over } as UnifiedToolContext;
 }
 
 describe('PROJECTED_DEPS plugin invocation security cutover', () => {
+  it('passes the installed executor through the policy lease and never invokes the host handler', async () => {
+    const invoke = vi.fn(async () => ({ content: [] }));
+    vi.mocked(getFlag).mockImplementation(async flag => flag === FLAGS.PLUGIN_INVOCATION_POLICY);
+    vi.mocked(executeInstalledPluginHandler).mockResolvedValue({ content: [{ type: 'text', text: 'confined' }] });
+    vi.mocked(pluginInvocationChokepoint).mockImplementationOnce(async (request, execute) => {
+      expect(execute).toBeTypeOf('function');
+      const { invoke: _fallback, ...invocation } = request;
+      return execute!(invocation, () => {});
+    });
+    try {
+      const result = await PROJECTED_DEPS.aroundInvoke!({ tool: { pluginName: 'security-fixture', capabilities: [],
+        pluginInstallation: { version: '1.0.0', path: '/fixture/security', source: 'global' } } as never,
+        toolName: 'security-fixture:write', input: {}, ctx: ctx(), callId: 'security-executor-call', invoke });
+      expect(result.content).toEqual([{ type: 'text', text: 'confined' }]);
+      expect(executeInstalledPluginHandler).toHaveBeenCalledOnce();
+      expect(vi.mocked(executeInstalledPluginHandler).mock.calls[0]![0]).not.toHaveProperty('invoke');
+      expect(invoke).not.toHaveBeenCalled();
+    } finally { vi.mocked(getFlag).mockReset(); }
+  });
+
   it.each([true, false])('enforces only when the registered control is ON (%s)', async enabled => {
     const invoke = vi.fn(async () => ({ content: [] }));
     vi.mocked(getFlag).mockImplementation(async flag => flag === FLAGS.PLUGIN_INVOCATION_POLICY ? enabled : false);

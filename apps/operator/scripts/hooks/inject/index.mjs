@@ -243,7 +243,7 @@ if (invokedDirectly) {
   /** @type {import('./delivery-ledger.mjs').DeliveryLedger | null} */
   let ledger = null;
   dispatch({
-    openDeliveryLedger: (owner, env) => (ledger = openDeliveryLedger(owner, env)),
+    openDeliveryLedger: (owner, env, port) => (ledger = openDeliveryLedger(owner, env, port)),
   })
     .then((payload) => {
       if (!payload) process.exit(0);
