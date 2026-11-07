@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
-import { bindRuntimeModelOpens, runtimeFileTraceArguments } from './runtime-file-opens.mjs';
+import { bindRuntimeModelOpens, bindRuntimeProcessTree, runtimeFileTraceArguments } from './runtime-file-opens.mjs';
 
 const options = { processId: 10, assets: [{path:'/model/config.json'}, {path:'/model/model.onnx'}], beforeEpochMs: 2000 };
 const lines = [
@@ -58,5 +58,80 @@ describe('model opens from the actual traced runtime', () => {
     if (variant === 'no-exec') altered.shift();
     if (variant === 'no-exit') altered.pop();
     expect(() => bindRuntimeModelOpens(altered.join('\n'), options)).toThrow();
+  });
+});
+
+describe('exec-to-EOF process and thread population', () => {
+  const terminal = { processId: 10, exitCode: 0, signal: null, eof: true, captureStartedBeforeExec: true };
+  const trace = () => lines.join('\n') + '\n';
+  it('keeps threads distinct from process roots and excludes argv secrets', () => {
+    const receipt = bindRuntimeProcessTree(trace().replace('["node"]', '["node", "secret-value"]'), terminal);
+    expect(receipt.tasks).toMatchObject([
+      { taskId: 10, threadGroupId: 10, parentTaskId: null, execs: [{executable:'/usr/bin/node'}] },
+      { taskId: 11, threadGroupId: 10, parentTaskId: 10, execs: [] },
+    ]);
+    expect(receipt.completeRuntimeClosureVerified).toBe(false);
+    expect(receipt.sourceQualification).toBe('required');
+    expect(JSON.stringify(receipt)).not.toContain('secret-value');
+  });
+  it.each(['fork()', 'vfork()', 'clone(child_stack=NULL, flags=SIGCHLD)',
+    'clone3({flags=CLONE_VM|CLONE_VFORK, exit_signal=SIGCHLD}, 88)'])('follows short-lived %s process births', call => {
+    const input = [...lines];
+    input.splice(4, 0, `10 1.400000 ${call} = 12`,
+      '12 1.500000 execveat(AT_FDCWD, "/usr/bin/true", ["true"], 0x1, 0) = 0',
+      '12 1.600000 +++ exited with 0 +++');
+    const receipt = bindRuntimeProcessTree(input.join('\n') + '\n', terminal);
+    expect(receipt.tasks[2]).toMatchObject({taskId:12,threadGroupId:12,parentTaskId:10,
+      execs:[{executable:'/usr/bin/true'}],terminalAtMs:1600});
+  });
+  it('reconciles resumed births even when child output arrives first', () => {
+    const input = [...lines];
+    input.splice(1, 1, '10 1.100000 clone(child_stack=NULL, flags=CLONE_VM|CLONE_THREAD <unfinished ...>',
+      '11 1.150000 openat(AT_FDCWD, "/other", O_RDONLY) = -1 ENOENT (No such file or directory)',
+      '10 1.160000 <... clone resumed>) = 11');
+    expect(bindRuntimeProcessTree(input.join('\n') + '\n', terminal).tasks).toHaveLength(2);
+  });
+  it.each(['root-exit', 'thread-exit', 'orphan', 'signal', 'failed-child', 'duplicate-birth',
+    'unknown-flags', 'unresolved-exec', 'truncated', 'after-exit', 'no-exec', 'unknown-birth'])(
+    'refuses %s instead of certifying a partial task population', variant => {
+      const input = [...lines];
+      if (variant === 'root-exit') input.pop();
+      if (variant === 'thread-exit') input.splice(4,1);
+      if (variant === 'orphan') input.splice(3,0,'99 1.200000 exit_group(0) = ?');
+      if (variant === 'signal') input[4] = '11 2.200000 +++ killed by SIGKILL +++';
+      if (variant === 'failed-child') input[4] = '11 2.200000 +++ exited with 1 +++';
+      if (variant === 'duplicate-birth') input.splice(2,0,input[1]);
+      if (variant === 'unknown-flags') input[1] = '10 1.100000 clone3({...}, 88) = 11';
+      if (variant === 'unresolved-exec') input[0] = '10 1.000000 execve("/usr/bin/node"..., [], 0x1) = 0';
+      if (variant === 'truncated') input[3] += ' <unfinished ...>';
+      if (variant === 'after-exit') input.push('11 2.400000 openat(AT_FDCWD, "/other", O_RDONLY) = -1 ENOENT');
+      if (variant === 'no-exec') input.shift();
+      if (variant === 'unknown-birth') input[1] = '10 1.100000 clone(child_stack=NULL, flags=CLONE_THREAD) = ?';
+      expect(() => bindRuntimeProcessTree(input.join('\n') + '\n', terminal)).toThrow();
+    });
+  it.each([{eof:false},{exitCode:1},{signal:'SIGTERM'},{captureStartedBeforeExec:false},{processId:99}])(
+    'requires the independent launcher terminal witness %j', delta => {
+      expect(() => bindRuntimeProcessTree(trace(), {...terminal,...delta})).toThrow();
+    });
+  it.runIf(process.platform === 'linux')('observes a real short-lived subprocess and a worker with cleared flags', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'runtime-process-tree-'));
+    try {
+      const output = path.join(root, 'trace.log'), env = {...process.env}; delete env.NODE_OPTIONS;
+      const child = spawnSync('/usr/bin/strace', runtimeFileTraceArguments(output, [process.execPath, '-e', `
+        const {spawnSync}=require('node:child_process'), {Worker}=require('node:worker_threads');
+        const result=spawnSync('/usr/bin/true'); if(result.status!==0) process.exit(1);
+        const worker=new Worker('require("node:worker_threads").parentPort.postMessage("done")',{eval:true,execArgv:[]});
+        worker.on('error',()=>{process.exitCode=1;});
+        process.stdout.write(String(process.pid));
+      `]), {env,encoding:'utf8',timeout:15_000,maxBuffer:1024*1024});
+      expect(child.status, child.stderr).toBe(0);
+      const receipt = bindRuntimeProcessTree(fs.readFileSync(output,'utf8'), {
+        ...terminal, processId:Number(child.stdout), exitCode:child.status!, signal:child.signal,
+      });
+      expect(receipt.tasks.some(task => task.threadGroupId !== receipt.processId &&
+        task.execs.some(exec => exec.executable === '/usr/bin/true'))).toBe(true);
+      expect(receipt.tasks.some(task => task.taskId !== task.threadGroupId)).toBe(true);
+      expect(receipt.tasks.every(task => task.terminalAtMs !== null)).toBe(true);
+    } finally { fs.rmSync(root,{recursive:true,force:true}); }
   });
 });
