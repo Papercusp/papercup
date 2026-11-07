@@ -137,6 +137,50 @@ function expectNoSharedInodes(dir: string): void {
 }
 
 describe('setup-*-runtime.sh never writes through a hard-linked destination (WI-10004321)', () => {
+  function preparedRuntime(script: string, body = OLD): { f: Fixture; targets: string[] } {
+    const f = fixture(script);
+    const ort = join(f.root, 'node_modules/onnxruntime-web/dist');
+    const ortFiles = ['ort-wasm-simd-threaded.wasm', 'ort-wasm-simd-threaded.jsep.mjs'];
+    for (const name of [...ortFiles, 'ort.bundle.min.mjs']) put(join(ort, name), body);
+    const models = ['silero_vad_v5.onnx', 'silero_vad_legacy.onnx', 'vad.worklet.bundle.min.js'];
+    for (const name of models) put(join(f.app, 'node_modules/@ricky0123/vad-web/dist', name), body);
+    const targets = script === 'setup-wake-runtime.sh'
+      ? [...ortFiles, 'ort.bundle.min.mjs'].map(name => `public/wake-runtime/${name}`)
+      : [...models.map(name => `public/${name}`),
+        ...ortFiles.flatMap(name => [`public/${name}`, `public/vad-runtime/${name}`])];
+    return { f, targets };
+  }
+
+  it.each(['setup-wake-runtime.sh', 'setup-vad-runtime.sh'])(
+    '%s preserves already identical independent assets on repeat builds', script => {
+      const { f, targets } = preparedRuntime(script);
+      run(f, script);
+      const before = targets.map(rel => statSync(join(f.app, rel)));
+      run(f, script);
+      targets.forEach((rel, i) => {
+        const after = statSync(join(f.app, rel));
+        expect(after.ino, `${rel}: unchanged runtime was copied again`).toBe(before[i].ino);
+        expect(after.mtimeMs).toBe(before[i].mtimeMs);
+        expect(after.nlink).toBe(1);
+      });
+      // Equal length is insufficient: repair corrupted bytes without a version bump.
+      const damaged = join(f.app, targets[0]);
+      writeFileSync(damaged, 'x'.repeat(Buffer.byteLength(OLD)));
+      run(f, script);
+      expect(readFileSync(damaged, 'utf8')).toBe(OLD);
+    },
+  );
+
+  it.each(['setup-wake-runtime.sh', 'setup-vad-runtime.sh'])(
+    '%s separates identical assets that still share a sibling inode', script => {
+      const { f, targets } = preparedRuntime(script);
+      const seeded = targets.map(rel => linkFromSibling(f, rel));
+      run(f, script);
+      targets.forEach((rel, i) => expectIsolated(f, rel, seeded[i], OLD));
+      expectNoSharedInodes(join(f.app, 'public'));
+    },
+  );
+
   it('calibration: the old in-place `cp -f` DOES rewrite the linked sibling', () => {
     const f = fixture('setup-vad-runtime.sh');
     const rel = 'public/silero_vad_v5.onnx';
