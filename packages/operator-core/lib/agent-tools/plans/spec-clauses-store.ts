@@ -851,11 +851,14 @@ export interface ListSpecClausesOptions {
 }
 
 /** Exact structured read; current-only unless includeHistory or revision is requested. */
-export async function listSpecClauses(options: ListSpecClausesOptions): Promise<SpecClauseRevision[]> {
+export async function listSpecClauses(options: ListSpecClausesOptions,
+  transaction?: SetSpecClauseTransaction): Promise<SpecClauseRevision[]> {
   if (options.asOf && (!Number.isFinite(Date.parse(options.asOf)) || options.revision !== undefined || options.includeHistory)) {
     throw new Error('spec_snapshot_selector_invalid');
   }
-  const scope = await resolvePlanScope({
+  if (transaction && (options.workspaceId !== transaction.workspaceId || options.harnessSlug !== transaction.harnessSlug))
+    throw new Error('spec_snapshot_transaction_scope_mismatch');
+  const scope = transaction ?? await resolvePlanScope({
     harnessSlug: options.harnessSlug,
     ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
   });
@@ -863,9 +866,7 @@ export async function listSpecClauses(options: ListSpecClausesOptions): Promise<
   const valIds = options.sourceValIds ?? [];
   const itemIds = options.planItemIds ?? [];
   const limit = options.limit == null ? null : Math.min(Math.max(Math.trunc(options.limit), 1), 5_000);
-  const rows = await withWorkspace(
-    scope.workspaceId,
-    async (tx) => tx<RevisionRow[]>`
+  const read = async (tx: SpecClauseSql) => tx<RevisionRow[]>`
     SELECT c.plan_slug, c.spec_id, c.source_val_id, c.current_revision,
            r.revision, r.plan_item_id, r.behavior, r.behavior_class,
            r.required_evidence, r.required_test_layers, r.mutation_required,
@@ -903,8 +904,9 @@ export async function listSpecClauses(options: ListSpecClausesOptions): Promise<
              : tx`r.revision = c.current_revision`
        }
      ORDER BY c.spec_id, r.revision
-     ${limit == null ? tx`` : tx`LIMIT ${limit}`}`,
-  );
+     ${limit == null ? tx`` : tx`LIMIT ${limit}`}`;
+  const rows = transaction ? await read(transaction.executor)
+    : await withWorkspace(scope.workspaceId, async tx => read(tx as unknown as SpecClauseSql));
 
   const specIdSet = options.specIds ? new Set(options.specIds) : null;
   const valIdSet = options.sourceValIds ? new Set(options.sourceValIds) : null;

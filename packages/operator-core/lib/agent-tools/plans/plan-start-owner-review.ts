@@ -4,14 +4,14 @@ import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
-import { getOrgPg } from '@papercusp/db-org';
+import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { getOwnerDirective, type OwnerDirectiveRow } from '../../owner-directives';
 import { getReport, type ReportRecord } from '../../report-library';
 import { lineagePartyKeys } from '../../acceptance-author-identity';
 import type { AgentIdentity } from '../coordination/identity';
-import { recordPlanRevision } from './revisions';
+import { recordPlanRevisionInTransaction, type PlanRevisionSql } from './revisions';
 import { computeSpecSetHash } from './spec-clause-compiler';
-import { listSpecClauses, type SpecClauseRevision } from './spec-clauses-store';
+import { listSpecClauses, type SpecClauseRevision, type SpecClauseSql } from './spec-clauses-store';
 import { barSetHashOf, clauseSemanticHash, isLiveBarCritiqueClause } from './plan-start-critique-gate';
 
 const HASH = z.string().regex(/^[a-f0-9]{64}$/);
@@ -28,7 +28,7 @@ export const ownerSelectedReviewSchema = z.object({
 export type OwnerSelectedReviewRequest = z.infer<typeof ownerSelectedReviewSchema>;
 export interface OwnerReviewScope { workspaceId: string; harnessSlug: string; planSlug: string }
 export interface OwnerSelectedReviewReceipt {
-  schema: 'plan-owner-selected-review-v1';
+  schema: 'plan-owner-selected-review-v2';
   scope: OwnerReviewScope;
   requestedBy: string;
   request: OwnerSelectedReviewRequest;
@@ -79,7 +79,9 @@ export function verifyOwnerSelectedReview(input: {
     return refuse('review_author_lineage');
   // An implicit "your review" is scoped to the session the owner addressed.
   // Selecting a different reviewer must name that report or reviewer explicitly.
-  if (directive.recordedBy !== reviewerId && !selection.includes(report.reportId) && !selection.includes(reviewerId))
+  if (!selection.includes(report.reportId) && !selection.includes(reviewerId)
+    && (directive.recordedBy !== reviewerId || !directive.sessionRef
+      || directive.sessionRef !== report.origin.authorSessionRef))
     return refuse('owner_selection_report_mismatch');
   const live = input.reviewedClauses.filter(isLiveBarCritiqueClause);
   if (!live.length || barSetHashOf(live) !== request.barSetHash || computeSpecSetHash(live) !== request.specSetHash
@@ -89,22 +91,24 @@ export function verifyOwnerSelectedReview(input: {
   if (barSetHashOf(input.currentClauses) !== request.barSetHash
     || JSON.stringify(contract) !== JSON.stringify(ownerReviewContract(input.currentClauses)))
     return refuse('review_contract_stale');
-  return { ok: true, receipt: { schema: 'plan-owner-selected-review-v1', scope, requestedBy: input.requestedBy,
+  return { ok: true, receipt: { schema: 'plan-owner-selected-review-v2', scope, requestedBy: input.requestedBy,
     request, reviewerId, reviewedAt: report.publishedAt, contract } };
 }
 
 /** Every use re-resolves immutable sources and current lineage/contract. */
 export async function resolveOwnerSelectedReview(scope: OwnerReviewScope, request: OwnerSelectedReviewRequest,
-  requestedBy: string, authorIds: readonly string[], sql: Sql = getOrgPg().sql): Promise<OwnerSelectedReviewResult> {
+  requestedBy: string, authorIds: readonly string[], sql: Sql = getOrgPg().sql,
+  inTransaction = false): Promise<OwnerSelectedReviewResult> {
+  const transaction = inTransaction ? { ...scope, executor: sql as unknown as SpecClauseSql } : undefined;
   const [directive, report, currentClauses] = await Promise.all([
     getOwnerDirective(request.directiveId, sql),
     getReport(sql, scope.workspaceId, request.reportId, { ownerId: requestedBy, potSlug: scope.harnessSlug },
       undefined, { currentEditionOnly: true }),
-    listSpecClauses(scope),
+    listSpecClauses(scope, transaction),
   ]);
   if (!report) return { ok: false, reason: 'review_source_unavailable' };
   const [history, keys] = await Promise.all([
-    listSpecClauses({ ...scope, asOf: report.publishedAt }),
+    listSpecClauses({ ...scope, asOf: report.publishedAt }, transaction),
     lineagePartyKeys([...authorIds, requestedBy, report.origin.authorOwnerId ?? ''], { sql, workspaceId: scope.workspaceId }),
   ]);
   return verifyOwnerSelectedReview({ scope, requestedBy, request, directive, report,
@@ -114,14 +118,40 @@ export async function resolveOwnerSelectedReview(scope: OwnerReviewScope, reques
     reviewedClauses: history, currentClauses });
 }
 
-/** A registration is evidence, not activation. Failure of a later gate grants nothing. */
+/** One directive selects one immutable target across the workspace. Reuse the
+ * existing revision spine; the directive lock precedes its per-plan revision lock.
+ * The caller must verify the receipt inside the same transaction. */
+export async function recordOwnerSelectedReviewInTransaction(sql: PlanRevisionSql,
+  receipt: OwnerSelectedReviewReceipt, identity: AgentIdentity): Promise<OwnerSelectedReviewResult> {
+  const { scope, request } = receipt;
+  const key = JSON.stringify([scope.workspaceId, request.directiveId]);
+  await sql`SELECT pg_advisory_xact_lock(hashtext('plan_owner_review'), hashtext(${key}))`;
+  const rows = await sql<{ content_snapshot: string }[]>`
+    SELECT content_snapshot FROM harness_shared.plan_revisions
+     WHERE workspace_id=${scope.workspaceId} AND rationale=${REVISION_REASON}
+       AND content_snapshot::jsonb #>> '{request,directiveId}' = ${String(request.directiveId)}`;
+  if (rows.length) {
+    if (rows.some(row => !isDeepStrictEqual(JSON.parse(row.content_snapshot), receipt)))
+      return { ok: false, reason: 'owner_selection_already_bound' };
+    return { ok: true, receipt };
+  }
+  await recordPlanRevisionInTransaction(sql, { ...scope, identity, rationale: REVISION_REASON,
+    content: JSON.stringify(receipt) });
+  return { ok: true, receipt };
+}
+
+/** A registration is evidence, not activation. Strict revision failure rolls
+ * back the binding rather than silently dropping its authority record. */
 export async function registerOwnerSelectedReview(scope: OwnerReviewScope, request: OwnerSelectedReviewRequest,
   identity: AgentIdentity): Promise<OwnerSelectedReviewResult> {
-  const resolved = await resolveOwnerSelectedReview(scope, request, identity.ownerId, []);
-  if (!resolved.ok) return resolved;
-  const revision = await recordPlanRevision({ ...scope, identity, rationale: REVISION_REASON,
-    content: JSON.stringify(resolved.receipt) });
-  return revision ? resolved : { ok: false, reason: 'review_receipt_not_recorded' };
+  return withWorkspace(scope.workspaceId, async tx => {
+    const sql = tx as unknown as Sql;
+    const key = JSON.stringify([scope.workspaceId, request.directiveId]);
+    await sql`SELECT pg_advisory_xact_lock(hashtext('plan_owner_review'), hashtext(${key}))`;
+    const resolved = await resolveOwnerSelectedReview(scope, request, identity.ownerId, [], sql, true);
+    if (!resolved.ok) return resolved;
+    return recordOwnerSelectedReviewInTransaction(tx, resolved.receipt, identity);
+  });
 }
 
 /** Newest registration wins, even if revoked/stale; never resurrect an older selection. */
@@ -133,7 +163,7 @@ export async function loadOwnerSelectedReview(scope: OwnerReviewScope, authorIds
   if (!row) return null;
   try {
     const saved = JSON.parse(row.content_snapshot) as OwnerSelectedReviewReceipt;
-    if (saved.schema !== 'plan-owner-selected-review-v1' || !isDeepStrictEqual(saved.scope, scope)
+    if (saved.schema !== 'plan-owner-selected-review-v2' || !isDeepStrictEqual(saved.scope, scope)
       || !saved.requestedBy) return { ok: false as const, reason: 'review_receipt_invalid' };
     const request = ownerSelectedReviewSchema.parse(saved.request);
     const resolved = await resolveOwnerSelectedReview(scope, request, saved.requestedBy, authorIds, sql);

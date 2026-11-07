@@ -92,6 +92,7 @@ import { setFlagOverridesForTest } from '@papercusp/flags/test';
 import { resetOperatorCacheForTests } from '../../../cache';
 import { _refreshCacheLayerForTests } from '../../../cache/instance';
 import { currentRequestWorkspaceId } from '../../../workspace-als';
+import { namedQueryStageTimings, withNamedQueryDiagnosticContext } from '../../db-diagnostic-correlation-wiring';
 
 const CTX = {
   log: vi.fn(),
@@ -183,6 +184,53 @@ describe('plans:attention — parallel source aggregation (P-005)', () => {
     expect(M.readNeedsHumanWorkItems).toHaveBeenCalledTimes(1);
     expect(M.listOwnerWalls).toHaveBeenCalledTimes(1);
     expect(M.listPendingGates).toHaveBeenCalledTimes(1);
+  });
+
+  it('identifies a pending plan read before the other source reads start', async () => {
+    let release!: () => void;
+    M.readAllPlans.mockImplementationOnce(() => new Promise(resolve => {
+      release = () => resolve([]);
+    }));
+    await withNamedQueryDiagnosticContext('plans.attention', async () => {
+      const read = run();
+      try {
+        await vi.waitFor(() => expect(namedQueryStageTimings()?.stages).toContainEqual({
+          stage: 'attention-plans', outcome: 'pending', elapsedMs: expect.any(Number),
+        }));
+        expect(M.readInbox).not.toHaveBeenCalled();
+      } finally {
+        release();
+        await read;
+      }
+      expect(namedQueryStageTimings()?.stages).toContainEqual({
+        stage: 'attention-plans', outcome: 'fulfilled', elapsedMs: expect.any(Number),
+      });
+    });
+    expect(namedQueryStageTimings()).toBeNull();
+  });
+
+  it('identifies the pending message source while independent sources finish', async () => {
+    let release!: () => void;
+    M.readInbox.mockImplementationOnce(() => new Promise(resolve => {
+      release = () => resolve([]);
+    }));
+    await withNamedQueryDiagnosticContext('plans.attention', async () => {
+      const read = run();
+      try {
+        await vi.waitFor(() => {
+          const stages = namedQueryStageTimings()?.stages;
+          expect(stages).toContainEqual({ stage: 'attention-messages', outcome: 'pending', elapsedMs: expect.any(Number) });
+          expect(stages).toContainEqual({ stage: 'attention-questions', outcome: 'fulfilled', elapsedMs: expect.any(Number) });
+        });
+      } finally {
+        release();
+        await read;
+      }
+      expect(namedQueryStageTimings()?.stages).toContainEqual({
+        stage: 'attention-messages', outcome: 'fulfilled', elapsedMs: expect.any(Number),
+      });
+      expect(namedQueryStageTimings()?.omittedStages).toBe(0);
+    });
   });
 
   it('runs only the owner-attention source legs selected by the registry', async () => {

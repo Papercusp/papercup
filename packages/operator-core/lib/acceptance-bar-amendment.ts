@@ -18,7 +18,7 @@ import { OrgTxnTimeoutError } from './pg-bounded-txn';
 import { acquirePlanAdvisoryLock, planAdvisoryLockKey, PLAN_ADVISORY_LOCK_NAMESPACE } from './agent-tools/plans/plan-lock-key';
 import { rubricTemplateDataAuthoringSchema } from './agent-tools/plans/rubric-template';
 import { normalizeBarMappingDelta } from './acceptance-bar-amendment-requirements-drift';
-import { AcceptanceBarCandidateError, acceptanceBarCandidateHash } from './acceptance-bar-projection';
+import { AcceptanceBarCandidateError, acceptanceBarCandidateHash, acceptanceBarCriterionWithoutDeclarationTime } from './acceptance-bar-projection';
 import { specBehaviorNonAtomicReason, specBehaviorNonFalsifiableReason } from './agent-tools/plans/spec-clause-compiler';
 import {
   setSpecClause,
@@ -322,7 +322,8 @@ export type AcceptanceBarApproval = z.infer<typeof acceptanceBarApprovalSchema>;
 export interface AcceptanceBarReviewSource {
   schemaVersion: 1;
   rubric: { ref: string; revision: number; baseline: unknown; candidate: unknown };
-  subjectPlan: { slug: string; harness: string; revision: number; content: string; proposedContent: string };
+  subjectPlan: { slug: string; harness: string; revision: number; content: string;
+    proposedContent?: string; proposedContentUnchanged?: true };
   reason: string;
   mappingDelta: unknown;
 }
@@ -380,8 +381,7 @@ function reviewSourceWithoutNewDeclarationTimes(source: AcceptanceBarReviewSourc
     const provenance = criterion.barProvenance;
     if (!provenance || typeof provenance !== 'object' || Array.isArray(provenance) ||
         typeof (provenance as Record<string, unknown>).declaredAt !== 'string') return undefined;
-    const { declaredAt: _applyTime, ...reviewedProvenance } = provenance as Record<string, unknown>;
-    criteria.push({ ...criterion, barProvenance: reviewedProvenance });
+    criteria.push(acceptanceBarCriterionWithoutDeclarationTime(criterion));
   }
   return { ...source, rubric: { ...source.rubric, candidate: { ...candidate, criteria } } };
 }
@@ -487,13 +487,16 @@ export function approvalReceiptJsonSource(body: string): string {
 export async function resolveAcceptanceBarApproval(
   sql: SpecClauseSql,
   args: { workspaceId: string; approvalRef?: string; approvedBy?: string; expected: AcceptanceBarApproval;
-    expectedSource?: AcceptanceBarReviewSource },
+    expectedSource?: AcceptanceBarReviewSource;
+    /** Internal recruitment precheck of the requester's preview, before a reviewer signs. */
+    purpose?: 'review-recruitment' },
 ): Promise<{
   approvalRef: string;
   approvedBy: string;
   approvedAt: string;
   certifies?: string;
   doesNotCertify?: string[];
+  reviewSource?: AcceptanceBarReviewSource;
 }> {
   const match = /^thread-post:([1-9][0-9]*)$/.exec(args.approvalRef?.trim() ?? '');
   if (!match) throw new Error('acceptance_bar_approval_required: use thread-post:<id> from an authenticated reviewer post containing the preview approval JSON');
@@ -552,11 +555,18 @@ export async function resolveAcceptanceBarApproval(
   const parsed = acceptanceBarApprovalSchema.safeParse(body);
   if (!parsed.success) throw new Error('acceptance_bar_approval_invalid_receipt');
   const receipt = parsed.data;
+  let reviewedSource: AcceptanceBarReviewSource | undefined;
   if (args.expected.reviewSourceHash) {
     if (!receipt.reviewSourceHash) throw new Error('acceptance_bar_review_source_mismatched');
     // Verify the complete immutable reviewed bytes before allowing an apply-time
     // metadata difference. Nothing is omitted from the signed source hash.
-    const reviewedSource = readAcceptanceBarReviewSource(receiptBody, receipt.reviewSourceHash);
+    reviewedSource = readAcceptanceBarReviewSource(receiptBody, receipt.reviewSourceHash);
+    if (args.purpose !== 'review-recruitment') {
+      const attestations = [...post.body.matchAll(/^verified-complete-source sha256:([a-f0-9]{64})[ \t]*\r?$/gm)];
+      if (attestations.length !== 1 || attestations[0]![1] !== receipt.reviewSourceHash) {
+        throw new Error('acceptance_bar_review_source_attestation_required');
+      }
+    }
     if (receipt.reviewSourceHash !== args.expected.reviewSourceHash) {
       const currentSource = args.expectedSource;
       const reviewed = reviewSourceWithoutNewDeclarationTimes(reviewedSource);
@@ -644,6 +654,7 @@ export async function resolveAcceptanceBarApproval(
     approvedAt: post.approved_at,
     certifies: receipt.certifies,
     doesNotCertify: receipt.doesNotCertify,
+    ...(args.purpose === 'review-recruitment' && reviewedSource ? { reviewSource: reviewedSource } : {}),
   };
 }
 

@@ -49,6 +49,11 @@ describe('owner-selected pre-implementation review', () => {
     expect(result).toMatchObject({ ok: true, receipt: { scope, reviewerId: 'reviewer', requestedBy: 'implementer', request: input.request } });
     expect(JSON.stringify(result)).not.toContain('consultId');
   });
+  it('rejects an implicit selection reused by a later session of the same reviewer', () => {
+    const input = fixture();
+    input.report.origin.authorSessionRef = 'later-session';
+    expect(verifyOwnerSelectedReview(input)).toEqual({ ok: false, reason: 'owner_selection_report_mismatch' });
+  });
   it('retains semantic freshness across lifecycle/revision/acceptance administration', () => {
     const input = fixture();
     input.currentClauses = [clause({ revision: 2, lifecycleStatus: 'accepted', acceptedBy: 'new-acceptor' })];

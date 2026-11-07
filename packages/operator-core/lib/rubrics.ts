@@ -5466,7 +5466,10 @@ async function amendAcceptanceBarRubric(
         rubric: { ref: input.rubricId, revision: oldRubricRevision,
           baseline: rubricRow.template_data, candidate: guard.data },
         subjectPlan: { slug: subjectPlanHint, harness: subjectScope.harnessSlug,
-          revision: oldSubjectRevision, content: subjectRow.content, proposedContent: proposedSource },
+          revision: oldSubjectRevision, content: subjectRow.content,
+          ...(proposedSource === subjectRow.content
+            ? { proposedContentUnchanged: true as const }
+            : { proposedContent: proposedSource }) },
         reason,
         mappingDelta,
       };

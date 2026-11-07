@@ -82,6 +82,7 @@ import { ownerAttentionSourcesFor, type OwnerAttentionSource } from '../../inter
 import { ownerAskDefaultDisclosure } from '../../external-blockers';
 import { attachListMeta } from '../../sync-resolver/list-meta';
 import { deriveAttentionCounts, deriveAttentionRefs } from '../../sync-resolver/attention-counts';
+import { traceNamedQueryStage } from '../db-diagnostic-correlation-wiring';
 
 function attentionProjections(groups: ReturnType<typeof buildAttentionGroups>) {
   // The full feed chooses duplicate winners by global priority before grouping.
@@ -261,7 +262,7 @@ export default defineTool({
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
     const sctx = harnessScopedCtx(args.harness, ctx);
-    const opts = await ctxToPlanSourceOpts(sctx);
+    const opts = await traceNamedQueryStage('attention-scope', () => ctxToPlanSourceOpts(sctx));
     const harnessFilter = args.harnessSlug ?? null;
     const includeArchived = args.includeArchived === true;
     // P-025 / D-019: invoking plans:attention is the owner-presence signal. The
@@ -307,7 +308,7 @@ export default defineTool({
     // latter contains inbox acknowledgments as well as new messages/escalations.
     // Its existing append-heavy debouncer bounds invalidation frequency; the short
     // SWR softTtl remains the backstop for sources without change-stream tags.
-    const aggregation = await cachedRead(
+    const aggregation = await traceNamedQueryStage('attention-aggregate', () => cachedRead(
       // Superuser HTTP contexts may carry '*', while this aggregation reads
       // one concrete workspace. Key L1/L2 in that same partition so its PG
       // change events invalidate the cached acknowledgment state.
@@ -357,7 +358,7 @@ export default defineTool({
 
         // 1. Plan items — non-terminal (todo/wip/blocked/needs-human).
         try {
-          const plans = await readAllPlans({ includeArchived, ...opts });
+          const plans = await traceNamedQueryStage('attention-plans', () => readAllPlans({ includeArchived, ...opts }));
           const planItems = planItemsToAttention(plans, harnessFilter);
           for (const it of planItems) {
             if (it.planSlug && it.harnessSlug) planHarness.set(it.planSlug, it.harnessSlug);
@@ -397,7 +398,7 @@ export default defineTool({
         const dbOrgImportP = import('@papercusp/db-org');
         await Promise.all([
           // 2. Open coord escalations (workspace-level).
-          (async () => {
+          traceNamedQueryStage('attention-escalations', async () => {
             if (!ownerSourceEnabled('open-owner-escalations')) return;
             try {
               const { listEscalations } = await import('../coordination/escalations');
@@ -445,14 +446,14 @@ export default defineTool({
             } catch {
               /* best-effort */
             }
-          })(),
+          }),
 
           // 3. Coord messages addressed to the human (most recent, capped).
           //    Drop messages acked from the human's admin coord UI so "Acknowledge"
           //    dismisses. Scoped to ADMIN_COORD_UI_OWNER (the id those acks are
           //    authored as) — NOT a global ack-set, so an agent acking a broadcast
           //    can't suppress it from the human's inbox (security review).
-          (async () => {
+          traceNamedQueryStage('attention-messages', async () => {
             try {
               // EI-1541: same coordLog ambient-workspace pitfall as source #2 —
               // pin the ALS so a detached SWR refresh can't fall through to the
@@ -527,13 +528,13 @@ export default defineTool({
             } catch {
               /* best-effort */
             }
-          })(),
+          }),
 
           // 4. Failing smoke tests (PG, workspace-scoped). (The plan-review source
           //    was retired by B-14/P-101 — needs-human plan items, a plan-governance
           //    Decision, are the review gate now; harness_plan_review had no live
           //    writer after the bash orchestrator was archived.)
-          (async () => {
+          traceNamedQueryStage('attention-smoke', async () => {
             try {
               const { getOrgPg } = await dbOrgImportP;
               const { sql } = getOrgPg();
@@ -566,13 +567,13 @@ export default defineTool({
             } catch {
               /* best-effort */
             }
-          })(),
+          }),
 
           // 6. Operator `<report>` turns — the operator's structured output is an
           //    inbox surface, not chat content (report-cards-inbox-reconciliation
           //    D-002). One item per report turn at the worst-of tier (D-003); the
           //    recent window + triage (resolve → handled) keep the feed clean (D-004).
-          (async () => {
+          traceNamedQueryStage('attention-reports', async () => {
             try {
               const { readRecentOperatorReports } = await import('../../attention/operator-report-source');
               const reportTurns = await readRecentOperatorReports();
@@ -580,7 +581,7 @@ export default defineTool({
             } catch {
               /* best-effort */
             }
-          })(),
+          }),
 
           // ── B-14 / P-100 (D-011): the folded disposition channels. Each surfaces
           //    ONLY the genuinely-awaiting-human slice (never the execution backlog —
@@ -589,7 +590,7 @@ export default defineTool({
           // 7. Human-routed improvements — engineer_issues the auto-implement loop
           //    flagged `needsHuman` (NOT the whole open backlog; that stays pull on the
           //    Learning tab, operator-learning-tab D-001).
-          (async () => {
+          traceNamedQueryStage('attention-improvements', async () => {
             try {
               const { readImprovementItems } = await import('../../harness/improvements/read-items');
               const improvements = await readImprovementItems({
@@ -620,11 +621,11 @@ export default defineTool({
             } catch {
               /* best-effort */
             }
-          })(),
+          }),
 
           // 8. Standing-approval candidates awaiting the owner (≥3 silent dispatches
           //    in 24h). Cheap cached read — never re-queries audit_log here.
-          (async () => {
+          traceNamedQueryStage('attention-approvals', async () => {
             try {
               const { readCandidates } = await import('../../operator-standing-candidates');
               const cands = await readCandidates();
@@ -643,10 +644,10 @@ export default defineTool({
             } catch {
               /* best-effort */
             }
-          })(),
+          }),
 
           // 9. Open agent questions / coord:ask conversations awaiting an answer.
-          (async () => {
+          traceNamedQueryStage('attention-questions', async () => {
             if (!ownerSourceEnabled('open-owner-questions')) return;
             try {
               // Pinned to the workspace resolved up front (and named in the cache
@@ -681,11 +682,11 @@ export default defineTool({
             } catch {
               /* best-effort */
             }
-          })(),
+          }),
 
           // 10. Scout grading — ONE rollup nudge if any routed idea is ungraded
           //     (optional feedback, never one item per idea — there can be thousands).
-          (async () => {
+          traceNamedQueryStage('attention-scout', async () => {
             try {
               const { readRoutedIdeas } = await import('../../scout/routed-ledger');
               const routed = await readRoutedIdeas(harnessFilter ? { harnessSlug: harnessFilter } : {});
@@ -694,7 +695,7 @@ export default defineTool({
             } catch {
               /* best-effort */
             }
-          })(),
+          }),
 
           // ── owner-inbox-single-pane-2026-07-17 P-005: the folded owner-gate
           //    channels — each a DISTINCT wall a working agent explicitly
@@ -709,7 +710,7 @@ export default defineTool({
           //     resolved post-fan-out by `dropDuplicateNeedsHumanWorkItems` (D-008).
           //     The read lives in its own module (needs-human-work-items-source)
           //     so tests mock it by path like every other source.
-          (async () => {
+          traceNamedQueryStage('attention-needs-human', async () => {
             if (!ownerSourceEnabled('needs-human-work-items')) return;
             try {
               const { readNeedsHumanWorkItems } = await import('../../attention/needs-human-work-items-source');
@@ -751,13 +752,13 @@ export default defineTool({
             } catch {
               /* best-effort */
             }
-          })(),
+          }),
 
           // 12. Registered owner-walls (P-005b) — the `coord:walls` union
           //     (loop:checkpoint carry-note walls + needs-human work-items),
           //     reused verbatim (reuse-first) so the SAME rows an owner would
           //     see via `coord:walls` also surface in the unified inbox.
-          (async () => {
+          traceNamedQueryStage('attention-walls', async () => {
             if (!ownerSourceEnabled('owner-walls')) return;
             try {
               const { listOwnerWalls } = await import('../coordination/tools/walls');
@@ -793,7 +794,7 @@ export default defineTool({
             } catch {
               /* best-effort */
             }
-          })(),
+          }),
 
           // 13. Pending dark-flag ratifications (P-005c) — the KNOWN_DARK_FLAGS
           //     allowlist entries whose case genuinely awaits an owner action
@@ -801,7 +802,7 @@ export default defineTool({
           //     which are deliberately-not-ready regardless of owner input).
           //     A pure in-process read of the static map — no I/O, no per-key
           //     PostHog round-trip (bounding this leg's cost).
-          (async () => {
+          traceNamedQueryStage('attention-dark-flags', async () => {
             try {
               const { DARK_FLAGS, DARK_FLAGS_OWNER_REVIEW_BY } = await import('@papercusp/flags');
               for (const [key, entry] of DARK_FLAGS) {
@@ -817,14 +818,14 @@ export default defineTool({
             } catch {
               /* best-effort */
             }
-          })(),
+          }),
 
           // 14. Watcher blocked-session + mirrored-ask (P-005d) — open
           //     `session_pending_gates` rows (owner-inbox-single-pane P-002):
           //     the client-agnostic backstop for a client whose hook can't
           //     mirror an unstructured ask as a structured envelope (D-002 —
           //     Codex has no turn-end hook at all; this is its only path in).
-          (async () => {
+          traceNamedQueryStage('attention-gates', async () => {
             if (!ownerSourceEnabled('pending-owner-gates')) return;
             try {
               const { listPendingGates } = await import('../../attention/gate-store');
@@ -873,7 +874,7 @@ export default defineTool({
             } catch {
               /* best-effort */
             }
-          })(),
+          }),
 
           // 15. Blocked work-items of EVERY kind (curated-signal-cards P-001) —
           //     `status='blocked'` rows off the same cross-kind
@@ -884,7 +885,7 @@ export default defineTool({
           //     `🚧 Blocked` chat line scans exactly this table. Alert tier,
           //     never a Decision: stuck work is worth surfacing, but unblocking
           //     is work, not a triage verdict.
-          (async () => {
+          traceNamedQueryStage('attention-blocked-items', async () => {
             try {
               const { readBlockedWorkItems } = await import('../../attention/blocked-work-items-source');
               const rows = await readBlockedWorkItems({
@@ -910,14 +911,14 @@ export default defineTool({
             } catch {
               /* best-effort */
             }
-          })(),
+          }),
 
           // 16. Possibly-unrecorded owner decisions (EI-147) — a closed
           //     session_pending_gates 'ask' row with no plans:add-decision /
           //     ratify-decision call by the same owner afterward. A
           //     mechanical, no-LLM-judgment heuristic (decision-owed-source.ts);
           //     Alert tier — a nudge to review, never a governed decision.
-          (async () => {
+          traceNamedQueryStage('attention-decisions', async () => {
             try {
               const { readDecisionsOwed } = await import('../../attention/decision-owed-source');
               const owed = await readDecisionsOwed({ workspaceId: activeWorkspaceId() });
@@ -939,12 +940,12 @@ export default defineTool({
             } catch {
               /* best-effort */
             }
-          })(),
+          }),
 
           // 17. Owner directives nobody is handling (owner-directive-delivery-redesign
           //     P-008 / R-7) — open, their session ENDED, and no live fleet leader or
           //     work-item holder to take them. Workspace-level: no harness scope.
-          (async () => {
+          traceNamedQueryStage('attention-directives', async () => {
             try {
               const { readUnhandledDirectives } = await import('../../attention/unhandled-directives-source');
               for (const d of await readUnhandledDirectives({ workspaceId: activeWorkspaceId() })) {
@@ -953,7 +954,7 @@ export default defineTool({
             } catch {
               /* best-effort */
             }
-          })(),
+          }),
         ]);
 
         // 11a. D-008 dedupe: a `work-item-needs-human` (P-005a) row that a more
@@ -1015,7 +1016,7 @@ export default defineTool({
         //    offline degrades to "untriaged", never a failed feed.
         let triaged = items;
         try {
-          const triage = await readTriageByWorkspace();
+          const triage = await traceNamedQueryStage('attention-triage', () => readTriageByWorkspace());
           if (triage.size > 0) {
             triaged = items.map((it) => {
               const rec = triage.get(it.id);
@@ -1035,7 +1036,8 @@ export default defineTool({
           try {
             const { FLAGS } = await import('@papercusp/flags');
             const { getFlag } = await import('@papercusp/flags/server');
-            armed = await getFlag(FLAGS.MUG_AUTONOMY_ARMED, `autonomy:${activeWorkspaceId()}`);
+            armed = await traceNamedQueryStage('attention-authorizer', () =>
+              getFlag(FLAGS.MUG_AUTONOMY_ARMED, `autonomy:${activeWorkspaceId()}`));
           } catch {
             /* fail-safe: treat as unarmed */
           }
@@ -1053,7 +1055,7 @@ export default defineTool({
         // and ref lookup must not copy/sort/serialize full item bodies on every hit.
         return { groups, tierCounts, itemCount: triaged.length, projections: attentionProjections(groups), degraded: false };
       },
-    );
+    ));
     const { groups, tierCounts } = aggregation;
 
     // WI-2144754: the owner filter runs in the presentation layer too, BEFORE

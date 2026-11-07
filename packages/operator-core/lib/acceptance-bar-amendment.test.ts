@@ -10,6 +10,7 @@ import {
   acceptanceBarApprovalSchema,
   acceptanceBarReviewPostBody,
   acceptanceBarReviewSourceHash,
+  readAcceptanceBarReviewSource,
   approvalReceiptJsonSource,
   resolveAcceptanceBarApproval,
   acceptanceBarAmendmentKey,
@@ -1163,12 +1164,13 @@ describe('WI-6554700010046154 approval survives apply-time new-BAR metadata', ()
       bars: [{ barKey: 'R-2', priorBarHash: null, nextBarHash: 'b'.repeat(64) }] };
   }
 
-  function resolve(current: ReturnType<typeof source>, options: { omitExpectedSource?: boolean; tamperBody?: boolean } = {}) {
+  function resolve(current: ReturnType<typeof source>, options: { omitExpectedSource?: boolean; tamperBody?: boolean;
+    attestation?: string; body?: string } = {}) {
     const reviewed = source();
     const body = acceptanceBarReviewPostBody(receipt(reviewed), reviewed);
     const sql = vi.fn()
-      .mockResolvedValueOnce([{ author_id: 'reviewer', body: 'approve thread-post:456', approved_at: '2026-11-06T00:01:00.000Z' }])
-      .mockResolvedValueOnce([{ author_id: 'author', body: options.tamperBody ? body.replace('Added outcome', 'Tampered outcome') : body }]);
+      .mockResolvedValueOnce([{ author_id: 'reviewer', body: `approve thread-post:456\n${options.attestation ?? `verified-complete-source sha256:${receipt(reviewed).reviewSourceHash}`}`, approved_at: '2026-11-06T00:01:00.000Z' }])
+      .mockResolvedValueOnce([{ author_id: 'author', body: options.body ?? (options.tamperBody ? body.replace('Added outcome', 'Tampered outcome') : body) }]);
     return resolveAcceptanceBarApproval(sql as never, {
       workspaceId: 'workspace', approvalRef: 'thread-post:123', expected: receipt(current),
       ...(options.omitExpectedSource ? {} : { expectedSource: current }),
@@ -1183,6 +1185,27 @@ describe('WI-6554700010046154 approval survives apply-time new-BAR metadata', ()
 
   it('accepts the immutable reviewed addition at a later declaration time', async () => {
     await expect(resolve(atApplyTime())).resolves.toMatchObject({ approvedBy: 'reviewer' });
+  });
+
+  it.each(['', `verified-complete-source sha256:${'0'.repeat(64)}`,
+    `verified-complete-source sha256:${receipt(source()).reviewSourceHash}\nverified-complete-source sha256:${receipt(source()).reviewSourceHash}`])(
+    'rejects missing, wrong or ambiguous reviewer complete-source attestation: %s', async (attestation) => {
+      await expect(resolve(source(), { attestation })).rejects.toThrow('acceptance_bar_review_source_attestation_required');
+    });
+
+  it('rejects an excerpt-only preview despite a valid approval pointer', async () => {
+    await expect(resolve(source(), { body: JSON.stringify(receipt(source())) }))
+      .rejects.toThrow('acceptance_bar_review_source_incomplete');
+  });
+
+  it('rejects truncated retained source and recovers complete source independently of later edits', () => {
+    const reviewed = source();
+    const approval = receipt(reviewed);
+    const body = acceptanceBarReviewPostBody(approval, reviewed);
+    reviewed.subjectPlan.content = 'Later live source';
+    expect(readAcceptanceBarReviewSource(body, approval.reviewSourceHash).subjectPlan.content).toBe('Plan source');
+    expect(() => readAcceptanceBarReviewSource(body.slice(0, -10), approval.reviewSourceHash))
+      .toThrow('acceptance_bar_review_source_incomplete');
   });
 
   it.each<[string, (current: ReturnType<typeof source>) => void]>([
