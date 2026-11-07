@@ -288,6 +288,33 @@ describe('scorecard coverage and pinned procedure presentation', () => {
     expect(screen.getByLabelText('Assessment coverage').textContent).toContain('Fulfillment unknown');
   });
 
+  it('keeps a healthy manual rating separate from unavailable manual support in the fixed two-criterion fixture', () => {
+    const card: ScorecardRow = { issueId: 'EI-manual-coverage-ui', createdAt: '2026-11-02T00:00:00Z',
+      createdBy: 'su-grader', rubricRef: 'manual-coverage-fixture', nKeys: 2, missingKeys: [],
+      rubricResolved: true, score10: 10,
+      ratings: {
+        'manual-review': { rating: 'healthy', evidence: 'Historical reviewer judgment; no canonical manual receipt.',
+          nextEvidenceAction: 'Retain the immutable manual review receipt under the original contract.' },
+        'executable-review': { rating: 'unknown', evidence: 'Not assessed.', unknownReason: 'not-assessed' },
+      },
+      coverage: { population: 'rubric', denominator: 2,
+        record: { expected: 2, present: 2, missingKeys: [], extraKeys: [] },
+        rating: { known: ['manual-review'], unknown: ['executable-review'], missing: [], inapplicable: [] },
+        evidence: { current: [], stale: [], absent: [], unknown: ['manual-review', 'executable-review'] },
+        freshness: { current: [], stale: [], unknown: ['manual-review', 'executable-review'] },
+        unresolvedKeys: ['manual-review', 'executable-review'],
+        requestedScope: { state: 'unknown', denominator: null, reason: 'canonical-scope-authority-unavailable' },
+        fulfillment: 'unknown' } };
+    const before = JSON.stringify(card);
+    render(<ScorecardDetail scorecard={card} />);
+    expect(screen.getByLabelText('Assessment coverage').textContent).toContain('2/2 rating keys present · 0/2 supported · 2 unresolved');
+    expect(screen.getByLabelText('Assessment coverage').textContent).toContain('Requested scope unknown · Fulfillment unknown');
+    expect(screen.getByText('healthy')).toBeTruthy();
+    expect(screen.getByText('unknown')).toBeTruthy();
+    expect(screen.getByText('Next evidence action: Retain the immutable manual review receipt under the original contract.')).toBeTruthy();
+    expect(JSON.stringify(card)).toBe(before);
+  });
+
   it('uses the pinned read reference and refuses a newer definition instead of displaying its procedure', async () => {
     const card = fixture();
     card.evidenceActions = [{ criterionKey: keys[0]!, category: 'recover-historical', reason: 'historical-missing',

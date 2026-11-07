@@ -1695,11 +1695,12 @@ describe('pinned historical evidence action readers — real PG', () => {
     expect(accepted.hasMore).toBe(false);
   });
 
-  it('projects exact retained ledger support on both readers without replacing it with a later run or rewriting the card', async () => {
+  it('keeps the fixed Luna Max 26-criterion fixture sparse on both readers without replacing its retained adverse result', async () => {
     const rubricRef = 'historical-ledger-support';
     const at = '2026-11-01T12:00:00Z';
     const clock = '2026-11-02T00:00:00Z';
-    const subject = { kind: 'pot' as const, ref: 'fleet:retained', windowStart: '2026-11-01T00:00:00Z', windowEnd: clock };
+    const subject = { kind: 'pot' as const, ref: 'fleet:luna-max-coverage-fixture', windowStart: '2026-11-01T00:00:00Z', windowEnd: clock };
+    const unknownKeys = Array.from({ length: 25 }, (_, index) => `unassessed-${index + 1}`);
     const schemaRevision = continuityProbeRevision(SQL_PROBE_TOOL);
     if (!schemaRevision) throw new Error('The maintained SQL probe must be registered for this fixture');
     await proposeRubric({ rubricId: rubricRef, characteristic: 'history', title: 'Retained ledger fixture',
@@ -1707,7 +1708,12 @@ describe('pinned historical evidence action readers — real PG', () => {
         method: 'Inspect the cited test_runs receipt.', replication: 'Preserve the historical subject and clock.',
         driftMarkers: 'A later successful run replaces an old failure.',
         check: { kind: 'probe', probe: { kind: 'sql', sql: 'SELECT 3 AS n', schemaRevision,
-          expect: { path: '$.rowCount', op: 'gte', value: 10 } } } }], status: 'active', by: 'su-fixture' });
+          expect: { path: '$.rowCount', op: 'gte', value: 10 } } } },
+        ...unknownKeys.map(key => ({ key, title: key, model: 'An unassessed fleet criterion.',
+          method: 'Inspect the pinned fleet window before retaining a measurement.',
+          driftMarkers: 'A present unknown key is counted as assessed.',
+          check: { kind: 'tests' as const, files: ['packages/operator-core/lib/scorecards.test.ts'] } })),
+      ], status: 'active', by: 'su-fixture' });
     const rubric = (await getRubric(rubricRef))!;
     const provenance = retainMeasurementProvenance({ startedAt: at, finishedAt: at,
       procedure: { kind: 'command', argv: ['retained-fixture-check'] }, result: { value: 3 } });
@@ -1720,7 +1726,10 @@ describe('pinned historical evidence action readers — real PG', () => {
       { workspaceId: issuesScopeWorkspace(), harnessSlug: 'papercusp' }, db.adminSql);
     const old = (await readLatestRubricCheckResults({ rubricRef, workspaceId: issuesScopeWorkspace(),
       asOf: clock, testRunIds: [oldId!], subject: check.subject }, db.adminSql)).get(check.id)!;
-    const ratings = { retained: { rating: 'degraded', evidence: 'The retained adverse result.',
+    const ratings = { ...Object.fromEntries(unknownKeys.map(key => [key, { rating: 'unknown',
+      evidence: 'Not assessed in the pinned fleet window.', unknownReason: 'not-assessed' as const,
+      nextEvidenceAction: `Inspect ${key} in the original fleet window.` }])),
+      retained: { rating: 'degraded', evidence: 'The retained adverse result.',
       ratedFrom: 'ledger' as const, ledgerResult: { testRunId: oldId!, value: 3, unit: null,
         provenance: old.check.provenance, provenanceStatus: old.provenanceStatus } } };
     const cardId = await fileScorecard(db, { id: 'retained-ledger', rubricRef,
@@ -1730,8 +1739,20 @@ describe('pinned historical evidence action readers — real PG', () => {
     const read = await readScorecardEvidence(cardId, clock);
     if (read.kind !== 'found') throw new Error('Historical ledger fixture missing');
     expect(listed.coverage!.evidence.current).toEqual(['retained']);
+    expect(listed.coverage!.record).toEqual({ expected: 26, present: 26, missingKeys: [], extraKeys: [] });
+    expect(listed.coverage!.rating).toEqual({ known: ['retained'], unknown: unknownKeys, missing: [], inapplicable: [] });
+    expect(listed.coverage!.evidence.unknown).toEqual(unknownKeys);
+    expect(listed.coverage!.unresolvedKeys).toEqual(unknownKeys);
+    expect(listed.coverage!.requestedScope).toEqual({ state: 'unknown', denominator: null,
+      reason: 'canonical-scope-authority-unavailable' });
     expect(listed.evidenceActions![0]).toMatchObject({ category: 'repair-subject', sourceRefs: [`test_runs:${oldId}`] });
     expect(read.scorecard.coverage).toEqual(listed.coverage);
+    expect(read.scorecard.criteria).toHaveLength(26);
+    expect(listed.evidenceActions).toEqual(read.scorecard.criteria.slice(0, 3).map(row => row.evidenceAction));
+    expect(listed.omittedActionCount).toBe(23);
+    expect(listed.evidenceActions![0]!.context).toMatchObject({ subjectRef: subject.ref,
+      windowStart: subject.windowStart, windowEnd: clock, comparisonTime: clock,
+      rubricRevision: rubric.revision, criteriaHash: rubric.criteriaHash });
     expect(read.scorecard.criteria[0]!.evidenceAction).toEqual(listed.evidenceActions![0]);
     expect(listed.ratings).toEqual(ratings);
     expect(listed.coverage!.fulfillment).toBe('unknown');
@@ -1739,8 +1760,52 @@ describe('pinned historical evidence action readers — real PG', () => {
     // Removing the retained receipt cannot make the later pass prove this card.
     await db.adminSql`DELETE FROM harness_shared.test_runs WHERE id = ${oldId!}`;
     const missing = (await listScorecards({ issueIds: [cardId], includeGeneration: false }))[0]!;
-    expect(missing.coverage!.evidence.unknown).toEqual(['retained']);
+    expect(missing.coverage!.evidence.unknown).toEqual(['retained', ...unknownKeys]);
     expect(missing.evidenceActions![0]!.category).toBe('recover-historical');
+  });
+
+  it('keeps the fixed manual fixture unsupported until an admissible manual receipt contract exists', async () => {
+    const rubricRef = 'manual-coverage-fixture';
+    const clock = '2026-11-02T00:00:00Z';
+    const subject = { ref: 'audit:manual-coverage-fixture',
+      windowStart: '2026-11-01T00:00:00Z', windowEnd: clock };
+    await proposeRubric({ rubricId: rubricRef, characteristic: 'manual-review', title: 'Manual coverage fixture',
+      status: 'active', by: 'su-fixture', criteria: [
+        { key: 'manual-review', title: 'Manual review', model: 'Retain the reviewer judgment.',
+          method: 'Read the archived review and retain its exact sources.', replication: 'Use the original audit window.',
+          driftMarkers: 'Authored prose is mistaken for an admissible receipt.', instrumentKey: 'none' },
+        { key: 'executable-review', title: 'Executable review', model: 'Measure the declared check.',
+          method: 'Run the declared check in the pinned audit context.', driftMarkers: 'An unmeasured check becomes supported.',
+          check: { kind: 'probe', probe: { kind: 'sql', sql: 'SELECT 1',
+            schemaRevision: continuityProbeRevision(SQL_PROBE_TOOL)!, expect: { path: '$.rowCount', op: 'eq', value: 1 } } } },
+      ] });
+    const rubric = (await getRubric(rubricRef))!;
+    const ratings = {
+      'manual-review': { rating: 'healthy', evidence: 'Historical reviewer judgment; no canonical manual receipt.',
+        nextEvidenceAction: 'Retain the immutable manual review receipt under the original contract.' },
+      'executable-review': { rating: 'unknown', evidence: 'Not assessed.', unknownReason: 'not-assessed' as const },
+    };
+    const cardId = await fileScorecard(db, { id: 'manual-coverage', rubricRef,
+      rubricRevision: rubric.revision, criteriaHash: rubric.criteriaHash, ratings, subject, createdAt: clock });
+    const before = await db.adminSql`SELECT payload FROM harness_shared.engineer_issues WHERE issue_id = ${cardId}`;
+    const listed = (await listScorecards({ issueIds: [cardId], includeGeneration: false, comparisonTime: clock }))[0]!;
+    const detail = await readScorecardEvidence(cardId, clock);
+    if (detail.kind !== 'found') throw new Error('Manual coverage fixture missing');
+    expect(listed.coverage!.record).toEqual({ expected: 2, present: 2, missingKeys: [], extraKeys: [] });
+    expect(listed.coverage!.rating).toEqual({ known: ['manual-review'], unknown: ['executable-review'], missing: [], inapplicable: [] });
+    expect(listed.coverage!.evidence).toEqual({ current: [], stale: [], absent: [], unknown: Object.keys(ratings) });
+    expect(listed.coverage!.unresolvedKeys).toEqual(Object.keys(ratings));
+    expect(listed.coverage!.fulfillment).toBe('unknown');
+    expect(listed.evidenceActions![0]).toMatchObject({ criterionKey: 'manual-review', category: 'manual-review',
+      readiness: 'manual', context: { subjectRef: subject.ref, windowStart: subject.windowStart,
+        windowEnd: clock, comparisonTime: clock, rubricRevision: rubric.revision, criteriaHash: rubric.criteriaHash },
+      procedure: { excerpt: 'Read the archived review and retain its exact sources.\nUse the original audit window.' } });
+    expect(listed.evidenceActions![1]!.readiness).toBe('typed-check');
+    expect(detail.scorecard.coverage).toEqual(listed.coverage);
+    expect(detail.scorecard.criteria.map(row => row.evidenceAction)).toEqual(listed.evidenceActions);
+    expect(listed.ratings).toEqual(ratings);
+    expect(await db.adminSql`SELECT payload FROM harness_shared.engineer_issues WHERE issue_id = ${cardId}`).toEqual(before);
+    // This honest negative control does not fulfill R7's required positive manual support.
   });
 
   it('reads old procedures after a live amendment, bounds list actions and preserves persisted ratings and acceptance', async () => {
