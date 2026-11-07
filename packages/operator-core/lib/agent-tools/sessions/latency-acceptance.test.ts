@@ -3,6 +3,7 @@ import {
   assessLatencyCohort, assessLatencyExperiment, assertLatencyPhaseOrder, calibrateLatencyOracle, frozenOutputOracle,
   latencyAttemptId, latencyAttemptSchedule, latencyDistribution, latencyFixtureDigest,
   latencyRecipeCriterionCompatibility, pinLatencyCardFixture, latencyDataFixtures,
+  latencyIntervalReference, pinLatencySiblingFixture, type LatencyReferenceInterval,
   type LatencyAttempt, type LatencyCardReference, type LatencyCardSnapshot,
 } from '../../../test/_latency-acceptance';
 
@@ -20,6 +21,63 @@ function calibrationSamples(): LatencyAttempt[] {
 }
 
 describe('LATENCY-M1 frozen experiment preparation', () => {
+  it('clips intervals before partitioning overlap and never adds nested stages twice', () => {
+    const input: LatencyReferenceInterval[] = [
+      { id: 'model', sourceRef: 'gateway:original', kind: 'model', startMs: -10, endMs: 30 },
+      { id: 'tool', sourceRef: 'native:terminal', kind: 'tool', startMs: 20, endMs: 70 },
+      { id: 'stage', sourceRef: 'handler:stage', kind: 'tool', startMs: 25, endMs: 35, parentId: 'tool' },
+      { id: 'next', sourceRef: 'native:next', kind: 'tool', startMs: 70, endMs: 110 },
+    ];
+    const result = latencyIntervalReference({ startMs: 0, endMs: 100 }, [...input, input[1]!]);
+    expect(result).toMatchObject({ wallMs: 100, knownMs: 100, coveragePercent: 100,
+      modelOnlyMs: 20, toolOnlyMs: 70, overlapMs: 10, unobservedMs: 0 });
+    expect(result.intervals).toHaveLength(3);
+    expect(result.subdivisions).toHaveLength(1);
+    expect(input[0]!.startMs).toBe(-10);
+  });
+
+  it('agrees with an independent per-millisecond occupancy oracle over every small two-span placement', () => {
+    for (let a = -1; a <= 5; a++) for (let b = a; b <= 6; b++)
+      for (let c = -1; c <= 5; c++) for (let d = c; d <= 6; d++) {
+        const result = latencyIntervalReference({ startMs: 0, endMs: 5 }, [
+          { id: 'a', sourceRef: 'fixture:a', kind: 'model', startMs: a, endMs: b },
+          { id: 'b', sourceRef: 'fixture:b', kind: 'tool', startMs: c, endMs: d },
+        ]);
+        const cells = Array.from({ length: 5 }, (_, i) => (a <= i && b > i ? 1 : 0)
+          + (c <= i && d > i ? 2 : 0));
+        expect([result.unobservedMs, result.modelOnlyMs, result.toolOnlyMs, result.overlapMs])
+          .toEqual([0, 1, 2, 3].map(mask => cells.filter(cell => cell === mask).length));
+      }
+  });
+
+  it('retains absent spans as unobserved and rejects conflicting IDs or unproved stage parents', () => {
+    expect(latencyIntervalReference({ startMs: 0, endMs: 10 }, [])).toMatchObject({
+      knownMs: 0, coveragePercent: 0, unobservedMs: 10 });
+    const row: LatencyReferenceInterval = { id: 'a', sourceRef: 'fixture:a', kind: 'tool', startMs: 1, endMs: 5 };
+    for (const rows of [[row, { ...row, endMs: 6 }], [{ ...row, parentId: 'missing' }],
+      [{ ...row, endMs: 0 }], [{ ...row, endMs: NaN }], [{ ...row, sourceRef: '' }]]) {
+      expect(() => latencyIntervalReference({ startMs: 0, endMs: 10 }, rows)).toThrow(/LATENCY-M1/);
+    }
+  });
+
+  it('pins sibling order, original recipe and explicit recipe absence; rejects clipped or wrong-scope pages', () => {
+    const reference = { issueId: 'card-a', rubricRef: 'rubric-a', subjectRef: 'subject-a' };
+    const snapshot = { ...reference, rerunRecipe: { evaluator: 'fixture:read', args: { subject: 'subject-a' } },
+      count: 1, hasMore: false, truncatedByLimit: false, nextCursor: null,
+      siblings: [{ ...reference, createdAt: '2026-11-07T00:00:00Z', supersededBy: null, retracted: false }] };
+    expect(pinLatencySiblingFixture(reference, snapshot)).toMatchObject({ count: 1, recipePresent: true });
+    expect(pinLatencySiblingFixture(reference, { ...snapshot, rerunRecipe: null })).toMatchObject({ recipePresent: false });
+    for (const patch of [{ count: 2 }, { hasMore: true }, { truncatedByLimit: true }, { nextCursor: {} },
+      { subjectRef: 'wrong' }, { rerunRecipe: { omittedChars: { args: 20 } } },
+      { siblings: [{ ...snapshot.siblings[0]!, rubricRef: 'wrong' }] }]) {
+      expect(() => pinLatencySiblingFixture(reference, { ...snapshot, ...patch })).toThrow(/LATENCY-M1/);
+    }
+    const check = (observed: unknown, authorized: boolean) => frozenOutputOracle(snapshot, observed, authorized);
+    expect(calibrateLatencyOracle(check, { positive: snapshot,
+      incorrect: { ...snapshot, rerunRecipe: null }, incomplete: { ...snapshot, siblings: [] } }))
+      .toEqual({ positive: true, incorrect: false, incomplete: false, unauthorized: false });
+  });
+
   it('materializes the frozen 10000-row populations with stable scope, identities and explicit controls', () => {
     const fixture = latencyDataFixtures();
     expect(latencyFixtureDigest(fixture)).toBe(latencyFixtureDigest(latencyDataFixtures()));

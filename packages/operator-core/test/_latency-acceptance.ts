@@ -100,7 +100,7 @@ export function latencyDataFixtures() {
   const unrelated = 'latency-acceptance:unrelated:';
   const oldKeys = Array.from({ length: 20 }, (_, i) =>
     `${i < 10 ? busy : quiet}old-${String(i % 10).padStart(2, '0')}`);
-  const bodies: Record<string, unknown>[] = oldKeys.map(condition_key => ({
+  const bodies: Array<Record<string, unknown> & { ts: string }> = oldKeys.map(condition_key => ({
     condition_key, ts: new Date(anchorMs - 30 * dayMs).toISOString(),
   }));
   const controls = [
@@ -186,6 +186,90 @@ export function pinLatencyCardFixture(reference: LatencyCardReference, snapshot:
     throw new Error('LATENCY-M1 card fixture does not match its complete pinned population');
   }
   return { issueId: snapshot.issueId, count: keys.length, keys, sha256: latencyFixtureDigest(snapshot) };
+}
+
+export interface LatencyReferenceInterval {
+  id: string;
+  sourceRef: string;
+  kind: 'model' | 'tool';
+  startMs: number;
+  endMs: number;
+  /** A stage is evidence about its parent, never another elapsed-time charge. */
+  parentId?: string;
+}
+
+/** Independent fixture oracle: endpoint sweep, without any timeline reader or
+ * production attribution code. Inputs must carry measured interval endpoints;
+ * absence of a span remains unobserved, never inferred idle/model time. */
+export function latencyIntervalReference(window: { startMs: number; endMs: number },
+  input: readonly LatencyReferenceInterval[]) {
+  if (!Number.isSafeInteger(window.startMs) || !Number.isSafeInteger(window.endMs)
+    || window.endMs <= window.startMs) throw new Error('LATENCY-M1 invalid reference window');
+  const identities = new Map<string, LatencyReferenceInterval>();
+  for (const row of input) {
+    if (!row.id.trim() || !row.sourceRef.trim() || !['model', 'tool'].includes(row.kind)
+      || !Number.isSafeInteger(row.startMs) || !Number.isSafeInteger(row.endMs)
+      || row.endMs < row.startMs) throw new Error('LATENCY-M1 invalid reference interval');
+    const previous = identities.get(row.id);
+    if (previous && latencyFixtureDigest(previous) !== latencyFixtureDigest(row)) {
+      throw new Error('LATENCY-M1 conflicting reference identity');
+    }
+    identities.set(row.id, row);
+  }
+  for (const row of identities.values()) if (row.parentId !== undefined) {
+    const parent = identities.get(row.parentId);
+    if (!parent || parent.parentId !== undefined || parent.id === row.id
+      || row.startMs < parent.startMs || row.endMs > parent.endMs) {
+      throw new Error('LATENCY-M1 missing or inconsistent interval parent');
+    }
+  }
+  const intervals = [...identities.values()].filter(row => row.parentId === undefined)
+    .map(row => ({ ...row, startMs: Math.max(window.startMs, row.startMs),
+      endMs: Math.min(window.endMs, row.endMs) }))
+    .filter(row => row.endMs > row.startMs).sort((a, b) => a.id.localeCompare(b.id));
+  const endpoints = [...new Set([window.startMs, window.endMs,
+    ...intervals.flatMap(row => [row.startMs, row.endMs])])].sort((a, b) => a - b);
+  const categories = { modelOnlyMs: 0, toolOnlyMs: 0, overlapMs: 0, unobservedMs: 0 };
+  for (let i = 1; i < endpoints.length; i++) {
+    const start = endpoints[i - 1]!, end = endpoints[i]!;
+    const active = intervals.filter(row => row.startMs <= start && row.endMs >= end);
+    const model = active.some(row => row.kind === 'model');
+    const tool = active.some(row => row.kind === 'tool');
+    categories[model && tool ? 'overlapMs' : model ? 'modelOnlyMs'
+      : tool ? 'toolOnlyMs' : 'unobservedMs'] += end - start;
+  }
+  const wallMs = window.endMs - window.startMs;
+  const knownMs = wallMs - categories.unobservedMs;
+  return { window, intervals, subdivisions: [...identities.values()]
+    .filter(row => row.parentId !== undefined).sort((a, b) => a.id.localeCompare(b.id)),
+  wallMs, knownMs, coveragePercent: 100 * knownMs / wallMs, ...categories };
+}
+
+/** Freeze T02's complete small sibling page and the original stored recipe.
+ * A digest-only recipe is not replay-body evidence. Explicit absence is valid. */
+export function pinLatencySiblingFixture(reference: {
+  issueId: string; rubricRef: string; subjectRef: string;
+}, snapshot: {
+  issueId: string; rubricRef: string; subjectRef: string;
+  rerunRecipe: Record<string, unknown> | null;
+  count: number; hasMore: boolean; truncatedByLimit: boolean; nextCursor: unknown;
+  siblings: readonly { issueId: string; rubricRef: string; subjectRef: string;
+    createdAt: string; supersededBy: string | null; retracted: boolean }[];
+}) {
+  if (snapshot.issueId !== reference.issueId || snapshot.rubricRef !== reference.rubricRef
+    || snapshot.subjectRef !== reference.subjectRef || snapshot.hasMore
+    || snapshot.truncatedByLimit || snapshot.nextCursor !== null
+    || snapshot.count !== snapshot.siblings.length || snapshot.count < 1 || snapshot.count > 20
+    || new Set(snapshot.siblings.map(row => row.issueId)).size !== snapshot.count
+    || !snapshot.siblings.some(row => row.issueId === reference.issueId)
+    || snapshot.siblings.some(row => !row.issueId.trim() || row.rubricRef !== reference.rubricRef
+      || row.subjectRef !== reference.subjectRef || !Number.isFinite(Date.parse(row.createdAt)))
+    || (snapshot.rerunRecipe !== null && ('omittedChars' in snapshot.rerunRecipe
+      || snapshot.rerunRecipe._partial === true || snapshot.rerunRecipe._stub === true))) {
+    throw new Error('LATENCY-M1 incomplete or mismatched sibling fixture');
+  }
+  return { issueId: snapshot.issueId, count: snapshot.count,
+    recipePresent: snapshot.rerunRecipe !== null, sha256: latencyFixtureDigest(snapshot) };
 }
 
 /** LATENCY-M1 deliberately differs from P-013's nearest-rank p50. */
