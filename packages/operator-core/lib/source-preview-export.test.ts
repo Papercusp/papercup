@@ -3789,7 +3789,8 @@ describe('BG inherited manifest and original source boundaries', () => {
       } finally { wholeFileRead.mockRestore(); syncBuiltinESMExports(); }
     });
 
-  async function maintainedCompilerCandidate(sourceOnly = false, protectedUnconsumed = false, runtimeModules = false) {
+  async function maintainedCompilerCandidate(sourceOnly = false, protectedUnconsumed = false, runtimeModules = false,
+    expectedHostManifest?: Parameters<typeof prepareBgVerifierBuildRecord>[0]['expectedHostManifest']) {
     const { prepared } = await compilerCandidate(true, true, sourceOnly, protectedUnconsumed, runtimeModules);
     const installed = dirname(createRequire(import.meta.url).resolve('@papercusp/host-esbuild/package.json'));
     const privateCompiler = join(prepared.root, 'node_modules/@papercusp/host-esbuild');
@@ -3815,21 +3816,22 @@ describe('BG inherited manifest and original source boundaries', () => {
       configuration: [join(prepared.root, 'package.json')], environment: { NODE_OPTIONS: '', NODE_PATH: '', PATH: '/usr/bin',
         TMPDIR: tmpdir(),
         ESBUILD_BINARY_PATH: join(privateCompiler, 'bin/esbuild'), ESBUILD_WORKER_THREADS: '0' } };
-    const record = prepareBgVerifierBuildRecord({ prepared, dependencies, invocation });
+    const record = prepareBgVerifierBuildRecord({ prepared, dependencies, invocation, expectedHostManifest });
     bgFixtureTrace('private-compiler:record-ready');
     const expectedVersion = '0.25.0';
     expect(JSON.parse(readFileSync(join(privateCompiler, 'package.json'), 'utf8')).version).toBe(expectedVersion);
     return { prepared, dependencies, invocation, record, argv, entry, expectedVersion, replayIdentityDefine };
   }
 
-  async function partitionCompilation(sourceOnly = true, protectedUnconsumed = false, runtimeModules = false) {
-    const fixture = await maintainedCompilerCandidate(sourceOnly, protectedUnconsumed, runtimeModules);
+  async function partitionCompilation(sourceOnly = true, protectedUnconsumed = false, runtimeModules = false,
+    expectedHostManifest?: Parameters<typeof prepareBgVerifierBuildRecord>[0]['expectedHostManifest']) {
+    const fixture = await maintainedCompilerCandidate(sourceOnly, protectedUnconsumed, runtimeModules, expectedHostManifest);
     const bank = dirname(fixture.entry), stageLeaf = 'partition-generation';
     mkdirSync(bank, { recursive: true });
     const temporary = 'hono-host.mjs.tmp.@BG_PID@';
     const invocation = { ...fixture.invocation,
       argv: fixture.argv.map(arg => arg.replaceAll(fixture.entry, join(bank, stageLeaf, temporary))) };
-    const transaction = prepareBgVerifierBuildTransaction({ ...fixture, bank, stageLeaf, invocations: [invocation],
+    const transaction = prepareBgVerifierBuildTransaction({ ...fixture, bank, stageLeaf, invocations: [invocation], expectedHostManifest,
       outputs: [{ temporary, final: 'hono-host.mjs' },
         { temporary: temporary + '.meta.json', final: 'hono-host.mjs.meta.json' }] });
     const binding = beginBgVerifierBuildTransaction({ transaction, ownerPid: process.pid });
@@ -3848,14 +3850,39 @@ describe('BG inherited manifest and original source boundaries', () => {
     invocation: Awaited<ReturnType<typeof partitionCompilation>>['args']['invocation'];
     execution: Parameters<typeof qualifyBgVerifierRuntimeSources>[0]['execution'];
   }> | undefined)[] = [];
-  async function compiledRuntime(transformed = false, native = false) {
-    return runtimeCompilations[Number(transformed) + Number(native) * 2] ??= (async () => {
+  async function compiledRuntime(transformed = false, native = false, host?: 'complete' | 'missing-member') {
+    const index = host === 'complete' ? 4 : host === 'missing-member' ? 5 : Number(transformed) + Number(native) * 2;
+    return runtimeCompilations[index] ??= (async () => {
+      // Independently pin a reference-host file census before the compiler and
+      // target start. Never derive expectations from the target's native packet.
+      // This fixture reference is not operational host approval or creator proof.
+      let expectedHostManifest: Parameters<typeof prepareBgVerifierBuildRecord>[0]['expectedHostManifest'];
+      if (host) {
+        const sampler = pathToFileURL(join(SOURCE_ROOT, 'libs/generic/memory/src/local-embedder-worker.script.mjs')).href;
+        const reference = spawnSync(process.execPath, ['--input-type=module', '-e',
+          `import { sampleNativeRuntime } from ${JSON.stringify(sampler)};
+const { libraries, loaderProcess } = sampleNativeRuntime('cpu');
+console.log(JSON.stringify({ files: libraries.map(({ path, sha256, bytes }) => ({ path, sha256, bytes })),
+  interpreter: loaderProcess.interpreterPath }));`], {
+          env: { PATH: '/usr/bin:/bin' }, encoding: 'utf8', timeout: 15_000, maxBuffer: 1024 * 1024,
+        });
+        expect(reference.status, reference.stderr).toBe(0);
+        expect(reference.error).toBeUndefined();
+        const manifest: { files: { path: string, sha256: string, bytes: number }[], interpreter: string } = JSON.parse(reference.stdout);
+        expect(manifest.files.length).toBeGreaterThan(1);
+        if (host === 'missing-member') manifest.files = manifest.files.filter(file => file.path !== manifest.interpreter);
+        const path = join(tmp, `runtime-expected-host-${host}.json`);
+        writeFileSync(path, JSON.stringify({ schemaVersion: 1, files: manifest.files }));
+        expectedHostManifest = { schemaVersion: 1, path, sha256: digest(readFileSync(path)),
+          evidenceRef: 'independent-reference-host-before-target/private-fixture' };
+      }
       // No CommonJS syntax-detection attempt precedes the original ESM bytes.
       // A failed parse must continue to refuse qualification in the capture.
-      const fixture = await partitionCompilation(true, false, true);
+      const fixture = await partitionCompilation(true, false, true, expectedHostManifest);
       const output = await qualifyBgVerifierOutput(fixture.args);
       // Preserve the original temporary output and compiler custody separately.
-      const prefix = native ? 'runtime-native-output' : transformed ? 'runtime-transformed-output' : 'runtime-compiled-output';
+      const prefix = host ? `runtime-host-${host}` : native ? 'runtime-native-output'
+        : transformed ? 'runtime-transformed-output' : 'runtime-compiled-output';
       const entry = join(tmp, prefix + '.mjs');
       cpSync(output.entry.path, entry);
       const capture = join(tmp, prefix + '.sources.jsonl');
@@ -3963,6 +3990,72 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
     expect(proof.completeRuntimeClosureVerified).toBe(false);
     expect(proof.dependencyQualification).toBe('required');
     expect(proof.creatorFence).toBe('required');
+  });
+
+  it.each(['complete', 'missing-member'] as const)('compiled runtime host custody: %s', async host => {
+    const fixture = await compiledRuntime(false, true, host);
+    if (host === 'missing-member') {
+      expect(() => qualifyBgVerifierRuntimeSources(fixture))
+        .toThrow('BG native mapped host file is outside original expected manifest');
+      return;
+    }
+    const proof = qualifyBgVerifierRuntimeSources(fixture);
+    expect(proof.nativeBindings[0]).toMatchObject({ expectedHostManifestQualified: true,
+      expectedHostManifestSha256: fixture.record.expectedHostManifest!.identity.sha256 });
+    expect(proof.nativeBindings[0]!.files.every(file => file.origin === 'expected-host')).toBe(true);
+    expect(proof.completeRuntimeClosureVerified).toBe(false);
+    expect(proof.dependencyQualification).toBe('required');
+    expect(proof.creatorFence).toBe('required');
+    expect(proof.unqualifiedSources.length).toBeGreaterThan(0);
+  });
+
+  it.each(['schema', 'authority', 'manifest-digest', 'file-digest', 'file-size', 'duplicate',
+    'relative', 'node-omitted', 'inside-root', 'symlink'] as const)(
+    'compiled runtime host manifest preflight: %s', async defect => {
+      const fixture = await compiledRuntime(false, true, 'complete');
+      const manifest: { schemaVersion: number, files: { path: string, sha256: string, bytes: number }[] } =
+        JSON.parse(readFileSync(fixture.record.expectedHostManifest!.identity.path, 'utf8'));
+      const path = join(tmp, `host-preflight-${defect}.json`);
+      if (defect === 'schema') manifest.schemaVersion = 2;
+      if (defect === 'file-digest') manifest.files[0]!.sha256 = 'a'.repeat(64);
+      if (defect === 'file-size') manifest.files[0]!.bytes++;
+      if (defect === 'duplicate') manifest.files.push(manifest.files[0]!);
+      if (defect === 'relative') manifest.files[0]!.path = 'relative-library.so';
+      if (defect === 'node-omitted') manifest.files = manifest.files.filter(file => file.path !== fixture.record.invocation.node.realpath);
+      writeFileSync(path, JSON.stringify(manifest));
+      const expected = { schemaVersion: 1 as const, path, sha256: digest(readFileSync(path)),
+        evidenceRef: defect === 'authority' ? 'unknown' : 'independent-reference-host/private-fixture' };
+      if (defect === 'manifest-digest') expected.sha256 = 'a'.repeat(64);
+      if (defect === 'inside-root') {
+        expected.path = join(dirname(fixture.output.entry.path), 'untrusted-host.json');
+        writeFileSync(expected.path, readFileSync(path));
+      }
+      if (defect === 'symlink') {
+        expected.path = path + '.link';
+        symlinkSync(path, expected.path);
+      }
+      try {
+        expect(() => prepareBgVerifierBuildRecord({ prepared: fixture.record.prepared,
+          dependencies: fixture.record.dependencies, invocation: fixture.invocation, expectedHostManifest: expected })).toThrow();
+      } finally {
+        if (defect === 'inside-root') rmSync(expected.path);
+      }
+    });
+
+  it('compiled runtime host manifest retains its original independent file and detached descriptor', async () => {
+    const fixture = await compiledRuntime(false, true, 'complete');
+    const path = join(tmp, 'host-retained-independent.json');
+    cpSync(fixture.record.expectedHostManifest!.identity.path, path);
+    const expected = { ...fixture.record.expectedHostManifest!.authority, path };
+    const record = prepareBgVerifierBuildRecord({ prepared: fixture.record.prepared,
+      dependencies: fixture.record.dependencies, invocation: fixture.invocation, expectedHostManifest: expected });
+    expected.sha256 = 'a'.repeat(64);
+    expect(() => verifyBgVerifierBuildRecord(record, fixture.invocation, 'before-publication')).not.toThrow();
+    const replacement = path + '.replacement';
+    cpSync(path, replacement);
+    nativeFs.renameSync(replacement, path);
+    expect(() => verifyBgVerifierBuildRecord(record, fixture.invocation, 'before-publication'))
+      .toThrow('BG original expected host manifest changed');
   });
 
   it.each(['positive', 'missing-compiler', 'compiler-api', 'parsed-bytes', 'parsed-size',

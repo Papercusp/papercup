@@ -61,6 +61,68 @@ const DEPENDENCY_GENERATION_SCRIPT = join(
 );
 const REPO_ROOT = resolve(__dirname, '../../../..');
 
+describe('SPA build evidence timestamps', () => {
+  function runSpa(script: string, interrupted = false) {
+    const root = mkdtempSync(join(tmpdir(), 'spa-build-evidence-'));
+    const bin = join(root, 'bin');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'npm'), '#!/usr/bin/env bash\n' + script, { mode: 0o755 });
+    const wrapper = [
+      'set -euo pipefail',
+      'source <(sed -n "/^build_release_spa()/,/^}/p" "$SETUP_SCRIPT")',
+      'log() { printf "%s\\n" "$*"; }',
+      'build_release_spa',
+    ].join('\n');
+    const startedAt = Date.now() / 1000;
+    const result = spawnSync(interrupted ? 'timeout' : 'bash',
+      interrupted ? ['--kill-after=1s', '0.25s', 'bash', '-c', wrapper] : ['-c', wrapper], {
+        encoding: 'utf8', timeout: 10_000,
+        env: { ...process.env, PATH: bin + ':' + process.env.PATH,
+          SETUP_SCRIPT: SCRIPT_PATH, RELEASE_ROOT: root, TMPDIR: root },
+      });
+    const endedAt = Date.now() / 1000;
+    const logs = readdirSync(root).filter(name => name.startsWith('setup-release-spa-build.'));
+    return { root, result, startedAt, endedAt, logs,
+      evidence: logs.map(name => readFileSync(join(root, name), 'utf8')).join('\n') };
+  }
+
+  it('retains timed lifecycle output and the actual failing npm status, including an unterminated line', () => {
+    const run = runSpa('printf "PREBUILD_ENTERED\\n"\nsleep 0.06\nprintf "VITE_ENTERED\\npartial-output"\nexit 7\n');
+    try {
+      expect(run.result.status, run.result.stderr).toBe(1);
+      const rows = run.evidence.trim().split('\n');
+      const times = rows.map(line => Number(/^\[setup-release-spa at=([0-9.]+)\]/.exec(line)?.[1]));
+      expect(times.every(time => Number.isFinite(time) && time >= Math.floor(run.startedAt)
+        && time <= run.endedAt), run.evidence).toBe(true);
+      expect(times).toEqual([...times].sort((a, b) => a - b));
+      expect(run.evidence).toContain('phase=npm-build-start');
+      expect(run.evidence).toContain('PREBUILD_ENTERED');
+      expect(run.evidence).toContain('VITE_ENTERED');
+      expect(run.evidence).toContain('partial-output\n');
+      expect(run.evidence).toContain('phase=npm-build-exit status=7');
+    } finally { rmSync(run.root, { recursive: true, force: true }); }
+  });
+
+  it('keeps the last timed phase when the original caller deadline interrupts npm', () => {
+    const run = runSpa('printf "PREBUILD_ENTERED\\n"\nsleep 5\nprintf "MUST_NOT_FINISH\\n"\n', true);
+    try {
+      expect(run.result.status, run.result.stderr).toBe(124);
+      expect(run.evidence).toMatch(/\[setup-release-spa at=[0-9.]+\] PREBUILD_ENTERED/);
+      expect(run.evidence).toContain('phase=npm-build-start');
+      expect(run.evidence).not.toContain('MUST_NOT_FINISH');
+      expect(run.evidence).not.toContain('phase=npm-build-exit');
+    } finally { rmSync(run.root, { recursive: true, force: true }); }
+  });
+
+  it('removes the temporary evidence only after a successful npm build', () => {
+    const run = runSpa('printf "COMPLETE\\n"\n');
+    try {
+      expect(run.result.status, run.result.stderr).toBe(0);
+      expect(run.logs).toEqual([]);
+    } finally { rmSync(run.root, { recursive: true, force: true }); }
+  });
+});
+
 describe('frozen dependency-only generation selection', () => {
   it.each(['matching', 'missing', 'wrong-input', 'explicit', 'ordinary'])(
     'selects target inputs before publication: %s', (mode) => {

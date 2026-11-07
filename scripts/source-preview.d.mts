@@ -256,36 +256,14 @@ export function createBgVerifierCompilerCustody({ prepared, dependencies }: {
 };
 /** A distinct, detached invocation record, never a restamped source receipt.
  * @param {{ prepared: BgVerifierPreparation, dependencies: ReturnType<typeof captureVerifierDependencies>,
- *   invocation: BgBuildInvocation }} options
+ *   invocation: BgBuildInvocation, expectedHostManifest?: BgExpectedHostManifest }} options
  */
-export function prepareBgVerifierBuildRecord({ prepared, dependencies, invocation }: {
+export function prepareBgVerifierBuildRecord({ prepared, dependencies, invocation, expectedHostManifest }: {
     prepared: BgVerifierPreparation;
     dependencies: ReturnType<typeof captureVerifierDependencies>;
     invocation: BgBuildInvocation;
+    expectedHostManifest?: BgExpectedHostManifest;
 }): {
-    schemaVersion: string;
-    prepared: BgVerifierPreparation;
-    dependencies: {
-        schemaVersion: string;
-        scope: string;
-        root: string;
-        sourceCommit: any;
-        policy: {
-            path: string;
-            sha256: string;
-        };
-        sourceReceiptSha256: string;
-        trees: {
-            path: string;
-            files: {
-                path: string;
-                kind: string;
-                executable: boolean;
-                sha256: string;
-            }[];
-        }[];
-    };
-    originalSourceReceiptSha256: string;
     invocation: {
         argv: string[];
         configuration: {
@@ -322,6 +300,47 @@ export function prepareBgVerifierBuildRecord({ prepared, dependencies, invocatio
             sha256: string;
         };
     };
+    expectedHostManifest?: {
+        authority: BgExpectedHostManifest;
+        identity: {
+            path: string;
+            realpath: string;
+            sha256: string;
+            dev: string;
+            ino: string;
+            size: string;
+            mtimeNs: string;
+            ctimeNs: string;
+        };
+        files: {
+            path: string;
+            sha256: string;
+            bytes: number;
+        }[];
+    } | undefined;
+    schemaVersion: string;
+    prepared: BgVerifierPreparation;
+    dependencies: {
+        schemaVersion: string;
+        scope: string;
+        root: string;
+        sourceCommit: any;
+        policy: {
+            path: string;
+            sha256: string;
+        };
+        sourceReceiptSha256: string;
+        trees: {
+            path: string;
+            files: {
+                path: string;
+                kind: string;
+                executable: boolean;
+                sha256: string;
+            }[];
+        }[];
+    };
+    originalSourceReceiptSha256: string;
 };
 /** The same original command and physical identities fence both boundaries.
  * @param {ReturnType<typeof prepareBgVerifierBuildRecord>} record
@@ -329,29 +348,6 @@ export function prepareBgVerifierBuildRecord({ prepared, dependencies, invocatio
  * @param {'before-build' | 'before-publication'} boundary
  */
 export function verifyBgVerifierBuildRecord(record: ReturnType<typeof prepareBgVerifierBuildRecord>, invocation: BgBuildInvocation, boundary: "before-build" | "before-publication"): {
-    schemaVersion: string;
-    prepared: BgVerifierPreparation;
-    dependencies: {
-        schemaVersion: string;
-        scope: string;
-        root: string;
-        sourceCommit: any;
-        policy: {
-            path: string;
-            sha256: string;
-        };
-        sourceReceiptSha256: string;
-        trees: {
-            path: string;
-            files: {
-                path: string;
-                kind: string;
-                executable: boolean;
-                sha256: string;
-            }[];
-        }[];
-    };
-    originalSourceReceiptSha256: string;
     invocation: {
         argv: string[];
         configuration: {
@@ -388,43 +384,62 @@ export function verifyBgVerifierBuildRecord(record: ReturnType<typeof prepareBgV
             sha256: string;
         };
     };
+    expectedHostManifest?: {
+        authority: BgExpectedHostManifest;
+        identity: {
+            path: string;
+            realpath: string;
+            sha256: string;
+            dev: string;
+            ino: string;
+            size: string;
+            mtimeNs: string;
+            ctimeNs: string;
+        };
+        files: {
+            path: string;
+            sha256: string;
+            bytes: number;
+        }[];
+    } | undefined;
+    schemaVersion: string;
+    prepared: BgVerifierPreparation;
+    dependencies: {
+        schemaVersion: string;
+        scope: string;
+        root: string;
+        sourceCommit: any;
+        policy: {
+            path: string;
+            sha256: string;
+        };
+        sourceReceiptSha256: string;
+        trees: {
+            path: string;
+            files: {
+                path: string;
+                kind: string;
+                executable: boolean;
+                sha256: string;
+            }[];
+        }[];
+    };
+    originalSourceReceiptSha256: string;
 };
 /** Keep the common source/dependency receipt once, with a separate original
  * command for every maintained main/worker/spawner invocation. Commands are
  * selected by their complete argv, never by entry basename or call order.
  * @param {{ prepared: BgVerifierPreparation, dependencies: ReturnType<typeof captureVerifierDependencies>,
- *   invocations: BgBuildInvocation[] }} args
+ *   invocations: BgBuildInvocation[], expectedHostManifest?: BgExpectedHostManifest }} args
  */
-export function prepareBgVerifierBuildContexts({ prepared, dependencies, invocations }: {
+export function prepareBgVerifierBuildContexts({ prepared, dependencies, invocations, expectedHostManifest }: {
     prepared: BgVerifierPreparation;
     dependencies: ReturnType<typeof captureVerifierDependencies>;
     invocations: BgBuildInvocation[];
+    expectedHostManifest?: BgExpectedHostManifest;
 }): {
     schemaVersion: string;
     record: {
-        schemaVersion: string;
-        prepared: BgVerifierPreparation;
-        dependencies: {
-            schemaVersion: string;
-            scope: string;
-            root: string;
-            sourceCommit: any;
-            policy: {
-                path: string;
-                sha256: string;
-            };
-            sourceReceiptSha256: string;
-            trees: {
-                path: string;
-                files: {
-                    path: string;
-                    kind: string;
-                    executable: boolean;
-                    sha256: string;
-                }[];
-            }[];
-        };
-        originalSourceReceiptSha256: string;
         invocation: {
             argv: string[];
             configuration: {
@@ -461,6 +476,47 @@ export function prepareBgVerifierBuildContexts({ prepared, dependencies, invocat
                 sha256: string;
             };
         };
+        expectedHostManifest?: {
+            authority: BgExpectedHostManifest;
+            identity: {
+                path: string;
+                realpath: string;
+                sha256: string;
+                dev: string;
+                ino: string;
+                size: string;
+                mtimeNs: string;
+                ctimeNs: string;
+            };
+            files: {
+                path: string;
+                sha256: string;
+                bytes: number;
+            }[];
+        } | undefined;
+        schemaVersion: string;
+        prepared: BgVerifierPreparation;
+        dependencies: {
+            schemaVersion: string;
+            scope: string;
+            root: string;
+            sourceCommit: any;
+            policy: {
+                path: string;
+                sha256: string;
+            };
+            sourceReceiptSha256: string;
+            trees: {
+                path: string;
+                files: {
+                    path: string;
+                    kind: string;
+                    executable: boolean;
+                    sha256: string;
+                }[];
+            }[];
+        };
+        originalSourceReceiptSha256: string;
     };
     invocations: {
         invocation: BgBuildInvocation;
@@ -508,17 +564,18 @@ export function prepareBgVerifierBuildContexts({ prepared, dependencies, invocat
  * can nominate commands, source inputs, switches, or logical output membership.
  * This is preparation for whole-recipe publication, not a publication receipt.
  * @param {{ prepared: BgVerifierPreparation, dependencies: ReturnType<typeof captureVerifierDependencies>,
- *   invocations: BgBuildInvocation[], bank: string, stageLeaf: string,
+ *   invocations: BgBuildInvocation[], bank: string, stageLeaf: string, expectedHostManifest?: BgExpectedHostManifest,
  *   outputs: { temporary: string, final: string }[], publicationLeaf?: string,
  *   assets?: { source: string, temporary: string, final: string }[],
  *   recipe?: { entry: string, outfile: string, profile: 'development' | 'release' } }} args
  */
-export function prepareBgVerifierBuildTransaction({ prepared, dependencies, invocations, bank, stageLeaf, outputs, assets, recipe, publicationLeaf }: {
+export function prepareBgVerifierBuildTransaction({ prepared, dependencies, invocations, bank, stageLeaf, outputs, assets, recipe, publicationLeaf, expectedHostManifest }: {
     prepared: BgVerifierPreparation;
     dependencies: ReturnType<typeof captureVerifierDependencies>;
     invocations: BgBuildInvocation[];
     bank: string;
     stageLeaf: string;
+    expectedHostManifest?: BgExpectedHostManifest;
     outputs: {
         temporary: string;
         final: string;
@@ -550,29 +607,6 @@ export function prepareBgVerifierBuildTransaction({ prepared, dependencies, invo
     contexts: {
         schemaVersion: string;
         record: {
-            schemaVersion: string;
-            prepared: BgVerifierPreparation;
-            dependencies: {
-                schemaVersion: string;
-                scope: string;
-                root: string;
-                sourceCommit: any;
-                policy: {
-                    path: string;
-                    sha256: string;
-                };
-                sourceReceiptSha256: string;
-                trees: {
-                    path: string;
-                    files: {
-                        path: string;
-                        kind: string;
-                        executable: boolean;
-                        sha256: string;
-                    }[];
-                }[];
-            };
-            originalSourceReceiptSha256: string;
             invocation: {
                 argv: string[];
                 configuration: {
@@ -609,6 +643,47 @@ export function prepareBgVerifierBuildTransaction({ prepared, dependencies, invo
                     sha256: string;
                 };
             };
+            expectedHostManifest?: {
+                authority: BgExpectedHostManifest;
+                identity: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                    dev: string;
+                    ino: string;
+                    size: string;
+                    mtimeNs: string;
+                    ctimeNs: string;
+                };
+                files: {
+                    path: string;
+                    sha256: string;
+                    bytes: number;
+                }[];
+            } | undefined;
+            schemaVersion: string;
+            prepared: BgVerifierPreparation;
+            dependencies: {
+                schemaVersion: string;
+                scope: string;
+                root: string;
+                sourceCommit: any;
+                policy: {
+                    path: string;
+                    sha256: string;
+                };
+                sourceReceiptSha256: string;
+                trees: {
+                    path: string;
+                    files: {
+                        path: string;
+                        kind: string;
+                        executable: boolean;
+                        sha256: string;
+                    }[];
+                }[];
+            };
+            originalSourceReceiptSha256: string;
         };
         invocations: {
             invocation: BgBuildInvocation;
@@ -683,29 +758,6 @@ export function beginBgVerifierBuildTransaction({ transaction, ownerPid }: {
         contexts: {
             schemaVersion: string;
             record: {
-                schemaVersion: string;
-                prepared: BgVerifierPreparation;
-                dependencies: {
-                    schemaVersion: string;
-                    scope: string;
-                    root: string;
-                    sourceCommit: any;
-                    policy: {
-                        path: string;
-                        sha256: string;
-                    };
-                    sourceReceiptSha256: string;
-                    trees: {
-                        path: string;
-                        files: {
-                            path: string;
-                            kind: string;
-                            executable: boolean;
-                            sha256: string;
-                        }[];
-                    }[];
-                };
-                originalSourceReceiptSha256: string;
                 invocation: {
                     argv: string[];
                     configuration: {
@@ -742,6 +794,47 @@ export function beginBgVerifierBuildTransaction({ transaction, ownerPid }: {
                         sha256: string;
                     };
                 };
+                expectedHostManifest?: {
+                    authority: BgExpectedHostManifest;
+                    identity: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                        dev: string;
+                        ino: string;
+                        size: string;
+                        mtimeNs: string;
+                        ctimeNs: string;
+                    };
+                    files: {
+                        path: string;
+                        sha256: string;
+                        bytes: number;
+                    }[];
+                } | undefined;
+                schemaVersion: string;
+                prepared: BgVerifierPreparation;
+                dependencies: {
+                    schemaVersion: string;
+                    scope: string;
+                    root: string;
+                    sourceCommit: any;
+                    policy: {
+                        path: string;
+                        sha256: string;
+                    };
+                    sourceReceiptSha256: string;
+                    trees: {
+                        path: string;
+                        files: {
+                            path: string;
+                            kind: string;
+                            executable: boolean;
+                            sha256: string;
+                        }[];
+                    }[];
+                };
+                originalSourceReceiptSha256: string;
             };
             invocations: {
                 invocation: BgBuildInvocation;
@@ -795,29 +888,6 @@ export function beginBgVerifierBuildTransaction({ transaction, ownerPid }: {
     contexts: {
         schemaVersion: string;
         record: {
-            schemaVersion: string;
-            prepared: BgVerifierPreparation;
-            dependencies: {
-                schemaVersion: string;
-                scope: string;
-                root: string;
-                sourceCommit: any;
-                policy: {
-                    path: string;
-                    sha256: string;
-                };
-                sourceReceiptSha256: string;
-                trees: {
-                    path: string;
-                    files: {
-                        path: string;
-                        kind: string;
-                        executable: boolean;
-                        sha256: string;
-                    }[];
-                }[];
-            };
-            originalSourceReceiptSha256: string;
             invocation: {
                 argv: string[];
                 configuration: {
@@ -854,6 +924,47 @@ export function beginBgVerifierBuildTransaction({ transaction, ownerPid }: {
                     sha256: string;
                 };
             };
+            expectedHostManifest?: {
+                authority: BgExpectedHostManifest;
+                identity: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                    dev: string;
+                    ino: string;
+                    size: string;
+                    mtimeNs: string;
+                    ctimeNs: string;
+                };
+                files: {
+                    path: string;
+                    sha256: string;
+                    bytes: number;
+                }[];
+            } | undefined;
+            schemaVersion: string;
+            prepared: BgVerifierPreparation;
+            dependencies: {
+                schemaVersion: string;
+                scope: string;
+                root: string;
+                sourceCommit: any;
+                policy: {
+                    path: string;
+                    sha256: string;
+                };
+                sourceReceiptSha256: string;
+                trees: {
+                    path: string;
+                    files: {
+                        path: string;
+                        kind: string;
+                        executable: boolean;
+                        sha256: string;
+                    }[];
+                }[];
+            };
+            originalSourceReceiptSha256: string;
         };
         invocations: {
             invocation: BgBuildInvocation;
@@ -980,7 +1091,7 @@ export function qualifyBgVerifierLogicalOutputSet(args: {
  * @param {Awaited<ReturnType<typeof qualifyBgVerifierLogicalOutputSet>>} logical
  * @param {Parameters<typeof qualifyBgVerifierLogicalOutputSet>[0]} args
  */
-export function verifyBgVerifierLogicalOutputSet(logical: Awaited<ReturnType<typeof qualifyBgVerifierLogicalOutputSet>>, { output, binding, receipts }: Parameters<typeof qualifyBgVerifierLogicalOutputSet>[0]): any;
+export function verifyBgVerifierLogicalOutputSet(logical: any, { output, binding, receipts }: Parameters<typeof qualifyBgVerifierLogicalOutputSet>[0]): any;
 /** Publish one COMPLETE receipt at the pre-nominated bank leaf. Linking a fully
  * written private file is atomic and refuses an existing destination, including
  * dangling links. Keep artifact paths physical: moving this directory would
@@ -1022,29 +1133,6 @@ export function publishBgVerifierLogicalOutputSet(args: {
             contexts: {
                 schemaVersion: string;
                 record: {
-                    schemaVersion: string;
-                    prepared: BgVerifierPreparation;
-                    dependencies: {
-                        schemaVersion: string;
-                        scope: string;
-                        root: string;
-                        sourceCommit: any;
-                        policy: {
-                            path: string;
-                            sha256: string;
-                        };
-                        sourceReceiptSha256: string;
-                        trees: {
-                            path: string;
-                            files: {
-                                path: string;
-                                kind: string;
-                                executable: boolean;
-                                sha256: string;
-                            }[];
-                        }[];
-                    };
-                    originalSourceReceiptSha256: string;
                     invocation: {
                         argv: string[];
                         configuration: {
@@ -1081,6 +1169,47 @@ export function publishBgVerifierLogicalOutputSet(args: {
                             sha256: string;
                         };
                     };
+                    expectedHostManifest?: {
+                        authority: BgExpectedHostManifest;
+                        identity: {
+                            path: string;
+                            realpath: string;
+                            sha256: string;
+                            dev: string;
+                            ino: string;
+                            size: string;
+                            mtimeNs: string;
+                            ctimeNs: string;
+                        };
+                        files: {
+                            path: string;
+                            sha256: string;
+                            bytes: number;
+                        }[];
+                    } | undefined;
+                    schemaVersion: string;
+                    prepared: BgVerifierPreparation;
+                    dependencies: {
+                        schemaVersion: string;
+                        scope: string;
+                        root: string;
+                        sourceCommit: any;
+                        policy: {
+                            path: string;
+                            sha256: string;
+                        };
+                        sourceReceiptSha256: string;
+                        trees: {
+                            path: string;
+                            files: {
+                                path: string;
+                                kind: string;
+                                executable: boolean;
+                                sha256: string;
+                            }[];
+                        }[];
+                    };
+                    originalSourceReceiptSha256: string;
                 };
                 invocations: {
                     invocation: BgBuildInvocation;
@@ -1134,29 +1263,6 @@ export function publishBgVerifierLogicalOutputSet(args: {
         contexts: {
             schemaVersion: string;
             record: {
-                schemaVersion: string;
-                prepared: BgVerifierPreparation;
-                dependencies: {
-                    schemaVersion: string;
-                    scope: string;
-                    root: string;
-                    sourceCommit: any;
-                    policy: {
-                        path: string;
-                        sha256: string;
-                    };
-                    sourceReceiptSha256: string;
-                    trees: {
-                        path: string;
-                        files: {
-                            path: string;
-                            kind: string;
-                            executable: boolean;
-                            sha256: string;
-                        }[];
-                    }[];
-                };
-                originalSourceReceiptSha256: string;
                 invocation: {
                     argv: string[];
                     configuration: {
@@ -1193,6 +1299,47 @@ export function publishBgVerifierLogicalOutputSet(args: {
                         sha256: string;
                     };
                 };
+                expectedHostManifest?: {
+                    authority: BgExpectedHostManifest;
+                    identity: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                        dev: string;
+                        ino: string;
+                        size: string;
+                        mtimeNs: string;
+                        ctimeNs: string;
+                    };
+                    files: {
+                        path: string;
+                        sha256: string;
+                        bytes: number;
+                    }[];
+                } | undefined;
+                schemaVersion: string;
+                prepared: BgVerifierPreparation;
+                dependencies: {
+                    schemaVersion: string;
+                    scope: string;
+                    root: string;
+                    sourceCommit: any;
+                    policy: {
+                        path: string;
+                        sha256: string;
+                    };
+                    sourceReceiptSha256: string;
+                    trees: {
+                        path: string;
+                        files: {
+                            path: string;
+                            kind: string;
+                            executable: boolean;
+                            sha256: string;
+                        }[];
+                    }[];
+                };
+                originalSourceReceiptSha256: string;
             };
             invocations: {
                 invocation: BgBuildInvocation;
@@ -1394,29 +1541,6 @@ export function verifyBgVerifierPublication(publication: ReturnType<typeof publi
             contexts: {
                 schemaVersion: string;
                 record: {
-                    schemaVersion: string;
-                    prepared: BgVerifierPreparation;
-                    dependencies: {
-                        schemaVersion: string;
-                        scope: string;
-                        root: string;
-                        sourceCommit: any;
-                        policy: {
-                            path: string;
-                            sha256: string;
-                        };
-                        sourceReceiptSha256: string;
-                        trees: {
-                            path: string;
-                            files: {
-                                path: string;
-                                kind: string;
-                                executable: boolean;
-                                sha256: string;
-                            }[];
-                        }[];
-                    };
-                    originalSourceReceiptSha256: string;
                     invocation: {
                         argv: string[];
                         configuration: {
@@ -1453,6 +1577,47 @@ export function verifyBgVerifierPublication(publication: ReturnType<typeof publi
                             sha256: string;
                         };
                     };
+                    expectedHostManifest?: {
+                        authority: BgExpectedHostManifest;
+                        identity: {
+                            path: string;
+                            realpath: string;
+                            sha256: string;
+                            dev: string;
+                            ino: string;
+                            size: string;
+                            mtimeNs: string;
+                            ctimeNs: string;
+                        };
+                        files: {
+                            path: string;
+                            sha256: string;
+                            bytes: number;
+                        }[];
+                    } | undefined;
+                    schemaVersion: string;
+                    prepared: BgVerifierPreparation;
+                    dependencies: {
+                        schemaVersion: string;
+                        scope: string;
+                        root: string;
+                        sourceCommit: any;
+                        policy: {
+                            path: string;
+                            sha256: string;
+                        };
+                        sourceReceiptSha256: string;
+                        trees: {
+                            path: string;
+                            files: {
+                                path: string;
+                                kind: string;
+                                executable: boolean;
+                                sha256: string;
+                            }[];
+                        }[];
+                    };
+                    originalSourceReceiptSha256: string;
                 };
                 invocations: {
                     invocation: BgBuildInvocation;
@@ -1506,29 +1671,6 @@ export function verifyBgVerifierPublication(publication: ReturnType<typeof publi
         contexts: {
             schemaVersion: string;
             record: {
-                schemaVersion: string;
-                prepared: BgVerifierPreparation;
-                dependencies: {
-                    schemaVersion: string;
-                    scope: string;
-                    root: string;
-                    sourceCommit: any;
-                    policy: {
-                        path: string;
-                        sha256: string;
-                    };
-                    sourceReceiptSha256: string;
-                    trees: {
-                        path: string;
-                        files: {
-                            path: string;
-                            kind: string;
-                            executable: boolean;
-                            sha256: string;
-                        }[];
-                    }[];
-                };
-                originalSourceReceiptSha256: string;
                 invocation: {
                     argv: string[];
                     configuration: {
@@ -1565,6 +1707,47 @@ export function verifyBgVerifierPublication(publication: ReturnType<typeof publi
                         sha256: string;
                     };
                 };
+                expectedHostManifest?: {
+                    authority: BgExpectedHostManifest;
+                    identity: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                        dev: string;
+                        ino: string;
+                        size: string;
+                        mtimeNs: string;
+                        ctimeNs: string;
+                    };
+                    files: {
+                        path: string;
+                        sha256: string;
+                        bytes: number;
+                    }[];
+                } | undefined;
+                schemaVersion: string;
+                prepared: BgVerifierPreparation;
+                dependencies: {
+                    schemaVersion: string;
+                    scope: string;
+                    root: string;
+                    sourceCommit: any;
+                    policy: {
+                        path: string;
+                        sha256: string;
+                    };
+                    sourceReceiptSha256: string;
+                    trees: {
+                        path: string;
+                        files: {
+                            path: string;
+                            kind: string;
+                            executable: boolean;
+                            sha256: string;
+                        }[];
+                    }[];
+                };
+                originalSourceReceiptSha256: string;
             };
             invocations: {
                 invocation: BgBuildInvocation;
@@ -1778,29 +1961,6 @@ export function runBgVerifierBuildRecipe(args: Parameters<typeof beginBgVerifier
             contexts: {
                 schemaVersion: string;
                 record: {
-                    schemaVersion: string;
-                    prepared: BgVerifierPreparation;
-                    dependencies: {
-                        schemaVersion: string;
-                        scope: string;
-                        root: string;
-                        sourceCommit: any;
-                        policy: {
-                            path: string;
-                            sha256: string;
-                        };
-                        sourceReceiptSha256: string;
-                        trees: {
-                            path: string;
-                            files: {
-                                path: string;
-                                kind: string;
-                                executable: boolean;
-                                sha256: string;
-                            }[];
-                        }[];
-                    };
-                    originalSourceReceiptSha256: string;
                     invocation: {
                         argv: string[];
                         configuration: {
@@ -1837,6 +1997,47 @@ export function runBgVerifierBuildRecipe(args: Parameters<typeof beginBgVerifier
                             sha256: string;
                         };
                     };
+                    expectedHostManifest?: {
+                        authority: BgExpectedHostManifest;
+                        identity: {
+                            path: string;
+                            realpath: string;
+                            sha256: string;
+                            dev: string;
+                            ino: string;
+                            size: string;
+                            mtimeNs: string;
+                            ctimeNs: string;
+                        };
+                        files: {
+                            path: string;
+                            sha256: string;
+                            bytes: number;
+                        }[];
+                    } | undefined;
+                    schemaVersion: string;
+                    prepared: BgVerifierPreparation;
+                    dependencies: {
+                        schemaVersion: string;
+                        scope: string;
+                        root: string;
+                        sourceCommit: any;
+                        policy: {
+                            path: string;
+                            sha256: string;
+                        };
+                        sourceReceiptSha256: string;
+                        trees: {
+                            path: string;
+                            files: {
+                                path: string;
+                                kind: string;
+                                executable: boolean;
+                                sha256: string;
+                            }[];
+                        }[];
+                    };
+                    originalSourceReceiptSha256: string;
                 };
                 invocations: {
                     invocation: BgBuildInvocation;
@@ -1890,29 +2091,6 @@ export function runBgVerifierBuildRecipe(args: Parameters<typeof beginBgVerifier
         contexts: {
             schemaVersion: string;
             record: {
-                schemaVersion: string;
-                prepared: BgVerifierPreparation;
-                dependencies: {
-                    schemaVersion: string;
-                    scope: string;
-                    root: string;
-                    sourceCommit: any;
-                    policy: {
-                        path: string;
-                        sha256: string;
-                    };
-                    sourceReceiptSha256: string;
-                    trees: {
-                        path: string;
-                        files: {
-                            path: string;
-                            kind: string;
-                            executable: boolean;
-                            sha256: string;
-                        }[];
-                    }[];
-                };
-                originalSourceReceiptSha256: string;
                 invocation: {
                     argv: string[];
                     configuration: {
@@ -1949,6 +2127,47 @@ export function runBgVerifierBuildRecipe(args: Parameters<typeof beginBgVerifier
                         sha256: string;
                     };
                 };
+                expectedHostManifest?: {
+                    authority: BgExpectedHostManifest;
+                    identity: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                        dev: string;
+                        ino: string;
+                        size: string;
+                        mtimeNs: string;
+                        ctimeNs: string;
+                    };
+                    files: {
+                        path: string;
+                        sha256: string;
+                        bytes: number;
+                    }[];
+                } | undefined;
+                schemaVersion: string;
+                prepared: BgVerifierPreparation;
+                dependencies: {
+                    schemaVersion: string;
+                    scope: string;
+                    root: string;
+                    sourceCommit: any;
+                    policy: {
+                        path: string;
+                        sha256: string;
+                    };
+                    sourceReceiptSha256: string;
+                    trees: {
+                        path: string;
+                        files: {
+                            path: string;
+                            kind: string;
+                            executable: boolean;
+                            sha256: string;
+                        }[];
+                    }[];
+                };
+                originalSourceReceiptSha256: string;
             };
             invocations: {
                 invocation: BgBuildInvocation;
@@ -2497,6 +2716,7 @@ export function qualifyBgVerifierRuntimeSources({ output, record, invocation, ex
             origin: string;
         }[];
         expectedHostManifestQualified: boolean;
+        expectedHostManifestSha256: string | null;
     }[];
     nativeQualification: string;
     compiledOutputBytesObserved: boolean;
@@ -2823,7 +3043,7 @@ export function exportSnapshot({ repoRoot, ref, out, target: targetName, license
     out: string;
     manifest: {
         schema: number;
-        target: "public" | "preview";
+        target: "preview" | "public";
         purpose: string;
         year: number;
         source: {
@@ -3218,6 +3438,18 @@ export type BgBuildInvocation = {
         stage: BgDirectoryIdentity;
         transactionSha256?: string;
     };
+};
+/**
+ * Expected host files are nominated independently BEFORE compilation/runtime,
+ * using the same pinned-manifest/physical-file fences as the source authority.
+ * This qualifies file bytes only; it does not attest builtins, vDSO, creator
+ * exclusion, or complete runtime coverage.
+ */
+export type BgExpectedHostManifest = {
+    schemaVersion: 1;
+    path: string;
+    sha256: string;
+    evidenceRef: string;
 };
 /**
  * Bind the maintained artifact writer's measured output to the ORIGINAL build

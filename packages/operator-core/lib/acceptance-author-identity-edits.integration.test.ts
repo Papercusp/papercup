@@ -4,8 +4,8 @@
  * (or one of its work-items) put the editor in that plan's implementer set, so
  * the grader exclusion sees it; edits attributed only to another plan do not.
  *
- * WHY real Postgres: the attribution rule (plan_slug OR a work-item of the
- * plan) is one SQL predicate; a fake `sql` would only restate it.
+ * WHY real Postgres: direct-plan and work-item membership must remain one
+ * distinct, workspace-fenced population; a fake `sql` would only restate it.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import postgres, { type Sql } from 'postgres';
@@ -48,7 +48,8 @@ beforeAll(async () => {
       work_item_id text, plan_slug text, ts timestamptz NOT NULL DEFAULT now());
   `);
   await sql`INSERT INTO harness_shared.work_items (workspace_id, feature_id, source_plan_slug, taken_by)
-            VALUES (${WS}, 'WI-A1', 'plan-a', 'claimant'), (${WS}, 'WI-B1', 'plan-b', 'other-claimant')`;
+            VALUES (${WS}, 'WI-A1', 'plan-a', 'claimant'), (${WS}, 'WI-B1', 'plan-b', 'other-claimant'),
+                   ('other-ws', 'WI-FOREIGN-ONLY', 'plan-a', 'foreign-claimant')`;
   await sql`INSERT INTO harness_shared.plan_audits (workspace_id, plan_slug, audit_kind, created_by, audit_seq)
             VALUES (${WS}, 'plan-a', 'activation', 'auditor', 1)`;
   const edit = (agent: string, opts: { plan?: string; wi?: string; ws?: string }) => sql`
@@ -60,6 +61,9 @@ beforeAll(async () => {
   await edit('other-item-editor', { wi: 'WI-B1' });
   await edit('unattributed-editor', {});
   await edit('foreign-workspace-editor', { plan: 'plan-a', ws: 'other-ws' });
+  await edit('foreign-workspace-item-editor', { wi: 'WI-A1', ws: 'other-ws' });
+  await edit('foreign-item-editor', { wi: 'WI-FOREIGN-ONLY' });
+  await edit('plan-editor', { plan: 'plan-a', wi: 'WI-A1' });
 });
 
 afterAll(async () => {
@@ -90,6 +94,66 @@ describe('resolvePlanImplementerIdentities edit attribution', () => {
     } finally {
       await sql.unsafe('ALTER TABLE harness_shared.edit_attribution_ledger_x RENAME TO edit_attribution_ledger');
     }
+  });
+
+  it('deduplicates both attribution branches before the census bound and fences work-item joins by workspace', async () => {
+    expect(await resolvePlanImplementerIdentities('plan-a', { workspaceId: WS, sql, maxRows: 2 }))
+      .toEqual(['auditor', 'claimant', 'item-editor', 'plan-editor']);
+    await expect(resolvePlanImplementerIdentities('plan-a', { workspaceId: WS, sql, maxRows: 1 }))
+      .rejects.toThrow('acceptance_implementer_census_incomplete');
+  });
+
+  it('uses the work-item membership index for a census beside unrelated edit history', async () => {
+    await sql.begin(async (tx) => {
+      // Mirror the competing production indexes and a selective plan inside a
+      // larger ledger. Wall-clock thresholds would depend on the CI machine;
+      // inspect the executed production query's access path instead.
+      await tx.unsafe(`
+        CREATE INDEX edit_attribution_ledger_agent_ts_idx
+          ON harness_shared.edit_attribution_ledger (agent_id, ts DESC);
+        CREATE INDEX edit_attribution_ledger_work_item_idx
+          ON harness_shared.edit_attribution_ledger (work_item_id, ts DESC)
+          WHERE work_item_id IS NOT NULL;
+        CREATE INDEX hfc_source_plan_slug_idx
+          ON harness_shared.work_items (source_plan_slug);
+      `);
+      await tx`INSERT INTO harness_shared.edit_attribution_ledger
+        (workspace_id, file, agent_id, plan_slug, work_item_id)
+        SELECT ${WS}, 'performance-noise.ts', 'noise-editor-' || n, 'plan-b', 'WI-B1'
+          FROM generate_series(1, 12000) n`;
+      await tx`ANALYZE harness_shared.edit_attribution_ledger`;
+      await tx`ANALYZE harness_shared.work_items`;
+
+      const plans: Record<string, unknown>[] = [];
+      const measuredSql = new Proxy(tx, {
+        apply(target, receiver, args: unknown[]) {
+          const [first, ...values] = args;
+          if (!Array.isArray(first) || !Object.hasOwn(first, 'raw') ||
+              !first.some((part: string) => part.includes('harness_shared.edit_attribution_ledger')))
+            return Reflect.apply(target, receiver, args);
+          const strings = [...first] as string[];
+          strings[0] = 'EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ' + strings[0];
+          return Reflect.apply(target, receiver, [Object.assign(strings, { raw: strings }), ...values])
+            .then((rows: Record<string, unknown>[]) => {
+              plans.push((rows[0]['QUERY PLAN'] as Record<string, unknown>[])[0]);
+              return [];
+            });
+        },
+      }) as unknown as Sql;
+      await resolvePlanImplementerIdentities('plan-a', { workspaceId: WS, sql: measuredSql, maxRows: 1024 });
+      expect(plans).toHaveLength(1);
+      const indexes: string[] = [];
+      const visit = (node: Record<string, unknown>) => {
+        if (typeof node['Index Name'] === 'string') indexes.push(node['Index Name']);
+        for (const child of (node.Plans ?? []) as Record<string, unknown>[]) visit(child);
+      };
+      visit(plans[0].Plan as Record<string, unknown>);
+      expect(indexes, 'work-item membership must avoid an agent-wide ordered ledger scan')
+        .toContain('edit_attribution_ledger_work_item_idx');
+      expect(await resolvePlanImplementerIdentities('plan-a', {
+        workspaceId: WS, sql: tx as unknown as Sql, maxRows: 1024,
+      })).toEqual(['auditor', 'claimant', 'item-editor', 'plan-editor']);
+    });
   });
 });
 

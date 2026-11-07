@@ -1377,16 +1377,68 @@ function readBgBuildInvocation(prepared, invocation) {
     environment: Object.fromEntries(Object.entries(invocation.environment).sort(([a], [b]) => a.localeCompare(b))) };
 }
 
+/** Expected host files are nominated independently BEFORE compilation/runtime,
+ * using the same pinned-manifest/physical-file fences as the source authority.
+ * This qualifies file bytes only; it does not attest builtins, vDSO, creator
+ * exclusion, or complete runtime coverage.
+ * @typedef {{ schemaVersion: 1, path: string, sha256: string, evidenceRef: string }} BgExpectedHostManifest
+ * @param {BgExpectedHostManifest} expected @param {string} root
+ */
+function readBgExpectedHostManifest(expected, root) {
+  assert.ok(expected && expected.schemaVersion === 1
+    && typeof expected.evidenceRef === 'string' && expected.evidenceRef.trim()
+    && !/^(?:unknown|absent|unresolved)$/i.test(expected.evidenceRef.trim()),
+  'BG expected host manifest authority is UNKNOWN');
+  assert.match(expected.sha256 ?? '', /^[a-f0-9]{64}$/, 'BG expected host manifest digest is required');
+  assertOutsideArchive(root, expected.path);
+  const identity = readBgIndependentOutputIdentity(expected.path);
+  assert.ok(BigInt(identity.size) > 0n && BigInt(identity.size) <= 1024n * 1024n,
+    'BG expected host manifest size is invalid');
+  const bytes = readFileSync(expected.path);
+  assert.equal(createHash('sha256').update(bytes).digest('hex'), expected.sha256,
+    'BG expected host manifest digest mismatch');
+  assert.deepEqual(readBgIndependentOutputIdentity(expected.path), identity,
+    'BG expected host manifest changed while reading');
+  assert.equal(identity.sha256, expected.sha256, 'BG expected host manifest identity mismatch');
+  /** @type {{ schemaVersion: number, files: { path: string, sha256: string, bytes: number }[] }} */
+  const manifest = JSON.parse(String(bytes));
+  assert.ok(manifest.schemaVersion === 1 && Array.isArray(manifest.files)
+    && manifest.files.length > 0 && manifest.files.length <= 1024,
+  'BG expected host manifest file census is invalid');
+  const paths = new Set();
+  for (const file of manifest.files) {
+    assert.ok(file && typeof file.path === 'string' && isAbsolute(file.path)
+      && resolve(file.path) === file.path && !paths.has(file.path),
+    'BG expected host manifest file path is invalid or duplicate');
+    paths.add(file.path);
+    assertOutsideArchive(root, file.path);
+    assert.ok(Number.isSafeInteger(file.bytes) && file.bytes > 0,
+      'BG expected host manifest file size is invalid');
+    assert.match(file.sha256 ?? '', /^[a-f0-9]{64}$/, 'BG expected host manifest file digest is invalid');
+    const actual = readBgFileIdentity(file.path);
+    assert.ok(actual.path === actual.realpath && actual.sha256 === file.sha256
+      && lstatSync(file.path).size === file.bytes, 'BG expected host file differs from pinned bytes');
+  }
+  return { authority: expected, identity, files: manifest.files };
+}
+
 /** A distinct, detached invocation record, never a restamped source receipt.
  * @param {{ prepared: BgVerifierPreparation, dependencies: ReturnType<typeof captureVerifierDependencies>,
- *   invocation: BgBuildInvocation }} options
+ *   invocation: BgBuildInvocation, expectedHostManifest?: BgExpectedHostManifest }} options
  */
-export function prepareBgVerifierBuildRecord({ prepared, dependencies, invocation }) {
+export function prepareBgVerifierBuildRecord({ prepared, dependencies, invocation, expectedHostManifest }) {
   verifyBgVerifierSource(prepared, 'before-build');
   assert.deepEqual(captureVerifierDependencies({ dest: prepared.root, receipt: prepared.source }), dependencies,
     'BG build dependency census changed');
+  const host = expectedHostManifest === undefined ? undefined : readBgExpectedHostManifest(expectedHostManifest, prepared.root);
+  if (host) {
+    const node = readBgFileIdentity(invocation.node);
+    assert.ok(host.files.some(file => file.path === node.realpath && file.sha256 === node.sha256),
+      'BG expected host manifest omits original Node');
+  }
   return freezeBgExpectation({ schemaVersion: 'bg-build-invocation-v1', prepared, dependencies,
     originalSourceReceiptSha256: prepared.sourceReceiptSha256,
+    ...(host ? { expectedHostManifest: host } : {}),
     invocation: readBgBuildInvocation(prepared, invocation) });
 }
 
@@ -1400,6 +1452,9 @@ export function verifyBgVerifierBuildRecord(record, invocation, boundary) {
   verifyBgVerifierSource(record.prepared, boundary);
   assert.equal(record.originalSourceReceiptSha256, record.prepared.sourceReceiptSha256,
     'BG build record original receipt changed');
+  if (record.expectedHostManifest) assert.deepEqual(
+    readBgExpectedHostManifest(record.expectedHostManifest.authority, record.prepared.root), record.expectedHostManifest,
+    'BG original expected host manifest changed');
   assert.deepEqual(readBgBuildInvocation(record.prepared, invocation), record.invocation,
     'BG builder configuration or toolchain identity changed');
   assert.deepEqual(captureVerifierDependencies({ dest: record.prepared.root, receipt: record.prepared.source }), record.dependencies,
@@ -1457,11 +1512,11 @@ function bgCompilerOptions(argv, root) {
  * command for every maintained main/worker/spawner invocation. Commands are
  * selected by their complete argv, never by entry basename or call order.
  * @param {{ prepared: BgVerifierPreparation, dependencies: ReturnType<typeof captureVerifierDependencies>,
- *   invocations: BgBuildInvocation[] }} args
+ *   invocations: BgBuildInvocation[], expectedHostManifest?: BgExpectedHostManifest }} args
  */
-export function prepareBgVerifierBuildContexts({ prepared, dependencies, invocations }) {
+export function prepareBgVerifierBuildContexts({ prepared, dependencies, invocations, expectedHostManifest }) {
   assert.ok(Array.isArray(invocations) && invocations.length > 0, 'BG invocation set is empty');
-  const record = prepareBgVerifierBuildRecord({ prepared, dependencies, invocation: invocations[0] });
+  const record = prepareBgVerifierBuildRecord({ prepared, dependencies, invocation: invocations[0], expectedHostManifest });
   return readBgVerifierBuildContexts(record, invocations);
 }
 
@@ -1532,13 +1587,13 @@ function selectBgVerifierBuildContext(context, argv) {
  * can nominate commands, source inputs, switches, or logical output membership.
  * This is preparation for whole-recipe publication, not a publication receipt.
  * @param {{ prepared: BgVerifierPreparation, dependencies: ReturnType<typeof captureVerifierDependencies>,
- *   invocations: BgBuildInvocation[], bank: string, stageLeaf: string,
+ *   invocations: BgBuildInvocation[], bank: string, stageLeaf: string, expectedHostManifest?: BgExpectedHostManifest,
  *   outputs: { temporary: string, final: string }[], publicationLeaf?: string,
  *   assets?: { source: string, temporary: string, final: string }[],
  *   recipe?: { entry: string, outfile: string, profile: 'development' | 'release' } }} args
  */
-export function prepareBgVerifierBuildTransaction({ prepared, dependencies, invocations, bank, stageLeaf, outputs, assets, recipe, publicationLeaf }) {
-  const contexts = prepareBgVerifierBuildContexts({ prepared, dependencies, invocations });
+export function prepareBgVerifierBuildTransaction({ prepared, dependencies, invocations, bank, stageLeaf, outputs, assets, recipe, publicationLeaf, expectedHostManifest }) {
+  const contexts = prepareBgVerifierBuildContexts({ prepared, dependencies, invocations, expectedHostManifest });
   const bankIdentity = readBgDirectoryIdentity(bank);
   const local = relative(prepared.root, bank);
   assert.ok(local && local !== '..' && !local.startsWith(`..${sep}`) && !isAbsolute(local),
@@ -1662,7 +1717,9 @@ export function beginBgVerifierBuildTransaction({ transaction, ownerPid }) {
   assert.deepEqual(readBgDirectoryIdentity(transaction.bank.path), transaction.bank, 'BG transaction bank identity changed');
   const outputNamespace = { bank: transaction.bank, stage: readBgDirectoryIdentity(transaction.stage),
     transactionSha256: createHash('sha256').update(JSON.stringify(transaction)).digest('hex') };
-  const contexts = prepareBgVerifierBuildContexts({ ...transaction.contexts.record,
+  const contexts = prepareBgVerifierBuildContexts({ prepared: transaction.contexts.record.prepared,
+    dependencies: transaction.contexts.record.dependencies,
+    expectedHostManifest: transaction.contexts.record.expectedHostManifest?.authority,
     invocations: transaction.contexts.invocations.map(entry => ({ ...entry.invocation, outputNamespace,
       argv: entry.original.argv.map(arg => arg.replaceAll('@BG_PID@', String(ownerPid))) })) });
   return freezeBgExpectation({ schemaVersion: 'bg-build-transaction-binding-v1', transaction,
@@ -2544,11 +2601,19 @@ export function qualifyBgVerifierRuntimeSources({ output, record, invocation, ex
           assert.ok(original.kind === 'file' && original.sha256 === mapped.sha256,
             'BG native mapped input differs from original input bytes');
           inputIdentities.set(file.path, file);
-        } else assert.ok(!pathToFileURL(file.path).href.startsWith(rootUrl),
-          'BG native mapped file is outside original input census');
-        return { file, origin: original?.origin ?? 'host-observed' };
+        } else {
+          assert.ok(!pathToFileURL(file.path).href.startsWith(rootUrl),
+            'BG native mapped file is outside original input census');
+          if (record.expectedHostManifest) {
+            const expected = record.expectedHostManifest.files.find(expected => expected.path === file.path);
+            assert.ok(expected && expected.sha256 === mapped.sha256 && expected.bytes === mapped.bytes,
+              'BG native mapped host file is outside original expected manifest');
+          }
+        }
+        return { file, origin: original?.origin ?? (record.expectedHostManifest ? 'expected-host' : 'host-observed') };
       });
-      nativeBindings.push({ processId, closure, files, expectedHostManifestQualified: false });
+      nativeBindings.push({ processId, closure, files, expectedHostManifestQualified: !!record.expectedHostManifest,
+        expectedHostManifestSha256: record.expectedHostManifest?.identity.sha256 ?? null });
     }
   }
   for (const [path, identity] of inputIdentities)
