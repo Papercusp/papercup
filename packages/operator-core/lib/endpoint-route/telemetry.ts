@@ -38,6 +38,7 @@ const guardHttpDiagnostics = pinModuleState('@papercusp/operator-core.guard-http
 const guardUuid = (value: unknown): value is string => typeof value === 'string'
   && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 const GUARD_BASE_PHASES = new Set(['auth', 'input', 'invoke']);
+const GUARD_AUTH_PHASES = new Set(['auth_remote', 'auth_tier_modules', 'auth_tier_flag']);
 const GUARD_SUMMARY_PHASES = new Set(['guard_setup', 'guard_plan_total', 'guard_identity_total']);
 const GUARD_PLAN_PHASES = new Set([
   'guard_plan_bindings', 'guard_plan_goal_module', 'guard_plan_goal_read', 'guard_plan_goal',
@@ -60,7 +61,7 @@ const SLOW_GUARD_PHASE_THRESHOLD_MS = 500;
 const GUARD_ROUTE_PHASE_LIMIT = 80;
 
 function isGuardDiagnosticPhase(phase: string): boolean {
-  return GUARD_SUMMARY_PHASES.has(phase) || GUARD_PLAN_PHASES.has(phase) ||
+  return GUARD_AUTH_PHASES.has(phase) || GUARD_SUMMARY_PHASES.has(phase) || GUARD_PLAN_PHASES.has(phase) ||
     GUARD_IDENTITY_PHASE_RE.test(phase) || GUARD_ACQUISITION_PHASE_RE.test(phase);
 }
 
@@ -230,8 +231,8 @@ export function recordRouteInvocation(exec: RouteExecution): void {
     try {
       const phaseTimings: Record<string, number> = Object.create(null) as Record<string, number>;
       const raw = exec.routeDiagnostics?.snapshot() ?? {};
-      const slowGuard = validGuardRequest && Number.isFinite(raw.invoke) &&
-        raw.invoke >= SLOW_GUARD_PHASE_THRESHOLD_MS;
+      const slowGuard = validGuardRequest && [raw.auth, raw.invoke].some(value =>
+        Number.isFinite(value) && value >= SLOW_GUARD_PHASE_THRESHOLD_MS);
       const maxPhases = validGuardRequest ? GUARD_ROUTE_PHASE_LIMIT : 32;
       for (const [phase, value] of Object.entries(raw).slice(0, maxPhases)) {
         if (validGuardRequest && !GUARD_BASE_PHASES.has(phase) &&

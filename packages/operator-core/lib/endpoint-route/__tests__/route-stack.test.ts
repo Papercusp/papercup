@@ -69,6 +69,33 @@ describe('route-stack — step order', () => {
 });
 
 describe('route diagnostics', () => {
+  it.each(['resolve', 'reject'] as const)('attributes a delayed loopback flag %s on a denial candidate', async outcome => {
+    let now = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
+    vi.mocked(getFlag).mockImplementation(async () => {
+      now += 725;
+      if (outcome === 'reject') throw new Error('flag backend unavailable');
+      return true;
+    });
+    try {
+      const app = freshApp();
+      const handler = vi.fn(() => Response.json({ ok: true }));
+      registerRoute(app, defineTool({ method: 'POST', path: '/diagnostics-loopback', auth: 'loopback', handler }));
+      const response = await app.request('http://evil.example.com/diagnostics-loopback', { method: 'POST' });
+      expect(response.status).toBe(403);
+      expect(handler).not.toHaveBeenCalled();
+      expect(getFlag).toHaveBeenCalledWith(expect.any(String), 'system');
+      const execution = vi.mocked(recordRouteInvocation).mock.calls.at(-1)?.[0];
+      expect(execution?.routeDiagnostics?.snapshot()).toMatchObject({
+        auth_remote: 0, auth_tier_modules: 0, auth_tier_flag: 725,
+      });
+      expect(requirePrincipal).not.toHaveBeenCalled();
+    } finally {
+      clock.mockRestore();
+      vi.mocked(getFlag).mockResolvedValue(true);
+    }
+  });
+
   it('passes diagnostics through mounted handlers and records each stack phase', async () => {
     const app = freshApp();
     registerRoute(app, defineTool({
@@ -599,6 +626,23 @@ describe('auth step — loopback tier (auth-tier rollout Wave 1)', () => {
     const res = await app.request('/lb', { method: 'POST' });
     expect(res.status).toBe(200);
     expect(requirePrincipal).not.toHaveBeenCalled();
+  });
+
+  it('admits an already-allowed loopback request without waiting for the flag backend', async () => {
+    let release!: (value: boolean) => void;
+    vi.mocked(getFlag).mockReturnValue(new Promise<boolean>(resolve => { release = resolve; }));
+    const handler = vi.fn(() => Response.json({ ok: true }));
+    const app = freshApp();
+    registerRoute(app, defineTool({ method: 'POST', path: '/lb-no-flag-wait', auth: 'loopback', handler }));
+    const response = app.request('/lb-no-flag-wait', { method: 'POST' });
+    try {
+      await vi.waitFor(() => expect(handler).toHaveBeenCalledOnce(), { timeout: 100 });
+      expect(getFlag).not.toHaveBeenCalled();
+    } finally {
+      release(true);
+      expect((await response).status).toBe(200);
+      vi.mocked(getFlag).mockResolvedValue(true);
+    }
   });
 
   it('rejects a non-loopback Host with 403 before the handler', async () => {

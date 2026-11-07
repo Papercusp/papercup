@@ -280,11 +280,30 @@ describe('recordRouteInvocation — native guard route correlation', () => {
     exec.routeDiagnostics = { measure: async (_phase, work) => work(),
       snapshot: () => ({
         auth: 1, input: 0, invoke: 499, guard_setup: 4,
+        auth_remote: 0, auth_tier_modules: 0, auth_tier_flag: 1,
         guard_plan_bindings: 25, guard_pg_acquire_org_admin_acquired_1: 11,
       }) };
     recordRouteInvocation(exec);
     await vi.waitFor(() => expect(findInsertCall().params[11]).toEqual(JSON.stringify({
       guardRequestId: requestId, routePhaseTimingsMs: { auth: 1, input: 0, invoke: 499 },
+    })));
+  });
+
+  it('retains only allowlisted auth details when authentication alone is slow', async () => {
+    const exec = execWith({ method: 'POST', path, status: 'ok',
+      headers: { 'x-papercusp-guard-request-id': requestId },
+    });
+    exec.routeDiagnostics = { measure: async (_phase, work) => work(), snapshot: () => ({
+      auth: 968, input: 0, invoke: 100,
+      auth_remote: 2, auth_tier_modules: 3, auth_tier_flag: 963,
+      auth_private_token: 5, auth_tier_private: 6,
+    }) };
+    recordRouteInvocation(exec);
+    await vi.waitFor(() => expect(findInsertCall().params[11]).toEqual(JSON.stringify({
+      guardRequestId: requestId, routePhaseTimingsMs: {
+        auth: 968, input: 0, invoke: 100,
+        auth_remote: 2, auth_tier_modules: 3, auth_tier_flag: 963,
+      },
     })));
   });
 

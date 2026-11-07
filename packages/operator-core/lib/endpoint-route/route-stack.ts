@@ -189,13 +189,19 @@ function authHeaders(exec: RouteExecution): Headers {
  * i.e. pre-rollout); requireLoopbackOr403's PAPERCUSP_ALLOW_REMOTE_ADMIN
  * env opt-out stays the deliberate remote-admin lever either way.
  */
-async function endpointAuthTiersEnabled(): Promise<boolean> {
+async function endpointAuthTiersEnabled(diagnostics?: RouteDiagnostics): Promise<boolean> {
   try {
+    const moduleStartedAt = performance.now();
     const [{ getFlag }, { FLAGS }] = await Promise.all([
       import('@papercusp/flags/server'),
       import('@papercusp/flags'),
-    ]);
-    return await getFlag(FLAGS.ENDPOINT_AUTH_TIERS, 'system');
+    ]).finally(() => diagnostics?.record?.('auth_tier_modules', performance.now() - moduleStartedAt));
+    const flagStartedAt = performance.now();
+    try {
+      return await getFlag(FLAGS.ENDPOINT_AUTH_TIERS, 'system');
+    } finally {
+      diagnostics?.record?.('auth_tier_flag', performance.now() - flagStartedAt);
+    }
   } catch {
     // Flag layer unreachable — fail CLOSED to the declared tier: a route
     // that says loopback-only stays loopback-only.
@@ -465,7 +471,9 @@ const authStep: RouteStep = {
       exec.status = 'forbidden';
       return errorResponse(error.status, 'forbidden', error.reason);
     }
+    const remoteStartedAt = performance.now();
     const remote = await enforceRemoteAuth(exec);
+    exec.routeDiagnostics?.record?.('auth_remote', performance.now() - remoteStartedAt);
     if (remote.denial) {
       exec.status = remote.denial.status === 401 ? 'unauthorized' : 'forbidden';
       return remote.denial;
@@ -508,12 +516,15 @@ const authStep: RouteStep = {
         exec.status = 'forbidden';
         return foreignPeer;
       }
-      if (await endpointAuthTiersEnabled()) {
-        const gate = requireLoopbackOr403(exec.req);
-        if (gate) {
-          exec.status = 'forbidden';
-          return gate;
-        }
+      // An allowed loopback request has the same result under either flag
+      // value. Do not put its admission behind a cold flag-store read (whose
+      // backend deadline can exceed the native guard's entire 1500ms wall).
+      // Denial candidates still consult the rollout flag, including its
+      // fail-closed error path and deliberate remote-admin compatibility.
+      const gate = requireLoopbackOr403(exec.req);
+      if (gate && await endpointAuthTiersEnabled(exec.routeDiagnostics)) {
+        exec.status = 'forbidden';
+        return gate;
       }
       return null;
     }
