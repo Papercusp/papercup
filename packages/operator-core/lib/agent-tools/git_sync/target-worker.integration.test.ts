@@ -4,7 +4,7 @@ import { symlink } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { expect, it, type TestContext } from 'vitest';
 import { captureIsolatedWorker, isolatedWorkerOptions, isolatedWorkerFailureDetail, recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
-import { preparePrivateOperatorApiBundle } from '../../../test/private-http-workspace-preflight';
+import { preparePrivateOperatorApiBundle, privateMcpSourceSha } from '../../../test/private-http-workspace-preflight';
 
 const root = resolve(import.meta.dirname, '../../../../..');
 const filePath = 'packages/operator-core/lib/agent-tools/git_sync/target-worker.integration.test.ts';
@@ -15,6 +15,9 @@ const options = isolatedWorkerOptions(360_000);
 let bundle: string;
 
 async function verifyPrivateWorker(context: TestContext, releaseContinuation = false) {
+  // MCP catalog and dispatch both require an attributable serving generation.
+  // Refuse before compilation or private PG, using the real bundler resolver.
+  const expectedBuildSha = privateMcpSourceSha(root);
   const runId = await recordIsolatedIntegrationProof({ root, filePath,
     sourcePaths: [fixture, 'scripts/with-test-pg.mjs',
       'packages/operator-core/test/isolated-integration-proof.ts',
@@ -60,6 +63,7 @@ async function verifyPrivateWorker(context: TestContext, releaseContinuation = f
       expect(receipt).toMatchObject({ committed: true, wrongTargetDispatched: false,
         principalDispatched: false, workerStopped: true, requestOnlyRefused: true,
         resultStatus: 'synced', remoteConfirmed: true, nonTargetUnchanged: true, commits: 1 });
+      expect(receipt.target.buildSha).toBe(expectedBuildSha);
       expect(receipt.workspace).toMatch(/^test-runtime-/);
       if (releaseContinuation) {
         expect(receipt.releaseContinuation).toMatchObject({

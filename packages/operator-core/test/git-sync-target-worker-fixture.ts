@@ -84,8 +84,10 @@ export async function runGitSyncTargetWorkerFixture() {
     await writeEndpointIpcDiscovery(join(process.env.PAPERCUSP_HOME!, 'private-worker.sock'), { port });
     const descriptor = JSON.parse(readFileSync(join(process.env.PAPERCUSP_HOME!, `endpoint-ipc.${port}.json`), 'utf8'));
     assert.equal(descriptor.processRole, 'bg-host');
+    assert.equal(descriptor.port, port);
+    assert.equal(descriptor.pid, process.pid);
     assert.equal(descriptor.executionProcessId, readProcessIdentity(process.pid));
-    if (!releaseScenario) assert.ok(descriptor.executionTarget?.buildSha);
+    assert.ok(descriptor.executionTarget?.buildSha);
     process.send?.({ kind: 'worker-ready', port, target: descriptor.executionTarget, pid: process.pid,
       identity: descriptor.executionProcessId });
     return;
@@ -149,6 +151,8 @@ export async function runGitSyncTargetWorkerFixture() {
       child!.once('exit', code => { clearTimeout(timer); reject(new Error(`worker exited ${code}`)); });
     });
     phase('background-worker-ready');
+    assert.ok(ready.identity, 'the private worker must report its actual process identity');
+    assert.equal(readProcessIdentity(ready.pid), ready.identity);
     const discovered = () => readMcpWorkerTargets(process.env.PAPERCUSP_HOME!);
     assert.equal(discovered().filter(worker => worker.port === ready.port).length, 1);
     const proxyPort = await listen(createMcpProxy({ listenPort: 0, targetPort: requestPort,
@@ -171,10 +175,7 @@ export async function runGitSyncTargetWorkerFixture() {
     assert.equal(requestOnly.reason, 'request-only-host', JSON.stringify(requestOnly));
     assert.equal(git('rev-parse', 'HEAD'), before);
     phase('request-only-refused');
-    // The release-only case measures current artifact bytes through the retained
-    // build receipt and connects directly to this child's private port. The
-    // original exact-target case still requires a source commit identity.
-    const client = await connect(releaseScenario ? ready.port : proxyPort);
+    const client = await connect(proxyPort);
     phase('preview-start');
     const preview = parse(await client.callTool({ name: 'git-sync:run', arguments: { installSlug: slug, target: ready.target, dryRun: true } }, undefined, requestOptions));
     assert.equal(preview.fired, false);
