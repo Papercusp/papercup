@@ -714,6 +714,46 @@ describe('verifier dependency staging preparation boundary', () => {
     return { dest, receipt };
   }
 
+  it.each(['stale', 'coherent'] as const)(
+    'checks the %s pinned submodule manifest against the root lock before dependency work', async state => {
+      const source = makeSuperproject(join(tmp, 'verifier-lock-' + state));
+      const pinnedVersion = state === 'stale' ? '16.4.0' : '16.4.1';
+      write(source.repo, 'package.json', JSON.stringify({ name: 'fixture-mono', private: true,
+        workspaces: ['libs/papercusp'] }));
+      write(source.repo, 'libs/papercusp/package.json', JSON.stringify({ name: '@papercusp/core',
+        dependencies: { next: pinnedVersion } }));
+      git(join(source.repo, 'libs/papercusp'), ['add', 'package.json']);
+      git(join(source.repo, 'libs/papercusp'), ['commit', '-qm', 'pinned workspace dependency']);
+      write(source.repo, 'package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: {
+        '': { name: 'fixture-mono' },
+        'libs/papercusp': { name: '@papercusp/core', dependencies: { next: '16.4.1' } },
+      } }));
+      git(source.repo, ['add', 'package.json', 'package-lock.json', 'libs/papercusp']);
+      git(source.repo, ['commit', '-qm', 'workspace lock and pinned gitlink']);
+      const ref = git(source.repo, ['rev-parse', 'HEAD']);
+      // The mutable donor now looks coherent even when the committed gitlink is not.
+      write(source.repo, 'libs/papercusp/package.json', JSON.stringify({ name: '@papercusp/core',
+        dependencies: { next: '16.4.1' } }));
+      const dest = join(tmp, 'verifier-lock-selected-' + state);
+      const receipt = await prepareVerifierSource({ repo: source.repo, ref, dest,
+        inputs: ['apps/operator/src/index.ts'] });
+      const phases: string[] = [];
+      await expect(prepareVerifierDependencies({ donor: source.repo, dest, receipt,
+        runPhase: async (phase, operation) => {
+          phases.push(phase);
+          if (phase === 'deps.source.after-runtime-assets') throw new Error('coherent source admitted');
+          return operation();
+        } })).rejects.toThrow(state === 'stale'
+        ? /NPM_INSTALL_SAFE_WORKSPACE_LOCK_DRIFT[\s\S]*libs\/papercusp[\s\S]*16\.4\.0[\s\S]*16\.4\.1/
+        : 'coherent source admitted');
+      expect(phases).toEqual(state === 'stale' ? ['deps.source.before']
+        : ['deps.source.before', 'deps.source.after-runtime-assets']);
+      await expect(verifyVerifierSource(dest, receipt)).resolves.toEqual(receipt);
+      expect(JSON.parse(readFileSync(join(source.repo, 'libs/papercusp/package.json'), 'utf8'))
+        .dependencies.next).toBe('16.4.1');
+    },
+  );
+
   it.each(['node_modules.pinned-deps-tmp', 'node_modules.pinned-deps-tmp.12345',
     'apps/operator/node_modules.pinned-deps-tmp.12345'])(
     'retains strict source/runtime verification outside preparation for %s, including empty staging', async staging => {

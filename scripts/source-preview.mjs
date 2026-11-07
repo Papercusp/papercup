@@ -45,6 +45,7 @@
 // Exit: 0 ok / in sync · 1 finding / drift / refused · 2 usage or cannot check.
 import assert from 'node:assert/strict';
 import { committedWorkRootDependencyDonor } from './lint-as-committed.mjs';
+import { assertRootLockManifestMatches } from './npm-install-safe.mjs';
 import { admitTaskDeadline, readTaskDeadlineEpochMs } from './lib/task-deadline.mjs';
 import { PRIVATE_TEST_PG_RELEASE_TOKEN_ENV, requestPrivateTestPgRelease } from './lib/with-test-pg-cleanup.mjs';
 import { createProgressAwareWatchdog } from './lib/batch-watchdog.mjs';
@@ -2655,8 +2656,13 @@ export async function prepareVerifierDependencies({ donor, runtimeAssetDonor = d
   // pre-copy check permits staging; the locked helper must adopt it, and
   // subsequent source checks still reject unfinished copies. Runtime assets
   // are seeded only after the committed source itself has been verified.
-  await runPhase('deps.source.before', () => verifyVerifierSource(dest, receipt,
-    { runtimeArtifacts: true, dependencyStaging: true }));
+  await runPhase('deps.source.before', async () => {
+    await verifyVerifierSource(dest, receipt, { runtimeArtifacts: true, dependencyStaging: true });
+    // A live nested checkout can already match the root lock while its pinned
+    // gitlink still selects an older manifest. Check the selected source before
+    // copying dependencies or allocating a native runtime, never the live donor.
+    assertRootLockManifestMatches(dest);
+  });
   const runtimeSetup = join(dest, 'apps/operator/scripts/setup-porcupine-runtime.sh');
   if (existsSync(runtimeSetup)) {
     const modelDonor = join(runtimeAssetDonor, 'apps/operator/public/porcupine/porcupine_params.pv');

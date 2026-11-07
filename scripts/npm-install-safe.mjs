@@ -320,6 +320,12 @@ function formatRootLockManifestMismatches(mismatches) {
   return lines.join("\n");
 }
 
+/** Reuse install admission for consumers of an independently pinned source tree. */
+export function assertRootLockManifestMatches(repoRoot = DEFAULT_REPO_ROOT) {
+  const mismatches = findRootLockManifestMismatches(repoRoot);
+  if (mismatches.length) throw new Error(formatRootLockManifestMismatches(mismatches));
+}
+
 function isGuardedTestRunner(commandArgs, repoRoot) {
   const targets = new Set(
     [...LOCK_GUARDED_TEST_RUNNERS].map((path) => resolve(repoRoot, path)),
