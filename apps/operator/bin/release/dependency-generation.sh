@@ -3910,9 +3910,11 @@ dependency_generation_ensure_once() {
 # lock no checkout has installed — and green-checkpoint verification then stalled with no
 # way forward (repairHead 5955f82b, 2026-09-30).
 #
-# When the ref's lockfiles describe the same installed packages as the live ones, modulo
-# live-only workspace LINKS (dependency-lock-equivalence.mjs decides and names them), the
-# exact generation is the live trees minus those links. So: stage the ref's inputs in a
+# Prefer a validated, install-equivalent immutable ancestor even when live lock inputs
+# match: matching locks do not freeze generated assets or the installed dependency bytes.
+# Otherwise, when the ref's lockfiles describe the same installed packages as the live ones,
+# modulo live-only workspace LINKS (dependency-lock-equivalence.mjs decides and names them),
+# the exact generation is the live trees minus those links. Stage the ref's inputs in a
 # private scratch root beside the live trees (same filesystem), prove the scratch input
 # fingerprint equals the ref's, hardlink the live node_modules trees in, drop the links,
 # and let the ordinary ensure path publish it under the ref's key. Anything that would
@@ -4011,7 +4013,9 @@ dependency_generation_find_equivalent_prewarm() {
       [ "$rc" -eq 3 ] && continue
       return 1
     fi
-    dependency_generation_select_input_fingerprint "$source_input" "$generation_root" || return $?
+    # Reserve 74 for no eligible donor. An indexed but invalid published
+    # selector must fail closed instead of admitting mutable live bytes.
+    dependency_generation_select_input_fingerprint "$source_input" "$generation_root" || return 1
     # A publication token proves immutable bytes, not that a legacy selector
     # bound those bytes to a complete install. Audit the donor's own locks
     # before either the no-copy selector shortcut or the hardlink builder.
@@ -4081,7 +4085,7 @@ dependency_generation_stage_exact_ref_inputs() {
       --live-root "$integration_root" --live-manifest "$scratch/.live-inputs"
   )" || rc=$?
   DEPENDENCY_GENERATION_EQUIVALENCE_VERDICT="$verdict"
-  if [ "$rc" -eq 3 ]; then
+  if [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ]; then
     local cached_rc=0
     dependency_generation_find_equivalent_prewarm "$integration_root" "$ref" "$scratch" "$generation_root" "$helper" || cached_rc=$?
     rm -f -- "$scratch/.ref-inputs" "$scratch/.live-inputs"
@@ -4191,6 +4195,10 @@ dependency_generation_ensure_verifier_ref() (
   # checks. A corrupt publication is never treated as a native cache miss.
   input="$(dependency_generation_input_fingerprint "$source_root")" || return $?
   key="$(dependency_generation_verifier_selector_key "$source_root")" || return $?
+  # The nested ordinary builder can fail after staging exact-ref inputs.
+  # This subshell must own cleanup before selection: its scratch pointer is
+  # invisible to the standalone caller's EXIT trap.
+  trap 'dependency_generation_release_selector_lease; dependency_generation_cleanup_exact_scratch' EXIT
   if [ -f "$generation_root/.inputs/$key" ]; then
     dependency_generation_select_verifier_inputs "$source_root" "$generation_root" || return $?
     indexed=1
@@ -4200,7 +4208,6 @@ dependency_generation_ensure_verifier_ref() (
   fi
   dependency_generation_acquire_selector_lease "$generation_root" "$DEPENDENCY_GENERATION_ID" \
     "${BASHPID:-$$}" "$DEPENDENCY_GENERATION_TOKEN" || return $?
-  trap 'dependency_generation_release_selector_lease; dependency_generation_cleanup_exact_scratch' EXIT
   "${DEPENDENCY_GENERATION_NODE:-node}" "$helper" verify "$DEPENDENCY_GENERATION_PATH" "$source_root" || rc=$?
   if [ "$rc" -ne 0 ]; then
     [ -z "$indexed" ] || return "$rc"
@@ -4457,7 +4464,7 @@ dependency_generation_main() {
     # Admit-time prediction (WI-10004151 part 2): would `--ensure-ref <ref>` succeed right
     # now? Read-only against the store and the live trees; stages only the ref's lockfiles.
     #   prewarmed  — a selector for the ref's inputs already exists
-    #   live-match — the ref's inputs equal the live tree's; ensure publishes from live
+    #   live-match — matching live inputs, with no equivalent immutable ancestor
     #   buildable  — install-equivalent modulo live-only links; the exact-ref builder builds it
     #   refused    — needs a real install; each reason is a _REASON line
     # Exit 0 for every verdict; non-zero only when the prediction itself failed.
@@ -4475,14 +4482,18 @@ dependency_generation_main() {
       dependency_generation_select_input_fingerprint "$exact_input" "$generation_root" || return $?
       dependency_generation_audit_selected_ref "$integration_root" "$predict_ref" || return $?
       predict_verdict='prewarmed'
-    elif [ "$live_input" = "$exact_input" ]; then
-      predict_verdict='live-match'
     else
       dependency_generation_stage_exact_ref_inputs \
         "$integration_root" "$predict_ref" "$exact_input" "$generation_root" || predict_rc=$?
       dependency_generation_cleanup_exact_scratch
       case "$predict_rc" in
-        0) predict_verdict='buildable' ;;
+        0)
+          if [ "$live_input" = "$exact_input" ] && [ -z "$DEPENDENCY_GENERATION_EXACT_SOURCE_INPUT" ]; then
+            predict_verdict='live-match'
+          else
+            predict_verdict='buildable'
+          fi
+          ;;
         74) predict_verdict='refused' ;;
         *) return "$predict_rc" ;;
       esac
@@ -4560,28 +4571,28 @@ dependency_generation_main() {
       # WI-10004151: publishing from the live tree could only ever miss this key.
       dependency_generation_log \
         "exact ref $ensure_ref inputs $exact_input differ from the live tree's $live_input; building from the ref's own lockfiles"
-      dependency_generation_prepare_exact_ref_root \
-        "$integration_root" "$ensure_ref" "$exact_input" "$generation_root" || return $?
-      build_root="$DEPENDENCY_GENERATION_EXACT_SCRATCH"
-      if [ -n "$DEPENDENCY_GENERATION_EXACT_SOURCE_INPUT" ] && [ -z "$DEPENDENCY_GENERATION_EQUIVALENCE_VERDICT" ]; then
-        dependency_generation_select_input_fingerprint "$DEPENDENCY_GENERATION_EXACT_SOURCE_INPUT" "$generation_root" || return $?
-        DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT="$(dependency_generation_read_field "$DEPENDENCY_GENERATION_PATH/.papercusp-dependency-generation" closure)"
-        dependency_generation_acquire_selector_lease \
-          "$generation_root" "$DEPENDENCY_GENERATION_ID" "$$" "$DEPENDENCY_GENERATION_TOKEN" || return $?
-        dependency_generation_publish_input_selector "$generation_root" "$exact_input" || {
-          rc=$?
-          dependency_generation_release_selector_lease
-          return "$rc"
-        }
+    fi
+    dependency_generation_prepare_exact_ref_root \
+      "$integration_root" "$ensure_ref" "$exact_input" "$generation_root" || return $?
+    build_root="$DEPENDENCY_GENERATION_EXACT_SCRATCH"
+    if [ -n "$DEPENDENCY_GENERATION_EXACT_SOURCE_INPUT" ] && [ -z "$DEPENDENCY_GENERATION_EQUIVALENCE_VERDICT" ]; then
+      dependency_generation_select_input_fingerprint "$DEPENDENCY_GENERATION_EXACT_SOURCE_INPUT" "$generation_root" || return $?
+      DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT="$(dependency_generation_read_field "$DEPENDENCY_GENERATION_PATH/.papercusp-dependency-generation" closure)"
+      dependency_generation_acquire_selector_lease \
+        "$generation_root" "$DEPENDENCY_GENERATION_ID" "$$" "$DEPENDENCY_GENERATION_TOKEN" || return $?
+      dependency_generation_publish_input_selector "$generation_root" "$exact_input" || {
+        rc=$?
         dependency_generation_release_selector_lease
-        dependency_generation_cleanup_exact_scratch
-        dependency_generation_retain_ensured_ref "$generation_root" "$integration_root" \
-          "$retain_as" "$DEPENDENCY_GENERATION_ID" "$ensure_ref" || return $?
-        printf 'DEPENDENCY_GENERATION_RESULT schema=1 identity=%s source=%s input=%s scope=full reused=true token=%s path=%s\n' \
-          "$DEPENDENCY_GENERATION_ID" "$DEPENDENCY_GENERATION_SOURCE_FINGERPRINT" \
-          "$DEPENDENCY_GENERATION_INPUT_FINGERPRINT" "$DEPENDENCY_GENERATION_TOKEN" "$DEPENDENCY_GENERATION_PATH"
-        return 0
-      fi
+        return "$rc"
+      }
+      dependency_generation_release_selector_lease
+      dependency_generation_cleanup_exact_scratch
+      dependency_generation_retain_ensured_ref "$generation_root" "$integration_root" \
+        "$retain_as" "$DEPENDENCY_GENERATION_ID" "$ensure_ref" || return $?
+      printf 'DEPENDENCY_GENERATION_RESULT schema=1 identity=%s source=%s input=%s scope=full reused=true token=%s path=%s\n' \
+        "$DEPENDENCY_GENERATION_ID" "$DEPENDENCY_GENERATION_SOURCE_FINGERPRINT" \
+        "$DEPENDENCY_GENERATION_INPUT_FINGERPRINT" "$DEPENDENCY_GENERATION_TOKEN" "$DEPENDENCY_GENERATION_PATH"
+      return 0
     fi
   fi
   dependency_generation_configure_workspace_dirs \
