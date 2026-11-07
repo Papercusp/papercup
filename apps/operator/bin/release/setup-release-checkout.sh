@@ -309,13 +309,28 @@ preflight_source_clone() {
 # Shared by ordinary deployment preparation and the finite SPA-only phase.
 build_release_spa() {
   log "building operator-vite SPA dist at the deployed sha (this can take a minute)"
-  local spa_log="${TMPDIR:-/tmp}/setup-release-spa-build.$$.log"
+  local spa_log="${TMPDIR:-/tmp}/setup-release-spa-build.$$.log" spa_line spa_status
   # A caller deadline can terminate this shell before the failure branch runs.
   # Publish the external log path first so cancellation retains readable proof.
   log "SPA build output: $spa_log"
-  if (cd "$RELEASE_ROOT" && npm --workspace @papercusp/operator-vite run build) >"$spa_log" 2>&1; then
+  # npm emits lifecycle boundaries, but an interrupted log without timestamps
+  # cannot distinguish prebuild/setup time from Vite execution. Stamp each line
+  # as it arrives, including an unterminated final line, within the same caller
+  # deadline. pipefail preserves npm's verdict through the log writer.
+  if (
+    set -o pipefail
+    cd "$RELEASE_ROOT" || exit
+    printf '[setup-release-spa at=%s] phase=npm-build-start\n' "${EPOCHREALTIME:-$(date +%s)}"
+    npm --workspace @papercusp/operator-vite run build 2>&1 |
+      while IFS= read -r spa_line || [ -n "$spa_line" ]; do
+        printf '[setup-release-spa at=%s] %s\n' "${EPOCHREALTIME:-$(date +%s)}" "$spa_line"
+      done
+  ) >"$spa_log" 2>&1; then
     rm -f "$spa_log"
   else
+    spa_status=$?
+    printf '[setup-release-spa at=%s] phase=npm-build-exit status=%s\n' \
+      "${EPOCHREALTIME:-$(date +%s)}" "$spa_status" >>"$spa_log"
     tail -n 60 "$spa_log" >&2
     echo "[setup-release] SPA build FAILED — the swap would serve a stale SPA; aborting (full build output: $spa_log)" >&2
     return 1
