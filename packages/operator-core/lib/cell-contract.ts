@@ -56,7 +56,92 @@
  * Deliberately NOT extensible by convention: adding a fifth code is a contract
  * change, because every caller's branch set changes with it.
  */
+import type { CellRead } from './cell-read';
+
 export type CellUnknownCode = 'not-applicable' | 'resolver-failed' | 'not-measured' | 'insufficient-data';
+
+export type CellComparisonTarget = 'measurement' | 'assessment' | 'material';
+
+/** Persisted in the existing fact dependency JSON. Missing/unknown versions need
+ * a new observation; a raw digest cannot establish semantic freshness. */
+export interface CellObservationAnchor {
+  version: 1;
+  target: CellComparisonTarget;
+  identityDigest: string;
+  qualifierDigest: string;
+  selectedDigest: string;
+}
+
+export function parseCellObservationAnchor(raw: unknown): CellObservationAnchor | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const a = raw as Record<string, unknown>;
+  if (a.version !== 1 || !['measurement', 'assessment', 'material'].includes(String(a.target))) return undefined;
+  for (const key of ['identityDigest', 'qualifierDigest', 'selectedDigest']) {
+    if (typeof a[key] !== 'string' || !/^[a-f0-9]{16}$/.test(a[key])) return undefined;
+  }
+  return {
+    version: 1,
+    target: a.target as CellComparisonTarget,
+    identityDigest: a.identityDigest as string,
+    qualifierDigest: a.qualifierDigest as string,
+    selectedDigest: a.selectedDigest as string,
+  };
+}
+
+/** A lens on ONE completed read, shared by capture and subsequent comparison.
+ * Evidence values may contain telemetry; only their availability/measuredness
+ * qualifies a selected value. The declared uncertainty channel remains data. */
+export function projectCellComparison(
+  read: CellRead,
+  subject?: string,
+  requestedTarget?: CellComparisonTarget,
+):
+  | { status: 'unknown'; unknown: CellUnknownCode | 'absent' }
+  | { status: 'value'; target: CellComparisonTarget; selected: unknown; identity: unknown; qualifiers: unknown } {
+  if (read.status === 'absent') return { status: 'unknown', unknown: 'absent' };
+  if (read.status === 'unknown') return { status: 'unknown', unknown: read.unknown.code };
+  if (read.assessment?.status === 'unavailable') return { status: 'unknown', unknown: read.assessment.unknown.code };
+  if (read.unknownHoist?.drifted || read.unknownHoist?.truncatedByDoor) {
+    return { status: 'unknown', unknown: 'insufficient-data' };
+  }
+  const target = requestedTarget ?? (read.material ? 'material' : 'measurement');
+  if ((target === 'material' && !read.material) || (target === 'assessment' && !read.assessment)) {
+    return { status: 'unknown', unknown: 'insufficient-data' };
+  }
+  const evidence = read.assessment?.evidence ?? [];
+  if (evidence.some((e) => e.drifted || e.truncatedByDoor || e.measuredBy?.drifted)) {
+    return { status: 'unknown', unknown: 'insufficient-data' };
+  }
+  return {
+    status: 'value',
+    target,
+    selected: target === 'material' ? read.material!.value : target === 'assessment' ? read.assessment!.code : read.value,
+    identity: {
+      cell: read.cell,
+      subject: subject ?? null,
+      resolver: read.resolver,
+      measurementPath: read.measurementPath ?? null,
+      target,
+      materialPath: read.material?.path ?? null,
+      assessmentPath: read.assessment?.path ?? null,
+      sourcePath: read.source?.path ?? null,
+      uncertaintyPath: read.unknownHoist?.key ?? null,
+      evidencePaths: evidence.map((e) => [e.path, e.measuredBy?.path ?? null]).sort(),
+    },
+    qualifiers: {
+      assessment: read.assessment
+        ? { status: read.assessment.status, code: read.assessment.code, meaning: read.assessment.meaning, safeAction: read.assessment.safeAction }
+        : null,
+      source: read.source ? { value: read.source.value, authoritative: read.source.authoritative } : null,
+      uncertainty: read.unknownHoist ? { value: read.unknownHoist.value, nullTerminated: read.unknownHoist.nullTerminated === true } : null,
+      evidence: evidence.map((e) => ({
+        path: e.path,
+        nullTerminated: e.nullTerminated === true,
+        measuredBy: e.measuredBy ? { value: e.measuredBy.value, nullTerminated: e.measuredBy.nullTerminated === true } : null,
+      })).sort((a, b) => a.path.localeCompare(b.path)),
+    },
+  };
+}
 
 /**
  * The in-band unknown. `code` is the branchable fact; `detail` is the human

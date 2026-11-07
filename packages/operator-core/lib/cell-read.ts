@@ -97,6 +97,8 @@ export type CellRead =
       value: unknown;
       headline: string;
       resolver: string;
+      /** Resolver path whose value was selected, retained for schema identity. */
+      measurementPath?: string;
       /**
        * Axis 6 — the optional total order declared by the cell. This is metadata
        * about the value, not a second resolver result, so project it from the
@@ -972,6 +974,7 @@ async function readCellValue(
       value,
       headline: spec.headline,
       resolver: spec.resolver,
+      measurementPath: spec.changeSignal.path,
       ...(spec.ordered === undefined ? {} : { ordered: { stages: [...spec.ordered.stages] } }),
       ...(spec.whyTotal === undefined ? {} : { totality: { why: spec.whyTotal } }),
       // D-008/D-016 — omitted ONLY for an event-signalled cell, the one case allowed to
