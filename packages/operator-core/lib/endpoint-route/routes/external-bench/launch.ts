@@ -19,9 +19,22 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { isSafeRunId } from '../../../external-bench/preserved-runs';
 import { launchBenchRun, cancelBenchRun, type LaunchBenchRunInput } from '../../../external-bench/run-launcher';
 import { gradeBenchRun } from '../../../external-bench/grade-runner';
-import { deleteBenchRun } from '../../../external-bench/run-store';
+import { deleteBenchRun, getBenchRunDetail } from '../../../external-bench/run-store';
 import { buildExportBundle } from '../../../external-bench/export-bundle';
 import { estimateBenchLaunch, estimateCurrentBenchLaunch } from '../../../external-bench/estimate';
+import { resolveBenchWorkspace } from '../../../external-bench/bench-workspace';
+import type { DbScope } from '../../../external-bench/reproducibility/db';
+
+// Omitted scope retains historical active-workspace behavior. Current runs must
+// keep the isolated workspace selected at launch through every later action.
+function requestedRunScope(req: Request): DbScope | Response {
+  const workspaceId = new URL(req.url).searchParams.get('workspaceId');
+  if (workspaceId === null) return {};
+  try { return { workspaceId: resolveBenchWorkspace(workspaceId) }; }
+  catch (error) {
+    return Response.json({ ok: false, error: error instanceof Error ? error.message : String(error) }, { status: 400 });
+  }
+}
 
 const launch = defineTool({
   method: 'POST',
@@ -87,12 +100,14 @@ const cancel = defineTool({
   path: '/external-bench/runs/:id/cancel',
   auth: 'loopback',
   timeoutSec: 60,
-  async handler(_req, ctx) {
+  async handler(req, ctx) {
     const id = ctx.params.id as string;
     if (!isSafeRunId(id)) {
       return Response.json({ ok: false, error: 'invalid_run_id' }, { status: 400 });
     }
-    const { cancelled } = await cancelBenchRun(id);
+    const scope = requestedRunScope(req);
+    if (scope instanceof Response) return scope;
+    const { cancelled } = await cancelBenchRun(id, { scope });
     if (!cancelled) {
       return Response.json({ ok: false, error: 'run_not_found', id }, { status: 404 });
     }
@@ -121,12 +136,14 @@ const grade = defineTool({
   path: '/external-bench/runs/:id/grade',
   auth: 'loopback',
   timeoutSec: 30,
-  async handler(_req, ctx) {
+  async handler(req, ctx) {
     const id = ctx.params.id as string;
     if (!isSafeRunId(id)) {
       return Response.json({ ok: false, error: 'invalid_run_id' }, { status: 400 });
     }
-    const res = await gradeBenchRun(id);
+    const scope = requestedRunScope(req);
+    if (scope instanceof Response) return scope;
+    const res = await gradeBenchRun(id, { scope });
     if ('error' in res) {
       return Response.json({ ok: false, error: res.error }, { status: 404 });
     }
@@ -138,10 +155,15 @@ const exportBundle = defineTool({
   method: 'GET',
   path: '/external-bench/runs/:id/export',
   auth: 'loopback',
-  async handler(_req, ctx) {
+  async handler(req, ctx) {
     const id = ctx.params.id as string;
     if (!isSafeRunId(id)) {
       return Response.json({ ok: false, error: 'invalid_run_id' }, { status: 400 });
+    }
+    const scope = requestedRunScope(req);
+    if (scope instanceof Response) return scope;
+    if (scope.workspaceId && !await getBenchRunDetail(id, scope)) {
+      return Response.json({ ok: false, error: 'run_not_found', id }, { status: 404 });
     }
     const bundle = buildExportBundle(id);
     if (!bundle) {
@@ -155,12 +177,14 @@ const remove = defineTool({
   method: 'DELETE',
   path: '/external-bench/runs/:id',
   auth: 'loopback',
-  async handler(_req, ctx) {
+  async handler(req, ctx) {
     const id = ctx.params.id as string;
     if (!isSafeRunId(id)) {
       return Response.json({ ok: false, error: 'invalid_run_id' }, { status: 400 });
     }
-    const { deleted } = await deleteBenchRun(id);
+    const scope = requestedRunScope(req);
+    if (scope instanceof Response) return scope;
+    const { deleted } = await deleteBenchRun(id, scope);
     if (!deleted) {
       return Response.json({ ok: false, error: 'run_not_found', id }, { status: 404 });
     }

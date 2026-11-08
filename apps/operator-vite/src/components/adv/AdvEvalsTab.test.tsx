@@ -112,6 +112,7 @@ beforeEach(() => {
   nuqsState.evalView = 'external';
   nuqsState.evalSuite = null;
   nuqsState.evalRun = null;
+  nuqsState.evalWorkspace = null;
   nuqsState.compareA = null;
   nuqsState.compareB = null;
   H.results = {};
@@ -381,9 +382,10 @@ describe('<AdvEvalsTab> runs subtab (evals.benchRuns / evals.benchRun)', () => {
     expect(screen.getByLabelText('Benchmark evidence class').textContent).toContain('do not measure current product performance');
   });
 
-  it('downloads the selected run export with the exact predictions and reproduction instructions', async () => {
+  it.each([null, 'bench-private'])('downloads the selected run export in workspace %s', async workspaceId => {
     nuqsState.evalView = 'preserved';
     nuqsState.evalRun = RUN_DETAIL.id;
+    nuqsState.evalWorkspace = workspaceId;
     H.results['evals.benchRuns'] = { ...blank(), data: RUN_LIST };
     H.results['evals.benchRun'] = { ...blank(), data: [RUN_DETAIL] };
     const predictions = [{ instance_id: 'instance_a', model_patch: 'diff --git a/a b/a\n+fixed' }];
@@ -407,7 +409,7 @@ describe('<AdvEvalsTab> runs subtab (evals.benchRuns / evals.benchRun)', () => {
     await waitFor(() => expect(downloads).toEqual([
       `${RUN_DETAIL.id}-predictions.json`, `${RUN_DETAIL.id}-README.md`,
     ]));
-    expect(fetchExport).toHaveBeenCalledWith(`/api/external-bench/runs/${RUN_DETAIL.id}/export`);
+    expect(fetchExport).toHaveBeenCalledWith(`/api/external-bench/runs/${RUN_DETAIL.id}/export${workspaceId ? '?workspaceId=bench-private' : ''}`);
     const contents = await Promise.all(blobs.map(blob => new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve(String(reader.result));
@@ -418,6 +420,26 @@ describe('<AdvEvalsTab> runs subtab (evals.benchRuns / evals.benchRun)', () => {
     expect(contents[1]).toBe(readme);
     expect(blobs.map(blob => blob.type)).toEqual(['application/json', 'text/markdown']);
     expect(revoked).toEqual(['blob:export-1', 'blob:export-2']);
+  });
+
+  it.each([
+    { label: 'Grade this run with the official grader', suffix: '/grade', method: 'POST' },
+    { label: 'Delete this run', suffix: '', method: 'DELETE' },
+  ])('keeps the selected workspace through $method $suffix', async action => {
+    nuqsState.evalView = 'preserved';
+    nuqsState.evalRun = RUN_DETAIL.id;
+    nuqsState.evalWorkspace = 'bench-private';
+    H.results['evals.benchRuns'] = { ...blank(), data: RUN_LIST };
+    H.results['evals.benchRun'] = { ...blank(), data: [RUN_DETAIL] };
+    const request = vi.fn(async () => ({ ok: true, text: async () => JSON.stringify({ ok: true, deleted: true }) }));
+    vi.stubGlobal('fetch', request);
+    render(<AdvEvalsTab />);
+    for (const queryName of ['evals.benchRuns', 'evals.benchRun', 'evals.benchRunLive']) {
+      expect(H.queryCalls.find(call => call.queryName === queryName)?.args).toMatchObject({ workspaceId: 'bench-private' });
+    }
+    fireEvent.click(screen.getByLabelText(action.label));
+    await waitFor(() => expect(request).toHaveBeenCalledWith(
+      `/api/external-bench/runs/${RUN_DETAIL.id}${action.suffix}?workspaceId=bench-private`, { method: action.method }));
   });
 
   it('shows a refused export without downloading substitute predictions', async () => {
@@ -484,6 +506,8 @@ describe('<AdvEvalsTab> launch subtab (P-006)', () => {
     // This fixture replaces setter spies on each render; observe its stored URL
     // state after the asynchronous mutation rather than a replacement spy.
     await vi.waitFor(() => expect(nuqsState.evalRun).toBe('current-study-result'));
+    expect(nuqsState.evalWorkspace).toBe('benchmarks');
+    expect(H.queryCalls.find(call => call.queryName === 'evals.benchRuns')?.args).toEqual({ workspaceId: 'benchmarks' });
     const [, init] = vi.mocked(fetch).mock.calls[0];
     expect(JSON.parse(String(init?.body))).toEqual({ arm: 'papercusp', suite, taskSetId: 'custom', current });
     fireEvent.change(screen.getByLabelText('Registered seed'), { target: { value: '2' } });

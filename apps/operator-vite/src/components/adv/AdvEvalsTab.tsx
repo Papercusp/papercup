@@ -325,12 +325,16 @@ async function launchRunRest(args: LaunchRunArgs): Promise<LaunchRunResult> {
   });
   return readJsonResponse<LaunchRunResult>(res, 'launch failed');
 }
-async function gradeRunRest(args: { runId: string }): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(`/api/external-bench/runs/${encodeURIComponent(args.runId)}/grade`, { method: 'POST' });
+function scopedRunUrl(runId: string, suffix: string, workspaceId?: string | null): string {
+  const base = `/api/external-bench/runs/${encodeURIComponent(runId)}${suffix}`;
+  return workspaceId ? `${base}?${new URLSearchParams({ workspaceId })}` : base;
+}
+async function gradeRunRest(args: { runId: string; workspaceId?: string }): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetch(scopedRunUrl(args.runId, '/grade', args.workspaceId), { method: 'POST' });
   return readJsonResponse<{ ok: boolean; error?: string }>(res, 'grade failed');
 }
-async function deleteRunRest(args: { runId: string }): Promise<{ ok: boolean; deleted?: boolean; error?: string }> {
-  const res = await fetch(`/api/external-bench/runs/${encodeURIComponent(args.runId)}`, { method: 'DELETE' });
+async function deleteRunRest(args: { runId: string; workspaceId?: string }): Promise<{ ok: boolean; deleted?: boolean; error?: string }> {
+  const res = await fetch(scopedRunUrl(args.runId, '', args.workspaceId), { method: 'DELETE' });
   return readJsonResponse<{ ok: boolean; deleted?: boolean; error?: string }>(res, 'delete failed');
 }
 
@@ -1101,7 +1105,8 @@ interface LaunchEstimate {
 function LaunchRunView() {
   const [armRaw, setArm] = useQueryState('launchArm', parseAsStringEnum([...LAUNCH_ARMS]).withDefault('papercusp'));
   const [protocolRunId, setProtocolRunId] = useState('');
-  const [workspaceId, setWorkspaceId] = useState('benchmarks');
+  const [workspaceSelection, setWorkspaceSelection] = useQueryState('evalWorkspace', parseAsString);
+  const [workspaceId, setWorkspaceId] = useState(workspaceSelection || 'benchmarks');
   const [seedText, setSeedText] = useState('1');
   const arm = LAUNCH_ARMS.includes(armRaw as typeof LAUNCH_ARMS[number]) ? armRaw! : 'papercusp';
   const seed = Number(seedText);
@@ -1114,7 +1119,7 @@ function LaunchRunView() {
   const launchRun = useSyncMutate<LaunchRunArgs, LaunchRunResult>('externalBench.launchRun', launchRunRest);
 
   // A run already in flight blocks a new launch (single-active-run, spend-safety).
-  const runsSync = useSyncQuery<{ id: string; status: string }>({ queryName: 'evals.benchRuns', args: {} });
+  const runsSync = useSyncQuery<{ id: string; status: string }>({ queryName: 'evals.benchRuns', args: { workspaceId } });
   const activeRun = useMemo(
     () => (Array.isArray(runsSync.data) ? runsSync.data : []).find((r) => ['pending', 'running', 'grading'].includes(r.status)),
     [runsSync.data],
@@ -1151,6 +1156,7 @@ function LaunchRunView() {
         setError(json.error || 'launch failed');
         return;
       }
+      await setWorkspaceSelection(workspaceId);
       await setEvalRun(json.runId);
       await setEvalView('preserved');
     } catch (e) {
@@ -1487,14 +1493,16 @@ function crossArmCaveats(a: PreservedRunDetail, b: PreservedRunDetail): string[]
 }
 
 function CompareRunsView() {
+  const [workspaceId] = useQueryState('evalWorkspace', parseAsString);
+  const scope = workspaceId ? { workspaceId } : {};
   const [aId, setAId] = useQueryState('compareA', parseAsString);
   const [bId, setBId] = useQueryState('compareB', parseAsString);
 
-  const runsSync = useSyncQuery<BenchRunListEntry>({ queryName: 'evals.benchRuns', args: {} });
+  const runsSync = useSyncQuery<BenchRunListEntry>({ queryName: 'evals.benchRuns', args: scope });
   const runs = useMemo(() => (Array.isArray(runsSync.data) ? runsSync.data : []), [runsSync.data]);
 
-  const aSync = useSyncQuery<PreservedRunDetail>({ queryName: 'evals.benchRun', args: { runId: aId ?? '' }, enabled: Boolean(aId) });
-  const bSync = useSyncQuery<PreservedRunDetail>({ queryName: 'evals.benchRun', args: { runId: bId ?? '' }, enabled: Boolean(bId) });
+  const aSync = useSyncQuery<PreservedRunDetail>({ queryName: 'evals.benchRun', args: { runId: aId ?? '', ...scope }, enabled: Boolean(aId) });
+  const bSync = useSyncQuery<PreservedRunDetail>({ queryName: 'evals.benchRun', args: { runId: bId ?? '', ...scope }, enabled: Boolean(bId) });
   const a = aSync.data?.[0] ?? null;
   const b = bSync.data?.[0] ?? null;
 
@@ -1614,11 +1622,13 @@ function CompareRunsView() {
 // ── Preserved / live runs view — the real graded snapshots, now via @papercusp/sync ──
 
 function PreservedRunsView() {
+  const [workspaceId] = useQueryState('evalWorkspace', parseAsString);
+  const scope = workspaceId ? { workspaceId } : {};
   // ?evalRun= is the selected run id (shared with the sync views).
   const [selId, setSelId] = useQueryState('evalRun', parseAsString);
 
   // Live run list (SSE-primary on desktop). Newest-first from the resolver.
-  const runsSync = useSyncQuery<BenchRunListEntry>({ queryName: 'evals.benchRuns', args: {} });
+  const runsSync = useSyncQuery<BenchRunListEntry>({ queryName: 'evals.benchRuns', args: scope });
   const runs = useMemo(() => (Array.isArray(runsSync.data) ? runsSync.data : []), [runsSync.data]);
   const loading = runsSync.loading && runs.length === 0;
   const listErr = runsSync.error ? String(runsSync.error) : null;
@@ -1632,7 +1642,7 @@ function PreservedRunsView() {
   // Live detail for the selected run (updates incrementally during a run).
   const detailSync = useSyncQuery<PreservedRunDetail>({
     queryName: 'evals.benchRun',
-    args: { runId: selId ?? '' },
+    args: { runId: selId ?? '', ...scope },
     enabled: Boolean(selId),
   });
   const detail = detailSync.data?.[0] ?? null;
@@ -1643,7 +1653,7 @@ function PreservedRunsView() {
   const selRun = runs.find((r) => r.id === selId);
   const liveSync = useSyncQuery<BenchRunLive>({
     queryName: 'evals.benchRunLive',
-    args: { runId: selId ?? '' },
+    args: { runId: selId ?? '', ...scope },
     enabled: Boolean(selId),
   });
   const live = liveSync.data?.[0] ?? null;
@@ -1656,8 +1666,8 @@ function PreservedRunsView() {
   const [, setLaunchArm] = useQueryState('launchArm', parseAsString);
   const [, setLaunchTaskSet] = useQueryState('launchTaskSet', parseAsString);
   const [, setLaunchCap] = useQueryState('launchCap', parseAsString);
-  const gradeRunMutate = useSyncMutate<{ runId: string }, { ok: boolean; error?: string }>('externalBench.gradeRun', gradeRunRest);
-  const deleteRunMutate = useSyncMutate<{ runId: string }, { ok: boolean; deleted?: boolean; error?: string }>('externalBench.deleteRun', deleteRunRest);
+  const gradeRunMutate = useSyncMutate<{ runId: string; workspaceId?: string }, { ok: boolean; error?: string }>('externalBench.gradeRun', gradeRunRest);
+  const deleteRunMutate = useSyncMutate<{ runId: string; workspaceId?: string }, { ok: boolean; deleted?: boolean; error?: string }>('externalBench.deleteRun', deleteRunRest);
   // Filter the run list by arm (P-014 browse/filter).
   const [armFilter, setArmFilter] = useQueryState('runArmFilter', parseAsString);
   const armOptions = useMemo(() => [...new Set(runs.map((r) => r.arm))].sort(), [runs]);
@@ -1668,7 +1678,7 @@ function PreservedRunsView() {
     setGrading(true);
     setActionErr(null);
     try {
-      await gradeRunMutate({ runId: selId });
+      await gradeRunMutate({ runId: selId, ...scope });
     } catch (e) {
       setActionErr(String(e));
     } finally {
@@ -1681,7 +1691,7 @@ function PreservedRunsView() {
     if (!selId) return;
     setActionErr(null);
     try {
-      const res = await fetch(`/api/external-bench/runs/${encodeURIComponent(selId)}/export`);
+      const res = await fetch(scopedRunUrl(selId, '/export', workspaceId));
       const bundle = (await res.json()) as { ok?: boolean; error?: string; predictions?: unknown; readme?: string };
       if (!res.ok || bundle.ok === false) {
         setActionErr(bundle.error || `export failed (${res.status})`);
@@ -1699,7 +1709,7 @@ function PreservedRunsView() {
     if (!selId) return;
     setActionErr(null);
     try {
-      await deleteRunMutate({ runId: selId });
+      await deleteRunMutate({ runId: selId, ...scope });
       await setSelId(null);
     } catch (e) {
       setActionErr(String(e));

@@ -8803,18 +8803,21 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // live over desktop SSE with no polling. Detail rows carry the PreservedArmRun shape
   // the eval-viz already renders.
   'evals.benchRuns': {
-    argsSchema: z.object({}),
-    resolve: async () => {
+    argsSchema: z.object({ workspaceId: z.string().optional() }),
+    resolve: async (args) => {
+      const { workspaceId } = args as { workspaceId?: string };
       const { listBenchRuns } = await import('../external-bench/run-store');
-      return listBenchRuns();
+      const { resolveBenchWorkspace } = await import('../external-bench/bench-workspace');
+      return listBenchRuns(workspaceId === undefined ? {} : { workspaceId: resolveBenchWorkspace(workspaceId) });
     },
   },
   'evals.benchRun': {
-    argsSchema: z.object({ runId: z.string() }),
+    argsSchema: z.object({ runId: z.string(), workspaceId: z.string().optional() }),
     resolve: async (args) => {
-      const { runId } = args as { runId: string };
+      const { runId, workspaceId } = args as { runId: string; workspaceId?: string };
       const { getBenchRunDetail } = await import('../external-bench/run-store');
-      const detail = await getBenchRunDetail(runId);
+      const { resolveBenchWorkspace } = await import('../external-bench/bench-workspace');
+      const detail = await getBenchRunDetail(runId, workspaceId === undefined ? {} : { workspaceId: resolveBenchWorkspace(workspaceId) });
       return detail ? [detail] : [];
     },
   },
@@ -8824,11 +8827,12 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // run's hive. The live monitor polls this (the fleet tables aren't bridged to
   // SSE); a completed run returns the not-live shape (signals null).
   'evals.benchRunLive': {
-    argsSchema: z.object({ runId: z.string() }),
+    argsSchema: z.object({ runId: z.string(), workspaceId: z.string().optional() }),
     resolve: async (args) => {
-      const { runId } = args as { runId: string };
+      const { runId, workspaceId } = args as { runId: string; workspaceId?: string };
       const { getBenchRunLiveState } = await import('../external-bench/live-state');
-      const state = await getBenchRunLiveState(runId);
+      const { resolveBenchWorkspace } = await import('../external-bench/bench-workspace');
+      const state = await getBenchRunLiveState(runId, workspaceId === undefined ? {} : { workspaceId: resolveBenchWorkspace(workspaceId) });
       return state ? [state] : [];
     },
   },
