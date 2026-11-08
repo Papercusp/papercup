@@ -426,9 +426,64 @@ describe('exec-to-EOF process and thread population', () => {
       expect(() => bindRuntimeProcessTree(input.join('\n') + '\n', terminal))
         .toThrow('memory transition outcome unresolved');
     });
-  const mappingTrace = (calls: string[]) => [lines[0], ...calls, lines.at(-1)].join('\n') + '\n';
+  // Synthetic timings are explicit fixture inputs; production captures must
+  // obtain their durations from strace's independent -T observation.
+  const mappingTrace = (calls: string[], timed = true) => [lines[0], ...calls, lines.at(-1)]
+    .map(row => timed && row!.includes(' = ') && !/ <\d+\.\d+>$/.test(row!)
+      ? row + ' <0.000001>' : row).join('\n') + '\n';
   const mappingTerminal = {...terminal, pageSizeBytes:4096};
   const anonymousMap = '10 1.100000 mmap(NULL, 8192, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x1000';
+  it('requests independent syscall duration measurements from the tracer', () => {
+    expect(runtimeFileTraceArguments('/tmp/trace', ['/usr/bin/true'])).toContain('-T');
+  });
+  it('does not infer mapping origins without measured syscall durations', () => {
+    const receipt = bindRuntimeProcessTree(mappingTrace([anonymousMap,
+      '10 1.200000 mprotect(0x1000, 4096, PROT_EXEC) = 0'], false), mappingTerminal);
+    expect(receipt.memoryTransitions).toHaveLength(2);
+    expect(receipt.mappingOrigins.executableRanges).toEqual([]);
+    expect(receipt.mappingOrigins.gaps.map(g => g.reason)).toContain('syscall-duration-required');
+  });
+  it.each(['complete', 'resumed'])('stops mapping replay at overlapping measured %s syscall windows', variant => {
+    const permission = variant === 'complete'
+      ? ['10 1.200000 mprotect(0x1000, 4096, PROT_EXEC) = 0 <0.200000>']
+      : ['10 1.200000 mprotect(0x1000, 4096, PROT_EXEC <unfinished ...>',
+        '10 1.220000 <... mprotect resumed>) = 0 <0.200000>'];
+    const receipt = bindRuntimeProcessTree(mappingTrace([
+      '10 1.050000 clone(child_stack=NULL, flags=CLONE_VM|CLONE_THREAD) = 11',
+      anonymousMap, ...permission, '11 1.300000 munmap(0x1000, 8192) = 0',
+      '11 1.900000 +++ exited with 0 +++',
+    ]), mappingTerminal);
+    expect(receipt.memoryTransitions).toHaveLength(3);
+    expect(receipt.memoryTransitions[1]).toMatchObject({durationNs:'200000000'});
+    expect(receipt.memoryTransitions[1]!.completedAtMs).toBeGreaterThanOrEqual(1400);
+    expect(receipt.mappingOrigins.executableRanges).toEqual([]);
+    expect(receipt.mappingOrigins.gaps.at(-1)?.reason).toBe('overlapping-address-space-events-replay-stopped');
+  });
+  it('replays disjoint measured syscall windows without qualifying their executable bytes', () => {
+    const receipt = bindRuntimeProcessTree(mappingTrace([anonymousMap,
+      '10 1.200000 mprotect(0x1000, 4096, PROT_EXEC) = 0 <0.001000>',
+      '10 1.300000 munmap(0x1000, 8192) = 0']), mappingTerminal);
+    expect(receipt.memoryTransitions[1]).toMatchObject({durationNs:'1000000'});
+    expect(receipt.mappingOrigins.executableRanges.filter(row => row.operation === 'mprotect')).toEqual([expect.objectContaining({
+      start:'0x1000', end:'0x2000', origin:{kind:'anonymous',path:null,offsetBytes:null},
+      executableBytesQualified:false,
+    })]);
+    expect(receipt.mappingOrigins.gaps.map(g => g.reason)).toEqual(['exec-kernel-installed-mappings-unobserved']);
+  });
+  it('compares nanosecond syscall bounds exactly at epoch-sized timestamps', () => {
+    const trace = mappingTrace([
+      '10 1.050000 clone(child_stack=NULL, flags=CLONE_VM|CLONE_THREAD) = 11', anonymousMap,
+      '10 1.200000000 mprotect(0x1000, 4096, PROT_EXEC) = 0 <0.000000001>',
+      '11 1.200000004 munmap(0x1000, 8192) = 0 <0.000000001>',
+      '11 1.900000 +++ exited with 0 +++',
+    ]).replace(/ (\d+)\.(\d+) /g, (_all, seconds, fraction) =>
+      ' ' + (1_794_150_000n + BigInt(seconds)) + '.' + fraction + ' ');
+    const receipt = bindRuntimeProcessTree(trace, mappingTerminal);
+    expect(receipt.mappingOrigins.executableRanges).toContainEqual(expect.objectContaining({
+      operation:'mprotect', origin:{kind:'anonymous',path:null,offsetBytes:null},
+    }));
+    expect(receipt.mappingOrigins.gaps.map(g => g.reason)).toEqual(['exec-kernel-installed-mappings-unobserved']);
+  });
   it('retains transient anonymous executable ranges after permissions are removed and memory is unmapped', () => {
     const receipt = bindRuntimeProcessTree(mappingTrace([anonymousMap,
       '10 1.200000 mprotect(0x1000, 1, PROT_READ|PROT_EXEC) = 0',

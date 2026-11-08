@@ -356,33 +356,53 @@ export function bindRuntimeJitDump(bytes, witness) {
 export function runtimeFileTraceArguments(output, command) {
   // -q suppresses attach chatter. -qq also suppresses the terminal records
   // that bindRuntimeModelOpens requires and therefore cannot qualify a run.
-  return ['-f', '-q', '-ttt', '-yy', '-s', '4096', '-e',
+  return ['-f', '-q', '-ttt', '-T', '-yy', '-s', '4096', '-e',
     'trace=openat,openat2,mmap,mprotect,pkey_mprotect,munmap,mremap,shmat,shmdt,remap_file_pages,execve,execveat,clone,clone3,fork,vfork,exit,exit_group',
     '-o', output, ...command];
 }
 
 function parseRuntimeFileTrace(text) {
   const pending = new Map(), lines = [], edges = [];
+  const nanoseconds = value => {
+    const [seconds, fraction] = value.split('.');
+    return {value:BigInt(seconds) * 1_000_000_000n + BigInt(fraction.padEnd(9, '0')),
+      precision:10n ** BigInt(9 - fraction.length)};
+  };
   for (const line of text.split('\n').filter(Boolean)) {
-    const match = /^(\d+)\s+(\d+\.\d+)\s+(.*)$/.exec(line);
+    const match = /^(\d+)\s+(\d+\.\d{1,9})\s+(.*)$/.exec(line);
     if (!match) throw new Error('unsupported strace record');
     const tid = Number(match[1]);
-    let atMs = Number(match[2]) * 1000;
-    const completedAtMs = atMs;
+    const printedTime = nanoseconds(match[2]);
+    let startedAtNs = printedTime.value, startPrecision = printedTime.precision;
+    let completedAtNs = printedTime.value;
     let call = match[3];
+    const elapsed = / <(\d+\.\d{1,9})>$/.exec(call);
+    const duration = elapsed ? nanoseconds(elapsed[1]) : null;
+    if (elapsed) call = call.slice(0, elapsed.index);
     if (call.endsWith('<unfinished ...>')) {
       if (pending.has(tid)) throw new Error('duplicate unfinished strace record');
-      pending.set(tid, { call: call.slice(0, -16), atMs }); continue;
+      pending.set(tid, {call:call.slice(0, -16), startedAtNs, startPrecision}); continue;
     }
     if (call.startsWith('<... ')) {
       const resumed = /^<\.\.\. (\w+) resumed>(.*)$/.exec(call), start = pending.get(tid);
       if (!resumed || !start || !start.call.startsWith(resumed[1] + '('))
         throw new Error('unmatched resumed strace record');
-      pending.delete(tid); call = start.call + resumed[2]; atMs = start.atMs;
+      pending.delete(tid); call = start.call + resumed[2];
+      startedAtNs = start.startedAtNs; startPrecision = start.startPrecision;
+    }
+    if (duration) {
+      // The printed timestamp is syscall entry, including when strace emits a
+      // complete line. Never treat it as a zero-duration completion. Keep an
+      // upper bound for BOTH printed precisions, and compare exact integers at
+      // epoch-sized timestamps (Number milliseconds can round these apart).
+      const upper = startedAtNs + startPrecision + duration.value + duration.precision;
+      completedAtNs += printedTime.precision;
+      if (upper > completedAtNs) completedAtNs = upper;
     }
     const clone = /^(?:clone|clone3|fork|vfork)\(.*\)\s+=\s+(\d+)\b/.exec(call);
     if (clone) edges.push([tid, Number(clone[1])]);
-    lines.push({ tid, atMs, completedAtMs, call });
+    lines.push({tid, atMs:Number(startedAtNs) / 1e6, completedAtMs:Number(completedAtNs) / 1e6,
+      startedAtNs, completedAtNs, durationNs:duration ? String(duration.value) : null, call});
   }
   if (pending.size) throw new Error('incomplete strace capture');
   return { lines, edges };
@@ -403,7 +423,8 @@ function replayRuntimeMappings(lines, processId, pageSizeBytes) {
   const gap = (row, reason) => gaps.push({taskId:row.tid, atMs:row.atMs, reason});
   const events = lines.filter(row => /^(?:mmap|mprotect|pkey_mprotect|munmap|mremap|shmat|shmdt|remap_file_pages)\(/.test(row.call)
     || /^(?:execve|execveat|clone|clone3|fork|vfork)\(/.test(row.call)
-      && !/\)\s+=\s+-1\b/.test(row.call)).sort((a, b) => a.atMs - b.atMs);
+      && !/\)\s+=\s+-1\b/.test(row.call))
+    .sort((a, b) => a.startedAtNs < b.startedAtNs ? -1 : a.startedAtNs > b.startedAtNs ? 1 : 0);
   const makeSpace = maps => {
     const space = {id:spaces.length + 1, maps:[...maps], uncertain:false};
     spaces.push(space); return space;
@@ -457,9 +478,12 @@ function replayRuntimeMappings(lines, processId, pageSizeBytes) {
   for (let index = 0; index < events.length; index++) {
     if (budgetExceeded) break;
     const row = events[index], next = events[index + 1];
+    // Old captures retain their raw census value, but an absent measurement
+    // cannot authorize inferred mapping origins or a claim of disjoint calls.
+    if (row.durationNs === null) { gap(row, 'syscall-duration-required'); break; }
     // Look ahead BEFORE applying either member of an ambiguous pair. Keeping
     // the first member's range would already assert an unsupported ordering.
-    if (next && next.atMs <= row.completedAtMs) {
+    if (next && next.startedAtNs <= row.completedAtNs) {
       gap(row, 'overlapping-address-space-events-replay-stopped'); break;
     }
     let space = tasks.get(row.tid);
@@ -648,7 +672,7 @@ export function bindRuntimeProcessTree(text, terminal) {
         ? /\bPROT_EXEC\b/.test(args) : null;
       memoryTransitions.push({ taskId: row.tid, operation, arguments: args, result,
         succeeded: !failed, executablePermissionRequested: permission,
-        atMs: row.atMs, completedAtMs: row.completedAtMs });
+        atMs: row.atMs, completedAtMs: row.completedAtMs, durationNs:row.durationNs });
     }
     if (/^execve(?:at)?\(/.test(row.call)) {
       if (/\)\s+=\s+-1\b/.test(row.call)) continue;
