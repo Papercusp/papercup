@@ -253,13 +253,27 @@ describe('selectRecipeCaptureTarget (P-014)', () => {
   });
 
   it('creates the proposed candidate when no exact or qualifying near match exists', () => {
+    const similarRecipes = [{
+      id: 'below',
+      similarity: 0.799,
+      matchingEvidence: { domain: { verdict: 'equivalent' as const, basis: 'exact-source-and-contract' } },
+    }];
     expect(selectRecipeCaptureTarget({
       proposedId: 'new-candidate',
-      similarRecipes: [{ id: 'below', similarity: 0.79 }],
+      similarRecipes,
     })).toEqual({
       id: 'new-candidate',
       disposition: 'created',
       matchedSimilarity: null,
+    });
+    expect(selectRecipeCaptureTarget({
+      proposedId: 'new-candidate',
+      similarRecipes,
+      nearDuplicateThreshold: 0.799,
+    })).toEqual({
+      id: 'below',
+      disposition: 'near-similarity-reuse',
+      matchedSimilarity: 0.799,
     });
   });
 });
