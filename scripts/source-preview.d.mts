@@ -302,6 +302,7 @@ export function createBgVerifierRuntimeCustody(options: Parameters<typeof create
             tracedTaskPopulationComplete: true;
             parsedSourceProcessPopulationComplete: true;
             memoryTransitions: ReturnType<typeof import("../packages/operator-core/lib/memory/bench/runtime-file-opens.mjs").bindRuntimeProcessTree>["memoryTransitions"];
+            mappingOrigins: ReturnType<typeof import("../packages/operator-core/lib/memory/bench/runtime-file-opens.mjs").bindRuntimeProcessTree>["mappingOrigins"];
             executableMemoryQualification: "required";
             completeRuntimeClosureVerified: false;
             sourceQualification: "required";
@@ -515,6 +516,8 @@ export function createBgVerifierRuntimeCustody(options: Parameters<typeof create
         builtinQualification: string;
         nativeQualification: string;
         vdsoQualification: string;
+        executableMemoryQualification: "required";
+        jitByteOriginQualification: "required";
         compiledOutputBytesObserved: boolean;
     }>;
 }>>;
@@ -1415,7 +1418,7 @@ export function qualifyBgVerifierLogicalOutputSet(args: {
  * @param {Awaited<ReturnType<typeof qualifyBgVerifierLogicalOutputSet>>} logical
  * @param {Parameters<typeof qualifyBgVerifierLogicalOutputSet>[0]} args
  */
-export function verifyBgVerifierLogicalOutputSet(logical: Awaited<ReturnType<typeof qualifyBgVerifierLogicalOutputSet>>, { output, binding, receipts }: Parameters<typeof qualifyBgVerifierLogicalOutputSet>[0]): any;
+export function verifyBgVerifierLogicalOutputSet(logical: any, { output, binding, receipts }: Parameters<typeof qualifyBgVerifierLogicalOutputSet>[0]): any;
 /** Publish one COMPLETE receipt at the pre-nominated bank leaf. Linking a fully
  * written private file is atomic and refuses an existing destination, including
  * dangling links. Keep artifact paths physical: moving this directory would
@@ -2940,6 +2943,7 @@ export function qualifyBgVerifierRuntimeSources({ output, record, invocation, ex
         tracedTaskPopulationComplete: true;
         parsedSourceProcessPopulationComplete: true;
         memoryTransitions: ReturnType<typeof import("../packages/operator-core/lib/memory/bench/runtime-file-opens.mjs").bindRuntimeProcessTree>["memoryTransitions"];
+        mappingOrigins: ReturnType<typeof import("../packages/operator-core/lib/memory/bench/runtime-file-opens.mjs").bindRuntimeProcessTree>["mappingOrigins"];
         executableMemoryQualification: "required";
         completeRuntimeClosureVerified: false;
         sourceQualification: "required";
@@ -3153,6 +3157,8 @@ export function qualifyBgVerifierRuntimeSources({ output, record, invocation, ex
     builtinQualification: string;
     nativeQualification: string;
     vdsoQualification: string;
+    executableMemoryQualification: "required";
+    jitByteOriginQualification: "required";
     compiledOutputBytesObserved: boolean;
 };
 /** Attach dependencies to the independently invoked tree before its first Node
@@ -3474,7 +3480,7 @@ export function exportSnapshot({ repoRoot, ref, out, target: targetName, license
     out: string;
     manifest: {
         schema: number;
-        target: "public" | "preview";
+        target: "preview" | "public";
         purpose: string;
         year: number;
         source: {
