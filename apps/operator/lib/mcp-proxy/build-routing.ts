@@ -129,6 +129,9 @@ export const CURRENT_BUILD_DEFAULT_TOOLS: readonly string[] = [
   "consult:decline",
   "consult:close",
   "consult:routing-health",
+  // Native edit hooks ship with staging and must retain their full session
+  // attribution proof; a pinned release may reject newer proof fields.
+  "locks:release",
 ];
 
 const CURRENT_BUILD_DEFAULT_LOOKUP: ReadonlySet<string> = new Set(
@@ -152,10 +155,10 @@ const CURRENT_BUILD_DEFAULT_SCRIPT_PATTERNS: ReadonlyArray<{ tool: string; patte
     const verb = tool.slice(tool.indexOf(":") + 1);
     const words = verb.split(/[-_]/).map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
     const spelling = words.join("[-_]?");
-    // Short consult verbs such as `close` occur on unrelated tools. Require
+    // Short verbs such as `close` and `release` occur on unrelated tools. Require
     // their namespace while retaining the established repair-plane spellings.
-    const pattern = namespace === "consult"
-      ? new RegExp(`\\btools(?:\\.consult|\\[['\"]consult['\"]\\])\\s*(?:\\.${spelling}\\b|\\[['\"]${spelling}['\"]\\])|\\bconsult[:_]${spelling}\\b`, "i")
+    const pattern = namespace === "consult" || namespace === "locks"
+      ? new RegExp(`\\btools(?:\\.${namespace}|\\[['\"]${namespace}['\"]\\])\\s*(?:\\.${spelling}\\b|\\[['\"]${spelling}['\"]\\])|\\b${namespace}[:_]${spelling}\\b`, "i")
       : new RegExp(spelling, "i");
     return { tool: normalizeMcpName(tool), pattern };
   });

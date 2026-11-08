@@ -342,6 +342,7 @@ describe("current-build defaults for release repair-plane tools", () => {
     expect(CURRENT_BUILD_DEFAULT_TOOLS).toEqual([
       "release:repair-queue", "release:test-downgrade",
       "consult:get_feedback", "consult:reply", "consult:decline", "consult:close", "consult:routing-health",
+      "locks:release",
     ]);
   });
 
@@ -361,6 +362,10 @@ describe("current-build defaults for release repair-plane tools", () => {
           description: "release downgrade guidance",
           inputSchema: { type: "object", properties: { oldReason: { type: "string" } } },
         },
+        {
+          name: "locks:release",
+          inputSchema: { type: "object", properties: { native_edit_proof: { properties: {} } } },
+        },
         { name: "coord:presence", description: "main-only guidance" },
       ], contentType));
       const staging = await listen(toolListOperator("staging", seen, [
@@ -374,6 +379,13 @@ describe("current-build defaults for release repair-plane tools", () => {
           name: "release:test-downgrade",
           description: "current-build downgrade guidance",
           inputSchema: { type: "object", properties: { reason: { type: "string" } } },
+        },
+        {
+          name: "locks:release",
+          inputSchema: {
+            type: "object",
+            properties: { native_edit_proof: { properties: { sessionId: { type: "string" } } } },
+          },
         },
         { name: "coord:presence", description: "staging-only guidance" },
       ], contentType));
@@ -394,6 +406,9 @@ describe("current-build defaults for release repair-plane tools", () => {
         inputSchema: { properties: { reason: { type: "string" } } },
       });
       expect(listed.find((tool) => tool.name === "coord:presence")?.description).toBe("main-only guidance");
+      expect(listed.find((tool) => tool.name === "locks:release")).toMatchObject({
+        inputSchema: { properties: { native_edit_proof: { properties: { sessionId: { type: "string" } } } } },
+      });
       expect(seen.map((entry) => entry.label)).toEqual(["main", "staging"]);
       expect(JSON.parse(seen[0]!.body)).toEqual(JSON.parse(seen[1]!.body));
     },
@@ -422,6 +437,55 @@ describe("current-build defaults for release repair-plane tools", () => {
 
   it("recognizes test-downgrade as a current-build default", () => {
     expect(currentBuildDefaultTool({ name: "release:test-downgrade", arguments: { op: "list" } })).not.toBeNull();
+  });
+
+  it("routes native release proof intact in direct, wrapped and script calls", () => {
+    const args = {
+      lock_id: "owned-lock", paths: ["src/first.ts"], coordination_domain: "/repo",
+      native_edit_proof: {
+        source: "codex", success: true, tool: "apply_patch", paths: ["src/first.ts"], sessionId: "native-session",
+      },
+    };
+    for (const name of ["locks:release", "locks_release"]) {
+      for (const wrapped of [false, true]) {
+        const request = wrapped ? call("tools:invoke", { name, args }) : call(name, args);
+        const routed = applyMcpBuildSelector(buf(request), { defaultToCurrentBuild: true });
+        expect(routed).toMatchObject({ kind: "routed", build: "staging" });
+        if (routed.kind !== "routed") continue;
+        const forwarded = JSON.parse(routed.body.toString("utf8")).params.arguments;
+        expect(wrapped ? forwarded.args : forwarded).toEqual(args);
+      }
+    }
+    for (const script of [
+      "return tools.locks.release({});", "return tools['locks']['release']({});",
+      "return tools['locks'].release({});", "return tools.locks['release']({});",
+      "return tools.invoke({ name: 'locks:release', args: {} });",
+    ]) {
+      expect(applyMcpBuildSelector(buf(call("code:run", { script })), { defaultToCurrentBuild: true }))
+        .toMatchObject({ kind: "routed", build: "staging" });
+    }
+    for (const script of ["return tools.release.deploy({});", "return tools.resource.release({});"]) {
+      expect(applyMcpBuildSelector(buf(call("code:run", { script })), { defaultToCurrentBuild: true }))
+        .toEqual({ kind: "none" });
+    }
+    expect(applyMcpBuildSelector(buf(call("locks:release", { ...args, build: "main" })), {
+      defaultToCurrentBuild: true,
+    })).toMatchObject({ kind: "routed", build: "main" });
+    expect(applyMcpBuildSelector(buf(call("locks:release", args)))).toEqual({ kind: "none" });
+  });
+
+  it("never falls back to old main when the native release authority is unavailable", async () => {
+    const seen: Array<{ label: string; body: string }> = [];
+    const main = await listen(stubOperator("main", seen));
+    const stagingDown = await freePort();
+    const p = await proxyFor(() => staticMcpProxyTargets("127.0.0.1", port(main), stagingDown), 100);
+    const response = await post(p, JSON.stringify(call("locks:release", {
+      lock_id: "owned-lock",
+      native_edit_proof: { success: true, source: "codex", paths: ["src/first.ts"], sessionId: "native-session" },
+    })));
+    expect(response.status).toBe(503);
+    expect(response.body).toContain("staging_unavailable");
+    expect(seen).toEqual([]);
   });
 
   it.each(["get_feedback", "reply", "decline", "close", "routing-health"])(

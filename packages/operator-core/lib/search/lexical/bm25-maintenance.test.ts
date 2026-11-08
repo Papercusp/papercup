@@ -179,6 +179,53 @@ describe('invalid-index rebuild vacuum admission', () => {
     expect(connectionStatements.some(query => query.includes('bm25_index_ddl'))).toBe(false);
     expect(conn.release).toHaveBeenCalledOnce();
   });
+
+  it('restores the long lock timeout for CREATE after an invalid-index drop succeeds', async () => {
+    const connectionStatements: string[] = [];
+    const conn = Object.assign(
+      vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        const query = render(strings, values);
+        connectionStatements.push(query);
+        if (query.includes('pg_try_advisory_lock')) return [{ locked: true }];
+        if (query.includes('FROM pg_index')) return [{ valid: false, vacuum_pid: null }];
+        if (query.includes('bm25_index_ddl')) return [{ ddl: 'CREATE INDEX CONCURRENTLY session_turns_bm25' }];
+        return [];
+      }),
+      {
+        unsafe: vi.fn(async (query: string) => {
+          connectionStatements.push(query);
+          return [];
+        }),
+        release: vi.fn(),
+      },
+    );
+    const sql = Object.assign(
+      vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        const query = render(strings, values);
+        if (query.includes('bm25_ensure_indexes')) {
+          return [{ corpus_index: 'session_turns_bm25', outcome: 'invalid' }];
+        }
+        if (query.includes('to_regprocedure')) return [{ defined: false }];
+        return [];
+      }),
+      { reserve: vi.fn().mockResolvedValue(conn) },
+    );
+
+    const report = await runBm25Maintenance(sql as never, { maxCompactionSteps: 0 });
+
+    const shortTimeout = connectionStatements.findIndex(query => query === "SET lock_timeout = '15s'");
+    const drop = connectionStatements.findIndex(query => query.includes('DROP INDEX CONCURRENTLY'));
+    const longTimeout = connectionStatements.findIndex(query => query === "SET lock_timeout = '4h'");
+    const create = connectionStatements.findIndex(query => query.includes('CREATE INDEX CONCURRENTLY session_turns_bm25'));
+    expect(shortTimeout).toBeGreaterThanOrEqual(0);
+    expect(shortTimeout).toBeLessThan(drop);
+    expect(drop).toBeLessThan(longTimeout);
+    expect(longTimeout).toBeLessThan(create);
+    expect(report.built).toBe('session_turns_bm25');
+    expect(report.rebuiltInvalid).toBe(true);
+    expect(report.errors).toEqual([]);
+    expect(conn.release).toHaveBeenCalledOnce();
+  });
 });
 
 describe('orderBuildCandidates', () => {

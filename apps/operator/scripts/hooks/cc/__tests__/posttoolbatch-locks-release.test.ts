@@ -12,6 +12,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import { join } from 'node:path';
 import { runHookProcess } from './spawn-hook';
+import { createMcpProxy, staticMcpProxyTargets } from '../../../../lib/mcp-proxy/proxy';
 
 const BATCH_HOOK = join(__dirname, '..', 'posttoolbatch-locks-release.sh');
 const POST_HOOK = join(__dirname, '..', 'posttooluse-locks-release.sh');
@@ -582,6 +583,71 @@ describe('posttooluse-locks-release.sh batch deferral', () => {
     expect(JSON.parse(fs.readFileSync(regenMarker, 'utf8'))).toEqual([
       '--files=scripts/input.mjs',
     ]);
+  });
+
+  it.each(['codex', 'claude'] as const)('preserves %s native session proof through the current-build release authority', async (source) => {
+    const oldRequests: unknown[] = [];
+    const oldMain = createServer((req, res) => {
+      let body = '';
+      req.on('data', chunk => (body += chunk));
+      req.on('end', () => {
+        oldRequests.push(JSON.parse(body));
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          jsonrpc: '2.0', id: 1,
+          error: { code: -32602, message: 'native_edit_proof: Unrecognized key sessionId' },
+        }));
+      });
+    });
+    await new Promise<void>(resolve => oldMain.listen(0, '127.0.0.1', resolve));
+    const mainPort = (oldMain.address() as { port: number }).port;
+    const stagingPort = (server.address() as { port: number }).port;
+    const proxy = createMcpProxy({
+      listenPort: 0,
+      resolveTargets: () => staticMcpProxyTargets('127.0.0.1', mainPort, stagingPort),
+      retryWindowMs: 200, retryBackoffMs: 10, log: () => {},
+    });
+    await new Promise<void>(resolve => proxy.listen(0, '127.0.0.1', resolve));
+    const proxyUrl = 'http://127.0.0.1:' + (proxy.address() as { port: number }).port;
+    const toolUseId = 'tu-current-' + source;
+    const nativeSession = 'native-' + source;
+    const owner = 'authority-' + source;
+    if (source === 'codex') {
+      fs.writeFileSync(join(cache, toolUseId + '.lock'), 'native-lock');
+      fs.writeFileSync(join(cache, toolUseId + '.paths'), JSON.stringify(['src/first.ts']));
+      fs.writeFileSync(join(cache, toolUseId + '.domain'), '/repo');
+    } else {
+      writeBatch('current-claude', 'granted', [toolUseId], { owner, paths: ['src/first.ts'] });
+    }
+    try {
+      const out = await runHook(source === 'codex' ? POST_HOOK : BATCH_HOOK, source === 'codex' ? {
+        hook_event_name: 'PostToolUse', tool_name: 'apply_patch', tool_use_id: toolUseId,
+        session_id: nativeSession, tool_response: { success: true },
+      } : {
+        ...batchInput([toolUseId], nativeSession),
+        tool_calls: [{ tool_use_id: toolUseId, tool_name: 'Edit', tool_response: { success: true } }],
+      }, {
+        PAPERCUSP_SID: owner, PAPERCUSP_OPERATOR_URL: proxyUrl,
+        PAPERCUSP_LOCKS_FALLBACK_OPERATOR_URL: proxyUrl,
+      });
+      expect(out.status).toBe(0);
+      expect(oldRequests).toEqual([]);
+      expect(releaseRequests).toHaveLength(1);
+      expect(releaseRequests[0]?.params?._meta?.['papercusp/build']).toBe('staging');
+      expect(releaseRequests[0]?.params?.arguments).toMatchObject({
+        paths: ['src/first.ts'], coordination_domain: '/repo',
+        native_edit_proof: { success: true, source, sessionId: nativeSession, paths: ['src/first.ts'] },
+      });
+      expect(fs.existsSync(join(cache, 'owner-' + owner + '-last-success.json'))).toBe(true);
+      expect(fs.existsSync(join(cache, 'last-error.json'))).toBe(false);
+      if (source === 'codex') expect(fs.existsSync(join(cache, toolUseId + '.lock'))).toBe(false);
+      else expectClean('current-claude', [toolUseId]);
+    } finally {
+      proxy.closeAllConnections();
+      await new Promise<void>(resolve => proxy.close(() => resolve()));
+      oldMain.closeAllConnections();
+      await new Promise<void>(resolve => oldMain.close(() => resolve()));
+    }
   });
 
   it('uses the stable release authority when the primary MCP response has no text result', async () => {
