@@ -1418,7 +1418,7 @@ export function qualifyBgVerifierLogicalOutputSet(args: {
  * @param {Awaited<ReturnType<typeof qualifyBgVerifierLogicalOutputSet>>} logical
  * @param {Parameters<typeof qualifyBgVerifierLogicalOutputSet>[0]} args
  */
-export function verifyBgVerifierLogicalOutputSet(logical: any, { output, binding, receipts }: Parameters<typeof qualifyBgVerifierLogicalOutputSet>[0]): any;
+export function verifyBgVerifierLogicalOutputSet(logical: Awaited<ReturnType<typeof qualifyBgVerifierLogicalOutputSet>>, { output, binding, receipts }: Parameters<typeof qualifyBgVerifierLogicalOutputSet>[0]): any;
 /** Publish one COMPLETE receipt at the pre-nominated bank leaf. Linking a fully
  * written private file is atomic and refuses an existing destination, including
  * dangling links. Keep artifact paths physical: moving this directory would
@@ -3480,7 +3480,7 @@ export function exportSnapshot({ repoRoot, ref, out, target: targetName, license
     out: string;
     manifest: {
         schema: number;
-        target: "preview" | "public";
+        target: "public" | "preview";
         purpose: string;
         year: number;
         source: {

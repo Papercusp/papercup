@@ -1,4 +1,20 @@
 export function runtimeFileTraceArguments(output: string, command: string[]): string[];
+export function observeRuntimePageSize(): number;
+export function bindRuntimeJitDump(bytes: Buffer, witness: {
+  processId: number; taskIds: number[]; elfMachine: number;
+  startedMonotonicNs: string; finishedMonotonicNs: string;
+  exitCode: number; signal: string | null; eof: boolean; captureStartedBeforeExec: boolean;
+}): {
+  schema: 'runtime-jitdump-code-bytes/v1'; processId: number; elfMachine: number; endianness: 'little' | 'big'; bytes: number; sha256: string;
+  createdMonotonicNs: string; recordCount: number; closeRecordObserved: boolean;
+  loads: {taskId: number; codeIndex: string; address: string; virtualAddress: string;
+    bytes: number; sha256: string; nameSha256: string; timestampNs: string; byteOffset: number}[];
+  moves: {taskId: number; codeIndex: string; from: string; to: string; virtualAddress: string;
+    bytes: number; timestampNs: string; destinationBytesObserved: false}[];
+  metadata: {kind: number; bytes: number; sha256: string}[];
+  byteEvidence: 'runtime-reported-code-load-payloads'; jitByteOriginQualification: 'required'; executableMemoryQualification: 'required';
+  runtimeCaptureCustody: 'required'; creatorFence: 'required'; completeRuntimeClosureVerified: false;
+};
 export function bindRuntimeProcessTree(text: string, terminal: {
   processId: number; exitCode: number; signal: string | null; eof: boolean; captureStartedBeforeExec: boolean;
   pageSizeBytes?: number;

@@ -97,9 +97,12 @@ function abortRefreshIfUnobserved(batch) {
     abort();
   }, TSC_SERVICE_TIMEOUT_MS);
   for (const item of batch) item.abortRefreshIfUnobserved = abort;
-  return () => {
-    clearTimeout(deadline);
-    for (const item of batch) delete item.abortRefreshIfUnobserved;
+  return {
+    wasAborted: () => abortRequested,
+    detach: () => {
+      clearTimeout(deadline);
+      for (const item of batch) delete item.abortRefreshIfUnobserved;
+    },
   };
 }
 
@@ -323,7 +326,7 @@ async function drain() {
       const batch = takeTscServiceProjectBatch(queue);
       if (batch.length === 0) continue;
       const projects = [...new Set(batch.map((item) => item.request.project))];
-      const detachRefreshAbort = abortRefreshIfUnobserved(batch);
+      const refreshAbort = abortRefreshIfUnobserved(batch);
       try {
       let refreshStartedAt = Date.now();
       let refreshFinishedAt = refreshStartedAt;
@@ -348,11 +351,11 @@ async function drain() {
       }
       for (let i = 0; i < batch.length; i += 1) {
         const item = batch[i];
-        if (item.cancelled) continue;
+        if (item.cancelled || item.completed) continue;
         try {
           const response = await serve({ ...item, refreshStartedAt, refreshFinishedAt,
-            isCancelled: () => item.cancelled });
-          if (!response || item.cancelled) {
+            isCancelled: () => item.cancelled || item.completed });
+          if (!response || item.cancelled || item.completed) {
             item.trace('cancelled');
             continue;
           }
@@ -374,10 +377,15 @@ async function drain() {
           break;
         }
       }
-      const rss = tsgoRssBytes();
-      if (rss > RSS_RESET_BYTES) await resetApi(`tsgo RSS ${(rss / 1024 ** 3).toFixed(1)} GiB`);
+      // A cooperative census can stop without another compiler RPC rejecting.
+      // Its abort still disposed the API: reap it before admitting queued work.
+      if (refreshAbort.wasAborted()) await resetApi('compiler batch cancelled');
+      else {
+        const rss = tsgoRssBytes();
+        if (rss > RSS_RESET_BYTES) await resetApi(`tsgo RSS ${(rss / 1024 ** 3).toFixed(1)} GiB`);
+      }
       } finally {
-        detachRefreshAbort();
+        refreshAbort.detach();
       }
     }
   } finally {

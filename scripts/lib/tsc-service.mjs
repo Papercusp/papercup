@@ -764,6 +764,23 @@ function* filesDependingOnChangedModulesSteps(opts) {
     };
     const optionsByConfig = new Map();
     const configsByDir = new Map();
+    // Module resolution revisits the same ancestor directories and package paths
+    // from thousands of import sites. Cache those filesystem answers for this
+    // census only; a later snapshot must see newly created or removed modules.
+    /** @template T @param {(file: string) => T} probe */
+    const memoizeProbe = (probe) => {
+      const answers = new Map();
+      return (file) => {
+        if (!answers.has(file)) answers.set(file, probe(file));
+        return answers.get(file);
+      };
+    };
+    const resolutionHost = {
+      ...ts.sys,
+      fileExists: memoizeProbe(ts.sys.fileExists),
+      directoryExists: memoizeProbe(ts.sys.directoryExists),
+      realpath: memoizeProbe(ts.sys.realpath),
+    };
     const optionsFor = (file) => {
       const dir = dirname(file);
       if (!configsByDir.has(dir)) configsByDir.set(dir, configFile
@@ -787,7 +804,7 @@ function* filesDependingOnChangedModulesSteps(opts) {
       if (text == null) continue;
       const { options, cache } = optionsFor(file);
       for (const imp of ts.preProcessFile(text, true, true).importedFiles) {
-        const resolved = ts.resolveModuleName(imp.fileName, file, options, ts.sys, cache).resolvedModule;
+        const resolved = ts.resolveModuleName(imp.fileName, file, options, resolutionHost, cache).resolvedModule;
         if (!resolved || !inside(resolved.resolvedFileName)) continue;
         const key = identity(resolved.resolvedFileName);
         if (!reverse.has(key)) reverse.set(key, new Set());

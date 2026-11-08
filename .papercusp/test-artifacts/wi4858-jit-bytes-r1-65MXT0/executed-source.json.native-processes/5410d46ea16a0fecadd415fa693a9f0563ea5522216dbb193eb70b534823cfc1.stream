@@ -1,0 +1,1 @@
+TEST_FILE_ROUTE_ERROR PC_EXECUTED_SOURCE_MAP_OUT and its .modules/.native-processes/.processes sidecars must be outside the repository or in a Git-ignored custody directory; use an external evidence path or .papercusp/scratch/ instead of a tracked docs/evidence path; For the supported routed test surface, use testing:run { files: [...] }.

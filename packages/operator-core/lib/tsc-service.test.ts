@@ -14,6 +14,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { build } from 'esbuild';
+import ts from 'typescript';
 const nativeDir = dirname(createRequire(import.meta.url).resolve('@typescript/native/package.json'));
 const { API } = await import(pathToFileURL(join(nativeDir, 'dist/api/async/api.js')).href);
 // eslint-disable-next-line import/no-relative-packages
@@ -187,6 +188,7 @@ describe('bundled typecheck service identity', () => {
     { release: 'server deadline', faultPhase: 'diagnostic', serviceTimeoutMs: 4_000, clientTimeoutMs: 15_000, expectedReason: 'request-deadline-exceeded' },
     { release: 'server deadline', faultPhase: 'initialize', serviceTimeoutMs: 4_000, clientTimeoutMs: 15_000, expectedReason: 'request-deadline-exceeded' },
     { release: 'server deadline', faultPhase: 'snapshot', serviceTimeoutMs: 4_000, clientTimeoutMs: 15_000, expectedReason: 'request-deadline-exceeded' },
+    { release: 'server deadline', faultPhase: 'scope', serviceTimeoutMs: 4_000, clientTimeoutMs: 15_000, expectedReason: 'request-deadline-exceeded' },
   ])('recovers from orphaned compiler RPCs and refuses same-version compiler replacement on a live daemon ($release, $faultPhase)', async ({ serviceTimeoutMs, clientTimeoutMs, expectedReason, faultPhase }) => {
     const root = mkdtempSync(join(tmpdir(), 'tsc-compiler-replacement-'));
     roots.push(root);
@@ -218,6 +220,22 @@ describe('bundled typecheck service identity', () => {
     expect(originalApi).toContain('async updateSnapshot(params) {');
     expect(originalApi).toContain('async ensureInitialized() {');
     const faultMarker = join(root, 'stall-rpc-once');
+    if (faultPhase === 'scope') {
+      const serviceFile = join(root, 'scripts/lib/tsc-service.mjs');
+      const signature = 'export async function checkedSetForCooperatively(opts, { isCancelled = () => false } = {}) {';
+      const source = readFileSync(serviceFile, 'utf8');
+      expect(source).toContain(signature);
+      writeFileSync(serviceFile, source.replace(signature, `${signature}
+        const fs = await import('node:fs');
+        if (fs.existsSync(${JSON.stringify(faultMarker)})) {
+          fs.unlinkSync(${JSON.stringify(faultMarker)});
+          console.log('HUNG_OPERATION_READY');
+          while (!isCancelled()) await new Promise(resolve => setTimeout(resolve, 10));
+          console.log('SCOPE_CENSUS_CANCELLED');
+          return null;
+        }
+      `));
+    }
     const stallOnce = `
       const fs = await import('node:fs');
       if (fs.existsSync(${JSON.stringify(faultMarker)})) {
@@ -253,7 +271,7 @@ describe('bundled typecheck service identity', () => {
       const runCaller = (files = ['a.ts'], timeoutMs = 10000, operation?: string) => new Promise<any>((resolve, reject) => {
         const caller = spawn(process.execPath, ['--input-type=module', '-e', `
           const service = await import(${JSON.stringify(pathToFileURL(join(root, 'scripts/lib/tsc-service.mjs')).href)});
-          const request = { requestId: crypto.randomUUID(), root: ${JSON.stringify(root)}, project: ${JSON.stringify(project)}, files: ${JSON.stringify(files)}, scope: 'named', operation: ${JSON.stringify(operation)} };
+          const request = { requestId: crypto.randomUUID(), root: ${JSON.stringify(root)}, project: ${JSON.stringify(project)}, files: ${JSON.stringify(files)}, scope: ${JSON.stringify(faultPhase === 'scope' && files.includes('hang.ts') ? 'dependencies' : 'named')}, operation: ${JSON.stringify(operation)} };
           const result = await service.requestTscService({ socketPath: ${JSON.stringify(socketPath)}, request, timeoutMs: ${timeoutMs} })
             .catch(error => ({ ok: false, reason: error.code }));
           console.log(JSON.stringify({ requestId: request.requestId, result, identity: service.tscServiceIdentity(request) }));
@@ -283,7 +301,8 @@ describe('bundled typecheck service identity', () => {
       const recovered = await queued;
       expect(expired.result).toMatchObject({ ok: false, reason: expectedReason });
       expect(recovered.result).toMatchObject({ ok: true, kind: 'result', errorCount: 0 });
-      expect(output).toContain(`orphan ${faultPhase} disposed`);
+      expect(output).toContain(faultPhase === 'scope' ? 'SCOPE_CENSUS_CANCELLED' : `orphan ${faultPhase} disposed`);
+      if (faultPhase === 'scope') expect(output).not.toContain(`${expired.requestId} project=tsconfig.json named=1 phase=program-diagnostics`);
       const prefix = `requestId=${expired.requestId} project=tsconfig.json named=1 phase=`;
       expect(output).toContain(`${prefix}compiler-initialize`);
       if (faultPhase === 'initialize') {
@@ -1308,6 +1327,33 @@ describe('checkedSetFor', () => {
     expect(complete.files).toHaveLength(41);
     expect(limited.files.every((file) => complete.files.includes(file))).toBe(true);
     expect(dependencyCache.size).toBe(1);
+  });
+
+  it('bounds repeated filesystem probes without retaining negative resolution answers across censuses', () => {
+    dir = mkdtempSync(join(tmpdir(), 'tsc-service-scope-probes-'));
+    const abs = (name: string) => join(dir, name);
+    writeFileSync(abs('changed.ts'), 'export const value = 1;');
+    const callers = Array.from({ length: 24 }, (_, i) => `nested-${i}/caller.ts`);
+    for (const caller of callers) {
+      mkdirSync(dirname(abs(caller)), { recursive: true });
+      writeFileSync(abs(caller), "import { value } from '../created.js';\nimport 'missing-package';");
+    }
+    const probes = vi.spyOn(ts.sys, 'directoryExists');
+    const options = { root: dir, named: ['changed.ts'],
+      programFiles: ['changed.ts', ...callers].map(abs), readText: readTextOrNull };
+    try {
+      expect(checkedSetFor(options).files).toEqual([abs('changed.ts')]);
+      const paths = probes.mock.calls.map(([path]) => path);
+      expect(paths.length).toBeGreaterThan(0);
+      expect(paths.length).toBe(new Set(paths).size);
+      writeFileSync(abs('created.ts'), "export { value } from './changed.js';");
+      probes.mockClear();
+      expect(checkedSetFor(options).files.sort()).toEqual(['changed.ts', ...callers].map(abs).sort());
+      const refreshed = probes.mock.calls.map(([path]) => path);
+      expect(refreshed.length).toBe(new Set(refreshed).size);
+    } finally {
+      probes.mockRestore();
+    }
   });
 
   it('yields during reverse-importer census so a client disconnect can cancel the walk', async () => {
