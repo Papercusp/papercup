@@ -85,6 +85,115 @@ function executableMaps(text) {
   }
   return maps;
 }
+function execEntryAuxv(bytes) {
+  memoryRequire(Buffer.isBuffer(bytes) && bytes.length >= 32 && bytes.length <= 65536
+    && bytes.length % 16 === 0, 'invalid exec auxv extent');
+  const values = new Map();
+  for (let offset = 0; offset < bytes.length; offset += 16) {
+    const key = bytes.readBigUInt64LE(offset), value = bytes.readBigUInt64LE(offset+8);
+    if (key === 0n) {
+      memoryRequire(value === 0n && offset+16 === bytes.length && values.has(7n)
+        && values.get(9n) > 0n, 'incomplete exec auxv');
+      return {base:values.get(7n), entry:values.get(9n)};
+    }
+    memoryRequire(!values.has(key), 'duplicate exec auxv key');
+    values.set(key,value);
+  }
+  throw new Error('runtime executable memory: unterminated exec auxv');
+}
+function execEntryHeaderAddress(auxv, maps, identity) {
+  if (auxv.base > 0n) return auxv.base;
+  const headers = maps.filter(map => map.path === identity.executable && BigInt(map.offset) === 0n
+    && BigInt(map.inode) > 0n);
+  memoryRequire(headers.length === 1, 'ambiguous static exec header');
+  return headers[0].start;
+}
+/** Read an x86-64 Linux exec stop owned by the existing independent tracer.
+ * The caller pins both identities, group-stops the tracer, and owns cleanup.
+ * Reading a later stopped process cannot qualify as this initial snapshot. */
+export function observeRuntimeExecEntry(identity, tracerIdentity) {
+  memoryRequire(process.platform === 'linux' && process.arch === 'x64', 'unsupported exec entry ABI');
+  memoryRequire(identity?.parentProcessId === process.pid, 'not the observer direct child');
+  const root = '/proc/'+identity.processId, startedMonotonicNs = process.hrtime.bigint().toString();
+  memoryRequire(sameProcess(procIdentity(root,identity.processId),identity), 'launch identity changed');
+  const tracerTasksBefore = stoppedTracer(tracerIdentity,identity), tasksBefore = stoppedTasks(root,tracerIdentity);
+  const syscallBefore = fs.readFileSync(root+'/syscall','utf8'), auxvBefore = fs.readFileSync(root+'/auxv');
+  const mapsBefore = fs.readFileSync(root+'/maps','utf8');
+  const address = execEntryHeaderAddress(execEntryAuxv(auxvBefore),executableMaps(mapsBefore),identity);
+  memoryRequire(address <= BigInt(Number.MAX_SAFE_INTEGER)-64n, 'unsupported exec header address');
+  const fd = fs.openSync(root+'/mem','r'), elfHeader = Buffer.alloc(64);
+  try {memoryRequire(fs.readSync(fd,elfHeader,0,64,Number(address)) === 64, 'short exec header read');}
+  finally {fs.closeSync(fd);}
+  const mapsAfter = fs.readFileSync(root+'/maps','utf8'), auxvAfter = fs.readFileSync(root+'/auxv');
+  const syscallAfter = fs.readFileSync(root+'/syscall','utf8'), tasksAfter = stoppedTasks(root,tracerIdentity);
+  const tracerTasksAfter = stoppedTracer(tracerIdentity,identity);
+  memoryRequire(sameProcess(procIdentity(root,identity.processId),identity), 'launch identity changed');
+  const observation = {schema:'runtime-exec-entry-observation/v1',process:{...identity},observerProcessId:process.pid,
+    startedMonotonicNs,finishedMonotonicNs:process.hrtime.bigint().toString(),
+    tracer:{process:{...tracerIdentity},tasksBefore:tracerTasksBefore,tasksAfter:tracerTasksAfter},
+    tasksBefore,tasksAfter,syscallBefore,syscallAfter,auxvBefore,auxvAfter,mapsBefore,mapsAfter,
+    elfHeader:{address:'0x'+address.toString(16),bytes:elfHeader}};
+  bindRuntimeExecEntry(observation,identity,tracerIdentity);
+  return observation;
+}
+/** Validate retained parent-read entry evidence. This covers one exec boundary,
+ * not the process lifetime, executable byte origin or writable aliases. */
+export function bindRuntimeExecEntry(observation, identity, tracerIdentity) {
+  const o = observation;
+  memoryRequire(o?.schema === 'runtime-exec-entry-observation/v1' && sameProcess(o.process,identity)
+    && Number.isSafeInteger(identity.processId) && identity.processId > 0
+    && identity.parentProcessId === o.observerProcessId && o.observerProcessId !== identity.processId,
+  'exec observer identity differs');
+  memoryRequire(sameProcess(o.tracer?.process,tracerIdentity) && tracerIdentity.processId !== identity.processId
+    && tracerIdentity.processId !== o.observerProcessId, 'exec tracer identity differs');
+  memoryRequire(/^\d+$/.test(o.startedMonotonicNs) && /^\d+$/.test(o.finishedMonotonicNs)
+    && BigInt(o.startedMonotonicNs) < BigInt(o.finishedMonotonicNs), 'invalid exec observation clock');
+  const stable = (a,b) => JSON.stringify(a) === JSON.stringify(b);
+  memoryRequire(Array.isArray(o.tasksBefore) && o.tasksBefore.length === 1
+    && o.tasksBefore[0].taskId === identity.processId && o.tasksBefore[0].state === 't'
+    && o.tasksBefore[0].startTimeTicks === identity.startTimeTicks
+    && o.tasksBefore[0].tracerProcessId === tracerIdentity.processId && stable(o.tasksBefore,o.tasksAfter),
+  'exec target task changed or not singly ptrace-stopped');
+  const tracerTasks = o.tracer.tasksBefore;
+  memoryRequire(Array.isArray(tracerTasks) && tracerTasks.length > 0 && tracerTasks.length <= 10000
+    && new Set(tracerTasks.map(t => t.taskId)).size === tracerTasks.length
+    && tracerTasks.every(t => Number.isSafeInteger(t.taskId) && t.taskId > 0 && t.state === 'T'
+      && /^[1-9]\d*$/.test(t.startTimeTicks))
+    && tracerTasks.some(t => t.taskId === tracerIdentity.processId && t.startTimeTicks === tracerIdentity.startTimeTicks)
+    && stable(tracerTasks,o.tracer.tasksAfter), 'exec tracer tasks changed or not stopped');
+  memoryRequire(o.syscallBefore === o.syscallAfter && o.mapsBefore === o.mapsAfter
+    && Buffer.isBuffer(o.auxvBefore) && Buffer.isBuffer(o.auxvAfter) && o.auxvBefore.equals(o.auxvAfter),
+  'exec syscall/maps/auxv changed');
+  const syscall = o.syscallBefore.trim().split(/\s+/);
+  memoryRequire(syscall.length === 9 && ['59','322'].includes(syscall[0])
+    && syscall.slice(1).every(word => /^0x[0-9a-f]+$/.test(word)), 'not an x86-64 exec syscall stop');
+  const pc = BigInt(syscall[8]), auxv = execEntryAuxv(o.auxvBefore), maps = executableMaps(o.mapsBefore);
+  const address = execEntryHeaderAddress(auxv,maps,identity), header = o.elfHeader?.bytes;
+  memoryRequire(o.elfHeader?.address === '0x'+address.toString(16) && Buffer.isBuffer(header)
+    && header.length === 64 && header.subarray(0,7).equals(Buffer.from([0x7f,69,76,70,2,1,1]))
+    && header.readUInt16LE(18) === 62 && header.readUInt32LE(20) === 1
+    && header.readUInt16LE(52) === 64, 'invalid x86-64 exec ELF header');
+  const type = header.readUInt16LE(16), entry = header.readBigUInt64LE(24);
+  memoryRequire((auxv.base > 0n ? type === 3 : [2,3].includes(type)) && entry > 0n,
+    'unsupported exec ELF type or entry');
+  const expectedPc = entry + (type === 3 ? address : 0n);
+  memoryRequire(expectedPc < 1n<<64n && pc === expectedPc, 'instruction pointer is not the kernel ELF entry');
+  const headerMap = maps.find(m => m.start <= address && m.end >= address+64n && m.permissions[0] === 'r'
+    && BigInt(m.offset)+address-m.start === 0n && BigInt(m.inode) > 0n);
+  const entryMap = maps.find(m => m.start <= pc && m.end > pc && m.permissions[2] === 'x');
+  memoryRequire(headerMap && entryMap && entryMap.device === headerMap.device && entryMap.inode === headerMap.inode,
+    'exec entry is not in the mapped ELF');
+  memoryRequire(maps.some(m => m.start <= auxv.entry && m.end > auxv.entry
+    && m.permissions[2] === 'x' && m.path === identity.executable && BigInt(m.inode) > 0n),
+  'auxv program entry is not mapped to the expected executable');
+  return {schema:'runtime-exec-entry-binding/v1',process:{...identity},
+    instructionPointer:'0x'+pc.toString(16),programEntry:'0x'+auxv.entry.toString(16),
+    interpreterBase:'0x'+auxv.base.toString(16),mapsSha256:memoryHash(o.mapsBefore),
+    auxvSha256:memoryHash(o.auxvBefore),elfHeaderSha256:memoryHash(header),
+    mappings:maps.map(memoryMapDescriptor),kernelEntryObserved:true,
+    mappingPopulationComplete:false,executableBytesQualified:false,completeRuntimeClosureVerified:false,
+    scope:'one independently stopped x86-64 exec entry snapshot; byte origin, aliases and lifetime custody unqualified'};
+}
 function selectedMemoryRanges(ranges) {
   memoryRequire(Array.isArray(ranges) && ranges.length > 0 && ranges.length <= 256, 'invalid selected ranges');
   const seen = new Set();
@@ -408,12 +517,24 @@ export function bindRuntimeJitDump(bytes, witness) {
  * access, not proof of which bytes were read. Join with stable pre/post hashes.
  * Fail closed on unfinished or unsupported open records, never infer from a
  * filename appearing in an argv, a failed open, or another process's output. */
-export function runtimeFileTraceArguments(output, command) {
+export function runtimeFileTraceArguments(output, command, options) {
   // -q suppresses attach chatter. -qq also suppresses the terminal records
   // that bindRuntimeModelOpens requires and therefore cannot qualify a run.
-  return ['-f', '-q', '-ttt', '-T', '-yy', '-s', '4096', '-e',
+  const args = ['-f', '-q', '-ttt', '-T', '-yy', '-s', '4096', '-e',
     'trace=openat,openat2,mmap,mprotect,pkey_mprotect,munmap,mremap,shmat,shmdt,remap_file_pages,execve,execveat,clone,clone3,fork,vfork,exit,exit_group',
-    '-o', output, ...command];
+    '-o', output];
+  if (options !== undefined) {
+    memoryRequire(Number.isSafeInteger(options.execEntryDelayMs) && options.execEntryDelayMs >= 1000
+      && options.execEntryDelayMs <= 30000 && Array.isArray(command) && command.length > 0
+      && command.every(arg => typeof arg === 'string' && !arg.includes('\0')) && command[0].startsWith('/'),
+    'invalid exec entry trace options');
+    // strace's own initial exec does not provide this delay. A positional shell
+    // exec supplies the subsequent boundary without interpreting target args.
+    args.unshift('-D');
+    args.push('-e','inject=execve,execveat:delay_exit='+options.execEntryDelayMs+'ms',
+      '/bin/sh','-c','exec "$@"','runtime-exec-entry');
+  }
+  return [...args, ...command];
 }
 
 function parseRuntimeFileTrace(text) {
@@ -434,6 +555,11 @@ function parseRuntimeFileTrace(text) {
     const elapsed = / <(\d+\.\d{1,9})>$/.exec(call);
     const duration = elapsed ? nanoseconds(elapsed[1]) : null;
     if (elapsed) call = call.slice(0, elapsed.index);
+    // Delay injection is confined to exec exit in the entry collector. Keep
+    // accepting the measured successful exec; other injected outcomes remain
+    // unsupported by their existing strict readers.
+    if (/^(?:execve|execveat)\(.*\)\s+=\s+0 \(DELAYED\)$/.test(call))
+      call = call.slice(0,-10);
     if (call.endsWith('<unfinished ...>')) {
       if (pending.has(tid)) throw new Error('duplicate unfinished strace record');
       pending.set(tid, {call:call.slice(0, -16), startedAtNs, startPrecision}); continue;

@@ -5,7 +5,139 @@ import path from 'node:path';
 import {spawn, spawnSync} from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { bindRuntimeJitDump, bindRuntimeJitMemory, bindRuntimeModelOpens, bindRuntimeProcessTree,
+  bindRuntimeExecEntry, observeRuntimeExecEntry, observeRuntimeTracerIdentity,
   observeRuntimeExecutableMemory, observeRuntimeProcessIdentity, observeRuntimePageSize, runtimeFileTraceArguments } from './runtime-file-opens.mjs';
+
+describe('independent initial exec mapping snapshot', () => {
+  const identity={processId:10,parentProcessId:9,startTimeTicks:'42',executable:'/program'};
+  const tracer={processId:12,parentProcessId:1,startTimeTicks:'50',executable:'/usr/bin/strace'};
+  function entrySample(): ReturnType<typeof observeRuntimeExecEntry> {
+    const auxv=Buffer.alloc(48);auxv.writeBigUInt64LE(7n);auxv.writeBigUInt64LE(0x4000n,8);
+    auxv.writeBigUInt64LE(9n,16);auxv.writeBigUInt64LE(0x1100n,24);
+    const header=Buffer.alloc(64);Buffer.from([0x7f,69,76,70,2,1,1]).copy(header);
+    header.writeUInt16LE(3,16);header.writeUInt16LE(62,18);header.writeUInt32LE(1,20);
+    header.writeBigUInt64LE(0x1000n,24);header.writeUInt16LE(64,52);
+    const tasks=[{taskId:10,state:'t',startTimeTicks:'42',tracerProcessId:12}];
+    const tracerTasks=[{taskId:12,state:'T',startTimeTicks:'50'}];
+    const maps='1000-2000 r-xp 00000000 00:01 42 /program\n4000-5000 r--p 00000000 00:01 43 /loader\n5000-6000 r-xp 00001000 00:01 43 /loader\n';
+    return {schema:'runtime-exec-entry-observation/v1',process:{...identity},observerProcessId:9,
+      startedMonotonicNs:'100',finishedMonotonicNs:'101',
+      tracer:{process:{...tracer},tasksBefore:tracerTasks,tasksAfter:structuredClone(tracerTasks)},
+      tasksBefore:tasks,tasksAfter:structuredClone(tasks),syscallBefore:'59 0x0 0x0 0x0 0x0 0x0 0x0 0x8000 0x5000\n',
+      syscallAfter:'59 0x0 0x0 0x0 0x0 0x0 0x0 0x8000 0x5000\n',
+      auxvBefore:auxv,auxvAfter:Buffer.from(auxv),mapsBefore:maps,mapsAfter:maps,
+      elfHeader:{address:'0x4000',bytes:header}};
+  }
+  it('binds an ELF loader entry without granting byte origin or lifetime closure', () => {
+    expect(bindRuntimeExecEntry(entrySample(),identity,tracer)).toMatchObject({instructionPointer:'0x5000',
+      programEntry:'0x1100',kernelEntryObserved:true,mappingPopulationComplete:false,
+      executableBytesQualified:false,completeRuntimeClosureVerified:false});
+  });
+  it.each([2,3])('binds static ELF type %i at its actual kernel entry', type => {
+    const s=entrySample();s.auxvBefore.writeBigUInt64LE(0n,8);s.auxvAfter=Buffer.from(s.auxvBefore);
+    s.elfHeader={address:'0x1000',bytes:Buffer.from(s.elfHeader.bytes)};
+    s.elfHeader.bytes.writeUInt16LE(type,16);
+    s.elfHeader.bytes.writeBigUInt64LE(type===2?0x1100n:0x100n,24);
+    s.syscallBefore=s.syscallAfter=s.syscallBefore.replace('59 ','322 ').replace('0x5000','0x1100');
+    expect(bindRuntimeExecEntry(s,identity,tracer)).toMatchObject({instructionPointer:'0x1100',interpreterBase:'0x0'});
+  });
+  it('retains delayed successful exec records in the existing process-tree reader', () => {
+    const text='10 1.000000 execve("/program", ["/program"], 0x1) = 0 (DELAYED) <0.000010>\n'
+      +'10 2.000000 +++ exited with 0 +++\n';
+    expect(bindRuntimeProcessTree(text,{processId:10,exitCode:0,signal:null,eof:true,
+      captureStartedBeforeExec:true,pageSizeBytes:4096}).tasks[0].execs).toEqual([{executable:'/program',atMs:1000}]);
+  });
+  it('passes shell-looking target arguments positionally through the exec wrapper', () => {
+    const command=['/program','apostrophe\'','$(not-executed)','`not-executed`','a b'];
+    const args=runtimeFileTraceArguments('/trace',command,{execEntryDelayMs:1000});
+    expect(args.slice(-command.length)).toEqual(command);
+    expect(args).toContain('exec "$@"');
+    expect(args[0]).toBe('-D');
+    for(const delay of [0,999,30001,NaN])
+      expect(()=>runtimeFileTraceArguments('/trace',command,{execEntryDelayMs:delay})).toThrow('invalid exec entry trace options');
+  });
+  it.each(['later-syscall','syscall-entry','pc-moved','wrong-child','recycled-child','wrong-tracer',
+    'running-tracer','changed-tracer','extra-target-task','maps-moved','auxv-moved','syscall-moved',
+    'header-moved','wrong-abi','wrong-loader','entry-not-executable','foreign-program','auxv-truncated',
+    'auxv-duplicate','bad-clock'])(
+    'refuses %s initial-map evidence', variant => {
+      const s=entrySample();
+      if(variant==='later-syscall')s.syscallBefore=s.syscallAfter=s.syscallBefore.replace('59 ','9 ');
+      if(variant==='syscall-entry')s.syscallBefore=s.syscallAfter=s.syscallBefore.replace('0x5000','0x1100');
+      if(variant==='pc-moved')s.syscallBefore=s.syscallAfter=s.syscallBefore.replace('0x5000','0x5001');
+      if(variant==='wrong-child')s.process.processId=11;
+      if(variant==='recycled-child')s.process.startTimeTicks='43';
+      if(variant==='wrong-tracer')s.tracer.process.executable='/other/tracer';
+      if(variant==='running-tracer')s.tracer.tasksBefore[0].state='S';
+      if(variant==='changed-tracer')s.tracer.tasksAfter=[];
+      if(variant==='extra-target-task')s.tasksBefore.push({...s.tasksBefore[0],taskId:11});
+      if(variant==='maps-moved')s.mapsAfter+='changed';
+      if(variant==='auxv-moved')s.auxvAfter[0]^=1;
+      if(variant==='syscall-moved')s.syscallAfter=s.syscallAfter.replace('0x8000','0x8001');
+      if(variant==='header-moved')s.elfHeader.address='0x5000';
+      if(variant==='wrong-abi')s.elfHeader.bytes[4]=1;
+      if(variant==='wrong-loader')s.elfHeader.bytes.writeBigUInt64LE(0x1001n,24);
+      if(variant==='entry-not-executable')s.mapsBefore=s.mapsAfter=s.mapsBefore.replace('5000-6000 r-xp','5000-6000 r--p');
+      if(variant==='foreign-program')s.mapsBefore=s.mapsAfter=s.mapsBefore.replace('/program','/other');
+      if(variant==='auxv-truncated')s.auxvBefore=s.auxvAfter=s.auxvBefore.subarray(0,32);
+      if(variant==='auxv-duplicate'){s.auxvBefore.writeBigUInt64LE(7n,16);s.auxvAfter=Buffer.from(s.auxvBefore);}
+      if(variant==='bad-clock')s.finishedMonotonicNs='100';
+      expect(()=>bindRuntimeExecEntry(s,identity,tracer)).toThrow('runtime executable memory:');
+    });
+  it.runIf(process.platform === 'linux' && process.arch === 'x64')(
+    'captures a real delayed exec before the child marker and refuses its later syscall', async () => {
+      const root=fs.mkdtempSync(path.join(os.tmpdir(),'runtime-exec-entry-'));
+      const marker=path.join(root,'ran'), trace=path.join(root,'trace.log');
+      const child=spawn('/usr/bin/strace',runtimeFileTraceArguments(trace,[process.execPath,'-e',
+        'require("node:fs").writeFileSync(process.argv[1],"ran");process.kill(process.pid,"SIGSTOP")',marker],
+      {execEntryDelayMs:5000}),{env:{PATH:'/usr/bin:/bin'},stdio:'ignore'});
+      const closed=new Promise<void>(resolve=>{child.once('exit',()=>resolve());child.once('error',()=>resolve());});
+      let pinned: typeof tracer|undefined;
+      try {
+        const deadline=Date.now()+10000;let identityAtEntry:typeof identity|undefined;
+        while(Date.now()<deadline){
+          try {
+            const candidate=observeRuntimeProcessIdentity(child.pid!);
+            if(candidate.executable===fs.realpathSync(process.execPath)){
+              identityAtEntry=candidate;pinned=observeRuntimeTracerIdentity(candidate,'/usr/bin/strace');break;
+            }
+          }catch{/* The wrapper/tracer may still be starting. */}
+          await new Promise(resolve=>setTimeout(resolve,5));
+        }
+        expect(identityAtEntry).toBeDefined();expect(pinned).toBeDefined();
+        process.kill(pinned!.processId,'SIGSTOP');
+        while(!fs.readFileSync('/proc/'+pinned!.processId+'/stat','utf8').split(') ')[1].startsWith('T ')){
+          if(Date.now()>deadline)throw Error('exec tracer stop timeout');
+          await new Promise(resolve=>setTimeout(resolve,5));
+        }
+        const sample=observeRuntimeExecEntry(identityAtEntry!,pinned!);
+        expect(fs.existsSync(marker)).toBe(false);
+        expect(bindRuntimeExecEntry(sample,identityAtEntry!,pinned!).kernelEntryObserved).toBe(true);
+        expect(()=>observeRuntimeExecEntry({...identityAtEntry!,startTimeTicks:'1'},pinned!)).toThrow('launch identity changed');
+        if(process.env.PAPERCUSP_TEST_ARTIFACT_DIR){
+          fs.writeFileSync(path.join(process.env.PAPERCUSP_TEST_ARTIFACT_DIR,'exec-entry.json'),JSON.stringify(sample));
+        }
+        process.kill(pinned!.processId,'SIGCONT');
+        while(!fs.existsSync(marker)){
+          if(Date.now()>deadline)throw Error('exec child marker timeout');
+          await new Promise(resolve=>setTimeout(resolve,10));
+        }
+        // At the child's later group stop, pinning the tracer cannot turn a
+        // post-entry syscall into initial maps.
+        process.kill(pinned!.processId,'SIGSTOP');
+        while(!fs.readFileSync('/proc/'+pinned!.processId+'/stat','utf8').split(') ')[1].startsWith('T ')){
+          if(Date.now()>deadline)throw Error('later tracer stop timeout');
+          await new Promise(resolve=>setTimeout(resolve,5));
+        }
+        expect(()=>observeRuntimeExecEntry(identityAtEntry!,pinned!)).toThrow();
+      }finally{
+        if(pinned){try{process.kill(pinned.processId,'SIGCONT');}catch{/* Already exited. */}}
+        child.kill('SIGCONT');child.kill('SIGKILL');await closed;
+        if(pinned){try{process.kill(pinned.processId,'SIGKILL');}catch{/* Already exited. */}}
+        fs.rmSync(root,{recursive:true,force:true});
+      }
+    },20000);
+});
 
 describe('retained Linux perf JIT code bytes', () => {
   const witness = {processId:10, taskIds:[10,11], elfMachine:62,
