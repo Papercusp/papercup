@@ -286,9 +286,13 @@ describe('retention on a real fixture tree', () => {
     let lost = false;
     const consumer = {
       nowMs,
-      listPresence: async () => [{ ownerId: 'consumer', revoked: lost && loss === 'revoked',
-        heartbeatAt: new Date(nowMs).toISOString(), stale: false, host: null, pid: null, source: 'fixture', agentRole: 'su',
-      } as PresenceRecord],
+      listPresence: async () => [{
+        ownerId: 'consumer', ownerLabel: 'Fixture consumer', workspaceId: 'fixture', source: 'fixture',
+        intent: '', currentPlanSlug: null, currentFiles: [], host: 'fixture-host', pid: null, tty: null,
+        startedAt: new Date(nowMs).toISOString(), heartbeatAt: new Date(nowMs).toISOString(),
+        lastActiveAt: null, intentDeclaredAt: null, agentRole: 'su', potSlug: null,
+        capabilityTags: [], stale: false, userId: null, revoked: lost && loss === 'revoked',
+      } satisfies PresenceRecord],
       resolveSessionStates: ((subjects, opts) => resolveSessionStates(subjects, { ...opts,
         fetchWakeabilityFn: async ids => new Map(ids.map(id => [id, { wakeable: false, liveTurn: !lost }])),
         fetchRecordedLiveFn: async () => new Set(), fetchRecordedEndedFn: async () => new Set(), probePidFn: () => null,

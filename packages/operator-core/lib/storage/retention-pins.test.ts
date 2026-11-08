@@ -16,7 +16,14 @@ function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'retention-pin-')); roots.push(root);
   const dir = join(root, 'leases'); const target = join(root, 'agent-output'); mkdirSync(target);
   const nowMs = Date.UTC(2026, 9, 15);
-  return { root, dir, target, nowMs, expiresAt: new Date(nowMs + 3600_000).toISOString() };
+  const presence: PresenceRecord = {
+    ownerId: 'consumer', ownerLabel: 'Fixture consumer', workspaceId: 'fixture', source: 'fixture',
+    intent: '', currentPlanSlug: null, currentFiles: [], host: 'fixture-host', pid: null, tty: null,
+    startedAt: new Date(nowMs).toISOString(), heartbeatAt: new Date(nowMs).toISOString(),
+    lastActiveAt: null, intentDeclaredAt: null, agentRole: 'su', potSlug: null,
+    capabilityTags: [], stale: false, userId: null, revoked: false,
+  };
+  return { root, dir, target, nowMs, presence, expiresAt: new Date(nowMs + 3600_000).toISOString() };
 }
 
 describe('agent retention pins in the existing lease store', () => {
@@ -25,9 +32,7 @@ describe('agent retention pins in the existing lease store', () => {
       const f = fixture();
       const reference = { harness_slug: 'fixture', work_item_id: 'WI-consumer', evidence_ref: 'docs/evidence/consumer.json' };
       const sql = vi.fn(async () => [{ ...reference, taken_by: state === 'abandoned' ? null : 'consumer' }]) as unknown as Sql;
-      const listPresence = vi.fn(async () => state === 'missing' ? [] : [{ ownerId: 'consumer', revoked: state === 'revoked',
-        heartbeatAt: new Date(f.nowMs).toISOString(), stale: false, host: null, pid: null, source: 'fixture', agentRole: 'su',
-      } as PresenceRecord]);
+      const listPresence = vi.fn(async () => state === 'missing' ? [] : [{ ...f.presence, revoked: state === 'revoked' }]);
       const references = await readOpenWorkItemEvidenceReferences(sql, 'fixture', {
         nowMs: f.nowMs, listPresence,
         resolveSessionStates: (subjects, options) => resolveSessionStates(subjects, { ...options,
@@ -47,9 +52,7 @@ describe('agent retention pins in the existing lease store', () => {
     const sql = vi.fn(async () => [{ harness_slug: 'fixture', work_item_id: 'WI-unknown',
       evidence_ref: 'docs/evidence/unknown.json', taken_by: 'consumer' }]) as unknown as Sql;
     await expect(readOpenWorkItemEvidenceReferences(sql, 'fixture', {
-      nowMs: f.nowMs, listPresence: async () => [{ ownerId: 'consumer', revoked: false,
-        heartbeatAt: new Date(f.nowMs).toISOString(), stale: false, host: null, pid: null, source: 'fixture',
-      } as PresenceRecord],
+      nowMs: f.nowMs, listPresence: async () => [f.presence],
       resolveSessionStates: (subjects, options) => resolveSessionStates(subjects, { ...options,
         fetchWakeabilityFn: async () => new Map(), fetchRecordedLiveFn: async () => new Set(),
         fetchRecordedEndedFn: async () => new Set(), probePidFn: () => null,
