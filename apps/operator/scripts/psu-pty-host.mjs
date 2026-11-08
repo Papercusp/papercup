@@ -11698,6 +11698,7 @@ export function resolveAgentPtyTarget({ command, args, env, cwd }, deps = {}) {
  *   injectable dead-operator-pin heal, run before each in-place respawn
  * @param {()=>number} [o.parentPidFn] injectable parent-pid probe
  * @param {number} [o.activityPersistMs] discovery activity refresh interval
+ * @param {number} [o.quotaResetGraceMs] test-only override for provider reset grace
  * @param {number} [o.nativePersistenceTimeoutMs] managed kickoff persistence deadline
  * @param {(...args:any[])=>any} [o.mcpReconnectMacro] injectable carry MCP reconnect macro
  */
@@ -12172,6 +12173,11 @@ export function hostThroughPty(o) {
   // members as permanently walled.
   const quotaBlockDetector = makeQuotaBlockDetector({
     agent: env.PAPERCUSP_AGENT,
+    // Keep reset-expiry integration coverage deterministic; production callers
+    // omit this seam and retain the shared 60-second grace.
+    resetGraceMs: Number.isFinite(o.quotaResetGraceMs)
+      ? Math.max(0, Number(o.quotaResetGraceMs))
+      : QUOTA_RESET_GRACE_MS,
     // EI-22609012864215464 / EI-22800121604015331: both native resume and
     // fork repaint the source transcript's old quota errors. Do not block the
     // first new submission on that replay; subsequent errors still block wakes.
@@ -14737,6 +14743,7 @@ export function hostThroughPty(o) {
   // stopped-but-retained record silences the session until a respawn.
   const retireUnconfirmedSubmission = (deliveryId, pending, reason, extra = {}) => {
     pending.submissionRecovery.stopped = true;
+    const composerCleared = extra.composerCleared === true;
     const retired = retirePendingSubmission(nativeStartPending, pending, deliveryDedup);
     appendHostEvent(ownerId, 'pending-submit-recovery-exhausted', {
       deliveryId, retiredDeliveryIds: retired, reason, childGeneration,
@@ -14747,8 +14754,9 @@ export function hostThroughPty(o) {
     try {
       writeTerminalDiagnostic(
         `psu-pty-host: gave up re-submitting machine turn ${deliveryId} for ${ownerId} (${reason}, ` +
-          `${pending.submissionRecovery.resubmits} recovery Enters, no native receipt). Its text may still sit ` +
-          `in the composer; later wakes are no longer deferred behind it (EI-25930229050142968).\n`,
+          `${pending.submissionRecovery.resubmits} recovery Enters, no native receipt). ` +
+          `${composerCleared ? 'The stale composer line was cleared; ' : 'Its text may still sit in the composer; '}` +
+          `later wakes are no longer deferred behind it (EI-25930229050142968).\n`,
       );
     } catch {
       /* never let a diagnostic write break the host */
@@ -14812,8 +14820,18 @@ export function hostThroughPty(o) {
         });
         if (decision.action === 'wait') continue;
         if (decision.action === 'exhausted') {
+          // The ownership, transcript, and native-execution guards above prove
+          // this exact composer line is still machine-owned. Clear it before
+          // releasing the tombstone, so the next event cannot append to it.
+          pending.child.write('\u0015');
+          ownerComposerGate.markSubmitted();
+          appendHostEvent(ownerId, 'pending-submit-recovery-composer-cleared', {
+            deliveryId, childGeneration, reason: decision.reason,
+            composerGenerationAtWrite: recovery.composerGenerationAtWrite,
+          });
           retireUnconfirmedSubmission(deliveryId, pending, decision.reason ?? 'max-resubmits', {
             countedResubmits: recovery.countedResubmits, ageMs: now - recovery.submittedAtMs,
+            composerCleared: true,
           });
           continue;
         }

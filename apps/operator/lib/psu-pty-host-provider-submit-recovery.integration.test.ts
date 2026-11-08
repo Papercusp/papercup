@@ -18,7 +18,8 @@ async function until(check: () => boolean, timeoutMs = 6_000, detail = () => '')
 
 let serial = 0;
 async function fixture(agent: 'codex' | 'claude' | 'omp', error: string, requireNativeTurnStart = true,
-  options: { acceptBeforeRecovery?: boolean; activityPersistMs?: number; env?: Record<string, string> } = {}) {
+  options: { acceptBeforeRecovery?: boolean; activityPersistMs?: number; quotaResetGraceMs?: number;
+    env?: Record<string, string> } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'provider-submit-'));
   const home = join(root, 'home');
   const nativeDir = agent === 'omp' ? join(home, 'agent', 'sessions')
@@ -38,7 +39,7 @@ async function fixture(agent: 'codex' | 'claude' | 'omp', error: string, require
   // persist the exact native user row. Empty Enter never starts another turn.
   const childCode = `
     const fs = require('node:fs');
-    const agent = ${JSON.stringify(agent)}, path = ${JSON.stringify(transcript)};
+    const agent = ${JSON.stringify(agent)}, path = ${JSON.stringify(transcript)}, recoveryPath = ${JSON.stringify(recovered)};
     let line = '', crs = 0;
     function append(row) { fs.appendFileSync(path, JSON.stringify({...row,
       timestamp: new Date().toISOString()})+'\\n'); }
@@ -52,12 +53,17 @@ async function fixture(agent: 'codex' | 'claude' | 'omp', error: string, require
     process.stdin.setRawMode(true); process.stdin.setEncoding('utf8');
     process.stdin.on('data', data => { for (const c of data) {
       if (c === '\\x04') { process.exit(0); return; }
+      // Recovery retirement clears the machine-owned, unsubmitted composer so
+      // a later event wake cannot concatenate onto its stale prompt.
+      if (c === '\\x15') { line = ''; process.stdout.write('CLEARED\\n'); continue; }
       if (c === '\\x03' || c === '\\x1b') {
         line = ''; process.stdout.write('INTERRUPTED\\n'); continue;
       }
       if (c !== '\\r') { line += c; continue; }
       process.stdout.write('ENTER:'+ ++crs +'\\n');
-      if (!fs.existsSync(${JSON.stringify(recovered)})) {
+      const recoveryState = fs.existsSync(recoveryPath) ? fs.readFileSync(recoveryPath, 'utf8') : '';
+      if (recoveryState === 'silent') continue;
+      if (!recoveryState) {
         if (${options.acceptBeforeRecovery === true} && line) accept();
         process.stdout.write(${JSON.stringify(error + '\n')}); continue;
       }
@@ -85,6 +91,7 @@ async function fixture(agent: 'codex' | 'claude' | 'omp', error: string, require
   expect(nativeTurnVerifierSupport(agent, env), 'fixture must support native receipt verification').toMatchObject({ supported: true });
   const done = hostThroughPty({ command: process.execPath, args: ['-e', childCode],
     cwd: root, ownerId, env, io: { stdin, stdout }, bridgeTty: true,
+    quotaResetGraceMs: options.quotaResetGraceMs,
     ...(options.env?.PAPERCUSP_PSU_PARK_IDLE_MS !== undefined ? {
       mintParkResumeArgs: (args: string[]) => ({ args: [...args, 'resume', parkNativeId], nativeId: parkNativeId }),
     } : {}),
@@ -106,6 +113,7 @@ async function fixture(agent: 'codex' | 'claude' | 'omp', error: string, require
   };
   return { root, done, sock, rows, envelope, data, stdin, output: () => output, transcript, home, nativeSessionId,
     recover: () => writeFileSync(recovered, 'ready'),
+    holdSilent: () => writeFileSync(recovered, 'silent'),
     async close() {
       await injectIntoHostWithConfirmation(sock, { mode: 'raw', ownerId, data: '\x04' }).catch(() => {});
       await done;
@@ -368,18 +376,45 @@ describe('pending submission after provider recovery (EI-25878022553042846)', ()
   // one recovery Enter every retry window forever (393 in one session), and the
   // live pending record deferred every later wake. The recovery must stop,
   // tombstone the delivery (no repaste), and let a different wake write again.
-  it.each(['codex', 'claude'] as const)('retires an unconfirmable %s submission after the recovery budget so later wakes inject', async agent => {
-    const f = await fixture(agent, 'API Error: 502 Bad Gateway', true,
-      { env: { PAPERCUSP_PSU_PTY_SUBMIT_RECOVERY_MAX_CR: '2' } });
+  it.each([
+    ['codex', 'API Error: 502 Bad Gateway', false],
+    ['claude', 'API Error: 502 Bad Gateway', false],
+    ['codex', 'You’ve hit your usage limit. Try again in 1 seconds.', true],
+  ] as const)('retires an unconfirmable %s submission after the recovery budget and starts a distinct event wake (%s)', async (agent, error, usageLimit) => {
+    const f = await fixture(agent, error, true,
+      { quotaResetGraceMs: usageLimit ? 0 : undefined, env: {
+        PAPERCUSP_PSU_PTY_SUBMIT_RECOVERY_MAX_CR: '2',
+        ...(usageLimit ? { PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR: '4' } : {}),
+      } });
     try {
-      expect(await injectIntoHostWithConfirmation(f.sock, f.envelope)).toMatchObject({ ok: true, reason: 'accepted' });
+      const first = { ...f.envelope, routineId: 'submit-recovery-loop', fireNumber: 1,
+        data: `⟦turn-origin:loop-fire nonce:${'a'.repeat(16)}⟧\noriginal event wake` };
+      expect(await injectIntoHostWithConfirmation(f.sock, first)).toMatchObject({ ok: true, reason: 'accepted' });
+      if (usageLimit) {
+        await until(() => f.rows().some(row => row.kind === 'quota-block-detected'), 3_000,
+          () => JSON.stringify({ phase: 'quota-block-detected', output: f.output(), events: f.rows() }));
+        // Keep the quota banner static until its short test reset expires. The
+        // unblocked retries then receive no native receipt and exhaust normally.
+        f.holdSilent();
+      }
       await until(() => f.rows().some(row => row.kind === 'pending-submit-recovery-exhausted'), 6_000,
         () => JSON.stringify({ output: f.output(), events: f.rows() }));
       const recoveryEnters = f.rows().filter(row => row.kind === 'submit-verify-recovery-resubmit');
-      expect(recoveryEnters).toHaveLength(2);
+      if (usageLimit) {
+        expect(recoveryEnters.filter(row => row.countedResubmits > 0)).toHaveLength(2);
+      } else expect(recoveryEnters).toHaveLength(2);
+      if (usageLimit) {
+        expect(f.rows()).toContainEqual(expect.objectContaining({
+          kind: 'quota-block-detected', agent: 'codex',
+          matchedExcerpt: expect.stringContaining('You’ve hit your usage limit'),
+        }));
+        expect(f.rows()).toContainEqual(expect.objectContaining({
+          kind: 'quota-block-expired-at-reset', agent: 'codex',
+        }));
+      }
       if (agent === 'codex') {
         const write = f.rows().find(row => row.kind === 'native-turn-submit-write-attempt'
-          && row.deliveryId === f.envelope.deliveryId);
+          && row.deliveryId === first.deliveryId);
         expect(write?.nativeSubmitContextAtWrite).toMatchObject({
           nativeSessionId: f.nativeSessionId,
           CODEX_HOME: f.home,
@@ -389,7 +424,7 @@ describe('pending submission after provider recovery (EI-25878022553042846)', ()
           },
         });
         const startFailure = f.rows().find(row => row.kind === 'native-turn-start-unverified'
-          && row.deliveryId === f.envelope.deliveryId);
+          && row.deliveryId === first.deliveryId);
         expect(startFailure).toMatchObject({
           nativeSubmitContextAtWrite: write?.nativeSubmitContextAtWrite,
           nativeSubmitContextAtVerificationFailure: {
@@ -407,11 +442,11 @@ describe('pending submission after provider recovery (EI-25878022553042846)', ()
               tuiState: { bridgeTty: true, stdinIsTTY: true, columns: 120, rows: 30 },
             },
           });
-          expect(JSON.stringify(retry.nativeSubmitContextAtRetry)).not.toContain(f.data);
+          expect(JSON.stringify(retry.nativeSubmitContextAtRetry)).not.toContain(first.data);
         }
       }
       expect(f.rows()).toContainEqual(expect.objectContaining({ kind: 'pending-submit-recovery-exhausted',
-        deliveryId: f.envelope.deliveryId, retiredDeliveryIds: [f.envelope.deliveryId], reason: 'max-resubmits',
+        deliveryId: first.deliveryId, retiredDeliveryIds: [first.deliveryId], reason: 'max-resubmits',
         ...(agent === 'codex' ? {
           nativeSubmitContextAtWrite: expect.objectContaining({ nativeSessionId: f.nativeSessionId, CODEX_HOME: f.home }),
           nativeSubmitContextAtExhaustion: expect.objectContaining({
@@ -425,17 +460,31 @@ describe('pending submission after provider recovery (EI-25878022553042846)', ()
       // Bounded: no further recovery Enter for the retired record.
       expect(f.output().match(/ENTER:/g)?.length ?? 0).toBe(entersAtRetire);
       // The durable retry of the retired delivery is refused, never repasted.
-      expect(await injectIntoHostWithConfirmation(f.sock, f.envelope)).toMatchObject({
+      expect(await injectIntoHostWithConfirmation(f.sock, first)).toMatchObject({
         ok: false, reason: 'deferred-native-turn-start-superseded',
       });
       expect(f.output()).not.toContain('SUBMITTED:');
-      // A different wake is no longer deferred behind the retired record.
-      const next = { ...f.envelope, deliveryId: `${f.envelope.deliveryId}-next`,
-        data: `⟦turn-origin:wake-pump nonce:${'f'.repeat(16)}⟧\nnext wake` };
+      // Usage is available again; a distinct event-delivered fire must start
+      // with its own prompt instead of inheriting the retired composer text.
+      f.recover();
+      const next = { ...first, deliveryId: `${first.deliveryId}-next`, fireNumber: 2,
+        data: `⟦turn-origin:loop-fire nonce:${'b'.repeat(16)}⟧\nnext event wake` };
       expect(await injectIntoHostWithConfirmation(f.sock, next)).toMatchObject({ ok: true, reason: 'accepted' });
-      await until(() => (f.output().match(/ENTER:/g)?.length ?? 0) > entersAtRetire, 6_000,
+      await until(() => f.rows().some(row => row.kind === 'native-turn-start-confirmed'
+        && row.deliveryId === next.deliveryId), 6_000,
         () => JSON.stringify({ phase: 'next-wake', output: f.output(), events: f.rows() }));
       expect(f.rows().some(row => row.kind === 'deferred-native-turn-start')).toBe(false);
+      const normalizedOutput = () => f.output().replace(/\r\n?/g, '\n');
+      await until(() => normalizedOutput().includes(`SUBMITTED:${next.data}`), 1_000,
+        () => JSON.stringify({ phase: 'stdout-after-native-confirmation', output: normalizedOutput() }));
+      const transcriptRows = readFileSync(f.transcript, 'utf8').split('\n').filter(Boolean)
+        .map(line => JSON.parse(line));
+      const userRows = transcriptRows.filter(row => agent === 'codex' ? row.payload?.role === 'user'
+        : agent === 'claude' ? row.type === 'user' : row.message?.role === 'user');
+      expect(userRows).toHaveLength(1);
+      const submitted = agent === 'codex' ? userRows[0].payload.content[0].text
+        : userRows[0].message.content;
+      expect(submitted).toBe(next.data);
     } finally { await f.close(); }
   }, 20_000);
 
