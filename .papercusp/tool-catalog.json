@@ -29731,7 +29731,7 @@
           "POST"
         ]
       },
-      "description": "Inspect, claim or change the frozen repair queue. For gate-red fixes, `admit{paths}` replays exact integration-branch paths onto repairHead; dry-run unless `confirm:true`. R6 prechecks run first; read `get` before confirming. Never catch up to tip, retire live/unknown work, launch a checkpoint or deploy. See /internal/docs/agent-insights/frozen-candidate-fix-only-admission.",
+      "description": "Inspect, claim or change the frozen repair queue. `admit{paths}` replays exact integration-branch paths onto repairHead. `heal-generated{generator:\"tool-delivery-declaration\",expectedCandidate,expectedRepairHead,expectedUpdatedAtMs}` measures and mechanically repairs the selected declaration on that exact frozen head. Both require confirm:true to write. Read get first. Never catch up to tip, retire live/unknown work, launch a checkpoint or deploy. See /internal/docs/agent-insights/frozen-candidate-fix-only-admission.",
       "capabilities": [
         "operator:write"
       ],
