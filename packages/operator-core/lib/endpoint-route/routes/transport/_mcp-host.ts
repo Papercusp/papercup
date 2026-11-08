@@ -6562,7 +6562,7 @@ export function registerMcpHost(server: McpServer): void {
     type StoredInitializeHandler = Parameters<typeof server.server.setRequestHandler>[1];
     server.server.setRequestHandler(
       sdk.InitializeRequestSchema,
-      wrapInitializeWithInstructions(sdkInitialize, async (base, extra, timing) => {
+      withMcpMemoryReceipts(wrapInitializeWithInstructions(sdkInitialize, async (base, extra, timing) => {
         const traceId = resolveMcpRequestTraceId(extra);
         const stages = {
           sdkMs: timing.sdkMs,
@@ -6634,7 +6634,8 @@ export function registerMcpHost(server: McpServer): void {
           });
           if (telemetry) console.warn('[mcp-initialize-stage]', telemetry);
         }
-      }, (req) => !isNativeInstructionBudgetClient(req)) as StoredInitializeHandler,
+      }, (req) => !isNativeInstructionBudgetClient(req)) as
+        (req: unknown, extra: unknown) => Promise<Record<string, unknown>>) as StoredInitializeHandler,
     );
   }
 
