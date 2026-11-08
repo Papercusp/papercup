@@ -9,7 +9,8 @@ export type SourceSite = {
 };
 export type SourceUnit = { path: string; sha256: string; ast: import('typescript').SourceFile;
     sites: SourceSite[]; span: (node: import('typescript').Node) => Record<string, number> };
-export function censusSites(path: string, text: string): SourceUnit;
+/** Definition sites are syntactic inventory candidates, not runtime or closure evidence. */
+export function censusSites(path: string, text: string, options?: { includeDefinitions?: boolean }): SourceUnit;
 export function changedSites(before: SourceUnit, after: SourceUnit): {
     addedOrChanged: SourceSite[]; removedOrChanged: SourceSite[] };
 export function selectSourcePath(unit: SourceUnit, options: { functionName: string; containerName?: string; branchValues?: Record<string, boolean> }): {
