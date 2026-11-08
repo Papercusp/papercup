@@ -708,6 +708,45 @@ describe('canonical successful-start revision authority (real PG)', () => {
     expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual(['plan_not_started']);
   });
 
+  it('preserves execution authority for a reflected release through the plan-line graph writer', async () => {
+    await seedLine('P-001');
+    await db.sql`UPDATE harness_shared.work_items SET status='wip',plan_phase='Phase 1',plan_deliverable='code' WHERE plan_line_id='P-001'`;
+    const original = body + '\n## Phase 1\n- **P-001** \x60wip\x60 Preserve findings deliverable: code\n';
+    await db.sql`UPDATE harness_shared.harness_plans SET content=${original},content_hash=${hashPlanContent(original)}`;
+    const receipt = await issue();
+    await import('../../plan-items/reflect-rules');
+    const { reactionRulesFor } = await import('../../events/registry');
+    const { flipStatusInBody } = await import('./set-status');
+    const { deriveIndexFromContent } = await import('./derive-index');
+    const { readPlanLineNodes, writePlanLineNodes } = await import('./plan-line-graph');
+    const graphScope = { workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug, slug: scope.planSlug };
+    const rule = reactionRulesFor('work_items:release').find(r => r.id === 'plan-item-reflect:release');
+    if (!rule || typeof rule.args !== 'function') throw new Error('release reflection rule missing');
+    const args = rule.args({
+      tool: 'work_items:release', args: {}, ctx: { uiClientId: identity.ownerId },
+      result: { ok: true, data: { workItem: { id: 'WI-6554700010046542', state: 'open',
+        payload: { plan_item: { plan_slug: scope.planSlug, item_id: 'P-001', harness_slug: scope.harnessSlug } } } } },
+    } as import('../../events/types').ToolInvocationEvent) as {
+      item: string; status: string; note: string; noteKind?: 'author' | 'progress';
+    };
+    const released = flipStatusInBody(original, args.item, args.status, args.note, args.noteKind);
+    expect(released.found).toBe(true);
+    const beforeNodes = await readPlanLineNodes(db.sql, graphScope);
+    const mutations = await db.sql.begin(async tx => {
+      await preservePlanExecutionProgress(tx, scope, original, released.newBody,
+        hashPlanContent(original), hashPlanContent(released.newBody));
+      await tx`UPDATE harness_shared.harness_plans SET content=${released.newBody},content_hash=${hashPlanContent(released.newBody)}`;
+      return writePlanLineNodes(tx as unknown as Parameters<typeof writePlanLineNodes>[0],
+        graphScope, beforeNodes, deriveIndexFromContent(released.newBody).items);
+    });
+    expect(mutations).toEqual([]);
+    expect((await readExecutionPlanRow(scope))?.execution_start_revision_seq).toBe(receipt.seq);
+    expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual([]);
+    expect((await readPlanLineNodes(db.sql, graphScope))[0]).toMatchObject({
+      text: 'Preserve findings', status: 'todo', blockedBy: [], deliverable: 'code', phase: 'Phase 1',
+    });
+  });
+
   it('preserves execution authority for a typed progress note through the plan-line graph writer', async () => {
     await seedLine('P-001');
     await db.sql`UPDATE harness_shared.work_items SET plan_phase='Phase 1',plan_deliverable='code' WHERE plan_line_id='P-001'`;
