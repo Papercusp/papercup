@@ -95,7 +95,7 @@ function passingExecution(): NonNullable<ListedEvidence['testRunExecution']> {
   };
 }
 
-function evidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForAdequacy {
+function evidence() {
   return {
     workItemId: 'WI-101',
     planSlug: 'reconnect-plan',
@@ -150,8 +150,7 @@ function evidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForA
       staleReasons: [],
       unknownReasons: [],
     },
-    ...over,
-  };
+  } satisfies SpecEvidenceForAdequacy;
 }
 
 function listedEvidence(over: Partial<ListedEvidence> = {}): ListedEvidence {
