@@ -884,10 +884,42 @@ describe('exec-to-EOF process and thread population', () => {
       .toEqual(['exec-kernel-installed-mappings-unobserved']);
   });
   it.each([
+    ['mmap', 'complete'], ['mmap', 'resumed'],
+    ['munmap', 'complete'], ['munmap', 'resumed'],
+    ['mprotect', 'complete'], ['mprotect', 'resumed'],
+  ])('replays a disjoint %s with an overlapping %s permission change', (operation, variant) => {
+    const args = operation === 'mmap'
+      ? 'NULL, 4096, PROT_READ, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0'
+      : operation === 'munmap' ? '0x5000, 1' : '0x5000, 1, PROT_READ';
+    const result = operation === 'mmap' ? '0x5000' : '0';
+    const first = variant === 'complete'
+      ? [`10 1.200000 ${operation}(${args}) = ${result} <0.200000>`]
+      : [`10 1.200000 ${operation}(${args} <unfinished ...>`,
+        `10 1.400000 <... ${operation} resumed>) = ${result} <0.200000>`];
+    const receipt = bindRuntimeProcessTree(mappingTrace([
+      '10 1.050000 clone(child_stack=NULL, flags=CLONE_VM|CLONE_THREAD) = 11', anonymousMap,
+      ...(operation === 'mmap' ? [] : [
+        '10 1.150000 mmap(NULL, 4096, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x5000']),
+      ...first, '11 1.300000 mprotect(0x1000, 1, PROT_EXEC) = 0 <0.200000>',
+      '11 1.900000 +++ exited with 0 +++',
+    ]), mappingTerminal);
+    expect(receipt.mappingOrigins.executableRanges).toEqual([expect.objectContaining({
+      taskId:11, operation:'mprotect', start:'0x1000', end:'0x2000', permissions:'PROT_EXEC',
+      origin:{kind:'anonymous',path:null,offsetBytes:null}, executableBytesQualified:false,
+    })]);
+    expect(receipt.mappingOrigins.gaps.map(row => row.reason))
+      .toEqual(['exec-kernel-installed-mappings-unobserved']);
+    expect(receipt.mappingOrigins).toMatchObject({mappingPopulationComplete:false, executableBytesQualified:false});
+    expect(receipt).toMatchObject({completeRuntimeClosureVerified:false, creatorFence:'required'});
+  });
+  it.each([
     ['nonadjacent range conflict',
       '11 1.300000 mmap(NULL, 4096, PROT_READ, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x9000 <0.200000>',
       '11 1.510000 munmap(0x6000, 4096) = 0 <0.010000>'],
-    ['permission barrier', '11 1.300000 mprotect(0x9000, 4096, PROT_EXEC) = 0 <0.200000>'],
+    ['permission range conflict', '11 1.300000 mprotect(0x6000, 1, PROT_EXEC) = 0 <0.200000>'],
+    ['failed permission barrier', '11 1.300000 mprotect(0x9000, 4096, PROT_EXEC) = -1 ENOMEM (Cannot allocate memory) <0.200000>'],
+    ['unsupported permission barrier', '11 1.300000 mprotect(0x9000, 4096, PROT_EXEC|PROT_GROWSDOWN) = 0 <0.200000>'],
+    ['protection key barrier', '11 1.300000 pkey_mprotect(0x9000, 4096, PROT_EXEC, 0) = 0 <0.200000>'],
     ['clone barrier', '10 1.300000 fork() = 12 <0.200000>', '12 1.800000 +++ exited with 0 +++'],
     ['unsupported flags',
       '11 1.300000 mmap(NULL, 4096, PROT_READ, MAP_PRIVATE|MAP_ANONYMOUS|MAP_HUGETLB, -1, 0) = 0x9000 <0.200000>'],
