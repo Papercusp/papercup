@@ -42,9 +42,10 @@ import {
 import { isTaskManagerEnabled } from './enabled';
 import { onTaskKillRequested } from './kill-notify';
 import { inspectTaskUnitTerminals, resetFailedTaskUnit } from './scope-terminal-state';
-import { closeTask, markSpawned, registerTask } from './store';
+import { closeTask, getTask, markSpawned, registerTask } from './store';
 import {
   deriveUserManagerRoot,
+  isTerminalState,
   isValidTaskId,
   newTaskId,
   scopeCgroupRelPath,
@@ -736,6 +737,14 @@ function wireExit(
         stage?.('completion-close');
         const input = terminal ? { ...outcome, terminalProvenance: terminal } : outcome;
         recorded = await (stage ? closeTask(taskId, input, undefined, { stage }) : closeTask(taskId, input));
+        if (!recorded) {
+          // Scoped teardown or the reconciler may have persisted the terminal
+          // row first. A lost idempotent UPDATE is not a persistence failure;
+          // acknowledge only a readback of this exact task and scope.
+          const current = await getTask(taskId);
+          recorded = current?.taskId === taskId && current.scopeUnit === scopeUnit &&
+            Boolean(current.endedAt) && isTerminalState(current.state);
+        }
         if (terminal) await resetFailedTaskUnit(terminal);
       });
       stage?.('completion-finished');

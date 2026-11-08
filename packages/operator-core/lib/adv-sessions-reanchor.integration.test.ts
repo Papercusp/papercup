@@ -1606,6 +1606,61 @@ describe('setAdvSessionPid workspace override (WI-10002854, real PG)', () => {
 });
 
 describe('resume finalization records the current headless posture (real PG)', () => {
+  const initialArgv = ['psu', '--agent=codex', '--fleet=routing-test', '--harness=papercusp',
+    '--account=default', '--model=gpt-6:high', '--carry=warm'];
+  const initialSpec = { v: 1, agent: 'codex', workspaceId: WS, harnessSlug: 'papercusp',
+    fleet: { slug: 'routing-test', role: 'member' }, model: 'gpt-6:high' };
+
+  async function seedInitialMember(sessionId: string | null) {
+    const id = await seedAdv({ coordOwnerId: OWNER, sessionId });
+    await admin`UPDATE harness_shared.adv_sessions SET agent = 'codex',
+      launch_argv = ${JSON.stringify(initialArgv)}::text::jsonb WHERE id = ${id}`;
+    return id;
+  }
+
+  it('captures original routing at the first render so a never-resumed member is restorable', async () => {
+    const id = await seedInitialMember(DEAD_ID);
+    expect(await recordSuLaunchSpec(id, OWNER, initialSpec)).toBe(true);
+    const record = await readAdvSessionLaunchRecordByOwner(OWNER, WS, { advSessionId: id, sessionId: DEAD_ID });
+    const { savedOriginalMemberLaunchSpec } = await import('./agent-tools/fleet_registry/saved-launch-spec');
+    expect(savedOriginalMemberLaunchSpec(record, { advSessionId: id, ownerId: OWNER, sessionId: DEAD_ID }, WS, 'routing-test'))
+      .toMatchObject({ ok: true, config: { account: 'default', model: 'gpt-6', effort: 'high', carry: 'warm' } });
+    const original = (record?.launchSpec as Record<string, unknown>).originalMemberLaunch;
+    expect(original).toMatchObject({ advSessionId: id, sessionId: DEAD_ID, launchArgv: initialArgv, launchSpec: initialSpec });
+    expect(await recordSuLaunchSpec(id, OWNER, { ...initialSpec, model: 'changed', originalMemberLaunch: { forged: true } })).toBe(true);
+    expect(((await readAdvSessionLaunchRecordByOwner(OWNER, WS, { advSessionId: id, sessionId: DEAD_ID }))?.launchSpec as Record<string, unknown>)
+      .originalMemberLaunch).toEqual(original);
+  });
+
+  it.each(['exact', 'owner'])('binds a pending initial native id once through the %s lifecycle route', async (route) => {
+    const id = await seedInitialMember(null);
+    expect(await recordSuLaunchSpec(id, OWNER, initialSpec)).toBe(true);
+    const reanchor = (native: string) => route === 'exact'
+      ? reanchorAdvSessionNativeId(id, native) : reanchorAdvSessionNativeIdByOwner(OWNER, native);
+    expect((await reanchor(DEAD_ID)).owner).toBe(OWNER);
+    const read = async () => (await admin<{ launch_spec: Record<string, unknown> }[]>`
+      SELECT launch_spec FROM harness_shared.adv_sessions WHERE id = ${id}`)[0].launch_spec.originalMemberLaunch;
+    expect(await read()).toMatchObject({ sessionId: DEAD_ID, launchArgv: initialArgv });
+    const original = await read();
+    expect((await reanchor(FRESH_ID)).owner).toBe(OWNER);
+    expect(await read()).toEqual(original);
+  });
+
+  it('does not backfill an existing render or a resume command as initial provenance', async () => {
+    for (const existingRender of [true, false]) {
+      const id = await seedInitialMember(DEAD_ID);
+      if (existingRender) {
+        await admin`UPDATE harness_shared.adv_sessions SET launch_spec = ${JSON.stringify(initialSpec)}::text::jsonb WHERE id = ${id}`;
+      } else {
+        await admin`UPDATE harness_shared.adv_sessions SET launch_argv = ${JSON.stringify(['psu', `--resume=${DEAD_ID}`])}::text::jsonb WHERE id = ${id}`;
+      }
+      expect(await recordSuLaunchSpec(id, OWNER, { ...initialSpec, originalMemberLaunch: { forged: true } })).toBe(true);
+      const [row] = await admin<{ launch_spec: Record<string, unknown> }[]>`
+        SELECT launch_spec FROM harness_shared.adv_sessions WHERE id = ${id}`;
+      expect(row.launch_spec).not.toHaveProperty('originalMemberLaunch');
+    }
+  });
+
   it('D019 retains the original native routing before repeated resumes and persona refreshes', async () => {
     const id = await seedAdv({ coordOwnerId: OWNER, sessionId: DEAD_ID });
     const originalArgv = ['psu', '--agent=codex', '--account=default', '--model=gpt-6:high', '--carry=warm'];

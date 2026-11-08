@@ -1885,6 +1885,7 @@ export async function reanchorAdvSessionNativeId(
         workspaceId: scope.workspace_id, advSessionId: id, nativeSessionId: sessionId,
         permit: opts.managedSuccessionPermit,
       }, async () => {
+      await bindInitialMemberNativeId(tx, id, sessionId);
       const rows = await tx<{ id: number; owner: string | null; workspace_id: string }[]>`
         UPDATE harness_shared.adv_sessions
            SET session_id = ${sessionId}, ended_at = NULL, exit_code = NULL, ended_by = NULL,
@@ -1936,6 +1937,22 @@ export async function reanchorAdvSessionNativeId(
     warnUnlessMissingTable(e, 'reanchorAdvSessionNativeId');
     return { reanchored: false, owner: null };
   }
+}
+
+/** Complete only a native id left pending by the initial lifecycle writer.
+ * Never manufacture a routing receipt from an old row during re-anchor. */
+async function bindInitialMemberNativeId(tx: Sql | TransactionSql, id: number, sessionId: string): Promise<void> {
+  await tx`
+    UPDATE harness_shared.adv_sessions
+       SET launch_spec = jsonb_set(launch_spec, '{originalMemberLaunch,sessionId}', to_jsonb(${sessionId}::text))
+     WHERE id = ${id} AND session_id IS NULL AND retired_at IS NULL
+       AND launch_spec->'originalMemberLaunch'->>'v' = '1'
+       AND launch_spec->'originalMemberLaunch'->>'advSessionId' = id::text
+       AND launch_spec->'originalMemberLaunch'->>'ownerId' = coord_owner_id
+       AND launch_spec->'originalMemberLaunch'->>'workspaceId' = workspace_id
+       AND launch_spec->'originalMemberLaunch'->>'agent' = agent
+       AND launch_spec->'originalMemberLaunch'->'sessionId' = 'null'::jsonb
+  `;
 }
 
 /**
@@ -1996,6 +2013,7 @@ export async function reanchorAdvSessionNativeIdByOwner(
       return withBlindReviewManagedReanchor(tx as unknown as Parameters<typeof withBlindReviewManagedReanchor>[0], {
         workspaceId: target[0]!.workspace_id, advSessionId: targetId, nativeSessionId: sessionId,
       }, async () => {
+      await bindInitialMemberNativeId(tx, targetId, sessionId);
       const rows = await tx<{ id: number }[]>`
         UPDATE harness_shared.adv_sessions
            SET session_id = ${sessionId}, ended_at = NULL, exit_code = NULL,
@@ -2304,10 +2322,13 @@ async function recordSuLaunchSpecInTransaction(
     id: number;
     workspace_id: string;
     coord_owner_id: string | null;
+    session_id: string | null;
+    agent: SuAgent | null;
+    launch_argv: unknown;
     launch_spec: unknown;
     applied: unknown;
   }[]>`
-    SELECT a.id, a.workspace_id, a.coord_owner_id, a.launch_spec,
+    SELECT a.id, a.workspace_id, a.coord_owner_id, a.session_id, a.agent, a.launch_argv, a.launch_spec,
            b.control_state->'activation'->'applied' AS applied
       FROM harness_shared.adv_sessions a
       LEFT JOIN harness_shared.session_briefs b
@@ -2404,6 +2425,23 @@ async function recordSuLaunchSpecInTransaction(
     delete (next as Record<string, unknown>).originalMemberLaunch;
     if (currentRecord?.originalMemberLaunch !== undefined)
       (next as Record<string, unknown>).originalMemberLaunch = currentRecord.originalMemberLaunch;
+    // Capture at the first persisted render, before a member ever needs resume.
+    // An existing render is not independent initial-launch evidence: refreshing
+    // a legacy row must not silently bless its current command as original.
+    const initial = next as Record<string, unknown>;
+    const fleet = initial.fleet as Record<string, unknown> | null;
+    if (row.launch_spec == null && row.coord_owner_id && row.agent &&
+        initial.workspaceId === row.workspace_id && initial.agent === row.agent &&
+        fleet?.role === 'member' && typeof fleet.slug === 'string' && fleet.slug.length > 0 &&
+        Array.isArray(row.launch_argv) && row.launch_argv.length > 0 &&
+        row.launch_argv.every((arg) => typeof arg === 'string' && !/(^|\s)--(resume|fork)(=|\s|$)/.test(arg))) {
+      initial.originalMemberLaunch = {
+        v: 1, advSessionId: Number(row.id), ownerId: row.coord_owner_id, sessionId: row.session_id,
+        workspaceId: row.workspace_id, agent: row.agent, launchArgv: row.launch_argv,
+        launchSpec: Object.fromEntries(Object.entries(initial).filter(([key]) =>
+          !['originalMemberLaunch', 'identityHistory', 'specificationArtifact'].includes(key))),
+      };
+    }
     // The bootstrap receipt binds this native incarnation to its runtime's
     // provenance ledger. A persona refresh cannot drop or redirect that pin.
     if (typeof currentRecord?.turnProvenanceDir === 'string' && isAbsolute(currentRecord.turnProvenanceDir))

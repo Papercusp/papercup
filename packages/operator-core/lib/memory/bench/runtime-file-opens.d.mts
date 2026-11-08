@@ -3,10 +3,13 @@ export function observeRuntimePageSize(): number;
 export function bindRuntimeJitDump(bytes: Buffer, witness: {
   processId: number; taskIds: number[]; elfMachine: number;
   startedMonotonicNs: string; finishedMonotonicNs: string;
+  headerClock?: 'monotonic-nanoseconds' | 'v8-realtime-microseconds';
+  startedEpochMs?: number; finishedEpochMs?: number;
   exitCode: number; signal: string | null; eof: boolean; captureStartedBeforeExec: boolean;
 }): {
   schema: 'runtime-jitdump-code-bytes/v1'; processId: number; elfMachine: number; endianness: 'little' | 'big'; bytes: number; sha256: string;
-  createdMonotonicNs: string; recordCount: number; closeRecordObserved: boolean;
+  headerTimestamp: string; headerClock: 'monotonic-nanoseconds' | 'v8-realtime-microseconds';
+  recordClock: 'monotonic-nanoseconds'; recordCount: number; closeRecordObserved: boolean;
   loads: {taskId: number; codeIndex: string; address: string; virtualAddress: string;
     bytes: number; sha256: string; nameSha256: string; timestampNs: string; byteOffset: number}[];
   moves: {taskId: number; codeIndex: string; from: string; to: string; virtualAddress: string;

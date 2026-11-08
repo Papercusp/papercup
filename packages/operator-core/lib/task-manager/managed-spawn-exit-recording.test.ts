@@ -36,6 +36,8 @@ const L = vi.hoisted(() => ({
   terminal: [] as unknown[],
   markDelay: undefined as (() => Promise<void>) | undefined,
   closeDelay: undefined as (() => Promise<void>) | undefined,
+  closeResult: true,
+  getTask: vi.fn(async (..._args: unknown[]) => null as Pick<TaskRow, 'taskId' | 'state' | 'endedAt' | 'scopeUnit'> | null),
   enabled: true,
   // Rest-typed so the pass-through mocks below can spread their `unknown[]` args in:
   // a zero-parameter vi.fn() makes `L.fn(...args)` a TS2556 spread error.
@@ -65,8 +67,9 @@ vi.mock('./store', () => ({
     await L.closeDelay?.();
     L.closed.push({ taskId, state: v.state, exitCode: v.exitCode ?? null, exitReason: v.exitReason });
     L.terminal.push((v as { terminalProvenance?: unknown }).terminalProvenance ?? null);
-    return true;
+    return L.closeResult;
   },
+  getTask: (...args: unknown[]) => L.getTask(...args),
 }));
 
 vi.mock('./scope-terminal-state', () => ({
@@ -82,7 +85,7 @@ import {
 } from './managed-spawn';
 import { notifyTaskKillRequested } from './kill-notify';
 import { CGROUP_ROOT, type CgroupFs } from './cgroup-read';
-import { scopeCgroupRelPath, scopeUnitForTask, type TaskSpec } from './types';
+import { scopeCgroupRelPath, scopeUnitForTask, type TaskRow, type TaskSpec } from './types';
 
 const MGR = '/user.slice/user-1000.slice/user@1000.service';
 const OWN_CGROUP = `0::${MGR}/papercup-dev-api.service\n`;
@@ -166,6 +169,8 @@ describe('confined task exit recording (WI-37509)', () => {
     L.terminal.length = 0;
     L.markDelay = undefined;
     L.closeDelay = undefined;
+    L.closeResult = true;
+    L.getTask.mockReset().mockResolvedValue(null);
     L.enabled = true;
     L.inspectTaskUnitTerminals.mockReset().mockResolvedValue(new Map());
     L.resetFailedTaskUnit.mockReset().mockResolvedValue(false);
@@ -250,6 +255,37 @@ describe('confined task exit recording (WI-37509)', () => {
     await expect(result.waitForCompletion()).resolves.toEqual({ status: 'unavailable', reason: 'fixture terminal store offline' });
     expect(L.closed).toEqual([]);
   });
+
+  it('accepts exact terminal readback when scoped teardown won the close race', async () => {
+    vi.useFakeTimers();
+    L.closeResult = false;
+    const { emitter, result } = await spawnConfined([]);
+    L.getTask.mockResolvedValue({ taskId: result.taskId, scopeUnit: result.scopeUnit,
+      state: 'killed', endedAt: '2026-11-08T15:00:13.511Z' });
+    emitter.emit('exit', null, 'SIGKILL');
+    await vi.advanceTimersByTimeAsync(SCOPE_HANDOFF_GRACE_MS);
+    await expect(result.waitForCompletion()).resolves.toEqual({ status: 'recorded' });
+    expect(L.getTask).toHaveBeenCalledWith(result.taskId);
+  });
+
+  it.each(['absent', 'live', 'wrong scope', 'wrong task'] as const)(
+    'keeps a no-op terminal write unavailable when readback is %s', async (kind) => {
+      L.closeResult = false;
+      const { emitter, child } = makeChild();
+      const result = await managedSpawn('true', [], SIDECAR_SPEC, {
+        confine: false, spawnFn: (() => child) as unknown as typeof nodeSpawn,
+      });
+      L.getTask.mockResolvedValue(kind === 'absent' ? null : {
+        taskId: kind === 'wrong task' ? 'other-task' : result.taskId,
+        scopeUnit: kind === 'wrong scope' ? 'pc-other-task.scope' : null,
+        state: kind === 'live' ? 'running' : 'killed',
+        endedAt: kind === 'live' ? null : '2026-11-08T15:00:13.511Z',
+      });
+      emitter.emit('exit', 0, null);
+      await expect(result.waitForCompletion()).resolves.toEqual({ status: 'unavailable',
+        reason: 'terminal write did not update the row' });
+    },
+  );
 
   it('reports disabled accounting after the unledgered child exits', async () => {
     L.enabled = false;
