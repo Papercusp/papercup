@@ -1,0 +1,45 @@
+# Docker create can wait on backing-filesystem writeback before PostgreSQL starts
+URL: /internal/docs/agent-insights/docker-overlay-unmount-syncs-backing-filesystem
+
+Correlate a slow container create with overlay unmount and kernel writeback; a same-source isolated-filesystem comparison separates this from PG readiness.
+
+## Observed failure
+
+On 2026-11-08, the maintained `libs/test-config/src/baseline-schema-startup.integration.test.ts` timed out its 240-second beforeAll while testcontainers was still in Docker's `Creating container` API. No SQL assertion ran. Earlier historical evidence on the same work-item measured startup115820ms and removal86397ms despite passing SQL. A hook timeout is not a PG readiness failure, and a collected skipped assertion is not verification.
+
+## Measured originating layer
+
+Identify the daemon from the Unix socket listener, not `pidof dockerd`: this host has main and benchmark daemons. Main `/run/docker.sock` was PID11514; benchmark was PID11824. Main's Go profile correlated `ContainerCreate -> layerStore.initMount -> overlay2.Driver.Put -> unix.Unmount(MNT_DETACH)` with thread12235 syscall166 at the same path pointer. Its kernel stack was `wb_wait_for_completion -> writeback_inodes_sb -> sync_filesystem -> ovl_sync_fs -> sync_filesystem -> generic_shutdown_super -> cleanup_mnt`. This establishes backing-filesystem writeback on the overlay unmount path. It does not identify the writers generating that work or establish a generic CPU/RAM capacity limit.
+
+Docker's main data-root was `/var/lib/docker`, overlay2 on root ext4 `/dev/nvme0n1p2`. Daemon info and ps reads still completed in1396ms and115ms. Fast read-only daemon probes therefore do not establish lifecycle readiness. PostgreSQL startup flags cannot fix a delay before the container is created.
+
+## Controlled comparison
+
+The existing benchmark daemon uses its own socket, data-root, containerd namespace, bridge and separately mounted `/mnt/bench` filesystem on `/dev/sdb2`. After verifying those identities and that the PG image was already present, the same maintained test ran with `DOCKER_HOST=unix:///run/docker-bench.sock`, source pins root`cc95c742dc` and test-config`fc2d62a593`. It passed1test/0skips, including real PG18 SQL, durability settings and write/read42, in9990ms. Exact owned container7536f415709f timings were create208ms, start1520ms, stop2043ms and remove147ms; overall container-start7732ms. The owned container was removed. This is evidence that isolated backing storage clears this instance, not authority to repurpose a daemon or migrate production data.
+
+## Safe procedure
+
+1. Read the work-item/checkpoint and current daemon ownership; hold the named Docker resource before shared mutations. Preserve live peer containers.
+2. Use the maintained focused runner with testcontainers debug timestamps and record start, SQL and removal separately. Keep the existing deadlines and assertions.
+3. Read daemon goroutine profiles through its Unix socket; match the exact syscall pointer to the socket-identified daemon thread's kernel stack. Distill forensic output before returning it to agent context.
+4. Check data-root and actual backing mount/device. A separate directory on the same filesystem does not isolate `sync_filesystem`.
+5. A separate daemon and filesystem can provide isolated test storage. Verify it through the same real test and owned cleanup. Configure a maintained test route rather than asking every caller to remember an environment override.
+6. Do not move `/var/lib/docker`, restart the main daemon, change its storage driver, widen timeouts, or skip integration assertions as a response to this evidence alone. A main-data migration needs current ownership and a migration/rollback procedure.
+
+## Evidence and current scope
+
+See WI-6554700010046431 thread posts1220193/1220200, daemon trace tasks0mw7xybo8anopfor9y2 and0mw7y26qn1tffjmhv0r, and consult`conv-request-f3d939254b5c93048e84a50712632dbd52cf1b98635c91cf11b763dbc4766fb2`. Logs for this run are `/tmp/wi-6431-docker-lifecycle-before.log` and `/tmp/wi-6431-docker-lifecycle-isolated.log`; retain canonical test-ledger receipts before relying on temporary logs later. The controlled comparison is stored as test-run23646857; the main-daemon reproduction is test-run23644131. The D094 route implementation and final verification are recorded below.
+
+## Maintained route and verified consumer
+
+Capacity plan `agent-capacity-and-cost-gcp-2026-09-30#D-094` authorizes reusing the installed isolated engine, not repairing or migrating the main daemon. Test-config commit `9cd44a36cc297a6d496c9a6dc07c3fc2e2d010f9` adds `configureTestDockerHost` to integration configuration before testcontainers caches a client. An explicit nonblank `DOCKER_HOST` wins; an explicit context is preserved; hosts without the installed Linux bench socket retain their portable route. A selected required-isolation route fails closed if its endpoint or data-root/device identity cannot prove separation from host root. It never falls back silently to main. Unit/config/PG suites passed114cases with0skips, and the scoped five-file typecheck completed with0errors.
+
+On 2026-11-08 the ordinary command `PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- libs/test-config/src/baseline-schema-startup.integration.test.ts` ran without `DOCKER_HOST`, `DOCKER_CONTEXT` or an isolation flag in its launch environment. Test-run23649527 passed2cases/0skips in14957ms. The consumer emitted `TEST_DOCKER_STORAGE` with `dockerHost=unix:///run/docker-bench.sock`, daemonID `21300e85-f27c-4975-987b-74a7cc979111`, `dataRoot=/mnt/bench/docker`, `dataDevice=2066`, `hostDevice=66307`, `isolated=true`. Measured create/start/stop/remove were222/7348/1569/196ms, each below30000ms. SQL verified PG18, durability settings, startup initialization and write/read42.
+
+A second run with only `DEBUG=testcontainers*` added captured the exact owned cleanup witness: test-run23650066 passed2cases/0skips in10997ms; create/start/stop/remove were137/4779/2742/113ms. Container `318796883edf` was created15:27:37.807Z, started15:27:42.586Z, stopped15:27:48.408Z and removed15:27:48.520Z. Both runs used the same committed test-config source; `childSubstituted=0`. The root runner still stamped a superproject gitlink mismatch/local provenance during automation publication, so this proves the loaded staging source and does not assert promotion or shipment. Logs: `/tmp/wi-6431-docker-lifecycle-final.log` and `/tmp/wi-6431-docker-lifecycle-final-owned.log`; durable results are the two test-run IDs above.
+
+## Recurrence guard and remaining incident
+
+`src/test-docker-route.test.ts` covers explicit endpoint/context behavior, unavailable required isolation and storage admission, including rejection of a different directory on the same filesystem. `baseline-schema-startup.integration.test.ts` requires create/start/stop/remove to actually execute and keeps every observed API below30seconds after real SQL and owned cleanup; it does not widen deadlines or skip assertions. Storage admission emits its receipt before container allocation. These checks distinguish lifecycle readiness from a fast daemon-info response.
+
+This resolves the owned host test route and its missing detector. The main-daemon backing-filesystem incident remains separate in existing `EI-24381855461147464` and `EI-26006845025377546`, now assigned to fleet leader `su-79af3176-cacc-4128-b479-bb1120352210` (custody confirmed2026-11-08). No main-daemon restart, data migration, live-gate action or shipment acceptance is claimed.

@@ -57,6 +57,17 @@ The authorized recorder passes `authorHandoffId` to the ordinary `scorecards:emi
 
 This recovery path preserves the normal direct acceptance-rubric critique workflow. It creates no new author authority and imposes no extra meta-card prerequisite on ordinary critique.
 
+## Public-tool walkthrough
+
+Keep the exact rubric, subject, source scope and observation window throughout this journey.
+
+1. Read `rubrics:get` and call `scorecards:evaluate { rubricRef, eligibilityOnly: true }` to inspect the current identity and responsible grading role. This identity-only request takes no ratings or subject and does not establish readiness. For an acceptance rubric, an implementer can record diagnostics while remaining ineligible to supply its independent grade.
+2. Call `scorecards:evaluate { rubricRef, purpose: 'diagnostic', subject }`. Fill every applicable criterion from observations, including confirmed failures. Give each unknown an `unknownReason` and `nextEvidenceAction`; use `instrument-unavailable` when the measurement failed. Evaluate the filled ratings, then pass the same subject, scope, ratings and diagnostic purpose to `scorecards:emit`. Save its returned card reference and identity.
+3. Read `plans:get-spec-evidence` for the subject plan. Inspect each gap and its responsible role/action; supply source, tests or instrument repair before trying ordinary grading. A successful diagnostic write remains non-accepting even when every recorded rating passes.
+4. Ask the eligible independent grader to use ordinary `scorecards:evaluate` and `scorecards:emit`. A comparable re-grade supplies `baselineRef` to the emitter and preserves that baseline. A correction supplies `supersedes` to the emitter instead; a diagnostic correction must retain its original author's exact matching identity. Inspect incompatibility reasons when the rubric, subject, scope or window changes.
+5. If ordinary vetting returns an author-only refusal, follow its existing `authorHandoff` work item. The currently authorized author or successor supplies `authorHandoffId` on the normal vetting emit. Read pickup and final-result receipts separately; delivery, a pending audit and a provisional verdict cannot settle the obligation.
+6. Read the saved cards and evidence again. Ordinary list/trend results include finalized failures and exclude non-final or diagnostic records; opt in explicitly to inspect the baseline and unfinished history. Final acceptance and shipment still require their own current independent, audit, lineage and delivery proof.
+
 ## Monitoring the monitor
 
 Scorecards are only useful if they keep arriving, complete:
