@@ -187,6 +187,7 @@ pub struct VoiceRequest {
     pub request_id: String,
     pub audio_base64: Option<String>,
     pub text: Option<String>,
+    pub chunk_index: Option<u32>,
 }
 
 impl VoiceRequest {
@@ -195,7 +196,7 @@ impl VoiceRequest {
         anyhow::ensure!(uuid(&self.conversation_id) && uuid(&self.request_id), "select an exact voice conversation/request");
         match self.operation {
             VoiceOperation::Transcribe => {
-                anyhow::ensure!(self.text.is_none(), "transcription cannot inject text");
+                anyhow::ensure!(self.text.is_none() && self.chunk_index.is_none(), "transcription cannot inject text or a reading chunk");
                 let encoded = self.audio_base64.as_deref().context("record audio first")?;
                 anyhow::ensure!(encoded.len() <= 2_600_000, "voice recording exceeds 60 seconds");
                 let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).context("invalid voice audio")?;
@@ -208,6 +209,7 @@ impl VoiceRequest {
                 Ok(Some(bytes))
             }
             VoiceOperation::Speak => {
+                anyhow::ensure!(self.chunk_index.is_none_or(|index| index < 32 * 1024), "invalid reading chunk index");
                 anyhow::ensure!(self.audio_base64.is_none() && self.text.as_deref().is_some_and(|s|
                     !s.trim().is_empty() && s.len() <= 32 * 1024), "invalid spoken reply");
                 Ok(None)
@@ -666,10 +668,18 @@ mod tests {
             let mut bad = base.clone(); bad[key] = value;
             assert!(serde_json::from_value::<VoiceRequest>(bad).unwrap().audio().is_err(), "accepted {key}");
         }
-        let mut speak = base; speak["operation"] = json!("speak"); speak["text"] = json!("literal ' $() λ");
+        let mut speak = base.clone(); speak["operation"] = json!("speak"); speak["text"] = json!("literal ' $() λ");
         assert!(serde_json::from_value::<VoiceRequest>(speak.clone()).unwrap().audio().is_err());
         speak.as_object_mut().unwrap().remove("audioBase64");
         assert!(serde_json::from_value::<VoiceRequest>(speak.clone()).unwrap().audio().unwrap().is_none());
+        for index in [json!(-1),json!(0.5),json!("1"),json!(32768)] {
+            let mut bad = speak.clone(); bad["chunkIndex"] = index;
+            assert!(serde_json::from_value::<VoiceRequest>(bad).map_or(true, |r| r.audio().is_err()));
+        }
+        speak["chunkIndex"] = json!(0); speak["text"] = json!("λ🙂".repeat(1500));
+        assert!(serde_json::from_value::<VoiceRequest>(speak.clone()).unwrap().audio().unwrap().is_none());
+        let mut bad = base; bad["chunkIndex"] = json!(0);
+        assert!(serde_json::from_value::<VoiceRequest>(bad).unwrap().audio().is_err());
         speak["text"] = json!(" "); assert!(serde_json::from_value::<VoiceRequest>(speak).unwrap().audio().is_err());
     }
     #[test]
