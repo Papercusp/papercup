@@ -66,6 +66,7 @@ vi.mock('../../authority/lock-event-stream', () => ({ recordLockEvent: vi.fn() }
 vi.mock('../../edit-attribution', () => ({
   recordEditAttribution: vi.fn(async () => {}),
   recordEditAttributionStrict: vi.fn(async () => {}),
+  preserveReleasedEditGenerations: vi.fn(async () => {}),
 }));
 // P-014: the pre-release restricted-edit hold. Default: an unrestricted owner (nothing written).
 vi.mock('../../personal-vault/git-sync-hold', () => ({ recordRestrictedEditBeforeRelease: vi.fn(async () => false) }));
@@ -82,7 +83,7 @@ import {
   tryRelease,
 } from './su-lock-store';
 import { resolveExplicitFileLockDomain } from './coordination-domain';
-import { recordEditAttribution, recordEditAttributionStrict } from '../../edit-attribution';
+import { recordEditAttribution, recordEditAttributionStrict, preserveReleasedEditGenerations } from '../../edit-attribution';
 import { recordRestrictedEditBeforeRelease } from '../../personal-vault/git-sync-hold';
 import { routeHookOperationFinish } from './file-lock-authority-wiring';
 import { resolveAgentIdentity } from '../coordination/identity';
@@ -755,5 +756,35 @@ describe('locks:release hook_operation threads caller identity (WI-6554700010019
       expect.objectContaining({ owner: 'me', workspaceId: 'ws-1', contributor: 'user-1' }),
       'auth-1',
     );
+  });
+});
+
+describe('explicit release preservation', () => {
+  it('keeps capture-bound attribution as the last handoff record instead of writing a duplicate unbound row', async () => {
+    vi.mocked(preserveReleasedEditGenerations).mockResolvedValueOnce(true);
+    const rows = [{ path: 'a.ts', lock_id: 'lease', intent: 'edit', goal_ref: 'WI-A', acquired_ts: new Date() }];
+    routeM.mockImplementation(async (_domain, op) => ({ value: await op.local(), via: 'local-authority' }) as never);
+    vi.mocked(tryRelease).mockImplementationOnce(async (_tx, p) => {
+      await p.beforeRelease?.(rows);
+      return { released: ['a.ts'], heldBefore: 1 };
+    });
+    await call({ lock_id: '33333333-3333-3333-3333-333333333333',
+      native_edit_proof: { success: true, source: 'claude', tool: 'Edit', paths: ['a.ts'] } });
+    expect(preserveReleasedEditGenerations).toHaveBeenCalledOnce();
+    expect(recordAttributionM).not.toHaveBeenCalled();
+  });
+
+  it('runs custody on the protected selection with the caller identity', async () => {
+    const rows = [{ path: 'a.ts', lock_id: 'lease', intent: 'edit', goal_ref: 'WI-A', acquired_ts: new Date() }];
+    vi.mocked(resolveAgentIdentity).mockReturnValue({ ownerId: 'me', workspaceId: 'ws-1', userId: 'user-1' } as never);
+    routeM.mockImplementation(async (_domain, op) => ({ value: await op.local(), via: 'local-authority' }) as never);
+    vi.mocked(tryRelease).mockImplementation(async (_tx, p) => {
+      await p.beforeRelease?.(rows);
+      return { released: ['a.ts'], heldBefore: 1 };
+    });
+    await call({ lock_id: '33333333-3333-3333-3333-333333333333' });
+    expect(preserveReleasedEditGenerations).toHaveBeenCalledWith(expect.objectContaining({
+      repoRoot: 'dom', rows, agentId: 'me', workspaceId: 'ws-1', contributor: 'user-1', sessionId: 'me',
+    }));
   });
 });

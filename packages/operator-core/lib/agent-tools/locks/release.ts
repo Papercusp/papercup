@@ -34,7 +34,7 @@ import {
 } from '../../authority/file-lock-authority-ops';
 import { recordLockEvent } from '../../authority/lock-event-stream';
 import { noteShaTokenRelease } from '../../authority/sha-token-registry';
-import { recordEditAttribution, recordEditAttributionStrict } from '../../edit-attribution';
+import { recordEditAttribution, recordEditAttributionStrict, preserveReleasedEditGenerations } from '../../edit-attribution';
 import { recordRestrictedEditBeforeRelease } from '../../personal-vault/git-sync-hold';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 import { resolveExplicitFileLockDomain } from './coordination-domain';
@@ -375,6 +375,7 @@ export default defineTool({
     type ReleaseOutcome = {
       released: string[];
       heldBefore: number | null;
+      preservationRecorded?: boolean;
       granularReleased?: number;
       wrongPlane?: {
         resource?: string;
@@ -399,14 +400,23 @@ export default defineTool({
       paths: string[] | undefined = args.paths,
     ): Promise<ReleaseOutcome> {
       const localRelease = (): Promise<ReleaseOutcome> =>
-        inWorkspaceTxn(domain, ownerId, async (tx) =>
-          tryRelease(tx, {
+        inWorkspaceTxn(domain, ownerId, async (tx) => {
+          let preservationRecorded = false;
+          const result = await tryRelease(tx, {
             coordinationDomain: domain,
             owner: ownerId,
             lockId,
             paths,
             allMine,
-          }),
+            beforeRelease: async rows => {
+              const identity = resolveAgentIdentity(ctx);
+              preservationRecorded = await preserveReleasedEditGenerations({ repoRoot: domain, rows, agentId: ownerId,
+                workspaceId: identity.workspaceId ?? undefined, contributor: identity.userId ?? undefined,
+                sessionId: editSessionId(args.native_edit_proof, ownerId) });
+            },
+          });
+          return { ...result, ...(preservationRecorded ? { preservationRecorded: true } : {}) };
+        },
           { paths },
         );
 
@@ -418,7 +428,7 @@ export default defineTool({
       // P-014: set when the restricted-owner path below already wrote this edit's
       // ledger row before the release, so the post-release write does not repeat it.
       let restrictedEditPreRecorded = false;
-      const onFileLocksReleased = (released: string[] | undefined): void => {
+      const onFileLocksReleased = (released: string[] | undefined, preservationRecorded = false): void => {
         // G-0 (P-033): remember the published sha for the next grant. On the
         // remote-authority path the authority records it too (from the routed
         // payload); this local note keeps the local-authority + fail-open paths
@@ -430,7 +440,7 @@ export default defineTool({
         // mutation. Attribute only after a successful recognized native edit
         // proof whose paths exactly equal the rows actually released.
         const proof = args.native_edit_proof as NativeEditProof | undefined;
-        if (!restrictedEditPreRecorded && released && isNativeEditProofForPaths(proof, released)) {
+        if (!preservationRecorded && !restrictedEditPreRecorded && released && isNativeEditProofForPaths(proof, released)) {
           const identity = resolveAgentIdentity(ctx);
           void recordEditAttribution({
             repoRoot: domain,
@@ -484,22 +494,25 @@ export default defineTool({
                   coordinationDomain: domain,
                   publishedSha: args.published_sha ?? null,
                   nativeEditProof: args.native_edit_proof as NativeEditProof | undefined,
+                  workspaceId: resolveAgentIdentity(ctx).workspaceId ?? undefined,
+                  contributor: resolveAgentIdentity(ctx).userId ?? undefined,
                 } satisfies FileLockReleaseParams,
                 decode: (raw) => {
-                  const r = raw as { released?: string[]; heldBefore?: number };
+                  const r = raw as { released?: string[]; heldBefore?: number; preservationRecorded?: boolean };
                   return {
                     released: r.released ?? [],
                     // `?? null`, never `?? 0`: a peer authority that does not send
                     // the field leaves the count UNKNOWN, and reporting unknown as
                     // 0 would assert "you held nothing" on no evidence.
                     heldBefore: typeof r.heldBefore === 'number' ? r.heldBefore : null,
+                    ...(r.preservationRecorded === true ? { preservationRecorded: true } : {}),
                   };
                 },
               },
             },
           ),
         );
-        onFileLocksReleased(routed.value.released);
+        onFileLocksReleased(routed.value.released, routed.value.preservationRecorded);
         // WI-1550 (P-015): a LOCALLY-decided release (we are the authority, or
         // fail-open/no-peers/unmanaged) never appended its own instant-handover
         // lock-event before this fix — only a release relayed to a REMOTE authority
@@ -521,7 +534,7 @@ export default defineTool({
         // local release (pre-cutover behavior). No lock-event emitted here, same
         // rationale as the acquire-side fallback in acquire.ts.
         const local = await acquireWithContentionRetry(localRelease);
-        onFileLocksReleased(local.released);
+        onFileLocksReleased(local.released, local.preservationRecorded);
         return local;
       }
     }

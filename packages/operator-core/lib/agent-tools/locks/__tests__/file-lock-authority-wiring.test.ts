@@ -11,13 +11,13 @@ vi.mock('../../../harness-registry', () => ({ loadHarnessRegistry: vi.fn() }));
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws1' }));
 vi.mock('../in-workspace-txn', () => ({ inWorkspaceTxn: vi.fn(async (_d: string, _o: string, fn: (tx: unknown) => unknown) => fn({})) }));
 vi.mock('../su-lock-store', () => ({ tryAcquire: vi.fn(), tryRelease: vi.fn(), tryFinishHookOperation: vi.fn(), readQueue: vi.fn(), getTxPool: vi.fn() }));
-vi.mock('../../../edit-attribution', () => ({ recordEditAttributionStrict: vi.fn(), preserveEditGeneration: vi.fn() }));
+vi.mock('../../../edit-attribution', () => ({ recordEditAttributionStrict: vi.fn(), preserveEditGeneration: vi.fn(), preserveReleasedEditGenerations: vi.fn() }));
 
 import { loadHarnessRegistry } from '../../../harness-registry';
 import { getDomainToHarnessSlug, getHarnessToPotSlug } from '../../../authority/file-lock-routing';
 import { _testing, adaptSuLockStore, finishHookOperationAtAuthority } from '../file-lock-authority-wiring';
-import { tryAcquire, tryFinishHookOperation } from '../su-lock-store';
-import { recordEditAttributionStrict, preserveEditGeneration } from '../../../edit-attribution';
+import { tryAcquire, tryRelease, tryFinishHookOperation } from '../su-lock-store';
+import { recordEditAttributionStrict, preserveEditGeneration, preserveReleasedEditGenerations } from '../../../edit-attribution';
 import type { FileLockReleaseParams } from '../../../authority/file-lock-authority-ops';
 
 beforeEach(() => {
@@ -37,6 +37,21 @@ const REGISTRY = {
 };
 
 describe('hook operation authority store adapter', () => {
+  it('preserves the authority-selected explicit lease before release', async () => {
+    vi.mocked(preserveReleasedEditGenerations).mockResolvedValueOnce(true);
+    const rows = [{ path: 'a.ts', lock_id: 'lease', intent: 'edit', goal_ref: 'WI-A', acquired_ts: new Date() }];
+    vi.mocked(tryRelease).mockImplementationOnce(async (_tx, p) => {
+      await p.beforeRelease?.(rows);
+      return { released: ['a.ts'], heldBefore: 1 };
+    });
+    const result = await adaptSuLockStore().release({ owner: 'A', coordinationDomain: '/repo', lockId: 'lease',
+      workspaceId: 'ws-1', contributor: 'user-1' });
+    expect(preserveReleasedEditGenerations).toHaveBeenCalledWith(expect.objectContaining({
+      repoRoot: '/repo', rows, agentId: 'A', workspaceId: 'ws-1', contributor: 'user-1', sessionId: 'A',
+    }));
+    expect(result).toMatchObject({ preservationRecorded: true });
+  });
+
   const operation = { id: '71d933be-413a-48b0-83af-8856650a917b', deadline: '2026-06-05T00:30:00Z',
     paths: ['a.ts'], intent: 'PreToolUse:Edit', ttlSec: 600, outcome: 'completed' as const };
   const params: FileLockReleaseParams = { owner: 'A', coordinationDomain: '/repo', operation,

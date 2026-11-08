@@ -5556,11 +5556,20 @@ async function commitPriorityPaths(
 const VANISHED_PATH_PROBE_BATCH = 500;
 
 /** Frozen input to a capture, persisted on the existing operation by its caller. */
+export interface GitSyncCandidateDependency {
+  requestId: string;
+  generation: number;
+  paths: string[];
+  /** null is an observed predecessor without readable custody, never success. */
+  tree: string | null;
+}
+
 export interface GitSyncCandidateRequest {
   requestId: string;
   generation: number;
   base: string | null;
   paths: readonly string[];
+  dependencies?: readonly GitSyncCandidateDependency[];
 }
 
 /** Version two of the existing custody manifest roots an entire candidate tree. */
@@ -5574,6 +5583,7 @@ export interface GitSyncCandidateCapture {
   paths: string[];
   baseTree: string;
   tree: string;
+  dependencies?: GitSyncCandidateDependency[];
 }
 
 export type GitSyncCandidateCaptureResult =
@@ -5586,7 +5596,7 @@ export type GitSyncCandidateCaptureResult =
 export async function readGitSyncCandidate(
   runGit: RunGit,
   repoPath: string,
-  request: Pick<GitSyncCandidateRequest, 'requestId' | 'generation' | 'paths'>,
+  request: Pick<GitSyncCandidateRequest, 'requestId' | 'generation'> & { paths?: readonly string[] },
 ): Promise<GitSyncCandidateCaptureResult> {
   try {
     const env = { GIT_OPTIONAL_LOCKS: '0', GIT_LITERAL_PATHSPECS: '1' };
@@ -5601,7 +5611,10 @@ export async function readGitSyncCandidate(
     const metadata = await runGit(['show', `${ref}:manifest.json`], repoPath, { env });
     if (metadata.code !== 0) return custodyRefused('candidate-manifest-read');
     const candidate = JSON.parse(metadata.stdout) as GitSyncCandidateCapture;
-    return await captureGitSyncCandidate(runGit, repoPath, { ...request, base: candidate.base }, { existingOnly: true });
+    return await captureGitSyncCandidate(runGit, repoPath, {
+      ...request, paths: request.paths ?? candidate.paths, base: candidate.base,
+      ...(candidate.dependencies ? { dependencies: candidate.dependencies } : {}),
+    }, { existingOnly: true });
   } catch {
     return custodyRefused('candidate-capture-exception');
   }
@@ -5622,11 +5635,21 @@ export async function captureGitSyncCandidate(
 ): Promise<GitSyncCandidateCaptureResult> {
   const oidPattern = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
   const paths = [...new Set(request.paths)].sort();
+  const dependencies = request.dependencies?.map(dependency => ({ ...dependency,
+    paths: [...new Set(dependency.paths)].sort(),
+  })).sort((a, b) => canonicalJson(a).localeCompare(canonicalJson(b)));
   if (!request.requestId || !Number.isSafeInteger(request.generation) || request.generation < 1 ||
       (request.base !== null && !oidPattern.test(request.base)) || paths.length === 0 ||
       paths.some(path => !path || path.includes('\0') || path.includes('\\') || isAbsolute(path) ||
         path.split('/').some(part => !part || part === '.' || part === '..'))) {
     return custodyRefused('candidate-input');
+  }
+  if (dependencies?.some(dependency => !dependency.requestId || dependency.requestId === request.requestId ||
+      !Number.isSafeInteger(dependency.generation) || dependency.generation < 1 ||
+      (dependency.tree !== null && !oidPattern.test(dependency.tree)) || !dependency.paths.length ||
+      dependency.paths.some(path => !paths.includes(path))) ||
+      (dependencies && new Set(dependencies.map(dependency => dependency.requestId)).size !== dependencies.length)) {
+    return custodyRefused('candidate-dependency-input');
   }
   // Even read-only Git commands must not opportunistically refresh the real index.
   const sharedGit: RunGit = (args, cwd, options) => runGit(args, cwd, {
@@ -5638,7 +5661,8 @@ export async function captureGitSyncCandidate(
     const repository = await realpath(common.stdout.trim());
     const identity = { repository, requestId: request.requestId, generation: request.generation };
     const ref = SOURCE_CUSTODY_REF_PREFIX + createHash('sha256').update(canonicalJson(identity)).digest('hex');
-    const input = { version: 2 as const, kind: 'candidate' as const, ...identity, base: request.base, paths };
+    const input = { version: 2 as const, kind: 'candidate' as const, ...identity, base: request.base, paths,
+      ...(dependencies?.length ? { dependencies } : {}) };
     const readCapture = async (): Promise<GitSyncCandidateCaptureResult> => {
       const metadata = await sharedGit(['show', `${ref}:manifest.json`], repoPath);
       if (metadata.code !== 0) return custodyRefused('candidate-manifest-read');

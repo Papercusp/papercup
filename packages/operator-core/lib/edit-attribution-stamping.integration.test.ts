@@ -9,6 +9,9 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import type { RunGit } from './harness/git-sync/run-git-sync';
+import type { FrozenEditCohort } from './edit-attribution';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 
@@ -22,7 +25,8 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 }));
 vi.mock('./agent-tools/coordination/presence', () => ({ getPresence: async () => h.presence }));
 
-const { recordEditAttribution } = await import('./edit-attribution');
+const { recordEditAttribution, preserveEditGeneration, readEditPredecessors, describeEditCohort,
+  freezeEditCohort, checkFrozenEditCohortEvidence } = await import('./edit-attribution');
 
 const WS = 'ws-stamping';
 const AGENT = 'su-stamping';
@@ -96,6 +100,121 @@ async function edit(intent: string, sessionId?: string) {
 }
 
 describe('edit stamping from the editor held set', () => {
+  const context = { configurationIdentity: 'config-1', environmentIdentity: 'isolated-env-1', requiredChecks: ['focused-suite'] };
+  const member = (id: string, path: string, dependencies: Array<{ requestId: string; generation: number; paths: string[]; tree: string | null }> = []) => ({
+    version: 1, kind: 'edit-generation', pending: true,
+    capture: { ok: true, ref: `refs/fixture/${id}`, candidate: {
+      version: 2, kind: 'candidate', repository: '/fixture/.git', requestId: id, generation: 1,
+      paths: [path], base: 'a'.repeat(40), baseTree: 'b'.repeat(40), tree: id === 'op-a' ? 'c'.repeat(40) : 'd'.repeat(40),
+      ...(dependencies.length ? { dependencies } : {}),
+    } },
+  });
+  async function fullEdit(id: string, path: string, dependencies: Parameters<typeof member>[2] = []) {
+    await recordEditAttribution({ repoRoot: root, files: [path], agentId: AGENT, workspaceId: WS,
+      goalRef: 'WI-A', dispatchCallId: id, captureReceipt: member(id, path, dependencies) }, { strict: true });
+  }
+  const freeze = () => freezeEditCohort({ workspaceId: WS, harnessSlug: 'papercusp', workItemId: 'WI-A', ...context });
+  async function lifecycle() {
+    return (await cohort() as { gitSyncLifecycle: { captures: Record<string, unknown>; frozen: FrozenEditCohort } }).gitSyncLifecycle;
+  }
+  function evidence(frozen: FrozenEditCohort, captures: Record<string, unknown>) {
+    return { frozen, captures, ...context, publicationIntent: true, dependencies: [],
+      checks: [{ check: 'focused-suite', identity: frozen.identity, environmentIdentity: context.environmentIdentity,
+        passed: true, runId: 'measured-run-1' }] };
+  }
+
+  it.each(['turn-end', 'session-restart'])('retains a complete unfinished frozen cohort after %s', async _boundary => {
+    await hold('WI-A');
+    await Promise.all([fullEdit('op-a', 'a.ts'), fullEdit('op-b', 'b.ts')]);
+    const frozen = await freeze();
+    // Both lifecycle boundaries can drop the short-lived editor, never the work.
+    h.presence = null;
+    await h.db!.sql`UPDATE harness_shared.work_items SET taken_by = NULL WHERE workspace_id = ${WS} AND feature_id = 'WI-A'`;
+    const reloaded = await lifecycle();
+    expect(reloaded.frozen).toEqual(frozen);
+    expect(await freeze()).toEqual(frozen);
+    expect(checkFrozenEditCohortEvidence({ ...evidence(reloaded.frozen, reloaded.captures), publicationIntent: false }))
+      .toEqual({ ok: false, reason: 'cohort-unfinished' });
+  });
+
+  it('invalidates the whole frozen subject when another captured file arrives', async () => {
+    await hold('WI-A');
+    await fullEdit('op-a', 'a.ts');
+    const frozen = await freeze();
+    expect(checkFrozenEditCohortEvidence(evidence(frozen, (await lifecycle()).captures))).toEqual({ ok: true });
+    await fullEdit('op-b', 'b.ts');
+    expect(checkFrozenEditCohortEvidence(evidence(frozen, (await lifecycle()).captures)))
+      .toEqual({ ok: false, reason: 'cohort-changed' });
+    const next = await freeze();
+    expect(next.identity).not.toBe(frozen.identity);
+    expect(next.members.map(member => member.operationId)).toEqual(['op-a', 'op-b']);
+  });
+
+  it('rejects a stale run, changed environment/configuration and missing measured check', async () => {
+    await hold('WI-A');
+    await fullEdit('op-a', 'a.ts');
+    const frozen = await freeze();
+    const current = evidence(frozen, (await lifecycle()).captures);
+    expect(checkFrozenEditCohortEvidence({ ...current, checks: [{ ...current.checks[0], identity: 'older-candidate' }] }))
+      .toEqual({ ok: false, reason: 'cohort-check-missing-or-stale' });
+    expect(checkFrozenEditCohortEvidence({ ...current, checks: [{ ...current.checks[0], runId: '' }] }))
+      .toEqual({ ok: false, reason: 'cohort-check-missing-or-stale' });
+    expect(checkFrozenEditCohortEvidence({ ...current, environmentIdentity: 'other-env' }))
+      .toEqual({ ok: false, reason: 'cohort-changed' });
+    expect(checkFrozenEditCohortEvidence({ ...current, configurationIdentity: 'other-config' }))
+      .toEqual({ ok: false, reason: 'cohort-changed' });
+  });
+
+  it('requires exact finished predecessor proof even when the successor checks pass', async () => {
+    await hold('WI-A');
+    const dependency = { requestId: 'unfinished-A1', generation: 1, paths: ['a.ts'], tree: 'e'.repeat(40) };
+    await fullEdit('op-b', 'a.ts', [dependency]);
+    const frozen = await freeze();
+    const current = evidence(frozen, (await lifecycle()).captures);
+    expect(checkFrozenEditCohortEvidence(current)).toEqual({ ok: false, reason: 'cohort-ancestor-unfinished' });
+    expect(checkFrozenEditCohortEvidence({ ...current, dependencies: [{ ...dependency, repository: '/fixture/.git', tree: 'f'.repeat(40) }] }))
+      .toEqual({ ok: false, reason: 'cohort-ancestor-unfinished' });
+    expect(checkFrozenEditCohortEvidence({ ...current, dependencies: [{ ...dependency, repository: '/fixture/.git' }] })).toEqual({ ok: true });
+  });
+
+  it('refuses separately captured overlapping files without causal order and incompatible bases', () => {
+    const a = member('op-a', 'a.ts'), b = member('op-b', 'a.ts');
+    expect(() => describeEditCohort({ 'op-a': a, 'op-b': b }, context)).toThrow('unordered-overlapping');
+    const ordered = member('op-b', 'a.ts', [{ requestId: 'op-a', generation: 1, paths: ['a.ts'], tree: a.capture.candidate.tree }]);
+    expect(describeEditCohort({ 'op-b': ordered, 'op-a': a }, context).members).toHaveLength(2);
+    expect(() => describeEditCohort({ 'op-a': a, 'op-b': { ...ordered, capture: { ...ordered.capture,
+      candidate: { ...ordered.capture.candidate, base: 'f'.repeat(40) } } } }, context)).toThrow('incompatible-bases');
+  });
+
+  it('uses acknowledged nullable-attribution handoff history and keeps legacy ancestry unknown', async () => {
+    const git = (...args: string[]) => {
+      const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+      if (result.status !== 0) throw new Error(result.stderr);
+      return result.stdout.trim();
+    };
+    git('init', '-b', 'main'); git('config', 'user.email', 'fixture@example.test'); git('config', 'user.name', 'fixture');
+    git('add', '--', 'tool.ts'); git('-c', 'commit.gpgsign=false', 'commit', '-m', 'base');
+    const runGit: RunGit = async (args, cwd, options) => {
+      const result = spawnSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, ...options?.env } });
+      return { code: result.status ?? -1, stdout: result.stdout, stderr: result.stderr };
+    };
+    const input = { repoRoot: root, files: ['tool.ts'], agentId: AGENT, workspaceId: WS,
+      dispatchCallId: 'unassigned-A1', operationState: 'granted' as const };
+    writeFileSync(join(root, 'tool.ts'), 'export const x = 2;\n');
+    const receipt = await preserveEditGeneration(input, runGit);
+    await recordEditAttribution({ ...input, captureReceipt: receipt }, { strict: true });
+    writeFileSync(join(root, 'tool.ts'), 'export const x = 3;\n');
+    const next = await preserveEditGeneration({ ...input, dispatchCallId: 'unassigned-B1' }, runGit);
+    expect(next).toMatchObject({ capture: { candidate: { dependencies: [{
+      requestId: 'unassigned-A1', generation: 1, paths: ['tool.ts'],
+      tree: (receipt.capture as { candidate: { tree: string } }).candidate.tree,
+    }] } } });
+    await recordEditAttribution({ repoRoot: root, files: ['tool.ts'], agentId: AGENT, workspaceId: WS,
+      intent: 'shell edit' }, { strict: true });
+    const unknown = await readEditPredecessors({ ...input, dispatchCallId: 'after-legacy' }, runGit);
+    expect(unknown).toEqual([{ requestId: expect.stringMatching(/^legacy-ledger:/), generation: 1, paths: ['tool.ts'], tree: null }]);
+  });
+
   const receipt = (path: string) => ({ version: 1, kind: 'edit-generation', pending: true,
     capture: { candidate: { repository: '/fixture/.git', paths: [path], base: 'a'.repeat(40), tree: 'b'.repeat(40) } } });
   async function capturedEdit(id: string, path: string, sessionId = 'session-1') {
@@ -110,10 +229,10 @@ describe('edit stamping from the editor held set', () => {
 
   it('merges concurrent captured members durably across editing sessions without losing payload fields', async () => {
     await hold('WI-A');
-    await h.db!.sql`UPDATE harness_shared.work_items SET payload = '{"existing":"preserved"}'::jsonb
+    await h.db!.sql`UPDATE harness_shared.work_items SET payload = '{"existing":"preserved","gitSyncLifecycle":{"frozen":{"identity":"previous"}}}'::jsonb
       WHERE feature_id = 'WI-A' AND workspace_id = ${WS}`;
     await Promise.all([capturedEdit('op-a', 'a.ts'), capturedEdit('op-b', 'b.ts', 'session-2')]);
-    expect(await cohort()).toEqual({ existing: 'preserved', gitSyncLifecycle: { version: 1,
+    expect(await cohort()).toEqual({ existing: 'preserved', gitSyncLifecycle: { version: 1, frozen: { identity: 'previous' },
       captures: { 'op-a': receipt('a.ts'), 'op-b': receipt('b.ts') } } });
     await capturedEdit('op-a', 'a.ts', 'restarted-session');
     expect(await cohort()).toMatchObject({ gitSyncLifecycle: {

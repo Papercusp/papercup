@@ -83,7 +83,7 @@ import { loadHarnessRegistry } from '../../harness-registry';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { tryAcquire, tryRelease, tryFinishHookOperation, readQueue, getTxPool } from './su-lock-store';
-import { recordEditAttributionStrict, preserveEditGeneration } from '../../edit-attribution';
+import { recordEditAttributionStrict, preserveEditGeneration, preserveReleasedEditGenerations } from '../../edit-attribution';
 import { noteShaTokenRelease } from '../../authority/sha-token-registry';
 import { recordLockEvent } from '../../authority/lock-event-stream';
 
@@ -136,6 +136,7 @@ export function adaptSuLockStore(): FileLockCoordinator {
 
     async release(p) {
       if (p.operation) return finishHookOperationAtAuthority(p);
+      let preservationRecorded = false;
       const r = await inWorkspaceTxn(p.coordinationDomain, p.owner, (tx) =>
         tryRelease(tx, {
           coordinationDomain: p.coordinationDomain,
@@ -143,6 +144,10 @@ export function adaptSuLockStore(): FileLockCoordinator {
           lockId: p.lockId,
           paths: p.paths,
           allMine: p.allMine,
+          beforeRelease: async rows => { preservationRecorded = await preserveReleasedEditGenerations({
+            repoRoot: p.coordinationDomain, rows, agentId: p.owner,
+            workspaceId: p.workspaceId, contributor: p.contributor, sessionId: p.nativeEditProof?.sessionId ?? p.owner,
+          }); },
         }),
         { paths: p.paths },
       );
@@ -152,7 +157,8 @@ export function adaptSuLockStore(): FileLockCoordinator {
       // report the count as unknown, and the requester's `released: []` would
       // stay ambiguous on precisely the cross-tree/cross-machine setups where
       // a domain mismatch is most likely in the first place.
-      return { ok: true, released: r.released, heldBefore: r.heldBefore };
+      return { ok: true, released: r.released, heldBefore: r.heldBefore,
+        ...(preservationRecorded ? { preservationRecorded: true } : {}) };
     },
 
     async queue(p) {

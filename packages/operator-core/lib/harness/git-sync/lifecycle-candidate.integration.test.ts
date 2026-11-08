@@ -100,6 +100,22 @@ function unpublishedState(f: ReturnType<typeof fixture>) {
 const pilotChecks = { assertHeld: () => {}, beforePublish: async () => ({ ok: true as const }) };
 
 describe('lifecycle P004 capture recovery', () => {
+  it('pins dependency edges in custody and refuses changed ancestry under the same generation', async () => {
+    const f = fixture();
+    const dependency = { requestId: 'A1', generation: 1, paths: ['a.txt'], tree: 'a'.repeat(40) };
+    const request = { requestId: 'B1', generation: 1, paths: ['a.txt'], base: f.git('rev-parse', 'HEAD'),
+      dependencies: [dependency] };
+    const captured = await captureGitSyncCandidate(f.runGit, f.repo, request);
+    if (!captured.ok) throw new Error(captured.error);
+    const before = candidateState(f);
+    expect(await readGitSyncCandidate(f.runGit, f.repo, { requestId: 'B1', generation: 1 })).toEqual(captured);
+    expect(await captureGitSyncCandidate(f.runGit, f.repo, { ...request, dependencies: [{ ...dependency, tree: 'b'.repeat(40) }] }))
+      .toEqual({ ok: false, error: 'source-custody-refused:candidate-input-mismatch' });
+    expect(await captureGitSyncCandidate(f.runGit, f.repo, { ...request, dependencies: [] }))
+      .toEqual({ ok: false, error: 'source-custody-refused:candidate-input-mismatch' });
+    expect(candidateState(f)).toEqual(before);
+  });
+
   it('recovers the original pinned generation after a receipt loss and moving HEAD', async () => {
     const f = fixture();
     writeFileSync(join(f.repo, 'a.txt'), 'A1 preserved\n');

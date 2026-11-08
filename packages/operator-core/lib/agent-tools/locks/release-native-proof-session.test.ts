@@ -35,6 +35,7 @@ vi.mock('../../authority/lock-event-stream', () => ({ recordLockEvent: vi.fn() }
 vi.mock('../../edit-attribution', () => ({
   recordEditAttribution: vi.fn(async () => {}),
   recordEditAttributionStrict: vi.fn(async () => {}),
+  preserveReleasedEditGenerations: vi.fn(async () => {}),
 }));
 vi.mock('../../personal-vault/git-sync-hold', () => ({ recordRestrictedEditBeforeRelease: vi.fn(async () => false) }));
 vi.mock('./file-lock-authority-wiring', () => ({ routeHookOperationFinish: vi.fn(async () => ({ ok: true })) }));

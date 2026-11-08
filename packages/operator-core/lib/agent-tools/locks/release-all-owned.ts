@@ -29,6 +29,7 @@ import { recordLockEvent } from '../../authority/lock-event-stream';
 import { noteShaTokenRelease } from '../../authority/sha-token-registry';
 import { domainsHoldingLocks } from './owner-lock-domains';
 import { candidateResourceLockDomains } from './coordination-domain';
+import { preserveReleasedEditGenerations } from '../../edit-attribution';
 
 type ReleaseOutcome = { released: string[]; heldBefore: number | null };
 
@@ -72,6 +73,11 @@ export async function releaseAllOwnedLocks(params: {
           coordinationDomain: domain,
           owner: ownerId,
           allMine: true,
+          beforeRelease: async rows => { await preserveReleasedEditGenerations({
+            repoRoot: domain, rows, agentId: ownerId,
+            workspaceId: source?.workspaceId ?? undefined, contributor: source?.userId ?? undefined,
+            sessionId: ownerId,
+          }); },
         }),
       );
 
@@ -87,6 +93,8 @@ export async function releaseAllOwnedLocks(params: {
               allMine: true,
               coordinationDomain: domain,
               publishedSha: null,
+              workspaceId: source?.workspaceId ?? undefined,
+              contributor: source?.userId ?? undefined,
             } satisfies FileLockReleaseParams,
             decode: (raw) => {
               const value = raw as { released?: string[]; heldBefore?: number };

@@ -19,8 +19,13 @@ import { getOrgPg } from '@papercusp/db-org';
 import { getPresence } from './agent-tools/coordination/presence';
 import { isLifecycleIntent } from './agent-tools/coordination/presence-payload';
 import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
-import type { RunGit } from './harness/git-sync/run-git-sync';
+import type { RunGit, GitSyncCandidateCapture, GitSyncCandidateDependency } from './harness/git-sync/run-git-sync';
 import { canonicalJson } from './external-bench/reproducibility/canonical-json';
+import { createHash } from 'node:crypto';
+import type { ReleaseLockRow } from '@papercusp/locks';
+import { hasValidGitEntry } from './agent-tools/locks/valid-git-entry';
+import { EXTERNAL_LOCK_PREFIXES } from './agent-tools/locks/external-path';
+import { z } from 'zod';
 
 export interface RecordEditAttributionInput {
   /** The lock's coordination domain — the physical repo root (the join key). */
@@ -234,14 +239,15 @@ export async function recordEditAttribution(
       : { harnessSlug: null, workItemId: null, resolution: 'no-workspace', candidates: null };
     const { harnessSlug, workItemId } = choice;
 
-    if (input.captureReceipt && input.dispatchCallId && input.workspaceId && workItemId && harnessSlug) {
+    if (input.captureReceipt && input.captureReceipt.kind !== 'unpreserved-edit' &&
+        input.dispatchCallId && input.workspaceId && workItemId && harnessSlug) {
       // Extend the existing work-item payload rather than creating a cohort
       // table. Row-update serialization merges concurrent files/sessions and
       // retains every operation's immutable membership. No readiness is inferred.
       const cohort = await sql<{ feature_id: string }[]>`
         UPDATE harness_shared.work_items
            SET payload = jsonb_set(COALESCE(payload, '{}'::jsonb), '{gitSyncLifecycle}',
-             jsonb_build_object('version', 1, 'captures',
+             COALESCE(payload->'gitSyncLifecycle', '{}'::jsonb) || jsonb_build_object('version', 1, 'captures',
                COALESCE(payload->'gitSyncLifecycle'->'captures', '{}'::jsonb)
                  || jsonb_build_object(${input.dispatchCallId}::text,
                    CASE WHEN payload->'gitSyncLifecycle'->'captures'->${input.dispatchCallId}::text->'pending' = 'false'::jsonb
@@ -322,16 +328,29 @@ export async function preserveEditGeneration(
     captureReceipt?: Record<string, unknown>;
   },
   runGitOverride?: RunGit,
+  predecessors: typeof readEditPredecessors = readEditPredecessors,
 ): Promise<Record<string, unknown>> {
+  if (!input.captureReceipt && input.operationState !== 'granted') {
+    throw new Error('edit-capture-refused:operation-no-longer-protects-version');
+  }
+  const external = input.files.some(path => EXTERNAL_LOCK_PREFIXES.some(prefix =>
+    path === prefix || path.startsWith(`${prefix}/`)));
+  if (external || !hasValidGitEntry(input.repoRoot)) {
+    const receipt = { version: 1, kind: 'unpreserved-edit', pending: false,
+      reason: external ? 'external-path' : 'non-repository', repoRoot: input.repoRoot,
+      files: [...new Set(input.files)].sort(), agentId: input.agentId,
+      workspaceId: input.workspaceId ?? null, goalRef: input.goalRef ?? null };
+    if (input.captureReceipt && canonicalJson(input.captureReceipt) !== canonicalJson(receipt)) {
+      throw new Error('edit-capture-refused:receipt-identity-mismatch');
+    }
+    return input.captureReceipt ?? receipt;
+  }
   const { captureGitSyncCandidate, readGitSyncCandidate, runGitBounded, gitTimeoutMsFor } =
     await import('./harness/git-sync/run-git-sync');
   const runGit: RunGit = runGitOverride ?? ((args, cwd, options) =>
     runGitBounded(args, cwd, gitTimeoutMsFor(args), options));
   const request = { requestId: input.dispatchCallId, generation: 1, paths: input.files };
   let captured = await readGitSyncCandidate(runGit, input.repoRoot, request);
-  if (!input.captureReceipt && input.operationState !== 'granted') {
-    throw new Error('edit-capture-refused:operation-no-longer-protects-version');
-  }
   if (!captured.ok) {
     // An acknowledged receipt is never repaired by reading moving content.
     if (input.captureReceipt || captured.error !== 'source-custody-refused:candidate-not-captured') {
@@ -348,7 +367,8 @@ export async function preserveEditGeneration(
         : null;
       if (missing?.code !== 1) throw new Error('edit-capture-refused:base-unreadable');
     }
-    captured = await captureGitSyncCandidate(runGit, input.repoRoot, { ...request, base });
+    const dependencies = await predecessors(input, runGit);
+    captured = await captureGitSyncCandidate(runGit, input.repoRoot, { ...request, base, dependencies });
     if (!captured.ok) throw new Error(captured.error);
   }
   const receipt = {
@@ -364,6 +384,204 @@ export async function preserveEditGeneration(
     return input.captureReceipt;
   }
   return receipt;
+}
+
+/** The existing per-file ledger is the handoff history, including nullable
+ * attribution. Resolve the last acknowledged operation while the next editor
+ * still holds these paths. Legacy/missing custody stays an unknown dependency.
+ * The result is pinned in the new custody manifest before the release receipt. */
+export async function readEditPredecessors(
+  input: RecordEditAttributionInput & { dispatchCallId: string },
+  runGit: RunGit,
+): Promise<GitSyncCandidateDependency[]> {
+  if (!input.workspaceId) return [];
+  const { sql } = getOrgPg();
+  const rows = await sql<Array<{ file: string; dispatch_call_id: string }>>`
+    SELECT DISTINCT ON (file) file, COALESCE(dispatch_call_id, 'legacy-ledger:' || id::text) AS dispatch_call_id
+      FROM harness_shared.edit_attribution_ledger
+     WHERE workspace_id = ${input.workspaceId} AND repo_root = ${input.repoRoot}
+       AND EXISTS (SELECT 1 FROM unnest(${input.files}::text[]) AS wanted(path)
+         WHERE file = wanted.path OR starts_with(file, wanted.path || '/') OR starts_with(wanted.path, file || '/'))
+       AND dispatch_call_id IS DISTINCT FROM ${input.dispatchCallId}
+     ORDER BY file, ts DESC, id DESC
+  `;
+  const grouped = new Map<string, string[]>();
+  for (const row of rows) grouped.set(row.dispatch_call_id, [...new Set([
+    ...(grouped.get(row.dispatch_call_id) ?? []), ...input.files.filter(path => path === row.file ||
+      path.startsWith(row.file + '/') || row.file.startsWith(path + '/')),
+  ])]);
+  const { readGitSyncCandidate } = await import('./harness/git-sync/run-git-sync');
+  return Promise.all([...grouped].map(async ([requestId, paths]) => {
+    const previous = await readGitSyncCandidate(runGit, input.repoRoot, { requestId, generation: 1 });
+    if (!previous.ok && previous.error !== 'source-custody-refused:candidate-not-captured') {
+      throw new Error(previous.error);
+    }
+    return { requestId, generation: 1, paths: paths.sort(), tree: previous.ok ? previous.candidate.tree : null };
+  }));
+}
+
+const cohortCaptureSchema = z.object({
+  kind: z.literal('edit-generation'),
+  capture: z.object({
+    ok: z.literal(true), ref: z.string().min(1),
+    candidate: z.object({
+      version: z.literal(2), kind: z.literal('candidate'), repository: z.string().min(1),
+      requestId: z.string().min(1), generation: z.number().int().positive(),
+      base: z.string().nullable(), baseTree: z.string().min(1), tree: z.string().min(1),
+      paths: z.array(z.string().min(1)).min(1),
+      dependencies: z.array(z.object({ requestId: z.string().min(1), generation: z.number().int().positive(),
+        paths: z.array(z.string().min(1)).min(1), tree: z.string().nullable() })).optional(),
+    }),
+  }),
+});
+
+export interface FrozenEditCohort {
+  version: 1;
+  identity: string;
+  members: Array<{ operationId: string; ref: string; candidate: GitSyncCandidateCapture }>;
+  configurationIdentity: string;
+  environmentIdentity: string;
+  requiredChecks: string[];
+}
+
+/** A reconciled vector of pinned generations, never separately sampled live
+ * files. Overlapping members must have an explicit causal order. The frozen
+ * vector is only a check subject; it neither requests publication nor verifies
+ * the candidate. Mutable settlement/session/lease fields do not identify bytes. */
+export function describeEditCohort(
+  captures: Record<string, unknown>,
+  context: Pick<FrozenEditCohort, 'configurationIdentity' | 'environmentIdentity' | 'requiredChecks'>,
+): FrozenEditCohort {
+  if (!context.configurationIdentity || !context.environmentIdentity || !context.requiredChecks.length ||
+      context.requiredChecks.some(check => !check)) throw new Error('edit-cohort-refused:verification-context-missing');
+  const members = Object.entries(captures).map(([operationId, value]) => {
+    const parsed = cohortCaptureSchema.parse(value).capture;
+    if (parsed.candidate.requestId !== operationId) throw new Error('edit-cohort-refused:operation-identity-mismatch');
+    return { operationId, ref: parsed.ref, candidate: parsed.candidate };
+  }).sort((a, b) => a.operationId.localeCompare(b.operationId));
+  if (!members.length) throw new Error('edit-cohort-refused:no-captures');
+  const byId = new Map(members.map(member => [member.operationId, member]));
+  function ancestors(id: string, visiting = new Set<string>()): Set<string> {
+    if (visiting.has(id)) throw new Error('edit-cohort-refused:dependency-cycle');
+    const next = new Set(visiting).add(id);
+    const dependencies = byId.get(id)?.candidate.dependencies ?? [];
+    const result = new Set<string>();
+    for (const dependency of dependencies) {
+      const provider = byId.get(dependency.requestId);
+      if (provider && (provider.candidate.repository !== byId.get(id)!.candidate.repository ||
+          provider.candidate.generation !== dependency.generation || provider.candidate.tree !== dependency.tree)) {
+        throw new Error('edit-cohort-refused:dependency-identity-mismatch');
+      }
+      result.add(dependency.requestId);
+      if (provider) for (const ancestor of ancestors(provider.operationId, next)) result.add(ancestor);
+    }
+    return result;
+  }
+  const ancestry = new Map(members.map(member => [member.operationId, ancestors(member.operationId)]));
+  for (let i = 0; i < members.length; i++) for (let j = i + 1; j < members.length; j++) {
+    const a = members[i], b = members[j];
+    if (a.candidate.repository !== b.candidate.repository) continue;
+    if (a.candidate.base !== b.candidate.base) throw new Error('edit-cohort-refused:incompatible-bases');
+    const overlaps = a.candidate.paths.some(path => b.candidate.paths.some(other =>
+      path === other || path.startsWith(other + '/') || other.startsWith(path + '/')));
+    if (overlaps && !ancestry.get(a.operationId)!.has(b.operationId) && !ancestry.get(b.operationId)!.has(a.operationId)) {
+      throw new Error('edit-cohort-refused:unordered-overlapping-generations');
+    }
+  }
+  const content = { version: 1 as const, members, configurationIdentity: context.configurationIdentity,
+    environmentIdentity: context.environmentIdentity, requiredChecks: [...new Set(context.requiredChecks)].sort() };
+  return { ...content, identity: createHash('sha256').update(canonicalJson(content)).digest('hex') };
+}
+
+/** Persist on the existing work-item. The captures CAS prevents a check subject
+ * from dropping an edit that arrived between read and freeze. No session/lease
+ * predicate: unfinished work outlives both. New captures invalidate old proof. */
+export async function freezeEditCohort(input: {
+  workspaceId: string; harnessSlug: string; workItemId: string;
+} & Pick<FrozenEditCohort, 'configurationIdentity' | 'environmentIdentity' | 'requiredChecks'>): Promise<FrozenEditCohort> {
+  const { sql } = getOrgPg();
+  const rows = await sql<Array<{ captures: Record<string, unknown> | null }>>`
+    SELECT payload->'gitSyncLifecycle'->'captures' AS captures FROM harness_shared.work_items
+     WHERE workspace_id = ${input.workspaceId} AND harness_slug = ${input.harnessSlug} AND feature_id = ${input.workItemId}
+  `;
+  if (rows.length !== 1 || !rows[0].captures) throw new Error('edit-cohort-refused:no-captures');
+  const captures = rows[0].captures;
+  const frozen = describeEditCohort(captures, input);
+  const saved = await sql<Array<{ feature_id: string }>>`
+    UPDATE harness_shared.work_items
+       SET payload = jsonb_set(payload, '{gitSyncLifecycle,frozen}', ${JSON.stringify(frozen)}::text::jsonb)
+     WHERE workspace_id = ${input.workspaceId} AND harness_slug = ${input.harnessSlug} AND feature_id = ${input.workItemId}
+       AND payload->'gitSyncLifecycle'->'captures' = ${JSON.stringify(captures)}::text::jsonb
+    RETURNING feature_id
+  `;
+  if (saved.length !== 1) throw new Error('edit-cohort-refused:membership-changed');
+  return frozen;
+}
+
+/** Exact pre-publication evidence, independent of later committed-build and
+ * final acceptance proof. A turn-end, session death or capture is no intent.
+ * Dependency proofs come from the existing publisher's exact object receipts. */
+export function checkFrozenEditCohortEvidence(input: {
+  frozen: FrozenEditCohort; captures: Record<string, unknown>;
+  configurationIdentity: string; environmentIdentity: string; publicationIntent: boolean;
+  checks: Array<{ check: string; identity: string; environmentIdentity: string; passed: boolean; runId: string }>;
+  dependencies: Array<{ repository: string; requestId: string; generation: number; tree: string }>;
+}): { ok: true } | { ok: false; reason: string } {
+  let current: FrozenEditCohort;
+  try { current = describeEditCohort(input.captures, { ...input, requiredChecks: input.frozen.requiredChecks }); }
+  catch { return { ok: false, reason: 'cohort-invalid' }; }
+  if (current.identity !== input.frozen.identity) return { ok: false, reason: 'cohort-changed' };
+  if (!input.publicationIntent) return { ok: false, reason: 'cohort-unfinished' };
+  for (const check of current.requiredChecks) {
+    if (!input.checks.some(proof => proof.check === check && proof.passed && proof.runId &&
+        proof.identity === current.identity && proof.environmentIdentity === current.environmentIdentity)) {
+      return { ok: false, reason: 'cohort-check-missing-or-stale' };
+    }
+  }
+  for (const member of current.members) for (const dependency of member.candidate.dependencies ?? []) {
+    if (!dependency.tree || !input.dependencies.some(proof => proof.repository === member.candidate.repository && proof.requestId === dependency.requestId &&
+        proof.generation === dependency.generation && proof.tree === dependency.tree)) {
+      return { ok: false, reason: 'cohort-ancestor-unfinished' };
+    }
+  }
+  return { ok: true };
+}
+
+/** Explicit release has no per-edit hook id. Derive replay identity from the
+ * exact selected lease generations, not moving file bytes or release time.
+ * The caller invokes this inside tryRelease's protected selection callback.
+ * Non-repository/home keys retain their existing release policy; no Git
+ * preservation guarantee is made for those paths. */
+export async function preserveReleasedEditGenerations(
+  input: Omit<RecordEditAttributionInput, 'files' | 'dispatchCallId' | 'captureReceipt'> & {
+    rows: ReleaseLockRow[];
+  },
+  dependencies: {
+    preserve?: typeof preserveEditGeneration;
+    attribute?: typeof recordEditAttributionStrict;
+  } = {},
+): Promise<boolean> {
+  const rows = input.rows.filter(row => !EXTERNAL_LOCK_PREFIXES.some(prefix =>
+    row.path === prefix || row.path.startsWith(`${prefix}/`)));
+  if (!rows.length || !hasValidGitEntry(input.repoRoot)) return false;
+  const groups = new Map<string, ReleaseLockRow[]>();
+  for (const row of rows) {
+    const key = canonicalJson({ lockId: row.lock_id, goalRef: row.goal_ref, intent: row.intent });
+    groups.set(key, [...(groups.get(key) ?? []), row]);
+  }
+  for (const selected of groups.values()) {
+    selected.sort((a, b) => a.path.localeCompare(b.path));
+    const dispatchCallId = 'release:' + createHash('sha256').update(canonicalJson(
+      selected.map(row => ({ path: row.path, lockId: row.lock_id,
+        acquiredAt: row.acquired_identity ?? row.acquired_ts.toISOString() })),
+    )).digest('hex');
+    const edit = { repoRoot: input.repoRoot, files: selected.map(row => row.path), agentId: input.agentId,
+      workspaceId: input.workspaceId, contributor: input.contributor, sessionId: input.sessionId,
+      intent: selected[0].intent, goalRef: selected[0].goal_ref ?? undefined, dispatchCallId };
+    const receipt = await (dependencies.preserve ?? preserveEditGeneration)({ ...edit, operationState: 'granted' });
+    await (dependencies.attribute ?? recordEditAttributionStrict)({ ...edit, captureReceipt: receipt });
+  }
+  return true;
 }
 
 /** One agent's attributed edits in a repo, as git-sync reads them back (P-003). Shaped to
