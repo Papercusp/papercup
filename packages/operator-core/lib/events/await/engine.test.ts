@@ -263,6 +263,23 @@ describe('sweepOnce — declared-gate recovery on timed-out announced waits', ()
     );
   });
 
+  it('does not direct a missed-emitter waiter to unrelated scheduler work before the steward ID exists', async () => {
+    const gated = awaitRow({ id: 3, eventKey: 'gate:missed-emitter', firedAt: null, firedReason: null });
+    h.store.fireTimedOutAwaits.mockResolvedValueOnce([gated]);
+    recoveryHook.annotateTimedOutAnnouncedAwaits.mockResolvedValueOnce(new Map([[3, {
+      classification: 'missed-emitter',
+      next_verb: null,
+      next_verb_status: 'steward-work-item-id-unresolved',
+    }]]));
+
+    await sweepOnce('ws-test');
+
+    expect(h.store.insertDeliveries).toHaveBeenCalledWith(expect.objectContaining({
+      awaits: [gated],
+      summary: expect.stringMatching(/No exact steward work-item ID is available yet; do not pull unrelated scheduler work/),
+    }));
+  });
+
   it('fail-open: a throwing recovery hook leaves every timed-out wake on the generic path', async () => {
     const a = awaitRow({ id: 3, eventKey: 'gate:x', firedAt: null, firedReason: null });
     h.store.fireTimedOutAwaits.mockResolvedValueOnce([a]);

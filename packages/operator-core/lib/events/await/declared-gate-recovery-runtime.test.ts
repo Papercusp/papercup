@@ -176,6 +176,52 @@ describe('annotateTimedOutAnnouncedAwaits — the sweeper hook', () => {
     expect(out.get(102)).toBe(out.get(101));
   });
 
+  it('missed-emitter timeout payload claims the exact steward ID returned by the bridge', async () => {
+    const declaration = row();
+    const deps = bridge();
+    const out = await annotateTimedOutAnnouncedAwaits([waiter(111)], {
+      findCurrentDeclaration: async () => declaration,
+      gather: async (d): Promise<DeclaredGateEvidenceInput> => ({
+        ...neverFireableEvidence(d),
+        catalog: { status: 'measured', value: { member: true, nearMiss: [] } },
+      }),
+      bridgeDeps: () => deps,
+    });
+
+    expect(out.get(111)).toMatchObject({
+      classification: 'missed-emitter',
+      next_verb_status: 'claim-by-id',
+      next_verb: {
+        verb: 'work_items:claim',
+        args: { id: 'WI-1' },
+        target: { kind: 'steward-work-item', ref: 'declared-gate-recovery:7:2:missed-emitter' },
+      },
+      action: { action: 'steward-item-filed', workItemId: 'WI-1' },
+    });
+    expect(deps.upsertCondition).toHaveBeenCalledTimes(1);
+  });
+
+  it('missed-emitter without a resolved steward ID has no generic scheduler fallback', async () => {
+    const declaration = row();
+    const deps = bridge();
+    deps.upsertCondition.mockResolvedValueOnce({ id: null, created: true });
+    const out = await annotateTimedOutAnnouncedAwaits([waiter(112)], {
+      findCurrentDeclaration: async () => declaration,
+      gather: async (d): Promise<DeclaredGateEvidenceInput> => ({
+        ...neverFireableEvidence(d),
+        catalog: { status: 'measured', value: { member: true, nearMiss: [] } },
+      }),
+      bridgeDeps: () => deps,
+    });
+
+    expect(out.get(112)).toMatchObject({
+      classification: 'missed-emitter',
+      next_verb: null,
+      next_verb_status: 'steward-work-item-id-unresolved',
+    });
+    expect(JSON.stringify(out.get(112))).not.toContain('scheduler:get_next');
+  });
+
   it('keys with no announcement, and pattern keys, are left to the generic timeout wake', async () => {
     const find = vi.fn(async () => null);
     const out = await annotateTimedOutAnnouncedAwaits([waiter(1, 'plain:key'), waiter(2, 'release:green:*')], {

@@ -37,6 +37,7 @@ import {
   type DeclaredGateRecoveryAction,
   type DeclaredGateRecoveryDeps,
   type DeclaredGateRecoveryResult,
+  type RecoveryNextVerb,
   type RecoveryProbe,
 } from './declared-gate-recovery';
 import { readInstalledUnitEvents } from './installed-events';
@@ -224,8 +225,23 @@ export function defaultDeclaredGateRecoveryDeps(row: AwaitRow): DeclaredGateReco
 export function declaredGateRecoveryPayload(
   result: DeclaredGateRecoveryResult,
   action: DeclaredGateRecoveryAction | null,
+  resolvedStewardWorkItemId: string | null = null,
 ): Record<string, unknown> {
   const e = result.evidence;
+  const stewardTarget =
+    result.status === 'classified' &&
+    result.classification === 'missed-emitter' &&
+    result.escalationTarget?.kind === 'steward-work-item'
+      ? result.escalationTarget
+      : null;
+  const stewardWorkItemId = stewardTarget
+    ? action?.workItemId ?? resolvedStewardWorkItemId
+    : null;
+  const nextVerb: RecoveryNextVerb | null = stewardTarget
+    ? stewardWorkItemId
+      ? { verb: 'work_items:claim', args: { id: stewardWorkItemId }, target: stewardTarget }
+      : null
+    : result.nextVerb;
   return {
     event: e.eventKey,
     announcement_id: e.announcementId,
@@ -238,7 +254,12 @@ export function declaredGateRecoveryPayload(
           idempotence_key: result.idempotenceKey,
         }
       : { inactive: result.reason }),
-    next_verb: result.nextVerb,
+    next_verb: nextVerb,
+    ...(stewardTarget
+      ? {
+          next_verb_status: stewardWorkItemId ? 'claim-by-id' : 'steward-work-item-id-unresolved',
+        }
+      : {}),
     evidence: {
       checked_at_ms: e.checkedAtMs,
       declared_by: e.declaredBy,
@@ -252,7 +273,7 @@ export function declaredGateRecoveryPayload(
       reasons: e.reasons,
     },
     ...(action ? { action } : {}),
-    rule: 'Evidence, including owner_liveness, is a point-in-time snapshot measured at evidence.checked_at_ms; re-read current ownership before acting on an older snapshot. A timeout stays a timeout until the exact key fires with a matching generation and expected condition; follow next_verb, never treat this wake as the gate opening.',
+    rule: 'Evidence, including owner_liveness, is a point-in-time snapshot measured at evidence.checked_at_ms; re-read current ownership before acting on an older snapshot. A timeout stays a timeout until the exact key fires with a matching generation and expected condition; follow next_verb when present, never treat this wake as the gate opening. If next_verb is null, no exact steward work-item ID was resolved; do not substitute an unrelated scheduler pull.',
   };
 }
 

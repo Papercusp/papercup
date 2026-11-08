@@ -2040,10 +2040,13 @@ export async function sweepOnce(workspaceId?: string): Promise<void> {
       for (const awaited of wakes) {
         const declaredGateRecovery = recovery.get(awaited.id);
         if (!declaredGateRecovery) continue;
+        const nextStepSummary = declaredGateRecovery.next_verb == null
+          ? 'No exact steward work-item ID is available yet; do not pull unrelated scheduler work.'
+          : 'follow declaredGateRecovery.next_verb.';
         await insertDeliveries({
           awaits: [awaited],
           payload: { timeout: true, guidance: TIMEOUT_WAKE_GUIDANCE, declaredGateRecovery },
-          summary: `${TIMEOUT_WAKE_SUMMARY} Announced gate classified ${String(declaredGateRecovery.classification ?? declaredGateRecovery.inactive ?? 'unknown')}; follow declaredGateRecovery.next_verb.`,
+          summary: `${TIMEOUT_WAKE_SUMMARY} Announced gate classified ${String(declaredGateRecovery.classification ?? declaredGateRecovery.inactive ?? 'unknown')}; ${nextStepSummary}`,
         });
       }
     }

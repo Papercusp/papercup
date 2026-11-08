@@ -86,9 +86,12 @@ function input(over: Over = {}): DeclaredGateEvidenceInput {
 
 const liveDeclarer = { status: 'measured', value: { declaredByLiveness: 'live', liveSuccessorIds: [] } } as const;
 
-function classified(result: DeclaredGateRecoveryResult): DeclaredGateClassifiedResult {
+function classified(
+  result: DeclaredGateRecoveryResult,
+): DeclaredGateClassifiedResult & { nextVerb: NonNullable<DeclaredGateClassifiedResult['nextVerb']> } {
   expect(result.status).toBe('classified');
-  return result as DeclaredGateClassifiedResult;
+  expect(result.nextVerb).not.toBeNull();
+  return result as DeclaredGateClassifiedResult & { nextVerb: NonNullable<DeclaredGateClassifiedResult['nextVerb']> };
 }
 
 describe('evaluateDeclaredGateGeneration — taxonomy (R-001) and exact next verbs (R-003)', () => {
@@ -128,11 +131,14 @@ describe('evaluateDeclaredGateGeneration — taxonomy (R-001) and exact next ver
     ['a sibling family fire', { fireHistory: { status: 'measured', value: { exactFired: false, familyFires: 4, priorGenerationFired: false, lastFiredAt: 'x' } } }],
     ['an earlier fired generation', { fireHistory: { status: 'measured', value: { exactFired: false, familyFires: 0, priorGenerationFired: true, lastFiredAt: null } } }],
   ] as const)('missed-emitter when the key is fireable by %s but its owner is gone', (_why, over) => {
-    const r = classified(evaluateDeclaredGateGeneration(input(over as Over)));
+    const r = evaluateDeclaredGateGeneration(input(over as Over));
     expect(r.classification).toBe('missed-emitter');
     // No live owner, no repair item: the steward condition item IS the escalation.
     expect(r.escalationTarget).toEqual({ kind: 'steward-work-item', ref: 'declared-gate-recovery:42:3:missed-emitter' });
-    expect(r.nextVerb).toEqual({ verb: 'scheduler:get_next', args: {}, target: r.escalationTarget });
+    expect(r.nextVerb).toBeNull();
+    const summary = declaredGateRecoverySummary(r as DeclaredGateClassifiedResult);
+    expect(summary).toContain('wait for the condition bridge');
+    expect(summary).not.toContain('scheduler:get_next');
   });
 
   it('missed-emitter with an existing producer repair item messages its audience, then claims it', () => {

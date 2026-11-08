@@ -45,6 +45,9 @@ vi.mock('../../events/await/store', () => ({
 vi.mock('../../events/await/installed-events', () => ({
   readInstalledUnitEvents: vi.fn(async () => []),
 }));
+vi.mock('../../coord/condition-bridge', () => ({
+  findConditionKeyHolder: vi.fn(async () => null),
+}));
 vi.mock('../../events/await/compose-store', () => ({
   listActiveComposedRoots: vi.fn(async () => []),
   loadTreeLeaves: vi.fn(async () => []),
@@ -68,6 +71,7 @@ import { CHARS_PER_TOKEN_ESTIMATE } from '../../context-doors';
 import { applyResultDoorAsync, resetResultDoorAggregatesForTests, RESULT_DOOR_TOKENS, type DoorableResult } from '../../result-door';
 import { _resetScratchUsageForTests } from '../../scratch-gc';
 import { readVolatileScratchReference } from '../../scratch-reference';
+import { findConditionKeyHolder } from '../../coord/condition-bridge';
 import type { AwaitRow, DeliveryRow } from '../../events/await/types';
 import type { SubscriptionRow } from '@papercusp/coordination/capabilities';
 
@@ -154,6 +158,7 @@ beforeEach(() => {
   });
   vi.mocked(wakeMeter).mockResolvedValue({ total: 7 } as never);
   vi.mocked(inspectEventKey).mockResolvedValue({ announcements: [], waiters: [], deliveries: [], fireLatch: null } as never);
+  vi.mocked(findConditionKeyHolder).mockResolvedValue(null);
 });
 
 describe('events:status projection', () => {
@@ -981,6 +986,51 @@ describe('events:status projection', () => {
     });
     // Read-only surface: no action is ever reported from events:status.
     expect(out.event_inspection.recovery).not.toHaveProperty('action');
+  });
+
+  it.each([
+    ['existing steward', 'WI-900', 'claim-by-id'],
+    ['unmaterialized steward', null, 'steward-work-item-id-unresolved'],
+  ] as const)('projects missed-emitter recovery with %s without a generic pull', async (_case, stewardId, nextVerbStatus) => {
+    const event = 'work-item:done:WI-900';
+    mockResolvedOnceTyped(vi.mocked(inspectEventKey), {
+      announcements: [{
+        ...AWAIT_ROW,
+        id: 12,
+        eventKey: event,
+        policy: 'announce',
+        subscriberId: 'su-ended',
+        causalGeneration: 5,
+      }],
+      waiters: [],
+      deliveries: [],
+      fireLatch: null,
+      composedRoot: null,
+    });
+    mockResolvedOnceTyped(vi.mocked(resolveSessionStates), new Map([
+      ['su-ended', { ownerId: 'su-ended', sessionState: 'ended' }],
+    ]));
+    vi.mocked(findConditionKeyHolder).mockResolvedValueOnce(stewardId);
+
+    const out = await call({ event });
+    const recovery = out.event_inspection.recovery;
+    expect(recovery).toMatchObject({
+      classification: 'missed-emitter',
+      escalation_target: { kind: 'steward-work-item', ref: 'declared-gate-recovery:12:5:missed-emitter' },
+      next_verb_status: nextVerbStatus,
+    });
+    if (stewardId) {
+      expect(recovery.next_verb).toMatchObject({
+        verb: 'work_items:claim',
+        args: { id: stewardId },
+        target: { kind: 'steward-work-item', ref: 'declared-gate-recovery:12:5:missed-emitter' },
+      });
+      expect(findConditionKeyHolder).toHaveBeenCalledWith('declared-gate-recovery:12:5:missed-emitter', { workspaceId: 'ws-x' });
+    } else {
+      expect(recovery.next_verb).toBeNull();
+      expect(JSON.stringify(recovery)).not.toContain('scheduler:get_next');
+    }
+    expect(recovery).not.toHaveProperty('action');
   });
 });
 

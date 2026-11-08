@@ -206,7 +206,8 @@ export interface DeclaredGateRecoveryEvidence {
 export interface DeclaredGateClassifiedResult {
   status: 'classified';
   classification: DeclaredGateClassification;
-  nextVerb: RecoveryNextVerb;
+  /** Null means this classification needs an exact ID from the condition bridge before it is actionable. */
+  nextVerb: RecoveryNextVerb | null;
   /** Who is escalated to (R-005). Null for waiter-owned verbs. */
   escalationTarget: RecoveryTarget | null;
   /** `declared-gate-recovery:<announcementId>:<generation>:<classification>` — the condition key (R-004). */
@@ -330,7 +331,7 @@ export function evaluateDeclaredGateGeneration(input: DeclaredGateEvidenceInput)
   };
   const classified = (
     classification: DeclaredGateClassification,
-    nextVerb: RecoveryNextVerb,
+    nextVerb: RecoveryNextVerb | null,
     escalationTarget: RecoveryTarget | null,
     producerHealth: DeclaredGateRecoveryEvidence['producerHealth'] = producerEvidence(input.producer),
   ): DeclaredGateClassifiedResult => ({
@@ -505,14 +506,11 @@ export function evaluateDeclaredGateGeneration(input: DeclaredGateEvidenceInput)
       );
     }
     // No live owner and no repair item: the bridge files the steward condition
-    // item (keyed by `conditionKey`), which is the claimable escalation. There is
-    // nobody live to message, so the waiter's next verb is to pull it.
+    // item (keyed by `conditionKey`). Its exact work-item ID is not known until
+    // the bridge returns it, so do not advertise an untargeted scheduler pull as
+    // if it claimed this steward.
     const steward: RecoveryTarget = { kind: 'steward-work-item', ref: conditionKey };
-    return classified(
-      'missed-emitter',
-      { verb: 'scheduler:get_next', args: {}, target: steward },
-      steward,
-    );
+    return classified('missed-emitter', null, steward);
   }
   reasons.push('no catalog family, no exact or sibling fire history, and no live emitter duty — nothing is heading toward this key');
   const corrected = catalog.nearMiss[0] ?? null;
@@ -592,7 +590,7 @@ function recoveryTitle(result: DeclaredGateClassifiedResult): string {
 export function declaredGateRecoverySummary(result: DeclaredGateClassifiedResult): string {
   const e = result.evidence;
   const fmt = (v: unknown) => JSON.stringify(v);
-  const next = [result.nextVerb, ...(result.nextVerb.then ?? [])]
+  const next = (result.nextVerb == null ? [] : [result.nextVerb, ...(result.nextVerb.then ?? [])])
     .map((v) => `${v.verb} ${fmt(v.args)} → ${v.target.kind}${v.target.ref ? `:${v.target.ref}` : ''}`)
     .join(' ; then ');
   return [
@@ -607,7 +605,7 @@ export function declaredGateRecoverySummary(result: DeclaredGateClassifiedResult
     `- producer health: ${fmt(e.producerHealth)}`,
     `- expected condition: ${fmt(e.expectedCondition)} (${e.expectedVerdict})`,
     `- escalation target: ${result.escalationTarget ? `${result.escalationTarget.kind}:${result.escalationTarget.ref}` : 'none (waiter-owned)'}`,
-    `- next verb: ${next}`,
+    `- next verb: ${next || 'No exact steward work-item ID is available yet; wait for the condition bridge, then claim its returned ID under the normal claim-spec admission.'}`,
     `- reasons: ${e.reasons.join(' | ')}`,
     '',
     'This record never marks the gate fired, completes work, or ships a plan: a timeout stays a timeout until the exact key fires.',
@@ -631,7 +629,7 @@ export async function applyDeclaredGateRecovery(
       action: 'none',
       conditionKey: null,
       workItemId: null,
-      detail: `${result.classification} is waiter-owned: ${result.nextVerb.verb}`,
+      detail: `${result.classification} is waiter-owned: ${result.nextVerb?.verb ?? 'no actionable next verb is available'}`,
     };
   }
   const e = result.evidence;
@@ -663,7 +661,7 @@ export async function applyDeclaredGateRecovery(
       action: 'deduplicated',
       conditionKey: result.idempotenceKey,
       workItemId: upsert.id,
-      ...(result.classification === 'stalled-producer' && result.nextVerb.then
+      ...(result.classification === 'stalled-producer' && result.nextVerb?.then
         ? { surfacedTakeover: result.nextVerb.then }
         : {}),
       detail: 'this generation+classification was already handled; no second wake or filing',
@@ -680,7 +678,7 @@ export async function applyDeclaredGateRecovery(
       };
     }
     const wake = await deps.wakeOwner(ownerId, {
-      summary: String(result.nextVerb.args.summary ?? recoveryTitle(result)),
+      summary: String(result.nextVerb?.args.summary ?? recoveryTitle(result)),
       payload: { declaredGateRecovery: result.idempotenceKey, workItemId: upsert.id, evidence: e },
     });
     return {

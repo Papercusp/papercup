@@ -221,6 +221,7 @@ function fitEventInspectionToBudget(inspection: BoundedEventInspection): void {
     ...(typeof recovery.generation === 'number' ? { generation: recovery.generation } : {}),
     ...(typeof recovery.classification === 'string' ? { classification: recovery.classification } : {}),
     ...(recovery.next_verb != null ? { next_verb: recovery.next_verb } : {}),
+    ...(typeof recovery.next_verb_status === 'string' ? { next_verb_status: recovery.next_verb_status } : {}),
   };
   if (serializedEnvelope().length > EXACT_EVENT_INSPECTION_MAX_CHARS) {
     const compactRecovery = inspection.recovery as Record<string, unknown>;
@@ -443,9 +444,10 @@ export default defineTool({
       ? await resolveAnnouncementOwnership(ownershipRows, identity.workspaceId)
       : new Map<number, AnnouncementOwnership>();
     // declared-gate-recovery-contract-2026-09-21 (R-001/R-003): the current
-    // declaration's deterministic classification + exact next verb, from the SAME
-    // evaluator the await sweeper uses on a timeout. Read-only here — the bridge's
-    // side effects run only on the sweeper path. Bounded; a failed read omits it.
+    // declaration's deterministic classification + next step, from the SAME
+    // evaluator the await sweeper uses on a timeout. Resolve an already-materialized
+    // steward ID through the read-only condition bridge; all writes stay on the sweeper.
+    // Bounded; a failed read omits recovery.
     const recovery = eventHistory && currentAnnouncement
       ? (
           await withBoundedTimeout(
@@ -463,7 +465,19 @@ export default defineTool({
                   : { status: 'unavailable', reason: 'ownership was not resolved for this declaration' },
                 workspaceId: identity.workspaceId,
               });
-              return declaredGateRecoveryPayload(evaluateDeclaredGateGeneration(evidence), null);
+              const result = evaluateDeclaredGateGeneration(evidence);
+              const stewardTarget =
+                result.status === 'classified' &&
+                result.classification === 'missed-emitter' &&
+                result.escalationTarget?.kind === 'steward-work-item'
+                  ? result.escalationTarget
+                  : null;
+              const stewardWorkItemId = stewardTarget?.ref
+                ? await (await import('../../coord/condition-bridge')).findConditionKeyHolder(stewardTarget.ref, {
+                    workspaceId: identity.workspaceId,
+                  })
+                : null;
+              return declaredGateRecoveryPayload(result, null, stewardWorkItemId);
             },
             { fallback: null, timeoutMs: 3_000, label: 'events-status:declared-gate-recovery' },
           )
