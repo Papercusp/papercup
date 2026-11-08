@@ -266,6 +266,10 @@ describe('operator release artifact provenance', () => {
 
   it('withholds fresh-process runtime initialization for an unknown parent and refuses later parent relabeling', async () => {
     const f = fixture(), sourceRoot = resolve(import.meta.dirname, '../../../..');
+    const started = performance.now();
+    const phase = (name: string, details = '') => process.stderr.write(
+      `BOOT_PARENT_FIXTURE ${name} elapsedMs=${Math.round(performance.now() - started)} ${details}\n`);
+    phase('start');
     const runtimePath = join(sourceRoot, 'packages/operator-core/lib/observability/runtime.ts');
     // This is a source-level runtime fixture. Reuse the maintained worker's tsx
     // route for external local TypeScript; single-file ESM bundling can hoist
@@ -281,7 +285,9 @@ describe('operator release artifact provenance', () => {
     expect(smoke.error, smoke.stdout + smoke.stderr).toBeUndefined();
     expect(smoke.status, smoke.stdout + smoke.stderr).toBe(0);
     expect(smoke.stdout).toContain('BOOT_PARENT_LOADER_READY');
+    phase('loader-smoke-complete');
     const { build } = await import('esbuild');
+    phase('build-start');
     const result = await build({ absWorkingDir: sourceRoot, bundle: true, platform: 'node', format: 'esm',
       outfile: f.entry, metafile: true, logLevel: 'silent',
       // Keep the runtime and DBOS tracing adapters in the bundle; optional OTLP
@@ -290,7 +296,8 @@ describe('operator release artifact provenance', () => {
         join(sourceRoot, 'packages/operator-core/lib/auth/loopback-peer-trust'),
         '@opentelemetry/exporter-trace-otlp-proto', '@opentelemetry/exporter-logs-otlp-proto',
         '@opentelemetry/sdk-logs', '@opentelemetry/sdk-trace-base',
-        'cpu-features', 'onnxruntime-node', 'ssh2'],
+        // Match bundle-host.sh: the real CommonJS compiler needs its own filename.
+        'typescript', 'cpu-features', 'onnxruntime-node', 'ssh2'],
       banner: { js: "import { createRequire as createBootBoundaryRequire } from 'node:module'; const require = createBootBoundaryRequire("
         + JSON.stringify(join(sourceRoot, 'package.json')) + ");" },
       define: { __PAPERCUSP_BUNDLED_SIDECAR__: 'true', __PAPERCUSP_BUNDLED_SOURCE_SHA__: JSON.stringify(f.sourceSha) },
@@ -312,6 +319,7 @@ describe('operator release artifact provenance', () => {
         await shutdownRuntimeObservability();
         console.error('BOOT_PARENT_PHASE shutdown-complete ' + JSON.stringify(process.getActiveResourcesInfo()));
       ` } });
+    phase('build-complete');
     // Catch banner/bundle binding collisions before any runtime control starts.
     const syntax = spawnSync(process.execPath, ['--check', f.entry], { encoding: 'utf8', timeout: 15_000 });
     expect(syntax.error, syntax.stderr).toBeUndefined();
@@ -332,20 +340,28 @@ describe('operator release artifact provenance', () => {
     Object.assign(parent.acceptedManifest!, { members, sha256: createHash('sha256').update(bytes).digest('hex') });
     writeFileSync(parent.acceptedManifest!.path, bytes);
     const boot = (input: typeof parent, legacy = false) => {
+      phase('child-start', `authority=${input.acceptedManifest?.authorityKind ?? 'legacy'} legacy=${legacy}`);
       const configPath = join(dirname(f.entry), 'boot-parent-config.json');
       writeFileSync(configPath, JSON.stringify({ parent: input, legacy }));
       const child = spawnSync(process.execPath, ['--import', sourceLoader, '--input-type=module', '--eval',
-        "import { pathToFileURL } from 'node:url'; console.error('BOOT_PARENT_PHASE bundle-import'); "
+        "import { pathToFileURL } from 'node:url'; import { registerHooks } from 'node:module'; import { readFileSync, writeSync } from 'node:fs'; "
+          + "const bundleURL = pathToFileURL(process.argv[1]).href; "
+          + "registerHooks({ resolve(specifier, context, next) { writeSync(2, 'BOOT_PARENT_RESOLVE_START ' + specifier + '\\n'); "
+          + "const result = next(specifier, context); writeSync(2, 'BOOT_PARENT_RESOLVE_END ' + result.url + '\\n'); return result; }, "
+          + "load(url, context, next) { writeSync(2, 'BOOT_PARENT_LOAD_START ' + url + '\\n'); "
+          + "const result = url === bundleURL ? { format: 'module', source: readFileSync(new URL(url)), shortCircuit: true } : next(url, context); "
+          + "writeSync(2, 'BOOT_PARENT_LOAD_END ' + url + '\\n'); return result; } }); console.error('BOOT_PARENT_PHASE bundle-import'); "
           + "await import(pathToFileURL(process.argv[1]).href); console.error('BOOT_PARENT_PHASE bundle-complete');",
         f.entry, configPath], {
         encoding: 'utf8', timeout: 15_000,
-        env: { ...bootEnv, NODE_DEBUG: 'esm' },
+        env: bootEnv,
       });
       const phases = child.stderr?.split('\n').filter(line => line.startsWith('BOOT_PARENT_PHASE '));
+      phase('child-complete', JSON.stringify({ status: child.status, error: child.error?.message, phases }));
       if (child.error || child.status !== 0) {
         // Assertion messages are truncated by the test reporter. Emit the raw
         // trace separately so a failed boot retains its actual final loader event.
-        console.error('BOOT_PARENT_CHILD_DIAGNOSTICS\n' + child.stdout + child.stderr);
+        process.stderr.write('BOOT_PARENT_CHILD_DIAGNOSTICS\n' + child.stdout + child.stderr);
       }
       const diagnostics = JSON.stringify({ phases, stderr: child.stderr?.slice(-1_500), signal: child.signal });
       expect(child.error, diagnostics).toBeUndefined();
