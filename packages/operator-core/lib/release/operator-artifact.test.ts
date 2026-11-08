@@ -272,6 +272,15 @@ describe('operator release artifact provenance', () => {
     // those imports even when their configuration readers are never called.
     const sourceLoader = createRequire(import.meta.url).resolve('tsx');
     symlinkSync(join(sourceRoot, 'node_modules'), join(f.root, 'node_modules'), 'dir');
+    const bootEnv = { PATH: process.env.PATH, NODE_ENV: 'test', PAPERCUSP_BUILD_SHA: f.sourceSha };
+    const loaderControl = join(dirname(f.entry), 'loader-control.mjs');
+    writeFileSync(loaderControl, "console.log('BOOT_PARENT_LOADER_READY');");
+    const smoke = spawnSync(process.execPath, ['--import', sourceLoader, '--input-type=module', '--eval',
+      "import { pathToFileURL } from 'node:url'; await import(pathToFileURL(process.argv[1]).href);", loaderControl],
+    { encoding: 'utf8', timeout: 15_000, env: bootEnv });
+    expect(smoke.error, smoke.stdout + smoke.stderr).toBeUndefined();
+    expect(smoke.status, smoke.stdout + smoke.stderr).toBe(0);
+    expect(smoke.stdout).toContain('BOOT_PARENT_LOADER_READY');
     const { build } = await import('esbuild');
     const result = await build({ absWorkingDir: sourceRoot, bundle: true, platform: 'node', format: 'esm',
       outfile: f.entry, metafile: true, logLevel: 'silent',
@@ -330,9 +339,15 @@ describe('operator release artifact provenance', () => {
           + "await import(pathToFileURL(process.argv[1]).href); console.error('BOOT_PARENT_PHASE bundle-complete');",
         f.entry, configPath], {
         encoding: 'utf8', timeout: 15_000,
-        env: { PATH: process.env.PATH, NODE_ENV: 'test', PAPERCUSP_BUILD_SHA: f.sourceSha },
+        env: { ...bootEnv, NODE_DEBUG: 'esm' },
       });
-      const diagnostics = JSON.stringify({ stdout: child.stdout, stderr: child.stderr, signal: child.signal });
+      const phases = child.stderr?.split('\n').filter(line => line.startsWith('BOOT_PARENT_PHASE '));
+      if (child.error || child.status !== 0) {
+        // Assertion messages are truncated by the test reporter. Emit the raw
+        // trace separately so a failed boot retains its actual final loader event.
+        console.error('BOOT_PARENT_CHILD_DIAGNOSTICS\n' + child.stdout + child.stderr);
+      }
+      const diagnostics = JSON.stringify({ phases, stderr: child.stderr?.slice(-1_500), signal: child.signal });
       expect(child.error, diagnostics).toBeUndefined();
       expect(child.status, diagnostics).toBe(0);
       const line = child.stdout.split('\n').find(row => row.startsWith('BOOT_PARENT_BOUNDARY '));
