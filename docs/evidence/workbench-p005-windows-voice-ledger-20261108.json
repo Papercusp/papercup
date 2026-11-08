@@ -1,0 +1,314 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Workbench P-005 Windows native voice fixture v5",
+  "framework": "operational",
+  "command": [
+    "ssh",
+    "win-vm",
+    "powershell.exe",
+    "-STA",
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-EncodedCommand",
+    "JABQAHIAbwBnAHIAZQBzAHMAUAByAGUAZgBlAHIAZQBuAGMAZQA9ACcAUwBpAGwAZQBuAHQAbAB5AEMAbwBuAHQAaQBuAHUAZQAnADsAIAAkAGUAbgB2ADoAUABBAFAARQBSAEMAVQBTAFAAXwBOAEEAVABJAFYARQBfAEUAVgBJAEQARQBOAEMARQBfAEQASQBSAD0AJwBDADoALwBVAHMAZQByAHMALwB1AHMAZQByAC8AQQBwAHAARABhAHQAYQAvAEwAbwBjAGEAbAAvAFQAZQBtAHAALwB3AG8AcgBrAGIAZQBuAGMAaAAtAHAAMAAwADUALQBjAGgAYQB0AC0AMgAwADIANgAxADEAMAA4AC0AYgAzAGMAZgA5AC8AdgBvAGkAYwBlAC0AdgA1ACcAOwAgACYAIAAnAEMAOgAvAFUAcwBlAHIAcwAvAHUAcwBlAHIALwBBAHAAcABEAGEAdABhAC8ATABvAGMAYQBsAC8AVABlAG0AcAAvAHcAbwByAGsAYgBlAG4AYwBoAC0AcAAwADAANQAtAGMAaABhAHQALQAyADAAMgA2ADEAMQAwADgALQBiADMAYwBmADkALwBuAGEAdABpAHYAZQAtAHcAbwByAGsAYgBlAG4AYwBoAC0AdwBpAG4AZABvAHcAcwAtAGgAbwBzAHQALgBwAHMAMQAnACAALQBTAG8AdQByAGMAZQBEAGkAcgBlAGMAdABvAHIAeQAgACcAQwA6AC8AVQBzAGUAcgBzAC8AdQBzAGUAcgAvAEEAcABwAEQAYQB0AGEALwBMAG8AYwBhAGwALwBUAGUAbQBwAC8AdwBvAHIAawBiAGUAbgBjAGgALQBwADAAMAA1AC0AYwBoAGEAdAAtADIAMAAyADYAMQAxADAAOAAtAGIAMwBjAGYAOQAnACAALQBQAGgAYQBzAGUAIAB2AG8AaQBjAGUAIAAtAEkAbgB0AGUAcgBhAGMAdABpAHYAZQA="
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-11-08T04:17:01.2148626Z",
+  "finishedAt": "2026-11-08T04:17:23.7862410Z",
+  "summary": "Records the already-executed v5 Windows interactive WPF voice fixture: 36 passing assertions. Injected audio devices and private fixture-PUI verify native state, control, Unicode transcript, transport correlation, cancellation and modality. No new execution occurred during recording. Physical microphone/speaker behavior, canonical operator integration and exact installed three-OS acceptance remain unverified.",
+  "workItem": "WI-6554700010044411",
+  "parentWorkItem": "WI-6554700010044395",
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "provenance": {
+    "detailedEvidenceFile": "docs/evidence/workbench-p005-windows-voice-20261108.json",
+    "detailedEvidenceSha256": "c34cb4ad8198fa4f8b481a8d3cd8aa311c7a5ccf6cda2d62793c0e548cb2dd9a",
+    "sourceGeneration": "v5",
+    "session": "01a1b954-2469-7aa2-979c-5f3a342ba390",
+    "commandExecution": "exec-e667f9e3-56d4-44af-bb99-7bb3e0bc48aa",
+    "outerBatch": {
+      "startedAt": "2026-11-08T04:16:31.634Z",
+      "finishedAt": "2026-11-08T04:17:24.303Z",
+      "exitCode": 0,
+      "phases": [
+        "host-compile",
+        "bridge-fixture",
+        "bridge-chat",
+        "bridge-cards",
+        "host-voice"
+      ]
+    },
+    "timestampSource": "Original retained native diagnostic.json bounds the voice phase; outer CommandExecution bounds the completed five-phase batch. The command is the exact nested SSH/EncodedCommand invocation reconstructed from its recorded runner. No rerun, new timestamps or v4 regression promotion.",
+    "logPath": "/tmp/wb-p005-voice-host-voice-20261108-v5.log",
+    "logSha256": "93c9c5fe1fcc96626e8d8779d64889fde5e6eebc1cb6f52444f12a9f0c13c03a",
+    "recordingMethod": "Read the unchanged original native diagnostic, exit, UTF-8 UI and voice-response receipts and checked byte hashes against the detailed evidence. Recovered the exact nested command and outer batch timing from the original CLI transcript."
+  },
+  "runtime": {
+    "platform": "windows",
+    "interactiveDesktop": true,
+    "processSessionId": 1,
+    "scope": "native-voice-fixture",
+    "audioDevices": "VoiceDeviceFixture substitutes recording and playback devices",
+    "operator": "Private fixture-PUI receipts only"
+  },
+  "sourceSha256AtExecution": {
+    "papercusp-desktop/native/windows/dependencies.json": "74fe7a9f1e68d87d69bfcd76f71e25ee017eefc7150f9fa11155524791077da4",
+    "papercusp-desktop/test/fixtures/native-workbench-windows-bridge.ps1": "7e7f908246b36c5a70cc45b2ab5b7d5521d499166912aac0c782855413407a6e",
+    "papercusp-desktop/test/fixtures/native-workbench-windows-host.ps1": "8cff961ad9c200ef6e860befb869ae5d0265eaabde670bb449c15f16014e30a7",
+    "papercusp-desktop/test/fixtures/native-workbench-windows-lifecycle.ps1": "2a7f660d51cdbe8dcd661fc07a13d469c909f90c40034e2df364d887566773c6",
+    "papercusp-desktop/native/windows/PuiReadBridge.cs": "81787dbc0d45f463214250c1cd9dcfc42873118f1be5d3418192c32ebcecac36",
+    "papercusp-desktop/native/windows/workbench.ps1": "db1fca0eaf12a954cee18fe8948025081d10bbc2b3bf21fcbf186c5fdaa87f51",
+    "papercusp-desktop/native/windows/WorkbenchContent.cs": "132df5406648fa588fc7785f5f7265fa7d7cb7f43348eb890878c476342e4f1a",
+    "papercusp-desktop/native/windows/WorkbenchDependencies.ps1": "36cf965fe087db8b854e14069655f4c2a9bd8616b29554067bae00e20e41c992",
+    "papercusp-desktop/native/windows/WorkbenchHost.cs": "d7f4a66f03f8253fd0e45a25c4d5bb7fabc0f8e0e4d1b1238fcf47ebf5e96669",
+    "papercusp-desktop/native/windows/WorkbenchLifecycle.psm1": "020ad44185faead0767140b635fd660ea5970f6249088acb501db75da9730d8c",
+    "papercusp-desktop/native/windows/WorkbenchModel.cs": "feeac550148a6638b2b3af558a6d276237905111eb03ef31d91f8bf5ad2b903e",
+    "papercusp-desktop/native/windows/lib/Markdig.dll": "194587cdf19ec17eee6f69461b27a7d1f542c96b78fd468a2025f3269043fb69",
+    "papercusp-desktop/native/windows/lib/Markdig.LICENSE.txt": "ae543293657b6782e3d4a76257dc4157210ce88a352ef8392065d3f04dcd88d1",
+    "papercusp-desktop/native/windows/lib/Microsoft.LICENSE.txt": "cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310",
+    "papercusp-desktop/native/windows/lib/System.Buffers.dll": "accccfbe45d9f08ffeed9916e37b33e98c65be012cfff6e7fa7b67210ce1fefb",
+    "papercusp-desktop/native/windows/lib/System.Memory.dll": "bf3fb84664f4097f1a8a9bc71a51dcf8cf1a905d4080a4d290da1730866e856f",
+    "papercusp-desktop/native/windows/lib/System.Numerics.Vectors.dll": "1d3ef8698281e7cf7371d1554afef5872b39f96c26da772210a33da041ba1183",
+    "papercusp-desktop/native/windows/lib/System.Runtime.CompilerServices.Unsafe.dll": "66409f670315afe8610f17a4d3a1ee52d72b6a46c544cec97544e8385f90ad74"
+  },
+  "retainedNativeEvidence": {
+    "child.json": {
+      "id": 5944,
+      "startTicks": 639297082239247100
+    },
+    "diagnostic.json": {
+      "finishedAt": "2026-11-08T04:17:23.7862410Z",
+      "startedAt": "2026-11-08T04:17:01.2148626Z",
+      "stoppedChild": null,
+      "error": null,
+      "phase": "voice",
+      "ok": true,
+      "budget": {
+        "fixtureTimeoutMs": 35000,
+        "clientTimeoutMs": 45000
+      },
+      "taskName": "Papercusp-WorkbenchFixture-90e5b88b3b3d4b4eb567635b07c322c9",
+      "directory": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-chat-20261108-b3cf9\\voice-v5\\Papercusp-WorkbenchFixture-90e5b88b3b3d4b4eb567635b07c322c9"
+    },
+    "exit.json": {
+      "sessionId": 1,
+      "exitCode": 0
+    },
+    "voice-response.json": {
+      "environment": {
+        "endpoint": "http://fixture.invalid:3170",
+        "workspaceId": "isolated",
+        "store": {
+          "id": "fixture"
+        },
+        "agentChat": {
+          "scope": "workspace:isolated"
+        }
+      },
+      "rows": [
+        {
+          "conversationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "requestId": "a189d604-d614-40f7-8bcf-09d40e5a4eb9",
+          "operation": "speak",
+          "audioBase64": "SUQz"
+        }
+      ]
+    },
+    "voice-ui.json": {
+      "transcript": "voice transcript λ",
+      "status": "Transcript ready; review it before sending",
+      "conversationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    }
+  },
+  "assertions": [
+    {
+      "id": "windows-voice-v5-01",
+      "passed": true,
+      "evidence": "canonical voice receipt accepts exact Unicode transcript; /tmp/wb-p005-voice-host-voice-20261108-v5.log SHA-256 93c9c5fe1fcc96626e8d8779d64889fde5e6eebc1cb6f52444f12a9f0c13c03a"
+    },
+    {
+      "id": "windows-voice-v5-02",
+      "passed": true,
+      "evidence": "voice refuses foreign receipt conversationId; /tmp/wb-p005-voice-host-voice-20261108-v5.log SHA-256 93c9c5fe1fcc96626e8d8779d64889fde5e6eebc1cb6f52444f12a9f0c13c03a"
+    },
+    {
+      "id": "windows-voice-v5-03",
+      "passed": true,
+      "evidence": "voice refuses foreign receipt requestId; /tmp/wb-p005-voice-host-voice-20261108-v5.log SHA-256 93c9c5fe1fcc96626e8d8779d64889fde5e6eebc1cb6f52444f12a9f0c13c03a"
+    },
+    {
+      "id": "windows-voice-v5-04",
+      "passed": true,
+      "evidence": "voice refuses foreign receipt operation; /tmp/wb-p005-voice-host-voice-20261108-v5.log SHA-256 93c9c5fe1fcc96626e8d8779d64889fde5e6eebc1cb6f52444f12a9f0c13c03a"
+    },
+    {
+      "id": "windows-voice-v5-05",
+      "passed": true,
+      "evidence": "voice refuses foreign environment axis endpoint; /tmp/wb-p005-voice-host-voice-20261108-v5.log SHA-256 93c9c5fe1fcc96626e8d8779d64889fde5e6eebc1cb6f52444f12a9f0c13c03a"
+    },
+    {
+      "id": "windows-voice-v5-06",
+      "passed": true,
+      "evidence": "voice refuses foreign environment axis workspaceId; /tmp/wb-p005-voice-host-voice-20261108-v5.log SHA-256 93c9c5fe1fcc96626e8d8779d64889fde5e6eebc1cb6f52444f12a9f0c13c03a"
+    },
+    {
+      "id": "windows-voice-v5-07",
+      "passed": true,
+      "evidence": "voice refuses foreign environment axis store; /tmp/wb-p005-voice-host-voice-20261108-v5.log SHA-256 93c9c5fe1fcc96626e8d8779d64889fde5e6eebc1cb6f52444f12a9f0c13c03a"
+    },
+    {
+      "id": "windows-voice-v5-08",
+      "passed": true,
+      "evidence": "voice refuses foreign environment axis agentChat; /tmp/wb-p005-voice-host-voice-20261108-v5.log SHA-256 93c9c5fe1fcc96626e8d8779d64889fde5e6eebc1cb6f52444f12a9f0c13c03a"
+    },
+    {
+      "id": "windows-voice-v5-09",
+      "passed": true,
+      "evidence": "voice refuses empty or oversized transcript #8; /tmp/wb-p005-voice-host-voice-20261108-v5.log SHA-256 93c9c5fe1fcc96626e8d8779d64889fde5e6eebc1cb6f52444f12a9f0c13c03a"
+    },
+    {
+      "id": "windows-voice-v5-10",
+      "passed": true,
+      "evidence": "voice refuses empty or oversized transcript #9; /tmp/wb-p005-voice-host-voice-20261108-v5.log SHA-256 93c9c5fe1fcc96626e8d8779d64889fde5e6eebc1cb6f52444f12a9f0c13c03a"
+    },
+    {
+      "id": "windows-voice-v5-11",
+      "passed": true,
+      "evidence": "voice refuses empty or oversized transcript #10; /tmp/wb-p005-voice-host-voice-20261108-v5.log SHA-256 93c9c5fe1fcc96626e8d8779d64889fde5e6eebc1cb6f52444f12a9f0c13c03a"
+    },
+    {
+      "id": "windows-voice-v5-12",
+      "passed": true,
+      "evidence": "voice refuses noncanonical or oversized audio #11; /tmp/wb-p005-voice-host-voice-20261108-v5.log SHA-256 93c9c5fe1fcc96626e8d8779d64889fde5e6eebc1cb6f52444f12a9f0c13c03a"
+    },
+    {
+      "id": "windows-voice-v5-13",
+      "passed": true,
+      "evidence": "voice refuses noncanonical or oversized audio #12; /tmp/wb-p005-voice-host-voice-20261108-v5.log SHA-256 93c9c5fe1fcc96626e8d8779d64889fde5e6eebc1cb6f52444f12a9f0c13c03a"
+    },
+    {
+      "id": "windows-voice-v5-14",
+      "passed": true,
+      "evidence": "voice refuses noncanonical or oversized audio #13; /tmp/wb-p005-voice-host-voice-20261108-v5.log SHA-256 93c9c5fe1fcc96626e8d8779d64889fde5e6eebc1cb6f52444f12a9f0c13c03a"
+    },
+    {
+      "id": "windows-voice-v5-15",
+      "passed": true,
+      "evidence": "voice refuses noncanonical or oversized audio #14; /tmp/wb-p005-voice-host-voice-20261108-v5.log SHA-256 93c9c5fe1fcc96626e8d8779d64889fde5e6eebc1cb6f52444f12a9f0c13c03a"
+    },
+    {
+      "id": "windows-voice-v5-16",
+      "passed": true,
+      "evidence": "voice advances only through recording and transcription; /tmp/wb-p005-voice-host-voice-20261108-v5.log SHA-256 93c9c5fe1fcc96626e8d8779d64889fde5e6eebc1cb6f52444f12a9f0c13c03a"
+    },
+    {
+      "id": "windows-voice-v5-17",
+      "passed": true,
+      "evidence": "voice rejects request not owned by current capture; /tmp/wb-p005-voice-host-voice-20261108-v5.log SHA-256 93c9c5fe1fcc96626e8d8779d64889fde5e6eebc1cb6f52444f12a9f0c13c03a"
+    },
+    {
+      "id": "windows-voice-v5-18",
+      "passed": true,
+      "evidence": "failed voice receipt preserves exact multiline draft; /tmp/wb-p005-voice-host-voice-20261108-v5.log SHA-256 93c9c5fe1fcc96626e8d8779d64889fde5e6eebc1cb6f52444f12a9f0c13c03a"
+    },
+    {
+      "id": "windows-voice-v5-19",
+      "passed": true,
+      "evidence": "late voice result cannot overwrite edited draft; /tmp/wb-p005-voice-host-voice-20261108-v5.log SHA-256 93c9c5fe1fcc96626e8d8779d64889fde5e6eebc1cb6f52444f12a9f0c13c03a"
+    },
+    {
+      "id": "windows-voice-v5-20",
+      "passed": true,
+      "evidence": "voice result is fenced by generation; /tmp/wb-p005-voice-host-voice-20261108-v5.log SHA-256 93c9c5fe1fcc96626e8d8779d64889fde5e6eebc1cb6f52444f12a9f0c13c03a"
+    },
+    {
+      "id": "windows-voice-v5-21",
+      "passed": true,
+      "evidence": "recording retains draft and displays recording state; /tmp/wb-p005-voice-host-voice-20261108-v5.log SHA-256 93c9c5fe1fcc96626e8d8779d64889fde5e6eebc1cb6f52444f12a9f0c13c03a"
+    },
+    {
+      "id": "windows-voice-v5-22",
+      "passed": true,
+      "evidence": "stop recording releases capture and preserves draft; /tmp/wb-p005-voice-host-voice-20261108-v5.log SHA-256 93c9c5fe1fcc96626e8d8779d64889fde5e6eebc1cb6f52444f12a9f0c13c03a"
+    },
+    {
+      "id": "windows-voice-v5-23",
+      "passed": true,
+      "evidence": "dismissal cancels voice before hiding the resident panel; /tmp/wb-p005-voice-host-voice-20261108-v5.log SHA-256 93c9c5fe1fcc96626e8d8779d64889fde5e6eebc1cb6f52444f12a9f0c13c03a"
+    },
+    {
+      "id": "windows-voice-v5-24",
+      "passed": true,
+      "evidence": "reopening preserves original voice draft; /tmp/wb-p005-voice-host-voice-20261108-v5.log SHA-256 93c9c5fe1fcc96626e8d8779d64889fde5e6eebc1cb6f52444f12a9f0c13c03a"
+    },
+    {
+      "id": "windows-voice-v5-25",
+      "passed": true,
+      "evidence": "microphone failure is explicit and preserves retryable draft; /tmp/wb-p005-voice-host-voice-20261108-v5.log SHA-256 93c9c5fe1fcc96626e8d8779d64889fde5e6eebc1cb6f52444f12a9f0c13c03a"
+    },
+    {
+      "id": "windows-voice-v5-26",
+      "passed": true,
+      "evidence": "canonical transcription failure retains draft without success; /tmp/wb-p005-voice-host-voice-20261108-v5.log SHA-256 93c9c5fe1fcc96626e8d8779d64889fde5e6eebc1cb6f52444f12a9f0c13c03a"
+    },
+    {
+      "id": "windows-voice-v5-27",
+      "passed": true,
+      "evidence": "foreign transcription receipt cannot replace draft; /tmp/wb-p005-voice-host-voice-20261108-v5.log SHA-256 93c9c5fe1fcc96626e8d8779d64889fde5e6eebc1cb6f52444f12a9f0c13c03a"
+    },
+    {
+      "id": "windows-voice-v5-28",
+      "passed": true,
+      "evidence": "Original console case is lossy ('voice transcript ?'). Retained UTF-8 voice-ui.json independently contains exact transcript 'voice transcript λ' with status 'Transcript ready; review it before sending'. /tmp/wb-p005-voice-host-voice-20261108-v5.log SHA-256 93c9c5fe1fcc96626e8d8779d64889fde5e6eebc1cb6f52444f12a9f0c13c03a"
+    },
+    {
+      "id": "windows-voice-v5-29",
+      "passed": true,
+      "evidence": "transcription requires review and never sends automatically; /tmp/wb-p005-voice-host-voice-20261108-v5.log SHA-256 93c9c5fe1fcc96626e8d8779d64889fde5e6eebc1cb6f52444f12a9f0c13c03a"
+    },
+    {
+      "id": "windows-voice-v5-30",
+      "passed": true,
+      "evidence": "native voice child receives exact conversation, request and audio beyond ordinary panel limit; /tmp/wb-p005-voice-host-voice-20261108-v5.log SHA-256 93c9c5fe1fcc96626e8d8779d64889fde5e6eebc1cb6f52444f12a9f0c13c03a"
+    },
+    {
+      "id": "windows-voice-v5-31",
+      "passed": true,
+      "evidence": "unchanged transcript retains voice modality on canonical send; /tmp/wb-p005-voice-host-voice-20261108-v5.log SHA-256 93c9c5fe1fcc96626e8d8779d64889fde5e6eebc1cb6f52444f12a9f0c13c03a"
+    },
+    {
+      "id": "windows-voice-v5-32",
+      "passed": true,
+      "evidence": "editing transcript restores text modality; /tmp/wb-p005-voice-host-voice-20261108-v5.log SHA-256 93c9c5fe1fcc96626e8d8779d64889fde5e6eebc1cb6f52444f12a9f0c13c03a"
+    },
+    {
+      "id": "windows-voice-v5-33",
+      "passed": true,
+      "evidence": "spoken reply fixture has a ready canonical assistant turn; /tmp/wb-p005-voice-host-voice-20261108-v5.log SHA-256 93c9c5fe1fcc96626e8d8779d64889fde5e6eebc1cb6f52444f12a9f0c13c03a"
+    },
+    {
+      "id": "windows-voice-v5-34",
+      "passed": true,
+      "evidence": "spoken reply plays canonical receipt without changing draft; /tmp/wb-p005-voice-host-voice-20261108-v5.log SHA-256 93c9c5fe1fcc96626e8d8779d64889fde5e6eebc1cb6f52444f12a9f0c13c03a"
+    },
+    {
+      "id": "windows-voice-v5-35",
+      "passed": true,
+      "evidence": "stop spoken reply cancels local playback; /tmp/wb-p005-voice-host-voice-20261108-v5.log SHA-256 93c9c5fe1fcc96626e8d8779d64889fde5e6eebc1cb6f52444f12a9f0c13c03a"
+    },
+    {
+      "id": "windows-voice-v5-36",
+      "passed": true,
+      "evidence": "spoken reply uses existing canonical TTS route; /tmp/wb-p005-voice-host-voice-20261108-v5.log SHA-256 93c9c5fe1fcc96626e8d8779d64889fde5e6eebc1cb6f52444f12a9f0c13c03a"
+    }
+  ],
+  "scopeLimits": [
+    "VoiceDeviceFixture substitutes recording and playback devices. This verifies native WPF state/control/transport, cancellation and modality, not physical microphone/speaker behavior.",
+    "Canonical private fixture-PUI receipts establish exact environment/conversation/request/operation matching; no actual operator acceptance claimed.",
+    "Exact installed Ubuntu/macOS/Windows matrix, physical audio, macOS runtime, independent acceptance, execution certificate and shipment remain unverified.",
+    "The detailed artifact's F-2-pending note is historical readiness metadata; consult current plan Discovery for source reconciliation. It is not a result of this native voice execution.",
+    "Workbench is NOT SHIPPED."
+  ]
+}
