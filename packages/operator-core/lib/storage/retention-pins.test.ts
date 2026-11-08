@@ -184,6 +184,78 @@ describe('agent retention pins in the existing lease store', () => {
     }
   });
 
+  it('serializes active renewal expiry and cleanup without reclaiming authorized evidence', async () => {
+    for (const order of ['renewal-first', 'cleanup-first'] as const) {
+      const f = fixture(), repository = join(f.root, 'repo'), home = join(f.root, 'home');
+      vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(f.root, 'mutex'));
+      const target = join(home, '.papercusp/evidence/boundary');
+      mkdirSync(target, { recursive: true });
+      writeFileSync(join(target, 'original.txt'), 'original retained evidence');
+      mkdirSync(join(repository, 'docs/evidence'), { recursive: true });
+      const reference = { harness_slug: 'fixture', work_item_id: 'WI-boundary', evidence_ref: 'docs/evidence/boundary.json' };
+      writeFileSync(join(repository, reference.evidence_ref), JSON.stringify({ retainedEvidence: {
+        root: '.papercusp/evidence/boundary', pathBase: 'Operating account home directory',
+      } }));
+      const options = { ...f, home, repositories: new Map([['fixture', repository]]) };
+      const initial = await withWorkItemEvidenceRetention(reference, options, async () => readRetentionPins(f).pins[0]!);
+      const boundary = Date.parse(initial.expiresAt);
+      expect(pinProtectsPath(target, [initial], boundary - 1)).toBe(true);
+      expect(pinProtectsPath(target, [initial], boundary)).toBe(false);
+      let entered!: () => void, release!: () => void, queued!: () => void;
+      const started = new Promise<void>(resolve => { entered = resolve; });
+      const proceed = new Promise<void>(resolve => { release = resolve; });
+      const waiting = new Promise<void>(resolve => { queued = resolve; });
+      const read = vi.fn(() => readFileSync(join(target, 'original.txt'), 'utf8'));
+
+      if (order === 'renewal-first') {
+        const intake = withWorkItemEvidenceRetention(reference, { ...options, nowMs: boundary - 1 }, async () => {
+          entered(); await proceed; return read();
+        });
+        await started;
+        const cleanup = withPortablePinProtection(isPinned => {
+          expect(isPinned(target)).toBe(true);
+          if (!isPinned(target)) rmSync(target, { recursive: true });
+        }, { ...f, nowMs: boundary, onWaiting: queued });
+        try { await waiting; } finally { release(); }
+        const [bytes] = await Promise.all([intake, cleanup]);
+        expect(bytes).toBe('original retained evidence');
+        expect(read).toHaveBeenCalledTimes(1);
+        const renewed = readRetentionPins({ ...f, nowMs: boundary }).pins[0]!;
+        expect(renewed.id).toBe(initial.id);
+        expect(Date.parse(renewed.expiresAt)).toBeGreaterThan(boundary);
+        expect(existsSync(target)).toBe(true);
+        expect(() => removeRetentionPin(renewed.id, 'foreign-consumer', f)).toThrow('only the pin owner');
+        expect(readRetentionPins({ ...f, nowMs: boundary }).pins).toEqual([renewed]);
+        await withPortablePinProtection(() => {
+          expect(removeRetentionPin(renewed.id, renewed.owner, f)).toBe(true);
+        }, { ...f, nowMs: boundary });
+        await withPortablePinProtection(isPinned => {
+          expect(isPinned(target)).toBe(false);
+          if (!isPinned(target)) rmSync(target, { recursive: true });
+        }, { ...f, nowMs: boundary });
+      } else {
+        const cleanup = withPortablePinProtection(async isPinned => {
+          expect(isPinned(target)).toBe(false);
+          entered(); await proceed;
+          if (!isPinned(target)) rmSync(target, { recursive: true });
+        }, { ...f, nowMs: boundary });
+        await started;
+        const intake = withWorkItemEvidenceRetention(reference, { ...options, nowMs: boundary }, async () => read());
+        const refused = expect(intake).rejects.toThrow('missing declared evidence');
+        // Cleanup already owns the mutex. A queued renewal must re-resolve the
+        // artifact after deletion, rather than resurrecting authority over it.
+        release();
+        await Promise.all([cleanup, refused]);
+        expect(read).not.toHaveBeenCalled();
+      }
+      expect(existsSync(target)).toBe(false);
+      const lateRead = vi.fn(async () => read());
+      await expect(withWorkItemEvidenceRetention(reference, { ...options, nowMs: boundary + 1 }, lateRead))
+        .rejects.toThrow('missing declared evidence');
+      expect(lateRead).not.toHaveBeenCalled();
+    }
+  });
+
   it.each(['ambiguous', 'outside', 'symlink'])('refuses an unsafe %s evidence receipt', async kind => {
     const f = fixture(); const repository = join(f.root, 'repo'); mkdirSync(join(repository, 'docs/evidence'), { recursive: true });
     const path = join(repository, 'docs/evidence/unsafe.json');
