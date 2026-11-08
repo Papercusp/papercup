@@ -1945,6 +1945,33 @@ export function requireServingGeneration(tool) {
   throw error;
 }
 
+const ptoolInitializeEmissions = new WeakMap();
+
+/** Retain the upstream initialize offer without acknowledging it. The SDK
+ * keeps instructions but discards private result metadata; the downstream
+ * stdio adapter still needs that offer to prove its own completed write.
+ * @param {any} client
+ * @param {EnvironmentMap} [env]
+ */
+export function enablePtoolMemoryReceipts(client, env = process.env) {
+  if (!['codex', 'claude', 'omp'].includes(env.PAPERCUSP_AGENT ?? '') || !env.PAPERCUSP_SID) return;
+  const request = client.request.bind(client);
+  client.request = async (params, ...rest) => {
+    if (params.method !== 'initialize') return request(params, ...rest);
+    const ledger = openDeliveryLedger(env.PAPERCUSP_SID, env, 'mcp');
+    const result = await request({ ...params, params: { ...params.params,
+      _meta: { ...params.params?._meta, 'papercusp/memoryReceipt': {
+        version: 1, confirmations: ledger?.confirmedMemoryDeliveries() ?? [],
+      } },
+    } }, ...rest);
+    const offer = result?._meta?.['papercusp/memoryEmission'];
+    if (offer?.owner === env.PAPERCUSP_SID && typeof result.instructions === 'string')
+      ptoolInitializeEmissions.set(client, { instructions: result.instructions, offer: structuredClone(offer) });
+    else ptoolInitializeEmissions.delete(client);
+    return result;
+  };
+}
+
 /** A downstream MCP connection retains exactly the catalog it was shown.
  * Older clients omit call metadata. Supply the listed generation, never a
  * newly fetched generation; stale mutations must reach the upstream fence.
@@ -1955,6 +1982,13 @@ export function createPtoolStdioBridge(client, { toolName = null, listTools = ()
   let catalog = null;
   let discovery = null;
   return {
+    initializeResult(result) {
+      const emission = ptoolInitializeEmissions.get(client);
+      // An altered or omitted instruction string cannot confirm the original.
+      return emission && result.instructions === emission.instructions
+        ? { ...result, _meta: { ...result._meta, 'papercusp/memoryEmission': emission.offer } }
+        : result;
+    },
     async listTools() {
       if (!discovery) {
         catalog = null;
@@ -2062,6 +2096,10 @@ async function servePtoolStdio(client, toolName) {
   const server = new Server({ name: 'papercusp-ptool', version: '1.0.0' }, {
     capabilities: { tools: {} }, instructions: client.getInstructions?.(),
   });
+  // Delegate negotiation and client-info side effects to the SDK's handler.
+  const initialize = server._requestHandlers.get('initialize');
+  if (initialize) server.setRequestHandler(types.InitializeRequestSchema, async (request, extra) =>
+    bridge.initializeResult(await initialize(request, extra)));
   server.setRequestHandler(types.ListToolsRequestSchema, () => bridge.listTools());
   server.setRequestHandler(types.CallToolRequestSchema, (request, extra) =>
     bridge.callTool(request.params, {
@@ -4567,7 +4605,7 @@ export async function preparePtoolConnectionModules(
  *  (mergeConvenienceArgs) for tools that take `workspace` as a genuine filter. */
 async function connect(
   operatorUrl,
-  { workspace, harness, tokenFile, transport: requestedTransport, nativeSessionOverride } = {},
+  { workspace, harness, tokenFile, transport: requestedTransport, nativeSessionOverride, stdioReceipts = false } = {},
   { timeoutMs } = {},
   preparedConnection,
   trace = {},
@@ -4624,7 +4662,10 @@ async function connect(
       requestInit: { headers: { Authorization: `Bearer ${token}` } },
       fetch: createPtoolHttpTraceFetch(trace),
     });
-    const client = new Client({ name: 'ptool', version: '0.1.0' }, { capabilities: {} });
+    const nativeClient = stdioReceipts && ['codex', 'claude', 'omp'].includes(process.env.PAPERCUSP_AGENT ?? '')
+      ? process.env.PAPERCUSP_AGENT : null;
+    const client = new Client({ name: nativeClient ? `ptool-${nativeClient}` : 'ptool', version: '0.1.0' }, { capabilities: {} });
+    if (stdioReceipts) enablePtoolMemoryReceipts(client);
     try {
       await client.connect(transport, timeoutMs > 0 ? { timeout: timeoutMs } : undefined);
     } catch (e) {
@@ -5145,7 +5186,8 @@ async function main() {
     payload: jsonKind != null ? inputArgs : undefined,
     toolName: args.tool,
   });
-  const scope = { workspace, harness, tokenFile: args.tokenFile, transport: args.transport };
+  const scope = { workspace, harness, tokenFile: args.tokenFile, transport: args.transport,
+    stdioReceipts: Boolean(args.stdio) };
   const tokenPaths = resolveTokenPaths({ tokenFile: args.tokenFile });
   let activeTokenFile = null;
   const retryOptions = ptoolConnectionRetryOptions(args, process.env);

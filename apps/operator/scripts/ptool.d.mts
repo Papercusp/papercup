@@ -503,6 +503,13 @@ export function buildCallToolParams(toolName: string, callArgs: any, { outputSch
  * generation that the operator can enforce.
  */
 export function requireServingGeneration(tool: any): string | undefined;
+/** Retain the upstream initialize offer without acknowledging it. The SDK
+ * keeps instructions but discards private result metadata; the downstream
+ * stdio adapter still needs that offer to prove its own completed write.
+ * @param {any} client
+ * @param {EnvironmentMap} [env]
+ */
+export function enablePtoolMemoryReceipts(client: any, env?: EnvironmentMap): void;
 /** A downstream MCP connection retains exactly the catalog it was shown.
  * Older clients omit call metadata. Supply the listed generation, never a
  * newly fetched generation; stale mutations must reach the upstream fence.
@@ -517,6 +524,7 @@ export function createPtoolStdioBridge(client: {
     listTools?: Function;
     env?: EnvironmentMap;
 }): {
+    initializeResult(result: any): any;
     listTools(): Promise<{
         tools: any;
     }>;
