@@ -2082,6 +2082,19 @@ interface ForwardOutcome {
   timedOut?: boolean;
 }
 
+/** Remove a socketless ClientRequest from Node's Agent queue before destroying it. */
+function removeQueuedAgentRequest(agent: http.Agent, request: http.ClientRequest): void {
+  // ClientRequest.destroy() only destroys an assigned socket. Node's Agent keeps socketless
+  // requests in `requests` and Agent.removeSocket later dispatches the queue head.
+  for (const [name, queue] of Object.entries(agent.requests)) {
+    const index = queue.indexOf(request);
+    if (index < 0) continue;
+    queue.splice(index, 1);
+    if (queue.length === 0) delete agent.requests[name];
+    return;
+  }
+}
+
 /** One forward attempt. Resolves with the upstream response OR an error + whether the
  *  socket had connected (so the caller can decide retry-safety). Never rejects.
  *  `timeoutMs` (WI-6740) bounds how long we wait for RESPONSE HEADERS; 0/undefined =
@@ -2153,7 +2166,8 @@ function forwardOnce(
       abortBeforeConnectListener = () => {
         // An opaque write is safe to cancel while queued or while its socket is connecting.
         // Once TCP connects, preserve the request: the server may already be applying it.
-        if (connected || settled) return;
+        if (connected || upstream.socket?.connecting === false || settled) return;
+        removeQueuedAgentRequest(agent, upstream);
         upstream.destroy(
           Object.assign(new Error("client disconnected before upstream connect"), {
             code: "ABORT_ERR",

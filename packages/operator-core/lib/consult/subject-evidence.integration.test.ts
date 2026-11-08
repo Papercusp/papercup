@@ -13,6 +13,14 @@ import { isEmbedSidecarRunning, probeSidecarHealth, readEmbedSidecarRecord, stop
 import { scoreSubjectEvidence, subjectContrasts, subjectEvidenceQuery, SUBJECT_EVIDENCE_MIN_SCORE, type SubjectContract } from './relevance-router';
 import { evaluateSubjectCases, HELD_OUT_SUBJECT_CASES, NATURAL_QUESTION_SUBJECT_CASES } from './subject-evidence.fixtures';
 
+function retainScorerDiagnostic(event: string, data: unknown): void {
+  // Vitest's JSON reporter suppresses console.info even for failing cases.
+  // Retained stderr must identify the runtime and failed bounded request before
+  // teardown removes the owned sidecar/database and its admission evidence.
+  try { process.stderr.write(event + ' ' + JSON.stringify(data) + '\n'); }
+  catch { /* Diagnostic delivery must not replace the scorer result. */ }
+}
+
 async function observeScorerSetup<T>(phase: string, action: () => Promise<T>): Promise<T> {
   const startedAt = performance.now();
   const emit = (event: 'start' | 'end') => {
@@ -46,46 +54,33 @@ describe('registered subject evidence with the real local scorer', () => {
   const savedHome = process.env.PAPERCUSP_HOME;
   const savedPort = process.env.PAPERCUSP_EMBED_SIDECAR_PORT;
   const savedEnable = process.env.PAPERCUSP_EMBED_SIDECAR;
+  const savedUrl = process.env.PAPERCUSP_EMBED_SIDECAR_URL;
   const databaseEnvKeys = ['HARNESS_ADMIN_DATABASE_URL', 'HARNESS_DATABASE_URL',
     'DATABASE_URL', 'PAPERCUSP_PGBOUNCER', 'PAPERCUSP_SKIP_PG_DISCOVERY'] as const;
   const savedDatabaseEnv = databaseEnvKeys.map(key => [key, process.env[key]] as const);
   beforeAll(async () => {
-    // A plain test:file invocation must exercise an owned source runtime too.
-    // Preserve explicit in-process/shared-runtime choices as distinct evidence.
-    if (savedEnable === undefined && !process.env.PAPERCUSP_EMBED_SIDECAR_URL) {
-      process.env.PAPERCUSP_EMBED_SIDECAR = '1';
-    }
-    // A scorer-only test owns its lazily spawned sidecar. The default Gemma
-    // startup is unrelated to this fixture and can overlap the first bounded
-    // measurements. Reuse the maintained reranker-only warm profile; explicit
-    // shared-sidecar URLs and caller-selected profiles retain their settings.
-    if (process.env.PAPERCUSP_EMBED_SIDECAR === '1' &&
-        !process.env.PAPERCUSP_EMBED_SIDECAR_URL) {
-      // This test changes the product DB URL so its spawned sidecar cannot
-      // escape into the live/native database. Retire any process-wide pools
-      // created during module setup before changing that target.
-      await observeScorerSetup('retire-module-pools', () => _resetForTests());
-      // No explicit URL does not imply a private scorer: the spawner otherwise
-      // adopts a sibling from the tenant's home or its inherited fixed port.
-      // Reuse its maintained tenant boundary so this run executes source code.
-      privateHome = mkdtempSync(join(tmpdir(), 'subject-scorer-'));
-      process.env.PAPERCUSP_HOME = privateHome;
-      delete process.env.PAPERCUSP_EMBED_SIDECAR_PORT;
-      // The non-Vitest child opens the admission governor's real PG pool.
-      // An ambient explicit DSN outranks the wrapper's private port, so pin
-      // every product resolver to an owned, fully migrated database instead.
-      privateDb = await observeScorerSetup('private-database', () => createFreshTestDb({ prefix: 'subjectscorer', template: {
-        key: orgTemplateKey(), provision: provisionOrgTemplate,
-      } }));
-      process.env.HARNESS_ADMIN_DATABASE_URL = privateDb.url;
-      process.env.HARNESS_DATABASE_URL = privateDb.url;
-      process.env.DATABASE_URL = privateDb.url;
-      process.env.PAPERCUSP_PGBOUNCER = '0';
-      process.env.PAPERCUSP_SKIP_PG_DISCOVERY = '1';
-      if (process.env.PAPERCUSP_EMBED_SIDECAR_WARM === undefined) {
-        process.env.PAPERCUSP_EMBED_SIDECAR_WARM = 'rerank';
-        configuredPrivateWarmup = true;
-      }
+    // testing:run inherits its operator's shared URL. This source-verification
+    // fixture must own its scorer regardless of the launcher environment;
+    // otherwise it silently skips source, process and database isolation.
+    process.env.PAPERCUSP_EMBED_SIDECAR = '1';
+    delete process.env.PAPERCUSP_EMBED_SIDECAR_URL;
+    // Retire pools before pinning every resolver to an owned product database.
+    await observeScorerSetup('retire-module-pools', () => _resetForTests());
+    privateHome = mkdtempSync(join(tmpdir(), 'subject-scorer-'));
+    process.env.PAPERCUSP_HOME = privateHome;
+    delete process.env.PAPERCUSP_EMBED_SIDECAR_PORT;
+    privateDb = await observeScorerSetup('private-database', () => createFreshTestDb({ prefix: 'subjectscorer', template: {
+      key: orgTemplateKey(), provision: provisionOrgTemplate,
+    } }));
+    process.env.HARNESS_ADMIN_DATABASE_URL = privateDb.url;
+    process.env.HARNESS_DATABASE_URL = privateDb.url;
+    process.env.DATABASE_URL = privateDb.url;
+    process.env.PAPERCUSP_PGBOUNCER = '0';
+    process.env.PAPERCUSP_SKIP_PG_DISCOVERY = '1';
+    // Gemma startup is unrelated to scoring and must not overlap bounded calls.
+    if (process.env.PAPERCUSP_EMBED_SIDECAR_WARM === undefined) {
+      process.env.PAPERCUSP_EMBED_SIDECAR_WARM = 'rerank';
+      configuredPrivateWarmup = true;
     }
   }, 120_000);
   afterAll(async () => {
@@ -114,6 +109,8 @@ describe('registered subject evidence with the real local scorer', () => {
               else process.env.PAPERCUSP_HOME = savedHome;
               if (savedPort === undefined) delete process.env.PAPERCUSP_EMBED_SIDECAR_PORT;
               else process.env.PAPERCUSP_EMBED_SIDECAR_PORT = savedPort;
+              if (savedUrl === undefined) delete process.env.PAPERCUSP_EMBED_SIDECAR_URL;
+              else process.env.PAPERCUSP_EMBED_SIDECAR_URL = savedUrl;
               if (configuredPrivateWarmup) delete process.env.PAPERCUSP_EMBED_SIDECAR_WARM;
               rmSync(privateHome, { recursive: true, force: true });
             }
@@ -122,11 +119,16 @@ describe('registered subject evidence with the real local scorer', () => {
       }
     }
     if (configuredPrivateWarmup) delete process.env.PAPERCUSP_EMBED_SIDECAR_WARM;
+    // Setup can fail while retiring pools, before privateHome exists.
+    if (savedUrl === undefined) delete process.env.PAPERCUSP_EMBED_SIDECAR_URL;
+    else process.env.PAPERCUSP_EMBED_SIDECAR_URL = savedUrl;
     if (savedEnable === undefined) delete process.env.PAPERCUSP_EMBED_SIDECAR;
     else process.env.PAPERCUSP_EMBED_SIDECAR = savedEnable;
   });
 
   it('loads the complete generated contract corpus before model scoring', () => {
+    expect(privateHome, 'source fixture must not adopt its launcher\'s shared scorer').toBeDefined();
+    expect(process.env.PAPERCUSP_EMBED_SIDECAR_URL).toBeUndefined();
     for (const name of ['computer:provision_desktop', 'computer:observe', 'db:migrate']) {
       expect(contracts.find(contract => contract.name === name)?.description).toBeTruthy();
     }
@@ -135,13 +137,14 @@ describe('registered subject evidence with the real local scorer', () => {
   });
 
   it('measures labelled held-out top choice, recall and explicit no-expert outcomes', async () => {
+    expect(privateHome, 'real model verification requires the owned source runtime').toBeDefined();
     const url = await observeScorerSetup('scorer-ready', () => resolveProcessSidecarUrl(undefined, ['POST /rerank']));
     const health = url ? await (await fetch(`${url}/healthz`, { signal: AbortSignal.timeout(5000) })).json() : null;
     const runtime = { endpoint: url, engine: url ? 'sidecar' : 'in-process',
       warmProfile: process.env.PAPERCUSP_EMBED_SIDECAR_WARM ?? 'default',
       build: health?.sha ?? null, modelState: health?.models?.rerank ?? null,
       execution: health?.rerankExecutionHealth?.active ?? null };
-    console.info('subject-scorer-preflight', JSON.stringify(runtime));
+    retainScorerDiagnostic('subject-scorer-preflight', { ...runtime, ownedScorer: !!privateHome });
     if (url) {
       expect(health?.rerankScorerGate, 'sidecar health must expose scorer queue diagnostics').toEqual(expect.objectContaining({
         active: expect.any(Number), queued: expect.any(Number), maxConcurrent: expect.any(Number), observations: expect.any(Number),
@@ -365,8 +368,8 @@ describe('registered subject evidence with the real local scorer', () => {
             admissionTextChars: query.length + text.length })),
           reason: error instanceof Error ? error.message.slice(0, 300) : 'unknown' };
         failures.push(failure);
-        console.info('subject-contract-unavailable', JSON.stringify({ ...failure, phaseSamples }));
-        console.info('subject-scorer-failure-state', JSON.stringify(await readScorerState(callStartedAt)));
+        retainScorerDiagnostic('subject-contract-unavailable', { ...failure, phaseSamples });
+        retainScorerDiagnostic('subject-scorer-failure-state', await readScorerState(callStartedAt));
         scorerFailureCaptured = true;
         throw error;
       }
@@ -386,8 +389,8 @@ describe('registered subject evidence with the real local scorer', () => {
           } | null;
           const state = readyHealth ? readyHealth.warmups?.rerank ?? 'absent' : 'unavailable';
           if (state !== lastState) {
-            console.info('subject-scorer-model-transition', JSON.stringify({ elapsedMs: Date.now() - warmStart,
-              state, construction: readyHealth?.models?.rerank ?? null }));
+            retainScorerDiagnostic('subject-scorer-model-transition', { elapsedMs: Date.now() - warmStart,
+              state, construction: readyHealth?.models?.rerank ?? null });
             lastState = state;
           }
           return state === 'warm' || state === 'failed' ? state : false;
@@ -399,12 +402,12 @@ describe('registered subject evidence with the real local scorer', () => {
       // Preserve phase evidence before teardown removes the owned process and
       // database. Per-call failures already captured this in the scorer wrapper.
       if (!scorerFailureCaptured) {
-        console.info('subject-scorer-failure-state', JSON.stringify(await readScorerState()));
+        retainScorerDiagnostic('subject-scorer-failure-state', await readScorerState());
       }
       throw error;
     }
     const warmupMs = Date.now() - warmStart;
-    console.info('subject-scorer-ready', JSON.stringify({ warmupMs }));
+    retainScorerDiagnostic('subject-scorer-ready', { warmupMs });
     if (privateDb) {
       // Snapshot the boot warmups and first successful scorer together, too:
       // otherwise the phase evidence exists only on a timeout and passing cold

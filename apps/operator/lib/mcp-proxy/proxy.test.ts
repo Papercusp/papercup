@@ -12337,7 +12337,11 @@ describe("EI-16883: opaque writes cancel only before the upstream socket connect
       expect(queuedInAgent, `request used another route: ${JSON.stringify({ hits, agent: agentState() })}`).toBe(true);
       expect(hits).not.toContain("queued");
       queued.destroy();
-      await waitFor(() => Object.values(agent.requests).every((queue) => !queue?.length));
+      try {
+        await waitFor(() => Object.values(agent.requests).every((queue) => !queue?.length));
+      } catch (error) {
+        throw new Error(`disconnected opaque request remained queued; state=${JSON.stringify({ hits, agent: agentState() })}; ${String(error)}`);
+      }
       expect(Object.values(agent.requests).reduce((total, queue) => total + (queue?.length ?? 0), 0)).toBe(0);
       releaseHeld();
       expect((await held).status).toBe(200);

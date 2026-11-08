@@ -3,7 +3,8 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readRestoredBenchmarkContext, restoreBenchmarkContext, readFrozenBenchmarkMemory, type BenchmarkContextInput } from './context';
+import { readRestoredBenchmarkContext, restoreBenchmarkContext, readFrozenBenchmarkMemory,
+  readBenchmarkContextSources, type BenchmarkContextInput } from './context';
 
 const roots: string[] = [];
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');
@@ -29,6 +30,14 @@ function fixture() {
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 describe('physical frozen benchmark context', () => {
+  it('preflights the exact corpus and memory without creating an assignment context', () => {
+    const f = fixture(), sources = readBenchmarkContextSources(f.input);
+    expect(sources.corpus.toString('utf8')).toBe(f.corpus);
+    expect(sources.memory.toString('utf8')).toBe(f.memory);
+    expect(existsSync(join(f.input.checkout, '.papercusp'))).toBe(false);
+    writeFileSync(join(f.input.snapshotRoot, 'memory.json'), '{}');
+    expect(() => readBenchmarkContextSources(f.input)).toThrow(/bytes differ/);
+  });
   it('recalls only pinned snapshot bytes and refuses altered or linked memory', () => {
     const f = fixture(), restored = restoreBenchmarkContext(f.input);
     expect(readFrozenBenchmarkMemory(f.input.checkout, f.input.context.memoryHash))

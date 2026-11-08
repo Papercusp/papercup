@@ -120,7 +120,7 @@ import { applyEnvLocal, parseEnvFile, PG_URL_ENV_VARS } from './lib/pg-url.mjs';
 import { withFsMutex, withFsMutexRead } from './lib/fs-mutex.mjs';
 import { withRetentionPinProtection } from './lib/retention-pins.mjs';
 import { installLockNameForRoot } from './lib/install-lock-name.mjs';
-import { verifyRetainedDependencies } from './lib/committed-dependency-verification.mjs';
+import { normalizeDependencyWorkspaceDirs, verifyRetainedDependencies } from './lib/committed-dependency-verification.mjs';
 
 export function requireDurableTestRunSink(environment = process.env) {
   if (typeof environment.PAPERCUSP_TEST_RUNS_DB_URL !== 'string' ||
@@ -340,6 +340,7 @@ export function writePreparedWorkRootReceipt(workRoot, expectedSha, receiptPath)
     root: verified.root,
     sourceCommit: expectedSha,
     ownerMarkerSha256: createHash('sha256').update(markerBytes).digest('hex'),
+    ...(marker.dependencyScope ? { dependencyScope: marker.dependencyScope } : {}),
   };
   writeFileSync(resolvedReceiptPath, JSON.stringify(receipt) + '\n', { flag: 'wx', mode: 0o600 });
   return resolvedReceiptPath;
@@ -351,7 +352,8 @@ export function writePreparedWorkRootReceipt(workRoot, expectedSha, receiptPath)
  * source, so Git clones must follow that provenance past the private install.
  * @param {{ sourceObjects?: boolean }} [options]
  */
-export function committedWorkRootDependencyDonor(workRoot, { sourceObjects = false } = {}) {
+export function committedWorkRootDependencyDonor(workRoot, { sourceObjects = false, workspaceDirs = [] } = {}) {
+  workspaceDirs = normalizeDependencyWorkspaceDirs(workspaceDirs);
   let root = realpathSync(workRoot);
   const visited = new Set();
   while (existsSync(join(root, OWNER_MARKER))) {
@@ -359,7 +361,15 @@ export function committedWorkRootDependencyDonor(workRoot, { sourceObjects = fal
     visited.add(root);
     const marker = JSON.parse(readFileSync(join(root, OWNER_MARKER), 'utf8'));
     verifyCommittedWorkRoot(root, marker.sha);
-    if (marker.dependencyMode === 'independent-copy-v1' && !sourceObjects) return root;
+    if (marker.dependencyMode === 'independent-copy-v1' && !sourceObjects) {
+      if (marker.dependencyScope && marker.dependencyScope.mode !== 'full') {
+        const available = normalizeDependencyWorkspaceDirs(marker.dependencyScope.workspaceDirs);
+        if (marker.dependencyScope.mode !== 'selected' || !available.length || !workspaceDirs.length ||
+            workspaceDirs.some(path => !available.includes(path)))
+          throw new Error('lint-as-committed: dependency donor scope does not cover requested workspaces');
+      }
+      return root;
+    }
     if (typeof marker.sourceRepoRoot !== 'string' || !isAbsolute(marker.sourceRepoRoot)) {
       throw new Error('lint-as-committed: retained source has no dependency donor provenance; rematerialize the recorded commit');
     }
@@ -380,12 +390,16 @@ export function committedWorkRootDependencyDonor(workRoot, { sourceObjects = fal
  * callers must resume before preparation, provenance or prepared receipts.
  * materializeMissing:true fills absent roots through the normal copier before
  * verifying the entire snapshot; existing roots are never replaced or trusted.
- * @param {{ prepareWorkspace?: (snapshot: { paths: string[], workspacePaths: Set<string> }) => void,
+ * workspaceDirs selects package-local dependency roots plus the root install.
+ * Its normalized scope is retained with every journal and prepared witness.
+ * @param {{ workspaceDirs?: string[], prepareWorkspace?: (snapshot: { paths: string[], workspacePaths: Set<string> }) => void,
  * resumeVerification?: { checkpointDir: string, generation?: boolean, materializeMissing?: boolean, maxBatches?: number, maxDurationMs?: number, batchSize?: number } }} [options]
  * @returns {Promise<{ paths: string[], workspacePaths: Set<string> } | { status: 'incomplete', progress: object }>}
  */
 export async function materializeIndependentDependencies(repoRoot, workRoot, options = {}) {
   const { prepareWorkspace, resumeVerification } = options;
+  const workspaceDirs = normalizeDependencyWorkspaceDirs(options.workspaceDirs);
+  const dependencyScope = { mode: workspaceDirs.length ? 'selected' : 'full', workspaceDirs };
   // Emit before entering synchronous setup too: a killed copier cannot return
   // to explain which prerequisite consumed the enclosing command's budget.
   const phase = (name, operation) => {
@@ -410,7 +424,7 @@ export async function materializeIndependentDependencies(repoRoot, workRoot, opt
       throw error;
     }
   };
-  const donor = committedWorkRootDependencyDonor(repoRoot);
+  const donor = committedWorkRootDependencyDonor(repoRoot, { workspaceDirs });
   const materializer = fileURLToPath(new URL('../apps/operator/bin/release/dependency-generation.sh', import.meta.url));
   const repairSnapshot = (sourceRoot, paths, alreadyMapped = false) => {
     const workspacePaths = new Set();
@@ -464,6 +478,11 @@ export async function materializeIndependentDependencies(repoRoot, workRoot, opt
 set -euo pipefail
 source "$1"
 source_root="$2"
+dependency_generation_configure_workspace_dirs "$3" "\${@:5}"
+expected_inputs=''
+if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = selected ]; then
+  expected_inputs="$(dependency_generation_verification_input_fingerprint "$3")"
+fi
 if [ "$4" = generation ]; then
   generation_root="$(dependency_generation_resolve_root "$2" '' 1)"
   input="$(dependency_generation_input_fingerprint "$3")"
@@ -474,7 +493,12 @@ if [ "$4" = generation ]; then
   source_root="$DEPENDENCY_GENERATION_TREE"
   sources="$(cut -f1 "$DEPENDENCY_GENERATION_PATH/.tree-manifest")"
 else
-  dependency_generation_configure_workspace_dirs "$2"
+  dependency_generation_configure_workspace_dirs "$2" "\${@:5}"
+  if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = selected ]; then
+    [ "$(dependency_generation_verification_input_fingerprint "$2")" = "$expected_inputs" ] || {
+      echo 'independent dependency materialization: dependency inputs differ' >&2; exit 74;
+    }
+  fi
   sources="$(dependency_generation_enumerate_node_modules "$2")"
 fi
 printf '%s\\n' "$source_root"
@@ -483,6 +507,13 @@ while IFS= read -r source; do
   if [ "$4" = generation ]; then
     rel="$source"
     case "$rel" in /*|../*|*/../*|*/..|..) exit 74 ;; esac
+    if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = selected ] && [ "$rel" != node_modules ]; then
+      selected=0
+      for workspace in "\${DEPENDENCY_GENERATION_WORKSPACE_DIRS[@]}"; do
+        [ "$rel" != "$workspace/node_modules" ] || selected=1
+      done
+      [ "$selected" = 1 ] || continue
+    fi
     source="$source_root/$rel"
   else
     rel="\${source#"$source_root"/}"
@@ -495,7 +526,13 @@ while IFS= read -r source; do
   printf 'COMMITTED_DEPENDENCY_COPY state=complete mode=%s path=%q elapsedSec=%s\\n' "$4" "$rel" "$((SECONDS - copy_started))" >&2
   printf '%s\\n' "$rel"
 done <<< "$sources"
-`, 'committed-dependencies', materializer, donor, workRoot, useGeneration ? 'generation' : 'donor'], {
+if [ "$4" = donor ] && [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = selected ]; then
+  [ "$(dependency_generation_verification_input_fingerprint "$2")" = "$expected_inputs" ] &&
+    [ "$(dependency_generation_verification_input_fingerprint "$3")" = "$expected_inputs" ] || {
+      echo 'independent dependency materialization: dependency inputs changed' >&2; exit 74;
+    }
+fi
+`, 'committed-dependencies', materializer, donor, workRoot, useGeneration ? 'generation' : 'donor', ...workspaceDirs], {
       encoding: 'utf8', env: { ...process.env, DEPENDENCY_GENERATION_ALLOW_HARDLINK: '0' },
       stdio: ['ignore', 'pipe', 'inherit'],
     });
@@ -519,7 +556,7 @@ done <<< "$sources"
     };
     verifySource();
     verification = await phase('resume-verification', () => verifyRetainedDependencies(
-      donor, workRoot, resumeVerification, { sourceCommit: owner.sha, materializer, verifySource,
+      donor, workRoot, resumeVerification, { sourceCommit: owner.sha, materializer, verifySource, workspaceDirs,
         retainSource: artifact => retainCommittedWorkRoot(workRoot, owner.sha, artifact) }));
     if (verification.status === 'incomplete') return verification;
     snapshot = repairSnapshot(verification.sourceRoot, verification.paths, true);
@@ -555,11 +592,11 @@ done <<< "$sources"
     const marker = JSON.parse(readFileSync(markerPath, 'utf8'));
     const temporary = markerPath + '.' + randomUUID() + '.tmp';
     try {
-      writeFileSync(temporary, JSON.stringify({ ...marker, dependencyMode: 'independent-copy-v1' }), { flag: 'wx' });
+      writeFileSync(temporary, JSON.stringify({ ...marker, dependencyMode: 'independent-copy-v1', dependencyScope }), { flag: 'wx' });
       renameSync(temporary, markerPath);
     } finally { rmSync(temporary, { force: true }); }
   });
-  return { paths: snapshot.paths, workspacePaths: snapshot.workspacePaths,
+  return { paths: snapshot.paths, workspacePaths: snapshot.workspacePaths, dependencyScope,
     ...(verification ? { status: 'complete', verification: verification.progress } : {}) };
 }
 

@@ -3974,11 +3974,13 @@ describe('BG inherited manifest and original source boundaries', () => {
     record: Awaited<ReturnType<typeof partitionCompilation>>['record'];
     invocation: Awaited<ReturnType<typeof partitionCompilation>>['args']['invocation'];
     execution: Parameters<typeof qualifyBgVerifierRuntimeSources>[0]['execution'];
+    inputCustody: ReturnType<typeof createBgVerifierCompilerCustody>;
   }> | undefined)[] = [];
-  async function compiledRuntime(transformed = false, native = false, host?: 'complete' | 'missing-member' | 'with-builtins') {
+  async function compiledRuntime(transformed = false, native = false, host?: 'complete' | 'missing-member' | 'with-builtins',
+    custodyCase?: string) {
     const index = host === 'with-builtins' ? 6 : host === 'complete' ? 4 : host === 'missing-member' ? 5
       : Number(transformed) + Number(native) * 2;
-    return runtimeCompilations[index] ??= (async () => {
+    const build = async () => {
       // Independently pin a reference-host file census before the compiler and
       // target start. Never derive expectations from the target's native packet.
       // This fixture reference is not operational host approval or creator proof.
@@ -4016,8 +4018,9 @@ console.log(JSON.stringify({ files: libraries.map(({ path, sha256, bytes }) => (
       const fixture = await partitionCompilation(true, false, true, expectedHostManifest);
       const output = await qualifyBgVerifierOutput(fixture.args);
       // Preserve the original temporary output and compiler custody separately.
-      const prefix = host ? `runtime-host-${host}` : native ? 'runtime-native-output'
-        : transformed ? 'runtime-transformed-output' : 'runtime-compiled-output';
+      const prefix = (host ? `runtime-host-${host}` : native ? 'runtime-native-output'
+        : transformed ? 'runtime-transformed-output' : 'runtime-compiled-output')
+        + (custodyCase ? `-${custodyCase}` : '');
       const entry = join(tmp, prefix + '.mjs');
       cpSync(output.entry.path, entry);
       const capture = join(tmp, prefix + '.sources.jsonl');
@@ -4051,6 +4054,15 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
     observedAt: new Date().toISOString(), clock: 'node-hrtime', runIndex: 1 }
 }));
 `);
+      const inputCustody = createBgVerifierCompilerCustody({ prepared: fixture.prepared,
+        dependencies: fixture.record.dependencies });
+      // Change and restore resolution metadata while the real child runs.
+      // Endpoint byte censuses alone accept both of these controls.
+      const metadata = join(fixture.prepared.root, 'node_modules/fixture-dependency/package.json');
+      const originalMetadata = readFileSync(metadata);
+      const transientMetadata = join(dirname(metadata), 'runtime-transient.json');
+      if (custodyCase === 'dependency-aba') writeFileSync(metadata, Buffer.concat([originalMetadata, Buffer.from('\n')]));
+      if (custodyCase === 'directory-aba') writeFileSync(transientMetadata, '{}');
       const result = spawnSync('strace', runtimeFileTraceArguments(trace,
         [process.execPath, '--import', pathToFileURL(preload).href,
           '--import', pathToFileURL(sourceInput).href,
@@ -4060,6 +4072,8 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
           ...(native ? { LD_DEBUG: 'files' } : {}) },
         encoding: 'utf8', timeout: 15_000, maxBuffer: 1024 * 1024,
       });
+      if (custodyCase === 'dependency-aba') writeFileSync(metadata, originalMetadata);
+      if (custodyCase === 'directory-aba') rmSync(transientMetadata);
       const rows = existsSync(capture) ? readFileSync(capture, 'utf8').trim().split('\n').map(line => JSON.parse(line)) : [];
       onTestFailed(() => console.error('compiled-runtime-capture', { status: result.status,
         signal: result.signal, error: result.error?.message, stderr: result.stderr,
@@ -4083,13 +4097,56 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
           eof: true as const, processId: rows[0].processId, exitCode: result.status!, signal: result.signal,
           bytes: stderr.length, sha256: digest(stderr) } };
       })()] : undefined;
-      return { output, record: fixture.record, invocation: fixture.args.invocation,
+      return { output, record: fixture.record, invocation: fixture.args.invocation, inputCustody,
         execution: { entry, trace: readFileSync(trace, 'utf8'), captures: [rows],
           ...(nativeCaptures ? { nativeCaptures } : {}),
           terminal: { processId: rows[0].processId, exitCode: result.status!, signal: result.signal,
             eof: true, captureStartedBeforeExec: true } } };
-    })();
+    };
+    return custodyCase ? build() : runtimeCompilations[index] ??= build();
   }
+
+  it.each(['positive', 'absent', 'copied', 'late', 'foreign', 'dependency-aba', 'directory-aba',
+    'same-bytes-replacement'] as const)('compiled runtime dependency interval custody: %s', async variant => {
+    const fixture = await compiledRuntime(false, false, undefined, variant);
+    let inputCustody: typeof fixture.inputCustody | undefined = fixture.inputCustody;
+    if (variant === 'absent') inputCustody = undefined;
+    if (variant === 'copied') inputCustody = { ...fixture.inputCustody };
+    if (variant === 'late') inputCustody = createBgVerifierCompilerCustody({
+      prepared: fixture.record.prepared, dependencies: fixture.record.dependencies });
+    if (variant === 'foreign') inputCustody = createBgVerifierCompilerCustody(await compilerCandidate());
+    if (variant === 'same-bytes-replacement') {
+      const path = join(fixture.record.prepared.root, 'node_modules/fixture-dependency/index.js');
+      const replacement = join(tmp, 'runtime-identical-replacement.js');
+      cpSync(path, replacement);
+      nativeFs.renameSync(replacement, path);
+    }
+    // Demonstrate that the original byte-only endpoint checks still pass.
+    expect(captureVerifierDependencies({ dest: fixture.record.prepared.root,
+      receipt: fixture.record.prepared.source })).toEqual(fixture.record.dependencies);
+    const qualify = () => qualifyBgVerifierRuntimeSources({ ...fixture,
+      execution: { ...fixture.execution, ...(inputCustody ? { inputCustody } : {}) } });
+    const failures: Partial<Record<typeof variant, string>> = {
+      copied: 'BG runtime input custody is not a retained host witness',
+      late: 'BG runtime input custody began after traced execution',
+      foreign: 'BG runtime input custody source differs',
+      'dependency-aba': 'BG compiler original input identity changed',
+      'directory-aba': 'BG compiler original directory identity changed',
+      'same-bytes-replacement': 'BG compiler original input identity changed',
+    };
+    if (failures[variant]) { expect(qualify).toThrow(failures[variant]); return; }
+    const proof = qualify();
+    expect(proof.dependencyQualification).toBe(variant === 'positive'
+      ? 'original-inputs-stable-over-traced-lifetime' : 'required');
+    if (variant === 'positive') {
+      expect(proof.inputCustody!.files).toBeGreaterThan(0);
+      expect(proof.inputCustody!.directories).toBeGreaterThan(0);
+      expect(proof.inputCustody!.capturedAtMs).toBeLessThan(proof.inputCustody!.firstExecAtMs);
+      expect(proof.inputCustody!.verifiedAtMs).toBeGreaterThanOrEqual(proof.inputCustody!.lastTerminalAtMs);
+    } else expect(proof.inputCustody).toBeUndefined();
+    expect(proof.completeRuntimeClosureVerified).toBe(false);
+    expect(proof.creatorFence).toBe('required');
+  });
 
   it.each(['positive', 'absent', 'missing-process', 'duplicate-process', 'foreign-process',
     'source-clock', 'early-sample', 'late-window', 'stderr-digest', 'stderr-eof',

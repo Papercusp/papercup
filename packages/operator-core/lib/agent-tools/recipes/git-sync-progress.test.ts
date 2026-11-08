@@ -96,3 +96,79 @@ describe('saved git-sync progress recipe', () => {
     expect(actual.routine).toMatchObject({ found: false, totalMatches: 0, returnedMatches: 0 });
   });
 });
+
+describe('saved git-sync blocker progress recipe', () => {
+  const blockerScript = readFileSync(new URL('./fixtures/check-git-sync-blocker-progress.recipe.txt', import.meta.url), 'utf8');
+  const resource = 'git-sync:papercusp';
+  const activity = {
+    owner: 'system:git-sync:900:new-fire', owner_pid: 900, workflow_id: 'workflow-new',
+    active: true, phase: 'local-sync', started_at: 10, updated_at: 30,
+    completed_at: null, outcome_status: null,
+    git_commands: {
+      scope: 'local-sync-runner', active_count: 1, omitted_count: 0,
+      active: [{ id: 2, subcommand: 'push', cwd: '/repo', started_at: 20 }],
+      completed_count: 1, completed_omitted_count: 0,
+      completed: [{ id: 1, subcommand: 'commit', cwd: '/repo', started_at: 10,
+        completed_at: 15, duration_ms: 5, status: 'succeeded', exit_code: 0 }],
+    },
+  };
+  async function observe(marker: unknown = activity, owner = activity.owner, count = 1, exactResource = true) {
+    const routines = vi.fn(async () => ({ count, routines: [{ installSlug: 'papercusp',
+      name: 'git-sync', health: { git_sync_activity: marker } }] }));
+    const locks = vi.fn(async () => ({ resources: [{ resource: resource + '/submodule' },
+      ...(exactResource ? [{ resource }] : [])], registryCount: { truncatedByLimit: true },
+      holders: [{ resource: resource + '/submodule', owner: 'foreign', status: 'held', mode: 'exclusive' },
+        { resource, owner, status: 'held', mode: 'exclusive' }] }));
+    const context = vm.createContext({ tools: { routines: { list: routines }, locks: { list: locks } } });
+    const result = await vm.runInContext(`(async () => { ${blockerScript}\n })()`, context);
+    return { result, routines, locks };
+  }
+
+  it('follows the exact current fire after PID drift and retains command identity and scope', async () => {
+    expect(await deriveRecipeAuthority(blockerScript)).toMatchObject({ unresolved: false });
+    const { result, routines, locks } = await observe();
+    expect(routines).toHaveBeenCalledWith({ installSlug: 'papercusp', name: 'git-sync', limit: 1 });
+    expect(locks).toHaveBeenCalledWith({ q: resource, limit: 2 });
+    expect(result.holders).toEqual([{ owner: activity.owner, mode: 'exclusive' }]);
+    expect(result).toMatchObject({ scopeComplete: true, activity: {
+      correlation: 'matched', ownerPid: 900, workflowId: 'workflow-new',
+      commands: { scope: 'local-sync-runner', activeCount: 1, completedCount: 1,
+        active: [{ identity: `${activity.owner}:2`, subcommand: 'push' }],
+        completed: [{ identity: `${activity.owner}:1`, status: 'succeeded', exitCode: 0 }] },
+    } });
+    expect(blockerScript).not.toContain('2731908');
+    expect(blockerScript).not.toContain('processes.list');
+  });
+
+  it('refuses another fire from the same host PID', async () => {
+    const { result } = await observe(activity, 'system:git-sync:900:other-fire');
+    expect(result.activity).toMatchObject({ correlation: 'different-fire', ownerPid: 900,
+      phase: null, heartbeatAt: null, commands: null });
+  });
+
+  it('does not turn heartbeat-only changes into command progress or publication', async () => {
+    const before = (await observe()).result.activity;
+    const after = (await observe({ ...activity, updated_at: 999 })).result.activity;
+    expect(after.heartbeatAt).toBe(999);
+    expect(after.commands).toEqual(before.commands);
+    expect(after).toMatchObject({ progressSincePriorRead: 'not-measured', remotePublication: 'not-measured' });
+  });
+
+  it('retains omitted command counts and never broadens the local runner to all sync work', async () => {
+    const { result } = await observe({ ...activity, git_commands: { ...activity.git_commands,
+      active_count: 18, omitted_count: 17, completed_count: 20, completed_omitted_count: 19 } });
+    expect(result.activity.commands).toMatchObject({ scope: 'local-sync-runner', activeCount: 18,
+      activeOmitted: 17, completedCount: 20, completedOmitted: 19 });
+    expect((await observe({ ...activity, git_commands: undefined })).result.activity.commands).toBeNull();
+    expect((await observe({ ...activity, git_commands: { scope: 'other' } })).result.activity.commands).toBeNull();
+  });
+
+  it('keeps missing or incompletely scoped activity unmeasured', async () => {
+    expect((await observe(null)).result.activity).toMatchObject({ correlation: 'not-measured',
+      owner: null, phase: null, commands: null });
+    expect((await observe(activity, activity.owner, 2)).result).toMatchObject({ scopeComplete: false,
+      activity: { correlation: 'not-measured', phase: null, commands: null } });
+    expect((await observe(activity, activity.owner, 1, false)).result).toMatchObject({ scopeComplete: false,
+      activity: { correlation: 'not-measured', phase: null, commands: null } });
+  });
+});

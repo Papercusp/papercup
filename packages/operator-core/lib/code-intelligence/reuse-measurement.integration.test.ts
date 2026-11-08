@@ -121,6 +121,15 @@ describe('R16 frozen measurement units and efficacy', () => {
     expect(buildReuseSourcePopulation({ sourcePaths: [...sourceMap.keys()],
       readSource: path => sourceMap.get(path)!, addedLines, complete: true })).toEqual(first);
   });
+  it('keeps the complete call population when a per-symbol summary caller cap is reached', () => {
+    const source = 'export function target() {}\n' + 'target();\n'.repeat(501);
+    const result = buildReuseSourcePopulation({ sources: [{ path: 'target.ts', source }], addedLines: {}, complete: true });
+
+    expect(result.calls).toHaveLength(501);
+    expect(result.callCensusComplete).toBe(true);
+    expect(result.method.callCensusCoverage).toMatchObject({ processedFiles: 1, parsedFiles: 1, skippedFiles: 0,
+      resolverTruncated: false });
+  });
   it('captures a complete immutable population larger than 128 MiB without truncating files', async () => {
     const root = await mkdtemp(join(tmpdir(), 'reuse-large-source-population-'));
     const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' });

@@ -71,6 +71,7 @@ import { COUPLING_SHADOW_WINDOW_INSTRUMENT_KEY, codeIntelCouplingShadowRescore }
 import { STRAGGLER_DISPOSITIONS_INSTRUMENT_KEY, codeIntelStragglerDispositionsRescore } from './code-intelligence/straggler-dispositions';
 import {
   WORK_OVERHEAD_INSTRUMENT_KEYS, measureWorkOverheadWindow, rateWorkOverhead, workOverheadCriterionForInstrument,
+  type WorkOverheadWindow, type WorkOverheadMetrics,
 } from './agent-work-overhead-metrics';
 import { REUSE_MEASUREMENT_INSTRUMENT_KEYS, type ReuseMetric } from './code-intelligence/reuse-measurement';
 
@@ -278,6 +279,9 @@ export interface PlatformInstrument {
     resolve(window: { workspaceId: string; harnessSlug?: string; windowStart: string; windowEnd: string;
       /** Present only for a subject-scoped instrument; a label is not identity authority. */
       subject?: RecordedRubricCheckSubject;
+    }, context?: {
+      /** Execution-local shared reading; direct resolver calls still measure afresh. */
+      workOverhead?: (window: WorkOverheadWindow) => Promise<WorkOverheadMetrics>;
     }): Promise<{
       verdict: 'pass' | 'fail' | 'unknown';
       detail: string;
@@ -960,12 +964,17 @@ export function instrumentRegistry(): ReadonlyMap<string, RegisteredInstrument> 
         windowMs: 24 * 60 * 60_000,
         unit: 'count' as const,
         scope: 'harness' as const,
-        resolve: async window => {
+        resolve: async (window, context) => {
           if (!window.harnessSlug?.trim()) return { verdict: 'unknown' as const,
             detail: 'A canonical rubric harness is required for work-overhead measurement.' };
-          const metrics = await measureWorkOverheadWindow({ ...window, harnessSlug: window.harnessSlug });
+          const metrics = await (context?.workOverhead ?? measureWorkOverheadWindow)({ ...window, harnessSlug: window.harnessSlug });
           const rating = rateWorkOverhead(metrics)[overheadCriterion];
-          return { verdict: rating.verdict, detail: JSON.stringify({ rating, metrics }) };
+          // Retain identities outside the bounded detail string in normal ledger provenance.
+          const resultSha256 = createHash('sha256').update(canonicalJson(metrics)).digest('hex');
+          return { verdict: rating.verdict, detail: JSON.stringify({ rating, metrics }), evidenceRefs: [
+            `${metrics.queryRef}#input-sha256:${metrics.input.sha256}`,
+            `${metrics.queryRef}#result-sha256:${resultSha256}`,
+          ] };
         },
       } } : {}),
     });

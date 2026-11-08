@@ -41,6 +41,7 @@ import {
 } from '@papercusp/test-config/execution-details';
 import type { ScorecardProbeCheckRun } from './harness/improvements/observation-types';
 import { measurementProvenanceStatus, retainMeasurementProvenance } from './measurement-provenance';
+import { measureWorkOverheadWindow, type WorkOverheadMetrics, type WorkOverheadWindow } from './agent-work-overhead-metrics';
 import {
   getRegisteredInstrument,
   isManualInstrumentKey,
@@ -254,6 +255,19 @@ export async function runInstrumentChecks(input: {
   const now = input.now ?? Date.now;
   const out: RubricCheckResult[] = [];
   const windowEndMs = now();
+  // A fixed event-time window is still mutable while transcripts are ingested. Paired
+  // instruments must grade one reading, including the same failure, within this execution.
+  // Never share it with another run, even for an identical window.
+  const workOverheadReadings = new Map<string, Promise<WorkOverheadMetrics>>();
+  const context = { workOverhead: (window: WorkOverheadWindow) => {
+    const key = JSON.stringify([window.workspaceId, window.harnessSlug, window.windowStart, window.windowEnd]);
+    let reading = workOverheadReadings.get(key);
+    if (!reading) {
+      reading = measureWorkOverheadWindow(window);
+      workOverheadReadings.set(key, reading);
+    }
+    return reading;
+  } };
   for (const criterion of input.criteria) {
     const check = criterion.check;
     if (check?.kind !== 'instrument' || !check.instrumentKey || isManualInstrumentKey(check.instrumentKey)) continue;
@@ -278,7 +292,7 @@ export async function runInstrumentChecks(input: {
       if (window.workspaceId.trim() && (instrument.rescore.scope !== 'harness' || window.harnessSlug) &&
           (!subjectScoped || subject)) {
         try {
-          const result = await (input.resolvePlatform ?? instrument.rescore.resolve)(window);
+          const result = await (input.resolvePlatform ?? instrument.rescore.resolve)(window, context);
           observed = result;
           verdict = result.verdict === 'unknown' ? 'error' : result.verdict;
           detail = result.detail;

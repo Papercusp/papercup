@@ -728,7 +728,8 @@ export async function startCurrentBenchTaskAssignment(input: CurrentTaskInput, p
     assignmentId: currentBenchAssignmentId(options.runId, options.armId, task.instanceId, options.seed),
     armId: options.armId, seed: options.seed }, taskId: task.instanceId,
     expectedSha256: frozenReads.sha256, allocation: input.fixtureReads! }) : undefined;
-  if (boundary) await requireBenchFixturePreflight(boundary, input.fixtureReads!, task, scope);
+  if (boundary) await requireBenchFixturePreflight(boundary, input.fixtureReads!, task, scope,
+    { context: protocol.context, snapshotRoot: options.preregistration.repoRoot ?? REPO_ROOT });
   const fixtureLease = boundary ? await allocateBenchFixtureReadLease({ scope, hostRunId: input.hostRunId,
     protocol, loopId, boundary, maxWallClockMs: currentArm.generationBudget.maxWallClockMs }) : undefined;
   let auth: ReturnType<typeof currentBenchProviderAuthenticator> | undefined;

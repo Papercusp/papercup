@@ -683,6 +683,31 @@ describe('canonical successful-start revision authority (real PG)', () => {
     expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual(['plan_not_started']);
   });
 
+  it('preserves execution authority for a reflected release receipt but rejects extra author scope', async () => {
+    await seedLine('P-001');
+    const original = body + '\n## Phase 1\n- **P-001** `wip` Preserve findings\n';
+    await db.sql`UPDATE harness_shared.harness_plans SET content=${original},content_hash=${hashPlanContent(original)}`;
+    const receipt = await issue();
+    // plan-item-reflect:release emits this exact unmarked legacy receipt.
+    // Releasing duplicate tracking must not revoke the plan's issued start.
+    const released = original.replace('`wip`', '`todo`')
+      .replace('Preserve findings\n', 'Preserve findings — note: ← WI-6554700010046542 released\n');
+    await db.sql.begin(async tx => {
+      await preservePlanExecutionProgress(tx, scope, original, released, hashPlanContent(original), hashPlanContent(released));
+      await tx`UPDATE harness_shared.harness_plans SET content=${released},content_hash=${hashPlanContent(released)}`;
+      await tx`UPDATE harness_shared.work_items SET status='todo' WHERE plan_line_id='P-001'`;
+    });
+    expect((await readExecutionPlanRow(scope))?.execution_start_revision_seq).toBe(receipt.seq);
+    expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual([]);
+
+    const changed = released.replace('released\n', 'released — also discard findings\n');
+    await db.sql.begin(async tx => {
+      await preservePlanExecutionProgress(tx, scope, released, changed, hashPlanContent(released), hashPlanContent(changed));
+      await tx`UPDATE harness_shared.harness_plans SET content=${changed},content_hash=${hashPlanContent(changed)}`;
+    });
+    expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual(['plan_not_started']);
+  });
+
   it('preserves execution authority for a typed progress note through the plan-line graph writer', async () => {
     await seedLine('P-001');
     await db.sql`UPDATE harness_shared.work_items SET plan_phase='Phase 1',plan_deliverable='code' WHERE plan_line_id='P-001'`;

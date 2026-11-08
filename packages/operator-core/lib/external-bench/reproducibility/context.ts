@@ -90,12 +90,21 @@ export function readFrozenBenchmarkMemory(checkout: string, expectedSha256: stri
   return snapshotSchema.parse(JSON.parse(bytes.toString('utf8'))).entries;
 }
 function readSnapshot(file: string, expected: string, forbidden: readonly string[]): Buffer {
-  const bytes = readRegularFile(file);
+  const bytes = readRegularFile(file, 16 * 1024 * 1024);
   if (digest(bytes) !== expected) throw new Error('Benchmark context snapshot bytes differ from the frozen protocol.');
   const value = snapshotSchema.parse(JSON.parse(bytes.toString('utf8')));
   if (value.entries.some(entry => forbidden.some(ref => entry.key === ref || entry.key.startsWith(`${ref}:`))))
     throw new Error('Benchmark context contains a forbidden source.');
   return bytes;
+}
+
+/** Read the actual pinned inputs before allocating an assignment or provider. */
+export function readBenchmarkContextSources(input: Pick<BenchmarkContextInput, 'context' | 'snapshotRoot'>) {
+  const source = realpathSync(input.snapshotRoot);
+  return {
+    corpus: readSnapshot(containedPath(source, input.context.corpusRef), input.context.corpusHash, input.context.forbiddenSources),
+    memory: readSnapshot(containedPath(source, input.context.memoryRef), input.context.memoryHash, input.context.forbiddenSources),
+  };
 }
 function roots(input: BenchmarkContextInput) {
   if (Object.values(input.binding).some(value => typeof value !== 'string' || !value.trim()) ||
@@ -119,8 +128,7 @@ function contextText(corpus: Buffer, memory: Buffer): string {
 /** Exclusive creation refuses a reused/contaminated assignment context. */
 export function restoreBenchmarkContext(input: BenchmarkContextInput): BenchmarkContextReceipt {
   const { checkout, source, directory } = roots(input);
-  const corpus = readSnapshot(containedPath(source, input.context.corpusRef), input.context.corpusHash, input.context.forbiddenSources);
-  const memory = readSnapshot(containedPath(source, input.context.memoryRef), input.context.memoryHash, input.context.forbiddenSources);
+  const { corpus, memory } = readBenchmarkContextSources({ context: input.context, snapshotRoot: source });
   mkdirSync(directory, { mode: 0o700 });
   writeFileSync(join(directory, 'corpus.json'), corpus, { flag: 'wx', mode: 0o600 });
   writeFileSync(join(directory, 'memory.json'), memory, { flag: 'wx', mode: 0o600 });

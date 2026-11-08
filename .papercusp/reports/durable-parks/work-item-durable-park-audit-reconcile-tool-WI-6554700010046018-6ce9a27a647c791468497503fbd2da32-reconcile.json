@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:WI-6554700010046018:6ce9a27a647c791468497503fbd2da32",
+  "inputSha256": "6ce9a27a647c791468497503fbd2da321a4edb34b01a1709135c75ffbe56fc8d",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-11-08T01:23:38.318Z",
+  "actor": "su-14b48d10-a137-41fa-a696-14d9b21d3078",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "WI-6554700010046018",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "f9a744c299644027819b5f4f2d04bf4aabc292d539e2628ec874339c8622fe9c",
+      "observedParkFingerprint": "f9a744c299644027819b5f4f2d04bf4aabc292d539e2628ec874339c8622fe9c",
+      "reasonCode": "operator-directed",
+      "evidence": "Exact bounded owner approval: graph plan one-work-graph-structured-holds-2026-10-26 D-024 proposal adopted by D-027 (v81). Original native Codex user message at /home/marsh-office/.papercusp/su-codex-homes/session-56534/sessions/2026/11/07/rollout-2026-11-07T16-00-19-01a1b7cf-ebe9-7073-b9b1-6433a5298510.jsonl:273, 2026-11-08T01:06:12.004Z, exact text i APPROVE, verified this session. Scope ONLY lifecycle P-004/WI-6554700010046018 migration:plan-line-work-item-nodes durable park. P-008 custody/bench and all other parks and activation/acceptance floors preserved. No force or claim takeover.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-6554700010046018-6ce9a27a647c791468497503fbd2da32-reconcile.json"
+}

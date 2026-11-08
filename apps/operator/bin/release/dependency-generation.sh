@@ -232,6 +232,27 @@ dependency_generation_input_fingerprint() {
   } | dependency_generation_sha256
 }
 
+# Verifier-only selection: preserve the release publisher's full input key.
+# The root install and its patches always participate; selected workspaces add
+# their own lockfiles/patches. Scope is part of the key, not an exclusion overlay.
+dependency_generation_verification_input_fingerprint() {
+  local root="$1" manifest
+  if [ "${DEPENDENCY_GENERATION_SCOPE_MODE:-full}" = full ]; then
+    dependency_generation_input_fingerprint "$root"
+    return $?
+  fi
+  manifest="$(dependency_generation_input_manifest "$root")" || return $?
+  {
+    printf 'schema\t1\n%s\n' "$DEPENDENCY_GENERATION_SCOPE_RECORD"
+    printf '%s\n' "$manifest" | awk -F '\t' \
+      -v dirs="$(printf '%s\n' "${DEPENDENCY_GENERATION_WORKSPACE_DIRS[@]}")" '
+      BEGIN { n = split(dirs, selected, "\n") }
+      $1 == "package-lock.json" || $1 == "npm-shrinkwrap.json" || index($1, "patches/") == 1 { print; next }
+      { for (i = 1; i <= n; i++) if (index($1, selected[i] "/") == 1) { print; break } }
+    '
+  } | dependency_generation_sha256
+}
+
 # Derive the same cheap dependency-input key from an immutable Git commit without
 # materialising a checkout. Only lockfiles and patch-package patch files
 # participate in the key, so walk those blobs directly and recurse through the

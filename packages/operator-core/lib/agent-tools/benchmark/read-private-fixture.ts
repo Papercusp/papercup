@@ -1,6 +1,8 @@
 /** The existing native bench host's assignment-bound read bridge. */
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { InvalidInputError, type ToolResponse } from '@papercusp/tooldef';
+import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
+import { getDoorConstantsSync } from '../../context-doors-config';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { readSessionConfinement } from '../../capability-envelope/session-confinement-store';
 import { validWorkItemBoundary } from '../../capability-envelope/session-confinement';
@@ -9,12 +11,13 @@ import { isSettledWorkItem } from '../../work-items-events';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 import { BENCH_PRIVATE_FIXTURE_TOOL, benchFixtureReadArgs, benchFixtureProductCall,
   benchFixtureReadContinuations, validBenchFixtureReadBoundary,
-  requireBenchFixtureReadLease, requireBenchFixtureSourcePins } from '../../external-bench/private-fixture-reads';
+  requireBenchFixtureReadLease, requireBenchFixtureSourcePins, benchFixtureResultSnapshot,
+  benchFixtureResultFits, benchFixtureResultPage } from '../../external-bench/private-fixture-reads';
 import type { PapercuspUnifiedToolContext } from '../_tool-context';
 
 export default defineTool({
   name: 'benchmark:read-private-fixture',
-  description: 'Read the source fixture assigned by the native benchmark host. Choose input A/B and a declared read operation; follow card continuations using the same operation and case. Source identities and workspace are fixed by the host. Saved recipes are read as data only.',
+  description: 'Read the source fixture assigned by the native benchmark host. Choose input A/B and a declared read operation; follow card continuations using the same operation and case. A privateFixtureResult page contains exact JSON text: follow next, concatenate text by offset until complete, verify sha256, then parse. Source identities and workspace are fixed by the host. Saved recipes are read as data only.',
   capability: 'work_items:read', requirePrincipal: false, skipWorkspaceTx: true,
   agentRoles: [...SU_ROLES, 'worker', 'cup'],
   args: benchFixtureReadArgs,
@@ -30,12 +33,19 @@ export default defineTool({
         ceiling.imposedBy !== `benchmark-host ${boundary.assignmentId}`)
       throw new InvalidInputError('Private fixture read requires its live host-bound benchmark assignment.');
     const call = benchFixtureProductCall(boundary, args);
+    const budgetBytes = Math.min(6000, computeTurnDoors(0, getDoorConstantsSync(ownerId)).resultEach * CHARS_PER_TOKEN_ESTIMATE);
     return runWithWorkspaceIfConcrete(workspaceId, async () => {
       await requireBenchFixtureReadLease(boundary, { workspaceId });
       await requireBenchFixtureSourcePins(boundary, { workspaceId });
       const held = await getWorkItem(item.id, item.harness);
       if (!held || held.harness !== item.harness || isSettledWorkItem(held) || !isSelfOwnerRecord(held.assignee, ownerId))
         throw new InvalidInputError('Private fixture read requires the caller to hold the exact nonterminal assignment.');
+      if (args.resultCursor) {
+        const snapshot = await benchFixtureResultSnapshot(boundary, call, { workspaceId });
+        await requireBenchFixtureSourcePins(boundary, { workspaceId });
+        await requireBenchFixtureReadLease(boundary, { workspaceId });
+        return { data: benchFixtureResultPage(snapshot, args, budgetBytes) };
+      }
       // Invoke maintained read handlers, with their own argument validation.
       // No dynamic tool name, execution/replay option, source scope or SQL is accepted.
       const tool = call.tool === 'scorecards:get' ? (await import('../scorecards/get')).default :
@@ -45,7 +55,12 @@ export default defineTool({
       const result = await (tool.handler as (args: unknown, ctx: PapercuspUnifiedToolContext) => Promise<ToolResponse>)(parsed, ctx);
       await requireBenchFixtureSourcePins(boundary, { workspaceId });
       await requireBenchFixtureReadLease(boundary, { workspaceId });
-      return { ...result, data: benchFixtureReadContinuations(result.data, call, args) };
+      const data = benchFixtureReadContinuations(result.data, call, args);
+      if (benchFixtureResultFits(data, budgetBytes)) return { ...result, data };
+      const snapshot = await benchFixtureResultSnapshot(boundary, call, { workspaceId }, JSON.stringify(data));
+      await requireBenchFixtureSourcePins(boundary, { workspaceId });
+      await requireBenchFixtureReadLease(boundary, { workspaceId });
+      return { data: benchFixtureResultPage(snapshot, args, budgetBytes) };
     });
   },
 });

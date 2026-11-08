@@ -2562,6 +2562,7 @@ export function verifyBgVerifierOutputRecord(output: BgVerifierOutputRecord, rec
  *   execution: { entry: string, trace: string,
  *     terminal: Parameters<typeof bindRuntimeSourcePopulation>[1],
  *     captures: Parameters<typeof bindRuntimeSourcePopulation>[2],
+ *     inputCustody?: ReturnType<typeof createBgVerifierCompilerCustody>,
  *     nativeCaptures?: { stderr: Buffer,
  *       windows: Parameters<typeof bindNativeLoaderClosure>[1],
  *       firstRun: Parameters<typeof bindNativeLoaderClosure>[2],
@@ -2576,6 +2577,7 @@ export function qualifyBgVerifierRuntimeSources({ output, record, invocation, ex
         trace: string;
         terminal: Parameters<typeof bindRuntimeSourcePopulation>[1];
         captures: Parameters<typeof bindRuntimeSourcePopulation>[2];
+        inputCustody?: ReturnType<typeof createBgVerifierCompilerCustody>;
         nativeCaptures?: {
             stderr: Buffer;
             windows: Parameters<typeof bindNativeLoaderClosure>[1];
@@ -2584,6 +2586,19 @@ export function qualifyBgVerifierRuntimeSources({ output, record, invocation, ex
         }[];
     };
 }): {
+    completeRuntimeClosureVerified: boolean;
+    dependencyQualification: string;
+    creatorFence: string;
+    inputCustody?: {
+        preparedSha256: string;
+        dependencySha256: string;
+        capturedAtMs: number;
+        firstExecAtMs: number;
+        lastTerminalAtMs: number;
+        verifiedAtMs: number;
+        files: number;
+        directories: number;
+    } | undefined;
     schemaVersion: string;
     originalSourceReceiptSha256: string;
     buildRecordSha256: string;
@@ -2793,9 +2808,6 @@ export function qualifyBgVerifierRuntimeSources({ output, record, invocation, ex
     builtinQualification: string;
     nativeQualification: string;
     compiledOutputBytesObserved: boolean;
-    completeRuntimeClosureVerified: boolean;
-    dependencyQualification: string;
-    creatorFence: string;
 };
 /** Attach dependencies to the independently invoked tree before its first Node
  * command. Reuse the release helper's donor install mutex and private snapshot.

@@ -1889,6 +1889,85 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
     expect(marker).not.toHaveProperty('dependencyMode');
   }
 
+  it.each(['copy', 'resume'] as const)('prepares only selected workspace dependencies with durable scope (%s)', async mode => {
+    const f = retainedFixture();
+    const selected = 'libs/runtime/node_modules/leaf/index.cjs';
+    const unrelated = 'apps/unrelated/node_modules/leaf/index.cjs';
+    for (const path of [selected, unrelated]) {
+      mkdirSync(dirname(join(f.root, path)), { recursive: true });
+      writeFileSync(join(f.root, path), 'module.exports = "independent-leaf";');
+    }
+    mkdirSync(join(f.root, 'apps/unrelated'), { recursive: true });
+    writeFileSync(join(f.root, 'apps/unrelated/package.json'), '{"name":"unrelated"}');
+    writeFileSync(join(f.root, 'apps/unrelated/package-lock.json'), '{"lockfileVersion":3}');
+    const scope = { mode: 'selected', workspaceDirs: ['libs/runtime'] };
+    try {
+      const result = await mod.materializeIndependentDependencies(f.root, f.workRoot, {
+        workspaceDirs: ['libs/runtime', 'libs/runtime'],
+        ...(mode === 'resume' ? { resumeVerification: {
+          ...f.options().resumeVerification, materializeMissing: true,
+        } } : {}),
+        prepareWorkspace: (s: { workspacePaths: Set<string> }) =>
+          mod.prepareWorkspaceExports(f.workRoot, s.workspacePaths),
+      });
+      expect(result.paths.slice().sort()).toEqual(['libs/runtime/node_modules', 'node_modules']);
+      expect(readFileSync(join(f.workRoot, selected))).toEqual(readFileSync(join(f.root, selected)));
+      expect(statSync(join(f.workRoot, selected)).ino).not.toBe(statSync(join(f.root, selected)).ino);
+      expect(existsSync(join(f.workRoot, unrelated))).toBe(false);
+      expect(result.dependencyScope).toEqual(scope);
+      const marker = JSON.parse(readFileSync(f.markerPath, 'utf8'));
+      expect(marker).toMatchObject({ dependencyMode: 'independent-copy-v1', dependencyScope: scope });
+      const receiptPath = join(f.parent, 'prepared.json');
+      mod.writePreparedWorkRootReceipt(f.workRoot, f.head, receiptPath);
+      expect(JSON.parse(readFileSync(receiptPath, 'utf8')).dependencyScope).toEqual(scope);
+      expect(() => mod.committedWorkRootDependencyDonor(f.workRoot)).toThrow('donor scope does not cover');
+      expect(mod.committedWorkRootDependencyDonor(f.workRoot, { workspaceDirs: ['libs/runtime'] })).toBe(f.workRoot);
+      expect(mod.committedWorkRootDependencyDonor(f.workRoot, { sourceObjects: true })).toBe(f.root);
+      if (mode === 'resume') {
+        expect(result.status).toBe('complete');
+        expect(JSON.parse(readFileSync(join(f.checkpointDir, 'manifest.json'), 'utf8')).data.scope).toEqual(scope);
+      }
+    } finally { f.cleanup(); }
+  }, 60_000);
+
+  it.each(['package-lock.json', 'patches/root.patch', 'libs/runtime/package-lock.json',
+    'libs/runtime/patches/local.patch'])('rejects selected-scope input drift at %s', async path => {
+    const f = retainedFixture();
+    mkdirSync(dirname(join(f.root, path)), { recursive: true });
+    writeFileSync(join(f.root, path), 'changed input');
+    try {
+      await expect(mod.materializeIndependentDependencies(f.root, f.workRoot, {
+        ...f.options(), workspaceDirs: ['libs/runtime'],
+      })).rejects.toThrow('dependency inputs differ');
+      expectUnpreparedRetainedMarker(f);
+    } finally { f.cleanup(); }
+  }, 60_000);
+
+  it('rejects widening the workspace scope of an interrupted verification journal', async () => {
+    const f = retainedFixture();
+    try {
+      const paused = await mod.materializeIndependentDependencies(f.root, f.workRoot, {
+        ...f.options(1), workspaceDirs: ['libs/runtime'],
+      });
+      expect(paused.status).toBe('incomplete');
+      await expect(mod.materializeIndependentDependencies(f.root, f.workRoot, f.options()))
+        .rejects.toThrow('journal binding changed');
+      expectUnpreparedRetainedMarker(f);
+    } finally { f.cleanup(); }
+  }, 60_000);
+
+  it.each(['../runtime', '/tmp/runtime', 'libs//runtime', 'libs/runtime/../runtime'])
+    ('rejects invalid dependency workspace scope %s before retaining source', async path => {
+      const f = retainedFixture();
+      try {
+        await expect(mod.materializeIndependentDependencies(f.root, f.workRoot, {
+          ...f.options(), workspaceDirs: [path],
+        })).rejects.toThrow('invalid workspaceDirs');
+        expect(existsSync(f.checkpointDir)).toBe(false);
+        expectUnpreparedRetainedMarker(f);
+      } finally { f.cleanup(); }
+    });
+
   it('resumes verified batches without recopying and releases its reader before workspace preparation', async () => {
     const f = retainedFixture();
     const files = ['alpha', 'beta', 'gamma'].map(name => join(f.workRoot, 'node_modules', name + '.txt'));

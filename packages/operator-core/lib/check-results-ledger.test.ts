@@ -7,6 +7,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import * as instruments from './rubric-instrument-registry';
+import * as workOverhead from './agent-work-overhead-metrics';
 import {
   buildRubricCheckLedgerRow, probeCheckResults, probeCheckUnit, runInstrumentChecks, recordRubricCheckResults,
   readLatestRubricCheckResults, rubricCheckLedgerPath,
@@ -167,6 +168,66 @@ describe('per-subject check rows (crm plan D-049)', () => {
 });
 
 describe('scheduled platform instrument results', () => {
+  const overheadCriteria = Object.entries(workOverhead.WORK_OVERHEAD_INSTRUMENT_KEYS).map(([key, instrumentKey]) =>
+    ({ key, check: { kind: 'instrument', instrumentKey } }));
+
+  it('grades paired overhead instruments from one snapshot despite late transcript ingestion', async () => {
+    const window = { workspaceId: 'ws', harnessSlug: 'papercusp',
+      windowStart: '2026-10-12T04:00:00.000Z', windowEnd: AT };
+    const before = workOverhead.summarizeWorkOverhead(window, []);
+    const after = { ...before, population: { ...before.population, toolCalls: 6 } };
+    const measure = vi.spyOn(workOverhead, 'measureWorkOverheadWindow')
+      .mockResolvedValueOnce(before).mockResolvedValue(after);
+    try {
+      const results = await runInstrumentChecks({ rubricRef: 'paperwork', criteria: overheadCriteria,
+        workspaceId: 'ws', harnessSlug: 'papercusp', now: () => Date.parse(AT) });
+      expect(measure).toHaveBeenCalledExactlyOnceWith(window);
+      expect(results.map(r => JSON.parse(r.detail!).metrics)).toEqual([before, before]);
+      const refs = results.map(r => r.check.provenance!.diagnostics.filter(d => d.path.startsWith('$["evidenceRefs"]')));
+      expect(refs[0]).toHaveLength(2);
+      expect(refs[0]).toEqual(refs[1]);
+      expect(refs[0]![0]!.value).toContain(before.input.sha256);
+      // A new execution takes a fresh reading even with the identical scope/window.
+      const next = await runInstrumentChecks({ rubricRef: 'paperwork', criteria: overheadCriteria,
+        workspaceId: 'ws', harnessSlug: 'papercusp', now: () => Date.parse(AT) });
+      expect(measure).toHaveBeenCalledTimes(2);
+      expect(next.map(r => JSON.parse(r.detail!).metrics)).toEqual([after, after]);
+    } finally { measure.mockRestore(); }
+  });
+
+  it('does not reuse paired overhead snapshots across workspaces harnesses or windows', async () => {
+    const measure = vi.spyOn(workOverhead, 'measureWorkOverheadWindow').mockImplementation(async window =>
+      workOverhead.summarizeWorkOverhead(window, []));
+    try {
+      for (const [workspaceId, harnessSlug, at] of [
+        ['ws', 'papercusp', AT], ['other', 'papercusp', AT], ['ws', 'other', AT],
+        ['ws', 'papercusp', '2026-10-14T04:00:00.000Z'],
+      ]) {
+        const results = await runInstrumentChecks({ rubricRef: 'paperwork', criteria: overheadCriteria,
+          workspaceId, harnessSlug, now: () => Date.parse(at!) });
+        const metrics = results.map(r => JSON.parse(r.detail!).metrics);
+        expect(metrics[0]).toEqual(metrics[1]);
+        expect(metrics[0].window).toMatchObject({ workspaceId, harnessSlug, windowEnd: at });
+      }
+      expect(measure).toHaveBeenCalledTimes(4);
+    } finally { measure.mockRestore(); }
+  });
+
+  it('retains one failed paired reading without silently retrying against changed input', async () => {
+    const measure = vi.spyOn(workOverhead, 'measureWorkOverheadWindow')
+      .mockRejectedValueOnce(new Error('input unavailable'))
+      .mockImplementation(async window => workOverhead.summarizeWorkOverhead(window, []));
+    try {
+      const results = await runInstrumentChecks({ rubricRef: 'paperwork', criteria: overheadCriteria,
+        workspaceId: 'ws', harnessSlug: 'papercusp', now: () => Date.parse(AT) });
+      expect(measure).toHaveBeenCalledTimes(1);
+      expect(results.map(r => [r.verdict, r.check.value, r.detail])).toEqual([
+        ['error', null, 'Scheduled instrument unavailable: input unavailable'],
+        ['error', null, 'Scheduled instrument unavailable: input unavailable'],
+      ]);
+    } finally { measure.mockRestore(); }
+  });
+
   it('passes a validated subject only to an explicitly subject-scoped resolver and retains its original measurement', async () => {
     const registered = instruments.getRegisteredInstrument(adoption.check.instrumentKey);
     if (registered?.evaluator !== 'platform' || !registered.rescore) throw new Error('fixture instrument unavailable');

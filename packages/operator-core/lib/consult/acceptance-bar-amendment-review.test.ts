@@ -5,6 +5,7 @@
  * real relation (and its equality with the apply guard's pairwise check) is
  * pinned against Postgres in acceptance-author-identity.integration.test.ts.
  */
+import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { selectionPolicy } from '@papercusp/ranked-selection';
 import type { RouteResult } from './relevance-router';
@@ -110,6 +111,32 @@ describe('P-003 compact immutable amendment packet', () => {
       expect(brief).toContain('On either route, an excerpt, missing source, failed retrieval or hash mismatch cannot satisfy approval');
       expect(brief).toContain(`verified-complete-source sha256:${input.preview.approval.reviewSourceHash}`);
       expect(brief).toContain('Presentation compaction grants no weaker approval');
+    }
+  });
+
+  it('directs both review routes to the canonical verifier when nested object insertion order differs', () => {
+    const { input, source } = packet();
+    const hash = input.preview.approval.reviewSourceHash!;
+    const reordered = { ...source, rubric: { ...source.rubric, baseline: {
+      criteria: source.rubric.baseline.criteria,
+      requirement: source.rubric.baseline.requirement,
+    } } };
+    const insertionOrderHash = (value: unknown) =>
+      createHash('sha256').update(JSON.stringify(value), 'utf8').digest('hex');
+    expect(insertionOrderHash(source)).not.toBe(hash);
+    expect(insertionOrderHash(reordered)).not.toBe(insertionOrderHash(source));
+    expect(acceptanceBarReviewSourceHash(reordered)).toBe(hash);
+    expect(readAcceptanceBarReviewSource(acceptanceBarReviewPostBody(input.preview.approval, reordered), hash))
+      .toEqual(source);
+    for (const answerOn of [undefined, { workItemId: 'WI-42', harness: 'papercusp' }]) {
+      const brief = buildAmendmentReviewBrief(input, answerOn);
+      expect(brief).toContain('readAcceptanceBarReviewSource(completeBody, expectedHash)');
+      expect(brief).toContain('packages/operator-core/lib/acceptance-bar-amendment.ts');
+      expect(brief).toContain(`expectedHash is ${hash}`);
+      expect(brief).toContain('canonicalJson from libs/generic/hash-chain/src/canonical-json.ts');
+      expect(brief).toContain('recursively sort object keys, preserve array order');
+      expect(brief).toContain('SHA-256 the UTF-8 bytes');
+      expect(brief).toContain('JSON.stringify(parsed) preserves insertion order and is not canonical verification');
     }
   });
 

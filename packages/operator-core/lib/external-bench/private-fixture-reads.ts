@@ -4,6 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { canonicalJson } from './reproducibility/canonical-json';
 import { resolveDb, type DbScope } from './reproducibility/db';
+import { readBenchmarkContextSources, type BenchmarkContextInput } from './reproducibility/context';
 
 export const BENCH_PRIVATE_FIXTURE_TOOL = 'benchmark:read-private-fixture';
 const id = z.string().trim().min(1).max(200);
@@ -58,6 +59,22 @@ export function freezeBenchFixtureReadBoundary(input: {
 }
 
 const sha256 = (text: string) => createHash('sha256').update(text).digest('hex');
+function exposesHiddenOracle(value: unknown, oracleText?: string): boolean {
+  if (typeof value === 'string') {
+    if (oracleText && value.includes(oracleText)) return true;
+    // Context entries can contain JSON as text; inspect its decoded fields too.
+    if (/^\s*[\[{]/.test(value)) {
+      let parsed: unknown;
+      try { parsed = JSON.parse(value); } catch { return false; }
+      return exposesHiddenOracle(parsed, oracleText);
+    }
+    return false;
+  }
+  return !!value && typeof value === 'object' &&
+    (oracleText !== undefined && canonicalJson(value) === oracleText ||
+      Object.entries(value).some(([key, child]) =>
+        ['qualityOracle', 'graderMeta', 'hiddenGraderAnswers'].includes(key) || exposesHiddenOracle(child, oracleText)));
+}
 /** Fingerprint stored source material, independently of reader projections.
  * Product output can improve between phases; the underlying inputs cannot.
  * These queries read the existing scorecard/revision stores in the private DB. */
@@ -68,7 +85,8 @@ export async function readBenchFixtureSourceSnapshot(boundary: BenchFixtureReadB
   if (boundary.taskId === 'LATENCY-M1:T01' || boundary.taskId === 'LATENCY-M1:T02') {
     const source = boundary.cases[which];
     if (!source.comparisonTime) throw new Error('Private fixture source requires its frozen comparison clock.');
-    const cards = await sql`SELECT issue_id, created_by, created_at, payload->'observation' AS observation
+    const cards = await sql<{ issue_id: string; created_by: string | null; created_at: Date;
+      observation: Record<string, unknown> | null }[]>`SELECT issue_id, created_by, created_at, payload->'observation' AS observation
       FROM harness_shared.engineer_issues WHERE workspace_id = ${ws} AND issue_id = ${source.issueId}
         AND created_at <= ${source.comparisonTime}::timestamptz`;
     if (cards.length !== 1 || !cards[0]!.observation) throw new Error('Private fixture source card is missing.');
@@ -76,7 +94,7 @@ export async function readBenchFixtureSourceSnapshot(boundary: BenchFixtureReadB
     // The product readers also resolve rubric definitions and supersession
     // against sibling cards. Pin those inputs, including post-clock relations;
     // freezing only the selected observation misses changes to read-time truth.
-    const rubricRef = card.observation.rubricRef;
+    const rubricRef = cards[0]!.observation!.rubricRef;
     if (typeof rubricRef !== 'string' || !rubricRef) throw new Error('Private fixture source rubric is missing.');
     const history = await sql`SELECT issue_id, created_by, created_at, payload->'observation' AS observation
       FROM harness_shared.engineer_issues WHERE workspace_id = ${ws}
@@ -145,23 +163,26 @@ export async function requireBenchFixtureSourcePins(boundary: BenchFixtureReadBo
     const pin = boundary.sourcePins[which];
     if (Buffer.byteLength(text) !== pin.bytes || sha256(text) !== pin.sha256)
       throw new Error('Private fixture source content or size differs from its frozen input.');
-    const containsHiddenFields = (value: unknown): boolean => !!value && typeof value === 'object' &&
-      Object.entries(value).some(([key, child]) => ['qualityOracle', 'graderMeta', 'hiddenGraderAnswers'].includes(key) || containsHiddenFields(child));
-    if (containsHiddenFields(snapshot) || rejectOracle && text.includes(rejectOracle))
+    if (exposesHiddenOracle(snapshot, rejectOracle))
       throw new Error('Private fixture source exposes a hidden grading oracle.');
   }
 }
 
 export async function requireBenchFixturePreflight(boundary: BenchFixtureReadBoundary, allocation: BenchFixtureAllocation,
-  task: { problemStatement: string; graderMeta: Record<string, unknown> }, scope: DbScope): Promise<void> {
+  task: { problemStatement: string; graderMeta: Record<string, unknown> }, scope: DbScope,
+  context: Pick<BenchmarkContextInput, 'context' | 'snapshotRoot'>): Promise<void> {
   const pin = allocation.verification?.[boundary.taskId];
   const oracle = (task.graderMeta.latencyM1 as { qualityOracle?: unknown } | undefined)?.qualityOracle;
   if (!pin || !oracle || typeof oracle !== 'object' || Array.isArray(oracle))
     throw new Error('Private fixture preflight requires the separately pinned task and hidden oracle.');
   const oracleText = canonicalJson(oracle);
   if (sha256(task.problemStatement) !== pin.promptSha256 || sha256(oracleText) !== pin.oracleSha256 ||
-      task.problemStatement.includes(oracleText))
+      exposesHiddenOracle(task.problemStatement, oracleText))
     throw new Error('Private fixture task bytes or hidden oracle exclusion differs from its frozen input.');
+  for (const bytes of Object.values(readBenchmarkContextSources(context))) {
+    if (exposesHiddenOracle(JSON.parse(bytes.toString('utf8')), oracleText))
+      throw new Error('Private fixture context exposes a hidden grading oracle.');
+  }
   await requireBenchFixtureSourcePins(boundary, scope, oracleText);
 }
 

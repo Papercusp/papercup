@@ -74,6 +74,7 @@ import { applyEnvLocal, PG_URL_ENV_VARS } from './lib/pg-url.mjs';
 import { findUnusableRuntimeDeps, formatRuntimeFailures } from './check-declared-deps-extracted.mjs';
 import { writeOperatorArtifactManifest } from '@papercusp/operator-core/lib/release/operator-artifact';
 import { bindRuntimeSourcePopulation } from '../packages/operator-core/lib/memory/bench/runtime-source-capture.mjs';
+import { bindRuntimeProcessTree } from '../packages/operator-core/lib/memory/bench/runtime-file-opens.mjs';
 import { bindNativeLoaderClosure } from '@papercusp/operator-core/lib/memory/bench/measurement-manifest';
 
 export const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -1272,6 +1273,13 @@ export function createBgVerifierCompilerCustody({ prepared, dependencies }) {
   });
 }
 
+/** Host-local interval witnesses extend the existing input custody; serialized
+ * receipts and freshly reconstructed endpoint censuses cannot manufacture one.
+ * @type {WeakMap<object, { preparedSha256: string, dependencySha256: string,
+ * capturedAtMs: number, capturedMonotonicNs: bigint, files: number, directories: number,
+ * verify: () => void }>} */
+const bgRuntimeInputCustodies = new WeakMap();
+
 /** Compose checks within one synchronous boundary, never across phase awaits.
  * The callback is private: callers cannot supply a cached or skipped fence.
  * @param {Parameters<typeof createBgVerifierCompilerCustody>[0]} options
@@ -1360,17 +1368,26 @@ function bgVerifierCompilerCustody({ prepared, dependencies }, verifyBoundary) {
       return { contents, loader, resolveDir: dirname(physical) };
     });
   } };
-  return { plugin, readToolchainInput: readInput,
+  const verifyInputs = () => {
+    verifyBoundary('before-publication', original);
+    for (const [local, expected] of originalIdentities)
+      assert.deepEqual(inputIdentity(local), expected, `BG compiler original input identity changed: ${local}`);
+    for (const [local, expected] of originalDirectories)
+      assert.deepEqual(inputIdentity(local), expected, `BG compiler original directory identity changed: ${local}`);
+  };
+  const custody = { plugin, readToolchainInput: readInput,
     consumed: () => freezeBgExpectation([...consumed.values()].sort((a, b) => a.path.localeCompare(b.path))),
     verifyBeforePublication() {
-      verifyBoundary('before-publication', original);
-      for (const [local, expected] of originalIdentities)
-        assert.deepEqual(inputIdentity(local), expected, `BG compiler original input identity changed: ${local}`);
-      for (const [local, expected] of originalDirectories)
-        assert.deepEqual(inputIdentity(local), expected, `BG compiler original directory identity changed: ${local}`);
+      verifyInputs();
       assert.ok(consumed.size > 0, 'BG compiler consumed input proof is UNKNOWN');
       return freezeBgExpectation([...consumed.values()].sort((a, b) => a.path.localeCompare(b.path)));
     } };
+  bgRuntimeInputCustodies.set(custody, {
+    preparedSha256: createHash('sha256').update(JSON.stringify(prepared)).digest('hex'),
+    dependencySha256: createHash('sha256').update(JSON.stringify(original)).digest('hex'),
+    capturedAtMs: Date.now(), capturedMonotonicNs: process.hrtime.bigint(),
+    files: originalIdentities.size, directories: originalDirectories.size, verify: verifyInputs });
+  return custody;
 }
 
 /** @typedef {{ path: string, dev: string, ino: string }} BgDirectoryIdentity */
@@ -2560,6 +2577,7 @@ export function verifyBgVerifierOutputRecord(output, record, invocation) {
  *   execution: { entry: string, trace: string,
  *     terminal: Parameters<typeof bindRuntimeSourcePopulation>[1],
  *     captures: Parameters<typeof bindRuntimeSourcePopulation>[2],
+ *     inputCustody?: ReturnType<typeof createBgVerifierCompilerCustody>,
  *     nativeCaptures?: { stderr: Buffer,
  *       windows: Parameters<typeof bindNativeLoaderClosure>[1],
  *       firstRun: Parameters<typeof bindNativeLoaderClosure>[2],
@@ -2573,6 +2591,28 @@ export function qualifyBgVerifierRuntimeSources({ output, record, invocation, ex
   assert.equal(entry.path, entry.realpath, 'BG runtime entry must be physical');
   assert.equal(entry.sha256, output.entry.sha256, 'BG runtime entry differs from original compiler output');
   const population = bindRuntimeSourcePopulation(execution.trace, execution.terminal, execution.captures);
+  let inputCustody;
+  if (execution.inputCustody !== undefined) {
+    const retained = bgRuntimeInputCustodies.get(execution.inputCustody);
+    assert.ok(retained, 'BG runtime input custody is not a retained host witness');
+    const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+    assert.equal(retained.preparedSha256, hash(record.prepared), 'BG runtime input custody source differs');
+    assert.equal(retained.dependencySha256, hash(record.dependencies), 'BG runtime input custody dependencies differ');
+    const tree = bindRuntimeProcessTree(execution.trace, execution.terminal);
+    const firstExecAtMs = Math.min(...tree.tasks.flatMap(task => task.execs.map(exec => exec.atMs)));
+    const lastTerminalAtMs = Math.max(...tree.tasks.map(task => task.terminalAtMs));
+    assert.ok(retained.capturedAtMs < Math.floor(firstExecAtMs),
+      'BG runtime input custody began after traced execution');
+    retained.verify();
+    const verifiedAtMs = Date.now(), verifiedMonotonicNs = process.hrtime.bigint();
+    assert.ok(verifiedAtMs >= Math.ceil(lastTerminalAtMs)
+      && Math.abs((verifiedAtMs - retained.capturedAtMs)
+        - Number(verifiedMonotonicNs - retained.capturedMonotonicNs) / 1e6) < 10,
+    'BG runtime input custody clock or terminal boundary differs');
+    inputCustody = { preparedSha256: retained.preparedSha256, dependencySha256: retained.dependencySha256,
+      capturedAtMs: retained.capturedAtMs, firstExecAtMs, lastTerminalAtMs, verifiedAtMs,
+      files: retained.files, directories: retained.directories };
+  }
   const expectedUrl = pathToFileURL(entry.path).href;
   /** @type {Map<string, { path: string, kind: string, sha256: string, origin: 'source' | 'dependency' }>} */
   const originalFiles = new Map();
@@ -2699,7 +2739,10 @@ export function qualifyBgVerifierRuntimeSources({ output, record, invocation, ex
     builtinQualification: builtinBindings.length ? 'original-node-bytes' : 'not-observed',
     nativeQualification: execution.nativeCaptures === undefined ? 'not-observed' : 'selected-windows-only',
     compiledOutputBytesObserved: true,
-    completeRuntimeClosureVerified: false, dependencyQualification: 'required', creatorFence: 'required' });
+    ...(inputCustody ? { inputCustody } : {}),
+    completeRuntimeClosureVerified: false,
+    dependencyQualification: inputCustody ? 'original-inputs-stable-over-traced-lifetime' : 'required',
+    creatorFence: 'required' });
 }
 
 /** Attach dependencies to the independently invoked tree before its first Node

@@ -4,9 +4,10 @@ import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { AdmissionAuthorityRefused, AdmissionAuthorityUnavailable } from './work-item-admission-authority';
 import {
   AdmissionRecoveryRefused, observeAdmissionRecoveryPickup, requestAdmissionRecovery, runAdmissionRecoveries,
-  readAuthorizedComponentScreeningIds, readAuthorizedComponentScreening,
+  readAuthorizedComponentScreeningIds, readAuthorizedComponentScreening, withAdmissionPromoterLock,
   type AdmissionRecoveryDeps,
 } from './work-item-admission-recovery';
+import { _resetHarnessAdminUrlCacheForTests } from './embedded-pg-discovery';
 
 let db: FreshPgDb;
 const scope = { workspaceId: 'ws-recovery', harnessSlug: 'papercusp', workItemId: 'WI-original' };
@@ -66,6 +67,31 @@ function deps(overrides: Partial<AdmissionRecoveryDeps> = {}): AdmissionRecovery
 }
 
 describe('original-item durable admission recovery', () => {
+  it('opens the production default lock client on the private database and releases its session lock', async () => {
+    const [target] = await db.sql`SELECT current_database() AS name`;
+    const applicationName = 'pcusp:admission-recovery-lock:p' + process.pid;
+    vi.stubEnv('HARNESS_ADMIN_DATABASE_URL', db.url);
+    _resetHarnessAdminUrlCacheForTests();
+    try {
+      const action = vi.fn(async () => {
+        const locks = await db.sql`
+          SELECT a.datname FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+           WHERE a.application_name = ${applicationName} AND l.locktype = 'advisory' AND l.granted`;
+        expect(locks.map(row => row.datname)).toEqual([target!.name]);
+        return 'private-default-client';
+      });
+      expect(await withAdmissionPromoterLock(scope, undefined, action)).toBe('private-default-client');
+      expect(action).toHaveBeenCalledOnce();
+      const remaining = await db.sql`
+        SELECT l.pid FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+         WHERE a.application_name = ${applicationName} AND l.locktype = 'advisory' AND l.granted`;
+      expect(remaining).toEqual([]);
+    } finally {
+      vi.unstubAllEnvs();
+      _resetHarnessAdminUrlCacheForTests();
+    }
+  });
+
   async function heldComponentRequest() {
     const result = await requestAdmissionRecovery({ ...input, authority: {
       kind: 'signed-spawn', role: 'reviewer', expiresAtSec: 0,

@@ -14,7 +14,7 @@
  * a run legitimately in flight in another live host is NOT killed.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
@@ -255,6 +255,12 @@ describe('current provider capture host checkpoint', () => {
     input.task = { ...input.task, instanceId: 'LATENCY-M1:T01', benchmark: 'harness-bench',
       problemStatement: 'Read both source cards completely.',
       graderMeta: { latencyM1: { qualityOracle: { kind: 'exact-reference', required: ['retained-hidden-reference'] } } } };
+    const snapshotRoot = mkdtempSync(join(tmpdir(), 'bench-private-context-')); roots.push(snapshotRoot);
+    const snapshot = JSON.stringify({ entries: [{ key: 'permitted', text: 'Read the assigned source inputs.' }] });
+    for (const name of ['corpus', 'memory']) writeFileSync(join(snapshotRoot, `${name}.json`), snapshot);
+    input.options.preregistration.repoRoot = snapshotRoot;
+    input.protocol.context = { ...input.protocol.context, corpusRef: 'corpus.json', memoryRef: 'memory.json',
+      corpusHash: createHash('sha256').update(snapshot).digest('hex'), memoryHash: createHash('sha256').update(snapshot).digest('hex') };
     for (const issue of ['EI-a', 'EI-b']) await sql`INSERT INTO harness_shared.engineer_issues
       (workspace_id, issue_id, created_at, payload) VALUES (${WS}, ${issue}, '2026-11-01T00:00:00Z',
         ${JSON.stringify({ observation: { rubricRef: 'rubric', subject: { ref: 'subject' },
@@ -358,6 +364,16 @@ describe('current provider capture host checkpoint', () => {
     const text = canonicalJson(await readBenchFixtureSourceSnapshot(boundary, 'A', scope));
     boundary.sourcePins!.A = { sha256: createHash('sha256').update(text).digest('hex'), bytes: Buffer.byteLength(text) };
     await expect(requireBenchFixtureSourcePins(boundary, scope)).rejects.toThrow(/hidden grading oracle/);
+  });
+  it.each(['corpus', 'memory'] as const)('refuses hidden answers in the actual pinned %s before leasing a native assignment', async kind => {
+    const f = await privateReadFixture('cold');
+    const oracle = (f.input.task.graderMeta.latencyM1 as { qualityOracle: unknown }).qualityOracle;
+    const snapshot = JSON.stringify({ entries: [{ key: 'apparently-permitted', text: JSON.stringify(oracle, null, 2) }] });
+    writeFileSync(join(f.input.options.preregistration.repoRoot!, `${kind}.json`), snapshot);
+    f.input.protocol.context[`${kind}Hash`] = createHash('sha256').update(snapshot).digest('hex');
+    await expect(startCurrentBenchTaskAssignment(f.input)).rejects.toThrow(/hidden grading oracle/);
+    const [row] = await sql`SELECT config->'privateFixtureReads' AS reads FROM harness_shared.bench_runs WHERE id = ${f.input.hostRunId}`;
+    expect(row!.reads).toBeNull();
   });
   it('diagnoses the JSONB string-encoding trap separately from missing source identities', async () => {
     const f = await privateReadFixture('cold'), allocation = f.input.fixtureReads!;

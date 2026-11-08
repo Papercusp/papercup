@@ -57,8 +57,9 @@ export function writePreparedWorkRootReceipt(workRoot: any, expectedSha: any, re
  * source, so Git clones must follow that provenance past the private install.
  * @param {{ sourceObjects?: boolean }} [options]
  */
-export function committedWorkRootDependencyDonor(workRoot: any, { sourceObjects }?: {
+export function committedWorkRootDependencyDonor(workRoot: any, { sourceObjects, workspaceDirs }?: {
     sourceObjects?: boolean | undefined;
+    workspaceDirs?: never[] | undefined;
 }): string;
 /**
  * Prefer an exact-input immutable generation, leased across materialization.
@@ -72,11 +73,14 @@ export function committedWorkRootDependencyDonor(workRoot: any, { sourceObjects 
  * callers must resume before preparation, provenance or prepared receipts.
  * materializeMissing:true fills absent roots through the normal copier before
  * verifying the entire snapshot; existing roots are never replaced or trusted.
- * @param {{ prepareWorkspace?: (snapshot: { paths: string[], workspacePaths: Set<string> }) => void,
+ * workspaceDirs selects package-local dependency roots plus the root install.
+ * Its normalized scope is retained with every journal and prepared witness.
+ * @param {{ workspaceDirs?: string[], prepareWorkspace?: (snapshot: { paths: string[], workspacePaths: Set<string> }) => void,
  * resumeVerification?: { checkpointDir: string, generation?: boolean, materializeMissing?: boolean, maxBatches?: number, maxDurationMs?: number, batchSize?: number } }} [options]
  * @returns {Promise<{ paths: string[], workspacePaths: Set<string> } | { status: 'incomplete', progress: object }>}
  */
 export function materializeIndependentDependencies(repoRoot: any, workRoot: any, options?: {
+    workspaceDirs?: string[];
     prepareWorkspace?: (snapshot: {
         paths: string[];
         workspacePaths: Set<string>;

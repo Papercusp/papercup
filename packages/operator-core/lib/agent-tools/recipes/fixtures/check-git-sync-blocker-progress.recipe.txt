@@ -1,0 +1,59 @@
+const installSlug = 'papercusp';
+const resource = 'git-sync:papercusp';
+const [routines, locks] = await Promise.all([
+  tools.routines.list({ installSlug: 'papercusp', name: 'git-sync', limit: 1 }),
+  tools.locks.list({ q: 'git-sync:papercusp', limit: 2 }),
+]);
+const optional = (value, key) => value != null && key in value ? value[key] : null;
+const rows = (Array.isArray(routines.routines) ? routines.routines : [])
+  .filter(row => row.installSlug === installSlug && row.name === 'git-sync');
+const registered = (Array.isArray(locks.resources) ? locks.resources : [])
+  .find(row => row.resource === resource);
+const holders = (Array.isArray(locks.holders) ? locks.holders : registered?.holders ?? [])
+  .filter(holder => holder.resource === resource && holder.status === 'held');
+const routineComplete = routines.count === 1 && rows.length === 1;
+// The query limits registry discovery only; the root holders array is complete.
+// An exact registered row is sufficient even if unrelated submodule rows were omitted.
+const lockComplete = Boolean(registered) && Array.isArray(locks.holders);
+const activity = optional(rows[0]?.health, 'git_sync_activity');
+const owner = optional(activity, 'owner');
+const matched = routineComplete && lockComplete && typeof owner === 'string'
+  && holders.some(holder => holder.owner === owner);
+const commands = matched ? optional(activity, 'git_commands') : null;
+const commandScope = optional(commands, 'scope');
+const commandRows = key => {
+  const values = optional(commands, key);
+  return Array.isArray(values) ? values.slice(0, 16).map(command => ({
+    identity: `${owner}:${optional(command, 'id')}`,
+    subcommand: optional(command, 'subcommand'), cwd: optional(command, 'cwd'),
+    cwdTruncated: optional(command, 'cwd_truncated'), startedAt: optional(command, 'started_at'),
+    completedAt: optional(command, 'completed_at'), durationMs: optional(command, 'duration_ms'),
+    status: optional(command, 'status'), exitCode: optional(command, 'exit_code'),
+  })) : null;
+};
+return {
+  request: { installSlug, resource },
+  scopeComplete: routineComplete && lockComplete,
+  holders: holders.slice(0, 20).map(holder => ({ owner: holder.owner, mode: holder.mode })),
+  activity: {
+    correlation: matched ? 'matched' : owner && routineComplete && lockComplete
+      ? holders.length ? 'different-fire' : 'unheld' : 'not-measured',
+    owner, ownerPid: optional(activity, 'owner_pid'),
+    workflowId: matched ? optional(activity, 'workflow_id') : null,
+    active: matched ? optional(activity, 'active') : null,
+    phase: matched ? optional(activity, 'phase') : null,
+    startedAt: matched ? optional(activity, 'started_at') : null,
+    heartbeatAt: matched ? optional(activity, 'updated_at') : null,
+    completedAt: matched ? optional(activity, 'completed_at') : null,
+    outcome: matched ? optional(activity, 'outcome_status') : null,
+    // A heartbeat is a marker write, not a completed Git command or remote publication.
+    progressSincePriorRead: 'not-measured', remotePublication: 'not-measured',
+    commands: commandScope === 'local-sync-runner' ? {
+      scope: commandScope,
+      activeCount: optional(commands, 'active_count'), activeOmitted: optional(commands, 'omitted_count'),
+      completedCount: optional(commands, 'completed_count'),
+      completedOmitted: optional(commands, 'completed_omitted_count'),
+      active: commandRows('active'), completed: commandRows('completed'),
+    } : null,
+  },
+};

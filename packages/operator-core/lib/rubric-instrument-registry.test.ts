@@ -557,12 +557,22 @@ describe('runInstrument', () => {
     expect(JSON.stringify(redacted.provenance)).not.toContain('tiny');
     expect(redacted.provenance?.gaps).toContain('redacted');
 
+    const stdout = 'Use%\n 42%\n' + 'x'.repeat(1_000);
+    const chunked = await runInstrument('host:df-root-used-pct', {
+      exec: async () => stdout,
+    });
+    const input = chunked.provenance?.diagnostics.find(entry => entry.path === '$["samples"]["0"]["stdout"]["chunks"]["0"]');
+    expect(typeof input?.value).toBe('string');
+    expect((input?.value as string).length).toBe(256);
+    expect(chunked.provenance?.gaps).toEqual([]);
+    expect(replayRetainedInstrument(chunked)).toMatchObject({ status: 'reproduced', value: 42 });
+
     const bounded = await runInstrument('host:df-root-used-pct', {
       exec: async () => 'Use%\n 42%\n' + 'x'.repeat(20_000),
     });
-    const input = bounded.provenance?.diagnostics.find(entry => entry.path === '$["samples"]["0"]["stdout"]["chunks"]["0"]');
-    expect(typeof input?.value).toBe('string');
-    expect((input?.value as string).length).toBe(256);
+    expect(bounded.provenance?.diagnostics).toContainEqual({
+      path: '$["samples"]["0"]["stdout"]', value: '[omitted: oversized diagnostic]',
+    });
     expect(bounded.provenance?.gaps).toContain('diagnostics-truncated');
     expect(Buffer.byteLength(JSON.stringify(bounded.provenance))).toBeLessThanOrEqual(16_384);
     expect(bounded.value).toBe(42);
