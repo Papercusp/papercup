@@ -422,7 +422,7 @@ describe('signed admission review recovery', () => {
       sql,
       vi.fn() as never,
     );
-    expect(retried.result?.reviewedItemId).toBe(featureId);
+    expect(retried.reviewedItemId).toBe(featureId);
     expect(mocks.runPromoter).toHaveBeenCalledTimes(2);
     expect(candidates[0]!.guardReceipt).not.toHaveProperty('guardDisposition');
     expect(candidates[0]!.receiptId).toBe(request.requestId);
