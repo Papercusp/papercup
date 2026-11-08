@@ -221,6 +221,90 @@ describe('private native proof custody (P002)', () => {
     expect(verifyNativeProofPacket(f.directory, saved.locator, f.contract).status).toBe('complete');
   });
 
+  function repeatedReferenceFixture() {
+    const f = fixture(), out = f.contract.expected[0]!.out!;
+    const payload = JSON.parse(readFileSync(out, 'utf8'));
+    const evaluation = payload.rows[0].moduleEvaluations, pin = evaluation.entries[0];
+    evaluation.entries = Array.from({ length: 512 }, (_, index) => ({ ...pin, index, role: 'entry' }));
+    evaluation.vmInputs = Array.from({ length: 512 }, (_, index) => ({ ...pin, index, role: 'vm' }));
+    payload.rows = Array.from({ length: 24 }, () => ({ moduleEvaluations: evaluation }));
+    payload.diagnostics = structuredClone(payload.rows);
+    payload.nativeRun.files = payload.rows.map((row: unknown) => ({ proof: { inputs: row } }));
+    writeFileSync(out, JSON.stringify(payload));
+    return { ...f, evaluation, pin };
+  }
+
+  it('retains more than 65536 evaluator occurrences with every location and full vector after producer retirement', () => {
+    const f = repeatedReferenceFixture(), saved = f.save();
+    expect(saved.status).toBe('complete');
+    const group = saved.manifest.groups[0]!, capsules = group.referenceCapsules!;
+    expect(group.references).toEqual([]);
+    expect(group.referenceArtifacts).toEqual([f.pin]);
+    expect(group.referenceGaps).toEqual([]);
+    expect(capsules.schemaVersion).toBe('native-evaluator-reference-capsules-v1');
+    expect(capsules.vectors).toEqual([{ sha256: createHash('sha256').update(JSON.stringify({
+      entries: f.evaluation.entries, vmInputs: f.evaluation.vmInputs,
+    })).digest('hex'), entries: f.evaluation.entries, vmInputs: f.evaluation.vmInputs }]);
+    expect(capsules.locations).toEqual(['/rows', '/diagnostics', '/nativeRun/files'].flatMap(prefix =>
+      Array.from({ length: 24 }, (_, index) => ({ location: `${prefix}/${index}`, capsule: capsules.vectors[0]!.sha256 }))));
+    expect(capsules.locations.reduce((sum, location) => {
+      const vector = capsules.vectors.find(row => row.sha256 === location.capsule)!;
+      return sum + vector.entries.length + vector.vmInputs.length;
+    }, 0)).toBe(73728);
+    expect(saved.manifest.limits.referenceOccurrences).toBe(65536);
+    expect(saved.manifest.limits.objectBytes).toBe(16 * 1024 * 1024);
+    rmSync(f.producer, { recursive: true });
+    const consumed = consumeRetained(f, saved.locator);
+    expect(consumed.status).toBe('complete');
+    expect(consumed.manifest.groups[0].referenceCapsules).toEqual(capsules);
+    expect(consumed.manifest.verdicts).toMatchObject({ nativeProof: 'unqualified', acceptance: 'unmeasured' });
+  }, 60_000);
+
+  describe('independent capsule verification', () => {
+    let f: ReturnType<typeof repeatedReferenceFixture>, saved: ReturnType<ReturnType<typeof fixture>['save']>;
+    beforeAll(() => { f = repeatedReferenceFixture(); saved = f.save(); rmSync(f.producer, { recursive: true }); });
+    it.each(['location', 'duplicate-location', 'role', 'order', 'pin-field', 'digest', 'vector', 'encoding'])
+      ('rejects resealed capsule %s changes against the exact retained OUT', fault => {
+        expect(saved.status).toBe('complete');
+        const manifest = structuredClone(saved.manifest), group = manifest.groups[0]!;
+        const capsules = group.referenceCapsules!;
+        if (fault === 'location') capsules.locations.pop();
+        if (fault === 'duplicate-location') capsules.locations[1] = capsules.locations[0]!;
+        if (fault === 'role') capsules.vectors[0]!.vmInputs = [];
+        if (fault === 'order') capsules.vectors[0]!.entries.reverse();
+        if (fault === 'pin-field') capsules.vectors[0]!.entries[0]!.index = -1;
+        if (fault === 'digest') capsules.vectors[0]!.sha256 = '0'.repeat(64);
+        if (fault === 'vector') capsules.vectors.pop();
+        if (fault === 'encoding') delete group.referenceCapsules;
+        const manifestPin = createNativeArtifactPersister(join(f.directory, 'objects'))
+          .persist(Buffer.from(JSON.stringify(manifest)), 'native-proof.json');
+        const inventoryHash = createHash('sha256').update(JSON.stringify({ groups: manifest.groups,
+          gaps: manifest.gaps, segments: manifest.segments })).digest('hex');
+        expect(() => verifyNativeProofPacket(f.directory, { ...saved.locator, manifest: manifestPin, inventoryHash }, f.contract))
+          .toThrow('custody reference');
+      });
+  });
+
+  it.each(['unique-pins', 'malformed-tail', 'conflicting-tail', 'foreign-tail'])
+    ('keeps capsule %s failures explicit instead of accepting an authenticated prefix', fault => {
+      const f = fixture(), out = f.contract.expected[0]!.out!, payload = JSON.parse(readFileSync(out, 'utf8'));
+      const source = payload.rows[0].moduleEvaluations, pin = source.entries[0];
+      source.entries = Array.from({ length: 65536 }, () => pin);
+      source.vmInputs = fault === 'unique-pins' ? [pin] : [];
+      if (fault === 'malformed-tail') source.entries[65535] = { ...pin, sha256: 'invalid' };
+      if (fault === 'conflicting-tail') source.entries[65535] = { ...pin, byteLength: pin.byteLength + 1 };
+      if (fault === 'foreign-tail') {
+        source.entries[65535] = { ...pin, codeRef: '/foreign/' + pin.sha256 + '.js' };
+      }
+      payload.rows = [{ moduleEvaluations: source }, { moduleEvaluations: source }];
+      payload.diagnostics = []; payload.nativeRun.files = [];
+      writeFileSync(out, JSON.stringify(payload));
+      const saved = f.save();
+      expect(saved.status).toBe('partial');
+      expect(saved.manifest.gaps.some(gap => gap.startsWith('group-0:A:'))).toBe(true);
+      expect(verifyNativeProofPacket(f.directory, saved.locator, f.contract).status).toBe('partial');
+    }, 60_000);
+
   it('retains evaluator references across the segment object boundary and preserves historical partial packets', async () => {
     const f = fixture(), group = f.contract.expected[0]!, modules = group.out! + '.modules';
     rmSync(modules, { recursive: true });

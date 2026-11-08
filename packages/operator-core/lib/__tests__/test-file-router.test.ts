@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, readFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
@@ -208,6 +208,25 @@ describe('router native custody population (P002)', () => {
       PC_EXECUTED_SOURCE_MAP_OUT: out, ...extraEnv }, root);
     return { producer, session };
   }
+  it.each(['groups', 'selected', 'minimum-objects'])('preflights known custody %s capacity before any child starts', async fault => {
+    const group = { cwd: root, runner: 'vitest', routes: [{ absolute: join(root, 'file.test.ts') }] };
+    const groups = fault === 'groups' ? Array(4097).fill(group) : fault === 'minimum-objects'
+      ? Array(3277).fill(group) : [{ ...group, routes: Array(4097).fill(group.routes[0]) }];
+    await expect(createRouterProofCustody(groups, { PAPERCUSP_TEST_ARTIFACT_DIR: join(root, 'packets'),
+      PC_EXECUTED_SOURCE_MAP_WORKSPACE: 'workspace', PC_EXECUTED_SOURCE_MAP_OUT: join(root, 'out.json'),
+      PC_EXECUTED_SOURCE_MAP_PRELOAD: '1', PC_EXECUTED_SOURCE_MAP_ROOT: root,
+    }, root)).rejects.toThrow(/custody .*population|custody .*capacity/);
+    expect(readdirSync(join(root, 'packets')).every(name =>
+      !existsSync(join(root, 'packets', name, 'expected.json')))).toBe(true);
+  });
+
+  it('preflights a detail attempt before expanding the declared population', async () => {
+    const { session } = await setup();
+    session.expected.push(...Array.from({ length: 4094 }, (_, index) => ({ ...session.expected[0], id: `extra-${index}` })));
+    expect(() => session.detail('group-0', 0, 'file.test.ts', join(root, 'detail.json'))).toThrow('custody expected population');
+    expect(session.expected).toHaveLength(4096);
+  });
+
   function produce(session: Awaited<ReturnType<typeof createRouterProofCustody>>, id: string) {
     const group = session.expected.find((row: { id: string; out: string }) => row.id === id);
     writeFileSync(group.out, '{"rows":[],"diagnostics":[]}');

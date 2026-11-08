@@ -666,12 +666,14 @@ export async function createRouterProofCustody(groups, env, repoRoot) {
   // Keep this lazy, but use the module's native ESM loader. The committed-source
   // fence can substitute a dirty ESM helper; its CommonJS compile hook must
   // refuse because it cannot safely make that substitution.
-  const { retainNativeProofPacketAsync } = await import('./lib/budgeted-task-scheduler.mjs');
+  const { retainNativeProofPacketAsync, preflightNativeProofCustody } = await import('./lib/budgeted-task-scheduler.mjs');
   const base = env.PAPERCUSP_TEST_ARTIFACT_DIR || join(homedir(), '.papercusp', 'test-artifacts', 'testing-run');
   mkdirSync(base, { recursive: true, mode: 0o700 });
   const directory = mkdtempSync(join(base, 'native-router-'));
   const identity = { workspace: env.PAPERCUSP_WORKSPACE_ID || env.PAPERCUSP_WORKSPACE || 'unscoped',
     harness: env.PAPERCUSP_TEST_RUN_HARNESS || 'unscoped', runId: env.PAPERCUSP_TEST_RUN_GROUP || randomUUID() };
+  const childEvidence = id => ['stdout', 'stderr', 'command-exit.json'].map(role => ({ role,
+    state: 'produced', path: join(directory, `${id}.${role}`) }));
   const expected = groups.map((group, index) => {
     const child = perGroupVitestEnv(env, index, groups.length);
     return { id: `group-${index}`, attempt: 'primary', selected: group.routes.map(route => route.absolute),
@@ -684,14 +686,18 @@ export async function createRouterProofCustody(groups, env, repoRoot) {
         workspace: child.PC_EXECUTED_SOURCE_MAP_WORKSPACE ?? null,
         root: child.PC_EXECUTED_SOURCE_MAP_ROOT ?? null },
       out: child.PC_EXECUTED_SOURCE_MAP_OUT ? resolve(child.PC_EXECUTED_SOURCE_MAP_OUT) : null,
-      cwd: resolve(group.cwd), auxiliary: [] };
+      cwd: resolve(group.cwd), auxiliary: childEvidence(`group-${index}`) };
   });
+  // Run before any collection/child, then again before declaring retries or
+  // extra auxiliary objects. Never promise capacity for still-unknown imports.
+  if (expected.length) preflightNativeProofCustody(expected);
   const observations = [];
   const publishDeclaration = () => writeFileSync(join(directory, 'expected.json'), JSON.stringify({ identity, expected }), { mode: 0o600 });
   publishDeclaration();
   const declare = (id, auxiliary) => {
     const group = expected.find(row => row.id === id);
     if (!group) throw new Error('native custody group is undeclared');
+    preflightNativeProofCustody(expected.map(row => row === group ? { ...row, auxiliary } : row));
     group.auxiliary = auxiliary;
     publishDeclaration();
   };
@@ -710,14 +716,14 @@ export async function createRouterProofCustody(groups, env, repoRoot) {
     // channel is unavailable, never reconstructed from decoded console output.
     observations.push({ id, out: group.out, captureComplete: raw?.complete === true });
   };
-  const childEvidence = id => ['stdout', 'stderr', 'command-exit.json'].map(role => ({ role,
-    state: 'produced', path: join(directory, `${id}.${role}`) }));
   return { directory, identity, expected, observations, declare, observe, childEvidence,
     detail(parentId, index, file, out) {
       const parent = expected.find(row => row.id === parentId);
       const id = `${parentId}-detail-${index}`;
-      expected.push({ ...parent, id, attempt: 'detail', selected: [resolve(parent.cwd, file)], out,
-        auxiliary: childEvidence(id) });
+      const detail = { ...parent, id, attempt: 'detail', selected: [resolve(parent.cwd, file)], out,
+        auxiliary: childEvidence(id) };
+      preflightNativeProofCustody([...expected, detail]);
+      expected.push(detail);
       publishDeclaration();
       return id;
     },

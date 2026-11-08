@@ -378,8 +378,10 @@ function custodyInventory(directory, objectLimit = custodyLimits.objects) {
     throw new Error('custody inventory changed');
   return names.sort();
 }
-function custodyReferences(payload, artifactLimit = custodyLimits.families.B.objects) {
+function custodyReferences(payload, artifactLimit = custodyLimits.families.B.objects, allowCapsules = false) {
   const occurrences = [], artifacts = new Map(), gaps = new Set();
+  const vectors = new Map(), locations = [];
+  let vectorPins = 0, expandedCount = 0;
   const scan = (rows, prefix, observation) => {
     if (rows === undefined) return;
     if (!Array.isArray(rows) || rows.length > 4096) throw new Error('custody observation population');
@@ -389,11 +391,27 @@ function custodyReferences(payload, artifactLimit = custodyLimits.families.B.obj
       if (value?.schemaVersion !== 'vitest-evaluator-inputs-v1' ||
           value.scope !== 'vitest-inlined-evaluator-inputs' || value.basis !== 'before-evaluator-call')
         throw new Error('custody evaluator protocol');
+      let vector, digest;
+      if (allowCapsules) {
+        vector = { entries: value.entries, vmInputs: value.vmInputs ?? [] };
+        if (!Array.isArray(vector.entries) || !Array.isArray(vector.vmInputs))
+          throw new Error('custody evaluator population');
+        digest = custodyHash(vector);
+        locations.push({ location: `${prefix}/${index}`, capsule: digest });
+        expandedCount += vector.entries.length + vector.vmInputs.length;
+        // The existing bound applies to stored pins, rather than repeated
+        // expansion of the same complete vector at every observation site.
+        if (vectors.has(digest)) return;
+        vectorPins += vector.entries.length + vector.vmInputs.length;
+        if (vectorPins > custodyLimits.referenceOccurrences)
+          throw new Error('custody evaluator capsule population');
+        vectors.set(digest, { sha256: digest, ...vector });
+      }
       for (const role of ['entries', 'vmInputs']) {
         const pins = value[role] ?? (role === 'vmInputs' ? [] : null);
         if (!Array.isArray(pins)) throw new Error('custody evaluator population');
         pins.forEach((pin, i) => {
-          if (occurrences.length === custodyLimits.referenceOccurrences) {
+          if (!allowCapsules && occurrences.length === custodyLimits.referenceOccurrences) {
             gaps.add('evaluator-occurrence-limit');
             return;
           }
@@ -408,7 +426,7 @@ function custodyReferences(payload, artifactLimit = custodyLimits.families.B.obj
             if (artifacts.size === artifactLimit) gaps.add('evaluator-artifact-limit');
             else artifacts.set(pin.codeRef, artifact);
           }
-          occurrences.push({ location: `${prefix}/${index}/${role}/${i}`, ...pin });
+          if (!allowCapsules) occurrences.push({ location: `${prefix}/${index}/${role}/${i}`, ...pin });
         });
       }
     });
@@ -416,7 +434,18 @@ function custodyReferences(payload, artifactLimit = custodyLimits.families.B.obj
   scan(payload.rows, '/rows', row => row?.moduleEvaluations);
   scan(payload.diagnostics, '/diagnostics', row => row?.moduleEvaluations);
   scan(payload.nativeRun?.files, '/nativeRun/files', row => row?.proof?.inputs?.moduleEvaluations);
-  return { occurrences, artifacts: [...artifacts.values()], gaps: [...gaps] };
+  const result = { occurrences, artifacts: [...artifacts.values()], gaps: [...gaps] };
+  if (allowCapsules && expandedCount > custodyLimits.referenceOccurrences) {
+    result.capsules = { schemaVersion: 'native-evaluator-reference-capsules-v1',
+      vectors: [...vectors.values()], locations };
+  } else if (allowCapsules) {
+    for (const { location, capsule } of locations) {
+      const vector = vectors.get(capsule);
+      for (const role of ['entries', 'vmInputs']) vector[role].forEach((pin, index) =>
+        occurrences.push({ location: `${location}/${role}/${index}`, ...pin }));
+    }
+  }
+  return result;
 }
 function custodyIdentity(identity) {
   if (!identity || !['workspace', 'harness', 'runId'].every(key => typeof identity[key] === 'string' && identity[key]))
@@ -429,6 +458,24 @@ function custodyPopulation(expected) {
         !group.selected.length || !Array.isArray(group.auxiliary) ||
         !['vitest', 'node', 'unsupported'].includes(group.runner) || typeof group.armed !== 'boolean') ||
       new Set(expected.map(group => group.id)).size !== expected.length) throw new Error('custody expected population missing');
+}
+
+/** Admit only what is knowable before execution. Imported vectors, sidecars and
+ * exact byte sizes are unknown until capture; this is not a completeness proof. */
+export function preflightNativeProofCustody(expected) {
+  custodyPopulation(expected);
+  let minimumObjects = 0;
+  for (const group of expected) {
+    if (group.armed && group.runner === 'vitest') {
+      if (group.selected.length > 4096) throw new Error('custody selected observation population capacity');
+      minimumObjects += 1 + Number(custodyProcessSourcesRequested(group));
+    }
+    minimumObjects += group.auxiliary.filter(row => row.state === 'produced').length;
+  }
+  if (minimumObjects > custodyArchiveLimits.objects) throw new Error('custody minimum archive object capacity');
+  if (Buffer.byteLength(JSON.stringify(expected)) + 1 > custodyLimits.bytes)
+    throw new Error('custody declared metadata capacity');
+  return { groups: expected.length, minimumObjects, dynamicCapacity: 'unknown-until-capture' };
 }
 
 function custodyOutBytes(entry, read, allowPartial = false) {
@@ -614,8 +661,9 @@ function prepareNativeProofPacket(directory, input) {
           const payload = JSON.parse(custodyOutBytes(entry.entries[0], artifact =>
             readNativeArtifactBytes(join(objectRoot, artifact.ref), artifact.byteLength,
               custodyLimits.objectBytes)).toString('utf8'));
-          const refs = custodyReferences(payload, custodyArchiveLimits.objects);
+          const refs = custodyReferences(payload, custodyArchiveLimits.objects, true);
           group.references = refs.occurrences;
+          if (refs.capsules) group.referenceCapsules = refs.capsules;
           group.referenceArtifacts = refs.artifacts;
           group.referenceGaps = refs.gaps;
           for (const reason of refs.gaps) gaps.push(expected.id + ':A:' + reason);
@@ -916,9 +964,14 @@ export function verifyNativeProofPacket(directory, locator, contract) {
     if (out && group.families.find(row => row.family === 'A').state === 'produced') {
       // Validate the exact bytes already read above; charging another read can
       // reject a correctly retained packet near the bounded capture limit.
-      const refs = custodyReferences(JSON.parse(reporter.toString('utf8')), referenceArtifactLimit);
+      if (group.referenceCapsules !== undefined && (!segmented || manifest.referenceArtifactLimit === undefined))
+        throw new Error('custody reference capsule encoding mismatch');
+      const refs = custodyReferences(JSON.parse(reporter.toString('utf8')), referenceArtifactLimit,
+        group.referenceCapsules !== undefined);
       if (JSON.stringify(refs.occurrences) !== JSON.stringify(group.references))
         throw new Error('custody reference occurrences missing');
+      if (JSON.stringify(refs.capsules) !== JSON.stringify(group.referenceCapsules))
+        throw new Error('custody reference capsules missing');
       if (current && (JSON.stringify(refs.artifacts) !== JSON.stringify(group.referenceArtifacts) ||
           JSON.stringify(refs.gaps) !== JSON.stringify(group.referenceGaps)))
         throw new Error('custody reference artifact population missing');

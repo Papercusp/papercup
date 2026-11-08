@@ -544,6 +544,7 @@ export const TAURI_VERIFIER_INPUTS = Object.freeze([
   'scripts/run-operator-e2e-isolated.sh',
   'scripts/lib/operator-e2e-assertion.sh',
   'scripts/lib/verify-tauri-assertion-env.mjs',
+  'scripts/lib/verify-tauri-screenshot.sh',
   'scripts/lib/run-in-isolated-netns.sh',
   'packages/operator-core/lib/testing-playwright-reporter.ts',
   'packages/operator-core/lib/testing-native-runtime.ts',
