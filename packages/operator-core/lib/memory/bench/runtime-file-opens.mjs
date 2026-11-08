@@ -526,20 +526,53 @@ function replayRuntimeMappings(lines, processId, pageSizeBytes) {
       executableRanges.push({taskId:row.tid, addressSpaceId:space.id, atMs:row.atMs,
         completedAtMs:row.completedAtMs, operation, ...serial(map), byteOriginQualification:'required'});
   };
-  // strace timestamps bound syscalls, not their linearization points. Even two
-  // individually successful calls cannot be ordered through overlapping windows.
-  // Stop replay globally at the first overlap (conservative even for disjoint
-  // VMs); the raw syscall census below still retains every later observation.
+  // These narrow operations commute only on disjoint, page-rounded extents.
+  // Returned allocation addresses are observations; hints are not reservations.
+  // Keep file mappings, fixed replacement, permission changes, remaps and task
+  // lifecycle changes as barriers rather than guessing their concurrent effects.
+  const independentRange = row => {
+    if (!page || !tasks.has(row.tid)) return null;
+    const call = /^(mmap|munmap)\((.*)\)\s+=\s+(0x[0-9a-f]+|0)$/i.exec(row.call);
+    if (!call) return null;
+    const [, operation, args, result] = call, fields = args.split(', ').map(field => field.trim());
+    if (operation === 'munmap')
+      return fields.length === 2 && result === '0' ? range(fields[0], fields[1]) : null;
+    const flags = (fields[3] ?? '').split('|');
+    return fields.length === 6 && /^0x[0-9a-f]+$/i.test(result)
+      && (fields[0] === 'NULL' || number(fields[0]) !== null)
+      && permissions(fields[2]) && fields[4] === '-1' && fields[5] === '0'
+      && flags.includes('MAP_PRIVATE') && flags.includes('MAP_ANONYMOUS')
+      && flags.every(flag => ['MAP_PRIVATE','MAP_ANONYMOUS','MAP_NORESERVE','MAP_STACK'].includes(flag))
+      ? range(result, fields[1]) : null;
+  };
+  // strace bounds syscall windows, not linearization points. Validate an ENTIRE
+  // connected overlapping component before retaining any member's effect. For
+  // commuting operations, start-time order is merely a representation of their
+  // metadata; it is not evidence of the order in which the kernel applied them.
+  let independentThrough = -1;
   for (let index = 0; index < events.length; index++) {
     if (budgetExceeded) break;
-    const row = events[index], next = events[index + 1];
+    const row = events[index];
     // Old captures retain their raw census value, but an absent measurement
     // cannot authorize inferred mapping origins or a claim of disjoint calls.
     if (row.durationNs === null) { gap(row, 'syscall-duration-required'); break; }
-    // Look ahead BEFORE applying either member of an ambiguous pair. Keeping
-    // the first member's range would already assert an unsupported ordering.
-    if (next && next.startedAtNs <= row.completedAtNs) {
-      gap(row, 'overlapping-address-space-events-replay-stopped'); break;
+    if (index > independentThrough) {
+      let last = index, finished = row.completedAtNs;
+      while (last + 1 < events.length && events[last + 1].startedAtNs <= finished) {
+        last++;
+        if (events[last].completedAtNs > finished) finished = events[last].completedAtNs;
+      }
+      if (last > index) {
+        const component = events.slice(index, last + 1);
+        const missing = component.find(event => event.durationNs === null);
+        if (missing) { gap(missing, 'syscall-duration-required'); break; }
+        const bounds = component.map(independentRange);
+        const sorted = bounds.filter(Boolean).sort((a, b) => a.start < b.start ? -1 : a.start > b.start ? 1 : 0);
+        if (sorted.length !== component.length || sorted.some((bounds, i) => i && bounds.start < sorted[i - 1].end)) {
+          gap(row, 'overlapping-address-space-events-replay-stopped'); break;
+        }
+      }
+      independentThrough = last;
     }
     let space = tasks.get(row.tid);
     if (!space) { gap(row, 'task-address-space-unresolved'); break; }
@@ -577,7 +610,7 @@ function replayRuntimeMappings(lines, processId, pageSizeBytes) {
         invalidate(row, space, 'failed-permission-change-may-be-partial');
       continue;
     }
-    const fields = args.split(', ');
+    const fields = args.split(', ').map(field => field.trim());
     if (operation === 'mmap') {
       const bounds = fields.length === 6 && range(result, fields[1]), prot = permissions(fields[2] ?? '');
       const flags = (fields[3] ?? '').split('|');

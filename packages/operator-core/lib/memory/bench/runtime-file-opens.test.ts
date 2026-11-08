@@ -583,6 +583,73 @@ describe('exec-to-EOF process and thread population', () => {
     expect(receipt.mappingOrigins.executableRanges).toEqual([]);
     expect(receipt.mappingOrigins.gaps.at(-1)?.reason).toBe('overlapping-address-space-events-replay-stopped');
   });
+  it.each(['complete', 'resumed'])('replays commuting anonymous allocations with overlapping %s windows', variant => {
+    const first = variant === 'complete'
+      ? ['10 1.200000 mmap(NULL, 4096, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x5000 <0.200000>']
+      : ['10 1.200000 mmap(NULL, 4096, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0 <unfinished ...>',
+        '10 1.400000 <... mmap resumed>) = 0x5000 <0.200000>'];
+    const receipt = bindRuntimeProcessTree(mappingTrace([
+      '10 1.050000 clone(child_stack=NULL, flags=CLONE_VM|CLONE_THREAD) = 11',
+      ...first,
+      '11 1.300000 mmap(0x9000, 4096, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x9000 <0.200000>',
+      '10 1.600000 mprotect(0x5000, 4096, PROT_EXEC) = 0',
+      '11 1.700000 mprotect(0x9000, 4096, PROT_EXEC) = 0',
+      '11 1.900000 +++ exited with 0 +++',
+    ]), mappingTerminal);
+    expect(receipt.mappingOrigins.executableRanges.map(row => [row.start, row.origin.kind]))
+      .toEqual([['0x5000','anonymous'], ['0x9000','anonymous']]);
+    expect(receipt.mappingOrigins.gaps.map(row => row.reason))
+      .toEqual(['exec-kernel-installed-mappings-unobserved']);
+    expect(receipt.mappingOrigins).toMatchObject({mappingPopulationComplete:false, executableBytesQualified:false});
+    expect(receipt).toMatchObject({completeRuntimeClosureVerified:false, creatorFence:'required'});
+  });
+  it('replays commuting page-rounded unmaps while preserving untouched origins', () => {
+    const receipt = bindRuntimeProcessTree(mappingTrace([
+      '10 1.050000 clone(child_stack=NULL, flags=CLONE_VM|CLONE_THREAD) = 11', anonymousMap,
+      '10 1.150000 mmap(NULL, 8192, PROT_READ, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x5000',
+      '10 1.200000 munmap(0x1000, 1) = 0 <0.200000>',
+      '11 1.300000 munmap(0x5000, 4096) = 0 <0.200000>',
+      '10 1.600000 mprotect(0x2000, 4096, PROT_EXEC) = 0',
+      '11 1.700000 mprotect(0x6000, 4096, PROT_EXEC) = 0',
+      '11 1.900000 +++ exited with 0 +++',
+    ]), mappingTerminal);
+    expect(receipt.mappingOrigins.changes.filter(row => row.operation === 'munmap-removed')).toHaveLength(2);
+    expect(receipt.mappingOrigins.executableRanges.filter(row => row.operation === 'mprotect')
+      .map(row => [row.start,row.origin.kind])).toEqual([['0x2000','anonymous'],['0x6000','anonymous']]);
+    expect(receipt.mappingOrigins.gaps.map(row => row.reason))
+      .toEqual(['exec-kernel-installed-mappings-unobserved']);
+  });
+  it.each([
+    ['nonadjacent range conflict',
+      '11 1.300000 mmap(NULL, 4096, PROT_READ, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x9000 <0.200000>',
+      '11 1.510000 munmap(0x6000, 4096) = 0 <0.010000>'],
+    ['permission barrier', '11 1.300000 mprotect(0x9000, 4096, PROT_EXEC) = 0 <0.200000>'],
+    ['clone barrier', '10 1.300000 fork() = 12 <0.200000>', '12 1.800000 +++ exited with 0 +++'],
+    ['unsupported flags',
+      '11 1.300000 mmap(NULL, 4096, PROT_READ, MAP_PRIVATE|MAP_ANONYMOUS|MAP_HUGETLB, -1, 0) = 0x9000 <0.200000>'],
+    ['page-rounded conflict', '11 1.300000 munmap(0x6000, 1) = 0 <0.200000>'],
+  ])('validates the entire overlapping component before replay: %s', (_label, ...other) => {
+    const receipt = bindRuntimeProcessTree(mappingTrace([
+      '10 1.050000 clone(child_stack=NULL, flags=CLONE_VM|CLONE_THREAD) = 11', anonymousMap,
+      '10 1.200000 mmap(NULL, 8192, PROT_READ, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x5000 <0.400000>',
+      ...other, '11 1.900000 +++ exited with 0 +++',
+    ]), mappingTerminal);
+    expect(receipt.mappingOrigins.changes.filter(row => row.operation === 'mmap')).toHaveLength(1);
+    expect(receipt.mappingOrigins.executableRanges).toEqual([]);
+    expect(receipt.mappingOrigins.gaps.at(-1)?.reason).toBe('overlapping-address-space-events-replay-stopped');
+  });
+  it('replays resumed mapping arguments without treating formatting spaces as unknown semantics', () => {
+    const receipt = bindRuntimeProcessTree(mappingTrace([
+      '10 1.100000 mmap(NULL, 8192, PROT_READ, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0 <unfinished ...>',
+      '10 1.120000 <... mmap resumed>) = 0x1000 <0.020000>',
+      '10 1.300000 mprotect(0x1000, 4096, PROT_EXEC) = 0',
+    ]), mappingTerminal);
+    expect(receipt.mappingOrigins.executableRanges).toEqual([expect.objectContaining({
+      operation:'mprotect', start:'0x1000', end:'0x2000', origin:{kind:'anonymous',path:null,offsetBytes:null},
+    })]);
+    expect(receipt.mappingOrigins.gaps.map(row => row.reason))
+      .toEqual(['exec-kernel-installed-mappings-unobserved']);
+  });
   it('replays disjoint measured syscall windows without qualifying their executable bytes', () => {
     const receipt = bindRuntimeProcessTree(mappingTrace([anonymousMap,
       '10 1.200000 mprotect(0x1000, 4096, PROT_EXEC) = 0 <0.001000>',

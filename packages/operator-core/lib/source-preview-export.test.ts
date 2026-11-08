@@ -4277,7 +4277,57 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
       expect(proof.inputCustody!.verifiedAtMs).toBeGreaterThanOrEqual(proof.inputCustody!.lastTerminalAtMs);
       expect(proof.jitBindings[0].selectedMemory).toMatchObject({selectedExecutableBytesVerified:true,
         mappingPopulationComplete:false,executableBytesQualified:false,completeRuntimeClosureVerified:false,
-        runtimeCaptureCustody:'required',jitByteOriginQualification:'required',creatorFence:'required'});
+        runtimeCaptureCustody:'required',jitByteOriginQualification:'required',creatorFence:'required',
+        writableAliasQualification:'required'});
+      const selected=proof.jitBindings[0].selectedMemory!;
+      expect(selected).toEqual(proof.population.jitBindings![0].selectedMemory);
+      // Derive the census independently from the retained kernel records. These
+      // are address extents at one stop, not resident or executed byte totals.
+      const executableMaps=memory.observation.mapsBefore.trimEnd().split('\n')
+        .map(line=>line.split(/\s+/)).filter(fields=>fields[1][2]==='x');
+      const coverage=selected.executableMappingCoverage;
+      expect(coverage.mappings).toHaveLength(executableMaps.length);
+      let total=0n, observed=0n;
+      for(const [index,fields] of executableMaps.entries()) {
+        const [start,end]=fields[0].split('-').map(value=>BigInt('0x'+value));
+        const row=coverage.mappings[index];
+        const ranges=selected.bindings.filter(binding=>BigInt(binding.address)>=start
+          && BigInt(binding.address)+BigInt(binding.bytes)<=end)
+          .map(({codeIndex,address,bytes})=>({codeIndex,address,bytes}));
+        const sampled=ranges.reduce((sum,range)=>sum+BigInt(range.bytes),0n);
+        expect(row.mapping).toMatchObject({start:'0x'+start.toString(16),end:'0x'+end.toString(16),
+          permissions:fields[1],offset:'0x'+fields[2],device:fields[3],inode:fields[4]});
+        expect(row.selectedRanges).toEqual(ranges);
+        expect(row.observedBytes).toBe(sampled.toString());
+        expect(row.unobservedBytes).toBe((end-start-sampled).toString());
+        total+=end-start; observed+=sampled;
+      }
+      expect(coverage).toMatchObject({totalBytes:total.toString(),observedBytes:observed.toString(),
+        unobservedBytes:(total-observed).toString()});
+      expect(observed).toBe(BigInt(memory.observation.samples.reduce((sum,sample)=>sum+sample.bytes.length,0)));
+      expect(total).toBeGreaterThan(observed);
+      expect(coverage.mappings.some(row=>row.selectedRanges.length===0)).toBe(true);
+      for(const binding of selected.bindings) {
+        const direct=binding.writableMappingCandidates.filter(candidate=>candidate.kind==='selected-mapping-writable');
+        expect(direct).toEqual(binding.mapping.permissions[1]==='w' ? [{
+          kind:'selected-mapping-writable',mapping:binding.mapping,
+          overlap:{selectedAddress:binding.address,candidateAddress:binding.address,bytes:binding.bytes},
+          sharedPhysicalBytesVerified:false,
+        }] : []);
+        for(const candidate of binding.writableMappingCandidates) {
+          expect(candidate.mapping.permissions[1]).toBe('w');
+          expect(candidate.sharedPhysicalBytesVerified).toBe(false);
+        }
+      }
+      const tree=bindRuntimeProcessTree(execution.trace,execution.terminal);
+      expect(tree.memoryTransitions.length).toBeGreaterThan(0);
+      for(const transition of tree.memoryTransitions) {
+        expect(transition.durationNs).toMatch(/^\d+$/);
+        expect(transition.completedAtMs).toBeGreaterThanOrEqual(transition.atMs);
+      }
+      expect(tree.mappingOrigins.gaps.some(gap=>gap.reason==='syscall-duration-required')).toBe(false);
+      expect(tree.mappingOrigins).toMatchObject({mappingPopulationComplete:false,executableBytesQualified:false,
+        jitByteOriginQualification:'required',effectivePermissionsQualification:'required'});
       expect(proof).toMatchObject({completeRuntimeClosureVerified:false,creatorFence:'required',
         executableMemoryQualification:'required',jitByteOriginQualification:'required'});
       for(const defect of ['bytes','tracer','identity'] as const) {
