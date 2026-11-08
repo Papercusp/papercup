@@ -42,9 +42,6 @@ export const productShapingSchema = z.object({
 
 export type ProductShaping = z.infer<typeof productShapingSchema>;
 
-export const DISCOVERY_WORKFLOW_GUIDANCE =
-  'Brief → scoped discovery → findings incorporated → implementation review → execution. Discovery is draft task work, not an implementation start. Save bounded questions, conclusions, existing evidence refs and target dispositions with plans:set-content; then plans:audit { slug, phase:"discovery" }. The server derives identity, freshness and readiness; do not copy facts or assert ready. Reuse current evidence for small/general plans; justify unchanged scope. Relevant changes reopen affected judgments; cosmetic/unrelated edits reuse them. Preserve in-flight work and historical terminal records.';
-
 /** Stage guidance is derived from the measured result, never an author attestation. */
 export function discoveryWorkflow(readiness: Pick<DiscoveryReadiness, 'ready' | 'evidenceRefs' | 'nextAction'>, finalized: boolean) {
   const reviewable = finalized && readiness.ready;
@@ -59,7 +56,7 @@ export function discoveryWorkflow(readiness: Pick<DiscoveryReadiness, 'ready' | 
 }
 
 export const PRODUCT_SHAPING_GUIDANCE =
-  'Shape the product before requirements/tasks: record audience, current problem, intended outcome, non-goals and original source refs. Walk concrete user scenarios including failure/recovery and boundaries; keep facts, assumptions and material product choices distinct. Ask only consequential product choices with recommendations. Map scenarios to R-N requirements and the Design BAR-to-work map. plans:audit phase:shaping returns advisory gaps, the ownerWalkthrough and a two-pass blind intent-review brief; lead the owner\'s approval ask with the ownerWalkthrough, not the requirements. ' + DISCOVERY_WORKFLOW_GUIDANCE;
+  'Shape the product before requirements/tasks: record audience, current problem, intended outcome, non-goals and original source refs. Walk concrete user scenarios including failure/recovery and boundaries; keep facts, assumptions and material product choices distinct. Ask only consequential product choices with recommendations. Map scenarios to R-N requirements and the Design BAR-to-work map. plans:audit phase:shaping returns advisory gaps, the ownerWalkthrough and a two-pass blind intent-review brief; lead the owner\'s approval ask with the ownerWalkthrough, not the requirements. Brief → scoped discovery → findings incorporated → implementation review → execution. Discovery is draft task work, not an implementation start. Save bounded questions, conclusions, existing evidence refs and target dispositions with plans:set-content; then plans:audit { slug, phase:"discovery" }. The server derives identity, freshness and readiness; do not copy facts or assert ready. Reuse current evidence for small/general plans; justify unchanged scope. Relevant changes reopen affected judgments; cosmetic/unrelated edits reuse them. Preserve in-flight work and historical terminal records.';
 
 const WALKTHROUGH_FIELD_MAX = 400;
 const clip = (value: string) => value.length > WALKTHROUGH_FIELD_MAX ? value.slice(0, WALKTHROUGH_FIELD_MAX - 1) + '…' : value;
