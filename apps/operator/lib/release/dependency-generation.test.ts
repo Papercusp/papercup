@@ -3574,6 +3574,53 @@ exec /bin/cp "$@"
     expect(publishedPath(reused.stdout)).toBe(generation);
   }, NATIVE_SHELL_TIMEOUT_MS);
 
+  it.each(['publish', 'select'] as const)(
+    'retains a delayed %s handoff after its producer exits and expires the pin normally',
+    (mode) => {
+      const integration = makeIntegration();
+      const competitor = makeIntegration();
+      const generationRoot = join(integration, '.papercusp/dependency-generations');
+      if (mode === 'select') {
+        const initial = publish(integration);
+        expect(initial.status, initial.stderr).toBe(0);
+      }
+      const args = [SCRIPT, '--integration', integration, '--generation-root', generationRoot,
+        '--retain-as', 'delayed-consumer'];
+      if (mode === 'select') args.push('--select-inputs-from', integration);
+      const retained = spawnSync('bash', args, { encoding: 'utf8', env: process.env });
+      expect(retained.status, retained.stderr).toBe(0);
+      const identity = publishedIdentity(retained.stdout);
+      const generation = publishedPath(retained.stdout);
+      expect(readdirSync(join(generationRoot, '.leases'))).toEqual([]);
+
+      for (let i = 0; i < 3; i += 1) {
+        writeFileSync(join(competitor, 'node_modules/pkg/index.js'), `competing-${i}\n`);
+        const competing = spawnSync('bash', [SCRIPT, '--integration', competitor,
+          '--generation-root', generationRoot], { encoding: 'utf8', env: {
+          ...process.env, DEPENDENCY_GENERATION_RETAIN_COUNT: '1',
+        } });
+        expect(competing.status, competing.stderr).toBe(0);
+      }
+      expect(existsSync(generation)).toBe(true);
+      const selected = selectPrewarmed(generationRoot, integration);
+      expect(selected.status, selected.stderr).toBe(0);
+      expect(publishedIdentity(selected.stdout)).toBe(identity);
+
+      const pins = readdirSync(join(generationRoot, '.pins'));
+      const pin = pins.find(name => readFileSync(join(generationRoot, '.pins', name), 'utf8')
+        .includes('label=delayed-consumer\n'));
+      expect(pin).toBeDefined();
+      const pinPath = join(generationRoot, '.pins', pin!);
+      writeFileSync(pinPath, readFileSync(pinPath, 'utf8').replace(/^expires=\d+$/m, 'expires=0'));
+      const expired = spawnSync('bash', [SCRIPT, '--integration', competitor,
+        '--generation-root', generationRoot, '--prune-only'], { encoding: 'utf8', env: {
+        ...process.env, DEPENDENCY_GENERATION_RETAIN_COUNT: '1',
+      } });
+      expect(expired.status, expired.stderr).toBe(0);
+      expect(existsSync(generation)).toBe(false);
+    }, NATIVE_SHELL_TIMEOUT_MS,
+  );
+
   it('bounds published growth to the newest set and finishes crash-left prune quarantines', () => {
     const integration = makeIntegration();
     const generationRoot = join(integration, '.papercusp/dependency-generations');
