@@ -1880,7 +1880,8 @@ dependency_generation_write_ref_pin_locked() {
   mv "$tmp" "$pin"
 }
 
-# No-op without a label, so every existing `--ensure-ref` caller is unchanged.
+# No-op without a label. Ordinary publication/selection can retain an input
+# handoff too: its producer may exit before a delayed consumer wakes.
 dependency_generation_retain_ensured_ref() {
   local generation_root="$1" integration_root="$2" label="$3" identity="$4" ref="$5" rc=0
   [ -n "$label" ] || return 0
@@ -4342,8 +4343,9 @@ dependency_generation_main() {
     }
   }
   [ -z "$retain_as" ] || {
-    [ -n "$ensure_ref" ] || {
-      dependency_generation_log '--retain-as requires --ensure-ref'
+    [ -z "$fingerprint_ref$prune_only$check_headroom$predict_ref$remember_store$retired_store$skip_recorded_stores" ] \
+      && [ "${#workspace_dirs[@]}" -eq 0 ] || {
+      dependency_generation_log '--retain-as requires full publication, selection, or --ensure-ref'
       return 2
     }
     [[ "$retain_as" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || {
@@ -4544,7 +4546,7 @@ dependency_generation_main() {
     }
     select_inputs_from="$(cd "$select_inputs_from" && pwd -P)"
     dependency_generation_select_inputs "$select_inputs_from" "$generation_root" || return $?
-    if [ -n "$lease_owner_pid" ]; then
+    if [ -n "$lease_owner_pid$retain_as" ]; then
       # Bridge the controller's selection-to-materialization interval. The
       # selector subprocess exits before pc-heavy admission and setup begin, so
       # a lease owned by $$ would immediately become reclaimable. Attribute it
@@ -4552,8 +4554,17 @@ dependency_generation_main() {
       # under the publish lock before returning the handoff.
       dependency_generation_acquire_selector_lease \
         "$generation_root" "$DEPENDENCY_GENERATION_ID" \
-        "$lease_owner_pid" "$DEPENDENCY_GENERATION_TOKEN" || return $?
+        "${lease_owner_pid:-$$}" "$DEPENDENCY_GENERATION_TOKEN" || return $?
     fi
+    dependency_generation_retain_ensured_ref "$generation_root" "$integration_root" \
+      "$retain_as" "$DEPENDENCY_GENERATION_ID" "inputs:$DEPENDENCY_GENERATION_INPUT_FINGERPRINT" || {
+      retention_rc=$?
+      dependency_generation_release_selector_lease
+      return "$retention_rc"
+    }
+    # A durable pin bridges process exit; a controller lease still belongs to
+    # its caller and must survive this selection subprocess.
+    [ -z "$retain_as" ] || [ -n "$lease_owner_pid" ] || dependency_generation_release_selector_lease
     printf 'DEPENDENCY_GENERATION_RESULT schema=1 identity=%s source=%s input=%s scope=full reused=true token=%s path=%s\n' \
       "$DEPENDENCY_GENERATION_ID" "$DEPENDENCY_GENERATION_SOURCE_FINGERPRINT" \
       "$DEPENDENCY_GENERATION_INPUT_FINGERPRINT" "$DEPENDENCY_GENERATION_TOKEN" \
@@ -4693,6 +4704,13 @@ dependency_generation_main() {
     }
     dependency_generation_retain_ensured_ref "$generation_root" "$integration_root" \
       "$retain_as" "$DEPENDENCY_GENERATION_ID" "$ensure_ref" || {
+      retention_rc=$?
+      dependency_generation_release_selector_lease
+      return "$retention_rc"
+    }
+  else
+    dependency_generation_retain_ensured_ref "$generation_root" "$integration_root" \
+      "$retain_as" "$DEPENDENCY_GENERATION_ID" "inputs:$DEPENDENCY_GENERATION_INPUT_FINGERPRINT" || {
       retention_rc=$?
       dependency_generation_release_selector_lease
       return "$retention_rc"
