@@ -1,0 +1,142 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Workbench P001 installed GNOME bridge canonical Reports",
+  "framework": "node",
+  "command": [
+    "env",
+    "PAPERCUSP_NATIVE_INSTALLED_REPORTS=1",
+    "PAPERCUSP_NATIVE_EXTENSION=$HOME/.local/share/gnome-shell/extensions/workbench@papercusp.ai",
+    "PAPERCUSP_NATIVE_OPERATOR=http://127.0.0.1:3170",
+    "PAPERCUSP_NATIVE_EVIDENCE_DIR=/tmp/wb-installed-reports-20261108",
+    "node",
+    "--test",
+    "--test-global-setup=./test/monorepo-host-preflight.mjs",
+    "--test-name-pattern=installed GNOME bridge reads canonical Reports",
+    "test/native-workbench-gnome-live.test.mjs"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-11-08T16:39:05.308567+00:00",
+  "finishedAt": "2026-11-08T16:39:12.651926+00:00",
+  "timestampMethod": "Log mtime and recorded Node test duration",
+  "pathRedaction": "Published command and proof paths replace the executing account's home directory with $HOME. This is portable path notation, not a new execution. Raw log and installed artifact hashes retain the original execution custody.",
+  "summary": "Installed Ubuntu preview bridge and exact PUI passed nine canonical Reports and foreign-rendezvous checks. Maintained Node test passed 1/1 with no skips. This is not GNOME Shell activation, ACL identity impersonation, final distribution, or three-OS shipment proof.",
+  "workItem": "WI-6554700010029572",
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "assertions": [
+    {
+      "id": "installed-reports-1",
+      "passed": true,
+      "evidence": "installed PUI selects the configured operator"
+    },
+    {
+      "id": "installed-reports-2",
+      "passed": true,
+      "evidence": "canonical Reports list returns selectable rows"
+    },
+    {
+      "id": "installed-reports-3",
+      "passed": true,
+      "evidence": "canonical list preserves the exact report ID"
+    },
+    {
+      "id": "installed-reports-4",
+      "passed": true,
+      "evidence": "canonical detail returns the selected report and full Markdown"
+    },
+    {
+      "id": "installed-reports-5",
+      "passed": true,
+      "evidence": "a missing exact report returns an empty result"
+    },
+    {
+      "id": "installed-reports-6",
+      "passed": true,
+      "evidence": "foreign workspaceId is refused before report access"
+    },
+    {
+      "id": "installed-reports-7",
+      "passed": true,
+      "evidence": "foreign endpoint is refused before report access"
+    },
+    {
+      "id": "installed-reports-8",
+      "passed": true,
+      "evidence": "foreign store is refused before report access"
+    },
+    {
+      "id": "installed-reports-9",
+      "passed": true,
+      "evidence": "foreign agentChat is refused before report access"
+    }
+  ],
+  "proof": {
+    "checks": [
+      "installed PUI selects the configured operator",
+      "canonical Reports list returns selectable rows",
+      "canonical list preserves the exact report ID",
+      "canonical detail returns the selected report and full Markdown",
+      "a missing exact report returns an empty result",
+      "foreign workspaceId is refused before report access",
+      "foreign endpoint is refused before report access",
+      "foreign store is refused before report access",
+      "foreign agentChat is refused before report access"
+    ],
+    "environment": {
+      "agentChat": {
+        "route": "/api/agent-chats",
+        "scope": "workspace:papercusp-workspace"
+      },
+      "build": {
+        "sha": "7986ba393e",
+        "version": "0.0.0"
+      },
+      "capabilities": {
+        "attachedSuSession": true,
+        "attachedSuSessionApprovals": true
+      },
+      "endpoint": "http://127.0.0.1:3170",
+      "schemaVersion": 1,
+      "selectionSource": "PUI_OPERATOR + PAPERCUSP_OPERATOR_URL",
+      "store": {
+        "id": "pg-a9c7b890119f",
+        "source": "env",
+        "target": "postgresql://localhost:5432/papercusp"
+      },
+      "transport": "http",
+      "workspaceId": "papercusp-workspace"
+    },
+    "pui": "$HOME/.local/share/papercusp/workbench-preview/20261108/pui",
+    "reportId": "rpt_03b0469e-1611-497f-811e-653d24cf114c",
+    "bodyChars": 4837
+  },
+  "package": {
+    "archive": "$HOME/.local/share/papercusp/workbench-preview/20261108/workbench@papercusp.ai.shell-extension.zip",
+    "uuid": "workbench@papercusp.ai",
+    "sha256": "16cf0ef526abb008b87eb7419bc5894a56d90db41794535dbd265a8bd84ef9f1",
+    "chatContentSha256": "bc1cdc7aa8bd0422c2a3783bd05659660db49245906ec5c8dea7b8705afa8f8e"
+  },
+  "install": {
+    "changed": true,
+    "firstInstall": false,
+    "sha256": "16cf0ef526abb008b87eb7419bc5894a56d90db41794535dbd265a8bd84ef9f1",
+    "loginRequired": true,
+    "reloadError": "GDBus.Error:org.freedesktop.DBus.Error.NotSupported: ReloadExtension is deprecated and does not work"
+  },
+  "sourceSha256AtRecording": {
+    "papercusp-desktop/test/native-workbench-gnome-live.test.mjs": "4085ec8f11c9214097fd8eae571bf62f417945a63d56e9bfbdf15bd62ea54f02",
+    "papercusp-desktop/native/gnome/bridge.js": "78287f56f34e4e7968d91eb5bcd5d583357c173c09f95a77dca3d3f9bc21c63f",
+    "papercusp-desktop/native/gnome/helper.js": "5604d173a62ad88583c884b0689ee1afc04da7a64ea5f41771e1fcd209416709",
+    "papercusp-desktop/native/gnome/prefs.js": "9ac9ad49f8cd92557218833b3ffabc821ac09567d4784b8fc2e643c605e2051d",
+    "papercusp-desktop/native/gnome/extension.js": "c9e51811729257b92ecc26e59f88b29f5364dae80d3ff77bfe6ce8c8c4818f64"
+  },
+  "installedPuiSha256": "48279092bc6051c531161e0da62d09f85ee9a1f87e43933139f21803aee40867",
+  "rawLogSha256": "77c28323af8e53e99d53dea4fb72b15edeb9077f2b92236b631f896c33fd3ae1",
+  "scopeLimits": [
+    "Preview only; installer reports loginRequired true.",
+    "Native Shell keyboard/selector UI integration remains unverified.",
+    "Retains production-default physical audio proof without rerunning it.",
+    "No full Ubuntu/macOS/Windows installed-artifact acceptance or certificate."
+  ]
+}
+
