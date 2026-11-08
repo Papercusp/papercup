@@ -227,6 +227,16 @@ describe('router native custody population (P002)', () => {
     expect(session.expected).toHaveLength(4096);
   });
 
+  it('preflights auxiliary expansion without changing the accepted declaration', async () => {
+    const { session } = await setup();
+    const accepted = structuredClone(session.expected);
+    expect(() => session.declare('group-0', Array.from({ length: 16385 }, (_, index) => ({
+      role: `extra-${index}`, state: 'produced', path: join(root, `extra-${index}`),
+    })))).toThrow('custody minimum archive object capacity');
+    expect(session.expected).toEqual(accepted);
+    expect(JSON.parse(readFileSync(join(session.directory, 'expected.json'), 'utf8')).expected).toEqual(accepted);
+  });
+
   function produce(session: Awaited<ReturnType<typeof createRouterProofCustody>>, id: string) {
     const group = session.expected.find((row: { id: string; out: string }) => row.id === id);
     writeFileSync(group.out, '{"rows":[],"diagnostics":[]}');
