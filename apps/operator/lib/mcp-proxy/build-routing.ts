@@ -248,16 +248,15 @@ export function applyMcpBuildSelector(
   opts: { defaultToCurrentBuild?: boolean } = {},
 ): McpBuildRouting {
   const defaultToCurrentBuild = opts.defaultToCurrentBuild === true;
-  // Cheap pre-filter: explicit selector spellings contain "build". Default-tool patterns
-  // are derived from the allowlist so a newly added verb cannot be skipped before parsing.
+  // Explicit selectors contain "build". With defaults enabled, match only after
+  // decoding JSON: escaped quotes in a serialized code:run script are not JS syntax.
+  // Keep the cheap no-selector path for proxies that do not apply current-build defaults.
   if (rawBody.length === 0) return { kind: "none" };
   const bodyText = rawBody.toString("utf8");
-  const hasCurrentBuildDefault =
-    defaultToCurrentBuild && CURRENT_BUILD_DEFAULT_SCRIPT_PATTERNS.some(({ pattern }) => pattern.test(bodyText));
-  if (!(bodyText.includes("build") || hasCurrentBuildDefault)) return { kind: "none" };
+  if (!defaultToCurrentBuild && !bodyText.includes("build")) return { kind: "none" };
   let parsed: unknown;
   try {
-    parsed = JSON.parse(rawBody.toString("utf8"));
+    parsed = JSON.parse(bodyText);
   } catch {
     return { kind: "none" };
   }

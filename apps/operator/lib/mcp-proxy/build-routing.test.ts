@@ -474,6 +474,54 @@ describe("current-build defaults for release repair-plane tools", () => {
     expect(applyMcpBuildSelector(buf(call("locks:release", args)))).toEqual({ kind: "none" });
   });
 
+  it.each([["locks", "release"], ["consult", "reply"], ["consult", "close"]])(
+    "decodes serialized bracket syntax before defaulting %s:%s scripts",
+    (namespace, verb) => {
+      for (const script of [
+        `return tools["${namespace}"]["${verb}"]({});`,
+        `return tools["${namespace}"].${verb}({});`,
+        `return tools.${namespace}["${verb}"]({});`,
+      ]) {
+        const forms = [
+          call("code:run", { script }),
+          call("code_run", JSON.stringify({ script })),
+          call("tools:invoke", { name: "code:run", args: { script } }),
+          call("tools_invoke", JSON.stringify({ name: "code_run", args: JSON.stringify({ script }) })),
+        ];
+        for (const request of forms) {
+          const raw = buf(request);
+          expect(raw.toString()).not.toContain("build");
+          expect(applyMcpBuildSelector(raw, { defaultToCurrentBuild: true }))
+            .toMatchObject({ kind: "routed", build: "staging" });
+          expect(applyMcpBuildSelector(raw)).toEqual({ kind: "none" });
+        }
+        for (const request of [
+          call("code:run", { script, build: "main" }),
+          call("tools:invoke", { name: "code:run", args: { script }, build: "main" }),
+        ]) {
+          expect(applyMcpBuildSelector(buf(request), { defaultToCurrentBuild: true }))
+            .toMatchObject({ kind: "routed", build: "main" });
+        }
+      }
+    },
+  );
+
+  it("keeps unrelated double-quoted scripts on their original route", () => {
+    for (const script of [
+      'return tools["resource"]["release"]({});',
+      'return tools["mail"]["reply"]({});',
+      'return tools["work_items"]["close"]({});',
+    ]) {
+      for (const request of [
+        call("code:run", { script }),
+        call("tools:invoke", { name: "code:run", args: { script } }),
+      ]) {
+        expect(applyMcpBuildSelector(buf(request), { defaultToCurrentBuild: true }))
+          .toEqual({ kind: "none" });
+      }
+    }
+  });
+
   it("never falls back to old main when the native release authority is unavailable", async () => {
     const seen: Array<{ label: string; body: string }> = [];
     const main = await listen(stubOperator("main", seen));
