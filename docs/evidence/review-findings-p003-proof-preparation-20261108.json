@@ -1,0 +1,1039 @@
+{
+  "schemaVersion": "p003-affected-proof-preparation-v1",
+  "plan": "review-findings-and-initial-code-scope-2026-10-31",
+  "harness": "papercusp",
+  "item": "P-003",
+  "workItem": "WI-6554700010044325",
+  "status": "preparation-only; affected proof and shipment unmeasured",
+  "execution": {
+    "confirmed": true,
+    "executionStartRevision": 44,
+    "planVersion": 37,
+    "contentHash": "940761235f068e03862aef71fbc35e8a7b47dacff1dcc72d5a711b394eaae68c",
+    "transportReplayKey": "e4d9fdeb-6cee-4159-adeb-cbdd43476c5b",
+    "replayReceipt": "/tmp/egm-cont3-start-replay.json",
+    "independentReadinessReceipt": "/tmp/egm-cont3-execution-before.json"
+  },
+  "sourceReview": {
+    "reviewedHead": "6b87054b1944667bf17fc0c78a815cde8b884f45",
+    "pins": [
+      {
+        "path": "packages/operator-core/lib/agent-tools/consult/close.ts",
+        "headBlob": "faedd66355c876485d3dc5cfc13070f04f8ca072",
+        "workingBlob": "faedd66355c876485d3dc5cfc13070f04f8ca072"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/consult/reply.ts",
+        "headBlob": "758bdb52591321305abb1d96cc77e191ba99a926",
+        "workingBlob": "758bdb52591321305abb1d96cc77e191ba99a926"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/plans/__tests__/_pg-tool-fixture.ts",
+        "headBlob": "675378b429b812283fe521ba214049a789deed08",
+        "workingBlob": "675378b429b812283fe521ba214049a789deed08"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/plans/__tests__/with-plan-lock-slug.test.ts",
+        "headBlob": "dc6066409543a3470b595b85eb34deeda6a0c884",
+        "workingBlob": "dc6066409543a3470b595b85eb34deeda6a0c884"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/plans/add-item.ts",
+        "headBlob": "cdd6eb8d9ad443552ef58e56dde48e71c2cc5af5",
+        "workingBlob": "cdd6eb8d9ad443552ef58e56dde48e71c2cc5af5"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/plans/edit.ts",
+        "headBlob": "679e8b7e26b3618917133d7f39d90cbaf5b6240d",
+        "workingBlob": "679e8b7e26b3618917133d7f39d90cbaf5b6240d"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/plans/initial-change-scope.test.ts",
+        "headBlob": "8e257bad6bd09c6f7ee63bd539dfaf3fdd54746f",
+        "workingBlob": "8e257bad6bd09c6f7ee63bd539dfaf3fdd54746f"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/plans/initial-change-scope.ts",
+        "headBlob": "6664004e4b065bbee180fc837d241923875ec3e0",
+        "workingBlob": "6664004e4b065bbee180fc837d241923875ec3e0"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/plans/item-anchors-tools.test.ts",
+        "headBlob": "c4d255f8b92f5007977bf832c88a3e2e1b5dd000",
+        "workingBlob": "c4d255f8b92f5007977bf832c88a3e2e1b5dd000"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/plans/item-anchors.integration.test.ts",
+        "headBlob": "f1022fd7e6aa74f9970a2c8759f544a866e3fc7b",
+        "workingBlob": "f1022fd7e6aa74f9970a2c8759f544a866e3fc7b"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/plans/plan-line-graph.ts",
+        "headBlob": "3f51fb6f2c4db68cac9134902d86b63a68f05a50",
+        "workingBlob": "3f51fb6f2c4db68cac9134902d86b63a68f05a50"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/plans/plan-start-gate.ts",
+        "headBlob": "9b8c9a70e1c81baa3d413334a34eeb691ff051ff",
+        "workingBlob": "9b8c9a70e1c81baa3d413334a34eeb691ff051ff"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/plans/with-plan-lock.ts",
+        "headBlob": "9905a8a27e9a3d1694e10846875581368cb816fb",
+        "workingBlob": "9905a8a27e9a3d1694e10846875581368cb816fb"
+      },
+      {
+        "path": "packages/operator-core/lib/consult/consult-verbs-core.integration.test.ts",
+        "headBlob": "bc25aef25f1624621e25ea6739d69e0a4fa86cd1",
+        "workingBlob": "bc25aef25f1624621e25ea6739d69e0a4fa86cd1"
+      },
+      {
+        "path": "packages/operator-core/lib/consult/consult-verbs-core.ts",
+        "headBlob": "53e449a75ca81d6472f51d07170e29b6e81fb982",
+        "workingBlob": "53e449a75ca81d6472f51d07170e29b6e81fb982"
+      },
+      {
+        "path": "packages/operator-core/lib/consult/responder-verb-menu.ts",
+        "headBlob": "332ad1df70dc9bc37859f69ef27ad756290ac5b0",
+        "workingBlob": "332ad1df70dc9bc37859f69ef27ad756290ac5b0"
+      },
+      {
+        "path": "packages/operator-core/lib/consult/review-findings.ts",
+        "headBlob": "b992920ea45a4af928313b2e2e14ac4e94728054",
+        "workingBlob": "b992920ea45a4af928313b2e2e14ac4e94728054"
+      },
+      {
+        "path": "packages/operator-core/lib/plan-items/anchor-store.ts",
+        "headBlob": "5917e3c8a3108766a2b88ad7181f87ad705b583d",
+        "workingBlob": "5917e3c8a3108766a2b88ad7181f87ad705b583d"
+      },
+      {
+        "path": "packages/operator-core/lib/plan-items/anchors.ts",
+        "headBlob": "9491e5071d02f2336a191e2ddd958bf738f598f5",
+        "workingBlob": "9491e5071d02f2336a191e2ddd958bf738f598f5"
+      }
+    ],
+    "helperAttribution": {
+      "workItem": "EI-28182804153942979",
+      "sourcePost": "thread-post:1220214",
+      "rawEditSession": "01a1b95c-a03c-76f0-8401-b1e179da8ca5",
+      "rawEditCall": "call_e590f07654bc4628970853f7a7c33d24",
+      "relationTarget": "review-findings-and-initial-code-scope-2026-10-31#P-003"
+    },
+    "note": "These blob pins describe reviewed source only. They do not establish a coherent dependency parent or runtime containment."
+  },
+  "base": {
+    "recipeFile": "/tmp/egm-current-six-recipes.json",
+    "recipeFileSha256": "4ec03091a7188c08f99e65d30ecf2a90dc37a263ec0d7685b8cc4a0b4bc233f6",
+    "archiveRefs": [
+      "thread-post:1220221",
+      "thread-post:1220173"
+    ],
+    "preservation": "All 24 historical recipe identities, their source/fixture paths and original titles are retained. Historical outcomes and adequacy booleans are intentionally absent from the proposed measured fields."
+  },
+  "proposedRecipes": [
+    {
+      "specId": "EGM-SCOPE-001",
+      "specRevision": 3,
+      "kind": "mutation",
+      "test": "packages/operator-core/lib/agent-tools/plans/item-anchors.integration.test.ts",
+      "sourcePaths": [
+        "packages/operator-core/lib/agent-tools/plans/add-item.ts",
+        "packages/operator-core/lib/agent-tools/plans/edit.ts",
+        "packages/operator-core/lib/agent-tools/plans/initial-change-scope.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-start-gate.ts",
+        "packages/operator-core/lib/agent-tools/plans/with-plan-lock.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-line-graph.ts",
+        "packages/operator-core/lib/plan-items/anchor-store.ts",
+        "packages/operator-core/lib/plan-items/anchors.ts"
+      ],
+      "fixturePaths": [
+        "packages/operator-core/lib/agent-tools/plans/__tests__/_pg-tool-fixture.ts",
+        "packages/operator-core/lib/agent-tools/plans/item-anchors.integration.test.ts"
+      ],
+      "historicalEvidenceId": 78588,
+      "adequacy": {
+        "testCases": [
+          "plan item anchors through the real plan tools > refuses absent initial scope at the real start boundary without mutation",
+          "plan item anchors through the real plan tools > refuses incomplete target action intended change or rationale at the real start boundary without mutation"
+        ],
+        "testLayer": "integration"
+      },
+      "evidenceStatus": "prepared-only-unmeasured"
+    },
+    {
+      "specId": "EGM-SCOPE-002",
+      "specRevision": 1,
+      "kind": "mutation",
+      "test": "packages/operator-core/lib/agent-tools/plans/initial-change-scope.test.ts",
+      "sourcePaths": [
+        "packages/operator-core/lib/agent-tools/plans/add-item.ts",
+        "packages/operator-core/lib/agent-tools/plans/edit.ts",
+        "packages/operator-core/lib/agent-tools/plans/initial-change-scope.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-start-gate.ts",
+        "packages/operator-core/lib/agent-tools/plans/with-plan-lock.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-line-graph.ts",
+        "packages/operator-core/lib/plan-items/anchor-store.ts",
+        "packages/operator-core/lib/plan-items/anchors.ts"
+      ],
+      "fixturePaths": [
+        "packages/operator-core/lib/agent-tools/plans/initial-change-scope.test.ts"
+      ],
+      "historicalEvidenceId": 78587,
+      "adequacy": {
+        "testCases": [
+          "initial implementation scope > preserves intended change metadata when validating canonical anchors"
+        ],
+        "testLayer": "unit"
+      },
+      "evidenceStatus": "prepared-only-unmeasured"
+    },
+    {
+      "specId": "EGM-COMPAT-001",
+      "specRevision": 1,
+      "kind": "mutation",
+      "test": "packages/operator-core/lib/agent-tools/plans/initial-change-scope.test.ts",
+      "sourcePaths": [
+        "packages/operator-core/lib/agent-tools/consult/close.ts",
+        "packages/operator-core/lib/agent-tools/consult/reply.ts",
+        "packages/operator-core/lib/agent-tools/plans/add-item.ts",
+        "packages/operator-core/lib/agent-tools/plans/edit.ts",
+        "packages/operator-core/lib/agent-tools/plans/initial-change-scope.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-start-gate.ts",
+        "packages/operator-core/lib/agent-tools/plans/with-plan-lock.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-line-graph.ts",
+        "packages/operator-core/lib/consult/consult-verbs-core.ts",
+        "packages/operator-core/lib/consult/responder-verb-menu.ts",
+        "packages/operator-core/lib/consult/review-findings.ts",
+        "packages/operator-core/lib/plan-items/anchor-store.ts",
+        "packages/operator-core/lib/plan-items/anchors.ts"
+      ],
+      "fixturePaths": [
+        "packages/operator-core/lib/agent-tools/plans/initial-change-scope.test.ts"
+      ],
+      "historicalEvidenceId": 78586,
+      "adequacy": {
+        "testCases": [
+          "initial implementation scope > preserves intended change metadata when validating canonical anchors"
+        ],
+        "testLayer": "unit"
+      },
+      "evidenceStatus": "prepared-only-unmeasured"
+    },
+    {
+      "specId": "AUTO-BAR-R-5-P-002",
+      "specRevision": 3,
+      "kind": "mutation",
+      "test": "packages/operator-core/lib/agent-tools/plans/initial-change-scope.test.ts",
+      "sourcePaths": [
+        "packages/operator-core/lib/agent-tools/consult/close.ts",
+        "packages/operator-core/lib/agent-tools/consult/reply.ts",
+        "packages/operator-core/lib/agent-tools/plans/add-item.ts",
+        "packages/operator-core/lib/agent-tools/plans/edit.ts",
+        "packages/operator-core/lib/agent-tools/plans/initial-change-scope.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-start-gate.ts",
+        "packages/operator-core/lib/agent-tools/plans/with-plan-lock.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-line-graph.ts",
+        "packages/operator-core/lib/consult/consult-verbs-core.ts",
+        "packages/operator-core/lib/consult/responder-verb-menu.ts",
+        "packages/operator-core/lib/consult/review-findings.ts",
+        "packages/operator-core/lib/plan-items/anchor-store.ts",
+        "packages/operator-core/lib/plan-items/anchors.ts"
+      ],
+      "fixturePaths": [
+        "packages/operator-core/lib/agent-tools/plans/initial-change-scope.test.ts"
+      ],
+      "historicalEvidenceId": 78585,
+      "adequacy": {
+        "testCases": [
+          "initial implementation scope > preserves intended change metadata when validating canonical anchors"
+        ],
+        "testLayer": "unit"
+      },
+      "evidenceStatus": "prepared-only-unmeasured"
+    },
+    {
+      "specId": "AUTO-BAR-R-4-P-002",
+      "specRevision": 3,
+      "kind": "mutation",
+      "test": "packages/operator-core/lib/agent-tools/plans/initial-change-scope.test.ts",
+      "sourcePaths": [
+        "packages/operator-core/lib/agent-tools/plans/add-item.ts",
+        "packages/operator-core/lib/agent-tools/plans/edit.ts",
+        "packages/operator-core/lib/agent-tools/plans/initial-change-scope.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-start-gate.ts",
+        "packages/operator-core/lib/agent-tools/plans/with-plan-lock.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-line-graph.ts",
+        "packages/operator-core/lib/plan-items/anchor-store.ts",
+        "packages/operator-core/lib/plan-items/anchors.ts"
+      ],
+      "fixturePaths": [
+        "packages/operator-core/lib/agent-tools/plans/initial-change-scope.test.ts"
+      ],
+      "historicalEvidenceId": 78584,
+      "adequacy": {
+        "testCases": [
+          "initial implementation scope > preserves intended change metadata when validating canonical anchors"
+        ],
+        "testLayer": "unit"
+      },
+      "evidenceStatus": "prepared-only-unmeasured"
+    },
+    {
+      "specId": "EGM-COMPAT-001",
+      "specRevision": 1,
+      "kind": "mutation",
+      "test": "packages/operator-core/lib/consult/consult-verbs-core.integration.test.ts",
+      "sourcePaths": [
+        "packages/operator-core/lib/agent-tools/consult/close.ts",
+        "packages/operator-core/lib/agent-tools/consult/reply.ts",
+        "packages/operator-core/lib/agent-tools/plans/add-item.ts",
+        "packages/operator-core/lib/agent-tools/plans/edit.ts",
+        "packages/operator-core/lib/agent-tools/plans/initial-change-scope.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-start-gate.ts",
+        "packages/operator-core/lib/agent-tools/plans/with-plan-lock.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-line-graph.ts",
+        "packages/operator-core/lib/consult/consult-verbs-core.ts",
+        "packages/operator-core/lib/consult/responder-verb-menu.ts",
+        "packages/operator-core/lib/consult/review-findings.ts",
+        "packages/operator-core/lib/plan-items/anchor-store.ts",
+        "packages/operator-core/lib/plan-items/anchors.ts"
+      ],
+      "fixturePaths": [
+        "packages/operator-core/lib/consult/consult-verbs-core.integration.test.ts"
+      ],
+      "historicalEvidenceId": 78377,
+      "adequacy": {
+        "testCases": [
+          "preserving review findings through consult settlement > preserves unrelated and concurrently accepted outcome data during overlapping accepted updates"
+        ],
+        "testLayer": "integration"
+      },
+      "evidenceStatus": "prepared-only-unmeasured"
+    },
+    {
+      "specId": "EGM-COMPAT-001",
+      "specRevision": 1,
+      "kind": "test",
+      "test": "packages/operator-core/lib/consult/consult-verbs-core.integration.test.ts",
+      "sourcePaths": [
+        "packages/operator-core/lib/agent-tools/consult/close.ts",
+        "packages/operator-core/lib/agent-tools/consult/reply.ts",
+        "packages/operator-core/lib/agent-tools/plans/add-item.ts",
+        "packages/operator-core/lib/agent-tools/plans/edit.ts",
+        "packages/operator-core/lib/agent-tools/plans/initial-change-scope.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-start-gate.ts",
+        "packages/operator-core/lib/agent-tools/plans/with-plan-lock.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-line-graph.ts",
+        "packages/operator-core/lib/consult/consult-verbs-core.ts",
+        "packages/operator-core/lib/consult/responder-verb-menu.ts",
+        "packages/operator-core/lib/consult/review-findings.ts",
+        "packages/operator-core/lib/plan-items/anchor-store.ts",
+        "packages/operator-core/lib/plan-items/anchors.ts"
+      ],
+      "fixturePaths": [
+        "packages/operator-core/lib/consult/consult-verbs-core.integration.test.ts"
+      ],
+      "historicalEvidenceId": 78376,
+      "adequacy": {
+        "testCases": [
+          "preserving review findings through consult settlement > records requester dispositions after reviewer settlement without reopening or waking at the exchange cap",
+          "preserving review findings through consult settlement > refuses unrelated, unstructured and invented-finding terminal posts before mutation",
+          "preserving review findings through consult settlement > preserves unrelated accepted outcome data through review reply, disposition, close and canonical round trips",
+          "preserving review findings through consult settlement > preserves unrelated accepted outcome data through an ordinary edit to another field",
+          "preserving review findings through consult settlement > preserves unrelated and concurrently accepted outcome data during overlapping accepted updates"
+        ],
+        "testLayer": "integration"
+      },
+      "evidenceStatus": "prepared-only-unmeasured"
+    },
+    {
+      "specId": "EGM-COMPAT-001",
+      "specRevision": 1,
+      "kind": "test",
+      "test": "packages/operator-core/lib/agent-tools/plans/initial-change-scope.test.ts",
+      "sourcePaths": [
+        "packages/operator-core/lib/agent-tools/consult/close.ts",
+        "packages/operator-core/lib/agent-tools/consult/reply.ts",
+        "packages/operator-core/lib/agent-tools/plans/add-item.ts",
+        "packages/operator-core/lib/agent-tools/plans/edit.ts",
+        "packages/operator-core/lib/agent-tools/plans/initial-change-scope.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-start-gate.ts",
+        "packages/operator-core/lib/agent-tools/plans/with-plan-lock.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-line-graph.ts",
+        "packages/operator-core/lib/consult/consult-verbs-core.ts",
+        "packages/operator-core/lib/consult/responder-verb-menu.ts",
+        "packages/operator-core/lib/consult/review-findings.ts",
+        "packages/operator-core/lib/plan-items/anchor-store.ts",
+        "packages/operator-core/lib/plan-items/anchors.ts"
+      ],
+      "fixturePaths": [
+        "packages/operator-core/lib/agent-tools/plans/initial-change-scope.test.ts"
+      ],
+      "historicalEvidenceId": 78375,
+      "adequacy": {
+        "testCases": [
+          "initial implementation scope > requires coding targets without imposing them on explicitly non-code items",
+          "initial implementation scope > allows honest unknowns and planned code without pretending symbols already exist",
+          "initial implementation scope > preserves intended change metadata when validating canonical anchors"
+        ],
+        "testLayer": "unit"
+      },
+      "evidenceStatus": "prepared-only-unmeasured"
+    },
+    {
+      "specId": "EGM-COMPAT-001",
+      "specRevision": 1,
+      "kind": "test",
+      "test": "packages/operator-core/lib/agent-tools/plans/item-anchors.integration.test.ts",
+      "sourcePaths": [
+        "packages/operator-core/lib/agent-tools/consult/close.ts",
+        "packages/operator-core/lib/agent-tools/consult/reply.ts",
+        "packages/operator-core/lib/agent-tools/plans/add-item.ts",
+        "packages/operator-core/lib/agent-tools/plans/edit.ts",
+        "packages/operator-core/lib/agent-tools/plans/initial-change-scope.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-start-gate.ts",
+        "packages/operator-core/lib/agent-tools/plans/with-plan-lock.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-line-graph.ts",
+        "packages/operator-core/lib/consult/consult-verbs-core.ts",
+        "packages/operator-core/lib/consult/responder-verb-menu.ts",
+        "packages/operator-core/lib/consult/review-findings.ts",
+        "packages/operator-core/lib/plan-items/anchor-store.ts",
+        "packages/operator-core/lib/plan-items/anchors.ts"
+      ],
+      "fixturePaths": [
+        "packages/operator-core/lib/agent-tools/plans/__tests__/_pg-tool-fixture.ts",
+        "packages/operator-core/lib/agent-tools/plans/item-anchors.integration.test.ts"
+      ],
+      "historicalEvidenceId": 78374,
+      "adequacy": {
+        "testCases": [
+          "plan item anchors through the real plan tools > refuses absent initial scope at the real start boundary without mutation",
+          "plan item anchors through the real plan tools > refuses incomplete target action intended change or rationale at the real start boundary without mutation",
+          "plan item anchors through the real plan tools > accepts valid scope and non-code planned-create and investigation controls at the real start boundary",
+          "plan item anchors through the real plan tools > refuses an active-plan coding item addition with absent or incomplete initial scope before mutation",
+          "plan item anchors through the real plan tools > refuses an active-plan edit that removes or invalidates executable initial scope before mutation",
+          "plan item anchors through the real plan tools > admits active-plan scoped additions and complete scope evolution with non-code controls",
+          "plan item anchors through the real plan tools > preserves unrelated accepted anchors across concurrent plan rewrites",
+          "plan item anchors through the real plan tools > anchor-only edits preserve stored prose and reconcile stale graph line text",
+          "plan item anchors through the real plan tools > file links retain content hashes, unresolved links retain reasons, and general plans get no no-links warning",
+          "plan item anchors through the real plan tools > refuses prose edits before a partial graph can erase a legacy-writer addition",
+          "plan item anchors through the real plan tools > refuses anchors edits before a partial graph can erase a legacy-writer addition",
+          "plan item anchors through the real plan tools > keeps graph authority when an empty legacy index cannot witness extra saved lines",
+          "plan item anchors through the real plan tools > keeps graph authority when an mismatched legacy index cannot witness extra saved lines"
+        ],
+        "testLayer": "integration"
+      },
+      "evidenceStatus": "prepared-only-unmeasured"
+    },
+    {
+      "specId": "EGM-SCOPE-002",
+      "specRevision": 1,
+      "kind": "test",
+      "test": "packages/operator-core/lib/agent-tools/plans/item-anchors-tools.test.ts",
+      "sourcePaths": [
+        "packages/operator-core/lib/agent-tools/plans/add-item.ts",
+        "packages/operator-core/lib/agent-tools/plans/edit.ts",
+        "packages/operator-core/lib/agent-tools/plans/initial-change-scope.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-start-gate.ts",
+        "packages/operator-core/lib/agent-tools/plans/with-plan-lock.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-line-graph.ts",
+        "packages/operator-core/lib/plan-items/anchor-store.ts",
+        "packages/operator-core/lib/plan-items/anchors.ts"
+      ],
+      "fixturePaths": [
+        "packages/operator-core/lib/agent-tools/plans/item-anchors-tools.test.ts"
+      ],
+      "historicalEvidenceId": 78373,
+      "adequacy": {
+        "testCases": [
+          "plan anchor handler unit contracts > adds an unlinked code item and returns its explicit no-links warning",
+          "plan anchor handler unit contracts > adds an unlinked general item without a code-link warning",
+          "plan anchor handler unit contracts > item-edit and add preserve the same resolved symbol metadata at the storage boundary"
+        ],
+        "testLayer": "unit"
+      },
+      "evidenceStatus": "prepared-only-unmeasured"
+    },
+    {
+      "specId": "EGM-SCOPE-002",
+      "specRevision": 1,
+      "kind": "test",
+      "test": "packages/operator-core/lib/agent-tools/plans/initial-change-scope.test.ts",
+      "sourcePaths": [
+        "packages/operator-core/lib/agent-tools/plans/add-item.ts",
+        "packages/operator-core/lib/agent-tools/plans/edit.ts",
+        "packages/operator-core/lib/agent-tools/plans/initial-change-scope.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-start-gate.ts",
+        "packages/operator-core/lib/agent-tools/plans/with-plan-lock.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-line-graph.ts",
+        "packages/operator-core/lib/plan-items/anchor-store.ts",
+        "packages/operator-core/lib/plan-items/anchors.ts"
+      ],
+      "fixturePaths": [
+        "packages/operator-core/lib/agent-tools/plans/initial-change-scope.test.ts"
+      ],
+      "historicalEvidenceId": 78372,
+      "adequacy": {
+        "testCases": [
+          "initial implementation scope > requires coding targets without imposing them on explicitly non-code items",
+          "initial implementation scope > allows honest unknowns and planned code without pretending symbols already exist",
+          "initial implementation scope > preserves intended change metadata when validating canonical anchors"
+        ],
+        "testLayer": "unit"
+      },
+      "evidenceStatus": "prepared-only-unmeasured"
+    },
+    {
+      "specId": "EGM-SCOPE-002",
+      "specRevision": 1,
+      "kind": "test",
+      "test": "packages/operator-core/lib/agent-tools/plans/item-anchors.integration.test.ts",
+      "sourcePaths": [
+        "packages/operator-core/lib/agent-tools/plans/add-item.ts",
+        "packages/operator-core/lib/agent-tools/plans/edit.ts",
+        "packages/operator-core/lib/agent-tools/plans/initial-change-scope.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-start-gate.ts",
+        "packages/operator-core/lib/agent-tools/plans/with-plan-lock.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-line-graph.ts",
+        "packages/operator-core/lib/plan-items/anchor-store.ts",
+        "packages/operator-core/lib/plan-items/anchors.ts"
+      ],
+      "fixturePaths": [
+        "packages/operator-core/lib/agent-tools/plans/__tests__/_pg-tool-fixture.ts",
+        "packages/operator-core/lib/agent-tools/plans/item-anchors.integration.test.ts"
+      ],
+      "historicalEvidenceId": 78371,
+      "adequacy": {
+        "testCases": [
+          "plan item anchors through the real plan tools > refuses absent initial scope at the real start boundary without mutation",
+          "plan item anchors through the real plan tools > refuses incomplete target action intended change or rationale at the real start boundary without mutation",
+          "plan item anchors through the real plan tools > accepts valid scope and non-code planned-create and investigation controls at the real start boundary",
+          "plan item anchors through the real plan tools > refuses an active-plan coding item addition with absent or incomplete initial scope before mutation",
+          "plan item anchors through the real plan tools > refuses an active-plan edit that removes or invalidates executable initial scope before mutation",
+          "plan item anchors through the real plan tools > admits active-plan scoped additions and complete scope evolution with non-code controls",
+          "plan item anchors through the real plan tools > preserves unrelated accepted anchors across concurrent plan rewrites",
+          "plan item anchors through the real plan tools > anchor-only edits preserve stored prose and reconcile stale graph line text",
+          "plan item anchors through the real plan tools > file links retain content hashes, unresolved links retain reasons, and general plans get no no-links warning",
+          "plan item anchors through the real plan tools > refuses prose edits before a partial graph can erase a legacy-writer addition",
+          "plan item anchors through the real plan tools > refuses anchors edits before a partial graph can erase a legacy-writer addition",
+          "plan item anchors through the real plan tools > keeps graph authority when an empty legacy index cannot witness extra saved lines",
+          "plan item anchors through the real plan tools > keeps graph authority when an mismatched legacy index cannot witness extra saved lines"
+        ],
+        "testLayer": "integration"
+      },
+      "evidenceStatus": "prepared-only-unmeasured"
+    },
+    {
+      "specId": "EGM-SCOPE-001",
+      "specRevision": 3,
+      "kind": "test",
+      "test": "packages/operator-core/lib/agent-tools/plans/initial-change-scope.test.ts",
+      "sourcePaths": [
+        "packages/operator-core/lib/agent-tools/plans/add-item.ts",
+        "packages/operator-core/lib/agent-tools/plans/edit.ts",
+        "packages/operator-core/lib/agent-tools/plans/initial-change-scope.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-start-gate.ts",
+        "packages/operator-core/lib/agent-tools/plans/with-plan-lock.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-line-graph.ts",
+        "packages/operator-core/lib/plan-items/anchor-store.ts",
+        "packages/operator-core/lib/plan-items/anchors.ts"
+      ],
+      "fixturePaths": [
+        "packages/operator-core/lib/agent-tools/plans/initial-change-scope.test.ts"
+      ],
+      "historicalEvidenceId": 78368,
+      "adequacy": {
+        "testCases": [
+          "initial implementation scope > requires coding targets without imposing them on explicitly non-code items",
+          "initial implementation scope > allows honest unknowns and planned code without pretending symbols already exist",
+          "initial implementation scope > preserves intended change metadata when validating canonical anchors"
+        ],
+        "testLayer": "unit"
+      },
+      "evidenceStatus": "prepared-only-unmeasured"
+    },
+    {
+      "specId": "EGM-SCOPE-001",
+      "specRevision": 3,
+      "kind": "test",
+      "test": "packages/operator-core/lib/agent-tools/plans/item-anchors.integration.test.ts",
+      "sourcePaths": [
+        "packages/operator-core/lib/agent-tools/plans/add-item.ts",
+        "packages/operator-core/lib/agent-tools/plans/edit.ts",
+        "packages/operator-core/lib/agent-tools/plans/initial-change-scope.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-start-gate.ts",
+        "packages/operator-core/lib/agent-tools/plans/with-plan-lock.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-line-graph.ts",
+        "packages/operator-core/lib/plan-items/anchor-store.ts",
+        "packages/operator-core/lib/plan-items/anchors.ts"
+      ],
+      "fixturePaths": [
+        "packages/operator-core/lib/agent-tools/plans/__tests__/_pg-tool-fixture.ts",
+        "packages/operator-core/lib/agent-tools/plans/item-anchors.integration.test.ts"
+      ],
+      "historicalEvidenceId": 78367,
+      "adequacy": {
+        "testCases": [
+          "plan item anchors through the real plan tools > refuses absent initial scope at the real start boundary without mutation",
+          "plan item anchors through the real plan tools > refuses incomplete target action intended change or rationale at the real start boundary without mutation",
+          "plan item anchors through the real plan tools > accepts valid scope and non-code planned-create and investigation controls at the real start boundary",
+          "plan item anchors through the real plan tools > refuses an active-plan coding item addition with absent or incomplete initial scope before mutation",
+          "plan item anchors through the real plan tools > refuses an active-plan edit that removes or invalidates executable initial scope before mutation",
+          "plan item anchors through the real plan tools > admits active-plan scoped additions and complete scope evolution with non-code controls",
+          "plan item anchors through the real plan tools > preserves unrelated accepted anchors across concurrent plan rewrites",
+          "plan item anchors through the real plan tools > anchor-only edits preserve stored prose and reconcile stale graph line text",
+          "plan item anchors through the real plan tools > file links retain content hashes, unresolved links retain reasons, and general plans get no no-links warning",
+          "plan item anchors through the real plan tools > refuses prose edits before a partial graph can erase a legacy-writer addition",
+          "plan item anchors through the real plan tools > refuses anchors edits before a partial graph can erase a legacy-writer addition",
+          "plan item anchors through the real plan tools > keeps graph authority when an empty legacy index cannot witness extra saved lines",
+          "plan item anchors through the real plan tools > keeps graph authority when an mismatched legacy index cannot witness extra saved lines"
+        ],
+        "testLayer": "integration"
+      },
+      "evidenceStatus": "prepared-only-unmeasured"
+    },
+    {
+      "specId": "AUTO-BAR-R-5-P-002",
+      "specRevision": 3,
+      "kind": "mutation",
+      "test": "packages/operator-core/lib/consult/consult-verbs-core.integration.test.ts",
+      "sourcePaths": [
+        "packages/operator-core/lib/agent-tools/consult/close.ts",
+        "packages/operator-core/lib/agent-tools/consult/reply.ts",
+        "packages/operator-core/lib/agent-tools/plans/add-item.ts",
+        "packages/operator-core/lib/agent-tools/plans/edit.ts",
+        "packages/operator-core/lib/agent-tools/plans/initial-change-scope.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-start-gate.ts",
+        "packages/operator-core/lib/agent-tools/plans/with-plan-lock.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-line-graph.ts",
+        "packages/operator-core/lib/consult/consult-verbs-core.ts",
+        "packages/operator-core/lib/consult/responder-verb-menu.ts",
+        "packages/operator-core/lib/consult/review-findings.ts",
+        "packages/operator-core/lib/plan-items/anchor-store.ts",
+        "packages/operator-core/lib/plan-items/anchors.ts"
+      ],
+      "fixturePaths": [
+        "packages/operator-core/lib/consult/consult-verbs-core.integration.test.ts"
+      ],
+      "historicalEvidenceId": 78271,
+      "adequacy": {
+        "testCases": [
+          "preserving review findings through consult settlement > preserves unrelated and concurrently accepted outcome data during overlapping accepted updates"
+        ],
+        "testLayer": "integration"
+      },
+      "evidenceStatus": "prepared-only-unmeasured"
+    },
+    {
+      "specId": "AUTO-BAR-R-5-P-002",
+      "specRevision": 3,
+      "kind": "test",
+      "test": "packages/operator-core/lib/agent-tools/plans/item-anchors.integration.test.ts",
+      "sourcePaths": [
+        "packages/operator-core/lib/agent-tools/consult/close.ts",
+        "packages/operator-core/lib/agent-tools/consult/reply.ts",
+        "packages/operator-core/lib/agent-tools/plans/add-item.ts",
+        "packages/operator-core/lib/agent-tools/plans/edit.ts",
+        "packages/operator-core/lib/agent-tools/plans/initial-change-scope.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-start-gate.ts",
+        "packages/operator-core/lib/agent-tools/plans/with-plan-lock.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-line-graph.ts",
+        "packages/operator-core/lib/consult/consult-verbs-core.ts",
+        "packages/operator-core/lib/consult/responder-verb-menu.ts",
+        "packages/operator-core/lib/consult/review-findings.ts",
+        "packages/operator-core/lib/plan-items/anchor-store.ts",
+        "packages/operator-core/lib/plan-items/anchors.ts"
+      ],
+      "fixturePaths": [
+        "packages/operator-core/lib/agent-tools/plans/__tests__/_pg-tool-fixture.ts",
+        "packages/operator-core/lib/agent-tools/plans/item-anchors.integration.test.ts"
+      ],
+      "historicalEvidenceId": 78244,
+      "adequacy": {
+        "testCases": [
+          "plan item anchors through the real plan tools > refuses absent initial scope at the real start boundary without mutation",
+          "plan item anchors through the real plan tools > refuses incomplete target action intended change or rationale at the real start boundary without mutation",
+          "plan item anchors through the real plan tools > accepts valid scope and non-code planned-create and investigation controls at the real start boundary",
+          "plan item anchors through the real plan tools > refuses an active-plan coding item addition with absent or incomplete initial scope before mutation",
+          "plan item anchors through the real plan tools > refuses an active-plan edit that removes or invalidates executable initial scope before mutation",
+          "plan item anchors through the real plan tools > admits active-plan scoped additions and complete scope evolution with non-code controls",
+          "plan item anchors through the real plan tools > preserves unrelated accepted anchors across concurrent plan rewrites",
+          "plan item anchors through the real plan tools > anchor-only edits preserve stored prose and reconcile stale graph line text",
+          "plan item anchors through the real plan tools > file links retain content hashes, unresolved links retain reasons, and general plans get no no-links warning",
+          "plan item anchors through the real plan tools > refuses prose edits before a partial graph can erase a legacy-writer addition",
+          "plan item anchors through the real plan tools > refuses anchors edits before a partial graph can erase a legacy-writer addition",
+          "plan item anchors through the real plan tools > keeps graph authority when an empty legacy index cannot witness extra saved lines",
+          "plan item anchors through the real plan tools > keeps graph authority when an mismatched legacy index cannot witness extra saved lines"
+        ],
+        "testLayer": "integration"
+      },
+      "evidenceStatus": "prepared-only-unmeasured"
+    },
+    {
+      "specId": "AUTO-BAR-R-4-P-002",
+      "specRevision": 3,
+      "kind": "test",
+      "test": "packages/operator-core/lib/agent-tools/plans/item-anchors.integration.test.ts",
+      "sourcePaths": [
+        "packages/operator-core/lib/agent-tools/plans/add-item.ts",
+        "packages/operator-core/lib/agent-tools/plans/edit.ts",
+        "packages/operator-core/lib/agent-tools/plans/initial-change-scope.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-start-gate.ts",
+        "packages/operator-core/lib/agent-tools/plans/with-plan-lock.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-line-graph.ts",
+        "packages/operator-core/lib/plan-items/anchor-store.ts",
+        "packages/operator-core/lib/plan-items/anchors.ts"
+      ],
+      "fixturePaths": [
+        "packages/operator-core/lib/agent-tools/plans/__tests__/_pg-tool-fixture.ts",
+        "packages/operator-core/lib/agent-tools/plans/item-anchors.integration.test.ts"
+      ],
+      "historicalEvidenceId": 78242,
+      "adequacy": {
+        "testCases": [
+          "plan item anchors through the real plan tools > refuses absent initial scope at the real start boundary without mutation",
+          "plan item anchors through the real plan tools > refuses incomplete target action intended change or rationale at the real start boundary without mutation",
+          "plan item anchors through the real plan tools > accepts valid scope and non-code planned-create and investigation controls at the real start boundary",
+          "plan item anchors through the real plan tools > refuses an active-plan coding item addition with absent or incomplete initial scope before mutation",
+          "plan item anchors through the real plan tools > refuses an active-plan edit that removes or invalidates executable initial scope before mutation",
+          "plan item anchors through the real plan tools > admits active-plan scoped additions and complete scope evolution with non-code controls",
+          "plan item anchors through the real plan tools > preserves unrelated accepted anchors across concurrent plan rewrites",
+          "plan item anchors through the real plan tools > anchor-only edits preserve stored prose and reconcile stale graph line text",
+          "plan item anchors through the real plan tools > file links retain content hashes, unresolved links retain reasons, and general plans get no no-links warning",
+          "plan item anchors through the real plan tools > refuses prose edits before a partial graph can erase a legacy-writer addition",
+          "plan item anchors through the real plan tools > refuses anchors edits before a partial graph can erase a legacy-writer addition",
+          "plan item anchors through the real plan tools > keeps graph authority when an empty legacy index cannot witness extra saved lines",
+          "plan item anchors through the real plan tools > keeps graph authority when an mismatched legacy index cannot witness extra saved lines"
+        ],
+        "testLayer": "integration"
+      },
+      "evidenceStatus": "prepared-only-unmeasured"
+    },
+    {
+      "specId": "AUTO-BAR-R-3-P-002",
+      "specRevision": 5,
+      "kind": "test",
+      "test": "packages/operator-core/lib/agent-tools/plans/item-anchors.integration.test.ts",
+      "sourcePaths": [
+        "packages/operator-core/lib/agent-tools/plans/add-item.ts",
+        "packages/operator-core/lib/agent-tools/plans/edit.ts",
+        "packages/operator-core/lib/agent-tools/plans/initial-change-scope.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-start-gate.ts",
+        "packages/operator-core/lib/agent-tools/plans/with-plan-lock.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-line-graph.ts",
+        "packages/operator-core/lib/plan-items/anchor-store.ts",
+        "packages/operator-core/lib/plan-items/anchors.ts"
+      ],
+      "fixturePaths": [
+        "packages/operator-core/lib/agent-tools/plans/__tests__/_pg-tool-fixture.ts",
+        "packages/operator-core/lib/agent-tools/plans/item-anchors.integration.test.ts"
+      ],
+      "historicalEvidenceId": 78240,
+      "adequacy": {
+        "testCases": [
+          "plan item anchors through the real plan tools > refuses absent initial scope at the real start boundary without mutation",
+          "plan item anchors through the real plan tools > refuses incomplete target action intended change or rationale at the real start boundary without mutation",
+          "plan item anchors through the real plan tools > accepts valid scope and non-code planned-create and investigation controls at the real start boundary",
+          "plan item anchors through the real plan tools > refuses an active-plan coding item addition with absent or incomplete initial scope before mutation",
+          "plan item anchors through the real plan tools > refuses an active-plan edit that removes or invalidates executable initial scope before mutation",
+          "plan item anchors through the real plan tools > admits active-plan scoped additions and complete scope evolution with non-code controls",
+          "plan item anchors through the real plan tools > preserves unrelated accepted anchors across concurrent plan rewrites",
+          "plan item anchors through the real plan tools > anchor-only edits preserve stored prose and reconcile stale graph line text",
+          "plan item anchors through the real plan tools > file links retain content hashes, unresolved links retain reasons, and general plans get no no-links warning",
+          "plan item anchors through the real plan tools > refuses prose edits before a partial graph can erase a legacy-writer addition",
+          "plan item anchors through the real plan tools > refuses anchors edits before a partial graph can erase a legacy-writer addition",
+          "plan item anchors through the real plan tools > keeps graph authority when an empty legacy index cannot witness extra saved lines",
+          "plan item anchors through the real plan tools > keeps graph authority when an mismatched legacy index cannot witness extra saved lines"
+        ],
+        "testLayer": "integration"
+      },
+      "evidenceStatus": "prepared-only-unmeasured"
+    },
+    {
+      "specId": "AUTO-BAR-R-5-P-002",
+      "specRevision": 3,
+      "kind": "test",
+      "test": "packages/operator-core/lib/consult/consult-verbs-core.integration.test.ts",
+      "sourcePaths": [
+        "packages/operator-core/lib/agent-tools/consult/close.ts",
+        "packages/operator-core/lib/agent-tools/consult/reply.ts",
+        "packages/operator-core/lib/agent-tools/plans/add-item.ts",
+        "packages/operator-core/lib/agent-tools/plans/edit.ts",
+        "packages/operator-core/lib/agent-tools/plans/initial-change-scope.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-start-gate.ts",
+        "packages/operator-core/lib/agent-tools/plans/with-plan-lock.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-line-graph.ts",
+        "packages/operator-core/lib/consult/consult-verbs-core.ts",
+        "packages/operator-core/lib/consult/responder-verb-menu.ts",
+        "packages/operator-core/lib/consult/review-findings.ts",
+        "packages/operator-core/lib/plan-items/anchor-store.ts",
+        "packages/operator-core/lib/plan-items/anchors.ts"
+      ],
+      "fixturePaths": [
+        "packages/operator-core/lib/consult/consult-verbs-core.integration.test.ts"
+      ],
+      "historicalEvidenceId": 78238,
+      "adequacy": {
+        "testCases": [
+          "preserving review findings through consult settlement > records requester dispositions after reviewer settlement without reopening or waking at the exchange cap",
+          "preserving review findings through consult settlement > refuses unrelated, unstructured and invented-finding terminal posts before mutation",
+          "preserving review findings through consult settlement > preserves unrelated accepted outcome data through review reply, disposition, close and canonical round trips",
+          "preserving review findings through consult settlement > preserves unrelated accepted outcome data through an ordinary edit to another field",
+          "preserving review findings through consult settlement > preserves unrelated and concurrently accepted outcome data during overlapping accepted updates"
+        ],
+        "testLayer": "integration"
+      },
+      "evidenceStatus": "prepared-only-unmeasured"
+    },
+    {
+      "specId": "AUTO-BAR-R-5-P-002",
+      "specRevision": 3,
+      "kind": "test",
+      "test": "packages/operator-core/lib/agent-tools/plans/initial-change-scope.test.ts",
+      "sourcePaths": [
+        "packages/operator-core/lib/agent-tools/consult/close.ts",
+        "packages/operator-core/lib/agent-tools/consult/reply.ts",
+        "packages/operator-core/lib/agent-tools/plans/add-item.ts",
+        "packages/operator-core/lib/agent-tools/plans/edit.ts",
+        "packages/operator-core/lib/agent-tools/plans/initial-change-scope.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-start-gate.ts",
+        "packages/operator-core/lib/agent-tools/plans/with-plan-lock.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-line-graph.ts",
+        "packages/operator-core/lib/consult/consult-verbs-core.ts",
+        "packages/operator-core/lib/consult/responder-verb-menu.ts",
+        "packages/operator-core/lib/consult/review-findings.ts",
+        "packages/operator-core/lib/plan-items/anchor-store.ts",
+        "packages/operator-core/lib/plan-items/anchors.ts"
+      ],
+      "fixturePaths": [
+        "packages/operator-core/lib/agent-tools/plans/initial-change-scope.test.ts"
+      ],
+      "historicalEvidenceId": 78237,
+      "adequacy": {
+        "testCases": [
+          "initial implementation scope > requires coding targets without imposing them on explicitly non-code items",
+          "initial implementation scope > allows honest unknowns and planned code without pretending symbols already exist",
+          "initial implementation scope > preserves intended change metadata when validating canonical anchors"
+        ],
+        "testLayer": "unit"
+      },
+      "evidenceStatus": "prepared-only-unmeasured"
+    },
+    {
+      "specId": "AUTO-BAR-R-4-P-002",
+      "specRevision": 3,
+      "kind": "test",
+      "test": "packages/operator-core/lib/agent-tools/plans/item-anchors-tools.test.ts",
+      "sourcePaths": [
+        "packages/operator-core/lib/agent-tools/plans/add-item.ts",
+        "packages/operator-core/lib/agent-tools/plans/edit.ts",
+        "packages/operator-core/lib/agent-tools/plans/initial-change-scope.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-start-gate.ts",
+        "packages/operator-core/lib/agent-tools/plans/with-plan-lock.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-line-graph.ts",
+        "packages/operator-core/lib/plan-items/anchor-store.ts",
+        "packages/operator-core/lib/plan-items/anchors.ts"
+      ],
+      "fixturePaths": [
+        "packages/operator-core/lib/agent-tools/plans/item-anchors-tools.test.ts"
+      ],
+      "historicalEvidenceId": 78236,
+      "adequacy": {
+        "testCases": [
+          "plan anchor handler unit contracts > adds an unlinked code item and returns its explicit no-links warning",
+          "plan anchor handler unit contracts > adds an unlinked general item without a code-link warning",
+          "plan anchor handler unit contracts > item-edit and add preserve the same resolved symbol metadata at the storage boundary"
+        ],
+        "testLayer": "unit"
+      },
+      "evidenceStatus": "prepared-only-unmeasured"
+    },
+    {
+      "specId": "AUTO-BAR-R-4-P-002",
+      "specRevision": 3,
+      "kind": "test",
+      "test": "packages/operator-core/lib/agent-tools/plans/initial-change-scope.test.ts",
+      "sourcePaths": [
+        "packages/operator-core/lib/agent-tools/plans/add-item.ts",
+        "packages/operator-core/lib/agent-tools/plans/edit.ts",
+        "packages/operator-core/lib/agent-tools/plans/initial-change-scope.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-start-gate.ts",
+        "packages/operator-core/lib/agent-tools/plans/with-plan-lock.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-line-graph.ts",
+        "packages/operator-core/lib/plan-items/anchor-store.ts",
+        "packages/operator-core/lib/plan-items/anchors.ts"
+      ],
+      "fixturePaths": [
+        "packages/operator-core/lib/agent-tools/plans/initial-change-scope.test.ts"
+      ],
+      "historicalEvidenceId": 78235,
+      "adequacy": {
+        "testCases": [
+          "initial implementation scope > requires coding targets without imposing them on explicitly non-code items",
+          "initial implementation scope > allows honest unknowns and planned code without pretending symbols already exist",
+          "initial implementation scope > preserves intended change metadata when validating canonical anchors"
+        ],
+        "testLayer": "unit"
+      },
+      "evidenceStatus": "prepared-only-unmeasured"
+    },
+    {
+      "specId": "AUTO-BAR-R-3-P-002",
+      "specRevision": 5,
+      "kind": "test",
+      "test": "packages/operator-core/lib/agent-tools/plans/initial-change-scope.test.ts",
+      "sourcePaths": [
+        "packages/operator-core/lib/agent-tools/plans/add-item.ts",
+        "packages/operator-core/lib/agent-tools/plans/edit.ts",
+        "packages/operator-core/lib/agent-tools/plans/initial-change-scope.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-start-gate.ts",
+        "packages/operator-core/lib/agent-tools/plans/with-plan-lock.ts",
+        "packages/operator-core/lib/agent-tools/plans/plan-line-graph.ts",
+        "packages/operator-core/lib/plan-items/anchor-store.ts",
+        "packages/operator-core/lib/plan-items/anchors.ts"
+      ],
+      "fixturePaths": [
+        "packages/operator-core/lib/agent-tools/plans/initial-change-scope.test.ts"
+      ],
+      "historicalEvidenceId": 78234,
+      "adequacy": {
+        "testCases": [
+          "initial implementation scope > requires coding targets without imposing them on explicitly non-code items",
+          "initial implementation scope > allows honest unknowns and planned code without pretending symbols already exist",
+          "initial implementation scope > preserves intended change metadata when validating canonical anchors"
+        ],
+        "testLayer": "unit"
+      },
+      "evidenceStatus": "prepared-only-unmeasured"
+    },
+    {
+      "specId": "AUTO-BAR-R-3-P-002",
+      "specRevision": 5,
+      "kind": "mutation",
+      "test": "packages/operator-core/lib/agent-tools/plans/initial-change-scope.test.ts",
+      "sourcePaths": [
+        "packages/operator-core/lib/agent-tools/plans/initial-change-scope.ts"
+      ],
+      "fixturePaths": [
+        "packages/operator-core/lib/agent-tools/plans/initial-change-scope.test.ts"
+      ],
+      "historicalEvidenceId": 76541,
+      "adequacy": {
+        "testCases": [
+          "initial implementation scope > requires coding targets without imposing them on explicitly non-code items",
+          "initial implementation scope > allows honest unknowns and planned code without pretending symbols already exist"
+        ],
+        "testLayer": "unit"
+      },
+      "evidenceStatus": "prepared-only-unmeasured"
+    }
+  ],
+  "selection": {
+    "files": [
+      "packages/operator-core/lib/consult/consult-verbs-core.integration.test.ts",
+      "packages/operator-core/lib/agent-tools/plans/initial-change-scope.test.ts",
+      "packages/operator-core/lib/agent-tools/plans/item-anchors.integration.test.ts",
+      "packages/operator-core/lib/agent-tools/plans/item-anchors-tools.test.ts",
+      "packages/operator-core/lib/agent-tools/plans/__tests__/with-plan-lock-slug.test.ts"
+    ],
+    "requiredTitles": [
+      "preserving review findings through consult settlement > records requester dispositions after reviewer settlement without reopening or waking at the exchange cap",
+      "preserving review findings through consult settlement > refuses unrelated, unstructured and invented-finding terminal posts before mutation",
+      "preserving review findings through consult settlement > preserves unrelated accepted outcome data through review reply, disposition, close and canonical round trips",
+      "preserving review findings through consult settlement > preserves unrelated accepted outcome data through an ordinary edit to another field",
+      "preserving review findings through consult settlement > preserves unrelated and concurrently accepted outcome data during overlapping accepted updates",
+      "initial implementation scope > requires coding targets without imposing them on explicitly non-code items",
+      "initial implementation scope > allows honest unknowns and planned code without pretending symbols already exist",
+      "initial implementation scope > preserves intended change metadata when validating canonical anchors",
+      "plan item anchors through the real plan tools > refuses absent initial scope at the real start boundary without mutation",
+      "plan item anchors through the real plan tools > refuses incomplete target action intended change or rationale at the real start boundary without mutation",
+      "plan item anchors through the real plan tools > accepts valid scope and non-code planned-create and investigation controls at the real start boundary",
+      "plan item anchors through the real plan tools > refuses an active-plan coding item addition with absent or incomplete initial scope before mutation",
+      "plan item anchors through the real plan tools > refuses an active-plan edit that removes or invalidates executable initial scope before mutation",
+      "plan item anchors through the real plan tools > admits active-plan scoped additions and complete scope evolution with non-code controls",
+      "plan item anchors through the real plan tools > preserves unrelated accepted anchors across concurrent plan rewrites",
+      "plan item anchors through the real plan tools > anchor-only edits preserve stored prose and reconcile stale graph line text",
+      "plan item anchors through the real plan tools > file links retain content hashes, unresolved links retain reasons, and general plans get no no-links warning",
+      "plan item anchors through the real plan tools > refuses prose edits before a partial graph can erase a legacy-writer addition",
+      "plan item anchors through the real plan tools > refuses anchors edits before a partial graph can erase a legacy-writer addition",
+      "plan item anchors through the real plan tools > keeps graph authority when an empty legacy index cannot witness extra saved lines",
+      "plan item anchors through the real plan tools > keeps graph authority when an mismatched legacy index cannot witness extra saved lines",
+      "plan anchor handler unit contracts > adds an unlinked code item and returns its explicit no-links warning",
+      "plan anchor handler unit contracts > adds an unlinked general item without a code-link warning",
+      "plan anchor handler unit contracts > item-edit and add preserve the same resolved symbol metadata at the storage boundary"
+    ],
+    "newCases": [
+      "plan item anchors through the real plan tools > refuses prose edits before a partial graph can erase a legacy-writer addition",
+      "plan item anchors through the real plan tools > refuses anchors edits before a partial graph can erase a legacy-writer addition",
+      "plan item anchors through the real plan tools > keeps graph authority when an empty legacy index cannot witness extra saved lines",
+      "plan item anchors through the real plan tools > keeps graph authority when an mismatched legacy index cannot witness extra saved lines"
+    ],
+    "testNamePattern": "preserving review findings through consult settlement > records requester dispositions after reviewer settlement without reopening or waking at the exchange cap|preserving review findings through consult settlement > refuses unrelated, unstructured and invented-finding terminal posts before mutation|preserving review findings through consult settlement > preserves unrelated accepted outcome data through review reply, disposition, close and canonical round trips|preserving review findings through consult settlement > preserves unrelated accepted outcome data through an ordinary edit to another field|preserving review findings through consult settlement > preserves unrelated and concurrently accepted outcome data during overlapping accepted updates|initial implementation scope > requires coding targets without imposing them on explicitly non-code items|initial implementation scope > allows honest unknowns and planned code without pretending symbols already exist|initial implementation scope > preserves intended change metadata when validating canonical anchors|plan item anchors through the real plan tools > refuses absent initial scope at the real start boundary without mutation|plan item anchors through the real plan tools > refuses incomplete target action intended change or rationale at the real start boundary without mutation|plan item anchors through the real plan tools > accepts valid scope and non-code planned-create and investigation controls at the real start boundary|plan item anchors through the real plan tools > refuses an active-plan coding item addition with absent or incomplete initial scope before mutation|plan item anchors through the real plan tools > refuses an active-plan edit that removes or invalidates executable initial scope before mutation|plan item anchors through the real plan tools > admits active-plan scoped additions and complete scope evolution with non-code controls|plan item anchors through the real plan tools > preserves unrelated accepted anchors across concurrent plan rewrites|plan item anchors through the real plan tools > anchor-only edits preserve stored prose and reconcile stale graph line text|plan item anchors through the real plan tools > file links retain content hashes, unresolved links retain reasons, and general plans get no no-links warning|plan item anchors through the real plan tools > refuses prose edits before a partial graph can erase a legacy-writer addition|plan item anchors through the real plan tools > refuses anchors edits before a partial graph can erase a legacy-writer addition|plan item anchors through the real plan tools > keeps graph authority when an empty legacy index cannot witness extra saved lines|plan item anchors through the real plan tools > keeps graph authority when an mismatched legacy index cannot witness extra saved lines|plan anchor handler unit contracts > adds an unlinked code item and returns its explicit no-links warning|plan anchor handler unit contracts > adds an unlinked general item without a code-link warning|plan anchor handler unit contracts > item-edit and add preserve the same resolved symbol metadata at the storage boundary|withPlanLock",
+    "predictedWithPlanLockCases": 8,
+    "predictedTotalCases": 32,
+    "collectionStatus": "unmeasured; verify expansion with maintained npm test:file router after coherent-parent preparation",
+    "assertionStatus": "unmeasured"
+  },
+  "runnerReuse": {
+    "originalTranscript": {
+      "base": "os.homedir()",
+      "relativePath": ".papercusp/su-codex-homes/session-55308/sessions/2026/11/07/rollout-2026-11-07T19-07-08-01a1b87a-f4fb-7fd0-b227-dc976e05cd60.jsonl"
+    },
+    "originalOrdinal": 353,
+    "recipeReadReplacement": "JSON.parse(readFileSync(canonical + '/docs/evidence/review-findings-p003-proof-preparation-20261108.json', 'utf8')).proposedRecipes",
+    "changes": [
+      "Set actual handed-off coherent committed root/SHA only after verifying the publisher handoff.",
+      "Use this prepared recipe set for both inner selection and outer source containment; include the extra withPlanLock unit-guard path in the outer path set.",
+      "Update reviewed with-plan-lock fingerprint to the pinned blob and compare every reviewed source/test blob; any changed pin reopens the affected source review.",
+      "Retain committed-source-loader, tsx, with-test-pg, canonical pg-url sink resolution, required staging mutation-descriptor reader, sourceStable terminal evidence and full cleanup receipts.",
+      "Update output filenames; preserve original metadata and startBoundary mutant mechanisms."
+    ],
+    "preparationDeadlineMs": 1800000,
+    "dependencyPreparation": "Use maintained lint-as-committed with assertCommittedWorkspaceLockMatches before expensive preparation. Historical 14ee donor is absent; prepare a new officially sealed snapshot after handoff."
+  },
+  "mutationDescriptors": {
+    "metadata": [
+      "--file",
+      "packages/operator-core/lib/agent-tools/plans/initial-change-scope.ts",
+      "--mutate",
+      "s/const change = anchorChangeSchema/anchor.change = undefined; const change = anchorChangeSchema/",
+      "--test",
+      "MUTATION_SUBJECT={} npm run test:file -- packages/operator-core/lib/agent-tools/plans/initial-change-scope.test.ts --testNamePattern='preserves intended change metadata'",
+      "--expect",
+      "caught",
+      "--relocation",
+      "overlay"
+    ],
+    "startBoundary": [
+      "--file",
+      "packages/operator-core/lib/agent-tools/plans/initial-change-scope.ts",
+      "--mutate",
+      "s/const problems: string\\[\\] = \\[\\];/const problems: string[] = []; return problems;/",
+      "--test",
+      "MUTATION_SUBJECT={} bash -c 'cd packages/operator-core && exec node ../../node_modules/vitest/vitest.mjs run --config vitest.integration.config.ts lib/agent-tools/plans/item-anchors.integration.test.ts --testNamePattern=\"refuses absent initial scope at the real start boundary without mutation|refuses incomplete target action intended change or rationale at the real start boundary without mutation\"'",
+      "--expect",
+      "caught",
+      "--relocation",
+      "overlay"
+    ]
+  },
+  "blocker": {
+    "sourceOwner": "su-96b7fe62-ee9a-4399-ad53-e30bc734d337",
+    "workItem": "WI-6554700010030253",
+    "publicationKey": "harness:papercusp:advisory-source-publication:WI-6554700010030253",
+    "lastDeliveredMessage": "coord-send-f0b3dd82e3b4fcf23cf74cf4981410a7083607bec83ccf33ac95610e9af3ee5f",
+    "handoffReceived": false,
+    "noParallelMonitor": true,
+    "noNewAwaitOrLoop": true,
+    "unlock": "Existing source owner supplies the coherent committed parent and publication proof; verify root app gitlink, committed app manifest/root lock coherence, all reviewed blobs and official dependency seal before tests."
+  },
+  "next": [
+    "Verify actual coherent committed parent from existing source owner.",
+    "Run clean affected positives with maintained router and reconcile selected titles, terminal exit, source stability and cleanup.",
+    "Run unchanged metadata and startBoundary mutations with maintained mutation-probe overlay.",
+    "Bind/evaluate/certify only the six affected P-002 clauses; preserve unaffected current evidence.",
+    "Refresh affected source completions and canonical full census, retaining helper/source attribution and every previous baseline/audit citation.",
+    "Complete real release aggregate, three public journeys, independent grading and author verdict, then verify shipment."
+  ]
+}
