@@ -113,19 +113,20 @@ describe('private native proof custody (P002)', () => {
     return { root, producer, directory, contract, observations, save, saveAsync };
   }
 
-  function consumeRetained(f: ReturnType<typeof fixture>, locator: ReturnType<typeof f.save>['locator'], contract = f.contract) {
+  function consumeRetained(f: ReturnType<typeof fixture>, locator: ReturnType<typeof f.save>['locator'], contract = f.contract,
+    includeObjectBytes = true) {
     expect(fs.existsSync(f.producer)).toBe(false);
     const child = spawnSync(process.execPath, ['--input-type=module', '-e',
       'import { verifyNativeProofPacket } from ' + JSON.stringify(resolve(REPO_ROOT, 'scripts/lib/budgeted-task-scheduler.mjs')) + ';' +
       'import { readFileSync, statSync } from "node:fs"; import { join } from "node:path";' +
-      'const [directory,locator,contract]=JSON.parse(process.argv[1]);' +
+      'const [directory,locator,contract,includeObjectBytes]=JSON.parse(process.argv[1]);' +
       'try { const r=verifyNativeProofPacket(directory,locator,contract);' +
       'const entries=r.manifest.groups.flatMap(g=>[...g.families.flatMap(f=>f.entries),...g.auxiliary.filter(a=>a.artifact)]);' +
       'process.stdout.write(JSON.stringify({refused:false,pid:process.pid,status:r.status,manifest:r.manifest,' +
-      'objects:entries.map(e=>({original:e.original??e.path,pin:e.artifact,mode:statSync(join(directory,"objects",e.artifact.ref)).mode&511,' +
-      'bytes:readFileSync(join(directory,"objects",e.artifact.ref)).toString("base64")}))})); }' +
+      'objects:includeObjectBytes?entries.map(e=>({original:e.original??e.path,pin:e.artifact,mode:statSync(join(directory,"objects",e.artifact.ref)).mode&511,' +
+      'bytes:readFileSync(join(directory,"objects",e.artifact.ref)).toString("base64")})):[]})); }' +
       'catch(error) { process.stdout.write(JSON.stringify({refused:true,error:String(error),pid:process.pid})); }',
-      JSON.stringify([f.directory, locator, contract])], { encoding: 'utf8', timeout: 15_000 });
+      JSON.stringify([f.directory, locator, contract, includeObjectBytes])], { encoding: 'utf8', timeout: 15_000 });
     const childResult = { error: child.error ? String(child.error) : undefined, stderr: child.stderr, status: child.status };
     expect(childResult, JSON.stringify(childResult)).toEqual({ error: undefined, stderr: '', status: 0 });
     const result = JSON.parse(child.stdout);
@@ -254,7 +255,9 @@ describe('private native proof custody (P002)', () => {
     expect(saved.manifest.limits.referenceOccurrences).toBe(65536);
     expect(saved.manifest.limits.objectBytes).toBe(16 * 1024 * 1024);
     rmSync(f.producer, { recursive: true });
-    const consumed = consumeRetained(f, saved.locator);
+    // The consumer still verifies every retained object. Returning a second
+    // base64 copy of the large OUT would test stdout buffering instead.
+    const consumed = consumeRetained(f, saved.locator, f.contract, false);
     expect(consumed.status).toBe('complete');
     expect(consumed.manifest.groups[0].referenceCapsules).toEqual(capsules);
     expect(consumed.manifest.verdicts).toMatchObject({ nativeProof: 'unqualified', acceptance: 'unmeasured' });
