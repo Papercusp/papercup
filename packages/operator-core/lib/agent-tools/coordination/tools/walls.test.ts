@@ -122,6 +122,14 @@ describe('coord:walls request diagnostics', () => {
 });
 
 describe('coord:walls handler', () => {
+  it('uses the generated carry-note index before materializing candidate bodies without truncating the census', async () => {
+    await listOwnerWalls({ workspaceId: 'ws-test', limit: 1 });
+    const query = (h.sql.mock.calls[1][0] as TemplateStringsArray).join('?');
+    expect(query).toContain("note_tsv @@ plainto_tsquery('english', 'Walls')");
+    expect(query).toContain("scope LIKE 'loop:%'");
+    expect(query).not.toMatch(/\bLIMIT\b/i);
+  });
+
   it('calls getOrgPg().sql as the tagged-template function and returns an empty wall set', async () => {
     const out = (await tool.handler({}, { workspaceId: 'ws-test' } as never)) as Out;
 

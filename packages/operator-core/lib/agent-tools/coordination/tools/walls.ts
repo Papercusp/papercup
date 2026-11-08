@@ -174,12 +174,19 @@ export async function listOwnerWalls(opts: ListOwnerWallsOpts = {}): Promise<{
   const walls: WallRow[] = [];
 
   // ── Source 1: carried rows; only owner/system origins are unconditional gates ──
+  // Every parseable Walls heading contains the English lexeme `wall`. Use the
+  // existing generated full-text index to select candidates before fetching and
+  // decoding full notes. The canonical parser below still decides which rows
+  // are walls; prose that merely mentions walls must not become an owner ask.
+  // Reading every historical loop body made this leg exceed the Inbox deadline
+  // even after the presence query had returned to millisecond execution.
   const notes = await traceNamedQueryStage('owner-walls-carry-notes', () => sql<Array<{ scope: string; note: string | null; updated_ts: Date | null }>>`
     SELECT scope, note, updated_ts
       FROM harness_shared.carry_notes
      WHERE (workspace_id = ${ws} OR workspace_id = 'default')
        AND scope LIKE 'loop:%'
        AND note IS NOT NULL
+       AND note_tsv @@ plainto_tsquery('english', 'Walls')
   `);
   for (const row of notes) {
     const parsed = parseLoopScope(row.scope);
