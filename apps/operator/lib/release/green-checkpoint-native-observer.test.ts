@@ -710,6 +710,8 @@ describe('native qualification preparation before the production suite', () => {
       mkdirSync(join(root, 'scripts/lib'), { recursive: true });
       writeFileSync(join(root, 'scripts/lib/vitest-startup-trace.mjs'),
         readFileSync(new URL('../../../../scripts/lib/vitest-startup-trace.mjs', import.meta.url)));
+      writeFileSync(join(root, 'scripts/lib/native-process-trace-env.mjs'),
+        readFileSync(new URL('../../../../scripts/lib/native-process-trace-env.mjs', import.meta.url)));
       const selection = { tasks: [{ dir: 'packages/a', runner: 'vitest', command: 'vitest run a.test.ts' },
         { dir: 'packages/b', runner: 'command-chain', command: 'npm run first && npm run second', steps: [
           { command: 'vitest run b.test.ts', discovery: [{ runner: 'vitest' }] },

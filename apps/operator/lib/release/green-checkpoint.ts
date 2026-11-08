@@ -4538,7 +4538,7 @@ export async function checkpointQualificationRunnerIdentity(root: string, select
   try {
     // The candidate's own helper names the preload the candidate child will
     // actually load. The orchestration process may run another checkout/runtime.
-    const trace = await import(pathToFileURL(path.join(root, 'scripts/lib/vitest-startup-trace.mjs')).href);
+    const trace = await import(pathToFileURL(path.join(root, 'scripts/lib/native-process-trace-env.mjs')).href);
     const finalEnvironment = trace.nativeProcessTraceEnv({ ...environment }, { enabled: true }) as NodeJS.ProcessEnv;
     const expectedPreload = `--import=${JSON.stringify(pathToFileURL(path.join(root, 'scripts/lib/vitest-startup-trace.mjs')).href)}`;
     if (!finalEnvironment.NODE_OPTIONS?.includes(expectedPreload)) return null;

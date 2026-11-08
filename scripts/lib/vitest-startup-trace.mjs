@@ -11,23 +11,19 @@ import { captureConfigurationSnapshot } from '../../libs/test-config/src/configu
 import { readProcessIdentity } from './process-identity.mjs';
 import { nativeSourceRetentionLimits, validateSourcePins, observeEngineScriptExecution }
   from '../../libs/test-config/src/executed-config-load-capture.ts';
+import { nativeProcessTraceEnv as candidateNativeProcessTraceEnv } from './native-process-trace-env.mjs';
 
 export { nativeSourceRetentionLimits };
 const sourcePinsEnv = 'PC_NATIVE_LOADER_SOURCE_PINS';
-
 /** Reuse the OUT channel and this preload without enabling stderr diagnostics.
  * @param {NodeJS.ProcessEnv} [env]
  * @param {{ enabled?: boolean, pinnedSources?: Array<{ path: string, sha256: string, byteLength: number }> }} [options]
  * Source-owned prediction and independent artifact pins before launch. Generic limits stay unchanged.
  */
 export function nativeProcessTraceEnv(env = process.env, options = {}) {
-  if (!(options.enabled ?? Boolean(env.PC_EXECUTED_SOURCE_MAP_OUT?.trim()))) return env;
-  const preload = `--import=${JSON.stringify(new URL('./vitest-startup-trace.mjs', import.meta.url).href)}`;
-  const nodeOptions = env.NODE_OPTIONS ?? '';
-  return { ...env, NODE_OPTIONS: nodeOptions.includes(preload) ? nodeOptions : `${nodeOptions} ${preload}`.trim(),
-    ...(options.pinnedSources === undefined ? {} : {
-      [sourcePinsEnv]: JSON.stringify(validateSourcePins(options.pinnedSources)),
-    }) };
+  const traced = candidateNativeProcessTraceEnv(env, options);
+  if (traced === env || options.pinnedSources === undefined) return traced;
+  return { ...traced, [sourcePinsEnv]: JSON.stringify(validateSourcePins(options.pinnedSources)) };
 }
 
 // These are observations, not a shell parser or a complete execution census.
