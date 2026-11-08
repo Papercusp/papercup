@@ -331,6 +331,40 @@ describe('cell-transcription detector — FALSE positives it must NOT raise (EI-
     },
   );
 
+  it('does not classify the recorded saved-recipe replay message as a deployed commit', async () => {
+    const summary = 'Progress recipe repaired/runnable e4fb5d71; live read now proves exact resource scope and UNHELD. Source publication remains96b7\'s lane.';
+    const body = 'EI281649 checkpoint4fbadb836f3d: exact-source fixture persisted/readbackequal e4fb5d71; live replay scopeCompletetrue/correlationunheld/holders[] at01:00Z, no inferred publication. Final suite failed2 before collection on96b7 installwriter after180s; earlier15PASS applies earlier revision. Publication await414307 armed from declared96b7 gen1. No second sync/test started.';
+    const requested: string[] = [];
+    const hint = await cellTranscriptionHintResolvingCommits([summary, body].join('\n'), async token => {
+      requested.push(token);
+      return null; // An unavailable resolver must not erase artifact provenance.
+    });
+    expect(hint).toBeNull();
+    expect(requested).toEqual([]);
+  });
+
+  it.each(['saved recipe revision', 'recipe authority revision', 'authority revision',
+    'exact-source fixture persisted/readbackequal', 'recipe repaired/runnable'])(
+    'keeps a labeled %s out of pipeline hints even when its token resolves to a commit', label => {
+      const text = `${label} e4fb5d71; live replay completed.`;
+      expect(detectCellTranscriptions(text, { resolvesToCommit: () => true })).toEqual([]);
+    },
+  );
+
+  it('keeps the actual serving commit beside a saved recipe revision', async () => {
+    const requested: string[] = [];
+    const text = 'Saved recipe revision e4fb5d71; :3170 is serving abc1234.';
+    const hint = await cellTranscriptionHintResolvingCommits(text, async token => {
+      requested.push(token);
+      return true;
+    });
+    expect(requested).toEqual(['abc1234']);
+    expect(hint).toContain('abc1234');
+    expect(hint).not.toContain('e4fb5d71');
+    expect(detectCellTranscriptions('Progress recipe now uses deployed commit abc1234 on :3170.'))
+      .toMatchObject([{ value: 'abc1234', cell: 'git.pipelinePosition' }]);
+  });
+
   it('does not classify a checkpoint fingerprint as a deployed SHA beside unrelated release context', async () => {
     const text = 'Checkpoint fingerprint digest fa14e401 is persisted; release status remains unchanged';
     expect(detectCellTranscriptions(text, { resolvesToCommit: () => true })).toEqual([]);

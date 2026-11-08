@@ -186,6 +186,15 @@ const ARTIFACT_HASH_VALUE_PREFIX =
   /\b(?:content[- ]?hash|(?:(?:prior|next))?bar[- ]?hash|(?:artifact[- ]?)?fingerprint(?:[- ]?(?:digest|hash))?|sha[- ]?256)\s*(?::|=)?\s*$/i;
 
 /**
+ * Saved recipe/fixture revisions identify an artifact even beside a live replay.
+ * Match only labels attached to this token: a recipe mentioned elsewhere must
+ * not suppress a separate deployed commit in the same message. Resolve this
+ * provenance before Git lookup, whose unavailable result deliberately fails open.
+ */
+const ARTIFACT_REVISION_VALUE_PREFIX =
+  /\b(?:(?:recipe|fixture)(?:(?:[-\s]+|\/)(?:authority|revision|rev|version|saved|persisted|readback(?:equal)?|repaired|runnable))*|authority[-\s]+revision)\s*(?:[:=]\s*)?["'`]?\s*$/i;
+
+/**
  * Memory-store identifiers are often rendered as their leading eight hex digits.
  * A nearby word like "live" can satisfy the broad pipeline context window, but the
  * immediate `memory <id>` label identifies an artifact id rather than a Git SHA.
@@ -256,6 +265,11 @@ function sameSentenceContextWindow(haystack: string, valueStart: number, valueLe
 function isCheckpointMetadataValue(haystack: string, valueStart: number): boolean {
   const before = haystack.slice(Math.max(0, valueStart - CONTEXT_WINDOW), valueStart);
   return CHECKPOINT_VALUE_PREFIX.test(before) || ARTIFACT_HASH_VALUE_PREFIX.test(before);
+}
+
+function isArtifactRevisionValue(haystack: string, valueStart: number): boolean {
+  const before = haystack.slice(Math.max(0, valueStart - CONTEXT_WINDOW), valueStart);
+  return ARTIFACT_REVISION_VALUE_PREFIX.test(before);
 }
 
 function isExplicitMemoryIdentifier(haystack: string, valueStart: number): boolean {
@@ -455,6 +469,7 @@ export function detectCellTranscriptions(text: unknown, options: DetectOptions =
       if (
         isExplicitLockOrLeaseIdentifier(haystack, m.index, m[0].length) ||
         isExplicitMemoryIdentifier(haystack, m.index) ||
+        (p.commitSha && isArtifactRevisionValue(haystack, m.index)) ||
         (p.commitSha &&
           ((p.cell === 'gate.greenCheckpoint.candidate' &&
             isUnlinkedSourceCommitCitation(haystack, m.index, m[0].length, 'candidate')) ||
