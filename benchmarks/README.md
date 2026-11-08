@@ -208,11 +208,14 @@ metered spend. Missing or inconsistent payer/cost-basis metadata cannot unlock l
    settlements. Missing measurement keeps efficiency claims closed. Verify
    cancellation/restart retires the run-owned task subtree, including descendants.
 7. Configure the official grading host paths listed above and call
-   `POST /api/external-bench/runs/<runId>/grade` in that run's workspace. Retain the
+   `POST /api/external-bench/runs/<runId>/grade?workspaceId=<benchmark-workspace>`
+   with the same isolated workspace used at launch. The Evaluation form retains
+   that workspace when opening the run and its Compare view. Retain the
    official source/CSV/image receipt, actual image-use trace and per-task test
    output. A grader error is missing measurement; repair/regrade it or publish an
    inconclusive measurement. Export with
-   `GET /api/external-bench/runs/<runId>/export` and compare its frozen assignments,
+   `GET /api/external-bench/runs/<runId>/export?workspaceId=<benchmark-workspace>`
+   and compare its frozen assignments,
    outcome denominator and source hashes with the stored run.
 
 The regression checks use the project's real test runner:

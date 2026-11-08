@@ -60,6 +60,7 @@ import {
 } from '../workspace-listener';
 import { acquireWithContentionRetry } from '../contention-retry';
 import { configureLocks, locksHost, type LocksHost } from '@papercusp/locks';
+import { SuLocksCoordinator } from '../coordinator';
 
 const SUITE_PREFIX = `vitest-su-locks-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const LOAD_STRESS_TIMEOUT_MS =
@@ -745,6 +746,144 @@ describe('recursive path advisory serialization', () => {
       await parentTxn;
       configureLocks(savedHost);
     }
+  });
+});
+
+describe('predecessor custody on expiry', () => {
+  type Preserve = NonNullable<LocksHost['beforeFileLocksRelease']>;
+  async function hold(ws: string, paths = ['a.ts']) {
+    const result = await inWorkspaceTxn(ws, 'predecessor', tx => tryAcquire(tx, {
+      coordinationDomain: ws, owner: 'predecessor', ownerLabel: 'A', paths,
+      intent: 'unfinished WI-A', goalRef: 'WI-A', ttlSec: 60,
+    }));
+    if (!result.ok) throw new Error('setup acquire failed');
+    return result;
+  }
+  async function expire(ws: string, paths: string[]) {
+    await getTxPool()`UPDATE agent_file_locks SET expires_ts = clock_timestamp() - interval '1 second'
+      WHERE coordination_domain = ${ws} AND path = ANY(${paths}::text[])`;
+  }
+  async function queue(ws: string, paths = ['a.ts']) {
+    const result = await inWorkspaceTxn(ws, 'successor', tx => tryInsertWaiter(tx, {
+      coordinationDomain: ws, owner: 'successor', ownerLabel: 'B', paths,
+      intent: 'next edit', ttlSec: 60, maxWaitSec: 120,
+    }));
+    if (!result.ok || 'self_granted' in result) throw new Error('setup waiter failed');
+    return result;
+  }
+
+  it.each(['direct', 'queued', 'janitor'] as const)('preserves the predecessor before a %s successor grant', async route => {
+    const ws = nextWs();
+    const held = await hold(ws);
+    const waiter = route === 'direct' ? undefined : await queue(ws);
+    await expire(ws, ['a.ts']);
+    const saved = locksHost();
+    const preserve = vi.fn<Preserve>(async input => {
+      if (input.coordinationDomain !== ws) return;
+      expect(input.rows).toEqual([expect.objectContaining({ path: 'a.ts', owner: 'predecessor',
+        goal_ref: 'WI-A', lock_id: held.lock_id, acquired_identity: expect.any(String) })]);
+      const owners = await getTxPool()`SELECT owner FROM agent_file_locks WHERE coordination_domain = ${ws}`;
+      expect(owners).toEqual([expect.objectContaining({ owner: 'predecessor' })]);
+      if (waiter) expect((await readWaiterStatus(getTxPool(), waiter.ticket_id)).status).toBe('waiting');
+    });
+    configureLocks({ ...saved, beforeFileLocksRelease: preserve });
+    try {
+      if (route === 'direct') {
+        expect(await inWorkspaceTxn(ws, 'successor', tx => tryAcquire(tx, {
+          coordinationDomain: ws, owner: 'successor', ownerLabel: 'B', paths: ['a.ts'], intent: 'next', ttlSec: 60,
+        }))).toMatchObject({ ok: true });
+      } else if (route === 'queued') await inWorkspaceTxn(ws, 'poke', tx => pokeWorkspace(tx, ws));
+      else await runBackgroundJanitorOnce();
+      expect(preserve.mock.calls.filter(([input]) => input.coordinationDomain === ws)).toHaveLength(1);
+      if (waiter) expect((await readWaiterStatus(getTxPool(), waiter.ticket_id)).status).toBe('granted');
+      expect(await getTxPool()`SELECT owner FROM agent_file_locks WHERE coordination_domain = ${ws}`)
+        .toEqual([expect.objectContaining({ owner: 'successor' })]);
+    } finally { configureLocks(saved); }
+  });
+
+  it('retains the predecessor and waiting successor on capture failure, then retries the same lease', async () => {
+    const ws = nextWs();
+    const held = await hold(ws);
+    const waiter = await queue(ws);
+    await expire(ws, ['a.ts']);
+    const saved = locksHost();
+    const preserve = vi.fn<Preserve>()
+      .mockRejectedValueOnce(new Error('custody unavailable')).mockResolvedValue(undefined);
+    configureLocks({ ...saved, beforeFileLocksRelease: preserve });
+    try {
+      await expect(inWorkspaceTxn(ws, 'poke', tx => pokeWorkspace(tx, ws)))
+        .rejects.toMatchObject({ reason: 'file_lock_preservation_failed' });
+      expect(await getTxPool()`SELECT owner, lock_id::text FROM agent_file_locks WHERE coordination_domain = ${ws}`)
+        .toEqual([expect.objectContaining({ owner: 'predecessor', lock_id: held.lock_id })]);
+      expect((await readWaiterStatus(getTxPool(), waiter.ticket_id)).status).toBe('waiting');
+      await inWorkspaceTxn(ws, 'poke', tx => pokeWorkspace(tx, ws));
+      expect(preserve.mock.calls[1][0]).toEqual(preserve.mock.calls[0][0]);
+      expect((await readWaiterStatus(getTxPool(), waiter.ticket_id)).status).toBe('granted');
+    } finally { configureLocks(saved); }
+  });
+
+  it('does not let a path-narrow sweep cascade past an unswept expired ancestor', async () => {
+    const ws = nextWs();
+    await hold(ws, ['trigger.ts', 'package']);
+    const waiter = await queue(ws, ['package/a.ts']);
+    await expire(ws, ['trigger.ts', 'package']);
+    const saved = locksHost();
+    const preserve = vi.fn<Preserve>(async () => {});
+    configureLocks({ ...saved, beforeFileLocksRelease: preserve });
+    try {
+      expect(await inWorkspaceTxn(ws, 'trigger', tx => tryAcquire(tx, {
+        coordinationDomain: ws, owner: 'trigger', ownerLabel: null, paths: ['trigger.ts'], intent: 'trigger', ttlSec: 60,
+      }), { paths: ['trigger.ts'] })).toMatchObject({ ok: true });
+      expect(preserve.mock.calls[0][0].rows.map(row => row.path)).toEqual(['trigger.ts']);
+      expect((await readWaiterStatus(getTxPool(), waiter.ticket_id)).status).toBe('waiting');
+      await inWorkspaceTxn(ws, 'poke', tx => pokeWorkspace(tx, ws));
+      expect(preserve.mock.calls[1][0].rows.map(row => row.path)).toEqual(['package']);
+      expect((await readWaiterStatus(getTxPool(), waiter.ticket_id)).status).toBe('granted');
+    } finally { configureLocks(saved); }
+  });
+
+  it('leaves a row expiring during capture for its own preservation pass', async () => {
+    const ws = nextWs();
+    await hold(ws, ['first.ts', 'later.ts']);
+    const waiter = await queue(ws, ['later.ts']);
+    await expire(ws, ['first.ts']);
+    const saved = locksHost();
+    const preserve = vi.fn<Preserve>(async input => {
+      if (input.rows.some(row => row.path === 'first.ts')) await expire(ws, ['later.ts']);
+    });
+    configureLocks({ ...saved, beforeFileLocksRelease: preserve });
+    try {
+      await inWorkspaceTxn(ws, 'poke', tx => pokeWorkspace(tx, ws));
+      expect(preserve.mock.calls[0][0].rows.map(row => row.path)).toEqual(['first.ts']);
+      expect((await readWaiterStatus(getTxPool(), waiter.ticket_id)).status).toBe('waiting');
+      await inWorkspaceTxn(ws, 'poke', tx => pokeWorkspace(tx, ws));
+      expect(preserve.mock.calls[1][0].rows.map(row => row.path)).toEqual(['later.ts']);
+      expect((await readWaiterStatus(getTxPool(), waiter.ticket_id)).status).toBe('granted');
+    } finally { configureLocks(saved); }
+  });
+});
+
+describe('coordinator predecessor custody', () => {
+  it.each(['release', 'reap'] as const)('preserves before backend-neutral %s and retains the fence on failure', async method => {
+    const ws = nextWs();
+    const coordinator = new SuLocksCoordinator({ coordinationDomain: ws });
+    const result = await coordinator.acquire('predecessor', ['a.ts'], { intent: 'edit', ttlMs: 60_000 });
+    if (!result.ok) throw new Error('setup claim failed');
+    const saved = locksHost();
+    const preserve = vi.fn<NonNullable<LocksHost['beforeFileLocksRelease']>>()
+      .mockRejectedValueOnce(new Error('custody unavailable')).mockResolvedValue(undefined);
+    configureLocks({ ...saved, beforeFileLocksRelease: preserve });
+    const release = () => method === 'release' ? coordinator.release(result.claim) : coordinator.reap('predecessor');
+    try {
+      await expect(release()).rejects.toThrow('custody unavailable');
+      expect(await getTxPool()`SELECT owner FROM agent_file_locks WHERE coordination_domain = ${ws}`)
+        .toEqual([expect.objectContaining({ owner: 'predecessor' })]);
+      const done = await release();
+      if (method === 'reap') expect(done).toBe(1);
+      expect(preserve.mock.calls[1][0]).toEqual(preserve.mock.calls[0][0]);
+      expect(preserve.mock.calls[1][0].rows).toEqual([expect.objectContaining({ owner: 'predecessor', path: 'a.ts' })]);
+      expect(await getTxPool()`SELECT owner FROM agent_file_locks WHERE coordination_domain = ${ws}`).toEqual([]);
+    } finally { configureLocks(saved); }
   });
 });
 

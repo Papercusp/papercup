@@ -22,11 +22,26 @@ import { setAdminPoolStatementTimeoutProvider } from '@papercusp/db-org';
 import { beginAcquire, recordPoolMax } from '@papercusp/db-org/acquire-registry';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 import { adminPoolStatementTimeoutMs, txnTimeoutsConfig } from '../../txn-timeouts-config';
+import { hasValidGitEntry } from './valid-git-entry';
 
 configureLocks({
   getAdminBaseUrl: () => getHarnessAdminUrl(),
   getTxnTimeouts: () => txnTimeoutsConfig(),
   acquireDiagnostics: { beginAcquire, recordPoolMax },
+  beforeFileLocksRelease: async ({ coordinationDomain, rows }) => {
+    if (!hasValidGitEntry(coordinationDomain)) return;
+    const [{ preserveReleasedEditGenerations }, { activeWorkspaceId }] = await Promise.all([
+      import('../../edit-attribution'), import('../../workspace-registry'),
+    ]);
+    // The predecessor's stored lease owns attribution, never the new writer's
+    // active goal. Reuse explicit-release custody and stable replay ids.
+    const byOwner = new Map<string, typeof rows>();
+    for (const row of rows) byOwner.set(row.owner, [...(byOwner.get(row.owner) ?? []), row]);
+    for (const [owner, selected] of byOwner) {
+      await preserveReleasedEditGenerations({ repoRoot: coordinationDomain, rows: selected,
+        agentId: owner, sessionId: owner, workspaceId: activeWorkspaceId() });
+    }
+  },
   onResourceExpired: async ({ resource, coordinationDomain }) => {
     // Keep the event engine out of this early adapter's synchronous import graph.
     const [{ emitResourceReleasedEvent }, { isWorkspaceScopedResource }] = await Promise.all([
