@@ -94,7 +94,8 @@ describe('invalid-index rebuild vacuum admission', () => {
   it('defers an invalid-index drop before taking the backup rendezvous when its table has an active vacuum', async () => {
     const connectionStatements: string[] = [];
     const conn = Object.assign(
-      vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      vi.fn((strings: TemplateStringsArray | string, ...values: unknown[]) => {
+        if (typeof strings === 'string') return strings;
         const query = render(strings, values);
         connectionStatements.push(query);
         if (query.includes('pg_try_advisory_lock')) return [{ locked: true }];
@@ -136,7 +137,8 @@ describe('invalid-index rebuild vacuum admission', () => {
   it('defers an invalid-index drop on the short lock-timeout race after preflight', async () => {
     const connectionStatements: string[] = [];
     const conn = Object.assign(
-      vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      vi.fn((strings: TemplateStringsArray | string, ...values: unknown[]) => {
+        if (typeof strings === 'string') return strings;
         const query = render(strings, values);
         connectionStatements.push(query);
         if (query.includes('pg_try_advisory_lock')) return [{ locked: true }];
@@ -183,7 +185,8 @@ describe('invalid-index rebuild vacuum admission', () => {
   it('restores the long lock timeout for CREATE after an invalid-index drop succeeds', async () => {
     const connectionStatements: string[] = [];
     const conn = Object.assign(
-      vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      vi.fn((strings: TemplateStringsArray | string, ...values: unknown[]) => {
+        if (typeof strings === 'string') return strings;
         const query = render(strings, values);
         connectionStatements.push(query);
         if (query.includes('pg_try_advisory_lock')) return [{ locked: true }];
@@ -293,7 +296,8 @@ describe('orphan rebuild cleanup', () => {
     const sqlStatements: string[] = [];
     const connectionStatements: string[] = [];
     const conn = Object.assign(
-      vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      vi.fn((strings: TemplateStringsArray | string, ...values: unknown[]) => {
+        if (typeof strings === 'string') return strings;
         const query = render(strings, values);
         connectionStatements.push(query);
         if (query.includes('pg_try_advisory_lock')) return [{ locked: true }];
