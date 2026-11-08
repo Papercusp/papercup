@@ -92,13 +92,22 @@ describe('P-003 compact immutable amendment packet', () => {
       .toThrow('acceptance_bar_review_source_mismatched');
   });
 
-  it('requires full paged retrieval and the same signed source hash on both review routes', () => {
+  it('prefers the complete post reader while preserving paged recovery and signed source verification on both review routes', () => {
     const { input } = packet();
     for (const answerOn of [undefined, { workItemId: 'WI-42', harness: 'papercusp' }]) {
       const brief = buildAmendmentReviewBrief(input, answerOn);
+      expect(brief).toContain("conversations:get { id:'thread-post:42' }");
+      expect(brief).toContain("tools.conversations.get({id:'thread-post:42'})");
+      expect(brief).toContain('results[].post.body');
+      expect(brief).toContain('inspect the entire body before returning bounded evidence');
+      expect(brief).toContain('Never substitute a requester-provided hash or an excerpt');
+      expect(brief.indexOf('Prefer one authenticated full-post read')).toBeLessThan(
+        brief.indexOf('Fallback exact paged read'),
+      );
       expect(brief).toContain("checkpointOnly:true, sourceRef:'WI-42#comment:42', offset:0, limit:768");
       expect(brief).toContain('checkpointPage.nextOffset');
       expect(brief).toContain('same checkpointContentHash');
+      expect(brief).toContain('On either route, an excerpt, missing source, failed retrieval or hash mismatch cannot satisfy approval');
       expect(brief).toContain(`verified-complete-source sha256:${input.preview.approval.reviewSourceHash}`);
       expect(brief).toContain('Presentation compaction grants no weaker approval');
     }
