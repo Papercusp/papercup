@@ -1,4 +1,4 @@
-import { cp, mkdir, mkdtemp, readlink, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, link, mkdir, mkdtemp, readFile, readlink, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -18,6 +18,25 @@ async function fixture() {
 }
 
 describe('offload symlink target integrity', () => {
+  it('refuses a source that can be mutated through a hard link outside its path prefix', async () => {
+    const f = await fixture();
+    const activeLock = join(f.root, 'live-lock.json');
+    await writeFile(activeLock, 'old lock');
+    await link(activeLock, join(f.source, '.package-lock.json'));
+    await writeFile(activeLock, 'new lock');
+    expect(await readFile(join(f.source, '.package-lock.json'), 'utf8')).toBe('new lock');
+    await expect(captureOffloadLinks(f.source)).rejects.toThrow('external hard links');
+  });
+
+  it('accepts fully contained hard links and rejects a new outside alias on the next source preflight', async () => {
+    const f = await fixture();
+    await writeFile(join(f.source, 'a'), 'payload');
+    await link(join(f.source, 'a'), join(f.source, 'b'));
+    expect((await captureOffloadLinks(f.source)).entriesVisited).toBe(2);
+    await link(join(f.source, 'a'), join(f.root, 'new-alias'));
+    await expect(captureOffloadLinks(f.source)).rejects.toThrow('2/3 links inside root');
+  });
+
   it('rejects identical link text resolving to an existing but different sibling', async () => {
     const f = await fixture();
     await mkdir(join(f.root, 'original', 'libs'));

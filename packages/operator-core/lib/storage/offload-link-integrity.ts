@@ -1,8 +1,10 @@
-/** Semantic companion to copy/checksum verification. Call under the offload's
+/** Link-safety companion to copy/checksum verification. Call under the offload's
  * existing quiescence/identity locks; this helper never copies or removes data.
  * Capture BEFORE moving the original, then verify the staged namespace and the
  * published destination before removing that original. A checksum of link text
  * alone cannot prove that a relocated link still reaches the same target.
+ * Repeat source capture at cutover: path-prefix holder/pin checks cannot prove
+ * quiescence when a regular file has another hard-link pathname outside the tree.
  */
 import { lstat, opendir, readlink, realpath } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -43,6 +45,9 @@ async function scan(root: string, options: OffloadLinkScanOptions) {
   options.signal?.throwIfAborted();
   const canonicalRoot = await realpath(resolve(root));
   const links: LinkObservation[] = [];
+  // As in retention allocation accounting, group multiply linked files by
+  // device/inode. Here we need namespace containment rather than byte totals.
+  const hardlinks = new Map<string, { path: string; nlink: number; seen: number }>();
   const pending = [''];
   let entriesVisited = 0;
   while (pending.length) {
@@ -57,7 +62,17 @@ async function scan(root: string, options: OffloadLinkScanOptions) {
       if (++entriesVisited > maxEntries) throw new Error(`Offload link scan exceeded ${maxEntries} entries`);
       const path = join(directory, entry.name);
       if (entry.isDirectory()) pending.push(path);
-      else if (entry.isSymbolicLink()) {
+      else if (entry.isFile()) {
+        const value = await lstat(join(canonicalRoot, path));
+        if (!value.isFile()) throw new Error(`Offload file changed during observation: ${path}`);
+        if (value.nlink > 1) {
+          const key = `${value.dev}:${value.ino}`;
+          const previous = hardlinks.get(key);
+          if (previous && previous.nlink !== value.nlink) throw new Error(`Offload hard link changed during observation: ${path}`);
+          if (previous) previous.seen += 1;
+          else hardlinks.set(key, { path, nlink: value.nlink, seen: 1 });
+        }
+      } else if (entry.isSymbolicLink()) {
         const fullPath = join(canonicalRoot, path);
         const first = await lstat(fullPath);
         const text = await readlink(fullPath);
@@ -79,6 +94,11 @@ async function scan(root: string, options: OffloadLinkScanOptions) {
     const after = await lstat(fullDirectory);
     if (before.dev !== after.dev || before.ino !== after.ino || before.mtimeMs !== after.mtimeMs) {
       throw new Error(`Offload directory changed during observation: ${fullDirectory}`);
+    }
+  }
+  for (const value of hardlinks.values()) {
+    if (value.seen !== value.nlink) {
+      throw new Error(`Offload file has external hard links: ${value.path} (${value.seen}/${value.nlink} links inside root)`);
     }
   }
   links.sort((a, b) => a.path.localeCompare(b.path));
