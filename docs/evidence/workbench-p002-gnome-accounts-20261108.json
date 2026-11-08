@@ -1,0 +1,506 @@
+{
+  "schemaVersion": 1,
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "workItem": "WI-6554700010029573",
+  "result": "pass",
+  "plane": "private GNOME virtual seat; fixture PUI; current dirty build",
+  "change": {
+    "problem": "Approved R-9 Accounts surface was absent from the GNOME controller, preferences, schema and resident bridge allowlists.",
+    "reuse": "Existing PUI native-account protocol and AccountState semantics used by Windows and Swift; existing GNOME packaging and maintained private Shell harness.",
+    "guard": "Native Accounts journey covers exact selected environment, independent confirmed steering axes, failure, foreign/partial/duplicate state, late confirmation, configurable accelerator and no application window."
+  },
+  "tests": {
+    "unit": {
+      "passed": 53,
+      "failed": 0,
+      "skipped": 1,
+      "childSubstituted": 0,
+      "log": "/tmp/wb-p002-accounts-20261108-v2.log",
+      "scope": "Retained previous-turn maintained current-source unit proof; not rerun."
+    },
+    "native": {
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0,
+      "childSubstituted": 0,
+      "group": "workbench-p002-accounts-native-20261108-v2",
+      "log": "/tmp/wb-p002-accounts-native-20261108-v2.log",
+      "cases": [
+        "GNOME archive installs all runtime sources and preserves private preferences across upgrade",
+        "bundled production installer preserves login, disabled and shortcut choices through upgrade and repair",
+        "private GNOME Shell renders actors and handles real seat keyboard, pointer and nested dismissal [accounts]"
+      ]
+    },
+    "fullNativeRegression": {
+      "passed": 16,
+      "failed": 0,
+      "skipped": 4,
+      "skippedScope": "Existing exact installed Reports, Goals, Inbox and Runs previews opt-in flags unset.",
+      "childSubstituted": 0,
+      "group": "workbench-p002-resident-all-20261108-v1",
+      "log": "/tmp/wb-p002-resident-all-20261108-v1.log",
+      "journeys": {
+        "gnome-native-accounts": {
+          "assertions": [
+            "native shortcut acquisition",
+            "native seat supports input injection",
+            "native input methods exist",
+            "desktop ready for normal shortcuts",
+            "Accounts shortcut opens the complete canonical pool",
+            "account-specific controls require an exact selection",
+            "Accounts displays selected endpoint workspace store and chat scope",
+            "pool and override reads carry the exact selected environment",
+            "opening Accounts does not mutate steering",
+            "all independent confirmed steering axes render",
+            "local account search filters by provider despite duplicate names",
+            "duplicate labels preserve exact account identity",
+            "Default changes only its confirmed steering axis",
+            "Force toggles independently of Default and Exclude",
+            "Exclude toggles independently without inferring Force",
+            "Auto clears Force and Exclude while preserving Default",
+            "native-account writes preserve exact action account and environment",
+            "failed canonical writes retain confirmed state and require refresh",
+            "foreign write confirmation cannot change displayed steering",
+            "Accounts refuses partial canonical pool or scope",
+            "Accounts refuses duplicate canonical pool or scope",
+            "Accounts refuses foreign canonical pool or scope",
+            "pending write never changes confirmed state or permits a second action",
+            "first Escape dismisses selected account before its panel",
+            "hidden Accounts rejects a late write confirmation",
+            "reopening reads persisted canonical state after late confirmation",
+            "selected environment change invalidates prior Accounts content",
+            "changing Accounts preference releases its old accelerator",
+            "configured Accounts accelerator reopens the native panel",
+            "Accounts Shell actors create no application window or task-switcher identity"
+          ],
+          "sourceCustody": {
+            "archiveSha256": "10873f2c83408f98d3cc858687b41478428e83220c392cb0b2a968e334247359",
+            "journey": "accounts",
+            "files": {
+              "extension.js": "ef6c9df511396e3c1868541b689b785a33a7602beb15efde1817d4fdc64032e5",
+              "workbench.js": "b95ba18e385d5c491d0d0dbc25d36d04968d28fb5a2cb281e3b40d206deb0e9b",
+              "panel-model.mjs": "14839e5822af07d93611c5e9fa9687dc9ee7ef84ca7a86639aa5ba4b2aa92810",
+              "bridge.js": "f0af6f85819867ea17c790d268b2c428af15d36e489d6c7134b5feeadeaf4eb2",
+              "helper.js": "5604d173a62ad88583c884b0689ee1afc04da7a64ea5f41771e1fcd209416709",
+              "audio.js": "3e3d4927292d31494313a74fcee3438b3eaf3afefdacb5f430ba4fcb1827f6ad",
+              "chat-content.js": "97e4d37a47a1a99ecfc6e2f80872fd5d67fde3a5bbf8fb0d8b347a87d5f3c90e",
+              "schemas/org.gnome.shell.extensions.papercusp-workbench.gschema.xml": "ac2f5d184f3e7f3156df421fd58139989c8990900eecc967ffb5f133d7e8b209"
+            },
+            "testSha256": "43f3b031c0eeeed128d289c9b9008774c42b305e4bc689231bdc27fda1471997"
+          },
+          "sourceHashesVerified": true,
+          "processEvidence": "/tmp/wb-p002-resident-all-20261108-v1/gnome-native-accounts/gnome-native-process.json"
+        },
+        "gnome-native-cards": {
+          "assertions": [
+            "native shortcut acquisition",
+            "native seat supports input injection",
+            "native input methods exist",
+            "desktop ready for normal shortcuts",
+            "canonical questions load preserves native panel keyboard focus",
+            "questions subscribe with exact selected conversation and environment",
+            "canonical run snapshot reaches the native question",
+            "question Markdown is styled and allocated visible native text",
+            "native choices and answer actions are visible in the card viewport",
+            "seat click selects the exact radio option",
+            "question remains visible while its canonical acknowledgement is held",
+            "pending answer disables duplicate native actions",
+            "native selection sends the exact identity and option payload",
+            "only canonical response acknowledgement dismisses the question",
+            "seat typing reaches the native answer field",
+            "native answer retains keyboard focus",
+            "replacing the focused answer field preserves a keyboard target inside the panel",
+            "native free text submission preserves exact answer and correlation identity",
+            "Decline waits for receipt and sends no fabricated answer",
+            "Cancel sends the exact canonical question identity",
+            "Cancel dismissal follows canonical receipt",
+            "lost acknowledgement retains the question and disables stale answers",
+            "reconnect reads canonical state without sending a duplicate answer",
+            "reconnect creates a fresh canonical subscription",
+            "older canonical snapshot cannot replace the current question",
+            "foreign conversation snapshot fails closed and cannot enable its answer",
+            "conversation fixture stores an exact raw identity without JSON quotes",
+            "conversation refresh restores keyboard focus from the GNOME stage fallback",
+            "conversation change clears prior questions and answer drafts",
+            "browser card cannot invent an inline submission",
+            "secure question link activates only its canonical same-origin route",
+            "questions remain native Shell actors outside application windows",
+            "Escape dismisses questions and cancels their local subscription"
+          ],
+          "sourceCustody": {
+            "archiveSha256": "5ffde642412f24613e1989477922d22105c431c94eac79faa51ffae34cad78ab",
+            "journey": "cards",
+            "files": {
+              "extension.js": "632390cc34706b2c119d53ebb0054f7ed35fb2662295f4c6c83fa93ca059960f",
+              "workbench.js": "b95ba18e385d5c491d0d0dbc25d36d04968d28fb5a2cb281e3b40d206deb0e9b",
+              "panel-model.mjs": "14839e5822af07d93611c5e9fa9687dc9ee7ef84ca7a86639aa5ba4b2aa92810",
+              "bridge.js": "f0af6f85819867ea17c790d268b2c428af15d36e489d6c7134b5feeadeaf4eb2",
+              "helper.js": "5604d173a62ad88583c884b0689ee1afc04da7a64ea5f41771e1fcd209416709",
+              "audio.js": "3e3d4927292d31494313a74fcee3438b3eaf3afefdacb5f430ba4fcb1827f6ad",
+              "chat-content.js": "97e4d37a47a1a99ecfc6e2f80872fd5d67fde3a5bbf8fb0d8b347a87d5f3c90e",
+              "schemas/org.gnome.shell.extensions.papercusp-workbench.gschema.xml": "ac2f5d184f3e7f3156df421fd58139989c8990900eecc967ffb5f133d7e8b209"
+            },
+            "testSha256": "43f3b031c0eeeed128d289c9b9008774c42b305e4bc689231bdc27fda1471997"
+          },
+          "sourceHashesVerified": true,
+          "processEvidence": "/tmp/wb-p002-resident-all-20261108-v1/gnome-native-cards/gnome-native-process.json"
+        },
+        "gnome-native-chat": {
+          "assertions": [
+            "native shortcut acquisition",
+            "native seat supports input injection",
+            "native input methods exist",
+            "desktop ready for normal shortcuts",
+            "Papercup shortcut opens native Shell actor",
+            "saved transcript reaches native chat",
+            "canonical history completion focuses native composer",
+            "Markdown renders styled native text without literal Markdown delimiters",
+            "fenced code preserves literal markup characters in a native actor",
+            "native code scroll viewport allocates visible height for its literal text",
+            "code references and unscoped plan references remain inert",
+            "native Copy code writes exact literal code to the clipboard",
+            "native plan context changes work links while preserving conversation and draft",
+            "native links activate exact shared work-item and plan-item popup grammar and external URL",
+            "Earlier messages prepends canonical page",
+            "chat child control owns keyboard focus",
+            "Escape closes chat without application window",
+            "reopen preserves conversation draft",
+            "another conversation cannot inherit draft",
+            "returning to conversation restores only its draft",
+            "seat typing reaches native chat composer",
+            "partial reply renders before producer is released and blocks duplicate send",
+            "exact saved acknowledgement clears submitted draft",
+            "progressive reply is present in actual Shell actor",
+            "completion reloads persisted transcript without duplicate user turn",
+            "disconnect exposes reconciliation without a second send",
+            "Send retains exact selected environment conversation and saved user identity",
+            "Reconnect passes exact saved turn and cursor without replaying send",
+            "Cancel requires canonical saved cancellation receipt",
+            "Cancel retains exact conversation identity",
+            "Papercup remains outside Dock taskbar and Alt-Tab application windows"
+          ],
+          "sourceCustody": {
+            "archiveSha256": "a7f31ea2873b862a15a27d347641bf35886949c405323b9dc2adeb66b5a40327",
+            "journey": "chat",
+            "files": {
+              "extension.js": "825926d463b1908955d5c33387ae71908c3bf8574ccff0f48e115ed4c2ff7523",
+              "workbench.js": "b95ba18e385d5c491d0d0dbc25d36d04968d28fb5a2cb281e3b40d206deb0e9b",
+              "panel-model.mjs": "14839e5822af07d93611c5e9fa9687dc9ee7ef84ca7a86639aa5ba4b2aa92810",
+              "bridge.js": "f0af6f85819867ea17c790d268b2c428af15d36e489d6c7134b5feeadeaf4eb2",
+              "helper.js": "5604d173a62ad88583c884b0689ee1afc04da7a64ea5f41771e1fcd209416709",
+              "audio.js": "3e3d4927292d31494313a74fcee3438b3eaf3afefdacb5f430ba4fcb1827f6ad",
+              "chat-content.js": "97e4d37a47a1a99ecfc6e2f80872fd5d67fde3a5bbf8fb0d8b347a87d5f3c90e",
+              "schemas/org.gnome.shell.extensions.papercusp-workbench.gschema.xml": "ac2f5d184f3e7f3156df421fd58139989c8990900eecc967ffb5f133d7e8b209"
+            },
+            "testSha256": "43f3b031c0eeeed128d289c9b9008774c42b305e4bc689231bdc27fda1471997"
+          },
+          "sourceHashesVerified": true,
+          "processEvidence": "/tmp/wb-p002-resident-all-20261108-v1/gnome-native-chat/gnome-native-process.json"
+        },
+        "gnome-native-focus": {
+          "assertions": [
+            "native shortcut acquisition",
+            "native seat supports input injection",
+            "native input methods exist",
+            "desktop ready for normal shortcuts",
+            "native activation refuses a newer session behind the same selected owner",
+            "stale selection leaves the previously focused terminal unchanged",
+            "native activation observes exact launch window despite shared process and similar titles",
+            "verified terminal focus dismisses its native launcher",
+            "verified terminal focus clears transient loading detail",
+            "reopened native launcher shows results after verified focus",
+            "reopened native launcher renders a current agent control"
+          ],
+          "sourceCustody": {
+            "archiveSha256": "40de70428da66059df3010fda275f3e029f057a636030fe296221a07cd81d110",
+            "journey": "focus",
+            "files": {
+              "extension.js": "42c77111f161d9c972697a2000ab6fc42ca53597e4a8c1996cb91b6c881993b1",
+              "workbench.js": "b95ba18e385d5c491d0d0dbc25d36d04968d28fb5a2cb281e3b40d206deb0e9b",
+              "panel-model.mjs": "14839e5822af07d93611c5e9fa9687dc9ee7ef84ca7a86639aa5ba4b2aa92810",
+              "bridge.js": "f0af6f85819867ea17c790d268b2c428af15d36e489d6c7134b5feeadeaf4eb2",
+              "helper.js": "5604d173a62ad88583c884b0689ee1afc04da7a64ea5f41771e1fcd209416709",
+              "audio.js": "3e3d4927292d31494313a74fcee3438b3eaf3afefdacb5f430ba4fcb1827f6ad",
+              "chat-content.js": "97e4d37a47a1a99ecfc6e2f80872fd5d67fde3a5bbf8fb0d8b347a87d5f3c90e",
+              "schemas/org.gnome.shell.extensions.papercusp-workbench.gschema.xml": "ac2f5d184f3e7f3156df421fd58139989c8990900eecc967ffb5f133d7e8b209"
+            },
+            "testSha256": "43f3b031c0eeeed128d289c9b9008774c42b305e4bc689231bdc27fda1471997"
+          },
+          "sourceHashesVerified": true,
+          "processEvidence": "/tmp/wb-p002-resident-all-20261108-v1/gnome-native-focus/gnome-native-process.json"
+        },
+        "gnome-native-input": {
+          "assertions": [
+            "native shortcut acquisition",
+            "native seat supports input injection",
+            "native input methods exist",
+            "desktop ready for normal shortcuts",
+            "qualified plan reached native actor model",
+            "Shell actor is attached",
+            "native result controls rendered",
+            "independent pinned panels coexist",
+            "Goals requests only its canonical source",
+            "panels and GTK helper create no application windows",
+            "debounced canonical query renders current result",
+            "exact report body in native detail",
+            "first Escape dismisses detail only",
+            "second Escape dismisses only its surface",
+            "reopen retains query and exact selection",
+            "outside dismissal preserves another pinned surface",
+            "repeated shortcut toggles pinned surface",
+            "Inbox canonical list reaches native actor",
+            "Inbox persisted denominator reaches native status",
+            "Inbox selected context preserves exact identity",
+            "Inbox context read uses canonical id without action itemId",
+            "Inbox confirmation freezes edited answer",
+            "Inbox write uses helper native-inbox and verifies terminal receipt",
+            "Inbox adds no application window",
+            "Inbox dismissal removes native actors and run refresh",
+            "seat shortcut opens panel",
+            "seat typing reaches focused native search",
+            "seat arrow navigates results",
+            "seat Up restores exact report selection",
+            "focused search consumes Enter through native activate signal",
+            "seat Enter opens exact selected detail",
+            "seat Escape dismisses detail before surface",
+            "seat click pins native panel",
+            "seat second shortcut preserves independent pin",
+            "seat journey keeps native surfaces outside application windows",
+            "seat outside click closes unpinned panel and preserves pin",
+            "seat shortcut toggles pinned panel closed",
+            "connection change dismisses panels and retires old data, detail and selection",
+            "connection change selects the new helper backend and retires Inbox identity"
+          ],
+          "sourceCustody": {
+            "archiveSha256": "ae67952f57f67ded6f081486af11b681d1d4a9dd56d1dda73dea3ba3d204851e",
+            "journey": "input",
+            "files": {
+              "extension.js": "457def86b7cb46f34f4df0b327fef29055fd972e98a1b3642c6aa937b484ca63",
+              "workbench.js": "b95ba18e385d5c491d0d0dbc25d36d04968d28fb5a2cb281e3b40d206deb0e9b",
+              "panel-model.mjs": "14839e5822af07d93611c5e9fa9687dc9ee7ef84ca7a86639aa5ba4b2aa92810",
+              "bridge.js": "f0af6f85819867ea17c790d268b2c428af15d36e489d6c7134b5feeadeaf4eb2",
+              "helper.js": "5604d173a62ad88583c884b0689ee1afc04da7a64ea5f41771e1fcd209416709",
+              "audio.js": "3e3d4927292d31494313a74fcee3438b3eaf3afefdacb5f430ba4fcb1827f6ad",
+              "chat-content.js": "97e4d37a47a1a99ecfc6e2f80872fd5d67fde3a5bbf8fb0d8b347a87d5f3c90e",
+              "schemas/org.gnome.shell.extensions.papercusp-workbench.gschema.xml": "ac2f5d184f3e7f3156df421fd58139989c8990900eecc967ffb5f133d7e8b209"
+            },
+            "testSha256": "43f3b031c0eeeed128d289c9b9008774c42b305e4bc689231bdc27fda1471997"
+          },
+          "sourceHashesVerified": true,
+          "processEvidence": "/tmp/wb-p002-resident-all-20261108-v1/gnome-native-input/gnome-native-process.json"
+        },
+        "gnome-native-organizer": {
+          "assertions": [
+            "native shortcut acquisition",
+            "native seat supports input injection",
+            "native input methods exist",
+            "desktop ready for normal shortcuts",
+            "Organizer shortcut summons a native actor",
+            "Arrange exact-harness / same verifies exact placement and partial failures",
+            "selected terminals remain on two distinct desktops",
+            "unselected terminal sharing the process remains unchanged",
+            "Arrange exact-fleet verifies exact placement and partial failures",
+            "Arrange Goal  verifies exact placement and partial failures",
+            "native receipts retain requested and observed geometry",
+            "native panel exposes remote desktop failure",
+            "Organizer dismisses independently"
+          ],
+          "sourceCustody": {
+            "archiveSha256": "d27857440d138756f13010b0767c3ac4a9eba62b34aaf077a02575e2c628b9bd",
+            "journey": "organizer",
+            "files": {
+              "extension.js": "0ead10ddcb83203a9105e3660d14d277defbf3bc65266cf211d23d16f74387b3",
+              "workbench.js": "b95ba18e385d5c491d0d0dbc25d36d04968d28fb5a2cb281e3b40d206deb0e9b",
+              "panel-model.mjs": "14839e5822af07d93611c5e9fa9687dc9ee7ef84ca7a86639aa5ba4b2aa92810",
+              "bridge.js": "f0af6f85819867ea17c790d268b2c428af15d36e489d6c7134b5feeadeaf4eb2",
+              "helper.js": "5604d173a62ad88583c884b0689ee1afc04da7a64ea5f41771e1fcd209416709",
+              "audio.js": "3e3d4927292d31494313a74fcee3438b3eaf3afefdacb5f430ba4fcb1827f6ad",
+              "chat-content.js": "97e4d37a47a1a99ecfc6e2f80872fd5d67fde3a5bbf8fb0d8b347a87d5f3c90e",
+              "schemas/org.gnome.shell.extensions.papercusp-workbench.gschema.xml": "ac2f5d184f3e7f3156df421fd58139989c8990900eecc967ffb5f133d7e8b209"
+            },
+            "testSha256": "43f3b031c0eeeed128d289c9b9008774c42b305e4bc689231bdc27fda1471997"
+          },
+          "sourceHashesVerified": true,
+          "processEvidence": "/tmp/wb-p002-resident-all-20261108-v1/gnome-native-organizer/gnome-native-process.json"
+        },
+        "gnome-native-resume": {
+          "assertions": [
+            "native shortcut acquisition",
+            "native seat supports input injection",
+            "native input methods exist",
+            "desktop ready for normal shortcuts",
+            "native Resume refuses a running replacement before opening a terminal",
+            "failed terminal launch stays visible with its error",
+            "ended result exposes an explicit native Resume button",
+            "native click reacquires a result replaced during pointer motion",
+            "seat Resume passes the exact ID, host and owner through the configured PUI argv",
+            "accepted terminal handoff dismisses its native launcher",
+            "native remote Resume preserves the saved host for terminal-side connection selection",
+            "accepted Resume clears transient checking detail before reopen",
+            "real terminal journey exposes the selected Resume button",
+            "production GIO terminal launch preserves exact arguments and quoted PUI executable path",
+            "GIO launches the selected command inside a real terminal PTY",
+            "GIO terminal inherits both aliases of the selected Workbench connection",
+            "real terminal handoff dismisses its native launcher"
+          ],
+          "sourceCustody": {
+            "archiveSha256": "5d79304a0d3f968eba5a697666c23708f4111ac795a1e4193fcbd2f8f94b7756",
+            "journey": "resume",
+            "files": {
+              "extension.js": "df7728343704d0d5afa7d5689f43b478e87937e48391c8e25b15d48fce48ab79",
+              "workbench.js": "b95ba18e385d5c491d0d0dbc25d36d04968d28fb5a2cb281e3b40d206deb0e9b",
+              "panel-model.mjs": "14839e5822af07d93611c5e9fa9687dc9ee7ef84ca7a86639aa5ba4b2aa92810",
+              "bridge.js": "f0af6f85819867ea17c790d268b2c428af15d36e489d6c7134b5feeadeaf4eb2",
+              "helper.js": "5604d173a62ad88583c884b0689ee1afc04da7a64ea5f41771e1fcd209416709",
+              "audio.js": "3e3d4927292d31494313a74fcee3438b3eaf3afefdacb5f430ba4fcb1827f6ad",
+              "chat-content.js": "97e4d37a47a1a99ecfc6e2f80872fd5d67fde3a5bbf8fb0d8b347a87d5f3c90e",
+              "schemas/org.gnome.shell.extensions.papercusp-workbench.gschema.xml": "ac2f5d184f3e7f3156df421fd58139989c8990900eecc967ffb5f133d7e8b209"
+            },
+            "testSha256": "43f3b031c0eeeed128d289c9b9008774c42b305e4bc689231bdc27fda1471997"
+          },
+          "sourceHashesVerified": true,
+          "processEvidence": "/tmp/wb-p002-resident-all-20261108-v1/gnome-native-resume/gnome-native-process.json"
+        },
+        "gnome-native-voice": {
+          "assertions": [
+            "native shortcut acquisition",
+            "native seat supports input injection",
+            "native input methods exist",
+            "desktop ready for normal shortcuts",
+            "voice binds exact canonical UUID conversation",
+            "native voice controls offer explicit recording and reply playback",
+            "opening conversation never records sends or plays automatically",
+            "real GStreamer capture exposes stop and use controls without duplicate capture",
+            "exact transcription populates editable native draft with review before Send",
+            "native capture reaches PUI as a finalized WAV",
+            "voice transport retains selected environment store conversation and unique request identity",
+            "transcription neither sends a turn nor starts reply audio",
+            "Read reply synthesizes only the exact selected reply",
+            "stopping playback preserves the reviewed draft",
+            "speech service failure preserves draft and explains the failure",
+            "a foreign voice receipt cannot replace the draft",
+            "seat editing cancels and reaps pending speech before any late transcript can apply",
+            "refresh retires capture and preserves the conversation draft",
+            "Earlier messages retires capture before changing history",
+            "Escape retires devices without creating an application window",
+            "another conversation inherits neither recording nor voice draft",
+            "returning to original conversation restores only its draft",
+            "explicit native Send carries voice modality and exact reviewed text and identity",
+            "explicit Send retires a live recording before starting the saved turn",
+            "native voice remains outside Dock taskbar and Alt-Tab application windows",
+            "changing the selected PUI environment hides chat and retires its voice devices"
+          ],
+          "sourceCustody": {
+            "archiveSha256": "d261ca3ae42f8ef3c759579a064ed289bda048a843092ce833205498eaaeaa93",
+            "journey": "voice",
+            "files": {
+              "extension.js": "d3d2f868c56958203fcb480eb0106eebae05a6a83e7bd7a093ff88e90c74cd05",
+              "workbench.js": "b95ba18e385d5c491d0d0dbc25d36d04968d28fb5a2cb281e3b40d206deb0e9b",
+              "panel-model.mjs": "14839e5822af07d93611c5e9fa9687dc9ee7ef84ca7a86639aa5ba4b2aa92810",
+              "bridge.js": "f0af6f85819867ea17c790d268b2c428af15d36e489d6c7134b5feeadeaf4eb2",
+              "helper.js": "5604d173a62ad88583c884b0689ee1afc04da7a64ea5f41771e1fcd209416709",
+              "audio.js": "3e3d4927292d31494313a74fcee3438b3eaf3afefdacb5f430ba4fcb1827f6ad",
+              "chat-content.js": "97e4d37a47a1a99ecfc6e2f80872fd5d67fde3a5bbf8fb0d8b347a87d5f3c90e",
+              "schemas/org.gnome.shell.extensions.papercusp-workbench.gschema.xml": "ac2f5d184f3e7f3156df421fd58139989c8990900eecc967ffb5f133d7e8b209"
+            },
+            "testSha256": "43f3b031c0eeeed128d289c9b9008774c42b305e4bc689231bdc27fda1471997",
+            "audioFixture": {
+              "path": "voice-helper.js",
+              "sha256": "4ccb32788ec846e9282115f9ca1e890d53e63af58b61570ee6b5ce249fbbf0fe",
+              "plane": "production AudioDevices and helper with constructor-selected audiotestsrc and fakesink; no physical microphone or speaker claim"
+            }
+          },
+          "sourceHashesVerified": true,
+          "processEvidence": "/tmp/wb-p002-resident-all-20261108-v1/gnome-native-voice/gnome-native-process.json"
+        }
+      }
+    }
+  },
+  "nativeAssertions": [
+    "native shortcut acquisition",
+    "native seat supports input injection",
+    "native input methods exist",
+    "desktop ready for normal shortcuts",
+    "Accounts shortcut opens the complete canonical pool",
+    "account-specific controls require an exact selection",
+    "Accounts displays selected endpoint workspace store and chat scope",
+    "pool and override reads carry the exact selected environment",
+    "opening Accounts does not mutate steering",
+    "all independent confirmed steering axes render",
+    "local account search filters by provider despite duplicate names",
+    "duplicate labels preserve exact account identity",
+    "Default changes only its confirmed steering axis",
+    "Force toggles independently of Default and Exclude",
+    "Exclude toggles independently without inferring Force",
+    "Auto clears Force and Exclude while preserving Default",
+    "native-account writes preserve exact action account and environment",
+    "failed canonical writes retain confirmed state and require refresh",
+    "foreign write confirmation cannot change displayed steering",
+    "Accounts refuses partial canonical pool or scope",
+    "Accounts refuses duplicate canonical pool or scope",
+    "Accounts refuses foreign canonical pool or scope",
+    "pending write never changes confirmed state or permits a second action",
+    "first Escape dismisses selected account before its panel",
+    "hidden Accounts rejects a late write confirmation",
+    "reopening reads persisted canonical state after late confirmation",
+    "selected environment change invalidates prior Accounts content",
+    "changing Accounts preference releases its old accelerator",
+    "configured Accounts accelerator reopens the native panel",
+    "Accounts Shell actors create no application window or task-switcher identity"
+  ],
+  "sourceCustody": {
+    "archiveSha256": "522635025eb9c3a226cdf8dc6277d31124eef78a2077ef67f42170d7079db5f7",
+    "journey": "accounts",
+    "files": {
+      "extension.js": "4a2b34e9cab7bbefc04cfd6fcc22e82c0fd79918d5edf87759b65971eac02905",
+      "workbench.js": "b95ba18e385d5c491d0d0dbc25d36d04968d28fb5a2cb281e3b40d206deb0e9b",
+      "panel-model.mjs": "14839e5822af07d93611c5e9fa9687dc9ee7ef84ca7a86639aa5ba4b2aa92810",
+      "bridge.js": "f0af6f85819867ea17c790d268b2c428af15d36e489d6c7134b5feeadeaf4eb2",
+      "helper.js": "5604d173a62ad88583c884b0689ee1afc04da7a64ea5f41771e1fcd209416709",
+      "audio.js": "3e3d4927292d31494313a74fcee3438b3eaf3afefdacb5f430ba4fcb1827f6ad",
+      "chat-content.js": "97e4d37a47a1a99ecfc6e2f80872fd5d67fde3a5bbf8fb0d8b347a87d5f3c90e",
+      "schemas/org.gnome.shell.extensions.papercusp-workbench.gschema.xml": "ac2f5d184f3e7f3156df421fd58139989c8990900eecc967ffb5f133d7e8b209"
+    },
+    "testSha256": "43f3b031c0eeeed128d289c9b9008774c42b305e4bc689231bdc27fda1471997"
+  },
+  "sourceHashVerification": {
+    "workbench.js": {
+      "match": true,
+      "sha256": "b95ba18e385d5c491d0d0dbc25d36d04968d28fb5a2cb281e3b40d206deb0e9b"
+    },
+    "panel-model.mjs": {
+      "match": true,
+      "sha256": "14839e5822af07d93611c5e9fa9687dc9ee7ef84ca7a86639aa5ba4b2aa92810"
+    },
+    "bridge.js": {
+      "match": true,
+      "sha256": "f0af6f85819867ea17c790d268b2c428af15d36e489d6c7134b5feeadeaf4eb2"
+    },
+    "helper.js": {
+      "match": true,
+      "sha256": "5604d173a62ad88583c884b0689ee1afc04da7a64ea5f41771e1fcd209416709"
+    },
+    "audio.js": {
+      "match": true,
+      "sha256": "3e3d4927292d31494313a74fcee3438b3eaf3afefdacb5f430ba4fcb1827f6ad"
+    },
+    "schemas/org.gnome.shell.extensions.papercusp-workbench.gschema.xml": {
+      "match": true,
+      "sha256": "ac2f5d184f3e7f3156df421fd58139989c8990900eecc967ffb5f133d7e8b209"
+    },
+    "test": {
+      "match": true,
+      "sha256": "43f3b031c0eeeed128d289c9b9008774c42b305e4bc689231bdc27fda1471997"
+    }
+  },
+  "evidence": {
+    "process": "/tmp/wb-p002-accounts-native-20261108-v2/gnome-native-accounts/gnome-native-process.json",
+    "screenshot": "/tmp/wb-p002-accounts-native-20261108-v2/gnome-native-accounts/gnome-native-input.png",
+    "screenshotVisuallyReviewed": true
+  },
+  "limits": [
+    "Fixture PUI has no live account mutations.",
+    "Local source and packaged extension proof only; no exact installed desktop artifact or three-OS certificate.",
+    "Installed Ubuntu/macOS/Windows fresh install, upgrade, login and complete plan acceptance remain pending."
+  ]
+}
