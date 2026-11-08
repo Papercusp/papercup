@@ -217,6 +217,55 @@ describe('POST /agent-mcp/operator-stt', () => {
 // ─── operator-tts ────────────────────────────────────────────────────────────
 
 describe('POST /agent-mcp/operator-tts original reading', () => {
+  it('lets JSON-only native clients read the complete Unicode source one canonical chunk at a time', async () => {
+    const source = 'First sentence. λ😀 words!\n'.repeat(450) + 'THE FINAL WORDS';
+    const mock = stubFetch(() => new Response(FAKE_WAV));
+    const chunks: Array<{text: string; start: number; end: number; index: number; total: number}> = [];
+    for (let index = 0, total = 1; index < total; index++) {
+      const res = await post(ttsRoute, 'operator-tts', { operation: 'read', text: source, chunkIndex: index });
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-type')).toContain('application/json');
+      const chunk = await res.json();
+      expect(chunk).toMatchObject({ ok: true, type: 'chunk', index, audioBase64: FAKE_WAV_B64 });
+      expect(chunk.start).toBe(chunks.at(-1)?.end ?? 0);
+      expect(chunk.end).toBe(chunk.start + chunk.text.length);
+      expect(Buffer.byteLength(chunk.text, 'utf8')).toBeLessThanOrEqual(4000);
+      expect(mock).toHaveBeenCalledTimes(index + 1); // no synthesis ahead of the player
+      chunks.push(chunk); total = chunk.total;
+    }
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.map(chunk => chunk.text).join('')).toBe(source);
+    const before = mock.mock.calls.length;
+    const outside = await post(ttsRoute, 'operator-tts', { operation: 'read', text: source, chunkIndex: chunks.length });
+    expect(outside.status).toBe(400);
+    expect(mock).toHaveBeenCalledTimes(before);
+  });
+
+  it('synthesizes only the selected chunk and preserves provider errors without a completed receipt', async () => {
+    const mock = stubFetch(() => new Response('unavailable', { status: 500 }));
+    const res = await post(ttsRoute, 'operator-tts', { operation: 'read', text: 'x'.repeat(9000), chunkIndex: 2 });
+    expect(res.status).toBe(502);
+    expect(await res.json()).toMatchObject({ ok: false, status: 502 });
+    expect(mock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([-1, 0.5, '1', null])('rejects an invalid native reading chunk index %s before synthesis', async chunkIndex => {
+    const mock = stubFetch(() => new Response(FAKE_WAV));
+    const res = await post(ttsRoute, 'operator-tts', { operation: 'read', text: 'words', chunkIndex });
+    expect(res.status).toBe(400);
+    expect(mock).not.toHaveBeenCalled();
+  });
+
+  it('does not synthesize a selected chunk after native cancellation', async () => {
+    const mock = stubFetch(() => new Response(FAKE_WAV));
+    const res = await (ttsRoute as unknown as Route).handler(new Request('http://localhost/api/agent-mcp/operator-tts', {
+      method: 'POST', body: JSON.stringify({ operation: 'read', text: 'x'.repeat(9000), chunkIndex: 1 }),
+      signal: AbortSignal.abort(),
+    }), { params: {} });
+    expect(res.status).toBe(499);
+    expect(mock).not.toHaveBeenCalled();
+  });
+
   it('reads the complete long source using stored settings and emits honest progress/completion', async () => {
     const mock = stubFetch(() => new Response(FAKE_WAV));
     const source = 'A paragraph with exact symbols {name}. '.repeat(230) + 'FINAL 🐉 TAIL';

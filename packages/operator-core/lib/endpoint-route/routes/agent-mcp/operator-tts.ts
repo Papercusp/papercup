@@ -64,6 +64,9 @@ async function readingResponse(body: Record<string, unknown>, requestSignal: Abo
   if (body.allowCloud !== undefined && typeof body.allowCloud !== 'boolean') {
     return Response.json({ ok: false, error: 'allowCloud must be a boolean' }, { status: 400 });
   }
+  if (body.chunkIndex !== undefined && (!Number.isSafeInteger(body.chunkIndex) || (body.chunkIndex as number) < 0)) {
+    return Response.json({ ok: false, error: 'chunkIndex must be a non-negative safe integer' }, { status: 400 });
+  }
   // This loopback route consumes supplied text only: no reference dereference,
   // file access, or remote fetching. Source readers retain their existing ACLs.
   const prefs = await loadVoicePrefs();
@@ -71,6 +74,7 @@ async function readingResponse(body: Record<string, unknown>, requestSignal: Abo
   const signal = AbortSignal.any([requestSignal, abort.signal]);
   const reading = synthesizeReading(text, prefs, {
     format: body.format as 'text' | 'markdown' | undefined,
+    chunkIndex: body.chunkIndex as number | undefined,
     allowCloud: body.allowCloud === true,
     signal,
   });
@@ -80,6 +84,16 @@ async function readingResponse(body: Record<string, unknown>, requestSignal: Abo
   if (first.value && !first.value.ok) {
     await reading.return(undefined);
     return Response.json(first.value, { status: first.value.status });
+  }
+  // Same splitter/provider/privacy path as streaming readers. A native client
+  // holds only one audio chunk and never starts the next synthesis before playback.
+  if (body.chunkIndex !== undefined) {
+    try {
+      if (first.done || !first.value?.ok) return Response.json({ ok: false, error: 'No reading chunk available' }, { status: 400 });
+      const { audio, ...progress } = first.value;
+      return Response.json({ ...progress, type: 'chunk', audioBase64: Buffer.from(audio).toString('base64') },
+        { headers: { 'cache-control': 'no-store' } });
+    } finally { await reading.return(undefined); }
   }
   const encode = (record: unknown) => new TextEncoder().encode(JSON.stringify(record) + '\n');
   let emitted = 0;

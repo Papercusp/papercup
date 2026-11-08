@@ -284,6 +284,8 @@ export async function synthesize(
 
 export interface ReadingSynthOptions extends SynthOptions {
   format?: 'text' | 'markdown';
+  /** JSON-only native transports request one canonical chunk after playing the previous one. */
+  chunkIndex?: number;
   /** Source disclosure permission, separate from the user's provider preference. */
   allowCloud?: boolean;
 }
@@ -321,8 +323,13 @@ export async function* synthesizeReading(
   // Shared route ceiling is below each supported provider's request cap. UTF-8
   // bounding also keeps non-Latin requests within the same byte budget.
   const chunks = splitSpeechText(prepared.text, { maxChars: MAX_TEXT_CHARS, maxUtf8Bytes: MAX_TEXT_CHARS });
-  let start = 0;
-  for (const [index, text] of chunks.entries()) {
+  const selected = options.chunkIndex;
+  if (selected !== undefined && (!Number.isSafeInteger(selected) || selected < 0 || selected >= chunks.length)) {
+    yield { ok: false, error: 'Reading chunk index is outside the source.', status: 400 }; return;
+  }
+  let start = selected === undefined ? 0 : chunks.slice(0, selected).reduce((sum, chunk) => sum + chunk.length, 0);
+  const entries: Iterable<[number, string]> = selected === undefined ? chunks.entries() : [[selected, chunks[selected]]];
+  for (const [index, text] of entries) {
     const result = await synthesize(resolved.engine, text, undefined, snapshot, options);
     if (!result.ok) { yield result; return; }
     yield { ...result, engine: resolved.engine, text, index, total: chunks.length, start, end: start + text.length, modifications: prepared.modifications };
