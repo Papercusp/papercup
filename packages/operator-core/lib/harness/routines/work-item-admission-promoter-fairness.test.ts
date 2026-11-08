@@ -38,6 +38,7 @@ function fixture(due = true, now: Date | string = new Date('2026-11-02T09:40:00.
   let slot: Record<string, unknown> = { dueAt: due ? '2000-01-01T00:00:00.000Z' : '2099-01-01T00:00:00.000Z' };
   const ledger = new Map<string, { result: ReturnType<typeof result>; settled: boolean }>();
   let queued = true;
+  let nextFireDue = false;
   const query = vi.fn(async (parts: TemplateStringsArray, ...values: unknown[]) => {
     const text = parts.join('?').replace(/\s+/g, ' ');
     if (text.includes('SELECT COALESCE(detail')) {
@@ -52,12 +53,19 @@ function fixture(due = true, now: Date | string = new Date('2026-11-02T09:40:00.
     if (text.includes('UPDATE harness_shared.routines SET metadata')) {
       const json = values.find((v) => typeof v === 'string' && v.startsWith('{')) as string;
       slot = JSON.parse(json);
-      if (text.includes('next_fire_at')) events.push('finish-ordinary');
+      if (text.includes('next_fire_at')) {
+        events.push('finish-ordinary');
+        nextFireDue = queued;
+      }
       return [];
     }
     if (text.includes('UPDATE harness_shared.admission_runs SET detail')) {
       const saved = JSON.parse(String(values[0]));
       ledger.set(saved.runId, { result: saved, settled: true });
+      return [];
+    }
+    if (text.includes('UPDATE harness_shared.admission_runs SET finished_at')) {
+      events.push('settle-recovery');
       return [];
     }
     throw new Error(`unexpected storage operation: ${text}`);
@@ -77,27 +85,33 @@ function fixture(due = true, now: Date | string = new Date('2026-11-02T09:40:00.
     ledger.set(runId, { result: saved, settled: false });
     return saved;
   });
-  io.recover.mockImplementation(async (scope) => {
+  io.recover.mockImplementation(async () => {
     if (!queued) return 0;
-    if (scope.deferUntilOrdinaryComplete) events.push('defer-original');
-    else {
-      events.push('recover-original');
-      queued = false;
-    }
+    events.push('recover-original');
+    queued = false;
     return 1;
   });
   const deps = { sql, authorize: vi.fn(), dispatch: vi.fn(), llmCall: vi.fn() };
-  return { events, query, deps, slot: () => slot, queued: () => queued };
+  return { events, query, deps, slot: () => slot, queued: () => queued, nextFireDue: () => nextFireDue };
 }
 
 beforeEach(() => vi.resetAllMocks());
 
 describe('D099 ordinary/exact admission fairness (injected production composition)', () => {
-  it('gives the original queued request a disposition before settling a due ordinary pass', async () => {
+  it('settles a due ordinary pass and recovers the original queued request on the next fire', async () => {
     const f = fixture();
     await expect(runAdmissionPromoterWithRecovery(options, f.deps)).resolves.toEqual(result(options.runId));
-    expect(f.events).toEqual(['review', 'defer-original', 'ordinary', 'recover-original', 'finish-ordinary']);
+    expect(f.events).toEqual(['review', 'ordinary', 'finish-ordinary']);
+    expect(f.queued()).toBe(true);
+    expect(f.nextFireDue()).toBe(true);
+    expect(io.recover).not.toHaveBeenCalled();
+
+    await runAdmissionPromoterWithRecovery({ ...options, runId: 'following-fire' }, f.deps);
+    expect(f.events).toEqual([
+      'review', 'ordinary', 'finish-ordinary', 'review', 'recover-original', 'settle-recovery',
+    ]);
     expect(f.queued()).toBe(false);
+    expect(io.promote).toHaveBeenCalledTimes(1);
     expect(io.recover).toHaveBeenLastCalledWith(expect.objectContaining({
       workspaceId: options.workspaceId, harnessSlug: options.harnessSlug,
     }), expect.objectContaining({ authorize: f.deps.authorize, dispatch: f.deps.dispatch }), f.deps.sql);
@@ -106,15 +120,16 @@ describe('D099 ordinary/exact admission fairness (injected production compositio
   it('accepts raw PostgreSQL timestamptz strings when claiming an ordinary slot', async () => {
     const f = fixture(true, '2026-11-02 09:40:00.000000+00');
     await expect(runAdmissionPromoterWithRecovery(options, f.deps)).resolves.toEqual(result(options.runId));
-    expect(f.events).toEqual(['review', 'defer-original', 'ordinary', 'recover-original', 'finish-ordinary']);
-    expect(f.slot().runId).toBe(options.runId);
+    expect(f.events).toEqual(['review', 'ordinary', 'finish-ordinary']);
+    expect(f.slot().completedRunIds).toContain(options.runId);
+    expect(Date.parse(String(f.slot().dueAt))).toBeGreaterThan(Date.parse('2026-11-02T09:40:00.000Z'));
   });
 
   it('does not let an ordinary screen failure dispatch exact work or lose the ordinary slot', async () => {
     const f = fixture();
     io.promote.mockRejectedValueOnce(new Error('ordinary screening unavailable'));
     await expect(runAdmissionPromoterWithRecovery(options, f.deps)).rejects.toThrow('ordinary screening unavailable');
-    expect(f.events).toEqual(['review', 'defer-original']);
+    expect(f.events).toEqual(['review']);
     expect(f.queued()).toBe(true);
     expect(f.slot().runId).toBe(options.runId);
   });
@@ -126,6 +141,8 @@ describe('D099 ordinary/exact admission fairness (injected production compositio
     await expect(runAdmissionPromoterWithRecovery(options, f.deps)).resolves.toEqual(result(options.runId));
     expect(io.recover).toHaveBeenCalledTimes(calls);
     expect(io.promote).toHaveBeenCalledTimes(1);
+    expect(f.queued()).toBe(true);
+    expect(f.nextFireDue()).toBe(true);
   });
 
   it('keeps review authorization first and fails closed before either admission path', async () => {
@@ -140,7 +157,7 @@ describe('D099 ordinary/exact admission fairness (injected production compositio
   it('does not accelerate unrelated ordinary screening on an exact-only fire', async () => {
     const f = fixture(false);
     await runAdmissionPromoterWithRecovery(options, f.deps);
-    expect(f.events).toEqual(['review', 'recover-original']);
+    expect(f.events).toEqual(['review', 'recover-original', 'settle-recovery']);
     expect(io.promote).not.toHaveBeenCalled();
     expect(f.slot().runId).toBeUndefined();
   });
