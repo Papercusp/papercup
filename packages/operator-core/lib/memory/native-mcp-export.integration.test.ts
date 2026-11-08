@@ -240,7 +240,12 @@ for (const client of ['codex', 'claude'] as const) for (const kind of ['memory',
   it(`context reliability R-1: installed ${client} ${kind} ${port} stdout`, async ({ task }) => {
     const instructions = `Native ${kind} receipt canary.\nApproval is required after the final condition ☃`;
     const capture = await captureNativeMcp(client, [{ name: 'receipt_canary', description: 'Local receipt observation.' }],
-      instructions, [], { stdioReceipt: kind, stdioPort: port });
+      instructions, [], { stdioReceipt: kind, stdioPort: port,
+        onDiagnostics: path => Object.assign(task.meta, { nativeMcpDiagnostics: path }) });
+    const diagnostic = JSON.parse(readFileSync(capture.diagnosticsPath, 'utf8'));
+    const initialize = diagnostic.mcpRequests.find((request: { method: string }) => request.method === 'initialize');
+    expect(initialize.params.clientInfo.name).toBe(`ptool-${client}`);
+    expect(initialize.params._meta['papercusp/memoryReceipt']).toEqual({ version: 1, confirmations: [] });
     expect(capture.methods).toEqual(expect.arrayContaining(['initialize', 'tools/list']));
     if (port !== 'initialize') expect(capture.methods).toContain('tools/call');
     // Two independent boundaries: the installed client's provider request
@@ -256,6 +261,24 @@ for (const client of ['codex', 'claude'] as const) for (const kind of ['memory',
       evidencePlane: 'installed-client-local-request', productionRuntime: 'UNKNOWN',
       scope: 'stdio adapter and installed client; fixture source/envelopes/recipient; no production port or deployment claim' } });
   }, 45_000);
+
+it('context reliability native harness: bounds exchanges and retains failed native requests', async ({ task }) => {
+  let diagnosticsPath = '';
+  await expect(captureNativeMcp('codex', [{ name: 'receipt_canary', description: 'Local receipt observation.' }],
+    'Bounded exchange canary.', [], { stdioReceipt: 'memory', stdioPort: 'orient', maxProviderExchanges: 1,
+      onDiagnostics: path => { diagnosticsPath = path; Object.assign(task.meta, { nativeMcpDiagnostics: path }); },
+    })).rejects.toThrow('Native provider exchange limit exceeded (1)');
+  const evidence = JSON.parse(readFileSync(diagnosticsPath, 'utf8'));
+  expect(evidence.requests).toHaveLength(2);
+  expect(evidence.providerRoutes).toHaveLength(2);
+  expect(evidence.signal).toBe('SIGKILL');
+  expect(evidence.mcpRequests.some((request: { method: string }) => request.method === 'initialize')).toBe(true);
+  expect(evidence.methods).toContain('tools/call');
+  expect(evidence.stdout).not.toContain('MCP tool call requires approval');
+  expect(evidence.invocation.environment.PAPERCUSP_AGENT).toBe('codex');
+  expect(evidence.environmentScope).toBe('native-client-parent');
+  expect(evidence.failure).toContain('exchange limit');
+}, 45_000);
 
 it('refuses to present the in-process OMP route as a ptool stdout profile', async () => {
   await expect(captureNativeMcp('omp', [{ name: 'echo', description: 'Unchanged registration.' }],

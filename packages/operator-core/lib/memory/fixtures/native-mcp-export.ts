@@ -23,6 +23,7 @@ export type NativeExport = {
   descriptors: Descriptor[]; request: Record<string, unknown>; methods: string[];
   clientSettings: { toolSearch?: 'disabled'; descriptionMode?: 'full' | 'default'; maxMcpDescriptionChars?: number };
   stdoutDelivery?: { adapter: 'ptool-stdio'; owner: string; confirmations: object[] };
+  diagnosticsPath: string;
 };
 export const baselineHash = '986f440eeaf59cf02a400fcd1caf206edae88cc7b04ccd95a91ba29235560ed4';
 export const sha256 = (text: string | Buffer) => createHash('sha256').update(text).digest('hex');
@@ -106,22 +107,33 @@ text(await tools[tool.name]({}));` }
 export async function captureNativeMcp(client: NativeExport['client'], tools: Descriptor[],
   instructions?: string, denied: string[] = [],
   options: { claudeDescriptionMode?: 'full' | 'default'; stdioReceipt?: 'memory' | 'corpus';
-    stdioPort?: 'initialize' | 'orient' | 'claim' | 'create' } = {}): Promise<NativeExport> {
+    stdioPort?: 'initialize' | 'orient' | 'claim' | 'create'; maxProviderExchanges?: number;
+    onDiagnostics?: (path: string) => void } = {}): Promise<NativeExport> {
   // OMP's maintained adapter is in-process. A ptool subprocess would measure
   // a different route, so never turn its registration proof into stdout proof.
   if (options.stdioReceipt && (client === 'omp' || !instructions))
     throw new Error('Native stdout receipt profile requires Codex/Claude instructions');
   const binary = wellKnownBackendBin(client === 'claude' ? 'claude-code' : client) ?? resolveOnPath(client);
   if (!binary) throw new Error(`Installed ${client} is required for native export evidence`);
-  const clientVersion = execFileSync(binary, ['--version'], { encoding: 'utf8', timeout: 5000 }).trim();
+  const maxProviderExchanges = options.maxProviderExchanges ?? 8;
+  if (!Number.isInteger(maxProviderExchanges) || maxProviderExchanges < 1 || maxProviderExchanges > 32)
+    throw new Error('Native provider exchange limit must be an integer from 1 to 32');
+  let clientVersion = 'UNKNOWN';
   const clientSettings: NativeExport['clientSettings'] = {};
   const home = mkdtempSync(join(tmpdir(), `${client}-mcp-wire-`));
+  // This sibling survives private-home cleanup, including a failing exchange.
+  const diagnosticsPath = `${home}.diagnostics.json`;
   const receiptOwner = `su-native-receipt-${client}`;
   const receiptPort = options.stdioPort ?? 'initialize';
   const receiptOffer = options.stdioReceipt ? { owner: receiptOwner, token: `native-${receiptPort}-${client}`,
     fragments: [memoryFragmentOffer(options.stdioReceipt, `native-${options.stdioReceipt}`, 3, receiptPort, instructions!)] } : null;
   const callReceipt = !!receiptOffer && receiptPort !== 'initialize';
   const methods: string[] = [], captures: Record<string, unknown>[] = [];
+  const mcpRequests: Record<string, unknown>[] = [];
+  const providerRoutes: string[] = [];
+  let failure: string | null = null;
+  let invocation: { argv: string[]; environment: Record<string, string | null> } | null = null;
+  let child: ReturnType<typeof spawn> | undefined, stderr = '', stdout = '';
   const server = createServer(async (req, res) => {
     try {
       if (req.method === 'GET') {
@@ -134,6 +146,7 @@ export async function captureNativeMcp(client: NativeExport['client'], tools: De
       const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>;
       const route = new URL(req.url ?? '/', 'http://offline.invalid').pathname;
       if (route === '/mcp' || route === '/api/mcp') {
+        mcpRequests.push(body);
         const method = String(body.method); methods.push(method);
         if (body.id === undefined) { res.writeHead(202); res.end(); return; }
         const result = method === 'initialize'
@@ -142,6 +155,10 @@ export async function captureNativeMcp(client: NativeExport['client'], tools: De
             ...(receiptOffer && !callReceipt ? { _meta: { 'papercusp/memoryEmission': receiptOffer } } : {}) }
           : method === 'tools/list' ? { tools: tools.map(tool => ({ ...tool,
             inputSchema: { type: 'object', properties: {} },
+            // This canary only returns a fixed local observation. Leaving its
+            // safety unspecified makes Codex require interactive approval.
+            ...(receiptOffer ? { annotations: { readOnlyHint: true, destructiveHint: false,
+              idempotentHint: true, openWorldHint: false } } : {}),
             ...(receiptOffer ? { _meta: { 'papercusp/servingGeneration': 'native-receipt-fixture-v1' } } : {}) })) }
             : method === 'tools/call' && callReceipt ? {
               content: [{ type: 'text', text: JSON.stringify({ [receiptPort]: instructions }) }],
@@ -155,6 +172,13 @@ export async function captureNativeMcp(client: NativeExport['client'], tools: De
       }
       if (req.url?.includes('/responses') || Array.isArray(body.tools)) {
         captures.push(body);
+        providerRoutes.push(route);
+        if (captures.length > maxProviderExchanges) {
+          failure = `Native provider exchange limit exceeded (${maxProviderExchanges})`;
+          child?.kill('SIGKILL');
+          res.writeHead(400, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ error: failure })); return;
+        }
         if (callReceipt && client !== 'omp') {
           sendReceiptTurn(res, client, body, tools[0]!.name, methods.includes('tools/call'));
           return;
@@ -164,9 +188,9 @@ export async function captureNativeMcp(client: NativeExport['client'], tools: De
       res.end('{"type":"error","error":{"type":"invalid_request_error","message":"Offline capture complete; no forwarding."}}');
     } catch (error) { if (!res.headersSent) res.writeHead(400); res.end(String(error)); }
   });
-  let child: ReturnType<typeof spawn> | undefined, stderr = '', stdout = '';
   const frameTypes: string[] = [];
   try {
+    clientVersion = execFileSync(binary, ['--version'], { encoding: 'utf8', timeout: 5000 }).trim();
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
     const baseURL = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
     const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, LANG: process.env.LANG ?? 'C.UTF-8', HOME: home };
@@ -187,7 +211,12 @@ export async function captureNativeMcp(client: NativeExport['client'], tools: De
       const gateway = codexGatewayConfigToml(null, { gateway: { baseURL, token: 'offline_capture_token_'.repeat(3) } });
       writeFileSync(join(home, 'config.toml'), ['model = "gpt-6.1-sol"', ...gateway.root, ...gateway.tables,
         '[mcp_servers.offline_canary]', ...(receiptOffer
-          ? [`command = ${JSON.stringify(process.execPath)}`, `args = ${JSON.stringify(bridgeArgs)}`]
+          ? [`command = ${JSON.stringify(process.execPath)}`, `args = ${JSON.stringify(bridgeArgs)}`,
+            // Codex filters the MCP child's inherited environment. These are
+            // fixture identities and private paths, never account credentials.
+            `env = { ${['PAPERCUSP_HOME', 'PAPERCUSP_OPERATOR_HOME', 'PAPERCUSP_SID',
+              'PAPERCUSP_AGENT', 'PAPERCUSP_INSTALL_MUTEX_HELD'].filter(key => env[key])
+              .map(key => `${key} = ${JSON.stringify(env[key])}`).join(', ')} }`]
           : [`url = "${baseURL}/mcp"`]), 'required = true',
         'startup_timeout_sec = 10', 'tool_timeout_sec = 10'].join('\n'));
       Object.assign(env, { CODEX_HOME: home, OPENAI_API_KEY: 'offline-fixture-only' });
@@ -267,6 +296,10 @@ export default async function(pi) {
       argv = ['--mode', 'rpc', '--no-extensions', '--no-skills', '--no-rules', '--no-session',
         '--extension', extension, '--model', 'native-export-fixture/proof'];
     }
+    invocation = { argv, environment: Object.fromEntries([
+      'HOME', 'CODEX_HOME', 'PAPERCUSP_HOME', 'PAPERCUSP_OPERATOR_HOME', 'PAPERCUSP_SID',
+      'PAPERCUSP_AGENT', 'PAPERCUSP_INSTALL_MUTEX_HELD',
+    ].map(key => [key, env[key] ?? null])) };
     child = spawn(binary, argv, { env, cwd: home, stdio: ['pipe', 'pipe', 'pipe'] });
     child.stderr!.setEncoding('utf8');
     child.stderr!.on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-3000); });
@@ -295,7 +328,8 @@ export default async function(pi) {
       // Codex treats a live stdin as additional input even with a prompt argv.
       // The original native fixture used stdio:'ignore'; preserve that EOF.
       running.stdin!.end();
-      running.stdout!.resume();
+      running.stdout!.setEncoding('utf8');
+      running.stdout!.on('data', (chunk: string) => { stdout = (stdout + chunk).slice(-16000); });
     }
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -307,6 +341,9 @@ export default async function(pi) {
       running.once('error', error => { clearTimeout(timer); reject(error); });
       running.once('exit', () => { clearTimeout(timer); resolve(); });
     });
+    if (failure) throw new Error(failure);
+    if (running.exitCode !== 0 && !captures.length)
+      throw new Error(`${client} native export exited without a provider request: ${stderr}`);
     if (!methods.includes('initialize') || !methods.includes('tools/list')) throw new Error(`${client} MCP handshake missing: ${stderr}`);
     const request = callReceipt ? captures.at(-1)
       : captures.find(body => client === 'omp' || JSON.stringify(body).includes(tools[0]!.name));
@@ -318,18 +355,30 @@ export default async function(pi) {
       const prompt = (data.systemPrompt as string[]).join('\n');
       if (request.success !== true || !prompt.includes('xd://mcp__offline_canary_')) throw new Error('OMP mounted route missing');
     }
-    return { client, clientVersion, clientSettings,
+    return { client, clientVersion, clientSettings, diagnosticsPath,
       evidencePlane: client === 'omp' ? 'installed-client-registration' : 'installed-client-local-request',
       request, descriptors, methods,
       ...(receiptOffer ? { stdoutDelivery: { adapter: 'ptool-stdio' as const, owner: receiptOwner,
         confirmations: openDeliveryLedger(receiptOwner, env, 'mcp')?.confirmedMemoryDeliveries() ?? [] } } : {}) };
+  } catch (error) {
+    failure ??= String(error);
+    throw new Error(`${failure}; diagnostics: ${diagnosticsPath}`, { cause: error });
   } finally {
     if (child && child.exitCode === null && child.signalCode === null) {
       const exited = new Promise<void>(resolve => child!.once('exit', () => resolve()));
       child.kill('SIGKILL'); await exited;
     }
     server.closeAllConnections();
-    await new Promise<void>(resolve => server.close(() => resolve()));
+    if (server.listening) await new Promise<void>(resolve => server.close(() => resolve()));
+    writeFileSync(diagnosticsPath, JSON.stringify({ client, clientVersion, binary, clientSettings,
+      receiptKind: options.stdioReceipt ?? null, receiptPort, maxProviderExchanges,
+      failure, invocation, exitCode: child?.exitCode ?? null, signal: child?.signalCode ?? null,
+      methods, mcpRequests, providerRoutes, requests: captures, frameTypes, stdout, stderr,
+      // Parent environment is measured here; the MCP child's inheritance must
+      // be established separately from its actual initialize request metadata.
+      environmentScope: 'native-client-parent',
+    }, null, 2), { mode: 0o600 });
+    options.onDiagnostics?.(diagnosticsPath);
     rmSync(home, { recursive: true, force: true });
   }
 }
