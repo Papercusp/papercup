@@ -355,6 +355,14 @@ beforeEach(async () => {
            (${WORKSPACE}, ${HARNESS}, 'WI-102', 'reconnect-plan', ARRAY['P-003', 'P-004']::text[])`;
 });
 
+// This JSON leaf contains literals, with no dependency on production or the
+// adequacy/scorecard implementation. Review it together with this projection;
+// neither a local pass nor a prior diagnostic review certifies independence.
+const custodyOracleBytes = await readFile(
+  new URL('./__fixtures__/paperwork-p017-custody-oracle.json', import.meta.url), 'utf8');
+const custodyOracle = JSON.parse(custodyOracleBytes);
+const custodyOracleSha256 = createHash('sha256').update(custodyOracleBytes).digest('hex');
+
 describe('canonical binding consumer custody', () => {
   it.each(['terminal', 'dead', 'abandoned', 'revoked'] as const)(
     'pins before the real binding insert and reclaims only after %s consumer expiry', async loss => {
@@ -405,6 +413,7 @@ describe('canonical binding consumer custody', () => {
       const reference = { harness_slug: HARNESS, work_item_id: 'WI-101', evidence_ref: evidenceRef };
       const repositories = new Map([[HARNESS, h.repoRoot]]);
       const inserts: string[] = [];
+      let preInsertPins: ReturnType<typeof readRetentionPins> | undefined;
       // Retain actual constructed values and observed outcomes before cleanup.
       // These diagnostics are bounded fixture evidence, not independent oracles.
       const trace = (stage: string, value: unknown) => console.info('P017_CUSTODY_RUNTIME',
@@ -415,6 +424,7 @@ describe('canonical binding consumer custody', () => {
           clock: { hour, nowMs, intakeMs }, resultBytes, consumer: await consumer.listPresence() });
         h.beforeBindingInsert = () => {
           const pins = readRetentionPins({ dir, nowMs: intakeMs });
+          preInsertPins = pins;
           trace('before-binding-insert', pins);
           expect(pins.errors).toEqual([]);
           expect(pins.pins).toEqual([expect.objectContaining({ owner: 'work-item:WI-101', paths: [retained] })]);
@@ -449,7 +459,8 @@ describe('canonical binding consumer custody', () => {
         expect(active.errors).toEqual([]);
         expect(active.entries).toContainEqual(expect.objectContaining({ path: retained, status: 'protected' }));
         expect(active.entries).toContainEqual(expect.objectContaining({ path: unrelated, status: 'removed' }));
-        expect(await readFile(path.join(retained, 'result.json'), 'utf8')).toBe(resultBytes);
+        const retainedBytes = await readFile(path.join(retained, 'result.json'), 'utf8');
+        expect(retainedBytes).toBe(resultBytes);
         const renewed = readRetentionPins({ dir, nowMs }).pins[0]!;
         expect(renewed.id).toBe(intakePin.id);
         expect(Date.parse(renewed.expiresAt)).toBeGreaterThan(Date.parse(intakePin.expiresAt));
@@ -460,7 +471,8 @@ describe('canonical binding consumer custody', () => {
         trace('consumer-loss', { lostRefs, consumer: await consumer.listPresence(), renewed });
         expect(lostRefs).toEqual([]);
         await renewWorkItemEvidencePins(lostRefs, { repositories, dir, nowMs: nowMs + 48 * hour });
-        expect(readRetentionPins({ dir, nowMs }).pins).toEqual([renewed]);
+        const pinsAfterLoss = readRetentionPins({ dir, nowMs }).pins;
+        expect(pinsAfterLoss).toEqual([renewed]);
         const reclaim = (at: number) => runDiskReclaimOnce({ ...options, nowMs: at,
           readProtection: async () => ({ paths: [], pins: readRetentionPins({ dir, nowMs: at }).pins }) });
         const grace = await reclaim(nowMs + 48 * hour);
@@ -473,7 +485,8 @@ describe('canonical binding consumer custody', () => {
         trace('expired-reclaim', { nowMs: later, expired, pins: readRetentionPins({ dir, nowMs: later }) });
         expect(expired.errors).toEqual([]);
         expect(expired.entries).toContainEqual(expect.objectContaining({ path: retained, status: 'removed' }));
-        await expect(stat(retained)).rejects.toMatchObject({ code: 'ENOENT' });
+        const retainedStatCode = await stat(retained).then(() => 'present', (error: NodeJS.ErrnoException) => error.code);
+        expect(retainedStatCode).toBe('ENOENT');
         clock.mockReturnValue(later);
         const afterReclaim = vi.fn(); h.beforeBindingInsert = afterReclaim;
         const refused = await bindTool.handler(args as never, CTX);
@@ -481,7 +494,49 @@ describe('canonical binding consumer custody', () => {
         expect(refused).toMatchObject({ data: { ok: false, results: [{ ok: false }] } });
         expect(JSON.stringify(refused)).toContain('evidence retention: missing declared evidence');
         expect(afterReclaim).not.toHaveBeenCalled();
-        expect(await db.sql`SELECT id FROM harness_shared.spec_evidence_bindings`).toHaveLength(1);
+        const finalRows = await db.sql`SELECT id FROM harness_shared.spec_evidence_bindings`;
+        expect(finalRows).toHaveLength(1);
+        const resultData = (result: unknown) => (result as {
+          data: { ok: boolean; results: Array<{ ok: boolean; status?: string; error?: string }> };
+        }).data;
+        const statuses = (entries: typeof active.entries, target: string) =>
+          entries.filter(entry => entry.path === target).map(entry => entry.status);
+        const observed = {
+          preInsertPinCount: preInsertPins?.pins.length,
+          preInsertErrors: preInsertPins?.errors,
+          preInsertOwner: preInsertPins?.pins[0]?.owner,
+          preInsertPathsMatchInput: JSON.stringify(preInsertPins?.pins[0]?.paths) === JSON.stringify([retained]),
+          insertCount: inserts.length,
+          insertPinMatchesIntake: inserts.length === 1 && inserts[0] === intakePin.id,
+          bindingOk: resultData(bound).ok,
+          bindingStatuses: resultData(bound).results.map(result => result.status),
+          storedWorkItem: stored?.work_item_id,
+          storedEvidenceMatchesInput: stored?.evidence_ref === evidenceRef,
+          activeReferencesMatchInput: refs.length === 1 && refs[0]?.harness_slug === HARNESS
+            && refs[0]?.work_item_id === 'WI-101' && refs[0]?.evidence_ref === evidenceRef,
+          activeErrors: active.errors,
+          activeRetainedStatuses: statuses(active.entries, retained),
+          activeUnrelatedStatuses: statuses(active.entries, unrelated),
+          retainedBytes,
+          renewedPinMatchesIntake: renewed.id === intakePin.id,
+          renewalExtendsExpiry: Date.parse(renewed.expiresAt) > Date.parse(intakePin.expiresAt),
+          lostReferences: lostRefs,
+          lossDoesNotRenewLease: JSON.stringify(pinsAfterLoss) === JSON.stringify([renewed]),
+          graceErrors: grace.errors,
+          graceRetainedStatuses: statuses(grace.entries, retained),
+          expiredErrors: expired.errors,
+          expiredRetainedStatuses: statuses(expired.entries, retained),
+          retainedStatCode,
+          refusedOk: resultData(refused).ok,
+          refusedResultOk: resultData(refused).results.map(result => result.ok),
+          refusedForMissingEvidence: resultData(refused).results.every(result =>
+            result.error?.startsWith('evidence retention: missing declared evidence ')),
+          reintakeInsertCount: afterReclaim.mock.calls.length,
+          finalBindingRowCount: finalRows.length,
+        };
+        trace('literal-oracle-observation', { oracleSha256: custodyOracleSha256, observed });
+        expect(custodyOracle.variants).toContain(loss);
+        expect(observed).toEqual(custodyOracle.expected);
       } finally {
         h.beforeBindingInsert = undefined;
         clock.mockRestore(); vi.unstubAllEnvs();
