@@ -36,7 +36,8 @@ import { CONTAINER_CODEX_BIN_PATH, materializeDockerExecWrapper, validateDockerE
 import type { PsuPtyHost } from '../events/await/psu-pty-discovery';
 import { BENCHMARK_SCRATCH_PLAN_TOOLS, type ScratchPlanBoundary } from '../capability-envelope/session-confinement';
 import { clampCompactionLimit } from '../agent-config-constants';
-import { BENCH_PRIVATE_FIXTURE_TOOL, freezeBenchFixtureReadBoundary, type BenchFixtureAllocation } from './private-fixture-reads';
+import { BENCH_PRIVATE_FIXTURE_TOOL, freezeBenchFixtureReadBoundary,
+  type BenchFixtureAllocation, type BenchFixtureReadBoundary } from './private-fixture-reads';
 
 interface NativeCostParticipant {
   taskId: string; ownerId: string; terminal: boolean;
@@ -1921,6 +1922,7 @@ export interface CurrentSuBenchObservations {
   containerExec?: DockerExecTarget;
   /** Private source locators, checked against the frozen arm before launch. */
   fixtureReads?: BenchFixtureAllocation;
+  fixtureReadLease?: BenchFixtureReadBoundary['lease'];
   admit(handle: BenchHarnessHandle, budget: GenerationBudget, taskId: string): Promise<{ admitted: boolean; receiptRef: string }>;
   observeIdentity(task: CurrentBenchTask): Promise<CurrentBenchIdentityObservation | null>;
 }
@@ -3411,7 +3413,8 @@ export function liveCurrentSuBenchPorts(
         throw new Error('Private benchmark reads were not declared by the frozen arm.');
       const fixtureReads = frozenReads ? freezeBenchFixtureReadBoundary({
         binding: { workspaceId, runId: opts.runId, preregHash: opts.preregistration.preregHash,
-          assignmentId: accounting!.assignmentId, armId: opts.armId, seed: opts.seed },
+          assignmentId: accounting!.assignmentId, armId: opts.armId, seed: opts.seed,
+          ...(observations.fixtureReadLease ? { lease: observations.fixtureReadLease } : {}) },
         taskId: requireBinding().taskId, expectedSha256: frozenReads.sha256, allocation: observations.fixtureReads!,
       }) : undefined;
       const planning = currentBenchPlanningBoundary(opts, { slug: input.binding.harnessSlug,

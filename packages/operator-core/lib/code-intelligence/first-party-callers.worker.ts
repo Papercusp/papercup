@@ -36,6 +36,7 @@ export interface FirstPartyCallersProgress {
   readonly kind: 'first-party-callers-progress';
   readonly phase: 'job-received' | 'typescript-load' | 'compiler-query' | ReuseSourcePhase;
   readonly elapsedMs: number;
+  readonly parserLimits?: Readonly<Record<string, unknown>>;
 }
 
 if (!isMainThread && workerData?.kind === 'reuse-symbol-parse') {

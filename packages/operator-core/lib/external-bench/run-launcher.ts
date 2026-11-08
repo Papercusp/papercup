@@ -81,6 +81,8 @@ import { resolveCoordinationSpec } from './coordination-topology';
 import { emitRollout } from './reproducibility/emit';
 import type { runFrontierSweCurrentArm } from './frontier-swe-arm';
 import type { MinecraftTaskLaunch, runMinecraftProvisionedTrial } from './minecraft-launch-adapter';
+import { allocateBenchFixtureReadLease, freezeBenchFixtureReadBoundary, requireBenchFixturePreflight,
+  type BenchFixtureAllocation } from './private-fixture-reads';
 
 export { currentBenchSessionRequestDelta, currentBenchSessionUsageDelta,
   type CurrentBenchTaskRequestCensus } from './current-su';
@@ -162,6 +164,8 @@ export interface LaunchDeps {
   /** Authenticated host context. The HTTP route supplies this; JSON cannot supply authority. */
   currentContext?: PapercuspUnifiedToolContext;
   currentRepoRoot?: string;
+  /** Host-owned source allocation, pinned by the committed arm. Never launch JSON. */
+  currentFixtureReads?: BenchFixtureAllocation;
   /** Assignment-local runtime seam; production starts the maintained native gateway/driver. */
   currentTask?: (input: CurrentTaskInput) => Promise<{ driver: BenchHarnessDriver; stop(): Promise<void> }>;
   currentGeneration?: Pick<import('./types').GenerationPorts, 'clone' | 'extractDiff'>;
@@ -186,6 +190,7 @@ export interface CurrentTaskInput {
   checkout: TaskCheckout;
   /** Operational run row retaining private host recovery pins. */
   hostRunId: string;
+  fixtureReads?: BenchFixtureAllocation;
   observation: NonNullable<LaunchBenchRunInput['current']>['observation'];
 }
 
@@ -662,8 +667,13 @@ export function currentBenchLaunchSelection(input: LaunchBenchRunInput, config: 
     protocol.aggregateBudgetUsd <= 20 && arm.agent === 'codex' &&
     ['stock-native-reference', 'repeated-session', 'solo'].includes(arm.control?.topology ?? '');
   if (minecraftReference && arm.control?.topology === 'solo') currentBenchSoloCapabilityControl(arm);
+  const latencySolo = input.suite === 'harness-bench' && arm.agent === 'codex' &&
+    ['cold', 'warm'].includes(arm.id) && arm.control?.topology === 'solo' &&
+    arm.control.fixtureReads?.kind === 'latency-m1-v1' &&
+    protocol.taskIds.every(id => /^LATENCY-M1:T(?:0[1-9]|10)$/.test(id));
+  if (latencySolo) currentBenchSoloCapabilityControl(arm);
   if (input.suite === 'minecraft' && !minecraftReference ||
-      !minecraftReference && (!['papercusp', 'baseline'].includes(arm.id) || arm.agent !== 'codex' && !hostReference && !claudeReference))
+      !minecraftReference && !latencySolo && (!['papercusp', 'baseline'].includes(arm.id) || arm.agent !== 'codex' && !hostReference && !claudeReference))
     throw new Error('Unsupported current benchmark execution arm/client.');
   if (input.taskSetId !== 'custom' || input.taskIds && canonicalJson(input.taskIds) !== canonicalJson(protocol.taskIds) ||
       input.model !== undefined && input.model !== arm.model || input.cap !== undefined && input.cap !== 1 ||
@@ -702,30 +712,51 @@ function currentBenchResources(protocol: CurrentBenchmarkProtocol): LearningRese
 }
 
 /** The shared production assignment authority used by host and in-container native runs. */
-export async function startCurrentBenchTaskAssignment(input: CurrentTaskInput): Promise<
+export async function startCurrentBenchTaskAssignment(input: CurrentTaskInput, ports: {
+  /** Existing gateway service seam for isolated factory verification; not launch JSON. */
+  startGateway?: Parameters<ReturnType<typeof currentBenchGatewayController>['startNativeGateway']>[1];
+} = {}): Promise<
   Pick<FrontierSweNativeAssignment, 'options' | 'observations' | 'stop' | 'readModelCalls' | 'readRequestCensus' | 'issueSessionBudget'>> {
   const { options, protocol, task, context, scope, resources, loopId } = input;
-  const capture = await currentBenchTaskProviderCapture(input);
   const currentArm = protocol.arms.find(arm => arm.id === options.armId)!;
-  const auth = currentBenchProviderAuthenticator({ workspaceId: options.workspaceId, preregHash: options.preregistration.preregHash,
-    protocol, armId: options.armId, taskId: task.instanceId, seed: options.seed });
-  const controller = currentBenchGatewayController({ workspaceId: options.workspaceId, loopId, token: randomBytes(32).toString('hex'),
-    preregHash: options.preregistration.preregHash, protocol, armId: options.armId, taskId: task.instanceId, seed: options.seed,
-    resources, ...(currentArm.payer === 'subscription' ? {} : {
-      outputTokenLimit: Math.min(4096, currentArm.generationBudget.maxTokens ?? 4096) }),
-    authenticateProvider: auth.authenticateProvider, captureProviderInput: capture.captureProviderInput },
-    { enabled: async () => true, getSql: async () => resolveDb(scope).sql });
-  let host: Awaited<ReturnType<typeof controller.startNativeGateway>> | undefined;
+  const frozenReads = currentArm.control?.fixtureReads;
+  if (Boolean(frozenReads) !== Boolean(input.fixtureReads))
+    throw new Error('Private fixture host allocation differs from its frozen arm.');
+  if (frozenReads) currentBenchSoloCapabilityControl(currentArm);
+  const boundary = frozenReads ? freezeBenchFixtureReadBoundary({ binding: {
+    workspaceId: options.workspaceId, runId: options.runId, preregHash: options.preregistration.preregHash,
+    assignmentId: currentBenchAssignmentId(options.runId, options.armId, task.instanceId, options.seed),
+    armId: options.armId, seed: options.seed }, taskId: task.instanceId,
+    expectedSha256: frozenReads.sha256, allocation: input.fixtureReads! }) : undefined;
+  if (boundary) await requireBenchFixturePreflight(boundary, input.fixtureReads!, task, scope);
+  const fixtureLease = boundary ? await allocateBenchFixtureReadLease({ scope, hostRunId: input.hostRunId,
+    protocol, loopId, boundary, maxWallClockMs: currentArm.generationBudget.maxWallClockMs }) : undefined;
+  let auth: ReturnType<typeof currentBenchProviderAuthenticator> | undefined;
+  let controller: ReturnType<typeof currentBenchGatewayController> | undefined;
+  let host: Awaited<ReturnType<ReturnType<typeof currentBenchGatewayController>['startNativeGateway']>> | undefined;
   let stopping: Promise<void> | undefined;
   const stop = () => {
-    auth.revoke(); controller.revoke();
-    return stopping ??= Promise.resolve().then(() => host?.stop());
+    auth?.revoke(); controller?.revoke();
+    return stopping ??= (async () => {
+      try { await fixtureLease?.revoke(); } finally { await host?.stop(); }
+    })();
   };
   try {
-    host = await controller.startNativeGateway(context.log);
+    const capture = await currentBenchTaskProviderCapture(input);
+    auth = currentBenchProviderAuthenticator({ workspaceId: options.workspaceId, preregHash: options.preregistration.preregHash,
+      protocol, armId: options.armId, taskId: task.instanceId, seed: options.seed });
+    controller = currentBenchGatewayController({ workspaceId: options.workspaceId, loopId, token: randomBytes(32).toString('hex'),
+      preregHash: options.preregistration.preregHash, protocol, armId: options.armId, taskId: task.instanceId, seed: options.seed,
+      resources, ...(currentArm.payer === 'subscription' ? {} : {
+        outputTokenLimit: Math.min(4096, currentArm.generationBudget.maxTokens ?? 4096) }),
+      authenticateProvider: auth.authenticateProvider, captureProviderInput: capture.captureProviderInput },
+      { enabled: async () => true, getSql: async () => resolveDb(scope).sql });
+    host = await controller.startNativeGateway(context.log, ports.startGateway);
     const observeIdentity = currentBenchObservationReader({ ...scope, ...input.observation,
       workspaceId: options.workspaceId, gatewayBaseUrl: host.nativeGateway.baseURL }, undefined, host);
     const observations = { ...host, observeIdentity,
+      ...(frozenReads ? { fixtureReads: structuredClone(input.fixtureReads!) } : {}),
+      ...(fixtureLease ? { fixtureReadLease: fixtureLease.boundary.lease } : {}),
       admit: async () => ({ admitted: !options.signal?.aborted, receiptRef: `governor:${options.workspaceId}/${loopId}#${options.preregistration.preregHash}` }) };
     const readRequestCensus = async () => {
       // Session accounting inherits the existing controller-issued lifetime.
@@ -1213,7 +1244,7 @@ async function launchCurrentBenchRun(input: LaunchBenchRunInput, deps: LaunchDep
           instantiate: async (blueprintId, task, checkout, budget) => {
             if (abort.signal.aborted) throw new Error('Current benchmark assignment cancelled before host allocation.');
             owned = await (deps.currentTask ?? liveCurrentTask)({ options, protocol, task, context, scope, resources, loopId,
-              checkout, hostRunId: runId, observation: current.observation });
+              checkout, hostRunId: runId, observation: current.observation, fixtureReads: deps.currentFixtureReads });
             active.stopCurrent = owned.stop;
             try { return await owned.driver.spinRunAndCost({ blueprintId, task, checkout, budget }); }
             finally { await owned.stop(); owned = undefined; active.stopCurrent = undefined; }

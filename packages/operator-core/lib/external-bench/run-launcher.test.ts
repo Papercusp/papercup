@@ -13,6 +13,7 @@ import { freezeMinecraftManifest, freezeMinecraftPair, freezeMinecraftSelection,
 import type { MinecraftTaskLaunch, runMinecraftProvisionedTrial } from './minecraft-launch-adapter';
 import { canonicalJson } from './reproducibility/canonical-json';
 import { PROXIMUS_CLIENT_VERSION, PROXIMUS_SOURCE_REVISION } from './reproducibility/schema';
+import { benchFixtureAllocationSha256, type BenchFixtureAllocation } from './private-fixture-reads';
 
 const io = vi.hoisted(() => ({ prereg: vi.fn(), committed: vi.fn(), register: vi.fn(),
   upsert: vi.fn(), task: vi.fn(), status: vi.fn(), completion: vi.fn(), events: vi.fn(), snapshot: vi.fn(),
@@ -92,6 +93,31 @@ describe.each(['legacy', 'current'] as const)('Minecraft admission through the %
 });
 
 describe('current host selection', () => {
+  it('routes distinct cold/warm controlled Codex arms without baseline aliasing', () => {
+    const allocation: BenchFixtureAllocation = {
+      'LATENCY-M1:T01': { A: { issueId: 'a' }, B: { issueId: 'b' } },
+      'LATENCY-M1:T02': { A: { issueId: 'a', rubricRef: 'r', subjectRef: 's', comparisonTime: '2026-11-06T00:00:00Z' },
+        B: { issueId: 'b', rubricRef: 'r', subjectRef: 's', comparisonTime: '2026-11-06T00:00:00Z' } },
+      'LATENCY-M1:T03': { A: { harness: 'h', slug: 'a', revision: 1, specAsOf: '2026-11-06T00:00:00Z' },
+        B: { harness: 'h', slug: 'b', revision: 2, specAsOf: '2026-11-06T00:00:00Z' } },
+    };
+    config.taskIds = ['LATENCY-M1:T01'];
+    config.sampling!.taskRepositories = { 'LATENCY-M1:T01': 'private-fixture', 'withheld-1': 'withheld-repo' };
+    for (const [i, arm] of config.arms.entries()) {
+      arm.id = i ? 'warm' : 'cold';
+      arm.control = { topology: 'solo', solverGroup: 'paired', solverToolsHash: 'f'.repeat(64),
+        capabilities: allCapabilities('off'), fixtureReads: { kind: 'latency-m1-v1', sha256: benchFixtureAllocationSha256(allocation) } };
+    }
+    const request = { ...input, suite: 'harness-bench' };
+    const cold = currentBenchLaunchSelection({ ...request, arm: 'cold' }, config);
+    const warm = currentBenchLaunchSelection({ ...request, arm: 'warm' }, config);
+    expect(cold.arm.id).toBe('cold'); expect(warm.arm.id).toBe('warm');
+    expect(cold.runId).not.toBe(warm.runId);
+    expect(() => currentBenchLaunchSelection({ ...request, arm: 'baseline' }, config)).toThrow(/frozen protocol/);
+    expect(() => currentBenchLaunchSelection({ ...request, arm: 'cold', suite: 'swe-bench-pro' }, config)).toThrow(/execution/);
+    config.arms[0].control!.capabilities['consult-router'] = 'on';
+    expect(() => currentBenchLaunchSelection({ ...request, arm: 'cold' }, config)).toThrow(/unavailable/);
+  });
   it('separates each frozen seed and workspace while deriving the exact controls', () => {
     const selected = currentBenchLaunchSelection(input, config);
     expect(selected.arm.model).toBe('configured-alias');

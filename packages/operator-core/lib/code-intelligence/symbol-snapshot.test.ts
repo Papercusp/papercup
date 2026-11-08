@@ -59,14 +59,27 @@ describe('precomputed symbol snapshot', () => {
       id: expect.stringMatching(/^positions\.ts:2:22:/), from: 'positions.ts', to: 'target.ts', resolved: true,
     }));
   });
-  it('preserves the existing caller cap as incomplete in compact measurement mode', () => {
+  it('keeps the full call census complete when the compact caller summary reaches its cap', () => {
     const text = 'export function target() {}\n' + 'target();\n'.repeat(501);
     const input = { files: ['target.ts'], readSource: () => text, resolveModule: () => null, includeCallCensus: true };
     const full = buildSymbolSnapshot(input), compact = buildSymbolSnapshot({ ...input, censusOnly: true });
     expect(compact.callCensus).toEqual(full.callCensus);
     expect(compact.callCensus).toHaveLength(501);
     expect(compact.stats).toEqual(full.stats);
-    expect(compact.stats).toMatchObject({ truncated: true, resolvedCalls: 500 });
+    expect(compact.stats).toMatchObject({ truncated: true, callCensusTruncated: false, resolvedCalls: 500 });
+  });
+  it('marks a non-converged export fixed point as incomplete for the call census', () => {
+    const depth = 40;
+    const files = Array.from({ length: depth + 1 }, (_, i) => `chain-${depth - i}.ts`).concat('use.ts');
+    const sources: Record<string, string> = { 'chain-0.ts': 'export function target() {}',
+      'use.ts': `import { target } from "./chain-${depth}"; target();` };
+    for (let i = 1; i <= depth; i++) sources[`chain-${i}.ts`] = `export * from "./chain-${i - 1}";`;
+    const fileSet = new Set(files);
+    const snapshot = buildSymbolSnapshot({ files, readSource: path => sources[path] ?? null,
+      resolveModule: (path, specifier) => relativeSymbolModule(path, specifier, fileSet), censusOnly: true });
+
+    expect(snapshot.stats).toMatchObject({ truncated: true, callCensusTruncated: true });
+    expect(snapshot.callCensus).toEqual([expect.objectContaining({ from: 'use.ts', to: null, resolved: false })]);
   });
   it('resolves aliases, barrel re-exports and namespace calls without matching comments or strings', () => {
     const result = build({

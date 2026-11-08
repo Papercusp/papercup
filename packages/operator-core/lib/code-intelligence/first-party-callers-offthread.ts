@@ -63,11 +63,27 @@ const isAnswer = (value: unknown): value is FirstPartyCallersAnswer =>
 const isProgress = (value: unknown): value is FirstPartyCallersProgress => {
   if (typeof value !== 'object' || value === null) return false;
   const progress = value as FirstPartyCallersProgress;
+  const parserLimits = progress.parserLimits;
   return progress.kind === 'first-party-callers-progress'
     && ['job-received', 'typescript-load', 'compiler-query', 'source-tree', 'source-capture',
       'source-diff', 'source-clones', 'source-calls'].includes(progress.phase)
-    && Number.isFinite(progress.elapsedMs) && progress.elapsedMs >= 0;
+    && Number.isFinite(progress.elapsedMs) && progress.elapsedMs >= 0
+    && (parserLimits === undefined || typeof parserLimits === 'object' && parserLimits !== null && !Array.isArray(parserLimits));
 };
+
+const parserProgressFields = new Set([
+  'kind', 'oldSpaceMb', 'heapLimitMb', 'sourceFileCount', 'sourceBytes', 'partitionCount', 'workerCount',
+  'maxBatchFiles', 'maxBatchBytes', 'workerIndex', 'index', 'files', 'bytes', 'startedPartitions',
+  'startedFiles', 'startedBytes', 'completedPartitions', 'completedFiles', 'completedBytes',
+]);
+
+function formatParserProgress(limits?: Readonly<Record<string, unknown>>): string {
+  if (!limits) return '';
+  const fields = Object.entries(limits).filter(([key, value]) => parserProgressFields.has(key)
+    && (typeof value === 'number' && Number.isFinite(value)
+      || key === 'kind' && typeof value === 'string' && value.length <= 40)).slice(0, 20);
+  return fields.length ? `, parserLimits=${JSON.stringify(Object.fromEntries(fields))}` : '';
+}
 
 /** Who calls `job.name`, answered in a forked worker process. Never rejects. */
 export async function firstPartyCallersOffthread(
@@ -117,6 +133,7 @@ export async function codeIntelWorkerRequest<T>(job: Serializable,
       timer = setTimeout(
         () => resolve(fail(`the callers worker exceeded its ${budgetMs} ms deadline and was killed; `
           + (lastProgress ? `last measured phase=${lastProgress.phase}, workerElapsedMs=${lastProgress.elapsedMs}`
+            + formatParserProgress(lastProgress.parserLimits)
             : 'no worker progress received (startup or delivery is unmeasured)'))),
         budgetMs,
       );

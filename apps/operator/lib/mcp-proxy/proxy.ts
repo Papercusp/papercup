@@ -2088,12 +2088,12 @@ interface ForwardOutcome {
  *  unbounded, which is what every real tools/call still uses.
  *
  *  `signal` (WI-35737) lets the caller abandon an attempt whose CLIENT has gone away, so the
- *  proxy stops spending upstream capacity producing a response nobody can read. The caller
- *  passes one ONLY for the write-free 'idempotent' class — aborting a keyed/opaque tools/call
- *  mid-flight could leave a write half-applied, which is the same retry-safety rule
- *  `handshakeTimeoutRetryable` already enforces. Abort surfaces through the existing
- *  `upstream.on('error')` path as an ordinary failed attempt; the caller then sees
- *  `clientGone` and breaks instead of replaying. */
+ *  proxy stops spending upstream capacity producing a response nobody can read. Idempotent
+ *  requests may be aborted at any point. Opaque writes may opt into pre-connect-only
+ *  cancellation: they can be removed from an `http.Agent` queue before a socket connects,
+ *  but are preserved once connected because the write may already be in flight. Abort surfaces
+ *  through the existing `upstream.on('error')` path as an ordinary failed attempt; the caller
+ *  then sees `clientGone` and breaks instead of replaying. */
 function forwardOnce(
   opts: McpProxyOptions,
   target: McpProxyTarget,
@@ -2105,15 +2105,21 @@ function forwardOnce(
   timeoutMs?: number,
   signal?: AbortSignal,
   observeTransport?: (stage: "socketAssignedMs" | "socketConnectedMs" | "requestFlushedMs") => void,
+  abortBeforeConnectOnly = false,
 ): Promise<ForwardOutcome> {
   return new Promise((resolve) => {
     let connected = false;
     let settled = false;
     let timer: NodeJS.Timeout | undefined;
+    let abortBeforeConnectListener: (() => void) | undefined;
     const done = (o: ForwardOutcome): void => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
+      if (signal && abortBeforeConnectListener) {
+        signal.removeEventListener("abort", abortBeforeConnectListener);
+        abortBeforeConnectListener = undefined;
+      }
       resolve(o);
     };
     const forwardedHeaders = stripClientConnectionHeader(
@@ -2137,13 +2143,26 @@ function forwardOnce(
         // W1.3: fresh socket per forward — never reuse a pooled keep-alive socket the :3070
         // cluster may be closing (the ~13% spurious-400 root cause). See UPSTREAM_AGENT above.
         agent,
-        // WI-35737: abandon this attempt if the client disconnects (idempotent class only —
-        // see the doc comment above). Node destroys the request and emits 'error' with
-        // code ABORT_ERR, which the existing handler below turns into a normal outcome.
-        signal,
+        // Idempotent requests use Node's signal handling. Opaque requests use the custom
+        // pre-connect-only listener below so a connected write cannot be aborted.
+        signal: abortBeforeConnectOnly ? undefined : signal,
       },
       (ures) => done({ ures, connected: true }),
     );
+    if (signal && abortBeforeConnectOnly) {
+      abortBeforeConnectListener = () => {
+        // An opaque write is safe to cancel while queued or while its socket is connecting.
+        // Once TCP connects, preserve the request: the server may already be applying it.
+        if (connected || settled) return;
+        upstream.destroy(
+          Object.assign(new Error("client disconnected before upstream connect"), {
+            code: "ABORT_ERR",
+          }),
+        );
+      };
+      if (signal.aborted) abortBeforeConnectListener();
+      else signal.addEventListener("abort", abortBeforeConnectListener, { once: true });
+    }
     upstream.on("socket", (s) => {
       observeTransport?.("socketAssignedMs");
       // Once the TCP handshake completes, the request is (or may be) in flight at :3070.
@@ -6348,15 +6367,16 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             // absolute ceiling that stops a stalled-but-connected upstream from silently
             // parking a socket for 32-89 minutes, while staying well above any legitimate tool's
             // real runtime (`build:typecheck` ~160s).
-            // WI-35737: arm client-disconnect abort for THIS attempt — write-free class only.
-            // A 'keyed'/'opaque' batch carries a tools/call whose side effect may already be
-            // landing upstream, so we let it finish and simply discard the result; that is the
-            // same retry-safety rule `handshakeTimeoutRetryable` applies, for the same reason.
+            // WI-35737: idempotent requests may be aborted at any point. An opaque write gets
+            // pre-connect-only cancellation: a queued Agent request has sent no bytes and is
+            // safe to remove, while a connected write must finish so its outcome stays known.
             // (This costs nothing in practice: every failure in the measured 2026-08-08 window
             // — 540 handshake timeouts, 520 upstream errors, 245 post-connect retries — was
             // klass 'idempotent'.)
             const attemptAbort =
-              fwd.klass === "idempotent" ? new AbortController() : null;
+              fwd.klass === "idempotent" || fwd.klass === "opaque"
+                ? new AbortController()
+                : null;
             abortAttempt = attemptAbort
               ? (): void => attemptAbort.abort()
               : null;
@@ -6411,6 +6431,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                 attempts === 1 && guardTiming
                   ? (stage) => { guardTiming[stage] = boundedMcpProxyStageMs(Date.now() - receivedAt); }
                   : undefined,
+                fwd.klass === "opaque",
               );
               if (outcome.ures) {
                 lastResponseTarget = attemptTarget;

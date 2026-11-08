@@ -12250,6 +12250,125 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
   });
 });
 
+describe("EI-16883: opaque writes cancel only before the upstream socket connects", () => {
+  it("removes queued writes on disconnect and preserves a connected write", async () => {
+    let releaseHeld: () => void = () => {};
+    const heldGate = new Promise<void>((resolve) => { releaseHeld = resolve; });
+    let releaseConnected: () => void = () => {};
+    const connectedGate = new Promise<void>((resolve) => { releaseConnected = resolve; });
+    let heldStarted: () => void = () => {};
+    const heldUpstream = new Promise<void>((resolve) => { heldStarted = resolve; });
+    let connectedStarted: () => void = () => {};
+    const connectedUpstream = new Promise<void>((resolve) => { connectedStarted = resolve; });
+    const hits: string[] = [];
+    let connectedResponseReleased = false;
+    let connectedClosedBeforeRelease = false;
+    let connectedResponseFinished = false;
+    const upstream = track(http.createServer((req, res) => {
+      const client = new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get("client") ?? "";
+      req.resume();
+      req.on("end", () => {
+        hits.push(client);
+        if (client === "held") {
+          heldStarted();
+          void heldGate.then(() => res.end('{"ok":true}'));
+          return;
+        }
+        if (client === "connected") {
+          connectedStarted();
+          res.once("close", () => {
+            if (!connectedResponseReleased) connectedClosedBeforeRelease = true;
+          });
+          res.once("finish", () => { connectedResponseFinished = true; });
+          void connectedGate.then(() => {
+            connectedResponseReleased = true;
+            res.end('{"ok":true}');
+          });
+          return;
+        }
+        res.end('{"ok":true}');
+      });
+    }));
+    await listen(upstream);
+    const agent = new http.Agent({ keepAlive: false, maxSockets: 1 });
+    const agentState = () => ({
+      sockets: Object.fromEntries(Object.entries(agent.sockets).map(([key, sockets]) => [key, sockets?.length ?? 0])),
+      requests: Object.fromEntries(Object.entries(agent.requests).map(([key, requests]) => [key, requests?.length ?? 0])),
+    });
+    const proxy = track(createMcpProxy({
+      listenPort: 0,
+      targetHost: "127.0.0.1",
+      targetPort: port(upstream),
+      retryWindowMs: 1_000,
+      retryBackoffMs: 10,
+      handshakeTimeoutMs: 5_000,
+      maxInFlight: 4,
+      controlPlaneReserve: 0,
+      upstreamAgent: agent,
+      log: () => {},
+    }));
+    await listen(proxy);
+
+    const opaqueBody = "opaque test write";
+    let held: ReturnType<typeof request> | undefined;
+    const queued = http.request({
+      host: "127.0.0.1",
+      port: port(proxy),
+      method: "POST",
+      path: "/api/mcp?client=queued",
+    });
+    queued.on("error", () => {});
+    let connected: http.ClientRequest | undefined;
+    try {
+      held = request(port(proxy), "held opaque write", "/api/mcp?client=held");
+      await heldUpstream;
+      expect(Object.values(agent.sockets).reduce((total, sockets) => total + (sockets?.length ?? 0), 0)).toBe(1);
+
+      queued.end(opaqueBody);
+      let queuedInAgent = false;
+      try {
+        await waitFor(() => {
+          queuedInAgent = Object.values(agent.requests).some((queue) => (queue?.length ?? 0) > 0);
+          return queuedInAgent || hits.includes("queued");
+        });
+      } catch (error) {
+        throw new Error(`opaque request did not reach the injected Agent; state=${JSON.stringify({ hits, agent: agentState() })}; ${String(error)}`);
+      }
+      expect(queuedInAgent, `request used another route: ${JSON.stringify({ hits, agent: agentState() })}`).toBe(true);
+      expect(hits).not.toContain("queued");
+      queued.destroy();
+      await waitFor(() => Object.values(agent.requests).every((queue) => !queue?.length));
+      expect(Object.values(agent.requests).reduce((total, queue) => total + (queue?.length ?? 0), 0)).toBe(0);
+      releaseHeld();
+      expect((await held).status).toBe(200);
+      expect(hits).toEqual(["held"]);
+
+      connected = http.request({
+        host: "127.0.0.1",
+        port: port(proxy),
+        method: "POST",
+        path: "/api/mcp?client=connected",
+      });
+      connected.on("error", () => {});
+      connected.end(opaqueBody);
+      await connectedUpstream;
+      connected.destroy();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(connectedClosedBeforeRelease).toBe(false);
+      releaseConnected();
+      await waitFor(() => connectedResponseFinished);
+      expect(hits).toEqual(["held", "connected"]);
+    } finally {
+      releaseHeld();
+      releaseConnected();
+      queued.destroy();
+      connected?.destroy();
+      agent.destroy();
+      if (held) await held.catch(() => undefined);
+    }
+  }, 10_000);
+});
+
 describe("EI-19305299022434394: heartbeat — logs while a forward is held open (kills the silence)", () => {
   it("emits a heartbeat log line + durable record while a forward is outstanding, none once it completes", async () => {
     const os = await import("node:os");

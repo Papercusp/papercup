@@ -34,7 +34,13 @@ beforeAll(() => {
   writeFileSync(join(fakes, 'hang.mjs'), 'process.on("message", () => {}); setInterval(() => {}, 1000);\n');
   writeFileSync(join(fakes, 'exit.mjs'), 'process.on("message", () => { console.error("Error: boom from the fake"); process.exit(3); });\n');
   writeFileSync(join(fakes, 'junk.mjs'), 'process.on("message", () => process.send({ nope: true }, () => process.disconnect()));\n');
-  writeFileSync(join(fakes, 'progress-hang.mjs'), 'process.on("message", job => process.send({ kind: "first-party-callers-progress", phase: job.name, elapsedMs: 12 })); setInterval(() => {}, 1000);\n');
+  writeFileSync(join(fakes, 'progress-hang.mjs'), [
+    'process.on("message", job => {',
+    '  const parserLimits = job.name === "source-calls" ? { kind: "partition", sourceFileCount: 1027, sourceBytes: 4194304, partitionCount: 4, workerCount: 2, workerIndex: 1, index: 2, files: 512, bytes: 4194304, startedPartitions: 3, startedFiles: 1027, startedBytes: 8388608, completedPartitions: 2, completedFiles: 515, completedBytes: 4194304 } : undefined;',
+    '  process.send({ kind: "first-party-callers-progress", phase: job.name, elapsedMs: 12, ...(parserLimits ? { parserLimits } : {}) });',
+    '});',
+    'setInterval(() => {}, 1000);',
+  ].join('\n'));
   writeFileSync(join(fakes, 'invalid-progress.mjs'), 'process.on("message", () => process.send({ kind: "first-party-callers-progress", phase: "compiler-query", elapsedMs: -1 }, () => process.disconnect()));\n');
 });
 afterAll(() => {
@@ -88,6 +94,11 @@ describe('firstPartyCallersOffthread', () => {
     );
     expect(result.error).toContain('exceeded its 2000 ms deadline');
     expect(result.error).toContain(`last measured phase=${phase}, workerElapsedMs=12`);
+    if (phase === 'source-calls') {
+      expect(result.error).toContain('parserLimits={"kind":"partition","sourceFileCount":1027');
+      expect(result.error).toContain('"completedPartitions":2');
+      expect(result.error).toContain('"completedFiles":515');
+    }
     expect(result.sites).toEqual([]);
     expect(result.freshness.health).toBe('unhealthy');
   }, 15_000);

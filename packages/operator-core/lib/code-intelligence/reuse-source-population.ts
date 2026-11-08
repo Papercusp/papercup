@@ -31,6 +31,9 @@ export type ReuseSourcePhase = 'source-tree' | 'source-capture' | 'source-diff' 
 type ParsedSymbols = ReturnType<typeof parseSymbolSnapshot>;
 export const REUSE_PARSER_OLD_SPACE_MB = 1024;
 export const REUSE_PARENT_OLD_SPACE_MB = 1024;
+const REUSE_PARSER_WORKER_COUNT = 4;
+const REUSE_PARSER_MAX_BATCH_FILES = 512;
+const REUSE_PARSER_MAX_BATCH_BYTES = 4 * 1024 * 1024;
 
 /** Fixed, finite parser pool inside the already supervised worker process.
  * A partition extracts syntax only; global resolution happens after ordered merge.
@@ -54,7 +57,7 @@ export async function parseReuseSourceSymbols(sourceFiles: Map<string, string>, 
     const size = capture ? capture.sizes.get(path)! : statSync(sourceFiles.get(path)!).size;
     if (!Number.isSafeInteger(size) || size < 0 || size > 2_000_000)
       throw new Error('Incomplete bounded Git blob population');
-    if (batch.length && (batch.length >= 512 || bytes + size > 4 * 1024 * 1024)) {
+    if (batch.length && (batch.length >= REUSE_PARSER_MAX_BATCH_FILES || bytes + size > REUSE_PARSER_MAX_BATCH_BYTES)) {
       batches.push({ files: batch, bytes }); batch = []; bytes = 0;
     }
     batch.push(path); bytes += size;
@@ -63,9 +66,16 @@ export async function parseReuseSourceSymbols(sourceFiles: Map<string, string>, 
   const parts: ParsedSymbols[] = [];
   const workers: Worker[] = [];
   const count = batches.length;
+  const workerCount = Math.min(REUSE_PARSER_WORKER_COUNT, count);
+  const sourceBytes = batches.reduce((sum, item) => sum + item.bytes, 0);
+  const population = { sourceFileCount: files.length, sourceBytes, partitionCount: count, workerCount,
+    maxBatchFiles: REUSE_PARSER_MAX_BATCH_FILES, maxBatchBytes: REUSE_PARSER_MAX_BATCH_BYTES };
+  observeLimits?.({ kind: 'population', ...population });
   let next = 0;
+  let startedPartitions = 0, startedFiles = 0, startedBytes = 0;
+  let completedPartitions = 0, completedFiles = 0, completedBytes = 0;
   try {
-    await Promise.all(Array.from({ length: Math.min(2, count) }, async () => {
+    await Promise.all(Array.from({ length: workerCount }, async (_unused, workerIndex) => {
       const worker = new Worker(workerPath, {
         workerData: { kind: 'reuse-symbol-parse', sourceFiles: [...sourceFiles] },
         // The effective inherited CLI cap equals this isolate's explicit cap.
@@ -88,12 +98,18 @@ export async function parseReuseSourceSymbols(sourceFiles: Map<string, string>, 
       if (ready?.kind !== 'ready' || ready.oldSpaceMb !== REUSE_PARSER_OLD_SPACE_MB
         || ready.heapLimitMb > REUSE_PARSER_OLD_SPACE_MB + 32 || ready.execArgv.some((x: string) => /max[-_]old[-_]space/i.test(x)))
         throw new Error('Source parser effective heap limit unavailable');
-      observeLimits?.(ready);
+      observeLimits?.({ ...population, ...ready, workerIndex });
       while (next < count) {
         const index = next++, { files: batch, bytes } = batches[index]!;
         // Import resolution uses the complete identity set, but syntax reads
         // only this partition. Later immutable blobs can still be in flight.
         await capture?.ready(batch);
+        startedPartitions++;
+        startedFiles += batch.length;
+        startedBytes += bytes;
+        observeLimits?.({ kind: 'partition-start', ...population, workerIndex, index,
+          files: batch.length, bytes, startedPartitions, startedFiles, startedBytes,
+          completedPartitions, completedFiles, completedBytes });
         const response = received();
         worker.postMessage({ index, files: batch });
         const result = await response;
@@ -106,7 +122,11 @@ export async function parseReuseSourceSymbols(sourceFiles: Map<string, string>, 
           || parsed.stats.files + parsed.stats.skippedFiles !== eligible.size
           || [...parsed.units.keys()].some(path => !eligible.has(path))) throw new Error('Invalid source parser partition');
         parts[index] = parsed;
-        observeLimits?.({ kind: 'partition', index, files: batch.length, bytes });
+        completedPartitions++;
+        completedFiles += batch.length;
+        completedBytes += bytes;
+        observeLimits?.({ kind: 'partition', ...population, workerIndex, index, files: batch.length, bytes,
+          startedPartitions, startedFiles, startedBytes, completedPartitions, completedFiles, completedBytes });
       }
     }));
     const merged: ParsedSymbols = { units: new Map(), symbols: new Map(), immediateCalls: [],
@@ -299,10 +319,13 @@ export function buildReuseSourcePopulation(input: {
       && [...added.keys()].every(path => /\.tsx?$/.test(path)
       && index.getFile(path)?.status === 'indexed'),
     calls: (snapshot.callCensus ?? []) as ReuseMetricPopulation['calls'],
-    callCensusComplete: input.complete && snapshot.stats.skippedFiles === 0 && !snapshot.stats.truncated,
+    callCensusComplete: input.complete && snapshot.stats.skippedFiles === 0 && !snapshot.stats.callCensusTruncated,
     method: { cloneVersion: binary ? null : index.version,
       cloneCensus: binary ? { status: 'unknown', reason: 'binary-additions', computed: false }
         : { status: 'computed', computed: true }, callKnowledge: snapshot.knowledge,
+      callCensusCoverage: { processedFiles: snapshot.stats.files + snapshot.stats.skippedFiles,
+        parsedFiles: snapshot.stats.files, skippedFiles: snapshot.stats.skippedFiles,
+        resolverTruncated: snapshot.stats.callCensusTruncated },
       sourcePopulation: [...paths].sort(), addedLinePopulation: [...added].map(([path, lines]) => ({ path, lines: [...lines].sort((a,b) => a-b) })),
       limitations: snapshot.limitations } };
 }

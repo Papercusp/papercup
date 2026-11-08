@@ -37,10 +37,15 @@ import {
   readCurrentBenchTaskRequestCensus,
   currentBenchSessionRequestDelta,
   currentBenchSessionUsageDelta,
+  startCurrentBenchTaskAssignment,
   freezeCurrentBenchTaskProviderReservation,
   type CurrentTaskInput,
 } from './run-launcher';
 import { currentProtocolFixture } from './reproducibility/_protocol-test-fixture';
+import { allCapabilities } from './reproducibility/_protocol-test-fixture';
+import { benchFixtureAllocationSha256, freezeBenchFixtureReadBoundary, requireBenchFixtureReadLease,
+  readBenchFixtureSourceSnapshot, requireBenchFixturePreflight, requireBenchFixtureSourcePins,
+  type BenchFixtureAllocation } from './private-fixture-reads';
 import { canonicalJson } from './reproducibility/canonical-json';
 import { currentBenchAssignmentId, currentBenchNativeCostReader } from './current-su';
 import { closedCodexSessionPopulation } from '../interactive-usage/ingest-adapters';
@@ -126,6 +131,17 @@ beforeAll(async () => {
     ALTER TABLE harness_shared.bench_run_tasks  DISABLE ROW LEVEL SECURITY;
     ALTER TABLE harness_shared.bench_run_events DISABLE ROW LEVEL SECURITY;
   `);
+  await db.sql.unsafe(`CREATE TABLE harness_shared.engineer_issues (
+    workspace_id text NOT NULL, issue_id text NOT NULL, created_at timestamptz NOT NULL,
+    payload jsonb NOT NULL, PRIMARY KEY (workspace_id, issue_id));
+    CREATE TABLE harness_shared.plan_revisions (id bigint, workspace_id text, harness_slug text,
+      plan_slug text, seq integer, content_hash text, content_snapshot_hash text,
+      content_snapshot text, created_at timestamptz);
+    CREATE TABLE harness_shared.plan_spec_clauses (workspace_id text, harness_slug text,
+      plan_slug text, spec_id text, source_val_id text);
+    CREATE TABLE harness_shared.plan_spec_clause_revisions (workspace_id text, harness_slug text,
+      plan_slug text, spec_id text, revision integer, content_hash text, behavior text,
+      created_at timestamptz, accepted_at timestamptz);`);
   scope = { sql, workspaceId: WS };
 }, 120_000);
 
@@ -139,6 +155,10 @@ beforeEach(async () => {
   await sql`DELETE FROM harness_shared.learning_spend_events WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.learning_spend_reservations WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.learning_governor_loops WHERE workspace_id = ${WS}`;
+  await sql`DELETE FROM harness_shared.engineer_issues WHERE workspace_id = ${WS}`;
+  await sql`DELETE FROM harness_shared.plan_revisions WHERE workspace_id = ${WS}`;
+  await sql`DELETE FROM harness_shared.plan_spec_clauses WHERE workspace_id = ${WS}`;
+  await sql`DELETE FROM harness_shared.plan_spec_clause_revisions WHERE workspace_id = ${WS}`;
 });
 
 describe('current provider capture host checkpoint', () => {
@@ -218,6 +238,156 @@ describe('current provider capture host checkpoint', () => {
     if (settled) expect((await settleLearningSpend(sql, { workspaceId: WS, reservationId: attempt.attemptId,
       disposition: 'used', usedUsd: 0.002 })).ok).toBe(true);
   }
+
+  async function privateReadFixture(armId: 'cold' | 'warm') {
+    const f = await fixture(), { input } = f;
+    const allocation: BenchFixtureAllocation = {
+      'LATENCY-M1:T01': { A: { issueId: 'EI-a', comparisonTime: '2026-11-06T00:00:00Z' },
+        B: { issueId: 'EI-b', comparisonTime: '2026-11-06T00:00:00Z' } },
+      'LATENCY-M1:T02': { A: { issueId: 'EI-a', rubricRef: 'rubric', subjectRef: 'subject', comparisonTime: '2026-11-06T00:00:00Z' },
+        B: { issueId: 'EI-b', rubricRef: 'rubric', subjectRef: 'subject', comparisonTime: '2026-11-06T00:00:00Z' } },
+      'LATENCY-M1:T03': { A: { harness: 'h', slug: 'a', revision: 1, specAsOf: '2026-11-06T00:00:00Z' },
+        B: { harness: 'h', slug: 'b', revision: 2, specAsOf: '2026-11-06T00:00:00Z' } },
+    };
+    input.task = { ...input.task, instanceId: 'LATENCY-M1:T01', benchmark: 'harness-bench',
+      problemStatement: 'Read both source cards completely.',
+      graderMeta: { latencyM1: { qualityOracle: { kind: 'exact-reference', required: ['retained-hidden-reference'] } } } };
+    for (const issue of ['EI-a', 'EI-b']) await sql`INSERT INTO harness_shared.engineer_issues
+      (workspace_id, issue_id, created_at, payload) VALUES (${WS}, ${issue}, '2026-11-01T00:00:00Z',
+        ${JSON.stringify({ observation: { rubricRef: 'rubric', subject: { ref: 'subject' },
+          ratings: { evidence: { rating: 'healthy', evidence: `Original source ${issue}` } } } })}::text::jsonb)`;
+    const seedShapes = await sql`SELECT issue_id, jsonb_typeof(payload) AS payload_kind,
+      jsonb_typeof(payload->'observation') AS observation_kind
+      FROM harness_shared.engineer_issues WHERE workspace_id = ${WS} ORDER BY issue_id`;
+    expect(seedShapes.map(row => [row.issue_id, row.payload_kind, row.observation_kind]))
+      .toEqual([['EI-a', 'object', 'object'], ['EI-b', 'object', 'object']]);
+    const preflightBoundary = freezeBenchFixtureReadBoundary({ binding: { workspaceId: WS, runId: input.options.runId,
+      preregHash: input.options.preregistration.preregHash, assignmentId: 'bench-assignment:preparation', armId, seed: 1 },
+      taskId: input.task.instanceId, expectedSha256: benchFixtureAllocationSha256(allocation), allocation })!;
+    const sourcePin = async (which: 'A' | 'B') => {
+      const text = canonicalJson(await readBenchFixtureSourceSnapshot(preflightBoundary, which, scope));
+      return { sha256: createHash('sha256').update(text).digest('hex'), bytes: Buffer.byteLength(text) };
+    };
+    allocation.verification = { 'LATENCY-M1:T01': { inputs: { A: await sourcePin('A'), B: await sourcePin('B') },
+      promptSha256: createHash('sha256').update(input.task.problemStatement).digest('hex'),
+      oracleSha256: createHash('sha256').update(canonicalJson(
+        (input.task.graderMeta.latencyM1 as { qualityOracle: unknown }).qualityOracle)).digest('hex') } };
+    input.protocol.taskIds = ['LATENCY-M1:T01'];
+    input.protocol.sampling!.taskRepositories = { 'LATENCY-M1:T01': 'private-fixture', 'withheld-1': 'withheld-repo' };
+    for (const [i, arm] of input.protocol.arms.entries()) {
+      arm.id = i ? 'warm' : 'cold'; arm.generationBudget.maxWallClockMs = 60_000;
+      arm.control = { topology: 'solo', solverGroup: 'paired', solverToolsHash: 'f'.repeat(64),
+        capabilities: allCapabilities('off'), fixtureReads: { kind: 'latency-m1-v1', sha256: benchFixtureAllocationSha256(allocation) } };
+    }
+    input.options.armId = armId;
+    input.fixtureReads = allocation;
+    input.options.preregistration.preregHash = createHash('sha256').update(canonicalJson(input.protocol)).digest('hex');
+    input.loopId = `benchmark:${input.options.preregistration.preregHash}`;
+    input.resources = { requestsPerArm: 2, inputTokens: 2000, outputTokens: 8192,
+      armIds: input.protocol.arms.map(arm => currentBenchAssignmentId(input.protocol.runId, arm.id, input.task.instanceId, 1)).sort(),
+      usdPerArm: 3, maxOpenUsd: 3, wallClockMsPerArm: 60_000, wallClockMs: 120_000 };
+    await upsertBenchRun({ id: input.hostRunId, arm: armId, taskSetId: 'custom', model: input.options.model,
+      status: 'running', config: { current: { preregHash: input.options.preregistration.preregHash },
+        protocol: input.protocol, loopId: input.loopId } }, scope);
+    return f;
+  }
+  it.each(['cold', 'warm'] as const)('allocates the real %s factory gateway and revokes private reads on stop', async armId => {
+    const f = await privateReadFixture(armId);
+    const assignment = await startCurrentBenchTaskAssignment(f.input, {
+      startGateway: async () => ({ port: 32121, stop: async () => {} } as never) });
+    roots.push((await currentBenchTaskProviderCapture(f.input)).captureRoot);
+    const boundary = freezeBenchFixtureReadBoundary({ binding: { workspaceId: WS,
+      runId: f.input.options.runId, preregHash: f.input.options.preregistration.preregHash,
+      assignmentId: currentBenchAssignmentId(f.input.options.runId, armId, f.input.task.instanceId, 1),
+      armId, seed: 1, lease: assignment.observations.fixtureReadLease }, taskId: f.input.task.instanceId,
+      expectedSha256: benchFixtureAllocationSha256(f.input.fixtureReads!), allocation: assignment.observations.fixtureReads! })!;
+    try {
+      expect(boundary.armId).toBe(armId);
+      expect(boundary.lease).toBeDefined();
+      expect(assignment.observations.nativeGateway?.baseURL).toMatch(/^http:\/\/127\.0\.0\.1:/);
+      await expect(requireBenchFixtureReadLease(boundary, scope)).resolves.toBeUndefined();
+      await expect(requireBenchFixtureReadLease({ ...boundary, armId: armId === 'cold' ? 'warm' : 'cold' }, scope))
+        .rejects.toThrow(/host lease/);
+    } finally { await assignment.stop(); }
+    await expect(requireBenchFixtureReadLease(boundary, scope)).rejects.toThrow(/host lease/);
+    await assignment.stop();
+    // Read revocation does not depend on a solver finishing or losing its claim.
+    expect((await getBenchRunDetail(f.input.hostRunId, scope))?.status).toBe('running');
+  });
+  it('refuses missing or drifted frozen allocation before opening a native gateway', async () => {
+    const f = await privateReadFixture('cold');
+    await expect(startCurrentBenchTaskAssignment({ ...f.input, fixtureReads: undefined })).rejects.toThrow(/allocation/);
+    f.input.fixtureReads!['LATENCY-M1:T01'].A.issueId = 'foreign';
+    await expect(startCurrentBenchTaskAssignment(f.input)).rejects.toThrow(/frozen arm/);
+    const [row] = await sql`SELECT config->'privateFixtureReads' AS reads FROM harness_shared.bench_runs WHERE id = ${f.input.hostRunId}`;
+    expect(row!.reads).toBeNull();
+  });
+  it('revokes a lease if gateway construction fails after the checkpoint was allocated', async () => {
+    const f = await privateReadFixture('cold'); f.input.resources.armIds = [];
+    await expect(startCurrentBenchTaskAssignment(f.input)).rejects.toThrow(/resource policy/);
+    roots.push((await currentBenchTaskProviderCapture(f.input)).captureRoot);
+    const [row] = await sql`SELECT config->'privateFixtureReads' AS reads FROM harness_shared.bench_runs WHERE id = ${f.input.hostRunId}`;
+    expect(Object.values(row!.reads as Record<string, { status: string }>).map(value => value.status)).toEqual(['revoked']);
+  });
+  it.each(['content', 'size', 'missing-pins', 'prompt', 'oracle'] as const)
+    ('refuses changed %s before a provider allocation or native gateway', async change => {
+      const f = await privateReadFixture('cold'), allocation = f.input.fixtureReads!;
+      if (change === 'content') await sql`UPDATE harness_shared.engineer_issues
+        SET payload = jsonb_set(payload, '{observation,ratings,evidence,evidence}', '"changed"') WHERE issue_id = 'EI-a'`;
+      if (change === 'size') allocation.verification!['LATENCY-M1:T01']!.inputs.A.bytes++;
+      if (change === 'missing-pins') delete allocation.verification;
+      if (change === 'prompt') f.input.task.problemStatement += ' changed';
+      if (change === 'oracle') (f.input.task.graderMeta.latencyM1 as { qualityOracle: unknown }).qualityOracle = { kind: 'changed-reference' };
+      // Pin mutated host metadata as a new preparation; source/prompt drift must
+      // still be rejected by preflight rather than only the allocation digest.
+      for (const arm of f.input.protocol.arms) arm.control!.fixtureReads!.sha256 = benchFixtureAllocationSha256(allocation);
+      await expect(startCurrentBenchTaskAssignment(f.input)).rejects.toThrow(/source|preflight|frozen input|immutable/);
+      const [row] = await sql`SELECT config->'privateFixtureReads' AS reads FROM harness_shared.bench_runs WHERE id = ${f.input.hostRunId}`;
+      expect(row!.reads).toBeNull();
+    });
+  it('rejects embedded hidden oracle fields even when a source hash matches', async () => {
+    const f = await privateReadFixture('cold'), allocation = f.input.fixtureReads!;
+    await sql`UPDATE harness_shared.engineer_issues SET payload = jsonb_set(payload,
+      '{observation,qualityOracle}', '{"answer":"hidden"}') WHERE issue_id = 'EI-a'`;
+    const boundary = freezeBenchFixtureReadBoundary({ binding: { workspaceId: WS, runId: f.input.options.runId,
+      preregHash: f.input.options.preregistration.preregHash, assignmentId: 'bench-assignment:preparation', armId: 'cold', seed: 1 },
+      taskId: f.input.task.instanceId, expectedSha256: benchFixtureAllocationSha256(allocation), allocation })!;
+    const text = canonicalJson(await readBenchFixtureSourceSnapshot(boundary, 'A', scope));
+    boundary.sourcePins!.A = { sha256: createHash('sha256').update(text).digest('hex'), bytes: Buffer.byteLength(text) };
+    await expect(requireBenchFixtureSourcePins(boundary, scope)).rejects.toThrow(/hidden grading oracle/);
+  });
+  it('diagnoses the JSONB string-encoding trap separately from missing source identities', async () => {
+    const f = await privateReadFixture('cold'), allocation = f.input.fixtureReads!;
+    const payload = JSON.stringify({ observation: { ratings: {} } });
+    await sql`UPDATE harness_shared.engineer_issues SET payload = ${payload}::jsonb WHERE issue_id = 'EI-a'`;
+    const [shape] = await sql`SELECT jsonb_typeof(payload) AS kind, payload->'observation' AS observation
+      FROM harness_shared.engineer_issues WHERE issue_id = 'EI-a'`;
+    expect(shape).toEqual({ kind: 'string', observation: null });
+    const boundary = freezeBenchFixtureReadBoundary({ binding: { workspaceId: WS, runId: f.input.options.runId,
+      preregHash: f.input.options.preregistration.preregHash, assignmentId: 'bench-assignment:preparation', armId: 'cold', seed: 1 },
+      taskId: f.input.task.instanceId, expectedSha256: benchFixtureAllocationSha256(allocation), allocation })!;
+    await expect(readBenchFixtureSourceSnapshot(boundary, 'A', scope)).rejects.toThrow(/source card is missing/);
+  });
+  it('pairs historical plan bytes with accepted specs at the frozen clock, excluding later revisions', async () => {
+    const f = await privateReadFixture('cold'), allocation = f.input.fixtureReads!;
+    await sql`INSERT INTO harness_shared.plan_revisions
+      (id, workspace_id, harness_slug, plan_slug, seq, content_hash, content_snapshot_hash, content_snapshot, created_at)
+      VALUES (1, ${WS}, 'h', 'a', 1, ${'b'.repeat(64)}, ${'b'.repeat(64)}, '# original', '2026-11-01'),
+        (2, ${WS}, 'h', 'a', 2, ${'c'.repeat(64)}, ${'c'.repeat(64)}, '# later', '2026-11-07')`;
+    await sql`INSERT INTO harness_shared.plan_spec_clauses VALUES (${WS}, 'h', 'a', 'SPEC-1', 'VAL-1')`;
+    await sql`INSERT INTO harness_shared.plan_spec_clause_revisions VALUES
+      (${WS}, 'h', 'a', 'SPEC-1', 1, ${'b'.repeat(64)}, 'original accepted behavior', '2026-11-01', '2026-11-01'),
+      (${WS}, 'h', 'a', 'SPEC-1', 2, ${'c'.repeat(64)}, 'accepted after cutoff', '2026-11-02', '2026-11-07')`;
+    const boundary = freezeBenchFixtureReadBoundary({ binding: { workspaceId: WS, runId: f.input.options.runId,
+      preregHash: f.input.options.preregistration.preregHash, assignmentId: 'bench-assignment:preparation', armId: 'cold', seed: 1 },
+      taskId: 'LATENCY-M1:T03', expectedSha256: benchFixtureAllocationSha256(allocation), allocation })!;
+    expect(await readBenchFixtureSourceSnapshot(boundary, 'A', scope)).toMatchObject({
+      plan: { content_snapshot: '# original', seq: 1 },
+      specs: [{ revision: { revision: 1, behavior: 'original accepted behavior' } }] });
+    if (boundary.taskId !== 'LATENCY-M1:T03') throw new Error('test fixture requires historical plan boundary');
+    boundary.cases.A.revision = 2;
+    await expect(readBenchFixtureSourceSnapshot(boundary, 'A', scope)).rejects.toThrow(/historical plan\/spec pairing/);
+  });
   it('counts every admitted request including an incomplete response from the real governor ledger', async () => {
     const f = await fixture();
     expect(await readCurrentBenchTaskModelCalls(f.input, f.capture)).toBe(0);

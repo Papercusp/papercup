@@ -26,6 +26,37 @@ export const REUSE_MEASUREMENT_INSTRUMENT_KEYS = {
 } as const;
 export type ReuseMetric = keyof typeof REUSE_MEASUREMENT_INSTRUMENT_KEYS;
 
+const REUSE_RAW_COLLECTION_FAILURE_TTL_MS = 10 * 60_000;
+const reuseRawCollectionFailures = new WeakMap<Sql, Map<string, { message: string; expiresAtMs: number }>>();
+
+function rawCollectionScopeKey(scope: { workspaceId: string; harnessSlug?: string; windowStart: string; windowEnd: string }): string {
+  return JSON.stringify([scope.workspaceId, scope.harnessSlug ?? '', scope.windowStart, scope.windowEnd]);
+}
+
+function rawCollectionFailure(sql: Sql, key: string): string | null {
+  const entries = reuseRawCollectionFailures.get(sql);
+  if (!entries) return null;
+  const now = Date.now();
+  for (const [candidate, value] of entries) if (value.expiresAtMs <= now) entries.delete(candidate);
+  return entries.get(key)?.message ?? null;
+}
+
+function rememberRawCollectionFailure(sql: Sql, key: string, message: string): void {
+  let entries = reuseRawCollectionFailures.get(sql);
+  if (!entries) { entries = new Map(); reuseRawCollectionFailures.set(sql, entries); }
+  const now = Date.now();
+  for (const [candidate, value] of entries) if (value.expiresAtMs <= now) entries.delete(candidate);
+  if (entries.size >= 32 && !entries.has(key)) {
+    const oldest = entries.keys().next().value;
+    if (oldest !== undefined) entries.delete(oldest);
+  }
+  entries.set(key, { message: message.slice(0, 500), expiresAtMs: now + REUSE_RAW_COLLECTION_FAILURE_TTL_MS });
+}
+
+function clearRawCollectionFailure(sql: Sql, key: string): void {
+  reuseRawCollectionFailures.get(sql)?.delete(key);
+}
+
 /** Hash the eligible work-item, not its invocation: retries stay in the same arm. */
 export function reuseHoldout(workItem: string, provider: string): boolean {
   if (!workItem.trim() || !provider.trim()) throw new Error('Exact work-item and provider required');
@@ -489,33 +520,68 @@ export async function measureRecordedReuseMetric(sql: Sql, scope: {
   if (!scope.workspaceId.trim() || !scope.harnessSlug?.trim()
     || time(scope.windowStart) >= time(scope.windowEnd)) return { verdict: 'unknown', detail: 'Exact workspace, harness and valid window required.' };
   if (metric === 'providerOutcomes') {
-    const { readRecipeOutcomeReport } = await import('../code-run-adoption');
-    const recipeOutcomes = await readRecipeOutcomeReport(async <T>(query: string, params: unknown[]) =>
-      await sql.unsafe(query, params as never) as unknown as T[], { ...scope, harnessSlug: scope.harnessSlug });
-    const { loadHarnessRegistry } = await import('../harness-registry');
-    const { REUSE_PROVIDER_POLICY, REUSE_PROVIDER_FLAGS } = await import('./reuse-brief-providers');
-    const roots = new Map<string, string>();
+    const resolverStartedAt = Date.now();
+    const stageTimings: Array<{ stage: string; elapsedMs: number; status: 'ok' | 'error' }> = [];
+    let activeStage = 'provider-outcomes-setup', activeStageStartedAt = resolverStartedAt;
+    let statementTimeoutMs: number | null = null;
+    const timed = async <T>(stage: string, operation: () => Promise<T>): Promise<T> => {
+      activeStage = stage;
+      activeStageStartedAt = Date.now();
+      try {
+        const result = await operation();
+        stageTimings.push({ stage, elapsedMs: Date.now() - activeStageStartedAt, status: 'ok' });
+        return result;
+      } catch (error) {
+        stageTimings.push({ stage, elapsedMs: Date.now() - activeStageStartedAt, status: 'error' });
+        throw error;
+      }
+    };
     try {
-      for (const project of (await loadHarnessRegistry(scope.workspaceId)).projects)
-        if (project.path) roots.set(project.slug, project.path);
-    } catch { /* Absolute paths remain unknown when the registry is unavailable. */ }
-    const collected = await collectRecordedReuseWindows(sql, { workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug,
-      start: scope.windowStart, end: scope.windowEnd, now: scope.windowEnd, repoRoots: roots });
-    const windows = (await readRecordedReuseWindows(sql, { workspaceId: scope.workspaceId,
-      start: scope.windowStart, end: scope.windowEnd })).filter(w => collected.windows.some(row => row.exposure.id === w.exposure.id));
-    const byProvider = summarizeReuseWindows(windows), providers = Object.keys(REUSE_PROVIDER_POLICY);
-    const notObserved = providers.filter(provider => !byProvider[provider]);
-    const recommendations = await Promise.all(providers.map(async provider => {
-      const first = windows.filter(w => w.exposure.provider === provider).map(w => w.exposure.at).sort()[0] ?? scope.windowEnd;
-      return { ...await applyReuseProviderDecision(sql, { workspaceId: scope.workspaceId, provider, windows,
-        experimentStartedAt: first, now: scope.windowEnd }),
-      reversal: { flag: REUSE_PROVIDER_FLAGS[provider as keyof typeof REUSE_PROVIDER_FLAGS], enabled: true } };
-    }));
-    return { verdict: notObserved.length || collected.rejected.length || !recipeOutcomes.coverage.complete ? 'unknown' : 'pass',
-      detail: JSON.stringify({ scope, byProvider, notObserved, recommendations, rejected: collected.rejected, recipeOutcomes,
-        sourceRefs: windows.map(w => w.exposure.id),
-        cannotObserve: ['No independent client receipt source is registered; delivery remains unknown.',
-          'Activity ledger completeness is not certified; absent follow-through remains unknown.'] }) };
+      const { readRecipeOutcomeReport, CODE_RUN_ADOPTION_STATEMENT_TIMEOUT_MS } = await import('../code-run-adoption');
+      statementTimeoutMs = CODE_RUN_ADOPTION_STATEMENT_TIMEOUT_MS;
+      const recipeOutcomes = await timed('recipe-outcome-report-call', () => readRecipeOutcomeReport(
+        async <T>(query: string, params: unknown[]) => await sql.unsafe(query, params as never) as unknown as T[],
+        { ...scope, harnessSlug: scope.harnessSlug! }));
+      const { loadHarnessRegistry } = await import('../harness-registry');
+      const { REUSE_PROVIDER_POLICY, REUSE_PROVIDER_FLAGS } = await import('./reuse-brief-providers');
+      const roots = new Map<string, string>();
+      await timed('harness-registry', async () => {
+        try {
+          for (const project of (await loadHarnessRegistry(scope.workspaceId)).projects)
+            if (project.path) roots.set(project.slug, project.path);
+        } catch { /* Absolute paths remain unknown when the registry is unavailable. */ }
+      });
+      const collected = await timed('collect-recorded-reuse-windows', () => collectRecordedReuseWindows(sql, {
+        workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug!,
+        start: scope.windowStart, end: scope.windowEnd, now: scope.windowEnd, repoRoots: roots,
+      }));
+      const windows = (await timed('read-recorded-reuse-windows', () => readRecordedReuseWindows(sql, {
+        workspaceId: scope.workspaceId, start: scope.windowStart, end: scope.windowEnd,
+      }))).filter(w => collected.windows.some(row => row.exposure.id === w.exposure.id));
+      const byProvider = summarizeReuseWindows(windows), providers = Object.keys(REUSE_PROVIDER_POLICY);
+      const notObserved = providers.filter(provider => !byProvider[provider]);
+      const recommendations = await timed('provider-decisions', () => Promise.all(providers.map(async provider => {
+        const first = windows.filter(w => w.exposure.provider === provider).map(w => w.exposure.at).sort()[0] ?? scope.windowEnd;
+        return { ...await applyReuseProviderDecision(sql, { workspaceId: scope.workspaceId, provider, windows,
+          experimentStartedAt: first, now: scope.windowEnd }),
+        reversal: { flag: REUSE_PROVIDER_FLAGS[provider as keyof typeof REUSE_PROVIDER_FLAGS], enabled: true } };
+      })));
+      return { verdict: notObserved.length || collected.rejected.length || !recipeOutcomes.coverage.complete ? 'unknown' : 'pass',
+        detail: JSON.stringify({ scope, byProvider, notObserved, recommendations, rejected: collected.rejected, recipeOutcomes,
+          sourceRefs: windows.map(w => w.exposure.id), stageTimings,
+          recipeOutcomeSqlStatementTimeoutMs: statementTimeoutMs,
+          cannotObserve: ['No independent client receipt source is registered; delivery remains unknown.',
+            'Activity ledger completeness is not certified; absent follow-through remains unknown.'] }) };
+    } catch (error) {
+      const failed = stageTimings[stageTimings.length - 1];
+      return { verdict: 'unknown', detail: JSON.stringify({
+        scope, failedStage: failed?.status === 'error' ? failed.stage : activeStage,
+        stageElapsedMs: failed?.status === 'error' ? failed.elapsedMs : Date.now() - activeStageStartedAt,
+        resolverElapsedMs: Date.now() - resolverStartedAt, stageTimings,
+        recipeOutcomeSqlStatementTimeoutMs: statementTimeoutMs,
+        error: error instanceof Error ? error.message : String(error),
+      }) };
+    }
   }
   const readPopulation = async () => await sql<{ subject: string; suggested_call: string | null }[]>`SELECT subject, payload AS suggested_call
     FROM harness_shared.code_intel_reuse_measurements
@@ -527,10 +593,23 @@ export async function measureRecordedReuseMetric(sql: Sql, scope: {
     ORDER BY id DESC LIMIT 1`;
   let rows = await readPopulation();
   if (!rows.length) {
+    const collectionKey = rawCollectionScopeKey(scope);
+    const priorFailure = rawCollectionFailure(sql, collectionKey);
+    if (priorFailure) return { verdict: 'unknown', detail: `Raw collection previously failed for this exact window; skipped duplicate source parsing: ${priorFailure}` };
     try {
       await collectRecordedReuseMetrics(sql, { ...scope, harnessSlug: scope.harnessSlug });
       rows = await readPopulation();
-    } catch (error) { return { verdict: 'unknown', detail: `Raw collection unavailable: ${error instanceof Error ? error.message : 'unknown cause'}` }; }
+      if (!rows.length) {
+        const message = 'collector completed without recording a raw exact-window population';
+        rememberRawCollectionFailure(sql, collectionKey, message);
+        return { verdict: 'unknown', detail: `Raw collection unavailable: ${message}` };
+      }
+      clearRawCollectionFailure(sql, collectionKey);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'unknown cause';
+      rememberRawCollectionFailure(sql, collectionKey, message);
+      return { verdict: 'unknown', detail: `Raw collection unavailable: ${message}` };
+    }
   }
   if (!rows.length) return { verdict: 'unknown', detail: 'No raw exact-window population has been recorded; absence is not zero.' };
   try {
