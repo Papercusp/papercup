@@ -40,7 +40,8 @@ export function parseSymbolSnapshot({ files, readSource, resolveModule, workspac
   const callCensus = [];
   const workspaces = workspacePackages.flatMap(([name, dirs]) => dirs.map(dir => ({ name, dir })))
     .sort((a, b) => b.dir.length - a.dir.length);
-  const stats = { files: 0, skippedFiles: 0, unresolvedCalls: 0, resolvedCalls: 0, truncated: false };
+  const stats = { files: 0, skippedFiles: 0, unresolvedCalls: 0, resolvedCalls: 0, truncated: false,
+    callCensusTruncated: false };
   for (const path of files) {
     if (!isSymbolSnapshotSourcePath(path)) continue;
     const text = readSource(path);
@@ -159,7 +160,7 @@ export function buildSymbolSnapshot(input) {
       changed ||= before !== [...unit.exports.values()].reduce((n, set) => n + set.size, 0);
     }
     if (!changed) break;
-    if (pass === 31) stats.truncated = true;
+    if (pass === 31) { stats.truncated = true; stats.callCensusTruncated = true; }
   }
   const visible = new Set();
   for (const unit of units.values()) for (const [name, values] of unit.exports) for (const id of values) {
@@ -189,6 +190,8 @@ export function buildSymbolSnapshot(input) {
       recordCall(call, symbol);
       if (!symbol || !visible.has(symbol.id)) continue;
       if (censusOnly) {
+        // This cap bounds only the per-symbol summary counter. The complete
+        // call-census row was already written above.
         if (symbol.callerCount >= 500) { stats.truncated = true; continue; }
         symbol.callerCount++; stats.resolvedCalls++; continue;
       }

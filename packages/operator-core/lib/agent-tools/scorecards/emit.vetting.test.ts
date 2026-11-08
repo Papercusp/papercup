@@ -82,7 +82,16 @@ vi.mock('../../harness/improvements/capture-core', () => ({
   captureImprovement: (...a: unknown[]) => captureImprovement(...a),
 }));
 vi.mock('../../scout/generation-watermark', () => ({
-  readRunningGeneration: async () => null,
+  // Successful vetting emits an audit-required card, so its evaluator must have
+  // a valid build identity. Missing/invalid identities are covered in
+  // emit.grading-audit.test.ts.
+  readRunningGeneration: async () => ({
+    deployedSha: 'a'.repeat(40),
+    hostStartedAt: '2026-09-08T19:00:00.000Z',
+    bootHeadSha: null,
+    scoutCodeHash: null,
+    staleHost: false,
+  }),
 }));
 vi.mock('../../issues-engineer', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../issues-engineer')>();

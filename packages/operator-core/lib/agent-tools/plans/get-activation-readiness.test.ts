@@ -30,7 +30,7 @@ vi.mock('../../consult/plan-start-consult', () => ({
 // runner's Git state by injecting a stable value.
 vi.mock('../../build-info', () => ({ getBuildInfo: () => ({ sha: 'abc1234', version: '0.0.0' }) }));
 
-import { ACTIVATION_STAGE_IDS, activationDeclarationReadiness, collectActivationReadiness,
+import { ACTIVATION_STAGE_IDS, activationDeclarationReadiness, activationConformanceReadiness, collectActivationReadiness,
   previewPlanStartConsult, unavailableActivationReadiness, matchingActivationConsult,
   type ActivationReadinessBasis, type ActivationReadinessReaders } from './get-activation-readiness';
 
@@ -87,7 +87,7 @@ describe('previewPlanStartConsult', () => {
     expect(result.stages.every(s => s.status === 'unknown' && s.detail === 'reader offline')).toBe(true);
     expect(result.stages.find(s => s.id === 'quality-audit')?.dependencies).toEqual(['spec-quality']);
     expect(result).toMatchObject({ ready: false, freshness: 'unknown', basis: null,
-      counts: { total: 13, returned: 13, omitted: 0 }, consult: { outcome: 'unavailable' } });
+      counts: { total: 14, returned: 14, omitted: 0 }, consult: { outcome: 'unavailable' } });
   });
   it('wires production routing, liveness, and excerpt callbacks without opening a consult', async () => {
     M.planStartConsult.mockImplementation(async (consultParams, deps) => {
@@ -204,6 +204,31 @@ describe('collectActivationReadiness', () => {
       stages: Object.fromEntries(ACTIVATION_STAGE_IDS.map(id => [id,
         vi.fn().mockResolvedValue({ status: 'pass', codes: [`${id}_ready`], nextAction: 'Continue canonical start.' })])) };
   }
+  it('exposes unenforced requirements even when every other activation stage passes', async () => {
+    const content = '## Requirements\n\n' + ['R-1', 'R-2'].map(key =>
+      `**${key} — Preserve executable acceptance.**\n\`\`\`requirement\n${JSON.stringify({
+        intent: { request: 'Preserve acceptance', sourceRefs: ['owner directive #1'] },
+        acceptance: { condition: 'Acceptance holds.', falsifier: 'Acceptance fails.', passRatings: ['healthy'] },
+        verification: { method: 'Inspect acceptance.' },
+      })}\n\`\`\``).join('\n\n');
+    const r = readers();
+    r.stages.conformance = async () => activationConformanceReadiness(content);
+    const result = await collectActivationReadiness(r);
+    expect(result.ready).toBe(false);
+    expect(result.stages.find(s => s.id === 'conformance')).toMatchObject({
+      status: 'blocked', codes: ['conformance_requirement_unenforced'], evidenceRefs: ['R-1', 'R-2'],
+    });
+    expect(result.stages.filter(s => s.id !== 'conformance').every(s => s.status === 'pass')).toBe(true);
+  });
+  it('keeps malformed Conformance blocked even without a requirement key', () => {
+    const result = activationConformanceReadiness('## Conformance\n\n```conformance\n{broken json\n```');
+    expect(result).toMatchObject({ status: 'blocked', codes: ['conformance_contract_invalid'], evidenceRefs: [] });
+    expect(result.detail).toContain('nothing was recorded');
+  });
+  it('preserves the canonical exemption for plans without applicable requirements', () => {
+    expect(activationConformanceReadiness('## Phase 1\n\n- **P-001** `todo` Build it.'))
+      .toMatchObject({ status: 'not-applicable', codes: ['conformance_not_applicable'] });
+  });
   it.each(['workspaceId', 'harnessSlug', 'planSlug', 'planHash', 'requesterId', 'policyHash'] as const)(
     'never reuses consultation advice across a changed %s', key => {
       const consult = { outcome: 'unavailable' as const, error: 'consult_preview_unavailable' as const, message: 'honest failure' };
@@ -220,7 +245,7 @@ describe('collectActivationReadiness', () => {
     const result = await collectActivationReadiness(r);
     expect(result.stages.filter(s => s.status === 'blocked').map(s => s.id)).toEqual(['source-discovery', 'inputs', 'anchors']);
     expect(result).toMatchObject({ schemaVersion: 1, advisory: true, ready: false, freshness: 'current',
-      counts: { total: 13, returned: 13, omitted: 0 } });
+      counts: { total: 14, returned: 14, omitted: 0 } });
   });
   it('waits on quality dependencies while admission, lane and promotion remain independently visible', async () => {
     const r = readers();
@@ -261,8 +286,8 @@ describe('collectActivationReadiness', () => {
     r.stages.inputs = vi.fn().mockResolvedValue({ status: 'blocked', codes: Array(30).fill('x'.repeat(300)),
       evidenceRefs: Array(20).fill('y'.repeat(400)), detail: 'z'.repeat(4000), nextAction: 'a'.repeat(3000) });
     const result = await collectActivationReadiness(r);
-    expect(result.counts).toEqual({ total: 13, returned: 13, omitted: 0 });
-    expect(result.stages[2]).toMatchObject({ omittedDetail: { codes: 22, evidenceRefs: 12 } });
+    expect(result.counts).toEqual({ total: 14, returned: 14, omitted: 0 });
+    expect(result.stages.find(s => s.id === 'inputs')).toMatchObject({ omittedDetail: { codes: 22, evidenceRefs: 12 } });
     expect(JSON.stringify(result).length).toBeLessThan(11000);
   });
 });

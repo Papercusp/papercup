@@ -195,6 +195,17 @@ describe('getForegroundRunVerdictAsync', () => {
     expect(fake.kernelReads).toEqual([]);
   });
 
+  it('preserves a cancelled task exit without claiming a per-file assertion verdict', async () => {
+    const fake = fakeSql({
+      tasks: [{ ...task('exited'), exit_code: 143 }], ledgerRows: 0,
+      kernelVerdict: { status: 'unknown' },
+    });
+
+    expect(await getForegroundRunVerdictAsync('run-1', fake.sql, fake.readKernelVerdict))
+      .toMatchObject({ taskState: 'exited', exitCode: 143, ledgerRows: 0, verdict: 'lost' });
+    expect(fake.kernelReads).toEqual([]);
+  });
+
   it('returns null when no foreground task exists for the run id', async () => {
     const fake = fakeSql({ tasks: [], ledgerRows: 0 });
     expect(await getForegroundRunVerdictAsync('run-1', fake.sql, fake.readKernelVerdict)).toBeNull();

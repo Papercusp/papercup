@@ -650,6 +650,47 @@ describe('first-class plan spec clauses', () => {
     expect(exact[0]?.behavior).toBe(first.behavior);
   });
 
+  it('keeps the exact historical revision and hash for proven prose spacing and line wrapping', async () => {
+    const first = clause({ sourceBar: BAR_PIN });
+    const created = await store.setSpecClause(first);
+    expect(created).toMatchObject({ status: 'created', revision: 1 });
+    const presentation = first.behavior.replace('event 42', 'event  42\n');
+    expect(await store.setSpecClause({ ...first, expectedRevision: 1, behavior: presentation }))
+      .toMatchObject({ status: 'unchanged', revision: 1, contentHash: (created as { contentHash: string }).contentHash });
+    const history = await store.listSpecClauses({ harnessSlug: HARNESS, planSlug: 'reconnect-plan', includeHistory: true });
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatchObject({ behavior: first.behavior, sourceBar: BAR_PIN, revision: 1 });
+  });
+
+  it.each<Partial<SpecClauseWrite>>([
+    { behaviorClass: 'authorization' },
+    { requiredEvidence: ['a different proof obligation'] },
+    { requiredTestLayers: ['unit'] },
+    { mutationRequired: false },
+    { falsifier: { observation: 'A revoked caller is admitted.' } },
+    { sourceBar: { ...BAR_PIN, barHash: 'c'.repeat(64) } },
+    { sourceBar: { ...BAR_PIN, barSetHash: 'd'.repeat(64) } },
+  ])('does not hide a changed contract or BAR policy behind prose formatting: %j', async (change) => {
+    const first = clause({ sourceBar: BAR_PIN });
+    const created = await store.setSpecClause(first);
+    const revised = await store.setSpecClause({ ...first, expectedRevision: 1,
+      behavior: first.behavior.replace('event 42', 'event  42\n'), ...change });
+    expect(revised).toMatchObject({ status: 'revised', revision: 2 });
+    expect((revised as { contentHash: string }).contentHash).not.toBe((created as { contentHash: string }).contentHash);
+    expect(revised).not.toHaveProperty('evidenceCarriedForward');
+  });
+
+  it.each([
+    ['The value is "a b".', 'The value is "a  b".'],
+    ['The value is `a b`.', 'The value is `a  b`.'],
+    ['Accepted conditions: - allow', 'Accepted conditions:\n- allow'],
+    ['A caller is allowed.', 'A caller is denied.'],
+  ])('appends a revision for substantive or unproven formatting equivalence: %s', async (before, after) => {
+    await store.setSpecClause(clause({ behavior: before }));
+    expect(await store.setSpecClause(clause({ expectedRevision: 1, behavior: after })))
+      .toMatchObject({ status: 'revised', revision: 2 });
+  });
+
   it('returns structured ownership, supersession, alias, and immutable-alias conflicts', async () => {
     expect(await store.setSpecClause(clause({ planSlug: 'missing-plan' }))).toMatchObject({ status: 'plan_not_found' });
     expect(await store.setSpecClause(clause({ planItemId: 'P-999' }))).toMatchObject({ status: 'plan_item_not_found' });

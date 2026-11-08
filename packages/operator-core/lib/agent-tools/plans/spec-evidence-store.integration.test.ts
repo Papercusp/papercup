@@ -379,8 +379,15 @@ describe('promotion carry-forward of current spec evidence', () => {
       })).toMatchObject({ status: 'retracted' });
     }
 
+    const beforePresentation = await db.sql`SELECT * FROM harness_shared.spec_evidence_bindings ORDER BY id`;
+    const presentation = clause().behavior.replace('event 42', 'event  42\n');
+    expect(await specs.setSpecClause(clause({ expectedRevision: 1, mutationRequired: false,
+      acceptanceRef: 'D-001', behavior: presentation })))
+      .toMatchObject({ status: 'unchanged', revision: 1 });
+    // Cosmetic writes must not renew, clone, relabel or resurrect any observation.
+    expect(await db.sql`SELECT * FROM harness_shared.spec_evidence_bindings ORDER BY id`).toEqual(beforePresentation);
     const revised = await specs.setSpecClause(clause({
-      expectedRevision: 1, mutationRequired: false, acceptanceRef: 'D-002',
+      expectedRevision: 1, mutationRequired: false, acceptanceRef: 'D-002', behavior: presentation,
     }));
     const expectedCount = withdrawn ? 0 : 2;
     expect(revised).toMatchObject({ status: 'revised', revision: 2, evidenceCarriedForward: expectedCount });

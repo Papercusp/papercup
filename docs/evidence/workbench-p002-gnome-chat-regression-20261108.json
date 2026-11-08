@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "workItem": "WI-6554700010029573",
+  "result": "pass",
+  "reason": "Regression after shared _refreshChat MetaStage focus repair",
+  "plane": "private GNOME virtual seat; fixture PUI; current build",
+  "maintainedTests": {
+    "passed": 3,
+    "failed": 0,
+    "skipped": 0
+  },
+  "nativeAssertions": [
+    "native shortcut acquisition",
+    "native seat supports input injection",
+    "native input methods exist",
+    "desktop ready for normal shortcuts",
+    "Papercup shortcut opens native Shell actor",
+    "saved transcript reaches native chat",
+    "canonical history completion focuses native composer",
+    "Markdown renders styled native text without literal Markdown delimiters",
+    "fenced code preserves literal markup characters in a native actor",
+    "native code scroll viewport allocates visible height for its literal text",
+    "code references and unscoped plan references remain inert",
+    "native Copy code writes exact literal code to the clipboard",
+    "native plan context changes work links while preserving conversation and draft",
+    "native links activate exact shared work-item and plan-item popup grammar and external URL",
+    "Earlier messages prepends canonical page",
+    "chat child control owns keyboard focus",
+    "Escape closes chat without application window",
+    "reopen preserves conversation draft",
+    "another conversation cannot inherit draft",
+    "returning to conversation restores only its draft",
+    "seat typing reaches native chat composer",
+    "partial reply renders before producer is released and blocks duplicate send",
+    "exact saved acknowledgement clears submitted draft",
+    "progressive reply is present in actual Shell actor",
+    "completion reloads persisted transcript without duplicate user turn",
+    "disconnect exposes reconciliation without a second send",
+    "Send retains exact selected environment conversation and saved user identity",
+    "Reconnect passes exact saved turn and cursor without replaying send",
+    "Cancel requires canonical saved cancellation receipt",
+    "Cancel retains exact conversation identity",
+    "Papercup remains outside Dock taskbar and Alt-Tab application windows"
+  ],
+  "sourceCustody": {
+    "archiveSha256": "519584b9f88cbf12f404809b13848b867464cbfa557058dbf25e3746badaa548",
+    "journey": "chat",
+    "files": {
+      "extension.js": "d3a21d01f545dc1728fc9feee94eae12c95ec5360c2fbe96b87f09aba2ad584e",
+      "workbench.js": "f556f103ffb4a8aee0e39e908576a2acb210e6ab3655c8a6cb1e88b758a76269",
+      "panel-model.mjs": "2cdd3c6475a8527c8d8afac29c45953fd370d0eab260f0fdc969a13bf04ea019",
+      "bridge.js": "d69b414b88e08484d485a7e23db3e7dc07a2e9ec0bf3f71aa54ee1c6e058fc02",
+      "helper.js": "e7adcb41beccee2146090fb5ab45d9ceb2e7af12a75c6c4b9e9502bcc0e5f897",
+      "chat-content.js": "97e4d37a47a1a99ecfc6e2f80872fd5d67fde3a5bbf8fb0d8b347a87d5f3c90e",
+      "schemas/org.gnome.shell.extensions.papercusp-workbench.gschema.xml": "5d2a51f63725674107512d43a7a8ec1383d1bfe9953f6e298d8c53a28229b3aa"
+    },
+    "testSha256": "037017511aaa56cf4122eaac0b8061b2dec60cbac871df2514cabe76bf153610"
+  },
+  "sourceHashesVerified": true,
+  "custodyMapping": "workbench.js is the production extension; extension.js is the generated seat driver",
+  "screenshotVisuallyVerified": true,
+  "evidence": {
+    "gnome-native-input.json": {
+      "path": "/tmp/wb-gnome-chat-cards-focus-20261108-v1/gnome-native-chat/gnome-native-input.json",
+      "sha256": "72bcd29e977d7622ef0683c23b1d2403d12debd37750f5122113bee2e03064d8"
+    },
+    "gnome-native-input.png": {
+      "path": "/tmp/wb-gnome-chat-cards-focus-20261108-v1/gnome-native-chat/gnome-native-input.png",
+      "sha256": "1b113d356053a6d1a72f1f67c14f5ba420cbc51a61c1449c640e3f3b74ea3135"
+    }
+  },
+  "log": "/tmp/wb-gnome-chat-cards-focus-20261108-v1.log",
+  "limitations": [
+    "Local dirty current build with fixture PUI",
+    "Exact installed three-OS proof, independent acceptance, certificate and shipment still required"
+  ]
+}

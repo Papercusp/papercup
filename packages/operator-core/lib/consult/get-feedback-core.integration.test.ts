@@ -233,6 +233,7 @@ const snapshotOf = (
   candidates: RoutingCandidate[],
   degraded?: RoutingSnapshot['degraded'],
   fallback?: 'lexical',
+  undispatchableSources?: RoutingSnapshot['undispatchableSources'],
 ): RoutingSnapshot => ({
   query: 'q',
   relevanceFloor: 0.41,
@@ -243,6 +244,7 @@ const snapshotOf = (
   computedAt: NOW.toISOString(),
   ...(degraded ? { degraded } : {}),
   ...(fallback ? { fallback } : {}),
+  ...(undispatchableSources?.length ? { undispatchableSources } : {}),
 });
 
 const routeOf = (
@@ -254,11 +256,12 @@ const routeOf = (
     queryVec?: number[] | null;
     queryProfile?: ProseProfileSelection | null;
     queryMode?: string | null;
+    undispatchableSources?: RoutingSnapshot['undispatchableSources'];
   } = {},
 ): RouteResult => ({
   verdict: qualified.length > 0 ? 'routed' : 'no_qualified_responder',
   qualified,
-  snapshot: snapshotOf(opts.all ?? qualified, opts.degraded, opts.fallback),
+  snapshot: snapshotOf(opts.all ?? qualified, opts.degraded, opts.fallback, opts.undispatchableSources),
   // Default null: existing scenarios exercise the pre-P-006 paths (no archive
   // leg); archive tests pass an explicit vector.
   queryVec: opts.queryVec ?? null,
@@ -2321,6 +2324,26 @@ describe('getFeedbackCore — routed', () => {
 });
 
 describe('getFeedbackCore — honest no_qualified_responder', () => {
+  it('persists the exact rejected Codex source tuple in the consult routing snapshot', async () => {
+    const rejected = {
+      ownerId: 'unarchived-codex',
+      dispatchable: false,
+      detail: 'Codex transcript absent on disk and not_archived',
+      source: {
+        agent: 'codex' as const,
+        sessionId: null,
+        advSessionId: 51628,
+        ownerId: 'unarchived-codex',
+      },
+    };
+    const { deps } = makeDeps(routeOf([], { undispatchableSources: [rejected] }));
+
+    const result = asOk(await getFeedbackCore({ ...baseReq, minResponders: 0 }, deps));
+    const row = await stateRow(result.conversation_id);
+
+    expect(row.routing).toMatchObject({ undispatchableSources: [rejected] });
+  });
+
   it('below_floor (pure-floor min:0): still opens + persists the verdict (D-003 honesty feed), no wake', async () => {
     // Under the D-003 global min of 1 a live below-floor pool now ROUTES
     // (minimum-fill) — the honest below_floor verdict survives via min:0.

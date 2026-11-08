@@ -27,6 +27,7 @@ export function parseSymbolSnapshot({ files, readSource, resolveModule, workspac
         unresolvedCalls: number;
         resolvedCalls: number;
         truncated: boolean;
+        callCensusTruncated: boolean;
     };
     immediateCalls: any[];
 };
@@ -49,6 +50,7 @@ export function buildSymbolSnapshot(input: Parameters<typeof parseSymbolSnapshot
         unresolvedCalls: number;
         resolvedCalls: number;
         truncated: boolean;
+        callCensusTruncated: boolean;
     };
     symbols: any[];
     callCensus?: any[] | undefined;

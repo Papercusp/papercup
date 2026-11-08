@@ -26,12 +26,18 @@ import { mkNonRepoTmpDir } from '../locks/non-repo-tmpdir';
 /** Records the paths every guardFileLock call was asked to hold, then delegates to the real guard. */
 const lockedPathSets: string[][] = [];
 let afterLockAcquired: (() => void) | undefined;
+let refuseLock = false;
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return { ...actual, readFileSync: vi.fn(actual.readFileSync) };
+});
 vi.mock('../locks/file-lock-guard', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../locks/file-lock-guard')>();
   return {
     ...actual,
     guardFileLock: (ctx: unknown, paths: string[], spec: unknown, run: () => unknown) => {
       lockedPathSets.push([...paths]);
+      if (refuseLock) return Promise.resolve({ acquired: false, busy: [] });
       return (actual.guardFileLock as unknown as (...a: unknown[]) => unknown)(ctx, paths, spec, () => {
         afterLockAcquired?.();
         return run();
@@ -96,6 +102,7 @@ function body(cell: Cell): string {
 beforeEach(() => {
   lockedPathSets.length = 0;
   afterLockAcquired = undefined;
+  refuseLock = false;
 });
 
 describe('capability:notebook_edit — replace', () => {
@@ -486,6 +493,25 @@ describe('capability:notebook_edit — through managed authority and locks', () 
 
   it('declares fs-write authority, not a read capability', () => {
     expect(notebookTool.capability).toBe('capability:fs-write');
+  });
+
+  it('does not read or mutate the notebook when its resolved lock is refused', async () => {
+    const p = notebook([codeCell('aaa', ['x = 1\n'])]);
+    const before = readFileSync(p, 'utf8');
+    const acquired = vi.fn();
+    afterLockAcquired = acquired;
+    refuseLock = true;
+    vi.mocked(readFileSync).mockClear();
+
+    const r = await edit({ notebook_path: p, cell_id: 'aaa', new_source: 'x = 2\n' });
+
+    expect(lockedPathSets).toEqual([[p]]);
+    expect(acquired).not.toHaveBeenCalled();
+    // Inspect calls before the assertion's own read of the unchanged bytes.
+    expect(vi.mocked(readFileSync).mock.calls.filter(([path]) => path === p)).toEqual([]);
+    expect(r.isError).toBe(true);
+    expect(parse(r).reason).toBe('file_locked');
+    expect(readFileSync(p, 'utf8')).toBe(before);
   });
 
   it('does not lock at all for an argument-only rejection', async () => {

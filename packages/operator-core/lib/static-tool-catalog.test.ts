@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { dirname, resolve } from 'node:path';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { listAllProjectedTools } from '@papercusp/agent-mcp';
@@ -22,6 +22,19 @@ function liveMcpNames(): Set<string> {
 }
 
 describe('static tool catalog derivation', () => {
+  it('keeps generated scorer contracts identical to the complete production registry', () => {
+    const catalog = JSON.parse(readFileSync(resolve(REPO_ROOT, '.papercusp/tool-catalog.json'), 'utf8')) as {
+      tools: Array<{ name: string | null; description: string }>;
+    };
+    const projected = catalog.tools.flatMap(tool => tool.name
+      ? [{ name: tool.name, description: tool.description }] : []);
+    const live = listAllProjectedTools().flatMap(tool => tool.expose.mcp
+      ? [{ name: tool.expose.mcp.name, description: tool.description }] : []);
+    const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name);
+    expect(projected.sort(byName), 'regenerate the catalog when a tool name or description changes')
+      .toEqual(live.sort(byName));
+  });
+
   it('resolves an imported string identity through an aliased re-export', () => {
     const root = mkdtempSync(resolve(tmpdir(), 'static-string-identity-'));
     const write = (path: string, text: string) => {

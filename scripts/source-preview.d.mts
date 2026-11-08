@@ -115,9 +115,11 @@ export function validateVerifierInputs({ repo, ref, inputs, inputsFile, tauriInp
  * checkout for read-only consumers (for example a host build with an external
  * output directory). They remain recorded source: rebuilding them invalidates
  * the receipt. The default archive/rebuild contract is unchanged.
- * @param {{ repo: string, ref: string, dest: string, inputs?: string[], inputsFile?: string, gitCheckout?: boolean, runtimeOutputs?: 'rebuild' | 'preserve', tauriInputs?: boolean, sourceArchive?: { root: string, receiptSha256: string }, operatorApi?: { root: string, sourceReceiptPath: string, sourceReceiptSha256: string, inputReceiptPath: string, inputReceiptSha256: string, outputPath: string } }} options
+ * Dependency-executing callers require lock coherence before allocating source;
+ * source-only archival also supports inspecting historically incoherent trees.
+ * @param {{ repo: string, ref: string, dest: string, inputs?: string[], inputsFile?: string, gitCheckout?: boolean, runtimeOutputs?: 'rebuild' | 'preserve', tauriInputs?: boolean, requireDependencyCoherence?: boolean, sourceArchive?: { root: string, receiptSha256: string }, operatorApi?: { root: string, sourceReceiptPath: string, sourceReceiptSha256: string, inputReceiptPath: string, inputReceiptSha256: string, outputPath: string } }} options
  */
-export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile, gitCheckout, runtimeOutputs, tauriInputs, sourceArchive, operatorApi }: {
+export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile, gitCheckout, runtimeOutputs, tauriInputs, requireDependencyCoherence, sourceArchive, operatorApi }: {
     repo: string;
     ref: string;
     dest: string;
@@ -126,6 +128,7 @@ export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile, git
     gitCheckout?: boolean;
     runtimeOutputs?: "rebuild" | "preserve";
     tauriInputs?: boolean;
+    requireDependencyCoherence?: boolean;
     sourceArchive?: {
         root: string;
         receiptSha256: string;
@@ -301,6 +304,11 @@ export function prepareBgVerifierBuildRecord({ prepared, dependencies, invocatio
         };
     };
     expectedHostManifest?: {
+        builtinSources?: {
+            url: string;
+            sha256: string;
+            bytes: number;
+        }[] | undefined;
         authority: BgExpectedHostManifest;
         identity: {
             path: string;
@@ -385,6 +393,11 @@ export function verifyBgVerifierBuildRecord(record: ReturnType<typeof prepareBgV
         };
     };
     expectedHostManifest?: {
+        builtinSources?: {
+            url: string;
+            sha256: string;
+            bytes: number;
+        }[] | undefined;
         authority: BgExpectedHostManifest;
         identity: {
             path: string;
@@ -477,6 +490,11 @@ export function prepareBgVerifierBuildContexts({ prepared, dependencies, invocat
             };
         };
         expectedHostManifest?: {
+            builtinSources?: {
+                url: string;
+                sha256: string;
+                bytes: number;
+            }[] | undefined;
             authority: BgExpectedHostManifest;
             identity: {
                 path: string;
@@ -644,6 +662,11 @@ export function prepareBgVerifierBuildTransaction({ prepared, dependencies, invo
                 };
             };
             expectedHostManifest?: {
+                builtinSources?: {
+                    url: string;
+                    sha256: string;
+                    bytes: number;
+                }[] | undefined;
                 authority: BgExpectedHostManifest;
                 identity: {
                     path: string;
@@ -795,6 +818,11 @@ export function beginBgVerifierBuildTransaction({ transaction, ownerPid }: {
                     };
                 };
                 expectedHostManifest?: {
+                    builtinSources?: {
+                        url: string;
+                        sha256: string;
+                        bytes: number;
+                    }[] | undefined;
                     authority: BgExpectedHostManifest;
                     identity: {
                         path: string;
@@ -925,6 +953,11 @@ export function beginBgVerifierBuildTransaction({ transaction, ownerPid }: {
                 };
             };
             expectedHostManifest?: {
+                builtinSources?: {
+                    url: string;
+                    sha256: string;
+                    bytes: number;
+                }[] | undefined;
                 authority: BgExpectedHostManifest;
                 identity: {
                     path: string;
@@ -1091,7 +1124,7 @@ export function qualifyBgVerifierLogicalOutputSet(args: {
  * @param {Awaited<ReturnType<typeof qualifyBgVerifierLogicalOutputSet>>} logical
  * @param {Parameters<typeof qualifyBgVerifierLogicalOutputSet>[0]} args
  */
-export function verifyBgVerifierLogicalOutputSet(logical: any, { output, binding, receipts }: Parameters<typeof qualifyBgVerifierLogicalOutputSet>[0]): any;
+export function verifyBgVerifierLogicalOutputSet(logical: Awaited<ReturnType<typeof qualifyBgVerifierLogicalOutputSet>>, { output, binding, receipts }: Parameters<typeof qualifyBgVerifierLogicalOutputSet>[0]): any;
 /** Publish one COMPLETE receipt at the pre-nominated bank leaf. Linking a fully
  * written private file is atomic and refuses an existing destination, including
  * dangling links. Keep artifact paths physical: moving this directory would
@@ -1170,6 +1203,11 @@ export function publishBgVerifierLogicalOutputSet(args: {
                         };
                     };
                     expectedHostManifest?: {
+                        builtinSources?: {
+                            url: string;
+                            sha256: string;
+                            bytes: number;
+                        }[] | undefined;
                         authority: BgExpectedHostManifest;
                         identity: {
                             path: string;
@@ -1300,6 +1338,11 @@ export function publishBgVerifierLogicalOutputSet(args: {
                     };
                 };
                 expectedHostManifest?: {
+                    builtinSources?: {
+                        url: string;
+                        sha256: string;
+                        bytes: number;
+                    }[] | undefined;
                     authority: BgExpectedHostManifest;
                     identity: {
                         path: string;
@@ -1578,6 +1621,11 @@ export function verifyBgVerifierPublication(publication: ReturnType<typeof publi
                         };
                     };
                     expectedHostManifest?: {
+                        builtinSources?: {
+                            url: string;
+                            sha256: string;
+                            bytes: number;
+                        }[] | undefined;
                         authority: BgExpectedHostManifest;
                         identity: {
                             path: string;
@@ -1708,6 +1756,11 @@ export function verifyBgVerifierPublication(publication: ReturnType<typeof publi
                     };
                 };
                 expectedHostManifest?: {
+                    builtinSources?: {
+                        url: string;
+                        sha256: string;
+                        bytes: number;
+                    }[] | undefined;
                     authority: BgExpectedHostManifest;
                     identity: {
                         path: string;
@@ -1998,6 +2051,11 @@ export function runBgVerifierBuildRecipe(args: Parameters<typeof beginBgVerifier
                         };
                     };
                     expectedHostManifest?: {
+                        builtinSources?: {
+                            url: string;
+                            sha256: string;
+                            bytes: number;
+                        }[] | undefined;
                         authority: BgExpectedHostManifest;
                         identity: {
                             path: string;
@@ -2128,6 +2186,11 @@ export function runBgVerifierBuildRecipe(args: Parameters<typeof beginBgVerifier
                     };
                 };
                 expectedHostManifest?: {
+                    builtinSources?: {
+                        url: string;
+                        sha256: string;
+                        bytes: number;
+                    }[] | undefined;
                     authority: BgExpectedHostManifest;
                     identity: {
                         path: string;
@@ -2586,6 +2649,15 @@ export function qualifyBgVerifierRuntimeSources({ output, record, invocation, ex
         sha256: any;
         bytes: any;
     }[];
+    builtinBindings: {
+        expectedHostManifestSha256: string;
+        processId: any;
+        target: any;
+        scriptId: any;
+        url: any;
+        sha256: any;
+        bytes: any;
+    }[];
     unqualifiedSources: {
         processId: any;
         target: any;
@@ -2718,6 +2790,7 @@ export function qualifyBgVerifierRuntimeSources({ output, record, invocation, ex
         expectedHostManifestQualified: boolean;
         expectedHostManifestSha256: string | null;
     }[];
+    builtinQualification: string;
     nativeQualification: string;
     compiledOutputBytesObserved: boolean;
     completeRuntimeClosureVerified: boolean;
@@ -3043,7 +3116,7 @@ export function exportSnapshot({ repoRoot, ref, out, target: targetName, license
     out: string;
     manifest: {
         schema: number;
-        target: "preview" | "public";
+        target: "public" | "preview";
         purpose: string;
         year: number;
         source: {
@@ -3442,8 +3515,9 @@ export type BgBuildInvocation = {
 /**
  * Expected host files are nominated independently BEFORE compilation/runtime,
  * using the same pinned-manifest/physical-file fences as the source authority.
- * This qualifies file bytes only; it does not attest builtins, vDSO, creator
- * exclusion, or complete runtime coverage.
+ * Optional builtin sources are pinned from the same independently selected Node
+ * before the target starts, then joined to its native executable identity.
+ * This does not attest vDSO, creator exclusion, or complete runtime coverage.
  */
 export type BgExpectedHostManifest = {
     schemaVersion: 1;

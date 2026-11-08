@@ -6,6 +6,7 @@ import { isRecordedTestLayer, RECORDED_TEST_LAYERS } from '@papercusp/test-confi
 import { isNonAutomatedBehaviorClass } from '../../plan-verification-profile';
 import { pgTimestampToIso, pgTimestampToIsoOrNull } from '../../pg-timestamp';
 import { resolveSpecScopeSlug } from './adhoc-spec-scope';
+import { normalizeSpecSemanticText } from './spec-clause-compiler';
 import type { resolvePlanScope as ResolvePlanScope } from './source';
 
 // The plan runtime reaches rubric checks and testing:run, whose schema imports
@@ -379,6 +380,17 @@ export function specClauseContentHash(input: SpecClauseWrite): string {
     .digest('hex');
 }
 
+/** Only plain prose spacing is proven inert here. Literal/code contents and
+ * Markdown block structure remain unknown and therefore require a revision. */
+function sameProseSpacing(before: string, after: string): boolean {
+  if (before === after) return true;
+  const protectedSyntax = /[`"'\\<>{}\[\]]/;
+  const blockStructure = /(?:^|\n)[\t ]*(?:[-*+]\s|#{1,6}\s|>\s|\d+[.)]\s)/;
+  if ([before, after].some(text => protectedSyntax.test(text) || blockStructure.test(text))) return false;
+  return before.replace(/[\t\r\n ]/g, '') === after.replace(/[\t\r\n ]/g, '') &&
+    normalizeSpecSemanticText(before) === normalizeSpecSemanticText(after);
+}
+
 /**
  * WI-10002889 (R-1) + WI-10003763: does this write differ from the stored prior revision only in
  * acceptance provenance (`lifecycleStatus` and/or `acceptanceRef`), or in the rubric revision
@@ -642,8 +654,8 @@ export async function setSpecClause(
     // hash-equality return below guarantees SOMETHING moved, so no separate change test is needed.
     let provenanceOnlyFrom: number | null = null;
     if (identity) {
-      const current = await tx<{ content_hash: string; lifecycle_status: SpecLifecycleStatus | null; exemption: Record<string, unknown> | null }[]>`
-        SELECT content_hash, lifecycle_status, exemption
+      const current = await tx<{ content_hash: string; behavior: string; lifecycle_status: SpecLifecycleStatus | null; exemption: Record<string, unknown> | null }[]>`
+        SELECT content_hash, behavior, lifecycle_status, exemption
           FROM harness_shared.plan_spec_clause_revisions
          WHERE workspace_id = ${scope.workspaceId}
            AND harness_slug = ${scope.harnessSlug}
@@ -653,13 +665,24 @@ export async function setSpecClause(
       if (current[0]?.content_hash === writeHash) {
         return { status: 'unchanged', specId: input.specId, revision: actualRevision, contentHash: writeHash };
       }
+      const presentationOnly = current[0] && sameProseSpacing(current[0].behavior, effectiveInput.behavior);
+      const priorPresentationInput = presentationOnly
+        ? { ...effectiveInput, behavior: current[0].behavior }
+        : effectiveInput;
+      // Compare against the OLD byte hash; changing the hash algorithm would
+      // manufacture revisions across the existing corpus. Every other contract
+      // and policy field must still match, including the effective BAR pin.
+      if (presentationOnly && current[0].behavior !== effectiveInput.behavior &&
+          specClauseContentHash({ ...priorPresentationInput, sourceBar: effectiveBarPin }) === current[0].content_hash) {
+        return { status: 'unchanged', specId: input.specId, revision: actualRevision, contentHash: current[0].content_hash };
+      }
       const priorLifecycle = current[0]?.lifecycle_status ?? null;
       if (
         current[0] &&
         priorLifecycle &&
         isEnforceableSpecLifecycle(normalized.lifecycleStatus) &&
         differsOnlyInAcceptanceProvenance(
-          effectiveInput,
+          priorPresentationInput,
           { lifecycleStatus: priorLifecycle, acceptanceRef: priorAcceptanceRef, exemption: current[0].exemption },
           priorBarPin,
           current[0].content_hash,

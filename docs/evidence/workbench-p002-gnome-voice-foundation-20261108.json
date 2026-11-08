@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "GNOME voice state and PUI transport foundation",
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "workItem": "WI-6554700010029573",
+  "plane": "dirty current build; Node model tests and actual GJS/GTK helper with fixture PUI",
+  "framework": "node:test",
+  "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp node scripts/test-files.mjs papercusp-desktop/test/native-workbench-gnome.test.mjs",
+  "exitCode": 0,
+  "testResult": {"passed": 48, "failed": 0, "skipped": 0},
+  "log": "/tmp/wb-gnome-voice-foundation-unit-20261108-v2.log",
+  "logSha256": "6fab47e3006acfd5cbad86eb0053a16fd5129c445360ca5f98459a6fd13d262d",
+  "sourceCustody": {
+    "captured": "after terminal test run; no source edits during v2",
+    "files": {
+      "papercusp-desktop/native/gnome/panel-model.mjs": "f50584d98403d14977219d90908bbc0706c4ca8b5acfea614d4bd9451c70f907",
+      "papercusp-desktop/native/gnome/bridge.js": "64481d1e2f1ad77c6a6d9a75ce59e157e36c801c7bd54883eaaafb2286aa1ab1",
+      "papercusp-desktop/native/gnome/helper.js": "e7adcb41beccee2146090fb5ab45d9ceb2e7af12a75c6c4b9e9502bcc0e5f897",
+      "papercusp-desktop/test/native-workbench-gnome.test.mjs": "294e6a524ffbb75a180ccd9f204bd0cb77f8473dda2c9fbf80b6d8994f18f641"
+    }
+  },
+  "coverage": [
+    "Exact environment, conversation and request receipts",
+    "Empty, oversized, malformed and noncanonical audio or transcript rejection",
+    "Late transcript rejection after edit, reload, earlier history, cancellation or send",
+    "Explicit send retains voice modality; a later edit restores text modality",
+    "128000-character audio passes actual GJS and resident GTK helper, exceeding the ordinary 64 KiB limit",
+    "Cancelling voice reaps its PUI child before completion while an unrelated read succeeds",
+    "Existing Markdown, cards, chat, Inbox, Organizer and native transport regressions"
+  ],
+  "limits": [
+    "No microphone or playback device implementation yet",
+    "No native voice controls or seat journey yet",
+    "Fixture PUI; authenticated operator and exact installed Ubuntu/macOS/Windows acceptance, certificate and shipment remain required"
+  ]
+}

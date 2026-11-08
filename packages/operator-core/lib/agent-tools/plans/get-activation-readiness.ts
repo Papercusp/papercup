@@ -3,6 +3,7 @@ import { recordExpertiseRoutingInvocation } from '../../endpoint-route/telemetry
 import { CONSULT_DEFAULT_POLICY } from '../../consult/selection-policies';
 import { previewProductShaping } from './product-shaping';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
+import { conformanceActivationVerdict } from '../../spec-conformance/activation-gate';
 import {
   evaluateActivationDeclarations,
   type ActivationDeclarationBlocker,
@@ -43,7 +44,7 @@ export function activationDeclarationReadiness(
 
 /** The finite population is part of the existing activationReadiness contract. */
 export const ACTIVATION_STAGE_IDS = [
-  'source-discovery', 'declarations', 'inputs', 'anchors', 'dependencies',
+  'source-discovery', 'declarations', 'conformance', 'inputs', 'anchors', 'dependencies',
   'bar-contract', 'spec-quality', 'quality-audit', 'contract-critique',
   'admission', 'lane', 'promotion', 'consult',
 ] as const;
@@ -55,6 +56,20 @@ export interface ActivationStageObservation {
   nextAction: string;
   evidenceRefs?: string[];
   detail?: string;
+}
+/** Preview the same executable-requirement gate used by the activation audit. */
+export function activationConformanceReadiness(planContent: string): ActivationStageObservation {
+  const verdict = conformanceActivationVerdict(planContent);
+  return {
+    status: !verdict.ok ? 'blocked' : verdict.report.applicable ? 'pass' : 'not-applicable',
+    codes: verdict.ok ? [verdict.report.applicable ? 'conformance_ready' : 'conformance_not_applicable']
+      : [...new Set(verdict.problems.map(problem => problem.code))],
+    nextAction: verdict.ok ? 'Retain executable requirement enforcement at the activation audit.'
+      : 'Repair the named Conformance problems before requesting the activation audit.',
+    evidenceRefs: [...new Set(verdict.problems.map(problem => problem.barKey)
+      .filter((key): key is string => Boolean(key)))],
+    ...(verdict.message ? { detail: verdict.message } : {}),
+  };
 }
 export interface ActivationStage extends ActivationStageObservation {
   id: ActivationStageId;
@@ -113,7 +128,7 @@ export function unavailableActivationReadiness(error: unknown): ActivationReadin
 }
 
 const STAGE_DEPENDENCIES: Record<ActivationStageId, ActivationStageId[]> = {
-  'source-discovery': [], declarations: [], inputs: [], anchors: [], dependencies: [],
+  'source-discovery': [], declarations: [], conformance: [], inputs: [], anchors: [], dependencies: [],
   'bar-contract': [], 'spec-quality': ['bar-contract'], 'quality-audit': ['spec-quality'],
   'contract-critique': ['spec-quality', 'quality-audit'], admission: [], lane: [],
   promotion: [], consult: [],
@@ -322,6 +337,9 @@ async function createPlanActivationReadinessRequestInWorkspace(params: {
         return { ...observation(declaration.ready, declaration.blockers.map(b => b.code),
           declaration.ready ? 'Retain declaration provenance.' : 'Repair the reuse/library declaration sections.'),
           ...(!declaration.applies ? { status: 'not-applicable' as const } : {}) };
+      },
+      async conformance() {
+        return activationConformanceReadiness(current().row.content);
       },
       async inputs() {
         const row = current().row;

@@ -18,6 +18,7 @@ import getTool from './get';
 import auditTool from './audit';
 import startTool from './start';
 import { autoStartAfterActivationAudit } from './auto-start-after-audit';
+import { conformanceActivationVerdict } from '../../spec-conformance/activation-gate';
 
 const advice = vi.hoisted(() => ({ route: vi.fn() }));
 vi.mock('../search/embedder', () => ({ buildQueryEmbedderResolved: async () => null }));
@@ -95,6 +96,26 @@ beforeEach(async () => {
 });
 
 describe('activation readiness application-read-only boundary', () => {
+  it('previews the activation audit Conformance refusal and requirement keys without writes', async () => {
+    const read = await readPlanBySlug(slug, { workspaceId: fx.workspaceId, harnessSlug: harness });
+    const content = read!.row.content + '\n## Requirements\n\n' + ['R-1', 'R-2'].map(key =>
+      `**${key} — Preserve executable acceptance.**\n\`\`\`requirement\n${JSON.stringify({
+        intent: { request: 'Preserve acceptance', sourceRefs: ['owner directive #1'] },
+        acceptance: { condition: 'Acceptance holds.', falsifier: 'Acceptance fails.', passRatings: ['healthy'] },
+        verification: { method: 'Inspect acceptance.' },
+      })}\n\`\`\``).join('\n\n');
+    await seedPlan(fx.admin, fx.workspaceId, harness, slug, content);
+    const gate = conformanceActivationVerdict(content);
+    expect(gate).toMatchObject({ ok: false, error: 'conformance_requirement_unenforced' });
+    const before = await snapshot();
+    const result = await readPlanActivationReadiness(request());
+    expect(result.ready).toBe(false);
+    expect(result.stages.find(s => s.id === 'conformance')).toMatchObject({
+      status: 'blocked', codes: [gate.error], evidenceRefs: gate.problems.map(p => p.barKey),
+    });
+    expect(await snapshot()).toEqual(before);
+  }, 120_000);
+
   it('controlled before and after blocker trace preserves the refusal and reveals independent blockers', async () => {
     const ctx = { workspaceId: fx.workspaceId, harnessSlug: harness,
       uiClientId: requesterId, isSuperuser: true } as never;
@@ -172,14 +193,14 @@ describe('activation readiness application-read-only boundary', () => {
     const project = (diagnostic: any) => ({ basis: diagnostic.basis, freshness: diagnostic.freshness,
       stages: diagnostic.stages.filter((s: any) => s.id !== 'consult') });
     expect(diagnostics[0]).toMatchObject({ ready: false, freshness: 'current',
-      counts: { total: 13, returned: 13, omitted: 0 } });
+      counts: { total: 14, returned: 14, omitted: 0 } });
     expect(project(diagnostics[1])).toEqual(project(diagnostics[0]));
     expect(project(diagnostics[2])).toEqual(project(diagnostics[0]));
     for (const id of ['declarations', 'inputs', 'anchors']) {
       expect(diagnostics[0].stages.find((s: any) => s.id === id)?.status, id).toBe('blocked');
     }
     // The preview deliberately does not recruit/route; this difference is
-    // explicit and must not hide a disagreement in the other twelve stages.
+    // explicit and must not hide a disagreement in the other thirteen stages.
     expect(diagnostics[1].consult).toMatchObject({ outcome: 'unavailable' });
     expect(await snapshot()).toEqual(before);
     expect(shadow).not.toHaveBeenCalled();
@@ -207,7 +228,7 @@ describe('activation readiness application-read-only boundary', () => {
   it('reports independent draft blockers without changing application rows or shadow observations', async () => {
     const before = await snapshot();
     const result = await readPlanActivationReadiness(request());
-    expect(result.counts).toEqual({ total: 13, returned: 13, omitted: 0 });
+    expect(result.counts).toEqual({ total: 14, returned: 14, omitted: 0 });
     for (const [id, code] of [['declarations', 'plan_declarations_invalid'], ['inputs', 'missing_required'],
       ['anchors', 'initial_change_scope_missing']]) {
       const stage = result.stages.find(s => s.id === id);
