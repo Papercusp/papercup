@@ -51,6 +51,13 @@ export interface NativeCustodyRetainedGroup {
   id: string; attempt: 'primary' | 'detail'; families: NativeCustodyFamily[];
   captureComplete: boolean | null;
   references: Array<{ location: string; codeRef: string; sha256: string; byteLength: number }>;
+  /** Above the flat occurrence bound, retain full vectors once and every exact
+   * observation base. Roles and pin indices reconstruct the original locations. */
+  referenceCapsules?: { schemaVersion: 'native-evaluator-reference-capsules-v1';
+    vectors: Array<{ sha256: string;
+      entries: Array<{ codeRef: string; sha256: string; byteLength: number; [key: string]: unknown }>;
+      vmInputs: Array<{ codeRef: string; sha256: string; byteLength: number; [key: string]: unknown }> }>;
+    locations: Array<{ location: string; capsule: string }> };
   referenceArtifacts?: Array<{ codeRef: string; sha256: string; byteLength: number }>;
   referenceGaps?: string[];
   auxiliary: Array<NativeCustodyAuxiliary & { artifact?: NativeArtifactPin }>;
@@ -81,6 +88,10 @@ export function retainNativeProofPacket(directory: string, input: {
   onProgress?: (progress: { phase: string; elapsedMs: number; group?: string; family?: string;
     objectsRead?: number; bytesRead?: number; completed?: number; total?: number; status?: string }) => void;
 }): { directory: string; locator: NativeCustodyLocator; status: 'complete' | 'partial'; verified: true; manifest: NativeCustodyManifest };
+/** Known declaration capacity only; runtime imports/bytes remain bounded at capture. */
+export function preflightNativeProofCustody(expected: NativeCustodyGroup[]): {
+  groups: number; minimumObjects: number; dynamicCapacity: 'unknown-until-capture';
+};
 export function retainNativeProofPacketAsync(directory: string, input: {
   identity: NativeCustodyIdentity; expected: NativeCustodyGroup[];
   observations: Array<{ id: string; out: string | null; captureComplete?: boolean }>;

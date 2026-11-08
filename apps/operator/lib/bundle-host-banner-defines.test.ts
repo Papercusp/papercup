@@ -194,6 +194,8 @@ describe('WI-10007604 — frozen host source identity', () => {
     };
     if (withGit) {
       git('init', '--quiet');
+      git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+        'commit', '--quiet', '--allow-empty', '-m', 'parent');
       git('add', 'entry.ts', helper);
       git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
         'commit', '--quiet', '-m', 'selected source');
@@ -207,7 +209,7 @@ describe('WI-10007604 — frozen host source identity', () => {
     writeFileSync(root + '.receipt.json', JSON.stringify(receipt));
     return root;
   }
-  it('bakes the validated archive commit instead of the enclosing checkout HEAD', () => {
+  it('bakes the validated archive commit instead of the enclosing checkout HEAD', async () => {
     const root = snapshot();
     try {
       const expected = spawnSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim().slice(0, 12);
@@ -215,9 +217,8 @@ describe('WI-10007604 — frozen host source identity', () => {
       expect(selected.status, selected.stderr).toBe(0);
       expect(selected.stdout).toBe(expected);
       const outfile = join(root, 'bundle.mjs');
-      const compile = spawnSync(join(REPO_ROOT, 'node_modules/esbuild/bin/esbuild'), [join(root, 'entry.ts'), '--outfile=' + outfile,
-        '--define:__PAPERCUSP_BUNDLED_SOURCE_SHA__=' + JSON.stringify(selected.stdout)], { encoding: 'utf8' });
-      expect(compile.status, compile.stderr).toBe(0);
+      await build({ entryPoints: [join(root, 'entry.ts')], outfile,
+        define: { __PAPERCUSP_BUNDLED_SOURCE_SHA__: JSON.stringify(selected.stdout) } });
       expect(spawnSync(process.execPath, [outfile], { encoding: 'utf8' }).stdout.trim()).toBe(expected);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
