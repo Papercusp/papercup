@@ -854,6 +854,18 @@ export async function specTestAdequacyCompletionGate(
     const label = `${clause.specId}@${clause.revision}`;
     const mechanical = evaluateMechanicalTestAdequacy({ clause, evidence: clauseEvidence, sourceBarTestRequirements });
     if (mechanical.applicable) {
+      if (mechanical.verdict === 'unknown') {
+        // Match the full evaluator's indeterminate-evidence boundary. An audit on
+        // another clause cannot supply this clause's missing frozen-oracle review.
+        return withReport({
+          ok: false,
+          applicable: true,
+          retryable: true,
+          checked: [],
+          reason: `${label}: mechanical test adequacy is unknown — ${mechanical.gaps.join('; ')}. ` +
+            'This is not repairable by a grading-integrity audit; no pendingGradingAuditTargetIds were produced.',
+        });
+      }
       if (mechanical.verdict === 'pass') { checked.push(label); proven.add(clauseKey(clause)); }
       else failures.push(`${label}: mechanical test adequacy failed — ${mechanical.gaps.join('; ')}`);
       continue;

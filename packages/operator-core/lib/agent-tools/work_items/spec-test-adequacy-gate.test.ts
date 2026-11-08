@@ -427,6 +427,62 @@ describe('item-close contribution boundary', () => {
 });
 
 describe('test-checked completion uses mechanical adequacy', () => {
+  it('keeps missing independent frozen-oracle review unknown at completion', async () => {
+    const deps = mechanicalDeps();
+    deps.listClauses.mockResolvedValue([clause({
+      behavior: 'Execution equals its independently reviewed frozen oracle.',
+    })]);
+    const result = await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps);
+    expect(result).toMatchObject({ ok: false, applicable: true, retryable: true, checked: [],
+      reason: expect.stringContaining('mechanical test adequacy is unknown') });
+    if (!result.ok) {
+      expect(result.reason).toContain('lacks eligible exact-proof review');
+      expect(result.reason).not.toContain('mechanical test adequacy failed');
+      expect(result.pendingGradingAuditTargetIds).toBeUndefined();
+    }
+    expect(deps.listCards).not.toHaveBeenCalled();
+  });
+
+  it('does not dispatch another clause’s pending audit when frozen-oracle eligibility is unknown', async () => {
+    const deps = mechanicalDeps();
+    const frozen = clause({ specId: 'SPEC-003-02',
+      behavior: 'Execution equals its independently reviewed frozen oracle.' });
+    deps.listClauses.mockResolvedValue([clause(), frozen]);
+    deps.resolveSourceBarTestRequirements.mockResolvedValueOnce({ status: 'not-required' });
+    deps.listEvidence.mockResolvedValue([...deps.rows, ...deps.rows.map(row => ({
+      ...row, specId: frozen.specId,
+    }))]);
+    deps.listCards.mockResolvedValue([{ ...matchingCard(),
+      gradingAudit: { ...PASSED_AUDIT, state: 'pending' } }]);
+
+    const result = await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps);
+    expect(result).toMatchObject({ ok: false, applicable: true, retryable: true, checked: [],
+      reason: expect.stringContaining('SPEC-003-02@1: mechanical test adequacy is unknown') });
+    expect(result).not.toHaveProperty('pendingGradingAuditTargetIds');
+    expect(result).not.toHaveProperty('failedGradingAuditTargetIds');
+    expect(deps.listCards).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts reader-certified frozen oracles and preserves explicit oracle contradictions as failures', async () => {
+    const deps = mechanicalDeps();
+    deps.listClauses.mockResolvedValue([clause({
+      behavior: 'Execution equals its independently reviewed frozen oracle.',
+    })]);
+    const reviewed = deps.rows.map((row, index) => ({ ...row,
+      oracleIndependenceVerification: { verifierBindingIds: [5002 + index] } }));
+    deps.listEvidence.mockResolvedValue(reviewed);
+    expect(await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps))
+      .toMatchObject({ ok: true, applicable: true, checked: ['SPEC-003-01@1'] });
+
+    reviewed[0]!.details = { ...reviewed[0]!.details,
+      adequacy: { ...(reviewed[0]!.details.adequacy as Record<string, unknown>), oracleIndependent: false } };
+    const contradicted = await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps);
+    expect(contradicted).toMatchObject({ ok: false,
+      reason: expect.stringContaining('mechanical test adequacy failed') });
+    if (!contradicted.ok) expect(contradicted.reason).toContain('explicitly reports a dependent oracle');
+    expect(deps.listCards).not.toHaveBeenCalled();
+  });
+
   it('completes with passing named tests and a caught mutant without reading judge cards', async () => {
     const deps = mechanicalDeps();
     const result = await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps);

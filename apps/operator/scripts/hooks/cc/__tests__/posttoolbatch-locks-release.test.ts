@@ -650,6 +650,40 @@ describe('posttooluse-locks-release.sh batch deferral', () => {
     }
   });
 
+  it('switches to manual mode without old-main fallback when the current release authority is down', async () => {
+    const down = createServer();
+    await new Promise<void>(resolve => down.listen(0, '127.0.0.1', resolve));
+    const downPort = (down.address() as { port: number }).port;
+    await new Promise<void>(resolve => down.close(() => resolve()));
+    const mainPort = (server.address() as { port: number }).port;
+    const proxy = createMcpProxy({
+      listenPort: 0,
+      resolveTargets: () => staticMcpProxyTargets('127.0.0.1', mainPort, downPort),
+      retryWindowMs: 100, retryBackoffMs: 10, log: () => {},
+    });
+    await new Promise<void>(resolve => proxy.listen(0, '127.0.0.1', resolve));
+    const proxyUrl = 'http://127.0.0.1:' + (proxy.address() as { port: number }).port;
+    const toolUseId = 'tu-current-down';
+    fs.writeFileSync(join(cache, toolUseId + '.lock'), 'unconfirmed-lock');
+    fs.writeFileSync(join(cache, toolUseId + '.paths'), JSON.stringify(['src/first.ts']));
+    try {
+      const out = await runHook(POST_HOOK, {
+        hook_event_name: 'PostToolUse', tool_name: 'apply_patch', tool_use_id: toolUseId,
+        session_id: 'codex-owner', tool_response: { success: true },
+      }, {
+        PAPERCUSP_OPERATOR_URL: proxyUrl, PAPERCUSP_LOCKS_FALLBACK_OPERATOR_URL: proxyUrl,
+      });
+      expect(out.status).toBe(0);
+      expect(releaseRequests).toEqual([]);
+      expect(JSON.parse(out.stdout).hookSpecificOutput.additionalContext).toContain('manual');
+      expect(fs.existsSync(join(cache, toolUseId + '.lock'))).toBe(true);
+      expect(fs.existsSync(join(cache, 'owner-codex-owner-last-success.json'))).toBe(false);
+    } finally {
+      proxy.closeAllConnections();
+      await new Promise<void>(resolve => proxy.close(() => resolve()));
+    }
+  });
+
   it('uses the stable release authority when the primary MCP response has no text result', async () => {
     const toolUseId = 'tu-empty-primary';
     const fallbackRequests: Array<Record<string, any>> = [];
