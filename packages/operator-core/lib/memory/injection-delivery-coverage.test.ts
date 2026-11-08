@@ -28,6 +28,7 @@ import {
   deliveryMatrixCellKey,
   deliveryTerminalOracle,
   validateDeliveryMatrix,
+  type DeliveryMatrixCoordinate,
   type DeliveryMatrixManifest,
   type DeliveredContextAttempt,
   INJECTION_PORTS,
@@ -44,9 +45,9 @@ describe('context reliability R-1: artifact-validator', () => {
     cells: deliveryMatrixPopulation().map(cell => ({ ...cell, selector: 'fixture-only', evidenceRefs: ['fixture-only'],
       verdict: 'UNKNOWN', terminalOracle: deliveryTerminalOracle(cell), state: 'UNKNOWN', suppressionWrites: 0 })),
   });
-  const emitted = () => {
+  const emitted = (fault: DeliveryMatrixCoordinate['fault'] = 'retry') => {
     const manifest = fixture();
-    const cell = manifest.cells.find(c => c.client === 'codex' && c.sink === 'turn-start' && c.source === 'memory' && c.fault === 'retry')!;
+    const cell = manifest.cells.find(c => c.client === 'codex' && c.sink === 'turn-start' && c.source === 'memory' && c.fault === fault)!;
     const fragment = { kind: 'memory' as const, id: 'source-1', epoch: 7, port: 'turn-start', bodySha256: '1'.repeat(64), bodyBytes: 30 };
     cell.state = 'emitted'; cell.verdict = 'passed'; cell.suppressionWrites = 1;
     cell.attempt = { id: 'attempt-1', recipient: 'agent-1', workspace: 'workspace-1', epoch: 7, token: 'token-1', fragment };
@@ -95,6 +96,51 @@ describe('context reliability R-1: artifact-validator', () => {
     expect(validateDeliveryMatrix(manifest)).toMatchObject({ valid: true, acceptanceReady: false, errors: [] });
     expect(validateDeliveryMatrix(manifest).unknown).toHaveLength(431);
   });
+
+  it.each(['retry', 'duplicate-commit', 'overlapping-ports'] as const)(
+    'a passed %s requires emission and exactly one suppression write', fault => {
+      for (const state of ['prepared', 'partial', 'abandoned', 'UNKNOWN'] as const) {
+        const { manifest, cell } = emitted(fault);
+        cell.state = state;
+        cell.suppressionWrites = 0;
+        delete cell.proof;
+        expect(validateDeliveryMatrix(manifest).errors).toContain(`${deliveryMatrixCellKey(cell)}:fault-outcome`);
+      }
+      const { manifest, cell } = emitted(fault);
+      cell.suppressionWrites = 0;
+      expect(validateDeliveryMatrix(manifest).errors).toContain(`${deliveryMatrixCellKey(cell)}:fault-outcome`);
+      cell.suppressionWrites = 1;
+      expect(validateDeliveryMatrix(manifest)).toMatchObject({ valid: true, errors: [] });
+    });
+
+  it.each(['prepare', 'lost-response', 'partial-stdout', 'deadline', 'abandon-expiry'] as const)(
+    'a passed %s cannot claim a successful emission', fault => {
+      const { manifest, cell } = emitted(fault);
+      expect(validateDeliveryMatrix(manifest).errors).toContain(`${deliveryMatrixCellKey(cell)}:fault-outcome`);
+    });
+
+  it.each([
+    ['prepare', 'prepared'], ['lost-response', 'prepared'], ['lost-response', 'abandoned'],
+    ['partial-stdout', 'partial'], ['partial-stdout', 'abandoned'],
+    ['deadline', 'prepared'], ['deadline', 'abandoned'], ['abandon-expiry', 'abandoned'],
+  ] as const)('retains the non-emitting %s outcome %s', (fault, state) => {
+    const { manifest, cell } = emitted(fault);
+    cell.state = state;
+    cell.suppressionWrites = 0;
+    delete cell.proof;
+    expect(validateDeliveryMatrix(manifest)).toMatchObject({ valid: true, acceptanceReady: false, errors: [] });
+  });
+
+  it.each(['prepare', 'lost-response', 'partial-stdout', 'deadline', 'abandon-expiry'] as const)(
+    'UNKNOWN cannot be a passed %s outcome', fault => {
+      const { manifest, cell } = emitted(fault);
+      cell.state = 'UNKNOWN';
+      cell.suppressionWrites = 0;
+      delete cell.proof;
+      expect(validateDeliveryMatrix(manifest).errors).toContain(`${deliveryMatrixCellKey(cell)}:fault-outcome`);
+      cell.verdict = 'UNKNOWN';
+      expect(validateDeliveryMatrix(manifest)).toMatchObject({ valid: true, acceptanceReady: false, errors: [] });
+    });
 
   it.each(['recipient', 'workspace', 'epoch', 'token', 'attemptId', 'client', 'sink', 'event'] as const)(
     'rejects a mismatched %s proof', field => {

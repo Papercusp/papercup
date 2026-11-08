@@ -257,6 +257,244 @@ export function createBgVerifierCompilerCustody({ prepared, dependencies }: {
         sha256: string;
     }[];
 };
+/** Bind original generation provenance before runtime effects, keeping its async
+ * verifier in this host alongside the existing input interval witness.
+ * @param {Parameters<typeof createBgVerifierCompilerCustody>[0]} options */
+export function createBgVerifierRuntimeCustody(options: Parameters<typeof createBgVerifierCompilerCustody>[0]): Promise<Readonly<{
+    /** @param {Parameters<typeof qualifyBgVerifierRuntimeSources>[0]} args */
+    qualify(args: Parameters<typeof qualifyBgVerifierRuntimeSources>[0]): Promise<{
+        dependencyQualification: string;
+        frozenGeneration: {
+            boundAtMs: number;
+            verifiedAtMs: number;
+            dependencyInputSha256: string;
+            dependencyGeneration: string;
+            dependencyGenerationSnapshotSha256: string;
+            materializedTreesSha256: string;
+        };
+        completeRuntimeClosureVerified: boolean;
+        creatorFence: string;
+        inputCustody?: {
+            preparedSha256: string;
+            dependencySha256: string;
+            capturedAtMs: number;
+            firstExecAtMs: number;
+            lastTerminalAtMs: number;
+            verifiedAtMs: number;
+            files: number;
+            directories: number;
+        } | undefined;
+        schemaVersion: string;
+        originalSourceReceiptSha256: string;
+        buildRecordSha256: string;
+        compilerOutputSha256: string;
+        captureSha256: string;
+        traceSha256: string;
+        entry: {
+            path: string;
+            realpath: string;
+            sha256: string;
+        };
+        population: {
+            schema: "runtime-traced-source-population/v1";
+            processId: number;
+            processes: import("../packages/operator-core/lib/memory/bench/runtime-source-capture.mjs").ParsedSourceReceipt[];
+            tracedTaskPopulationComplete: true;
+            parsedSourceProcessPopulationComplete: true;
+            completeRuntimeClosureVerified: false;
+            sourceQualification: "required";
+            dependencyQualification: "required";
+            creatorFence: "required";
+            scope: string;
+            fileInputs?: {
+                censusSha256: string;
+                bindings: {
+                    processId: number;
+                    target: string;
+                    scriptId: string;
+                    url: string;
+                    sha256: string;
+                    path: string;
+                }[];
+                unboundSources: {
+                    processId: number;
+                    target: string;
+                    scriptId: string;
+                    url: string;
+                    sha256: string;
+                }[];
+                originalSourceQualification: "required";
+                nativeDependencyQualification: "required";
+            };
+        };
+        bindings: {
+            processId: any;
+            target: any;
+            scriptId: any;
+            url: any;
+            sha256: any;
+            bytes: any;
+        }[];
+        inputBindings: {
+            origin: "source" | "dependency";
+            file: {
+                path: string;
+                realpath: string;
+                sha256: string;
+            };
+            processId: any;
+            target: any;
+            scriptId: any;
+            url: any;
+            sha256: any;
+            bytes: any;
+        }[];
+        builtinBindings: {
+            expectedHostManifestSha256: string;
+            processId: any;
+            target: any;
+            scriptId: any;
+            url: any;
+            sha256: any;
+            bytes: any;
+        }[];
+        unqualifiedSources: {
+            processId: any;
+            target: any;
+            scriptId: any;
+            url: any;
+            sha256: any;
+            bytes: any;
+        }[];
+        nativeBindings: {
+            processId: number;
+            closure: {
+                executable: {
+                    path: string;
+                    bytes: number;
+                    sha256: string;
+                    mappedDevice: string;
+                    mappedInode: string;
+                    mappedRanges?: {
+                        startAddress: string;
+                        endAddress: string;
+                        fileOffset: string;
+                        permissions: string;
+                    }[];
+                };
+                interpreter: {
+                    path: string;
+                    bytes: number;
+                    sha256: string;
+                    mappedDevice: string;
+                    mappedInode: string;
+                    mappedRanges?: {
+                        startAddress: string;
+                        endAddress: string;
+                        fileOffset: string;
+                        permissions: string;
+                    }[];
+                };
+                vdso: {
+                    startAddress: string;
+                    endAddress: string;
+                    fileOffset: string;
+                    permissions: string;
+                    bytes: number;
+                    sha256: string;
+                    origin: "kernel-auxv-AT_SYSINFO_EHDR";
+                };
+                initializationJoins: {
+                    line: number;
+                    object: string;
+                    file: {
+                        path: string;
+                        bytes: number;
+                        sha256: string;
+                        mappedDevice: string;
+                        mappedInode: string;
+                        mappedRanges?: {
+                            startAddress: string;
+                            endAddress: string;
+                            fileOffset: string;
+                            permissions: string;
+                        }[];
+                    };
+                    namespaces: string[];
+                }[];
+                retiredInitializationPaths: string[];
+                unjoinedMappedFiles: {
+                    path: string;
+                    bytes: number;
+                    sha256: string;
+                    mappedDevice: string;
+                    mappedInode: string;
+                    mappedRanges?: {
+                        startAddress: string;
+                        endAddress: string;
+                        fileOffset: string;
+                        permissions: string;
+                    }[];
+                }[];
+                stderrReceipt: import("@papercusp/operator-core/lib/memory/bench/measurement-manifest").NativeLoaderCaptureReceipt;
+                completeBeforeInferenceClosureVerified: true;
+                scope: string;
+                processId: number;
+                runTag: string;
+                objectMapJoins: {
+                    file: {
+                        path: string;
+                        bytes: number;
+                        sha256: string;
+                        mappedDevice: string;
+                        mappedInode: string;
+                        mappedRanges?: {
+                            startAddress: string;
+                            endAddress: string;
+                            fileOffset: string;
+                            permissions: string;
+                        }[];
+                    };
+                    object: string;
+                    namespace: string;
+                    loadBias: string;
+                    mappedSize: string;
+                    dynamicAddress: string;
+                    programHeaderAddress: string;
+                    line: number;
+                }[];
+                registrationProbeLookups: {
+                    line: number;
+                    object: string;
+                    symbol: string;
+                }[];
+                retiredBeforeFirstRun: {
+                    object: string;
+                    namespace: string;
+                    loadBias: string;
+                    mappedSize: string;
+                    dynamicAddress: string;
+                    programHeaderAddress: string;
+                    line: number;
+                }[];
+                noLoaderActivityDuringPopulation: boolean;
+            };
+            files: {
+                file: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                origin: string;
+            }[];
+            expectedHostManifestQualified: boolean;
+            expectedHostManifestSha256: string | null;
+        }[];
+        builtinQualification: string;
+        nativeQualification: string;
+        compiledOutputBytesObserved: boolean;
+    }>;
+}>>;
 /** A distinct, detached invocation record, never a restamped source receipt.
  * @param {{ prepared: BgVerifierPreparation, dependencies: ReturnType<typeof captureVerifierDependencies>,
  *   invocation: BgBuildInvocation, expectedHostManifest?: BgExpectedHostManifest }} options

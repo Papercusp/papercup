@@ -1,0 +1,189 @@
+{
+  "schemaVersion": "verification-preparation-audit-v1",
+  "workItem": "EI-28170776135022495",
+  "decision": "agent-shipping-workflow-effort-reduction-2026-11-07#D-008",
+  "observedAt": "2026-11-08T01:43:40.691Z",
+  "sourceCommit": "7847dd7835b8ee0bdec9c319f0ff8a8959db7af6",
+  "priorAttempt": {
+    "result": "NOT_MEASURED",
+    "receipt": "docs/evidence/mission-absorption-http-7847-cancelled-20261108.json",
+    "retainedCloneAbsent": true,
+    "retentionDefect": "EI-28182089379160317"
+  },
+  "runner": {
+    "head": "e8274843f35af2606e6522fa02ecc1ee477f82fa",
+    "files": [
+      {
+        "path": "scripts/lint-as-committed.mjs",
+        "sha256": "1958ed7b8f1c2b6f747ec85bf9004809ee6a5b079b743f0677d91ecb9d9d84ad"
+      },
+      {
+        "path": "scripts/lib/committed-dependency-verification.mjs",
+        "sha256": "0ad2caeca9f87946859486d7eb9850afd41c981830f9e4998641a51ba94de349"
+      },
+      {
+        "path": "apps/operator/bin/release/dependency-generation.sh",
+        "sha256": "e98b31e6382d8f0eebc8acaf407b093f1d6efcd8f48bfec1c563ef424756a82b"
+      }
+    ],
+    "scopeSupport": "maintained --workspace-dir CLI and scope-bound independent dependency provenance"
+  },
+  "declaredClosure": {
+    "seeds": [
+      "apps/operator",
+      "packages/operator-core"
+    ],
+    "dependencyFields": [
+      "dependencies",
+      "devDependencies",
+      "optionalDependencies",
+      "peerDependencies"
+    ],
+    "selectedWorkspaceDirs": [
+      "apps/operator",
+      "libs/agent-chat",
+      "libs/flags",
+      "libs/generic/activity-bridge",
+      "libs/generic/agent-roster",
+      "libs/generic/artifact-registry",
+      "libs/generic/audio-dsp",
+      "libs/generic/bench-metrics",
+      "libs/generic/cache",
+      "libs/generic/card-stack",
+      "libs/generic/chat-cards",
+      "libs/generic/chat-protocol",
+      "libs/generic/control-mutation",
+      "libs/generic/debounce-coalesce",
+      "libs/generic/decision-model",
+      "libs/generic/deployment-driver",
+      "libs/generic/desktop-ipc",
+      "libs/generic/dock-workbench",
+      "libs/generic/embedded-pg-discovery",
+      "libs/generic/eval-battery",
+      "libs/generic/event-reaction",
+      "libs/generic/facets",
+      "libs/generic/failure-detector",
+      "libs/generic/fanout-resolver",
+      "libs/generic/git-graph",
+      "libs/generic/hash-chain",
+      "libs/generic/image-blankness",
+      "libs/generic/ipc-endpoint-server",
+      "libs/generic/ipc-framing",
+      "libs/generic/kokoro-tts",
+      "libs/generic/lexicon",
+      "libs/generic/linkable-edges",
+      "libs/generic/locks-core",
+      "libs/generic/memory",
+      "libs/generic/merkle-log",
+      "libs/generic/model-pricing",
+      "libs/generic/module-singleton",
+      "libs/generic/overlap-clusters",
+      "libs/generic/p2p-voice",
+      "libs/generic/papergrid/grid-core",
+      "libs/generic/papergrid/kv-persist",
+      "libs/generic/papergrid/kv-persist-indexeddb",
+      "libs/generic/plan-parser",
+      "libs/generic/plugin-loader",
+      "libs/generic/projection-index",
+      "libs/generic/pubsub-substrate",
+      "libs/generic/ranked-selection",
+      "libs/generic/rate-limit",
+      "libs/generic/release-profile",
+      "libs/generic/rerank",
+      "libs/generic/resource-profile",
+      "libs/generic/result-encoding",
+      "libs/generic/rrf",
+      "libs/generic/rules",
+      "libs/generic/scheduled-registry",
+      "libs/generic/search",
+      "libs/generic/search-core",
+      "libs/generic/seed-bundle",
+      "libs/generic/sequence-patterns",
+      "libs/generic/sse",
+      "libs/generic/step-program",
+      "libs/generic/structured-concurrency",
+      "libs/generic/sync",
+      "libs/generic/tauri-release-kit",
+      "libs/generic/template-kit",
+      "libs/generic/tooldef",
+      "libs/generic/tooldef-http",
+      "libs/generic/ui-primitives",
+      "libs/generic/verification-harness",
+      "libs/host-platform",
+      "libs/papercusp-db",
+      "libs/papercusp-publish-auth",
+      "libs/papercusp-shared",
+      "libs/papercusp/libs/db",
+      "libs/papercusp/packages/blueprint-distribution",
+      "libs/papercusp/packages/embedded-postgres-server",
+      "libs/papercusp/packages/file-claim",
+      "libs/papercusp/packages/harness",
+      "libs/papercusp/packages/locks",
+      "libs/papercusp/packages/orchestrator",
+      "libs/test-config",
+      "libs/testing-shell",
+      "packages/agent-mcp",
+      "packages/backup",
+      "packages/coordination",
+      "packages/docs-engine",
+      "packages/operator-core",
+      "packages/operator-ui",
+      "packages/plugin-loader",
+      "packages/plugin-sdk",
+      "packages/tooldef-mcp"
+    ],
+    "unresolved": [],
+    "scopeSha256": "343da5f04e014efe6c059bbf7f3025d93ffa635eefd978857074d0ee22696f2c",
+    "limitations": "Declared manifest graph is a conservative selection, not proof of all executed imports. The maintained bundle/export/preparation preflights and HTTP test must still succeed; unknown imports fail preparation."
+  },
+  "dependencyInputs": [
+    {
+      "path": "package.json",
+      "sha256": "5db0ee8458bee8beef415b7c31345443b4f332ce064dbe6aa2e56d7cf46e65e2",
+      "equalToSource": true
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "91eab95c0a2021921f6610a7f6f177121d32551aa0f219e6d590caebb49dcb0c",
+      "equalToSource": true
+    }
+  ],
+  "execution": {
+    "script": "test:file",
+    "args": [
+      "packages/operator-core/lib/plan-absorption-current-build-http.integration.test.ts"
+    ],
+    "sourceRoute": "maintained lint:as-committed --ref exact source, --any --keep, repeated --workspace-dir",
+    "dependencyCustody": "independent copy from exact-input immutable generation or normal bounded donor reader; no manual links, mutable hardlinks or peer takeover",
+    "reporter": "explicit canonical PG sink; harness papercusp; workspace papercusp-workspace; exact work item",
+    "failurePolicy": "Preserve original logs and terminal result. No preparation failure is an HTTP pass. Audit a new failure class before another expensive attempt."
+  },
+  "followupPreflight": {
+    "sourceCommit": "7847dd7835b8ee0bdec9c319f0ff8a8959db7af6",
+    "validator": "scripts/npm-install-safe.mjs#assertRootLockManifestMatches",
+    "procedure": "Read-only maintained validator through its injected readJson/existsSync/expandWorkspaces seams, using a git ls-tree/show manifest census recursively including exact pinned submodule commits.",
+    "nativeExecSession": 97641,
+    "exitCode": 1,
+    "result": "FAIL",
+    "error": "NPM_INSTALL_SAFE_WORKSPACE_LOCK_DRIFT",
+    "mismatch": {
+      "workspace": "apps/slack-asana-bug-drill",
+      "field": "dependencies.next",
+      "manifest": "16.4.0",
+      "rootLock": "16.4.1"
+    },
+    "meaning": "Frozen source failed metadata preparation; no dependency materialization, private database, host or HTTP assertions were allocated by this probe.",
+    "workItemEvidence": "EI-28170776135022495 post 1219767",
+    "runnerGuardOwner": "WI-6554700010046564",
+    "sourceRulingRequested": "coord-send-d37b49b0c2c927e04c29b38e18fb5669743734d99af75e39733be6acd24ea06e"
+  },
+  "launchStatus": {
+    "started": false,
+    "guardRequestId": "06a1490a-f954-4ac9-891c-37e26dad537f",
+    "guardResult": "Denied before execution: authority lookup waiting for headers at localhost:3070 exceeded 1500ms wall",
+    "runnerRecheck": "Original audited runner hash changed before launch under another agent's lock; stable producer receipt required before execution. Other two recorded instrument hashes still matched at recheck.",
+    "authorityRepair": "EI-27967556594211322"
+  },
+  "assertionsExecuted": false,
+  "result": "NOT_MEASURED"
+}

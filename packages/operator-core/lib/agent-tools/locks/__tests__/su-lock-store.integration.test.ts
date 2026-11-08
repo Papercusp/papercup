@@ -170,9 +170,13 @@ describe('native hook operation fence', () => {
     return inWorkspaceTxn(p.coordinationDomain, p.owner, (tx) => tryAcquire(tx, p), { paths: p.paths });
   }
 
-  function finish(p: ReturnType<typeof operation>, outcome: 'cancelled' | 'completed' = 'completed') {
+  function finish(
+    p: ReturnType<typeof operation>,
+    outcome: 'cancelled' | 'completed' = 'completed',
+    beforeRelease?: Parameters<typeof tryFinishHookOperation>[1]['beforeRelease'],
+  ) {
     return inWorkspaceTxn(p.coordinationDomain, p.owner,
-      (tx) => tryFinishHookOperation(tx, { ...p, outcome }), { paths: p.paths });
+      (tx) => tryFinishHookOperation(tx, { ...p, outcome, beforeRelease }), { paths: p.paths });
   }
 
   async function held(p: ReturnType<typeof operation>) {
@@ -204,6 +208,101 @@ describe('native hook operation fence', () => {
     expect(duplicate).toEqual(first);
     expect(await finish(p)).toMatchObject({ ok: true, released: p.paths });
     expect(await finish(p)).toMatchObject({ ok: true, released: [] });
+  });
+
+  it('preserves the edited generation before releasing paths to a queued successor', async () => {
+    const p = { ...operation(['first.ts', 'second.ts']), goalRef: 'WI-test-generation' };
+    expect((await acquire(p)).ok).toBe(true);
+    const successor = await inWorkspaceTxn(p.coordinationDomain, 'successor', (tx) =>
+      tryInsertWaiter(tx, { ...p, owner: 'successor', operation: undefined, maxWaitSec: 120 }));
+    if (!successor.ok || 'self_granted' in successor) throw new Error('successor must queue');
+    const receipt = { pending: true, generation: 'immutable-A1' };
+    const preserve = vi.fn(async (operationState: Parameters<NonNullable<Parameters<typeof tryFinishHookOperation>[1]['beforeRelease']>>[0]) => {
+      expect(operationState).toEqual({
+        requestedPaths: p.paths, goalRef: p.goalRef, state: 'granted', captureReceipt: undefined,
+      });
+      expect((await held(p)).map((row) => row.owner)).toEqual([p.owner, p.owner]);
+      expect((await readWaiterStatus(getTxPool(), successor.ticket_id)).status).toBe('waiting');
+      return receipt;
+    });
+    expect(await finish(p, 'completed', preserve)).toMatchObject({
+      ok: true, released: p.paths, captureReceipt: receipt,
+    });
+    expect(preserve).toHaveBeenCalledOnce();
+    expect((await readWaiterStatus(getTxPool(), successor.ticket_id)).status).toBe('granted');
+    expect((await held(p)).every((row) => row.owner === 'successor')).toBe(true);
+  });
+
+  it('replays the original receipt after a successor owns the paths', async () => {
+    const p = operation();
+    expect((await acquire(p)).ok).toBe(true);
+    const receipt = { pending: true, generation: 'immutable-A1' };
+    await finish(p, 'completed', async () => receipt);
+    const successor = { ...p, owner: 'successor', operation: undefined, automatic: false };
+    expect((await inWorkspaceTxn(p.coordinationDomain, successor.owner,
+      (tx) => tryAcquire(tx, successor), { paths: p.paths })).ok).toBe(true);
+    const readback = vi.fn(async (operationState: Parameters<NonNullable<Parameters<typeof tryFinishHookOperation>[1]['beforeRelease']>>[0]) => {
+      expect(operationState.state).toBe('completed');
+      expect(operationState.captureReceipt).toEqual(receipt);
+      expect((await held(p)).map((row) => row.owner)).toEqual(['successor']);
+      return operationState.captureReceipt!;
+    });
+    expect(await finish(p, 'completed', readback)).toMatchObject({
+      ok: true, released: [], captureReceipt: receipt,
+    });
+    expect(readback).toHaveBeenCalledOnce();
+    expect((await held(p)).map((row) => row.owner)).toEqual(['successor']);
+  });
+
+  it('rolls back completion and keeps the lease when preservation fails', async () => {
+    const p = operation();
+    const grant = await acquire(p);
+    expect(grant.ok).toBe(true);
+    await expect(finish(p, 'completed', async () => {
+      throw new Error('durable custody readback failed');
+    })).rejects.toThrow('durable custody readback failed');
+    expect(await acquire(p)).toEqual(grant);
+    const rows = await getTxPool()`
+      SELECT hook_operation FROM agent_lock_waiters WHERE ticket_id = ${p.operation.id}::uuid
+    `;
+    expect(rows[0].hook_operation).toMatchObject({ state: 'granted' });
+    expect(rows[0].hook_operation.captureReceipt).toBeUndefined();
+    expect((await held(p)).map((row) => row.path)).toEqual(p.paths);
+    expect(await finish(p, 'completed', async () => ({ pending: true })))
+      .toMatchObject({ ok: true, released: p.paths });
+  });
+
+  it('refuses first preservation after an expired lease has passed to a successor', async () => {
+    const p = operation();
+    await acquire(p);
+    await getTxPool()`UPDATE agent_file_locks SET expires_ts = clock_timestamp() - interval '1 second'
+      WHERE coordination_domain = ${p.coordinationDomain} AND owner = ${p.owner}`;
+    const successor = { ...p, owner: 'successor', operation: undefined, automatic: false };
+    expect((await inWorkspaceTxn(p.coordinationDomain, successor.owner,
+      (tx) => tryAcquire(tx, successor), { paths: p.paths })).ok).toBe(true);
+    const preserve = vi.fn(async () => ({ pending: true, generation: 'wrong-B1' }));
+    await expect(finish(p, 'completed', preserve)).rejects.toThrow('operation_preservation_fence_lost');
+    expect(preserve).not.toHaveBeenCalled();
+    expect((await held(p)).map((row) => row.owner)).toEqual(['successor']);
+  });
+
+  it('retains pending preserved versions past terminal GC until their receipt is settled', async () => {
+    const p = operation();
+    await acquire(p);
+    const receipt = { pending: true, generation: 'immutable-A1' };
+    await finish(p, 'completed', async () => receipt);
+    const sql = getTxPool();
+    await sql`UPDATE agent_lock_waiters SET queued_ts = clock_timestamp() - interval '25 hours'
+      WHERE ticket_id = ${p.operation.id}::uuid`;
+    await runBackgroundJanitorOnce();
+    const retained = await sql`SELECT hook_operation FROM agent_lock_waiters
+      WHERE ticket_id = ${p.operation.id}::uuid`;
+    expect(retained).toHaveLength(1);
+    expect(retained[0].hook_operation.captureReceipt).toEqual(receipt);
+    await finish(p, 'completed', async ({ captureReceipt }) => ({ ...captureReceipt, pending: false }));
+    await runBackgroundJanitorOnce();
+    expect(await sql`SELECT ticket_id FROM agent_lock_waiters
+      WHERE ticket_id = ${p.operation.id}::uuid`).toHaveLength(0);
   });
 
   it('completion preserves overlapping explicit holds and unrelated paths', async () => {

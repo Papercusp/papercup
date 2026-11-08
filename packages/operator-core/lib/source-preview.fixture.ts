@@ -12,6 +12,7 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { cpSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { ROOT as SOURCE_ROOT, prepareBgVerifierSource, captureVerifierDependencies } from '../../../scripts/source-preview.mjs';
 import type { TestCasePopulationMember } from './testing-case-filter';
@@ -326,6 +327,16 @@ export async function makeBgCompilerCandidate(base: string, {
 } = {}) {
   trace('compiler-fixture:start');
   const c = makeBgCandidate(base);
+  const frozenPackages = frozenGeneration ? {
+    'fixture-dependency': '1.0.0', 'fixture-compiler': '1.0.0', 'fixture-package-manager': '1.0.0',
+    '@papercusp/host-esbuild': JSON.parse(readFileSync(
+      createRequire(import.meta.url).resolve('@papercusp/host-esbuild/package.json'), 'utf8')).version as string,
+  } : {};
+  if (frozenGeneration) {
+    const path = join(c.fixture.repo, 'package.json');
+    const manifest = JSON.parse(readFileSync(path, 'utf8'));
+    writeFileSync(path, JSON.stringify({ ...manifest, dependencies: { ...manifest.dependencies, ...frozenPackages } }));
+  }
   if (runtimeModules) {
     write(c.fixture.repo, 'package.json', JSON.stringify({
       ...JSON.parse(readFileSync(join(c.fixture.repo, 'package.json'), 'utf8')), type: 'module',
@@ -356,8 +367,10 @@ export async function makeBgCompilerCandidate(base: string, {
     // the real monorepo's dependency maps with unrelated fixture manifests.
     // Source admission checks these committed bytes before any compiler starts.
     write(c.fixture.repo, 'package-lock.json', JSON.stringify({ lockfileVersion: 3,
-      packages: Object.fromEntries(['', 'apps/operator', 'libs/papercusp'].map(path =>
+      packages: { ...Object.fromEntries(['', 'apps/operator', 'libs/papercusp'].map(path =>
         [path, JSON.parse(readFileSync(join(c.fixture.repo, path, 'package.json'), 'utf8'))])),
+      ...Object.fromEntries(Object.entries(frozenPackages).map(([name, version]) =>
+        ['node_modules/' + name, { version }])) },
     }));
   }
   write(c.fixture.repo, BG_INPUTS[0]!, "export { y } from '../../../packages/core/index'; export { default as dep } from 'fixture-dependency';\n");
@@ -381,7 +394,10 @@ export async function makeBgCompilerCandidate(base: string, {
   trace('compiler-fixture:source-ready');
   write(prepared.root, 'node_modules/fixture-dependency/package.json', JSON.stringify({
     name: 'fixture-dependency', main: 'index.js', ...(runtimeModules ? { type: 'module' } : {}),
+    ...(frozenGeneration ? { version: frozenPackages['fixture-dependency'] } : {}),
   }));
+  if (frozenGeneration) for (const name of ['fixture-compiler', 'fixture-package-manager'] as const)
+    write(prepared.root, 'node_modules/' + name + '/package.json', JSON.stringify({ name, version: frozenPackages[name] }));
   write(prepared.root, 'node_modules/fixture-dependency/index.js', 'export default 41;\n');
   write(prepared.root, 'node_modules/fixture-package-manager/cli.js', '// fixture package-manager identity\n');
   write(prepared.root, 'node_modules/fixture-compiler/cli.js', '// fixture compiler identity\n');

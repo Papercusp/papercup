@@ -431,6 +431,17 @@ export function validateDeliveryMatrix(manifest: DeliveryMatrixManifest): {
     if (cell.verdict === 'failed') failed.push(key);
     if (!text(cell.selector) || !Array.isArray(cell.evidenceRefs) || !cell.evidenceRefs.length || !cell.evidenceRefs.every(text)) reject('execution-evidence');
     if (oracle === 'NONE' && (cell.state !== 'UNKNOWN' || cell.verdict !== 'UNKNOWN' || cell.proof || cell.suppressionWrites !== 0)) reject('uninstrumented-sink');
+    if (oracle !== 'NONE' && cell.verdict === 'passed') {
+      // A valid receipt join alone cannot establish that the named fault was
+      // exercised successfully. In particular, a prepared retry is no proof of
+      // delivery, and lost/partial output must never become an emitted pass.
+      const requiresEmission = ['retry', 'duplicate-commit', 'overlapping-ports'].includes(cell.fault);
+      const states: readonly DeliveryMatrixCell['state'][] = requiresEmission ? ['emitted']
+        : cell.fault === 'prepare' ? ['prepared']
+        : cell.fault === 'partial-stdout' ? ['partial', 'abandoned']
+        : cell.fault === 'abandon-expiry' ? ['abandoned'] : ['prepared', 'abandoned'];
+      if (!states.includes(cell.state) || cell.suppressionWrites !== (requiresEmission ? 1 : 0)) reject('fault-outcome');
+    }
     if (cell.state !== 'emitted' && (cell.suppressionWrites !== 0 || cell.proof)) reject('unproven-suppression');
     if (cell.state === 'emitted') {
       const a = cell.attempt, p = cell.proof;

@@ -1597,14 +1597,31 @@ fs.appendFileSync(${JSON.stringify(received)}, JSON.stringify({ root: process.cw
       } finally { rmSync(f.root, { recursive: true, force: true }); }
     }, 40_000);
 
-  it.each(['matching', 'stale'] as const)('checks a %s workspace lock before dependency preparation', state => {
+  it.each([
+    ['root', 'matching'], ['root', 'stale'],
+    ['workspace', 'matching'], ['workspace', 'stale'],
+  ] as const)('checks a %s %s workspace lock before dependency preparation', (scope, state) => {
     const f = fixture('node build.cjs');
     try {
+      const rootManifest = JSON.parse(readFileSync(join(f.root, 'package.json'), 'utf8'));
+      rootManifest.workspaces = ['libs/runtime'];
+      const workspaceManifest = JSON.parse(readFileSync(join(f.root, 'libs/runtime/package.json'), 'utf8'));
+      const target = scope === 'root' ? rootManifest : workspaceManifest;
+      target.devDependencies = { 'fixture-dep': state === 'stale' ? '1.0.0' : '2.0.0' };
       snapshot(f.root, {
+        'package.json': JSON.stringify(rootManifest),
+        'libs/runtime/package.json': JSON.stringify(workspaceManifest),
         'package-lock.json': JSON.stringify({ lockfileVersion: 3, packages: {
-          '': state === 'stale' ? { dependencies: { 'fixture-dep': '1.0.0' } } : {},
+          '': scope === 'root' ? { devDependencies: { 'fixture-dep': '2.0.0' } } : {},
+          'libs/runtime': scope === 'workspace' ? { devDependencies: { 'fixture-dep': '2.0.0' } } : {},
         } }),
       }, f.head);
+      if (state === 'stale') {
+        // Repairing the mutable donor must not hide invalid committed inputs.
+        target.devDependencies['fixture-dep'] = '2.0.0';
+        writeFileSync(join(f.root, scope === 'root' ? 'package.json' : 'libs/runtime/package.json'),
+          JSON.stringify(target));
+      }
       const result = run(f.root);
       if (state === 'matching') {
         expect(result.status, result.stderr).toBe(0);
@@ -1613,6 +1630,7 @@ fs.appendFileSync(${JSON.stringify(received)}, JSON.stringify({ root: process.cw
         expect(result.status).not.toBe(0);
         expect(result.stderr).toContain('NPM_INSTALL_SAFE_WORKSPACE_LOCK_DRIFT');
         expect(result.stderr).toContain('fixture-dep');
+        expect(result.stderr).toContain(scope === 'root' ? '<root>' : 'libs/runtime');
         expect(result.stderr).not.toContain('COMMITTED_DEPENDENCY_PHASE');
         expect(result.stdout).not.toMatch(/copied \d+ node_modules|building pinned runtime exports|CLONE_PREREQUISITES_OK/);
       }

@@ -195,7 +195,7 @@ export async function finishHookOperationAtAuthority(p: FileLockReleaseParams): 
         };
         const receipt = await preserveEditGeneration({ ...input,
           operationState: stored.state, captureReceipt: stored.captureReceipt });
-        await recordEditAttributionStrict(input);
+        await recordEditAttributionStrict({ ...input, captureReceipt: receipt });
         return receipt;
       } } : {}),
     });

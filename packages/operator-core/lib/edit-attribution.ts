@@ -43,6 +43,8 @@ export interface RecordEditAttributionInput {
   contributor?: string;
   /** Dispatcher call id for duplicate-safe server-side edit capture. */
   dispatchCallId?: string;
+  /** Verified immutable custody from the protected edit operation. */
+  captureReceipt?: Record<string, unknown>;
 }
 
 /**
@@ -232,6 +234,26 @@ export async function recordEditAttribution(
       : { harnessSlug: null, workItemId: null, resolution: 'no-workspace', candidates: null };
     const { harnessSlug, workItemId } = choice;
 
+    if (input.captureReceipt && input.dispatchCallId && input.workspaceId && workItemId && harnessSlug) {
+      // Extend the existing work-item payload rather than creating a cohort
+      // table. Row-update serialization merges concurrent files/sessions and
+      // retains every operation's immutable membership. No readiness is inferred.
+      const cohort = await sql<{ feature_id: string }[]>`
+        UPDATE harness_shared.work_items
+           SET payload = jsonb_set(COALESCE(payload, '{}'::jsonb), '{gitSyncLifecycle}',
+             jsonb_build_object('version', 1, 'captures',
+               COALESCE(payload->'gitSyncLifecycle'->'captures', '{}'::jsonb)
+                 || jsonb_build_object(${input.dispatchCallId}, ${JSON.stringify(input.captureReceipt)}::jsonb)))
+         WHERE workspace_id = ${input.workspaceId} AND harness_slug = ${harnessSlug}
+           AND feature_id = ${workItemId} AND taken_by = ${input.agentId}
+           AND NOT (status = ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[]))
+           AND (payload->'gitSyncLifecycle'->'captures'->${input.dispatchCallId} IS NULL
+             OR payload->'gitSyncLifecycle'->'captures'->${input.dispatchCallId} = ${JSON.stringify(input.captureReceipt)}::jsonb)
+        RETURNING feature_id
+      `;
+      if (cohort.length !== 1) throw new Error('edit-cohort-refused:ownership-or-generation-changed');
+    }
+
     // One row per file via unnest — a single round-trip on the hot path.
     const inserted = await sql<{ id: string; file: string }[]>`
       INSERT INTO harness_shared.edit_attribution_ledger
@@ -314,7 +336,7 @@ export async function preserveEditGeneration(
     const head = await runGit(['rev-parse', '--verify', 'HEAD'], input.repoRoot,
       { env: { GIT_OPTIONAL_LOCKS: '0' } });
     // Rev-parse alone cannot distinguish unborn from a corrupt repository.
-    let base: string | null = head.code === 0 ? head.stdout.trim() : null;
+    const base: string | null = head.code === 0 ? head.stdout.trim() : null;
     if (base === null) {
       const symbolic = await runGit(['symbolic-ref', '-q', 'HEAD'], input.repoRoot);
       const missing = symbolic.code === 0

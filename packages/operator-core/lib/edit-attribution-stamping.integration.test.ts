@@ -52,7 +52,8 @@ beforeAll(async () => {
       feature_id   text NOT NULL,
       taken_by     text,
       status       text NOT NULL,
-      lane         text
+      lane         text,
+      payload      jsonb
     )`);
   root = mkdtempSync(join(tmpdir(), 'edit-attr-stamping-'));
   writeFileSync(join(root, 'tool.ts'), 'export const x = 1;\n');
@@ -95,6 +96,37 @@ async function edit(intent: string, sessionId?: string) {
 }
 
 describe('edit stamping from the editor held set', () => {
+  const receipt = (path: string) => ({ version: 1, kind: 'edit-generation', pending: true,
+    capture: { candidate: { repository: '/fixture/.git', paths: [path], base: 'a'.repeat(40), tree: 'b'.repeat(40) } } });
+  async function capturedEdit(id: string, path: string, sessionId = 'session-1') {
+    await recordEditAttribution({ repoRoot: root, files: [path], agentId: AGENT, workspaceId: WS,
+      goalRef: 'WI-A', sessionId, dispatchCallId: id, captureReceipt: receipt(path) }, { strict: true });
+  }
+  async function cohort() {
+    const rows = await h.db!.sql<Array<{ payload: Record<string, unknown> }>>`
+      SELECT payload FROM harness_shared.work_items WHERE feature_id = 'WI-A' AND workspace_id = ${WS}`;
+    return rows[0].payload;
+  }
+
+  it('merges concurrent captured members durably across editing sessions without losing payload fields', async () => {
+    await hold('WI-A');
+    await h.db!.sql`UPDATE harness_shared.work_items SET payload = '{"existing":"preserved"}'::jsonb
+      WHERE feature_id = 'WI-A' AND workspace_id = ${WS}`;
+    await Promise.all([capturedEdit('op-a', 'a.ts'), capturedEdit('op-b', 'b.ts', 'session-2')]);
+    expect(await cohort()).toEqual({ existing: 'preserved', gitSyncLifecycle: { version: 1,
+      captures: { 'op-a': receipt('a.ts'), 'op-b': receipt('b.ts') } } });
+    await capturedEdit('op-a', 'a.ts', 'restarted-session');
+    expect(await cohort()).toMatchObject({ gitSyncLifecycle: {
+      captures: { 'op-a': receipt('a.ts'), 'op-b': receipt('b.ts') } } });
+  });
+
+  it('refuses a changed member under the same operation key and keeps its original generation', async () => {
+    await hold('WI-A');
+    await capturedEdit('op-a', 'a.ts');
+    await expect(capturedEdit('op-a', 'changed.ts')).rejects.toThrow('ownership-or-generation-changed');
+    expect(await cohort()).toMatchObject({ gitSyncLifecycle: { captures: { 'op-a': receipt('a.ts') } } });
+  });
+
   it('records none when the editor holds no open work item', async () => {
     const row = await edit('PreToolUse:Edit');
     expect(row).toMatchObject({ work_item_id: null, work_item_resolution: 'none', work_item_candidates: null });
