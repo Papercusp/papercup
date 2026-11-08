@@ -104,8 +104,11 @@ describe("P2P witness runtime closure", () => {
     const built = await buildWitness(f);
     expect(built.status, built.diagnostic).toBe(0);
     await rm(f.repo, { recursive: true, force: true });
+    const loadStarted = performance.now();
     const loaded = spawnSync(process.execPath, [join(f.output, "serve.mjs")], { encoding: "utf8", timeout: 10_000 });
-    expect(loaded.status, loaded.stderr).toBe(0);
+    expect(loaded.status, JSON.stringify({ status: loaded.status, signal: loaded.signal,
+      error: loaded.error && { message: loaded.error.message, code: (loaded.error as NodeJS.ErrnoException).code },
+      elapsedMs: performance.now() - loadStarted }) + loaded.stdout + loaded.stderr).toBe(0);
     expect(loaded.stdout.trim()).toBe("isolated-runtime-ok");
     const manifest = JSON.parse(await readFile(join(f.output, "witness-manifest.json"), "utf8"));
     expect(manifest.inputs.dependencies.some((row: { input: string }) => row.input === "runtime/node_modules"),
