@@ -8,11 +8,11 @@ export function createPendingCarryFence({ identity, canFence, now }: {
     canFence?: (() => boolean) | undefined;
     now?: (() => number) | undefined;
 }): {
-    admit(message: any): "stale-carry-target" | "carry-fenced" | "carry-already-committed" | "carry-nonce-required-after-fence" | null;
+    admit(message: any): "carry-nonce-required-after-fence" | "stale-carry-target" | "carry-fenced" | "carry-already-committed" | null;
     end(message: any): void;
     isFenced(message: any): boolean;
-    deliveryRefusal: (message: any) => "stale-carry-target" | "carry-fenced" | "carry-already-committed" | "carry-nonce-required-after-fence" | null;
-    begin(message: any): "stale-carry-target" | "carry-fenced" | "carry-already-committed" | "carry-nonce-required-after-fence" | null;
+    deliveryRefusal: (message: any) => "carry-nonce-required-after-fence" | "stale-carry-target" | "carry-fenced" | "carry-already-committed" | null;
+    begin(message: any): "carry-nonce-required-after-fence" | "stale-carry-target" | "carry-fenced" | "carry-already-committed" | null;
     fence(request: any): {
         ok: boolean;
         reason: any;

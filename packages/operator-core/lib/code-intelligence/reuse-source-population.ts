@@ -29,7 +29,11 @@ const lowerBound = (values: readonly number[], value: number): number => {
 export type ReuseSourcePhase = 'source-tree' | 'source-capture' | 'source-diff' | 'source-clones' | 'source-calls';
 
 type ParsedSymbols = ReturnType<typeof parseSymbolSnapshot>;
-const REUSE_PARSER_WORKER_COUNT = 4;
+// The parser parent is launched with --max-old-space-size=1024. On Node 25.9,
+// Worker.resourceLimits reports its requested value but each isolate still
+// inherits that process-wide cap. Two parser isolates plus the parent fit the
+// fixed 3072 MiB old-space budget.
+const REUSE_PARSER_WORKER_COUNT = 2;
 export const REUSE_PARENT_OLD_SPACE_MB = 1024;
 const REUSE_PARSER_HEAP_ENVELOPE_MB = 3072;
 export const REUSE_PARSER_OLD_SPACE_MB = Math.floor(
@@ -100,11 +104,11 @@ export async function parseReuseSourceSymbols(sourceFiles: Map<string, string>, 
       worker.on('error', fail);
       worker.on('exit', code => fail(new Error(`Source parser exited before completion (${code})`)));
       const ready = await received();
+      if (ready && typeof ready === 'object') observeLimits?.({ ...population, ...ready, workerIndex });
       if (ready?.kind !== 'ready' || ready.oldSpaceMb !== REUSE_PARSER_OLD_SPACE_MB
-        || ready.heapLimitMb > REUSE_PARSER_OLD_SPACE_MB + 32
+        || ready.heapLimitMb > REUSE_PARSER_OLD_SPACE_MB + 192
         || ready.execArgv.some((x: string) => /max[-_]old[-_]space/i.test(x)))
         throw new Error('Source parser effective heap limit unavailable');
-      observeLimits?.({ ...population, ...ready, workerIndex });
       while (next < count) {
         const index = next++, { files: batch, bytes } = batches[index]!;
         // Import resolution uses the complete identity set, but syntax reads
@@ -136,7 +140,8 @@ export async function parseReuseSourceSymbols(sourceFiles: Map<string, string>, 
       }
     }));
     const merged: ParsedSymbols = { units: new Map(), symbols: new Map(), immediateCalls: [],
-      stats: { files: 0, skippedFiles: 0, unresolvedCalls: 0, resolvedCalls: 0, truncated: false } };
+      stats: { files: 0, skippedFiles: 0, unresolvedCalls: 0, resolvedCalls: 0, truncated: false,
+        callCensusTruncated: false } };
     for (let index = 0; index < count; index++) {
       const part = parts[index];
       if (!part) throw new Error('Missing source parser partition');
@@ -151,6 +156,9 @@ export async function parseReuseSourceSymbols(sourceFiles: Map<string, string>, 
       for (const call of part.immediateCalls) merged.immediateCalls.push(call);
       merged.stats.files += part.stats.files; merged.stats.skippedFiles += part.stats.skippedFiles;
       merged.stats.unresolvedCalls += part.stats.unresolvedCalls;
+      merged.stats.resolvedCalls += part.stats.resolvedCalls;
+      merged.stats.truncated ||= part.stats.truncated;
+      merged.stats.callCensusTruncated ||= part.stats.callCensusTruncated;
     }
     return merged;
   } finally { await Promise.all(workers.map(worker => worker.terminate())); }

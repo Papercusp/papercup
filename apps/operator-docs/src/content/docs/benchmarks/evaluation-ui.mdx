@@ -4,27 +4,35 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: Evaluation UI — run, monitor, grade, compare & export
-description: The operator's Evaluation dock tab — launch a real SWE-bench Pro run, monitor it live, grade it with the official grader, compare arms with the validity gate + honest caveats, and export a 3rd-party-reproducible bundle.
+title: "Evaluation UI — run, monitor, grade, compare & export"
+description: "Launch a committed current benchmark protocol, inspect evidence classes, grade with the official harness, compare assigned outcomes and export reproducible evidence."
+type: Insight
+discovered: 2026-11-08
+status: active
+documents:
+  - "apps/operator-vite/src/components/adv/AdvEvalsTab.tsx"
+  - "apps/operator-vite/src/components/adv/AdvShell.tsx"
+  - "apps/operator-vite/src/routes/adv/index.tsx"
+  - "packages/operator-core/lib/external-bench/run-launcher.ts"
+  - "packages/operator-core/lib/external-bench/export-bundle.ts"
+  - "benchmarks/README.md"
+plans:
+  - "benchmark-evaluation-ui-2026-06-16"
+  - "impartial-benchmark-suite-2026-06-15"
+  - "benchmark-credibility-roadmap-2026-06-16"
+  - "current-benchmark-modernization-2026-10-09"
 sidebar:
   order: 3
-plans:
-  - benchmark-evaluation-ui-2026-06-16
-  - impartial-benchmark-suite-2026-06-15
-  - benchmark-credibility-roadmap-2026-06-16
-documents:
-  - apps/operator-vite/src/components/adv/AdvEvalsTab.tsx
-  - apps/operator-vite/src/components/adv/AdvShell.tsx
-  - apps/operator-vite/src/routes/adv/index.tsx
-  - packages/operator-core/lib/external-bench/reproducibility
 ---
 
 import { Aside } from '@astrojs/starlight/components';
 
-The **Evaluation** dock tab (`?tab=evals`) is the full UI for the impartial
-benchmark: launch a real run, watch it live, grade it with the official grader,
-compare arms, and export a reproducible bundle. Built on
-`benchmark-evaluation-ui-2026-06-16`.
+The **Evaluation** dock tab (`?tab=evals`) supports current protocol launch, run detail,
+official grading, comparison and reproducible export. Current generation uses the
+committed protocol's runtime, model, payer and budgets. Imported historical runs
+remain visible with their evidence class; their old arm names do not define a new
+current study. The complete prerequisites and request shape are maintained in
+`benchmarks/README.md` under **Current launch prerequisites and verification**.
 
 The tab id `'evals'` and its sidebar metadata (label **Evaluation**, Trophy
 icon) are **declared** in `apps/operator-vite/src/components/adv/AdvShell.tsx`;
@@ -57,46 +65,66 @@ shell (`cd papercusp-desktop && npm run dev` → the Evaluation tab), per
 
 | Subtab | What it does |
 | --- | --- |
-| **Launch** | Pick arm / task set / cap / `$`-budget, see a cost+time estimate, owner-confirm when the estimate is `>= $20` of opus (`OWNER_CONFIRM_USD`), launch. opus is pinned (fail-closed). Arms: `hive-realqueen` (treatment), `fifo-noqueen` (no-Mug control), `mini-swe-agent` (reference harness); task sets: 11-task pilot, full ~731, custom ids. |
+| **Launch** | Select an isolated workspace, committed protocol, current arm and registered seed. Review the account/runtime readiness, frozen controls and payer-specific usage estimate before launch. |
 | **Preserved runs** | Browse runs (imports + live) — id · arm · resolved% · status. Per-run: Grade, Export, Re-run, Delete. Validity badges, live fleet panel, coordination timeline. |
 | **Compare** | Arm-vs-arm over the same task set: resolved% delta + Frontier + per-task table + the honest-caveats panel. |
 
-## Launch a run (P-004 / P-005)
+## Launch a current run
 
-The launch form posts to `POST /api/external-bench/runs/launch`. The run goes
-through the **real bench engine** (not a `/tmp` launcher) as a detached managed
-job: it persists `status=running`, returns a `run_id` immediately, and streams
-live. Only **one run at a time** (spend-safety). The launch form offers three
-arms — `hive-realqueen` (treatment), `fifo-noqueen` (no-Mug control),
-`mini-swe-agent` (the reference harness) — over three task sets (11-task pilot /
-full ~731 / custom ids), and requires an explicit **owner-confirm when the
-estimate is `>= $20`** of opus (`OWNER_CONFIRM_USD`). Launches are gated on the
-`papercusp-external-bench` flag (default OFF — the owner's spend gate; enable at
-`/admin/features`).
+The form posts to `POST /api/external-bench/runs/launch` through the maintained
+`run-launcher.ts` engine. Select a committed protocol ID, isolated benchmark
+workspace, registered arm and seed. `papercusp` selects current su; `baseline`
+selects the stock native Codex arm. The protocol fixes the model, effort, task
+assignments, concurrency, caps and single registered suite. A historical arm or
+configured model alias is not measured current execution identity.
 
-<Aside type="caution" title="Spend-safety (closes D-022)">
-Every launched run dissolves its pot on completion/cancel — stopping the Mug
-wake, cancelling cups, and DELETING the gym/scout learning-loop rows
-(`teardownHiveLearningLoop`) so no orphan re-spins opus. A run left in flight by
-a CRASHED host is reaped on the next operator boot (heartbeat-gated, so a run
-legitimately running in another live host is untouched). A UI run can never
-orphan-respin opus on a `:3170` restart.
-</Aside>
+Before launching:
+
+1. Select the current-build route with
+   `dev:pipeline_position { path: "packages/operator-core/lib/external-bench/current-su.ts", testClass: "operator-api" }`
+   and verify its serving source. Ordinary acceptance uses that build; final
+   shipment needs separate proof of the exact green release artifact.
+2. Register the account in the isolated benchmark workspace and match its
+   credential to the protocol's payer. An ambient account in another workspace
+   does not satisfy this prerequisite. Subscription usage is labelled
+   **list-price-equivalent**; API-key usage is metered spend. The estimate and
+   approval must retain the matching cost basis and authorized ceilings.
+3. Calibrate the actual native client and loaded model/runtime on non-study work,
+   freeze the permitted inputs with `preregister()`, and verify the introducing
+   commit with `requireCommittedPreregistration()` before study generation.
+4. Select the protocol's arm and registered seed. The estimate checks the
+   committed protocol, account and loaded host; missing or inconsistent evidence
+   keeps launch unavailable. The request's observed workspace and units must
+   identify the actual execution host. JSON fields cannot create host authority.
+5. Launch one registered arm/seed at a time and retain its managed run ID.
+   Admission is not a completed run or an official grade. A second attempt of the
+   same arm/seed is refused; changing the protocol requires a new preregistration.
+
+Use the complete request and payer-specific prerequisites in
+`benchmarks/README.md`; the current form derives launch controls from that
+protocol. The former `hive-realqueen`, `fifo-noqueen` and `mini-swe-agent` workflow
+is historical context, not the current launch recipe.
+
+At terminal state reconcile the run's task/session/request population, measured
+execution identity, provider response and usage evidence, and governor
+settlements. Cancellation or restart must retire the run-owned task subtree,
+including descendants. Missing accounting keeps efficiency claims closed.
 
 ## Monitor live (P-007 / P-008 / P-009)
 
-While a run is active the detail view polls `evals.benchRunLive` (the manual PG
-checks made visual, from `spawned_agents` / `agent_usage_samples` scoped to the
-run's pot):
+Run detail reads `evals.benchRunLive` and displays recorded progress and usage.
+Historical fleet runs can also expose these older pot-scoped diagnostics from
+`spawned_agents` / `agent_usage_samples`; they do not prove a current native
+execution matches its protocol:
 
 - **Mug survival** — alive / age / reclaims.
 - **Cup status** — placed / working / done / evicted / failed.
 - **Per-task progress**, cumulative spend, wall-clock.
 - **Coordination timeline** — placements, evictions, recoveries, wakes, event by event.
 
-### Validity badges — the integrity guarantee (D-003)
+### Historical fleet validity badges (D-003)
 
-Every run shows red/green validity badges (`computeValiditySignals` returns
+The historical fleet validity model uses red/green badges (`computeValiditySignals` returns
 **seven**, in order): `OPUS-ONLY`, `MUG-SURVIVAL`, `EMPTY-DIFF`,
 `GENERATION-ATTRIBUTED`, `FLEET-CAP`, `SUBSET-SIZE`, `SINGLE-SEED`. A **fail** (a
 non-opus leak, a mug reclaim, a 0-work arm, a phantom win) means the run is NOT
@@ -128,10 +156,14 @@ actionable `verified_harness_not_installed` error (with the exact install steps)
 
 ## Compare arms (P-011 / P-012)
 
-Pick run **A** (baseline) and **B** (treatment). The headline comparison is
-**hive-realqueen vs mini-swe-agent** (the SWE-bench Pro reference harness), same
-model + same tasks (D-005). The view shows the resolved% delta, the cost/accuracy
-Frontier, and the per-task table.
+Pick run **A** (baseline) and **B** (treatment) from the matched current protocol.
+The view shows the assigned-task outcome, cost/accuracy Frontier and per-task
+results. Inspect the evidence class before interpreting a delta: synthetic,
+historical and incomplete current evidence are distinct from current measured
+evidence. Complete assigned outcomes, committed protocol and matching measured
+execution identity are required; even that evidence alone does not establish
+superiority. Conditional graded quality is labelled separately, and missing
+official grades keep the primary result inconclusive.
 
 - **The validity gate (D-003):** if EITHER arm fails a validity check, the view
   renders **“No valid delta”** + the failing badges — never a fabricated number.
@@ -142,8 +174,11 @@ Frontier, and the per-task table.
 
 ## Export for 3rd-party reproduction (P-013)
 
-**Export** downloads `predictions.json` (`[{instance_id, patch, prefix}]`) + a
-`README.md` with the EXACT public re-grade command. A third party reproduces the
+**Export** downloads `predictions.json` (`[{instance_id, patch, prefix}]`),
+`tasks-sample.jsonl` and a `README.md` with the exact public re-grade command.
+The README records primary assigned outcomes, conditional graded quality,
+absent attempts and missing grader measurements. Compare those denominators and
+the frozen assignments/source hashes with the stored run. A third party reproduces the
 resolved verdicts with the public `swe_bench_pro_eval` + public images, with zero
 access to our harness — also the shape for a SWE-bench Pro / SEAL leaderboard
 submission.
@@ -155,6 +190,12 @@ submission.
 - Where the code lives: the UI is `apps/operator-vite/src/components/adv/AdvEvalsTab.tsx`
   (routed in `src/routes/adv/index.tsx`, declared in `src/components/adv/AdvShell.tsx`);
   the shared viz + `validity.ts` are under `apps/operator/app/eval-viz/`.
-- A full **live** walkthrough (launch → monitor → grade → compare → export with a
-  real opus run) is **owner-gated** — it spends real budget and needs the
-  `papercusp-external-bench` flag on. Drive it through the Tauri shell.
+- A full **live** walkthrough requires the documented installed prerequisites and
+  authorized generation/grading budget. Drive the current protocol through the
+  Tauri shell, retain the official grader's source/CSV/image receipt, actual
+  image-use trace and per-task output, then compare the export with the stored
+  run. An export-helper unit test does not reproduce this journey.
+- The registered isolated surface check in `benchmarks/README.md` exercises
+  unavailable-protocol launch refusal and Compare → Launch with an empty isolated
+  database. It starts no benchmark generation. A passing surface check does not
+  establish funded launch, official grading, reproduction or shipment.

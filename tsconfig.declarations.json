@@ -357,6 +357,8 @@
     // EI-20228184337467634 — ptool.mjs is imported by TypeScript tests; register
     // its runtime dependency too so the complete CLI import surface is typed.
     "apps/operator/scripts/ptool.mjs",
+    // P-001 receipt tests and the native stdio bridge share this maintained ledger.
+    "apps/operator/scripts/hooks/inject/delivery-ledger.mjs",
     "apps/operator/scripts/operator-discovery.mjs",
     "apps/operator/scripts/tool-delivery.generated.mjs",
     "packages/operator-core/lib/model-context-budget.mjs",

@@ -97,7 +97,7 @@ export function parseArgs(argv: string[]): {
 export function jsonSourceKind({ jsonArgs, flags }?: {
     jsonArgs?: string;
     flags?: McpCallFlags;
-}): "file" | "stdin" | "inline" | null;
+}): "file" | "inline" | "stdin" | null;
 /**
  * Read and parse the selected JSON args source. `readFile` is injectable for
  * tests; descriptor 0 is used for the `--json -` stdin sentinel.

@@ -296,10 +296,12 @@ ${captureSite}`);
         child.send({ kind: 'reuse-source-population', root, start, end, captureRoot: dir });
       });
       expect(result.ok, `${result.error}; parserObservations=${JSON.stringify(observations)}`).toBe(true);
+      expect(result.population.method.callCensusCoverage.resolverTruncated)
+        .toBe(serial.method.callCensusCoverage.resolverTruncated);
       expect(result.population).toEqual(serial);
       const population = observations.find(x => x.kind === 'population');
-      expect(population).toMatchObject({ sourceFileCount: 1027, partitionCount: 4, workerCount: 4,
-        oldSpaceBudgetMb: 3072, maxWorkerOldSpaceMb: 512,
+      expect(population).toMatchObject({ sourceFileCount: 1027, partitionCount: 4, workerCount: 2,
+        oldSpaceBudgetMb: 3072, maxWorkerOldSpaceMb: 1024,
         maxBatchFiles: 512, maxBatchBytes: 4 * 1024 * 1024 });
       expect(population.sourceBytes).toBeGreaterThan(0);
       const partitions = observations.filter(x => x.kind === 'partition').map(x => x.index);
@@ -307,12 +309,13 @@ ${captureSite}`);
       expect([...partitions].sort()).toEqual([0, 1, 2, 3]);
       const chunks = observations.filter(x => x.kind === 'partition');
       expect(chunks.every(x => x.bytes <= 4 * 1024 * 1024 && x.files <= 512)).toBe(true);
-      expect(chunks.every(x => x.sourceFileCount === 1027 && x.partitionCount === 4 && x.workerCount === 4)).toBe(true);
+      expect(chunks.every(x => x.sourceFileCount === 1027 && x.partitionCount === 4 && x.workerCount === 2)).toBe(true);
       expect(chunks.map(x => x.completedPartitions).sort()).toEqual([1, 2, 3, 4]);
       expect(chunks.reduce((sum, x) => sum + x.files, 0)).toBe(1027);
       const limits = observations.filter(x => x.kind === 'ready');
-      expect(limits).toHaveLength(4);
-      expect(limits.every(x => x.oldSpaceMb === 512 && x.heapLimitMb <= 544
+      expect(limits).toHaveLength(2);
+      expect(limits.map(x => x.workerIndex).sort()).toEqual([0, 1]);
+      expect(limits.every(x => x.oldSpaceMb === 1024 && x.heapLimitMb <= 1216
         && !x.execArgv.some((flag: string) => /max[-_]old[-_]space/.test(flag)))).toBe(true);
       expect(result.population.calls.some((call: any) => call.from === 'f0000.ts' && call.to === 'f0500.ts')).toBe(true);
       expect(result.population.callCensusComplete).toBe(false);

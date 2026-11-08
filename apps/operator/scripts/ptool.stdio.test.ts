@@ -134,7 +134,7 @@ it('forwards initialize offers only with the unchanged instructions and waits fo
 });
 
 // A local protocol fixture: no operator, shared database or platform credentials.
-it('carries the downstream listed generation across the real CLI stdio boundary without replay', async () => {
+it.each(['http', 'auto'])('carries the downstream listed generation across the real %s CLI stdio boundary without replay', async transportMode => {
   const home = await mkdtemp(join(tmpdir(), 'ptool-stdio-'));
   const tokenFile = join(home, 'token');
   await writeFile(tokenFile, 'stdio-fixture-token', { mode: 0o600 });
@@ -185,6 +185,7 @@ it('carries the downstream listed generation across the real CLI stdio boundary 
   if (!address || typeof address === 'string') throw new Error('fixture_address_missing');
   const transport = new StdioClientTransport({ command: process.execPath,
     args: [fileURLToPath(new URL('./ptool.mjs', import.meta.url)), 'tools:invoke', '--stdio',
+      '--transport', transportMode,
       '--url', `http://127.0.0.1:${address.port}`, '--token-file', tokenFile],
     env: Object.fromEntries(Object.entries({ ...process.env, HOME: home, PAPERCUSP_OPERATOR_HOME: home,
       PAPERCUSP_HOME: home, PAPERCUSP_SID: offer.owner, PAPERCUSP_AGENT: 'claude' })

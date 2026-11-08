@@ -6,7 +6,7 @@
  *   locks side-DB (papercusp_su via getTxPool — skipIf down, like the other
  *   locks integration suites) + the awaits store on a migrated org fixture.
  *
- *   1. Holder A acquires with a 1s TTL and CRASHES (never releases).
+ *   1. Holder A acquires and CRASHES (never releases).
  *   2. Waiter B queues a ticket + registers a wake await on its grant key
  *      (exactly what locks:acquire{wake_on_grant:true} does).
  *   3. The lease lapses → pokeWorkspace (the janitor path) runs the cascade →
@@ -101,7 +101,9 @@ describe('lock grant → wake, lease-backstopped (real PG ×2)', async () => {
       const domain = 'wake-e2e-' + Date.now();
       const paths = normalizePaths(['lib/wake-e2e.ts']);
 
-      // 1. Holder A: 1s TTL, then "crashes" (never releases).
+      // Expire each crashed participant only after its observers are ready.
+      // A one-second lease can lapse during await-store setup, skipping B's
+      // observable grant before the assertion even runs.
       const a = await inWorkspaceTxn(domain, 'agent-a', (tx) =>
         tryAcquire(tx, {
           coordinationDomain: domain,
@@ -109,13 +111,13 @@ describe('lock grant → wake, lease-backstopped (real PG ×2)', async () => {
           ownerLabel: 'A',
           paths,
           intent: 'hold then crash',
-          ttlSec: 1,
+          ttlSec: 60,
         }),
       );
       expect(a.ok).toBe(true);
 
       // 2. Waiter B queues + registers the wake await (the wake_on_grant shape).
-      //    B's grant will carry a 1s TTL too — B is our dead grantee for step 5.
+      //    B is our dead grantee for step 5.
       const insertedB = await inWorkspaceTxn(domain, 'agent-b', (tx) =>
         tryInsertWaiter(tx, {
           coordinationDomain: domain,
@@ -123,7 +125,7 @@ describe('lock grant → wake, lease-backstopped (real PG ×2)', async () => {
           ownerLabel: 'B',
           paths: ['lib/wake-e2e.ts'],
           intent: 'sleeping waiter',
-          ttlSec: 1,
+          ttlSec: 60,
           maxWaitSec: 120,
         }),
       );
@@ -154,8 +156,12 @@ describe('lock grant → wake, lease-backstopped (real PG ×2)', async () => {
         eventKey: lockGrantKey(ticketC),
       });
 
-      // 3. A's lease lapses; the poke (janitor path) sweeps + cascades.
-      await sleep(1_200);
+      // 3. Establish the precondition, then expire A in the real locks store.
+      // The production janitor still performs the sweep and grant cascade.
+      expect((await readWaiterStatus(getTxPool(), ticketB)).status).toBe('waiting');
+      await getTxPool()`UPDATE agent_file_locks
+        SET expires_ts = clock_timestamp() - interval '1 second'
+        WHERE coordination_domain = ${domain} AND owner = 'agent-a'`;
       await inWorkspaceTxn(domain, 'agent-b', (tx) => pokeWorkspace(tx, domain));
       const statusB = await readWaiterStatus(getTxPool(), ticketB);
       expect(statusB.status).toBe('granted');
@@ -176,9 +182,12 @@ describe('lock grant → wake, lease-backstopped (real PG ×2)', async () => {
       await reconcileLockGrantAwaits(h.ws);
       expect((await awaitStore.listRecentDeliveries('su-waiter-b')).length).toBe(wakesB.length);
 
-      // 5. B never takes its lock — B's granted 1s lease lapses → the cascade
+      // 5. B never takes its lock — expire its granted lease → the cascade
       //    moves on to C (the lease backstops dead grantees too).
-      await sleep(1_200);
+      expect((await readWaiterStatus(getTxPool(), ticketC)).status).toBe('waiting');
+      await getTxPool()`UPDATE agent_file_locks
+        SET expires_ts = clock_timestamp() - interval '1 second'
+        WHERE coordination_domain = ${domain} AND owner = 'agent-b'`;
       await inWorkspaceTxn(domain, 'agent-c', (tx) => pokeWorkspace(tx, domain));
       const statusC = await readWaiterStatus(getTxPool(), ticketC);
       expect(statusC.status).toBe('granted');

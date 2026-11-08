@@ -4627,6 +4627,9 @@ async function connect(
   });
   const mode = requestedTransport || process.env.PAPERCUSP_MCP_TRANSPORT || 'http';
   if (!['http', 'uds', 'auto'].includes(mode)) throw new Error('Invalid MCP transport; expected http, uds or auto');
+  const nativeClient = stdioReceipts && ['codex', 'claude', 'omp'].includes(process.env.PAPERCUSP_AGENT ?? '')
+    ? process.env.PAPERCUSP_AGENT : null;
+  const clientName = nativeClient ? `ptool-${nativeClient}` : 'ptool';
   let selectedTokenPath = tokenCandidates[0].path;
   const client = await connectWithTokenFallback(async (token) => {
     if (mode !== 'http') {
@@ -4642,7 +4645,8 @@ async function connect(
       );
       const connected = await native.connectAgentMcp({
         url: url.href, headers: { Authorization: `Bearer ${token}` }, mode,
-        name: 'ptool', timeoutMs, home: process.env.PAPERCUSP_OPERATOR_HOME,
+        name: clientName, timeoutMs, home: process.env.PAPERCUSP_OPERATOR_HOME,
+        ...(stdioReceipts ? { prepareClient: enablePtoolMemoryReceipts } : {}),
       });
       selectedTokenPath = tokenCandidates.find((candidate) => candidate.token === token)?.path ?? selectedTokenPath;
       return connected.client;
@@ -4662,9 +4666,7 @@ async function connect(
       requestInit: { headers: { Authorization: `Bearer ${token}` } },
       fetch: createPtoolHttpTraceFetch(trace),
     });
-    const nativeClient = stdioReceipts && ['codex', 'claude', 'omp'].includes(process.env.PAPERCUSP_AGENT ?? '')
-      ? process.env.PAPERCUSP_AGENT : null;
-    const client = new Client({ name: nativeClient ? `ptool-${nativeClient}` : 'ptool', version: '0.1.0' }, { capabilities: {} });
+    const client = new Client({ name: clientName, version: '0.1.0' }, { capabilities: {} });
     if (stdioReceipts) enablePtoolMemoryReceipts(client);
     try {
       await client.connect(transport, timeoutMs > 0 ? { timeout: timeoutMs } : undefined);

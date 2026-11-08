@@ -125,6 +125,9 @@ function setStatusArgs(e: ToolInvocationEvent, status: string, why: string): Rec
     item: stamp.item_id,
     status,
     note: `← ${wi.id ?? 'work_item'} ${why}`,
+    // Keep lifecycle receipts out of the authoritative plan-line text. An
+    // untyped note changes the graph's scope and revokes an issued plan start.
+    noteKind: 'progress',
     // A work-item lifecycle event is an AUTOMATED reflection, not an owner's
     // general decision to clear a plan gate. Reopen and terminal edges opt into
     // only the narrowly attributed clear below; other reflections preserve a
