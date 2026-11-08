@@ -1494,6 +1494,30 @@ console.log('CLONE_PREREQUISITES_OK');
     });
   }
 
+  it.each(['matching', 'stale'] as const)('checks a %s workspace lock before dependency preparation', state => {
+    const f = fixture('node build.cjs');
+    try {
+      snapshot(f.root, {
+        'package-lock.json': JSON.stringify({ lockfileVersion: 3, packages: {
+          '': state === 'stale' ? { dependencies: { 'fixture-dep': '1.0.0' } } : {},
+        } }),
+      }, f.head);
+      const result = run(f.root);
+      if (state === 'matching') {
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stdout).toContain('CLONE_PREREQUISITES_OK');
+      } else {
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain('NPM_INSTALL_SAFE_WORKSPACE_LOCK_DRIFT');
+        expect(result.stderr).toContain('fixture-dep');
+        expect(result.stderr).not.toContain('COMMITTED_DEPENDENCY_PHASE');
+        expect(result.stdout).not.toMatch(/copied \d+ node_modules|building pinned runtime exports|CLONE_PREREQUISITES_OK/);
+      }
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  }, 90_000);
+
   it.each(['valid', 'corrupt'] as const)('consumes a %s exact-input generation without borrowing its source', async variant => {
     const parent = mkdtempSync(join(tmpdir(), 'lac-generation-custody-'));
     const store = join(parent, 'generations');
