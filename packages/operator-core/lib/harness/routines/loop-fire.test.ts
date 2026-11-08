@@ -90,6 +90,8 @@ function mkDeps(
     ownerStewardsActiveGoal: vi.fn(async () => null) as never,
     // P-007: hermetic default — no goal-holder state block, and no test reaches the real agenda read.
     readGoalHolderWakeState: vi.fn(async () => null) as never,
+    // Keep fireLoopWake tests hermetic; the production fallback reads owner facts from PG.
+    readGoalFactCorrections: vi.fn(async () => ({ armedAtMs: null, corrected: [] })) as never,
     // P-024: hermetic default — "never delivered" keeps the pre-heartbeat ceiling.
     readLastDeliveredAt: vi.fn(async () => null) as never,
     rescheduleSuppressedWake: vi.fn(async () => true) as never,
