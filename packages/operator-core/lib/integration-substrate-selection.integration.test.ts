@@ -68,6 +68,16 @@ describe('integration selection without a PostgreSQL dependency', () => {
     expect(integrationNeedsPostgres([fixture, fixture + '.unknown'])).toBe(true);
     expect(integrationNeedsPostgres([])).toBe(true);
   });
+  it('keeps grading-integrity off the shared baseline because it owns fresh fixture databases', async () => {
+    const fixture = fileURLToPath(new URL('./grading-integrity.integration.test.ts', import.meta.url));
+    const baseline = vi.fn(async () => { throw new Error('Shared PG must not initialize'); });
+    const org = vi.fn(async () => { throw new Error('Shared org must not initialize'); });
+    await setupIntegrationSubstrate({}, [fixture], { baseline, org });
+    expect(baseline).not.toHaveBeenCalled();
+    expect(org).not.toHaveBeenCalled();
+    expect(integrationNeedsPostgres([fixture])).toBe(false);
+    expect(integrationNeedsPostgres([fixture, fixture + '.unknown'])).toBe(true);
+  });
   it('keeps selected-operator digest acceptance outside shared PG setup', async () => {
     const fixture = fileURLToPath(new URL('./agent-tools/sessions/digest.selected-operator.integration.test.ts', import.meta.url));
     const baseline = vi.fn(async () => { throw new Error('Shared PG must not initialize'); });

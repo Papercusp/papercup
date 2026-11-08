@@ -52,6 +52,8 @@ const NO_SHARED_PG_TESTS = new Set([
   '../lib/harness/routines/loop-turn-start-reconcile.integration.test.ts',
   // Owns its native PG cluster, confined endpoint, and observed teardown.
   '../lib/release/grading-audit-runtime.integration.test.ts',
+  // Owns fresh fixture databases and mocks ambient Org PG; it does not read the shared baseline DSN.
+  '../lib/grading-integrity.integration.test.ts',
   // Archives and DDL controls own a disposable native cluster, without a baseline.
   '../lib/search/bench/selected-corpus-schema.integration.test.ts',
   // Runs the ingest and completion readers in its own disposable current-build runtime.
