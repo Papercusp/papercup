@@ -341,8 +341,17 @@ export async function makeBgCompilerCandidate(base: string, {
       `const { runCli } = await import(${JSON.stringify(new URL('../../../scripts/source-preview.mjs', import.meta.url).href)});\nprocess.exitCode = await runCli(process.argv.slice(2));\n`);
     // The maintained shell measures these data inputs before and after every
     // compile. Freeze the same population in the synthetic source archive.
-    for (const path of RETAINED_REPLAY_SOURCE_FILES)
+    for (const path of RETAINED_REPLAY_SOURCE_FILES) {
+      if (path === 'package-lock.json') continue;
       write(c.fixture.repo, path, readFileSync(join(SOURCE_ROOT, path), 'utf8'));
+    }
+    // Retain a lock for this miniature source generation, rather than pairing
+    // the real monorepo's dependency maps with unrelated fixture manifests.
+    // Source admission checks these committed bytes before any compiler starts.
+    write(c.fixture.repo, 'package-lock.json', JSON.stringify({ lockfileVersion: 3,
+      packages: Object.fromEntries(['', 'apps/operator', 'libs/papercusp'].map(path =>
+        [path, JSON.parse(readFileSync(join(c.fixture.repo, path, 'package.json'), 'utf8'))])),
+    }));
   }
   write(c.fixture.repo, BG_INPUTS[0]!, "export { y } from '../../../packages/core/index'; export { default as dep } from 'fixture-dependency';\n");
   git(c.fixture.repo, ['add', '-A']);

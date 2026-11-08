@@ -206,6 +206,12 @@ export function parseArgs(argv: any): {
     sawSeparator: boolean;
 } | {
     workspace?: any;
+    checkErrors?: string[] | undefined;
+    checks?: {
+        script: string;
+        args: string[];
+        workspace?: string;
+    }[] | undefined;
     retainFor?: any;
     materializeOnly?: boolean | undefined;
     keep: boolean;

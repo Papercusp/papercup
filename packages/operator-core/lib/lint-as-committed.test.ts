@@ -727,6 +727,29 @@ describe('parseArgs', () => {
     // `forward` there would throw on `.length` at the ambiguity guard.
     expect(parseArgs(['--help']).forward).toEqual([]);
   });
+
+  it('keeps explicit checks separate and applies the existing command guards to each', () => {
+    const check = (value: unknown) => '--check=' + JSON.stringify(value);
+    const parsed = parseArgs([
+      check({ script: 'test:file', args: ['a.test.ts'] }),
+      check({ script: 'lint:probe', workspace: 'apps/operator', args: ['two words', '--keep'] }),
+    ]);
+    expect(parsed).toMatchObject({
+      scripts: ['test:file', 'lint:probe'], nonLint: ['test:file'], forward: [],
+      checks: [
+        { script: 'test:file', args: ['a.test.ts'] },
+        { script: 'lint:probe', workspace: 'apps/operator', args: ['two words', '--keep'] },
+      ],
+    });
+    expect(parseArgs([check({ script: 'lint:as-committed' })]).selfRecursive).toEqual(['lint:as-committed']);
+    for (const value of [null, [], {}, { script: '--help' }, { script: 'lint:x', args: [1] },
+      { script: 'lint:x', workspace: '../escape' }, { script: 'lint:x', env: {} }]) {
+      expect(parseArgs([check(value)])).toHaveProperty('checkErrors.0');
+    }
+    for (const extra of [['lint:x'], ['--'], ['--materialize-only']]) {
+      expect(parseArgs([check({ script: 'lint:x' }), ...extra])).toHaveProperty('checkErrors.0');
+    }
+  });
 });
 
 describe('diagnoseNpmSwallow (EI-25262907465098145 — npm ate --any and the separator)', () => {
@@ -1493,6 +1516,76 @@ console.log('CLONE_PREREQUISITES_OK');
       cwd: root, env: commandEnvironment(), encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL',
     });
   }
+
+  it.each(['pass', 'missing', 'failure', 'source-drift', 'receipts'] as const)(
+    'shares one preparation across explicit checks while preserving %s evidence', async state => {
+      const f = fixture('node build.cjs');
+      try {
+        const received = join(f.root, 'received.jsonl');
+        const installed = join(f.root, 'node_modules/fixture-dependency/index.cjs');
+        mkdirSync(dirname(installed), { recursive: true });
+        writeFileSync(installed, 'module.exports = "original-install";\n');
+        const { installLockNameForRoot } = await import(pathToFileURL(
+          join(repoRoot, 'scripts/lib/install-lock-name.mjs')).href);
+        const script = state === 'receipts' ? 'test:file' : 'lint:probe';
+        snapshot(f.root, {
+          ...(state === 'receipts' ? {
+            'package.json': JSON.stringify({ private: true, scripts: { 'test:file': 'node probe.cjs' } }),
+            'scripts/test-files.mjs': '// Fixture command; no external test runner or database.\n',
+          } : {}),
+          'probe.cjs': `
+const fs = require('node:fs');
+const assert = require('node:assert/strict');
+const arg = process.argv[2];
+assert.equal(require('@fixture/runtime'), 'pinned-source');
+assert.equal(require('fixture-dependency/index.cjs'), 'original-install');
+const receipt = process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
+const witness = process.env.PAPERCUSP_LINT_AS_COMMITTED_PREPARED_ROOT_RECEIPT;
+if (${JSON.stringify(state)} === 'receipts') {
+  assert.ok(fs.existsSync(receipt));
+  assert.equal(JSON.parse(fs.readFileSync(witness, 'utf8')).root, process.cwd());
+}
+fs.appendFileSync(${JSON.stringify(received)}, JSON.stringify({ root: process.cwd(), pid: process.pid, arg, receipt, witness }) + '\\n');
+(async () => {
+  if (arg === 'first') {
+    const { withFsMutex } = await import(${JSON.stringify(pathToFileURL(join(repoRoot, 'scripts/lib/fs-mutex.mjs')).href)});
+    await withFsMutex(${JSON.stringify(installLockNameForRoot(f.root))}, () => {
+      fs.writeFileSync(${JSON.stringify(installed)}, 'module.exports = "new-install";\\n');
+    }, { timeoutMs: 200, retryMs: 10 });
+    if (${JSON.stringify(state)} === 'source-drift') fs.appendFileSync('probe.cjs', '// changed source\\n');
+    if (${JSON.stringify(state)} === 'failure') process.exitCode = 7;
+  } else assert.equal(arg, 'second with spaces');
+})().catch(error => { console.error(error); process.exitCode = 9; });
+` }, f.head);
+        const result = spawnSync(process.execPath, [scriptPath,
+          ...(state === 'receipts' ? ['--any'] : []),
+          '--check=' + JSON.stringify({ script, args: ['first'] }),
+          '--check=' + JSON.stringify({ script, args: [state === 'missing' ? 'absent.test.ts' : 'second with spaces'] }),
+        ], { cwd: f.root, env: commandEnvironment(state === 'receipts'
+          ? { PAPERCUSP_TEST_RUNS_DB_URL: 'postgres://ledger.invalid' } : {}),
+          encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
+        const output = result.stdout + result.stderr;
+        expect(result.status, output).toBe(state === 'pass' || state === 'receipts' ? 0 : 1);
+        expect(result.stderr.match(/COMMITTED_DEPENDENCY_COPY state=started mode=donor path=node_modules/g)).toHaveLength(1);
+        const executions = readFileSync(received, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+        expect(executions).toHaveLength(state === 'missing' || state === 'source-drift' ? 1 : 2);
+        if (executions.length === 2) {
+          expect(executions[0].root).toBe(executions[1].root);
+          expect(executions[0].pid).not.toBe(executions[1].pid);
+          expect(executions[1].arg).toBe('second with spaces');
+        }
+        if (state === 'receipts') {
+          expect(executions[0].receipt).not.toBe(executions[1].receipt);
+          expect(executions[0].witness).not.toBe(executions[1].witness);
+          for (const execution of executions) expect(existsSync(dirname(execution.receipt))).toBe(false);
+        }
+        expect(output).toContain(`${script} [check 2]`);
+        if (state === 'source-drift') expect(output).toContain('tracked source changed between checks');
+        if (state === 'missing') expect(output).toContain('operand(s) absent');
+        if (state === 'failure') expect(output).toContain('exit 7');
+        expect(existsSync(executions[0].root)).toBe(false);
+      } finally { rmSync(f.root, { recursive: true, force: true }); }
+    }, 40_000);
 
   it.each(['matching', 'stale'] as const)('checks a %s workspace lock before dependency preparation', state => {
     const f = fixture('node build.cjs');

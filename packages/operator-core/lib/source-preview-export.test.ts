@@ -701,6 +701,12 @@ describe('source-preview export — R-1 selection parity with the installer cut'
 });
 
 describe('verifier dependency staging preparation boundary', () => {
+  function prepareFixtureDependencies(options: Omit<Parameters<typeof prepareVerifierDependencies>[0], 'env' | 'now'>) {
+    // These synthetic source/staging assertions must not inherit the test
+    // launcher's remaining clock. Production deadline admission is tested below.
+    return prepareVerifierDependencies({ ...options, env: {}, now: () => 1_000 });
+  }
+
   function fixture(recordedStaging?: string) {
     const dest = mkdtempSync(join(tmp, 'dependency-staging-'));
     write(dest, 'input.mjs', 'export default 1;\n');
@@ -714,8 +720,28 @@ describe('verifier dependency staging preparation boundary', () => {
     return { dest, receipt };
   }
 
+  it('isolates fixture assertions from a short enclosing deadline while preserving production admission', async () => {
+    const { dest, receipt } = fixture();
+    write(dest, 'unexpected.mjs', 'unaccepted source');
+    const phases: string[] = [];
+    const options: Parameters<typeof prepareVerifierDependencies>[0] = { donor: dest, dest, receipt,
+      runPhase: async (phase, operation) => {
+        phases.push(phase);
+        return operation();
+      } };
+    vi.stubEnv('PAPERCUSP_TASK_DEADLINE_EPOCH_MS', String(Date.now() + 1_000));
+    try {
+      await expect(prepareVerifierDependencies(options)).rejects.toThrow('TASK_DEADLINE_REFUSAL');
+      expect(phases).toEqual([]);
+      await expect(prepareFixtureDependencies(options)).rejects.toThrow('added unexpected.mjs');
+      expect(phases).toEqual(['deps.source.before']);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it.each(['stale', 'coherent'] as const)(
-    'checks the %s pinned submodule manifest against the root lock before dependency work', async state => {
+    'checks the %s pinned submodule manifest against the root lock before source materialization', async state => {
       const source = makeSuperproject(join(tmp, 'verifier-lock-' + state));
       const pinnedVersion = state === 'stale' ? '16.4.0' : '16.4.1';
       write(source.repo, 'package.json', JSON.stringify({ name: 'fixture-mono', private: true,
@@ -735,24 +761,72 @@ describe('verifier dependency staging preparation boundary', () => {
       write(source.repo, 'libs/papercusp/package.json', JSON.stringify({ name: '@papercusp/core',
         dependencies: { next: '16.4.1' } }));
       const dest = join(tmp, 'verifier-lock-selected-' + state);
-      const receipt = await prepareVerifierSource({ repo: source.repo, ref, dest,
-        inputs: ['apps/operator/src/index.ts'] });
+      const preparation = prepareVerifierSource({ repo: source.repo, ref, dest,
+        inputs: ['apps/operator/src/index.ts'], requireDependencyCoherence: true });
+      if (state === 'stale') {
+        await expect(preparation).rejects.toThrow(
+          /NPM_INSTALL_SAFE_WORKSPACE_LOCK_DRIFT[\s\S]*libs\/papercusp[\s\S]*16\.4\.0[\s\S]*16\.4\.1/);
+        expect(existsSync(dest)).toBe(false);
+        expect(JSON.parse(readFileSync(join(source.repo, 'libs/papercusp/package.json'), 'utf8'))
+          .dependencies.next).toBe('16.4.1');
+        return;
+      }
+      const receipt = await preparation;
       const phases: string[] = [];
-      await expect(prepareVerifierDependencies({ donor: source.repo, dest, receipt,
+      await expect(prepareFixtureDependencies({ donor: source.repo, dest, receipt,
         runPhase: async (phase, operation) => {
           phases.push(phase);
           if (phase === 'deps.source.after-runtime-assets') throw new Error('coherent source admitted');
           return operation();
-        } })).rejects.toThrow(state === 'stale'
-        ? /NPM_INSTALL_SAFE_WORKSPACE_LOCK_DRIFT[\s\S]*libs\/papercusp[\s\S]*16\.4\.0[\s\S]*16\.4\.1/
-        : 'coherent source admitted');
-      expect(phases).toEqual(state === 'stale' ? ['deps.source.before']
-        : ['deps.source.before', 'deps.source.after-runtime-assets']);
+        } })).rejects.toThrow('coherent source admitted');
+      expect(phases).toEqual(['deps.source.before', 'deps.source.after-runtime-assets']);
       await expect(verifyVerifierSource(dest, receipt)).resolves.toEqual(receipt);
       expect(JSON.parse(readFileSync(join(source.repo, 'libs/papercusp/package.json'), 'utf8'))
         .dependencies.next).toBe('16.4.1');
     },
   );
+
+  it('rejects a committed glob workspace missing from the root lock before creating source', async () => {
+    const source = makeSuperproject(join(tmp, 'verifier-missing-workspace-lock'));
+    write(source.repo, 'package.json', JSON.stringify({ name: 'fixture-mono', private: true,
+      workspaces: ['packages/*', '!packages/excluded'] }));
+    write(source.repo, 'packages/unlocked/package.json', JSON.stringify({ name: '@fixture/unlocked',
+      dependencies: { next: '16.4.1' } }));
+    write(source.repo, 'packages/excluded/package.json', JSON.stringify({ name: '@fixture/excluded' }));
+    write(source.repo, 'package-lock.json', JSON.stringify({ lockfileVersion: 3,
+      packages: { '': { name: 'fixture-mono' } } }));
+    git(source.repo, ['add', 'package.json', 'package-lock.json', 'packages']);
+    git(source.repo, ['commit', '-qm', 'workspace absent from lock']);
+    const ref = git(source.repo, ['rev-parse', 'HEAD']);
+    const dest = join(tmp, 'verifier-missing-workspace-lock-export');
+    await expect(prepareVerifierSource({ repo: source.repo, ref, dest,
+      inputs: ['apps/operator/src/index.ts'], requireDependencyCoherence: true })).rejects.toThrow(
+      /NPM_INSTALL_SAFE_WORKSPACE_LOCK_DRIFT[\s\S]*packages\/unlocked packages entry/);
+    expect(existsSync(dest)).toBe(false);
+  });
+
+  it('preserves source-only archives while enforcing lock coherence before dependency preparation', async () => {
+    const source = makeSuperproject(join(tmp, 'verifier-source-only-lock'));
+    write(source.repo, 'package.json', JSON.stringify({ name: 'fixture-mono', private: true,
+      workspaces: ['libs/papercusp'] }));
+    write(source.repo, 'libs/papercusp/package.json', JSON.stringify({ name: '@papercusp/core',
+      dependencies: { next: '16.4.0' } }));
+    git(join(source.repo, 'libs/papercusp'), ['add', 'package.json']);
+    git(join(source.repo, 'libs/papercusp'), ['commit', '-qm', 'historical workspace']);
+    write(source.repo, 'package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: {
+      '': { name: 'fixture-mono' },
+      'libs/papercusp': { name: '@papercusp/core', dependencies: { next: '16.4.1' } },
+    } }));
+    git(source.repo, ['add', 'package.json', 'package-lock.json', 'libs/papercusp']);
+    git(source.repo, ['commit', '-qm', 'historical incoherent lock']);
+    const dest = join(tmp, 'verifier-source-only-lock-export');
+    const receipt = await prepareVerifierSource({ repo: source.repo, ref: 'HEAD', dest,
+      inputs: ['apps/operator/src/index.ts'] });
+    await expect(verifyVerifierSource(dest, receipt)).resolves.toEqual(receipt);
+    await expect(prepareFixtureDependencies({ donor: source.repo, dest, receipt }))
+      .rejects.toThrow(/NPM_INSTALL_SAFE_WORKSPACE_LOCK_DRIFT[\s\S]*libs\/papercusp/);
+    await expect(verifyVerifierSource(dest, receipt)).resolves.toEqual(receipt);
+  });
 
   it.each(['node_modules.pinned-deps-tmp', 'node_modules.pinned-deps-tmp.12345',
     'apps/operator/node_modules.pinned-deps-tmp.12345'])(
@@ -776,7 +850,7 @@ describe('verifier dependency staging preparation boundary', () => {
       const { dest, receipt } = fixture();
       await fsPromises.mkdir(join(dest, staging));
       const phases: string[] = [];
-      await expect(prepareVerifierDependencies({ donor: dest, dest, receipt,
+      await expect(prepareFixtureDependencies({ donor: dest, dest, receipt,
         runPhase: async (phase, operation) => { phases.push(phase); return operation(); } }))
         .rejects.toThrow('invalid dependency staging name');
       expect(phases).toEqual(['deps.source.before']);
@@ -802,7 +876,7 @@ describe('verifier dependency staging preparation boundary', () => {
       }
       const before = readdirSync(dest).sort();
       const phases: string[] = [];
-      await expect(prepareVerifierDependencies({ donor: dest, dest, receipt,
+      await expect(prepareFixtureDependencies({ donor: dest, dest, receipt,
         runPhase: async (phase, operation) => { phases.push(phase); return operation(); } }))
         .rejects.toThrow(/dependency staging|symlink escapes source root/);
       expect(phases).toEqual(['deps.source.before']);
@@ -817,7 +891,7 @@ describe('verifier dependency staging preparation boundary', () => {
     for (const path of retained) write(dest, path, 'retained dependency bytes');
     await fsPromises.mkdir(join(dest, 'apps/operator/node_modules.pinned-deps-tmp.12345'));
     const phases: string[] = [];
-    await expect(prepareVerifierDependencies({ donor: dest, dest, receipt,
+    await expect(prepareFixtureDependencies({ donor: dest, dest, receipt,
       runPhase: async (phase, operation) => { phases.push(phase); return operation(); } }))
       .rejects.toThrow('unexpected dependency staging');
     expect(phases).toEqual(['deps.source.before', 'deps.source.after-runtime-assets',
@@ -830,7 +904,7 @@ describe('verifier dependency staging preparation boundary', () => {
     write(dest, 'node_modules/dependency/index.js', 'retained dependency bytes');
     write(dest, 'apps/operator/unexpected.mjs', 'unaccepted source');
     const phases: string[] = [];
-    await expect(prepareVerifierDependencies({ donor: dest, dest, receipt,
+    await expect(prepareFixtureDependencies({ donor: dest, dest, receipt,
       runPhase: async (phase, operation) => { phases.push(phase); return operation(); } }))
       .rejects.toThrow('added apps/operator/unexpected.mjs');
     expect(phases).toEqual(['deps.source.before']);
@@ -844,7 +918,7 @@ describe('verifier dependency staging preparation boundary', () => {
       write(dest, input, 'changed recorded source');
       if (input === 'input.mjs') write(dest, 'node_modules.pinned-deps-tmp/partial', 'retained bytes');
       const phases: string[] = [];
-      await expect(prepareVerifierDependencies({ donor: dest, dest, receipt,
+      await expect(prepareFixtureDependencies({ donor: dest, dest, receipt,
         runPhase: async (phase, operation) => { phases.push(phase); return operation(); } }))
         .rejects.toThrow('changed ' + input);
       expect(phases).toEqual(['deps.source.before']);
@@ -855,7 +929,7 @@ describe('verifier dependency staging preparation boundary', () => {
     const { dest, receipt } = fixture();
     await fsPromises.mkdir(join(dest, 'node_modules.pinned-deps-tmp'));
     const phases: string[] = [];
-    await expect(prepareVerifierDependencies({ donor: dest, dest, receipt,
+    await expect(prepareFixtureDependencies({ donor: dest, dest, receipt,
       runPhase: async (phase, operation) => { phases.push(phase); return operation(); } }))
       .rejects.toThrow('unexpected dependency staging');
     expect(phases).toEqual(['deps.source.before', 'deps.source.after-runtime-assets',
@@ -3650,6 +3724,17 @@ describe('BG inherited manifest and original source boundaries', () => {
       { artifactInputs, cliHarness, sourceOnly, protectedUnconsumed, runtimeModules, trace: bgFixtureTrace });
   }
 
+  it('compiled runtime source fixture retains a root lock matching its own manifests', async () => {
+    const { prepared } = await compilerCandidate(true, true, true, false, true);
+    const lock = JSON.parse(readFileSync(join(prepared.root, 'package-lock.json'), 'utf8'));
+    expect(lock.lockfileVersion).toBe(3);
+    expect(Object.keys(lock.packages).sort()).toEqual(['', 'apps/operator', 'libs/papercusp']);
+    for (const path of Object.keys(lock.packages)) {
+      expect(lock.packages[path]).toEqual(JSON.parse(readFileSync(join(prepared.root, path, 'package.json'), 'utf8')));
+    }
+    expect(verifyBgVerifierSource(prepared, 'before-publication')).toBe(prepared);
+  });
+
   it('bg-r1-compiler-resolver-metadata-transient-restored refuses publication after real resolution used changed package metadata then restored it', async () => {
     const { prepared } = await compilerCandidate();
     const metadata = join(prepared.root, 'node_modules/fixture-dependency/package.json');
@@ -3890,8 +3975,9 @@ describe('BG inherited manifest and original source boundaries', () => {
     invocation: Awaited<ReturnType<typeof partitionCompilation>>['args']['invocation'];
     execution: Parameters<typeof qualifyBgVerifierRuntimeSources>[0]['execution'];
   }> | undefined)[] = [];
-  async function compiledRuntime(transformed = false, native = false, host?: 'complete' | 'missing-member') {
-    const index = host === 'complete' ? 4 : host === 'missing-member' ? 5 : Number(transformed) + Number(native) * 2;
+  async function compiledRuntime(transformed = false, native = false, host?: 'complete' | 'missing-member' | 'with-builtins') {
+    const index = host === 'with-builtins' ? 6 : host === 'complete' ? 4 : host === 'missing-member' ? 5
+      : Number(transformed) + Number(native) * 2;
     return runtimeCompilations[index] ??= (async () => {
       // Independently pin a reference-host file census before the compiler and
       // target start. Never derive expectations from the target's native packet.
@@ -3901,18 +3987,27 @@ describe('BG inherited manifest and original source boundaries', () => {
         const sampler = pathToFileURL(join(SOURCE_ROOT, 'libs/generic/memory/src/local-embedder-worker.script.mjs')).href;
         const reference = spawnSync(process.execPath, ['--input-type=module', '-e',
           `import { sampleNativeRuntime } from ${JSON.stringify(sampler)};
+import { createHash } from 'node:crypto';
 const { libraries, loaderProcess } = sampleNativeRuntime('cpu');
 console.log(JSON.stringify({ files: libraries.map(({ path, sha256, bytes }) => ({ path, sha256, bytes })),
+  builtinSources: Object.entries(process.binding('natives')).filter(([, source]) => typeof source === 'string').map(([name, source]) => ({
+    url: 'node:' + name, sha256: createHash('sha256').update(source).digest('hex'), bytes: Buffer.byteLength(source) })),
   interpreter: loaderProcess.interpreterPath }));`], {
           env: { PATH: '/usr/bin:/bin' }, encoding: 'utf8', timeout: 15_000, maxBuffer: 1024 * 1024,
         });
         expect(reference.status, reference.stderr).toBe(0);
         expect(reference.error).toBeUndefined();
-        const manifest: { files: { path: string, sha256: string, bytes: number }[], interpreter: string } = JSON.parse(reference.stdout);
+        const manifest: { files: { path: string, sha256: string, bytes: number }[], interpreter: string,
+          builtinSources: { url: string, sha256: string, bytes: number }[] } = JSON.parse(reference.stdout);
         expect(manifest.files.length).toBeGreaterThan(1);
+        expect(manifest.builtinSources.length).toBeGreaterThan(1);
+        expect(manifest.builtinSources.every(source => source.url.startsWith('node:')
+          && /^[a-f0-9]{64}$/.test(source.sha256) && Number.isSafeInteger(source.bytes)
+          && source.bytes >= 0), 'reference inventory must contain source identities before target start').toBe(true);
         if (host === 'missing-member') manifest.files = manifest.files.filter(file => file.path !== manifest.interpreter);
         const path = join(tmp, `runtime-expected-host-${host}.json`);
-        writeFileSync(path, JSON.stringify({ schemaVersion: 1, files: manifest.files }));
+        writeFileSync(path, JSON.stringify({ schemaVersion: 1, files: manifest.files,
+          ...(host === 'with-builtins' ? { builtinSources: manifest.builtinSources } : {}) }));
         expectedHostManifest = { schemaVersion: 1, path, sha256: digest(readFileSync(path)),
           evidenceRef: 'independent-reference-host-before-target/private-fixture' };
       }
@@ -4048,6 +4143,51 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
     expect(proof.creatorFence).toBe('required');
     expect(proof.unqualifiedSources.length).toBeGreaterThan(0);
   });
+
+  it.each(['positive', 'digest', 'size', 'unknown-name', 'missing-native'] as const)(
+    'compiled runtime builtin custody: %s', async defect => {
+      const fixture = await compiledRuntime(false, true, 'with-builtins');
+      const execution = structuredClone(fixture.execution);
+      execution.nativeCaptures!.forEach((capture, index) => {
+        capture.stderr = Buffer.from(fixture.execution.nativeCaptures![index]!.stderr);
+      });
+      const builtins = execution.captures.flatMap(rows => rows.filter(row =>
+        row.kind === 'source' && row.url.startsWith('node:')));
+      expect(builtins.length).toBeGreaterThan(1);
+      if (defect === 'digest') builtins[0]!.sha256 = 'a'.repeat(64);
+      if (defect === 'size') builtins[0]!.bytes++;
+      if (defect === 'unknown-name') builtins[0]!.url = 'node:missing-original-source';
+      if (defect === 'missing-native') delete execution.nativeCaptures;
+      const qualify = () => qualifyBgVerifierRuntimeSources({ ...fixture, execution });
+      if (defect !== 'positive') { expect(qualify).toThrow(/BG (?:parsed builtin|runtime builtin|builtin source)/); return; }
+      const proof = qualify();
+      expect(proof.builtinQualification).toBe('original-node-bytes');
+      expect(proof.builtinBindings).toHaveLength(builtins.length);
+      expect(proof.builtinBindings.every(row => row.expectedHostManifestSha256
+        === fixture.record.expectedHostManifest!.identity.sha256)).toBe(true);
+      expect(proof.unqualifiedSources.some(row => row.url.startsWith('node:'))).toBe(false);
+      expect(proof.completeRuntimeClosureVerified).toBe(false);
+      expect(proof.dependencyQualification).toBe('required');
+      expect(proof.creatorFence).toBe('required');
+    });
+
+  it.each(['empty', 'url', 'digest', 'size', 'duplicate'] as const)(
+    'compiled runtime builtin manifest preflight: %s', async defect => {
+      const fixture = await compiledRuntime(false, true, 'with-builtins');
+      expect(fixture.record.schemaVersion).toBe('bg-build-invocation-v1');
+      const manifest = JSON.parse(readFileSync(fixture.record.expectedHostManifest!.identity.path, 'utf8'));
+      if (defect === 'empty') manifest.builtinSources = [];
+      if (defect === 'url') manifest.builtinSources[0].url = 'node:internal/../foreign';
+      if (defect === 'digest') manifest.builtinSources[0].sha256 = 'unknown';
+      if (defect === 'size') manifest.builtinSources[0].bytes = -1;
+      if (defect === 'duplicate') manifest.builtinSources.push(manifest.builtinSources[0]);
+      const path = join(tmp, `builtin-preflight-${defect}.json`);
+      writeFileSync(path, JSON.stringify(manifest));
+      expect(() => prepareBgVerifierBuildRecord({ prepared: fixture.record.prepared, dependencies: fixture.record.dependencies,
+        invocation: fixture.invocation, expectedHostManifest: { schemaVersion: 1, path,
+          sha256: digest(readFileSync(path)), evidenceRef: 'independent-reference-host-before-target/private-fixture' } }))
+        .toThrow(/BG expected builtin source/);
+    });
 
   it.each(['schema', 'authority', 'manifest-digest', 'file-digest', 'file-size', 'duplicate',
     'relative', 'node-omitted', 'inside-root', 'symlink'] as const)(

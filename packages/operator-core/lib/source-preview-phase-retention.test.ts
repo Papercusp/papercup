@@ -5,12 +5,47 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { archiveVerifierTaskEvidence, captureVerifierDependencies, readVerifierPhaseMeasurements, selectVerifierDependencySnapshot,
-  verifierPhaseRunner } from '../../../scripts/source-preview.mjs';
+  runCli, verifierPhaseRunner } from '../../../scripts/source-preview.mjs';
 
 const fixtures: string[] = [];
 afterEach(() => { for (const root of fixtures.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 describe('verifier phase evidence retention', () => {
+  it.each(['source', 'receipt'])('retains successful and failed strict CLI postchecks after %s tampering', async tampered => {
+    const root = mkdtempSync(join(tmpdir(), 'verifier-cli-phase-retention-'));
+    fixtures.push(root);
+    const sourceRoot = join(root, 'source');
+    mkdirSync(sourceRoot);
+    const text = 'export {};';
+    writeFileSync(join(sourceRoot, 'input.ts'), text);
+    const file = { path: 'input.ts', kind: 'file', executable: false,
+      sha256: createHash('sha256').update(text).digest('hex') };
+    const receipt = { schemaVersion: 'verifier-source-v1', sourceCommit: 'f'.repeat(40),
+      files: [file], testedInputs: [{ path: file.path, sha256: file.sha256 }] };
+    const receiptPath = join(root, 'receipt.json');
+    writeFileSync(receiptPath, JSON.stringify(receipt));
+    writeFileSync(join(sourceRoot, '.verifier-source.json'), JSON.stringify(receipt));
+    const logs = join(root, 'persistent');
+    vi.stubEnv('PAPERCUSP_CHECKPOINT_LOG_DIR', logs);
+    try {
+      const command = ['verifier-verify', '--out', sourceRoot, '--receipt', receiptPath];
+      expect(await runCli(command)).toBe(0);
+      writeFileSync(tampered === 'source' ? join(sourceRoot, 'input.ts') : receiptPath, 'changed');
+      await expect(runCli(command)).rejects.toThrow();
+      const local = readdirSync(root).filter(name => name.startsWith('receipt.json.verify.'));
+      expect(local).toHaveLength(2);
+      const retained = readdirSync(logs).map(name => readFileSync(join(logs, name), 'utf8'));
+      expect(retained).toHaveLength(2);
+      expect(retained.sort()).toEqual(local.map(name => readFileSync(join(root, name), 'utf8')).sort());
+      const rows = retained.flatMap(bytes => bytes.trim().split('\n').map(line => JSON.parse(line)));
+      expect(rows.filter(row => row.phase === 'source.verify' && row.event === 'started')).toHaveLength(2);
+      expect(rows.filter(row => row.event === 'completed')).toHaveLength(1);
+      expect(rows.filter(row => row.event === 'failed')).toHaveLength(1);
+      for (const name of local) rmSync(join(root, name));
+      expect(readdirSync(logs)).toHaveLength(2);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it.each(['source', 'manifest'])('keeps custody receipts and original bytes when the %s write runs out of space', failureStage => {
     const root = mkdtempSync(join(tmpdir(), 'verifier-task-retention-'));
     fixtures.push(root);

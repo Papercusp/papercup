@@ -862,6 +862,9 @@ export function workspaceManifestPath(workspace) {
 export function parseArgs(argv) {
   const scripts = [];
   const forward = [];
+  /** @type {{ script: string, args: string[], workspace?: string }[]} */
+  const checks = [];
+  const checkErrors = [];
   let ref = 'HEAD';
   let workspace;
   let keep = false;
@@ -883,12 +886,36 @@ export function parseArgs(argv) {
     else if (arg === '--any') any = true;
     else if (arg.startsWith('--ref=')) ref = arg.slice('--ref='.length);
     else if (arg.startsWith('--workspace=')) workspace = arg.slice('--workspace='.length);
+    else if (arg.startsWith('--check=')) {
+      try {
+        const check = JSON.parse(arg.slice('--check='.length));
+        if (!check || typeof check !== 'object' || Array.isArray(check) ||
+            Object.keys(check).some(key => !['script', 'args', 'workspace'].includes(key)) ||
+            typeof check.script !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9:_.-]*$/.test(check.script) ||
+            (check.args !== undefined && (!Array.isArray(check.args) ||
+              !check.args.every(value => typeof value === 'string' && !value.includes('\0')))))
+          throw new Error('expected {script, args?: string[], workspace?: string}');
+        if (check.workspace !== undefined) {
+          if (typeof check.workspace !== 'string') throw new Error('workspace must be a string');
+          workspaceManifestPath(check.workspace);
+        }
+        checks.push({ script: check.script, args: check.args ?? [],
+          ...(check.workspace !== undefined ? { workspace: check.workspace } : {}) });
+      } catch (error) {
+        checkErrors.push('invalid --check: ' + error.message);
+      }
+    }
     else if (arg === '--help' || arg === '-h')
       return { help: true, scripts: [], forward: [], ref, keep, any, unknown, sawSeparator };
     else if (arg.startsWith('-')) unknown.push(arg);
     else scripts.push(arg);
   }
 
+  if (checks.length > 0) {
+    if (scripts.length > 0 || sawSeparator || materializeOnly)
+      checkErrors.push('--check cannot be combined with positional scripts, -- forwarding, or --materialize-only');
+    scripts.push(...checks.map(check => check.script));
+  }
   const nonLint = any ? [] : scripts.filter((s) => !s.startsWith('lint:'));
   // Self-recursion is a real footgun, not a hypothetical: `lint:as-committed` starts
   // with `lint:`, so a sweep over every lint:* script picks it up, and the inner run
@@ -904,6 +931,8 @@ export function parseArgs(argv) {
   return { help: false, scripts, forward, ref, keep, any, unknown, nonLint, selfRecursive, forwardAmbiguous, sawSeparator,
     ...(materializeOnly ? { materializeOnly: true, keep: true } : {}),
     ...(retainFor !== undefined ? { retainFor } : {}),
+    ...(checks.length > 0 ? { checks } : {}),
+    ...(checkErrors.length > 0 ? { checkErrors } : {}),
     ...(workspace !== undefined ? { workspace } : {}) };
 }
 
@@ -1329,6 +1358,7 @@ lint-as-committed — run a lint as the release gate runs it (committed detector
 
   npm run lint:as-committed -- <lint:script> [<lint:script>...] [--ref=<git-ref>] [--keep] [--any]
   npm run lint:as-committed -- <script> --any -- <args forwarded to the script>
+  npm run lint:as-committed -- --any --check='{"script":"test:file","args":["a.test.ts"]}' --check='{"script":"test:file","args":["b.test.ts"]}'
 
   --ref=<git-ref>   which commit to test (default HEAD). e.g. --ref=origin/staging
   --workspace=<dir> select a committed npm workspace, e.g. apps/sidecar;
@@ -1337,6 +1367,9 @@ lint-as-committed — run a lint as the release gate runs it (committed detector
   --materialize-only prepare committed source without running a lint/test (implies --keep)
   --retain-for=<path> retain source while this external artifact exists; requires --materialize-only
   --any             allow a non-'lint:' npm script (blast-radius opt-in)
+  --check=<json>    repeat for sequential checks sharing ONE source/dependency preparation;
+                    {script, args?: string[], workspace?: string}; each test:file gets its own receipts
+                    cannot be mixed with positional scripts, --, or --materialize-only
   --                everything after this is forwarded verbatim to the npm script
                     (only one script may be named when forwarding)
 
@@ -1448,6 +1481,11 @@ async function main() {
   if (args.help) {
     process.stdout.write(USAGE);
     process.exit(0);
+  }
+  if (args.checkErrors?.length) {
+    console.error('lint-as-committed: ' + args.checkErrors.join('; '));
+    process.exitCode = 2;
+    return;
   }
   // Before every other refusal: once npm has rewritten the argv, each later message
   // (usage, nonLint) describes an invocation the caller never typed.
@@ -1771,15 +1809,6 @@ async function main() {
       return;
     }
 
-    // ── read the COMMITTED package.json: the script DEFINITION is versioned too ──
-    let refScripts = {};
-    try {
-      refScripts = JSON.parse(readFileSync(join(workRoot, workspaceManifestPath(args.workspace)), 'utf8')).scripts ?? {};
-    } catch (err) {
-      console.error(`lint-as-committed: cannot read package.json at ${short}: ${err.message}`);
-      await bail(2);
-    }
-
     if (args.scripts.some((script) => script.startsWith('test:'))) {
       const mobileSource = materializeMobileSourceContract(repoRoot, workRoot, process.env);
       if (mobileSource) {
@@ -1788,25 +1817,45 @@ async function main() {
       }
     }
 
-    for (const script of args.scripts) {
+    const checks = args.checks ?? args.scripts.map(script => ({ script, args: args.forward }));
+    for (const [index, check] of checks.entries()) {
+      const { script, args: forward } = check;
+      const workspace = check.workspace ?? args.workspace;
+      const resultScript = args.checks ? `${script} [check ${index + 1}]` : script;
+      // A preceding command must not silently change the source tested by the
+      // next one. Each command still has its own actual execution and receipts.
+      if (args.checks) {
+        verifyCommittedWorkRoot(workRoot, sha);
+        if (git(['status', '--porcelain', '--untracked-files=no'], workRoot)) {
+          results.push({ script: resultScript, status: 'error', note: 'tracked source changed between checks' });
+          break;
+        }
+      }
+      let refScripts;
+      try {
+        refScripts = JSON.parse(readFileSync(join(workRoot, workspaceManifestPath(workspace)), 'utf8')).scripts ?? {};
+      } catch (err) {
+        results.push({ script: resultScript, status: 'error', note: `cannot read package.json at ${short}: ${err.message}` });
+        continue;
+      }
       const command = refScripts[script];
-      console.log(`\n─── ${script} ───`);
+      console.log(`\n─── ${resultScript} ───`);
 
       if (!command) {
         console.log(`  MISSING at ${short}: this npm script does not exist in the committed package.json.`);
         console.log(`  That is a real finding, not a skip — a working-tree run of it tests something the gate cannot run.`);
-        results.push({ script, status: 'missing', note: `not in package.json at ${short}` });
+        results.push({ script: resultScript, status: 'missing', note: `not in package.json at ${short}` });
         continue;
       }
       console.log(`  committed command: ${command}`);
-      if (args.forward.length > 0) console.log(`  forwarded args:    ${args.forward.join(' ')}`);
+      if (forward.length > 0) console.log(`  forwarded args:    ${forward.join(' ')}`);
 
       // Detector drift: WHY a working-tree run may disagree with this one. Forwarded
       // operands (the test file you named) get the same treatment as the detector —
       // for `test:file` the operand IS the code under test, so its drift is the whole
       // answer to "did my green come from the commit or from someone's dirty edit?".
-      const forwardedPaths = args.forward.filter((a) => !a.startsWith('-') && /\.[cm]?[jt]sx?$/.test(a));
-      const scopedPath = (p) => args.workspace ? join(args.workspace, p) : p;
+      const forwardedPaths = forward.filter((a) => !a.startsWith('-') && /\.[cm]?[jt]sx?$/.test(a));
+      const scopedPath = (p) => workspace ? join(workspace, p) : p;
       for (const p of [...detectorPathsFromCommand(command), ...forwardedPaths].map(scopedPath)) {
         const atRef = showAtRef(repoRoot, sha, p);
         const local = existsSync(join(repoRoot, p)) ? readFileSync(join(repoRoot, p), 'utf8') : null;
@@ -1823,7 +1872,7 @@ async function main() {
       if (absentOperands.length > 0) {
         console.log(`  MISSING at ${short}: forwarded file(s) not present at this ref: ${absentOperands.join(', ')}`);
         console.log(`  Refusing to run — the result would describe a different program than you asked about.`);
-        results.push({ script, status: 'missing', note: `operand(s) absent at ${short}: ${absentOperands.join(', ')}` });
+        results.push({ script: resultScript, status: 'missing', note: `operand(s) absent at ${short}: ${absentOperands.join(', ')}` });
         continue;
       }
 
@@ -1847,15 +1896,15 @@ async function main() {
           if (testReceiptDir) rmSync(testReceiptDir, { recursive: true, force: true });
           const note = err instanceof Error ? err.message : String(err);
           console.error('lint-as-committed: cannot prepare durable test receipt: ' + note);
-          results.push({ script, status: 'error', note });
+          results.push({ script: resultScript, status: 'error', note });
           continue;
         }
       }
 
       let run;
       try {
-        run = spawnSync('npm', [...(args.workspace ? ['--workspace', args.workspace] : []), 'run', script,
-          ...(args.forward.length > 0 ? ['--', ...args.forward] : [])], {
+        run = spawnSync('npm', [...(workspace ? ['--workspace', workspace] : []), 'run', script,
+          ...(forward.length > 0 ? ['--', ...forward] : [])], {
           cwd: workRoot,
           encoding: 'utf8',
           stdio: 'inherit',
@@ -1869,14 +1918,14 @@ async function main() {
       }
 
       if (run.error) {
-        results.push({ script, status: 'error', note: run.error.message });
+        results.push({ script: resultScript, status: 'error', note: run.error.message });
       } else if (run.status === 0) {
-        results.push({ script, status: 'pass' });
+        results.push({ script: resultScript, status: 'pass' });
       } else {
         const detail = run.signal
           ? `terminated by signal ${run.signal} (no exit status)`
           : `exit ${run.status}`;
-        results.push({ script, status: 'fail', note: detail });
+        results.push({ script: resultScript, status: 'fail', note: detail });
       }
     }
   } finally {

@@ -46,6 +46,7 @@
 import assert from 'node:assert/strict';
 import { committedWorkRootDependencyDonor } from './lint-as-committed.mjs';
 import { assertRootLockManifestMatches } from './npm-install-safe.mjs';
+import { expandWorkspaces } from './assert-workspace-links.mjs';
 import { admitTaskDeadline, readTaskDeadlineEpochMs } from './lib/task-deadline.mjs';
 import { PRIVATE_TEST_PG_RELEASE_TOKEN_ENV, requestPrivateTestPgRelease } from './lib/with-test-pg-cleanup.mjs';
 import { createProgressAwareWatchdog } from './lib/batch-watchdog.mjs';
@@ -53,7 +54,7 @@ import { processGroupLifetime } from '@papercusp/operator-core/lib/fleet/process
 import { readProcessIdentity } from '@papercusp/operator-core/lib/process-identity';
 import { sealRuntimeSourceHandle } from '@papercusp/operator-core/lib/blind-review-source-seal';
 import { spawn, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { promises as fs, appendFileSync, closeSync, existsSync, fstatSync, ftruncateSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { papercuspHome } from '@papercusp/host-platform/home';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -434,6 +435,40 @@ function committedInputBlob(repo, sha, path, trees) {
   return input.blob;
 }
 
+// Read the selected gitlinks, never their mutable checkout manifests. Reuse
+// install admission before allocating or copying the full verifier source.
+function assertCommittedWorkspaceLockMatches(repo, sha) {
+  const trees = new Map();
+  const object = path => committedInputObject(repo, sha, relative(repo, path).split(sep).join('/'), trees, true);
+  let directories;
+  const manifestDirectories = () => {
+    if (directories) return directories;
+    directories = [];
+    const collect = (source, commit, prefix = '') => {
+      committedInputObject(source, commit, 'package.json', trees, true);
+      const { entries, links } = trees.get(`${source}\0${commit}`);
+      for (const [path, fields] of entries) {
+        if (fields[1] !== 'blob' || basename(path) !== 'package.json') continue;
+        const dir = posixPath.dirname(prefix + path);
+        if (dir !== '.') directories.push(dir);
+      }
+      for (const link of links)
+        collect(materializedSubmodule(source, link, prefix + link.path), link.sha, prefix + link.path + '/');
+    };
+    collect(repo, sha);
+    return directories;
+  };
+  assertRootLockManifestMatches(repo, {
+    existsSync: path => object(path) !== null,
+    readJson: path => {
+      const input = object(path);
+      assert.ok(input, 'Committed manifest must be present');
+      return JSON.parse(git(input.repo, ['cat-file', 'blob', input.blob]));
+    },
+    expandWorkspaces: (patterns, root) => expandWorkspaces(patterns, root, { directories: manifestDirectories() }),
+  });
+}
+
 /** Conservative allocated source bytes for the exact recursive verifier export.
  * Count committed blobs, including desktop and private gitlinks, before creating
  * any destination. Per-file block rounding covers small-file allocation; the
@@ -661,9 +696,11 @@ export async function validateVerifierInputs({ repo, ref, inputs = [], inputsFil
  * checkout for read-only consumers (for example a host build with an external
  * output directory). They remain recorded source: rebuilding them invalidates
  * the receipt. The default archive/rebuild contract is unchanged.
- * @param {{ repo: string, ref: string, dest: string, inputs?: string[], inputsFile?: string, gitCheckout?: boolean, runtimeOutputs?: 'rebuild' | 'preserve', tauriInputs?: boolean, sourceArchive?: { root: string, receiptSha256: string }, operatorApi?: { root: string, sourceReceiptPath: string, sourceReceiptSha256: string, inputReceiptPath: string, inputReceiptSha256: string, outputPath: string } }} options
+ * Dependency-executing callers require lock coherence before allocating source;
+ * source-only archival also supports inspecting historically incoherent trees.
+ * @param {{ repo: string, ref: string, dest: string, inputs?: string[], inputsFile?: string, gitCheckout?: boolean, runtimeOutputs?: 'rebuild' | 'preserve', tauriInputs?: boolean, requireDependencyCoherence?: boolean, sourceArchive?: { root: string, receiptSha256: string }, operatorApi?: { root: string, sourceReceiptPath: string, sourceReceiptSha256: string, inputReceiptPath: string, inputReceiptSha256: string, outputPath: string } }} options
  */
-export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inputsFile, gitCheckout = false, runtimeOutputs = 'rebuild', tauriInputs = false, sourceArchive, operatorApi }) {
+export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inputsFile, gitCheckout = false, runtimeOutputs = 'rebuild', tauriInputs = false, requireDependencyCoherence = false, sourceArchive, operatorApi }) {
   repo = realpathSync(repo);
   if (!['rebuild', 'preserve'].includes(runtimeOutputs) || (runtimeOutputs === 'preserve' && !gitCheckout))
     throw new PreviewError('preserving verifier runtime outputs requires an independent Git checkout', 2);
@@ -678,6 +715,7 @@ export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inpu
   const { sha, paths } = await validateVerifierInputs({ repo: authority?.root ?? repo,
     ref: authority?.receipt.sourceCommit ?? ref, inputs, inputsFile, tauriInputs,
     ...(sourceArchive ? { receiptSha256: sourceArchive.receiptSha256 } : {}) });
+  if (requireDependencyCoherence) assertCommittedWorkspaceLockMatches(repo, sha);
   // Observations come from a separately selected root, never this exporter.
   const planned = operatorApi ? readOperatorApiHandoff(operatorApi, sha) : undefined;
   if (operatorApi) {
@@ -1380,8 +1418,9 @@ function readBgBuildInvocation(prepared, invocation) {
 
 /** Expected host files are nominated independently BEFORE compilation/runtime,
  * using the same pinned-manifest/physical-file fences as the source authority.
- * This qualifies file bytes only; it does not attest builtins, vDSO, creator
- * exclusion, or complete runtime coverage.
+ * Optional builtin sources are pinned from the same independently selected Node
+ * before the target starts, then joined to its native executable identity.
+ * This does not attest vDSO, creator exclusion, or complete runtime coverage.
  * @typedef {{ schemaVersion: 1, path: string, sha256: string, evidenceRef: string }} BgExpectedHostManifest
  * @param {BgExpectedHostManifest} expected @param {string} root
  */
@@ -1401,7 +1440,8 @@ function readBgExpectedHostManifest(expected, root) {
   assert.deepEqual(readBgIndependentOutputIdentity(expected.path), identity,
     'BG expected host manifest changed while reading');
   assert.equal(identity.sha256, expected.sha256, 'BG expected host manifest identity mismatch');
-  /** @type {{ schemaVersion: number, files: { path: string, sha256: string, bytes: number }[] }} */
+  /** @type {{ schemaVersion: number, files: { path: string, sha256: string, bytes: number }[],
+   *   builtinSources?: { url: string, sha256: string, bytes: number }[] }} */
   const manifest = JSON.parse(String(bytes));
   assert.ok(manifest.schemaVersion === 1 && Array.isArray(manifest.files)
     && manifest.files.length > 0 && manifest.files.length <= 1024,
@@ -1420,7 +1460,22 @@ function readBgExpectedHostManifest(expected, root) {
     assert.ok(actual.path === actual.realpath && actual.sha256 === file.sha256
       && lstatSync(file.path).size === file.bytes, 'BG expected host file differs from pinned bytes');
   }
-  return { authority: expected, identity, files: manifest.files };
+  if (manifest.builtinSources !== undefined) {
+    assert.ok(Array.isArray(manifest.builtinSources) && manifest.builtinSources.length > 0
+      && manifest.builtinSources.length <= 4096, 'BG expected builtin source census is invalid');
+    const urls = new Set();
+    for (const source of manifest.builtinSources) {
+      assert.ok(source && typeof source.url === 'string'
+        && /^node:[a-zA-Z0-9_-]+(?:\/[a-zA-Z0-9_-]+)*$/.test(source.url) && !urls.has(source.url),
+      'BG expected builtin source URL is invalid or duplicate');
+      urls.add(source.url);
+      assert.match(source.sha256 ?? '', /^[a-f0-9]{64}$/, 'BG expected builtin source digest is invalid');
+      assert.ok(Number.isSafeInteger(source.bytes) && source.bytes >= 0,
+        'BG expected builtin source size is invalid');
+    }
+  }
+  return { authority: expected, identity, files: manifest.files,
+    ...(manifest.builtinSources === undefined ? {} : { builtinSources: manifest.builtinSources }) };
 }
 
 /** A distinct, detached invocation record, never a restamped source receipt.
@@ -2534,7 +2589,9 @@ export function qualifyBgVerifierRuntimeSources({ output, record, invocation, ex
   for (const tree of record.dependencies.trees) for (const file of tree.files)
     addInput({ ...file, path: `${tree.path}/${file.path}` }, 'dependency');
   const rootUrl = pathToFileURL(record.prepared.root + sep).href;
-  const bindings = [], inputBindings = [], unqualifiedSources = [];
+  const bindings = [], inputBindings = [], builtinBindings = [], unqualifiedSources = [];
+  const builtinSources = record.expectedHostManifest?.builtinSources;
+  const originalBuiltins = new Map(builtinSources?.map(source => [source.url, source]));
   for (const rows of execution.captures) for (const row of rows.filter(row => row.kind === 'source')) {
     const identity = { processId: rows[0].processId, target: row.target, scriptId: row.scriptId,
       url: row.url, sha256: row.sha256, bytes: row.bytes };
@@ -2547,6 +2604,15 @@ export function qualifyBgVerifierRuntimeSources({ output, record, invocation, ex
       assert.equal(canonical, url, 'BG runtime source URL is not canonical');
     }
     if (url !== expectedUrl) {
+      if (url.startsWith('node:') && builtinSources) {
+        const original = originalBuiltins.get(url);
+        assert.ok(original, 'BG runtime builtin is outside original expected manifest');
+        assert.ok(row.sha256 === original.sha256 && row.bytes === original.bytes,
+          'BG parsed builtin differs from original Node source bytes');
+        builtinBindings.push({ ...identity,
+          expectedHostManifestSha256: record.expectedHostManifest.identity.sha256 });
+        continue;
+      }
       const original = originalFiles.get(url);
       if (original) {
         assert.equal(original.kind, 'file', 'BG parsed runtime input is not an original regular file');
@@ -2617,6 +2683,9 @@ export function qualifyBgVerifierRuntimeSources({ output, record, invocation, ex
         expectedHostManifestSha256: record.expectedHostManifest?.identity.sha256 ?? null });
     }
   }
+  for (const builtin of builtinBindings) assert.ok(nativeBindings.some(native =>
+    native.processId === builtin.processId && native.expectedHostManifestQualified),
+  'BG builtin source lacks original native executable qualification');
   for (const [path, identity] of inputIdentities)
     assert.deepEqual(readBgFileIdentity(path), identity, 'BG runtime original input changed during qualification');
   assert.deepEqual(readBgFileIdentity(execution.entry), entry, 'BG runtime entry changed during qualification');
@@ -2626,7 +2695,8 @@ export function qualifyBgVerifierRuntimeSources({ output, record, invocation, ex
     buildRecordSha256: output.buildRecordSha256, compilerOutputSha256: output.entry.sha256,
     captureSha256: createHash('sha256').update(JSON.stringify(execution.captures)).digest('hex'),
     traceSha256: createHash('sha256').update(execution.trace).digest('hex'),
-    entry, population, bindings, inputBindings, unqualifiedSources, nativeBindings,
+    entry, population, bindings, inputBindings, builtinBindings, unqualifiedSources, nativeBindings,
+    builtinQualification: builtinBindings.length ? 'original-node-bytes' : 'not-observed',
     nativeQualification: execution.nativeCaptures === undefined ? 'not-observed' : 'selected-windows-only',
     compiledOutputBytesObserved: true,
     completeRuntimeClosureVerified: false, dependencyQualification: 'required', creatorFence: 'required' });
@@ -3195,7 +3265,7 @@ export async function runVerifierCommand({ repo, runtimeAssetDonor, ref, receipt
     const gitCheckout = !VERIFIER_REBUILT_OUTPUTS.some(path =>
       committedVerifierPathTracked(sourceRepo, sourceCommit, path));
     const receipt = await runPhase('source.freeze', () => prepareVerifierSource({ repo: sourceRepo, ref: sourceCommit, dest: root,
-      inputs, inputsFile, tauriInputs, gitCheckout, sourceArchive }));
+      inputs, inputsFile, tauriInputs, gitCheckout, sourceArchive, requireDependencyCoherence: true }));
     await runPhase('receipt.write', () => fs.writeFile(receiptPath, `${JSON.stringify(receipt)}\n`, { flag: 'wx', mode: 0o600 }));
     // Native generation selection also needs independently pinned archive
     // custody before dependency materialization, using the reporter contract.
@@ -4865,8 +4935,22 @@ async function main(argv) {
         } } : {}) });
       await fs.writeFile(opts.receipt, `${JSON.stringify(receipt)}\n`, { flag: 'wx', mode: 0o600 });
     }
-    await verifyVerifierSource(opts.out, JSON.parse(await fs.readFile(opts.receipt, 'utf8')),
-      { runtimeArtifacts: opts.runtimeArtifacts === true });
+    if (cmd === 'verifier-verify') {
+      // Use the same retained journal as verifier-run. A synchronous census
+      // cannot service timers, so retain its existing bounded progress too.
+      const phasePath = `${resolve(opts.receipt)}.verify.${randomUUID()}.phases.jsonl`;
+      assertOutsideArchive(opts.out, phasePath);
+      const runPhase = verifierPhaseRunner(phasePath, process.env, `${phasePath}.child.json`);
+      process.stderr.write(`VERIFIER_SOURCE_PHASES ${phasePath}\n`);
+      await runPhase('source.verify', async () => verifyVerifierSource(opts.out,
+        JSON.parse(await fs.readFile(opts.receipt, 'utf8')), {
+          runtimeArtifacts: opts.runtimeArtifacts === true,
+          progress: record => process.stderr.write(`VERIFIER_SOURCE_PROGRESS ${JSON.stringify(record)}\n`),
+        }));
+    } else {
+      await verifyVerifierSource(opts.out, JSON.parse(await fs.readFile(opts.receipt, 'utf8')),
+        { runtimeArtifacts: opts.runtimeArtifacts === true });
+    }
     return 0;
   }
   if (cmd === 'licenses') {
