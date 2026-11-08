@@ -15684,17 +15684,29 @@ export function forkBootstrapBody(
   ownerId = /** @type {string | null} */ (null),
   launchArgs = /** @type {Record<string, any> | null} */ (null),
 ) {
+  // Bootstrap consumes the selected model from JSON, not the argv audit record.
+  // Normalize an existing selection as on a fresh launch; absence stays absent
+  // so the server still rejects a Codex fork without a selected model.
+  const codexSelection = session.agent === "codex" && launchArgs?.model
+    ? resolveCodexModelSelection(launchArgs.model, {
+      source: launchArgs.modelSource || "explicit",
+    })
+    : null;
+  const effectiveModel = codexSelection?.model ?? launchArgs?.model;
+  const effectiveLaunchArgs = codexSelection
+    ? { ...launchArgs, model: effectiveModel, modelSource: codexSelection.source }
+    : launchArgs;
   // A fork bootstraps a fresh row, but its provenance is the actual resume/fork
   // invocation. Reuse the normal launch record so the parent, owner pin and
   // headless discriminator survive bootstrap and session:end can recognize an
   // agent-launched child. Calls without launch args retain the legacy body.
-  const launchArgv = launchArgs ? psuLaunchArgvRecord({
+  const launchArgv = effectiveLaunchArgs ? psuLaunchArgvRecord({
     agent: session.agent, workspace: session.workspaceId || null,
     harness: null, plan: session.planSlug || null,
   }, {
-    ...launchArgs, sessionPortSourceAdvSessionId: null,
-    ownerId: ownerId || launchArgs.ownerId || null,
-    account: account || launchArgs.account || null,
+    ...effectiveLaunchArgs, sessionPortSourceAdvSessionId: null,
+    ownerId: ownerId || effectiveLaunchArgs.ownerId || null,
+    account: account || effectiveLaunchArgs.account || null,
   }) : null;
   if (launchArgv) launchArgv.splice(2, 0, `--resume=${session.sessionId}`, "--fork");
   return {
@@ -15716,6 +15728,8 @@ export function forkBootstrapBody(
       ? { bootstrap_idempotency_key: launchArgs.bootstrapIdempotencyKey }
       : {}),
     ...(launchArgv ? { launch_argv: launchArgv } : {}),
+    ...(effectiveModel ? { model: effectiveModel } : {}),
+    ...(codexSelection ? { model_source: codexSelection.source } : {}),
     ...(launchArgs?.launchedBy ? { launched_by: launchArgs.launchedBy } : {}),
     ...(launchArgs?.headless ? { headless: true } : {}),
     // A tracked fork mints a fresh session, so the gateway account pin is folded

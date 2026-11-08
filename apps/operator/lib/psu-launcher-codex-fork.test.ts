@@ -31,6 +31,41 @@ it('resumes only the registered child and carries no parent runtime fields', asy
   expect(JSON.parse(api.mock.calls[0]![1].body).native_fork_source.advSessionId).toBe(17);
 });
 
+it.each([
+  { name: 'explicit', model: 'gpt-6.1-sol:xhigh', modelSource: 'explicit', resolved: null },
+  { name: 'inherited', model: ' gpt-6.1-sol:xhigh ', modelSource: 'inherited', resolved: null },
+  { name: 'resolved argument', model: 'gpt-6.1-sol:high', modelSource: 'explicit', resolved: 'gpt-6.1-sol:xhigh' },
+])('forwards the $name model in the bootstrap payload and launch record', async selection => {
+  const api = vi.fn().mockImplementation(async (_path, request) => {
+    const body = JSON.parse(request.body);
+    expect(body).toMatchObject({ model: 'gpt-6.1-sol:xhigh', model_source: selection.modelSource,
+      account: 'auto', headless: true, owner_id: 'su-child',
+      native_fork_source: { advSessionId: 17, nativeSessionId: 'parent-native' } });
+    expect(body.launch_argv).toContain('--model=gpt-6.1-sol:xhigh');
+    expect(body.launch_argv).toContain(`--model-source=${selection.modelSource}`);
+    return bootstrap();
+  });
+  const launchResume = vi.fn();
+  await launchTrackedFork(source, { ownerId: 'su-child', headless: true,
+    model: selection.model, modelSource: selection.modelSource },
+  { id: null, forward: 'auto', env: {}, notice: null }, selection.resolved, { api, launchResume });
+  expect(api).toHaveBeenCalledOnce();
+  expect(launchResume).toHaveBeenCalledOnce();
+});
+
+it('preserves missing-model bootstrap rejection without launching a child', async () => {
+  const api = vi.fn().mockImplementation(async (_path, request) => {
+    const body = JSON.parse(request.body);
+    expect(body).not.toHaveProperty('model');
+    throw new Error('Codex model is required');
+  });
+  const launchResume = vi.fn();
+  await expect(launchTrackedFork(source, { ownerId: 'su-child', headless: true }, undefined, null,
+    { api, launchResume })).rejects.toThrow('Tracked Codex fork bootstrap failed: Codex model is required');
+  expect(api).toHaveBeenCalledOnce();
+  expect(launchResume).not.toHaveBeenCalled();
+});
+
 it.each(['missing-native', 'same-native', 'same-owner', 'wrong-parent', 'missing-home'])(
   'refuses %s bootstrap evidence without untracked fallback or process launch', async failure => {
     const res = bootstrap();
