@@ -23,6 +23,7 @@
  */
 import type { Sql } from 'postgres';
 import type { SessionState } from './agent-tools/coordination/presence-wakeability';
+import { traceNamedQueryStage } from './agent-tools/db-diagnostic-correlation-wiring';
 
 export type DirectiveRoute =
   | { kind: 'addressee' }
@@ -143,21 +144,26 @@ export async function routeOpenDirectives(
 ): Promise<Map<number, DirectiveRoute>> {
   const out = new Map<number, DirectiveRoute>();
   const addressees = [...new Set(rows.map((r) => r.recordedBy))];
-  const states = await deps.sessionStates(addressees);
+  const states = await traceNamedQueryStage('directive-route-addressees', () => deps.sessionStates(addressees));
   const gone = rows.filter((r) => isSessionGone(states.get(r.recordedBy)));
   for (const r of rows) out.set(r.id, { kind: 'addressee' });
   if (gone.length === 0) return out;
 
   const goneAddressees = [...new Set(gone.map((r) => r.recordedBy))];
-  const [holders, fleets] = await Promise.all([
-    deps.directiveHolders(workspaceId, gone.map((r) => r.id)),
-    deps.lastFleets(workspaceId, goneAddressees),
-  ]);
-  const leaders = await deps.fleetLeaders(workspaceId, [...new Set(fleets.values())]);
+  // Keep the canonical reference reads together so both liveness phases fit
+  // the bounded request trace even when the other attention sources overlap.
+  const { holders, fleets, leaders } = await traceNamedQueryStage('directive-route-membership', async () => {
+    const [holders, fleets] = await Promise.all([
+      deps.directiveHolders(workspaceId, gone.map((r) => r.id)),
+      deps.lastFleets(workspaceId, goneAddressees),
+    ]);
+    const leaders = await deps.fleetLeaders(workspaceId, [...new Set(fleets.values())]);
+    return { holders, fleets, leaders };
+  });
   const unknown = [
     ...new Set([...[...holders.values()].flat(), ...[...leaders.values()].filter((l): l is string => !!l)]),
   ].filter((id) => !states.has(id));
-  const more = await deps.sessionStates(unknown);
+  const more = await traceNamedQueryStage('directive-route-related', () => deps.sessionStates(unknown));
   const facts: DirectiveRoutingFacts = { states: new Map([...states, ...more]), fleets, leaders, holders };
   for (const r of gone) out.set(r.id, routeDirective(r, facts));
   return out;

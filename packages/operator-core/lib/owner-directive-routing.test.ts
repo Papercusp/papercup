@@ -6,6 +6,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import type { SessionState } from './agent-tools/coordination/presence-wakeability';
+import { namedQueryStageTimings, traceNamedQueryStage, withNamedQueryDiagnosticContext } from './agent-tools/db-diagnostic-correlation-wiring';
 import {
   directivesInheritedBy,
   routeDirective,
@@ -80,6 +81,71 @@ function fakeDeps(states: Record<string, SessionState | null>, over: Partial<Dir
 }
 
 describe('routeOpenDirectives', () => {
+  it.each(['addressees', 'membership', 'related'] as const)(
+    'retains a pending %s leg in the original attention request', async boundary => {
+      let enter!: () => void;
+      let release!: () => void;
+      const entered = new Promise<void>(resolve => { enter = resolve; });
+      const paused = new Promise<void>(resolve => { release = resolve; });
+      const pause = async (leg: typeof boundary) => {
+        if (leg === boundary) { enter(); await paused; }
+      };
+      const deps = fakeDeps({ [GONE]: 'ended', [LEADER]: 'live' }, {
+        sessionStates: vi.fn(async ids => {
+          await pause(ids.includes(GONE) ? 'addressees' : 'related');
+          return new Map<string, SessionState>(ids.map(id => [id, id === GONE ? 'ended' : 'live']));
+        }),
+        directiveHolders: vi.fn(async () => { await pause('membership'); return new Map(); }),
+      });
+      await withNamedQueryDiagnosticContext('plans.attention', async requestId => {
+        const read = routeOpenDirectives('ws', [row], deps);
+        try {
+          await entered;
+          expect(namedQueryStageTimings()).toMatchObject({ requestId, omittedStages: 0 });
+          expect(namedQueryStageTimings()?.stages).toEqual(expect.arrayContaining([
+            expect.objectContaining({ stage: `directive-route-${boundary}`, outcome: 'pending' }),
+          ]));
+          if (boundary === 'addressees') expect(deps.directiveHolders).not.toHaveBeenCalled();
+          if (boundary === 'membership') expect(deps.fleetLeaders).not.toHaveBeenCalled();
+        } finally {
+          release();
+          await read;
+        }
+        expect((await read).get(row.id)).toEqual({ kind: 'fleet-leader', fleetSlug: 'fleet-a', leaderOwnerId: LEADER });
+        expect(namedQueryStageTimings()?.stages.every(stage => stage.outcome === 'fulfilled')).toBe(true);
+      });
+      expect(namedQueryStageTimings()).toBeNull();
+    },
+  );
+
+  it('records a rejected route leg without replacing its error or continuing dependent reads', async () => {
+    const failure = new Error('directive holder read unavailable');
+    const deps = fakeDeps({ [GONE]: 'ended' }, {
+      directiveHolders: vi.fn(async () => { throw failure; }),
+    });
+    await withNamedQueryDiagnosticContext('plans.attention', async () => {
+      await expect(routeOpenDirectives('ws', [row], deps)).rejects.toBe(failure);
+      expect(namedQueryStageTimings()?.stages).toEqual(expect.arrayContaining([
+        expect.objectContaining({ stage: 'directive-route-membership', outcome: 'rejected' }),
+      ]));
+      expect(deps.fleetLeaders).not.toHaveBeenCalled();
+    });
+  });
+
+  it('retains both liveness phases and membership when the request trace is almost full', async () => {
+    await withNamedQueryDiagnosticContext('plans.attention', async () => {
+      for (let i = 0; i < 29; i++) await traceNamedQueryStage('attention-plans', async () => undefined);
+      const routes = await routeOpenDirectives('ws', [row], fakeDeps({ [GONE]: 'ended', [LEADER]: 'live' }));
+      expect(routes.get(row.id)?.kind).toBe('fleet-leader');
+      expect(namedQueryStageTimings()?.omittedStages).toBe(0);
+      expect(namedQueryStageTimings()?.stages.slice(-3)).toEqual([
+        expect.objectContaining({ stage: 'directive-route-addressees', outcome: 'fulfilled' }),
+        expect.objectContaining({ stage: 'directive-route-membership', outcome: 'fulfilled' }),
+        expect.objectContaining({ stage: 'directive-route-related', outcome: 'fulfilled' }),
+      ]);
+    });
+  });
+
   it('asks liveness for the leader it discovered, and routes only the ended rows', async () => {
     const deps = fakeDeps({ [GONE]: 'ended', 'su-alive': 'live', [LEADER]: 'live' });
     const routes = await routeOpenDirectives('ws', [row, { id: 8, recordedBy: 'su-alive' }], deps);
