@@ -101,7 +101,7 @@ const fileTools = new Set(['Edit', 'Write', 'MultiEdit', 'edit', 'write', 'apply
 const shellTools = new Set(['Bash', 'bash', 'exec_command', 'shell_command', 'shell', 'capability:bash']);
 const executionTools = new Set(['code:run', 'capability:terminal', 'capability:git', 'templates:new-app',
   'capability:launch-agent', 'fleet:launch-on-plan', 'plans:launch', 'plans:run-now', 'plans:arm-schedule']);
-const readCommands = new Set(['pwd', 'ls', 'cat', 'head', 'tail', 'wc', 'rg', 'grep', 'readlink', 'realpath']);
+const readCommands = new Set(['pwd', 'ls', 'cat', 'head', 'tail', 'wc', 'rg', 'grep', 'readlink', 'realpath', 'sed']);
 
 /** A deliberately small read-only shell subset; arbitrary interpreters require activation. */
 export function isPlanResearchCommand(command: unknown): boolean {
@@ -109,21 +109,36 @@ export function isPlanResearchCommand(command: unknown): boolean {
   if (typeof command !== 'string' || /[$`\n\r]/.test(command)) return false;
   try {
     const tokens = parseShell(command);
-    let needsCommand = true;
+    const invocations: string[][] = [];
+    let current: string[] = [];
     for (const token of tokens) {
-      if (typeof token !== 'string') {
-        if (token && typeof token === 'object' && 'op' in token && typeof token.op === 'string'
-          && ['|', '&&', ';'].includes(token.op)) {
-          if (needsCommand) return false;
-          needsCommand = true;
-        } else return false;
-      } else if (needsCommand) {
-        if (!readCommands.has(token)) return false;
-        needsCommand = false;
-      } else if (/^--(?:pre|hostname-bin)(?:=|$)/.test(token)) return false;
+      if (typeof token === 'string') {
+        current.push(token);
+        continue;
+      }
+      if (token && typeof token === 'object' && 'op' in token && typeof token.op === 'string'
+        && ['|', '&&', ';'].includes(token.op) && current.length > 0) {
+        invocations.push(current);
+        current = [];
+        continue;
+      }
+      return false;
     }
-    return tokens.length > 0 && !needsCommand;
+    if (current.length === 0) return false;
+    invocations.push(current);
+    return invocations.every(isReadOnlyPlanResearchInvocation);
   } catch { return false; }
+}
+
+function isReadOnlyPlanResearchInvocation(tokens: readonly string[]): boolean {
+  const [tool, ...args] = tokens;
+  if (!tool || !readCommands.has(tool)) return false;
+  if (args.some(arg => /^--(?:pre|hostname-bin)(?:=|$)/.test(arg))) return false;
+  if (tool !== 'sed') return true;
+  if (args.length < 3 || args[0] !== '-n' ||
+      !/^(?:\d+|\$)(?:,(?:\d+|\$))?p$/.test(args[1] ?? '')) return false;
+  const inputFiles = args.slice(2);
+  return inputFiles.length > 0 && inputFiles.every(arg => arg.length > 0 && !arg.startsWith('-'));
 }
 
 const readOnlyPtoolTools = new Set([
@@ -206,7 +221,10 @@ function isPlanPtoolReadCommand(command: unknown): boolean {
 
 function isPlanPtoolControlCommand(command: unknown): boolean {
   const tool = ptoolJsonHeredocTool(command);
-  return tool === 'consult:reply' || tool === 'consult:decline' || tool === 'plans:start';
+  // plans:audit is a canonical plan-control operation; its handler owns audit
+  // evidence validation and any activation transition. It does not grant code
+  // execution, which remains behind the implementation readiness check.
+  return tool === 'consult:reply' || tool === 'consult:decline' || tool === 'plans:start' || tool === 'plans:audit';
 }
 
 export function isPlanImplementationCall(toolName: string, args: unknown): boolean {

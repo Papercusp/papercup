@@ -15,13 +15,19 @@ bundle_host_source_sha() { # <canonical source root> [node command...]
   local -a source_node=("${@:-node}")
   if [[ -f "$repo_root/.verifier-source.json" ]]; then
     "${source_node[@]}" --input-type=module - "$repo_root" <<'NODE'
-import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 const root = process.argv[2];
-const { verifyVerifierSourceSync } = await import(pathToFileURL(join(root, 'packages/operator-core/lib/verifier-source.ts')));
-const receipt = JSON.parse(readFileSync(process.env.VERIFY_TAURI_SOURCE_RECEIPT || join(root, '.verifier-source.json'), 'utf8'));
-verifyVerifierSourceSync(root, receipt, { runtimeArtifacts: true });
+// Use the final bundle fence's independent receipt reader before any compiler
+// work. The archive marker alone cannot qualify a network-capable host build.
+const { readVerifierSourceReceiptSync } = await import(pathToFileURL(join(root, 'libs/test-config/src/verifier-source.ts')));
+const receipt = readVerifierSourceReceiptSync(root);
+if (!receipt.gitCheckout) throw new Error('archive bundle requires independently verified Git checkout');
+// Preserve the additional planned-input checks for operator-api archives.
+if (receipt.operatorApiInputs) {
+  const { verifyVerifierSourceSync } = await import(pathToFileURL(join(root, 'packages/operator-core/lib/verifier-source.ts')));
+  verifyVerifierSourceSync(root, receipt, { runtimeArtifacts: true });
+}
 process.stdout.write(receipt.sourceCommit.slice(0, 12));
 NODE
   elif [[ -n "${VERIFY_TAURI_SOURCE_RECEIPT:-}" ]]; then

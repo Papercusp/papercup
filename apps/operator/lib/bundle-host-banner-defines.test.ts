@@ -14,7 +14,7 @@
  * This file lives under apps/operator/lib, outside every scanned root below, so the fixture
  * strings in it can never be picked up by the scan itself (asserted in the first test).
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -22,7 +22,7 @@ import { performance } from 'node:perf_hooks';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
-import { verifierSourceFiles } from '../../../packages/operator-core/lib/verifier-source';
+import { verifierGitCheckoutSync, verifierSourceFiles } from '../../../libs/test-config/src/verifier-source';
 
 const TEST_FILE = fileURLToPath(import.meta.url);
 // Resolve from this module, not process.cwd(): root-level and package-scoped Vitest runs differ.
@@ -155,13 +155,21 @@ describe('EI-26045992788438631 — host runtime dependencies', () => {
 });
 
 describe('WI-10007604 — frozen host source identity', () => {
+  const snapshots: string[] = [];
+  afterEach(() => {
+    for (const root of snapshots.splice(0)) {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(root + '.receipt.json', { force: true });
+    }
+  });
   const source = readFileSync(join(REPO_ROOT, 'apps/operator/bin/bundle-host.sh'), 'utf8');
   const blockStart = source.indexOf('SOURCE_SHA="$(bundle_host_source_sha');
   const blockEnd = source.indexOf('# EI-9413:', blockStart);
   if (blockStart < 0 || blockEnd < 0) throw new Error('bundle-host source identity block markers not found');
   const block = source.slice(blockStart, blockEnd);
   const select = (root: string, receipt = '') => spawnSync('bash', ['-c', 'set -euo pipefail; REPO_ROOT="$1"; source "$2"; COMMITTED_NODE=(node);\n' + block + '\nprintf "%s" "$SOURCE_SHA"', '_', root, COMMON_SCRIPT],
-    { encoding: 'utf8', env: { ...process.env, PAPERCUSP_BUNDLE_HOST_COMMON_LOADED: '', VERIFY_TAURI_SOURCE_RECEIPT: receipt } });
+    { encoding: 'utf8', timeout: 15_000, env: { ...process.env, PAPERCUSP_BUNDLE_HOST_COMMON_LOADED: '',
+      VERIFY_TAURI_SOURCE_RECEIPT: receipt, VERIFY_TAURI_SOURCE_REF: '' } });
   function snapshotRoot() {
     // Match the maintained verifier's ignored scratch boundary. An unignored
     // fixture is rightly refused by the committed-source loader before receipt
@@ -169,40 +177,55 @@ describe('WI-10007604 — frozen host source identity', () => {
     const parent = join(REPO_ROOT, '.papercusp/tmp');
     mkdirSync(parent, { recursive: true });
     const root = mkdtempSync(join(parent, 'host-source-identity-'));
+    snapshots.push(root);
     expect(spawnSync('git', ['check-ignore', root], { cwd: REPO_ROOT }).status).toBe(0);
     return root;
   }
-  function snapshot() {
-    // Nested under a real checkout: Git demonstrably discovers the wrong parent.
+  function snapshot(withGit = true) {
     const root = snapshotRoot();
-    const helper = 'packages/operator-core/lib/verifier-source.ts';
+    const helper = 'libs/test-config/src/verifier-source.ts';
     mkdirSync(dirname(join(root, helper)), { recursive: true });
     writeFileSync(join(root, helper), readFileSync(join(REPO_ROOT, helper)));
     writeFileSync(join(root, 'entry.ts'), 'console.log(__PAPERCUSP_BUNDLED_SOURCE_SHA__);\n');
-    const receipt = { schemaVersion: 'verifier-source-v1', sourceCommit: 'a'.repeat(40),
-      testedInputs: [{ path: 'entry.ts', sha256: 'fixture' }], files: verifierSourceFiles(root) };
+    const git = (...args: string[]) => {
+      const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf8' });
+      expect(result.status, result.stderr).toBe(0);
+      return result.stdout.trim();
+    };
+    if (withGit) {
+      git('init', '--quiet');
+      git('add', 'entry.ts', helper);
+      git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+        'commit', '--quiet', '-m', 'selected source');
+    }
+    const sourceCommit = withGit ? git('rev-parse', 'HEAD') : 'a'.repeat(40);
+    const files = verifierSourceFiles(root, { gitMetadataPaths: withGit ? ['.git'] : [] });
+    const receipt = { schemaVersion: 'verifier-source-v1', sourceCommit,
+      testedInputs: [{ path: 'entry.ts', sha256: files.find(file => file.path === 'entry.ts')!.sha256 }], files,
+      ...(withGit ? { gitCheckout: verifierGitCheckoutSync(root, sourceCommit) } : {}) };
     writeFileSync(join(root, '.verifier-source.json'), JSON.stringify(receipt));
+    writeFileSync(root + '.receipt.json', JSON.stringify(receipt));
     return root;
   }
   it('bakes the validated archive commit instead of the enclosing checkout HEAD', () => {
     const root = snapshot();
     try {
-      expect(spawnSync('git', ['-C', root, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).stdout.trim()).toBe(REPO_ROOT);
-      const selected = select(root);
+      const expected = spawnSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim().slice(0, 12);
+      const selected = select(root, root + '.receipt.json');
       expect(selected.status, selected.stderr).toBe(0);
-      expect(selected.stdout).toBe('a'.repeat(12));
+      expect(selected.stdout).toBe(expected);
       const outfile = join(root, 'bundle.mjs');
       const compile = spawnSync(join(REPO_ROOT, 'node_modules/esbuild/bin/esbuild'), [join(root, 'entry.ts'), '--outfile=' + outfile,
         '--define:__PAPERCUSP_BUNDLED_SOURCE_SHA__=' + JSON.stringify(selected.stdout)], { encoding: 'utf8' });
       expect(compile.status, compile.stderr).toBe(0);
-      expect(spawnSync(process.execPath, [outfile], { encoding: 'utf8' }).stdout.trim()).toBe('a'.repeat(12));
+      expect(spawnSync(process.execPath, [outfile], { encoding: 'utf8' }).stdout.trim()).toBe(expected);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it('refuses changed source bytes before stamping an archive commit', () => {
     const root = snapshot();
     try {
       writeFileSync(join(root, 'entry.ts'), 'changed source');
-      const selected = select(root);
+      const selected = select(root, root + '.receipt.json');
       expect(selected.status).not.toBe(0);
       expect(selected.stderr).toContain('tampered verification source archive');
     } finally { rmSync(root, { recursive: true, force: true }); }
@@ -211,8 +234,30 @@ describe('WI-10007604 — frozen host source identity', () => {
     const root = snapshot();
     try {
       writeFileSync(join(root, '.verifier-source.json'), '{}');
-      expect(select(root).status).not.toBe(0);
+      expect(select(root, root + '.receipt.json').status).not.toBe(0);
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it('refuses a marker without the independent external receipt before compiler admission', () => {
+    const root = snapshot();
+    const selected = select(root);
+    expect(selected.status).not.toBe(0);
+    expect(selected.stdout).toBe('');
+    expect(selected.stderr).toContain('missing independent verifier source receipt');
+  });
+  it('refuses a fully matching non-Git archive before compiler admission', () => {
+    const root = snapshot(false);
+    expect(spawnSync('git', ['-C', root, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).stdout.trim()).toBe(REPO_ROOT);
+    const selected = select(root, root + '.receipt.json');
+    expect(selected.status).not.toBe(0);
+    expect(selected.stdout).toBe('');
+    expect(selected.stderr).toContain('archive bundle requires independently verified Git checkout');
+  });
+  it('refuses an otherwise matching receipt placed inside the archive', () => {
+    const root = snapshot();
+    const selected = select(root, join(root, '.verifier-source.json'));
+    expect(selected.status).not.toBe(0);
+    expect(selected.stdout).toBe('');
+    expect(selected.stderr).toContain('verifier source receipt must be outside the archive');
   });
   it('refuses an external receipt that disagrees with the archived identity', () => {
     const root = snapshot(), external = root + '.receipt.json';

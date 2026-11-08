@@ -174,11 +174,15 @@ describe('implementation authority before direct writes (EI-27540173897381380)',
     expect(await checkPlanExecutionGuard(call(toolName), { readBindings, checkPlan: vi.fn() })).toBeNull();
     expect(readBindings).not.toHaveBeenCalled();
   });
-  it('permits read-only shell research but refuses redirection, interpreters, substitutions and external search hooks', () => {
-    for (const command of ['pwd', 'rg -n scope source.ts | head -20', "cat 'source file.ts'", 'ls; wc -l source.ts'])
+  it('permits bounded read-only shell research but refuses unsafe sed, redirection, interpreters, substitutions and external search hooks', () => {
+    for (const command of ['pwd', 'rg -n scope source.ts | head -20', "cat 'source file.ts'", 'ls; wc -l source.ts',
+      "sed -n '1,20p' source.ts", "sed -n '$p' source.ts", "sed -n '1,20p' source.ts | head -5"])
       expect(isPlanResearchCommand(command), command).toBe(true);
     for (const command of ['cat x > source.ts', 'python -c "open(\"x\",\"w\")"', 'rg --pre=sh x',
-      'rg --hostname-bin sh x', 'ls $(touch x)', 'ls `touch x`', 'cat x\ntouch y', 'ls || touch x', 'ls |'])
+      'rg --hostname-bin sh x', 'ls $(touch x)', 'ls `touch x`', 'cat x\ntouch y', 'ls || touch x', 'ls |',
+      "sed -i 's/old/new/' source.ts", "sed -n '1w output' source.ts",
+      "sed -n '1,20p' source.ts > copy.ts", "sed -n '1,20p' source.ts; touch output",
+      "python -c \"print(open('scratch.txt').read())\""])
       expect(isPlanResearchCommand(command), command).toBe(false);
     expect(isPlanImplementationCall('write_stdin', { chars: '' })).toBe(false);
     expect(isPlanImplementationCall('write_stdin', { chars: 'touch x\n' })).toBe(true);
@@ -194,6 +198,17 @@ describe('implementation authority before direct writes (EI-27540173897381380)',
       '{"conversation_id":"consult-1","kind":"answer","body":"Reviewed.","evidence":[{"session_id":"session-1","turn_idx":3}]}',
       'JSON',
     ].join('\n');
+    const auditArgs = { slug: 'review-plan', harness: 'papercusp', phase: 'activation', dryRun: false };
+    const auditCommand = [
+      "ptool plans:audit --json - --harness=papercusp <<'JSON'",
+      JSON.stringify(auditArgs),
+      'JSON',
+    ].join('\n');
+    const wrappedAuditCommand = [
+      "ptool tools:invoke --json - --harness=papercusp <<'JSON'",
+      JSON.stringify({ name: 'plans:audit', args: auditArgs }),
+      'JSON',
+    ].join('\n');
     const writeCommand = [
       "ptool work_items:set_state --json - <<'JSON'",
       '{"id":"WI-123","state":"done"}',
@@ -202,6 +217,8 @@ describe('implementation authority before direct writes (EI-27540173897381380)',
 
     expect(isPlanImplementationCall('exec_command', { cmd: readCommand })).toBe(false);
     expect(isPlanImplementationCall('exec_command', { cmd: replyCommand })).toBe(false);
+    expect(isPlanImplementationCall('exec_command', { cmd: auditCommand })).toBe(false);
+    expect(isPlanImplementationCall('exec_command', { cmd: wrappedAuditCommand })).toBe(false);
     expect(isPlanImplementationCall('exec_command', { cmd: writeCommand })).toBe(true);
     expect(isPlanImplementationCall('exec_command', { cmd: "ptool tools:invoke --json - <<'JSON'\n{}\nJSON" })).toBe(true);
     expect(isPlanImplementationCall('exec_command', { cmd: "ptool plans:get --json - <<JSON\n{}\nJSON" })).toBe(true);
@@ -210,6 +227,8 @@ describe('implementation authority before direct writes (EI-27540173897381380)',
     const checkPlan = vi.fn(async () => ['plan_status:draft']);
     expect(await checkPlanExecutionGuard(call('exec_command', { cmd: readCommand }), { readBindings, checkPlan })).toBeNull();
     expect(await checkPlanExecutionGuard(call('exec_command', { cmd: replyCommand }), { readBindings, checkPlan })).toBeNull();
+    expect(await checkPlanExecutionGuard(call('exec_command', { cmd: auditCommand }), { readBindings, checkPlan })).toBeNull();
+    expect(await checkPlanExecutionGuard(call('exec_command', { cmd: wrappedAuditCommand }), { readBindings, checkPlan })).toBeNull();
     expect(readBindings).not.toHaveBeenCalled();
     expect(await checkPlanExecutionGuard(call('exec_command', { cmd: writeCommand }), { readBindings, checkPlan }))
       .toMatchObject({ code: 'plan_execution_not_ready', blockers: ['plan_status:draft'] });
