@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Workbench canonical Whisper provisioning and transcription recovery",
+  "framework": "node",
+  "workItems": ["EI-28257908704437580", "WI-6554700010029572", "WI-6554700010029573"],
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "command": ["npm", "run", "test:file", "--", "packages/operator-core/lib/voice-node/local-whisper-service.test.ts", "packages/operator-core/lib/endpoint-route/routes/agent-mcp/operator-voice-io.test.ts"],
+  "commandScope": "Executable reproduction of the maintained diagnostic regression suites. Historical test totals and source hashes below belong to the original logs; the independent positive transcription control is retained in canonicalControl and the installed V3 raw result. This command does not repeat model provisioning or claim an installed voice pass.",
+  "startedAt": "2026-11-08T21:50:55.168Z",
+  "finishedAt": "2026-11-08T22:01:58.222Z",
+  "exitCode": 0,
+  "summary": "Canonical STT independently recovered from HTTP502 to HTTP200 with the exact reference transcript. Existing model symlink preserved; its missing target on the verified mounted offload volume restored; existing downloader installed and verified the default model. Maintained lifecycle suite17PASS and final hermetic route suite23PASS/2existing live-optin SKIP. New installed voice V3 remains FAIL at a separate long-reply TTS HTTP413 after32 native assertions; no shipment claim.",
+  "rootCause": {
+    "hypothesis": "No server could start because the default model was absent and its cache root was a dangling offload symlink.",
+    "alternativeHypothesis": "GNOME input capture was corrupt while canonical transcription remained usable.",
+    "distinguishingTest": "Call canonical STT directly with retained reference.wav independently of GNOME; inspect lifecycle health and invoke the existing model resolver/downloader; restore the existing missing symlink target and provision, then repeat the same direct transcription.",
+    "actualObservation": "Both2022 health addresses refused connection; canonical health reported binary present/model absent. Downloader failed ENOTDIR on the dangling symlink. After guarded directory restoration and verified download, canonical health reported managed Whisper ready and direct STT returned200 with the complete reference sentence.",
+    "disappearanceProvenance": "Unknown; no attribution to a cleanup actor is established."
+  },
+  "cache": {
+    "link": "$HOME/.papercusp/models",
+    "pathNotation": "$HOME denotes the executing account's home directory. Expand it when reproducing; the measured symlink target, original log bytes and hashes are retained unchanged.",
+    "preservedTarget": "/mnt/data/offload/wi-10006692-retained-model-vendor-2026-10-08/models",
+    "verifiedMount": "/mnt/data /dev/nvme1n1 xfs rw",
+    "modelBytes": 147951465,
+    "modelSha256": "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+    "manifestVerified": true
+  },
+  "canonicalControl": {"operator": "http://127.0.0.1:3170", "buildSha": "6de7fdff78", "status": 200, "text": "The quick brown fox jumps over the lazy dog.", "reference": "/tmp/pcv/workbench-installed-shell-rX34h4/reference.wav"},
+  "sourceHashes": {
+    "packages/operator-core/lib/voice-node/local-whisper-service.ts": "a75f21b53bfd5386b3bbe44dc4f7a7085d06f9db9ac344c1a6449025a2fac75d",
+    "packages/operator-core/lib/voice-node/local-whisper-service.test.ts": "f19348689e54183c3561d64108117e89ae3cea9350dc016692d6cbb18fbe885c",
+    "packages/operator-core/lib/endpoint-route/routes/agent-mcp/operator-voice-io.test.ts": "3796e671cbb1d20a11485758f8747acf2b61eab14c270335e4e17e8ec53cb6ef"
+  },
+  "logs": {
+    "/tmp/wb-stt-lifecycle-20261108-v1.log": "ca50d54033eea9b86ec99dd8475a708748e62449098b631218eeddd7c3fdb3cd",
+    "/tmp/wb-stt-route-20261108-v2.log": "4c4f6d76d56f1f51ed3c48eeeca1b0de98bde9796cad74f551cd227eb761eea4"
+  },
+  "scopeLimits": [
+    "Diagnostic source was local tree at verification; positive canonical control used the separately identified staging build.",
+    "No physical microphone or speaker verification; private PulseAudio null sinks exercise actual default GStreamer devices.",
+    "Installed voice V3 failed at long reply playback; full native3OS fresh-install/upgrade/login, independent review, certificate and shipment remain open.",
+    "No LIVE_GATE_OPS, fanout, VM mutation, mount change, manual git or git-sync fire."
+  ],
+  "assertions": [
+    {"id":"cache-cause", "passed":true, "evidence":"Independent canonical health and downloader isolate missing model/dangling cache root."},
+    {"id":"cache-integrity", "passed":true, "evidence":"Existing downloader installed147951465bytes and existing resolver reverified the SHA256 manifest."},
+    {"id":"managed-ready", "passed":true, "evidence":"Canonical health200 reports voicemode=true and managed Whisper source."},
+    {"id":"canonical-transcript", "passed":true, "evidence":"Direct operator-stt200 recognizes the complete retained reference sentence independently of GNOME."},
+    {"id":"bounded-recovery-diagnostic", "passed":true, "evidence":"Maintained lifecycle regression proves one warm/two fetches retain missing-model diagnosis and cause; external success still accepted."},
+    {"id":"http-diagnostic", "passed":true, "evidence":"Final hermetic HTTP502 route regression preserves ECONNREFUSED plus local Whisper not-provisioned and missing-model detail."}
+  ]
+}
