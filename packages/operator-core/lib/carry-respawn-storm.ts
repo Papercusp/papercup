@@ -25,7 +25,8 @@
  *                     rows such as activity:report fire without a model turn,
  *                     and in-process sub-calls are 'unknown', so neither counts);
  *   - a LATCH       = a prior `session:request-compaction` refusal with
- *                     error_code 'respawn-storm' since the last real turn.
+ *                     error_code 'respawn-storm' since the last real turn,
+ *                     still supported by the required queued cuts in the ledger.
  *
  * Absence of rows never PROVES idleness (native Bash/Edit calls write none), so
  * the rule is deliberately narrow: it only fires on POSITIVE evidence of
@@ -125,14 +126,12 @@ export function classifyRespawnStorm(
   const sorted = [...rows].sort((a, b) => b.invokedAtMs - a.invokedAtMs);
   const excluded = requestsWithoutCuts(rows, opts.hostEvents ?? [], nowMs);
   const cuts: number[] = [];
-  let excludedSinceRealTurn = 0;
   let latched = false;
   let lastRealTurnAtMs: number | null = null;
   for (const row of sorted) {
     if (row.toolName === REQUEST_COMPACTION_TOOL) {
       if (row.status === 'ok') {
-        if (excluded.has(row.invokedAtMs)) excludedSinceRealTurn += 1;
-        else cuts.push(row.invokedAtMs);
+        if (!excluded.has(row.invokedAtMs)) cuts.push(row.invokedAtMs);
       }
       else if (row.errorCode === RESPAWN_STORM_ERROR) latched = true;
       continue;
@@ -143,8 +142,11 @@ export function classifyRespawnStorm(
     }
   }
   const priorNeeded = minCuts - 1;
-  // A refusal based on requests the host disproves must not perpetuate itself.
-  if (excludedSinceRealTurn > 0 && cuts.length < priorNeeded) latched = false;
+  // Refusals are not evidence of another cut. Once the supporting requests age
+  // out of the bounded ledger (or the host disproves them), retrying must not
+  // renew the latch forever: native PreCompact can prevent the real tool call
+  // that would otherwise clear it.
+  if (cuts.length < priorNeeded) latched = false;
   const dense = cuts.length >= priorNeeded && nowMs - cuts[priorNeeded - 1]! <= windowMs;
   const storm = dense || latched;
   return {

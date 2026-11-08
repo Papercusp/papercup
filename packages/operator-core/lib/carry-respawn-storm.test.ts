@@ -23,6 +23,7 @@ import {
   REQUEST_COMPACTION_TOOL,
   RESPAWN_STORM_DEDUP_KIND,
   RESPAWN_STORM_ERROR,
+  RESPAWN_STORM_LOOKBACK_MS,
   RESPAWN_STORM_WINDOW_MS,
   type StormLedgerRow,
 } from './carry-respawn-storm';
@@ -160,6 +161,43 @@ describe('classifyRespawnStorm', () => {
 
     const cleared = [...latched, call('00:20:00', 'coord:orient', 'agent')];
     expect(classifyRespawnStorm(cleared, at('00:50:00')).storm).toBe(false);
+  });
+
+  it('expires the latch after its queued cuts age out despite repeated refusal-only retries', () => {
+    const now = at('01:17:00');
+    const rows = [
+      cut('00:14:38'),
+      cut('00:15:19'),
+      cut('00:16:04', 'refused', RESPAWN_STORM_ERROR),
+      cut('01:15:00', 'refused', RESPAWN_STORM_ERROR),
+      cut('01:16:00', 'refused', RESPAWN_STORM_ERROR),
+    ];
+    expect(classifyRespawnStorm(rows.slice(0, 3), at('00:17:00')).storm).toBe(true);
+    const boundedLedger = rows.filter(row => row.invokedAtMs > now - RESPAWN_STORM_LOOKBACK_MS);
+
+    expect(classifyRespawnStorm(boundedLedger, now)).toMatchObject({
+      storm: false, reason: null, cutsSinceRealTurn: 0, lastRealTurnAt: null,
+    });
+  });
+
+  it('allows an ordinary cut when only one supporting request remains in the bounded ledger', () => {
+    const rows = [cut('00:15:19'), cut('01:14:00', 'refused', RESPAWN_STORM_ERROR)];
+
+    expect(classifyRespawnStorm(rows, at('01:15:00'))).toMatchObject({
+      storm: false, reason: null, cutsSinceRealTurn: 1,
+    });
+  });
+
+  it('still breaks a new dense storm after an unsupported old latch expires', () => {
+    const rows = [
+      cut('01:14:00', 'refused', RESPAWN_STORM_ERROR),
+      cut('01:15:00'),
+      cut('01:16:00'),
+    ];
+
+    expect(classifyRespawnStorm(rows, at('01:17:00'))).toMatchObject({
+      storm: true, reason: 'dense-cuts', cutsSinceRealTurn: 2,
+    });
   });
 });
 
