@@ -101,6 +101,58 @@ function selectedMemoryRanges(ranges) {
     return {...range,addressValue:address};
   });
 }
+const memoryMapDescriptor = map => ({start:'0x'+map.start.toString(16),end:'0x'+map.end.toString(16),
+  permissions:map.permissions,offset:map.offset,device:map.device,inode:map.inode,path:map.path});
+// These are candidates from ONE process's stopped maps, not physical-page
+// identity or an alias-exclusion proof. Private/COW mappings can still appear
+// here; anonymous aliases, other processes and external writers remain unknown.
+function writableMappingCandidates(writableMaps, selected, start, end, budget) {
+  const candidates = [], selectedOffset = BigInt(selected.offset) + start - selected.start;
+  for (const map of writableMaps) {
+    let selectedAddress = start, candidateAddress = start, bytes = end - start;
+    if (map !== selected) {
+      if (BigInt(selected.inode) === 0n || selected.device !== map.device || selected.inode !== map.inode) continue;
+      const offset = BigInt(map.offset), offsetEnd = offset + map.end - map.start;
+      const overlapStart = selectedOffset > offset ? selectedOffset : offset;
+      const selectedEnd = selectedOffset + end - start;
+      const overlapEnd = selectedEnd < offsetEnd ? selectedEnd : offsetEnd;
+      if (overlapStart >= overlapEnd) continue;
+      selectedAddress = start + overlapStart - selectedOffset;
+      candidateAddress = map.start + overlapStart - offset;
+      bytes = overlapEnd - overlapStart;
+    }
+    memoryRequire(budget.remaining-- > 0, 'writable mapping candidate limit');
+    candidates.push({kind:map === selected ? 'selected-mapping-writable' : 'matching-file-offset',
+      mapping:memoryMapDescriptor(map),overlap:{selectedAddress:'0x'+selectedAddress.toString(16),
+        candidateAddress:'0x'+candidateAddress.toString(16),bytes:Number(bytes)},sharedPhysicalBytesVerified:false});
+  }
+  return candidates;
+}
+// Coverage is restricted to these stopped maps. Even zero unobserved bytes
+// cannot establish earlier mappings, source origin or continuous custody.
+function executableMappingCoverage(maps, bindings) {
+  const executable = maps.filter(map => map.permissions[2] === 'x');
+  memoryRequire(executable.length <= 4096, 'executable mapping coverage limit');
+  const selectedByMap = new Map();
+  for (const binding of bindings) {
+    const key = binding.mapping.start;
+    if (!selectedByMap.has(key)) selectedByMap.set(key, []);
+    selectedByMap.get(key).push({codeIndex:binding.codeIndex,address:binding.address,bytes:binding.bytes});
+  }
+  let total = 0n, observed = 0n;
+  const mappings = executable.map(map => {
+    const mapping = memoryMapDescriptor(map), selectedRanges = selectedByMap.get(mapping.start) ?? [];
+    selectedRanges.sort((a,b) => BigInt(a.address) < BigInt(b.address) ? -1 : 1);
+    const bytes = map.end - map.start;
+    const selectedBytes = selectedRanges.reduce((sum,range) => sum + BigInt(range.bytes), 0n);
+    total += bytes; observed += selectedBytes;
+    return {mapping,selectedRanges,observedBytes:selectedBytes.toString(),
+      unobservedBytes:(bytes-selectedBytes).toString()};
+  });
+  return {mappings,totalBytes:total.toString(),observedBytes:observed.toString(),
+    unobservedBytes:(total-observed).toString(),
+    scope:'selected byte coverage of executable mappings in the retained stopped snapshot only'};
+}
 /** Retain parent-read raw maps/tasks/bytes from a stopped direct child. The
  * default requires group-stops; the explicit ptrace path additionally requires
  * an independently pinned, group-stopped tracer. The caller owns stop/cleanup. Endpoint
@@ -187,6 +239,8 @@ export function bindRuntimeJitMemory(bytes, witness, observation, expectedIdenti
   'stopped task population differs');
   memoryRequire(sample.mapsBefore === sample.mapsAfter, 'kernel maps changed');
   const maps = executableMaps(sample.mapsBefore);
+  const writableMaps = maps.filter(map => map.permissions[1] === 'w');
+  const candidateBudget = {remaining:4096};
   memoryRequire(Array.isArray(sample.samples), 'missing memory samples');
   const selected = selectedMemoryRanges(sample.samples.map(row=>({...row,size:row.bytes?.length})));
   // The raw dump orders MOVE against an existing load, but a clock inversion
@@ -218,12 +272,13 @@ export function bindRuntimeJitMemory(bytes, witness, observation, expectedIdenti
     const map = maps.find(map=>map.start <= start && map.end >= end && map.permissions[2] === 'x');
     memoryRequire(map, 'selected range lacks kernel executable mapping');
     return {codeIndex:row.codeIndex,address:row.address,bytes:row.size,sha256:load.sha256,
-      mapping:{start:'0x'+map.start.toString(16),end:'0x'+map.end.toString(16),
-        permissions:map.permissions,offset:map.offset,device:map.device,inode:map.inode,path:map.path}};
+      mapping:memoryMapDescriptor(map),
+      writableMappingCandidates:writableMappingCandidates(writableMaps,map,start,end,candidateBudget)};
   });
   return {schema:'runtime-jit-selected-memory-binding/v1',processId:witness.processId,
     dumpSha256:dump.sha256,mapsSha256:memoryHash(sample.mapsBefore),
     startedMonotonicNs:sample.startedMonotonicNs,finishedMonotonicNs:sample.finishedMonotonicNs,bindings,
+    executableMappingCoverage:executableMappingCoverage(maps,bindings),
     selectedExecutableBytesVerified:true, emittedLoadsNotSampled:dump.loads.length-bindings.length,
     mappingPopulationComplete:false,executableBytesQualified:false,completeRuntimeClosureVerified:false,
     jitByteOriginQualification:'required',runtimeCaptureCustody:'required',creatorFence:'required',

@@ -42,6 +42,130 @@ describe('retained Linux perf JIT code bytes', () => {
       jitByteOriginQualification:'required',runtimeCaptureCustody:'required',creatorFence:'required',
       writableAliasQualification:'required'});
   });
+  it('retains direct writable executable mappings as candidates without excluding other aliases', () => {
+    const sample=memorySample();
+    sample.mapsBefore=sample.mapsAfter=sample.mapsBefore.replace('r-xp','rwxp');
+    const proof=bindRuntimeJitMemory(dump(),witness,sample,identity);
+    expect(proof.bindings[0]!.writableMappingCandidates).toEqual([{
+      kind:'selected-mapping-writable',
+      mapping:{start:'0x1000',end:'0x3000',permissions:'rwxp',offset:'0x00000000',
+        device:'00:00',inode:'0',path:null},
+      overlap:{selectedAddress:'0x1000',candidateAddress:'0x1000',bytes:3},
+      sharedPhysicalBytesVerified:false,
+    }]);
+    expect(proof).toMatchObject({writableAliasQualification:'required',runtimeCaptureCustody:'required',
+      jitByteOriginQualification:'required',completeRuntimeClosureVerified:false});
+  });
+  it('accounts for unsampled executable mappings from the same stopped snapshot', () => {
+    const sample=memorySample();
+    sample.mapsBefore=sample.mapsAfter=[
+      '00001000-00003000 r-xp 00000000 00:00 0',
+      '00003000-00004000 rw-p 00000000 00:00 0',
+      '00004000-00005000 r-xs 00002000 00:01 42 /runtime.so',
+      'ffffffffff600000-ffffffffff601000 --xp 00000000 00:00 0 [vsyscall]',
+    ].join('\n')+'\n';
+    const proof=bindRuntimeJitMemory(dump(),witness,sample,identity);
+    expect(proof.executableMappingCoverage).toEqual({
+      mappings:[
+        {mapping:expect.objectContaining({start:'0x1000',end:'0x3000',permissions:'r-xp'}),
+          selectedRanges:[{codeIndex:'1',address:'0x1000',bytes:3}],observedBytes:'3',unobservedBytes:'8189'},
+        {mapping:expect.objectContaining({start:'0x4000',path:'/runtime.so'}),
+          selectedRanges:[],observedBytes:'0',unobservedBytes:'4096'},
+        {mapping:expect.objectContaining({start:'0xffffffffff600000',path:'[vsyscall]'}),
+          selectedRanges:[],observedBytes:'0',unobservedBytes:'4096'},
+      ],totalBytes:'16384',observedBytes:'3',unobservedBytes:'16381',
+      scope:'selected byte coverage of executable mappings in the retained stopped snapshot only',
+    });
+    expect(proof).toMatchObject({mappingPopulationComplete:false,executableBytesQualified:false,
+      completeRuntimeClosureVerified:false,runtimeCaptureCustody:'required',writableAliasQualification:'required'});
+  });
+  it('accounts for disjoint selected ranges once and orders them by address', () => {
+    const sample=memorySample(), bytes=dump(), load=Buffer.from(bytes.subarray(40,101));
+    load.writeBigUInt64LE(2n,48);load.writeBigUInt64LE(0x1008n,32);
+    sample.samples.unshift({codeIndex:'2',address:'0x1008',bytes:Buffer.from([0x90,0x90,0xc3])});
+    const proof=bindRuntimeJitMemory(Buffer.concat([bytes.subarray(0,101),load,bytes.subarray(101)]),
+      witness,sample,identity);
+    expect(proof.executableMappingCoverage).toMatchObject({totalBytes:'8192',observedBytes:'6',unobservedBytes:'8186',
+      mappings:[{selectedRanges:[{codeIndex:'1',address:'0x1000',bytes:3},
+        {codeIndex:'2',address:'0x1008',bytes:3}],observedBytes:'6',unobservedBytes:'8186'}]});
+  });
+  it('keeps executable mapping byte totals exact beyond Number precision', () => {
+    const sample=memorySample();
+    sample.mapsBefore=sample.mapsAfter+='00004000-0020000000004001 --xp 00000000 00:00 0 [kernel]\n';
+    const coverage=bindRuntimeJitMemory(dump(),witness,sample,identity).executableMappingCoverage;
+    expect(coverage).toMatchObject({totalBytes:'9007199254749185',observedBytes:'3',
+      unobservedBytes:'9007199254749182'});
+    expect(coverage.mappings[1]).toMatchObject({observedBytes:'0',unobservedBytes:'9007199254740993'});
+  });
+  it('does not promote full selected byte coverage into runtime closure', () => {
+    const sample=memorySample();
+    sample.mapsBefore=sample.mapsAfter='00001000-00001003 r-xp 00000000 00:00 0\n';
+    const proof=bindRuntimeJitMemory(dump(),witness,sample,identity);
+    expect(proof.executableMappingCoverage).toMatchObject({totalBytes:'3',observedBytes:'3',unobservedBytes:'0'});
+    expect(proof).toMatchObject({mappingPopulationComplete:false,executableBytesQualified:false,
+      completeRuntimeClosureVerified:false,jitByteOriginQualification:'required',runtimeCaptureCustody:'required',
+      creatorFence:'required',writableAliasQualification:'required'});
+  });
+  it('refuses an oversized executable mapping coverage census instead of truncating it', () => {
+    const sample=memorySample();
+    sample.mapsBefore=sample.mapsAfter+=Array.from({length:4096},(_,i)=>
+      `${(0x4000+i*0x1000).toString(16)}-${(0x5000+i*0x1000).toString(16)} r-xp 00000000 00:00 0`).join('\n')+'\n';
+    expect(()=>bindRuntimeJitMemory(dump(),witness,sample,identity)).toThrow('executable mapping coverage limit');
+  });
+  it.each(['r-xp','r-xs'])('retains matching writable file offsets for a %s selected mapping', permissions => {
+    const sample=memorySample();sample.samples[0]!.address='0x1001';
+    const bytes=dump();bytes.writeBigUInt64LE(0x1001n,72);
+    sample.mapsBefore=sample.mapsAfter=[
+      `00001000-00003000 ${permissions} 00001000 00:01 42 /memfd:selected (deleted)`,
+      '00004000-00005000 rw-s 00001002 00:01 42 /different/name',
+    ].join('\n')+'\n';
+    const proof=bindRuntimeJitMemory(bytes,witness,sample,identity);
+    expect(proof.bindings[0]!.writableMappingCandidates).toEqual([{
+      kind:'matching-file-offset',
+      mapping:{start:'0x4000',end:'0x5000',permissions:'rw-s',offset:'0x00001002',
+        device:'00:01',inode:'42',path:'/different/name'},
+      overlap:{selectedAddress:'0x1002',candidateAddress:'0x4000',bytes:2},
+      sharedPhysicalBytesVerified:false,
+    }]);
+    expect(proof.writableAliasQualification).toBe('required');
+  });
+  it.each(['device','inode','offset','read-only','anonymous'])(
+    'does not invent a writable file candidate from %s similarity', variant => {
+      const sample=memorySample();
+      let selected='00001000-00003000 r-xp 00001000 00:01 42 /same/name';
+      let candidate='00004000-00005000 rw-s 00001000 00:01 42 /same/name';
+      if(variant==='device')candidate=candidate.replace('00:01','00:02');
+      if(variant==='inode')candidate=candidate.replace('42','43');
+      if(variant==='offset')candidate=candidate.replace('00001000','00001003');
+      if(variant==='read-only')candidate=candidate.replace('rw-s','r--s');
+      if(variant==='anonymous'){
+        selected=selected.replace('42','0');candidate=candidate.replace('42','0');
+      }
+      sample.mapsBefore=sample.mapsAfter=selected+'\n'+candidate+'\n';
+      const proof=bindRuntimeJitMemory(dump(),witness,sample,identity);
+      expect(proof.bindings[0]!.writableMappingCandidates).toEqual([]);
+      expect(proof.writableAliasQualification).toBe('required');
+      expect(proof.completeRuntimeClosureVerified).toBe(false);
+    });
+  it('compares large file offsets and inode identities without Number rounding', () => {
+    const sample=memorySample();
+    sample.mapsBefore=sample.mapsAfter=[
+      '00001000-00003000 r-xp 0020000000000000 00:01 9007199254740992 /memfd:code',
+      '00004000-00005000 rw-s 0020000000000001 00:01 9007199254740992 /memfd:code',
+      '00005000-00006000 rw-s 0020000000000003 00:01 9007199254740992 /memfd:code',
+      '00006000-00007000 rw-s 0020000000000000 00:01 9007199254740993 /memfd:code',
+    ].join('\n')+'\n';
+    const candidates=bindRuntimeJitMemory(dump(),witness,sample,identity).bindings[0]!.writableMappingCandidates;
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({kind:'matching-file-offset',
+      overlap:{selectedAddress:'0x1001',candidateAddress:'0x4000',bytes:2}});
+  });
+  it('refuses an oversized writable candidate population instead of silently truncating it', () => {
+    const sample=memorySample();
+    sample.mapsBefore=sample.mapsAfter='00001000-00003000 r-xp 00000000 00:01 42 /memfd:code\n'
+      +Array.from({length:4097},(_,i)=>`${(0x4000+i*0x1000).toString(16)}-${(0x5000+i*0x1000).toString(16)} rw-s 00000000 00:01 42 /memfd:code`).join('\n')+'\n';
+    expect(()=>bindRuntimeJitMemory(dump(),witness,sample,identity)).toThrow('writable mapping candidate limit');
+  });
   it('binds a moved code payload only at the observed destination', () => {
     const sample=memorySample();sample.samples[0].address='0x2000';
     expect(bindRuntimeJitMemory(dump(true,true),witness,sample,identity).bindings[0].address).toBe('0x2000');
