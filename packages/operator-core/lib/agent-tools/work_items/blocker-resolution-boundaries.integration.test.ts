@@ -15,8 +15,15 @@ import { activeExternalBlockers, updateExternalBlockerHistory } from '../../exte
 import { createBlockerEvidenceReader, preflightBlockerDecision } from '../../blocker-resolution-evidence';
 import { planLaneBlockerRef, syncLinkedWorkItemsToPlanLane } from '../../plan-items/reconcile-linked-work-items';
 import { readPlanLineNodes } from '../plans/plan-line-graph';
+import { readAgentReviewState } from '../../harness/improvements/agent-review-policy';
 
-const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql,
+  parkConsult: vi.fn(), parkWake: vi.fn(), parkNotify: vi.fn() }));
+vi.mock('../../consult/park-door', async original => ({
+  ...(await original<typeof import('../../consult/park-door')>()),
+  makeProdParkDoorDeps: () => ({ now: () => Date.now(), openConsult: h.parkConsult,
+    registerVerdictWake: h.parkWake, notifyOwner: h.parkNotify }),
+}));
 vi.mock('@papercusp/db-org', async original => ({
   ...(await original<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: h.sql }),
 }));
@@ -122,7 +129,7 @@ beforeAll(async () => {
       IF OLD.payload->'blockerResolution' IS DISTINCT FROM NEW.payload->'blockerResolution' THEN
         INSERT INTO harness_shared.blocker_boundary_transactions VALUES (NEW.feature_id, 'decision', txid_current());
       END IF;
-      IF OLD.status IS DISTINCT FROM NEW.status AND NEW.status='blocked' THEN
+      IF OLD.status IS DISTINCT FROM NEW.status AND NEW.status IN ('blocked', 'needs-human') THEN
         INSERT INTO harness_shared.blocker_boundary_transactions VALUES (NEW.feature_id, 'lifecycle', txid_current());
       END IF;
       RETURN NEW;
@@ -141,12 +148,15 @@ beforeAll(async () => {
 }, 90_000);
 afterAll(async () => { await db?.cleanup(); });
 beforeEach(async () => {
+  h.parkConsult.mockReset().mockResolvedValue({ consultId: 'prospective-authority-review' });
+  h.parkWake.mockReset().mockResolvedValue(undefined);
+  h.parkNotify.mockReset().mockResolvedValue(undefined);
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps,
     harness_shared.carry_notes, harness_shared.coord_event_log, harness_shared.blocker_boundary_transactions,
     harness_shared.event_awaits, harness_shared.event_key_fires RESTART IDENTITY CASCADE`;
   await declareCondition();
 });
-async function seed(kind: 'task' | 'feature' = 'feature', blocked = true) {
+async function seed(kind: 'task' | 'bug' | 'feature' = 'feature', blocked = true) {
   const item = await wi.createWorkItem({ kind, title: 'Investigate dependency', harness: HARNESS, createdBy: OWNER });
   const blockers = blocked ? [{ kind: 'event', capability: 'live-dependency', ref: EVENT, status: 'active',
     summary: 'Await isolated dependency recovery',
@@ -293,6 +303,51 @@ describe('public blocker resolution boundaries', () => {
     expect(await call(setState, { id, harness: HARNESS, state: 'open', blockerDecision: deferral('persist') }))
       .toMatchObject({ ok: false, code: 'blocker_decision_conflict' });
     expect(await snapshot(id)).toEqual(before);
+  });
+  it.each(['task', 'feature'] as const)('admits the first event blocker through the atomic lifecycle preflight for %s', async kind => {
+    const id = await seed(kind, false);
+    const result = await call(setBlocker, { id, harness: HARNESS, kind: 'event', ref: EVENT,
+      blockerDecision: deferral('first-event') });
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
+    expect(await wi.getWorkItem(id, HARNESS)).toMatchObject({ state: 'blocked', assignee: OWNER });
+    expect(activeExternalBlockers((await wi.getWorkItem(id, HARNESS))?.payload))
+      .toMatchObject([{ ref: EVENT, status: 'active' }]);
+    await expectPairedMutationTransaction(id);
+  });
+  it.each(['bug', 'feature'] as const)('admits a first product-decision park after its caller ref becomes a consult ref for %s', async kind => {
+    const id = await seed(kind, false);
+    // A newly created task may still have an independent agent-review gate.
+    // Exercise an admitted issue, matching the production bug-item failure.
+    const current = await wi.getWorkItem(id, HARNESS);
+    expect(['pending', 'revision-requested']).not.toContain(readAgentReviewState(current?.payload)?.status);
+    const authority = { kind: 'authority' as const, ref: 'fixture:owner-publication-exception' };
+    const decision: DeferralDecision = { ...deferral('first-authority'), evidenceRefs: [authority, ref],
+      investigation: [{ action: 'Read the owner-only publication gate', outcome: 'Owner approval remains pending',
+        evidenceRefs: [authority, ref] }],
+      deferral: { reason: 'missing-authority', responsibleParty: 'product-owner',
+        reasonEvidenceRefs: [authority], nextAction: 'Preserve the gate until the owner signs off', recheckRef: ref } };
+    const args = { id, harness: HARNESS, kind: 'human', capability: 'product-decision', ref: authority.ref,
+      summary: 'Owner approval for a publication exception', ownerAuthorityTopic: 'publish',
+      nextVerb: 'After owner approval, perform the audited publication exception',
+      defaultIfUnanswered: 'Preserve the publication gate; silence is not approval',
+      decideBy: new Date(Date.now() + 3_600_000).toISOString(), blockerDecision: decision };
+    const result = await call(setBlocker, args);
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
+    const item = await wi.getWorkItem(id, HARNESS);
+    // Issue-family owner parks release the claim; feature-family parks retain it.
+    expect({ state: item?.state, assignee: item?.assignee })
+      .toEqual({ state: 'needs-human', assignee: kind === 'bug' ? null : OWNER });
+    expect(activeExternalBlockers(item?.payload)).toMatchObject([
+      { ref: 'consult:prospective-authority-review', capability: 'product-decision', status: 'active' },
+    ]);
+    await expectPairedMutationTransaction(id);
+    const before = await snapshot(id);
+    expect(await call(setBlocker, args)).toMatchObject({ ok: true, replayed: true });
+    expect(await snapshot(id)).toEqual(before);
+    expect(h.parkConsult).toHaveBeenCalledTimes(1);
+    expect(h.parkConsult).toHaveBeenCalledWith(expect.objectContaining({
+      cascade: expect.objectContaining({ ownerAuthorityTopic: 'publish' }),
+    }));
   });
   it('safe repair clears the blocker and retains custody', async () => {
     for (const kind of ['task', 'feature'] as const) {

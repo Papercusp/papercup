@@ -63,6 +63,8 @@ const UNPROVABLE_REASON: Record<UncertifiedConditionReason, string> = {
   'change-notification':
     'is a change notification: a fire says its subject changed, not that it reached the state you are ' +
     'waiting for',
+  'expected-condition-unproven':
+    'fired without matching expected-condition proof, so that fire cannot certify the condition you are waiting for',
 };
 
 /**

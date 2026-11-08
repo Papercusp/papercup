@@ -61,7 +61,8 @@ vi.mock('../../coord-ops/prod-caps', () => ({
 }));
 // event-wait-settlement-2026-10-20 P-006: the event ledger the write-time wait admission reads.
 // Only the DB read is faked; classification is the REAL reader (catalogue, announcement, latch).
-const announcedKeys = new Map<string, { cancelledAt?: string; firedAt?: string }>();
+const announcedKeys = new Map<string, { cancelledAt?: string; firedAt?: string;
+  expectedCondition?: unknown; firedPayload?: unknown }>();
 const firedKeys = new Map<string, string>();
 const inspectEventKey = vi.fn(async (key: string) => ({
   announcements: announcedKeys.has(key)
@@ -71,6 +72,8 @@ const inspectEventKey = vi.fn(async (key: string) => ({
         expiresTs: null,
         firedAt: announcedKeys.get(key)!.firedAt ?? null,
         firedReason: announcedKeys.get(key)!.firedAt ? 'event' : null,
+        expectedCondition: announcedKeys.get(key)!.expectedCondition ?? null,
+        firedPayload: announcedKeys.get(key)!.firedPayload ?? null,
       }]
     : [],
   waiters: [],
@@ -2455,11 +2458,24 @@ describe('work_items:set_blocker write-time wait admission (P-006)', () => {
 
   it('refuses an announced gate whose current announcement already fired, as already satisfied', async () => {
     openItem();
-    announcedKeys.set('fleet:x:schema-ready', { firedAt: '2026-10-20T13:00:00.000Z' });
+    announcedKeys.set('fleet:x:schema-ready', { firedAt: '2026-10-20T13:00:00.000Z',
+      expectedCondition: { kind: 'predicate', predicate: { ready: true } }, firedPayload: { ready: true } });
     const out = await one({ id: 'WI-1', kind: 'gate', ref: 'fleet:x:schema-ready', summary: 'wait for schema' });
 
     expect(out).toMatchObject({ ok: false, code: 'wait_ref_already_satisfied' });
     expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, { ready: false }])('refuses an announced fire without matching condition proof: %j', async firedPayload => {
+    openItem();
+    announcedKeys.set('fleet:x:schema-ready', { firedAt: '2026-10-20T13:00:00.000Z',
+      expectedCondition: { kind: 'predicate', predicate: { ready: true } }, firedPayload });
+    const out = await one({ id: 'WI-1', kind: 'gate', ref: 'fleet:x:schema-ready', summary: 'wait for schema' });
+    expect(out).toMatchObject({ ok: false, code: 'wait_ref_unprovable' });
+    expect(out.error).toMatch(/matching.*proof/);
+    expect(out.error).not.toContain('undefined');
+    expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
   });
 
   it('refuses an announced gate whose announcement was cancelled, as unreachable', async () => {
