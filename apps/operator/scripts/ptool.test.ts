@@ -1481,6 +1481,11 @@ describe('ptool call deadlines', () => {
 
   it.each(['admit', 'converge'])('keeps %s receipts alive through bounded preflight on both transport routes', op => {
     expect(PTOOL_REPAIR_QUEUE_PREVIEW_TIMEOUT_MS).toBe(305_000);
+    for (const confirm of [true, false]) {
+      const args = { op: 'heal-generated', confirm };
+      expect(timeoutForTool('release:repair-queue', args)).toBe(PTOOL_REPAIR_QUEUE_PREVIEW_TIMEOUT_MS);
+      expect(timeoutForTool('tools:invoke', { name: 'release:repair-queue', args })).toBe(PTOOL_REPAIR_QUEUE_PREVIEW_TIMEOUT_MS);
+    }
     for (const args of [{ op }, { op, confirm: false }, { op, confirm: true }]) {
       expect(timeoutForTool('release:repair-queue', args))
         .toBe(PTOOL_REPAIR_QUEUE_PREVIEW_TIMEOUT_MS);

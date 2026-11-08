@@ -577,6 +577,44 @@ export interface FrozenRepairAdmissionPrecheck {
   };
 }
 
+/** A confined writer's durable identity; progress never authorizes a different queue revision. */
+export interface FrozenGeneratedRepairOperation {
+  schemaVersion: 1;
+  operationId: string;
+  taskId: string;
+  candidate: string;
+  repairHead: string;
+  expectedUpdatedAtMs: number;
+  queueUpdatedAtMs: number;
+  actor: string;
+  conditionKey: string;
+  delegate: { authorized: boolean; callerSpawnId: string | null; queueFixerSpawnId: string | null };
+  status: 'running' | 'publishing' | 'cancelling' | 'succeeded' | 'failed' | 'interrupted' | 'cancelled';
+  phase: string;
+  startedAtMs: number;
+  updatedAtMs: number;
+  expiresAtMs: number;
+  result?: Record<string, unknown>;
+  notificationsComplete?: boolean;
+}
+
+export function parseGeneratedRepairOperation(value: unknown): FrozenGeneratedRepairOperation | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const r = value as Record<string, unknown>;
+  const delegate = r.delegate as FrozenGeneratedRepairOperation['delegate'] | undefined;
+  if (r.schemaVersion !== 1 ||
+      !['operationId', 'taskId', 'actor', 'conditionKey', 'phase'].every(k => nonBlank(r[k])) ||
+      !['candidate', 'repairHead'].every(k => typeof r[k] === 'string' && /^[a-f0-9]{40}$/.test(r[k] as string)) ||
+      !['expectedUpdatedAtMs', 'queueUpdatedAtMs', 'startedAtMs', 'updatedAtMs', 'expiresAtMs'].every(k => validTimestamp(r[k])) ||
+      Number(r.updatedAtMs) < Number(r.startedAtMs) || Number(r.expiresAtMs) < Number(r.startedAtMs) ||
+      !['running', 'publishing', 'cancelling', 'succeeded', 'failed', 'interrupted', 'cancelled'].includes(String(r.status)) ||
+      !delegate || typeof delegate.authorized !== 'boolean' ||
+      ![delegate.callerSpawnId, delegate.queueFixerSpawnId].every(v => v === null || nonBlank(v)) ||
+      (r.result !== undefined && (!r.result || typeof r.result !== 'object' || Array.isArray(r.result))) ||
+      (r.notificationsComplete !== undefined && typeof r.notificationsComplete !== 'boolean')) return null;
+  return r as unknown as FrozenGeneratedRepairOperation;
+}
+
 export interface FrozenCandidateRepairQueue {
   /** Every version the parser accepts; a parsed row is always re-stamped with the current one. */
   schemaVersion: 1 | 2 | 3 | 4 | 5 | typeof FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION;
@@ -655,6 +693,7 @@ export interface FrozenCandidateRepairQueue {
   fixerDispatchReceipt?: FrozenRepairFixerDispatchReceipt;
   /** Observable, bounded R6 admission pre-check; publication requires a later confirmed call. */
   admissionPrecheck?: FrozenRepairAdmissionPrecheck;
+  healGeneratedOperation?: FrozenGeneratedRepairOperation;
   /**
    * P-006: the flat PROJECTION of `signature` (`signature.map(e => e.id)`), kept for every
    * consumer that correlates by id. Written together with `signature`; never diverges.
@@ -2581,6 +2620,10 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
   if (dispatchReservation === null) return null;
   const fixerDispatchReceipt = parseFixerDispatchReceipt(row.fixerDispatchReceipt);
   const admissionPrecheck = parseAdmissionPrecheck(row.admissionPrecheck);
+  const healGeneratedOperation = row.healGeneratedOperation === undefined ? undefined
+    : parseGeneratedRepairOperation(row.healGeneratedOperation);
+  // Losing a live writer marker would permit duplicate publication. Fail closed on malformed state.
+  if (healGeneratedOperation === null) return null;
   // A pre-check reservation whose marker is gone guards nothing. Measured 2026-10-27: a reader
   // that could not parse the marker wrote the queue back without it, and the orphaned
   // reservation held fixer dispatch and resume behind a ~25h pre-check deadline. Read it as
@@ -2697,6 +2740,7 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
     ...(liveDispatchReservation ? { dispatchReservation: liveDispatchReservation } : {}),
     ...(fixerDispatchReceipt ? { fixerDispatchReceipt } : {}),
     ...(admissionPrecheck ? { admissionPrecheck } : {}),
+    ...(healGeneratedOperation ? { healGeneratedOperation } : {}),
     ...(convergenceRounds.length > 0 ? { convergenceRounds } : {}),
     ...(selectiveCoverage ? { selectiveCoverage } : {}),
     ...(selectiveCoverageBlocked ? { selectiveCoverageBlocked: true as const } : {}),

@@ -18,6 +18,7 @@ export interface ExplicitGeneratedRepairInput {
   queue: FrozenCandidateRepairQueue;
   readQueue(): Promise<FrozenCandidateRepairQueue | null>;
   admit(input: AdmitPathsInput): Promise<AdmissionOutcome>;
+  progress?(phase: 'materializing' | 'generating'): Promise<void>;
   /** Persist while holding the same run lock as materialization and regeneration. */
   record(outcome: Extract<Awaited<ReturnType<typeof healGenCheckLegs>>, { kind: 'healed' }>): Promise<boolean>;
 }
@@ -41,7 +42,9 @@ export async function healGeneratedRepair(input: ExplicitGeneratedRepairInput,
     if (!sameGeneratedRepairQueue(await input.readQueue(), input.queue)) {
       return { kind: 'refused' as const, reason: 'exact_queue_identity_mismatch' };
     }
+    await input.progress?.('materializing');
     await runtime.setup(input.queue.repairHead);
+    await input.progress?.('generating');
     const io = runtime.io();
     const outcome = await healGenCheckLegs({ ...io, admit: async (admission) => {
       // Never regenerate on a different head or publish after a peer moved the row.

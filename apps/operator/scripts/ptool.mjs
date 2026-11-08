@@ -2950,7 +2950,7 @@ export function timeoutForTool(toolName, callArgs) {
   }
   if (
     effectiveToolName === 'release:repair-queue' &&
-    (effectiveArgs?.op === 'admit' || effectiveArgs?.op === 'converge')
+    (effectiveArgs?.op === 'admit' || effectiveArgs?.op === 'converge' || effectiveArgs?.op === 'heal-generated')
   ) {
     return PTOOL_REPAIR_QUEUE_PREVIEW_TIMEOUT_MS;
   }
