@@ -1,0 +1,32 @@
+{
+  "schemaVersion": "codex-native-release-routing-proof-reference-v1",
+  "workItem": "EI-28181434532280867",
+  "trackingItem": "EI-28192533065279517",
+  "phase": "native-release-confirmed",
+  "verificationPending": false,
+  "independentAcceptance": "pending-leader-routing",
+  "shipment": "pending-leader",
+  "proofRecord": {
+    "location": "canonical work-item checkpoint",
+    "workItem": "EI-28181434532280867",
+    "checkpointHash": "e7408de48bf7",
+    "details": "The canonical record preserves exact native session, owner, coordination domain, callback times, lock identifiers and listener identifiers."
+  },
+  "nativeVerification": {
+    "retainedCallback": "confirmed",
+    "automaticRelease": "confirmed",
+    "remainingOwnerLocks": 0,
+    "manualReleaseUsedForAutomaticProbe": false
+  },
+  "focusedSuites": {
+    "filesPassed": 2,
+    "testsPassed": 83,
+    "skippedTests": 0,
+    "head": "876b853b1d"
+  },
+  "proxyReload": {
+    "mechanism": "dev:restart target=mcp-proxy",
+    "drained": true
+  },
+  "sourceSha256": "23d2d7d5cf55e829d17aa06567ed1858bcd18e616bc3002fd8aa696c663cea3c"
+}
