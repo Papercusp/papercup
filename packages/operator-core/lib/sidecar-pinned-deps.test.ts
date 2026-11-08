@@ -472,6 +472,7 @@ process.exit(result.status ?? 1);`);
       write(join(donor, 'packages/cli/package.json'), manifest);
       write(join(donor, 'packages/cli/dist/cli.js'), 'import "./support.js";');
       write(join(donor, 'packages/cli/dist/support.js'), 'export const frozen = true;');
+      linkSync(join(donor, 'packages/cli/dist/support.js'), join(donor, 'packages/cli/dist/support-alias.js'));
       mkdirSync(join(donor, 'node_modules/@fixture'), { recursive: true });
       mkdirSync(join(donor, 'node_modules/.bin'));
       symlinkSync('../../packages/cli', join(donor, 'node_modules/@fixture/cli'));
@@ -485,6 +486,13 @@ process.exit(result.status ?? 1);`);
       expect(first.code, first.err).toBe(0);
       expect(readFileSync(join(snapshot, 'node_modules/.bin/cli'), 'utf8')).toContain('./support.js');
       expect(readFileSync(join(snapshot, 'packages/cli/dist/support.js'), 'utf8')).toContain('frozen');
+      const support = statSync(join(snapshot, 'packages/cli/dist/support.js'));
+      const alias = statSync(join(snapshot, 'packages/cli/dist/support-alias.js'));
+      expect(support.ino === alias.ino).toBe(mode === 'hardlink');
+      if (mode === 'copy') {
+        expect(support.nlink).toBe(1);
+        expect(alias.nlink).toBe(1);
+      }
       const nested = join(t, 'nested'); prepare(nested);
       const second = runLib(['snapshot', snapshot, nested, mode]);
       expect(second.code, second.err).toBe(0);
@@ -908,7 +916,7 @@ test "$after" != "$changed"
       expect(existsSync(legacy)).toBe(false);
     });
 
-    it('breaks retained donor hardlinks before applying metadata and preserves independent hardlink groups', () => {
+    it('breaks retained donor hardlinks and donor aliases into independently writable files', () => {
       const t = fixture();
       const donor = join(t, 'donor');
       const snap = join(t, 'snap');
@@ -921,9 +929,38 @@ test "$after" != "$changed"
       expect(runLib(['snapshot', donor, snap, 'copy']).code).toBe(0);
       const copied = join(snap, 'node_modules/p/index.js');
       expect(statSync(copied).ino).not.toBe(statSync(sourceFile).ino);
-      expect(statSync(copied).ino).toBe(statSync(join(snap, 'node_modules/p/twin.js')).ino);
+      const twin = join(snap, 'node_modules/p/twin.js');
+      expect(statSync(copied).ino).not.toBe(statSync(twin).ino);
+      expect(statSync(copied).nlink).toBe(1);
+      expect(statSync(twin).nlink).toBe(1);
       writeFileSync(copied, 'changed');
       expect(readFileSync(sourceFile, 'utf8')).toBe('independent');
+      expect(readFileSync(twin, 'utf8')).toBe('independent');
+    });
+
+    it('copies internal donor aliases through strict independence validation and reuses the completed copy', () => {
+      const t = fixture(), donor = join(t, 'donor'), snap = join(t, 'snap');
+      const source = join(donor, 'node_modules/p/index.js');
+      write(source, 'frozen donor');
+      linkSync(source, join(donor, 'node_modules/p/twin.js'));
+      const first = runLib(['snapshot', donor, snap, 'copy']);
+      expect(first.code, first.err).toBe(0);
+      const copied = join(snap, 'node_modules/p/index.js');
+      const twin = join(snap, 'node_modules/p/twin.js');
+      const inode = statSync(copied).ino;
+      expect(statSync(copied).nlink).toBe(1);
+      expect(statSync(twin).nlink).toBe(1);
+      expect(statSync(twin).ino).not.toBe(inode);
+      const assertion = runLib(['assert', snap, donor]);
+      expect(assertion.code, assertion.err).toBe(0);
+      const reused = runLib(['snapshot', donor, snap, 'copy']);
+      expect(reused.code, reused.err).toBe(0);
+      expect(reused.out).toContain('reused verified completed snapshot node_modules');
+      expect(statSync(copied).ino).toBe(inode);
+      writeFileSync(copied, 'changed copy');
+      expect(readFileSync(twin, 'utf8')).toBe('frozen donor');
+      expect(readFileSync(source, 'utf8')).toBe('frozen donor');
+      expect(statSync(source).nlink).toBe(2);
     });
 
     it('refuses ambiguous or symlinked staging without deleting retained progress or stamping success', () => {

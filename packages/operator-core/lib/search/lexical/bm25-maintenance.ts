@@ -56,8 +56,8 @@ import { readBm25Indexes, resetBm25Availability } from './rank';
 const BUILD_OUTCOMES = new Set(['deferred:build-concurrently', 'invalid']);
 
 /**
- * Session lock_timeout for concurrent builds, invalid-index replacements, and reclaims in
- * steps 2 and 4. Step 2a orphan drops use a shorter retryable bound.
+ * Session lock_timeout for concurrent builds, reclaims, and the CREATE phase of invalid-index
+ * replacements in steps 2 and 4. Transient invalid-index and orphan drops use a shorter bound.
  * CREATE / REINDEX / DROP INDEX CONCURRENTLY wait for every transaction that holds a
  * conflicting lock on the table or an older snapshot, and those waits are lock waits, so
  * they obey lock_timeout. The live pool role sets lock_timeout = 15s (measured on the dev
@@ -75,8 +75,8 @@ const BUILD_OUTCOMES = new Set(['deferred:build-concurrently', 'invalid']);
  * the admission check has succeeded.
  */
 export const CONCURRENT_DDL_LOCK_TIMEOUT = '4h';
-/** Orphan drops are retryable; bound lock waits so they cannot stall host backups. */
-const ORPHAN_DROP_LOCK_TIMEOUT = '15s';
+/** Transient index drops are retryable; bound lock waits so they cannot stall host backups. */
+const RETRYABLE_INDEX_DROP_LOCK_TIMEOUT = '15s';
 
 /**
  * The indexes step 2 should build, in the order to try them: never-attempted builds
@@ -325,30 +325,62 @@ export async function runBm25Maintenance(
       // `invalid` until it finishes. Leave it to that run.
       if (!locked) {
         report.pendingBuilds.unshift(name);
-      } else if (!(backupLocked = await tryAcquireBackupRendezvous(conn))) {
-        // A host pg_dump owns AccessShareLock on every relation in its snapshot.
-        // Do not start concurrent DDL and enter the lock queue behind it.
-        report.pendingBuilds.unshift(name);
       } else {
-        const [state] = await conn<{ valid: boolean }[]>`
-          SELECT i.indisvalid AS valid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+        const [state] = await conn<{ valid: boolean; vacuum_pid: number | null }[]>`
+          SELECT i.indisvalid AS valid, active_vacuum.pid AS vacuum_pid
+            FROM pg_index i
+            JOIN pg_class c ON c.oid = i.indexrelid
             JOIN pg_namespace n ON n.oid = c.relnamespace
+            LEFT JOIN LATERAL (
+              SELECT v.pid
+                FROM pg_stat_progress_vacuum v
+               WHERE v.relid = i.indrelid
+               ORDER BY v.pid
+               LIMIT 1
+            ) AS active_vacuum ON true
            WHERE n.nspname = 'harness_shared' AND c.relname = ${name}`;
-        if (!state?.valid) {
+        // Match the orphan cleanup admission rule: an invalid index on a vacuuming table
+        // is safe to retry later. Check before taking the backup rendezvous so queued DDL
+        // cannot pin a host dump while it waits behind autovacuum.
+        if (state && !state.valid && state.vacuum_pid !== null && state.vacuum_pid !== undefined) {
+          report.pendingBuilds.unshift(name);
+        } else if (!(backupLocked = await tryAcquireBackupRendezvous(conn))) {
+          // A host pg_dump owns AccessShareLock on every relation in its snapshot.
+          // Do not start concurrent DDL and enter the lock queue behind it.
+          report.pendingBuilds.unshift(name);
+        } else if (!state?.valid) {
           // Session-scoped: a big build must not hit the pool's statement_timeout, and its
-          // waits for older transactions must not hit the pool's lock_timeout.
+          // waits for older transactions during CREATE must not hit the pool's lock_timeout.
           await conn`SET statement_timeout = 0`;
-          await conn.unsafe(`SET lock_timeout = '${CONCURRENT_DDL_LOCK_TIMEOUT}'`);
           // Re-read under the lock: an index that was invalid when ensure ran may have been
           // finished by a run that has since released the lock.
+          let dropDeferred = false;
           if (state) {
-            await conn`DROP INDEX CONCURRENTLY IF EXISTS ${conn(`harness_shared.${name}`)}`;
-            report.rebuiltInvalid = true;
+            // A vacuum can start after preflight. This transient drop is retryable, so
+            // bound that race instead of holding the relation lock queue for the 4h build.
+            await conn.unsafe(`SET lock_timeout = '${RETRYABLE_INDEX_DROP_LOCK_TIMEOUT}'`);
+            try {
+              await conn`DROP INDEX CONCURRENTLY IF EXISTS ${conn(`harness_shared.${name}`)}`;
+              report.rebuiltInvalid = true;
+            } catch (err) {
+              const sqlState = typeof err === 'object' && err !== null && 'code' in err
+                ? (err as { code?: unknown }).code
+                : undefined;
+              if (sqlState === '55P03') {
+                report.pendingBuilds.unshift(name);
+                dropDeferred = true;
+              } else {
+                throw err;
+              }
+            }
           }
-          const [{ ddl }] = await conn<{ ddl: string }[]>`SELECT harness_shared.bm25_index_ddl(${name}, true) AS ddl`;
-          await conn.unsafe(ddl);
-          report.built = name;
-          resetBm25Availability();
+          if (!dropDeferred) {
+            await conn.unsafe(`SET lock_timeout = '${CONCURRENT_DDL_LOCK_TIMEOUT}'`);
+            const [{ ddl }] = await conn<{ ddl: string }[]>`SELECT harness_shared.bm25_index_ddl(${name}, true) AS ddl`;
+            await conn.unsafe(ddl);
+            report.built = name;
+            resetBm25Availability();
+          }
         }
       }
     } catch (err) {
@@ -472,7 +504,7 @@ async function dropOrphanedRebuilds(sql: Sql, report: Bm25MaintenanceReport): Pr
     await conn`SET statement_timeout = 0`;
     // An orphan is safe to retry. The preflight skips known vacuums; this timeout
     // bounds the race where a vacuum starts after preflight without pinning backups.
-    await conn.unsafe(`SET lock_timeout = '${ORPHAN_DROP_LOCK_TIMEOUT}'`);
+    await conn.unsafe(`SET lock_timeout = '${RETRYABLE_INDEX_DROP_LOCK_TIMEOUT}'`);
     for (const candidate of ready) {
       const qualified = 'harness_shared.' + candidate.name;
       try {

@@ -87,6 +87,100 @@ describe('host-backup rendezvous admission', () => {
   });
 });
 
+describe('invalid-index rebuild vacuum admission', () => {
+  const render = (strings: TemplateStringsArray, values: unknown[]) =>
+    strings.reduce((text, part, i) => text + part + (i < values.length ? String(values[i]) : ''), '');
+
+  it('defers an invalid-index drop before taking the backup rendezvous when its table has an active vacuum', async () => {
+    const connectionStatements: string[] = [];
+    const conn = Object.assign(
+      vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        const query = render(strings, values);
+        connectionStatements.push(query);
+        if (query.includes('pg_try_advisory_lock')) return [{ locked: true }];
+        if (query.includes('FROM pg_index')) return [{ valid: false, vacuum_pid: 3647428 }];
+        return [];
+      }),
+      {
+        unsafe: vi.fn(async (query: string) => {
+          connectionStatements.push(query);
+          return [];
+        }),
+        release: vi.fn(),
+      },
+    );
+    const sql = Object.assign(
+      vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        const query = render(strings, values);
+        if (query.includes('bm25_ensure_indexes')) {
+          return [{ corpus_index: 'session_turns_bm25', outcome: 'invalid' }];
+        }
+        if (query.includes('to_regprocedure')) return [{ defined: false }];
+        return [];
+      }),
+      { reserve: vi.fn().mockResolvedValue(conn) },
+    );
+
+    const report = await runBm25Maintenance(sql as never, { maxCompactionSteps: 0 });
+
+    expect(report.pendingBuilds).toContain('session_turns_bm25');
+    expect(report.rebuiltInvalid).toBe(false);
+    expect(report.errors).toEqual([]);
+    expect(connectionStatements.some(query => query.includes('pg_stat_progress_vacuum'))).toBe(true);
+    expect(connectionStatements.filter(query => query.includes('pg_try_advisory_lock'))).toHaveLength(1);
+    expect(connectionStatements.some(query => query.includes('DROP INDEX CONCURRENTLY'))).toBe(false);
+    expect(connectionStatements.some(query => query.includes('bm25_index_ddl'))).toBe(false);
+    expect(conn.release).toHaveBeenCalledOnce();
+  });
+
+  it('defers an invalid-index drop on the short lock-timeout race after preflight', async () => {
+    const connectionStatements: string[] = [];
+    const conn = Object.assign(
+      vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        const query = render(strings, values);
+        connectionStatements.push(query);
+        if (query.includes('pg_try_advisory_lock')) return [{ locked: true }];
+        if (query.includes('FROM pg_index')) return [{ valid: false, vacuum_pid: null }];
+        if (query.includes('DROP INDEX CONCURRENTLY')) {
+          throw Object.assign(new Error('canceling statement due to lock timeout'), { code: '55P03' });
+        }
+        return [];
+      }),
+      {
+        unsafe: vi.fn(async (query: string) => {
+          connectionStatements.push(query);
+          return [];
+        }),
+        release: vi.fn(),
+      },
+    );
+    const sql = Object.assign(
+      vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        const query = render(strings, values);
+        if (query.includes('bm25_ensure_indexes')) {
+          return [{ corpus_index: 'session_turns_bm25', outcome: 'invalid' }];
+        }
+        if (query.includes('to_regprocedure')) return [{ defined: false }];
+        return [];
+      }),
+      { reserve: vi.fn().mockResolvedValue(conn) },
+    );
+
+    const report = await runBm25Maintenance(sql as never, { maxCompactionSteps: 0 });
+
+    const shortTimeout = connectionStatements.findIndex(query => query === "SET lock_timeout = '15s'");
+    const drop = connectionStatements.findIndex(query => query.includes('DROP INDEX CONCURRENTLY'));
+    expect(shortTimeout).toBeGreaterThanOrEqual(0);
+    expect(shortTimeout).toBeLessThan(drop);
+    expect(report.pendingBuilds).toContain('session_turns_bm25');
+    expect(report.rebuiltInvalid).toBe(false);
+    expect(report.built).toBeNull();
+    expect(report.errors).toEqual([]);
+    expect(connectionStatements.some(query => query.includes('bm25_index_ddl'))).toBe(false);
+    expect(conn.release).toHaveBeenCalledOnce();
+  });
+});
+
 describe('orderBuildCandidates', () => {
   it('tries never-attempted builds before indexes whose earlier build died, so one failing index cannot starve the rest', () => {
     const ordered = orderBuildCandidates([

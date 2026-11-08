@@ -1,0 +1,391 @@
+{
+  "schemaVersion": 1,
+  "kind": "current-build-native-evidence",
+  "framework": "operational",
+  "name": "Windows formatted chat, scoped links, privacy and affected regressions",
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "workItem": "WI-6554700010044411",
+  "measuredAt": "2026-11-08T03:46:05.587560+00:00",
+  "sourceSha256": {
+    "papercusp-desktop/native/windows/PuiReadBridge.cs": "28ab80438678026d56fe86654e1d0b671857cdd9d485bf4d136679ee3cbb4ee4",
+    "papercusp-desktop/native/windows/WorkbenchModel.cs": "37e4cacf7fe6f594915d5fe239fabcb6b1ad0cebe67e1ad1c6d9dc473af28c82",
+    "papercusp-desktop/native/windows/WorkbenchHost.cs": "5dd0d6e6af84bfe4db2cb30251ab69fe114211a49f5cd722152366f7c7a5e365",
+    "papercusp-desktop/native/windows/WorkbenchContent.cs": "132df5406648fa588fc7785f5f7265fa7d7cb7f43348eb890878c476342e4f1a",
+    "papercusp-desktop/native/windows/WorkbenchDependencies.ps1": "36cf965fe087db8b854e14069655f4c2a9bd8616b29554067bae00e20e41c992",
+    "papercusp-desktop/native/windows/dependencies.json": "74fe7a9f1e68d87d69bfcd76f71e25ee017eefc7150f9fa11155524791077da4",
+    "papercusp-desktop/native/windows/WorkbenchLifecycle.psm1": "020ad44185faead0767140b635fd660ea5970f6249088acb501db75da9730d8c",
+    "papercusp-desktop/native/windows/workbench.ps1": "db1fca0eaf12a954cee18fe8948025081d10bbc2b3bf21fcbf186c5fdaa87f51",
+    "papercusp-desktop/test/fixtures/native-workbench-windows-host.ps1": "8424bd54df4cfd333f5b165b20dcf6fbdd5c235270a35939841907c34dae71ea",
+    "papercusp-desktop/test/fixtures/native-workbench-windows-lifecycle.ps1": "2a7f660d51cdbe8dcd661fc07a13d469c909f90c40034e2df364d887566773c6",
+    "papercusp-desktop/native/windows/lib/Markdig.dll": "194587cdf19ec17eee6f69461b27a7d1f542c96b78fd468a2025f3269043fb69",
+    "papercusp-desktop/native/windows/lib/Markdig.LICENSE.txt": "ae543293657b6782e3d4a76257dc4157210ce88a352ef8392065d3f04dcd88d1",
+    "papercusp-desktop/native/windows/lib/Microsoft.LICENSE.txt": "cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310",
+    "papercusp-desktop/native/windows/lib/System.Buffers.dll": "accccfbe45d9f08ffeed9916e37b33e98c65be012cfff6e7fa7b67210ce1fefb",
+    "papercusp-desktop/native/windows/lib/System.Memory.dll": "bf3fb84664f4097f1a8a9bc71a51dcf8cf1a905d4080a4d290da1730866e856f",
+    "papercusp-desktop/native/windows/lib/System.Numerics.Vectors.dll": "1d3ef8698281e7cf7371d1554afef5872b39f96c26da772210a33da041ba1183",
+    "papercusp-desktop/native/windows/lib/System.Runtime.CompilerServices.Unsafe.dll": "66409f670315afe8610f17a4d3a1ee52d72b6a46c544cec97544e8385f90ad74",
+    "papercusp-desktop/test/native-workbench-windows.test.mjs": "5bf22bbb57d79d24f2a6551329b777b3f6ae3c127d52295193bb24d3ee0c8983",
+    "papercusp-desktop/bin/package-native-workbench.mjs": "37dfe4e3778e4357414ea42aa033022a31037d542c0f2a1c8e1a004952437571",
+    "papercusp-desktop/src-tauri/windows/inno/papercusp.iss": "4fd2de373b991144efa659dd71b40fa6fbbc4fe9d18cc51a1d5cf70aeaac5585"
+  },
+  "remoteSourceHashes": [
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-chat-20261108-b3cf9\\PuiReadBridge.cs",
+      "Hash": "28AB80438678026D56FE86654E1D0B671857CDD9D485BF4D136679EE3CBB4EE4"
+    },
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-chat-20261108-b3cf9\\WorkbenchModel.cs",
+      "Hash": "37E4CACF7FE6F594915D5FE239FABCB6B1AD0CEBE67E1AD1C6D9DC473AF28C82"
+    },
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-chat-20261108-b3cf9\\WorkbenchHost.cs",
+      "Hash": "5DD0D6E6AF84BFE4DB2CB30251AB69FE114211A49F5CD722152366F7C7A5E365"
+    },
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-chat-20261108-b3cf9\\WorkbenchContent.cs",
+      "Hash": "132DF5406648FA588FC7785F5F7265FA7D7CB7F43348EB890878C476342E4F1A"
+    },
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-chat-20261108-b3cf9\\WorkbenchDependencies.ps1",
+      "Hash": "36CF965FE087DB8B854E14069655F4C2A9BD8616B29554067BAE00E20E41C992"
+    },
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-chat-20261108-b3cf9\\dependencies.json",
+      "Hash": "74FE7A9F1E68D87D69BFCD76F71E25EE017EEFC7150F9FA11155524791077DA4"
+    },
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-chat-20261108-b3cf9\\WorkbenchLifecycle.psm1",
+      "Hash": "020AD44185FAEAD0767140B635FD660EA5970F6249088ACB501DB75DA9730D8C"
+    },
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-chat-20261108-b3cf9\\workbench.ps1",
+      "Hash": "DB1FCA0EAF12A954CEE18FE8948025081D10BBC2B3BF21FCBF186C5FDAA87F51"
+    },
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-chat-20261108-b3cf9\\native-workbench-windows-host.ps1",
+      "Hash": "8424BD54DF4CFD333F5B165B20DCF6FBDD5C235270A35939841907C34DAE71EA"
+    },
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-chat-20261108-b3cf9\\native-workbench-windows-lifecycle.ps1",
+      "Hash": "2A7F660D51CDBE8DCD661FC07A13D469C909F90C40034E2DF364D887566773C6"
+    },
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-chat-20261108-b3cf9\\lib\\Markdig.dll",
+      "Hash": "194587CDF19EC17EEE6F69461B27A7D1F542C96B78FD468A2025F3269043FB69"
+    },
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-chat-20261108-b3cf9\\lib\\Markdig.LICENSE.txt",
+      "Hash": "AE543293657B6782E3D4A76257DC4157210CE88A352EF8392065D3F04DCD88D1"
+    },
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-chat-20261108-b3cf9\\lib\\Microsoft.LICENSE.txt",
+      "Hash": "CFC21F5E8BD655AE997EEC916138B707B1D290B83272C02A95C9F821B8C87310"
+    },
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-chat-20261108-b3cf9\\lib\\System.Buffers.dll",
+      "Hash": "ACCCCFBE45D9F08FFEED9916E37B33E98C65BE012CFFF6E7FA7B67210CE1FEFB"
+    },
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-chat-20261108-b3cf9\\lib\\System.Memory.dll",
+      "Hash": "BF3FB84664F4097F1A8A9BC71A51DCF8CF1A905D4080A4D290DA1730866E856F"
+    },
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-chat-20261108-b3cf9\\lib\\System.Numerics.Vectors.dll",
+      "Hash": "1D3EF8698281E7CF7371D1554AFEF5872B39F96C26DA772210A33DA041BA1183"
+    },
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-chat-20261108-b3cf9\\lib\\System.Runtime.CompilerServices.Unsafe.dll",
+      "Hash": "66409F670315AFE8610F17A4D3A1EE52D72B6A46C544CEC97544E8385F90AD74"
+    }
+  ],
+  "sourceCustody": "Independent Get-FileHash on win-vm matches all 17 native source, fixture and dependency files. No source changed between these native runs. Local Node registration, packager and Inno hashes retained separately.",
+  "runs": [
+    {
+      "phase": "compile",
+      "exitCode": 0,
+      "log": "/tmp/wb-p005-content-compile-20261108-v5.log",
+      "logSha256": "7e7891c423e3fc9f8dee22bdf095dfddc7b106e1aa9cb818b89bbd0da1166ff4",
+      "result": {
+        "ok": true,
+        "platform": "windows",
+        "phase": "compile",
+        "cases": [],
+        "count": 0,
+        "organizerRuns": [],
+        "processSessionId": 0,
+        "interactiveDesktop": false,
+        "scope": "native-compile-fixture"
+      }
+    },
+    {
+      "phase": "content",
+      "exitCode": 0,
+      "log": "/tmp/wb-p005-content-content-20261108-v5.log",
+      "logSha256": "fa02544b40a3b86bee65d14da3c6600839d00dd271dba66ca3cb08d8791fb929",
+      "result": {
+        "ok": true,
+        "platform": "windows",
+        "phase": "content",
+        "cases": [
+          "shared refs mask code and links and preserve repetitions and ASCII boundaries",
+          "native ref offsets use UTF16 beside astral text",
+          "unterminated code fences mask the remaining refs",
+          "reference shape remains case sensitive and word bounded",
+          "work links encode exact harness on the selected origin",
+          "plan links use the GUI plan popup grammar",
+          "missing plan or harness stays inert",
+          "credentialed origins cannot become native links",
+          "native link substitution leaves inline code intact",
+          "native Markdown is selectable and enables link activation",
+          "Markdown heading has native heading emphasis",
+          "Markdown strong text uses native bold runs",
+          "Markdown emphasis uses native italic runs",
+          "inline code remains copyable native monospace text",
+          "fenced code preserves source without Markdown delimiters",
+          "ordered lists retain the canonical starting number",
+          "block quotes render as native document sections",
+          "maintained table AST renders native header and data cells",
+          "unsafe links and image URLs never become active or fetch content",
+          "native hyperlink navigation invokes the host activation seam once",
+          "HTML and image alternative text remain visible inert content",
+          "explicit context captures canonical harness plus plan identity",
+          "message plan takes precedence over selected fallback",
+          "same-conversation refresh retains explicit context and unsent draft",
+          "actual native history renders scoped refs while code remains inert",
+          "native history activates the exact selected harness target",
+          "replaced context fences retained document links from the former harness",
+          "dismissed native documents cannot activate retained work links",
+          "conversation change clears fallback context and keeps the other draft isolated",
+          "new conversation cannot inherit the previous plan fallback",
+          "late context response is fenced by generation",
+          "conversation reload removes previous interactive context choices"
+        ],
+        "count": 32,
+        "organizerRuns": [],
+        "processSessionId": 1,
+        "interactiveDesktop": true,
+        "scope": "native-content-fixture"
+      }
+    },
+    {
+      "phase": "chat",
+      "exitCode": 0,
+      "log": "/tmp/wb-p005-content-chat-20261108-v5.log",
+      "logSha256": "5a64d8718dfc6266bbc757594dd5baf698c8be8169cef39d3fc082f1badaf27b",
+      "result": {
+        "ok": true,
+        "platform": "windows",
+        "phase": "chat",
+        "cases": [
+          "Papercup is a resident native tool sidebar without app chrome",
+          "Papercup displays the canonical selected environment and conversation",
+          "native chat loads canonical history",
+          "native chat control enabled: earlier messages #3",
+          "native history prepends the exact earlier page",
+          "native Papercup retains its HWND and exact multiline draft across dismissal",
+          "native chat control enabled: send #6",
+          "denied native send retains draft without success or a duplicate send route",
+          "native chat control enabled: send #8",
+          "only canonical user acknowledgement clears the native draft",
+          "native incremental display excludes private text",
+          "completed native stream reloads the saved canonical assistant turn",
+          "native chat control enabled: send #12",
+          "disconnected native reply exposes reconciliation without resending",
+          "native chat control enabled: reconnect #14",
+          "native reconnect resumes the saved turn cursor without a second send",
+          "native chat control enabled: send #16",
+          "native chat control enabled: cancel reply #17",
+          "native cancel waits for a canonical cancelled acknowledgement",
+          "native chat control enabled: send #19",
+          "late A stream cannot enter conversation B or clear its native draft",
+          "returning to A reads its independently saved user event",
+          "native draft keys include the canonical conversation identity",
+          "native chat control enabled: send #23",
+          "foreign environment frame cannot alter native reply or acknowledge its draft",
+          "every native send is bound to conversation A in the helper receipt"
+        ],
+        "count": 26,
+        "organizerRuns": [],
+        "processSessionId": 1,
+        "interactiveDesktop": true,
+        "scope": "native-chat-fixture"
+      }
+    },
+    {
+      "phase": "cards",
+      "exitCode": 0,
+      "log": "/tmp/wb-p005-content-cards-20261108-v5.log",
+      "logSha256": "9de5ead632784b1f3aabb1c3e83d63e55b7f08f599426c493bff925b7520c1f9",
+      "result": {
+        "ok": true,
+        "platform": "windows",
+        "phase": "cards",
+        "cases": [
+          "all six card kinds use native typed WPF controls",
+          "sensitive card answers are masked native password fields",
+          "card approval prose and structured report preserve canonical context",
+          "card details expand as copyable native text",
+          "decline policy expiry and unsupported kinds cannot fabricate a native submit",
+          "native card control enabled: secure link secret #5",
+          "native secure link uses the selected canonical operator origin",
+          "native card control enabled: submit radio #7",
+          "invalid native selection never invokes the response helper",
+          "identical new-version snapshots retain controls and exact multiline draft",
+          "native dropdown selects the canonical option identity",
+          "native dropdown captures the selected identity during the selection event",
+          "deliberately clearing the current dropdown clears its draft",
+          "native dropdown item selection captures the canonical identity",
+          "native card control enabled: submit radio #14",
+          "native card acknowledgement radio: ",
+          "unanswered dropdown draft and displayed selection survive radio acknowledgement",
+          "native card control enabled: submit checkbox #17",
+          "native card acknowledgement checkbox: ",
+          "unanswered dropdown draft and displayed selection survive checkbox acknowledgement",
+          "late selection event from detached dropdown cannot erase the current card draft",
+          "native card control enabled: submit select #21",
+          "native card acknowledgement select: ",
+          "native card control enabled: submit text #23",
+          "native card acknowledgement text: ",
+          "native card control enabled: submit date #25",
+          "native card acknowledgement date: ",
+          "native card control enabled: submit slider #27",
+          "native card acknowledgement slider: ",
+          "native card control enabled: submit secret #29",
+          "native card acknowledgement secret: ",
+          "native choices submit exact option identities despite duplicate labels",
+          "native typed answers reach the helper byte-for-byte with numeric slider payload",
+          "native card control enabled: decline decline #33",
+          "native card control enabled: cancel cancel #34",
+          "native decline and cancel wait for exact canonical receipts",
+          "native card control enabled: submit denied #36",
+          "denied native answer retains its draft and blocks blind resubmit",
+          "native card control enabled: reconnect questions #38",
+          "question reconnect preserves exact same-scope draft for reconciliation",
+          "native card control enabled: submit wrong #40",
+          "wrong correlation receipt cannot remove native card or claim success",
+          "native card control enabled: reconnect questions #42",
+          "changed card signature clears the old answer instead of reusing a stale draft",
+          "switching conversation fences old question frames and draft controls",
+          "dismissing native sidebar cancels subscription and invalidates card generation"
+        ],
+        "count": 46,
+        "organizerRuns": [],
+        "processSessionId": 1,
+        "interactiveDesktop": true,
+        "scope": "native-cards-fixture"
+      }
+    },
+    {
+      "phase": "lifecycle",
+      "exitCode": 0,
+      "log": "/tmp/wb-p005-content-lifecycle-20261108-v5.log",
+      "logSha256": "e6bae4e598a3444527e66db9f209baf2516db5870192291572785be67b83060d",
+      "result": {
+        "resident": true,
+        "ok": true,
+        "platform": "windows",
+        "cases": [
+          "first install enables native panels with distinct default shortcuts",
+          "first install enables the Accounts shortcut",
+          "first install enables Inbox on Ctrl Alt B",
+          "Inbox migration chooses a free accelerator without resetting existing panels",
+          "installer persists the migrated Inbox shortcut",
+          "upgrade preserves explicitly disabled Inbox",
+          "first install enables Organizer on Ctrl Alt O",
+          "Organizer migration avoids existing shortcuts",
+          "installer persists the migrated Organizer shortcut",
+          "upgrade preserves explicitly disabled Organizer",
+          "Organizer upgrade retains the prior Quick Access shortcut",
+          "first install enables Papercup on Ctrl Alt P",
+          "Papercup migration avoids existing shortcuts",
+          "installer persists migrated Papercup shortcut",
+          "upgrade preserves explicitly disabled Papercup",
+          "Papercup upgrade retains existing surface preferences",
+          "adding Accounts preserves legacy disable and shortcut choices",
+          "Accounts migration avoids existing Quick Access and Inbox shortcuts",
+          "preserve-existing installer persists the missing Accounts binding",
+          "login registration uses the exact installed controller and fixed argv",
+          "Workbench registration preserves unrelated login applications",
+          "native login command preserves spaces apostrophes and literal dollar signs",
+          "upgrade preserves account shortcuts and individual panel disable",
+          "upgrade refreshes the registered installation without resetting choices",
+          "disable removes this accounts Workbench login value",
+          "reinstall does not re-enable an explicitly disabled account",
+          "explicit enable restores login registration",
+          "duplicate enabled shortcuts are refused before writing",
+          "reserved F12 remains invalid even for a disabled panel",
+          "invalid native modifier bits are refused",
+          "invalid settings leave both persistence and login state unchanged",
+          "concurrent settings writer cannot bypass the per-account lock",
+          "registry failure is surfaced instead of accepting a partial settings update",
+          "registry failure restores the previous settings",
+          "missing resident is reported without starting a service or touching another account",
+          "settings wake targets the exact account and state-directory identity",
+          "uninstalling another role preserves the current roles login entry",
+          "uninstall removes owned login registration and retains account preferences",
+          "retained preferences survive uninstall and reinstall",
+          "corrupt preferences fail visibly instead of silently resetting shortcuts",
+          "resident fixture refuses to overwrite an existing Workbench login registration",
+          "actual controller starts the resident in the signed-in desktop and acknowledges native readiness",
+          "unchanged desktop preparation preserves the same resident process",
+          "settings command reaches the resident native WPF dialog through its account event",
+          "resident settings exposes the configurable Papercup shortcut",
+          "saving native disable releases the resident and removes login registration",
+          "native settings persist explicit disable",
+          "login invocation respects the saved disabled choice",
+          "explicit enable restarts the same configured native host",
+          "explicit disable waits for resident shutdown",
+          "controller uninstall leaves no owned login entry and retains account choices"
+        ],
+        "count": 51
+      }
+    }
+  ],
+  "verificationAudit": [
+    {
+      "evidence": "/tmp/wb-p005-content-chat-20261108-v4.log",
+      "observation": "Canonical scope oracle passes, then incremental privacy check fails. Test requests TextBox; production ChatText creates RichTextBox with the same automation name.",
+      "repair": "Read all named RichTextBox FlowDocument TextRanges; require exact Partial visible text and reject internal in every rendered message and reply state. Maintained fixture still injects internal<say>Partial."
+    },
+    {
+      "evidence": "/tmp/wb-p005-content-chat-20261108-v3.log",
+      "observation": "ChatState loaded before optional context lookup; UI had not projected settled scope.",
+      "repair": "Render settled chat before awaiting independent plan context, retaining original scope oracle."
+    },
+    {
+      "evidence": "/tmp/wb-p005-content-compile-20261108-v5.log",
+      "repair": "Compile preflight before expensive interactive phases; reuse existing Elements<T> traversal."
+    }
+  ],
+  "packaging": {
+    "dependencyClosure": "Five pinned DLLs and two licenses, native loader and explicit Inno/packager closure.",
+    "currentSourceUnitLog": "/tmp/wb-p005-content-packaging-20261108-v2.log",
+    "currentSourceUnitResult": "PASS; childSubstituted=0",
+    "inspectorCompatibilityLog": "/tmp/wb-p005-inno-preflight-20261108.log",
+    "inspectorCompatibility": "PASS exact Inno 6.7 spanned fixture, extraction, legacy headers, truncation, corruption and bad-header controls.",
+    "realInstallerTest": "NOT MEASURED: /tmp/wb-p005-content-inno-20261108-v2.log exited2 before test child started; install-reader lock timed out against active dependency writer. Prior v1 selected incompatible PATH inspector and is not passing packaging proof."
+  },
+  "rootCauseVerification": {
+    "hypothesis": "The v4 incremental assertion fails because it requires the obsolete TextBox type.",
+    "alternativeHypothesis": "The renderer leaks the injected private internal text.",
+    "distinguishingTest": "Collect every named native RichTextBox document. Require an exact Partial rendered message and reject internal in all rendered documents plus ChatReply.DisplayText.",
+    "predictedObservations": {
+      "hypothesis": "TextBox lookup fails while RichTextBox documents display Partial and exclude internal.",
+      "alternativeHypothesis": "At least one rendered document or reply state contains internal."
+    },
+    "actualObservation": "Native chat v5 exits0 with all 26 assertions, including the strengthened rendered-document privacy check. Current content32, cards46 and lifecycle51 also pass.",
+    "testResult": "PASS",
+    "testProcedure": "Maintained native-workbench-windows-host.ps1 -Phase chat -Interactive on signed-in Windows desktop, using exact hashed production sources.",
+    "evidenceRefs": [
+      "papercusp-desktop/test/fixtures/native-workbench-windows-host.ps1",
+      "/tmp/wb-p005-content-chat-20261108-v4.log",
+      "/tmp/wb-p005-content-chat-20261108-v5.log"
+    ]
+  },
+  "scopeLimits": [
+    "Current-source signed-in native Windows/private fixture-PUI proof; no actual operator or exact installed-artifact acceptance claimed.",
+    "Windows voice, complete installed Ubuntu/macOS/Windows matrix, macOS runtime, independent acceptance, execution certificate and shipment remain.",
+    "Real Inno packaging test must run after dependency writer releases the shared reader lock.",
+    "Source Discovery F-2 for the changed Inno manifest must be reconciled before activation/acceptance."
+  ]
+}
