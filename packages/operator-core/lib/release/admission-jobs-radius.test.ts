@@ -22,6 +22,7 @@ import {
   ordinaryAdmissionRadius,
 } from './admission-jobs';
 import { ADMISSION_TEST_ENVIRONMENT, runAdmissionPrecheckWorker } from './admission-fix-precheck-managed';
+import { admissionOffthreadStats, resetAdmissionOffthread, runAdmissionJob } from './admission-offthread';
 import { createFrozenCandidateRepairQueue, parseFrozenCandidateRepairQueue, type FrozenCandidateRepairQueue } from './frozen-candidate-repair-queue';
 import { edgeCacheKey } from '../../../../scripts/lib/related-tests.mjs';
 import * as relatedTests from '../../../../scripts/lib/related-tests.mjs';
@@ -267,17 +268,24 @@ describe('ordinaryAdmissionRadius (P-007)', () => {
     expect(radiusFor(['pkg-b/src/util.ts'], { cap: 1 })).toMatchObject({ status: 'measured', guarded: ['pkg-b/src/util.test.ts'] });
   });
 
-  it('the production discovery job preserves the independently counted over-cap skip', async () => {
+  it('the isolated real admission worker preserves the independently counted over-cap skip and shuts down', async () => {
     const census = git(root, 'ls-tree', '-r', '--name-only', commit, '--', 'wide/src')
       .split('\n').filter(file => file.endsWith('.test.ts'));
     expect(census).toHaveLength(41);
-    expect(await executeAdmissionJob({ kind: 'precheck-population', input: {
-      root, commit, signature: [], admittedPaths: ['wide/src/core.ts', 'pkg-b/src/util.test.ts'],
-    } })).toMatchObject({ ok: true, population: {
-      files: ['pkg-b/src/util.test.ts'],
-      radius: { status: 'skipped', reason: 'over-cap(41/40)', guarded: [], reportOnly: [] },
-    } });
-  });
+    await resetAdmissionOffthread();
+    try {
+      expect(await runAdmissionJob({ kind: 'precheck-population', input: {
+        root, commit, signature: [], admittedPaths: ['wide/src/core.ts', 'pkg-b/src/util.test.ts'],
+      } })).toMatchObject({ ok: true, population: {
+        files: ['pkg-b/src/util.test.ts'],
+        radius: { status: 'skipped', reason: 'over-cap(41/40)', guarded: [], reportOnly: [] },
+      } });
+      expect(admissionOffthreadStats()).toMatchObject({ jobsOnWorker: 1, jobsInline: 0, workerLive: true });
+    } finally {
+      await resetAdmissionOffthread();
+      expect(admissionOffthreadStats().workerLive).toBe(false);
+    }
+  }, 60_000);
 
   it('carries the actual pinned over-cap producer through managed measurement and settlement without executing radius files', async () => {
     const initial = createFrozenCandidateRepairQueue({ candidate: commit, base: null,

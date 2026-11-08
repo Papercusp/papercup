@@ -230,7 +230,10 @@ describe('P-007 (#D-040) — a red round attributes newly red entries to its win
   });
 
   it('keeps complete kind-prefixed identities and historical omission evidence on read', () => {
-    const files = ['a', 'b'].map(suffix => `lib/${'x'.repeat(490)}${suffix}.test.ts`);
+    const files = ['a', 'b'].map(suffix => `lib/${'x'.repeat(486)}${suffix}.test.ts`);
+    // Exercise the attribution key's extra kind prefix without triggering the
+    // separate signature-id length policy before attribution starts.
+    expect(files.every(file => file.length < 500 && `test-file:${file}`.length > 500)).toBe(true);
     const red = redAt(admit(opened(), H1, T0 + 10, { radius: OVER_CAP }), H1, T0 + 20, files);
     const raw = JSON.parse(JSON.stringify(red));
     raw.schemaVersion = 5;
