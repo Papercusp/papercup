@@ -487,7 +487,7 @@ it('recovers the exact evaluator route before persisting and waking its retained
       targets: [ownerId], keys: [], woken: 1, queued: 1, pickupConfirmed: false,
     } as unknown as Awaited<ReturnType<NonNullable<RenewalDeps['wake']>>>);
     const resolveParties: NonNullable<RenewalDeps['resolveParties']> = async ids =>
-      new Map(ids.map(id => [id, id]));
+      new Map(ids.filter((id): id is string => typeof id === 'string').map(id => [id, id]));
     const auditor = await getTask(auditorTask.taskId, db.sql);
     expect(auditor?.state).toBe('running');
     const notice = await notifyRetainedGradingAuditor({
@@ -500,7 +500,9 @@ it('recovers the exact evaluator route before persisting and waking its retained
     expect((await getTask(auditorTask.taskId, db.sql))?.detail.gradingAuditRuntimeBinding).toEqual(recovered);
     expect(wake).toHaveBeenCalledTimes(1);
     expect(wake.mock.calls[0]![0]).toEqual([ownerId]);
-    expect(wake.mock.calls[0]![1].payload).toMatchObject({ gradingAuditRuntimeBinding: recovered });
+    expect(wake.mock.calls[0]![1]).toMatchObject({
+      payload: { gradingAuditRuntimeBinding: recovered },
+    });
   } finally {
     for (const taskId of taskIds) await closeTask(taskId,
       { state: 'killed', exitReason: 'fixture cleanup' }, db.sql, { emitTerminal: async () => {} });
@@ -626,7 +628,7 @@ it('keeps the exact recorded evaluator sibling when a newer unbound build is pre
     taskIds.push(newer.taskId);
     await db.sql`UPDATE harness_shared.work_items
       SET payload = jsonb_set(payload, '{observation,rerunRecipe}',
-        ${db.sql.json({ evaluatorBuild: exact.locator.evaluatorBuild })})
+        ${db.sql.json({ evaluatorBuild: exact.locator.evaluatorBuild } as unknown as postgres.JSONValue)})
       WHERE workspace_id = ${workspaceId} AND feature_id = ${id}`;
     const [persistedRecipe] = await db.sql<Array<{ rerun_recipe: unknown }>>`
       SELECT payload->'observation'->'rerunRecipe' AS rerun_recipe
