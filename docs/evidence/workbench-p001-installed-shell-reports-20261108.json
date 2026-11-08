@@ -1,0 +1,134 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Workbench P001 exact installed Ubuntu preview canonical Reports in private GNOME Shell",
+  "framework": "node",
+  "command": [
+    "env",
+    "PAPERCUSP_NATIVE_INSTALLED_SHELL=1",
+    "PAPERCUSP_NATIVE_EXTENSION=$HOME/.local/share/gnome-shell/extensions/workbench@papercusp.ai",
+    "PAPERCUSP_NATIVE_PUI=$HOME/.local/share/papercusp/workbench-preview/20261108/pui",
+    "PAPERCUSP_NATIVE_OPERATOR=http://127.0.0.1:3170",
+    "PAPERCUSP_NATIVE_EVIDENCE_DIR=/tmp/wb-installed-shell-20261108-v2",
+    "node",
+    "--test",
+    "--test-global-setup=./test/monorepo-host-preflight.mjs",
+    "--test-name-pattern=exact installed GNOME preview",
+    "test/native-workbench-gnome-live.test.mjs"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-11-08T17:01:52.349965+00:00",
+  "finishedAt": "2026-11-08T17:01:58.328827+00:00",
+  "timestampMethod": "Retained Node duration and log mtime; published account home paths use $HOME notation, not a new execution.",
+  "summary": "Maintained Node test passed 1/1, zero failures/skips. Ten checks exercise byte-equal installed GNOME preview sources and real installed PUI with canonical Reports, real private Shell login/shortcut/Enter/Escape and no product application windows. An independent probe extension observes the unmodified product.",
+  "workItem": "WI-6554700010029572",
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "assertions": [
+    {
+      "id": "installed-shell-reports-1",
+      "passed": true,
+      "evidence": "login loads the exact installed PUI selection"
+    },
+    {
+      "id": "installed-shell-reports-2",
+      "passed": true,
+      "evidence": "login retains the selected canonical operator"
+    },
+    {
+      "id": "installed-shell-reports-3",
+      "passed": true,
+      "evidence": "unmodified installed extension acquires native shortcuts"
+    },
+    {
+      "id": "installed-shell-reports-4",
+      "passed": true,
+      "evidence": "seat shortcut opens the installed native actor"
+    },
+    {
+      "id": "installed-shell-reports-5",
+      "passed": true,
+      "evidence": "actual canonical Reports rows reach the installed panel"
+    },
+    {
+      "id": "installed-shell-reports-6",
+      "passed": true,
+      "evidence": "exact canonical detail control returns full Markdown"
+    },
+    {
+      "id": "installed-shell-reports-7",
+      "passed": true,
+      "evidence": "seat Enter opens the exact selected canonical report body"
+    },
+    {
+      "id": "installed-shell-reports-8",
+      "passed": true,
+      "evidence": "installed report UI creates no application window"
+    },
+    {
+      "id": "installed-shell-reports-9",
+      "passed": true,
+      "evidence": "first seat Escape dismisses only canonical detail"
+    },
+    {
+      "id": "installed-shell-reports-10",
+      "passed": true,
+      "evidence": "second seat Escape dismisses the installed panel"
+    }
+  ],
+  "proof": {
+    "ok": true,
+    "error": null,
+    "phase": "nested Escape",
+    "assertions": [
+      "login loads the exact installed PUI selection",
+      "login retains the selected canonical operator",
+      "unmodified installed extension acquires native shortcuts",
+      "seat shortcut opens the installed native actor",
+      "actual canonical Reports rows reach the installed panel",
+      "exact canonical detail control returns full Markdown",
+      "seat Enter opens the exact selected canonical report body",
+      "installed report UI creates no application window",
+      "first seat Escape dismisses only canonical detail",
+      "second seat Escape dismisses the installed panel"
+    ],
+    "reportId": "rpt_fda0b47b-3d9f-48f4-a1d0-51950a3f6971",
+    "bodyChars": 6491,
+    "sources": [
+      {
+        "kind": "reports",
+        "status": "ready"
+      }
+    ]
+  },
+  "sourceCustody": {
+    "files": {
+      "extension.js": "c9e51811729257b92ecc26e59f88b29f5364dae80d3ff77bfe6ce8c8c4818f64",
+      "panel-model.mjs": "a1804b9d7fc6e196565175c570fc327cdb38ab22ece3e191ef228acab3d3bfc5",
+      "bridge.js": "78287f56f34e4e7968d91eb5bcd5d583357c173c09f95a77dca3d3f9bc21c63f",
+      "helper.js": "5604d173a62ad88583c884b0689ee1afc04da7a64ea5f41771e1fcd209416709",
+      "audio.js": "3e3d4927292d31494313a74fcee3438b3eaf3afefdacb5f430ba4fcb1827f6ad",
+      "chat-content.js": "bc1cdc7aa8bd0422c2a3783bd05659660db49245906ec5c8dea7b8705afa8f8e",
+      "metadata.json": "b8c39f0fdfa34af6d33e513e90e62324e45d52ed2f08377cf9b3d52eba4f6cd5",
+      "stylesheet.css": "7768fa01ef52ade16120db9129a610321eced284ef9c3bd1fe13936e9122ca33",
+      "schemas/org.gnome.shell.extensions.papercusp-workbench.gschema.xml": "9ce369583d10efb36667b16b771107f9ace1ef1eaf9f03d443d966b2e2298094",
+      "schemas/gschemas.compiled": "661d9a8f45d7dfad4d2661f406d53905ecad7aa03b7216de2e065763e437bf90"
+    },
+    "puiSha256": "48279092bc6051c531161e0da62d09f85ee9a1f87e43933139f21803aee40867",
+    "testSha256": "8d04b4772ced66064d6f4081885d96fc766c9d566928ee97f66a6eb5947e36e9"
+  },
+  "retainedProofFile": "/tmp/wb-installed-shell-20261108-v2/installed-shell-reports.json",
+  "retainedProofSha256": "a81e8693971e7a94052102826d71a99df2fecbc72d2ff570495e87c38c7db90b",
+  "rawLogFile": "/tmp/wb-installed-shell-20261108-v2.log",
+  "rawLogSha256": "50a9e9e57ddb10fdb481454e6d6ca98e8e397f4fbe9eae68ef11ce77eafb0956",
+  "previewArchiveSha256": "16cf0ef526abb008b87eb7419bc5894a56d90db41794535dbd265a8bd84ef9f1",
+  "scopeLimits": [
+    "Reports-only private Shell journey with the exact installed preview files; owner desktop login activation remains pending.",
+    "Private keyfile settings and isolated session bus; no owner desktop restart or modification.",
+    "Does not establish final Tauri distribution, fresh-install/upgrade matrix, ACL impersonation, macOS/Windows acceptance, independent review or shipment.",
+    "Earlier retained fixture journeys and physical default audio evidence remain separate and were not replayed."
+  ],
+  "priorAttempt": {
+    "log": "/tmp/wb-installed-shell-20261108-v1.log",
+    "result": "New probe reached login and shortcut acquisition, then stopped at startup overview. Reused existing seat Escape precondition before v2; no product modification."
+  }
+}
