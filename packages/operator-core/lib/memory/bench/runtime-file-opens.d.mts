@@ -7,6 +7,8 @@ export interface RuntimeExecEntryObservation {
   schema: 'runtime-exec-entry-observation/v1';
   process: RuntimeObservedProcessIdentity; observerProcessId: number;
   startedMonotonicNs: string; finishedMonotonicNs: string;
+  /** Absent in historical samples; both are required to join a trace exec. */
+  startedEpochMs?: number; finishedEpochMs?: number;
   tracer: {process: RuntimeObservedProcessIdentity;
     tasksBefore: {taskId: number; state: string; startTimeTicks: string}[];
     tasksAfter: {taskId: number; state: string; startTimeTicks: string}[]};
@@ -21,6 +23,7 @@ export function bindRuntimeExecEntry(observation: RuntimeExecEntryObservation,
   identity: RuntimeObservedProcessIdentity, tracerIdentity: RuntimeObservedProcessIdentity): {
   schema: 'runtime-exec-entry-binding/v1'; process: RuntimeObservedProcessIdentity;
   instructionPointer: string; programEntry: string; interpreterBase: string;
+  epochWindow: {startedEpochMs: number; finishedEpochMs: number} | null;
   mapsSha256: string; auxvSha256: string; elfHeaderSha256: string;
   mappings: {start: string; end: string; permissions: string; offset: string;
     device: string; inode: string; path: string | null}[];
@@ -93,6 +96,8 @@ export function bindRuntimeJitDump(bytes: Buffer, witness: {
 export function bindRuntimeProcessTree(text: string, terminal: {
   processId: number; exitCode: number; signal: string | null; eof: boolean; captureStartedBeforeExec: boolean;
   pageSizeBytes?: number;
+  execEntries?: {observation: RuntimeExecEntryObservation; identity: RuntimeObservedProcessIdentity;
+    tracerIdentity: RuntimeObservedProcessIdentity}[];
 }): {
   schema: 'runtime-traced-process-tree/v1'; processId: number;
   tasks: {taskId: number; parentTaskId: number | null; threadGroupId: number;
@@ -117,7 +122,9 @@ export function bindRuntimeProcessTree(text: string, terminal: {
 };
 interface RuntimeMappingRange {
   start: string; end: string; permissions: string;
-  origin: {kind: 'anonymous' | 'file-mapping' | 'unresolved'; path: string | null; offsetBytes: string | null};
+  origin: {kind: 'anonymous' | 'file-mapping' | 'kernel-exec-mapping' | 'unresolved';
+    path: string | null; offsetBytes: string | null;
+    device?: string; inode?: string; execEntryMapsSha256?: string};
   executableBytesQualified: false;
 }
 export function bindRuntimeModelOpens(text: string, options: {
