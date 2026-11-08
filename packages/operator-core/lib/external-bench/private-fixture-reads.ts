@@ -68,12 +68,46 @@ export async function readBenchFixtureSourceSnapshot(boundary: BenchFixtureReadB
   if (boundary.taskId === 'LATENCY-M1:T01' || boundary.taskId === 'LATENCY-M1:T02') {
     const source = boundary.cases[which];
     if (!source.comparisonTime) throw new Error('Private fixture source requires its frozen comparison clock.');
-    const cards = await sql`SELECT issue_id, created_at, payload->'observation' AS observation
+    const cards = await sql`SELECT issue_id, created_by, created_at, payload->'observation' AS observation
       FROM harness_shared.engineer_issues WHERE workspace_id = ${ws} AND issue_id = ${source.issueId}
         AND created_at <= ${source.comparisonTime}::timestamptz`;
     if (cards.length !== 1 || !cards[0]!.observation) throw new Error('Private fixture source card is missing.');
     const card = { ...cards[0], created_at: new Date(cards[0]!.created_at).toISOString() };
-    if (boundary.taskId === 'LATENCY-M1:T01') return { card };
+    // The product readers also resolve rubric definitions and supersession
+    // against sibling cards. Pin those inputs, including post-clock relations;
+    // freezing only the selected observation misses changes to read-time truth.
+    const rubricRef = card.observation.rubricRef;
+    if (typeof rubricRef !== 'string' || !rubricRef) throw new Error('Private fixture source rubric is missing.');
+    const history = await sql`SELECT issue_id, created_by, created_at, payload->'observation' AS observation
+      FROM harness_shared.engineer_issues WHERE workspace_id = ${ws}
+        AND payload->'observation'->>'rubricRef' = ${rubricRef}
+      ORDER BY created_at DESC, issue_id DESC LIMIT 10001`;
+    if (history.length > 10000) throw new Error('Private fixture related history is oversized.');
+    const rubricRefs = [rubricRef, 'grading-integrity'], seen = new Set<string>();
+    const rubrics: unknown[] = [];
+    while (rubricRefs.length) {
+      const ref = rubricRefs.shift()!;
+      if (seen.has(ref)) continue;
+      if (seen.size >= 64) throw new Error('Private fixture rubric dependency population is oversized.');
+      seen.add(ref);
+      const definitions = await sql`SELECT harness_slug, plan_slug, version, status, archived, content_hash, template_data
+        FROM harness_shared.harness_plans WHERE workspace_id = ${ws} AND plan_slug = ${ref}
+          AND template = 'rubric' AND template_slug IS NULL ORDER BY harness_slug LIMIT 2`;
+      if (definitions.length > 1) throw new Error('Private fixture rubric dependency is ambiguous.');
+      for (const definition of definitions) {
+        const revisions = await sql`SELECT seq, content_hash, content_snapshot, created_at
+          FROM harness_shared.plan_revisions WHERE workspace_id = ${ws}
+            AND harness_slug = ${definition.harness_slug} AND plan_slug = ${ref} ORDER BY seq LIMIT 10001`;
+        if (revisions.length > 10000) throw new Error('Private fixture rubric history is oversized.');
+        rubrics.push({ definition, revisions: revisions.map(row => ({ ...row, created_at: new Date(row.created_at).toISOString() })) });
+        const data = definition.template_data;
+        if (typeof data?.classRef === 'string') rubricRefs.push(data.classRef);
+        if (Array.isArray(data?.composes)) for (const parent of data.composes)
+          if (typeof parent === 'string') rubricRefs.push(parent);
+      }
+    }
+    const dependencies = { history: history.map(row => ({ ...row, created_at: new Date(row.created_at).toISOString() })), rubrics };
+    if (boundary.taskId === 'LATENCY-M1:T01') return { card, ...dependencies };
     const siblingSource = boundary.cases[which];
     const rows = await sql`SELECT issue_id, created_at, payload->'observation' AS observation
       FROM harness_shared.engineer_issues WHERE workspace_id = ${ws}
@@ -83,7 +117,7 @@ export async function readBenchFixtureSourceSnapshot(boundary: BenchFixtureReadB
       ORDER BY created_at DESC, issue_id DESC LIMIT 10001`;
     if (!rows.length || rows.length > 10000 || !rows.some(row => row.issue_id === siblingSource.issueId))
       throw new Error('Private fixture sibling source is incomplete or oversized.');
-    return { card, siblings: rows.map(row => ({ ...row, created_at: new Date(row.created_at).toISOString() })) };
+    return { card, siblings: rows.map(row => ({ ...row, created_at: new Date(row.created_at).toISOString() })), ...dependencies };
   }
   const source = boundary.cases[which];
   const rows = await sql`SELECT id, seq, content_hash, content_snapshot, created_at
@@ -185,7 +219,8 @@ export async function requireBenchFixtureReadLease(boundary: BenchFixtureReadBou
   if (!row?.live) throw new Error('Private fixture read requires its active operational host lease.');
 }
 
-const common = z.object({ case: z.enum(['A', 'B']) });
+const common = z.object({ case: z.enum(['A', 'B']),
+  resultCursor: z.object({ sha256: digest, offset: z.number().int().safe().nonnegative() }).strict().optional() });
 const offset = z.number().int().safe().nonnegative();
 export const benchFixtureReadArgs = z.discriminatedUnion('operation', [
   common.extend({ operation: z.literal('card'), criterionKey: id.optional(),
@@ -199,13 +234,81 @@ export type BenchFixtureReadArgs = z.infer<typeof benchFixtureReadArgs>;
 export type BenchFixtureProductCall = { tool: 'scorecards:get' | 'scorecards:list' | 'plans:get' | 'plans:get-specs';
   args: Record<string, unknown> };
 
+/** Lossless result continuations live on the SAME operational lease. Only the
+ * actual product reader can create one; a cursor cannot select another source.
+ * This extends the existing checkpoint, rather than admitting scratch-file tools. */
+export async function benchFixtureResultSnapshot(boundary: BenchFixtureReadBoundary,
+  call: BenchFixtureProductCall, scope: DbScope, text?: string) {
+  await requireBenchFixtureReadLease(boundary, scope);
+  const { sql, ws } = resolveDb(scope), key = sha256(canonicalJson(call));
+  const parse = (value: unknown) => {
+    const stored = z.object({ text: z.string(), sha256: digest, bytes: z.number().int().positive() }).strict().parse(value);
+    if (Buffer.byteLength(stored.text) !== stored.bytes || sha256(stored.text) !== stored.sha256)
+      throw new Error('Private fixture result snapshot is corrupt.');
+    return stored;
+  };
+  if (text === undefined) {
+    const [row] = await sql`SELECT config->'privateFixtureReads'->${boundary.assignmentId}->'results'->${key} AS snapshot
+      FROM harness_shared.bench_runs WHERE workspace_id = ${ws} AND id = ${boundary.lease!.hostRunId}`;
+    if (!row?.snapshot) throw new Error('Private fixture result continuation has no retained product read.');
+    return parse(row.snapshot);
+  }
+  const snapshot = { text, sha256: sha256(text), bytes: Buffer.byteLength(text) };
+  if (!snapshot.bytes || snapshot.bytes > 16 * 1024 * 1024)
+    throw new Error('Private fixture result exceeds its bounded checkpoint.');
+  return sql.begin(async tx => {
+    const [row] = await tx`SELECT config->'privateFixtureReads'->${boundary.assignmentId}->'results' AS results
+      FROM harness_shared.bench_runs WHERE workspace_id = ${ws} AND id = ${boundary.lease!.hostRunId}
+        AND status = 'running' AND config->'privateFixtureReads'->${boundary.assignmentId}->>'status' = 'active'
+        AND config->'privateFixtureReads'->${boundary.assignmentId}->'boundary' = ${JSON.stringify(boundary)}::text::jsonb
+        AND now() < ${boundary.lease!.expiresAt}::timestamptz FOR UPDATE`;
+    if (!row) throw new Error('Private fixture result lost its active host lease.');
+    const results = row.results ?? {};
+    if (results[key]) {
+      const existing = parse(results[key]);
+      if (existing.sha256 !== snapshot.sha256) throw new Error('Private fixture product output changed within its frozen read.');
+      return existing;
+    }
+    if (Object.keys(results).length >= 128 || Buffer.byteLength(JSON.stringify({ ...results, [key]: snapshot })) > 16 * 1024 * 1024)
+      throw new Error('Private fixture result population exceeds its bounded checkpoint.');
+    await tx`UPDATE harness_shared.bench_runs SET config = jsonb_set(config,
+      ${['privateFixtureReads', boundary.assignmentId, 'results']}::text[],
+      ${JSON.stringify({ ...results, [key]: snapshot })}::text::jsonb)
+      WHERE workspace_id = ${ws} AND id = ${boundary.lease!.hostRunId}`;
+    return snapshot;
+  });
+}
+
+/** Account for both JSON escape layers used by the MCP text envelope. */
+export function benchFixtureResultFits(data: unknown, budgetBytes: number) {
+  return Buffer.byteLength(JSON.stringify({ content: [{ type: 'text', text: JSON.stringify(data) }] })) <= budgetBytes - 512;
+}
+
+export function benchFixtureResultPage(snapshot: { text: string; sha256: string; bytes: number },
+  request: BenchFixtureReadArgs, budgetBytes: number) {
+  const offset = request.resultCursor?.offset ?? 0;
+  if (request.resultCursor && request.resultCursor.sha256 !== snapshot.sha256 || offset > snapshot.text.length)
+    throw new Error('Private fixture result cursor differs from its retained product read.');
+  let length = Math.min(2048, snapshot.text.length - offset);
+  for (;;) {
+    const end = offset + length, complete = end === snapshot.text.length;
+    const data = { ok: true, privateFixtureResult: { encoding: 'json-utf16-chunks', sha256: snapshot.sha256,
+      bytes: snapshot.bytes, totalChars: snapshot.text.length, offset, text: snapshot.text.slice(offset, end), complete,
+      next: complete ? null : { tool: BENCH_PRIVATE_FIXTURE_TOOL,
+        args: { ...request, resultCursor: { sha256: snapshot.sha256, offset: end } } } } };
+    if (benchFixtureResultFits(data, budgetBytes)) return data;
+    if (length <= 1) throw new Error('Private fixture result door cannot fit a lossless continuation.');
+    length = Math.floor(length / 2);
+  }
+}
+
 /** Compile an argument-aware proxy call. Raw product verbs remain outside the
  * native tool ceiling; the existing handlers perform the actual read. */
 export function benchFixtureProductCall(boundary: BenchFixtureReadBoundary, rawArgs: unknown): BenchFixtureProductCall {
   const pinned = benchFixtureBoundarySchema.parse(boundary), args = benchFixtureReadArgs.parse(rawArgs);
   const source = pinned.cases[args.case];
   if (args.operation === 'card' && 'issueId' in source) {
-    const { operation: _, case: __, ...paging } = args;
+    const { operation: _, case: __, resultCursor: ___, ...paging } = args;
     if (paging.criterionKey !== undefined && paging.indexOffset !== undefined ||
         paging.evidenceOffset !== undefined && paging.criterionKey === undefined ||
         paging.rerunRecipeOffset !== undefined &&

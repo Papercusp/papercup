@@ -56,7 +56,8 @@ import { readBm25Indexes, resetBm25Availability } from './rank';
 const BUILD_OUTCOMES = new Set(['deferred:build-concurrently', 'invalid']);
 
 /**
- * Session lock_timeout for the CONCURRENTLY builds, rebuilds and drops in steps 2 and 4.
+ * Session lock_timeout for concurrent builds, invalid-index replacements, and reclaims in
+ * steps 2 and 4. Step 2a orphan drops use a shorter retryable bound.
  * CREATE / REINDEX / DROP INDEX CONCURRENTLY wait for every transaction that holds a
  * conflicting lock on the table or an older snapshot, and those waits are lock waits, so
  * they obey lock_timeout. The live pool role sets lock_timeout = 15s (measured on the dev
@@ -74,6 +75,8 @@ const BUILD_OUTCOMES = new Set(['deferred:build-concurrently', 'invalid']);
  * the admission check has succeeded.
  */
 export const CONCURRENT_DDL_LOCK_TIMEOUT = '4h';
+/** Orphan drops are retryable; bound lock waits so they cannot stall host backups. */
+const ORPHAN_DROP_LOCK_TIMEOUT = '15s';
 
 /**
  * The indexes step 2 should build, in the order to try them: never-attempted builds
@@ -97,6 +100,13 @@ export interface Bm25EnsureRow {
   outcome: string;
 }
 
+export interface Bm25DeferredOrphanDrop {
+  index: string;
+  relation: string;
+  reason: 'active-vacuum' | 'lock-timeout';
+  vacuumPid?: number;
+}
+
 export interface Bm25MaintenanceReport {
   /** Every row `bm25_ensure_indexes()` returned, verbatim. */
   ensure: Bm25EnsureRow[];
@@ -108,6 +118,8 @@ export interface Bm25MaintenanceReport {
   rebuiltInvalid: boolean;
   /** INVALID `_ccnew` / `_ccold` leftovers of a dead REINDEX CONCURRENTLY dropped this run (step 2a). */
   droppedOrphans: string[];
+  /** Retryable orphan drops deferred to avoid holding the backup rendezvous behind table locks. */
+  deferredOrphanDrops: Bm25DeferredOrphanDrop[];
   /** Deferred or invalid indexes left for later runs. */
   pendingBuilds: string[];
   /** Compaction passes run per index (only indexes that needed compaction appear). */
@@ -269,6 +281,7 @@ export async function runBm25Maintenance(
     built: null,
     rebuiltInvalid: false,
     droppedOrphans: [],
+    deferredOrphanDrops: [],
     pendingBuilds: [],
     compacted: [],
     reclaimed: null,
@@ -401,29 +414,53 @@ const REBUILD_LEFTOVER_PATTERN = '_cc(new|old)[0-9]*$';
  * carry_notes_bm25_ccnew sat invalid beside a valid carry_notes_bm25 that step 4 had no
  * reason to rebuild.
  *
- * Every invalid bm25 index in the schema whose name matches the pattern is dropped, under
- * the DDL advisory lock: every maintenance rebuild holds that lock, so while this run holds
- * it no maintenance rebuild has a live `_ccnew`. When another run holds it, the sweep
- * waits for the next tick. A rebuild started by hand outside maintenance would make this
- * DROP wait for its table lock and then report an error; that is acceptable.
+ * Orphans whose base relation has an active vacuum are deferred before the backup rendezvous
+ * is acquired. Waiting DDL held that shared lock and stalled host dumps. The short orphan-drop
+ * lock_timeout also bounds a vacuum that starts after preflight, since invalid leftovers are
+ * safe to retry on the next maintenance tick. The DDL advisory lock still prevents overlapping
+ * maintenance runs from changing a candidate during the sweep.
  */
 async function dropOrphanedRebuilds(sql: Sql, report: Bm25MaintenanceReport): Promise<void> {
-  let orphans: string[];
+  let candidates: Array<{ name: string; relation: string; vacuum_pid: number | null }>;
   try {
-    orphans = (await sql<{ name: string }[]>`
-      SELECT c.relname AS name
+    candidates = await sql<{ name: string; relation: string; vacuum_pid: number | null }[]>`
+      SELECT c.relname AS name,
+             base_schema.nspname || '.' || base_table.relname AS relation,
+             active_vacuum.pid AS vacuum_pid
         FROM pg_index i
         JOIN pg_class c ON c.oid = i.indexrelid
         JOIN pg_am a ON a.oid = c.relam
         JOIN pg_namespace n ON n.oid = c.relnamespace
+        JOIN pg_class base_table ON base_table.oid = i.indrelid
+        JOIN pg_namespace base_schema ON base_schema.oid = base_table.relnamespace
+        LEFT JOIN LATERAL (
+          SELECT v.pid
+            FROM pg_stat_progress_vacuum v
+           WHERE v.relid = i.indrelid
+           ORDER BY v.pid
+           LIMIT 1
+        ) AS active_vacuum ON true
        WHERE a.amname = 'bm25' AND n.nspname = 'harness_shared'
          AND NOT i.indisvalid AND c.relname ~ ${REBUILD_LEFTOVER_PATTERN}
-       ORDER BY 1`).map(r => r.name);
+       ORDER BY 1`;
   } catch (err) {
     report.errors.push(`orphans: ${message(err)}`);
     return;
   }
-  if (orphans.length === 0) return;
+  const ready: Array<{ name: string; relation: string }> = [];
+  for (const candidate of candidates) {
+    if (candidate.vacuum_pid !== null) {
+      report.deferredOrphanDrops.push({
+        index: 'harness_shared.' + candidate.name,
+        relation: candidate.relation,
+        reason: 'active-vacuum',
+        vacuumPid: candidate.vacuum_pid,
+      });
+    } else {
+      ready.push(candidate);
+    }
+  }
+  if (ready.length === 0) return;
   const conn = await sql.reserve();
   let locked = false;
   let backupLocked = false;
@@ -433,14 +470,27 @@ async function dropOrphanedRebuilds(sql: Sql, report: Bm25MaintenanceReport): Pr
     backupLocked = await tryAcquireBackupRendezvous(conn);
     if (!backupLocked) return;
     await conn`SET statement_timeout = 0`;
-    await conn.unsafe(`SET lock_timeout = '${CONCURRENT_DDL_LOCK_TIMEOUT}'`);
-    for (const name of orphans) {
-      const qualified = `harness_shared.${name}`;
+    // An orphan is safe to retry. The preflight skips known vacuums; this timeout
+    // bounds the race where a vacuum starts after preflight without pinning backups.
+    await conn.unsafe(`SET lock_timeout = '${ORPHAN_DROP_LOCK_TIMEOUT}'`);
+    for (const candidate of ready) {
+      const qualified = 'harness_shared.' + candidate.name;
       try {
         await conn`DROP INDEX CONCURRENTLY IF EXISTS ${conn(qualified)}`;
         report.droppedOrphans.push(qualified);
       } catch (err) {
-        report.errors.push(`drop orphan ${qualified}: ${message(err)}`);
+        const sqlState = typeof err === 'object' && err !== null && 'code' in err
+          ? (err as { code?: unknown }).code
+          : undefined;
+        if (sqlState === '55P03') {
+          report.deferredOrphanDrops.push({
+            index: qualified,
+            relation: candidate.relation,
+            reason: 'lock-timeout',
+          });
+        } else {
+          report.errors.push(`drop orphan ${qualified}: ${message(err)}`);
+        }
       }
     }
   } catch (err) {
@@ -600,6 +650,14 @@ export function formatBm25MaintenanceReport(
   const created = r.ensure.filter(e => e.outcome === 'created').map(e => e.corpusIndex);
   if (created.length) parts.push(`created ${created.join(',')}`);
   if (r.droppedOrphans.length) parts.push(`dropped orphan ${r.droppedOrphans.join(',')}`);
+  if (r.deferredOrphanDrops.length) {
+    const deferred = r.deferredOrphanDrops.map(entry => {
+      const reason = entry.reason === 'active-vacuum' ? 'active vacuum' : 'lock timeout';
+      const pid = entry.vacuumPid === undefined ? '' : ' pid=' + entry.vacuumPid;
+      return entry.index + ' (' + reason + ' on ' + entry.relation + pid + ')';
+    }).join(',');
+    parts.push('orphan drop deferred ' + deferred);
+  }
   if (r.built) parts.push(`built${r.rebuiltInvalid ? ' (replaced invalid)' : ''} ${r.built}`);
   if (r.pendingBuilds.length) parts.push(`pending ${r.pendingBuilds.join(',')}`);
   for (const c of r.compacted) parts.push(`compacted ${c.index} x${c.steps}${c.stillNeeds ? ' (more needed)' : ''}`);

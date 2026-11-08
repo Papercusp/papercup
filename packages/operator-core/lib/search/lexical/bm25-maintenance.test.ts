@@ -111,6 +111,96 @@ describe('orderBuildCandidates', () => {
   });
 });
 
+describe('orphan rebuild cleanup', () => {
+  const render = (strings: TemplateStringsArray, values: unknown[]) =>
+    strings.reduce((text, part, i) => text + part + (i < values.length ? String(values[i]) : ''), '');
+
+  it('defers orphan drops for a relation with an active vacuum before reserving the DDL lock', async () => {
+    const statements: string[] = [];
+    const reserve = vi.fn();
+    const sql = Object.assign(
+      vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        const query = render(strings, values);
+        statements.push(query);
+        if (query.includes('bm25_ensure_indexes')) return [];
+        if (query.includes('FROM pg_index')) {
+          return [{
+            name: 'session_turns_bm25_ccnew',
+            relation: 'harness_shared.session_turns',
+            vacuum_pid: 3647428,
+          }];
+        }
+        if (query.includes('to_regprocedure')) return [{ defined: false }];
+        return [];
+      }),
+      { reserve },
+    );
+
+    const result = await runBm25Maintenance(sql as never, { maxCompactionSteps: 0 });
+
+    expect(result.deferredOrphanDrops).toEqual([{
+      index: 'harness_shared.session_turns_bm25_ccnew',
+      relation: 'harness_shared.session_turns',
+      reason: 'active-vacuum',
+      vacuumPid: 3647428,
+    }]);
+    expect(reserve).not.toHaveBeenCalled();
+    expect(statements.some(query => query.includes('DROP INDEX CONCURRENTLY'))).toBe(false);
+  });
+
+  it('uses a short lock timeout and records a retryable deferral if a vacuum starts after preflight', async () => {
+    const sqlStatements: string[] = [];
+    const connectionStatements: string[] = [];
+    const conn = Object.assign(
+      vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        const query = render(strings, values);
+        connectionStatements.push(query);
+        if (query.includes('pg_try_advisory_lock')) return [{ locked: true }];
+        if (query.includes('DROP INDEX CONCURRENTLY')) {
+          throw Object.assign(new Error('canceling statement due to lock timeout'), { code: '55P03' });
+        }
+        return [];
+      }),
+      {
+        unsafe: vi.fn(async (query: string) => {
+          connectionStatements.push(query);
+          return [];
+        }),
+        release: vi.fn(),
+      },
+    );
+    const sql = Object.assign(
+      vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        const query = render(strings, values);
+        sqlStatements.push(query);
+        if (query.includes('bm25_ensure_indexes')) return [];
+        if (query.includes('FROM pg_index')) {
+          return [{
+            name: 'session_turns_bm25_ccnew',
+            relation: 'harness_shared.session_turns',
+            vacuum_pid: null,
+          }];
+        }
+        if (query.includes('to_regprocedure')) return [{ defined: false }];
+        return [];
+      }),
+      { reserve: vi.fn().mockResolvedValue(conn) },
+    );
+
+    const result = await runBm25Maintenance(sql as never, { maxCompactionSteps: 0 });
+
+    expect(connectionStatements).toContain("SET lock_timeout = '15s'");
+    expect(result.deferredOrphanDrops).toEqual([{
+      index: 'harness_shared.session_turns_bm25_ccnew',
+      relation: 'harness_shared.session_turns',
+      reason: 'lock-timeout',
+    }]);
+    expect(result.errors).toEqual([]);
+    expect(conn.release).toHaveBeenCalledOnce();
+    expect(sqlStatements.some(query => query.includes('pg_stat_progress_vacuum'))).toBe(true);
+  });
+});
+
 // Verbatim output of bm25_summarize_index on pg_textsearch 1.5.1 (scratch probe, 2026-10-11).
 const SUMMARY_WITH_DEAD = `Index: t_bm25
 
@@ -159,6 +249,7 @@ function report(over: Partial<Bm25MaintenanceReport> = {}): Bm25MaintenanceRepor
     built: null,
     rebuiltInvalid: false,
     droppedOrphans: [],
+    deferredOrphanDrops: [],
     pendingBuilds: [],
     compacted: [],
     reclaimed: null,
@@ -234,6 +325,20 @@ describe('formatBm25MaintenanceReport', () => {
     expect(formatBm25MaintenanceReport(report({
       droppedOrphans: ['harness_shared.carry_notes_bm25_ccnew', 'harness_shared.work_items_bm25_ccold1'],
     }))).toBe('[bm25-maintenance] dropped orphan harness_shared.carry_notes_bm25_ccnew,harness_shared.work_items_bm25_ccold1');
+  });
+
+  it('reports orphan cleanup deferred by an active vacuum', () => {
+    expect(formatBm25MaintenanceReport(report({
+      deferredOrphanDrops: [{
+        index: 'harness_shared.session_turns_bm25_ccnew',
+        relation: 'harness_shared.session_turns',
+        reason: 'active-vacuum',
+        vacuumPid: 3647428,
+      }],
+    }))).toBe(
+      '[bm25-maintenance] orphan drop deferred harness_shared.session_turns_bm25_ccnew '
+      + '(active vacuum on harness_shared.session_turns pid=3647428)',
+    );
   });
 
   it('attaches the measured interval to a non-empty maintenance log line and keeps no-op runs quiet', () => {

@@ -132,8 +132,11 @@ beforeAll(async () => {
     ALTER TABLE harness_shared.bench_run_events DISABLE ROW LEVEL SECURITY;
   `);
   await db.sql.unsafe(`CREATE TABLE harness_shared.engineer_issues (
-    workspace_id text NOT NULL, issue_id text NOT NULL, created_at timestamptz NOT NULL,
+    workspace_id text NOT NULL, issue_id text NOT NULL, created_by text, created_at timestamptz NOT NULL,
     payload jsonb NOT NULL, PRIMARY KEY (workspace_id, issue_id));
+    CREATE TABLE harness_shared.harness_plans (workspace_id text, harness_slug text, plan_slug text,
+      version integer, status text, archived boolean, content_hash text, template_data jsonb,
+      template text, template_slug text);
     CREATE TABLE harness_shared.plan_revisions (id bigint, workspace_id text, harness_slug text,
       plan_slug text, seq integer, content_hash text, content_snapshot_hash text,
       content_snapshot text, created_at timestamptz);

@@ -44,6 +44,23 @@ describe('acceptance-time attribution in native transcript parts', () => {
 });
 
 describe('repeatable overhead and native-session outcomes', () => {
+  it('fingerprints complete inputs including scope and rows excluded from the population', () => {
+    const rows = [event(), event({ session_id: 'boundary', first_at: stamp(-1) })];
+    const measured = summarizeWorkOverhead(window, rows);
+    expect(measured.input).toEqual({ sha256: expect.stringMatching(/^[a-f0-9]{64}$/), rowCount: 2 });
+    expect(summarizeWorkOverhead({ ...window }, structuredClone(rows)).input).toEqual(measured.input);
+    for (const changed of [
+      rows.slice(0, 1),
+      [rows[0]!, { ...rows[1]!, payload: 'new late-ingested input' }],
+      [rows[0]!, { ...rows[1]!, closed: false }],
+    ]) expect(summarizeWorkOverhead(window, changed).input.sha256).not.toBe(measured.input.sha256);
+    for (const changed of [
+      { ...window, workspaceId: 'other' }, { ...window, harnessSlug: 'other' },
+      { ...window, windowEnd: stamp(200) },
+    ]) expect(summarizeWorkOverhead(changed, rows).input.sha256).not.toBe(measured.input.sha256);
+    expect(measured.population.boundarySessions).toBe(1);
+  });
+
   it('strictly requires share below 10%, including the unknown upper bound', () => {
     const measure = (seconds: number) => summarizeWorkOverhead(window, [
       event({ tool_name: 'plans:audit' }), event({ part_idx: 1, ts: stamp(seconds) }),

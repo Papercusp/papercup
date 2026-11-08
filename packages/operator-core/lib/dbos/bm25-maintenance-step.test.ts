@@ -9,6 +9,7 @@ function report(overrides: Partial<Bm25MaintenanceReport> = {}): Bm25Maintenance
     built: null,
     rebuiltInvalid: false,
     droppedOrphans: [],
+    deferredOrphanDrops: [],
     pendingBuilds: [],
     compacted: [],
     reclaimed: null,

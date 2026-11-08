@@ -3,9 +3,11 @@
  * Transcript spans are lower bounds, not launcher lifetimes (a launcher survives carry).
  */
 import type { Sql } from 'postgres';
+import { createHash } from 'node:crypto';
+import { canonicalJson } from '@papercusp/hash-chain';
 import { getOrgPg } from '@papercusp/db-org';
 
-export const WORK_OVERHEAD_VERSION = 3;
+export const WORK_OVERHEAD_VERSION = 4;
 export const WORK_OVERHEAD_INSTRUMENT_KEYS = Object.freeze({
   acceptanceShare: 'agents:acceptance-machinery-share',
   sessionMinutes: 'agents:native-session-minutes',
@@ -176,6 +178,8 @@ export interface WorkOverheadMetrics {
   version: number;
   window: WorkOverheadWindow;
   queryRef: string;
+  /** Digest of the complete ordered query input, including excluded/censored rows. */
+  input: { sha256: string; rowCount: number };
   population: { sessions: number; boundarySessions: number; censoredSessions: number;
     missingTimestampSessions: number; clients: Record<string, number>; toolCalls: number };
   time: { activeMs: number; acceptanceMs: number; unknownMs: number; excludedIdleMs: number;
@@ -185,7 +189,11 @@ export interface WorkOverheadMetrics {
 }
 
 export function summarizeWorkOverhead(window: WorkOverheadWindow, events: readonly WorkOverheadEvent[]): WorkOverheadMetrics {
+  const inputHash = createHash('sha256').update(canonicalJson({ version: WORK_OVERHEAD_VERSION,
+    window, queryRef: WORK_OVERHEAD_QUERY_REF }));
+  for (const event of events) inputHash.update('\n').update(canonicalJson(event));
   const result: WorkOverheadMetrics = { version: WORK_OVERHEAD_VERSION, window, queryRef: WORK_OVERHEAD_QUERY_REF,
+    input: { sha256: inputHash.digest('hex'), rowCount: events.length },
     population: { sessions: 0, boundarySessions: 0, censoredSessions: 0, missingTimestampSessions: 0,
       clients: {}, toolCalls: 0 },
     time: { activeMs: 0, acceptanceMs: 0, unknownMs: 0, excludedIdleMs: 0,
