@@ -334,23 +334,29 @@ describe('code_recipes hybrid search (real PG)', () => {
       ...profiledEmbedding(seededEmbedding(73)),
     });
 
-    const baseSql = db.adminSql as unknown as (strings: TemplateStringsArray, ...values: unknown[]) => unknown;
     let invalidated = false;
-    const racingSql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
-      const query = strings.join(' ');
-      if (!invalidated && /SELECT id, title, description, script[\s\S]*FROM harness_shared\.code_recipes/.test(query)) {
-        invalidated = true;
-        return (async () => {
-          await db.adminSql`
-            UPDATE harness_shared.code_recipes
-               SET status = 'merged', merged_into = 'checkpoint-monitor-survivor'
-             WHERE id = ${id}
-          `;
-          return baseSql(strings, ...values);
-        })();
-      }
-      return baseSql(strings, ...values);
-    }) as unknown as postgres.Sql;
+    // A bare tag function drops Sql.unsafe/begin and makes enabled search legs
+    // degrade before metadata revalidation. Intercept only this boundary while
+    // retaining the actual driver's capabilities in every search leg.
+    const racingSql = new Proxy(db.adminSql, { apply(target, thisArg, args) {
+      const strings = args[0] as TemplateStringsArray;
+      if (Array.isArray(strings) && !invalidated
+        && /SELECT id, title, description, script[\s\S]*FROM harness_shared\.code_recipes/.test(strings.join(' '))) {
+          invalidated = true;
+          return (async () => {
+            await db.adminSql`
+              UPDATE harness_shared.code_recipes
+                 SET status = 'merged', merged_into = 'checkpoint-monitor-survivor'
+               WHERE id = ${id}
+            `;
+            return Reflect.apply(target, thisArg, args);
+          })();
+        }
+        return Reflect.apply(target, thisArg, args);
+    } }) as postgres.Sql;
+    expect(typeof racingSql.unsafe).toBe('function');
+    expect(typeof racingSql.begin).toBe(typeof db.adminSql.begin);
+    const searchLogs: string[] = [];
 
     const results = await searchSimilarRecipes(racingSql, {
       title: 'Merged during checkpoint monitor search',
@@ -358,9 +364,9 @@ describe('code_recipes hybrid search (real PG)', () => {
       toolsUsed: [],
       ...profiledEmbedding(seededEmbedding(73)),
       limit: 10,
-    });
+    }, { log: message => searchLogs.push(message) });
 
-    expect(invalidated).toBe(true);
+    expect(invalidated, searchLogs.join('\n')).toBe(true);
     expect(results.find((row) => row.id === id)).toBeUndefined();
   });
 

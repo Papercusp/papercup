@@ -263,3 +263,21 @@ describe('selectRecipeCaptureTarget (P-014)', () => {
     });
   });
 });
+
+describe('P008 capture target revision guard', () => {
+  it('creates a separate candidate when a certified neighbor changed after the search read', async () => {
+    captureStore.rows.clear(); vi.clearAllMocks();
+    captureStore.rows.set('stale-neighbor', { id: 'stale-neighbor', title: 'Old candidate', script: 'return 2;',
+      status: 'active', bindingSchema: null, capabilityManifest: null } as CodeRecipeRow);
+    captureStore.similar.mockResolvedValueOnce([{ id: 'stale-neighbor', similarity: 1, toolsUsed: [],
+      matchingEvidence: { domain: { verdict: 'equivalent', basis: 'exact-source-and-contract' } } }] as never);
+    const result = await captureRecipe({ sql: {} as never, embed: async () => null, resolveHive: async () => null }, {
+      script: 'return 1;', title: 'P008 current source', workspaceId: 'p008-guard', harness: 'alpha',
+      ownerId: 'agent-a', role: 'operator', tools: [],
+    });
+    expect(result?.disposition).toBe('created');
+    expect(result?.row.id).not.toBe('stale-neighbor');
+    expect(result?.row.script).toBe('return 1;');
+    expect(captureStore.rows.get('stale-neighbor')?.script).toBe('return 2;');
+  });
+});
