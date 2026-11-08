@@ -1,0 +1,46 @@
+{
+  "schemaVersion": "verification-attempt-terminal-v1",
+  "workItem": "EI-28170776135022495",
+  "decision": "agent-shipping-workflow-effort-reduction-2026-11-07#D-008",
+  "sourceCommit": "7847dd7835b8ee0bdec9c319f0ff8a8959db7af6",
+  "originalExecSession": 69129,
+  "result": "NOT_MEASURED",
+  "httpAssertionsExecuted": false,
+  "terminalExitCode": 1,
+  "terminalReason": "Owned dependency preparation child received SIGTERM under D-008 to release installer custody; the parent unwound through withFsMutexRead finally.",
+  "signal": {
+    "pid": 2544567,
+    "startTicks": "51701240",
+    "parentPid": 2521044,
+    "parentStartTicks": "51694256",
+    "bootId": "c58f787e-e441-4c5c-a0f5-40e3b362e124",
+    "signal": "SIGTERM",
+    "identityRevalidatedBeforeSignal": true
+  },
+  "retainedClone": "/tmp/pcv/papercusp-lint-as-committed-7847dd7835-S7G3ov",
+  "completeLog": "/tmp/mission-absorption-http-7847-ledger.log",
+  "sourceInputs": [
+    {
+      "path": "packages/operator-core/lib/plan-absorption-current-build-http.integration.test.ts",
+      "sha256": "175b3d617bbfdbd1c9f95ef9631a07390694cb590da25cc01e950dcb6625ca1e"
+    },
+    {
+      "path": "packages/operator-core/test/plan-absorption-http-fixture.ts",
+      "sha256": "37e1fb199695afa851be47fb425c83b45e37bab9958e666d9518cfa5a609034d"
+    }
+  ],
+  "readerPostimage": {
+    "observedAt": "2026-11-08T01:27:28.652706+00:00",
+    "scope": "Only the identity-matched reader owned by PID 2521044; global installer clearance remains the installer lane's responsibility.",
+    "parentAlive": false,
+    "preparationChildAlive": false,
+    "readerMarkers": [],
+    "stagingMarkers": [],
+    "retainedCloneExists": true,
+    "manualMarkerDeletion": false
+  },
+  "releaseGate": "fleet:workflow-efficiency-shipping-2026-11-07:absorption-reader-2521044-released",
+  "releaseGateGeneration": 1,
+  "releaseGateFired": true,
+  "nextRequirement": "After legitimate installer release, audit bounded preparation before a maintained retry of the same source and work item. Preserve independent dependencies, original runtime evidence, acceptance and shipment requirements."
+}

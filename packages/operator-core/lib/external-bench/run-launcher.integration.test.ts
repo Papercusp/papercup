@@ -139,7 +139,7 @@ beforeAll(async () => {
       template text, template_slug text);
     CREATE TABLE harness_shared.plan_revisions (id bigint, workspace_id text, harness_slug text,
       plan_slug text, seq integer, content_hash text, content_snapshot_hash text,
-      content_snapshot text, created_at timestamptz);
+      content_snapshot text, created_at bigint);
     CREATE TABLE harness_shared.plan_spec_clauses (workspace_id text, harness_slug text,
       plan_slug text, spec_id text, source_val_id text);
     CREATE TABLE harness_shared.plan_spec_clause_revisions (workspace_id text, harness_slug text,
@@ -391,8 +391,8 @@ describe('current provider capture host checkpoint', () => {
     const f = await privateReadFixture('cold'), allocation = f.input.fixtureReads!;
     await sql`INSERT INTO harness_shared.plan_revisions
       (id, workspace_id, harness_slug, plan_slug, seq, content_hash, content_snapshot_hash, content_snapshot, created_at)
-      VALUES (1, ${WS}, 'h', 'a', 1, ${'b'.repeat(64)}, ${'b'.repeat(64)}, '# original', '2026-11-01'),
-        (2, ${WS}, 'h', 'a', 2, ${'c'.repeat(64)}, ${'c'.repeat(64)}, '# later', '2026-11-07')`;
+      VALUES (1, ${WS}, 'h', 'a', 1, ${'b'.repeat(64)}, ${'b'.repeat(64)}, '# original', ${Date.parse('2026-11-01T00:00:00Z')}),
+        (2, ${WS}, 'h', 'a', 2, ${'c'.repeat(64)}, ${'c'.repeat(64)}, '# later', ${Date.parse('2026-11-07T00:00:00Z')})`;
     await sql`INSERT INTO harness_shared.plan_spec_clauses VALUES (${WS}, 'h', 'a', 'SPEC-1', 'VAL-1')`;
     await sql`INSERT INTO harness_shared.plan_spec_clause_revisions VALUES
       (${WS}, 'h', 'a', 'SPEC-1', 1, ${'b'.repeat(64)}, 'original accepted behavior', '2026-11-01', '2026-11-01'),
@@ -401,7 +401,7 @@ describe('current provider capture host checkpoint', () => {
       preregHash: f.input.options.preregistration.preregHash, assignmentId: 'bench-assignment:preparation', armId: 'cold', seed: 1 },
       taskId: 'LATENCY-M1:T03', expectedSha256: benchFixtureAllocationSha256(allocation), allocation })!;
     expect(await readBenchFixtureSourceSnapshot(boundary, 'A', scope)).toMatchObject({
-      plan: { content_snapshot: '# original', seq: 1 },
+      plan: { content_snapshot: '# original', seq: 1, created_at: '2026-11-01T00:00:00.000Z' },
       specs: [{ revision: { revision: 1, behavior: 'original accepted behavior' } }] });
     if (boundary.taskId !== 'LATENCY-M1:T03') throw new Error('test fixture requires historical plan boundary');
     boundary.cases.A.revision = 2;

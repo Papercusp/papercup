@@ -117,7 +117,7 @@ export async function readBenchFixtureSourceSnapshot(boundary: BenchFixtureReadB
           FROM harness_shared.plan_revisions WHERE workspace_id = ${ws}
             AND harness_slug = ${definition.harness_slug} AND plan_slug = ${ref} ORDER BY seq LIMIT 10001`;
         if (revisions.length > 10000) throw new Error('Private fixture rubric history is oversized.');
-        rubrics.push({ definition, revisions: revisions.map(row => ({ ...row, created_at: new Date(row.created_at).toISOString() })) });
+        rubrics.push({ definition, revisions: revisions.map(row => ({ ...row, created_at: new Date(Number(row.created_at)).toISOString() })) });
         const data = definition.template_data;
         if (typeof data?.classRef === 'string') rubricRefs.push(data.classRef);
         if (Array.isArray(data?.composes)) for (const parent of data.composes)
@@ -143,7 +143,7 @@ export async function readBenchFixtureSourceSnapshot(boundary: BenchFixtureReadB
       AND plan_slug = ${source.slug}
       AND ${typeof source.revision === 'number' ? sql`seq = ${source.revision}` :
         sql`content_hash = ${source.revision} AND content_snapshot_hash = content_hash`}
-      AND created_at <= ${source.specAsOf}::timestamptz ORDER BY seq DESC LIMIT 1`;
+      AND created_at <= ${Date.parse(source.specAsOf)}::bigint ORDER BY seq DESC LIMIT 1`;
   if (rows.length !== 1) throw new Error('Private fixture historical plan/spec pairing is unavailable.');
   const specs = await sql`SELECT DISTINCT ON (r.spec_id) to_jsonb(r) AS revision, c.source_val_id
     FROM harness_shared.plan_spec_clause_revisions r JOIN harness_shared.plan_spec_clauses c
@@ -152,7 +152,7 @@ export async function readBenchFixtureSourceSnapshot(boundary: BenchFixtureReadB
       AND GREATEST(r.created_at, COALESCE(r.accepted_at, r.created_at)) <= ${source.specAsOf}::timestamptz
     ORDER BY r.spec_id, r.revision DESC LIMIT 10001`;
   if (!specs.length || specs.length > 10000) throw new Error('Private fixture historical specs are missing or oversized.');
-  return { plan: { ...rows[0], created_at: new Date(rows[0]!.created_at).toISOString() }, specs };
+  return { plan: { ...rows[0], created_at: new Date(Number(rows[0]!.created_at)).toISOString() }, specs };
 }
 
 export async function requireBenchFixtureSourcePins(boundary: BenchFixtureReadBoundary, scope: DbScope,

@@ -52,6 +52,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node
 import { isAbsolute, join, resolve } from 'node:path';
 import { defaultBenchResultsDir } from './preserved-runs';
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
+import { REPO_ROOT } from '../agent-tools/docs/_repo-paths';
 import { currentBenchmarkProtocolSchema, requireCurrentBenchmarkAssignment, type CurrentBenchmarkProtocol } from './reproducibility/schema';
 import { canonicalJson } from './reproducibility/canonical-json';
 import { getPrereg, listRunResults } from './reproducibility/store';

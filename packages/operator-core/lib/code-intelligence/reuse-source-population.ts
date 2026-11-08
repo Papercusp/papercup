@@ -29,9 +29,11 @@ const lowerBound = (values: readonly number[], value: number): number => {
 export type ReuseSourcePhase = 'source-tree' | 'source-capture' | 'source-diff' | 'source-clones' | 'source-calls';
 
 type ParsedSymbols = ReturnType<typeof parseSymbolSnapshot>;
-export const REUSE_PARSER_OLD_SPACE_MB = 1024;
-export const REUSE_PARENT_OLD_SPACE_MB = 1024;
 const REUSE_PARSER_WORKER_COUNT = 4;
+export const REUSE_PARENT_OLD_SPACE_MB = 1024;
+const REUSE_PARSER_HEAP_ENVELOPE_MB = 3072;
+export const REUSE_PARSER_OLD_SPACE_MB = Math.floor(
+  (REUSE_PARSER_HEAP_ENVELOPE_MB - REUSE_PARENT_OLD_SPACE_MB) / REUSE_PARSER_WORKER_COUNT);
 const REUSE_PARSER_MAX_BATCH_FILES = 512;
 const REUSE_PARSER_MAX_BATCH_BYTES = 4 * 1024 * 1024;
 
@@ -42,8 +44,9 @@ export async function parseReuseSourceSymbols(sourceFiles: Map<string, string>, 
   observeLimits?: (limits: Record<string, unknown>) => void,
   capture?: { sizes: ReadonlyMap<string, number>; ready: (files: readonly string[]) => Promise<void> }): Promise<ParsedSymbols> {
   // V8 carries the parent's effective CLI heap flag into new isolates even
-  // when execArgv is cleared. Equal 1024 MiB limits keep all three old spaces
-  // within the existing 3072 MiB envelope. Young space is separate from it.
+  // when execArgv is cleared. Derive each worker's limit from the fixed pool
+  // so the parent plus every worker stays inside the 3072 MiB old-space budget.
+  // Young space is separate from it.
   if (!process.execArgv.includes(`--max-old-space-size=${REUSE_PARENT_OLD_SPACE_MB}`)
     || getHeapStatistics().heap_size_limit > (REUSE_PARENT_OLD_SPACE_MB + 192) * 1024 * 1024)
     throw new Error('Source parser parent exceeds its effective heap envelope');
@@ -69,6 +72,8 @@ export async function parseReuseSourceSymbols(sourceFiles: Map<string, string>, 
   const workerCount = Math.min(REUSE_PARSER_WORKER_COUNT, count);
   const sourceBytes = batches.reduce((sum, item) => sum + item.bytes, 0);
   const population = { sourceFileCount: files.length, sourceBytes, partitionCount: count, workerCount,
+    oldSpaceBudgetMb: REUSE_PARENT_OLD_SPACE_MB + workerCount * REUSE_PARSER_OLD_SPACE_MB,
+    maxWorkerOldSpaceMb: REUSE_PARSER_OLD_SPACE_MB,
     maxBatchFiles: REUSE_PARSER_MAX_BATCH_FILES, maxBatchBytes: REUSE_PARSER_MAX_BATCH_BYTES };
   observeLimits?.({ kind: 'population', ...population });
   let next = 0;
@@ -96,7 +101,8 @@ export async function parseReuseSourceSymbols(sourceFiles: Map<string, string>, 
       worker.on('exit', code => fail(new Error(`Source parser exited before completion (${code})`)));
       const ready = await received();
       if (ready?.kind !== 'ready' || ready.oldSpaceMb !== REUSE_PARSER_OLD_SPACE_MB
-        || ready.heapLimitMb > REUSE_PARSER_OLD_SPACE_MB + 32 || ready.execArgv.some((x: string) => /max[-_]old[-_]space/i.test(x)))
+        || ready.heapLimitMb > REUSE_PARSER_OLD_SPACE_MB + 32
+        || ready.execArgv.some((x: string) => /max[-_]old[-_]space/i.test(x)))
         throw new Error('Source parser effective heap limit unavailable');
       observeLimits?.({ ...population, ...ready, workerIndex });
       while (next < count) {

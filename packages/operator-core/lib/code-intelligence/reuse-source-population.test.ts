@@ -299,6 +299,7 @@ ${captureSite}`);
       expect(result.population).toEqual(serial);
       const population = observations.find(x => x.kind === 'population');
       expect(population).toMatchObject({ sourceFileCount: 1027, partitionCount: 4, workerCount: 4,
+        oldSpaceBudgetMb: 3072, maxWorkerOldSpaceMb: 512,
         maxBatchFiles: 512, maxBatchBytes: 4 * 1024 * 1024 });
       expect(population.sourceBytes).toBeGreaterThan(0);
       const partitions = observations.filter(x => x.kind === 'partition').map(x => x.index);
@@ -311,7 +312,7 @@ ${captureSite}`);
       expect(chunks.reduce((sum, x) => sum + x.files, 0)).toBe(1027);
       const limits = observations.filter(x => x.kind === 'ready');
       expect(limits).toHaveLength(4);
-      expect(limits.every(x => x.oldSpaceMb === 1024 && x.heapLimitMb <= 1056
+      expect(limits.every(x => x.oldSpaceMb === 512 && x.heapLimitMb <= 544
         && !x.execArgv.some((flag: string) => /max[-_]old[-_]space/.test(flag)))).toBe(true);
       expect(result.population.calls.some((call: any) => call.from === 'f0000.ts' && call.to === 'f0500.ts')).toBe(true);
       expect(result.population.callCensusComplete).toBe(false);
