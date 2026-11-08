@@ -7,7 +7,9 @@ import type { ObservedSurface } from '@papercusp/testing-shell/census';
 import { context, trace, TraceFlags } from '@opentelemetry/api';
 import { parseSqlCoverageExecutionReceipt, type ExecutionBoundaryReceipt,
   type SqlCoverageExecutionReceipt } from '@papercusp/test-config/execution-details';
-import { projectedToolRegistryRevision, type DispatchProjectedDeps } from '@papercusp/agent-mcp';
+// The agent-mcp barrel registers platform providers at import time. Observability
+// needs the defining registry API, including during a minimal fresh-process boot.
+import { projectedToolRegistryRevision, type DispatchProjectedDeps } from '@papercusp/tooldef';
 import type { GatewayRequestTimeline } from '../inference-gateway/request-stage-telemetry';
 import { createTracing } from './tracing';
 import { PosthogSpanExporter } from './posthog-exporter';
