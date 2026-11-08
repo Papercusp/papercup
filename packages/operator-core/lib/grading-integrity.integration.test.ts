@@ -626,7 +626,7 @@ it('keeps the exact recorded evaluator sibling when a newer unbound build is pre
     taskIds.push(newer.taskId);
     await db.sql`UPDATE harness_shared.work_items
       SET payload = jsonb_set(payload, '{observation,rerunRecipe}',
-        ${JSON.stringify({ evaluatorBuild: exact.locator.evaluatorBuild })}::jsonb)
+        ${db.sql.json({ evaluatorBuild: exact.locator.evaluatorBuild })})
       WHERE workspace_id = ${workspaceId} AND feature_id = ${id}`;
     const [persistedRecipe] = await db.sql<Array<{ rerun_recipe: unknown }>>`
       SELECT payload->'observation'->'rerunRecipe' AS rerun_recipe
