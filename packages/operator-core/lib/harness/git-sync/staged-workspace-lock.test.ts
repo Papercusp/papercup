@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { commitAttributedGroups, runGitSync, type RunGit } from './run-git-sync';
-import { guardStagedWorkspaceLock, workspaceLockTreeValidator } from './staged-workspace-lock';
+import { guardStagedWorkspaceLock, workspaceLockTreeValidator, workspaceLockTreeInspector } from './staged-workspace-lock';
 
 const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 const runGit: RunGit = async (args, cwd, options) => {
@@ -53,6 +53,27 @@ describe('commit-boundary workspace dependency coherence (real git)', () => {
   });
   afterEach(() => rmSync(root, { recursive: true, force: true }));
 
+  it('agrees with the synchronous selected-object adapter on exact immutable diagnostics and identities', async () => {
+    git(repo, 'add', 'package-lock.json');
+    const tree = git(repo, 'write-tree');
+    const sync = await import('../../../../../scripts/lint-as-committed.mjs');
+    const result = await workspaceLockTreeInspector()(runGit, repo, tree);
+    expect(result).toEqual(sync.inspectSelectedWorkspaceLock(repo, { oid: tree, kind: 'tree' }));
+    expect(result).toMatchObject({ ok: false, treeOid: tree, mismatches: [{
+      lockfile: 'package-lock.json', manifest: 'libs/app/package.json', controllingPaths: ['.gitmodules', 'libs/app'],
+    }] });
+  });
+
+  it('keeps unreadable selected metadata distinct from classified mismatches', async () => {
+    writeFileSync(join(repo, 'package-lock.json'), '{invalid');
+    git(repo, 'add', 'package-lock.json');
+    const tree = git(repo, 'write-tree');
+    expect(await workspaceLockTreeInspector()(runGit, repo, tree)).toMatchObject({ ok: false,
+      errors: [{ code: 'metadata-unreadable', path: 'package-lock.json' }] });
+    expect(await guardStagedWorkspaceLock(runGit, repo)).toMatchObject({ ok: false, error: expect.stringContaining('unreadable dependency metadata') });
+    expect(git(repo, 'write-tree')).toBe(tree);
+  });
+
   it('holds a stale pinned manifest despite a coherent live child, preserving unrelated source and the shared index', async () => {
     const index = join(root, 'private-index');
     git(repo, 'add', 'package-lock.json');
@@ -96,6 +117,7 @@ describe('commit-boundary workspace dependency coherence (real git)', () => {
     const fixture = join(repo, 'fixtures', 'invalid');
     mkdirSync(fixture, { recursive: true });
     writeFileSync(join(fixture, 'package.json'), '{intentionally-invalid-fixture');
+    writeFileSync(join(fixture, 'package-lock.json'), '{intentionally-invalid-fixture-lock');
     git(repo, 'add', 'fixtures', 'libs/app', 'package-lock.json');
     expect(await guardStagedWorkspaceLock(runGit, repo)).toEqual({ ok: true, held: [] });
   });

@@ -204,8 +204,9 @@ describe('EI-270796 root publication notifications', () => {
     expect(f.git('rev-parse', 'HEAD')).toBe(baseline);
   });
 
-  it('notifies the shared-index fallback before entering the push phase', async () => {
+  it('refuses publication when the runner cannot isolate the private index', async () => {
     const f = fixture();
+    const base = f.git('rev-parse', 'HEAD');
     writeFileSync(join(f.repo, 'a.txt'), 'shared-index publication\n');
     const commits: GitSyncRootCommit[] = [];
     const log = vi.fn();
@@ -214,14 +215,11 @@ describe('EI-270796 root publication notifications', () => {
       // Model a legacy runner that does not forward GIT_INDEX_FILE.
       runGit: (args, cwd) => f.runGit(args, cwd),
       onRootCommit: (commit) => commits.push(commit),
-      step: async (name, operation) => {
-        if (name === 'git-sync:push') expect(commits).toHaveLength(1);
-        return operation();
-      },
     });
-    expect(log).toHaveBeenCalledWith(expect.stringContaining('through the shared index instead'));
-    expect(commits).toEqual([{ sha: f.git('rev-parse', 'HEAD'), committedAtMs: expect.any(Number) }]);
-    expect(result.localCommits).toEqual(commits);
+    expect(result).toMatchObject({ status: 'error', message: expect.stringContaining('catch-all private index unavailable') });
+    expect(commits).toEqual([]);
+    expect(f.git('rev-parse', 'HEAD')).toBe(base);
+    expect(f.git('diff', '--name-only', 'HEAD')).toContain('a.txt');
   });
 
   it('keeps notification failure separate from successful publication', async () => {

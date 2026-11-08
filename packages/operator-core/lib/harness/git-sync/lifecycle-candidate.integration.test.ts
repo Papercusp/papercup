@@ -145,6 +145,40 @@ describe('lifecycle P004 capture recovery', () => {
 });
 
 describe('lifecycle P003 frozen publication', () => {
+  it.each(['coherent', 'incoherent'])('refuses a %s private-tree mutation after the last publication callback', async mutation => {
+    const f = fixture();
+    writeFileSync(join(f.repo, 'package.json'), JSON.stringify({ name: 'fixture', dependencies: { next: '1.0.0' } }));
+    const lock = (version: string) => JSON.stringify({ lockfileVersion: 3, packages: { '': { dependencies: { next: version } } } });
+    writeFileSync(join(f.repo, 'package-lock.json'), lock('1.0.0'));
+    f.git('add', 'package.json', 'package-lock.json');
+    f.git('commit', '-m', 'coherent npm metadata');
+    const base = f.git('rev-parse', 'HEAD');
+    writeFileSync(join(f.repo, 'a.txt'), 'A1 frozen\n');
+    const request = { requestId: `late-tree-${mutation}`, generation: 1, base, paths: ['a.txt'] };
+    expect((await captureGitSyncCandidate(f.runGit, f.repo, request)).ok).toBe(true);
+    const before = candidateState(f);
+    let privateIndex: string | undefined;
+    const observed: RunGit = async (args, cwd, options) => {
+      if (options?.env?.GIT_INDEX_FILE) privateIndex = options.env.GIT_INDEX_FILE;
+      return f.runGit(args, cwd, options);
+    };
+    const result = await publishGitSyncCandidate(observed, f.repo, request, { assertHeld: () => {}, beforePublish: async () => {
+      expect(privateIndex).toBeTruthy();
+      const hashed = spawnSync('git', ['hash-object', '-w', '--stdin'], { cwd: f.repo, encoding: 'utf8',
+        input: mutation === 'incoherent' ? lock('2.0.0') : 'late unrelated source\n' });
+      expect(hashed.status).toBe(0);
+      const path = mutation === 'incoherent' ? 'package-lock.json' : 'late.txt';
+      const updated = await f.runGit(['update-index', '--add', '--cacheinfo', `100644,${hashed.stdout.trim()},${path}`], f.repo,
+        { env: { GIT_INDEX_FILE: privateIndex! } });
+      expect(updated.code).toBe(0);
+      return { ok: true };
+    } });
+    expect(result).toMatchObject({ status: 'error', error: expect.stringContaining(mutation === 'incoherent'
+      ? 'NPM_INSTALL_SAFE_WORKSPACE_LOCK_DRIFT' : 'private tree changed before publication') });
+    expect(candidateState(f)).toEqual(before);
+    expect(f.git('rev-parse', 'HEAD')).toBe(base);
+  });
+
   it.each(publicationStates)('publishes A1 preserving the real %s index and later working state', async state => {
     const f = fixture();
     writeFileSync(join(f.repo, 'a.txt'), 'A1 frozen\n');

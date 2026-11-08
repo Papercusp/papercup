@@ -218,7 +218,7 @@ function normalizedRecord(value) {
  * manifest dependency maps; stale copies can detach npm's ideal-tree link targets
  * and crash inside build-ideal-tree before npm can repair them.
  */
-function findRootLockManifestMismatches(repoRoot = DEFAULT_REPO_ROOT, deps = {}) {
+export function findRootLockManifestMismatches(repoRoot = DEFAULT_REPO_ROOT, deps = {}) {
   const root = resolve(repoRoot);
   const exists = deps.existsSync ?? existsSync;
   const readJson = deps.readJson ?? ((path) => JSON.parse(readFileSync(path, "utf8")));
@@ -302,6 +302,61 @@ function findRootLockManifestMismatches(repoRoot = DEFAULT_REPO_ROOT, deps = {})
     }
   }
   return mismatches;
+}
+
+/** Inspect an immutable metadata census using the ordinary install comparator.
+ * Readers supply Git bytes and identity; this core never consults the checkout.
+ * Keep parse failures distinct from classified dependency disagreements. */
+export function inspectWorkspaceLockSnapshot(repoRoot, files, inputs = []) {
+  const root = resolve(repoRoot);
+  const name = path => relative(root, path).split(sep).join("/");
+  const directories = [...files.keys()].filter(path => path.endsWith("/package.json")).map(dirname);
+  const errors = [];
+  const mismatches = [];
+  const selectedReaders = {
+    existsSync: path => files.has(name(path)),
+    readJson: path => JSON.parse(files.get(name(path))),
+    expandWorkspaces: (patterns, base) => expandWorkspaces(patterns, base, { directories }),
+  };
+  // A fixture's package-lock is data, not another project to publish. Preserve
+  // the existing workspace scope and include independently pinned project roots.
+  const lockRoots = new Set(["", ...resolveWorkspaceDirs(root, selectedReaders),
+    ...inputs.filter(input => input.kind === "gitlink").map(input => input.path)]);
+  for (const dir of [...lockRoots].sort()) {
+    const selectedRoot = resolve(root, dir);
+    const pathAt = leaf => dir ? `${dir}/${leaf}` : leaf;
+    const lockfile = pathAt(files.has(pathAt("npm-shrinkwrap.json")) ? "npm-shrinkwrap.json" : "package-lock.json");
+    const found = findRootLockManifestMismatches(selectedRoot, {
+      existsSync: path => files.has(name(path)),
+      readJson: path => {
+        const selectedPath = name(path);
+        try { return JSON.parse(files.get(selectedPath)); }
+        catch (error) {
+          errors.push({ code: "metadata-unreadable", path: selectedPath, detail: String(error) });
+          throw error;
+        }
+      },
+      expandWorkspaces: (patterns, base) => expandWorkspaces(patterns, base, {
+        directories: directories.filter(path => !dir || path.startsWith(`${dir}/`))
+          .map(path => dir ? path.slice(dir.length + 1) : path),
+      }),
+    });
+    for (const mismatch of found) {
+      const manifest = pathAt(mismatch.workspace ? `${mismatch.workspace}/package.json` : "package.json");
+      const controllers = inputs.filter(input => input.kind === "gitlink" &&
+        [manifest, lockfile].some(path => path.startsWith(`${input.path}/`)));
+      mismatches.push({ ...mismatch, code: "workspace-lock-mismatch", lockfile, manifest,
+        controllingPaths: [...new Set(controllers.flatMap(input => [input.path, input.gitmodules]))].sort() });
+    }
+  }
+  return { ok: errors.length === 0 && mismatches.length === 0,
+    inputs: [...inputs].sort((a, b) => a.path.localeCompare(b.path)), mismatches, errors };
+}
+
+/** Preserve the established error prefix for existing install/publication callers. */
+export function assertWorkspaceLockInspection(inspection) {
+  if (inspection.errors.length) throw new Error(`unreadable dependency metadata: ${JSON.stringify(inspection.errors)}`);
+  if (inspection.mismatches.length) throw new Error(formatRootLockManifestMismatches(inspection.mismatches));
 }
 
 function formatRootLockManifestMismatches(mismatches) {

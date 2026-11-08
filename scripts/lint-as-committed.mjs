@@ -120,7 +120,7 @@ import { applyEnvLocal, parseEnvFile, PG_URL_ENV_VARS } from './lib/pg-url.mjs';
 import { withFsMutex, withFsMutexRead } from './lib/fs-mutex.mjs';
 import { withRetentionPinProtection } from './lib/retention-pins.mjs';
 import { installLockNameForRoot } from './lib/install-lock-name.mjs';
-import { assertRootLockManifestMatches } from './npm-install-safe.mjs';
+import { assertRootLockManifestMatches, inspectWorkspaceLockSnapshot, assertWorkspaceLockInspection } from './npm-install-safe.mjs';
 import { expandWorkspaces } from './assert-workspace-links.mjs';
 import { normalizeDependencyWorkspaceDirs, verifyRetainedDependencies } from './lib/committed-dependency-verification.mjs';
 
@@ -1497,42 +1497,45 @@ export function showAtRef(repoRoot, ref, path) {
 
 /** Check dependency metadata at the selected recursive pins before allocating source.
  * The shared checkout can already contain a newer, coherent submodule manifest. */
-export function assertCommittedWorkspaceLockMatches(repoRoot, ref = 'HEAD') {
-  const sha = git(['rev-parse', '--verify', `${ref}^{commit}`], repoRoot);
+export function inspectSelectedWorkspaceLock(repoRoot, { oid, kind }) {
+  if (!['commit', 'tree'].includes(kind)) throw new Error(`unsupported selected object kind: ${kind}`);
+  const selectedOid = git(['rev-parse', '--verify', `${oid}^{object}`], repoRoot);
+  const type = git(['cat-file', '-t', selectedOid], repoRoot);
+  if (type !== kind) throw new Error(`selected object type mismatch: expected ${kind}, got ${type}`);
+  const treeOid = git(['rev-parse', '--verify', `${selectedOid}^{tree}`], repoRoot);
   const files = new Map();
-  const directories = [];
+  const inputs = [];
   const collect = (source, commit, prefix = '') => {
+    const modules = gitShowOrNull(source, `${commit}:.gitmodules`);
+    const mapped = new Set(parseGitmodules(modules ?? '').map(entry => entry.path));
     for (const row of git(['ls-tree', '-r', '-z', commit], source).split('\0')) {
       if (!row) continue;
       const tab = row.indexOf('\t');
       const path = row.slice(tab + 1);
       const [mode, type, object] = row.slice(0, tab).split(' ');
       if (mode === '160000' && type === 'commit') {
+        if (!mapped.has(path)) throw new Error(`unmapped selected gitlink ${prefix + path} @ ${object}`);
+        inputs.push({ kind: 'gitlink', path: prefix + path, mode, oid: object,
+          owner: prefix, selectedOid: commit, gitmodules: prefix + '.gitmodules' });
         const subRoot = join(source, path);
         if (!existsSync(subRoot) || git(['rev-parse', '--show-toplevel'], subRoot) !== realpathSync(subRoot))
           throw new Error(`unresolvable gitlink ${prefix + path} @ ${object}`);
         collect(subRoot, object, prefix + path + '/');
-      } else if (type === 'blob' && ['package.json', 'package-lock.json', 'npm-shrinkwrap.json'].includes(basename(path))) {
-        files.set(prefix + path, { source, commit, path });
-        if (basename(path) === 'package.json') directories.push(dirname(prefix + path).split(sep).join('/'));
+      } else if (type === 'blob' && ['package.json', 'package-lock.json', 'npm-shrinkwrap.json', '.gitmodules'].includes(basename(path)) && !path.split('/').includes('node_modules')) {
+        const text = execFileSync('git', ['cat-file', 'blob', object], { cwd: source, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+        files.set(prefix + path, text);
+        inputs.push({ kind: 'blob', path: prefix + path, mode, oid: object, owner: prefix,
+          selectedOid: commit, sha256: createHash('sha256').update(text).digest('hex') });
       }
     }
   };
-  collect(repoRoot, sha);
-  const cache = new Map();
-  const read = path => {
-    const name = relative(repoRoot, path).split(sep).join('/');
-    if (!cache.has(name)) {
-      const file = files.get(name);
-      cache.set(name, file ? showAtRef(file.source, file.commit, file.path) : null);
-    }
-    return cache.get(name);
-  };
-  assertRootLockManifestMatches(repoRoot, {
-    existsSync: path => read(path) !== null,
-    readJson: path => JSON.parse(read(path)),
-    expandWorkspaces: (patterns, root) => expandWorkspaces(patterns, root, { directories }),
-  });
+  collect(repoRoot, selectedOid);
+  return { selectedOid, treeOid, kind, ...inspectWorkspaceLockSnapshot(repoRoot, files, inputs) };
+}
+
+export function assertCommittedWorkspaceLockMatches(repoRoot, ref = 'HEAD') {
+  const oid = git(['rev-parse', '--verify', `${ref}^{commit}`], repoRoot);
+  assertWorkspaceLockInspection(inspectSelectedWorkspaceLock(repoRoot, { oid, kind: 'commit' }));
 }
 
 /** Validate the focused runner's actual test-config imports before Node loads it.

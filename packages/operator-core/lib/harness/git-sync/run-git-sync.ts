@@ -5399,6 +5399,10 @@ async function publishPrivateIndexCommit(
   const treeRes = await privateGit(['write-tree'], repoPath);
   const tree = treeRes.stdout.trim();
   if (treeRes.code !== 0 || !tree) return { status: 'error', error: `${p.label} failed: ${gitFailureDetail(treeRes)}` };
+  const validateTree = workspaceLockTreeValidator();
+  try { await validateTree(privateGit, repoPath, tree); }
+  catch (error) { return { status: 'error', error: `${p.label} not published: ${error instanceof Error ? error.message : error}` }; }
+  // Even an unchanged private tree must prove the inherited base coherent.
   if (tree === p.baseTree) return { status: 'nothing' };
   const commitArgs = [
     ...GIT_SYNC_IDENTITY_ARGS,
@@ -5416,6 +5420,13 @@ async function publishPrivateIndexCommit(
     const ready = await p.beforePublish(commit, tree);
     if (!ready.ok) return { status: 'error', error: ready.error };
   }
+  // Callbacks may perform late guards. Re-read and revalidate their exact result,
+  // never publish the earlier commit under a proof for a different private tree.
+  const finalTree = await privateGit(['write-tree'], repoPath);
+  if (finalTree.code !== 0 || !finalTree.stdout.trim()) return { status: 'error', error: `${p.label} final tree unavailable` };
+  try { await validateTree(privateGit, repoPath, finalTree.stdout.trim()); }
+  catch (error) { return { status: 'error', error: `${p.label} not published: ${error instanceof Error ? error.message : error}` }; }
+  if (finalTree.stdout.trim() !== tree) return { status: 'error', error: `${p.label} private tree changed before publication; retry from the final candidate` };
   const publishArgs = ['update-ref', '-m', p.reflogMessage, 'HEAD', commit, p.base ?? ''];
   let cas = await runGit(publishArgs, repoPath);
   const publicationLock = async (): Promise<GitMetadataLockName | null> => {
@@ -7752,9 +7763,8 @@ async function commitOneRepoWithScratch(
     // path the post-stage guard held back (a late lock, drift, an importer of an excluded
     // module) that a peer re-staged before the commit was published anyway. `stageGit` is
     // the runner for every index read and write below, and the commit is write-tree →
-    // commit-tree → update-ref CAS. STRANDING GUARD: when the runner does not forward
-    // GIT_INDEX_FILE, or the seed fails, it falls back to the shared index + `git commit`;
-    // committing the tree outranks isolating it.
+    // commit-tree → update-ref CAS. An unavailable isolated index is unknown
+    // publication identity; never fall back to a shared-index git commit.
     // Attributed work can take long enough for another staged source to vanish.
     // Recheck the SHARED index before either private seeding or shared fallback.
     const catchAllCustody = await preserveVanishedStagedSources(runGit, repoPath, o.attribution, o.log);
@@ -7799,10 +7809,12 @@ async function commitOneRepoWithScratch(
           );
         }
       } else {
-        o.log(`[git-sync] ${repoPath}: ${seeded.error} — committing the catch-all through the shared index instead`);
+        return { committedLocal: committedAny, dirtyPathCount, committedCount,
+          error: `catch-all private index unavailable: ${seeded.error}`, oversized, contentErrors, skippedPaths };
       }
     } else {
-      o.log(`[git-sync] ${repoPath}: ${catchAllSite.error} — committing the catch-all through the shared index instead`);
+      return { committedLocal: committedAny, dirtyPathCount, committedCount,
+        error: `catch-all private index unavailable: ${catchAllSite.error}`, oversized, contentErrors, skippedPaths };
     }
     const buildAddArgs = (extraExcludes: string[], omittedExcludes: readonly string[] = []): string[] => {
       const omitted = new Set(omittedExcludes);
@@ -8064,33 +8076,8 @@ async function commitOneRepoWithScratch(
       committedLocal = committedAny;
       return { committedLocal, dirtyPathCount, committedCount, oversized, contentErrors, skippedPaths };
     }
-    const commitArgs = [...GIT_SYNC_IDENTITY_ARGS, 'commit', '--no-verify', ...messageArgs];
-    let c = await runGit(commitArgs, repoPath);
-    c = await recoverIndexLockContention(c, () => runGit(commitArgs, repoPath), runGit, repoPath, 'git commit', o.log);
-    if (c.code === 0) {
-      committedAny = true;
-      committedCount += 1;
-      if (o.onPublished) {
-        const sha = await headSha(runGit, repoPath);
-        if (sha) o.onPublished(sha);
-      }
-    } else if (!nothingToCommit(c)) {
-      // P-002: a real commit failure (index.lock race, corrupt index, a hook) is NOT
-      // a merge conflict. If the still-dirty tree fell through to the merge phase it
-      // would abort as a phantom 'conflict' with zero conflicted files and dispatch a
-      // merge-resolver at nothing, while the true failure (agents' work not landing)
-      // stayed invisible. Surface it as an error.
-      return {
-        committedLocal: false,
-        dirtyPathCount,
-        committedCount,
-        error: `commit failed: ${gitFailureDetail(c)}`,
-        oversized,
-        contentErrors,
-        skippedPaths,
-      };
-    }
-    committedLocal = committedAny;
+    return { committedLocal: committedAny, dirtyPathCount, committedCount,
+      error: 'catch-all private index unavailable', oversized, contentErrors, skippedPaths };
   }
   return { committedLocal, dirtyPathCount, committedCount, oversized, contentErrors, skippedPaths };
 }

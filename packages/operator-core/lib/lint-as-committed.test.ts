@@ -106,6 +106,70 @@ async function readPublicDocsModule(): Promise<{
 }
 
 const mod = await import(scriptPath);
+describe('selected workspace lock objects', () => {
+  const roots: string[] = [];
+  afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+  function metadataFixture() {
+    const root = mkdtempSync(join(tmpdir(), 'selected-lock-'));
+    roots.push(root);
+    const child = join(root, 'apps/app');
+    mkdirSync(child, { recursive: true });
+    const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+    const init = (cwd: string) => {
+      git(cwd, 'init', '-b', 'main');
+      git(cwd, 'config', 'user.name', 'fixture');
+      git(cwd, 'config', 'user.email', 'fixture@example.test');
+      git(cwd, 'config', 'core.hooksPath', '/dev/null');
+    };
+    const commit = (cwd: string) => { git(cwd, 'add', '-A'); git(cwd, 'commit', '-m', 'metadata'); return git(cwd, 'rev-parse', 'HEAD'); };
+    init(child);
+    writeFileSync(join(child, 'package.json'), JSON.stringify({ name: 'app', dependencies: { next: '1.0.0' } }));
+    const pin = commit(child);
+    init(root);
+    writeFileSync(join(root, '.gitmodules'), '[submodule "app"]\n path = apps/app\n url = ./apps/app\n');
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ private: true, workspaces: ['apps/*'] }));
+    const lock = (version: string) => JSON.stringify({ lockfileVersion: 3, packages: { '': {}, 'apps/app': { dependencies: { next: version } } } });
+    writeFileSync(join(root, 'package-lock.json'), lock('1.0.0'));
+    const base = commit(root);
+    writeFileSync(join(child, 'package.json'), JSON.stringify({ name: 'app', dependencies: { next: '2.0.0' } }));
+    commit(child);
+    return { root, child, git, lock, base, pin };
+  }
+  it('inspects commits and exact private trees using pinned child bytes and typed controllers', () => {
+    const f = metadataFixture();
+    expect(mod.inspectSelectedWorkspaceLock(f.root, { oid: f.base, kind: 'commit' }).ok).toBe(true);
+    writeFileSync(join(f.root, 'package-lock.json'), f.lock('2.0.0'));
+    f.git(f.root, 'add', 'package-lock.json');
+    const tree = f.git(f.root, 'write-tree');
+    const result = mod.inspectSelectedWorkspaceLock(f.root, { oid: tree, kind: 'tree' });
+    expect(result).toMatchObject({ ok: false, selectedOid: tree, treeOid: tree, errors: [], mismatches: [{
+      code: 'workspace-lock-mismatch', lockfile: 'package-lock.json', manifest: 'apps/app/package.json',
+      field: 'dependencies', differences: { next: { manifest: '1.0.0', lock: '2.0.0' } },
+      controllingPaths: ['.gitmodules', 'apps/app'],
+    }] });
+    expect(result.inputs).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'gitlink', path: 'apps/app', oid: f.pin })]));
+    expect(f.git(f.child, 'show', 'HEAD:package.json')).toContain('2.0.0');
+    expect(() => mod.assertCommittedWorkspaceLockMatches(f.root, f.base)).not.toThrow();
+  });
+  it('rejects wrong object kinds, annotated tags and missing objects', () => {
+    const f = metadataFixture();
+    const tree = f.git(f.root, 'rev-parse', 'HEAD^{tree}');
+    const blob = f.git(f.root, 'rev-parse', 'HEAD:package.json');
+    f.git(f.root, 'tag', '-a', 'selected-tag', '-m', 'tag');
+    for (const oid of [tree, blob, 'selected-tag'])
+      expect(() => mod.inspectSelectedWorkspaceLock(f.root, { oid, kind: 'commit' })).toThrow(/object type mismatch/);
+    expect(() => mod.inspectSelectedWorkspaceLock(f.root, { oid: '1'.repeat(40), kind: 'tree' })).toThrow();
+    // The established commit wrapper retains its commit-ish CLI compatibility.
+    expect(() => mod.assertCommittedWorkspaceLockMatches(f.root, 'selected-tag')).not.toThrow();
+  });
+  it.each(['mapping', 'object'])('fails closed for a missing recursive %s', defect => {
+    const f = metadataFixture();
+    if (defect === 'mapping') f.git(f.root, 'update-index', '--force-remove', '.gitmodules');
+    else f.git(f.root, 'update-index', '--cacheinfo', `160000,${'1'.repeat(40)},apps/app`);
+    const tree = f.git(f.root, 'write-tree');
+    expect(() => mod.inspectSelectedWorkspaceLock(f.root, { oid: tree, kind: 'tree' })).toThrow();
+  });
+});
 describe('committed focused runner dependency preflight', () => {
   it.each(['missing-export', 'missing-target'])
     ('rejects %s from the parent gitlink even when the working submodule has the dependency', async defect => {
