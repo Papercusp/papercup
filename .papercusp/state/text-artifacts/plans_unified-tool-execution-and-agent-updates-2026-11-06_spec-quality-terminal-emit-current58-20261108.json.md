@@ -1,0 +1,7 @@
+---
+rel_path: "plans/unified-tool-execution-and-agent-updates-2026-11-06/spec-quality-terminal-emit-current58-20261108.json"
+updated_at: 1794104398405
+_body: "content"
+---
+
+{"source":"spec-quality-current58-20261108.json","result":{"ok":false,"code":"spec_quality_evaluator_mismatch","error":"Spec quality requires hash protocol 2 on evaluator {\"sha\":\"f05be3cc58\",\"version\":\"0.0.0\"}; received {\"schemaVersion\":1,\"evaluator\":\"plans:evaluate-spec-quality\",\"evaluatorBuild\":{\"sha\":\"b590698487\",\"version\":\"0.0.0\"},\"specSetHashVersion\":2,\"args\":{\"harness\":\"papercusp\",\"slug\":\"unified-tool-execution-and-agent-updates-2026-11-06\",\"classRef\":\"plan-class-feature-ship\",\"expectedSpecSetHash\":\"ea406787116a897d8f14c9a4bee5d3a79f76d0be06bb96a97e061b3efb1a9cf5\",\"specSetHashVersion\":2,\"evaluatorBuild\":{\"sha\":\"b590698487\",\"version\":\"0.0.0\"},\"replaySnapshot\":{\"planContentHash\":\"e9f61a01c42ed7e5561d9464916ac4d2a23c7e5d9bad7dc4a1376b7a1abb2931\",\"clausesAsOf\":\"2026-11-08T01:37:40.588Z\"}}}. Re-evaluate and emit on the same current build/route (use the staging build selector when evaluating staging); no card or audit was created. Historical cards remain unchanged.","completionReceipt":{"status":"not-recorded","reason":"spec_quality_evaluator_mismatch"},"_meta":{"explicitFullRequest":true,"format":"json","_seeAlso":[{"tool":"scorecards:evaluate"},{"tool":"scorecards:list"},{"tool":"rubrics:trend"}]}}}

@@ -270,6 +270,9 @@ export function startRuntimeSourceCapture(destination) {
     });
   };
   const notification = (target, method, params) => {
+    // Teardown must not rewrite the already sealed terminal snapshot or write
+    // lifecycle events to its closed receipt.
+    if (finished) return;
     if (method === 'Debugger.scriptParsed') capture(target, params);
     else if (method === 'Debugger.scriptFailedToParse') fail(target.id, 'script failed to parse: ' + params.url);
     else if (method === 'Debugger.paused') { target.paused = true; resume(target); }
@@ -355,8 +358,13 @@ export function startRuntimeSourceCapture(destination) {
     fs.fsyncSync(fd); fs.closeSync(fd);
     // Preserve the terminal snapshot before cleanup: disconnecting a still-live
     // application worker must never turn forced exit into complete evidence.
-    // Explicitly release worker channels while the parent can still dispatch;
-    // otherwise notifyWhenWaitingForDisconnect can hold cleanup open.
+    // NodeWorker.disable only stops auto-attachment; it leaves existing worker
+    // sessions connected. Explicitly detach those sessions before disconnecting
+    // their parent, otherwise worker shutdown can wait forever for that parent.
+    for (const target of [...targets.values()].reverse()) {
+      if (target.parent && target.live)
+        target.parent.post('NodeWorker.detach', { sessionId: target.sessionId }, () => {});
+    }
     session.post('NodeWorker.disable', {}, () => {});
     session.disconnect();
   });

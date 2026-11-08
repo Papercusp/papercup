@@ -1,0 +1,7 @@
+---
+rel_path: "plans/unified-tool-execution-and-agent-updates-2026-11-06/rubric5-rollout-structural-canonical-review-request-v1.json"
+updated_at: 1794114590980
+_body: "content"
+---
+
+{"ok":true,"dryRun":true,"receipt":{"idempotencyKey":"review-0b927fa7670c451caaea12f96345738e0dfb31484035a3d8e46d1e45e0ef40f2","rubricRef":"acceptance-unified-tool-execution-and-agent-updates-2026-11-06","registered":true,"poll":{"tool":"rubrics:amend-status","args":{"rubricRef":"acceptance-unified-tool-execution-and-agent-updates-2026-11-06","idempotencyKey":"review-0b927fa7670c451caaea12f96345738e0dfb31484035a3d8e46d1e45e0ef40f2"}}},"preview":{"rubricRevision":5,"subjectPlanRevision":63,"changedBars":["R-98"],"priorBarSetHash":"5e308384434fa416beddfc475217b67a9f246349f80289bfc43e60d41252c528","nextBarSetHash":"379a25c3d109586451e7554223264411d627273199a8c8f2393a7d271c562b94","projectionCount":340,"approval":{"schemaVersion":1,"kind":"acceptance-bar-amendment-approval","rubricRef":"acceptance-unified-tool-execution-and-agent-updates-2026-11-06","subjectPlan":"unified-tool-execution-and-agent-updates-2026-11-06","proposedPatchHash":"385cc3cda7d8e1dce310b6b3822f7cb13c1bb475261b89f02dae339c65a0a8d8","reviewSourceHash":"0a3f88ca193ba1138cc99849197b68f4ec4e2d3c9bfacab3aedd73975abd24ef","bars":[{"barKey":"R-98","priorBarHash":"1bc518de423c08e988e8a63ddb50175f484b288e1d9cc4aa87eba86879d101c1","nextBarHash":"a406aaf8974b4d168259d98aacfd483c6d397cc41d6267c39c494b7273951a0f"}]}}}

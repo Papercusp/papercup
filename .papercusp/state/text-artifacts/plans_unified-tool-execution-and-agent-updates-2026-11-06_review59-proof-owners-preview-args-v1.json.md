@@ -1,0 +1,7 @@
+---
+rel_path: "plans/unified-tool-execution-and-agent-updates-2026-11-06/review59-proof-owners-preview-args-v1.json"
+updated_at: 1794107334407
+_body: "content"
+---
+
+{"rubricRef":"acceptance-unified-tool-execution-and-agent-updates-2026-11-06","barMappingDelta":[{"barKey":"R-75","prior":{"planItemIds":["P-007","P-010","P-013"],"evidencePlane":"tree"},"next":{"planItemIds":["P-013"],"evidencePlane":"tree"}},{"barKey":"R-76","prior":{"planItemIds":["P-007","P-010","P-013"],"evidencePlane":"tree"},"next":{"planItemIds":["P-014"],"evidencePlane":"tree"}}],"dryRun":true,"expectedRubricRevision":3,"expectedSubjectPlanRevision":59,"idempotencyKey":"unified-review58-r75-r76-proof-owners-v1","reason":"First phase of outside whole-plan review1219839/1219842 and rubric critique1219854 reconciliation. Move R75 ownership to P013 and R76 to P014 while their exact current BAR hashes/planes remain unchanged. The separately reviewed semantic follow-up will promote R75 to live and R76 to deployed and add exact causal selectors. This avoids deployed-proof dependencies on ordinary producer implementation. Original98 outcome models and committed amendment conservation remain preserved. Companion exact draft is PG artifact review58-consolidated-causal-cases-planes-rollout-draft-v2.json; subject plan59 already records full producer ordering/journey/rollback obligations.","reviewerModel":{"agent":"codex","model":"sol","effort":"high"},"requestReview":{"workItemId":"WI-6554700010046131","harness":"papercusp"},"payloadTier":"full"}
