@@ -60,9 +60,9 @@ it('binds an authenticated full census to the executed private API bundle withou
         bundleSha256: prepared!.sha256, sourcePins: expect.arrayContaining([
           expect.objectContaining({ path: 'packages/operator-core/lib/observability/runtime.ts' }),
           expect.objectContaining({ path: 'packages/plugin-loader/src/index.ts' }),
-        ]), substitutionRefused: true, readbackVerified: true,
+        ]), invalidBearerRefusal: { tool: 'dev:telemetry', reason: 'superuser_invalid_bearer', isError: true },
+        substitutionRefused: true, readbackVerified: true,
         populationComplete: false, closureAccepted: false, executionAdmitted: false });
-      expect([401, 403]).toContain(proof.invalidBearerStatus);
       expect(proof.total).toBeGreaterThan(0);
     },
   });

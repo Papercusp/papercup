@@ -12,6 +12,25 @@ const sources = ['packages/operator-core/lib/observability/runtime.ts',
   'packages/operator-core/lib/plugin-host-runtime.ts', 'packages/plugin-loader/src/index.ts'];
 const sha256 = (bytes: string | Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 
+export async function verifyInvalidSecurityCensusBearerRefusal(url: URL, workspace: string) {
+  // Initialize negotiates the MCP session. Authentication of a local SU bearer
+  // happens at tools/call, so exercise the producer rather than its handshake.
+  const { client } = await connectAgentMcp({ name: 'invalid-census-control', url: url.href,
+    mode: 'http', timeoutMs: 10_000,
+    headers: { Authorization: 'Bearer invalid-private-census-token' } });
+  try {
+    const result = await client.callTool({ name: 'dev:telemetry',
+      arguments: { view: 'security-census', capture: true, harness: workspace } }, undefined,
+    { timeout: 10_000 });
+    const text = (result.content as Array<{ type: string; text?: string }>)
+      .filter(part => part.type === 'text').map(part => part.text ?? '').join('\n').trim();
+    assert.equal(result.isError, true, 'invalid bearer must not enter the discovery producer');
+    assert.equal(text, 'request_rejected: superuser_invalid_bearer',
+      `invalid bearer control returned an unrelated refusal: ${text.slice(0, 1000)}`);
+    return { tool: 'dev:telemetry', reason: 'superuser_invalid_bearer', isError: true } as const;
+  } finally { await client.close(); }
+}
+
 export async function measureSecurityCensusScenario(o: {
   workspace: string; base: string; evidenceDir: string; bundle: string; hostPid: number; expectedSha: string;
 }) {
@@ -21,14 +40,7 @@ export async function measureSecurityCensusScenario(o: {
   const url = new URL(o.base + '/api/mcp');
   for (const [key, value] of Object.entries({ superuser: '1', workspace: o.workspace, harness: o.workspace,
     client: 'su-private-security-census', format: 'json', structured: '1' })) url.searchParams.set(key, value);
-  const refused = await fetch(url, { method: 'POST', headers: {
-    'content-type': 'application/json', accept: 'application/json, text/event-stream',
-    authorization: 'Bearer invalid-private-census-token',
-  }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize',
-    params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'invalid-census-control', version: '1' } } }),
-  signal: AbortSignal.timeout(10_000) });
-  await refused.arrayBuffer();
-  assert.ok([401, 403].includes(refused.status), 'invalid bearer must not enter the discovery producer');
+  const invalidBearerRefusal = await verifyInvalidSecurityCensusBearerRefusal(url, o.workspace);
 
   const { client } = await connectAgentMcp({ name: 'private-security-census', url: url.href,
     mode: 'http', headers: { Authorization: `Bearer ${token}` } });
@@ -100,7 +112,7 @@ export async function measureSecurityCensusScenario(o: {
     const proof = { workspace: o.workspace, hostPid: o.hostPid, producer: identity.ownerId,
       sourceSha: artifact.sourceSha, bundleSha256, sourcePins, snapshotRef: capture.snapshotRef,
       receiptRef: capture.receiptRef, discoverySha256: capture.discoverySha256, total: snapshot.total,
-      invalidBearerStatus: refused.status, substitutionRefused: true, readbackVerified: true,
+      invalidBearerRefusal, substitutionRefused: true, readbackVerified: true,
       populationComplete: false, closureAccepted: false, executionAdmitted: false,
       scope: 'private current-build authenticated runtime discovery; security qualification remains open' };
     await writeFile(join(o.evidenceDir, 'security-census-proof.json'), JSON.stringify(proof), { flag: 'wx' });
