@@ -43,6 +43,7 @@ import {
   type ReadActionability,
 } from '../liveness-oracle';
 import type { SessionState } from '../presence-wakeability';
+import { traceNamedQueryStage } from '../../db-diagnostic-correlation-wiring';
 
 /** A loop carry-note scope is `loop:<harness>:<ownerId>` (carry-note.ts loopScope). */
 function parseLoopScope(scope: string): { harness: string; ownerId: string } | null {
@@ -146,7 +147,7 @@ export async function listOwnerWalls(opts: ListOwnerWallsOpts = {}): Promise<{
   // ── Liveness inputs: the shared oracle decides whether an answer has a live
   // waiter. Keep the full presence row rather than rebuilding a heartbeat-only
   // rule here.
-  const presence = await sql<
+  const presence = await traceNamedQueryStage('owner-walls-presence', () => sql<
     Array<{
       owner_id: string;
       workspace_id: string;
@@ -161,7 +162,7 @@ export async function listOwnerWalls(opts: ListOwnerWallsOpts = {}): Promise<{
            host, pid, source, agent_role
       FROM harness_shared.coord_presence
      WHERE (workspace_id = ${ws} OR workspace_id = 'default')
-  `;
+  `);
   const presenceByOwner = new Map<string, (typeof presence)[number]>();
   for (const p of presence) {
     const current = presenceByOwner.get(p.owner_id);
@@ -173,13 +174,13 @@ export async function listOwnerWalls(opts: ListOwnerWallsOpts = {}): Promise<{
   const walls: WallRow[] = [];
 
   // ── Source 1: carried rows; only owner/system origins are unconditional gates ──
-  const notes = await sql<Array<{ scope: string; note: string | null; updated_ts: Date | null }>>`
+  const notes = await traceNamedQueryStage('owner-walls-carry-notes', () => sql<Array<{ scope: string; note: string | null; updated_ts: Date | null }>>`
     SELECT scope, note, updated_ts
       FROM harness_shared.carry_notes
      WHERE (workspace_id = ${ws} OR workspace_id = 'default')
        AND scope LIKE 'loop:%'
        AND note IS NOT NULL
-  `;
+  `);
   for (const row of notes) {
     const parsed = parseLoopScope(row.scope);
     if (!parsed) continue;
@@ -205,7 +206,7 @@ export async function listOwnerWalls(opts: ListOwnerWallsOpts = {}): Promise<{
   }
 
   // ── Source 2: work-items parked in needs-human ───────────────────────────
-  const items = await sql<
+  const items = await traceNamedQueryStage('owner-walls-needs-human', () => sql<
     Array<{
       feature_id: string;
       title: string | null;
@@ -220,7 +221,7 @@ export async function listOwnerWalls(opts: ListOwnerWallsOpts = {}): Promise<{
        AND status = 'needs-human'
        AND (${opts.harness ?? null}::text IS NULL OR harness_slug = ${opts.harness ?? null})
        AND (${opts.ownerId ?? null}::text IS NULL OR taken_by = ${opts.ownerId ?? null})
-  `;
+  `);
   for (const it of items) {
     const sinceMs = it.last_progress_at ? new Date(it.last_progress_at).getTime() : null;
     walls.push({
@@ -243,7 +244,7 @@ export async function listOwnerWalls(opts: ListOwnerWallsOpts = {}): Promise<{
   // scope is resolved for filtering/display, and a work_item-scoped fact joins
   // the existing work-items view only to recover that item's harness.
   const factHarness = opts.harness ?? null;
-  const facts = await sql<
+  const facts = await traceNamedQueryStage('owner-walls-standing-facts', () => sql<
     Array<{
       scope: FactScope;
       scope_ref: string | null;
@@ -279,7 +280,7 @@ export async function listOwnerWalls(opts: ListOwnerWallsOpts = {}): Promise<{
          OR (f.scope = 'harness' AND f.scope_ref = ${factHarness})
          OR (f.scope = 'work_item' AND wi.harness_slug = ${factHarness})
        )
-  `;
+  `);
   for (const fact of facts) {
     const sinceMs = fact.updated_at ? new Date(fact.updated_at).getTime() : null;
     const recheck =
@@ -328,7 +329,7 @@ export async function listOwnerWalls(opts: ListOwnerWallsOpts = {}): Promise<{
   let verdicts = new Map<string, LivenessVerdict>();
   if (subjects.length > 0) {
     try {
-      verdicts = await resolveSessionStates(subjects);
+      verdicts = await traceNamedQueryStage('owner-walls-liveness', () => resolveSessionStates(subjects));
     } catch {
       // Preserve rows as unknown rather than fabricating an actionable wall
       // when the liveness store is temporarily unavailable.

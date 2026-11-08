@@ -11,6 +11,10 @@
  * `waiting: 0` as though it were a fact about the world.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  namedQueryStageTimings,
+  withNamedQueryDiagnosticContext,
+} from '../../db-diagnostic-correlation-wiring';
 
 const h = vi.hoisted(() => ({ sql: vi.fn(), resolveSessionStates: vi.fn() }));
 
@@ -25,6 +29,7 @@ vi.mock('../liveness-oracle', async (orig) => ({
 }));
 
 const tool = (await import('./walls')).default;
+const { listOwnerWalls } = await import('./walls');
 
 type Out = {
   data: {
@@ -54,6 +59,66 @@ beforeEach(() => {
     .mockResolvedValueOnce([]) // carry_notes
     .mockResolvedValueOnce([]) // needs-human work_items
     .mockResolvedValueOnce([]); // wall: standing facts
+});
+
+describe('coord:walls request diagnostics', () => {
+  const sqlStages = ['owner-walls-presence', 'owner-walls-carry-notes',
+    'owner-walls-needs-human', 'owner-walls-standing-facts'];
+
+  it.each(sqlStages)('retains the pending %s read before it settles', async stage => {
+    let release!: (rows: never[]) => void;
+    const pending = new Promise<never[]>(resolve => { release = resolve; });
+    h.sql.mockReset();
+    for (const candidate of sqlStages) h.sql.mockResolvedValueOnce(candidate === stage ? pending : []);
+    await withNamedQueryDiagnosticContext('plans.attention', async () => {
+      const read = listOwnerWalls({ workspaceId: 'ws-test' });
+      try {
+        await vi.waitFor(() => expect(namedQueryStageTimings()?.stages).toContainEqual({
+          stage, outcome: 'pending', elapsedMs: expect.any(Number),
+        }));
+      } finally {
+        release([]);
+      }
+      expect(await read).toMatchObject({ walls: [], total: 0, waiting: 0 });
+      expect(namedQueryStageTimings()?.stages.map(row => [row.stage, row.outcome]))
+        .toEqual(sqlStages.map(name => [name, 'fulfilled']));
+    });
+    expect(namedQueryStageTimings()).toBeNull();
+  });
+
+  it('distinguishes a pending liveness read from fulfilled SQL and preserves unknown on failure', async () => {
+    let reject!: (error: Error) => void;
+    h.resolveSessionStates.mockReturnValueOnce(new Promise((_, rejectRead) => { reject = rejectRead; }));
+    h.sql.mockReset();
+    h.sql.mockResolvedValueOnce([]).mockResolvedValueOnce([]).mockResolvedValueOnce([{
+      feature_id: 'WI-waiting', title: 'Owner decision', harness_slug: 'papercusp',
+      taken_by: 'su-waiting', last_progress_at: new Date(),
+    }]).mockResolvedValueOnce([]);
+    await withNamedQueryDiagnosticContext('plans.attention', async () => {
+      const read = listOwnerWalls({ workspaceId: 'ws-test' });
+      try {
+        await vi.waitFor(() => expect(namedQueryStageTimings()?.stages).toContainEqual({
+          stage: 'owner-walls-liveness', outcome: 'pending', elapsedMs: expect.any(Number),
+        }));
+        expect(namedQueryStageTimings()?.stages.slice(0, 4).every(row => row.outcome === 'fulfilled')).toBe(true);
+      } finally {
+        reject(new Error('liveness unavailable'));
+      }
+      expect(await read).toMatchObject({ total: 1, waiting: 0, walls: [{ status: 'unknown' }] });
+      expect(namedQueryStageTimings()?.stages.at(-1)?.outcome).toBe('rejected');
+    });
+  });
+
+  it('preserves SQL rejection while recording the failed stage', async () => {
+    const failure = new Error('presence unavailable');
+    h.sql.mockReset().mockRejectedValueOnce(failure);
+    await withNamedQueryDiagnosticContext('plans.attention', async () => {
+      await expect(listOwnerWalls({ workspaceId: 'ws-test' })).rejects.toBe(failure);
+      expect(namedQueryStageTimings()?.stages).toEqual([{
+        stage: 'owner-walls-presence', outcome: 'rejected', elapsedMs: expect.any(Number),
+      }]);
+    });
+  });
 });
 
 describe('coord:walls handler', () => {

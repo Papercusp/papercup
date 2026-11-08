@@ -44,7 +44,9 @@ type NamedQueryStage = 'goal-detail-dependencies' | 'goal-detail-sql' | 'goal-ho
   'attention-import' | 'attention-read' | 'attention-scope' | 'attention-aggregate' | 'attention-plans' | 'attention-escalations' |
   'attention-messages' | 'attention-smoke' | 'attention-reports' | 'attention-improvements' |
   'attention-approvals' | 'attention-questions' | 'attention-scout' | 'attention-needs-human' |
-  'attention-walls' | 'attention-dark-flags' | 'attention-gates' | 'attention-blocked-items' |
+  'attention-walls' | 'owner-walls-presence' | 'owner-walls-carry-notes' |
+  'owner-walls-needs-human' | 'owner-walls-standing-facts' | 'owner-walls-liveness' |
+  'attention-dark-flags' | 'attention-gates' | 'attention-blocked-items' |
   'attention-decisions' | 'attention-directives' | 'attention-triage' | 'attention-authorizer';
 interface NamedQueryStageTiming {
   stage: NamedQueryStage;

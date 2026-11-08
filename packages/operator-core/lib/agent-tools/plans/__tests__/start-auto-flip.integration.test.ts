@@ -600,14 +600,19 @@ describe('plans:start — refused approval leaves no persisted start (P-002)', (
   it('preserves the row when the canonical body writer refuses activation after the mutator passes', async () => {
     await seedLegacyPlan('draft');
     const before = await persistedStartState();
-    START_GATES.activation
-      .mockResolvedValueOnce({ satisfied: true, auditSeq: 1 })
-      .mockResolvedValueOnce({ satisfied: false, code: 'conversation_audit_required' });
+    // Readiness diagnostics can re-read activation after a refusal. Target the
+    // writer's pending body, so those reads cannot move this fixture's refusal.
+    START_GATES.activation.mockImplementation((_tx, scope: { pendingContent?: string }) =>
+      scope.pendingContent === undefined
+        ? { satisfied: true, auditSeq: 1 }
+        : { satisfied: false, code: 'conversation_audit_required' });
 
     const refused = await runStart();
     expect(refused.isError).toBe(true);
     expect(refused.data).toMatchObject({ ok: false, error: 'conversation_audit_required' });
-    expect(START_GATES.activation).toHaveBeenCalledTimes(2);
+    const writes = START_GATES.activation.mock.calls.filter(([, scope]) => scope.pendingContent !== undefined);
+    expect(writes).toHaveLength(1);
+    expect(parsePlan(writes[0][1].pendingContent, { filePath: `${SLUG}.md` }).frontmatter.status).toBe('ready');
     expect(await persistedStartState()).toEqual(before);
     expect(START_GATES.promotion).not.toHaveBeenCalled();
     expect(START_GATES.prediction).not.toHaveBeenCalled();
