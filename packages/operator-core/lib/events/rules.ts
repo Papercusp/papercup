@@ -85,7 +85,7 @@ interface ConfirmedRepairAdmission {
 /** Extract only the one successful write shape that is allowed to wake repair verification. */
 function confirmedRepairAdmission(e: import('./types').ToolInvocationEvent): ConfirmedRepairAdmission | null {
   const args = e.args as { op?: unknown; confirm?: unknown } | undefined;
-  if ((args?.op !== 'admit' && args?.op !== 'converge') || args.confirm !== true) return null;
+  if ((args?.op !== 'admit' && args?.op !== 'converge' && args?.op !== 'heal-generated') || args.confirm !== true) return null;
   const data = e.result.data as
     | {
         ok?: unknown;

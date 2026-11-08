@@ -483,6 +483,81 @@ describe('checkUnreachableTerminalGuard (WI-1399 — IO wrapper)', () => {
     expect(autoPause).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['unknown', 'native-observation-unavailable', true, 1],
+    ['unknown', 'inference-observation-unavailable', true, 1],
+    ['unknown', 'failure-settle-grace', true, 0],
+    ['blocked', 'native-observation-unavailable', false, 20],
+    ['blocked', 'inference-observation-unavailable', false, 20],
+  ] as const)(
+    'COMATOSE-HOST: returned %s/%s evidence never authorizes auto-pause',
+    async (status, reason, handled, probes) => {
+      const autoPause = vi.fn(async () => {});
+      const probeReachability = vi.fn(async () => verdict(true));
+      const recoverCurrentExecution = vi.fn(async () => ({
+        handled,
+        state: {
+          status, reason, probes, attempts: 0,
+          nextProbeAt: Date.now() + 300_000,
+          observedAt: Date.now(),
+          generation: null,
+          lastAttemptAt: null,
+        },
+      }));
+
+      const res = await checkUnreachableTerminalGuard(
+        { ...input, circuitOpen: true, stuckFireCount: comatoseStuckFiresForTermination() },
+        { autoPause, probeReachability, recoverCurrentExecution },
+      );
+
+      expect(res).toMatchObject({ breach: false, reason: 'current-execution-recovery-unavailable' });
+      expect(recoverCurrentExecution).toHaveBeenCalledTimes(1);
+      expect(autoPause).not.toHaveBeenCalled();
+    },
+  );
+
+  it('COMATOSE-HOST: an indeterminate host change with no state fails open', async () => {
+    const autoPause = vi.fn(async () => {});
+    const probeReachability = vi.fn(async () => verdict(true));
+    const recoverCurrentExecution = vi.fn(async () => ({ handled: true }));
+
+    const res = await checkUnreachableTerminalGuard(
+      { ...input, circuitOpen: true, stuckFireCount: comatoseStuckFiresForTermination() },
+      { autoPause, probeReachability, recoverCurrentExecution },
+    );
+
+    expect(res).toMatchObject({ breach: false, reason: 'current-execution-recovery-unavailable' });
+    expect(autoPause).not.toHaveBeenCalled();
+  });
+
+  it.each(['native-start-retry-exhausted', 'native-start-unverified'])(
+    'COMATOSE-HOST still pauses for a conclusive exhausted %s budget',
+    async reason => {
+      const autoPause = vi.fn(async () => {});
+      const probeReachability = vi.fn(async () => verdict(true));
+      const recoverCurrentExecution = vi.fn(async () => ({
+        handled: false,
+        state: {
+          status: 'blocked' as const, reason, attempts: 5, probes: 20,
+          nextProbeAt: Date.now() + 300_000,
+          observedAt: Date.now(),
+          generation: 'host:2:child:3',
+          lastAttemptAt: Date.now() - 300_000,
+        },
+      }));
+
+      const res = await checkUnreachableTerminalGuard(
+        { ...input, circuitOpen: true, stuckFireCount: comatoseStuckFiresForTermination() },
+        { autoPause, probeReachability, recoverCurrentExecution },
+      );
+
+      expect(res.breach).toBe(true);
+      expect(autoPause).toHaveBeenCalledExactlyOnceWith(
+        input.sql, input.routineId, expect.stringContaining('COMATOSE-HOST'),
+      );
+    },
+  );
+
   it('COMATOSE-HOST still pauses after a live host has no current native execution', async () => {
     const autoPause = vi.fn(async () => {});
     const probeReachability = vi.fn(async () => verdict(true));

@@ -288,6 +288,19 @@ export async function checkUnreachableTerminalGuard(
       return { breach: false, reason: 'current-execution-recovery-unavailable', reachability };
     }
 
+    // Exhausted observation probes hand off to the paced recovery actors, but
+    // unavailable evidence still cannot certify a live host as comatose. A host
+    // change during the locked read can also return handled:true without a state.
+    // Keep handled:false without a state and conclusive failure budgets terminal.
+    if (
+      (!execution.state && execution.handled) ||
+      execution.state?.status === 'unknown' ||
+      execution.state?.reason === 'native-observation-unavailable' ||
+      execution.state?.reason === 'inference-observation-unavailable'
+    ) {
+      return { breach: false, reason: 'current-execution-recovery-unavailable', reachability };
+    }
+
     const activeReason = execution.state?.reason;
     if (
       execution.state?.status === 'running' &&

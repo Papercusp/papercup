@@ -107,8 +107,8 @@ describe('P-001 confirmed repair admission reactions', () => {
     repairQueue: { candidate, repairHead },
   };
 
-  it('fires both durable actions with the exact persisted candidate/head tuple', () => {
-    const actions = matchReactions(repairAdmissionEvent({ op: 'admit', confirm: true }, persisted));
+  it.each(['admit', 'converge', 'heal-generated'])('fires both durable actions for %s with the exact persisted candidate/head tuple', (op) => {
+    const actions = matchReactions(repairAdmissionEvent({ op, confirm: true }, persisted));
     const event = actions.find((action) => action.ruleId === 'gate:repair-admitted:event');
     const rejudge = actions.find((action) => action.ruleId === 'gate:repair-admitted:rejudge');
     expect(event).toMatchObject({
@@ -124,11 +124,13 @@ describe('P-001 confirmed repair admission reactions', () => {
     });
   });
 
-  it('fires nothing for dry-runs, failed persistence, or already-admitted reads', () => {
+  it.each(['admit', 'converge', 'heal-generated'])('fires nothing for %s dry-runs, failed persistence, or already-admitted reads', (op) => {
     const controls = [
-      repairAdmissionEvent({ op: 'admit', confirm: false }, persisted),
-      repairAdmissionEvent({ op: 'admit', confirm: true }, { ...persisted, ok: false, persisted: false }),
-      repairAdmissionEvent({ op: 'admit', confirm: true }, { ...persisted, admitted: false }),
+      repairAdmissionEvent({ op, confirm: false }, persisted),
+      repairAdmissionEvent({ op, confirm: true }, { ...persisted, ok: false, persisted: false }),
+      repairAdmissionEvent({ op, confirm: true }, { ...persisted, persisted: false }),
+      repairAdmissionEvent({ op, confirm: true }, { ...persisted, admitted: false }),
+      repairAdmissionEvent({ op, confirm: true }, { ...persisted, repairQueue: undefined }),
     ];
     for (const event of controls) {
       expect(matchReactions(event).filter((action) => action.ruleId.startsWith('gate:repair-admitted'))).toEqual([]);

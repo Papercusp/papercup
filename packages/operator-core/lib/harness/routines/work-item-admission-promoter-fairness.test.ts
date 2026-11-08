@@ -4,7 +4,8 @@ import type { Sql } from 'postgres';
 const io = vi.hoisted(() => ({
   review: vi.fn(), recover: vi.fn(), promote: vi.fn(), components: vi.fn(),
 }));
-vi.mock('@dbos-inc/dbos-sdk', () => ({
+vi.mock('@dbos-inc/dbos-sdk', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@dbos-inc/dbos-sdk')>(),
   DBOS: { registerWorkflow: (workflow: unknown) => workflow },
 }));
 vi.mock('./system-actions', () => ({ SYSTEM_TARGET_PREFIX: 'system:', registerSystemAction: vi.fn() }));
