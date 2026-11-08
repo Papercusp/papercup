@@ -142,14 +142,17 @@ export class PgL2Store {
         ? null
         : new Date(this.nowMs() + opts.hardTtlMs);
     await sql`
-      INSERT INTO harness_shared.cache_l2
+      INSERT INTO harness_shared.cache_l2 AS existing
         (workspace_id, cache_key, value, tags, generation, expires_at, created_at)
       VALUES (
         ${workspaceId}, ${key}, ${JSON.stringify(value ?? null)}::text::jsonb,
         ${tags}, ${generation}, ${expiresAt}, now()
       )
       ON CONFLICT (workspace_id, cache_key) DO UPDATE SET
-        value      = EXCLUDED.value,
+        value      = CASE
+          WHEN existing.value IS DISTINCT FROM EXCLUDED.value THEN EXCLUDED.value
+          ELSE existing.value
+        END,
         tags       = EXCLUDED.tags,
         generation = EXCLUDED.generation,
         expires_at = EXCLUDED.expires_at,
