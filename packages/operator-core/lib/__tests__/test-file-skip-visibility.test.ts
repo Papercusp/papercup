@@ -394,6 +394,38 @@ describe('--require-ran — turning "did my fix get exercised?" into a checked p
     expect(parsed.vitestArgs).toEqual(['--testNamePattern=pattern']);
   });
 
+  it.each([
+    ['bare option', ['lib/a.test.ts', '--require-ran']],
+    ['separate value', ['--require-ran', 'assertion', 'lib/a.test.ts']],
+    ['empty value', ['--require-ran=', 'lib/a.test.ts']],
+    ['blank value', ['--require-ran=   ', 'lib/a.test.ts']],
+    ['after separator', ['lib/a.test.ts', '--', '--require-ran=assertion']],
+    ['after Vitest option', ['lib/a.test.ts', '-t', 'assertion', '--require-ran=assertion']],
+  ])('refuses require-ran %s before route discovery or private preparation', async (_label, args) => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const prepare = vi.fn(() => { throw new Error('private preparation must not run'); });
+    const execute = vi.fn(() => { throw new Error('test execution must not run'); });
+    try {
+      const code = await main(args, {
+        repoRoot: join(tmpdir(), 'require-ran-no-repository'),
+        runPrivateVerifierImpl: prepare,
+        preflightPrivateIntegrationPgImpl: prepare,
+        runVitestListImpl: execute,
+        runGovernedTestProcessImpl: execute,
+        runCapturedTestProcessImpl: execute,
+      });
+      expect(code).toBe(2);
+      const output = errorSpy.mock.calls.map((call) => String(call[0])).join('\n');
+      expect(output).toContain('TEST_FILE_ROUTE_ERROR');
+      expect(output).toContain('--require-ran=<substring>');
+      expect(output).not.toContain('TEST_FILE_RESULT');
+      expect(prepare).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it('passes only when the named assertion actually EXECUTED', () => {
     expect(requireRanVerdict('pays for the answer ONCE', outcomes)).toMatchObject({ status: 'ran' });
   });
