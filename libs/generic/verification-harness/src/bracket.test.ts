@@ -296,6 +296,69 @@ ${exitCode ? 'exit 7' : 'vh_begin ship'}
     }
   }, 30_000);
 
+  it.each(['loader', 'adapter', 'exports'])('refuses a broken %s graph before running a phase', (broken) => {
+    const fixture = tmp();
+    let r: ReturnType<typeof run> | undefined;
+    try {
+      const pkg = path.join(fixture, 'node_modules', 'tsx');
+      mkdirSync(path.join(fixture, 'node_modules', '.bin'), { recursive: true });
+      mkdirSync(pkg);
+      mkdirSync(path.join(fixture, 'src'));
+      writeFileSync(path.join(fixture, 'package.json'), '{"type":"module"}');
+      writeFileSync(path.join(pkg, 'package.json'), '{"name":"tsx","type":"module","exports":"./loader.mjs"}');
+      writeFileSync(path.join(pkg, 'cli.mjs'), '#!/usr/bin/env node\n', { mode: 0o755 });
+      symlinkSync('../tsx/cli.mjs', path.join(fixture, 'node_modules', '.bin', 'tsx'));
+      writeFileSync(path.join(pkg, 'loader.mjs'), broken === 'loader' ? 'throw new Error("broken-loader-graph");' : '');
+      writeFileSync(path.join(fixture, 'src', 'cli.ts'), broken === 'adapter'
+        ? 'import "./missing-recorder-dependency.js";'
+        : 'export function planCommand() {}');
+      r = run(`
+VH_LIB_DIR=${JSON.stringify(fixture)}
+vh_phase prep ""
+vh_init broken-recorder "$ROOT/ev"
+vh_begin prep
+echo phase-must-not-run
+`, { VH_TSX: '', VH_FAIL_OPEN: '0' });
+      expect(r.code).toBe(2);
+      expect(r.stderr).toContain('cli-loader-preflight-failed');
+      expect(r.stdout).not.toContain('phase-must-not-run');
+      expect(r.stdout).not.toContain('VH_BEGIN');
+      expect(r.result).toBeNull();
+      expect(readdirSync(path.join(r.root, 'ev'))).toEqual([]);
+    } finally {
+      if (r) rmSync(r.root, { recursive: true, force: true });
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it('finalizes with the runtime pinned before phases even when PATH changes', () => {
+    const fixture = tmp();
+    let r: ReturnType<typeof run> | undefined;
+    try {
+      const initial = path.join(fixture, 'initial');
+      const changed = path.join(fixture, 'changed');
+      mkdirSync(initial);
+      mkdirSync(changed);
+      writeFileSync(path.join(initial, 'node'), `#!/bin/bash\nexec ${JSON.stringify(process.execPath)} "$@"\n`, { mode: 0o755 });
+      writeFileSync(path.join(changed, 'node'), '#!/bin/bash\necho unexpected-runtime-resolution >&2\nexit 91\n', { mode: 0o755 });
+      r = run(`${chain}
+vh_begin prep
+PATH=${JSON.stringify(changed)}:$PATH
+vh_begin build
+vh_begin ship
+vh_finish
+`, { VH_TSX: '', PATH: `${initial}:${process.env.PATH}` });
+      expect(r.code, r.stderr).toBe(0);
+      expect(r.stderr).not.toContain('unexpected-runtime-resolution');
+      expect(r.stdout).toMatch(/HARNESS_RESULT harness=linear verdict=pass/);
+      expect(r.result.verdict).toBe('pass');
+      expect(r.result.phases.map((p: { status: string }) => p.status)).toEqual(['passed', 'passed', 'passed']);
+    } finally {
+      if (r) rmSync(r.root, { recursive: true, force: true });
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   // WI-10004050: cli.ts gated main() on argv[1] === import.meta.url's path. Reached through a
   // symlinked checkout those differ (link vs real file), so the CLI exited 0 printing nothing:
   // an empty plan, then a finalize that never wrote a result.

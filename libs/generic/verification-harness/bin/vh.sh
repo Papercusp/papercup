@@ -82,6 +82,7 @@ VH_MAIN_PID="${BASHPID:-$$}"
 # Initialized so a `set -u` caller can never trip on them; evidence writes below are non-fatal
 # so a `set -e` caller can never be aborted by its own instrumentation.
 VH_CUR_PHASE="" VH_CUR_STEP="" VH_CUR_FAIL="" VH_CUR_DETAIL="" VH_DISABLED_FAILED=0
+VH_CLI_NODE="" VH_CLI_LOADER=""
 
 _vh_say() {
   if [ "${VH_LOG_FD:-1}" = 2 ]; then printf '%s\n' "$*" >&2; else printf '%s\n' "$*"; fi
@@ -93,12 +94,11 @@ _vh_disable() { # <reason>
     "${VH_NAME:-?}" "$1" >&2
 }
 
-_vh_cli() {
-  if [ -n "${VH_TSX:-}" ]; then
-    "$VH_TSX" "$VH_LIB_DIR/src/cli.ts" "$@"
-    return $?
-  fi
-  local d="$VH_LIB_DIR" tsx_bin="" loader
+_vh_prepare_cli() {
+  [ -z "${VH_TSX:-}" ] || return 0
+  [ -z "$VH_CLI_NODE" ] || return 0
+  local d="$VH_LIB_DIR" tsx_bin="" loader node_bin
+  node_bin="$(command -v node)" || return $?
   while [ "$d" != "/" ]; do
     if [ -x "$d/node_modules/.bin/tsx" ]; then
       tsx_bin="$d/node_modules/.bin/tsx"
@@ -110,13 +110,32 @@ _vh_cli() {
   # Load the maintained module directly: the tsx CLI opens an IPC socket below
   # TMPDIR before main(), which can exceed the Unix socket path limit.
   # Resolve from the real executable so local, global and symlinked installs work.
-  loader="$(node -e '
+  loader="$("$node_bin" -e '
     const { realpathSync } = require("node:fs");
     const { createRequire } = require("node:module");
     const { pathToFileURL } = require("node:url");
     console.log(pathToFileURL(createRequire(realpathSync(process.argv[1])).resolve("tsx")).href);
   ' "$tsx_bin")" || return $?
-  node --import "$loader" "$VH_LIB_DIR/src/cli.ts" "$@"
+  # Validate the entire recorder graph before any phase, including dependencies
+  # of finalize. The sentinel argv keeps this import-only probe out of CLI main.
+  "$node_bin" --import "$loader" --input-type=module -e '
+    const { pathToFileURL } = await import("node:url");
+    const cli = await import(pathToFileURL(process.argv[2]).href);
+    for (const name of ["planCommand", "finalizeCommand", "guardRailsCommand", "retainRunsCommand"]) {
+      if (typeof cli[name] !== "function") throw new Error(`verification-harness: missing recorder export ${name}`);
+    }
+  ' vh-loader-preflight "$VH_LIB_DIR/src/cli.ts" || return $?
+  VH_CLI_NODE="$node_bin"
+  VH_CLI_LOADER="$loader"
+}
+
+_vh_cli() {
+  if [ -n "${VH_TSX:-}" ]; then
+    "$VH_TSX" "$VH_LIB_DIR/src/cli.ts" "$@"
+    return $?
+  fi
+  _vh_prepare_cli || return $?
+  "$VH_CLI_NODE" --import "$VH_CLI_LOADER" "$VH_LIB_DIR/src/cli.ts" "$@"
 }
 
 _vh_json_str() {
@@ -323,6 +342,9 @@ vh_init() {
     return $?
   fi
   mkdir -p "$root" 2>/dev/null || { _vh_init_failed "evidence-root-unwritable:$root"; return $?; }
+  # Run in the parent shell: retention/plan use command substitutions, whose
+  # variable assignments cannot pin the runtime for the later EXIT recorder.
+  _vh_prepare_cli || { _vh_init_failed "cli-loader-preflight-failed"; return $?; }
   # Reclaim completed old runs before creating this run and entering the expensive
   # release/build phases. Disk-pressure pruning is independent of VH_KEEP_RUNS and
   # refuses to remove latest, live, unfinished, or .vh-keep-protected evidence.
