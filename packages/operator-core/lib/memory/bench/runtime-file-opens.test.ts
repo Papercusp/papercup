@@ -48,6 +48,44 @@ describe('retained Linux perf JIT code bytes', () => {
     sample.samples[0].address='0x1000';
     expect(()=>bindRuntimeJitMemory(dump(true,true),witness,sample,identity)).toThrow('bytes/address differ');
   });
+  const tracerIdentity={processId:12,parentProcessId:9,startTimeTicks:'50',executable:'/usr/bin/strace'};
+  function tracedMemorySample(): ReturnType<typeof observeRuntimeExecutableMemory> {
+    const sample: ReturnType<typeof observeRuntimeExecutableMemory>=memorySample();
+    sample.tasksBefore=sample.tasksBefore.map(task=>({...task,state:'t',tracerProcessId:12}));
+    sample.tasksAfter=structuredClone(sample.tasksBefore);
+    sample.tracer={process:{...tracerIdentity},tasksBefore:[{taskId:12,state:'T',startTimeTicks:'50'}],
+      tasksAfter:[{taskId:12,state:'T',startTimeTicks:'50'}]};
+    return sample;
+  }
+  it('binds selected ptrace memory only with an independently pinned stopped tracer', () => {
+    const proof=bindRuntimeJitMemory(dump(),witness,tracedMemorySample(),identity,tracerIdentity);
+    expect(proof.selectedExecutableBytesVerified).toBe(true);
+    expect(proof.completeRuntimeClosureVerified).toBe(false);
+    expect(proof.runtimeCaptureCustody).toBe('required');
+  });
+  it.each(['no-pin','no-witness','wrong-tracer','reused-tracer','target-tracer','observer-tracer',
+    'running-tracer','tracer-task-change','tracer-main-missing','tracer-task-duplicate',
+    'tracer-task-identity','wrong-target-tracer','mixed-stop','unqualified-ptrace'])(
+    'refuses selected ptrace memory %s', variant=>{
+      const sample=tracedMemorySample();let expected: typeof tracerIdentity|undefined={...tracerIdentity};
+      if(variant==='no-pin')expected=undefined;
+      if(variant==='no-witness')delete sample.tracer;
+      if(variant==='wrong-tracer')expected!.executable='/other/strace';
+      if(variant==='reused-tracer')expected!.startTimeTicks='51';
+      if(variant==='target-tracer')sample.tracer!.process.processId=expected!.processId=10;
+      if(variant==='observer-tracer')sample.tracer!.process.processId=expected!.processId=9;
+      if(variant==='running-tracer')sample.tracer!.tasksBefore[0].state='S';
+      if(variant==='tracer-main-missing')sample.tracer!.tasksBefore[0].taskId=13;
+      if(variant==='tracer-task-duplicate')sample.tracer!.tasksBefore.push(sample.tracer!.tasksBefore[0]);
+      if(variant==='tracer-task-identity')sample.tracer!.tasksBefore[0].startTimeTicks='51';
+      if(sample.tracer&&variant!=='tracer-task-change')sample.tracer.tasksAfter=structuredClone(sample.tracer.tasksBefore);
+      if(variant==='tracer-task-change')sample.tracer!.tasksAfter=[];
+      if(variant==='wrong-target-tracer')sample.tasksBefore[1].tracerProcessId=13;
+      if(variant==='mixed-stop')sample.tasksBefore[1].state='T';
+      sample.tasksAfter=structuredClone(sample.tasksBefore);
+      if(variant==='unqualified-ptrace'){delete sample.tracer;expected=undefined;}
+      expect(()=>bindRuntimeJitMemory(dump(),witness,sample,identity,expected)).toThrow('runtime executable memory:');
+    });
   it.each([109n,110n])('refuses an inverted or equal selected memory MOVE clock %s', timestamp => {
     const bytes=dump(true,true);bytes.writeBigUInt64LE(timestamp,109);
     expect(()=>bindRuntimeJitMemory(bytes,witness,memorySample(),identity)).toThrow('ambiguous per-code event clock');

@@ -8,7 +8,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { bindRuntimeSourcePopulation, startRuntimeSourceCapture, validateRuntimeSourceCapture } from './runtime-source-capture.mjs';
 import { bindRuntimeProcessTree, observeRuntimeExecutableMemory, observeRuntimeProcessIdentity,
-  observeRuntimePageSize, runtimeFileTraceArguments } from './runtime-file-opens.mjs';
+  observeRuntimeTracerIdentity, observeRuntimePageSize, runtimeFileTraceArguments } from './runtime-file-opens.mjs';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
@@ -346,7 +346,7 @@ describe('parsed sources joined to independent process lifetimes', () => {
       if (variant === 'missing-source') rows[1].splice(1,1);
       expect(()=>bindRuntimeSourcePopulation(input,terminal,rows)).toThrow();
     });
-  it.runIf(process.platform==='linux')('refuses ptrace stops as group-stopped executable memory while retaining traced sources', async () => {
+  async function captureTracedSourceMemory(qualified: boolean) {
     const root=fs.mkdtempSync(path.join(os.tmpdir(),'runtime-source-memory-')); roots.push(root);
     const tracePath=path.join(root,'trace.log'), sourcePath=path.join(root,'sources.jsonl');
     const startedEpochMs=Date.now(), startedMonotonicNs=process.hrtime.bigint().toString();
@@ -358,6 +358,7 @@ describe('parsed sources joined to independent process lifetimes', () => {
       'process.stdin.once("data",()=>process.stdin.pause());'])],
       {env:{PATH:'/usr/bin:/bin',PAPERCUSP_RUNTIME_SOURCE_CAPTURE:sourcePath},stdio:['pipe','pipe','pipe']});
     let stderr='', states:{taskId:number,state:string,tracerPid:number}[]=[];
+    let tracerIdentity: ReturnType<typeof observeRuntimeTracerIdentity>|undefined, tracerStopped=false;
     child.stderr.on('data',chunk=>{stderr+=chunk;});
     const closed=new Promise<{code:number|null,signal:string|null}>((resolve,reject)=>{
       child.once('error',reject);child.once('close',(code,signal)=>resolve({code,signal}));
@@ -379,6 +380,10 @@ describe('parsed sources joined to independent process lifetimes', () => {
         child.once('error',error=>{clearTimeout(timer);reject(error);});
       });
       const launchIdentity=observeRuntimeProcessIdentity(child.pid!);
+      if(qualified){
+        expect(()=>observeRuntimeTracerIdentity(launchIdentity,process.execPath)).toThrow('unexpected tracer executable');
+        tracerIdentity=observeRuntimeTracerIdentity(launchIdentity,'/usr/bin/strace');
+      }
       expect(child.kill('SIGSTOP')).toBe(true);
       const deadline=Date.now()+5000;
       do {
@@ -406,6 +411,23 @@ describe('parsed sources joined to independent process lifetimes', () => {
       // A ptrace stop is not the independent group-stop contract. Require an
       // explicit tracer witness before that observation can ever qualify.
       expect(()=>observeRuntimeExecutableMemory(launchIdentity,[target!])).toThrow('task is not group-stopped');
+      let observation: ReturnType<typeof observeRuntimeExecutableMemory>|undefined;
+      if(tracerIdentity){
+        expect(()=>observeRuntimeExecutableMemory(launchIdentity,[target!],tracerIdentity)).toThrow('task is not group-stopped');
+        process.kill(tracerIdentity.processId,'SIGSTOP');tracerStopped=true;
+        const tracerDeadline=Date.now()+5000;
+        while(!fs.readdirSync('/proc/'+tracerIdentity.processId+'/task').every(id=>
+          fs.readFileSync('/proc/'+tracerIdentity!.processId+'/task/'+id+'/stat','utf8').split(') ')[1].startsWith('T '))){
+          if(Date.now()>tracerDeadline)throw new Error('independent tracer did not group-stop');
+          await new Promise(resolve=>setTimeout(resolve,10));
+        }
+        expect(()=>observeRuntimeExecutableMemory(launchIdentity,[target!],{...tracerIdentity!,startTimeTicks:'1'}))
+          .toThrow('tracer identity changed');
+        observation=observeRuntimeExecutableMemory(launchIdentity,[target!],tracerIdentity);
+        expect(observation.tracer!.process).toEqual(tracerIdentity);
+        expect(observation.tasksBefore.every(task=>task.state==='t'&&task.tracerProcessId===tracerIdentity!.processId)).toBe(true);
+        process.kill(tracerIdentity.processId,'SIGCONT');tracerStopped=false;
+      }
       child.kill('SIGCONT');child.stdin.end('finish\n');
       const terminal=await closed;expect(terminal,stderr).toEqual({code:0,signal:null});
       const trace=fs.readFileSync(tracePath,'utf8'), sources=fs.readFileSync(sourcePath,'utf8').trim().split('\n').map(line=>JSON.parse(line));
@@ -415,20 +437,39 @@ describe('parsed sources joined to independent process lifetimes', () => {
       const capture={bytes:fs.readFileSync(dumpPath),witness:{...processTerminal,
         taskIds:tree.tasks.map(task=>task.taskId),elfMachine:elf[5]===1?elf.readUInt16LE(18):elf.readUInt16BE(18),
         startedEpochMs,startedMonotonicNs,finishedEpochMs:Date.now(),finishedMonotonicNs:process.hrtime.bigint().toString(),
-        headerClock:'v8-realtime-microseconds' as const}};
+        headerClock:'v8-realtime-microseconds' as const},
+        ...(observation?{memory:{observation,launchIdentity,tracerIdentity}}:{})};
       const proof=bindRuntimeSourcePopulation(trace,processTerminal,[sources],undefined,[capture]);
-      expect(proof.jitBindings![0].selectedMemory).toBeUndefined();
+      if(qualified){
+        expect(proof.jitBindings![0].selectedMemory).toMatchObject({selectedExecutableBytesVerified:true,
+          completeRuntimeClosureVerified:false,runtimeCaptureCustody:'required',jitByteOriginQualification:'required'});
+        const changed={...capture,memory:{...capture.memory!,tracerIdentity:{...tracerIdentity!,startTimeTicks:'1'}}};
+        expect(()=>bindRuntimeSourcePopulation(trace,processTerminal,[sources],undefined,[changed]))
+          .toThrow('independent stopped tracer differs');
+      }else expect(proof.jitBindings![0].selectedMemory).toBeUndefined();
       expect(proof.completeRuntimeClosureVerified).toBe(false);
       if(process.env.PAPERCUSP_TEST_ARTIFACT_DIR){const out=process.env.PAPERCUSP_TEST_ARTIFACT_DIR;
         fs.writeFileSync(path.join(out,'source-memory-trace.log'),trace);
         fs.writeFileSync(path.join(out,'source-memory-sources.jsonl'),fs.readFileSync(sourcePath));
         fs.writeFileSync(path.join(out,'source-memory-jit.dump'),capture.bytes);
+        if(observation)fs.writeFileSync(path.join(out,'source-memory-observation.json'),JSON.stringify(observation));
         fs.writeFileSync(path.join(out,'source-memory-traced-stop.json'),JSON.stringify({states,launchIdentity,witness:capture.witness}));}
     } finally {
+      if(tracerStopped&&tracerIdentity){
+        // Only resume the exact pinned tracer; never signal a reused PID.
+        try{
+          const current=observeRuntimeTracerIdentity(observeRuntimeProcessIdentity(child.pid!),'/usr/bin/strace');
+          if(JSON.stringify(current)===JSON.stringify(tracerIdentity))process.kill(tracerIdentity.processId,'SIGCONT');
+        }catch{}
+      }
       if(child.exitCode===null){child.kill('SIGCONT');child.kill('SIGKILL');}
       await closed;
     }
-  },30000);
+  }
+  it.runIf(process.platform==='linux')('refuses ptrace stops as group-stopped executable memory while retaining traced sources',
+    ()=>captureTracedSourceMemory(false),30000);
+  it.runIf(process.platform==='linux')('joins actual traced source executable memory with an independent stopped tracer',
+    ()=>captureTracedSourceMemory(true),30000);
   it.runIf(process.platform==='linux')('captures a real Node subprocess and refuses a child that removes instrumentation', () => {
     const root=fs.mkdtempSync(path.join(os.tmpdir(),'runtime-source-process-')); roots.push(root);
     const fixture=path.join(root,'input.cjs'); fs.writeFileSync(fixture,'module.exports=42;\n');

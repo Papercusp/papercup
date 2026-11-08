@@ -146,7 +146,7 @@ export function bindRuntimeSourcePopulation(trace, terminal, captures, fileInput
         // Reparse raw terminal dump and raw parent observation. A precomputed
         // proof cannot stand in for either; selected ranges confer no custody,
         // original-source origin or process-lifetime population authority.
-        selectedMemory = bindRuntimeJitMemory(capture.bytes, witness, observation, identity);
+        selectedMemory = bindRuntimeJitMemory(capture.bytes, witness, observation, identity, capture.memory.tracerIdentity);
       }
       return { ...proof, ...(selectedMemory ? { selectedMemory } : {}),
         tracedTaskIds: taskIds, sourceCaptureSha256: digest(JSON.stringify(rows)),

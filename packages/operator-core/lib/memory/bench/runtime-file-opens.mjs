@@ -27,16 +27,46 @@ export function observeRuntimeProcessIdentity(processId) {
   memoryRequire(identity.parentProcessId === process.pid, 'not the observer direct child');
   return identity;
 }
-function stoppedTasks(root) {
+/** Pin the kernel-reported tracer before stopping it. The target cannot supply
+ * this identity; the parent also selects the expected tracer executable. */
+export function observeRuntimeTracerIdentity(identity, expectedExecutable) {
+  const root = '/proc/'+identity?.processId;
+  memoryRequire(identity?.parentProcessId === process.pid
+    && sameProcess(procIdentity(root,identity.processId),identity), 'launch identity changed');
+  const status = fs.readFileSync(root+'/status','utf8');
+  const tracerId = Number(/^TracerPid:\s+(\d+)$/m.exec(status)?.[1]);
+  memoryRequire(Number.isSafeInteger(tracerId) && tracerId > 0
+    && tracerId !== process.pid && tracerId !== identity.processId, 'missing independent tracer');
+  const tracer = procIdentity('/proc/'+tracerId,tracerId);
+  memoryRequire(typeof expectedExecutable === 'string' && expectedExecutable.startsWith('/')
+    && tracer.executable === fs.realpathSync(expectedExecutable), 'unexpected tracer executable');
+  return tracer;
+}
+function stoppedTasks(root, tracer) {
   const ids = fs.readdirSync(root+'/task').map(Number).sort((a,b)=>a-b);
   memoryRequire(ids.length > 0 && ids.length <= 10000
     && ids.every(id => Number.isSafeInteger(id) && id > 0), 'invalid task population');
   return ids.map(taskId => {
     const stat = fs.readFileSync(root+'/task/'+taskId+'/stat','utf8');
     const fields = stat.slice(stat.lastIndexOf(')')+2).trim().split(/\s+/);
-    memoryRequire(fields[0] === 'T' && /^[1-9]\d*$/.test(fields[19]), 'task is not group-stopped');
-    return {taskId, state:'T', startTimeTicks:fields[19]};
+    memoryRequire(/^[1-9]\d*$/.test(fields[19]), 'invalid task identity');
+    if (tracer) {
+      const status = fs.readFileSync(root+'/task/'+taskId+'/status','utf8');
+      const tracerProcessId = Number(/^TracerPid:\s+(\d+)$/m.exec(status)?.[1]);
+      memoryRequire(fields[0] === 't' && tracerProcessId === tracer.processId,
+        'task is not stopped by the pinned tracer');
+      return {taskId,state:'t',startTimeTicks:fields[19],tracerProcessId};
+    }
+    memoryRequire(fields[0] === 'T', 'task is not group-stopped');
+    return {taskId,state:'T',startTimeTicks:fields[19]};
   });
+}
+function stoppedTracer(identity, target) {
+  memoryRequire(identity && identity.processId !== target.processId && identity.processId !== process.pid,
+    'missing independent tracer');
+  const root = '/proc/'+identity.processId;
+  memoryRequire(sameProcess(procIdentity(root,identity.processId),identity), 'tracer identity changed');
+  return stoppedTasks(root);
 }
 function executableMaps(text) {
   memoryRequire(typeof text === 'string' && text.length > 0 && text.length <= 16*1024*1024,
@@ -71,16 +101,18 @@ function selectedMemoryRanges(ranges) {
     return {...range,addressValue:address};
   });
 }
-/** Retain parent-read raw maps/tasks/bytes from an already group-stopped direct
- * child. The caller owns the bounded stop/resume/cleanup protocol. Endpoint
+/** Retain parent-read raw maps/tasks/bytes from a stopped direct child. The
+ * default requires group-stops; the explicit ptrace path additionally requires
+ * an independently pinned, group-stopped tracer. The caller owns stop/cleanup. Endpoint
  * observations do not prove continuous custody or rule out writable aliases. */
-export function observeRuntimeExecutableMemory(identity, ranges) {
+export function observeRuntimeExecutableMemory(identity, ranges, tracerIdentity) {
   const selected = selectedMemoryRanges(ranges);
   memoryRequire(identity?.parentProcessId === process.pid, 'not the observer direct child');
   const root = '/proc/'+identity.processId;
   const startedMonotonicNs = process.hrtime.bigint().toString();
   memoryRequire(sameProcess(procIdentity(root,identity.processId),identity), 'launch identity changed');
-  const tasksBefore = stoppedTasks(root), mapsBefore = fs.readFileSync(root+'/maps','utf8');
+  const tracerTasksBefore = tracerIdentity ? stoppedTracer(tracerIdentity,identity) : undefined;
+  const tasksBefore = stoppedTasks(root,tracerIdentity), mapsBefore = fs.readFileSync(root+'/maps','utf8');
   const maps = executableMaps(mapsBefore);
   const fd = fs.openSync(root+'/mem','r');
   let samples;
@@ -95,18 +127,21 @@ export function observeRuntimeExecutableMemory(identity, ranges) {
       return {codeIndex:range.codeIndex,address:range.address,bytes};
     });
   } finally {fs.closeSync(fd);}
-  const mapsAfter = fs.readFileSync(root+'/maps','utf8'), tasksAfter = stoppedTasks(root);
+  const mapsAfter = fs.readFileSync(root+'/maps','utf8'), tasksAfter = stoppedTasks(root,tracerIdentity);
+  const tracerTasksAfter = tracerIdentity ? stoppedTracer(tracerIdentity,identity) : undefined;
   memoryRequire(mapsBefore === mapsAfter && JSON.stringify(tasksBefore) === JSON.stringify(tasksAfter)
+    && JSON.stringify(tracerTasksBefore) === JSON.stringify(tracerTasksAfter)
     && sameProcess(procIdentity(root,identity.processId),identity), 'process/maps/tasks changed during observation');
   return {schema:'runtime-selected-executable-memory/v1', process:{...identity}, observerProcessId:process.pid,
     startedMonotonicNs,finishedMonotonicNs:process.hrtime.bigint().toString(),
-    tasksBefore,tasksAfter,mapsBefore,mapsAfter,samples};
+    tasksBefore,tasksAfter,mapsBefore,mapsAfter,samples,
+    ...(tracerIdentity ? {tracer:{process:{...tracerIdentity},tasksBefore:tracerTasksBefore,tasksAfter:tracerTasksAfter}} : {})};
 }
 
 /** Reparse retained dump AND independent raw memory evidence after terminal EOF.
  * Only selected code indices at the observation time are qualified. An emitted
  * name, matching URL, or matching bytes does not establish original JS origin. */
-export function bindRuntimeJitMemory(bytes, witness, observation, expectedIdentity) {
+export function bindRuntimeJitMemory(bytes, witness, observation, expectedIdentity, expectedTracer) {
   const dump = bindRuntimeJitDump(bytes,witness), sample = observation;
   memoryRequire(sample?.schema === 'runtime-selected-executable-memory/v1'
     && sameProcess(sample.process,expectedIdentity)
@@ -122,13 +157,32 @@ export function bindRuntimeJitMemory(bytes, witness, observation, expectedIdenti
   const before = BigInt(sample.startedMonotonicNs), after = BigInt(sample.finishedMonotonicNs);
   memoryRequire(before <= after && before >= BigInt(witness.startedMonotonicNs)
     && after <= BigInt(witness.finishedMonotonicNs), 'observation outside witnessed lifetime');
+  const tracer = sample.tracer;
+  memoryRequire(Boolean(tracer) === Boolean(expectedTracer), 'missing independent tracer identity');
+  if (tracer) {
+    const tasks = tracer.tasksBefore;
+    memoryRequire(sameProcess(tracer.process,expectedTracer)
+      && Number.isSafeInteger(tracer.process.processId) && tracer.process.processId > 0
+      && tracer.process.processId !== sample.observerProcessId && tracer.process.processId !== witness.processId
+      && /^[1-9]\d*$/.test(tracer.process.startTimeTicks)
+      && typeof tracer.process.executable === 'string' && tracer.process.executable.startsWith('/')
+      && Number.isSafeInteger(tracer.process.parentProcessId) && tracer.process.parentProcessId > 0
+      && Array.isArray(tasks) && tasks.length > 0 && tasks.length <= 10000
+      && JSON.stringify(tasks) === JSON.stringify(tracer.tasksAfter)
+      && new Set(tasks.map(task=>task.taskId)).size === tasks.length
+      && tasks.every(task=>Number.isSafeInteger(task.taskId) && task.taskId > 0
+        && task.state === 'T' && /^[1-9]\d*$/.test(task.startTimeTicks))
+      && tasks.find(task=>task.taskId === tracer.process.processId)?.startTimeTicks === tracer.process.startTimeTicks,
+    'independent stopped tracer differs');
+  }
   memoryRequire(Array.isArray(sample.tasksBefore) && sample.tasksBefore.length > 0
     && sample.tasksBefore.length <= 10000
     && JSON.stringify(sample.tasksBefore) === JSON.stringify(sample.tasksAfter)
     && new Set(sample.tasksBefore.map(task=>task.taskId)).size === sample.tasksBefore.length
     && sample.tasksBefore.some(task=>task.taskId === witness.processId)
     && sample.tasksBefore.every(task=>witness.taskIds.includes(task.taskId)
-      && task.state === 'T' && /^[1-9]\d*$/.test(task.startTimeTicks))
+      && (tracer ? task.state === 't' && task.tracerProcessId === tracer.process.processId : task.state === 'T')
+      && /^[1-9]\d*$/.test(task.startTimeTicks))
     && sample.tasksBefore.find(task=>task.taskId === witness.processId).startTimeTicks === expectedIdentity.startTimeTicks,
   'stopped task population differs');
   memoryRequire(sample.mapsBefore === sample.mapsAfter, 'kernel maps changed');

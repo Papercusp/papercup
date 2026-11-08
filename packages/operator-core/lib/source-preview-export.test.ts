@@ -4194,7 +4194,8 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
       expect(proof.population.mappingOrigins.executableBytesQualified).toBe(false);
     });
 
-  it.each(['positive','changed-bytes','foreign-identity','missing-identity','outside-source'] as const)(
+  it.each(['positive','changed-bytes','foreign-identity','missing-identity','outside-source',
+    'traced-positive','traced-missing-pin','traced-reused-pin','traced-running','traced-foreign-task'] as const)(
     'compiled runtime synthetic selected-memory contract: %s', async variant => {
       const fixture=await compiledRuntime(false,false,undefined,undefined,false,true);
       const execution=structuredClone(fixture.execution), capture=execution.jitCaptures![0];
@@ -4213,12 +4214,31 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
         observerProcessId:10,startedMonotonicNs:String(start+3n),finishedMonotonicNs:String(start+4n),
         tasksBefore:tasks,tasksAfter:structuredClone(tasks),mapsBefore:maps,mapsAfter:maps,
         samples:[{codeIndex:'1',address:'0x1000',bytes:Buffer.from([0xc3])}]}};
+      if(variant.startsWith('traced-')) {
+        const tracerIdentity={processId:id+100000,parentProcessId:2,startTimeTicks:'99',executable:'/usr/bin/strace'};
+        const tracerTasks=[{taskId:tracerIdentity.processId,state:'T' as const,startTimeTicks:'99'}];
+        capture.memory.tracerIdentity=tracerIdentity;
+        capture.memory.observation.tracer={process:{...tracerIdentity},tasksBefore:tracerTasks,
+          tasksAfter:structuredClone(tracerTasks)};
+        capture.memory.observation.tasksBefore=tasks.map(task=>({...task,state:'t',tracerProcessId:tracerIdentity.processId}));
+        capture.memory.observation.tasksAfter=structuredClone(capture.memory.observation.tasksBefore);
+        if(variant==='traced-missing-pin')delete capture.memory.tracerIdentity;
+        if(variant==='traced-reused-pin')tracerIdentity.startTimeTicks='100';
+        if(variant==='traced-running') {
+          Object.assign(tracerTasks[0],{state:'S'});
+          capture.memory.observation.tracer.tasksAfter=structuredClone(tracerTasks);
+        }
+        if(variant==='traced-foreign-task') {
+          Object.assign(capture.memory.observation.tasksBefore[0],{tracerProcessId:tracerIdentity.processId+1});
+          capture.memory.observation.tasksAfter=structuredClone(capture.memory.observation.tasksBefore);
+        }
+      }
       if(variant==='changed-bytes')capture.memory.observation.samples[0].bytes[0]=0;
       if(variant==='foreign-identity')capture.memory.launchIdentity.processId++;
       if(variant==='missing-identity')delete (capture.memory as any).launchIdentity;
       if(variant==='outside-source')capture.memory.observation.finishedMonotonicNs=String(capture.witness.finishedMonotonicNs)+'0';
       const qualify=()=>qualifyBgVerifierRuntimeSources({...fixture,execution});
-      if(variant!=='positive'){expect(qualify).toThrow();return;}
+      if(variant!=='positive'&&variant!=='traced-positive'){expect(qualify).toThrow();return;}
       const proof=qualify();
       expect(proof.jitBindings[0].selectedMemory).toEqual(proof.population.jitBindings![0].selectedMemory);
       expect(proof.jitBindings[0].selectedMemory).toMatchObject({selectedExecutableBytesVerified:true,
