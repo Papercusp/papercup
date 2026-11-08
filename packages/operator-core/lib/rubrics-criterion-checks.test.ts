@@ -24,6 +24,7 @@ import {
   runCargoCriterionCheck,
   evaluateCriterionCargoChecks,
   evaluateCriterionTestChecks,
+  normalizeCriterionProbeChecks,
   validatePreservedCriterionCases,
   evaluateCriterionCoverageChecks,
   subjectPlanAllowsPlannedPaths,
@@ -37,6 +38,11 @@ import { checkoutRootForPath, selectTestFileRoot } from './agent-tools/testing/r
 import { REPO_ROOT } from './agent-tools/docs/_repo-paths';
 import { rubricCriterionSchema, rubricTemplateDataSchema, rubricCriterionCheckSchema } from './agent-tools/plans/rubric-template';
 import { collectPlannedRubricPaths, effectiveCriterionInstrumentKey, planRowToRubric } from './rubrics';
+import { SQL_PROBE_TOOL, continuityProbeRevision } from './continuity-probes';
+import { RUBRIC_PROBE_MAX_PER_EMIT } from './agent-tools/limits';
+import './agent-tools/dev/pg_query';
+import { asStructuredObservation } from './harness/improvements/observation-types';
+import { probeCheckResults } from './check-results-ledger';
 // The ROUTER's own admission predicate, imported so WI-369566's restated pattern is
 // pinned to it. A test may import this plain-Node CLI freely; the validator may not
 // (the operator host spawns it and must not bundle it).
@@ -1078,6 +1084,78 @@ const CRITERIA = [
 ];
 
 describe('evaluateCriterionTestChecks (grading time)', () => {
+  describe('tests AND independent typed probes', () => {
+    const probe = () => ({ kind: 'sql', sql: 'SELECT 1 AS n', maxRows: 50, schemaRevision: continuityProbeRevision(SQL_PROBE_TOOL)!,
+      expect: { path: '$.rowCount', op: 'eq', value: 1 } });
+    const criterion = () => ({ key: 'det', check: { ...testsCheck(['packages/x/real.test.ts']), all: [probe(), probe()] } });
+    const dispatch = (rowCount: number) => vi.fn(async () => ({ data: {
+      mode: 'query', rowCount, truncated: false, fields: ['n'], rows: [{ n: 1 }],
+    } }));
+
+    it('normalizes probe revisions without losing files, and validates probes AND file paths', () => {
+      const source = criterion();
+      expect(normalizeCriterionProbeChecks([source])[0]).toEqual(source);
+      expect(validateCriterionCheckPaths([source], { root }).ok).toBe(true);
+      const missing = { ...source, check: { ...source.check, files: ['missing.test.ts'] } };
+      expect(validateCriterionCheckPaths([missing], { root }).failures).toHaveLength(1);
+      const invalid = { ...source, check: { ...source.check, all: [{ ...probe(), sql: 'DELETE FROM x' }] } };
+      expect(validateCriterionCheckPaths([invalid], { root }).scopeFailures.length).toBeGreaterThan(0);
+    });
+
+    it.each([
+      [0, 1, 'healthy', true, 'pass'], [0, 0, 'healthy', false, 'fail'],
+      [1, 1, 'healthy', false, 'fail'], [1, 0, 'broken', true, 'fail'], [0, 0, 'broken', true, 'fail'],
+    ] as const)('judges test failures=%s probe matches=%s rating=%s', async (failed, count, rating, ok, verdict) => {
+      const runner = vi.fn(async ({ files }: { files: string[] }) => {
+        const run = passRun(files);
+        return { ...run, testRunIds: [901], byFile: { [files[0]!]: { passed: 3, failed, skipped: 0, collectionFailed: false } } } as never;
+      });
+      const dispatchTool = dispatch(count);
+      const result = await evaluateCriterionTestChecks({ criteria: [criterion()] as never, ratings: { det: { rating } }, root, runner, dispatchTool });
+      expect(result.ok).toBe(ok);
+      const record = result.ok ? result.checkRuns.det : 'run' in result ? result.run : undefined;
+      expect(record).toMatchObject({ kind: 'tests', files: ['packages/x/real.test.ts'], passed: 3, failed, testRunIds: [901], verdict,
+        all: [{ kind: 'probe', executed: true }, { kind: 'probe', executed: true }] });
+      expect(runner).toHaveBeenCalledTimes(1);
+      expect(dispatchTool).toHaveBeenCalledTimes(2);
+      const readback = asStructuredObservation({ checkRuns: { det: record } })?.checkRuns?.det;
+      expect(readback).toEqual(record);
+      expect(probeCheckResults('tests-and-probes', { det: readback! })).toHaveLength(2);
+      const malformed = { ...record, all: [{ ...record, kind: 'probe' }] };
+      expect(asStructuredObservation({ checkRuns: { det: malformed } })?.checkRuns?.det).toBeUndefined();
+      if (verdict === 'fail') expect(asStructuredObservation({ checkRuns: { det: { ...record, verdict: 'pass' } } })?.checkRuns?.det).toBeUndefined();
+    });
+
+    it('refuses an unjudgeable child and invalid SQL without accepting the passing test receipt', async () => {
+      const runner = vi.fn(async ({ files }: { files: string[] }) => passRun(files) as never);
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const result = await evaluateCriterionTestChecks({ criteria: [criterion()] as never, ratings: { det: { rating: 'healthy' } }, root,
+          runner, dispatchTool: async () => { throw new Error('unavailable'); } });
+        expect(result).toMatchObject({ ok: false, error: 'probe_run_failed' });
+        expect(warning).toHaveBeenCalledTimes(2);
+        expect(warning.mock.calls.every(([message]) => String(message).includes('unavailable'))).toBe(true);
+      } finally { warning.mockRestore(); }
+      runner.mockClear();
+      const invalid = criterion();
+      invalid.check.all[0]!.sql = 'DELETE FROM x';
+      expect(await evaluateCriterionTestChecks({ criteria: [invalid] as never, ratings: { det: { rating: 'healthy' } }, root, runner }))
+        .toMatchObject({ ok: false, error: 'probe_invalid' });
+      expect(runner).not.toHaveBeenCalled();
+    });
+
+    it('enforces the combined probe budget before running tests', async () => {
+      const criteria = Array.from({ length: RUBRIC_PROBE_MAX_PER_EMIT / 2 + 1 }, (_, index) => ({ ...criterion(), key: `c-${index}` }));
+      const runner = vi.fn();
+      const ratings = Object.fromEntries(criteria.map(c => [c.key, { rating: 'healthy' }]));
+      expect(validateCriterionCheckPaths([...criteria, { key: 'standalone', check: { kind: 'probe', probe: probe() } }] as never, { root }).scopeFailures)
+        .toContainEqual(expect.objectContaining({ criterionKey: '(probe batch)' }));
+      expect(await evaluateCriterionTestChecks({ criteria: criteria as never, ratings, root, runner }))
+        .toMatchObject({ ok: false, error: 'probe_invalid', criterionKey: '(probe batch)' });
+      expect(runner).not.toHaveBeenCalled();
+    });
+  });
+
   describe('immutable case selection preservation', () => {
     const behavior = { file: 'packages/x/real.test.ts', testName: 'protected behavior' };
     const inventory = { file: 'packages/x/real.test.ts', testName: 'inventory guard' };

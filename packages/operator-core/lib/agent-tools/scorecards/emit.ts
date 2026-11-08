@@ -4010,6 +4010,7 @@ export async function emitScorecard(
           criteria: rubric.criteria,
           ratings,
           root: checkScope.root,
+          dispatchTool: deps.dispatchTool,
           ...(checkScope.workspaceId ? { workspaceId: checkScope.workspaceId } : {}),
           ...(checkScope.harnessSlug ? { harnessSlug: checkScope.harnessSlug } : {}),
           ...(deps.evaluateChecks ? {} : {
@@ -4039,11 +4040,21 @@ export async function emitScorecard(
           timeoutMs: SCORECARD_TEST_CHECK_TIMEOUT_MS,
         }),
       );
+      const executedTestRuns = checkEvaluation.ok ? checkEvaluation.checkRuns
+        : checkEvaluation.error === 'check_contradicted'
+          ? checkEvaluation.checkRuns ?? { [checkEvaluation.criterionKey]: checkEvaluation.run } : {};
+      checkLedger = await recordCheckResultsReported(
+        probeCheckResults(rubric.rubricId, executedTestRuns, rubric.criteria),
+        { workspaceId: rubric.workspaceId ?? null, harnessSlug: rubric.subjectHarnessSlug ?? null,
+          ...(input.checkRoot ? { root: input.checkRoot } : {}) },
+        deps.recordCheckResults,
+      );
       if (!checkEvaluation.ok) {
         return {
           ok: false as const,
           error: checkEvaluation.detail,
           checkRefusal: checkEvaluation,
+          ...(checkLedger ? { checkLedger } : {}),
         };
       }
       checkRuns = Object.keys(checkEvaluation.checkRuns).length > 0 ? checkEvaluation.checkRuns : undefined;
@@ -4073,7 +4084,7 @@ export async function emitScorecard(
         : probeEvaluation.error === 'probe_contradicted' && 'run' in probeEvaluation && probeEvaluation.run
           ? { [probeEvaluation.criterionKey]: probeEvaluation.run }
           : {};
-      checkLedger = await recordCheckResultsReported(
+      const probeLedger = await recordCheckResultsReported(
         probeCheckResults(rubric.rubricId, executedProbeRuns, rubric.criteria),
         {
           workspaceId: rubric.workspaceId ?? null,
@@ -4082,6 +4093,11 @@ export async function emitScorecard(
         },
         deps.recordCheckResults,
       );
+      if (probeLedger) {
+        const errors = [checkLedger, probeLedger].flatMap(outcome => outcome && 'error' in outcome ? [outcome.error] : []);
+        const testRunIds = [checkLedger, probeLedger].flatMap(outcome => outcome && 'testRunIds' in outcome ? outcome.testRunIds : []);
+        checkLedger = { recorded: testRunIds.length, testRunIds, ...(errors.length ? { error: errors.join('; ') } : {}) };
+      }
       if (!probeEvaluation.ok) {
         return {
           ok: false as const,

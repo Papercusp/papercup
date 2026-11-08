@@ -148,7 +148,7 @@ export function validatePreservedCriterionCases(
 /** Pin every ALL child before rubric hashing/persistence. Legacy single probes keep their existing writer contract. */
 export function normalizeCriterionProbeChecks<T extends CheckedCriterion>(criteria: readonly T[]): T[] {
   return criteria.map(c => {
-    if (c.check?.kind !== 'probe' || c.check.all === undefined) return c;
+    if ((c.check?.kind !== 'probe' && c.check?.kind !== 'tests') || c.check.all === undefined) return c;
     rubricCriterionCheckSchema.parse(c.check);
     return {
       ...c,
@@ -327,18 +327,19 @@ export function validateCriterionCheckPaths(
   const normalizedByKey: Record<string, string[]> = {};
   const normalizedCargoByKey: Record<string, NormalizedCargoCheckPaths> = {};
   let checked = 0;
-  const probeCount = criteria.reduce((n, c) => n + (c.check?.kind === 'probe' ? (c.check.all?.length ?? 1) : 0), 0);
+  const probeCount = criteria.reduce((n, c) => n + (c.check?.kind === 'probe' ? (c.check.all?.length ?? 1)
+    : c.check?.kind === 'tests' ? (c.check.all?.length ?? 0) : 0), 0);
   if (probeCount > RUBRIC_PROBE_MAX_PER_EMIT) {
     scopeFailures.push({ criterionKey: '(probe batch)', path: 'all', reason: `${probeCount} probes exceed the execution cap of ${RUBRIC_PROBE_MAX_PER_EMIT}` });
   }
   for (const c of criteria) {
-    if (c.check?.kind === 'probe') {
+    if (c.check?.kind === 'probe' || (c.check?.kind === 'tests' && c.check.all !== undefined)) {
       const shape = rubricCriterionCheckSchema.safeParse(c.check);
       if (!shape.success) {
         scopeFailures.push({ criterionKey: c.key, path: 'probe', reason: shape.error.message });
         continue;
       }
-      for (const [index, probe] of (c.check.all ?? [c.check.probe]).entries()) {
+      for (const [index, probe] of (c.check.all ?? (c.check.kind === 'probe' ? [c.check.probe] : [])).entries()) {
         const parsed = continuityProbeSchema.safeParse(probe);
         if (!parsed.success) {
           scopeFailures.push({ criterionKey: c.key, path: `probe[${index}]`, reason: parsed.error.message });
@@ -371,7 +372,7 @@ export function validateCriterionCheckPaths(
           }
         }
       }
-      continue;
+      if (c.check.kind === 'probe') continue;
     }
     if (c.check?.kind === 'coverage') {
       // A scope naming BOTH an explicit file list and planTouched is contradictory:
@@ -748,6 +749,8 @@ export type CriterionCheckRefusal =
       rating: string;
       detail: string;
       run: CriterionCheckRun;
+      /** Other executed conjunctions must also reach the ledger on refusal. */
+      checkRuns?: Record<string, CriterionCheckRun>;
     }
   | {
       /** A tests check's testName filter did not resolve to executed recorded cases
@@ -1647,6 +1650,8 @@ export async function evaluateCriterionTestChecks(input: {
   caseLoader?: CriterionCaseLoader;
   /** Immutable canonical rubric history; injected only by tests. Never use the current rubric as fallback. */
   caseBaselineLoader?: CriterionCaseBaselineLoader;
+  /** Typed probe conjuncts use the same read-only dispatcher as standalone probes. */
+  dispatchTool?: CriterionProbeDispatcher;
   /** Exact request-bound run group supplied by a composing durable scorecard emit. */
   runId?: string;
   nowIso?: () => string;
@@ -1659,6 +1664,11 @@ export async function evaluateCriterionTestChecks(input: {
     (c) => c.check?.kind === 'tests' && input.ratings[c.key] !== undefined,
   );
   const root = selectCriterionCheckRoot(ratedTestsChecks, input.root ?? resolveAgentWorkspaceRoot({})).root;
+  const probeValidation = validateCriterionCheckPaths(ratedTestsChecks, { root });
+  if (probeValidation.scopeFailures.length) {
+    return { ok: false, error: 'probe_invalid', criterionKey: probeValidation.scopeFailures[0]!.criterionKey,
+      detail: probeValidation.scopeFailures.map(f => `${f.path}: ${f.reason}`).join('; ') };
+  }
   // The ordinary testing:run handler passes this scope into runTestFilesCore and
   // reads back its numeric ledger IDs. Scorecard checks bypass that handler, so
   // preserve the same contract here rather than creating unattributed rows that
@@ -1706,7 +1716,7 @@ export async function evaluateCriterionTestChecks(input: {
         paths: validation.failures.map((f) => f.path),
         detail:
           `criterion '${c.key}' carries a tests-check whose file(s) no longer resolve against '${root}': ` +
-          validation.failures.map((f) => `${f.path} (${f.reason})`).join('; ') +
+          [...validation.failures, ...validation.scopeFailures].map((f) => `${f.path} (${f.reason})`).join('; ') +
           ` — grading a deterministic criterion whose check cannot run would be a silent pass. ` +
           `Fix the rubric's check (rubrics:propose) or restore the file(s), then re-emit.`,
       };
@@ -1929,6 +1939,33 @@ export async function evaluateCriterionTestChecks(input: {
           }
         : {}),
     };
+    checkRuns[key] = record;
+  }
+
+  // Evaluate independent proof as a conjunction, retaining the original test receipt.
+  // Use an honest non-passing rating while collecting so every child receipt survives
+  // a contradiction; judge the requested rating only after both halves have run.
+  const probeCriteria: CheckedCriterion[] = ratedTestsChecks.flatMap(c =>
+    c.check?.kind === 'tests' && c.check.all !== undefined
+      ? [{ ...c, check: { kind: 'probe' as const, all: c.check.all } }] : []);
+  const probes = await evaluateCriterionProbeChecks({
+    criteria: probeCriteria,
+    ratings: Object.fromEntries(probeCriteria.map(c => [c.key, { rating: 'broken' }])),
+    dispatchTool: input.dispatchTool,
+    nowIso,
+  });
+  if (!probes.ok) return probes;
+  for (const c of probeCriteria) {
+    const record = checkRuns[c.key];
+    const proof = probes.checkRuns[c.key];
+    if (record?.kind !== 'tests' || proof?.kind !== 'probe' || !('all' in proof)) {
+      return { ok: false, error: 'probe_run_failed', criterionKey: c.key, detail: 'tests conjunction has no complete child receipt' };
+    }
+    record.all = proof.all;
+    record.verdict = record.failed === 0 && proof.verdict === 'pass' ? 'pass' : 'fail';
+  }
+  for (const [key, record] of Object.entries(checkRuns)) {
+    if (record.kind !== 'tests') continue;
     const rating = input.ratings[key]?.rating ?? '';
     if (record.verdict === 'fail' && ratingClaimsPass(rating)) {
       return {
@@ -1938,12 +1975,12 @@ export async function evaluateCriterionTestChecks(input: {
         rating,
         run: record,
         detail:
-          `criterion '${key}' is rated '${rating}' but its deterministic tests-check FAILED ` +
+          `criterion '${key}' is rated '${rating}' but its deterministic tests-check or additional probe FAILED ` +
           `(${record.failed} failing of ${record.passed + record.failed} run${record.failures ? `: ${record.failures.join(' · ')}` : ''}). ` +
           `A must-pass check outranks judgment — fix the code (or the tests), or rate the criterion honestly.`,
+        checkRuns,
       };
     }
-    checkRuns[key] = record;
   }
   return { ok: true, checkRuns };
 }

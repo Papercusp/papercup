@@ -39,6 +39,7 @@ vi.mock('../work-items', async (importOriginal) => {
 
 import { judgeTestsFromLedger, lifecycleOnlyAdmissionRefusal, productionConformanceDeps } from './conformance-run-deps';
 import * as testContent from './conformance-test-content';
+import * as buildInfo from '../build-info';
 import { buildRubricCheckLedgerRow, type RubricCheckResult } from '../check-results-ledger';
 import { evaluateCriterionCargoChecks, type CriterionCargoCheckRunner, type RequirementRealizationReader } from '../rubrics-criterion-checks';
 import { runPlanConformance } from './conformance-run';
@@ -495,6 +496,28 @@ describe('conformance test-run evidence', () => {
     } finally {
       factory.mockRestore();
     }
+  });
+
+  it.each(['pass', 'fail', 'error'] as const)('conjoins clean test-ledger proof with a %s typed probe', async verdict => {
+    const build = vi.spyOn(buildInfo, 'getBuildInfo').mockReturnValue({ sha: 'a'.repeat(40), version: 'test' });
+    const probe = { kind: 'tool' as const, tool: 'state:read', args: {}, schemaRevision: 'fixture',
+      expect: { path: '$.value', op: 'eq' as const, value: true } };
+    const child = { kind: 'probe' as const, probe, executed: true as const, observed: verdict === 'pass',
+      verdict: verdict === 'pass' ? 'pass' as const : 'fail' as const,
+      status: verdict === 'pass' ? 'fresh' as const : 'stale' as const, measuredAt: new Date().toISOString() };
+    const evaluateProbes = vi.fn().mockResolvedValue(verdict === 'error'
+      ? { ok: false, error: 'probe_run_failed', criterionKey: 'R-1', detail: 'unavailable' }
+      : { ok: true, checkRuns: { 'R-1': { kind: 'probe', all: [child], verdict: child.verdict,
+        status: child.status, executed: true, measuredAt: child.measuredAt } } });
+    sqlMock.mockImplementationOnce(async () => [{ ...testRunRow('pass'), finished_at: new Date() }] as never[]);
+    try {
+      const deps = productionConformanceDeps({ workspaceId: 'workspace', harnessSlug: 'papercusp', planSlug: PLAN, evaluateProbes });
+      const result = await deps.evaluateCheck({ barKey: 'R-1', role: 'done-when', checkId: 'R-1',
+        check: { kind: 'tests', files: [file], all: [probe] } });
+      expect(result).toMatchObject({ kind: 'tests', verdict });
+      expect(evaluateProbes).toHaveBeenCalledOnce();
+      expect(evaluateProbes.mock.calls[0]![0]).toMatchObject({ criteria: [{ key: 'R-1', check: { kind: 'probe', all: [probe] } }] });
+    } finally { build.mockRestore(); }
   });
 
   it('passes the caller tracker from the production adapter to its test-ledger reader', async () => {

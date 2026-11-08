@@ -636,6 +636,43 @@ describe('scorecards:emit deterministic criterion checks (P-011)', () => {
     expect(result).toMatchObject({ checkLedger: { recorded: 0, error: expect.stringMatching(/results-ledger write failed: connection refused/) } });
   });
 
+  it.each([[0, 2, true], [0, 0, false], [1, 2, false]] as const)(
+    'keeps both halves and probe ledger receipts for tests.all (%s failures, %s observed)', async (failed, count, accepted) => {
+      const file = 'packages/operator-core/lib/agent-tools/scorecards/emit.checks.test.ts';
+      const probe = { kind: 'tool' as const, tool: 'scorecards:get', args: { issueId: 'EI-conjunction-proof' },
+        schemaRevision: 'live', expect: { path: '$.count', op: 'eq' as const, value: 2 } };
+      const criteria = [{ ...CHECKED_RUBRIC.criteria[0], check: { kind: 'probe', probe } },
+        { ...CHECKED_RUBRIC.criteria[1], check: { kind: 'tests', files: [file], all: [probe] } }];
+      getRubric.mockResolvedValue({ ...CHECKED_RUBRIC, criteria });
+      const dispatchTool = vi.fn(async () => ({ count }));
+      const runRecoverableChecks = vi.fn(async (opts: { files: string[]; root: string }) => ({
+        ok: true, root: opts.root, runId: 'conjoined-test-run', files: 1, passed: 3, failed, skipped: 0,
+        byFile: { [file]: { passed: 3, failed, skipped: 0, collectionFailed: false } },
+        failures: [], failuresTruncated: false, durationMs: 1, testRunIds: [900],
+      }));
+      const recordCheckResults = vi.fn<typeof recordRubricCheckResults>()
+        .mockResolvedValueOnce([901]).mockResolvedValueOnce([902]);
+      const result = await emitScorecard(emitArgs() as never, { ...EMIT_INPUT, checkRoot: REPO_ROOT },
+        { runRecoverableChecks, dispatchTool, recordCheckResults });
+      expect(result, JSON.stringify(result)).toMatchObject({ ok: accepted });
+      expect(runRecoverableChecks).toHaveBeenCalledOnce();
+      expect(runRecoverableChecks.mock.calls[0]![0].files).toEqual([file]);
+      expect(recordCheckResults.mock.calls[0]![0]).toMatchObject([{ check: { id: 'det-outcome:0', kind: 'probe', value: count },
+        verdict: count === 2 ? 'pass' : 'fail' }]);
+      if (!accepted) {
+        expect(result).toMatchObject({ checkRefusal: { error: 'check_contradicted', run: { kind: 'tests', files: [file],
+          passed: 3, failed, testRunIds: [900], all: [{ kind: 'probe', executed: true, observed: count }] } },
+          checkLedger: { recorded: 1, testRunIds: [901] } });
+        expect(captureImprovement).not.toHaveBeenCalled();
+        return;
+      }
+      expect(result).toMatchObject({ checkLedger: { recorded: 2, testRunIds: [901, 902] } });
+      const observation = captureImprovement.mock.calls[0][0].payloadExtra.observation;
+      expect(observation.checkRuns['det-outcome']).toMatchObject({ kind: 'tests', files: [file], testRunIds: [900],
+        all: [{ kind: 'probe', executed: true, verdict: 'pass', observed: 2 }] });
+      expect(asStructuredObservation(observation)?.checkRuns?.['det-outcome']).toEqual(observation.checkRuns['det-outcome']);
+    });
+
   it('files a five-file card through the real evaluator and request-bound recovery seam', async () => {
     const checkFiles = [
       'packages/operator-core/lib/agent-tools/scorecards/emit.checks.test.ts',
@@ -912,6 +949,7 @@ describe('scorecards:emit deterministic criterion checks (P-011)', () => {
     const res = await emitScorecard(emitArgs() as never, EMIT_INPUT, { evaluateChecks });
     expect(res.ok).toBe(false);
     if (res.ok) throw new Error('expected an unjudgeable check refusal');
+    if (!('checkRefusal' in res)) throw new Error(`expected checkRefusal: ${res.error}`);
     expect(res.checkRefusal).toMatchObject({
       error: 'check_run_failed',
       runner: { runId: 'route-run-42', error: 'route_error',

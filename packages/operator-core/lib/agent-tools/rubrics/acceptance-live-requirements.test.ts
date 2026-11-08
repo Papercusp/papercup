@@ -105,6 +105,18 @@ describe('acceptanceBarSourceFingerprint (BAR-neutrality of plan edits)', () => 
 });
 
 describe('overlayLiveRequirementVerification', () => {
+  it.each(['removed', 'changed'] as const)('keeps the tests conjunction when additional proof is %s', mutation => {
+    const probe = { kind: 'tool', tool: 'state:read', args: { cell: 'proof' }, expect: { path: '$.value', op: 'eq', value: true } };
+    const check = { kind: 'tests', files: [OLD_TEST], all: [probe] };
+    const next = { kind: 'tests', files: [NEW_TEST], ...(mutation === 'changed' ? { all: [{ ...probe, expect: { ...probe.expect, value: false } }] } : {}) };
+    const overlay = overlayLiveRequirementVerification([{ barKey: 'R-1', check }], [{ barKey: 'R-1', criterion: { check: next } }]);
+    expect(overlay.criteria[0]?.check).toEqual(check);
+    expect(overlay.kept).toEqual([{ barKey: 'R-1', reason: 'check-binding-downgraded' }]);
+    const moved = overlayLiveRequirementVerification([{ barKey: 'R-1', check }], [{ barKey: 'R-1', criterion: { check: { ...check, files: [NEW_TEST] } } }]);
+    expect(moved.criteria[0]?.check).toEqual({ ...check, files: [NEW_TEST] });
+    expect(classifyRequirementBarEdit({ check }, { check: next })).toBe('meaning');
+  });
+
   const stored = [
     { key: 'r-1', barKey: 'R-1', method: 'old', check: { kind: 'tests', files: [OLD_TEST] } },
     { key: 'r-2', barKey: 'R-2', method: 'legacy', check: { kind: 'tests', files: [OLD_TEST] } },

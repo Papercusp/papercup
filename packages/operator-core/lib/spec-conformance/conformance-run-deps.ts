@@ -483,13 +483,24 @@ export function productionConformanceDeps(input: ProductionConformanceDepsInput)
             ? undefined
             : [{ file: check.files[0]!, testName: check.testName }]
         );
-        return judgeTestsFromLedger({
+        const tests = await judgeTestsFromLedger({
           files: check.files,
           workspaceId: input.workspaceId,
           phases: input.phases,
           contentEquivalence,
           ...(cases ? { cases } : {}),
         }, sql());
+        if (check.all === undefined) return tests;
+        const criterion = { key: request.checkId, check: { kind: 'probe' as const, all: check.all } };
+        const evaluation = await (input.evaluateProbes ?? evaluateCriterionProbeChecks)({
+          criteria: [criterion],
+          ratings: { [request.checkId]: { rating: 'unknown' } },
+          dispatchTool: rescoreProbeDispatcher(input.harnessSlug, input.dispatchTool, input.workspaceId),
+        });
+        if (!evaluation.ok) return { ...tests, verdict: 'error', detail: `tests conjunction probe unjudged: ${evaluation.error}` };
+        const probes = foldResults('probe', probeCheckResults(request.checkId, evaluation.checkRuns, [criterion]), nowIso());
+        return { ...tests, verdict: foldVerdicts([tests.verdict, probes.verdict]),
+          detail: [tests.detail, `additional probes: ${probes.verdict}`, probes.detail].filter(Boolean).join('; ') };
       }
       if (check.kind === 'cargo') {
         const evaluation = await (input.evaluateCargo ?? evaluateCriterionCargoChecks)({
