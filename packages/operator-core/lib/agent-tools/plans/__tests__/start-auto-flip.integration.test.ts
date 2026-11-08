@@ -133,6 +133,18 @@ vi.mock('../plan-activation-gate', async (importOriginal) => {
     evaluateConversationActivationGate: (...args: unknown[]) => START_GATES.activation(...args),
   };
 });
+// These legacy seeds exercise approval and its real transactional revision
+// capture, not discovery finalization. Keep the unrelated discovery door
+// deterministic alongside activation/admission; discovery-start-doors.test.ts
+// and discovery-lifecycle.integration.test.ts cover its production refusal.
+vi.mock('../../../plan-audits', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../plan-audits')>();
+  return {
+    ...actual,
+    withCurrentDiscovery: async (_input: unknown, accept: () => Promise<unknown>) =>
+      ({ ok: true, result: await accept() }),
+  };
+});
 vi.mock('../plan-admission-preflight', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../plan-admission-preflight')>();
   return {
