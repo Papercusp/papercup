@@ -389,6 +389,8 @@ const {
     nonLint?: string[];
     selfRecursive?: string[];
     forwardAmbiguous?: boolean;
+    workspaceDirs?: string[];
+    checkErrors?: string[];
   };
   detectorPathsFromCommand: (command: unknown) => string[];
   parseGitmodules: (text: unknown) => { name: string; path: string; url: string | null }[];
