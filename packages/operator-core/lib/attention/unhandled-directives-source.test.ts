@@ -6,6 +6,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { OwnerDirectiveRow } from '../owner-directives';
 import type { DirectiveRoute } from '../owner-directive-routing';
+import { namedQueryStageTimings, withNamedQueryDiagnosticContext } from '../agent-tools/db-diagnostic-correlation-wiring';
 
 const h = vi.hoisted(() => ({ listOwnerDirectives: vi.fn(), routeOpenDirectives: vi.fn() }));
 
@@ -71,6 +72,56 @@ describe('readUnhandledDirectives', () => {
     h.listOwnerDirectives.mockResolvedValue([]);
     expect(await readUnhandledDirectives({ workspaceId: 'ws' })).toEqual([]);
     expect(h.routeOpenDirectives).not.toHaveBeenCalled();
+  });
+
+  it.each(['list', 'routing'] as const)('retains the pending %s boundary in the original attention request', async boundary => {
+    let enter!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const paused = new Promise<void>(resolve => { release = resolve; });
+    const rows = [directive(3, 'test it')];
+    const routes = new Map<number, DirectiveRoute>([
+      [3, { kind: 'unhandled', why: 'no-fleet', fleetSlug: null }],
+    ]);
+    h.listOwnerDirectives.mockImplementation(async () => {
+      if (boundary === 'list') { enter(); await paused; }
+      return rows;
+    });
+    h.routeOpenDirectives.mockImplementation(async () => {
+      if (boundary === 'routing') { enter(); await paused; }
+      return routes;
+    });
+
+    await withNamedQueryDiagnosticContext('plans.attention', async requestId => {
+      const read = readUnhandledDirectives({ workspaceId: 'ws' });
+      try {
+        await entered;
+        expect(namedQueryStageTimings()).toMatchObject({ requestId, omittedStages: 0 });
+        expect(namedQueryStageTimings()?.stages).toEqual(expect.arrayContaining([
+          expect.objectContaining({ stage: 'attention-directives-import', outcome: 'fulfilled' }),
+          expect.objectContaining({ stage: `attention-directives-${boundary}`, outcome: 'pending' }),
+        ]));
+        if (boundary === 'list') expect(h.routeOpenDirectives).not.toHaveBeenCalled();
+      } finally {
+        release();
+        await read;
+      }
+      expect(await read).toMatchObject([{ directiveId: 3, displayText: '"test it"' }]);
+      expect(namedQueryStageTimings()?.stages.every(stage => stage.outcome === 'fulfilled')).toBe(true);
+    });
+    expect(namedQueryStageTimings()).toBeNull();
+  });
+
+  it('records a rejected routing boundary without replacing the original failure', async () => {
+    const failure = new Error('routing unavailable');
+    h.listOwnerDirectives.mockResolvedValue([directive(3, 'test it')]);
+    h.routeOpenDirectives.mockRejectedValue(failure);
+    await withNamedQueryDiagnosticContext('plans.attention', async () => {
+      await expect(readUnhandledDirectives({ workspaceId: 'ws' })).rejects.toBe(failure);
+      expect(namedQueryStageTimings()?.stages).toEqual(expect.arrayContaining([
+        expect.objectContaining({ stage: 'attention-directives-routing', outcome: 'rejected' }),
+      ]));
+    });
   });
 });
 

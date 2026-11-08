@@ -11,16 +11,19 @@
  * needs-human-work-items-source.ts is mocked.
  */
 import type { UnhandledDirectiveInput } from './adapters';
+import { traceNamedQueryStage } from '../agent-tools/db-diagnostic-correlation-wiring';
 
 export async function readUnhandledDirectives(input: { workspaceId: string }): Promise<UnhandledDirectiveInput[]> {
-  const [{ listOwnerDirectives }, { directiveDisplayText }, { routeOpenDirectives }] = await Promise.all([
+  const [{ listOwnerDirectives }, { directiveDisplayText }, { routeOpenDirectives }] = await traceNamedQueryStage('attention-directives-import', () => Promise.all([
     import('../owner-directives'),
     import('../owner-directive-display'),
     import('../owner-directive-routing'),
-  ]);
-  const open = await listOwnerDirectives({ workspaceId: input.workspaceId, state: ['open'], limit: 200 });
+  ]));
+  const open = await traceNamedQueryStage('attention-directives-list', () =>
+    listOwnerDirectives({ workspaceId: input.workspaceId, state: ['open'], limit: 200 }));
   if (open.length === 0) return [];
-  const routes = await routeOpenDirectives(input.workspaceId, open);
+  const routes = await traceNamedQueryStage('attention-directives-routing', () =>
+    routeOpenDirectives(input.workspaceId, open));
   const out: UnhandledDirectiveInput[] = [];
   for (const row of open) {
     const route = routes.get(row.id);
