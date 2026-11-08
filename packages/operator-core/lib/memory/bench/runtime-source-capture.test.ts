@@ -195,6 +195,19 @@ describe('parsed sources joined to independent process lifetimes', () => {
     expect(result.completeRuntimeClosureVerified).toBe(false);
     expect(result.dependencyQualification).toBe('required');
   });
+  it('carries transient executable-memory evidence without qualifying its byte origin', () => {
+    const observed = trace.replace('20 1.800000',
+      '20 1.600000 mprotect(0x1000, 4096, PROT_READ|PROT_EXEC) = 0\n'
+      + '20 1.700000 munmap(0x1000, 4096) = 0\n20 1.800000');
+    const result = bindRuntimeSourcePopulation(observed, terminal, captures());
+    expect(result.memoryTransitions).toMatchObject([
+      {taskId:20, operation:'mprotect', executablePermissionRequested:true, succeeded:true},
+      {taskId:20, operation:'munmap', succeeded:true},
+    ]);
+    expect(result.executableMemoryQualification).toBe('required');
+    expect(result.completeRuntimeClosureVerified).toBe(false);
+    expect(result.creatorFence).toBe('required');
+  });
   it('joins original file census bytes while keeping generated and runtime scripts explicit', () => {
     const rows=captures();
     rows[0].splice(2,0,{kind:'source',target:'main',scriptId:'2',url:'[eval]',sha256:'b'.repeat(64),bytes:7});

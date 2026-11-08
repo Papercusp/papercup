@@ -6,7 +6,8 @@ export function runtimeFileTraceArguments(output, command) {
   // -q suppresses attach chatter. -qq also suppresses the terminal records
   // that bindRuntimeModelOpens requires and therefore cannot qualify a run.
   return ['-f', '-q', '-ttt', '-yy', '-s', '4096', '-e',
-    'trace=openat,openat2,mmap,execve,execveat,clone,clone3,fork,vfork,exit,exit_group', '-o', output, ...command];
+    'trace=openat,openat2,mmap,mprotect,pkey_mprotect,munmap,mremap,shmat,shmdt,remap_file_pages,execve,execveat,clone,clone3,fork,vfork,exit,exit_group',
+    '-o', output, ...command];
 }
 
 function parseRuntimeFileTrace(text) {
@@ -16,6 +17,7 @@ function parseRuntimeFileTrace(text) {
     if (!match) throw new Error('unsupported strace record');
     const tid = Number(match[1]);
     let atMs = Number(match[2]) * 1000;
+    const completedAtMs = atMs;
     let call = match[3];
     if (call.endsWith('<unfinished ...>')) {
       if (pending.has(tid)) throw new Error('duplicate unfinished strace record');
@@ -29,7 +31,7 @@ function parseRuntimeFileTrace(text) {
     }
     const clone = /^(?:clone|clone3|fork|vfork)\(.*\)\s+=\s+(\d+)\b/.exec(call);
     if (clone) edges.push([tid, Number(clone[1])]);
-    lines.push({ tid, atMs, call });
+    lines.push({ tid, atMs, completedAtMs, call });
   }
   if (pending.size) throw new Error('incomplete strace capture');
   return { lines, edges };
@@ -53,7 +55,7 @@ export function bindRuntimeProcessTree(text, terminal) {
   const validId = id => Number.isSafeInteger(id) && id > 0;
   const tasks = new Map([[processId, { taskId: processId, parentTaskId: null,
     threadGroupId: processId, birthAtMs: null, execs: [], terminalAtMs: null }]]);
-  const births = [], observed = new Set();
+  const births = [], observed = new Set(), memoryTransitions = [];
   for (const row of lines) {
     if (!validId(row.tid) || !Number.isFinite(row.atMs)) throw new Error('process census identity invalid');
     observed.add(row.tid);
@@ -87,6 +89,25 @@ export function bindRuntimeProcessTree(text, terminal) {
     const task = tasks.get(row.tid);
     if (task.birthAtMs !== null && row.atMs < task.birthAtMs || task.terminalAtMs !== null)
       throw new Error('process census task lifetime changed');
+    if (/^(?:mmap|mprotect|pkey_mprotect|munmap|mremap|shmat|shmdt|remap_file_pages)\(/.test(row.call)) {
+      const memory = /^(\w+)\((.*)\)\s+=\s+(.*)$/.exec(row.call);
+      if (!memory || row.completedAtMs < row.atMs)
+        throw new Error('process census memory transition unresolved');
+      const [, operation, args, result] = memory;
+      const failed = /^-1 [A-Z][A-Z0-9]+(?: \([^\n]*\))?$/.test(result);
+      const returnsAddress = ['mmap', 'mremap', 'shmat'].includes(operation);
+      if (!failed && !(returnsAddress ? /^0x[0-9a-f]+$/i.test(result) : result === '0'))
+        throw new Error('process census memory transition outcome unresolved');
+      // Retain transitions even when no executable map survives until a sample.
+      // These are syscall observations, not an address-space replay: remaps can
+      // inherit permissions, tasks can share mappings, and exec installs kernel
+      // mappings outside mmap. Never turn this into a JIT/byte-origin claim.
+      const permission = /\bPROT_(?:NONE|READ|WRITE|EXEC)\b/.test(args)
+        ? /\bPROT_EXEC\b/.test(args) : null;
+      memoryTransitions.push({ taskId: row.tid, operation, arguments: args, result,
+        succeeded: !failed, executablePermissionRequested: permission,
+        atMs: row.atMs, completedAtMs: row.completedAtMs });
+    }
     if (/^execve(?:at)?\(/.test(row.call)) {
       if (/\)\s+=\s+-1\b/.test(row.call)) continue;
       if (!/\)\s+=\s+0$/.test(row.call) || task.threadGroupId !== task.taskId)
@@ -111,6 +132,7 @@ export function bindRuntimeProcessTree(text, terminal) {
     throw new Error('process census lacks complete exec-to-exit population');
   return { schema: 'runtime-traced-process-tree/v1', processId,
     tasks: [...tasks.values()].sort((a, b) => a.taskId - b.taskId),
+    memoryTransitions, executableMemoryQualification: 'required',
     tracedTaskPopulationComplete: true, completeRuntimeClosureVerified: false,
     sourceQualification: 'required', creatorFence: 'required',
     scope: 'all recorded process/thread births through successful termination under the maintained file trace' };

@@ -2594,6 +2594,7 @@ export function verifyBgVerifierOutputRecord(output, record, invocation) {
  *     terminal: Parameters<typeof bindRuntimeSourcePopulation>[1],
  *     captures: Parameters<typeof bindRuntimeSourcePopulation>[2],
  *     inputCustody?: ReturnType<typeof createBgVerifierCompilerCustody>,
+ *     nativeScope?: 'selected-requests' | 'process-lifetime',
  *     nativeCaptures?: { stderr: Buffer,
  *       windows: Parameters<typeof bindNativeLoaderClosure>[1],
  *       firstRun: Parameters<typeof bindNativeLoaderClosure>[2],
@@ -2601,6 +2602,10 @@ export function verifyBgVerifierOutputRecord(output, record, invocation) {
  */
 export function qualifyBgVerifierRuntimeSources({ output, record, invocation, execution }) {
   verifyBgVerifierOutputRecord(output, record, invocation);
+  assert.ok(execution.nativeScope === undefined || execution.nativeScope === 'selected-requests'
+    || execution.nativeScope === 'process-lifetime', 'BG native qualification scope unsupported');
+  assert.ok(execution.nativeScope !== 'process-lifetime' || execution.nativeCaptures?.length,
+    'BG native lifetime capture missing');
   // Full-parent membership alone also cannot stand in for observed compilation.
   verifyBgOutputAuthority(output, record, true);
   const entry = readBgFileIdentity(execution.entry);
@@ -2711,7 +2716,8 @@ export function qualifyBgVerifierRuntimeSources({ output, record, invocation, ex
         && capture.windows.every(window => ns(window.startMonotonicNs) && ns(window.endMonotonicNs)
           && BigInt(start) <= BigInt(window.startMonotonicNs) && BigInt(window.endMonotonicNs) <= BigInt(end)),
       'BG native capture lies outside source lifetime');
-      const closure = bindNativeLoaderClosure(capture.stderr, capture.windows, capture.firstRun, capture.receipt);
+      const closure = bindNativeLoaderClosure(capture.stderr, capture.windows, capture.firstRun, capture.receipt,
+        { scope: execution.nativeScope });
       assert.ok(closure.executable.path === record.invocation.node.realpath
         && closure.executable.sha256 === record.invocation.node.sha256,
       'BG native executable differs from original compiler Node');
@@ -2760,7 +2766,8 @@ export function qualifyBgVerifierRuntimeSources({ output, record, invocation, ex
     traceSha256: createHash('sha256').update(execution.trace).digest('hex'),
     entry, population, bindings, inputBindings, builtinBindings, unqualifiedSources, nativeBindings,
     builtinQualification: builtinBindings.length ? 'original-node-bytes' : 'not-observed',
-    nativeQualification: execution.nativeCaptures === undefined ? 'not-observed' : 'selected-windows-only',
+    nativeQualification: execution.nativeCaptures === undefined ? 'not-observed'
+      : execution.nativeScope === 'process-lifetime' ? 'file-backed-glibc-process-lifetimes' : 'selected-windows-only',
     vdsoQualification: nativeBindings.some(native => native.expectedVdsoQualified)
       ? 'original-host-bytes' : execution.nativeCaptures === undefined ? 'not-observed' : 'required',
     compiledOutputBytesObserved: true,

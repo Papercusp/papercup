@@ -91,6 +91,84 @@ describe('exec-to-EOF process and thread population', () => {
       '10 1.160000 <... clone resumed>) = 11');
     expect(bindRuntimeProcessTree(input.join('\n') + '\n', terminal).tasks).toHaveLength(2);
   });
+  it('retains transient executable permissions, remaps, unmaps and unsuccessful attempts', () => {
+    const input = [...lines];
+    input.splice(4, 0,
+      '11 1.400000 mmap(NULL, 4096, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x1000',
+      '11 1.500000 mprotect(0x1000, 4096, PROT_READ|PROT_EXEC <unfinished ...>',
+      '10 1.510000 openat(AT_FDCWD, "/other", O_RDONLY) = -1 ENOENT (No such file or directory)',
+      '11 1.520000 <... mprotect resumed>) = 0',
+      '11 1.600000 pkey_mprotect(0x1000, 4096, PROT_READ, 0) = 0',
+      '11 1.700000 mremap(0x1000, 4096, 8192, MREMAP_MAYMOVE) = 0x3000',
+      '11 1.800000 munmap(0x3000, 8192) = 0',
+      '11 1.900000 mprotect(0x1000, 4096, PROT_EXEC) = -1 ENOMEM (Cannot allocate memory)',
+      '10 2.000000 shmat(3, NULL, SHM_EXEC) = 0x5000',
+      '10 2.010000 remap_file_pages(0x5000, 4096, 0, 0, 0) = 0',
+      '10 2.020000 shmdt(0x5000) = 0');
+    const receipt = bindRuntimeProcessTree(input.join('\n') + '\n', terminal);
+    expect(receipt.memoryTransitions).toHaveLength(9);
+    expect(receipt.memoryTransitions[1]).toMatchObject({taskId:11, operation:'mprotect',
+      succeeded:true, executablePermissionRequested:true, atMs:1500, completedAtMs:1520});
+    expect(receipt.memoryTransitions[2]).toMatchObject({operation:'pkey_mprotect', executablePermissionRequested:false});
+    expect(receipt.memoryTransitions[3]).toMatchObject({operation:'mremap', executablePermissionRequested:null});
+    expect(receipt.memoryTransitions[5]).toMatchObject({operation:'mprotect', succeeded:false});
+    expect(receipt.memoryTransitions[6]).toMatchObject({operation:'shmat', executablePermissionRequested:null});
+    expect(receipt.executableMemoryQualification).toBe('required');
+    expect(receipt.completeRuntimeClosureVerified).toBe(false);
+    const mask = runtimeFileTraceArguments('/trace', ['/program']).join(' ');
+    for (const {operation} of receipt.memoryTransitions) expect(mask).toContain(operation);
+  });
+  it.each(['?', '0x1000...', '1', '-1 UNKNOWN...', '0 (INJECTED)'])(
+    'refuses an unresolved successful memory outcome %s', result => {
+      const input = [...lines];
+      input.splice(4, 0, '11 1.400000 mprotect(0x1000, 4096, PROT_EXEC) = ' + result);
+      expect(() => bindRuntimeProcessTree(input.join('\n') + '\n', terminal))
+        .toThrow('memory transition outcome unresolved');
+    });
+  it.runIf(process.platform === 'linux')('retains a real anonymous executable mapping removed before exit', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'runtime-executable-memory-'));
+    try {
+      const source = path.join(root, 'mapping.c'), binary = path.join(root, 'mapping'), output = path.join(root, 'trace.log');
+      fs.writeFileSync(source, `#define _GNU_SOURCE
+#include <sys/mman.h>
+#include <unistd.h>
+#include <stdio.h>
+int main(void) {
+  long page = sysconf(_SC_PAGESIZE);
+  if (page <= 0) return 1;
+  void *p = mmap(NULL, page, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+  if (p == MAP_FAILED || mprotect(p, page, PROT_READ|PROT_EXEC) != 0) return 2;
+  if (mprotect(p, page, PROT_READ|PROT_WRITE) != 0) return 3;
+  p = mremap(p, page, page * 2, MREMAP_MAYMOVE);
+  if (p == MAP_FAILED || munmap(p, page * 2) != 0) return 4;
+  printf("%d", getpid());
+  return 0;
+}
+`);
+      const env = {...process.env}; delete env.NODE_OPTIONS;
+      const compile = spawnSync('/usr/bin/cc', [source, '-o', binary], {env, encoding:'utf8', timeout:10_000});
+      expect(compile.error).toBeUndefined();
+      expect(compile.status, compile.stderr).toBe(0);
+      const child = spawnSync('/usr/bin/strace', runtimeFileTraceArguments(output, [binary]),
+        {env, encoding:'utf8', timeout:10_000, maxBuffer:1024*1024});
+      expect(child.error).toBeUndefined();
+      expect(child.status, child.stderr).toBe(0);
+      const receipt = bindRuntimeProcessTree(fs.readFileSync(output, 'utf8'), {
+        ...terminal, processId:Number(child.stdout), exitCode:child.status!, signal:child.signal,
+      });
+      const executable = receipt.memoryTransitions.find(row => row.operation === 'mprotect'
+        && row.succeeded && row.executablePermissionRequested);
+      expect(executable).toBeDefined();
+      const address = executable!.arguments.split(',')[0]!;
+      expect(receipt.memoryTransitions.some(row => row.operation === 'mremap'
+        && row.succeeded && row.arguments.startsWith(address + ','))).toBe(true);
+      const remap = receipt.memoryTransitions.find(row => row.operation === 'mremap')!;
+      expect(receipt.memoryTransitions.some(row => row.operation === 'munmap'
+        && row.succeeded && row.arguments.startsWith(remap.result + ','))).toBe(true);
+      expect(receipt.executableMemoryQualification).toBe('required');
+      expect(receipt.completeRuntimeClosureVerified).toBe(false);
+    } finally { fs.rmSync(root, {recursive:true, force:true}); }
+  });
   it.each(['root-exit', 'thread-exit', 'orphan', 'signal', 'failed-child', 'duplicate-birth',
     'unknown-flags', 'unresolved-exec', 'truncated', 'after-exit', 'no-exec', 'unknown-birth'])(
     'refuses %s instead of certifying a partial task population', variant => {

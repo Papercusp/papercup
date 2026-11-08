@@ -4237,6 +4237,37 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
     expect(proof.creatorFence).toBe('required');
   });
 
+  it.each(['positive', 'late-load', 'late-unload', 'missing-native', 'empty-native', 'invalid-scope'] as const)(
+    'compiled runtime native lifetime: %s', async variant => {
+      const fixture = await compiledRuntime(false, true, 'with-vdso');
+      const execution = JSON.parse(JSON.stringify(fixture.execution)) as Parameters<typeof qualifyBgVerifierRuntimeSources>[0]['execution'];
+      execution.nativeScope = variant === 'invalid-scope' ? 'caller-qualified' as never : 'process-lifetime';
+      execution.nativeCaptures!.forEach((capture, index) => {
+        capture.stderr = Buffer.from(fixture.execution.nativeCaptures![index]!.stderr);
+      });
+      if (variant === 'late-load' || variant === 'late-unload') {
+        const capture = execution.nativeCaptures![0]!;
+        capture.stderr = Buffer.concat([capture.stderr, Buffer.from(capture.firstRun.processId + ': file=/foreign/transient.so [0];  '
+          + (variant === 'late-load' ? 'generating' : 'destroying') + ' link map\n')]);
+        capture.receipt.bytes = capture.stderr.length;
+        capture.receipt.sha256 = digest(capture.stderr);
+      }
+      if (variant === 'missing-native') delete execution.nativeCaptures;
+      if (variant === 'empty-native') execution.nativeCaptures = [];
+      const run = () => qualifyBgVerifierRuntimeSources({ ...fixture, execution });
+      if (variant !== 'positive') {
+        expect(run).toThrow(variant === 'invalid-scope' ? 'scope unsupported'
+          : variant === 'missing-native' || variant === 'empty-native' ? 'lifetime capture missing' : 'outside lifetime census');
+        return;
+      }
+      const proof = run();
+      expect(proof.nativeQualification).toBe('file-backed-glibc-process-lifetimes');
+      expect(proof.nativeBindings[0]!.closure.fileBackedLifetimeClosureVerified).toBe(true);
+      expect(proof.nativeBindings[0]!.closure.finalizationJoins.length).toBeGreaterThan(0);
+      expect(proof.completeRuntimeClosureVerified).toBe(false);
+      expect(proof.creatorFence).toBe('required');
+    });
+
   it.each(['positive', 'absent', 'missing-process', 'duplicate-process', 'foreign-process',
     'source-clock', 'early-sample', 'late-window', 'stderr-digest', 'stderr-eof',
     'mapped-bytes', 'original-node'] as const)('compiled runtime native custody: %s', async variant => {
