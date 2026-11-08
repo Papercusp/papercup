@@ -26,9 +26,23 @@ export function bindRuntimeJitMemory(bytes: Buffer, witness: Parameters<typeof b
   expectedTracer?: RuntimeObservedProcessIdentity): {
     schema: 'runtime-jit-selected-memory-binding/v1'; processId: number;
     dumpSha256: string; mapsSha256: string; startedMonotonicNs: string; finishedMonotonicNs: string;
+    /** Exact decimal byte totals for this stopped snapshot, not lifetime closure. */
+    executableMappingCoverage: {
+      mappings: {mapping: {start: string; end: string; permissions: string; offset: string;
+        device: string; inode: string; path: string | null};
+        selectedRanges: {codeIndex: string; address: string; bytes: number}[];
+        observedBytes: string; unobservedBytes: string}[];
+      totalBytes: string; observedBytes: string; unobservedBytes: string; scope: string;
+    };
     bindings: {codeIndex: string; address: string; bytes: number; sha256: string;
       mapping: {start: string; end: string; permissions: string; offset: string;
-        device: string; inode: string; path: string | null}}[];
+        device: string; inode: string; path: string | null};
+      /** Same-process stopped maps metadata only. Empty does not exclude aliases. */
+      writableMappingCandidates: {kind: 'selected-mapping-writable' | 'matching-file-offset';
+        mapping: {start: string; end: string; permissions: string; offset: string;
+          device: string; inode: string; path: string | null};
+        overlap: {selectedAddress: string; candidateAddress: string; bytes: number};
+        sharedPhysicalBytesVerified: false}[]}[];
     selectedExecutableBytesVerified: true; emittedLoadsNotSampled: number;
     mappingPopulationComplete: false; executableBytesQualified: false; completeRuntimeClosureVerified: false;
     jitByteOriginQualification: 'required'; runtimeCaptureCustody: 'required'; creatorFence: 'required';

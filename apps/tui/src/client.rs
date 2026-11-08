@@ -2620,17 +2620,32 @@ impl OperatorClient {
         if matches!(request.name, crate::native_panel::ReadModel::Environment) {
             return Ok(serde_json::json!({"rows":[self.backend_identity().await?]}));
         }
-        let environment = if let Some(expected) = &request.environment {
+        let goal_read = matches!(request.name, crate::native_panel::ReadModel::Goals | crate::native_panel::ReadModel::Goal);
+        let environment = if request.environment.is_some() || goal_read {
             let current = self.backend_identity().await?;
-            anyhow::ensure!(expected.same_rendezvous(&current),
-                "selected environment changed; refresh the native panel");
+            if let Some(expected) = &request.environment {
+                anyhow::ensure!(expected.same_rendezvous(&current),
+                    "selected environment changed; refresh the native panel");
+            }
             Some(current)
         } else { None };
+        let mut args = request.args.clone();
+        if goal_read {
+            let current = environment.as_ref().context("native Goals requires a selected environment")?;
+            if let Some(workspace) = args.get("workspaceId") {
+                anyhow::ensure!(workspace.as_str() == Some(current.workspace_id.as_str()),
+                    "selected workspace changed; refresh the native Goals panel");
+            }
+            // These canonical queries default to the legacy `default`
+            // workspace. Native callers select an operator, so bind both
+            // portfolio and exact detail reads to its verified identity.
+            args.insert("workspaceId".into(), serde_json::json!(current.workspace_id));
+        }
         let mut payload = self
             .get_json(&format!(
                 "/api/zero-harness/rest-query?name={}&args={}",
                 urlencode(request.name.as_str()),
-                urlencode(&serde_json::to_string(&request.args)?),
+                urlencode(&serde_json::to_string(&args)?),
             ))
             .await?;
         if payload.get("error").is_some_and(|error| !error.is_null())
@@ -4401,6 +4416,67 @@ mod tests {
                 assert_eq!(result["rows"][0]["goal"]["status"], if start {"active"} else {"paused"});
             } else { assert!(result.is_err(), "accepted {scenario}"); }
             server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn native_goal_reads_bind_selected_workspace_before_querying() {
+        use super::*;
+        use serde_json::json;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for name in ["goals.list", "goals.detail"] {
+            for supplied in [None, Some("selected"), Some("foreign")] {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let base = format!("http://{}", listener.local_addr().unwrap());
+                let identity = json!({"schemaVersion":1,"workspaceId":"selected",
+                    "store":{"id":"fixture","target":"test","source":"test"},
+                    "build":{"version":"current","sha":null},
+                    "agentChat":{"scope":"workspace:selected","route":"test"},"capabilities":{}});
+                let original = if name == "goals.list" { json!({"query":"literal +/=& λ","limit":500}) }
+                    else { json!({"goalId":"literal +/=& λ"}) };
+                let mut expected_args = original.clone(); expected_args["workspaceId"] = json!("selected");
+                let foreign = supplied == Some("foreign");
+                let server = tokio::spawn(async move {
+                    let mut steps = vec![("/api/tui/identity", identity)];
+                    if !foreign { steps.push(("/api/zero-harness/rest-query",
+                        json!({"rows":[{"canonical":"selected"}],"version":"goal-version","partial":true}))); }
+                    for (path, payload) in steps {
+                        let (mut socket, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept()).await.unwrap().unwrap();
+                        let mut bytes = Vec::new();
+                        loop {
+                            let mut buffer = [0; 2048]; let n = socket.read(&mut buffer).await.unwrap(); assert!(n > 0);
+                            bytes.extend_from_slice(&buffer[..n]);
+                            if bytes.windows(4).any(|w| w == b"\r\n\r\n") { break; }
+                        }
+                        let head = String::from_utf8(bytes).unwrap();
+                        assert!(head.to_lowercase().contains("authorization: bearer native-goal-read"));
+                        let target = head.lines().next().unwrap().split_whitespace().nth(1).unwrap();
+                        let url = reqwest::Url::parse(&format!("http://fixture{target}")).unwrap();
+                        assert_eq!(url.path(), path);
+                        if path.ends_with("rest-query") {
+                            let params: std::collections::HashMap<_, _> = url.query_pairs().collect();
+                            assert_eq!(params.get("name").unwrap(), name);
+                            assert_eq!(serde_json::from_str::<serde_json::Value>(params.get("args").unwrap()).unwrap(), expected_args);
+                        }
+                        let body = payload.to_string();
+                        socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+                    }
+                });
+                let client = OperatorClient {transport:Transport::Http(HttpClient::new(base.clone(),Some("native-goal-read".into()))),
+                    endpoint:base,selection_source:"test".into()};
+                let mut args = original;
+                if let Some(workspace) = supplied { args["workspaceId"] = json!(workspace); }
+                let request = serde_json::from_value(json!({"name":name,"args":args})).unwrap();
+                let result = client.native_panel_read(&request).await;
+                if foreign { assert!(result.unwrap_err().to_string().contains("selected workspace changed")); }
+                else {
+                    let result = result.unwrap();
+                    assert_eq!(result["rows"][0]["canonical"], "selected");
+                    assert_eq!(result["environment"]["workspaceId"], "selected");
+                    assert_eq!(result["version"], "goal-version"); assert_eq!(result["partial"], true);
+                }
+                server.await.unwrap();
+            }
         }
     }
 
