@@ -391,6 +391,15 @@ const argsSchema = z.preprocess(
         previewOperationId: z.string().min(4).max(80).optional(),
       }),
       z.object({
+        op: z.literal('heal-generated'),
+        expectedCandidate: z.string().regex(FULL_COMMIT_SHA),
+        expectedRepairHead: z.string().regex(FULL_COMMIT_SHA),
+        expectedUpdatedAtMs: z.number().int().nonnegative(),
+        /** Currently the proved selected tool-delivery declaration pair only. */
+        generator: z.literal('tool-delivery-declaration'),
+        confirm: z.boolean().optional(),
+      }),
+      z.object({
         op: z.literal('admit'),
         /** Repo-relative paths your fix touched — the admission allowlist. REQUIRED: an admission is by explicit path. */
         paths: z.array(z.string().min(1)).min(1).max(REPAIR_QUEUE_ADMIT_MAX_PATHS),
@@ -1091,14 +1100,14 @@ export default defineTool({
   timeoutSec: 295,
   profile: 'engineer',
   description:
-    'Inspect, claim or change the frozen repair queue. For gate-red fixes, `admit{paths}` replays exact integration-branch paths onto repairHead; dry-run unless `confirm:true`. R6 prechecks run first; read `get` before confirming. Never catch up to tip, retire live/unknown work, launch a checkpoint or deploy. See /internal/docs/agent-insights/frozen-candidate-fix-only-admission.',
+    'Inspect, claim or change the frozen repair queue. `admit{paths}` replays exact integration-branch paths onto repairHead. `heal-generated{generator:"tool-delivery-declaration",expectedCandidate,expectedRepairHead,expectedUpdatedAtMs}` measures and mechanically repairs the selected declaration on that exact frozen head. Both require confirm:true to write. Read get first. Never catch up to tip, retire live/unknown work, launch a checkpoint or deploy. See /internal/docs/agent-insights/frozen-candidate-fix-only-admission.',
   capability: 'operator:write',
   abortCompletionReceipt: repairQueueAbortCompletionReceipt,
   effectForCall: (args) => {
     const op = (args as { op?: unknown }).op;
     return op === undefined ||
       op === 'get' ||
-      ((op === 'admit' || op === 'converge') && (args as { confirm?: unknown }).confirm !== true)
+      ((op === 'admit' || op === 'converge' || op === 'heal-generated') && (args as { confirm?: unknown }).confirm !== true)
       ? 'read'
       : 'write';
   },
@@ -1121,7 +1130,7 @@ export default defineTool({
   result: z
     .object({
       ok: z.boolean().optional(),
-      op: z.enum(['get', 'admit', 'claim-leg', 'record-edit', 'retire']).optional(),
+      op: z.enum(['get', 'admit', 'heal-generated', 'claim-leg', 'record-edit', 'retire']).optional(),
       recorded: z.boolean().optional(),
       target: z.unknown().optional(),
       repairQueue: z.unknown().nullable().optional(),
@@ -1264,7 +1273,9 @@ export default defineTool({
     }
     if (inspected.read.status === 'unreadable') {
       const op =
-        args.op === 'retire'
+        args.op === 'heal-generated'
+          ? 'heal-generated'
+          : args.op === 'retire'
           ? 'retire'
           : args.op === 'claim-leg'
             ? 'claim-leg'
@@ -1338,7 +1349,7 @@ export default defineTool({
     // session id is the documented fallback proof of delegation; keep this separate
     // from signed authorization and require the queue to still be awaiting that fixer.
     const exactFallbackFixerAdmission =
-      args.op === 'admit' &&
+      (args.op === 'admit' || args.op === 'heal-generated') &&
       ctx.isSuperuser === true &&
       callerAuthorization.status === 'not-applicable' &&
       callerAuthorization.callerSpawnId !== null &&
@@ -1351,6 +1362,66 @@ export default defineTool({
       stampActionEffect({ status: 'refused-live-peer' });
       return json({ ok: false, op: args.op, refused: true, verdict: 'refused',
         reason: 'gate_condition_claimed_by_live_peer', ownership: gateOwnershipReceipt });
+    }
+    if (args.op === 'heal-generated') {
+      const queue = inspected.queue;
+      const base = { op: 'heal-generated' as const, target: inspected.target, callerAuthorization };
+      const refuse = (reason: string) => json({ ...base, ok: false, refused: true,
+        admitted: false, reason, effectMayHaveRun: false });
+      if (!queue) return refuse('no-frozen-queue');
+      if (ctx.role !== 'su' && !isOperatorConfigWriteRole(ctx.role) && ctx.isSuperuser !== true &&
+          callerAuthorization.authorized !== true) return refuse('caller-not-authorized');
+      if (!ownership) return refuse('gate-ownership-unmeasured');
+      if (args.generator !== 'tool-delivery-declaration') return refuse('unsupported-generator');
+      if (queue.candidate !== args.expectedCandidate || queue.repairHead !== args.expectedRepairHead ||
+          queue.updatedAtMs !== args.expectedUpdatedAtMs) return refuse('exact_queue_identity_mismatch');
+      if (queue.admissionPrecheck?.status === 'running') return refuse('precheck-running');
+      if (queue.qualificationAttemptId) {
+        const block = frozenRepairAdmissionHandoffBlock(queue, await readStoredQualification(inspected.target));
+        if (block) return refuse(block.reason);
+      }
+      if (args.confirm !== true) return json({ ...base, ok: true, dryRun: true, admitted: false,
+        generator: args.generator, judgedSha: queue.repairHead,
+        paths: ['apps/operator/scripts/tool-delivery.generated.d.mts'] });
+      const { healGeneratedRepair } = await import('../../../../../apps/operator/lib/release/heal-generated-repair');
+      const { genCheckHealTransition } = await import('../../../../../apps/operator/lib/release/green-checkpoint-gen-check-self-heal');
+      const identity = readIdentity(ctx);
+      const outcome = await healGeneratedRepair({
+        integrationRoot: scopeRoot, queue,
+        readQueue: async () => {
+          const read = await readFrozenCandidateRepairQueueState(inspected.target);
+          if (read.status === 'unreadable') throw new Error('repair queue became unreadable');
+          return read.status === 'value' ? read.queue : null;
+        },
+        admit: async (input) => {
+          const receipt = await executeWithGateActionReceipt({
+            action: 'release:repair-queue', actor: identity.ownerId, ownerId: identity.ownerId,
+            conditionKey: ownership?.eventKey ?? '', allowUnowned: true,
+            delegate: { authorized: callerAuthorization.status === 'authorized-delegate',
+              callerSpawnId: callerAuthorization.callerSpawnId, queueFixerSpawnId: callerAuthorization.queueFixerSpawnId },
+            target: { op: 'heal-generated', candidate: queue.candidate, repairHead: queue.repairHead },
+            run: () => runAdmissionJob({ kind: 'admit', input, preflight: null }),
+            summarize: (effect) => ({ status: effect.ok ? 'lineage-ref-published' : 'not-published' }),
+          });
+          if (!receipt.ok) throw new Error(`generated repair publication refused: ${receipt.reason}`);
+          effectReceipt = { receiptId: receipt.receiptId, ownership: receipt.ownership };
+          return receipt.effect;
+        },
+        record: async (healed) => {
+          const written = await applyFrozenCandidateRepairQueueTransition(inspected.target,
+            (fresh) => genCheckHealTransition(fresh, queue, healed));
+          return written.queue?.candidate === queue.candidate && written.queue.repairHead === healed.toRepairHead &&
+            (written.queue.admissions ?? []).some((entry) => entry.toRepairHead === healed.toRepairHead);
+        },
+      });
+      const persisted = outcome.kind === 'healed' && outcome.persisted;
+      const autoVerify = persisted ? await scheduleRepairAutoVerify({ target: inspected.target,
+        candidate: queue.candidate, repairHead: outcome.toRepairHead, admittedAtMs: Date.now() }) : null;
+      stampActionEffect({ status: persisted ? 'repair-head-published' : 'not-persisted', kind: outcome.kind });
+      const savedReceipt = effectReceipt as { receiptId: string; ownership: Record<string, unknown> } | null;
+      return json({ ...base, ok: persisted || outcome.kind === 'already-fresh', admitted: persisted,
+        outcome, autoVerify, ...(persisted && savedReceipt ? { completionReceipt: { status: 'recorded',
+          effectRef: `release:repair-queue:heal-generated:${savedReceipt.receiptId}` } } : {}) });
     }
     if (args.op === 'record-edit') {
       // P-019 (D-008 layer 1). The hook only calls this while the marker file exists, so the

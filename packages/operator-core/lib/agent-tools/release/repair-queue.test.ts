@@ -75,6 +75,8 @@ const ALT_HEAD = 'e'.repeat(40);
 const mocks = vi.hoisted(() => ({
   // WI-6554700010030460: the door's gate run-lock probe; not held unless a test says so.
   runLockHeld: vi.fn((_root: string): { held: boolean; pid?: number; elapsedSec: number | null } => ({ held: false, elapsedSec: null })),
+  healGeneratedRepair: vi.fn(),
+  autoVerify: vi.fn(),
   read: vi.fn(),
   readState: vi.fn(),
   retire: vi.fn(),
@@ -130,6 +132,8 @@ vi.mock('../../coord/gate-ownership', async (importOriginal) => ({
   readGateOwnership: mocks.gateOwnership,
 }));
 vi.mock('../../events/await/engine', () => ({ emitAwaitedEvent: mocks.emitAwaitedEvent }));
+vi.mock('../../../../../apps/operator/lib/release/heal-generated-repair', () => ({ healGeneratedRepair: mocks.healGeneratedRepair }));
+vi.mock('../../release/repair-auto-verify', () => ({ scheduleRepairAutoVerify: mocks.autoVerify }));
 vi.mock('../../harness/routines/release-actions', () => ({
   applyFrozenCandidateRepairQueueTransition: mocks.transition,
   readFrozenCandidateRepairQueue: mocks.read,
@@ -318,6 +322,58 @@ const toolResult = (payload: unknown): ToolResult => ({
   content: [{ type: 'text', text: JSON.stringify({ data: payload }) }],
 });
 
+describe('release:repair-queue explicit generated repair', () => {
+  const request = { op: 'heal-generated', generator: 'tool-delivery-declaration',
+    expectedCandidate: queue.candidate, expectedRepairHead: queue.repairHead,
+    expectedUpdatedAtMs: queue.updatedAtMs, confirm: true };
+  it('requires the complete immutable identity in the published schema', () => {
+    expect(tool.args.safeParse(request).success).toBe(true);
+    const { expectedUpdatedAtMs: _, ...partial } = request;
+    expect(tool.args.safeParse(partial).success).toBe(false);
+  });
+  it('previews without loading the actuator or publishing', async () => {
+    expect(body(await tool.handler({ ...request, confirm: false } as never, { role: 'su' } as never)))
+      .toMatchObject({ ok: true, dryRun: true, admitted: false });
+    expect(mocks.healGeneratedRepair).not.toHaveBeenCalled(); expect(mocks.autoVerify).not.toHaveBeenCalled();
+  });
+  it('refuses stale identity and unauthorized callers before generation', async () => {
+    expect(body(await tool.handler({ ...request, expectedRepairHead: ALT_HEAD } as never,
+      { role: 'su' } as never))).toMatchObject({ reason: 'exact_queue_identity_mismatch' });
+    expect(body(await tool.handler(request as never, { role: 'release-fixer', spawnId: 'wrong' } as never)))
+      .toMatchObject({ reason: 'caller-not-authorized' });
+    expect(mocks.healGeneratedRepair).not.toHaveBeenCalled();
+  });
+  it('stands down when a different live gate owner holds the lane', async () => {
+    mocks.gateOwnership.mockResolvedValue({ assessment: 'held-live', claimState: 'held',
+      takenBy: 'another-agent', holderSessionState: 'live', workItem: 'WI-peer', eventKey: 'gate:red:drill' });
+    expect(body(await tool.handler(request as never, { role: 'su' } as never)))
+      .toMatchObject({ reason: 'gate_condition_claimed_by_live_peer' });
+    expect(mocks.healGeneratedRepair).not.toHaveBeenCalled();
+  });
+  it('does not schedule verification when the measured declaration is already fresh', async () => {
+    expect(body(await tool.handler(request as never, { role: 'su' } as never)))
+      .toMatchObject({ ok: true, admitted: false, outcome: { kind: 'already-fresh' } });
+    expect(mocks.transition).not.toHaveBeenCalled(); expect(mocks.autoVerify).not.toHaveBeenCalled();
+  });
+  it('publishes through the action receipt, records with the fresh-row reducer, then schedules that head', async () => {
+    mocks.gateOwnership.mockResolvedValue({ assessment: 'unowned', claimState: 'no-object',
+      takenBy: null, eventKey: 'gate:red:drill' });
+    const paths = ['apps/operator/scripts/tool-delivery.generated.d.mts'];
+    mocks.admit.mockReturnValue(admissionOf(true, paths));
+    mocks.healGeneratedRepair.mockImplementation(async (input) => {
+      const admitted = await input.admit({ root: '/repo', candidate: queue.candidate,
+        repairHead: queue.repairHead, paths, source: { ref: ALT_HEAD }, actor: 'gate', nowMs: 10 });
+      const healed = { kind: 'healed', entry: admitted.entry, fromRepairHead: queue.repairHead,
+        toRepairHead: admitted.commit, paths, healedIds: ['gen:declarations:check'], reason: 'paired writer/check passed' };
+      return { ...healed, persisted: await input.record(healed) };
+    });
+    expect(body(await tool.handler(request as never, { role: 'su' } as never)))
+      .toMatchObject({ admitted: true, completionReceipt: { status: 'recorded' } });
+    expect(mocks.autoVerify).toHaveBeenCalledWith(expect.objectContaining({ candidate: queue.candidate, repairHead: NEW_HEAD }));
+    expect(mocks.autoVerify.mock.invocationCallOrder[0]).toBeGreaterThan(mocks.transition.mock.invocationCallOrder[0]);
+  });
+});
+
 describe('release:repair-queue abort-completion receipts', () => {
   const attempt = { callId: 'repair-queue-call-1', toolName: 'release:repair-queue' };
 
@@ -414,6 +470,8 @@ beforeEach(() => {
   });
   mocks.read.mockResolvedValue(queue);
   mocks.readState.mockResolvedValue({ status: 'value', queue });
+  mocks.healGeneratedRepair.mockResolvedValue({ kind: 'already-fresh' });
+  mocks.autoVerify.mockResolvedValue({ scheduled: true });
   mocks.alive.mockResolvedValue(false);
   mocks.retire.mockResolvedValue({ retired: true, current: null });
   mocks.verifyDirective.mockResolvedValue({ ok: true, directiveId: 4242, excerpt: 'retire that queue' });

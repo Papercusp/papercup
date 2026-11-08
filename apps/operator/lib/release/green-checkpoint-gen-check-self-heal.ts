@@ -83,6 +83,7 @@ export function genCheckEntriesOf(
 
 export type GenCheckHealOutcome =
   | { kind: "nothing-to-heal" }
+  | { kind: "already-fresh" }
   | {
       kind: "healed";
       healedIds: string[];
@@ -105,13 +106,13 @@ export type GenCheckHealOutcome =
 
 export interface GenCheckHealIo {
   /** Run one ROOT npm script in the frozen verification tree (checkpoint root at repairHead). */
-  runScript(script: string): Promise<{ code: number; tail: string }>;
+  runScript(script: string, args?: readonly string[]): Promise<{ code: number; tail: string }>;
   /** Repo-relative paths currently dirty (modified + untracked) in the verification tree. */
   dirtyPaths(): Promise<string[]>;
   /** Build an unreferenced commit on `repairHead` in the integration root carrying the
    *  verification tree's current content for `paths`. Returns the sha. */
   buildSourceCommit(repairHead: string, paths: readonly string[]): Promise<string>;
-  admit(input: AdmitPathsInput): AdmissionOutcome;
+  admit(input: AdmitPathsInput): AdmissionOutcome | Promise<AdmissionOutcome>;
   /** Re-read the queue and rematerialize its current head after a lineage CAS loss. */
   refreshAfterRefMove?(
     previous: Pick<FrozenCandidateRepairQueue, "candidate" | "repairHead">,
@@ -126,6 +127,8 @@ export interface GenCheckHealInput {
   queue: Pick<FrozenCandidateRepairQueue, "candidate" | "repairHead">;
   /** The fresh red signature verifyRepairHead measured at queue.repairHead. */
   signature: readonly { id: string }[];
+  /** Explicit actuation: measure the checker first and constrain both command and output. */
+  selection?: { args: readonly string[]; allowedPaths: readonly string[] };
 }
 
 function buildReason(healed: GenCheckEntry[], paths: string[], from: string): string {
@@ -148,6 +151,15 @@ export async function healGenCheckLegs(
   const now = io.now ?? Date.now;
   const entries = genCheckEntriesOf(input.signature);
   if (entries.length === 0) return { kind: "nothing-to-heal" };
+  if (input.selection) {
+    try {
+      // A caller naming a check is not proof of a failure at this exact head.
+      const checks = await Promise.all(entries.map((e) => io.runScript(e.check, input.selection!.args)));
+      if (checks.every((r) => r.code === 0)) return { kind: "already-fresh" };
+    } catch (e) {
+      return { kind: "probe-failed", detail: `initial selected check: ${errMsg(e)}` };
+    }
+  }
   let queue = input.queue;
   let refreshedQueue: FrozenCandidateRepairQueue | undefined;
   // The selective verification can take long enough for a human fixer to admit a
@@ -158,6 +170,9 @@ export async function healGenCheckLegs(
   let before: Set<string>;
   try {
     before = new Set(await io.dirtyPaths());
+    if (input.selection && before.size !== 0) {
+      return { kind: "probe-failed", detail: "explicit generated repair requires a clean verification tree" };
+    }
   } catch (e) {
     return { kind: "probe-failed", detail: `dirty-set probe before writer: ${errMsg(e)}` };
   }
@@ -165,7 +180,7 @@ export async function healGenCheckLegs(
     const owner = entries.find((e) => e.writer === writer)!;
     let r: { code: number; tail: string };
     try {
-      r = await io.runScript(writer);
+      r = await io.runScript(writer, input.selection?.args);
     } catch (e) {
       return { kind: "regeneration-failed", id: owner.id, writer, detail: errMsg(e) };
     }
@@ -189,7 +204,7 @@ export async function healGenCheckLegs(
   for (const entry of entries) {
     let r: { code: number; tail: string };
     try {
-      r = await io.runScript(entry.check);
+      r = await io.runScript(entry.check, input.selection?.args);
     } catch (e) {
       return { kind: "recheck-failed", id: entry.id, check: entry.check, detail: errMsg(e), paths };
     }
@@ -203,6 +218,17 @@ export async function healGenCheckLegs(
       };
     }
   }
+  if (input.selection) {
+    try {
+      const finalPaths = [...new Set(await io.dirtyPaths())].sort();
+      const allowed = new Set(input.selection.allowedPaths);
+      if (finalPaths.some((p) => !allowed.has(p)) || finalPaths.join("\0") !== paths.join("\0")) {
+        return { kind: "probe-failed", detail: "selected writer/check changed paths outside its declared output radius" };
+      }
+    } catch (e) {
+      return { kind: "probe-failed", detail: `selected output probe: ${errMsg(e)}` };
+    }
+  }
   let sourceCommit: string;
   try {
     sourceCommit = await io.buildSourceCommit(from, paths);
@@ -210,7 +236,7 @@ export async function healGenCheckLegs(
     return { kind: "probe-failed", detail: `source commit build: ${errMsg(e)}` };
   }
   const reason = buildReason(entries, paths, from);
-  const outcome = io.admit({
+  const outcome = await io.admit({
     root: input.root,
     candidate: queue.candidate,
     repairHead: from,
@@ -293,6 +319,8 @@ export function describeGenCheckHeal(outcome: GenCheckHealOutcome): string {
   switch (outcome.kind) {
     case "nothing-to-heal":
       return "no gen:*:check entries in the red signature";
+    case "already-fresh":
+      return "selected check passed at the exact repair head; nothing changed";
     case "healed":
       return (
         `HEALED ${outcome.healedIds.join(", ")}: paired writer delta admitted onto ` +
@@ -323,7 +351,7 @@ export interface RealGenCheckHealIoInput {
   /** The superproject root holding the lineage ref (cfg.integrationRoot). */
   integrationRoot: string;
   /** Run one root npm script in `checkpointRoot` (the gate's own exec, so pc-heavy / env apply). */
-  runScript(script: string): Promise<{ code: number; tail: string }>;
+  runScript: GenCheckHealIo["runScript"];
   log(line: string): void;
   refreshAfterRefMove?: GenCheckHealIo["refreshAfterRefMove"];
   git?: AdmissionGitRunner;
