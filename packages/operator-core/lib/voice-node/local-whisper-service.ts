@@ -83,7 +83,7 @@ export interface LocalWhisperDeps {
  */
 export interface WhisperRecoveryOptions {
   /** Warm/reconcile the local endpoint before the one permitted retry. */
-  warm?: (deps: LocalWhisperDeps) => Promise<unknown>;
+  warm?: (deps: LocalWhisperDeps) => Promise<EnsureWhisperResult>;
   /** Retryable upstream statuses. Defaults to connection failures and HTTP 5xx/408. */
   shouldRetryStatus?: (status: number) => boolean;
 }
@@ -290,10 +290,22 @@ export async function fetchWhisperWithRecovery(
     // the route, which reports the honest final 502 rather than hiding it behind the first error.
   }
 
-  // Warm is best-effort. If the cache is absent or the child cannot start, the retry still runs
-  // against the external URL and preserves the original route error surface.
-  await warm(deps).catch(() => {});
-  return request(whisperSttBaseUrl(deps));
+  // Retry even if warming fails: an external endpoint may recover independently. If the
+  // retry also fails, preserve the lifecycle diagnosis (for example a missing model),
+  // rather than reducing an actionable provisioning failure to an opaque "fetch failed".
+  const recovery = await warm(deps).catch(() => undefined);
+  try {
+    return await request(whisperSttBaseUrl(deps));
+  } catch (error) {
+    if (recovery && !recovery.ok && recovery.reason) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `${message}; local Whisper ${recovery.reason}${recovery.detail ? `: ${recovery.detail}` : ''}`,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
 }
 
 async function startManaged(deps: LocalWhisperDeps, probe: (u: string) => Promise<boolean>): Promise<EnsureWhisperResult> {

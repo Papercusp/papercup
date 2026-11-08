@@ -369,6 +369,38 @@ describe('local-whisper-service', () => {
       expect(warm).toHaveBeenCalledTimes(1);
     });
 
+    it('retains the missing-model diagnosis when the retry is also unreachable', async () => {
+      const failure = new Error('fetch failed');
+      const warm = vi.fn(async () => ({
+        ok: false,
+        reason: 'not-provisioned' as const,
+        detail: 'ggml-base.bin not found — run the local-voice install step',
+      }));
+      const request = vi.fn(async (): Promise<Response> => { throw failure; });
+
+      const error = await fetchWhisperWithRecovery(request, { externalUrl: 'http://whisper.test' }, { warm })
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain('local Whisper not-provisioned: ggml-base.bin not found');
+      expect((error as Error).cause).toBe(failure);
+      expect(request).toHaveBeenCalledTimes(2);
+      expect(warm).toHaveBeenCalledTimes(1);
+    });
+
+    it('accepts an external recovery even when the managed cache is not provisioned', async () => {
+      const warm = vi.fn(async () => ({ ok: false, reason: 'not-provisioned' as const }));
+      const request = vi.fn<() => Promise<Response>>()
+        .mockRejectedValueOnce(new Error('fetch failed'))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ text: 'recovered' })));
+
+      const response = await fetchWhisperWithRecovery(request, { externalUrl: 'http://whisper.test' }, { warm });
+
+      expect(await response.json()).toEqual({ text: 'recovered' });
+      expect(request).toHaveBeenCalledTimes(2);
+      expect(warm).toHaveBeenCalledTimes(1);
+    });
+
     it('warms + retries 5xx, but leaves client errors and rate limits single-shot', async () => {
       const warm = vi.fn(async () => ({ ok: true }));
       const serverError = vi.fn(async () => new Response('down', { status: 503 }));

@@ -101,6 +101,18 @@ vi.mock('../../../voice-credentials', () => ({
   readOpenAiKey: vi.fn(async () => null),
   readCartesiaKey: vi.fn(async () => null),
 }));
+// Exercise the real recovery policy without inspecting or spawning this host's Whisper.
+// A fetch stub alone cannot isolate the lifecycle's TCP/cache/process probes.
+vi.mock('../../../voice-node/local-whisper-service', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('../../../voice-node/local-whisper-service')>();
+  return {
+    ...orig,
+    fetchWhisperWithRecovery: (request: (baseUrl: string) => Promise<Response>) =>
+      orig.fetchWhisperWithRecovery(request, {}, {
+        warm: async () => ({ ok: false, reason: 'not-provisioned', detail: 'ggml-base.bin not found' }),
+      }),
+  };
+});
 // See tts-synth.test.ts: the kokoro-unreachable branch's in-process fallback is gated on an
 // fs marker under the REAL $HOME, so on a box with the local model provisioned it loads
 // @huggingface/transformers, fetches through the stubbed `fetch`, and console.warns —
@@ -189,7 +201,9 @@ describe('POST /agent-mcp/operator-stt', () => {
     });
     const res = await post(sttRoute, 'operator-stt', { audioBase64: FAKE_WAV_B64 });
     expect(res.status).toBe(502);
-    expect((await res.json()).error).toMatch(/unreachable/);
+    expect((await res.json()).error).toBe(
+      'whisper unreachable: ECONNREFUSED; local Whisper not-provisioned: ggml-base.bin not found',
+    );
   });
 
   it('502s on a whisper non-2xx', async () => {
