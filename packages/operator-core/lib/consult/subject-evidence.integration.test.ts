@@ -3,7 +3,6 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import postgres from 'postgres';
-import { lookupByMcpName, listAllProjectedTools } from '@papercusp/tooldef';
 import { _resetForTests } from '@papercusp/db-org';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
 import { orgTemplateKey, provisionOrgTemplate } from '../../test/_org-test-db';
@@ -11,17 +10,34 @@ import { flushFallbackObservations } from '../degradation/fallback-observations'
 import { linuxProcStateFromStat, linuxStartTicksFromProcStat } from '../process-identity';
 import { buildSidecarAwareReranker, resolveProcessSidecarUrl } from '../memory/embed-sidecar-wiring';
 import { isEmbedSidecarRunning, probeSidecarHealth, readEmbedSidecarRecord, stopEmbedSidecar } from '../memory/embed-sidecar-spawn';
-import { scoreSubjectEvidence, subjectContrasts, subjectEvidenceQuery, SUBJECT_EVIDENCE_MIN_SCORE } from './relevance-router';
+import { scoreSubjectEvidence, subjectContrasts, subjectEvidenceQuery, SUBJECT_EVIDENCE_MIN_SCORE, type SubjectContract } from './relevance-router';
 import { evaluateSubjectCases, HELD_OUT_SUBJECT_CASES, NATURAL_QUESTION_SUBJECT_CASES } from './subject-evidence.fixtures';
 
 async function observeScorerSetup<T>(phase: string, action: () => Promise<T>): Promise<T> {
   const startedAt = performance.now();
-  const emit = (event: 'start' | 'end') => console.info('subject-scorer-setup-phase',
-    JSON.stringify({ phase, event, elapsedMs: Math.round(performance.now() - startedAt) }));
+  const emit = (event: 'start' | 'end') => {
+    // Console events may be buffered until the hook returns. Preserve this
+    // diagnostic in the runner's retained stderr even if its worker is stopped.
+    try {
+      process.stderr.write('subject-scorer-setup-phase ' + JSON.stringify({
+        pid: process.pid, phase, event, elapsedMs: Math.round(performance.now() - startedAt),
+      }) + '\n');
+    } catch { /* Diagnostic delivery must not change fixture behavior. */ }
+  };
   emit('start');
   try { return await action(); }
   finally { emit('end'); }
 }
+
+// The scorer consumes names/descriptions, not tool handlers. Reuse the complete
+// generated projection; static-tool-catalog.test.ts checks exact live-registry
+// parity so a missing or stale contract cannot silently change this corpus.
+const contracts: SubjectContract[] = await observeScorerSetup('tool-contract-catalog', async () => {
+  const catalog = JSON.parse(readFileSync(new URL('../../../../.papercusp/tool-catalog.json', import.meta.url), 'utf8')) as {
+    tools: Array<{ name: string | null; description: string }>;
+  };
+  return catalog.tools.flatMap(tool => tool.name ? [{ name: tool.name, description: tool.description }] : []);
+});
 
 describe('registered subject evidence with the real local scorer', () => {
   let configuredPrivateWarmup = false;
@@ -34,9 +50,6 @@ describe('registered subject evidence with the real local scorer', () => {
     'DATABASE_URL', 'PAPERCUSP_PGBOUNCER', 'PAPERCUSP_SKIP_PG_DISCOVERY'] as const;
   const savedDatabaseEnv = databaseEnvKeys.map(key => [key, process.env[key]] as const);
   beforeAll(async () => {
-    // Preserve the complete production registry, but load it inside a timed
-    // fixture phase so a cold import cannot disappear into test collection.
-    await observeScorerSetup('tool-registry', () => import('../agent-tools/index'));
     // A plain test:file invocation must exercise an owned source runtime too.
     // Preserve explicit in-process/shared-runtime choices as distinct evidence.
     if (savedEnable === undefined && !process.env.PAPERCUSP_EMBED_SIDECAR_URL) {
@@ -113,11 +126,12 @@ describe('registered subject evidence with the real local scorer', () => {
     else process.env.PAPERCUSP_EMBED_SIDECAR = savedEnable;
   });
 
-  it('initializes the complete registered contract corpus before model scoring', () => {
+  it('loads the complete generated contract corpus before model scoring', () => {
     for (const name of ['computer:provision_desktop', 'computer:observe', 'db:migrate']) {
-      expect(lookupByMcpName(name)?.description).toBeTruthy();
+      expect(contracts.find(contract => contract.name === name)?.description).toBeTruthy();
     }
-    expect(listAllProjectedTools().length).toBeGreaterThan(100);
+    expect(contracts.length).toBeGreaterThan(100);
+    expect(new Set(contracts.map(contract => contract.name)).size).toBe(contracts.length);
   });
 
   it('measures labelled held-out top choice, recall and explicit no-expert outcomes', async () => {
@@ -409,15 +423,13 @@ describe('registered subject evidence with the real local scorer', () => {
       console.info('subject-natural-forward-pairs', JSON.stringify({ id: scenario.id, query: primary,
         passages: scenario.passages, scores: forward }));
       const scores = await scoreSubjectEvidence(scenario.subject, scenario.passages.map(p => p.text),
-        Date.now() + 4000, { scorer });
+        Date.now() + 4000, { scorer, contracts });
       naturalMeasurements.push({ id: scenario.id, scores });
     }
     // Compare the same real passage and targets while changing only which
     // existing action contracts compete. Keep this diagnosis in the retained
     // assertion: JSON reporters suppress the informational console output.
     const bindingScenario = NATURAL_QUESTION_SUBJECT_CASES[2];
-    const contracts = listAllProjectedTools().flatMap(tool => tool.expose.mcp
-      ? [{ name: tool.expose.mcp.name, description: tool.description }] : []);
     const identityContract = contracts.find(contract => contract.name === 'coord:whoami');
     const contrastVariants = [];
     for (const passage of bindingScenario.passages) {
@@ -441,7 +453,7 @@ describe('registered subject evidence with the real local scorer', () => {
     console.info('subject-natural-question-summary', JSON.stringify(natural.summary));
     const measurements = [];
     for (const scenario of HELD_OUT_SUBJECT_CASES) {
-      const scores = await scoreSubjectEvidence(scenario.subject, scenario.passages.map(p => p.text), Date.now() + 4000, { scorer });
+      const scores = await scoreSubjectEvidence(scenario.subject, scenario.passages.map(p => p.text), Date.now() + 4000, { scorer, contracts });
       measurements.push({ id: scenario.id, scores });
     }
     // Persisted in the normal Vitest evidence; labels and full population are
