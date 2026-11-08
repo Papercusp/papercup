@@ -33,12 +33,12 @@ import type { AdmissionRadius, FixPrecheckFileResult, FixPrecheckVerdict } from 
 import { roundMeasurementFromKinds, type FrozenRepairRoundMeasurement } from './round-one-measurement';
 
 /**
- * Schema 5 fences the managed pre-check's mutable task identity, environment and
- * per-file measurement from schema-4 writers that would silently erase them.
- * Schemas 1–4 still parse and upgrade on read; pre-signature rows derive their
+ * Schema 6 fences complete attribution and unjudged admissions from older writers
+ * that truncate these known arrays. Schema 5 fenced managed pre-check identity.
+ * Schemas 1–5 still parse and upgrade on read; pre-signature rows derive their
  * typed signature from `failingTests` as before.
  */
-export const FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION = 5 as const;
+export const FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION = 6 as const;
 export const FROZEN_REPAIR_STAGING_MISMATCH_SIGNATURE = 'repair-staging-mismatch';
 
 /**
@@ -579,7 +579,7 @@ export interface FrozenRepairAdmissionPrecheck {
 
 export interface FrozenCandidateRepairQueue {
   /** Every version the parser accepts; a parsed row is always re-stamped with the current one. */
-  schemaVersion: 1 | 2 | 3 | 4 | typeof FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION;
+  schemaVersion: 1 | 2 | 3 | 4 | 5 | typeof FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION;
   phase: FrozenCandidateRepairPhase;
   /** The fixed C persisted before its first suite. Never moves for this queue entry. */
   candidate: string;
@@ -777,14 +777,16 @@ export interface FrozenRepairAdmissionRadiusSummary {
   legs?: Record<string, string>;
 }
 
-/** PURE: bound the door's radius into the summary an admission persists. */
+/** PURE: persist a complete measured radius or an honest skipped disposition. */
 export function summarizeAdmissionRadius(
   radius: AdmissionRadius | undefined,
 ): FrozenRepairAdmissionRadiusSummary | undefined {
   if (!radius) return undefined;
   const files = radius.status === 'measured'
-    ? [...new Set([...radius.guarded, ...radius.reportOnly].filter(nonBlank))].slice(0, FROZEN_REPAIR_RADIUS_SUMMARY_FILE_CAP)
+    ? [...new Set([...radius.guarded, ...radius.reportOnly].filter(nonBlank))]
     : [];
+  if (files.length > FROZEN_REPAIR_RADIUS_SUMMARY_FILE_CAP)
+    return { status: 'skipped', reason: `over-cap(${files.length}/${FROZEN_REPAIR_RADIUS_SUMMARY_FILE_CAP})` };
   const legs: Record<string, string> = {};
   const legFiles = [...files, ...Object.keys(radius.legs ?? {}).filter((file) => !files.includes(file))];
   for (const file of legFiles) {
@@ -813,7 +815,9 @@ function parseAdmissionRadiusSummary(value: unknown): FrozenRepairAdmissionRadiu
   let files: string[] | undefined;
   if (row.files !== undefined) {
     if (row.status !== 'measured' || !Array.isArray(row.files) || !row.files.every(nonBlank)) return undefined;
-    files = [...new Set(row.files as string[])].slice(0, FROZEN_REPAIR_RADIUS_SUMMARY_FILE_CAP);
+    files = [...new Set(row.files as string[])];
+    if (files.length > FROZEN_REPAIR_RADIUS_SUMMARY_FILE_CAP)
+      return { status: 'skipped', reason: `over-cap(${files.length}/${FROZEN_REPAIR_RADIUS_SUMMARY_FILE_CAP})` };
   }
   let legs: Record<string, string> | undefined;
   if (row.legs !== undefined) {
@@ -1027,9 +1031,7 @@ export type FrozenRepairRetestDecision =
   | { kind: 'settled'; queue: FrozenCandidateRepairQueue; request: FrozenRepairRetestRequest }
   | { kind: 'refire'; queue: FrozenCandidateRepairQueue; request: FrozenRepairRetestRequest };
 
-/** Ledger cap: a runaway admission loop cannot grow the persisted queue without bound. The
- * NEWEST entries are kept — the ledger's job is "what is on the lineage now", and every
- * dropped entry's content is still reachable from the commits themselves. */
+/** Settled history limit. Unjudged attribution metadata must never be evicted. */
 export const FROZEN_REPAIR_ADMISSION_CAP = 200;
 
 /**
@@ -1072,7 +1074,7 @@ function trackEntryReads(entry: Record<string, unknown>): {
   };
 }
 
-function parseAdmissions(raw: unknown): FrozenRepairAdmission[] {
+function parseAdmissions(raw: unknown, legacyRadius = false): FrozenRepairAdmission[] {
   if (!Array.isArray(raw)) return [];
   const out: FrozenRepairAdmission[] = [];
   for (const v of raw) {
@@ -1122,6 +1124,11 @@ function parseAdmissions(raw: unknown): FrozenRepairAdmission[] {
       patches.at(-1).commit === patch.commit && patches.at(-1).parent === patch.parent &&
       patches.at(-1).sha256 === patch.sha256;
     const precheck = parseAdmissionPrecheckRecord(e.precheck);
+    // Older summaries silently cut a larger radius to 40. Its missing population
+    // cannot be recovered; do not use it to exonerate admissions outside that list.
+    if (legacyRadius && precheck?.radius?.status === 'measured' &&
+        precheck.radius.files?.length === FROZEN_REPAIR_RADIUS_SUMMARY_FILE_CAP)
+      precheck.radius = { status: 'skipped', reason: 'legacy-radius-completeness-unknown' };
     const appliedSources = e.mode === 'multi-source' ? parseAppliedAdmissionSources(e.sources) : null;
     const parsed: FrozenRepairAdmission = {
       atMs: e.atMs as number,
@@ -1150,7 +1157,7 @@ function parseAdmissions(raw: unknown): FrozenRepairAdmission[] {
     // Built first, so every key the parser decides on has been read before `unread()` runs.
     out.push({ ...tracked.unread(), ...parsed });
   }
-  return out.slice(-FROZEN_REPAIR_ADMISSION_CAP);
+  return out;
 }
 
 /**
@@ -1241,7 +1248,7 @@ export interface FrozenRepairConvergenceRound {
   /**
    * P-007 (green-main-cycle-time-2026-10-08#D-040): each entry this round newly turned red,
    * attributed to the admissions in the round's window. Absent = nothing newly red, a legacy
-   * row, or a red at the candidate (no admission can own it). Bounded.
+   * row, or a red at the candidate (no admission can own it). Complete within each retained round.
    */
   attributions?: FrozenRepairRedAttribution[];
 }
@@ -1268,10 +1275,6 @@ export const FROZEN_REPAIR_RED_ATTRIBUTION_BASES: readonly FrozenRepairRedAttrib
   'outside-measured-radius',
 ]);
 
-/** Newly red entries kept per round, and window admissions kept per entry. */
-export const FROZEN_REPAIR_ROUND_ATTRIBUTION_CAP = 20;
-export const FROZEN_REPAIR_ATTRIBUTION_ADMISSION_CAP = 5;
-
 export interface FrozenRepairRedAttributionAdmission {
   actor: string;
   toRepairHead: string;
@@ -1288,7 +1291,7 @@ export interface FrozenRepairRedAttribution {
   basis: FrozenRepairRedAttributionBasis | 'none';
   /** Window admissions, strongest basis first, newest first within a basis. */
   admissions: FrozenRepairRedAttributionAdmission[];
-  /** Window admissions beyond FROZEN_REPAIR_ATTRIBUTION_ADMISSION_CAP, so a cut is never silent. */
+  /** Historical incompleteness from an older writer; never emitted by the complete producer. */
   omittedAdmissions?: number;
 }
 
@@ -1317,16 +1320,33 @@ export function frozenRepairRoundAdmissionWindow(
   const rounds = queue.convergenceRounds ?? [];
   const last = rounds[rounds.length - 1];
   let start = 0;
-  if (last) {
+  if (last && last.head !== queue.candidate) {
     const judged = lastProducing(last.head);
     if (judged >= 0) {
       start = judged + 1;
     } else {
-      const after = admissions.findIndex((admission) => admission.atMs > last.atMs);
+      const after = admissions.findIndex((admission) => admission.atMs >= last.atMs);
       start = after >= 0 ? after : admissions.length;
     }
   }
   return start > end ? [] : admissions.slice(start, end + 1);
+}
+
+/** Keep the latest judged boundary plus bounded settled history and ALL pending admissions. */
+function retainRoundAdmissions(
+  admissions: FrozenRepairAdmission[],
+  rounds: readonly FrozenRepairConvergenceRound[],
+  candidate: string,
+): FrozenRepairAdmission[] {
+  const last = rounds.at(-1);
+  if (!last || last.head === candidate) return admissions;
+  let judged = -1;
+  for (let i = admissions.length - 1; i >= 0; i -= 1) {
+    if (admissions[i]!.toRepairHead === last.head) { judged = i; break; }
+  }
+  const pending = judged >= 0 ? judged + 1 : admissions.findIndex(a => a.atMs >= last.atMs);
+  const settled = pending < 0 ? admissions.length : pending;
+  return admissions.slice(Math.max(0, settled - FROZEN_REPAIR_ADMISSION_CAP));
 }
 
 /** Path equality that tolerates a workspace-relative test id against a repo-relative path. */
@@ -1373,8 +1393,8 @@ function wholeTestTaskRedWorkspaces(signature: readonly RepairSignatureEntry[]):
  * PURE (green-main-cycle-time-2026-10-08#D-040): attribute each entry `nextSignature` adds over
  * `queue.signature` (by kind and id, so previously green at the last judged round) to the
  * admissions in the window ending at `measuredHead`. Sound, not exact: with several unmeasured
- * admissions in one window each is named, but the admission that caused a red is never dropped
- * without the `omittedAdmissions` count saying so.
+ * admissions in one window each is named. Neither newly red entries nor eligible admissions
+ * are truncated in this authoritative backing; presentation may bound its own view.
  *
  * An entry the prior signature already covered as part of a whole red test task is NOT newly
  * red: a `test-file` (or its bare workspace marker) of a workspace whose test task was red names
@@ -1408,11 +1428,9 @@ export function attributeRoundReds(
     const key = `${entry.kind}:${entry.id}`;
     if (prior.has(key) && !gainedCaseKeys(entry)) continue;
     if (coveredByWholeTaskRed(entry)) continue;
-    if (out.length >= FROZEN_REPAIR_ROUND_ATTRIBUTION_CAP) break;
     const ranked = window
       .map((admission, index) => ({ admission, index, basis: redAttributionBasis(entry, admission) }))
       .sort((a, b) => rank(a.basis) - rank(b.basis) || b.index - a.index);
-    const kept = ranked.slice(0, FROZEN_REPAIR_ATTRIBUTION_ADMISSION_CAP);
     let leg = entry.workspace;
     if (!leg && entry.kind === 'test-file') {
       for (const { admission } of ranked) {
@@ -1425,16 +1443,15 @@ export function attributeRoundReds(
       }
     }
     out.push({
-      entry: key.slice(0, MAX_PERSISTED_FAILURE_CHARS),
+      entry: key,
       ...(leg ? { leg } : {}),
-      basis: kept[0]?.basis ?? 'none',
-      admissions: kept.map(({ admission, basis }) => ({
+      basis: ranked[0]?.basis ?? 'none',
+      admissions: ranked.map(({ admission, basis }) => ({
         actor: admission.actor,
         toRepairHead: admission.toRepairHead,
         atMs: admission.atMs,
         basis,
       })),
-      ...(ranked.length > kept.length ? { omittedAdmissions: ranked.length - kept.length } : {}),
     });
   }
   return out;
@@ -1446,14 +1463,12 @@ function parseRedAttributions(value: unknown): FrozenRepairRedAttribution[] | un
   const bases = FROZEN_REPAIR_RED_ATTRIBUTION_BASES as readonly unknown[];
   const out: FrozenRepairRedAttribution[] = [];
   for (const raw of value) {
-    if (out.length >= FROZEN_REPAIR_ROUND_ATTRIBUTION_CAP) break;
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
     const row = raw as Record<string, unknown>;
     if (!nonBlank(row.entry)) continue;
     if (row.basis !== 'none' && !bases.includes(row.basis)) continue;
     const admissions: FrozenRepairRedAttributionAdmission[] = [];
     for (const item of Array.isArray(row.admissions) ? row.admissions : []) {
-      if (admissions.length >= FROZEN_REPAIR_ATTRIBUTION_ADMISSION_CAP) break;
       if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
       const a = item as Record<string, unknown>;
       if (!nonBlank(a.actor) || !nonBlank(a.toRepairHead) || !validTimestamp(a.atMs) || !bases.includes(a.basis)) continue;
@@ -1465,7 +1480,7 @@ function parseRedAttributions(value: unknown): FrozenRepairRedAttribution[] | un
       });
     }
     out.push({
-      entry: row.entry.slice(0, MAX_PERSISTED_FAILURE_CHARS),
+      entry: row.entry,
       ...(nonBlank(row.leg) ? { leg: row.leg } : {}),
       basis: row.basis as FrozenRepairRedAttribution['basis'],
       admissions,
@@ -2431,7 +2446,7 @@ function appendConvergenceRound(
   const existing = queue.convergenceRounds ?? [];
   const highest = existing.reduce((max, entry) => (entry.round > max ? entry.round : max), 0);
   const executed = normalizeRoundExecution(input.executed);
-  const attributions = (input.attributions ?? []).slice(0, FROZEN_REPAIR_ROUND_ATTRIBUTION_CAP);
+  const attributions = input.attributions ?? [];
   const failingTests = boundedFailures(input.failingTests);
   const excludedFromCount = boundedFailures([...new Set(input.excludedFromCount ?? [])]);
   return capConvergenceRounds([
@@ -2541,6 +2556,7 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
     row.schemaVersion !== 2 &&
     row.schemaVersion !== 3 &&
     row.schemaVersion !== 4 &&
+    row.schemaVersion !== 5 &&
     row.schemaVersion !== FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION
   )
     return null;
@@ -2580,7 +2596,12 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
   // P-001 / D-010: a verification phase is reached EITHER by a dispatched fixer (attempts ≥ 1
   // and a spawn id) OR by an admission through the one door — an admitted fix from any agent
   // needs no fixer bookkeeping. A legacy row with no admissions keeps the old invariant exactly.
-  const admissions = parseAdmissions(row.admissions);
+  const convergenceRounds = parseConvergenceRounds(row.convergenceRounds);
+  const admissions = retainRoundAdmissions(
+    parseAdmissions(row.admissions, (row.schemaVersion as number) < 6),
+    convergenceRounds,
+    row.candidate,
+  );
   const retestRequested = parseFrozenRepairRetestRequest(
     row.retestRequested,
     row.candidate,
@@ -2603,7 +2624,6 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
    * frozen head and let the treadmill D-007 exists to stop resume. Losing the history is
    * the strictly smaller failure, and it is visible (rounds read as absent).
    */
-  const convergenceRounds = parseConvergenceRounds(row.convergenceRounds);
   const rawSignature = row.signature;
   const rawSignatureComplete = completeRawRepairSignature(rawSignature, row.failingTests as string[]);
   const selectiveCoverageBlocked = row.selectiveCoverageBlocked === true ||
@@ -3474,7 +3494,9 @@ export function markFrozenRepairAdmitted(
     );
   }
   if (entry.paths.length === 0) throw new Error('an admission with no changed paths is not an admission');
-  const admissions = [...(queue.admissions ?? []), entry].slice(-FROZEN_REPAIR_ADMISSION_CAP);
+  const admissions = retainRoundAdmissions(
+    [...(queue.admissions ?? []), entry], queue.convergenceRounds ?? [], queue.candidate,
+  );
   const phase: FrozenCandidateRepairPhase = queue.phase === 'ready-to-test' ? 'ready-to-test' : 'ready-to-verify';
   const {
     blockedReason: _leavingBlocked,

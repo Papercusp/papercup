@@ -166,6 +166,8 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
     });
   });
 
+  // Synthetic guarded populations exercise worker resume/baseline handling directly.
+  // The pinned producer's ordinary-radius cap is covered in admission-jobs-radius.test.ts.
   const wide = (size = 81) => {
     const files = ['lib/red.test.ts', ...Array.from({ length: size - 1 }, (_, i) => `lib/file-${i}.test.ts`)];
     return queue(operation({ files, totalCount: files.length, radius: { status: 'measured', reason: 'ok',

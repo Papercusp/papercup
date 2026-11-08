@@ -495,8 +495,11 @@ export function ordinaryAdmissionRadius(input: {
       ...(playwrightExcluded ? [`playwright-excluded=${playwrightExcluded}`] : []),
       ...(unroutable ? [`unroutable=${unroutable}`] : []),
       ...fullReasons.map(reason => `full=${reason}`),
-      `execution-groups=${Math.ceil(radius.length / cap)}`,
+      `radius-files=${radius.length}`,
     ].join('; ');
+    // R24 bounds the complete ordinary radius, including report-only files.
+    // Execution grouping belongs to admitted tests and cannot waive this guard.
+    if (radius.length > cap) return result('skipped', `over-cap(${radius.length}/${cap})`, detail);
     const guarded: string[] = [];
     const reportOnly: string[] = [];
     for (const { file, leg } of radius) {

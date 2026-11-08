@@ -249,15 +249,31 @@ describe('ordinaryAdmissionRadius (P-007)', () => {
     expect(radius.legs).toEqual({ 'component/src/api.test.ts': '@t/c', 'pkg-b/src/util.test.ts': '@t/b' });
   });
 
-  it('a 41-file radius retains every file beyond the unchanged group cap', () => {
+  it('skips the complete over-cap population, including report-only files, and measures exactly the cap', () => {
     expect(ADMISSION_RADIUS_CAP).toBe(40);
     const expected = Array.from({ length: 41 }, (_, i) => `wide/src/fan-${String(i).padStart(2, '0')}.test.ts`);
     const radius = radiusFor(['wide/src/core.ts']);
-    expect(radius).toMatchObject({ status: 'measured', reason: 'ok', detail: expect.stringContaining('execution-groups=2') });
-    expect(radius.guarded).toEqual(expected);
+    expect(radius).toMatchObject({ status: 'skipped', reason: 'over-cap(41/40)', detail: expect.stringContaining('radius-files=41') });
+    expect(radius.guarded).toEqual([]);
     expect(radius.reportOnly).toEqual([]);
-    expect(radius.legs).toEqual(Object.fromEntries(expected.map(file => [file, '@t/wide'])));
-    expect(radiusFor(['wide/src/core.ts'], { cap: 1 }).guarded).toEqual(expected);
+    expect(radiusFor(['wide/src/core.ts'], { cap: 1 })).toMatchObject({ status: 'skipped', reason: 'over-cap(41/1)', guarded: [] });
+    expect(radiusFor(['wide/src/core.ts'], { signature: [{ kind: 'workspace-task', id: '@t/wide :: test' }] }))
+      .toMatchObject({ status: 'skipped', reason: 'over-cap(41/40)', guarded: [], reportOnly: [] });
+    const boundary = radiusFor(['wide/src/core.ts', expected[0]!]);
+    expect(boundary).toMatchObject({ status: 'measured', reason: 'ok', guarded: expected.slice(1) });
+    expect(radiusFor(['pkg-b/src/util.ts'], { cap: 1 })).toMatchObject({ status: 'measured', guarded: ['pkg-b/src/util.test.ts'] });
+  });
+
+  it('the production discovery job preserves the independently counted over-cap skip', async () => {
+    const census = git(root, 'ls-tree', '-r', '--name-only', commit, '--', 'wide/src')
+      .split('\n').filter(file => file.endsWith('.test.ts'));
+    expect(census).toHaveLength(41);
+    expect(await executeAdmissionJob({ kind: 'precheck-population', input: {
+      root, commit, signature: [], admittedPaths: ['wide/src/core.ts', 'pkg-b/src/util.test.ts'],
+    } })).toMatchObject({ ok: true, population: {
+      files: ['pkg-b/src/util.test.ts'],
+      radius: { status: 'skipped', reason: 'over-cap(41/40)', guarded: [], reportOnly: [] },
+    } });
   });
 
   it('retains related tests when independent pinned workspaces share a package name', async () => {

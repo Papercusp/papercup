@@ -62,7 +62,7 @@ function fresh(): FrozenCandidateRepairQueue {
 }
 
 describe('frozen-candidate repair queue', () => {
-  it.each([1, 2, 3, 4, FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION] as const)('upgrades schema %i without losing managed pre-check identity or measurement', schemaVersion => {
+  it.each([1, 2, 3, 4, 5, FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION] as const)('upgrades schema %i without losing managed pre-check identity or measurement', schemaVersion => {
     const pending: FrozenCandidateRepairQueue = {
       ...fresh(),
       schemaVersion,
@@ -90,9 +90,8 @@ describe('frozen-candidate repair queue', () => {
       },
     };
     const parsed = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(pending)));
-    // Schema-4 main hosts reject this version instead of rewriting mutable state
-    // without the managed task/environment/measurement fields they cannot read.
-    expect(parsed?.schemaVersion).toBe(5);
+    // Schema-5 readers reject schema 6 instead of truncating known attribution/admission arrays.
+    expect(parsed?.schemaVersion).toBe(6);
     expect(parsed?.admissionPrecheck).toEqual(pending.admissionPrecheck);
     const measurement = { schemaVersion: 1 as const, identity: 'a'.repeat(64), results: [
       { path: 'lib/a.test.ts', status: 'fail' as const, exitCode: 1, durationMs: 12, detail: 'native assertion failed' },

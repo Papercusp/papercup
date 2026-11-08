@@ -6,8 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
-  FROZEN_REPAIR_ATTRIBUTION_ADMISSION_CAP,
-  FROZEN_REPAIR_ROUND_ATTRIBUTION_CAP,
+  FROZEN_REPAIR_ADMISSION_CAP,
   attributeRoundReds,
   createFrozenCandidateRepairQueue,
   frozenRepairRoundAdmissionWindow,
@@ -178,19 +177,49 @@ describe('P-007 (#D-040) — a red round attributes newly red entries to its win
     expect(lastRound(red)?.attributions?.[0]?.admissions.map((a) => a.actor)).toEqual(['su-first']);
   });
 
-  it('bounds admissions per entry and entries per round, and says how many admissions it cut', () => {
+  it.each([false, true])('persists every red and admission beyond the former caps (superseded=%s)', superseded => {
     let queue = opened();
-    const heads = Array.from({ length: FROZEN_REPAIR_ATTRIBUTION_ADMISSION_CAP + 2 }, (_, i) => String(i + 2).repeat(40).slice(0, 40));
+    const heads = Array.from({ length: 8 }, (_, i) => (i + 2).toString(16).padStart(40, '0'));
     heads.forEach((head, i) => {
       queue = admit(queue, head, T0 + 10 + i, { radius: OVER_CAP, actor: `su-${i}` });
     });
-    const reds = Array.from({ length: FROZEN_REPAIR_ROUND_ATTRIBUTION_CAP + 5 }, (_, i) => `packages/x/lib/n${i}.test.ts`);
-    const red = redAt(queue, queue.repairHead, T0 + 100, reds);
+    const reds = Array.from({ length: 25 }, (_, i) => `packages/x/lib/n${i}.test.ts`);
+    const measuredHead = superseded ? heads.at(-2)! : queue.repairHead;
+    const eligible = heads.slice(0, superseded ? -1 : undefined);
+    const red = superseded
+      ? recordFrozenRepairSupersededRed(queue, { measuredHead, nowMs: T0 + 100, failingTests: reds })
+      : redAt(queue, measuredHead, T0 + 100, reds);
     const attributions = lastRound(red)?.attributions ?? [];
-    expect(attributions).toHaveLength(FROZEN_REPAIR_ROUND_ATTRIBUTION_CAP);
-    expect(attributions[0]?.admissions).toHaveLength(FROZEN_REPAIR_ATTRIBUTION_ADMISSION_CAP);
-    expect(attributions[0]?.omittedAdmissions).toBe(2);
-    expect(attributions[0]?.admissions[0]?.actor).toBe(`su-${heads.length - 1}`);
+    const expected = reds.map(file => ({
+      entry: `test-file:${file}`,
+      ...(superseded ? {} : { leg: LEG }),
+      basis: 'unmeasured-radius',
+      admissions: eligible.map((head, i) => ({ actor: `su-${i}`, toRepairHead: head, atMs: T0 + 10 + i, basis: 'unmeasured-radius' })).reverse(),
+    }));
+    expect(attributions).toEqual(expected);
+    const parsed = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(red)))!;
+    expect(lastRound(parsed)?.attributions).toEqual(expected);
+  });
+
+  it('keeps more than 200 unjudged admissions across appends and reads, then bounds only settled history', () => {
+    let queue = opened();
+    const heads = Array.from({ length: FROZEN_REPAIR_ADMISSION_CAP + 5 }, (_, i) => (i + 2).toString(16).padStart(40, '0'));
+    heads.forEach((head, i) => { queue = admit(queue, head, T0 + 10 + i, { radius: OVER_CAP, actor: `su-${i}` }); });
+    queue = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(queue)))!;
+    expect(queue.admissions?.map(a => a.toRepairHead)).toEqual(heads);
+    const judged = recordFrozenRepairSupersededRed(queue, { measuredHead: heads.at(-3)!, nowMs: T0 + 1000, failingTests: [OLD, NEW] });
+    expect(lastRound(judged)?.attributions?.[0]?.admissions.at(-1)?.actor).toBe('su-0');
+    const parsed = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(judged)))!;
+    expect(parsed.admissions).toHaveLength(FROZEN_REPAIR_ADMISSION_CAP + 2);
+    expect(frozenRepairRoundAdmissionWindow(parsed, parsed.repairHead).map(a => a.toRepairHead)).toEqual(heads.slice(-2));
+    expect(lastRound(parsed)?.attributions).toEqual(lastRound(judged)?.attributions);
+  });
+
+  it('retains timestamp ties when the last judged head is absent from admission history', () => {
+    const queue = admit(admit(opened(), H1, T0 + 10), H2, T0 + 11);
+    const unknown = { ...queue, convergenceRounds: [{ round: 2, head: H3, failingCount: 1, atMs: T0 + 10 }] };
+    const parsed = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(unknown)))!;
+    expect(frozenRepairRoundAdmissionWindow(parsed, H2).map(a => a.toRepairHead)).toEqual([H1, H2]);
   });
 
   it('round-trips attributions and the admission radius summary through the persisted row', () => {
@@ -268,7 +297,7 @@ describe('P-007 (#D-040) — the window and summary helpers', () => {
     expect(attributeRoundReds(queue, queue.signature, H1)).toEqual([]);
   });
 
-  it('summarizeAdmissionRadius keeps files only when measured and bounds them', () => {
+  it('summarizeAdmissionRadius reports over-cap instead of a truncated measured success', () => {
     expect(summarizeAdmissionRadius({ status: 'skipped', reason: 'over-cap(5572/40)', guarded: [], reportOnly: [], legs: {} })).toEqual(OVER_CAP);
     const many = Array.from({ length: 50 }, (_, i) => `lib/t${i}.test.ts`);
     const summary = summarizeAdmissionRadius({
@@ -278,8 +307,16 @@ describe('P-007 (#D-040) — the window and summary helpers', () => {
       reportOnly: many.slice(30),
       legs: Object.fromEntries(many.map((file) => [file, LEG])),
     });
-    expect(summary?.files).toHaveLength(40);
-    expect(Object.keys(summary?.legs ?? {})).toHaveLength(40);
+    expect(summary).toEqual({ status: 'skipped', reason: 'over-cap(50/40)' });
     expect(summarizeAdmissionRadius(undefined)).toBeUndefined();
+  });
+
+  it('does not infer complete coverage from a legacy summary at the truncation boundary', () => {
+    const files = Array.from({ length: 40 }, (_, i) => `lib/t${i}.test.ts`);
+    const queue = admit(opened(), H1, T0 + 10, { radius: { status: 'measured', reason: 'ok', files } });
+    const legacy = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify({ ...queue, schemaVersion: 5 })))!;
+    expect(legacy.admissions?.[0]?.precheck?.radius).toEqual({ status: 'skipped', reason: 'legacy-radius-completeness-unknown' });
+    expect(lastRound(redAt(legacy, H1, T0 + 20, [OLD, NEW]))?.attributions?.[0]?.basis).toBe('unmeasured-radius');
+    expect(parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(queue)))?.admissions?.[0]?.precheck?.radius?.files).toEqual(files);
   });
 });
