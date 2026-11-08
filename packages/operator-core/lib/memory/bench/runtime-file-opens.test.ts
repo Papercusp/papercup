@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFailed } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -40,14 +40,17 @@ describe('retained Linux perf JIT code bytes', () => {
     expect(proof.closeRecordObserved).toBe(false);
     expect(proof.loads).toHaveLength(1);
   });
-  it.each(['magic','version','header-size','padding','pid','architecture','clock','short-header','truncated-record',
+  it.each([0,1,0xdeadbeef,0xffffffff])('treats reserved header word %s as opaque', reserved => {
+    const bytes=dump();bytes.writeUInt32LE(reserved,16);
+    expect(bindRuntimeJitDump(bytes,witness).loads).toHaveLength(1);
+  });
+  it.each(['magic','version','header-size','pid','architecture','clock','short-header','truncated-record',
     'extent','timestamp','unknown-kind','name','code-size','address-wrap','duplicate-index','no-loads','after-close','foreign-pid','foreign-tid'])(
     'refuses malformed or foreign %s evidence', variant => {
       let bytes=dump();
       if(variant==='magic')bytes.writeUInt32LE(0,0);
       if(variant==='version')bytes.writeUInt32LE(2,4);
       if(variant==='header-size')bytes.writeUInt32LE(44,8);
-      if(variant==='padding')bytes.writeUInt32LE(1,16);
       if(variant==='pid')bytes.writeUInt32LE(99,20);
       if(variant==='architecture')bytes.writeUInt32LE(183,12);
       if(variant==='clock')bytes.writeBigUInt64LE(1n,32);
@@ -99,6 +102,9 @@ describe('retained Linux perf JIT code bytes', () => {
       const processId=Number(child.stdout), dumpPath=path.join(root,'jit-'+processId+'.dump');
       const bytes=fs.readFileSync(dumpPath), tree=bindRuntimeProcessTree(fs.readFileSync(trace,'utf8'),{
         processId,exitCode:child.status!,signal:child.signal,eof:true,captureStartedBeforeExec:true,pageSizeBytes});
+      onTestFailed(()=>console.error('JIT_DUMP_CAPTURE_DIAGNOSTICS '+JSON.stringify({processId,elfMachine,
+        startedMonotonicNs:before.toString(),finishedMonotonicNs:after.toString(),bytes:bytes.length,
+        sha256:sha(bytes),headerHex:bytes.subarray(0,40).toString('hex'),taskIds:tree.tasks.map(task=>task.taskId)})));
       const proof=bindRuntimeJitDump(bytes,{processId,elfMachine,taskIds:tree.tasks.map(task=>task.taskId),
         startedMonotonicNs:before.toString(),finishedMonotonicNs:after.toString(),
         exitCode:child.status!,signal:child.signal,eof:true,captureStartedBeforeExec:true});

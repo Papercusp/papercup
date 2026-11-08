@@ -46,7 +46,8 @@ export function bindRuntimeJitDump(bytes, witness) {
   const u32 = offset => little ? bytes.readUInt32LE(offset) : bytes.readUInt32BE(offset);
   const u64 = offset => little ? bytes.readBigUInt64LE(offset) : bytes.readBigUInt64BE(offset);
   const hex = value => '0x'+value.toString(16), addressLimit = 1n << 64n;
-  require(u32(4) === 1 && u32(8) === 40 && u32(16) === 0, 'unsupported header');
+  // The reserved word is opaque, not a zero assertion. V8 writes DEADBEEF.
+  require(u32(4) === 1 && u32(8) === 40, 'unsupported header');
   require(u32(12) === witness.elfMachine && u32(20) === witness.processId, 'header process/architecture differs');
   require(u64(32) === 0n, 'unsupported timestamp clock/flags');
   const created = u64(24);
