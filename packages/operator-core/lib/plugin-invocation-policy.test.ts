@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AsyncResource } from 'node:async_hooks';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -51,6 +51,33 @@ function fixture() {
 }
 
 describe('projected plugin host resource approval', () => {
+  it('shares the installed host PDP across adapter module records and propagates removal', async () => {
+    const f = fixture();
+    const bind = (create: typeof createPluginInvocationChokepoint) => create({
+      readManifest: async () => ['tasks:write'], readGrants: async () => ['tasks:write'],
+      executeHandler: request => request.tool.fn(request.input, request.ctx),
+    });
+    setHostPluginInvocationPolicy(f.policy);
+    const original = bind(createPluginInvocationChokepoint);
+    expect((await dispatchProjectedTool(f.tool, 'fixture:write', {}, f.ctx, { aroundInvoke: original }))
+      .result?.isError).not.toBe(true);
+    expect(readFileSync(f.marker, 'utf8')).toBe('authorized'); rmSync(f.marker);
+    vi.resetModules();
+    try {
+      const other = await import('./plugin-invocation-policy');
+      expect(other.createPluginInvocationChokepoint).not.toBe(createPluginInvocationChokepoint);
+      const result = await dispatchProjectedTool(f.tool, 'fixture:write', {}, f.ctx,
+        { aroundInvoke: bind(other.createPluginInvocationChokepoint) });
+      expect(existsSync(f.marker)).toBe(true);
+      expect(result.result?.isError).not.toBe(true);
+      expect(readFileSync(f.marker, 'utf8')).toBe('authorized'); rmSync(f.marker);
+      other.setHostPluginInvocationPolicy(null);
+      expect((await dispatchProjectedTool(f.tool, 'fixture:write', {}, f.ctx, { aroundInvoke: original }))
+        .result?.isError).toBe(true);
+      expect(existsSync(f.marker)).toBe(false);
+    } finally { setHostPluginInvocationPolicy(null); vi.resetModules(); }
+  });
+
   it('passes a host guard which rechecks current policy and expires on settlement', async () => {
     const f = fixture(); let retained: (() => void) | undefined;
     const aroundInvoke = createPluginInvocationChokepoint({ resolvePolicy: () => f.policy,
