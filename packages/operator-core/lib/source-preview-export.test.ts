@@ -3489,6 +3489,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       'packages/operator-core/lib/testing-native-runtime.ts',
       'packages/operator-core/lib/testing-playwright-reporter.ts',
       'scripts/lib/run-in-isolated-netns.sh',
+      'scripts/lib/verify-tauri-screenshot.sh',
     ].entries()) {
       writeFileSync(join(fixture.repo, helper), 'changed native tooling after commit');
       const refused = join(tmp, `verifier-tauri-inputs-refused-${index}`);
