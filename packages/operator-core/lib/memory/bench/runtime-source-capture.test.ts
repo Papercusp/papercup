@@ -205,6 +205,9 @@ describe('parsed sources joined to independent process lifetimes', () => {
       {taskId:20, operation:'munmap', succeeded:true},
     ]);
     expect(result.executableMemoryQualification).toBe('required');
+    expect(result.mappingOrigins).toMatchObject({mappingPopulationComplete:false,
+      executableBytesQualified:false, jitByteOriginQualification:'required'});
+    expect(result.mappingOrigins.gaps).toContainEqual(expect.objectContaining({reason:'independent-host-page-size-required'}));
     expect(result.completeRuntimeClosureVerified).toBe(false);
     expect(result.creatorFence).toBe('required');
   });

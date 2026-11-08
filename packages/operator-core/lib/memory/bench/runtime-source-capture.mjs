@@ -102,6 +102,7 @@ export function bindRuntimeSourcePopulation(trace, terminal, captures, fileInput
   return { schema: 'runtime-traced-source-population/v1', processId: processTree.processId,
     processes: receipts, tracedTaskPopulationComplete: true,
     memoryTransitions: processTree.memoryTransitions,
+    mappingOrigins: processTree.mappingOrigins,
     executableMemoryQualification: processTree.executableMemoryQualification,
     parsedSourceProcessPopulationComplete: true, completeRuntimeClosureVerified: false,
     ...(fileInputs === undefined ? {} : { fileInputs: bindParsedFiles(captures, fileInputs) }),

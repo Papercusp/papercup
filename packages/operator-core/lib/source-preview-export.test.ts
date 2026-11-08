@@ -4302,6 +4302,10 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
     }
     expect(proof.completeRuntimeClosureVerified).toBe(false);
     expect(proof.dependencyQualification).toBe('required');
+    expect(proof.executableMemoryQualification).toBe('required');
+    expect(proof.jitByteOriginQualification).toBe('required');
+    expect(proof.population.mappingOrigins).toMatchObject({mappingPopulationComplete:false,
+      executableBytesQualified:false, jitByteOriginQualification:'required'});
     expect(proof.creatorFence).toBe('required');
   });
 

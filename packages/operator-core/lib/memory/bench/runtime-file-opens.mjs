@@ -37,6 +37,198 @@ function parseRuntimeFileTrace(text) {
   return { lines, edges };
 }
 
+/** Replay only mapping metadata whose syscall semantics and ordering are known.
+ * This deliberately never qualifies executable bytes: writable aliases, JIT
+ * stores, kernel-installed exec mappings and file mutation need other witnesses.
+ * pageSizeBytes must be supplied by the independent launcher's host witness;
+ * guessing 4096 silently loses the tail of mappings on other Linux page sizes.
+ */
+function replayRuntimeMappings(lines, processId, pageSizeBytes) {
+  const gaps = [], executableRanges = [], changes = [], spaces = [], tasks = new Map();
+  let recordedRanges = 0, budgetExceeded = false;
+  const page = Number.isSafeInteger(pageSizeBytes) && pageSizeBytes >= 1024
+    && Number.isInteger(Math.log2(pageSizeBytes)) ? BigInt(pageSizeBytes) : null;
+  const hex = value => '0x' + value.toString(16);
+  const gap = (row, reason) => gaps.push({taskId:row.tid, atMs:row.atMs, reason});
+  const events = lines.filter(row => /^(?:mmap|mprotect|pkey_mprotect|munmap|mremap|shmat|shmdt|remap_file_pages)\(/.test(row.call)
+    || /^(?:execve|execveat|clone|clone3|fork|vfork)\(/.test(row.call)
+      && !/\)\s+=\s+-1\b/.test(row.call)).sort((a, b) => a.atMs - b.atMs);
+  const makeSpace = maps => {
+    const space = {id:spaces.length + 1, maps:[...maps], uncertain:false};
+    spaces.push(space); return space;
+  };
+  tasks.set(processId, makeSpace([]));
+  if (!page) gap({tid:processId, atMs:events[0]?.atMs ?? null}, 'independent-host-page-size-required');
+  const number = value => /^(?:0x[0-9a-f]+|[0-9]+)$/i.test(value) ? BigInt(value) : null;
+  const rounded = value => {
+    const n = number(value);
+    return n !== null && n > 0n ? ((n + page - 1n) / page) * page : null;
+  };
+  const range = (start, length) => {
+    const a = number(start), size = rounded(length);
+    return a !== null && a % page === 0n && size !== null && a + size <= (1n << 64n)
+      ? {start:a, end:a + size} : null;
+  };
+  const permissions = value => {
+    const flags = value.split('|');
+    return flags.length && flags.every(flag => ['PROT_NONE','PROT_READ','PROT_WRITE','PROT_EXEC'].includes(flag))
+      && (!flags.includes('PROT_NONE') || flags.length === 1) ? value : null;
+  };
+  const cut = (map, start, end) => ({...map, start, end,
+    origin:{...map.origin, offsetBytes:map.origin.offsetBytes === null ? null
+      : map.origin.offsetBytes + start - map.start}});
+  const serial = map => ({start:hex(map.start), end:hex(map.end), permissions:map.permissions,
+    origin:{...map.origin, offsetBytes:map.origin.offsetBytes === null ? null : String(map.origin.offsetBytes)},
+    executableBytesQualified:false});
+  const remove = (space, bounds) => {
+    space.maps = space.maps.flatMap(map => map.end <= bounds.start || map.start >= bounds.end ? [map]
+      : [map.start < bounds.start ? cut(map, map.start, bounds.start) : null,
+        map.end > bounds.end ? cut(map, bounds.end, map.end) : null].filter(Boolean));
+  };
+  const invalidate = (row, space, reason) => {
+    gap(row, reason); space.maps = []; space.uncertain = true;
+  };
+  const record = (row, space, operation, maps) => {
+    recordedRanges += maps.length;
+    if (recordedRanges > 100_000) {
+      gap(row, 'mapping-replay-population-limit'); budgetExceeded = true; return;
+    }
+    changes.push({taskId:row.tid, addressSpaceId:space.id, atMs:row.atMs,
+      completedAtMs:row.completedAtMs, operation, ranges:maps.map(serial)});
+    for (const map of maps) if (map.permissions.split('|').includes('PROT_EXEC'))
+      executableRanges.push({taskId:row.tid, addressSpaceId:space.id, atMs:row.atMs,
+        completedAtMs:row.completedAtMs, operation, ...serial(map), byteOriginQualification:'required'});
+  };
+  // strace timestamps bound syscalls, not their linearization points. Even two
+  // individually successful calls cannot be ordered through overlapping windows.
+  // Stop replay globally at the first overlap (conservative even for disjoint
+  // VMs); the raw syscall census below still retains every later observation.
+  for (let index = 0; index < events.length; index++) {
+    if (budgetExceeded) break;
+    const row = events[index], next = events[index + 1];
+    // Look ahead BEFORE applying either member of an ambiguous pair. Keeping
+    // the first member's range would already assert an unsupported ordering.
+    if (next && next.atMs <= row.completedAtMs) {
+      gap(row, 'overlapping-address-space-events-replay-stopped'); break;
+    }
+    let space = tasks.get(row.tid);
+    if (!space) { gap(row, 'task-address-space-unresolved'); break; }
+    if (/^(?:clone3?|fork|vfork)\(/.test(row.call)) {
+      const child = Number(/\)\s+=\s+(\d+)$/.exec(row.call)?.[1]);
+      const flags = /\bflags=([A-Z0-9_|]+)(?=\s*[,})])/.exec(row.call)?.[1]?.split('|') ?? [];
+      if (row.call.startsWith('clone') && flags.some(flag => !['CLONE_VM','CLONE_FS','CLONE_FILES',
+        'CLONE_SIGHAND','CLONE_PIDFD','CLONE_PTRACE','CLONE_VFORK','CLONE_PARENT','CLONE_THREAD',
+        'CLONE_NEWNS','CLONE_SYSVSEM','CLONE_SETTLS','CLONE_PARENT_SETTID','CLONE_CHILD_CLEARTID',
+        'CLONE_DETACHED','CLONE_UNTRACED','CLONE_CHILD_SETTID','CLONE_NEWCGROUP','CLONE_NEWUTS',
+        'CLONE_NEWIPC','CLONE_NEWUSER','CLONE_NEWPID','CLONE_NEWNET','CLONE_IO','CLONE_CLEAR_SIGHAND',
+        'CLONE_INTO_CGROUP','SIGCHLD'].includes(flag))) {
+        gap(row, 'clone-address-space-flags-unresolved'); break;
+      }
+      const shared = flags.includes('CLONE_VM') || row.call.startsWith('vfork(');
+      const inherited = shared ? space : makeSpace(space.maps);
+      if (!shared) inherited.uncertain = space.uncertain;
+      tasks.set(child, inherited);
+      record(row, inherited, shared ? 'share-vm' : 'copy-vm', inherited.maps);
+      continue;
+    }
+    if (/^execve(?:at)?\(/.test(row.call)) {
+      space = makeSpace([]); tasks.set(row.tid, space);
+      gap(row, 'exec-kernel-installed-mappings-unobserved');
+      record(row, space, 'exec-reset', []); continue;
+    }
+    if (!page) continue;
+    if (space.uncertain) { gap(row, 'prior-address-space-transition-unresolved'); continue; }
+    const memory = /^(\w+)\((.*)\)\s+=\s+(.*)$/.exec(row.call);
+    const [, operation, args, result] = memory;
+    if (result.startsWith('-1 ')) {
+      // Linux mprotect may have changed earlier VMAs before returning an
+      // error on a later one. Failure is not proof of an unchanged range.
+      if (['mprotect','pkey_mprotect'].includes(operation))
+        invalidate(row, space, 'failed-permission-change-may-be-partial');
+      continue;
+    }
+    const fields = args.split(', ');
+    if (operation === 'mmap') {
+      const bounds = fields.length === 6 && range(result, fields[1]), prot = permissions(fields[2] ?? '');
+      const flags = (fields[3] ?? '').split('|');
+      const supported = flags.every(flag => ['MAP_PRIVATE','MAP_SHARED','MAP_ANONYMOUS','MAP_FIXED',
+        'MAP_FIXED_NOREPLACE','MAP_DENYWRITE','MAP_EXECUTABLE','MAP_NORESERVE','MAP_STACK',
+        'MAP_POPULATE','MAP_NONBLOCK','MAP_32BIT'].includes(flag))
+        && flags.filter(flag => ['MAP_PRIVATE','MAP_SHARED'].includes(flag)).length === 1;
+      const offset = number(fields[5]);
+      if (!bounds || !prot || !supported || offset === null || offset % page !== 0n
+        || (flags.includes('MAP_FIXED') || flags.includes('MAP_FIXED_NOREPLACE')) && number(fields[0]) !== bounds.start) {
+        invalidate(row, space, 'mmap-semantics-unresolved'); continue;
+      }
+      const anonymous = flags.includes('MAP_ANONYMOUS');
+      const path = /^\d+<([^<>]+)>$/.exec(fields[4])?.[1] ?? null;
+      const origin = {kind:anonymous ? 'anonymous' : path ? 'file-mapping' : 'unresolved',
+        path:anonymous ? null : path, offsetBytes:anonymous ? null : offset};
+      if (origin.kind === 'unresolved') gap(row, 'mmap-descriptor-path-unresolved');
+      if (space.maps.some(map => map.end > bounds.start && map.start < bounds.end)
+        && !flags.includes('MAP_FIXED')) {
+        invalidate(row, space, 'mmap-unexpected-overlap'); continue;
+      }
+      remove(space, bounds);
+      const map = {...bounds, permissions:prot, origin}; space.maps.push(map);
+      record(row, space, operation, [map]);
+    } else if (['mprotect','pkey_mprotect','munmap'].includes(operation)) {
+      const bounds = range(fields[0], fields[1]);
+      const prot = operation === 'munmap' ? null : permissions(fields[2] ?? '');
+      if (!bounds || fields.length !== (operation === 'munmap' ? 2 : operation === 'mprotect' ? 3 : 4)
+        || operation !== 'munmap' && !prot) {
+        invalidate(row, space, 'mapping-permission-or-unmap-semantics-unresolved'); continue;
+      }
+      const covered = space.maps.filter(map => map.end > bounds.start && map.start < bounds.end)
+        .map(map => cut(map, map.start > bounds.start ? map.start : bounds.start,
+          map.end < bounds.end ? map.end : bounds.end)).sort((a,b) => a.start < b.start ? -1 : 1);
+      remove(space, bounds);
+      if (operation === 'munmap') { record(row, space, 'munmap-removed', covered); continue; }
+      const maps = [], unknown = (start, end) => ({start, end, permissions:prot,
+        origin:{kind:'unresolved', path:null, offsetBytes:null}});
+      let cursor = bounds.start;
+      for (const map of covered) {
+        if (map.start > cursor) maps.push(unknown(cursor, map.start));
+        maps.push({...map, permissions:prot}); cursor = map.end;
+      }
+      if (cursor < bounds.end) maps.push(unknown(cursor, bounds.end));
+      if (maps.some(map => map.origin.kind === 'unresolved')) gap(row, 'permission-range-mapping-origin-unresolved');
+      space.maps.push(...maps); record(row, space, operation, maps);
+    } else if (operation === 'mremap') {
+      const old = range(fields[0], fields[1]), size = rounded(fields[2] ?? ''), flags = (fields[3] ?? '').split('|');
+      const destination = size && range(result, String(size));
+      const supported = flags.every(flag => ['0','MREMAP_MAYMOVE','MREMAP_FIXED'].includes(flag))
+        && (!flags.includes('MREMAP_FIXED') || flags.includes('MREMAP_MAYMOVE'))
+        && fields.length === (flags.includes('MREMAP_FIXED') ? 5 : 4)
+        && (!flags.includes('MREMAP_FIXED') || number(fields[4]) === number(result));
+      const source = old && space.maps.find(map => map.start === old.start && map.end === old.end);
+      if (!old || !destination || !supported || !source) {
+        invalidate(row, space, 'mremap-origin-or-semantics-unresolved'); continue;
+      }
+      const overlap = old.start < destination.end && old.end > destination.start;
+      if (overlap && old.start !== destination.start || destination.start !== old.start
+        && !flags.includes('MREMAP_MAYMOVE')) {
+        invalidate(row, space, 'mremap-overlap-or-movement-unresolved'); continue;
+      }
+      remove(space, old);
+      if (!flags.includes('MREMAP_FIXED') && space.maps.some(map => map.end > destination.start && map.start < destination.end)) {
+        invalidate(row, space, 'mremap-destination-overlap-unresolved'); continue;
+      }
+      remove(space, destination);
+      const moved = {...source, ...destination}; space.maps.push(moved);
+      record(row, space, operation, [moved]);
+    } else invalidate(row, space, operation + '-semantics-unresolved');
+    if (space.maps.length > 8192 || executableRanges.length > 100_000) {
+      gap(row, 'mapping-replay-population-limit'); break;
+    }
+  }
+  return {schema:'runtime-mapping-origins/v1', pageSizeBytes:page ? Number(page) : null,
+    changes, executableRanges, gaps, mappingPopulationComplete:false,
+    executableBytesQualified:false, jitByteOriginQualification:'required',
+    effectivePermissionsQualification:'required',
+    scope:'ordered supported syscall origins and requested protections; kernel permissions and executable bytes require separate witnesses'};
+}
+
 /** A host-local exec-to-EOF task census, including short-lived children and
  * native threads. The terminal witness must come from the launcher's actual
  * close/EOF events, not the target's own receipt. This accounts only for the
@@ -99,9 +291,8 @@ export function bindRuntimeProcessTree(text, terminal) {
       if (!failed && !(returnsAddress ? /^0x[0-9a-f]+$/i.test(result) : result === '0'))
         throw new Error('process census memory transition outcome unresolved');
       // Retain transitions even when no executable map survives until a sample.
-      // These are syscall observations, not an address-space replay: remaps can
-      // inherit permissions, tasks can share mappings, and exec installs kernel
-      // mappings outside mmap. Never turn this into a JIT/byte-origin claim.
+      // Replay is a separate, deliberately partial mapping-metadata witness.
+      // Neither these observations nor mapping origins qualify executable bytes.
       const permission = /\bPROT_(?:NONE|READ|WRITE|EXEC)\b/.test(args)
         ? /\bPROT_EXEC\b/.test(args) : null;
       memoryTransitions.push({ taskId: row.tid, operation, arguments: args, result,
@@ -132,7 +323,8 @@ export function bindRuntimeProcessTree(text, terminal) {
     throw new Error('process census lacks complete exec-to-exit population');
   return { schema: 'runtime-traced-process-tree/v1', processId,
     tasks: [...tasks.values()].sort((a, b) => a.taskId - b.taskId),
-    memoryTransitions, executableMemoryQualification: 'required',
+    memoryTransitions, mappingOrigins:replayRuntimeMappings(lines, processId, terminal.pageSizeBytes),
+    executableMemoryQualification: 'required',
     tracedTaskPopulationComplete: true, completeRuntimeClosureVerified: false,
     sourceQualification: 'required', creatorFence: 'required',
     scope: 'all recorded process/thread births through successful termination under the maintained file trace' };

@@ -2771,6 +2771,8 @@ export function qualifyBgVerifierRuntimeSources({ output, record, invocation, ex
       : execution.nativeScope === 'process-lifetime' ? 'file-backed-glibc-process-lifetimes' : 'selected-windows-only',
     vdsoQualification: nativeBindings.some(native => native.expectedVdsoQualified)
       ? 'original-host-bytes' : execution.nativeCaptures === undefined ? 'not-observed' : 'required',
+    executableMemoryQualification: population.executableMemoryQualification,
+    jitByteOriginQualification: population.mappingOrigins.jitByteOriginQualification,
     compiledOutputBytesObserved: true,
     ...(inputCustody ? { inputCustody } : {}),
     completeRuntimeClosureVerified: false,
