@@ -60,7 +60,9 @@ export function bindRuntimeProcessTree(text: string, terminal: {
   tasks: {taskId: number; parentTaskId: number | null; threadGroupId: number;
     birthAtMs: number | null; execs: {executable: string; atMs: number}[]; terminalAtMs: number}[];
   memoryTransitions: {taskId: number; operation: string; arguments: string; result: string;
-    succeeded: boolean; executablePermissionRequested: boolean | null; atMs: number; completedAtMs: number}[];
+    succeeded: boolean; executablePermissionRequested: boolean | null; atMs: number; completedAtMs: number;
+    /** Independent strace duration; null for legacy captures lacking -T. */
+    durationNs: string | null}[];
   mappingOrigins: {
     schema: 'runtime-mapping-origins/v1'; pageSizeBytes: number | null;
     changes: {taskId: number; addressSpaceId: number; atMs: number; completedAtMs: number;
