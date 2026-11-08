@@ -257,14 +257,26 @@ export function startRuntimeSourceCapture(destination) {
     });
   };
   const resume = target => {
-    if (!target.paused || target.sourcePending || !target.live) return;
+    if (!target.paused || target.sourcePending || !target.live || target.waitingForDisconnect) return;
     target.paused = false;
     target.post('Debugger.resume', {}, error => { if (error) fail(target.id, 'resume: ' + error.message); });
+  };
+  const releaseWorker = target => {
+    if (!target.parent || !target.live || !target.waitingForDisconnect || target.detaching
+      || target.pending.size || target.sourcePending) return;
+    target.detaching = true;
+    target.parent.post('NodeWorker.detach', { sessionId: target.sessionId }, error => {
+      if (error) fail(target.id, 'detach: ' + error.message);
+    });
   };
   const notification = (target, method, params) => {
     if (method === 'Debugger.scriptParsed') capture(target, params);
     else if (method === 'Debugger.scriptFailedToParse') fail(target.id, 'script failed to parse: ' + params.url);
     else if (method === 'Debugger.paused') { target.paused = true; resume(target); }
+    else if (method === 'NodeRuntime.waitingForDisconnect') {
+      target.waitingForDisconnect = true;
+      releaseWorker(target);
+    }
     else if (method === 'NodeWorker.attachedToWorker') attach(target, params);
     else if (method === 'NodeWorker.detachedFromWorker') {
       const child = [...targets.values()].find(item => item.parent === target && item.sessionId === params.sessionId);
@@ -285,6 +297,7 @@ export function startRuntimeSourceCapture(destination) {
         child.pending.delete(message.id);
         if (!request) return fail(child.id, 'unknown worker protocol response');
         request.callback(message.error ? new Error(message.error.message) : null, message.result);
+        releaseWorker(child);
       } else notification(child, message.method, message.params);
     }
   };
@@ -301,7 +314,10 @@ export function startRuntimeSourceCapture(destination) {
       target.pending.set(requestId, { method, callback });
       parent.post('NodeWorker.sendMessageToWorker', { sessionId: target.sessionId,
         message: JSON.stringify({ id: requestId, method, params: args }) }, error => {
-        if (error && target.pending.delete(requestId)) callback(error);
+        if (error && target.pending.delete(requestId)) {
+          callback(error);
+          releaseWorker(target);
+        }
       });
     };
     target.post('Debugger.enable', {}, error => {
@@ -310,7 +326,17 @@ export function startRuntimeSourceCapture(destination) {
       // before getScriptSource returns. Main-isolate protocol calls are local.
       target.post('Debugger.setInstrumentationBreakpoint', { instrumentation: 'beforeScriptExecution' }, error => {
         if (error) fail(id, error.message);
-        target.post('Runtime.runIfWaitingForDebugger', {}, error => { if (error) fail(id, error.message); });
+        const run = () => target.post('Runtime.runIfWaitingForDebugger', {}, error => { if (error) fail(id, error.message); });
+        // Internal loaders are joined during parent cleanup, when that parent
+        // can no longer service the disconnect notification. Keep their
+        // existing independent process-termination evidence requirement.
+        if (params.workerInfo.url === 'node:internal/modules/esm/worker') { run(); return; }
+        // Node keeps a naturally exiting worker's inspector context alive only
+        // when this notification is enabled. Drain replies before detaching it.
+        target.post('NodeRuntime.notifyWhenWaitingForDisconnect', { enabled: true }, error => {
+          if (error) fail(id, error.message);
+          run();
+        });
       });
     });
   };
@@ -326,7 +352,13 @@ export function startRuntimeSourceCapture(destination) {
     emit({ kind: 'terminal', processId: process.pid, exitCode: code, sources: sourceCount,
       workers: workerCount, errors: errors.length, pending, liveWorkers, finishedAt: new Date().toISOString(),
       monotonicNs: process.hrtime.bigint().toString() });
-    fs.fsyncSync(fd); fs.closeSync(fd); session.disconnect();
+    fs.fsyncSync(fd); fs.closeSync(fd);
+    // Preserve the terminal snapshot before cleanup: disconnecting a still-live
+    // application worker must never turn forced exit into complete evidence.
+    // Explicitly release worker channels while the parent can still dispatch;
+    // otherwise notifyWhenWaitingForDisconnect can hold cleanup open.
+    session.post('NodeWorker.disable', {}, () => {});
+    session.disconnect();
   });
 }
 

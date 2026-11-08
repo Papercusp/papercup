@@ -23,15 +23,78 @@ function run(program: string, extraArgs: string[] = []) {
   delete env.NODE_OPTIONS;
   const result = spawnSync(process.execPath, ['--import', preload, ...extraArgs, '-e', program.replaceAll('FIXTURE', JSON.stringify(fixture))],
     { env, encoding: 'utf8', timeout: 15_000, maxBuffer: 1024 * 1024 });
-  expect(result.error, result.stderr).toBeUndefined();
-  const rows = fs.readFileSync(output, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  const rows = fs.existsSync(output) ? fs.readFileSync(output, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line)) : [];
   // Preserve the failure discriminator before afterEach removes the receipt.
   onTestFailed(() => console.error('RUNTIME_SOURCE_CAPTURE_DIAGNOSTICS ' + JSON.stringify({
-    exitCode: result.status, signal: result.signal, lifecycle: rows.filter(row => row.kind !== 'source'),
+    error: result.error?.message, exitCode: result.status, signal: result.signal,
+    lifecycle: rows.filter(row => row.kind !== 'source'),
   })));
+  expect(result.error, result.stderr).toBeUndefined();
   return { result, rows, fixture, source, output };
 }
 describe('worker detach protocol evidence', () => {
+  it.each(['Debugger.getScriptSource', 'Debugger.resume'])(
+    'drains %s at natural worker exit before releasing the inspector context', pendingMethod => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'runtime-source-drain-')); roots.push(root);
+      const output = path.join(root, 'sources.jsonl');
+      let notify!: (message: {method: string; params: Record<string, unknown>}) => void;
+      let finish!: (code: number) => void;
+      let outstanding!: {id: number; method: string};
+      const methods: string[] = [];
+      let disconnectNotificationEnabled = false, detached = false;
+      const notification = (method: string, params: Record<string, unknown> = {}) => notify({method, params});
+      const workerMessage = (message: Record<string, unknown>) => notification('NodeWorker.receivedMessageFromWorker', {
+        sessionId: 'worker-session', message: JSON.stringify(message),
+      });
+      const session = {
+        connect() {}, disconnect() {},
+        on(_event: string, listener: typeof notify) { notify = listener; },
+        post(method: string, params: Record<string, unknown>, callback: (error: null, result: object) => void) {
+          if (method === 'NodeWorker.detach') {
+            detached = true;
+            notification('NodeWorker.detachedFromWorker', {sessionId: 'worker-session'});
+          }
+          callback(null, method === 'Debugger.getScriptSource' ? {scriptSource: 'main source'} : {});
+          if (method !== 'NodeWorker.sendMessageToWorker') return;
+          const request = JSON.parse(String(params.message)); methods.push(request.method);
+          if (request.method === 'NodeRuntime.notifyWhenWaitingForDisconnect')
+            disconnectNotificationEnabled = request.params.enabled === true;
+          if (request.method === pendingMethod) { outstanding = request; return; }
+          workerMessage({id: request.id,
+            result: request.method === 'Debugger.getScriptSource' ? {scriptSource: 'worker source'} : {}});
+        },
+      };
+      const originalOnce = process.once.bind(process);
+      const constructor = vi.spyOn(inspector, 'Session').mockImplementation(function () { return session; } as never);
+      const once = vi.spyOn(process, 'once').mockImplementation(((event: string, listener: (...args: any[]) => void) => {
+        if (event === 'exit') { finish = listener; return process; }
+        return originalOnce(event, listener);
+      }) as typeof process.once);
+      try { startRuntimeSourceCapture(output); }
+      finally { constructor.mockRestore(); once.mockRestore(); }
+      try {
+        notification('Debugger.scriptParsed', {scriptId: 'main-script', url: 'file:///main.js'});
+        notification('NodeWorker.attachedToWorker', {sessionId: 'worker-session', waitingForDebugger: true,
+          workerInfo: {workerId: 'worker', url: 'file:///worker.js'}});
+        workerMessage({method: 'Debugger.scriptParsed', params: {scriptId: 'worker-script', url: 'file:///worker.js'}});
+        workerMessage({method: 'Debugger.paused', params: {}});
+        // Node retains the context at natural exit only when this notification
+        // was enabled before execution. Otherwise outstanding calls are lost.
+        if (disconnectNotificationEnabled) workerMessage({method: 'NodeRuntime.waitingForDisconnect', params: {}});
+        else notification('NodeWorker.detachedFromWorker', {sessionId: 'worker-session'});
+        expect(detached).toBe(false);
+        expect(disconnectNotificationEnabled).toBe(true);
+        expect(methods.indexOf('NodeRuntime.notifyWhenWaitingForDisconnect'))
+          .toBeLessThan(methods.indexOf('Runtime.runIfWaitingForDebugger'));
+        workerMessage({id: outstanding.id,
+          result: pendingMethod === 'Debugger.getScriptSource' ? {scriptSource: 'worker source'} : {}});
+        expect(detached).toBe(true);
+      } finally { finish(0); }
+      const rows = fs.readFileSync(output, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+      expect(rows.at(-1)).toMatchObject({errors: 0, pending: 0, liveWorkers: 0});
+      expect(validateRuntimeSourceCapture(rows, ['worker']).workerIds).toEqual(['worker']);
+    });
+
   it.each(['Debugger.resume', 'Debugger.getScriptSource'])(
     'retains the outstanding %s method and source count without accepting incomplete evidence', pendingMethod => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), 'runtime-source-protocol-')); roots.push(root);
