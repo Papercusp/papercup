@@ -12,6 +12,7 @@ import { distAtomicWritesPlugin } from './dist-atomic-writes';
 import { distWipeGuardPlugin } from './dist-wipe-guard';
 import { flagsBootstrapPlugin } from './flags-bootstrap';
 import { watchHeartbeatPlugin } from './watch-heartbeat';
+import { publicAssetsPlugin } from './public-assets';
 import { tanstackLazyRetryPlugin } from './tanstack-lazy-retry';
 import { desktopPortalPlugin } from './desktop-portal-plugin';
 import { createDevWatchIgnore } from './dev-watch-ignore';
@@ -401,6 +402,7 @@ export default defineConfig(async (): Promise<UserConfig> => ({
     },
   },
   plugins: [
+    publicAssetsPlugin(),
     await desktopPortalPlugin({ papercuspRoot: resolve(import.meta.dirname, '../..') }),
     noViteClientPlugin,
     flagsBootstrapPlugin,
@@ -436,9 +438,7 @@ export default defineConfig(async (): Promise<UserConfig> => ({
     // same-dist live watcher and fails open otherwise, so it never wedges the
     // deploy pipeline. See dist-wipe-guard.ts.
     ...(retainDistChunks ? [devDistPrunePlugin()] : [distWipeGuardPlugin({ outDir: finalOutDir })]),
-    // WI-10004327: vite copies public/ wholesale, including operator-docs'
-    // transient docs.old.<pid> / docs.tmp.<pid> swap dirs (~350 MB each), and a
-    // retain-regime dist never drops them. Prune them after every build.
+    // Clean up swap copies retained from builds predating publicAssetsPlugin.
     distDocsSwapLeftoverPrunePlugin(),
     // Retention stops rebuilds DELETING old chunks; this stops them CORRUPTING
     // current ones: an in-place rewrite of a same-hash asset is a non-atomic

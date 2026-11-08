@@ -622,15 +622,15 @@ describe('work_items:create handler (keyed-array)', () => {
       // Keep the real evaluator. A canned allow would miss the create-time
       // fleet:null projection even though persisted-item admission was correct.
       fleetAdmission.admit.mockImplementationOnce(async ({ subject }) =>
-        matchesClaimSpecFilter(filter, subject)
+        matchesClaimSpecFilter(subject, filter)
           ? { allowed: true, scoped: false } : { ...outOfScope });
       await body({ kind, payload, title: 'fleet readiness', assign_to: 'bee-7' });
       expect(createM.mock.calls[0][0].assign_to).toBe(assigned ? 'bee-7' : undefined);
       const storedSubject = claimSpecSubjectFromWorkItem(aWorkItem({ kind, payload }));
-      expect(matchesClaimSpecFilter(filter, storedSubject)).toBe(assigned);
+      expect(matchesClaimSpecFilter(storedSubject, filter)).toBe(assigned);
       // Distinguish the actual defect from a bad fleet predicate: the same
       // eligible item fails if its create-time projection drops only the stamp.
-      if (assigned) expect(matchesClaimSpecFilter(filter, { ...storedSubject, fleet: null })).toBe(false);
+      if (assigned) expect(matchesClaimSpecFilter({ ...storedSubject, fleet: null }, filter)).toBe(false);
     });
 
     it('FILES the item unassigned rather than refusing the create', async () => {
