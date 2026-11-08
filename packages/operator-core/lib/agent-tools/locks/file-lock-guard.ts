@@ -40,22 +40,23 @@
  */
 
 import { existsSync, statSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { resolveCapabilityBaseDir } from '../capability/base-dir';
 import { hasValidGitEntry } from './valid-git-entry';
 import { readFileLockIdentity, type IdentityCtx } from './identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { acquireWithContentionRetry, isWorkspaceContended } from './contention-retry';
-import { normalizePaths, tryAcquire, tryRelease, type AcquireBusy } from './su-lock-store';
+import { normalizePaths, tryAcquire, tryFinishHookOperation, type AcquireBusy } from './su-lock-store';
 import { notifyPlanLockChange } from './notify-lock-change';
 import { enrichBusy } from './enrich-busy';
 import { DEFAULT_LOCK_TTL_SEC } from './lock-config';
 import type { CellReader } from '../../cell-registry';
 import { readAgentStateStamp } from '../../agent-state-stamp';
+import { preserveEditGeneration, recordEditAttributionStrict } from '../../edit-attribution';
 
-/** Default lease — same as the PreToolUse hook (`ttl_sec: 1200`). The body runs
- *  while held and releases in a finally, so this is just the crash/abort
- *  backstop (a body that dies without releasing frees at TTL). */
+/** Default lease — same as the PreToolUse hook (`ttl_sec: 1200`). Successful
+ * edits preserve custody before handoff; TTL remains the crash backstop. */
 const DEFAULT_TTL_SEC = DEFAULT_LOCK_TTL_SEC;
 
 /** The ctx fields this HOF reads. A capability tool's `UnifiedToolContext`
@@ -163,7 +164,7 @@ function isDir(p: string): boolean {
 
 /**
  * Acquire the per-path file lock for `paths` (single-shot, no wait — like the
- * hook's `wait:{max_sec:0}`), run `run()` only if held, release in a finally.
+ * hook's `wait:{max_sec:0}`), run `run()` only if held, preserve before handoff.
  * Returns the busy snapshot (enriched with holder presence) without running the
  * body on contention. Fails OPEN: an unexpected acquire fault runs the body.
  */
@@ -224,6 +225,7 @@ export async function guardFileLock<T>(
   const { ownerId, ownerLabel, coordinationDomain } = readFileLockIdentity(ctx);
   const ttlSec = spec.ttlSec ?? DEFAULT_TTL_SEC;
   const goalRef = readAgentStateStamp(ownerId).goalRef ?? undefined;
+  const operation = { id: randomUUID(), deadline: new Date(Date.now() + 120_000).toISOString() };
 
   let acquired: Awaited<ReturnType<typeof tryAcquire>>;
   try {
@@ -242,6 +244,7 @@ export async function guardFileLock<T>(
           ttlSec,
           goalRef,
           automatic: true,
+          operation,
         }),
         { paths },
       ));
@@ -282,7 +285,6 @@ export async function guardFileLock<T>(
     return { acquired: false, busy: acquired.busy, reader: { ownerId } };
   }
 
-  const lockId = acquired.lock_id;
   // A same-owner acquire can refresh an existing deliberate lock. Release
   // only the paths this invocation newly acquired; otherwise an automatic
   // guard would tear down the caller's longer-lived lock in its finally.
@@ -294,25 +296,47 @@ export async function guardFileLock<T>(
   // committed, never inside it — a notify fired mid-transaction can be observed
   // before the row it announces is visible. No-ops for non-plan paths.
   notifyPlanLockChange(paths);
+  let bodyReturned = false;
+  const finish = (outcome: 'completed' | 'cancelled') =>
+    inWorkspaceTxn(coordinationDomain, ownerId, (tx) => tryFinishHookOperation(tx, {
+      coordinationDomain, owner: ownerId, ownerLabel, paths, intent: spec.intent,
+      ttlSec, goalRef, automatic: true, operation, outcome,
+      ...(outcome === 'completed' ? { beforeRelease: async (stored: {
+        requestedPaths: string[]; goalRef: string | null;
+        state: 'pending' | 'granted' | 'cancelled' | 'completed'; captureReceipt?: Record<string, unknown>;
+      }) => {
+        const input = { repoRoot: coordinationDomain, files: stored.requestedPaths, agentId: ownerId,
+          sessionId: ownerId, intent: spec.intent, goalRef: stored.goalRef ?? undefined,
+          workspaceId: ctx.workspaceId ?? undefined, dispatchCallId: operation.id };
+        const receipt = await preserveEditGeneration({ ...input,
+          operationState: stored.state, captureReceipt: stored.captureReceipt });
+        await recordEditAttributionStrict({ ...input, captureReceipt: receipt });
+        return receipt;
+      } } : {}),
+    }), { paths });
   try {
     const result = await run({ coordinated: true, paths, newlyHeld, coordinationDomain, ownerId });
+    bodyReturned = true;
+    const toolResult = result as { isError?: boolean; content?: Array<{ type?: string; text?: string }> } | null;
+    let succeeded = toolResult?.isError !== true;
+    for (const part of toolResult?.content ?? []) {
+      if (part.type !== 'text' || !part.text) continue;
+      try { if (JSON.parse(part.text)?.ok === false) succeeded = false; } catch { /* ordinary prose result */ }
+    }
+    const finished = await finish(succeeded ? 'completed' : 'cancelled');
+    if (!finished.ok) throw new Error(`file-lock completion refused: ${finished.reason}`);
+    notifyPlanLockChange(releasePaths);
     return { acquired: true, result, coordinated: true };
-  } finally {
-    if (releasePaths.length > 0) {
-      // Release like the PostToolUse hook does — by lock_id, owner-checked.
-      await inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
-        tryRelease(tx, { coordinationDomain, owner: ownerId, lockId, paths: releasePaths }),
-        { paths: releasePaths },
-      ).catch((err) => {
-        ctx.log?.(`[file-lock] release faulted (lock frees at TTL): ${err instanceof Error ? err.message : String(err)}`);
+  } catch (err) {
+    // A preservation failure must retain the fence. Only a body that threw
+    // before returning uses cancellation cleanup (without claiming capture).
+    if (!bodyReturned) {
+      await finish('cancelled').catch((cleanupError) => {
+        ctx.log?.(`[file-lock] cancellation faulted: ${String(cleanupError)}`);
       });
-      // P-025: and the RELEASE. This is the emit the bus's 90s first-wins dedupe
-      // would swallow on the default window (D-042) — acquire and release share
-      // one (name, args) key — which is why notifyPlanLockChange passes a short
-      // per-call window. Emitted even when the release faulted above: the lock
-      // then frees at TTL and the banner still needs to stop showing it.
       notifyPlanLockChange(releasePaths);
     }
+    throw err;
   }
 }
 

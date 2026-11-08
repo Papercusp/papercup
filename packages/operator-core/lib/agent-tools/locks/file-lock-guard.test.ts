@@ -14,6 +14,9 @@ import { mkNonRepoTmpDir } from './non-repo-tmpdir';
 const h = vi.hoisted(() => ({
   tryAcquire: vi.fn(),
   tryRelease: vi.fn(),
+  tryFinish: vi.fn(),
+  preserve: vi.fn(),
+  attribute: vi.fn(),
   readIdentity: vi.fn(() => ({ ownerId: 'owner-1', ownerLabel: 'Owner', coordinationDomain: '/dom' })),
 }));
 
@@ -21,7 +24,9 @@ vi.mock('./su-lock-store', () => ({
   normalizePaths: (p: string[]) => p,
   tryAcquire: h.tryAcquire,
   tryRelease: h.tryRelease,
+  tryFinishHookOperation: h.tryFinish,
 }));
+vi.mock('../../edit-attribution', () => ({ preserveEditGeneration: h.preserve, recordEditAttributionStrict: h.attribute }));
 // WI-38252: the guard resolves its domain via readFileLockIdentity (the tree
 // agents EDIT) so it cannot disagree with locks:acquire. Same stub for both.
 vi.mock('./identity', () => ({ readIdentity: h.readIdentity, readFileLockIdentity: h.readIdentity }));
@@ -50,6 +55,14 @@ const ctx = { projectDir: REPO, log: () => {} } as never;
 beforeEach(() => {
   h.tryAcquire.mockReset();
   h.tryRelease.mockReset().mockResolvedValue({ released: ['foo.ts'] });
+  h.preserve.mockReset().mockResolvedValue({ pending: true, capture: 'A1' });
+  h.attribute.mockReset().mockResolvedValue(undefined);
+  h.tryFinish.mockReset().mockImplementation(async (_tx, p) => {
+    const grant = await h.tryAcquire.mock.results.at(-1)?.value;
+    await p.beforeRelease?.({ requestedPaths: p.paths, goalRef: null, state: 'granted' });
+    if ((grant?.newly_held ?? p.paths).length) await h.tryRelease();
+    return { ok: true, released: grant?.newly_held ?? p.paths, state: p.outcome };
+  });
 });
 
 describe('toRepoRelative', () => {
@@ -92,6 +105,35 @@ describe('guardFileLock', () => {
     expect(out).toEqual({ acquired: true, result: 'RESULT', coordinated: true });
     expect(run).toHaveBeenCalledOnce();
     expect(h.tryRelease).not.toHaveBeenCalled();
+  });
+
+  it('preserves the successful result before handing off paths', async () => {
+    h.tryAcquire.mockResolvedValue({ ok: true, lock_id: 'L1', held: ['foo.ts'], newly_held: ['foo.ts'] });
+    const order: string[] = [];
+    h.preserve.mockImplementation(async () => { order.push('capture'); return { pending: true }; });
+    h.attribute.mockImplementation(async () => { order.push('attribute'); });
+    h.tryRelease.mockImplementation(async () => { order.push('release'); });
+    await guardFileLock(ctx, ['foo.ts'], { intent: 'capability:write' }, async () => { order.push('edit'); return 'ok'; });
+    expect(order).toEqual(['edit', 'capture', 'attribute', 'release']);
+  });
+
+  it('keeps the fence and rejects success when immutable preservation fails', async () => {
+    h.tryAcquire.mockResolvedValue({ ok: true, lock_id: 'L1', held: ['foo.ts'] });
+    h.preserve.mockRejectedValue(new Error('custody unreadable'));
+    await expect(guardFileLock(ctx, ['foo.ts'], { intent: 'capability:write' }, async () => 'written'))
+      .rejects.toThrow('custody unreadable');
+    expect(h.tryFinish).toHaveBeenCalledOnce();
+    expect(h.tryRelease).not.toHaveBeenCalled();
+    expect(h.attribute).not.toHaveBeenCalled();
+  });
+
+  it('cancels a refused edit without inventing a successful capture', async () => {
+    h.tryAcquire.mockResolvedValue({ ok: true, lock_id: 'L1', held: ['foo.ts'] });
+    const refusal = { content: [{ type: 'text', text: JSON.stringify({ ok: false }) }] };
+    await guardFileLock(ctx, ['foo.ts'], { intent: 'capability:write' }, async () => refusal);
+    expect(h.tryFinish).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ outcome: 'cancelled' }));
+    expect(h.preserve).not.toHaveBeenCalled();
+    expect(h.tryRelease).toHaveBeenCalledOnce();
   });
 
   it('does NOT run the body on contention', async () => {

@@ -127,6 +127,16 @@ describe('edit stamping from the editor held set', () => {
     expect(await cohort()).toMatchObject({ gitSyncLifecycle: { captures: { 'op-a': receipt('a.ts') } } });
   });
 
+  it('keeps settlement separate from immutable membership and never reopens it on a stale replay', async () => {
+    await hold('WI-A');
+    await capturedEdit('op-a', 'a.ts');
+    await recordEditAttribution({ repoRoot: root, files: ['a.ts'], agentId: AGENT, workspaceId: WS,
+      goalRef: 'WI-A', dispatchCallId: 'op-a', captureReceipt: { ...receipt('a.ts'), pending: false } }, { strict: true });
+    await capturedEdit('op-a', 'a.ts');
+    expect(await cohort()).toMatchObject({ gitSyncLifecycle: {
+      captures: { 'op-a': { ...receipt('a.ts'), pending: false } } } });
+  });
+
   it('records none when the editor holds no open work item', async () => {
     const row = await edit('PreToolUse:Edit');
     expect(row).toMatchObject({ work_item_id: null, work_item_resolution: 'none', work_item_candidates: null });

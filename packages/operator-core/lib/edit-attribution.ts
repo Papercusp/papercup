@@ -243,12 +243,16 @@ export async function recordEditAttribution(
            SET payload = jsonb_set(COALESCE(payload, '{}'::jsonb), '{gitSyncLifecycle}',
              jsonb_build_object('version', 1, 'captures',
                COALESCE(payload->'gitSyncLifecycle'->'captures', '{}'::jsonb)
-                 || jsonb_build_object(${input.dispatchCallId}, ${JSON.stringify(input.captureReceipt)}::jsonb)))
+                 || jsonb_build_object(${input.dispatchCallId}::text,
+                   CASE WHEN payload->'gitSyncLifecycle'->'captures'->${input.dispatchCallId}::text->'pending' = 'false'::jsonb
+                     THEN payload->'gitSyncLifecycle'->'captures'->${input.dispatchCallId}::text
+                     ELSE ${JSON.stringify(input.captureReceipt)}::text::jsonb END)))
          WHERE workspace_id = ${input.workspaceId} AND harness_slug = ${harnessSlug}
            AND feature_id = ${workItemId} AND taken_by = ${input.agentId}
            AND NOT (status = ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[]))
-           AND (payload->'gitSyncLifecycle'->'captures'->${input.dispatchCallId} IS NULL
-             OR payload->'gitSyncLifecycle'->'captures'->${input.dispatchCallId} = ${JSON.stringify(input.captureReceipt)}::jsonb)
+           AND (payload->'gitSyncLifecycle'->'captures'->${input.dispatchCallId}::text IS NULL
+             OR (payload->'gitSyncLifecycle'->'captures'->${input.dispatchCallId}::text) - 'pending'
+               = ${JSON.stringify(input.captureReceipt)}::text::jsonb - 'pending')
         RETURNING feature_id
       `;
       if (cohort.length !== 1) throw new Error('edit-cohort-refused:ownership-or-generation-changed');
