@@ -1,0 +1,185 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "acceptanceSchemaVersion": "workbench-installed-native-acceptance-v1",
+  "name": "Workbench exact installed Ubuntu Accounts and Reports canonical reads",
+  "framework": "node",
+  "command": ["node", "scripts/test-files.mjs", "papercusp-desktop/test/native-workbench-gnome-live.test.mjs", "--test-name-pattern=exact installed GNOME preview opens canonical (Accounts|Reports)"],
+  "exitCode": 0,
+  "startedAt": "2026-11-08T21:01:29.207Z",
+  "finishedAt": "2026-11-08T21:01:53.545Z",
+  "summary": "Retained completed maintained run: 2 PASS, 0 FAIL, 0 SKIP, childSubstituted=0. Exact installed preview files and real PUI read canonical Accounts and Reports through a private GNOME46 Shell and real virtual-seat input. Accounts 20 and Reports 10 native assertions passed. Read-only acceptance; full three-OS shipment remains open. No test replay was performed when adding this ledger metadata.",
+  "assertions": [
+    {"id": "installed-canonical-accounts", "passed": true, "evidence": "Retained accounts run exitCode=0, evidence.ok=true and all 20 named native assertions passed; original result and source custody remain in runs[1]. Log SHA256 98c10103b8e8c31b36ec159270e9f85ad37c1ab92faa5f3fed7d4e837811b37e."},
+    {"id": "installed-canonical-reports", "passed": true, "evidence": "Retained reports run exitCode=0, evidence.ok=true and all 10 named native assertions passed; original result and source custody remain in runs[0]. Same completed maintained test log, no replay."}
+  ],
+  "workItems": [
+    "WI-6554700010029572",
+    "WI-6554700010029573"
+  ],
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "recordedAt": "2026-11-08T21:02:56.808898+00:00",
+  "plane": "Exact installed preview runtime files and real installed PUI against canonical operator, running unchanged in a private GNOME46 Shell with separate observer extension and real virtual-seat input. Accounts canonical reads only; Reports regression.",
+  "shipment": "NOT SHIPPED: final distribution, owner desktop activation, full Ubuntu/macOS/Windows fresh-install/upgrade/login matrix, independent review and certificate remain required.",
+  "mutations": "No account steering writes; before/after canonical sessionOverride axes match. Private Shell settings only during acceptance.",
+  "operator": "http://127.0.0.1:3170",
+  "archiveSha256": "ee1c8822458e54c04a429f6df815e64910de6af6982715b9595f6812301818b9",
+  "archiveChatContentSha256": "bc1cdc7aa8bd0422c2a3783bd05659660db49245906ec5c8dea7b8705afa8f8e",
+  "installer": {
+    "changed": true,
+    "firstInstall": false,
+    "loginRequired": true,
+    "reloadError": "ReloadExtension is deprecated and does not work; no owner logout or Shell restart performed"
+  },
+  "pui": "$HOME/.local/share/papercusp/workbench-preview/20261108/pui",
+  "puiSha256": "33265444b156aeeba98e9689c58dc1de65dc49db0f8be5f2fd16e441bae5ef5a",
+  "test": "papercusp-desktop/test/native-workbench-gnome-live.test.mjs",
+  "testSha256": "27c44ac7499c7a6ee96271c6edbb34e4fbb21a305cf5f09b27913fc4b2e5601a",
+  "testLog": "/tmp/wb-installed-accounts-20261108-v1.log",
+  "testLogSha256": "98c10103b8e8c31b36ec159270e9f85ad37c1ab92faa5f3fed7d4e837811b37e",
+  "result": {
+    "tests": 2,
+    "passed": 2,
+    "failed": 0,
+    "skipped": 0,
+    "childSubstituted": 0,
+    "assertions": {
+      "accounts": 20,
+      "reports": 10
+    },
+    "provenance": "current dirty test source, root pre/post HEAD dc1f819e48; child repo HEAD074e3bb7c2 and superproject pin mismatch noted by maintained runner; file ledger stamped worktree_dirty"
+  },
+  "sourceHashes": {
+    "papercusp-desktop/native/gnome/extension.js": "b95ba18e385d5c491d0d0dbc25d36d04968d28fb5a2cb281e3b40d206deb0e9b",
+    "papercusp-desktop/native/gnome/panel-model.mjs": "14839e5822af07d93611c5e9fa9687dc9ee7ef84ca7a86639aa5ba4b2aa92810",
+    "papercusp-desktop/native/gnome/bridge.js": "f0af6f85819867ea17c790d268b2c428af15d36e489d6c7134b5feeadeaf4eb2",
+    "papercusp-desktop/native/gnome/helper.js": "5604d173a62ad88583c884b0689ee1afc04da7a64ea5f41771e1fcd209416709",
+    "papercusp-desktop/native/gnome/audio.js": "3e3d4927292d31494313a74fcee3438b3eaf3afefdacb5f430ba4fcb1827f6ad",
+    "papercusp-desktop/native/gnome/metadata.json": "b8c39f0fdfa34af6d33e513e90e62324e45d52ed2f08377cf9b3d52eba4f6cd5",
+    "papercusp-desktop/native/gnome/stylesheet.css": "7768fa01ef52ade16120db9129a610321eced284ef9c3bd1fe13936e9122ca33",
+    "papercusp-desktop/native/gnome/schemas/org.gnome.shell.extensions.papercusp-workbench.gschema.xml": "ac2f5d184f3e7f3156df421fd58139989c8990900eecc967ffb5f133d7e8b209"
+  },
+  "runs": [
+    {
+      "surface": "reports",
+      "result": {
+        "ok": true,
+        "error": null,
+        "phase": "nested Escape",
+        "assertions": [
+          "login loads the exact installed PUI selection",
+          "login retains the selected canonical operator",
+          "unmodified installed extension acquires native shortcuts",
+          "seat shortcut opens the installed native actor",
+          "actual canonical Reports rows reach the installed panel",
+          "exact canonical detail control returns full Markdown",
+          "seat Enter opens the exact selected canonical report body",
+          "installed report UI creates no application window",
+          "first seat Escape dismisses only canonical detail",
+          "second seat Escape dismisses the installed panel"
+        ],
+        "reportId": "rpt_6134783b-ebc6-4dac-9687-ec3cce68a80a",
+        "bodyChars": 13858,
+        "questions": 0,
+        "savedRunId": null,
+        "inboxState": {
+          "listReady": false,
+          "listError": null,
+          "bulkReady": false,
+          "bulkError": null,
+          "contextError": null
+        },
+        "sources": [
+          {
+            "kind": "reports",
+            "status": "ready",
+            "total": null,
+            "rows": 200,
+            "partial": false
+          }
+        ]
+      },
+      "sourceCustody": {
+        "files": {
+          "extension.js": "b95ba18e385d5c491d0d0dbc25d36d04968d28fb5a2cb281e3b40d206deb0e9b",
+          "panel-model.mjs": "14839e5822af07d93611c5e9fa9687dc9ee7ef84ca7a86639aa5ba4b2aa92810",
+          "bridge.js": "f0af6f85819867ea17c790d268b2c428af15d36e489d6c7134b5feeadeaf4eb2",
+          "helper.js": "5604d173a62ad88583c884b0689ee1afc04da7a64ea5f41771e1fcd209416709",
+          "audio.js": "3e3d4927292d31494313a74fcee3438b3eaf3afefdacb5f430ba4fcb1827f6ad",
+          "chat-content.js": "bc1cdc7aa8bd0422c2a3783bd05659660db49245906ec5c8dea7b8705afa8f8e",
+          "metadata.json": "b8c39f0fdfa34af6d33e513e90e62324e45d52ed2f08377cf9b3d52eba4f6cd5",
+          "stylesheet.css": "7768fa01ef52ade16120db9129a610321eced284ef9c3bd1fe13936e9122ca33",
+          "schemas/org.gnome.shell.extensions.papercusp-workbench.gschema.xml": "ac2f5d184f3e7f3156df421fd58139989c8990900eecc967ffb5f133d7e8b209",
+          "schemas/gschemas.compiled": "d14fe87b42f198341f707c48cd3625b05941ff9d0eb161665c5c9ae0f30962ef"
+        },
+        "puiSha256": "33265444b156aeeba98e9689c58dc1de65dc49db0f8be5f2fd16e441bae5ef5a",
+        "testSha256": "27c44ac7499c7a6ee96271c6edbb34e4fbb21a305cf5f09b27913fc4b2e5601a"
+      },
+      "exitCode": 0,
+      "error": null,
+      "retainedEvidence": "/tmp/wb-installed-accounts-20261108-v1/installed-shell-reports.json",
+      "retainedEvidenceSha256": "5679ece6461c826750d76628cf9a4dff25de8c0184b8963be0b057214b94ae4e"
+    },
+    {
+      "surface": "accounts",
+      "result": {
+        "ok": true,
+        "error": null,
+        "phase": "nested Accounts Escape",
+        "assertions": [
+          "login loads the exact installed PUI selection",
+          "login retains the selected canonical operator",
+          "unmodified installed extension acquires native shortcuts",
+          "seat shortcut opens the installed native Accounts actor",
+          "canonical account pool and steering are ready",
+          "native Accounts retains the selected canonical environment",
+          "native Accounts preserves every exact canonical account identity",
+          "native Accounts displays confirmed canonical steering on each independent axis",
+          "native Accounts displays endpoint workspace store and chat scope",
+          "native Accounts renders the complete canonical pool",
+          "native Accounts exposes all four independent steering controls",
+          "account-specific controls require exact selection",
+          "native Accounts local filtering retains canonical source and exact identity",
+          "real seat selection retains the exact canonical account ID",
+          "exact selection enables each independent account control",
+          "installed Accounts refuses a changed workspace before pool access",
+          "opening filtering and selecting Accounts leaves canonical steering unchanged",
+          "installed Accounts creates no application window",
+          "first seat Escape dismisses only selected account",
+          "second seat Escape dismisses the installed Accounts panel and retires its scope"
+        ],
+        "accountId": "chatgpt-sub-cli",
+        "questions": 0,
+        "savedRunId": null,
+        "inboxState": {
+          "listReady": false,
+          "listError": null,
+          "bulkReady": false,
+          "bulkError": null,
+          "contextError": null
+        },
+        "sources": []
+      },
+      "sourceCustody": {
+        "files": {
+          "extension.js": "b95ba18e385d5c491d0d0dbc25d36d04968d28fb5a2cb281e3b40d206deb0e9b",
+          "panel-model.mjs": "14839e5822af07d93611c5e9fa9687dc9ee7ef84ca7a86639aa5ba4b2aa92810",
+          "bridge.js": "f0af6f85819867ea17c790d268b2c428af15d36e489d6c7134b5feeadeaf4eb2",
+          "helper.js": "5604d173a62ad88583c884b0689ee1afc04da7a64ea5f41771e1fcd209416709",
+          "audio.js": "3e3d4927292d31494313a74fcee3438b3eaf3afefdacb5f430ba4fcb1827f6ad",
+          "chat-content.js": "bc1cdc7aa8bd0422c2a3783bd05659660db49245906ec5c8dea7b8705afa8f8e",
+          "metadata.json": "b8c39f0fdfa34af6d33e513e90e62324e45d52ed2f08377cf9b3d52eba4f6cd5",
+          "stylesheet.css": "7768fa01ef52ade16120db9129a610321eced284ef9c3bd1fe13936e9122ca33",
+          "schemas/org.gnome.shell.extensions.papercusp-workbench.gschema.xml": "ac2f5d184f3e7f3156df421fd58139989c8990900eecc967ffb5f133d7e8b209",
+          "schemas/gschemas.compiled": "d14fe87b42f198341f707c48cd3625b05941ff9d0eb161665c5c9ae0f30962ef"
+        },
+        "puiSha256": "33265444b156aeeba98e9689c58dc1de65dc49db0f8be5f2fd16e441bae5ef5a",
+        "testSha256": "27c44ac7499c7a6ee96271c6edbb34e4fbb21a305cf5f09b27913fc4b2e5601a"
+      },
+      "exitCode": 0,
+      "error": null,
+      "retainedEvidence": "/tmp/wb-installed-accounts-20261108-v1/installed-shell-accounts.json",
+      "retainedEvidenceSha256": "05c4f912f53d5f3eb63ad4d3088a2c307cb61fd92c327870d6a7118f0b5ac731"
+    }
+  ]
+}
