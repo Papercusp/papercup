@@ -15,8 +15,12 @@ const label = node => {
   return '<anonymous>';
 };
 
-/** Retain every call/import occurrence, its source span, function and predicate context. */
-export function censusSites(path, text) {
+/** Retain every call/import occurrence, its source span, function and predicate context.
+ * includeDefinitions also retains syntactic surface candidates whose changes need
+ * no call: type fields, prompt literals, adapters and gate bodies. These are source
+ * candidates, not proof of requiredness, runtime reachability or transitive closure.
+ */
+export function censusSites(path, text, { includeDefinitions = false } = {}) {
   const ast = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true);
   if (ast.parseDiagnostics.length) throw new Error('Source parse failed: ' + path);
   const sites = [], bindings = new Map(), declarations = new Map(), writes = new Set();
@@ -89,13 +93,25 @@ export function censusSites(path, text) {
     }
     const isImport = (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier;
     const isCall = ts.isCallExpression(node) || ts.isNewExpression(node);
-    if (isImport || isCall) {
+    const isDefinition = includeDefinitions && (
+      ts.isVariableDeclaration(node) || ts.isFunctionLike(node) && !!node.body
+      || ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node)
+      || ts.isPropertyAssignment(node) || ts.isShorthandPropertyAssignment(node)
+      || ts.isPropertySignature(node) || ts.isMethodSignature(node)
+      || ts.isIfStatement(node) || ts.isConditionalExpression(node) || ts.isSwitchStatement(node)
+      || ts.isCaseClause(node) || ts.isReturnStatement(node) || ts.isThrowStatement(node)
+      || ts.isBinaryExpression(node) && node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment
+        && node.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+    );
+    if (isImport || isCall || isDefinition) {
       const dynamicImport = isCall && (node.expression.kind === ts.SyntaxKind.ImportKeyword || node.expression.getText() === 'require');
       const literal = isImport ? node.moduleSpecifier : dynamicImport ? node.arguments?.[0] : null;
-      const kind = isImport ? 'import' : dynamicImport ? 'dynamic-import' : 'call';
-      const typeOnly = !!(isImport && (node.isTypeOnly || node.importClause?.isTypeOnly));
+      const kind = isImport ? 'import' : dynamicImport ? 'dynamic-import' : isCall ? 'call' : 'surface-definition';
+      const typeOnly = !!(isImport && (node.isTypeOnly || node.importClause?.isTypeOnly)
+        || ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node)
+        || ts.isPropertySignature(node) || ts.isMethodSignature(node));
       sites.push({ path, ...span(node), kind, typeOnly,
-        expression: isImport ? 'import' : node.expression.getText(),
+        expression: isImport ? 'import' : isCall ? node.expression.getText() : ts.SyntaxKind[node.kind],
         specifier: literal && ts.isStringLiteralLike(literal) ? literal.text : null,
         source: node.getText(ast), enclosingFunctions: context, predicates,
         initialization: context.length === 0, node });

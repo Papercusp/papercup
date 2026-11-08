@@ -53,6 +53,54 @@ describe('paperwork census source-diff controls', () => {
   });
 });
 
+describe('paperwork census non-call surface controls', () => {
+  const census = (source: string) => censusSites('ordinary-input.ts', source, { includeDefinitions: true });
+
+  it.each([
+    ['input type', 'export interface Input { id: string }', 'export interface Input { id: string; mandatoryForm: string }'],
+    ['prompt', "export const instructions = 'Submit the existing id.';",
+      "export const instructions = 'Submit the existing id and a mandatory report.';"],
+    ['adapter', 'export const adapter = { required: ["id"] };',
+      'export const adapter = { required: ["id", "copiedReceipt"] };'],
+    ['gate', 'export function handler(input) { if (!input.id) throw "id required"; return input.id; }',
+      'export function handler(input) { if (!input.id || !input.relevanceLabel) throw "label required"; return input.id; }'],
+    ['assignment', 'requirements.checkpointSection = false;', 'requirements.checkpointSection = true;'],
+  ])('retains a changed %s whose source contains no call or import', (_category, before, after) => {
+    // The call inventory is legitimately empty. It cannot stand in for the
+    // concrete-surface inventory required by R23.
+    expect(censusSites('ordinary-input.ts', before).sites).toEqual([]);
+    expect(censusSites('ordinary-input.ts', after).sites).toEqual([]);
+    const delta = changedSites(census(before), census(after));
+    expect(delta.addedOrChanged.some(site => site.kind === 'surface-definition')).toBe(true);
+    expect(delta.removedOrChanged.some(site => site.kind === 'surface-definition')).toBe(true);
+    expect(delta.addedOrChanged.every(site => site.calleeCoverage === null)).toBe(true);
+  });
+
+  it('keeps duplicate calls visible when definition candidates are included', () => {
+    const before = 'function handler(input) { return normalWrite(input); }';
+    const after = 'function handler(input) { normalWrite(input); return normalWrite(input); }';
+    const delta = changedSites(census(before), census(after));
+    expect(delta.addedOrChanged.filter(site => site.expression === 'normalWrite')).toHaveLength(1);
+    expect(delta.addedOrChanged.some(site => site.expression === 'FunctionDeclaration')).toBe(true);
+  });
+
+  it('retains removal of a non-call surface and leaves the frozen inventory unchanged', () => {
+    const source = 'export interface Input { id: string }';
+    const frozen = census(source);
+    const original = frozen.sites.map(site => site.fingerprint);
+    const delta = changedSites(frozen, census(''));
+    expect(delta.addedOrChanged).toEqual([]);
+    expect(delta.removedOrChanged.some(site => site.expression === 'InterfaceDeclaration')).toBe(true);
+    expect(frozen.sites.map(site => site.fingerprint)).toEqual(original);
+    expect(frozen.sha256).toBe(census(source).sha256);
+  });
+
+  it('does not manufacture a difference for an unchanged non-call surface', () => {
+    const source = "export const instructions = 'Use the existing receipt.';";
+    expect(changedSites(census(source), census(source))).toEqual({ addedOrChanged: [], removedOrChanged: [] });
+  });
+});
+
 vi.mock('./plan-decisions-claim-port', () => ({
   getClaimTimePlanDecisions: vi.fn(async () => null),
   renderPlanDecisionsNote: vi.fn(),
