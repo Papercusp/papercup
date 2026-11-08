@@ -284,7 +284,7 @@ it(`context reliability R-4: ${condition} ${boundary}`, async ({ annotate, task 
     // prepared object, so its aggregate clamp and receipt filter remain real.
     const prepare = injection.prepareMemoryContextBlock;
     const prepared = await prepare({ userId: 'query-fixture-user', workspaceId: 'query-fixture-ws',
-      queryContext: 'zephyrrepair', harnessSlugs: [], hiveSlugs: [], budgetChars: 8000,
+      queryContext: 'zephyrrepair', harnessSlugs: [], potSlugs: [], budgetChars: 8000,
       session: { sessionId: owner, port: 'mid-turn' } });
     if (source === 'memory' && boundary === 'aggregate' && mode === 'limited')
       expect(prepared?.fragments).toHaveLength(1);
@@ -419,7 +419,7 @@ for (const scenario of CACHE_IDENTITY_CASES) it(`context reliability R-5: ${scen
       lastBuild = (async () => {
         await wait;
         return injection.prepareMemoryContextBlock({ userId: input.principal, workspaceId: input.workspace,
-          queryContext: input.query, harnessSlugs: [], hiveSlugs: [], budgetChars: 8000 });
+          queryContext: input.query, harnessSlugs: [], potSlugs: [], budgetChars: 8000 });
       })();
       return lastBuild;
     }, { cache, sessionId: 'query-fixture-session', softTtlMs, deadlineMs, retrieval: {
