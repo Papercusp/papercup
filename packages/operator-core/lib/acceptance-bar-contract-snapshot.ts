@@ -30,7 +30,7 @@ import {
   type SpecLifecycleStatus,
 } from './agent-tools/plans/spec-clauses-store';
 import { listSpecEvidence, readSpecEvidencePlane, type EvidenceCurrentInput } from './agent-tools/plans/spec-evidence-store';
-import { activeSpecEvidence, evaluateSpecTestAdequacy, PLAN_CLASS_RUBRIC_REFS, type PlanClassRubricRef } from './agent-tools/plans/spec-test-adequacy';
+import { activeSpecEvidence, evaluateSpecTestAdequacy, frozenOracleReviewRating, PLAN_CLASS_RUBRIC_REFS, type PlanClassRubricRef } from './agent-tools/plans/spec-test-adequacy';
 import { evaluateMechanicalTestAdequacy } from './agent-tools/plans/mechanical-test-adequacy';
 import { listScorecardPage, settledGradingAuditIsCurrent, type ScorecardRow } from './scorecards';
 import { activeWorkspaceId } from './workspace-registry';
@@ -1269,9 +1269,19 @@ export function projectAcceptanceBarContractSnapshot(
       return { specId: clause.specId, revision: clause.revision, verdict: result.verdict,
         wouldBlock: result.wouldBlock, evidenceRefs: result.evidenceRefs };
     });
+    // Alternative clauses retain OR semantics, but an explicitly declared frozen
+    // oracle is an obligation of its own. A passing sibling cannot certify it.
+    // Select the exact active proof before checking freshness so a superseded
+    // certificate, another clause or an older revision cannot clear this floor.
+    const frozenOracleChecks = enforceableClauses.map(clause => frozenOracleReviewRating(clause,
+      activeSpecEvidence(evidence.filter(row => row.planSlug === clause.planSlug
+        && row.specId === clause.specId && row.specRevision === clause.revision
+        && row.specFingerprint === clause.contentHash))));
     const adequacyState = !adequacyDeclared ? 'undeclared' as const
-      : adequacyChecks.some((check) => check.verdict === 'pass') ? 'pass' as const
-        : adequacyChecks.some((check) => check.verdict === 'unknown') ? 'unknown' as const : 'fail' as const;
+      : frozenOracleChecks.some(check => check?.rating === 'fail') ? 'fail' as const
+        : frozenOracleChecks.some(check => check?.rating === 'unknown') ? 'unknown' as const
+          : adequacyChecks.some((check) => check.verdict === 'pass') ? 'pass' as const
+            : adequacyChecks.some((check) => check.verdict === 'unknown') ? 'unknown' as const : 'fail' as const;
     // A tree/unit tests check declares its named tests and calibrated mutant as
     // proof. Supplementary observations must not add a runtime-currentness
     // obligation after that exact proof has passed. Preserve those observations
@@ -2283,6 +2293,7 @@ function acceptanceBarHashInputFromTrace(
     driftMarkers: bar.falsifier,
     requiredScope: bar.requiredScope,
     evidencePlane: bar.evidencePlane ?? undefined,
+    requiredEvidencePlanes: bar.requirement?.acceptance.requiredEvidencePlanes ?? undefined,
     evidenceRuntime: bar.requirement?.acceptance.evidenceRuntime ?? undefined,
     requiredTestLayers: bar.requiredTestLayers,
     check: bar.check ?? undefined,

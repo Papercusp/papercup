@@ -34,8 +34,9 @@ import {
 } from './grading-integrity';
 import { _closeGradingAuditSubjectMutexForTests, isCurrentSourceAuditResponder } from './scorecards';
 import { closeTask, getTask, listTasks, markSpawned, registerTask } from './task-manager/store';
-import { ensureGradingAuditRuntime, type GradingAuditRuntimeDeps, type GradingAuditRuntimeLocator } from './release/grading-audit-runtime';
-import { writeGradingAuditSourcePin } from './release/grading-audit-source-pin';
+import { ensureGradingAuditRuntime, retireUnusedGradingAuditRuntimes,
+  type GradingAuditRuntimeDeps, type GradingAuditRuntimeLocator } from './release/grading-audit-runtime';
+import { readGradingAuditSourcePin, writeGradingAuditSourcePin } from './release/grading-audit-source-pin';
 
 const workspaceId = 'default';
 const taskLedgerMigration = fileURLToPath(new URL('../../../libs/papercusp/libs/db/sql/696-task-ledger.sql', import.meta.url));
@@ -89,6 +90,100 @@ async function readAudit(id = issueId): Promise<Record<string, unknown>> {
     SELECT payload->'observation'->'gradingAudit' AS audit
       FROM harness_shared.work_items WHERE workspace_id = ${workspaceId} AND feature_id = ${id}`;
   return rows[0].audit;
+}
+
+async function registerRuntimeFixture(
+  id: string,
+  scratchRoot: string,
+  buildSha: string,
+  port: number,
+  expiresAtSec: number,
+): Promise<{ taskId: string; locator: GradingAuditRuntimeLocator }> {
+  const evaluatorBuild = { sha: buildSha, version: '1.2.3' };
+  const sourceRoot = join(scratchRoot, `.candidate-${buildSha}`, 'checkout');
+  const bundlePath = join(sourceRoot, 'apps/operator/dist-host/hono-host.mjs');
+  const bundle = `fixture evaluator ${buildSha}`;
+  mkdirSync(dirname(bundlePath), { recursive: true });
+  writeFileSync(bundlePath, bundle);
+  const ownerRef = 'grading-audit-runtime:' + createHash('sha256')
+    .update(JSON.stringify([workspaceId, evaluatorBuild.sha, evaluatorBuild.version])).digest('hex');
+  const locator: GradingAuditRuntimeLocator = {
+    schemaVersion: 1, sourceRoot, bundlePath, ownerRef, evaluatorBuild,
+    bundleSha256: createHash('sha256').update(bundle).digest('hex'), expiresAtSec,
+    baseUrl: `http://127.0.0.1:${port}`, issueIds: [id],
+  };
+  writeGradingAuditSourcePin(locator, Math.floor(now.getTime() / 1000));
+  const task = await registerTask({ class: 'sidecar', title: ownerRef, argv: [],
+    launchedBy: GRADING_AUDIT_DISPATCH_ACTOR,
+    detail: { label: ownerRef, gradingAuditRuntime: locator },
+  }, { workspaceId }, db.sql);
+  await markSpawned(task.taskId, {}, db.sql);
+  return { taskId: task.taskId, locator };
+}
+
+async function reconcileRuntimeFixture(id: string, runtimeDeps: GradingAuditRuntimeDeps) {
+  let cleanupPhase = false;
+  const listCards: NonNullable<DispatchPendingGradingAuditsDeps['listScorecards']> = async filter => {
+    if (!cleanupPhase) return [];
+    const ids = filter?.issueIds ?? [id];
+    const rows = await db.sql`
+      SELECT feature_id, payload->'observation'->'gradingAudit' AS audit,
+             payload->'observation'->>'rubricRef' AS rubric_ref,
+             payload->'observation'->>'evidenceFingerprint' AS evidence_fingerprint,
+             payload->'observation'->'rerunRecipe' AS rerun_recipe,
+             payload->'observation'->>'supersededBy' AS superseded_by,
+             payload->'observation'->'retracted' AS retracted
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${workspaceId} AND feature_id = ANY(${ids}::text[])`;
+    return rows.map(row => ({ issueId: row.feature_id, rubricRef: row.rubric_ref,
+      evidenceFingerprint: row.evidence_fingerprint, gradingAudit: row.audit,
+      rerunRecipe: row.rerun_recipe, supersededBy: row.superseded_by, retracted: row.retracted })) as ScorecardRow[];
+  };
+  await reconcilePendingGradingAudits({ ctx: { workspaceId } as never, harness: 'papercusp', targetIds: [id] }, {
+    listTasks: filter => listTasks(filter, db.sql),
+    listScorecards: listCards,
+    now: () => now.getTime(),
+    retireRuntimes: async (ws, pendingIssueIds, _dispatchDeps, targetIds) => {
+      cleanupPhase = true;
+      await retireUnusedGradingAuditRuntimes(ws, pendingIssueIds, runtimeDeps, targetIds);
+    },
+    launch: async () => { throw new Error('retirement fixture must not launch an auditor'); },
+  });
+}
+
+function runtimeRetirementDeps(nowSec: number): GradingAuditRuntimeDeps {
+  return {
+    now: () => nowSec * 1000,
+    list: async (scope, label) => {
+      const [live, history] = await Promise.all([
+        listTasks({ workspaceId: scope, labelPrefix: label,
+          states: ['pending', 'running', 'unaccounted'], limit: 2_000 }, db.sql),
+        listTasks({ workspaceId: scope, labelPrefix: label, includeEnded: true,
+          states: ['exited', 'killed', 'timed_out', 'stranded', 'ended_unobserved'], limit: 100 }, db.sql),
+      ]);
+      if (live.length >= 2_000) throw new Error('fixture runtime census is incomplete');
+      return [...live, ...history];
+    },
+    mutex: async (_scope, _key, run) => run(),
+    pendingAcceptanceRefs: async () => [],
+    stop: async taskId => {
+      await closeTask(taskId, { state: 'killed', exitReason: 'fixture runtime retired' }, db.sql, {
+        emitTerminal: async () => {},
+      });
+    },
+  };
+}
+
+async function cleanupRetirementFixture(taskIds: string[], scratchRoot: string) {
+  for (const taskId of taskIds) {
+    const task = await getTask(taskId, db.sql);
+    if (task && (task.state === 'pending' || task.state === 'running' || task.state === 'unaccounted')) {
+      await closeTask(taskId, { state: 'killed', exitReason: 'fixture cleanup' }, db.sql, {
+        emitTerminal: async () => {},
+      });
+    }
+  }
+  rmSync(scratchRoot, { recursive: true, force: true });
 }
 
 beforeAll(async () => {
@@ -467,6 +562,117 @@ it('retires cancelled missions from real private ledgers and preserves a pending
   expect((await getTask(tasks[1].taskId, db.sql))?.state).toBe('killed');
   expect((await getTask(tasks[2].taskId, db.sql))?.state).toBe('pending');
   expect(launch).not.toHaveBeenCalled();
+});
+
+it('keeps one newest pinned sibling for an unbound pending audit and retires older roots', async () => {
+  const id = 'EI-25100000000000030';
+  const nowSec = Math.floor(now.getTime() / 1000);
+  const scratchRoot = mkdtempSync(join(tmpdir(), 'grading-audit-sibling-retirement-'));
+  const taskIds: string[] = [];
+  try {
+    await seed(id, { state: 'pending' });
+    const older = await registerRuntimeFixture(id, scratchRoot, 'aaaaaaaaaa', 43221, nowSec + 1800);
+    taskIds.push(older.taskId);
+    const newest = await registerRuntimeFixture(id, scratchRoot, 'bbbbbbbbbb', 43222, nowSec + 3600);
+    taskIds.push(newest.taskId);
+
+    await reconcileRuntimeFixture(id, runtimeRetirementDeps(nowSec));
+
+    expect((await getTask(older.taskId, db.sql))?.state).toBe('killed');
+    expect((await getTask(newest.taskId, db.sql))?.state).toBe('running');
+    expect(readGradingAuditSourcePin(older.locator.sourceRoot, older.locator.ownerRef, nowSec)).toBeNull();
+    expect(readGradingAuditSourcePin(newest.locator.sourceRoot, newest.locator.ownerRef, nowSec)).not.toBeNull();
+  } finally {
+    await cleanupRetirementFixture(taskIds, scratchRoot);
+  }
+});
+
+it('keeps the exact recorded evaluator sibling when a newer unbound build is present', async () => {
+  const id = 'EI-25100000000000034';
+  const nowSec = Math.floor(now.getTime() / 1000);
+  const scratchRoot = mkdtempSync(join(tmpdir(), 'grading-audit-exact-sibling-'));
+  const taskIds: string[] = [];
+  try {
+    await seed(id, { state: 'pending' });
+    const exact = await registerRuntimeFixture(id, scratchRoot, 'aaaaaaaaaa', 43227, nowSec + 1800);
+    taskIds.push(exact.taskId);
+    const newer = await registerRuntimeFixture(id, scratchRoot, 'bbbbbbbbbb', 43228, nowSec + 3600);
+    taskIds.push(newer.taskId);
+    await db.sql`UPDATE harness_shared.work_items
+      SET payload = jsonb_set(payload, '{observation,rerunRecipe}',
+        ${JSON.stringify({ evaluatorBuild: exact.locator.evaluatorBuild })}::jsonb)
+      WHERE workspace_id = ${workspaceId} AND feature_id = ${id}`;
+
+    await reconcileRuntimeFixture(id, runtimeRetirementDeps(nowSec));
+
+    expect((await getTask(exact.taskId, db.sql))?.state).toBe('running');
+    expect((await getTask(newer.taskId, db.sql))?.state).toBe('killed');
+    expect(readGradingAuditSourcePin(exact.locator.sourceRoot, exact.locator.ownerRef, nowSec)).not.toBeNull();
+    expect(readGradingAuditSourcePin(newer.locator.sourceRoot, newer.locator.ownerRef, nowSec)).toBeNull();
+  } finally {
+    await cleanupRetirementFixture(taskIds, scratchRoot);
+  }
+});
+
+it('keeps the active sibling bound to the current reservation even when another root is newer', async () => {
+  const id = 'EI-25100000000000031';
+  const nowSec = Math.floor(now.getTime() / 1000);
+  const lease = { key: `grading-audit:${id}`, reservedAt: now.toISOString() };
+  const scratchRoot = mkdtempSync(join(tmpdir(), 'grading-audit-active-sibling-'));
+  const taskIds: string[] = [];
+  try {
+    await seed(id, { state: 'pending', dispatchReservation: lease });
+    const active = await registerRuntimeFixture(id, scratchRoot, 'aaaaaaaaaa', 43223, nowSec + 1800);
+    taskIds.push(active.taskId);
+    const newer = await registerRuntimeFixture(id, scratchRoot, 'bbbbbbbbbb', 43224, nowSec + 3600);
+    taskIds.push(newer.taskId);
+    const auditor = await registerTask({ class: 'agent-session', title: 'fixture retained auditor', argv: [],
+      launchedBy: GRADING_AUDIT_DISPATCH_ACTOR, harnessSlug: 'papercusp', workItemId: id,
+      detail: { label: `grading-audit:${id}`, coordOwnerId: 'su-fixture-auditor',
+        gradingAuditRuntimeBinding: { taskId: active.taskId, baseUrl: active.locator.baseUrl,
+          evaluatorBuild: active.locator.evaluatorBuild, bundleSha256: active.locator.bundleSha256,
+          expiresAtSec: active.locator.expiresAtSec },
+        gradingAudit: { issueId: id, evidenceFingerprint: 'fixture-evidence', reservation: lease } },
+    }, { workspaceId }, db.sql);
+    taskIds.push(auditor.taskId);
+    await markSpawned(auditor.taskId, {}, db.sql);
+
+    await reconcileRuntimeFixture(id, runtimeRetirementDeps(nowSec));
+
+    expect((await getTask(active.taskId, db.sql))?.state).toBe('running');
+    expect((await getTask(newer.taskId, db.sql))?.state).toBe('killed');
+    expect(readGradingAuditSourcePin(active.locator.sourceRoot, active.locator.ownerRef, nowSec)).not.toBeNull();
+    expect(readGradingAuditSourcePin(newer.locator.sourceRoot, newer.locator.ownerRef, nowSec)).toBeNull();
+  } finally {
+    await cleanupRetirementFixture(taskIds, scratchRoot);
+  }
+});
+
+it('retires every sibling root after the pending audit card is superseded', async () => {
+  const id = 'EI-25100000000000032';
+  const supersedingId = 'EI-25100000000000033';
+  const nowSec = Math.floor(now.getTime() / 1000);
+  const scratchRoot = mkdtempSync(join(tmpdir(), 'grading-audit-superseded-sibling-'));
+  const taskIds: string[] = [];
+  try {
+    await seed(id, { state: 'passed', auditedAt: now.toISOString() });
+    await db.sql`UPDATE harness_shared.work_items
+      SET payload = jsonb_set(payload, '{observation,supersededBy}', ${JSON.stringify(supersedingId)}::jsonb)
+      WHERE workspace_id = ${workspaceId} AND feature_id = ${id}`;
+    const first = await registerRuntimeFixture(id, scratchRoot, 'aaaaaaaaaa', 43225, nowSec + 1800);
+    taskIds.push(first.taskId);
+    const second = await registerRuntimeFixture(id, scratchRoot, 'bbbbbbbbbb', 43226, nowSec + 3600);
+    taskIds.push(second.taskId);
+
+    await reconcileRuntimeFixture(id, runtimeRetirementDeps(nowSec));
+
+    expect((await getTask(first.taskId, db.sql))?.state).toBe('killed');
+    expect((await getTask(second.taskId, db.sql))?.state).toBe('killed');
+    expect(readGradingAuditSourcePin(first.locator.sourceRoot, first.locator.ownerRef, nowSec)).toBeNull();
+    expect(readGradingAuditSourcePin(second.locator.sourceRoot, second.locator.ownerRef, nowSec)).toBeNull();
+  } finally {
+    await cleanupRetirementFixture(taskIds, scratchRoot);
+  }
 });
 
 it('commits Discovery admission before slow spec-quality routing can idle out its transaction', async () => {

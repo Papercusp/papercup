@@ -20,7 +20,9 @@ import { DEFAULT_SCRIPT_TIMEOUT_MS } from '@papercusp/tooldef';
 import { observeFallback } from './degradation/fallback-observations';
 import launchAgentTool, { INTERNAL_GRADING_AUDIT_TASK_DETAIL, INTERNAL_GRADING_AUDIT_RUNTIME } from './agent-tools/capability/launch-agent';
 import { ensureGradingAuditRuntime, retireUnusedGradingAuditRuntimes, GradingAuditRuntimeReadinessError,
-  type GradingAuditRuntimeBinding, type GradingAuditRuntimeReadinessDiagnostic } from './release/grading-audit-runtime';
+  type GradingAuditRuntimeBinding, type GradingAuditRuntimeLocator,
+  type GradingAuditRuntimeReadinessDiagnostic } from './release/grading-audit-runtime';
+import { GRADING_AUDIT_SOURCE_PIN_MAX_SEC, readGradingAuditSourcePin } from './release/grading-audit-source-pin';
 import { advSessionsByTranscriptHandles, type AdvSessionRow } from './adv-sessions';
 import { getBuildInfo, type BuildInfo } from './build-info';
 import { findSessionTranscript } from './claude-sessions';
@@ -4153,19 +4155,79 @@ export async function reconcilePendingGradingAudits(
         // grader is live. Unbound cards can move between compatible builds;
         // pending alone must not pin every build they have ever touched.
         const recorded = recordedEvaluatorBuildForRecipe(card.rerunRecipe);
-        if (recorded?.sha === locator.evaluatorBuild.sha && recorded?.version === locator.evaluatorBuild.version) {
-          return card.issueId;
-        }
         const key = `${GRADING_AUDIT_TASK_LABEL_PREFIX}${card.issueId}`;
         try {
+          const nowSec = Math.floor((deps.now?.() ?? Date.now()) / 1000);
           const tasks = await (deps.listTasks ?? listTasks)({ workspaceId: input.ctx.workspaceId,
             labelPrefix: key, states: ['pending', 'running', 'unaccounted'], classes: ['agent-session'], limit: 200 });
-          // A full page, absent consumer or incomplete binding cannot prove a
-          // move. Preserve crash recovery until the existing bounded expiry.
+          // A full page or incomplete binding cannot prove a move. Preserve
+          // every candidate until the existing bounded expiry in that case.
           if (tasks.length >= 200) return card.issueId;
           const consumers = tasks.filter(task => task.detail.label === key ||
             String(task.detail.label).startsWith(`${key}:`));
-          if (!consumers.length) return card.issueId;
+          if (!consumers.length) {
+            // A complete consumer census with no active auditor leaves one
+            // recovery root sufficient for an unbound card. Select the newest
+            // still-pinned runtime deterministically; exact recipe bindings
+            // narrow that choice to the recorded evaluator build. This keeps
+            // the six-hour recovery window without pinning every old build.
+            const runtimeTasks = await (deps.listTasks ?? listTasks)({ workspaceId: input.ctx.workspaceId,
+              labelPrefix: 'grading-audit-runtime:', states: ['pending', 'running', 'unaccounted'],
+              classes: ['sidecar'], limit: 2_000 });
+            if (runtimeTasks.length >= 2_000) return card.issueId;
+            const siblings: Array<{ task: TaskRow; locator: GradingAuditRuntimeLocator }> = [];
+            const recoveryRoots = new Set<string>();
+            for (const task of runtimeTasks) {
+              const label = task.detail.label;
+              if (typeof label !== 'string' || !label.startsWith('grading-audit-runtime:')) continue;
+              const raw = task.detail.gradingAuditRuntime as Partial<GradingAuditRuntimeLocator> | undefined;
+              if (!raw || raw.schemaVersion !== 1 || raw.ownerRef !== label ||
+                  typeof raw.sourceRoot !== 'string' || !raw.sourceRoot ||
+                  typeof raw.baseUrl !== 'string' ||
+                  !raw.evaluatorBuild?.sha || typeof raw.evaluatorBuild.version !== 'string' ||
+                  typeof raw.bundleSha256 !== 'string' || !/^[a-f0-9]{64}$/i.test(raw.bundleSha256) ||
+                  typeof raw.expiresAtSec !== 'number' || !Number.isSafeInteger(raw.expiresAtSec) ||
+                  raw.expiresAtSec > nowSec + GRADING_AUDIT_SOURCE_PIN_MAX_SEC ||
+                  !Array.isArray(raw.issueIds) || raw.issueIds.some(id => typeof id !== 'string')) return card.issueId;
+              let url: URL;
+              try { url = new URL(raw.baseUrl); } catch { return card.issueId; }
+              if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || !url.port || url.pathname !== '/' ||
+                  url.username || url.password || url.search || url.hash) return card.issueId;
+              if (raw.sourceRecovery !== undefined) {
+                const previousSourceRoot = raw.sourceRecovery?.previousSourceRoot;
+                if (typeof previousSourceRoot !== 'string' || !previousSourceRoot) return card.issueId;
+                recoveryRoots.add(previousSourceRoot);
+              }
+              if (!raw.issueIds.includes(card.issueId) || raw.expiresAtSec <= nowSec) continue;
+              const pin = readGradingAuditSourcePin(raw.sourceRoot, raw.ownerRef, nowSec);
+              if (!pin || pin.sourceRoot !== raw.sourceRoot || pin.ownerRef !== raw.ownerRef ||
+                  pin.bundleSha256 !== raw.bundleSha256 || pin.expiresAtSec !== raw.expiresAtSec ||
+                  pin.evaluatorBuild.sha !== raw.evaluatorBuild.sha ||
+                  pin.evaluatorBuild.version !== raw.evaluatorBuild.version) return card.issueId;
+              siblings.push({ task, locator: raw as GradingAuditRuntimeLocator });
+            }
+            const sameRuntime = (candidate: GradingAuditRuntimeLocator) =>
+              candidate.sourceRoot === locator.sourceRoot && candidate.ownerRef === locator.ownerRef &&
+              candidate.baseUrl === locator.baseUrl && candidate.bundleSha256 === locator.bundleSha256;
+            const currentRuntime = siblings.find(entry => sameRuntime(entry.locator));
+            if (!currentRuntime || currentRuntime.task.state === 'unaccounted' ||
+                recoveryRoots.has(locator.sourceRoot)) {
+              return card.issueId;
+            }
+            const candidates = recorded
+              ? siblings.filter(entry => recorded.sha !== null &&
+                  entry.locator.evaluatorBuild.sha === recorded.sha && entry.locator.evaluatorBuild.version === recorded.version &&
+                  entry.task.state !== 'unaccounted')
+              : siblings.filter(entry => entry.task.state !== 'unaccounted');
+            if (candidates.length === 0) return card.issueId;
+            const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
+            const fallback = [...candidates].sort((a, b) =>
+              b.locator.expiresAtSec - a.locator.expiresAtSec ||
+              compare(a.locator.sourceRoot, b.locator.sourceRoot) ||
+              compare(a.locator.baseUrl, b.locator.baseUrl) ||
+              compare(a.task.taskId, b.task.taskId))[0]!;
+            return sameRuntime(fallback.locator) ? card.issueId : null;
+          }
           const lease = card.gradingAudit?.dispatchReservation;
           let currentConsumer = false;
           for (const task of consumers) {

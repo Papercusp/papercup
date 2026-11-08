@@ -552,7 +552,84 @@ function liveVerificationPlan(check: RubricCriterion['check']): string {
   }), '```'].join('\n');
 }
 
+function mixedClauseFixture(kind: 'mechanical' | 'judgment', frozenOracle = true): AcceptanceBarContractSnapshotInput {
+  const input = kind === 'mechanical' ? mechanicallyProvedFixture() : provedFixture(1);
+  // The mechanical helper exercises adequacy alone; shipment also requires an
+  // explicit test layer and evidence plane, with the corresponding BAR pins.
+  if (kind === 'mechanical') {
+    const rubric = input.rubrics.rows[0]!;
+    const criterion = rubric.criteria[0]!;
+    criterion.requiredTestLayers = ['integration'];
+    criterion.barHash = computeAcceptanceBarHash(criterion);
+    const barSetHash = computeAcceptanceBarSetHash(rubric.criteria);
+    rubric.barSetHash = barSetHash;
+    input.planRows.rows[0]!.barSetHash = barSetHash;
+    input.clauses.rows[0]!.requiredTestLayers = ['integration'];
+    Object.assign(input.clauses.rows[0]!.sourceBar!, { barHash: criterion.barHash, barSetHash });
+    for (const row of input.evidence.rows) row.details.evidencePlane = 'tree';
+  }
+  const original = input.clauses.rows[0]!;
+  const sibling = { ...structuredClone(original), specId: 'SIBLING-ORACLE', contentHash: 'sibling-oracle-hash',
+    behavior: frozenOracle ? 'Execution equals its frozen independently reviewed oracle.' : original.behavior };
+  input.clauses.rows.push(sibling);
+  input.workContracts.rows.push({ ...input.workContracts.rows[0]!, specId: sibling.specId,
+    specFingerprint: sibling.contentHash });
+  input.evidence.rows.push(...input.evidence.rows.map(row => {
+    const copy = { ...structuredClone(row), id: row.id! + 100, specId: sibling.specId,
+      specFingerprint: sibling.contentHash };
+    const adequacy = copy.details.adequacy as { targeted?: string } | undefined;
+    if (adequacy?.targeted === original.specId) adequacy.targeted = sibling.specId;
+    return copy;
+  }));
+  return input;
+}
+
 describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
+  describe.each(['mechanical', 'judgment'] as const)('mixed-clause %s oracle obligations', kind => {
+    it('keeps a missing frozen-oracle review UNKNOWN despite a passing sibling', () => {
+      const snapshot = projectAcceptanceBarContractSnapshot(mixedClauseFixture(kind));
+      expect(snapshot.bars[0]!.proof.adequacy).toMatchObject({ state: 'unknown', checks: [
+        { verdict: 'pass' }, { specId: 'SIBLING-ORACLE', verdict: 'unknown' },
+      ] });
+      const ship = evaluateAcceptanceBarLifecycle(snapshot, 'ship');
+      expect(ship.satisfied).toBe(false);
+      expect(ship.codes).toEqual(['bar_snapshot_proof_inadequate']);
+    });
+
+    it('ships when the exact frozen proof has independently certified review', () => {
+      const input = mixedClauseFixture(kind);
+      for (const row of input.evidence.rows.filter(row => row.specId === 'SIBLING-ORACLE')) {
+        row.currentness.provenance = 'server-measured';
+        row.oracleIndependenceVerification = { verifierBindingIds: [1000 + row.id!] };
+      }
+      const snapshot = projectAcceptanceBarContractSnapshot(input);
+      expect(snapshot.bars[0]!.proof.adequacy?.state).toBe('pass');
+      expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').satisfied).toBe(true);
+    });
+
+    it('preserves an explicitly dependent frozen oracle as FAIL despite a passing sibling', () => {
+      const input = mixedClauseFixture(kind);
+      const proof = input.evidence.rows.find(row => row.specId === 'SIBLING-ORACLE' && row.evidenceKind === 'test')!;
+      proof.details.adequacy = { ...(proof.details.adequacy as object), oracleIndependent: false };
+      const snapshot = projectAcceptanceBarContractSnapshot(input);
+      expect(snapshot.bars[0]!.proof.adequacy?.state).toBe('fail');
+      expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').codes).toEqual(['bar_snapshot_proof_inadequate']);
+    });
+
+    it('retains ordinary OR semantics when a sibling has no explicit frozen-oracle obligation', () => {
+      const input = mixedClauseFixture(kind, false);
+      const proof = input.evidence.rows.find(row => row.specId === 'SIBLING-ORACLE' && row.evidenceKind === 'test')!;
+      proof.testRunExecution = { ...proof.testRunExecution!, status: 'fail', passed: 0, failed: 1 };
+      proof.details.adequacy = { ...(proof.details.adequacy as object), outcome: 'failed' };
+      const snapshot = projectAcceptanceBarContractSnapshot(input);
+      expect(snapshot.bars[0]!.proof.adequacy?.checks).toEqual([
+        expect.objectContaining({ verdict: 'pass' }), expect.objectContaining({ verdict: 'fail' }),
+      ]);
+      expect(snapshot.bars[0]!.proof.adequacy?.state).toBe('pass');
+      expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').satisfied).toBe(true);
+    });
+  });
+
   it('uses live requirement check paths while preserving stored hash and vetting identities', () => {
     const input = mechanicallyProvedFixture();
     const rubric = input.rubrics.rows[0]!;
@@ -2130,6 +2207,19 @@ describe('AcceptanceBarContractSnapshot — semantic dry-run diff', () => {
         kinds: ['bar-meaning'],
         fields: ['requiredTestLayers'],
       }),
+    ]);
+  });
+
+  it('requires amendment when only the authored evidence-plane set changes', () => {
+    const before = projectAcceptanceBarContractSnapshot(fixture(1));
+    const after = structuredClone(before);
+    after.bars[0]!.requirement!.acceptance.requiredEvidencePlanes = ['tree', 'deployed'];
+
+    const diff = diffAcceptanceBarContractSnapshots(before, after, 'amend');
+
+    expect(diff.requiresAmendment).toBe(true);
+    expect(diff.changes).toEqual([
+      expect.objectContaining({ barKey: 'R-1', kinds: ['bar-meaning'], fields: ['requiredEvidencePlanes'] }),
     ]);
   });
 

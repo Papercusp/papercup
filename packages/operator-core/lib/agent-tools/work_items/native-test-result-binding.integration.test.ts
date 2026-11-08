@@ -51,6 +51,35 @@ async function contradiction() {
 }
 
 describe('native completion evidence SQL', () => {
+  it.each(['baseline', 'copy-baseline', 'mutant'])(
+    'keeps normal source truth separate from a canonical %s probe leg', async leg => {
+      await native('pass', 'agent-a', 'EI-123', 'normal-green');
+      await db.sql`UPDATE harness_shared.test_runs
+        SET started_at = now() - interval '40 seconds', finished_at = now() - interval '30 seconds'
+        WHERE run_group_id = 'normal-green'`;
+      await native('fail', 'agent-a', 'EI-123', 'probe-red');
+      const mutation = {
+        schemaVersion: 1, probeInvocationId: '0690ad0c-ca61-4acd-964a-ae92bccdf762',
+        mode: 'copy-out', subjectPath: 'subject.ts', mutateExpression: 's/fixed/broken/', againstCommit: null,
+        subjectBeforeSha256: 'a'.repeat(64), subjectAfterSha256: 'b'.repeat(64),
+        mutantDiff: '-fixed\n+broken', mutantDiffTruncated: false, testCommandSha256: 'c'.repeat(64),
+        leg, testFileSha256: 'd'.repeat(64),
+      };
+      await db.sql`UPDATE harness_shared.test_runs SET execution_details =
+        execution_details || ${db.sql.json({ mutation })} WHERE run_group_id = 'probe-red'`;
+      expect(await latestTestingRunForOwner(...scope)).toMatchObject({ runGroupId: 'normal-green' });
+      expect(await contradiction()).toBeUndefined();
+    },
+  );
+
+  it('preserves a red result with an incomplete mutation descriptor', async () => {
+    await native('fail');
+    await db.sql`UPDATE harness_shared.test_runs SET execution_details =
+      execution_details || ${db.sql.json({ mutation: { schemaVersion: 1, leg: 'mutant' } })}
+      WHERE run_group_id = 'native'`;
+    expect(await contradiction()).toMatchObject({ runGroupId: 'native', failingFiles: ['a.test.ts'] });
+  });
+
   it('replaces an older tool red with exact native green and ignores a concurrent foreign red', async () => {
     await native();
     await native('fail', 'peer', 'EI-other', 'peer-red');

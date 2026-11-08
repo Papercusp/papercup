@@ -135,8 +135,11 @@ import type { SpecClauseRevision } from './agent-tools/plans/spec-clauses-store'
 // (2026-09-05: arm-schedule / run-now / list.delta / shape-clip / launch.goal-stamp).
 import { appendDecisionToBody, allocateNextDecisionId } from './agent-tools/plans/decision-body';
 import { setFrontmatterScalar } from './agent-tools/plans/transfer-owner';
-import { deriveIndexFromContent } from './agent-tools/plans/source';
+import { deriveIndexFromContent, type PlanIndexItem } from './agent-tools/plans/source';
 import { writePlanIndexRows } from './agent-tools/plans/plan-index-rows';
+import { readPlanLineNodes, writePlanLineNodes } from './agent-tools/plans/plan-line-graph';
+import { mutateWorkItemDependenciesInTransaction } from './dbos/work-item-deps-store';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { summarizeForcedPast } from './agent-tools/plans/forced-past-stamp';
 import { acquirePlanRevisionAdvisoryLock, recordPlanRevisionInTransaction, type PlanRevisionSql } from './agent-tools/plans/revisions';
 import {
@@ -4986,6 +4989,33 @@ export function buildAcceptanceBarAmendmentCandidate(
 
 type AcceptanceAmendmentTx = Parameters<Parameters<typeof withAcceptanceBarAmendmentTransaction>[1]>[0];
 
+/** Keep the accepted source and its graph-owned read projection in one transaction.
+ * Identical contracts also reach this seam to repair pre-graph writers, without
+ * changing BAR meaning, saved source, ownership, or the migration claim parks.
+ */
+async function synchronizeAcceptancePlanLines(
+  tx: AcceptanceAmendmentTx,
+  scope: { workspaceId: string; harnessSlug: string; planSlug: string },
+  content: string,
+): Promise<boolean> {
+  const graphScope = { workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug, slug: scope.planSlug };
+  const before = await readPlanLineNodes(tx as never, graphScope);
+  const wanted = deriveIndexFromContent(content).items;
+  const fingerprint = (items: readonly PlanIndexItem[]) => JSON.stringify(items.map(item => [
+    item.id, item.status === 'blocked' ? 'todo' : item.status, item.text, item.importance,
+    item.phase ?? null, item.deliverable ?? null, item.ownerGateMarker ?? null,
+    [...item.blockedBy].sort(), [...item.decisionRefs].sort(),
+  ]));
+  if (fingerprint(before) === fingerprint(wanted)) return false;
+  const mutations = await writePlanLineNodes(tx as never, graphScope, before, wanted);
+  if (mutations.length) {
+    await mutateWorkItemDependenciesInTransaction(tx as never, {
+      workspaceId: DEFAULT_COORD_WORKSPACE, itemWorkspaceId: scope.workspaceId, mutations,
+    });
+  }
+  return true;
+}
+
 /**
  * WI-6554700010018395: read the subject pin and the immutable snapshot(s) naming the
  * pinned rubric revision inside the amendment's locked transaction, and let the pure
@@ -5129,6 +5159,7 @@ async function amendAcceptanceBarRubric(
         { ...subjectScope, planSlug: subjectPlanHint },
       ],
       mode: preview ? 'preview' : 'write',
+      dependencyAdmission: true,
     },
     async (tx) => {
       input.onPhase?.('acceptance-locked-plan-read');
@@ -5806,6 +5837,9 @@ async function amendAcceptanceBarRubric(
       const projectionOnly = !orphanRestore && canonicalUnchanged && changedBars.length === 0 && !provenanceChanged &&
         mappingDelta.length === 0;
       if (projectionOnly && !preview) {
+        if (await synchronizeAcceptancePlanLines(tx, { ...subjectScope, planSlug: subjectPlanHint }, requirementsRerender.content)) {
+          injectAmendmentFault(input, 'after-projection');
+        }
         if (requirementsRerender.rerendered.length === 0) return {
           rubric: { ...stored, revision: oldRubricRevision }, decisionId: '', rubricRevision: oldRubricRevision,
           subjectPlanRevision: oldSubjectRevision, barSetHash: stored.barSetHash!,
@@ -6186,6 +6220,7 @@ async function amendAcceptanceBarRubric(
         { workspaceId: subjectScope.workspaceId, harnessSlug: subjectScope.harnessSlug, planSlug: subjectPlanHint },
         subjectIdx,
       );
+      await synchronizeAcceptancePlanLines(tx, { ...subjectScope, planSlug: subjectPlanHint }, subjectBody);
 
       // Every projection pins the GLOBAL rubric revision and BAR-set hash,
       // including BARs whose individual meaning did not change.

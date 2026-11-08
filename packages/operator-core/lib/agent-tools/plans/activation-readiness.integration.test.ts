@@ -20,11 +20,16 @@ import startTool from './start';
 import { autoStartAfterActivationAudit } from './auto-start-after-audit';
 import { conformanceActivationVerdict } from '../../spec-conformance/activation-gate';
 
-const advice = vi.hoisted(() => ({ route: vi.fn() }));
+const advice = vi.hoisted(() => ({ compute: vi.fn(), route: vi.fn() }));
 vi.mock('../search/embedder', () => ({ buildQueryEmbedderResolved: async () => null }));
-vi.mock('../../consult/plan-start-consult', async orig => ({
-  ...(await orig<typeof import('../../consult/plan-start-consult')>()),
-  planStartConsult: advice.route,
+vi.mock('../../consult/plan-start-consult', async orig => {
+  const actual = await orig<typeof import('../../consult/plan-start-consult')>();
+  advice.compute.mockImplementation(actual.planStartConsult);
+  return { ...actual, planStartConsult: advice.compute };
+});
+vi.mock('../../consult/relevance-router', async orig => ({
+  ...(await orig<typeof import('../../consult/relevance-router')>()),
+  routeConsult: advice.route,
 }));
 
 let fx: PlanPgFixture;
@@ -70,7 +75,8 @@ beforeAll(async () => {
 afterAll(async () => { configurePlanAdmissionPolicySource(null); configurePlanAdmissionShadowSink(null);
   configurePlanAdmissionCertificateSource(null); await fx?.dispose(); });
 beforeEach(async () => {
-  advice.route.mockReset().mockResolvedValue({ outcome: 'proceed', verdict: 'no_qualified_responder' });
+  advice.compute.mockClear();
+  advice.route.mockReset().mockResolvedValue({ qualified: [], snapshot: { candidates: [] } });
   slug = 'readiness-draft-' + ++serial;
   shadow.mockClear();
   configurePlanAdmissionPolicySource(async () => null);
@@ -146,8 +152,11 @@ describe('activation readiness application-read-only boundary', () => {
     // Measure the former two-caller composition without sharing its receipt.
     const baselineStart = await readPlanActivationReadiness(params);
     const baselineAudit = await readPlanActivationReadiness(params);
+    expect(advice.compute).toHaveBeenCalledTimes(2);
     expect(advice.route).toHaveBeenCalledTimes(2);
+    const beforeComputes = advice.compute.mock.calls.length;
     const beforeRoutes = advice.route.mock.calls.length;
+    advice.compute.mockClear();
     advice.route.mockClear();
     const read = await readPlanBySlug(slug, { workspaceId: fx.workspaceId, harnessSlug: harness });
     const outcome = await autoStartAfterActivationAudit({ slug, harness, planContent: read!.row.content,
@@ -166,11 +175,13 @@ describe('activation readiness application-read-only boundary', () => {
     expect(current.consult).toEqual(baselineStart.consult);
     expect(current.consult).toEqual(baselineAudit.consult);
     expect(current.ready).toBe(baselineAudit.ready);
+    expect(advice.compute).toHaveBeenCalledTimes(1);
     expect(advice.route).toHaveBeenCalledTimes(1);
     expect(await snapshot()).toEqual(before);
     console.info('ACTIVATION_CONTROLLED_TRACE ' + JSON.stringify({ journey: 'consult',
-      before: { routes: beforeRoutes, ready: baselineAudit.ready, advice: baselineAudit.consult },
-      after: { routes: advice.route.mock.calls.length, ready: current.ready, advice: current.consult } }));
+      before: { computes: beforeComputes, routes: beforeRoutes, ready: baselineAudit.ready, advice: baselineAudit.consult },
+      after: { computes: advice.compute.mock.calls.length, routes: advice.route.mock.calls.length,
+        ready: current.ready, advice: current.consult } }));
   }, 120_000);
 
   it('keeps get, activation audit and refused start on the same real diagnostic basis', async () => {
@@ -220,9 +231,11 @@ describe('activation readiness application-read-only boundary', () => {
     const auditDiagnostic = await readPlanActivationReadiness({ ...params, consultReceipt: receipt });
     expect(startDiagnostic.consult).toEqual(actual);
     expect(auditDiagnostic.consult).toEqual(actual);
+    expect(advice.compute).toHaveBeenCalledTimes(1);
     expect(advice.route).toHaveBeenCalledTimes(1);
     expect(await snapshot()).toEqual(before);
     await readPlanActivationReadiness({ ...params, requesterId: 'different-requester', consultReceipt: receipt });
+    expect(advice.compute).toHaveBeenCalledTimes(2);
     expect(advice.route).toHaveBeenCalledTimes(2);
   }, 120_000);
   it('reports independent draft blockers without changing application rows or shadow observations', async () => {

@@ -13,6 +13,7 @@ import { z } from 'zod';
 import { canonicalJson } from '@papercusp/hash-chain';
 import { isNonAutomatedBehaviorClass, NON_AUTOMATED_BEHAVIOR_CLASS } from './plan-verification-profile';
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
+import { withWorkItemDependencyAdmissionTransaction } from './dbos/work-item-deps-store';
 import type { Sql, TransactionSql } from 'postgres';
 import { OrgTxnTimeoutError } from './pg-bounded-txn';
 import { acquirePlanAdvisoryLock, planAdvisoryLockKey, PLAN_ADVISORY_LOCK_NAMESPACE } from './agent-tools/plans/plan-lock-key';
@@ -1596,6 +1597,8 @@ export interface AcceptanceBarAmendmentTransactionArgs {
   ttlSec?: number;
   /** Read-only previews skip exclusive plan locks and the wrapping transaction; callers recheck source revisions before returning. */
   mode?: 'write' | 'preview';
+  /** Couple plan-line graph changes to the canonical dependency admission boundary. */
+  dependencyAdmission?: boolean;
 }
 
 /**
@@ -1629,7 +1632,7 @@ export async function withAcceptanceBarAmendmentTransaction<T>(
       const { sql } = getOrgPg();
       return await work(sql);
     }
-    return await withWorkspace(workspaceId, async (tx) => {
+    const write = async (tx: AcceptanceBarAmendmentSql) => {
       for (const plan of plans) {
         await acquirePlanAdvisoryLock(
           tx,
@@ -1638,7 +1641,15 @@ export async function withAcceptanceBarAmendmentTransaction<T>(
         );
       }
       return work(tx);
-    });
+    };
+    if (args.dependencyAdmission) {
+      return await withWorkItemDependencyAdmissionTransaction(getOrgPg().sql as Sql, async (tx) => {
+        await tx`SELECT set_config('app.workspace_id', ${workspaceId}, true),
+                        set_config('search_path', 'harness_shared, papercusp_shared, public', true)`;
+        return write(tx);
+      });
+    }
+    return await withWorkspace(workspaceId, write);
   } catch (error) {
     // acquirePlanAdvisoryLock deliberately propagates PostgreSQL's 55P03 after
     // the transaction has been aborted. This boundary is the caller-facing

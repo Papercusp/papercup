@@ -4108,6 +4108,66 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect((await rubrics.amendRubric(amendment))!.revision).toBe(reread.revision);
   });
 
+  it.each(['unchanged', 'changed'] as const)('EI-281940: synchronizes a partial plan graph atomically during an %s amendment', async (kind) => {
+    const seeded = await explicitAmendmentSubject(`partial-plan-graph-${kind}`);
+    const { deriveIndexFromContent } = await import('./agent-tools/plans/derive-index');
+    const { writePlanIndexRows } = await import('./agent-tools/plans/plan-index-rows');
+    const { readPlanBySlug } = await import('./agent-tools/plans/source');
+    const { readPlanLineNodes, writePlanLineNodes } = await import('./agent-tools/plans/plan-line-graph');
+    const scope = { workspaceId: seeded.workspaceId, harnessSlug: 'papercusp', planSlug: seeded.subject };
+    await db.adminSql.begin(async (tx) => {
+      const graphScope = { workspaceId: seeded.workspaceId, harnessSlug: 'papercusp', slug: seeded.subject };
+      await writePlanLineNodes(tx as never, graphScope, await readPlanLineNodes(tx as never, graphScope), deriveIndexFromContent(seeded.content).items);
+    });
+    const graphRows = () => db.adminSql`SELECT feature_id, plan_line_id, plan_line_text, status, taken_by, payload, updated_ts
+      FROM harness_shared.work_items WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp'
+        AND plan_slug=${seeded.subject} AND plan_line_id IS NOT NULL ORDER BY plan_seq`;
+    // Reproduce the old writer: saved source and both legacy indexes advance,
+    // while the existing graph still has only the two historical lines.
+    const content = `${seeded.content}\n## Follow-through\n\n- **P-027** \`todo\` Recover every retained notification. importance: high\n`;
+    await db.adminSql.begin(async (tx) => {
+      await tx`UPDATE harness_shared.harness_plans SET content=${content}, content_hash=${hashPlanContent(content)}
+        WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
+      await writePlanIndexRows(tx as never, scope, deriveIndexFromContent(content));
+    });
+    const before = await graphRows();
+    expect(before.map(row => row.plan_line_id)).toEqual(['P-001', 'P-002']);
+    expect((await readPlanBySlug(seeded.subject, scope))!.parsed.items.map(item => item.id)).toEqual(['P-001', 'P-002']);
+    const amendment = {
+      rubricId: seeded.rubricSlug, actorId: 'graph-repair-author', reason: 'Synchronize the accepted source and its graph projection.',
+      expectedRubricRevision: seeded.rubric.revision, expectedSubjectPlanRevision: seeded.subjectRevision,
+      ...(kind === 'unchanged' ? { criteria: seeded.rubric.criteria } : {
+        criterion: { key: seeded.rubric.criteria[0]!.key, field: 'model' as const,
+          mode: 'replace' as const, text: 'The first amended outcome holds.' },
+      }),
+    };
+    const approved = { ...amendment, ...(kind === 'changed' ? { approvalRef: await postApproval(amendment) } : {}) };
+    await expect(rubrics.amendRubric({ ...approved, faultInjection: 'after-projection' })).rejects.toThrow('after-projection');
+    expect(await graphRows()).toEqual(before);
+    const [rolledBack] = await db.adminSql`SELECT content, version FROM harness_shared.harness_plans
+      WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
+    expect(rolledBack!.content).toBe(content);
+    expect(Number(rolledBack!.version)).toBe(seeded.subjectRevision);
+
+    const after = (await rubrics.amendRubric(approved))!;
+    const projected = (await readPlanBySlug(seeded.subject, scope))!;
+    expect(projected.parsed.items.map(item => item.id)).toEqual(['P-001', 'P-002', 'P-027']);
+    expect(projected.parsed.items[2]!.text).toContain('Recover every retained notification.');
+    const graph = await graphRows();
+    expect(graph.slice(0, 2).map(({ updated_ts: _updated, ...row }) => row))
+      .toEqual(before.map(({ updated_ts: _updated, ...row }) => row));
+    expect(graph[2]).toMatchObject({ status: 'open', payload: { _claimHold: true,
+      claim_hold_by: 'migration:plan-line-work-item-nodes' } });
+    expect(after.revision).toBe(seeded.rubric.revision! + (kind === 'changed' ? 1 : 0));
+    if (kind === 'unchanged') {
+      expect(after.barSetHash).toBe(seeded.rubric.barSetHash);
+      expect(projected.row.version).toBe(seeded.subjectRevision);
+      expect(projected.row.storedContent).toBe(content);
+      await rubrics.amendRubric(approved);
+      expect(await graphRows()).toEqual(graph);
+    }
+  });
+
   it('repairs a stale canonical map without amending the rubric or disturbing proof projections', async () => {
     const seeded = await explicitAmendmentSubject('stale-map-repair-subject', 'live');
     const { validateAcceptanceBarSource } = await import('./acceptance-bar-seed');
@@ -4990,8 +5050,9 @@ describe('template_data persistence boundary — the set-template-data door', ()
     const preview = await rubrics.previewAcceptanceBarAmendment(input);
     expect(preview).not.toBeNull();
     const receipt = { ...preview!.approval, ...receiptFields };
-    const { acceptanceBarReviewPostBody } = await import('./acceptance-bar-amendment');
-    const body = acceptanceBarReviewPostBody(receipt, preview!.reviewSource);
+    const { acceptanceBarReviewPostBody, acceptanceBarReviewSourceHash } = await import('./acceptance-bar-amendment');
+    expect(acceptanceBarReviewSourceHash(preview!.reviewSource!)).toBe(receipt.reviewSourceHash);
+    const body = `verified-complete-source sha256:${receipt.reviewSourceHash}\n${acceptanceBarReviewPostBody(receipt, preview!.reviewSource)}`;
     const workspaceId = activeWorkspaceId();
     const thread = `approval-${preview!.approval.subjectPlan}`;
     await db.adminSql`INSERT INTO harness_shared.coord_threads (workspace_id,thread_id,parent_kind,parent_ref)

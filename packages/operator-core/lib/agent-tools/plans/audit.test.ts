@@ -1472,10 +1472,11 @@ describe('plans:audit phase:activation', () => {
       phase: 'activation',
       activationReadiness: {
         schemaVersion: 1, advisory: true, freshness: 'unknown',
-        counts: { total: 13, returned: 13, omitted: 0 },
+        counts: { total: 14, returned: 14, omitted: 0 },
         consult: { outcome: 'proceed', verdict: 'no_qualified_responder' },
       },
     });
+    expect(result.activationReadiness.stages).toContainEqual(expect.objectContaining({ id: 'conformance' }));
     expect(mockPreviewPlanStartConsult).toHaveBeenCalledWith({
       workspaceId: 'test-workspace',
       requesterId: 'su-auditor',
@@ -1492,7 +1493,8 @@ describe('plans:audit phase:activation', () => {
     const result = ((await tool.handler({ ...activationArgs(), unresolvedBlockers: ['missing source'] } as never, ctx)) as { data: any }).data;
     expect(result.ok).toBe(false);
     expect(result.activationReadiness).toMatchObject({ ready: false, freshness: 'unknown',
-      counts: { total: 13, returned: 13, omitted: 0 } });
+      counts: { total: 14, returned: 14, omitted: 0 } });
+    expect(result.activationReadiness.stages).toContainEqual(expect.objectContaining({ id: 'conformance' }));
     expect(mockRecordActivation).not.toHaveBeenCalled();
   });
 

@@ -319,6 +319,7 @@ import { FLAGS } from '@papercusp/flags';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import { isGitTrackedPath, repoRelativePathUnderRoot, type GitTrackednessProbe } from '../../git-trackedness';
 import { getOrgPg } from '@papercusp/db-org';
+import { parseMutationDescriptor } from '@papercusp/test-config/mutation-descriptor';
 import { conformanceReviewClosureRefusal, conformanceReviewFromPayload } from '../../spec-conformance/conformance-review';
 import { conformanceClosureAssessment } from '../../spec-conformance/closure-guard';
 import {
@@ -3521,13 +3522,14 @@ export async function latestTestingRunForOwner(
       files: unknown;
       work_item_id: string | null;
       run_group_id?: string | null;
+      mutations?: unknown;
     }>>`
       WITH attributable_runs AS (
       SELECT invoked_at, duration_ms, args_json->'files' AS files,
              COALESCE(
                NULLIF(args_json->>'work_item_id', ''),
                NULLIF(args_json #>> '{evidence,workItemId}', '')
-             ) AS work_item_id, NULL::text AS run_group_id
+             ) AS work_item_id, NULL::text AS run_group_id, NULL::jsonb AS mutations
         FROM harness_shared.tool_invocations
        WHERE coord_owner_id = ${ownerId}
          AND invoked_at >= ${cutoff}
@@ -3550,7 +3552,8 @@ export async function latestTestingRunForOwner(
       SELECT MAX(finished_at) AS invoked_at,
              (EXTRACT(EPOCH FROM (MAX(finished_at) - MIN(started_at))) * 1000)::double precision AS duration_ms,
              jsonb_agg(DISTINCT file_path) AS files,
-             ${workItemId}::text AS work_item_id, run_group_id
+             ${workItemId}::text AS work_item_id, run_group_id,
+             jsonb_agg(DISTINCT execution_details->'mutation') AS mutations
         FROM harness_shared.test_runs
        WHERE finished_at >= ${cutoff}
          AND execution_details #>> '{attribution,ownerId}' = ${ownerId}
@@ -3567,9 +3570,15 @@ export async function latestTestingRunForOwner(
       )
       SELECT * FROM attributable_runs
        ORDER BY invoked_at DESC
-       LIMIT 1
+       LIMIT 50
     `;
-    const row = rows[0];
+    // Isolated negative controls describe intentionally changed source, not the
+    // current product's test verdict. Reuse the reporter's strict descriptor
+    // parser; absent, malformed or mixed receipts still retain normal red-run
+    // treatment. Keep the search bounded and never infer green from exhaustion.
+    const row = rows.find(candidate => !(Array.isArray(candidate.mutations)
+      && candidate.mutations.length > 0
+      && candidate.mutations.every(mutation => parseMutationDescriptor(mutation) !== undefined)));
     if (!row) return null;
     const files = Array.isArray(row.files) ? row.files.filter((f): f is string => typeof f === 'string') : [];
     return {

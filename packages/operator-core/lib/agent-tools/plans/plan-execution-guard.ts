@@ -103,10 +103,32 @@ const executionTools = new Set(['code:run', 'capability:terminal', 'capability:g
   'capability:launch-agent', 'fleet:launch-on-plan', 'plans:launch', 'plans:run-now', 'plans:arm-schedule']);
 const readCommands = new Set(['pwd', 'ls', 'cat', 'head', 'tail', 'wc', 'rg', 'grep', 'readlink', 'realpath', 'sed']);
 
+function hasActiveShellExpansion(command: string): boolean {
+  let quote: "'" | '"' | null = null;
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i];
+    if (quote === "'") {
+      if (char === "'") quote = null;
+      continue;
+    }
+    if (char === '\\') {
+      const next = command[i + 1];
+      if (!next) return true;
+      if (quote !== '"' || /["\\$`]/.test(next)) i++;
+      continue;
+    }
+    if (char === "'" && quote === null) quote = "'";
+    else if (char === '"') quote = quote === '"' ? null : '"';
+    else if (char === '$' || char === '`') return true;
+  }
+  return quote !== null;
+}
+
 /** A deliberately small read-only shell subset; arbitrary interpreters require activation. */
 export function isPlanResearchCommand(command: unknown): boolean {
   if (isPlanPtoolReadCommand(command)) return true;
-  if (typeof command !== 'string' || /[$`\n\r]/.test(command)) return false;
+  // Single-quoted constants such as sed's '$p' do not expand in the shell.
+  if (typeof command !== 'string' || /[\n\r]/.test(command) || hasActiveShellExpansion(command)) return false;
   try {
     const tokens = parseShell(command);
     const invocations: string[][] = [];
