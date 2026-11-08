@@ -233,17 +233,34 @@ describe('unanswered-directed roster statement (P-005)', () => {
     expect([...(current[0]!.newest_ids as string[])].sort()).toEqual(['ask-r0-a1-new', 'ask-r0-a2-old']);
   });
 
-  it('counts resolved @file and @fleet-leader questions, excludes other audiences, then clears replies', async () => {
+  it('counts resolved @file and final-chunk @fleet-leader questions, excludes other audiences, then clears replies', async () => {
     const fileAskId = 'ask-r0-file-selector';
     const fleetLeaderAskId = 'ask-r0-fleet-leader-selector';
     const topicAskId = 'ask-r0-topic-selector';
     const broadcastAskId = 'ask-r0-wildcard';
+    const assignmentId = 'leader-assignment-before-chunk';
+    const contextPartId = 'fleet-leader-context-part';
     const extraMessages = [
       ask(fileAskId, 'su-p005-a7', R0, 0.01, {
         audience: ['@file:packages/operator-core/lib/storage/disk-reclaim.ts'],
       }),
+      msg(assignmentId, R0, ['su-p005-a10'], 0.03, {
+        expects: 'action', expectsReply: true,
+      }),
+      msg(contextPartId, 'su-p005-a10', [R0], 0.02, {
+        audience: ['@fleet-leader:nonp2p-bug-drain-luna-max-0930'],
+        expects: 'none', expectsReply: false, related_msg_id: assignmentId,
+        summary: 'Sequencing obligations (part 1/2)',
+        body: '⟦part 1/2 g:e67d2c8d⟧\n\nThe absorbed work still has pending producer obligations.',
+      }),
+      // EI-28171894832613663: the retained 22:52:38Z ask was the final
+      // chunk of a reply to a leader assignment, with a resolved leader
+      // audience. Neither the selector nor the reply chain makes it an ACK.
       ask(fleetLeaderAskId, 'su-p005-a10', R0, 0.01, {
         audience: ['@fleet-leader:nonp2p-bug-drain-luna-max-0930'],
+        related_msg_id: assignmentId,
+        summary: 'Sequencing obligations (part 2/2)',
+        body: '⟦part 2/2 g:e67d2c8d cont⟧\n\nShould those sequencing obligations remain mapped in the absorption receipt to surviving producer/consumer nodes, rather than pretending source dependencies succeeded?',
       }),
       ask(topicAskId, 'su-p005-a8', R0, 0.01, { audience: ['@topic:storage'] }),
       msg(broadcastAskId, 'su-p005-a9', ROSTER, 0.01, {
@@ -272,6 +289,7 @@ describe('unanswered-directed roster statement (P-005)', () => {
       expect(recipientSummary?.count).toBe(4);
       expect(recipientSummary?.newest.map((entry) => entry.msgId)).toContain(fileAskId);
       expect(recipientSummary?.newest.map((entry) => entry.msgId)).toContain(fleetLeaderAskId);
+      expect(recipientSummary?.newest.map((entry) => entry.msgId)).not.toContain(contextPartId);
       expect(recipientSummary?.newest.map((entry) => entry.msgId)).not.toContain(topicAskId);
       expect(recipientSummary?.newest.map((entry) => entry.msgId)).not.toContain(broadcastAskId);
 
@@ -331,6 +349,8 @@ describe('unanswered-directed roster statement (P-005)', () => {
             fleetLeaderAskId,
             topicAskId,
             broadcastAskId,
+            assignmentId,
+            contextPartId,
             'reply-r0-file-selector',
             'reply-r0-fleet-leader-selector',
           ],
