@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -266,10 +267,14 @@ describe('operator release artifact provenance', () => {
   it('withholds fresh-process runtime initialization for an unknown parent and refuses later parent relabeling', async () => {
     const f = fixture(), sourceRoot = resolve(import.meta.dirname, '../../../..');
     const runtimePath = join(sourceRoot, 'packages/operator-core/lib/observability/runtime.ts');
+    // This is a source-level runtime fixture. Reuse the maintained worker's tsx
+    // route for external local TypeScript; single-file ESM bundling can hoist
+    // those imports even when their configuration readers are never called.
+    const sourceLoader = createRequire(import.meta.url).resolve('tsx');
+    symlinkSync(join(sourceRoot, 'node_modules'), join(f.root, 'node_modules'), 'dir');
     const { build } = await import('esbuild');
     const result = await build({ absWorkingDir: sourceRoot, bundle: true, platform: 'node', format: 'esm',
       outfile: f.entry, metafile: true, logLevel: 'silent',
-      // Neither dynamic configuration reader is called without an exported span.
       // Keep the runtime and DBOS tracing adapters in the bundle; optional OTLP
       // peers and native addons stay external so Node resolves only this host's ABI.
       external: [join(sourceRoot, 'packages/operator-core/lib/telemetry-flush'),
@@ -277,12 +282,13 @@ describe('operator release artifact provenance', () => {
         '@opentelemetry/exporter-trace-otlp-proto', '@opentelemetry/exporter-logs-otlp-proto',
         '@opentelemetry/sdk-logs', '@opentelemetry/sdk-trace-base',
         'cpu-features', 'onnxruntime-node', 'ssh2'],
-      banner: { js: "import { createRequire } from 'node:module'; const require = createRequire("
+      banner: { js: "import { createRequire as createBootBoundaryRequire } from 'node:module'; const require = createBootBoundaryRequire("
         + JSON.stringify(join(sourceRoot, 'package.json')) + ");" },
       define: { __PAPERCUSP_BUNDLED_SIDECAR__: 'true', __PAPERCUSP_BUNDLED_SOURCE_SHA__: JSON.stringify(f.sourceSha) },
       stdin: { resolveDir: sourceRoot, sourcefile: 'boot-parent-runtime-boundary.ts', loader: 'ts', contents: `
         import { readFileSync } from 'node:fs';
         import { initializeRuntimeObservability, runtimeObservabilityHealth, shutdownRuntimeObservability } from ${JSON.stringify(runtimePath)};
+        console.error('BOOT_PARENT_PHASE module-ready');
         const { parent, legacy } = JSON.parse(readFileSync(process.argv[2], 'utf8'));
         let ready = false, error = null;
         try {
@@ -293,8 +299,14 @@ describe('operator release artifact provenance', () => {
         const health = runtimeObservabilityHealth();
         console.log('BOOT_PARENT_BOUNDARY ' + JSON.stringify({ ready, error,
           initialized: health.initialized, artifact: health.artifact, pid: process.pid }));
+        console.error('BOOT_PARENT_PHASE shutdown-start');
         await shutdownRuntimeObservability();
+        console.error('BOOT_PARENT_PHASE shutdown-complete ' + JSON.stringify(process.getActiveResourcesInfo()));
       ` } });
+    // Catch banner/bundle binding collisions before any runtime control starts.
+    const syntax = spawnSync(process.execPath, ['--check', f.entry], { encoding: 'utf8', timeout: 15_000 });
+    expect(syntax.error, syntax.stderr).toBeUndefined();
+    expect(syntax.status, syntax.stderr).toBe(0);
     // Independent compiler input and output measurement for this source-level
     // boot-boundary fixture. This does not claim full BG service/dependency closure.
     const members = Object.fromEntries(Object.keys(result.metafile!.inputs)
@@ -313,12 +325,16 @@ describe('operator release artifact provenance', () => {
     const boot = (input: typeof parent, legacy = false) => {
       const configPath = join(dirname(f.entry), 'boot-parent-config.json');
       writeFileSync(configPath, JSON.stringify({ parent: input, legacy }));
-      const child = spawnSync(process.execPath, [f.entry, configPath], {
+      const child = spawnSync(process.execPath, ['--import', sourceLoader, '--input-type=module', '--eval',
+        "import { pathToFileURL } from 'node:url'; console.error('BOOT_PARENT_PHASE bundle-import'); "
+          + "await import(pathToFileURL(process.argv[1]).href); console.error('BOOT_PARENT_PHASE bundle-complete');",
+        f.entry, configPath], {
         encoding: 'utf8', timeout: 15_000,
         env: { PATH: process.env.PATH, NODE_ENV: 'test', PAPERCUSP_BUILD_SHA: f.sourceSha },
       });
-      expect(child.error, child.stderr).toBeUndefined();
-      expect(child.status, child.stderr).toBe(0);
+      const diagnostics = JSON.stringify({ stdout: child.stdout, stderr: child.stderr, signal: child.signal });
+      expect(child.error, diagnostics).toBeUndefined();
+      expect(child.status, diagnostics).toBe(0);
       const line = child.stdout.split('\n').find(row => row.startsWith('BOOT_PARENT_BOUNDARY '));
       expect(line, child.stdout + child.stderr).toBeTruthy();
       return JSON.parse(line!.slice('BOOT_PARENT_BOUNDARY '.length));
