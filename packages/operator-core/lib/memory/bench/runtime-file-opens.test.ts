@@ -187,6 +187,88 @@ describe('independent initial exec mapping snapshot', () => {
         fs.rmSync(root,{recursive:true,force:true});
       }
     },20000);
+  it.runIf(process.platform === 'linux' && process.arch === 'x64')(
+    'joins a real exec entry snapshot to the completed trace after normal exit', async () => {
+      const root=fs.mkdtempSync(path.join(os.tmpdir(),'runtime-exec-replay-'));
+      const trace=path.join(root,'trace.log'), executable=fs.realpathSync('/bin/true');
+      const child=spawn('/usr/bin/strace',runtimeFileTraceArguments(trace,[executable],
+        {execEntryDelayMs:5000}),{env:{PATH:'/usr/bin:/bin'},stdio:'ignore'});
+      const closed=new Promise<{exitCode:number|null;signal:NodeJS.Signals|null}>((resolve,reject)=>{
+        child.once('close',(exitCode,signal)=>resolve({exitCode,signal}));child.once('error',reject);
+      });
+      // Attach immediately, including if startup fails before the entry is observed.
+      void closed.catch(()=>{});
+      let pinned:typeof tracer|undefined;
+      const deadline=Date.now()+15000;
+      const until=async (check:()=>boolean,label:string)=>{
+        while(!check()){
+          if(Date.now()>deadline)throw Error(label+' timeout');
+          await new Promise(resolve=>setTimeout(resolve,5));
+        }
+      };
+      const tracerAlive=()=>{
+        if(!pinned)return false;
+        try{
+          const state=fs.readFileSync('/proc/'+pinned.processId+'/stat','utf8').split(') ')[1][0];
+          if(state==='Z'||state==='X')return false;
+          return observeRuntimeProcessIdentity(pinned.processId).startTimeTicks===pinned.startTimeTicks;
+        }catch(error){
+          if(['ENOENT','ESRCH'].includes((error as NodeJS.ErrnoException).code??''))return false;
+          throw error;
+        }
+      };
+      try{
+        let atEntry:typeof identity|undefined;
+        await until(()=>{
+          try{
+            const candidate=observeRuntimeProcessIdentity(child.pid!);
+            if(candidate.executable!==executable)return false;
+            pinned=observeRuntimeTracerIdentity(candidate,'/usr/bin/strace');atEntry=candidate;return true;
+          }catch{return false;}
+        },'normal-exit exec entry');
+        process.kill(pinned!.processId,'SIGSTOP');
+        await until(()=>fs.readFileSync('/proc/'+pinned!.processId+'/stat','utf8').split(') ')[1].startsWith('T '),
+          'normal-exit tracer stop');
+        const observation=observeRuntimeExecEntry(atEntry!,pinned!);
+        const binding=bindRuntimeExecEntry(observation,atEntry!,pinned!);
+        if(process.env.PAPERCUSP_TEST_ARTIFACT_DIR)
+          fs.writeFileSync(path.join(process.env.PAPERCUSP_TEST_ARTIFACT_DIR,'exec-entry-normal-exit.json'),
+            JSON.stringify({observation,identity:atEntry,tracerIdentity:pinned}));
+        process.kill(pinned!.processId,'SIGCONT');
+        // The daemon tracer owns the output file. Its termination, as well as
+        // the direct child's close event, is required before asserting EOF.
+        await until(()=>child.exitCode!==null||child.signalCode!==null,'normal child exit');
+        const outcome=await closed;
+        expect(outcome).toEqual({exitCode:0,signal:null});
+        if(outcome.exitCode!==0||outcome.signal!==null)throw Error('normal child exit was not successful');
+        await until(()=>!tracerAlive(),'normal tracer exit');
+        const text=fs.readFileSync(trace,'utf8');
+        if(process.env.PAPERCUSP_TEST_ARTIFACT_DIR)
+          fs.writeFileSync(path.join(process.env.PAPERCUSP_TEST_ARTIFACT_DIR,'exec-entry-normal-exit.trace'),text);
+        const terminal={processId:atEntry!.processId,exitCode:outcome.exitCode,signal:outcome.signal,
+          eof:true,captureStartedBeforeExec:true,
+          pageSizeBytes:observeRuntimePageSize()};
+        const without=bindRuntimeProcessTree(text,terminal);
+        const receipt=bindRuntimeProcessTree(text,{...terminal,
+          execEntries:[{observation,identity:atEntry!,tracerIdentity:pinned!}]});
+        const seeded=receipt.mappingOrigins.changes.filter(c=>c.operation==='exec-entry-snapshot');
+        expect(seeded).toHaveLength(1);
+        const targetExec=receipt.tasks.find(t=>t.taskId===atEntry!.processId)!.execs.find(e=>e.executable===executable)!;
+        expect(seeded[0].atMs).toBe(targetExec.atMs);
+        expect(seeded[0].ranges.some(r=>r.origin.path===executable)).toBe(true);
+        expect(seeded[0].ranges.every(r=>r.origin.execEntryMapsSha256===binding.mapsSha256)).toBe(true);
+        const missing={taskId:atEntry!.processId,atMs:targetExec.atMs,reason:'exec-kernel-installed-mappings-unobserved'};
+        expect(without.mappingOrigins.gaps).toContainEqual(missing);
+        expect(receipt.mappingOrigins.gaps).not.toContainEqual(missing);
+        expect(receipt.mappingOrigins).toMatchObject({mappingPopulationComplete:false,executableBytesQualified:false});
+        expect(receipt.completeRuntimeClosureVerified).toBe(false);
+      }finally{
+        if(tracerAlive()){process.kill(pinned!.processId,'SIGCONT');}
+        child.kill('SIGCONT');child.kill('SIGKILL');await closed.catch(()=>{});
+        if(tracerAlive())process.kill(pinned!.processId,'SIGKILL');
+        fs.rmSync(root,{recursive:true,force:true});
+      }
+    },20000);
 });
 
 describe('retained Linux perf JIT code bytes', () => {
