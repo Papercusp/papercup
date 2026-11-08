@@ -489,6 +489,43 @@ export function clampTestingRunForegroundTimeoutMs(requestedTimeoutMs: number): 
   );
 }
 
+/** Retain the worker's cold-start phases even when the core never creates a packet. */
+export function buildDetachedTestRunBootstrapScript(opts: {
+  coreModuleUrl: string;
+  replay: RunTestFilesCoreOptions & { deadline: TestRunDeadline };
+  reportDirectories: Record<string, string>;
+}): string {
+  return [
+    `const replay = ${JSON.stringify(opts.replay)};`,
+    'const bootstrapStartedAtMs = Date.now();',
+    'const trace = (phase, detail = {}) => {',
+    '  const atMs = Date.now();',
+    '  process.stderr.write(JSON.stringify({ schemaVersion: "testing-run-bootstrap-v1", phase,',
+    '    runId: process.env.PAPERCUSP_TEST_RUN_GROUP ?? null, atMs,',
+    '    elapsedMs: atMs - bootstrapStartedAtMs, sinceRequestMs: atMs - replay.deadline.startedAtMs,',
+    '    taskDeadlineAtMs: replay.deadline.taskDeadlineAtMs, childCutoffAtMs: replay.deadline.childCutoffAtMs,',
+    '    cleanupReserveMs: replay.deadline.cleanupReserveMs,',
+    '    remainingChildMs: Math.max(0, replay.deadline.childCutoffAtMs - atMs), ...detail }) + "\\n");',
+    '};',
+    'trace("bootstrap-start");',
+    'let failedPhase = "core-import";',
+    'try {',
+    '  trace("core-import-start");',
+    `  const { runTestFilesCore } = await import(${JSON.stringify(opts.coreModuleUrl)});`,
+    '  trace("core-import-complete");',
+    '  failedPhase = "core-execution";',
+    '  trace("core-execution-start");',
+    `  const result = await runTestFilesCore({ ...replay, runId: process.env.PAPERCUSP_TEST_RUN_GROUP }, { reportDirectories: ${JSON.stringify(opts.reportDirectories)} });`,
+    '  trace("core-execution-complete", { ok: result.ok, error: result.error ?? null });',
+    '  console.log(JSON.stringify(result));',
+    '  process.exitCode = result.ok ? 0 : 1;',
+    '} catch (error) {',
+    '  trace("bootstrap-error", { failedPhase, errorName: error instanceof Error ? error.name : "unknown" });',
+    '  throw error;',
+    '}',
+  ].join('\n');
+}
+
 /**
  * Build the store-backed recovery command for a Papercusp checkout. The
  * foreground run's JSON report lives in a private temporary directory that is
@@ -560,14 +597,13 @@ export function buildDetachedTestRunRequest(opts: {
       filePath: opts.files.length === 1 ? opts.files[0] : undefined,
       requestedFiles: requestedLedgerFilePaths(opts.root, opts.files),
       command: process.execPath,
-      args: ['--import', 'tsx', '--input-type=module', '-e', [
+      args: ['--import', 'tsx', '--input-type=module', '-e', buildDetachedTestRunBootstrapScript({
         // import.meta.url names the host bundle in a serving operator. Replaying
         // that bundle boots a second server instead of entering this leaf core.
-        `const { runTestFilesCore } = await import(${JSON.stringify(pathToFileURL(join(REPO_ROOT, 'packages/operator-core/lib/agent-tools/testing/run.ts')).href)});`,
-        `const result = await runTestFilesCore({ ...${JSON.stringify(replay)}, runId: process.env.PAPERCUSP_TEST_RUN_GROUP }, { reportDirectories: ${JSON.stringify(reportDirectories)} });`,
-        'console.log(JSON.stringify(result));',
-        'process.exitCode = result.ok ? 0 : 1;',
-      ].join('\n')],
+        coreModuleUrl: pathToFileURL(join(REPO_ROOT, 'packages/operator-core/lib/agent-tools/testing/run.ts')).href,
+        replay,
+        reportDirectories,
+      })],
       // The worker runs platform code whose helper paths are resolved from
       // cwd at import time. Keep it in the serving checkout; the replay's
       // explicit root still selects the external corpus and its test cwd.

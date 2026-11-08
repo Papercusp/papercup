@@ -24,6 +24,7 @@ import {
   runCargoCriterionCheck,
   evaluateCriterionCargoChecks,
   evaluateCriterionTestChecks,
+  validatePreservedCriterionCases,
   evaluateCriterionCoverageChecks,
   subjectPlanAllowsPlannedPaths,
   type CriterionCheckRunner,
@@ -68,6 +69,10 @@ mkdirSync(join(siblingAmbient, '.git'), { recursive: true });
 writeFileSync(join(siblingAmbient, 'package.json'), JSON.stringify({ workspaces: [] }));
 mkdirSync(join(siblingRepo, '.git'), { recursive: true });
 writeFileSync(join(siblingRepo, 'package.json'), JSON.stringify({ workspaces: [] }));
+// A workspace boundary alone is not an executor (checkoutRootForPath's
+// nearest-runnable contract); these fixtures model actual runnable checkouts.
+writeFileSync(join(siblingAmbient, 'vitest.config.js'), 'export default {};\n');
+writeFileSync(join(siblingRepo, 'vitest.config.js'), 'export default {};\n');
 mkdirSync(join(siblingRepo, 'tests'), { recursive: true });
 writeFileSync(join(siblingRepo, 'tests', 'sibling.test.ts'), 'export {}\n');
 symlinkSync(siblingRepo, siblingRepoLink, 'dir');
@@ -92,11 +97,13 @@ const singlePackage = (dir: string, opts: { gitFile?: boolean; vitestConfig?: bo
 };
 mkdirSync(join(vitestAmbient, '.git'), { recursive: true });
 writeFileSync(join(vitestAmbient, 'package.json'), JSON.stringify({ workspaces: [] }));
+writeFileSync(join(vitestAmbient, 'vitest.config.js'), 'export default {};\n');
 singlePackage(vitestSiteClone);
 symlinkSync(vitestSiteClone, join(vitestWorkspace, 'site'), 'dir');
 singlePackage(join(vitestWorkspace, 'plain'), { vitestConfig: false });
 singlePackage(join(vitestWorkspace, 'worktree-site'), { gitFile: true });
 singlePackage(join(vitestAmbient, 'apps', 'drill'));
+singlePackage(join(vitestAmbient, 'apps', 'no-runner'), { vitestConfig: false });
 afterAll(() => rmSync(vitestWorkspace, { recursive: true, force: true }));
 afterAll(() => rmSync(vitestSiteClone, { recursive: true, force: true }));
 
@@ -499,8 +506,13 @@ describe('validateCriterionCheckPaths / assertCriterionCheckPathsResolve', () =>
     ]);
   });
 
-  it('keeps a Vitest clone nested inside a workspaces superproject owned by the superproject', () => {
-    expect(checkoutRootForPath(join(vitestAmbient, 'apps', 'drill', 'tests', 'map.test.js'))).toBe(vitestAmbient);
+  it('routes a runnable nested Vitest checkout through its own nearest executor', () => {
+    const nested = join(vitestAmbient, 'apps', 'drill');
+    expect(checkoutRootForPath(join(nested, 'tests', 'map.test.js'))).toBe(nested);
+  });
+
+  it('keeps a non-runnable nested checkout on the runnable superproject executor', () => {
+    expect(checkoutRootForPath(join(vitestAmbient, 'apps', 'no-runner', 'tests', 'map.test.js'))).toBe(vitestAmbient);
   });
 
   it('refuses sibling-prefixed paths that traverse outside the admitted checkout', () => {
@@ -1066,6 +1078,65 @@ const CRITERIA = [
 ];
 
 describe('evaluateCriterionTestChecks (grading time)', () => {
+  describe('immutable case selection preservation', () => {
+    const behavior = { file: 'packages/x/real.test.ts', testName: 'protected behavior' };
+    const inventory = { file: 'packages/x/real.test.ts', testName: 'inventory guard' };
+    const owner = { key: 'behavior', role: 'outcome', mandatory: true, passRatings: ['healthy'],
+      check: { ...testsCheck([behavior.file]), cases: [behavior] } };
+    const guard = { key: 'inventory', check: { ...testsCheck([inventory.file]), cases: [inventory],
+      preserveCasesFrom: { rubricRef: 'frozen-acceptance', revision: 11, criterionKey: 'old-inventory',
+        ownerKeys: ['behavior'], directCases: [inventory] } } };
+    const baseline = { rubricId: 'frozen-acceptance', revision: 11,
+      criteria: [{ key: 'old-inventory', check: { ...testsCheck([behavior.file]), cases: [behavior, inventory] } }] };
+
+    it('preserves exact protected routing independently of behavior verdicts', () => {
+      expect(rubricCriterionCheckSchema.parse(guard.check)).toEqual(guard.check);
+      expect(validatePreservedCriterionCases([owner, guard], guard, baseline)).toEqual([]);
+    });
+
+    it.each(['removed', 'renamed', 'different-file', 'optional', 'non-outcome', 'non-healthy-pass'])(
+      'refuses a protected selection made %s even while its source title still exists', mutation => {
+        const changed = structuredClone(owner);
+        if (mutation === 'removed') changed.check.cases = [];
+        if (mutation === 'renamed') changed.check.cases[0]!.testName += ' substituted';
+        if (mutation === 'different-file') changed.check.cases[0]!.file = 'packages/x/other.test.ts';
+        if (mutation === 'optional') changed.mandatory = false;
+        if (mutation === 'non-outcome') changed.role = 'disclosure';
+        if (mutation === 'non-healthy-pass') changed.passRatings.push('broken');
+        expect(validatePreservedCriterionCases([changed, guard], guard, baseline).length).toBeGreaterThan(0);
+      });
+
+    it('refuses a lost direct inventory identity and a current-revision fallback', () => {
+      const changed = { ...guard, check: { ...guard.check, cases: [behavior] } };
+      expect(validatePreservedCriterionCases([owner, changed], changed, baseline).length).toBeGreaterThan(0);
+      expect(validatePreservedCriterionCases([owner, guard], guard, { ...baseline, revision: 12 })).toEqual([
+        'exact immutable case baseline is unavailable',
+      ]);
+    });
+
+    it('loads the exact immutable revision and refuses before running an unprotected population', async () => {
+      const load = vi.fn(async () => baseline);
+      const runner = vi.fn();
+      const changed = { ...owner, check: { ...owner.check, cases: [] } };
+      const result = await evaluateCriterionTestChecks({ criteria: [changed, guard],
+        ratings: { behavior: { rating: 'broken' }, inventory: { rating: 'healthy' } }, root,
+        caseBaselineLoader: load, runner });
+      expect(load).toHaveBeenCalledExactlyOnceWith('frozen-acceptance', 11);
+      expect(result).toMatchObject({ ok: false, error: 'check_case_preservation_failed', criterionKey: 'inventory' });
+      expect(runner).not.toHaveBeenCalled();
+    });
+
+    it('refuses unreadable history and an unrated owning bar before any run', async () => {
+      const runner = vi.fn();
+      const common = { criteria: [owner, guard], ratings: { inventory: { rating: 'healthy' } }, root, runner };
+      expect(await evaluateCriterionTestChecks({ ...common, caseBaselineLoader: async () => null }))
+        .toMatchObject({ ok: false, error: 'check_case_preservation_failed' });
+      expect(await evaluateCriterionTestChecks({ ...common, caseBaselineLoader: async () => baseline }))
+        .toMatchObject({ ok: false, error: 'check_case_preservation_failed' });
+      expect(runner).not.toHaveBeenCalled();
+    });
+  });
+
   it('passes concrete ledger scope to the runner and preserves its bindable testRunIds', async () => {
     const calls: Array<{ files: string[]; workspaceId?: string; harnessSlug?: string }> = [];
     const runner: CriterionCheckRunner = async ({ files, workspaceId, harnessSlug }) => {

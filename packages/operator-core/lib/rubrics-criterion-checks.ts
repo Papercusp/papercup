@@ -85,6 +85,64 @@ import { eventStatusReadAccessError } from './events/await/status-access';
 export interface CheckedCriterion {
   key: string;
   check?: RubricCriterionCheck;
+  role?: string;
+  mandatory?: boolean;
+  passRatings?: string[];
+}
+
+type PreservedCasesBinding = NonNullable<Extract<RubricCriterionCheck, { kind: 'tests' }>['preserveCasesFrom']>;
+export type CriterionCaseBaselineLoader = (rubricRef: string, revision: number) => Promise<{
+  rubricId: string;
+  revision?: number;
+  criteria: ReadonlyArray<CheckedCriterion>;
+} | null>;
+
+/** Registration only: behavior is still executed and graded by its mandatory owner. */
+export function validatePreservedCriterionCases(
+  criteria: ReadonlyArray<CheckedCriterion>,
+  criterion: CheckedCriterion,
+  baseline: Awaited<ReturnType<CriterionCaseBaselineLoader>>,
+): string[] {
+  const check = criterion.check;
+  if (check?.kind !== 'tests' || !check.preserveCasesFrom) return [];
+  const binding = check.preserveCasesFrom;
+  if (!baseline || baseline.rubricId !== binding.rubricRef || baseline.revision !== binding.revision) {
+    return ['exact immutable case baseline is unavailable'];
+  }
+  const sources = baseline.criteria.filter(row => row.key === binding.criterionKey);
+  const source = sources.length === 1 ? sources[0]?.check : undefined;
+  if (source?.kind !== 'tests' || !source.cases?.length) return ['baseline must have one explicit non-empty case population'];
+  const identity = (row: { file: string; testName: string }) => JSON.stringify([row.file, row.testName]);
+  const protectedCases = new Set(source.cases.map(identity));
+  const direct = new Set(binding.directCases.map(identity));
+  const selectedHere = new Set((check.cases ?? []).map(identity));
+  const failures: string[] = [];
+  if (protectedCases.size !== source.cases.length) failures.push('baseline has duplicate case identities');
+  if (direct.size !== binding.directCases.length) failures.push('direct case identities must be unique');
+  for (const row of binding.directCases) {
+    if (!protectedCases.has(identity(row)) || !selectedHere.has(identity(row))) {
+      failures.push(`direct case is not both protected and selected: ${identity(row)}`);
+    }
+  }
+  if (new Set(binding.ownerKeys).size !== binding.ownerKeys.length || binding.ownerKeys.includes(criterion.key)) {
+    failures.push('owning criteria must be unique and separate from the inventory criterion');
+  }
+  const owned = new Set<string>();
+  for (const key of binding.ownerKeys) {
+    const owners = criteria.filter(row => row.key === key);
+    const owner = owners.length === 1 ? owners[0] : undefined;
+    if (!owner || owner.role !== 'outcome' || owner.mandatory !== true ||
+        owner.passRatings?.length !== 1 || owner.passRatings[0] !== 'healthy' || owner.check?.kind !== 'tests') {
+      failures.push(`owner '${key}' must be a mandatory healthy-only tests outcome`);
+      continue;
+    }
+    for (const row of owner.check.cases ?? []) owned.add(identity(row));
+    if (owner.check.testName) owned.add(identity({ file: owner.check.files[0]!, testName: owner.check.testName }));
+  }
+  for (const row of source.cases) {
+    if (!direct.has(identity(row)) && !owned.has(identity(row))) failures.push(`protected case lost its owning selection: ${identity(row)}`);
+  }
+  return failures;
 }
 
 /** Pin every ALL child before rubric hashing/persistence. Legacy single probes keep their existing writer contract. */
@@ -643,6 +701,12 @@ export interface CriterionCheckRunnerFailure {
 }
 
 export type CriterionCheckRefusal =
+  | {
+      ok: false;
+      error: 'check_case_preservation_failed';
+      criterionKey: string;
+      detail: string;
+    }
   | {
       ok: false;
       error: 'probe_invalid';
@@ -1581,6 +1645,8 @@ export async function evaluateCriterionTestChecks(input: {
   runner?: CriterionCheckRunner;
   /** Per-case read for checks that carry a testName (defaults to the ledger read). */
   caseLoader?: CriterionCaseLoader;
+  /** Immutable canonical rubric history; injected only by tests. Never use the current rubric as fallback. */
+  caseBaselineLoader?: CriterionCaseBaselineLoader;
   /** Exact request-bound run group supplied by a composing durable scorecard emit. */
   runId?: string;
   nowIso?: () => string;
@@ -1612,6 +1678,23 @@ export async function evaluateCriterionTestChecks(input: {
     if (c.check?.kind !== 'tests') continue;
     const check = c.check;
     if (input.ratings[c.key] === undefined) continue;
+    if (check.preserveCasesFrom) {
+      const binding: PreservedCasesBinding = check.preserveCasesFrom;
+      let baseline: Awaited<ReturnType<CriterionCaseBaselineLoader>> = null;
+      try {
+        const load = input.caseBaselineLoader ?? (async (ref, revision) => {
+          const { getRubric } = await import('./rubrics');
+          return getRubric(ref, revision);
+        });
+        baseline = await load(binding.rubricRef, binding.revision);
+      } catch { /* An unreadable immutable baseline is UNKNOWN, never permission to grade. */ }
+      const failures = validatePreservedCriterionCases(input.criteria, c, baseline);
+      for (const key of binding.ownerKeys) {
+        if (input.ratings[key] === undefined) failures.push(`owning criterion '${key}' is not being graded`);
+      }
+      if (failures.length) return { ok: false, error: 'check_case_preservation_failed', criterionKey: c.key,
+        detail: failures.join('; ') };
+    }
     // Re-resolve at grading time — the tree has moved since propose. A path that no
     // longer resolves REFUSES the emit rather than silently passing (D-006 verbatim).
     const validation = validateCriterionCheckPaths([c], { root });

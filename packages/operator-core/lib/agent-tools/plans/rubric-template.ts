@@ -241,6 +241,18 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
       }).strict()).min(1).max(200).optional().describe(
         'Required executed cases: select every listed file and no others. Names use full titles or complete hierarchy suffixes, checked against static declarations before activation and recorded cases at grading. Exclusive with testName.',
       ),
+      preserveCasesFrom: z.object({
+        rubricRef: z.string().trim().min(1).max(120),
+        revision: z.number().int().positive(),
+        criterionKey: z.string().trim().min(1).max(120),
+        ownerKeys: z.array(z.string().trim().min(1).max(120)).min(1).max(50),
+        directCases: z.array(z.object({
+          file: z.string().trim().min(1),
+          testName: z.string().trim().min(1).max(500),
+        }).strict()).max(200).default([]),
+      }).strict().optional().describe(
+        'Before grading, load this exact immutable rubric revision and preserve every source criterion case: directCases remain selected here; all other exact file/title pairs remain selected by rated, mandatory, healthy-only outcome ownerKeys. Missing history or selection refuses grading without running tests.',
+      ),
     })
     .strict()
     .superRefine((check, ctx) => {

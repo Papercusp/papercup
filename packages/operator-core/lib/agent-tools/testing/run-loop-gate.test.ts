@@ -1,7 +1,9 @@
 import { afterEach, expect, it, vi } from 'vitest';
+import { spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 // WI-10004175 / expensive-verification-loops P-002: testing:run launches detached runs that
 // the attempt ledger counts per work-item, but it never consulted the loop gate, so a grinding
@@ -38,7 +40,8 @@ vi.mock('./evidence', async (original) => ({
 
 import { BashProvenanceRefusal } from '../capability/bash-task-provenance';
 import { REPO_ROOT } from '../docs/_repo-paths';
-import runTool, { testingRunAbortCompletionReceipt } from './run';
+import runTool, { buildDetachedTestRunBootstrapScript, testingRunAbortCompletionReceipt } from './run';
+import { testRunDeadline, type TestRunDeadline } from './run-artifacts';
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -75,6 +78,75 @@ const refusal = {
   fingerprints: ['exit:aaa', 'log:bbb'],
   message: 'loop_audit_required — WI-grinding is grinding',
 };
+
+async function invokeBootstrap(source: string, deadline = testRunDeadline(120_000)) {
+  const root = await mkdtemp(join(tmpdir(), 'testing-run-bootstrap-'));
+  roots.push(root);
+  const corePath = join(root, 'core.mjs');
+  await writeFile(corePath, source);
+  const script = buildDetachedTestRunBootstrapScript({
+    coreModuleUrl: pathToFileURL(corePath).href,
+    replay: { root, files: ['feature.test.ts'], deadline },
+    reportDirectories: { [root]: join(root, 'reports') },
+  });
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+    encoding: 'utf8', timeout: 10_000,
+    env: { ...process.env, PAPERCUSP_TEST_RUN_GROUP: 'bootstrap-run' },
+  });
+  expect(result.error).toBeUndefined();
+  const events = result.stderr.split('\n').filter(line => line.startsWith('{')).map(line => JSON.parse(line));
+  return { ...result, events, root };
+}
+
+it('retains worker startup, import and execution phases without changing the replay deadline', async () => {
+  const deadline = testRunDeadline(120_000, { now: Date.now() - 5_000, cleanupReserveMs: 30_000 });
+  const result = await invokeBootstrap(`export async function runTestFilesCore(opts, deps) {
+    return { ok: true, deadline: opts.deadline, runId: opts.runId, reports: deps.reportDirectories };
+  }`, deadline);
+
+  expect(result.status).toBe(0);
+  expect(JSON.parse(result.stdout)).toEqual({ ok: true, deadline, runId: 'bootstrap-run',
+    reports: { [result.root]: join(result.root, 'reports') } });
+  expect(result.events.map(event => event.phase)).toEqual(['bootstrap-start', 'core-import-start',
+    'core-import-complete', 'core-execution-start', 'core-execution-complete']);
+  for (const event of result.events) {
+    expect(event).toMatchObject({ schemaVersion: 'testing-run-bootstrap-v1', runId: 'bootstrap-run',
+      taskDeadlineAtMs: deadline.taskDeadlineAtMs, childCutoffAtMs: deadline.childCutoffAtMs,
+      cleanupReserveMs: 30_000 });
+    expect(event.sinceRequestMs).toBeGreaterThanOrEqual(5_000);
+    expect(event.elapsedMs).toBeGreaterThanOrEqual(0);
+  }
+  expect(result.events.at(-1)).toMatchObject({ ok: true, error: null });
+});
+
+it('retains an import failure before a core or artifact packet can start', async () => {
+  const result = await invokeBootstrap('throw new TypeError("fixture import failure");');
+  expect(result.status).toBe(1);
+  expect(result.stdout).toBe('');
+  expect(result.events.map(event => event.phase)).toEqual(['bootstrap-start', 'core-import-start', 'bootstrap-error']);
+  expect(result.events.at(-1)).toMatchObject({ failedPhase: 'core-import', errorName: 'TypeError' });
+});
+
+it('distinguishes a core failure from an import failure', async () => {
+  const result = await invokeBootstrap('export async function runTestFilesCore() { throw new Error("fixture core failure"); }');
+  expect(result.status).toBe(1);
+  expect(result.stdout).toBe('');
+  expect(result.events.map(event => event.phase)).toEqual(['bootstrap-start', 'core-import-start',
+    'core-import-complete', 'core-execution-start', 'bootstrap-error']);
+  expect(result.events.at(-1)).toMatchObject({ failedPhase: 'core-execution', errorName: 'Error' });
+});
+
+it('reports an exhausted child budget without renewing it or changing the refused result', async () => {
+  const deadline: TestRunDeadline = { startedAtMs: Date.now() - 120_000,
+    taskDeadlineAtMs: Date.now() + 10_000, childCutoffAtMs: Date.now() - 20_000, cleanupReserveMs: 30_000 };
+  const result = await invokeBootstrap(`export async function runTestFilesCore(opts) {
+    return { ok: false, error: 'deadline_exhausted', deadline: opts.deadline };
+  }`, deadline);
+  expect(result.status).toBe(1);
+  expect(JSON.parse(result.stdout)).toEqual({ ok: false, error: 'deadline_exhausted', deadline });
+  expect(result.events.every(event => event.remainingChildMs === 0)).toBe(true);
+  expect(result.events.at(-1)).toMatchObject({ ok: false, error: 'deadline_exhausted' });
+});
 
 it('starts one caller-bound background core, retaining pending evidence and the full budget', async () => {
   phases.gate.mockResolvedValue(null);
