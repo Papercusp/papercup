@@ -98,17 +98,22 @@ async function buildWitness(f: Awaited<ReturnType<typeof fixture>>) {
   } finally { watchdog.stop(); }
 }
 
+function loadStandalone(entry: string) {
+  const started = performance.now();
+  const loaded = spawnSync(process.execPath, [entry], { encoding: "utf8", timeout: 10_000 });
+  return { status: loaded.status, signal: loaded.signal,
+    error: loaded.error ? { message: loaded.error.message, code: (loaded.error as NodeJS.ErrnoException).code } : null,
+    elapsedMs: performance.now() - started, stdout: loaded.stdout, stderr: loaded.stderr };
+}
+
 describe("P2P witness runtime closure", () => {
   it.each([false, true])("loads copied externals and nested dependencies after the donor disappears (wildcard=%s)", async (wildcard) => {
     const f = await fixture({ wildcard });
     const built = await buildWitness(f);
     expect(built.status, built.diagnostic).toBe(0);
     await rm(f.repo, { recursive: true, force: true });
-    const loadStarted = performance.now();
-    const loaded = spawnSync(process.execPath, [join(f.output, "serve.mjs")], { encoding: "utf8", timeout: 10_000 });
-    expect(loaded.status, JSON.stringify({ status: loaded.status, signal: loaded.signal,
-      error: loaded.error && { message: loaded.error.message, code: (loaded.error as NodeJS.ErrnoException).code },
-      elapsedMs: performance.now() - loadStarted }) + loaded.stdout + loaded.stderr).toBe(0);
+    const loaded = loadStandalone(join(f.output, "serve.mjs"));
+    expect(loaded.status, JSON.stringify(loaded)).toBe(0);
     expect(loaded.stdout.trim()).toBe("isolated-runtime-ok");
     const manifest = JSON.parse(await readFile(join(f.output, "witness-manifest.json"), "utf8"));
     expect(manifest.inputs.dependencies.some((row: { input: string }) => row.input === "runtime/node_modules"),
@@ -135,4 +140,22 @@ describe("P2P witness runtime closure", () => {
     expect(built.stdout + built.stderr).toContain("@fixture/runtime");
     await expect(readFile(join(f.output, "witness-manifest.json"))).rejects.toMatchObject({ code: "ENOENT" });
   }, 120_000);
+
+  it("retains child execution failure and timeout diagnostics under the same 10s bound", async () => {
+    const root = await mkdtemp(join(tmpdir(), "p2p-witness-load-diagnostics-"));
+    temporary.push(root);
+    const entry = join(root, "child.mjs");
+    await writeFile(entry, "process.stdout.write('child-out'); process.stderr.write('child-error'); process.exit(7);\n");
+    const failed = loadStandalone(entry);
+    expect(Object.keys(failed).sort()).toEqual(["elapsedMs", "error", "signal", "status", "stderr", "stdout"]);
+    expect(failed).toMatchObject({ status: 7, signal: null, error: null, stdout: "child-out", stderr: "child-error" });
+    expect(failed.elapsedMs).toBeGreaterThan(0);
+    expect(failed.elapsedMs).toBeLessThan(10_000);
+
+    await writeFile(entry, "process.stdout.write('child-out'); process.stderr.write('child-wait'); setInterval(() => {}, 1000);\n");
+    const timedOut = loadStandalone(entry);
+    expect(timedOut, JSON.stringify(timedOut)).toMatchObject({ status: null, signal: "SIGTERM",
+      error: { code: "ETIMEDOUT", message: expect.stringContaining("ETIMEDOUT") }, stdout: "child-out", stderr: "child-wait" });
+    expect(timedOut.elapsedMs).toBeGreaterThanOrEqual(10_000);
+  }, 30_000);
 });
