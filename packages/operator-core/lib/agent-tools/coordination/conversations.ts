@@ -627,6 +627,8 @@ export interface ConsultDispatchSummary {
     answering_owner_id: string | null;
     /** Expert transcript identity, distinct from the launched answerer. */
     source_owner_id?: string;
+    /** Bounded refusal when routing stopped before any model rank was tried. */
+    reason?: string;
     attempts: Array<{
       rank: number | null;
       agent: string | null;
@@ -646,20 +648,23 @@ const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
 
 /**
  * Compact a raw `consult_state.dispatch_attempts` array for a conversation read:
- * the newest {@link CONSULT_DISPATCH_RECENT} walks, dropping the long `detail`
- * strings (reason + launch_error carry the failure). Pure; null when empty or
- * not an array.
+ * the newest {@link CONSULT_DISPATCH_RECENT} walks. Rank reason + launch_error
+ * carry launch failures; an empty failed walk keeps a bounded top-level refusal
+ * from detail, since no rank exists to explain it. Pure; null when empty or not
+ * an array.
  */
 export function summarizeConsultDispatch(raw: unknown): ConsultDispatchSummary | null {
   if (!Array.isArray(raw) || raw.length === 0) return null;
   const recent = raw.slice(-CONSULT_DISPATCH_RECENT).map((w) => {
     const walk = (w && typeof w === 'object' ? w : {}) as Record<string, unknown>;
     const attempts = Array.isArray(walk.attempts) ? walk.attempts : [];
+    const refusal = walk.dispatched === false && attempts.length === 0 ? str(walk.detail)?.trim() : null;
     return {
       at: str(walk.at),
       dispatched: walk.dispatched === true,
       answering_owner_id: str(walk.answeringOwnerId),
       ...(str(walk.sourceOwnerId) ? { source_owner_id: str(walk.sourceOwnerId)! } : {}),
+      ...(refusal ? { reason: refusal.slice(0, 600) } : {}),
       attempts: attempts.map((a) => {
         const at = (a && typeof a === 'object' ? a : {}) as Record<string, unknown>;
         // Older walks retained the exact launch reference only in detail.

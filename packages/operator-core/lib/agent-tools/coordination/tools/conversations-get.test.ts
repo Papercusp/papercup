@@ -467,6 +467,38 @@ describe('conversations:get handler (bulk keyed-array)', () => {
       });
     });
 
+    it('surfaces a pre-rank routing refusal when no model attempt was made', async () => {
+      const reason = 'requested model codex/gpt-5.5 is not in the expert model allowlist';
+      const dispatch = summarizeConsultDispatch([{
+        at: '2026-11-08T15:36:00.000Z',
+        dispatched: false,
+        answeringOwnerId: null,
+        detail: reason,
+        attempts: [],
+      }]);
+      getM.mockResolvedValue(detail('c-consult', { kind: 'consult', state: 'open' }));
+      consultM.mockResolvedValue(new Map([['c-consult', { ...consultRow('c-consult'), dispatch }]]));
+
+      const result = (await body({ id: 'c-consult' })).results[0];
+      expect(result.consult.dispatch.recent[0]).toMatchObject({
+        dispatched: false, answering_owner_id: null, attempts: [], reason,
+      });
+    });
+
+    it('bounds pre-rank refusal text and leaves successful and rank-diagnosed walks compact', () => {
+      const dispatch = summarizeConsultDispatch([
+        { dispatched: false, detail: 'x'.repeat(700) },
+        { dispatched: true, detail: 'successful walk detail', attempts: [] },
+        { dispatched: false, detail: 'rank walk detail', attempts: [{ reason: 'launch-exited' }] },
+      ])!;
+
+      expect(dispatch.recent[0]).toHaveProperty('reason', 'x'.repeat(600));
+      expect(dispatch.recent[1]).not.toHaveProperty('reason');
+      expect(dispatch.recent[2]).not.toHaveProperty('reason');
+      expect(dispatch.recent[2]!.attempts[0]).toHaveProperty('reason', 'launch-exited');
+      expect(JSON.stringify(dispatch)).not.toContain('detail');
+    });
+
     it('preserves historical failed-launch references stored only in dispatch detail', () => {
       const dispatch = summarizeConsultDispatch([{
         sourceOwnerId: 'su-historical-source',
