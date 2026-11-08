@@ -1,6 +1,8 @@
 import type { ToolResult } from '@papercusp/tooldef';
 import { projectBoundedPayload } from '@papercusp/tooldef';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import '../../events/rules';
+import { matchReactions } from '../../events/registry';
 import { drainDetached, trackDetached } from '../../detached-imports';
 import { checkpointRootMirror } from '../../release-checkpoint-launch';
 import type { FrozenCandidateRepairQueue } from '../../release/frozen-candidate-repair-queue';
@@ -367,8 +369,18 @@ describe('release:repair-queue explicit generated repair', () => {
         toRepairHead: admitted.commit, paths, healedIds: ['gen:declarations:check'], reason: 'paired writer/check passed' };
       return { ...healed, persisted: await input.record(healed) };
     });
-    expect(body(await tool.handler(request as never, { role: 'su' } as never)))
-      .toMatchObject({ admitted: true, completionReceipt: { status: 'recorded' } });
+    const result = body(await tool.handler(request as never, { role: 'su' } as never)) as Record<string, unknown>;
+    expect(result).toMatchObject({ admitted: true, persisted: true,
+      repairQueue: { candidate: queue.candidate, repairHead: NEW_HEAD },
+      movedRepairHead: { from: queue.repairHead, to: NEW_HEAD },
+      completionReceipt: { status: 'recorded' } });
+    const reactions = matchReactions({ tool: 'release:repair-queue', args: request,
+      result: { ok: true, data: result }, ctx: { role: 'su' } as never });
+    expect(reactions.filter((action) => action.ruleId.startsWith('gate:repair-admitted'))
+      .map((action) => action.ruleId).sort()).toEqual(['gate:repair-admitted:event', 'gate:repair-admitted:rejudge']);
+    expect(reactions.find((action) => action.ruleId === 'gate:repair-admitted:event')?.args)
+      .toMatchObject({ event: `gate:repair-admitted:${queue.candidate}`,
+        payload: { candidate: queue.candidate, repairHead: NEW_HEAD } });
     expect(mocks.autoVerify).toHaveBeenCalledWith(expect.objectContaining({ candidate: queue.candidate, repairHead: NEW_HEAD }));
     expect(mocks.autoVerify.mock.invocationCallOrder[0]).toBeGreaterThan(mocks.transition.mock.invocationCallOrder[0]);
   });

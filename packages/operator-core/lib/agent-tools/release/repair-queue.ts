@@ -1420,7 +1420,10 @@ export default defineTool({
       stampActionEffect({ status: persisted ? 'repair-head-published' : 'not-persisted', kind: outcome.kind });
       const savedReceipt = effectReceipt as { receiptId: string; ownership: Record<string, unknown> } | null;
       return json({ ...base, ok: persisted || outcome.kind === 'already-fresh', admitted: persisted,
-        outcome, autoVerify, ...(persisted && savedReceipt ? { completionReceipt: { status: 'recorded',
+        persisted, ...(outcome.kind === 'healed' && outcome.persisted ? {
+          repairQueue: { candidate: queue.candidate, repairHead: outcome.toRepairHead },
+          movedRepairHead: { from: queue.repairHead, to: outcome.toRepairHead },
+        } : {}), outcome, autoVerify, ...(persisted && savedReceipt ? { completionReceipt: { status: 'recorded',
           effectRef: `release:repair-queue:heal-generated:${savedReceipt.receiptId}` } } : {}) });
     }
     if (args.op === 'record-edit') {
