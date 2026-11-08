@@ -21,7 +21,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it, onTestFailed, vi } from 'vitest';
-import { bindRuntimeProcessTree, observeRuntimeExecutableMemory, observeRuntimePageSize, observeRuntimeProcessIdentity,
+import { bindRuntimeExecEntry, bindRuntimeProcessTree, observeRuntimeExecEntry, observeRuntimeExecutableMemory, observeRuntimePageSize, observeRuntimeProcessIdentity,
   observeRuntimeTracerIdentity, runtimeFileTraceArguments } from './memory/bench/runtime-file-opens.mjs';
 import {
   ROOT as SOURCE_ROOT,
@@ -4010,10 +4010,13 @@ describe('BG inherited manifest and original source boundaries', () => {
     generation?: { store: string, path: string };
   }> | undefined)[] = [];
   async function compiledRuntime(transformed = false, native = false, host?: 'complete' | 'missing-member' | 'with-builtins' | 'with-vdso',
-    custodyCase?: string, frozenGeneration = false, jit = false, selectedMemory = false) {
+    custodyCase?: string, frozenGeneration = false, jit = false, selectedMemory = false, execEntry = false) {
     const index = jit ? 8 + Number(transformed) + Number(native)*2 : host === 'with-vdso' ? 7 : host === 'with-builtins' ? 6 : host === 'complete' ? 4 : host === 'missing-member' ? 5
       : Number(transformed) + Number(native) * 2;
     const build = async () => {
+      // Fresh builds may use the same variant; keep their exclusive captures
+      // and per-process JIT artifacts in separate directories.
+      const runtimeRoot = mkdtempSync(join(tmp, 'runtime-build-'));
       // Independently pin a reference-host file census before the compiler and
       // target start. Never derive expectations from the target's native packet.
       // This fixture reference is not operational host approval or creator proof.
@@ -4042,7 +4045,7 @@ console.log(JSON.stringify({ files: libraries.map(({ path, sha256, bytes }) => (
           && /^[a-f0-9]{64}$/.test(source.sha256) && Number.isSafeInteger(source.bytes)
           && source.bytes >= 0), 'reference inventory must contain source identities before target start').toBe(true);
         if (host === 'missing-member') manifest.files = manifest.files.filter(file => file.path !== manifest.interpreter);
-        const path = join(tmp, `runtime-expected-host-${host}.json`);
+        const path = join(runtimeRoot, `runtime-expected-host-${host}.json`);
         writeFileSync(path, JSON.stringify({ schemaVersion: 1, files: manifest.files,
           ...(host === 'with-builtins' ? { builtinSources: manifest.builtinSources } : {}),
           ...(host === 'with-vdso' ? { vdso: { origin: manifest.vdso.origin,
@@ -4058,10 +4061,10 @@ console.log(JSON.stringify({ files: libraries.map(({ path, sha256, bytes }) => (
       const prefix = (host ? `runtime-host-${host}` : native ? 'runtime-native-output'
         : transformed ? 'runtime-transformed-output' : 'runtime-compiled-output')
         + (custodyCase ? `-${custodyCase}` : '');
-      const entry = join(tmp, prefix + '.mjs');
+      const entry = join(runtimeRoot, prefix + '.mjs');
       cpSync(output.entry.path, entry);
-      const capture = join(tmp, prefix + '.sources.jsonl');
-      const trace = join(tmp, prefix + '.trace');
+      const capture = join(runtimeRoot, prefix + '.sources.jsonl');
+      const trace = join(runtimeRoot, prefix + '.trace');
       const preload = join(SOURCE_ROOT, 'packages/operator-core/lib/memory/bench/runtime-source-capture.mjs');
       const sourceInput = join(fixture.prepared.root, 'packages/core/runtime.' + (transformed ? 'ts' : 'mjs'));
       const dependencyInput = join(fixture.prepared.root, 'node_modules/fixture-dependency/index.js');
@@ -4070,11 +4073,11 @@ console.log(JSON.stringify({ files: libraries.map(({ path, sha256, bytes }) => (
       // loader's transformed bytes must never become original file authority.
       for (const packagePath of ['package.json', 'node_modules/fixture-dependency/package.json'])
         expect(JSON.parse(readFileSync(join(fixture.prepared.root, packagePath), 'utf8')).type).toBe('module');
-      const nativePreload = join(tmp, prefix + '.native.mjs');
+      const nativePreload = join(runtimeRoot, prefix + '.native.mjs');
       // This diagnostic entry imports the exact compiled bytes before reporting
       // readiness. It does not turn its own generated source into original-input
       // authority, or extend a selected sample to the whole runtime population.
-      const memoryEntry = join(tmp, prefix + '.memory.mjs');
+      const memoryEntry = join(runtimeRoot, prefix + '.memory.mjs');
       if (selectedMemory) writeFileSync(memoryEntry, `
 await import(${JSON.stringify(pathToFileURL(entry).href)});
 function bgMemoryTarget(x) { return x * 3 + 1; }
@@ -4129,8 +4132,10 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
           '--import', pathToFileURL(dependencyInput).href,
           ...(native ? ['--import', pathToFileURL(nativePreload).href] : []), selectedMemory ? memoryEntry : entry];
       let memory: NonNullable<NonNullable<Parameters<typeof qualifyBgVerifierRuntimeSources>[0]['execution']['jitCaptures']>[number]['memory']> | undefined;
+      let execEntries: Parameters<typeof bindRuntimeProcessTree>[1]['execEntries'];
       const runSelectedMemory = async () => {
-        const child = spawn('/usr/bin/strace', ['-D', ...runtimeFileTraceArguments(trace, command)], {
+        const traceArgs = runtimeFileTraceArguments(trace, command, execEntry ? { execEntryDelayMs: 5000 } : undefined);
+        const child = spawn('/usr/bin/strace', [...(execEntry ? [] : ['-D']), ...traceArgs], {
           env: { PATH: '/usr/bin:/bin', PAPERCUSP_RUNTIME_SOURCE_CAPTURE: capture }, stdio: ['pipe','pipe','pipe'],
         });
         let stdout = '', stderr = '', tracerStopped = false;
@@ -4138,16 +4143,52 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
         const closed = new Promise<{ code: number | null, signal: NodeJS.Signals | null }>((resolve, reject) => {
           child.once('error', reject); child.once('close', (code, signal) => resolve({code,signal}));
         });
+        void closed.catch(() => {});
+        child.stdout.on('data', chunk => { stdout += chunk; });
         child.stderr.on('data', chunk => { stderr += chunk; });
+        const until = async (check: () => boolean, label: string) => {
+          const deadline = Date.now() + 10_000;
+          while (!check()) {
+            if (Date.now() > deadline) throw new Error('BG ' + label + ' timeout: ' + stderr);
+            await new Promise(resolve => setTimeout(resolve, 5));
+          }
+        };
+        const tracerAlive = () => {
+          if (!tracerIdentity) return false;
+          try {
+            const state = readFileSync('/proc/' + tracerIdentity.processId + '/stat', 'utf8').split(') ')[1][0];
+            return state !== 'Z' && state !== 'X'
+              && observeRuntimeProcessIdentity(tracerIdentity.processId).startTimeTicks === tracerIdentity.startTimeTicks;
+          } catch (error) {
+            if (['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) return false;
+            throw error;
+          }
+        };
         try {
-          await new Promise<void>((resolve, reject) => {
-            const timer = setTimeout(() => reject(new Error('BG memory ready timeout: '+stderr)), 10_000);
-            child.stdout.on('data', chunk => { stdout += chunk; if (stdout.includes('BG_MEMORY_READY\n')) {
-              clearTimeout(timer); resolve();
-            }});
-            child.once('error', error => { clearTimeout(timer); reject(error); });
-            child.once('close', () => { clearTimeout(timer); reject(new Error('BG exited before memory readiness: '+stderr)); });
-          });
+          if (execEntry) {
+            let identity: ReturnType<typeof observeRuntimeProcessIdentity> | undefined;
+            await until(() => {
+              try {
+                const candidate = observeRuntimeProcessIdentity(child.pid!);
+                if (candidate.executable !== process.execPath) return false;
+                tracerIdentity = observeRuntimeTracerIdentity(candidate, '/usr/bin/strace');
+                identity = candidate; return true;
+              } catch { return false; }
+            }, 'exec entry');
+            process.kill(tracerIdentity!.processId, 'SIGSTOP'); tracerStopped = true;
+            await until(() => readFileSync('/proc/' + tracerIdentity!.processId + '/stat', 'utf8')
+              .split(') ')[1].startsWith('T '), 'entry tracer stop');
+            const observation = observeRuntimeExecEntry(identity!, tracerIdentity!);
+            // Keep the raw kernel witness. A later selected-memory snapshot
+            // cannot supply historical mapping origins at this boundary.
+            execEntries = [{ observation, identity: identity!, tracerIdentity: tracerIdentity! }];
+            expect(stdout).toBe(''); expect(existsSync(capture)).toBe(false);
+            process.kill(tracerIdentity!.processId, 'SIGCONT'); tracerStopped = false;
+          }
+          await until(() => {
+            if (child.exitCode !== null || child.signalCode !== null) throw new Error('BG exited before memory readiness: ' + stderr);
+            return stdout.includes('BG_MEMORY_READY\n');
+          }, 'memory readiness');
           const launchIdentity = observeRuntimeProcessIdentity(child.pid!);
           tracerIdentity = observeRuntimeTracerIdentity(launchIdentity, '/usr/bin/strace');
           expect(child.kill('SIGSTOP')).toBe(true);
@@ -4187,6 +4228,7 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
           process.kill(tracerIdentity.processId,'SIGCONT'); tracerStopped=false;
           child.kill('SIGCONT'); child.stdin.end('finish\n');
           const terminal=await closed;
+          await until(() => !tracerAlive(), 'tracer termination');
           return {status:terminal.code,signal:terminal.signal,stdout,stderr,error:undefined};
         } finally {
           if(tracerStopped&&tracerIdentity) {
@@ -4196,7 +4238,8 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
             } catch {}
           }
           if(child.exitCode===null){child.kill('SIGCONT');child.kill('SIGKILL');}
-          await closed;
+          await closed.catch(() => {});
+          if (tracerAlive()) process.kill(tracerIdentity!.processId, 'SIGKILL');
         }
       };
       const result = selectedMemory ? await runSelectedMemory() : spawnSync('strace', runtimeFileTraceArguments(trace, command), {
@@ -4231,7 +4274,7 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
           bytes: stderr.length, sha256: digest(stderr) } };
       })()] : undefined;
       const terminal={processId:rows[0].processId,pageSizeBytes,exitCode:result.status!,signal:result.signal,
-        eof:true,captureStartedBeforeExec:true};
+        eof:true,captureStartedBeforeExec:true, ...(execEntries ? { execEntries } : {})};
       let jitCaptures: Parameters<typeof qualifyBgVerifierRuntimeSources>[0]['execution']['jitCaptures'];
       if(jit) {
         const elf=Buffer.alloc(20), fd=nativeFs.openSync(process.execPath,'r');
@@ -4249,8 +4292,57 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
           ...(nativeCaptures ? { nativeCaptures } : {}),
           ...(jitCaptures ? { jitCaptures } : {}), terminal } };
     };
-    return custodyCase || frozenGeneration || selectedMemory ? build() : runtimeCompilations[index] ??= build();
+    return custodyCase || frozenGeneration || selectedMemory || execEntry ? build() : runtimeCompilations[index] ??= build();
   }
+
+  it.runIf(process.platform === 'linux' && process.arch === 'x64')(
+    'consumes actual compiled BG exec-entry evidence while refusing the earlier uncaptured shell image', async () => {
+      const fixture = await compiledRuntime(false, false, undefined, undefined, true, true, true, true);
+      vi.stubEnv('PAPERCUSP_DEPENDENCY_GENERATION_ROOT', fixture.generation!.store);
+      try {
+        const { execution } = fixture;
+        const witness = (execution.terminal as Parameters<typeof bindRuntimeProcessTree>[1]).execEntries![0];
+        const entry = bindRuntimeExecEntry(witness.observation, witness.identity, witness.tracerIdentity);
+        const tree = bindRuntimeProcessTree(execution.trace, execution.terminal);
+        const root = tree.tasks.find(task => task.taskId === execution.terminal.processId)!;
+        expect(root.execs.map(exec => exec.executable)).toEqual(['/bin/sh', process.execPath]);
+        const changes = tree.mappingOrigins.changes.filter(change => change.operation === 'exec-entry-snapshot');
+        expect(changes).toHaveLength(1);
+        expect(changes[0].atMs).toBe(root.execs[1].atMs);
+        expect(changes[0].ranges).toHaveLength(entry.mappings.length);
+        expect(changes[0].ranges.every(range => range.origin.execEntryMapsSha256 === entry.mapsSha256)).toBe(true);
+        const unobserved = (atMs: number) => ({taskId: root.taskId, atMs, reason: 'exec-kernel-installed-mappings-unobserved'});
+        expect(tree.mappingOrigins.gaps).toContainEqual(unobserved(root.execs[0].atMs));
+        expect(tree.mappingOrigins.gaps).not.toContainEqual(unobserved(root.execs[1].atMs));
+        const withoutEntry = bindRuntimeProcessTree(execution.trace, { ...execution.terminal, execEntries: undefined });
+        expect(withoutEntry.mappingOrigins.gaps).toContainEqual(unobserved(root.execs[1].atMs));
+        const compiled = execution.captures[0].filter(row => row.kind === 'source'
+          && row.url === pathToFileURL(execution.entry).href);
+        expect(compiled).toHaveLength(1);
+        expect(compiled[0]).toMatchObject({ sha256: fixture.output.entry.sha256,
+          bytes: Number(fixture.output.compilerReceipt!.output.size) });
+        expect(entry).toMatchObject({kernelEntryObserved: true, mappingPopulationComplete: false,
+          executableBytesQualified: false, completeRuntimeClosureVerified: false});
+        expect(tree.mappingOrigins).toMatchObject({mappingPopulationComplete: false, executableBytesQualified: false});
+        expect(tree.completeRuntimeClosureVerified).toBe(false);
+        // The qualifier must consume the raw terminal witness and still refuse
+        // full source coverage: the final Node receipt never captured /bin/sh.
+        await expect(fixture.runtimeCustody!.qualify(fixture))
+          .rejects.toThrow('runtime source process image missing, replaced or mismatched');
+        const changed = { ...execution, terminal: { ...execution.terminal, execEntries: [{ ...witness,
+          observation: { ...witness.observation, mapsAfter: witness.observation.mapsAfter + '\n' } }] } };
+        await expect(fixture.runtimeCustody!.qualify({ ...fixture, execution: changed }))
+          .rejects.toThrow('exec syscall/maps/auxv changed');
+        const out = process.env.PAPERCUSP_TEST_ARTIFACT_DIR;
+        if (out) {
+          writeFileSync(join(out, 'bg-entry-observation.json'), JSON.stringify(witness));
+          writeFileSync(join(out, 'bg-entry-trace.log'), execution.trace);
+          writeFileSync(join(out, 'bg-entry-sources.json'), JSON.stringify(execution.captures));
+          writeFileSync(join(out, 'bg-entry-binding.json'), JSON.stringify({ entry, tree,
+            output: fixture.output, record: fixture.record }));
+        }
+      } finally { vi.unstubAllEnvs(); }
+    }, 60_000);
 
   it.runIf(process.platform==='linux')('joins actual compiled runtime selected memory with frozen build inputs and an independent stopped tracer', async () => {
     const fixture=await compiledRuntime(false,false,undefined,undefined,true,true,true);
