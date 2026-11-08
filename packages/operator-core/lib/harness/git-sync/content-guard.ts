@@ -443,8 +443,13 @@ export async function detectUnscannedStagedOffenders(deps: StagedRescanDeps): Pr
     } else {
       const byOid = new Map<string, Array<(typeof targets)[number]>>();
       const fallback = new Set<(typeof targets)[number]>();
+      const indexedTargets: typeof targets = [];
       for (const target of targets) {
         const rows = indexRows.get(target.file) ?? [];
+        // A successful census proves there is no staged blob for these paths.
+        // Retrying deletions individually only repeats an expected git show 128.
+        if (rows.length === 0) continue;
+        indexedTargets.push(target);
         if (rows.length !== 1 || rows[0]!.stage !== 0 || rows[0]!.mode === '160000') {
           fallback.add(target);
           continue;
@@ -474,7 +479,7 @@ export async function detectUnscannedStagedOffenders(deps: StagedRescanDeps): Pr
       }
       if (checkFailed) {
         log?.(`[content-guard] ${repoPath}: staged blob batch-check failed; falling back to per-file reads`);
-        await readIndividually(targets);
+        await readIndividually(indexedTargets);
       } else {
         const blobEntries: StagedBlobBatchEntry[] = [];
         for (const oid of uniqueOids) {

@@ -708,6 +708,27 @@ describe('detectUnscannedStagedOffenders — bounded byte-safe private-index bat
     expect(calls).toEqual(['--batch-check=%(objectname) %(objecttype) %(objectsize)', '--batch --buffer']);
   });
 
+  it.each([false, true])('does not read absent index paths when batch-check failure is %s', async (failCheck) => {
+    const calls: string[] = [];
+    const shown: string[] = [];
+    const deleted = Array.from({ length: 256 }, (_, index) => `docs/deleted-${index}.mdx`);
+    const observedRunGit: RunGit = async (args, cwd, options) => {
+      if (args[0] === 'show') shown.push(args[1]!.slice(1));
+      return runGit(args, cwd, options);
+    };
+    const offenders = await detectUnscannedStagedOffenders({
+      runGit: observedRunGit,
+      runGitStdin: batchRunner(calls, failCheck),
+      repoPath: '/repo',
+      staged: [...files.map((entry) => entry.file), ...deleted],
+      scanned: new Map(),
+      detectors: [makeDetector({ matches: () => true })],
+    });
+
+    expect(offenders.map((entry) => entry.file)).toEqual(['docs/late.mdx']);
+    expect(shown.sort()).toEqual(failCheck ? files.map((entry) => entry.file).sort() : []);
+  });
+
   it('retains per-file reads when the stdin batch preflight fails', async () => {
     const calls: string[] = [];
     const shown: string[] = [];

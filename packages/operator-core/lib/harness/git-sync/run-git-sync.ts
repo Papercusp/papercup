@@ -87,6 +87,7 @@ import {
 } from './git-sync-attribution';
 import { attributionScopeLabel, resolveAttributionRepo } from './attribution-repo';
 import { canonicalJson } from '../../external-bench/reproducibility/canonical-json';
+import { guardStagedWorkspaceLock, workspaceLockTreeValidator } from './staged-workspace-lock';
 
 /**
  * Per-call options a git runner must forward to the git child.
@@ -6265,7 +6266,10 @@ async function commitAttributedGroupsPass(
   // reports staged reverts when the shared index has an obsolete gitlink, so
   // even --ignore-submodules=dirty cannot establish a pending pointer change.
   const allDirty = await dirtyFiles(runGit, repoPath, { ignoreSubmodules: 'dirty' });
-  const prioritySet = new Set(opts.priorityPaths ?? []);
+  // Dependency metadata and its gitlinks must share a candidate tree. Publishing a
+  // priority pointer first can be just as incoherent as publishing its lock first.
+  const hasDirtyManifest = allDirty.some(isNpmManifestPath);
+  const prioritySet = new Set(hasDirtyManifest ? [] : opts.priorityPaths ?? []);
   const pendingPriorityPaths = async (paths: string[]): Promise<string[]> => {
     const pending: string[] = [];
     for (const path of paths.filter((f) => prioritySet.has(f))) {
@@ -6339,6 +6343,10 @@ async function commitAttributedGroupsPass(
       files: dirty,
       log: opts.log,
     });
+    const dependencyUnit = dirty.filter(path => isNpmManifestPath(path) || opts.priorityPaths?.includes(path));
+    if (hasDirtyManifest) {
+      for (const provider of dependencyUnit.slice(1)) edges.push({ importer: dependencyUnit[0]!, provider });
+    }
     const linked = mergeImportLinkedGroups(grouped, edges);
     if (linked !== grouped) {
       opts.log?.(
@@ -7587,6 +7595,7 @@ async function commitOneRepoWithScratch(
       );
     }
     let committedAny = false;
+    const validateDependencyTree = workspaceLockTreeValidator();
     // EI-24712906810240170: the post-stage guard for every commit below. A late lock is
     // reported like a pre-stage one (skippedPaths), deduped by path.
     // WI-10006705: an attributed group passes the runner bound to its PRIVATE index, so the
@@ -7627,6 +7636,27 @@ async function commitOneRepoWithScratch(
         log: o.log,
       });
       if (guard.ok) {
+        const dependencies = await guardStagedWorkspaceLock(indexRunGit, repoPath, validateDependencyTree);
+        if (!dependencies.ok) return dependencies;
+        for (const path of dependencies.heldProviders ?? []) {
+          if (!postStageExcludedDependencies.includes(path)) postStageExcludedDependencies.push(path);
+          exclusionReasons.set(path, `source in gitlink withheld for workspace dependency coherence: ${dependencies.reason}`);
+        }
+        for (const path of dependencies.held) {
+          guard.unstaged.push(path);
+          if (!postStageExcludedDependencies.includes(path)) postStageExcludedDependencies.push(path);
+          if (!stagingExcludePaths.includes(path)) stagingExcludePaths.push(path);
+          exclusionReasons.set(path, `workspace dependency coherence: ${dependencies.reason}`);
+          o.log(`[git-sync] ${logScope}: holding incoherent dependency path ${path}: ${dependencies.reason}`);
+          if (!contentErrors.some(error => error.file === path && error.detectorKey === 'workspace-lock-coherence')) {
+            contentErrors.push({
+              file: path,
+              detectorKey: 'workspace-lock-coherence',
+              error: dependencies.reason!,
+              fixerRole: 'content-fixer',
+            });
+          }
+        }
         for (const holding of guard.lateLockedHoldings) {
           if (skippedPaths.some((p) => p.path === holding.path)) continue;
           skippedPaths.push({
@@ -7638,6 +7668,19 @@ async function commitOneRepoWithScratch(
           });
         }
         await o.yieldIfRequested?.('before-superproject-publish');
+        if (dependencies.held.length > 0) {
+          // The validator ran after late-lock/drift pruning. Feed any newly held
+          // provider back through the native importer/provider guard on THIS
+          // private index. Each round removes dependency paths, so it terminates.
+          const follow = await postStageGuard(indexRunGit, indexRunGitStdin);
+          if (!follow.ok) return follow;
+          return {
+            ...follow,
+            lateLockedHoldings: [...guard.lateLockedHoldings, ...follow.lateLockedHoldings],
+            drifted: [...new Set([...guard.drifted, ...follow.drifted])],
+            unstaged: [...new Set([...guard.unstaged, ...follow.unstaged])],
+          };
+        }
       }
       return guard;
     };
