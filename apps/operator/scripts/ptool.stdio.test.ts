@@ -9,9 +9,9 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { CallToolRequestSchema, InitializeRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { expect, it } from 'vitest';
-import { createPtoolStdioTransport, createPtoolStdioBridge } from './ptool.mjs';
+import { createPtoolStdioTransport, createPtoolStdioBridge, enablePtoolMemoryReceipts } from './ptool.mjs';
 import { openDeliveryLedger } from './hooks/inject/delivery-ledger.mjs';
 
 it.each(['codex', 'claude', 'omp'])('records %s MCP output only after the real writable callback', async client => {
@@ -91,6 +91,48 @@ it('keeps pending stdout errors handled when the MCP input closes first', async 
   input.destroy(); output.destroy();
 });
 
+it('forwards initialize offers only with the unchanged instructions and waits for stdout proof', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'ptool-initialize-'));
+  const env = { PAPERCUSP_HOME: home, PAPERCUSP_SID: 'su-initialize', PAPERCUSP_AGENT: 'claude' };
+  const input = new PassThrough();
+  let finish: (() => void) | undefined;
+  const output = new Writable({ write(_chunk, _encoding, callback) { finish = callback; } });
+  const transport = await createPtoolStdioTransport({ stdin: input, stdout: output, env });
+  const rendered = '- initialize memory with its complete condition ☃';
+  const fragment = { kind: 'memory', id: 'initialize-memory', epoch: 2, port: 'initialize', rendered,
+    bodySha256: createHash('sha256').update(rendered).digest('hex'), bodyBytes: Buffer.byteLength(rendered) };
+  const offer = { owner: env.PAPERCUSP_SID, token: 'initialize-1', fragments: [fragment] };
+  const requests: unknown[] = [];
+  const client = { request: async (request: unknown) => {
+    requests.push(request);
+    return { instructions: rendered, _meta: { 'papercusp/memoryEmission': offer } };
+  }, listTools: async () => ({ tools: [] }), callTool: async () => ({ content: [] }) };
+  enablePtoolMemoryReceipts(client, env);
+  const bridge = createPtoolStdioBridge(client, { env });
+  try {
+    await client.request({ method: 'initialize', params: { protocolVersion: '2025-03-26' } });
+    expect(requests).toMatchObject([{ params: { _meta: { 'papercusp/memoryReceipt': {
+      version: 1, confirmations: [],
+    } } } }]);
+    expect(bridge.initializeResult({ instructions: rendered + ' changed' })).not.toHaveProperty('_meta');
+    const result = bridge.initializeResult({ instructions: rendered });
+    expect(result._meta).toMatchObject({ 'papercusp/memoryEmission': offer });
+    const sent = transport.send({ jsonrpc: '2.0', id: 1, result });
+    expect(openDeliveryLedger(env.PAPERCUSP_SID, env, 'mcp')!.confirmedMemoryDeliveries()).toEqual([]);
+    finish!(); await sent;
+    const { rendered: _text, ...manifest } = fragment;
+    expect(openDeliveryLedger(env.PAPERCUSP_SID, env, 'mcp')!.confirmedMemoryDeliveries())
+      .toEqual([{ token: offer.token, fragments: [manifest] }]);
+    await client.request({ method: 'initialize', params: {} });
+    expect(requests[1]).toMatchObject({ params: { _meta: { 'papercusp/memoryReceipt': {
+      confirmations: [{ token: offer.token, fragments: [manifest] }],
+    } } } });
+  } finally {
+    await transport.close(); input.destroy(); output.destroy();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 // A local protocol fixture: no operator, shared database or platform credentials.
 it('carries the downstream listed generation across the real CLI stdio boundary without replay', async () => {
   const home = await mkdtemp(join(tmpdir(), 'ptool-stdio-'));
@@ -98,13 +140,25 @@ it('carries the downstream listed generation across the real CLI stdio boundary 
   await writeFile(tokenFile, 'stdio-fixture-token', { mode: 0o600 });
   let generation = 'serving-generation-v1:first';
   const calls: Array<Record<string, unknown>> = [];
+  const initializations: unknown[] = [];
+  const instructions = 'Keep these upstream native instructions.\n\nComplete condition ☃';
+  const fragment = { kind: 'memory', id: 'initialize-cli-memory', epoch: 3, port: 'initialize',
+    rendered: instructions, bodySha256: createHash('sha256').update(instructions).digest('hex'),
+    bodyBytes: Buffer.byteLength(instructions) };
+  const offer = { owner: 'su-stdio-cli', token: 'cli-initialize-1', fragments: [fragment] };
   const upstream = createServer(async (request, response) => {
     if (request.headers.authorization !== 'Bearer stdio-fixture-token') {
       response.writeHead(401).end();
       return;
     }
     const server = new Server({ name: 'generation-fixture', version: '1' }, {
-      capabilities: { tools: {} }, instructions: 'Keep these upstream native instructions.\n\nComplete condition ☃',
+      capabilities: { tools: {} }, instructions,
+    });
+    server.setRequestHandler(InitializeRequestSchema, async ({ params }) => {
+      initializations.push(structuredClone(params));
+      return { protocolVersion: '2025-03-26', capabilities: { tools: {} },
+        serverInfo: { name: 'generation-fixture', version: '1' }, instructions,
+        _meta: { 'papercusp/memoryEmission': offer } };
     });
     server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{
       name: 'tools:invoke', inputSchema: { type: 'object', properties: {
@@ -132,7 +186,8 @@ it('carries the downstream listed generation across the real CLI stdio boundary 
   const transport = new StdioClientTransport({ command: process.execPath,
     args: [fileURLToPath(new URL('./ptool.mjs', import.meta.url)), 'tools:invoke', '--stdio',
       '--url', `http://127.0.0.1:${address.port}`, '--token-file', tokenFile],
-    env: Object.fromEntries(Object.entries({ ...process.env, HOME: home, PAPERCUSP_OPERATOR_HOME: home })
+    env: Object.fromEntries(Object.entries({ ...process.env, HOME: home, PAPERCUSP_OPERATOR_HOME: home,
+      PAPERCUSP_HOME: home, PAPERCUSP_SID: offer.owner, PAPERCUSP_AGENT: 'claude' })
       .filter((entry): entry is [string, string] => typeof entry[1] === 'string')),
     stderr: 'pipe',
   });
@@ -141,7 +196,9 @@ it('carries the downstream listed generation across the real CLI stdio boundary 
   const client = new Client({ name: 'legacy-metadata-free-client', version: '1' });
   try {
     await client.connect(transport, { timeout: 30_000 });
-    expect(client.getInstructions()).toBe('Keep these upstream native instructions.\n\nComplete condition ☃');
+    expect(client.getInstructions()).toBe(instructions);
+    expect(initializations).toMatchObject([{ clientInfo: { name: 'ptool-claude' },
+      _meta: { 'papercusp/memoryReceipt': { version: 1, confirmations: [] } } }]);
     expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(['tools:invoke']);
     const request = { name: 'tools:invoke', arguments: { name: 'fixture:missing', args: {} } };
     const first = await client.callTool(request);
@@ -149,6 +206,10 @@ it('carries the downstream listed generation across the real CLI stdio boundary 
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({ arguments: { name: 'fixture:missing', args: '{}' },
       _meta: { 'papercusp/servingGeneration': generation } });
+    const { rendered: _text, ...manifest } = fragment;
+    expect(calls[0]._meta).toMatchObject({ 'papercusp/memoryReceipt': {
+      version: 1, confirmations: [{ token: offer.token, fragments: [manifest] }],
+    } });
     generation = 'serving-generation-v1:second';
     expect(await client.callTool(request)).toMatchObject({ isError: true,
       content: [{ text: 'stale_tool_contract' }] });

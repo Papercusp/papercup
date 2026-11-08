@@ -38,7 +38,7 @@ import { join } from 'node:path';
  * @property {() => string | null} confirmed  the token this session last proved it emitted
  * @property {() => object[]} confirmedFactBodies private manifests from that token's immutable stdout receipt
  * @property {() => object[]} confirmedMemoryDeliveries exact fragments from recent immutable stdout receipts
- * @property {(token: unknown, emission?: { payload?: string, client?: string, nativeSessionId?: string | null, control?: object | null, factBodyOffers?: object[] }) => void} offer
+ * @property {(token: unknown, emission?: { payload?: string, client?: string, format?: string, nativeSessionId?: string | null, control?: object | null, factBodyOffers?: object[], memoryFragmentOffers?: object[] }) => void} offer
  *   remember the returned token and the exact payload that the caller will emit
  * @property {() => boolean} commit           record the offered token; call ONLY after emitting
  */
