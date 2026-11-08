@@ -389,4 +389,77 @@ describe('loop turn-start producer to reconciler, real Postgres', () => {
     `;
     expect(routine?.parked).toBe(false);
   });
+
+  it('joins a direct loop-fire marker by exact nonce when the marker follows the prompt timestamp', async () => {
+    const now = Date.now();
+    const firedAt = new Date(now - 60_000);
+    const fixture = {
+      id: 'rt-direct-loop-fire-exact-nonce',
+      owner: 'su-direct-loop-fire-exact-nonce',
+      wakeCount: 17,
+    };
+    await insertLoopFixture({ ...fixture, firedAt });
+
+    const launchId = await recordAdvSession({
+      workspaceId: WS, agent: 'codex', mode: 'omp',
+      coordOwnerId: fixture.owner, sessionId: `native-${fixture.owner}`,
+    });
+    expect(launchId).not.toBeNull();
+    expect(await recordSuLaunchSpec(launchId!, fixture.owner, {
+      v: 1, workspaceId: WS, turnProvenanceDir: provenanceDir,
+    })).toBe(true);
+
+    const exactPrompt = await tagTurnForInjection({
+      sid: fixture.owner,
+      origin: 'loop-fire',
+      text: 'Continue the scheduled loop task.',
+      loopFire: { routineId: fixture.id, wakeCount: fixture.wakeCount },
+      dir: provenanceDir!,
+    });
+    const wrongNoncePrompt = await tagTurnForInjection({
+      sid: fixture.owner,
+      origin: 'loop-fire',
+      text: 'Unrelated loop-fire prompt.',
+      loopFire: { routineId: fixture.id, wakeCount: fixture.wakeCount },
+      dir: provenanceDir!,
+    });
+    expect(await recordLoopTurnStart({
+      owner: fixture.owner, workspaceId: WS, client: 'codex', prompt: exactPrompt.taggedText,
+    })).toBe(true);
+
+    const stamps = await sql<Array<{ created_at: Date }>>`
+      SELECT created_at FROM harness_shared.agent_activity
+       WHERE workspace_id = ${WS} AND owner_id = ${fixture.owner}
+         AND summary = ${LOOP_TURN_START_MARKER}`;
+    expect(stamps).toHaveLength(1);
+
+    const insertTurn = async (sessionId: string, prompt: string, promptAt: Date, assistantAt: Date) => sql`
+      INSERT INTO harness_shared.session_turns
+        (workspace_id, source_kind, session_id, turn_idx, ts, owner, harness_slug,
+         speaker, text, turn_origin, turn_origin_verdict, turn_origin_classifier_version)
+      VALUES
+        (${WS}, 'codex', ${sessionId}, 0, ${promptAt}, ${fixture.owner}, 'papercusp',
+         'user', ${prompt}, 'loop-fire', 'agent-injected', 1),
+        (${WS}, 'codex', ${sessionId}, 1, ${assistantAt}, ${fixture.owner}, 'papercusp',
+         'assistant', 'loop continuation completed', NULL, 'not-user-turn', 1)
+    `;
+
+    const wrongPromptAt = new Date(stamps[0]!.created_at.getTime() + 1_000);
+    await insertTurn(
+      `session-${fixture.id}-wrong-nonce`, wrongNoncePrompt.taggedText,
+      wrongPromptAt, new Date(wrongPromptAt.getTime() + 2_000),
+    );
+    expect((await getLoopStatus(fixture.owner, { sql }))?.lastLoopTurnAt).toBeNull();
+
+    const exactPromptAt = new Date(now - 30_000);
+    const exactAssistantAt = new Date(now + 10_000);
+    expect(stamps[0]!.created_at.getTime()).toBeGreaterThan(exactPromptAt.getTime());
+    await insertTurn(
+      `session-${fixture.id}-exact-nonce`, exactPrompt.taggedText,
+      exactPromptAt, exactAssistantAt,
+    );
+
+    const status = await getLoopStatus(fixture.owner, { sql });
+    expect(status?.lastLoopTurnAt).toBe(exactAssistantAt.toISOString());
+  });
 });
