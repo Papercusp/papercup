@@ -4327,8 +4327,10 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
       const vdso = execution.nativeCaptures![0]!.firstRun.runtime.loaderProcess.vdso;
       if (defect === 'digest') vdso.sha256 = 'a'.repeat(64);
       if (defect === 'size') {
-        vdso.bytes++;
-        vdso.endAddress = (BigInt('0x' + vdso.endAddress) + 1n).toString(16);
+        // Stay inside the observed range so the original census shape remains
+        // valid; expanding it may overlap the adjacent loader mapping first.
+        vdso.bytes--;
+        vdso.endAddress = (BigInt('0x' + vdso.endAddress) - 1n).toString(16);
       }
       if (defect === 'missing-native') delete execution.nativeCaptures;
       const qualify = () => qualifyBgVerifierRuntimeSources({ ...fixture, execution });

@@ -44,7 +44,7 @@ import { admittedByLeg, collapseNearDuplicates } from './recall-admission';
 import { assessCorpusCoverageGate, CORPUS_GATE_SOURCES, type CorpusGateDecision } from './corpus-coverage-gate';
 import { isMemoryWorkspaceScopedRecallOn, keepUserPoolHitForWorkspace } from './workspace-scope-recall';
 import { recentlySurfacedIds } from './bump-last-surfaced';
-import { alreadySurfacedIds, currentSessionEpoch, memoryFragmentOffer, type MemoryFragmentOffer, type PreparedMemoryBlock } from './session-epoch-ledger';
+import { alreadySurfacedIds, currentSessionEpoch, memoryFragmentOffer, collectsMemoryEmission, collectMemoryEmission, type MemoryFragmentOffer, type PreparedMemoryBlock } from './session-epoch-ledger';
 import { hiveScopeKey, potSlugFromScope, resolvePotSlugsForHarnesses } from './hive-scope';
 import {
   recallsMemoryPool,
@@ -442,6 +442,14 @@ export async function prepareMemoryContextBlock(input: MemoryInjectionInput): Pr
 }
 
 export async function buildMemoryContextBlock(input: MemoryInjectionInput, fragments?: MemoryFragmentOffer[]): Promise<string | null> {
+  const collected = fragments ?? (collectsMemoryEmission(input.session?.sessionId) ? [] : undefined);
+  const text = await buildMemoryContextBlockInner(input, collected);
+  if (text && collected) collectMemoryEmission(input.session?.sessionId,
+    collected.filter(row => (`\n${text}\n`).includes(`\n${row.rendered}\n`)));
+  return text;
+}
+
+async function buildMemoryContextBlockInner(input: MemoryInjectionInput, fragments?: MemoryFragmentOffer[]): Promise<string | null> {
   const { sessionAllowsAmbientContext } = await import('../capability-envelope/session-confinement-port');
   if (!await sessionAllowsAmbientContext({ ownerId: input.session?.sessionId, workspaceId: input.workspaceId })) return null;
   const ownsDeadline = !input.deadline;

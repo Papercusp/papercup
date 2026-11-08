@@ -3324,6 +3324,25 @@ function transportOwnerId(ctx: BuiltSpawnContext): string {
   }).ownerId;
 }
 
+/** Receipt metadata is opt-in at the native stdout adapter. Resolve the owner
+ * from transport authentication, never from the caller's offer or tool args. */
+function withMcpMemoryReceipts<Req, Res extends object>(
+  handler: (req: Req, extra: unknown) => Promise<Res>,
+): (req: Req, extra: unknown) => Promise<Res> {
+  return async (req, extra) => {
+    const receipt = (req as { params?: { _meta?: Record<string, unknown> } })?.params?._meta?.['papercusp/memoryReceipt'];
+    if (!receipt || typeof receipt !== 'object' || !('version' in receipt) || receipt.version !== 1)
+      return handler(req, extra);
+    const spawn = await tryBuildSpawnContext(extra);
+    if (spawn.kind !== 'ok') return handler(req, extra);
+    const [{ withMemoryEmissionReceipt }, { getOrgPg }] = await Promise.all([
+      import('../../../memory/session-epoch-ledger'), import('@papercusp/db-org'),
+    ]);
+    return withMemoryEmissionReceipt(getOrgPg().sql, transportOwnerId(spawn.ctx),
+      'confirmations' in receipt ? receipt.confirmations : undefined, () => handler(req, extra));
+  };
+}
+
 /**
  * Resolve the MCP tool listings visible to THIS session — the single walk
  * shared by `tools/list` and the dynamic slash projection on `prompts/list`,
@@ -4232,7 +4251,7 @@ export function registerMcpHost(server: McpServer): void {
     sdk.CallToolRequestSchema,
     // staging-build-tool-routing-2026-10-21 P-002: refuse a call naming another build
     // (`build_mismatch`) before the generation read or dispatch.
-    withMcpRequestDeadline(withMcpBuildFence(withMcpSessionSurfaceRecheck(withFuzzyToolName(
+    withMcpRequestDeadline(withMcpBuildFence(withMcpMemoryReceipts(withMcpSessionSurfaceRecheck(withFuzzyToolName(
     async (
       req: {
         params: {
@@ -6347,7 +6366,7 @@ export function registerMcpHost(server: McpServer): void {
       };
     },
     MCP_FUZZY_DEPS,
-    )))),
+    ))))),
   );
 
   // ── Resources ────────────────────────────────────────────────────

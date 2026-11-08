@@ -26,7 +26,8 @@
  */
 
 import type { SqlTag } from './bump-last-surfaced';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 
 /** Private host metadata; no recalled plaintext is persisted in a receipt. */
 export type MemoryFragmentManifest = {
@@ -56,6 +57,71 @@ function validFragment(row: MemoryFragmentManifest): boolean {
 const sameFragment = (a: MemoryFragmentManifest, b: MemoryFragmentManifest) =>
   a.kind === b.kind && a.id === b.id && a.epoch === b.epoch && a.port === b.port &&
   a.bodySha256 === b.bodySha256 && a.bodyBytes === b.bodyBytes;
+
+// Extend the existing ledger rather than adding a parallel delivery service.
+// Native tool dispatch can invoke recall through several nested helpers. Scope
+// their preparations to one authenticated recipient and one final MCP response.
+const emissionScope = new AsyncLocalStorage<{
+  ownerId: string; active: boolean; fragments: MemoryFragmentOffer[];
+}>();
+
+export function collectsMemoryEmission(ownerId: string | undefined): boolean {
+  const scope = emissionScope.getStore();
+  return !!scope?.active && scope.ownerId === ownerId;
+}
+
+export function collectMemoryEmission(ownerId: string | undefined, fragments: readonly MemoryFragmentOffer[]): void {
+  const scope = emissionScope.getStore();
+  if (!scope?.active || scope.ownerId !== ownerId) return;
+  for (const row of fragments) {
+    if (scope.fragments.length >= 128) break;
+    if (validFragment(row) && !scope.fragments.some(other => sameFragment(row, other))) scope.fragments.push(row);
+  }
+}
+
+/** Only inspect fields the native client presents to the model. Private offer
+ * metadata and structured-only diagnostic payloads cannot prove delivery. */
+function modelVisibleStrings(value: unknown): string[] {
+  if (typeof value === 'string') {
+    try { return modelVisibleStrings(JSON.parse(value)); } catch { return [value]; }
+  }
+  if (Array.isArray(value)) return value.flatMap(modelVisibleStrings);
+  if (value && typeof value === 'object') return Object.entries(value)
+    .filter(([key]) => key !== '_meta').flatMap(([, child]) => modelVisibleStrings(child));
+  return [];
+}
+
+/** Native adapters opt in only when they can prove their completed stdout
+ * write. This prepares an offer; only a subsequent exact receipt stamps it. */
+export async function withMemoryEmissionReceipt<T extends object>(
+  sql: SqlTag, ownerId: string, confirmations: unknown, run: () => Promise<T>,
+): Promise<T & { _meta?: Record<string, unknown> }> {
+  if (Array.isArray(confirmations) && confirmations.length <= 16) {
+    for (const proof of confirmations) {
+      try { await confirmMemoryEmission(sql, ownerId, proof); }
+      catch { /* A missed confirmation permits replay, never false suppression. */ }
+    }
+  }
+  const scope = { ownerId, active: true, fragments: [] as MemoryFragmentOffer[] };
+  let result: T;
+  try { result = await emissionScope.run(scope, run); }
+  finally { scope.active = false; } // Late deadline losers cannot attach offers.
+  const response = result as { instructions?: unknown; content?: unknown; _meta?: Record<string, unknown> };
+  const content = Array.isArray(response.content) ? response.content : [];
+  const visible = [response.instructions, ...content.flatMap(block =>
+    block?.type === 'text' && typeof block.text === 'string' ? [block.text] : [])]
+    .flatMap(modelVisibleStrings).join('\n');
+  const fragments = scope.fragments.filter(row =>
+    (`\n${visible.trimEnd()}\n`).includes(`\n${row.rendered}\n`) &&
+    createHash('sha256').update(row.rendered).digest('hex') === row.bodySha256 &&
+    Buffer.byteLength(row.rendered) === row.bodyBytes);
+  if (!fragments.length) return result;
+  const token = randomUUID();
+  try { await stageMemoryEmission(sql, ownerId, token, fragments); }
+  catch { return result; }
+  return { ...result, _meta: { ...response._meta,
+    'papercusp/memoryEmission': { owner: ownerId, token, fragments } } };
+}
 
 /** Extend coord_read_cursors, with one surface per token so competing ports
  * cannot replace each other's candidate. Unsupported sinks never call this. */

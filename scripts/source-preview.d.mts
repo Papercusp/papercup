@@ -488,10 +488,12 @@ export function createBgVerifierRuntimeCustody(options: Parameters<typeof create
                 origin: string;
             }[];
             expectedHostManifestQualified: boolean;
+            expectedVdsoQualified: boolean;
             expectedHostManifestSha256: string | null;
         }[];
         builtinQualification: string;
         nativeQualification: string;
+        vdsoQualification: string;
         compiledOutputBytesObserved: boolean;
     }>;
 }>>;
@@ -542,6 +544,11 @@ export function prepareBgVerifierBuildRecord({ prepared, dependencies, invocatio
         };
     };
     expectedHostManifest?: {
+        vdso?: {
+            origin: "kernel-auxv-AT_SYSINFO_EHDR";
+            sha256: string;
+            bytes: number;
+        } | undefined;
         builtinSources?: {
             url: string;
             sha256: string;
@@ -631,6 +638,11 @@ export function verifyBgVerifierBuildRecord(record: ReturnType<typeof prepareBgV
         };
     };
     expectedHostManifest?: {
+        vdso?: {
+            origin: "kernel-auxv-AT_SYSINFO_EHDR";
+            sha256: string;
+            bytes: number;
+        } | undefined;
         builtinSources?: {
             url: string;
             sha256: string;
@@ -728,6 +740,11 @@ export function prepareBgVerifierBuildContexts({ prepared, dependencies, invocat
             };
         };
         expectedHostManifest?: {
+            vdso?: {
+                origin: "kernel-auxv-AT_SYSINFO_EHDR";
+                sha256: string;
+                bytes: number;
+            } | undefined;
             builtinSources?: {
                 url: string;
                 sha256: string;
@@ -900,6 +917,11 @@ export function prepareBgVerifierBuildTransaction({ prepared, dependencies, invo
                 };
             };
             expectedHostManifest?: {
+                vdso?: {
+                    origin: "kernel-auxv-AT_SYSINFO_EHDR";
+                    sha256: string;
+                    bytes: number;
+                } | undefined;
                 builtinSources?: {
                     url: string;
                     sha256: string;
@@ -1056,6 +1078,11 @@ export function beginBgVerifierBuildTransaction({ transaction, ownerPid }: {
                     };
                 };
                 expectedHostManifest?: {
+                    vdso?: {
+                        origin: "kernel-auxv-AT_SYSINFO_EHDR";
+                        sha256: string;
+                        bytes: number;
+                    } | undefined;
                     builtinSources?: {
                         url: string;
                         sha256: string;
@@ -1191,6 +1218,11 @@ export function beginBgVerifierBuildTransaction({ transaction, ownerPid }: {
                 };
             };
             expectedHostManifest?: {
+                vdso?: {
+                    origin: "kernel-auxv-AT_SYSINFO_EHDR";
+                    sha256: string;
+                    bytes: number;
+                } | undefined;
                 builtinSources?: {
                     url: string;
                     sha256: string;
@@ -1441,6 +1473,11 @@ export function publishBgVerifierLogicalOutputSet(args: {
                         };
                     };
                     expectedHostManifest?: {
+                        vdso?: {
+                            origin: "kernel-auxv-AT_SYSINFO_EHDR";
+                            sha256: string;
+                            bytes: number;
+                        } | undefined;
                         builtinSources?: {
                             url: string;
                             sha256: string;
@@ -1576,6 +1613,11 @@ export function publishBgVerifierLogicalOutputSet(args: {
                     };
                 };
                 expectedHostManifest?: {
+                    vdso?: {
+                        origin: "kernel-auxv-AT_SYSINFO_EHDR";
+                        sha256: string;
+                        bytes: number;
+                    } | undefined;
                     builtinSources?: {
                         url: string;
                         sha256: string;
@@ -1859,6 +1901,11 @@ export function verifyBgVerifierPublication(publication: ReturnType<typeof publi
                         };
                     };
                     expectedHostManifest?: {
+                        vdso?: {
+                            origin: "kernel-auxv-AT_SYSINFO_EHDR";
+                            sha256: string;
+                            bytes: number;
+                        } | undefined;
                         builtinSources?: {
                             url: string;
                             sha256: string;
@@ -1994,6 +2041,11 @@ export function verifyBgVerifierPublication(publication: ReturnType<typeof publi
                     };
                 };
                 expectedHostManifest?: {
+                    vdso?: {
+                        origin: "kernel-auxv-AT_SYSINFO_EHDR";
+                        sha256: string;
+                        bytes: number;
+                    } | undefined;
                     builtinSources?: {
                         url: string;
                         sha256: string;
@@ -2289,6 +2341,11 @@ export function runBgVerifierBuildRecipe(args: Parameters<typeof beginBgVerifier
                         };
                     };
                     expectedHostManifest?: {
+                        vdso?: {
+                            origin: "kernel-auxv-AT_SYSINFO_EHDR";
+                            sha256: string;
+                            bytes: number;
+                        } | undefined;
                         builtinSources?: {
                             url: string;
                             sha256: string;
@@ -2424,6 +2481,11 @@ export function runBgVerifierBuildRecipe(args: Parameters<typeof beginBgVerifier
                     };
                 };
                 expectedHostManifest?: {
+                    vdso?: {
+                        origin: "kernel-auxv-AT_SYSINFO_EHDR";
+                        sha256: string;
+                        bytes: number;
+                    } | undefined;
                     builtinSources?: {
                         url: string;
                         sha256: string;
@@ -3041,10 +3103,12 @@ export function qualifyBgVerifierRuntimeSources({ output, record, invocation, ex
             origin: string;
         }[];
         expectedHostManifestQualified: boolean;
+        expectedVdsoQualified: boolean;
         expectedHostManifestSha256: string | null;
     }[];
     builtinQualification: string;
     nativeQualification: string;
+    vdsoQualification: string;
     compiledOutputBytesObserved: boolean;
 };
 /** Attach dependencies to the independently invoked tree before its first Node
@@ -3767,7 +3831,8 @@ export type BgBuildInvocation = {
  * using the same pinned-manifest/physical-file fences as the source authority.
  * Optional builtin sources are pinned from the same independently selected Node
  * before the target starts, then joined to its native executable identity.
- * This does not attest vDSO, creator exclusion, or complete runtime coverage.
+ * Optional vDSO bytes are independently pinned from that reference host too.
+ * This does not attest creator exclusion or complete runtime coverage.
  */
 export type BgExpectedHostManifest = {
     schemaVersion: 1;

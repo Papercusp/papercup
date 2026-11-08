@@ -39,6 +39,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  readlinkSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -46,6 +47,7 @@ import {
   utimesSync,
   writeFileSync,
 } from 'node:fs';
+import { open as openFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
@@ -1917,6 +1919,44 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
     expect(marker).not.toHaveProperty('dependencyMode');
   }
 
+  it.each([
+    { side: 'donor', phase: 'before-hash', statCall: 1 },
+    { side: 'donor', phase: 'after-hash', statCall: 2 },
+    { side: 'destination', phase: 'before-hash', statCall: 1 },
+    { side: 'destination', phase: 'after-hash', statCall: 2 },
+  ])('retains exact metadata failure evidence for $side $phase', async ({ side, phase, statCall }) => {
+    const f = retainedFixture();
+    const path = 'node_modules/alpha.txt';
+    const target = join(side === 'donor' ? f.root : f.workRoot, path);
+    const mode = statSync(target).mode & 0o7777;
+    const handle = await openFile(target, 'r');
+    const prototype = Object.getPrototypeOf(handle);
+    await handle.close();
+    const originalStat = prototype.stat;
+    let targetStats = 0;
+    // Change the real file at the descriptor-check boundary. GNU find's census
+    // and the verifier's before/after reads still use actual filesystem state.
+    const stat = vi.spyOn(prototype, 'stat').mockImplementation(async function (this: { fd: number }, options) {
+      if (readlinkSync('/proc/self/fd/' + this.fd) === target && ++targetStats === statCall)
+        chmodSync(target, mode ^ 0o100);
+      return originalStat.call(this, options);
+    });
+    const build = vi.fn();
+    try {
+      await expect(mod.materializeIndependentDependencies(f.root, f.workRoot, {
+        ...f.options(), prepareWorkspace: build,
+      })).rejects.toMatchObject({
+        code: 'DEPENDENCY_METADATA_CHANGED',
+        dependencyMetadata: { side, phase, path, differences: expect.objectContaining({
+          mode: { expected: mode.toString(8), actual: (mode ^ 0o100).toString(8) },
+        }) },
+      });
+      expect(targetStats).toBe(statCall);
+      expect(build).not.toHaveBeenCalled();
+      expectUnpreparedRetainedMarker(f);
+    } finally { stat.mockRestore(); f.cleanup(); }
+  }, 60_000);
+
   it('materializes selected dependency scope through the maintained CLI', () => {
     const f = fixture('node build.cjs');
     let preparedRoot: string | undefined;
@@ -2023,6 +2063,44 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
         expectUnpreparedRetainedMarker(f);
       } finally { f.cleanup(); }
     });
+
+  it.each(['donor', 'destination'])('verifies retained release bookkeeping on only the %s', async side => {
+    const f = retainedFixture();
+    const root = side === 'donor' ? f.root : f.workRoot;
+    try {
+      writeFileSync(join(root, 'node_modules/.papercusp-source-package-lock.json'), '{"lockfileVersion":3}');
+      const result = await mod.materializeIndependentDependencies(f.root, f.workRoot, {
+        ...f.options(), prepareWorkspace: (s: { workspacePaths: Set<string> }) =>
+          mod.prepareWorkspaceExports(f.workRoot, s.workspacePaths),
+      });
+      expect(result.status).toBe('complete');
+      expect(readFileSync(join(f.workRoot, 'node_modules/alpha.txt'), 'utf8')).toBe('payload-v1');
+      expect(JSON.parse(readFileSync(f.markerPath, 'utf8')).dependencyMode).toBe('independent-copy-v1');
+    } finally { f.cleanup(); }
+  }, 60_000);
+
+  it('keeps nested release bookkeeping names in the retained runtime census', async () => {
+    const f = retainedFixture();
+    const nested = join(f.root, 'node_modules/leaf/.papercusp-source-package-lock.json');
+    mkdirSync(dirname(nested), { recursive: true });
+    writeFileSync(nested, 'runtime package data');
+    try {
+      await expect(mod.materializeIndependentDependencies(f.root, f.workRoot, f.options()))
+        .rejects.toThrow('dependency census differs');
+      expectUnpreparedRetainedMarker(f);
+    } finally { f.cleanup(); }
+  }, 60_000);
+
+  it('does not let retained release bookkeeping mask changed runtime bytes', async () => {
+    const f = retainedFixture();
+    try {
+      writeFileSync(join(f.root, 'node_modules/.papercusp-source-package-lock.json'), '{"lockfileVersion":3}');
+      writeFileSync(join(f.workRoot, 'node_modules/alpha.txt'), 'payload-v2');
+      await expect(mod.materializeIndependentDependencies(f.root, f.workRoot, f.options()))
+        .rejects.toThrow('dependency bytes differ: node_modules/alpha.txt');
+      expectUnpreparedRetainedMarker(f);
+    } finally { f.cleanup(); }
+  }, 60_000);
 
   it('resumes verified batches without recopying and releases its reader before workspace preparation', async () => {
     const f = retainedFixture();

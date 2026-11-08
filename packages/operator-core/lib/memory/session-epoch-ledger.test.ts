@@ -15,6 +15,7 @@ import {
   _resetSessionEpochLedgerForTests,
   memoryFragmentOffer, stageMemoryEmission, confirmMemoryEmission,
   MEMORY_EMISSION_TTL_MS,
+  collectMemoryEmission, collectsMemoryEmission, withMemoryEmissionReceipt,
 } from './session-epoch-ledger';
 import { configureReadCursorStore, InMemoryReadCursorStore, resetReadCursorStore } from '../agent-tools/coordination/read-cursors';
 import type { SqlTag } from './bump-last-surfaced';
@@ -28,6 +29,55 @@ describe('exact memory emission receipts', () => {
   const offer = (id = UUID_A, epoch = 3, kind: 'memory' | 'corpus' = 'memory') =>
     memoryFragmentOffer(kind, id, epoch, 'turn-start', `- ${id}: complete snowman ☃`);
   const manifest = ({ rendered: _text, ...row }: ReturnType<typeof offer>) => row;
+
+  it('stages only complete model-visible fragments and confirms them before the next recall', async () => {
+    const { sql, calls } = makeSql();
+    const a = offer(), clipped = offer(UUID_B);
+    const result = await withMemoryEmissionReceipt(sql, 'owner', [], async () => {
+      expect(collectsMemoryEmission('owner')).toBe(true);
+      expect(collectsMemoryEmission('foreign')).toBe(false);
+      collectMemoryEmission('foreign', [clipped]);
+      collectMemoryEmission('owner', [a, clipped]);
+      return { content: [{ type: 'text', text: JSON.stringify({ memory: a.rendered,
+        clipped: clipped.rendered.slice(0, -1), _meta: { private: clipped.rendered } }) }],
+        _meta: { existing: 'preserved' } };
+    });
+    const receipt = result._meta['papercusp/memoryEmission'] as {
+      owner: string; token: string; fragments: ReturnType<typeof offer>[];
+    };
+    expect(receipt).toMatchObject({ owner: 'owner', fragments: [a] });
+    expect(result._meta.existing).toBe('preserved');
+    const inserts = () => calls.filter(c => c.text.includes('INSERT INTO harness_shared.memory_session_surfaced'));
+    expect(inserts()).toHaveLength(0);
+    await withMemoryEmissionReceipt(sql, 'owner', [{ token: receipt.token, fragments: [manifest(a)] }], async () => {
+      expect(inserts()).toHaveLength(1);
+      return { content: [] };
+    });
+    expect(collectsMemoryEmission('owner')).toBe(false);
+  });
+
+  it('isolates overlapping recipients and rejects metadata-only, structured-only and late offers', async () => {
+    const { sql } = makeSql();
+    const row = offer();
+    const prepare = (owner: string) => withMemoryEmissionReceipt(sql, owner, [], async () => {
+      await Promise.resolve();
+      collectMemoryEmission(owner, [row]);
+      return { instructions: row.rendered };
+    });
+    const [a, b] = await Promise.all([prepare('a'), prepare('b')]);
+    expect(a._meta?.['papercusp/memoryEmission']).toMatchObject({ owner: 'a' });
+    expect(b._meta?.['papercusp/memoryEmission']).toMatchObject({ owner: 'b' });
+    expect(a._meta?.['papercusp/memoryEmission']).not.toEqual(b._meta?.['papercusp/memoryEmission']);
+    let late: () => void = () => {};
+    const hidden = await withMemoryEmissionReceipt(sql, 'owner', [], async () => {
+      late = () => collectMemoryEmission('owner', [row]);
+      collectMemoryEmission('owner', [row]);
+      return { content: [], structuredContent: { memory: row.rendered }, _meta: { private: row.rendered } };
+    });
+    late();
+    expect(hidden._meta).toEqual({ private: row.rendered });
+    expect(collectsMemoryEmission('owner')).toBe(false);
+  });
 
   it('does not stamp preparation, absent output, a wrong owner or a forged fragment', async () => {
     const { sql, calls } = makeSql();

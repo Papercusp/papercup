@@ -389,6 +389,9 @@ export function owningSubmodule(path: any, submodulePaths: any): any;
  * `ref` — the same bytes the submodule-init step materialises into the clone.
  */
 export function showAtRef(repoRoot: any, ref: any, path: any): string | null;
+/** Check dependency metadata at the selected recursive pins before allocating source.
+ * The shared checkout can already contain a newer, coherent submodule manifest. */
+export function assertCommittedWorkspaceLockMatches(repoRoot: any, ref?: string): void;
 /** Validate the focused runner's actual test-config imports before Node loads it.
  * Read both ends from the parent commit, never the newer checked-out submodule. */
 export function assertCommittedFocusedRunnerImports(repoRoot: any, ref?: string): Promise<string[]>;
