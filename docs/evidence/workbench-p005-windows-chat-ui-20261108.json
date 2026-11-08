@@ -1,0 +1,474 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Workbench P-005 native Windows Papercup sidebar and shortcut migration",
+  "framework": "operational",
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "workItem": "WI-6554700010044411",
+  "measuredAt": "2026-11-08T02:18:06.578681+00:00",
+  "exitCode": 0,
+  "summary": "Native WPF Papercup journey26PASS and per-account shortcut/settings40PASS; both exit0. Canonical fixturePUI transport, real signed-in Windows session.",
+  "sourceSha256": {
+    "papercusp-desktop/native/windows/PuiReadBridge.cs": "2dcc7de38773df4ac56bb3c8210889e4c7318398d25fe00f20dd3e752934df54",
+    "papercusp-desktop/native/windows/WorkbenchModel.cs": "a296df75de8d6450c2bdecbafdecfc4fd69a6b25459ea05a16343e69b5500461",
+    "papercusp-desktop/native/windows/WorkbenchHost.cs": "98113764dfa39b05b3b426107e1577e67d261ccd297769af5dc1ba60ada4720f",
+    "papercusp-desktop/native/windows/WorkbenchLifecycle.psm1": "020ad44185faead0767140b635fd660ea5970f6249088acb501db75da9730d8c",
+    "papercusp-desktop/native/windows/workbench.ps1": "c20b256c32830830931f66a80de2eaa165f4668f2683d0368d8a39a4f14751d3",
+    "papercusp-desktop/test/fixtures/native-workbench-windows-host.ps1": "99ba302334cc9817c0e96d932e95977d5e72cefe8c4b35f03dc5c40b6cd6025c",
+    "papercusp-desktop/test/fixtures/native-workbench-windows-lifecycle.ps1": "2a7f660d51cdbe8dcd661fc07a13d469c909f90c40034e2df364d887566773c6",
+    "papercusp-desktop/test/native-workbench-windows.test.mjs": "4fddda3a8c3cad784ae1a6bd64799f1430c3be8bafb6598a1ad1749e2a9020eb"
+  },
+  "remoteSourceHashes": {
+    "papercusp-desktop/native/windows/PuiReadBridge.cs": "2dcc7de38773df4ac56bb3c8210889e4c7318398d25fe00f20dd3e752934df54",
+    "papercusp-desktop/native/windows/WorkbenchModel.cs": "a296df75de8d6450c2bdecbafdecfc4fd69a6b25459ea05a16343e69b5500461",
+    "papercusp-desktop/native/windows/WorkbenchHost.cs": "98113764dfa39b05b3b426107e1577e67d261ccd297769af5dc1ba60ada4720f",
+    "papercusp-desktop/native/windows/WorkbenchLifecycle.psm1": "020ad44185faead0767140b635fd660ea5970f6249088acb501db75da9730d8c",
+    "papercusp-desktop/native/windows/workbench.ps1": "c20b256c32830830931f66a80de2eaa165f4668f2683d0368d8a39a4f14751d3",
+    "papercusp-desktop/test/fixtures/native-workbench-windows-host.ps1": "99ba302334cc9817c0e96d932e95977d5e72cefe8c4b35f03dc5c40b6cd6025c",
+    "papercusp-desktop/test/fixtures/native-workbench-windows-lifecycle.ps1": "2a7f660d51cdbe8dcd661fc07a13d469c909f90c40034e2df364d887566773c6"
+  },
+  "remoteHashesVerifiedBy": "Independent Get-FileHash SHA256 on win-vm after runs; all7 copied production/fixture hashes match local current source. Node registration hash retained locally.",
+  "runs": [
+    {
+      "command": "powershell.exe -STA -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:/Users/user/AppData/Local/Temp/workbench-p005-chat-20261108-b3cf9/native-workbench-windows-host.ps1 -SourceDirectory C:/Users/user/AppData/Local/Temp/workbench-p005-chat-20261108-b3cf9 -Phase chat -Interactive",
+      "exitCode": 0,
+      "log": "/tmp/wb-p005-chat-ui-native-20261108-v1.log",
+      "logSha256": "8fc82d5cd49ec32945b874eec045d90f55afe52d337e021930ec6dbb6d229469",
+      "result": {
+        "ok": true,
+        "platform": "windows",
+        "phase": "chat",
+        "cases": [
+          "Papercup is a resident native tool sidebar without app chrome",
+          "Papercup displays the canonical selected environment and conversation",
+          "native chat loads canonical history",
+          "native chat control enabled: earlier messages #3",
+          "native history prepends the exact earlier page",
+          "native Papercup retains its HWND and exact multiline draft across dismissal",
+          "native chat control enabled: send #6",
+          "denied native send retains draft without success or a duplicate send route",
+          "native chat control enabled: send #8",
+          "only canonical user acknowledgement clears the native draft",
+          "native incremental display excludes private text",
+          "completed native stream reloads the saved canonical assistant turn",
+          "native chat control enabled: send #12",
+          "disconnected native reply exposes reconciliation without resending",
+          "native chat control enabled: reconnect #14",
+          "native reconnect resumes the saved turn cursor without a second send",
+          "native chat control enabled: send #16",
+          "native chat control enabled: cancel reply #17",
+          "native cancel waits for a canonical cancelled acknowledgement",
+          "native chat control enabled: send #19",
+          "late A stream cannot enter conversation B or clear its native draft",
+          "returning to A reads its independently saved user event",
+          "native draft keys include the canonical conversation identity",
+          "native chat control enabled: send #23",
+          "foreign environment frame cannot alter native reply or acknowledge its draft",
+          "every native send is bound to conversation A in the helper receipt"
+        ],
+        "count": 26,
+        "organizerRuns": [],
+        "processSessionId": 1,
+        "interactiveDesktop": true,
+        "scope": "native-chat-fixture"
+      }
+    },
+    {
+      "command": "powershell.exe -STA -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:/Users/user/AppData/Local/Temp/workbench-p005-chat-20261108-b3cf9/native-workbench-windows-lifecycle.ps1 -SourceDirectory C:/Users/user/AppData/Local/Temp/workbench-p005-chat-20261108-b3cf9",
+      "exitCode": 0,
+      "log": "/tmp/wb-p005-chat-settings-native-20261108-v1.log",
+      "logSha256": "da3b4ea440365d75e0b3456e426805ef32fe65fc715c6f5558b72700d9ede50b",
+      "result": {
+        "resident": false,
+        "ok": true,
+        "platform": "windows",
+        "cases": [
+          "first install enables native panels with distinct default shortcuts",
+          "first install enables the Accounts shortcut",
+          "first install enables Inbox on Ctrl Alt B",
+          "Inbox migration chooses a free accelerator without resetting existing panels",
+          "installer persists the migrated Inbox shortcut",
+          "upgrade preserves explicitly disabled Inbox",
+          "first install enables Organizer on Ctrl Alt O",
+          "Organizer migration avoids existing shortcuts",
+          "installer persists the migrated Organizer shortcut",
+          "upgrade preserves explicitly disabled Organizer",
+          "Organizer upgrade retains the prior Quick Access shortcut",
+          "first install enables Papercup on Ctrl Alt P",
+          "Papercup migration avoids existing shortcuts",
+          "installer persists migrated Papercup shortcut",
+          "upgrade preserves explicitly disabled Papercup",
+          "Papercup upgrade retains existing surface preferences",
+          "adding Accounts preserves legacy disable and shortcut choices",
+          "Accounts migration avoids existing Quick Access and Inbox shortcuts",
+          "preserve-existing installer persists the missing Accounts binding",
+          "login registration uses the exact installed controller and fixed argv",
+          "Workbench registration preserves unrelated login applications",
+          "native login command preserves spaces apostrophes and literal dollar signs",
+          "upgrade preserves account shortcuts and individual panel disable",
+          "upgrade refreshes the registered installation without resetting choices",
+          "disable removes this accounts Workbench login value",
+          "reinstall does not re-enable an explicitly disabled account",
+          "explicit enable restores login registration",
+          "duplicate enabled shortcuts are refused before writing",
+          "reserved F12 remains invalid even for a disabled panel",
+          "invalid native modifier bits are refused",
+          "invalid settings leave both persistence and login state unchanged",
+          "concurrent settings writer cannot bypass the per-account lock",
+          "registry failure is surfaced instead of accepting a partial settings update",
+          "registry failure restores the previous settings",
+          "missing resident is reported without starting a service or touching another account",
+          "settings wake targets the exact account and state-directory identity",
+          "uninstalling another role preserves the current roles login entry",
+          "uninstall removes owned login registration and retains account preferences",
+          "retained preferences survive uninstall and reinstall",
+          "corrupt preferences fail visibly instead of silently resetting shortcuts"
+        ],
+        "count": 40
+      }
+    }
+  ],
+  "assertions": [
+    {
+      "id": "native-chat-1",
+      "passed": true,
+      "evidence": "Papercup is a resident native tool sidebar without app chrome"
+    },
+    {
+      "id": "native-chat-2",
+      "passed": true,
+      "evidence": "Papercup displays the canonical selected environment and conversation"
+    },
+    {
+      "id": "native-chat-3",
+      "passed": true,
+      "evidence": "native chat loads canonical history"
+    },
+    {
+      "id": "native-chat-4",
+      "passed": true,
+      "evidence": "native chat control enabled: earlier messages #3"
+    },
+    {
+      "id": "native-chat-5",
+      "passed": true,
+      "evidence": "native history prepends the exact earlier page"
+    },
+    {
+      "id": "native-chat-6",
+      "passed": true,
+      "evidence": "native Papercup retains its HWND and exact multiline draft across dismissal"
+    },
+    {
+      "id": "native-chat-7",
+      "passed": true,
+      "evidence": "native chat control enabled: send #6"
+    },
+    {
+      "id": "native-chat-8",
+      "passed": true,
+      "evidence": "denied native send retains draft without success or a duplicate send route"
+    },
+    {
+      "id": "native-chat-9",
+      "passed": true,
+      "evidence": "native chat control enabled: send #8"
+    },
+    {
+      "id": "native-chat-10",
+      "passed": true,
+      "evidence": "only canonical user acknowledgement clears the native draft"
+    },
+    {
+      "id": "native-chat-11",
+      "passed": true,
+      "evidence": "native incremental display excludes private text"
+    },
+    {
+      "id": "native-chat-12",
+      "passed": true,
+      "evidence": "completed native stream reloads the saved canonical assistant turn"
+    },
+    {
+      "id": "native-chat-13",
+      "passed": true,
+      "evidence": "native chat control enabled: send #12"
+    },
+    {
+      "id": "native-chat-14",
+      "passed": true,
+      "evidence": "disconnected native reply exposes reconciliation without resending"
+    },
+    {
+      "id": "native-chat-15",
+      "passed": true,
+      "evidence": "native chat control enabled: reconnect #14"
+    },
+    {
+      "id": "native-chat-16",
+      "passed": true,
+      "evidence": "native reconnect resumes the saved turn cursor without a second send"
+    },
+    {
+      "id": "native-chat-17",
+      "passed": true,
+      "evidence": "native chat control enabled: send #16"
+    },
+    {
+      "id": "native-chat-18",
+      "passed": true,
+      "evidence": "native chat control enabled: cancel reply #17"
+    },
+    {
+      "id": "native-chat-19",
+      "passed": true,
+      "evidence": "native cancel waits for a canonical cancelled acknowledgement"
+    },
+    {
+      "id": "native-chat-20",
+      "passed": true,
+      "evidence": "native chat control enabled: send #19"
+    },
+    {
+      "id": "native-chat-21",
+      "passed": true,
+      "evidence": "late A stream cannot enter conversation B or clear its native draft"
+    },
+    {
+      "id": "native-chat-22",
+      "passed": true,
+      "evidence": "returning to A reads its independently saved user event"
+    },
+    {
+      "id": "native-chat-23",
+      "passed": true,
+      "evidence": "native draft keys include the canonical conversation identity"
+    },
+    {
+      "id": "native-chat-24",
+      "passed": true,
+      "evidence": "native chat control enabled: send #23"
+    },
+    {
+      "id": "native-chat-25",
+      "passed": true,
+      "evidence": "foreign environment frame cannot alter native reply or acknowledge its draft"
+    },
+    {
+      "id": "native-chat-26",
+      "passed": true,
+      "evidence": "every native send is bound to conversation A in the helper receipt"
+    },
+    {
+      "id": "settings-1",
+      "passed": true,
+      "evidence": "first install enables native panels with distinct default shortcuts"
+    },
+    {
+      "id": "settings-2",
+      "passed": true,
+      "evidence": "first install enables the Accounts shortcut"
+    },
+    {
+      "id": "settings-3",
+      "passed": true,
+      "evidence": "first install enables Inbox on Ctrl Alt B"
+    },
+    {
+      "id": "settings-4",
+      "passed": true,
+      "evidence": "Inbox migration chooses a free accelerator without resetting existing panels"
+    },
+    {
+      "id": "settings-5",
+      "passed": true,
+      "evidence": "installer persists the migrated Inbox shortcut"
+    },
+    {
+      "id": "settings-6",
+      "passed": true,
+      "evidence": "upgrade preserves explicitly disabled Inbox"
+    },
+    {
+      "id": "settings-7",
+      "passed": true,
+      "evidence": "first install enables Organizer on Ctrl Alt O"
+    },
+    {
+      "id": "settings-8",
+      "passed": true,
+      "evidence": "Organizer migration avoids existing shortcuts"
+    },
+    {
+      "id": "settings-9",
+      "passed": true,
+      "evidence": "installer persists the migrated Organizer shortcut"
+    },
+    {
+      "id": "settings-10",
+      "passed": true,
+      "evidence": "upgrade preserves explicitly disabled Organizer"
+    },
+    {
+      "id": "settings-11",
+      "passed": true,
+      "evidence": "Organizer upgrade retains the prior Quick Access shortcut"
+    },
+    {
+      "id": "settings-12",
+      "passed": true,
+      "evidence": "first install enables Papercup on Ctrl Alt P"
+    },
+    {
+      "id": "settings-13",
+      "passed": true,
+      "evidence": "Papercup migration avoids existing shortcuts"
+    },
+    {
+      "id": "settings-14",
+      "passed": true,
+      "evidence": "installer persists migrated Papercup shortcut"
+    },
+    {
+      "id": "settings-15",
+      "passed": true,
+      "evidence": "upgrade preserves explicitly disabled Papercup"
+    },
+    {
+      "id": "settings-16",
+      "passed": true,
+      "evidence": "Papercup upgrade retains existing surface preferences"
+    },
+    {
+      "id": "settings-17",
+      "passed": true,
+      "evidence": "adding Accounts preserves legacy disable and shortcut choices"
+    },
+    {
+      "id": "settings-18",
+      "passed": true,
+      "evidence": "Accounts migration avoids existing Quick Access and Inbox shortcuts"
+    },
+    {
+      "id": "settings-19",
+      "passed": true,
+      "evidence": "preserve-existing installer persists the missing Accounts binding"
+    },
+    {
+      "id": "settings-20",
+      "passed": true,
+      "evidence": "login registration uses the exact installed controller and fixed argv"
+    },
+    {
+      "id": "settings-21",
+      "passed": true,
+      "evidence": "Workbench registration preserves unrelated login applications"
+    },
+    {
+      "id": "settings-22",
+      "passed": true,
+      "evidence": "native login command preserves spaces apostrophes and literal dollar signs"
+    },
+    {
+      "id": "settings-23",
+      "passed": true,
+      "evidence": "upgrade preserves account shortcuts and individual panel disable"
+    },
+    {
+      "id": "settings-24",
+      "passed": true,
+      "evidence": "upgrade refreshes the registered installation without resetting choices"
+    },
+    {
+      "id": "settings-25",
+      "passed": true,
+      "evidence": "disable removes this accounts Workbench login value"
+    },
+    {
+      "id": "settings-26",
+      "passed": true,
+      "evidence": "reinstall does not re-enable an explicitly disabled account"
+    },
+    {
+      "id": "settings-27",
+      "passed": true,
+      "evidence": "explicit enable restores login registration"
+    },
+    {
+      "id": "settings-28",
+      "passed": true,
+      "evidence": "duplicate enabled shortcuts are refused before writing"
+    },
+    {
+      "id": "settings-29",
+      "passed": true,
+      "evidence": "reserved F12 remains invalid even for a disabled panel"
+    },
+    {
+      "id": "settings-30",
+      "passed": true,
+      "evidence": "invalid native modifier bits are refused"
+    },
+    {
+      "id": "settings-31",
+      "passed": true,
+      "evidence": "invalid settings leave both persistence and login state unchanged"
+    },
+    {
+      "id": "settings-32",
+      "passed": true,
+      "evidence": "concurrent settings writer cannot bypass the per-account lock"
+    },
+    {
+      "id": "settings-33",
+      "passed": true,
+      "evidence": "registry failure is surfaced instead of accepting a partial settings update"
+    },
+    {
+      "id": "settings-34",
+      "passed": true,
+      "evidence": "registry failure restores the previous settings"
+    },
+    {
+      "id": "settings-35",
+      "passed": true,
+      "evidence": "missing resident is reported without starting a service or touching another account"
+    },
+    {
+      "id": "settings-36",
+      "passed": true,
+      "evidence": "settings wake targets the exact account and state-directory identity"
+    },
+    {
+      "id": "settings-37",
+      "passed": true,
+      "evidence": "uninstalling another role preserves the current roles login entry"
+    },
+    {
+      "id": "settings-38",
+      "passed": true,
+      "evidence": "uninstall removes owned login registration and retains account preferences"
+    },
+    {
+      "id": "settings-39",
+      "passed": true,
+      "evidence": "retained preferences survive uninstall and reinstall"
+    },
+    {
+      "id": "settings-40",
+      "passed": true,
+      "evidence": "corrupt preferences fail visibly instead of silently resetting shortcuts"
+    }
+  ],
+  "validation": [
+    "Node maintained suite registration syntax PASS",
+    "Scoped submodule git diff --check PASS"
+  ],
+  "scopeLimits": [
+    "Current-source native WPF and private fixturePUI proof; not actual operator conversation acceptance or installed artifact acceptance.",
+    "Retained real HWND/window-style/session observations, user-send ledger and replay/cancel helper receipts within the private fixture.",
+    "No full installed Ubuntu/macOS/Windows matrix, independent acceptance review, execution certificate or shipment proved.",
+    "Windows Markdown/code/work-link/card/voice surface remains to implement. Full resident controller lifecycle51 remains to execute after these relevant source changes.",
+    "Prior chat-core43 source is unchanged; retained evidence remains valid without rerun. Prior resident45 proof refers to the earlier source; this version requires the updated51 journey."
+  ]
+}

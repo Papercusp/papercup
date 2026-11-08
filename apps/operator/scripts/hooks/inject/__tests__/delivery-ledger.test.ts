@@ -25,6 +25,39 @@ const home = () => ({ PAPERCUSP_HOME: mkdtempSync(path.join(tmpdir(), 'ledger-un
 type CodeIntelState = { turn: string; chars: number; subjects: string[] };
 
 describe('delivery ledger', () => {
+  it.each(['codex', 'claude', 'omp'])('joins exact %s MCP output, preserving hook tokens and rejecting metadata-only bodies', client => {
+    const env = home(), owner = 'su-mcp';
+    const start = openDeliveryLedger(owner, env);
+    start.offer('orientation-token');
+    start.commit();
+    const mcp = openDeliveryLedger(owner, env, 'mcp');
+    for (const port of ['initialize', 'orient', 'claim', 'create', 'compact-reprime']) {
+      const rendered = '- corpus: the late approval condition must survive ☃';
+      const offer = { kind: 'corpus', id: 'WI-stdio', epoch: 8, port, rendered,
+        bodySha256: createHash('sha256').update(rendered).digest('hex'), bodyBytes: Buffer.byteLength(rendered) };
+      const token = `mcp-${port}`;
+      const payload = (body: string, proofToken = token, proofOwner = owner) => JSON.stringify({ jsonrpc: '2.0', id: port,
+        result: { ...(port === 'initialize' ? { instructions: body }
+          : { content: [{ type: 'text', text: JSON.stringify({ memory: { text: body } }) }] }),
+        _meta: { 'papercusp/memoryEmission': { owner: proofOwner, token: proofToken, fragments: [offer] } } } });
+      for (const [suffix, body, proofOwner] of [
+        ['metadata', '', owner], ['partial', rendered.slice(0, -4), owner],
+        ['token', rendered, owner], ['owner', rendered, 'su-other'],
+      ]) {
+        const offeredToken = `${token}-${suffix}`;
+        mcp.offer(offeredToken, { payload: payload(body, suffix === 'token' ? 'foreign-token' : offeredToken, proofOwner), format: 'mcp', client,
+          memoryFragmentOffers: [offer] });
+        mcp.commit();
+      }
+      expect(mcp.confirmedMemoryDeliveries().some(proof => proof.token.startsWith(token))).toBe(false);
+      mcp.offer(token, { payload: payload(rendered) + '\n', format: 'mcp', client, memoryFragmentOffers: [offer] });
+      mcp.commit();
+      const { rendered: _text, ...manifest } = offer;
+      expect(start.confirmedMemoryDeliveries()).toContainEqual({ token, fragments: [manifest] });
+    }
+    expect(start.confirmed()).toBe('orientation-token');
+  });
+
   it.each(['codex', 'claude', 'omp'])('records exact %s mid-turn output without replacing the orientation token', client => {
     const env = home();
     const owner = 'su-mid-turn';

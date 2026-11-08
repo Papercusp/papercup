@@ -1,0 +1,624 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "workItem": "WI-6554700010044411",
+  "measuredAt": "2026-11-08T02:33:33.177733+00:00",
+  "exitCode": 0,
+  "name": "Workbench P-005 Windows canonical question-card core",
+  "sourceSha256": {
+    "papercusp-desktop/native/windows/PuiReadBridge.cs": "28ab80438678026d56fe86654e1d0b671857cdd9d485bf4d136679ee3cbb4ee4",
+    "papercusp-desktop/native/windows/WorkbenchModel.cs": "d2bfaab6de63f341bf1a3801d14c4982c2a531b07f6c40dc71cf9904bb7db73f",
+    "papercusp-desktop/test/fixtures/native-workbench-windows-bridge.ps1": "7e7f908246b36c5a70cc45b2ab5b7d5521d499166912aac0c782855413407a6e",
+    "papercusp-desktop/test/native-workbench-windows.test.mjs": "608accd6e72cbff6d3ae02bcd532bbba426b3d03560b395633fc8fa584091419"
+  },
+  "remoteSourceHashes": {
+    "papercusp-desktop/native/windows/PuiReadBridge.cs": "28ab80438678026d56fe86654e1d0b671857cdd9d485bf4d136679ee3cbb4ee4",
+    "papercusp-desktop/native/windows/WorkbenchModel.cs": "d2bfaab6de63f341bf1a3801d14c4982c2a531b07f6c40dc71cf9904bb7db73f",
+    "papercusp-desktop/test/fixtures/native-workbench-windows-bridge.ps1": "7e7f908246b36c5a70cc45b2ab5b7d5521d499166912aac0c782855413407a6e"
+  },
+  "remoteHashesVerifiedBy": "Get-FileHash SHA256 on win-vm after both native runs; each copied production/fixture file equals canonical staging. Node registration hash retained locally.",
+  "runs": [
+    {
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:/Users/user/AppData/Local/Temp/workbench-p005-chat-20261108-b3cf9/native-workbench-windows-bridge.ps1 -BridgeSource C:/Users/user/AppData/Local/Temp/workbench-p005-chat-20261108-b3cf9/PuiReadBridge.cs -Phase cards",
+      "exitCode": 0,
+      "log": "/tmp/wb-p005-cards-native-20261108-v1.log",
+      "logSha256": "b82cc9c6f1d3a46052100646f45a7ce8abd9c2810b078828b3247cbcce6a1866",
+      "result": {
+        "ok": true,
+        "platform": "windows",
+        "phase": "cards",
+        "count": 51,
+        "cases": [
+          "native card transport returns both canonical frames",
+          "canonical card reset opens the connection",
+          "empty native card snapshot is observed",
+          "card stream rejects unscoped input before launching helper",
+          "card response rejects subscribe operation",
+          "native state projects canonical card",
+          "card prompt preserves Unicode and shell-looking text",
+          "identical snapshot replay preserves card and draft identity",
+          "older snapshot cannot remove a newer question",
+          "conflicting same-version snapshot is rejected",
+          "conflicting snapshot leaves prior card unchanged",
+          "foreign conversation card is rejected",
+          "foreign backend frame cannot clear cards",
+          "duplicate card identity is rejected atomically",
+          "one card cannot belong to multiple runs",
+          "text question rejects empty required answer",
+          "text answer uses UTF8 byte bound",
+          "literal text answer stays data",
+          "response binds exact card and conversation",
+          "pending answer blocks duplicate submission",
+          "foreign acknowledgement cannot remove a pending question",
+          "unacknowledged answer remains visible and pending",
+          "only canonical exact acknowledgement removes question",
+          "late pre-response snapshot cannot resurrect answered question",
+          "disconnected question cannot be answered without reconciliation",
+          "disconnect preserves displayed question",
+          "new empty snapshot reconciles removed question",
+          "late A snapshot cannot enter B",
+          "late A response cannot affect B",
+          "same-label options preserve canonical option identity",
+          "radio rejects multiple answers",
+          "choice rejects unknown option identity",
+          "choice enforces required answer",
+          "checkbox accepts distinct available answers",
+          "checkbox rejects duplicate picks",
+          "historical JSON-string options reuse canonical decoder contract",
+          "duplicate option identities are rejected",
+          "date refuses invalid calendar day",
+          "date accepts valid leap day",
+          "date enforces displayed bound",
+          "slider accepts displayed step",
+          "slider rejects off-step answer",
+          "slider rejects non-finite value",
+          "slider rejects out-of-range value",
+          "secure link stays on selected operator origin",
+          "foreign secure-link target remains inert",
+          "unsupported question cannot fabricate submit payload",
+          "expired question cannot send a response",
+          "question decline restriction is honored",
+          "typed request revalidates fabricated empty payload",
+          "replaced card control cannot submit stale input"
+        ]
+      }
+    },
+    {
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:/Users/user/AppData/Local/Temp/workbench-p005-chat-20261108-b3cf9/native-workbench-windows-bridge.ps1 -BridgeSource C:/Users/user/AppData/Local/Temp/workbench-p005-chat-20261108-b3cf9/PuiReadBridge.cs -Phase chat",
+      "exitCode": 0,
+      "log": "/tmp/wb-p005-cards-chat-regression-20261108-v1.log",
+      "logSha256": "f8f3ddf4ac859b6907a3ec0d9a4403b181e74e4093fea68224c5bf370bcfc9ca",
+      "result": {
+        "ok": true,
+        "platform": "windows",
+        "phase": "chat",
+        "count": 43,
+        "cases": [
+          "native frames arrive before child exit and preserve split UTF8",
+          "chat helper reaped: incremental",
+          "reject native stream malformed",
+          "chat helper reaped: malformed",
+          "reject native stream shape",
+          "chat helper reaped: shape",
+          "reject native stream partial",
+          "chat helper reaped: partial",
+          "reject native stream empty",
+          "chat helper reaped: empty",
+          "reject native stream oversize",
+          "chat helper reaped: oversize",
+          "reject native stream exit",
+          "chat helper reaped: exit",
+          "stream deadline is enforced",
+          "chat helper reaped: timeout",
+          "pipe cancellation stays a transport failure",
+          "chat helper reaped: cancel",
+          "refused callback terminates stream",
+          "chat helper reaped: callback",
+          "canonical conversation and history bind",
+          "conversation B cannot inherit A draft",
+          "return to conversation A restores its draft",
+          "earlier history preserves exact ordered cursor",
+          "foreign history rejected",
+          "invalid history cannot partially mutate state",
+          "refuse changed endpoint",
+          "refuse changed workspaceId",
+          "refuse changed store",
+          "refuse changed agentChat",
+          "failed send retains draft and blocks duplicate resend",
+          "unknown saved turn cannot be replayed or resent",
+          "only exact saved-user acknowledgement clears draft",
+          "stream hides private text and partial closing tags",
+          "reply sequence gaps are refused",
+          "refused reply frame leaves cursor and text unchanged",
+          "identical replay is idempotent",
+          "conflicting replay is refused",
+          "canonical tool activity projected",
+          "reconnect uses saved identity and sequence without resend",
+          "foreign completion cannot claim success",
+          "exact durable completion acknowledgement permits next send",
+          "late A reply cannot enter B or clear its draft"
+        ]
+      }
+    }
+  ],
+  "scope": "Current-source native Windows .NET transport/state with fixture PUI, not WPF card controls, actual operator, installed acceptance or shipment.",
+  "limitations": [
+    "WPF question-card controls remain to implement.",
+    "Markdown/code/work links and voice remain required.",
+    "Exact installed Ubuntu/macOS/Windows acceptance, independent review, certificate and shipment remain pending."
+  ],
+  "assertions": [
+    {
+      "id": "cards-1",
+      "passed": true,
+      "evidence": "native card transport returns both canonical frames"
+    },
+    {
+      "id": "cards-2",
+      "passed": true,
+      "evidence": "canonical card reset opens the connection"
+    },
+    {
+      "id": "cards-3",
+      "passed": true,
+      "evidence": "empty native card snapshot is observed"
+    },
+    {
+      "id": "cards-4",
+      "passed": true,
+      "evidence": "card stream rejects unscoped input before launching helper"
+    },
+    {
+      "id": "cards-5",
+      "passed": true,
+      "evidence": "card response rejects subscribe operation"
+    },
+    {
+      "id": "cards-6",
+      "passed": true,
+      "evidence": "native state projects canonical card"
+    },
+    {
+      "id": "cards-7",
+      "passed": true,
+      "evidence": "card prompt preserves Unicode and shell-looking text"
+    },
+    {
+      "id": "cards-8",
+      "passed": true,
+      "evidence": "identical snapshot replay preserves card and draft identity"
+    },
+    {
+      "id": "cards-9",
+      "passed": true,
+      "evidence": "older snapshot cannot remove a newer question"
+    },
+    {
+      "id": "cards-10",
+      "passed": true,
+      "evidence": "conflicting same-version snapshot is rejected"
+    },
+    {
+      "id": "cards-11",
+      "passed": true,
+      "evidence": "conflicting snapshot leaves prior card unchanged"
+    },
+    {
+      "id": "cards-12",
+      "passed": true,
+      "evidence": "foreign conversation card is rejected"
+    },
+    {
+      "id": "cards-13",
+      "passed": true,
+      "evidence": "foreign backend frame cannot clear cards"
+    },
+    {
+      "id": "cards-14",
+      "passed": true,
+      "evidence": "duplicate card identity is rejected atomically"
+    },
+    {
+      "id": "cards-15",
+      "passed": true,
+      "evidence": "one card cannot belong to multiple runs"
+    },
+    {
+      "id": "cards-16",
+      "passed": true,
+      "evidence": "text question rejects empty required answer"
+    },
+    {
+      "id": "cards-17",
+      "passed": true,
+      "evidence": "text answer uses UTF8 byte bound"
+    },
+    {
+      "id": "cards-18",
+      "passed": true,
+      "evidence": "literal text answer stays data"
+    },
+    {
+      "id": "cards-19",
+      "passed": true,
+      "evidence": "response binds exact card and conversation"
+    },
+    {
+      "id": "cards-20",
+      "passed": true,
+      "evidence": "pending answer blocks duplicate submission"
+    },
+    {
+      "id": "cards-21",
+      "passed": true,
+      "evidence": "foreign acknowledgement cannot remove a pending question"
+    },
+    {
+      "id": "cards-22",
+      "passed": true,
+      "evidence": "unacknowledged answer remains visible and pending"
+    },
+    {
+      "id": "cards-23",
+      "passed": true,
+      "evidence": "only canonical exact acknowledgement removes question"
+    },
+    {
+      "id": "cards-24",
+      "passed": true,
+      "evidence": "late pre-response snapshot cannot resurrect answered question"
+    },
+    {
+      "id": "cards-25",
+      "passed": true,
+      "evidence": "disconnected question cannot be answered without reconciliation"
+    },
+    {
+      "id": "cards-26",
+      "passed": true,
+      "evidence": "disconnect preserves displayed question"
+    },
+    {
+      "id": "cards-27",
+      "passed": true,
+      "evidence": "new empty snapshot reconciles removed question"
+    },
+    {
+      "id": "cards-28",
+      "passed": true,
+      "evidence": "late A snapshot cannot enter B"
+    },
+    {
+      "id": "cards-29",
+      "passed": true,
+      "evidence": "late A response cannot affect B"
+    },
+    {
+      "id": "cards-30",
+      "passed": true,
+      "evidence": "same-label options preserve canonical option identity"
+    },
+    {
+      "id": "cards-31",
+      "passed": true,
+      "evidence": "radio rejects multiple answers"
+    },
+    {
+      "id": "cards-32",
+      "passed": true,
+      "evidence": "choice rejects unknown option identity"
+    },
+    {
+      "id": "cards-33",
+      "passed": true,
+      "evidence": "choice enforces required answer"
+    },
+    {
+      "id": "cards-34",
+      "passed": true,
+      "evidence": "checkbox accepts distinct available answers"
+    },
+    {
+      "id": "cards-35",
+      "passed": true,
+      "evidence": "checkbox rejects duplicate picks"
+    },
+    {
+      "id": "cards-36",
+      "passed": true,
+      "evidence": "historical JSON-string options reuse canonical decoder contract"
+    },
+    {
+      "id": "cards-37",
+      "passed": true,
+      "evidence": "duplicate option identities are rejected"
+    },
+    {
+      "id": "cards-38",
+      "passed": true,
+      "evidence": "date refuses invalid calendar day"
+    },
+    {
+      "id": "cards-39",
+      "passed": true,
+      "evidence": "date accepts valid leap day"
+    },
+    {
+      "id": "cards-40",
+      "passed": true,
+      "evidence": "date enforces displayed bound"
+    },
+    {
+      "id": "cards-41",
+      "passed": true,
+      "evidence": "slider accepts displayed step"
+    },
+    {
+      "id": "cards-42",
+      "passed": true,
+      "evidence": "slider rejects off-step answer"
+    },
+    {
+      "id": "cards-43",
+      "passed": true,
+      "evidence": "slider rejects non-finite value"
+    },
+    {
+      "id": "cards-44",
+      "passed": true,
+      "evidence": "slider rejects out-of-range value"
+    },
+    {
+      "id": "cards-45",
+      "passed": true,
+      "evidence": "secure link stays on selected operator origin"
+    },
+    {
+      "id": "cards-46",
+      "passed": true,
+      "evidence": "foreign secure-link target remains inert"
+    },
+    {
+      "id": "cards-47",
+      "passed": true,
+      "evidence": "unsupported question cannot fabricate submit payload"
+    },
+    {
+      "id": "cards-48",
+      "passed": true,
+      "evidence": "expired question cannot send a response"
+    },
+    {
+      "id": "cards-49",
+      "passed": true,
+      "evidence": "question decline restriction is honored"
+    },
+    {
+      "id": "cards-50",
+      "passed": true,
+      "evidence": "typed request revalidates fabricated empty payload"
+    },
+    {
+      "id": "cards-51",
+      "passed": true,
+      "evidence": "replaced card control cannot submit stale input"
+    },
+    {
+      "id": "chat-1",
+      "passed": true,
+      "evidence": "native frames arrive before child exit and preserve split UTF8"
+    },
+    {
+      "id": "chat-2",
+      "passed": true,
+      "evidence": "chat helper reaped: incremental"
+    },
+    {
+      "id": "chat-3",
+      "passed": true,
+      "evidence": "reject native stream malformed"
+    },
+    {
+      "id": "chat-4",
+      "passed": true,
+      "evidence": "chat helper reaped: malformed"
+    },
+    {
+      "id": "chat-5",
+      "passed": true,
+      "evidence": "reject native stream shape"
+    },
+    {
+      "id": "chat-6",
+      "passed": true,
+      "evidence": "chat helper reaped: shape"
+    },
+    {
+      "id": "chat-7",
+      "passed": true,
+      "evidence": "reject native stream partial"
+    },
+    {
+      "id": "chat-8",
+      "passed": true,
+      "evidence": "chat helper reaped: partial"
+    },
+    {
+      "id": "chat-9",
+      "passed": true,
+      "evidence": "reject native stream empty"
+    },
+    {
+      "id": "chat-10",
+      "passed": true,
+      "evidence": "chat helper reaped: empty"
+    },
+    {
+      "id": "chat-11",
+      "passed": true,
+      "evidence": "reject native stream oversize"
+    },
+    {
+      "id": "chat-12",
+      "passed": true,
+      "evidence": "chat helper reaped: oversize"
+    },
+    {
+      "id": "chat-13",
+      "passed": true,
+      "evidence": "reject native stream exit"
+    },
+    {
+      "id": "chat-14",
+      "passed": true,
+      "evidence": "chat helper reaped: exit"
+    },
+    {
+      "id": "chat-15",
+      "passed": true,
+      "evidence": "stream deadline is enforced"
+    },
+    {
+      "id": "chat-16",
+      "passed": true,
+      "evidence": "chat helper reaped: timeout"
+    },
+    {
+      "id": "chat-17",
+      "passed": true,
+      "evidence": "pipe cancellation stays a transport failure"
+    },
+    {
+      "id": "chat-18",
+      "passed": true,
+      "evidence": "chat helper reaped: cancel"
+    },
+    {
+      "id": "chat-19",
+      "passed": true,
+      "evidence": "refused callback terminates stream"
+    },
+    {
+      "id": "chat-20",
+      "passed": true,
+      "evidence": "chat helper reaped: callback"
+    },
+    {
+      "id": "chat-21",
+      "passed": true,
+      "evidence": "canonical conversation and history bind"
+    },
+    {
+      "id": "chat-22",
+      "passed": true,
+      "evidence": "conversation B cannot inherit A draft"
+    },
+    {
+      "id": "chat-23",
+      "passed": true,
+      "evidence": "return to conversation A restores its draft"
+    },
+    {
+      "id": "chat-24",
+      "passed": true,
+      "evidence": "earlier history preserves exact ordered cursor"
+    },
+    {
+      "id": "chat-25",
+      "passed": true,
+      "evidence": "foreign history rejected"
+    },
+    {
+      "id": "chat-26",
+      "passed": true,
+      "evidence": "invalid history cannot partially mutate state"
+    },
+    {
+      "id": "chat-27",
+      "passed": true,
+      "evidence": "refuse changed endpoint"
+    },
+    {
+      "id": "chat-28",
+      "passed": true,
+      "evidence": "refuse changed workspaceId"
+    },
+    {
+      "id": "chat-29",
+      "passed": true,
+      "evidence": "refuse changed store"
+    },
+    {
+      "id": "chat-30",
+      "passed": true,
+      "evidence": "refuse changed agentChat"
+    },
+    {
+      "id": "chat-31",
+      "passed": true,
+      "evidence": "failed send retains draft and blocks duplicate resend"
+    },
+    {
+      "id": "chat-32",
+      "passed": true,
+      "evidence": "unknown saved turn cannot be replayed or resent"
+    },
+    {
+      "id": "chat-33",
+      "passed": true,
+      "evidence": "only exact saved-user acknowledgement clears draft"
+    },
+    {
+      "id": "chat-34",
+      "passed": true,
+      "evidence": "stream hides private text and partial closing tags"
+    },
+    {
+      "id": "chat-35",
+      "passed": true,
+      "evidence": "reply sequence gaps are refused"
+    },
+    {
+      "id": "chat-36",
+      "passed": true,
+      "evidence": "refused reply frame leaves cursor and text unchanged"
+    },
+    {
+      "id": "chat-37",
+      "passed": true,
+      "evidence": "identical replay is idempotent"
+    },
+    {
+      "id": "chat-38",
+      "passed": true,
+      "evidence": "conflicting replay is refused"
+    },
+    {
+      "id": "chat-39",
+      "passed": true,
+      "evidence": "canonical tool activity projected"
+    },
+    {
+      "id": "chat-40",
+      "passed": true,
+      "evidence": "reconnect uses saved identity and sequence without resend"
+    },
+    {
+      "id": "chat-41",
+      "passed": true,
+      "evidence": "foreign completion cannot claim success"
+    },
+    {
+      "id": "chat-42",
+      "passed": true,
+      "evidence": "exact durable completion acknowledgement permits next send"
+    },
+    {
+      "id": "chat-43",
+      "passed": true,
+      "evidence": "late A reply cannot enter B or clear its draft"
+    }
+  ]
+}

@@ -295,7 +295,7 @@ ${captureSite}`);
         });
         child.send({ kind: 'reuse-source-population', root, start, end, captureRoot: dir });
       });
-      expect(result.ok, result.error).toBe(true);
+      expect(result.ok, `${result.error}; parserObservations=${JSON.stringify(observations)}`).toBe(true);
       expect(result.population).toEqual(serial);
       const population = observations.find(x => x.kind === 'population');
       expect(population).toMatchObject({ sourceFileCount: 1027, partitionCount: 4, workerCount: 4,

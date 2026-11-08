@@ -1,0 +1,355 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "workItem": "WI-6554700010044411",
+  "measuredAt": "2026-11-08T02:33:33.177733+00:00",
+  "exitCode": 0,
+  "name": "Workbench P-005 Windows Papercup resident lifecycle",
+  "sourceSha256": {
+    "papercusp-desktop/native/windows/PuiReadBridge.cs": "2dcc7de38773df4ac56bb3c8210889e4c7318398d25fe00f20dd3e752934df54",
+    "papercusp-desktop/native/windows/WorkbenchModel.cs": "a296df75de8d6450c2bdecbafdecfc4fd69a6b25459ea05a16343e69b5500461",
+    "papercusp-desktop/native/windows/WorkbenchHost.cs": "98113764dfa39b05b3b426107e1577e67d261ccd297769af5dc1ba60ada4720f",
+    "papercusp-desktop/native/windows/WorkbenchLifecycle.psm1": "020ad44185faead0767140b635fd660ea5970f6249088acb501db75da9730d8c",
+    "papercusp-desktop/native/windows/workbench.ps1": "c20b256c32830830931f66a80de2eaa165f4668f2683d0368d8a39a4f14751d3",
+    "papercusp-desktop/test/fixtures/native-workbench-windows-host.ps1": "99ba302334cc9817c0e96d932e95977d5e72cefe8c4b35f03dc5c40b6cd6025c",
+    "papercusp-desktop/test/fixtures/native-workbench-windows-lifecycle.ps1": "2a7f660d51cdbe8dcd661fc07a13d469c909f90c40034e2df364d887566773c6",
+    "papercusp-desktop/test/native-workbench-windows.test.mjs": "4fddda3a8c3cad784ae1a6bd64799f1430c3be8bafb6598a1ad1749e2a9020eb"
+  },
+  "remoteSourceHashes": {
+    "papercusp-desktop/native/windows/PuiReadBridge.cs": "2dcc7de38773df4ac56bb3c8210889e4c7318398d25fe00f20dd3e752934df54",
+    "papercusp-desktop/native/windows/WorkbenchModel.cs": "a296df75de8d6450c2bdecbafdecfc4fd69a6b25459ea05a16343e69b5500461",
+    "papercusp-desktop/native/windows/WorkbenchHost.cs": "98113764dfa39b05b3b426107e1577e67d261ccd297769af5dc1ba60ada4720f",
+    "papercusp-desktop/native/windows/WorkbenchLifecycle.psm1": "020ad44185faead0767140b635fd660ea5970f6249088acb501db75da9730d8c",
+    "papercusp-desktop/native/windows/workbench.ps1": "c20b256c32830830931f66a80de2eaa165f4668f2683d0368d8a39a4f14751d3",
+    "papercusp-desktop/test/fixtures/native-workbench-windows-host.ps1": "99ba302334cc9817c0e96d932e95977d5e72cefe8c4b35f03dc5c40b6cd6025c",
+    "papercusp-desktop/test/fixtures/native-workbench-windows-lifecycle.ps1": "2a7f660d51cdbe8dcd661fc07a13d469c909f90c40034e2df364d887566773c6"
+  },
+  "sourceCustody": "Ran against the exact source already measured in workbench-p005-windows-chat-ui-20261108.json before the subsequent cards-core bridge/model edits.",
+  "runs": [
+    {
+      "command": "powershell.exe -STA -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:/Users/user/AppData/Local/Temp/workbench-p005-chat-20261108-b3cf9/native-workbench-windows-host.ps1 -SourceDirectory C:/Users/user/AppData/Local/Temp/workbench-p005-chat-20261108-b3cf9 -Phase lifecycle -Interactive",
+      "exitCode": 0,
+      "log": "/tmp/wb-p005-chat-resident-native-20261108-v1.log",
+      "logSha256": "a93121b41b3a728f80c6ac620ce10537e1b938d57df2e119046bbdfb4271c124",
+      "result": {
+        "resident": true,
+        "ok": true,
+        "platform": "windows",
+        "cases": [
+          "first install enables native panels with distinct default shortcuts",
+          "first install enables the Accounts shortcut",
+          "first install enables Inbox on Ctrl Alt B",
+          "Inbox migration chooses a free accelerator without resetting existing panels",
+          "installer persists the migrated Inbox shortcut",
+          "upgrade preserves explicitly disabled Inbox",
+          "first install enables Organizer on Ctrl Alt O",
+          "Organizer migration avoids existing shortcuts",
+          "installer persists the migrated Organizer shortcut",
+          "upgrade preserves explicitly disabled Organizer",
+          "Organizer upgrade retains the prior Quick Access shortcut",
+          "first install enables Papercup on Ctrl Alt P",
+          "Papercup migration avoids existing shortcuts",
+          "installer persists migrated Papercup shortcut",
+          "upgrade preserves explicitly disabled Papercup",
+          "Papercup upgrade retains existing surface preferences",
+          "adding Accounts preserves legacy disable and shortcut choices",
+          "Accounts migration avoids existing Quick Access and Inbox shortcuts",
+          "preserve-existing installer persists the missing Accounts binding",
+          "login registration uses the exact installed controller and fixed argv",
+          "Workbench registration preserves unrelated login applications",
+          "native login command preserves spaces apostrophes and literal dollar signs",
+          "upgrade preserves account shortcuts and individual panel disable",
+          "upgrade refreshes the registered installation without resetting choices",
+          "disable removes this accounts Workbench login value",
+          "reinstall does not re-enable an explicitly disabled account",
+          "explicit enable restores login registration",
+          "duplicate enabled shortcuts are refused before writing",
+          "reserved F12 remains invalid even for a disabled panel",
+          "invalid native modifier bits are refused",
+          "invalid settings leave both persistence and login state unchanged",
+          "concurrent settings writer cannot bypass the per-account lock",
+          "registry failure is surfaced instead of accepting a partial settings update",
+          "registry failure restores the previous settings",
+          "missing resident is reported without starting a service or touching another account",
+          "settings wake targets the exact account and state-directory identity",
+          "uninstalling another role preserves the current roles login entry",
+          "uninstall removes owned login registration and retains account preferences",
+          "retained preferences survive uninstall and reinstall",
+          "corrupt preferences fail visibly instead of silently resetting shortcuts",
+          "resident fixture refuses to overwrite an existing Workbench login registration",
+          "actual controller starts the resident in the signed-in desktop and acknowledges native readiness",
+          "unchanged desktop preparation preserves the same resident process",
+          "settings command reaches the resident native WPF dialog through its account event",
+          "resident settings exposes the configurable Papercup shortcut",
+          "saving native disable releases the resident and removes login registration",
+          "native settings persist explicit disable",
+          "login invocation respects the saved disabled choice",
+          "explicit enable restarts the same configured native host",
+          "explicit disable waits for resident shutdown",
+          "controller uninstall leaves no owned login entry and retains account choices"
+        ],
+        "count": 51
+      }
+    }
+  ],
+  "scope": "Native signed-in Windows account, fixture controller/PUI, 51 resident lifecycle assertions. Historical source generation before cards-core; installed artifact and actual operator acceptance are separate.",
+  "assertions": [
+    {
+      "id": "resident-1",
+      "passed": true,
+      "evidence": "first install enables native panels with distinct default shortcuts"
+    },
+    {
+      "id": "resident-2",
+      "passed": true,
+      "evidence": "first install enables the Accounts shortcut"
+    },
+    {
+      "id": "resident-3",
+      "passed": true,
+      "evidence": "first install enables Inbox on Ctrl Alt B"
+    },
+    {
+      "id": "resident-4",
+      "passed": true,
+      "evidence": "Inbox migration chooses a free accelerator without resetting existing panels"
+    },
+    {
+      "id": "resident-5",
+      "passed": true,
+      "evidence": "installer persists the migrated Inbox shortcut"
+    },
+    {
+      "id": "resident-6",
+      "passed": true,
+      "evidence": "upgrade preserves explicitly disabled Inbox"
+    },
+    {
+      "id": "resident-7",
+      "passed": true,
+      "evidence": "first install enables Organizer on Ctrl Alt O"
+    },
+    {
+      "id": "resident-8",
+      "passed": true,
+      "evidence": "Organizer migration avoids existing shortcuts"
+    },
+    {
+      "id": "resident-9",
+      "passed": true,
+      "evidence": "installer persists the migrated Organizer shortcut"
+    },
+    {
+      "id": "resident-10",
+      "passed": true,
+      "evidence": "upgrade preserves explicitly disabled Organizer"
+    },
+    {
+      "id": "resident-11",
+      "passed": true,
+      "evidence": "Organizer upgrade retains the prior Quick Access shortcut"
+    },
+    {
+      "id": "resident-12",
+      "passed": true,
+      "evidence": "first install enables Papercup on Ctrl Alt P"
+    },
+    {
+      "id": "resident-13",
+      "passed": true,
+      "evidence": "Papercup migration avoids existing shortcuts"
+    },
+    {
+      "id": "resident-14",
+      "passed": true,
+      "evidence": "installer persists migrated Papercup shortcut"
+    },
+    {
+      "id": "resident-15",
+      "passed": true,
+      "evidence": "upgrade preserves explicitly disabled Papercup"
+    },
+    {
+      "id": "resident-16",
+      "passed": true,
+      "evidence": "Papercup upgrade retains existing surface preferences"
+    },
+    {
+      "id": "resident-17",
+      "passed": true,
+      "evidence": "adding Accounts preserves legacy disable and shortcut choices"
+    },
+    {
+      "id": "resident-18",
+      "passed": true,
+      "evidence": "Accounts migration avoids existing Quick Access and Inbox shortcuts"
+    },
+    {
+      "id": "resident-19",
+      "passed": true,
+      "evidence": "preserve-existing installer persists the missing Accounts binding"
+    },
+    {
+      "id": "resident-20",
+      "passed": true,
+      "evidence": "login registration uses the exact installed controller and fixed argv"
+    },
+    {
+      "id": "resident-21",
+      "passed": true,
+      "evidence": "Workbench registration preserves unrelated login applications"
+    },
+    {
+      "id": "resident-22",
+      "passed": true,
+      "evidence": "native login command preserves spaces apostrophes and literal dollar signs"
+    },
+    {
+      "id": "resident-23",
+      "passed": true,
+      "evidence": "upgrade preserves account shortcuts and individual panel disable"
+    },
+    {
+      "id": "resident-24",
+      "passed": true,
+      "evidence": "upgrade refreshes the registered installation without resetting choices"
+    },
+    {
+      "id": "resident-25",
+      "passed": true,
+      "evidence": "disable removes this accounts Workbench login value"
+    },
+    {
+      "id": "resident-26",
+      "passed": true,
+      "evidence": "reinstall does not re-enable an explicitly disabled account"
+    },
+    {
+      "id": "resident-27",
+      "passed": true,
+      "evidence": "explicit enable restores login registration"
+    },
+    {
+      "id": "resident-28",
+      "passed": true,
+      "evidence": "duplicate enabled shortcuts are refused before writing"
+    },
+    {
+      "id": "resident-29",
+      "passed": true,
+      "evidence": "reserved F12 remains invalid even for a disabled panel"
+    },
+    {
+      "id": "resident-30",
+      "passed": true,
+      "evidence": "invalid native modifier bits are refused"
+    },
+    {
+      "id": "resident-31",
+      "passed": true,
+      "evidence": "invalid settings leave both persistence and login state unchanged"
+    },
+    {
+      "id": "resident-32",
+      "passed": true,
+      "evidence": "concurrent settings writer cannot bypass the per-account lock"
+    },
+    {
+      "id": "resident-33",
+      "passed": true,
+      "evidence": "registry failure is surfaced instead of accepting a partial settings update"
+    },
+    {
+      "id": "resident-34",
+      "passed": true,
+      "evidence": "registry failure restores the previous settings"
+    },
+    {
+      "id": "resident-35",
+      "passed": true,
+      "evidence": "missing resident is reported without starting a service or touching another account"
+    },
+    {
+      "id": "resident-36",
+      "passed": true,
+      "evidence": "settings wake targets the exact account and state-directory identity"
+    },
+    {
+      "id": "resident-37",
+      "passed": true,
+      "evidence": "uninstalling another role preserves the current roles login entry"
+    },
+    {
+      "id": "resident-38",
+      "passed": true,
+      "evidence": "uninstall removes owned login registration and retains account preferences"
+    },
+    {
+      "id": "resident-39",
+      "passed": true,
+      "evidence": "retained preferences survive uninstall and reinstall"
+    },
+    {
+      "id": "resident-40",
+      "passed": true,
+      "evidence": "corrupt preferences fail visibly instead of silently resetting shortcuts"
+    },
+    {
+      "id": "resident-41",
+      "passed": true,
+      "evidence": "resident fixture refuses to overwrite an existing Workbench login registration"
+    },
+    {
+      "id": "resident-42",
+      "passed": true,
+      "evidence": "actual controller starts the resident in the signed-in desktop and acknowledges native readiness"
+    },
+    {
+      "id": "resident-43",
+      "passed": true,
+      "evidence": "unchanged desktop preparation preserves the same resident process"
+    },
+    {
+      "id": "resident-44",
+      "passed": true,
+      "evidence": "settings command reaches the resident native WPF dialog through its account event"
+    },
+    {
+      "id": "resident-45",
+      "passed": true,
+      "evidence": "resident settings exposes the configurable Papercup shortcut"
+    },
+    {
+      "id": "resident-46",
+      "passed": true,
+      "evidence": "saving native disable releases the resident and removes login registration"
+    },
+    {
+      "id": "resident-47",
+      "passed": true,
+      "evidence": "native settings persist explicit disable"
+    },
+    {
+      "id": "resident-48",
+      "passed": true,
+      "evidence": "login invocation respects the saved disabled choice"
+    },
+    {
+      "id": "resident-49",
+      "passed": true,
+      "evidence": "explicit enable restarts the same configured native host"
+    },
+    {
+      "id": "resident-50",
+      "passed": true,
+      "evidence": "explicit disable waits for resident shutdown"
+    },
+    {
+      "id": "resident-51",
+      "passed": true,
+      "evidence": "controller uninstall leaves no owned login entry and retains account choices"
+    }
+  ]
+}

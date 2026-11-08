@@ -749,6 +749,60 @@ describe('recursive path advisory serialization', () => {
 });
 
 describe('tryRelease + grant cascade', () => {
+  it('preserves only the selected live rows before granting the successor', async () => {
+    const ws = nextWs();
+    const held = await inWorkspaceTxn(ws, 'a', tx => tryAcquire(tx, {
+      coordinationDomain: ws, owner: 'a', ownerLabel: 'A', paths: ['a.ts', 'b.ts'],
+      intent: 'edit WI-A', goalRef: 'WI-A', ttlSec: 60,
+    }));
+    if (!held.ok) throw new Error('setup acquire failed');
+    const waiter = await inWorkspaceTxn(ws, 'b', tx => tryInsertWaiter(tx, {
+      coordinationDomain: ws, owner: 'b', ownerLabel: 'B', paths: ['a.ts'],
+      intent: 'successor', ttlSec: 60, maxWaitSec: 30,
+    }));
+    if (!waiter.ok || 'self_granted' in waiter) throw new Error('setup waiter failed');
+    const preserve = vi.fn(async (rows: Parameters<NonNullable<Parameters<typeof tryRelease>[1]['beforeRelease']>>[0]) => {
+      expect(rows).toEqual([expect.objectContaining({ path: 'a.ts', lock_id: held.lock_id,
+        intent: 'edit WI-A', goal_ref: 'WI-A', acquired_ts: expect.any(Date) })]);
+      expect((await readWaiterStatus(getTxPool(), waiter.ticket_id)).status).toBe('waiting');
+      expect((await readQueue(getTxPool(), { coordinationDomain: ws })).active_locks)
+        .toEqual(expect.arrayContaining([expect.objectContaining({ path: 'a.ts', owner: 'a' })]));
+    });
+    const released = await inWorkspaceTxn(ws, 'a', tx => tryRelease(tx, {
+      coordinationDomain: ws, owner: 'a', lockId: held.lock_id, paths: ['a.ts'], beforeRelease: preserve,
+    }));
+    expect(released.released).toEqual(['a.ts']);
+    expect(preserve).toHaveBeenCalledTimes(1);
+    expect((await readWaiterStatus(getTxPool(), waiter.ticket_id)).status).toBe('granted');
+    expect((await readQueue(getTxPool(), { coordinationDomain: ws })).active_locks)
+      .toEqual(expect.arrayContaining([expect.objectContaining({ path: 'b.ts', owner: 'a' })]));
+  });
+
+  it('retains explicit locks and the queued successor when preservation fails', async () => {
+    const ws = nextWs();
+    const held = await inWorkspaceTxn(ws, 'a', tx => tryAcquire(tx, {
+      coordinationDomain: ws, owner: 'a', ownerLabel: 'A', paths: ['a.ts'], intent: 'edit', ttlSec: 60,
+    }));
+    if (!held.ok) throw new Error('setup acquire failed');
+    const waiter = await inWorkspaceTxn(ws, 'b', tx => tryInsertWaiter(tx, {
+      coordinationDomain: ws, owner: 'b', ownerLabel: 'B', paths: ['a.ts'],
+      intent: 'successor', ttlSec: 60, maxWaitSec: 30,
+    }));
+    if (!waiter.ok || 'self_granted' in waiter) throw new Error('setup waiter failed');
+    await expect(inWorkspaceTxn(ws, 'a', tx => tryRelease(tx, {
+      coordinationDomain: ws, owner: 'a', lockId: held.lock_id,
+      beforeRelease: async () => { throw new Error('custody unavailable'); },
+    }))).rejects.toThrow('custody unavailable');
+    expect((await readWaiterStatus(getTxPool(), waiter.ticket_id)).status).toBe('waiting');
+    expect((await readQueue(getTxPool(), { coordinationDomain: ws })).active_locks)
+      .toEqual([expect.objectContaining({ path: 'a.ts', owner: 'a', lock_id: held.lock_id })]);
+    const preserve = vi.fn();
+    await inWorkspaceTxn(ws, 'other', tx => tryRelease(tx, {
+      coordinationDomain: ws, owner: 'other', lockId: held.lock_id, beforeRelease: preserve,
+    }));
+    expect(preserve).not.toHaveBeenCalled();
+  });
+
   it('release frees the locks', async () => {
     const ws = nextWs();
     const r = await inWorkspaceTxn(ws, 'a', (tx) =>

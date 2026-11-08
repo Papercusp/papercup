@@ -219,12 +219,17 @@ const MULTI_EXTENDED_WHILE_RE = new RegExp(
 // stay on the existing multi-verb path and conjunctions in modifiers do not
 // become object bundles by themselves.
 const OBJECT_DETERMINER = '(?:a|an|the|each|every|one|two|both|another|separate|distinct|this|that|these|those|its|their)';
-// In "a completed request", the participle modifies the subject; it is not
+// In "a completed request" or "a complete result", the modifier is not
 // another outcome. Keep coordinated predicates such as "completed and records".
 const ATTRIBUTIVE_PARTICIPLE_RE = new RegExp(
-  '\\b(' + OBJECT_DETERMINER + ')\\s+(?:[a-z]+ed|proven|made)\\b(?=\\s+(?!(?:and|or|while|when|if|unless)\\b)[a-z])',
+  '\\b(' + OBJECT_DETERMINER + ')\\s+(?:[a-z]+ed|proven|made|complete)\\b(?=\\s+(?!(?:and|or|while|when|if|unless)\\b)[a-z])',
   'gi',
 );
+// A word inside a hyphenated token ("fail-open", "read-only") is not
+// a finite predicate. Mask only the detector input, preserving the contract
+// and all standalone predicates before/after the compound.
+const HYPHENATED_TOKEN_RE = /\b[a-z0-9]+(?:-[a-z0-9]+)+\b/gi;
+const HYPHENATED_PREDICATE_COMPONENT_RE = new RegExp('\\b' + EXTENDED_OBSERVABLE_VERB + '\\b', 'gi');
 const OBJECT_CONDITION_BOUNDARY_RE = /\b(?:when|whenever|if|unless)\b/gi;
 const MULTI_OBJECT_CONJUNCTION_RE = new RegExp(
   '\\b' + EXTENDED_OBSERVABLE_VERB + '\\b[^.;\\n]{0,120}\\b' + OBJECT_DETERMINER +
@@ -342,7 +347,9 @@ export function specBehaviorNonAtomicReason(rawBehavior: string): string | null 
   const behavior = normalizeSpecSemanticText(rawBehavior);
   if (/;\s*\S/.test(behavior)) return 'behavior contains multiple semicolon-separated assertions';
   if (/[.!?]\s+(?=[A-Z0-9])/.test(behavior)) return 'behavior contains multiple sentences';
-  const predicates = behavior.replace(ATTRIBUTIVE_PARTICIPLE_RE, '$1 modifier');
+  const predicates = behavior
+    .replace(HYPHENATED_TOKEN_RE, (token) => token.replace(HYPHENATED_PREDICATE_COMPONENT_RE, 'modifier'))
+    .replace(ATTRIBUTIVE_PARTICIPLE_RE, '$1 modifier');
   if (MULTI_SUBJECT_SHARED_PREDICATE_RE.test(predicates)) {
     return 'behavior groups multiple subjects under one predicate';
   }

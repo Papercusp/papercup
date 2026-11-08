@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   compileSpecClauses,
   computeSpecSetHash,
+  specBehaviorNonAtomicReason,
   specBehaviorNonFalsifiableReason,
   type SpecClauseEnrichment,
 } from '../spec-clause-compiler';
@@ -280,6 +281,35 @@ describe('compileSpecClauses', () => {
     expect(result.candidates.find((candidate) => candidate.sourceValId === 'VAL-demo-compound')?.behavior).toBe(
       'GET /x returns 200 and POST /audit emits a record',
     );
+  });
+
+  it.each([
+    'The integrated plan workflow refuses every frozen incomplete or stale-authority case before evaluation with a complete actionable prerequisite result.',
+    'The compiler returns a complete result for incomplete and stale inputs.',
+    'The inventory emits one dispositioned row per site for missing checks, the log-only fail-open or fallback decisions, and stale evidence.',
+    'The inventory emits one dispositioned row per site for missing checks, the log-only fail-open decisions, and stale evidence.',
+    'The inventory emits one dispositioned row per site for missing checks, the log-only fallback decisions (fail-open included), and stale evidence.',
+  ])('keeps modifiers in a single outcome atomic without rewriting the contract: %s', (behavior) => {
+    const result = compileSpecClauses(
+      plan('  - **[VAL-demo-modifier]**', '    - **Verify:** ' + behavior),
+      { enrichments: { 'VAL-demo-modifier': { behaviorClass: 'failure', lifecycleStatus: 'active' } } },
+    );
+
+    expect(specBehaviorNonAtomicReason(behavior)).toBeNull();
+    expect(result.ok).toBe(true);
+    expect(result.diagnostics).toEqual([]);
+    expect(result.candidates[0].behavior).toBe(behavior);
+  });
+
+  it.each([
+    'The workflow refuses stale inputs and returns a complete prerequisite result.',
+    'The workers complete requests and records remain available.',
+    'The fail-open handler returns a response and writes an audit record.',
+    'The handler emits one row, the fail-open handler writes an audit record.',
+    'The workers complete a request while the fail-open handler writes an audit record.',
+    'Class-A emits one row, Class-B returns another row.',
+  ])('retains independent outcome detection beside modifiers: %s', (behavior) => {
+    expect(specBehaviorNonAtomicReason(behavior)).toBe('behavior joins multiple independently observable outcomes');
   });
 
   it('rejects coordinated subject lists with a source-presence predicate', () => {

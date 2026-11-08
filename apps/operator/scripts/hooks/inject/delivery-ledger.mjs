@@ -66,11 +66,32 @@ function memoryManifest(row) {
     bodySha256: row.bodySha256, bodyBytes: row.bodyBytes };
 }
 
-function emittedMemoryFragments(payload, client, offers) {
+function emittedMemoryFragments(payload, client, offers, format, token, owner) {
   if (typeof payload !== 'string' || !Array.isArray(offers) || offers.length > 128) return [];
   let context;
   try {
-    if (client === 'omp') context = payload;
+    if (format === 'mcp') {
+      const message = JSON.parse(payload);
+      const receipt = message?.result?._meta?.['papercusp/memoryEmission'];
+      if (!['codex', 'claude', 'omp'].includes(client) || message?.jsonrpc !== '2.0' ||
+          !['string', 'number'].includes(typeof message.id) || message.error ||
+          receipt?.owner !== owner || receipt?.token !== token) return [];
+      // Inspect only model-visible response fields, never the offer metadata.
+      // Tool text may itself contain a JSON result; inspect its string values
+      // so escaped newlines cannot turn complete output into a false miss.
+      const strings = value => {
+        if (typeof value === 'string') {
+          try { return strings(JSON.parse(value)); } catch { return [value]; }
+        }
+        if (Array.isArray(value)) return value.flatMap(strings);
+        if (value && typeof value === 'object') return Object.entries(value)
+          .filter(([key]) => key !== '_meta').flatMap(([, child]) => strings(child));
+        return [];
+      };
+      context = [message.result.instructions, ...(message.result.content ?? [])
+        .filter(block => block?.type === 'text').map(block => block.text)]
+        .flatMap(strings).join('\n');
+    } else if (client === 'omp') context = payload;
     else if (client === 'claude' || client === 'codex') {
       const output = JSON.parse(payload);
       const expected = client === 'codex' ? 'PostToolUse' : 'PostToolBatch';
@@ -114,7 +135,7 @@ const revision = value => value && isHash(value.specificationRevision) && isHash
   : null;
 
 /** Whitelist metadata before writing: context text never enters the receipt. */
-function emissionMetadata(owner, emission) {
+function emissionMetadata(owner, emission, token) {
   const payload = typeof emission?.payload === 'string' ? emission.payload : null;
   const c = emission?.control;
   const control = c?.targetOwnerId === owner && Number.isSafeInteger(c.generation) && c.generation >= 0
@@ -136,7 +157,8 @@ function emissionMetadata(owner, emission) {
       ? emission.nativeSessionId : null,
     control,
     factBodies: emittedFactBodies(payload, emission?.client, emission?.factBodyOffers),
-    memoryFragments: emittedMemoryFragments(payload, emission?.client, emission?.memoryFragmentOffers),
+    memoryFragments: emittedMemoryFragments(payload, emission?.client, emission?.memoryFragmentOffers,
+      emission?.format, token, owner),
   };
 }
 
@@ -224,11 +246,11 @@ export function ledgerDir(env = process.env) {
  * Open the ledger for one session, or null when it cannot be written.
  * @param {string | null | undefined} owner  PAPERCUSP_SID
  * @param {NodeJS.ProcessEnv} [env]
- * @param {'turn-start' | 'mid-turn'} [port]
+ * @param {'turn-start' | 'mid-turn' | 'mcp'} [port]
  * @returns {DeliveryLedger | null}
  */
 export function openDeliveryLedger(owner, env = process.env, port = 'turn-start') {
-  if (typeof owner !== 'string' || !owner || !['turn-start', 'mid-turn'].includes(port)) return null;
+  if (typeof owner !== 'string' || !owner || !['turn-start', 'mid-turn', 'mcp'].includes(port)) return null;
   const dir = ledgerDir(env);
   try {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -241,7 +263,7 @@ export function openDeliveryLedger(owner, env = process.env, port = 'turn-start'
   const key = owner.replace(/[^A-Za-z0-9._-]/g, '_');
   // Mid-turn must never replace the orientation ACK token. Both ports retain
   // the real recipient in their immutable receipts and share fragment proofs.
-  const namespace = port === 'turn-start' ? key : `${key}.mid-turn`;
+  const namespace = port === 'turn-start' ? key : `${key}.${port}`;
   const file = join(dir, `${namespace}.token`);
   const receipts = join(dir, `${namespace}.emissions`);
   /** @type {{ token: string, metadata: ReturnType<typeof emissionMetadata> } | null} */
@@ -268,7 +290,8 @@ export function openDeliveryLedger(owner, env = process.env, port = 'turn-start'
       // Read immutable receipts rather than only the last-writer token pointer:
       // overlapping hooks can finish and return their proofs in either order.
       try {
-        const files = [join(dir, `${key}.emissions`), join(dir, `${key}.mid-turn.emissions`)].flatMap(directory => {
+        const files = ['turn-start', 'mid-turn', 'mcp'].map(port =>
+          join(dir, `${key}${port === 'turn-start' ? '' : `.${port}`}.emissions`)).flatMap(directory => {
           try { return readdirSync(directory).filter(name => /^[a-f0-9]{64}\.json$/.test(name))
             .map(name => ({ name, directory, mtime: statSync(join(directory, name)).mtimeMs })); }
           catch { return []; }
@@ -288,7 +311,7 @@ export function openDeliveryLedger(owner, env = process.env, port = 'turn-start'
     },
     offer(token, emission) {
       offered = typeof token === 'string' && token
-        ? { token, metadata: emissionMetadata(owner, emission) } : null;
+        ? { token, metadata: emissionMetadata(owner, emission, token) } : null;
     },
     recordOutcome(outcome) {
       const metadata = turnStartOutcomeMetadata(outcome);

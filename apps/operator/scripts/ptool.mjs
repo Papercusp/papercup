@@ -78,6 +78,7 @@ import { PSU_REQUEST_TIMEOUT_MS } from '../lib/mcp-proxy/budgets.mjs';
 import { AGENT_LAUNCH_CLIENT_TIMEOUT_MS } from '../../../packages/operator-core/lib/agent-kickoff/launch-budgets.mjs';
 import { SCORECARD_EMIT_CLIENT_TIMEOUT_MS } from '../../../packages/operator-core/lib/agent-tools/scorecards/emit-timeout-budget.mjs';
 import { discoverOperatorUrl, rebaseUrl, resolveOperatorBase, validLocalPort } from './operator-discovery.mjs';
+import { openDeliveryLedger } from './hooks/inject/delivery-ledger.mjs';
 
 /** @typedef {Record<string, string | undefined>} EnvironmentMap */
 // psu-launcher marks inherited operator URLs as managed handoffs rather than
@@ -1890,7 +1891,7 @@ export function buildCallToolParams(toolName, callArgs, { outputSchema, idempote
     Object.hasOwn(callArgs, 'projection'),
   );
   const objectRooted = outputSchema?.type === 'object' && !projected;
-  /** @type {{structured?: boolean, format?: string, idempotencyKey?: string, 'papercusp/servingGeneration'?: string}} */
+  /** @type {{structured?: boolean, format?: string, idempotencyKey?: string, 'papercusp/servingGeneration'?: string, 'papercusp/memoryReceipt'?: {version: number, confirmations: object[]}}} */
   const meta = objectRooted ? { structured: true } : { format: 'json' };
   if (idempotencyKey) meta.idempotencyKey = idempotencyKey;
   if (typeof servingGeneration === 'string' && servingGeneration.trim()) {
@@ -1948,9 +1949,9 @@ export function requireServingGeneration(tool) {
  * Older clients omit call metadata. Supply the listed generation, never a
  * newly fetched generation; stale mutations must reach the upstream fence.
  * @param {{ listTools: Function, callTool: Function }} client
- * @param {{ toolName?: string|null, listTools?: Function }} [options]
+ * @param {{ toolName?: string|null, listTools?: Function, env?: EnvironmentMap }} [options]
  */
-export function createPtoolStdioBridge(client, { toolName = null, listTools = () => listAllTools(client) } = {}) {
+export function createPtoolStdioBridge(client, { toolName = null, listTools = () => listAllTools(client), env = process.env } = {}) {
   let catalog = null;
   let discovery = null;
   return {
@@ -1986,20 +1987,81 @@ export function createPtoolStdioBridge(client, { toolName = null, listTools = ()
         servingGeneration: generation,
         idempotencyKey: params._meta?.idempotencyKey ?? randomUUID(),
       });
+      const ledger = ['codex', 'claude', 'omp'].includes(env.PAPERCUSP_AGENT ?? '')
+        ? openDeliveryLedger(env.PAPERCUSP_SID, env, 'mcp') : null;
+      if (ledger) request._meta = { ...request._meta, 'papercusp/memoryReceipt': {
+        version: 1, confirmations: ledger.confirmedMemoryDeliveries(),
+      } };
       // No automatic catalog refresh or replay, especially for writes.
       return client.callTool(request, undefined, options);
     },
   };
 }
 
-async function servePtoolStdio(client, toolName) {
-  const [{ Server }, { StdioServerTransport }, types] = await Promise.all([
-    importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/server/index.js'),
+/** Keep SDK framing/input handling; strengthen send completion to the actual
+ * stdout callback. The SDK's send resolves when write() accepts a buffer, which
+ * precedes a possible EPIPE. Each response owns its ledger handle so overlapping
+ * sends cannot replace another response's offered token.
+ * @param {{ stdin?: import('node:stream').Readable, stdout?: import('node:stream').Writable, env?: EnvironmentMap }} [options]
+ */
+export async function createPtoolStdioTransport({ stdin = process.stdin, stdout = process.stdout,
+  env = process.env } = {}) {
+  const [{ StdioServerTransport }, { serializeMessage }] = await Promise.all([
     importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/server/stdio.js'),
+    importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/shared/stdio.js'),
+  ]);
+  const transport = new StdioServerTransport(stdin, stdout);
+  const onError = error => { transport.onerror?.(error); };
+  stdout.on('error', onError);
+  let closing = false;
+  let pendingWrites = 0;
+  const cleanup = () => {
+    if (closing && pendingWrites === 0) setImmediate(() => {
+      if (pendingWrites === 0) stdout.off('error', onError);
+    });
+  };
+  const close = transport.close.bind(transport);
+  transport.close = async () => {
+    // A failed write emits error after its callback. Keep its listener until
+    // queued callbacks/events have drained, including close after rejection.
+    closing = true;
+    await close();
+    cleanup();
+  };
+  transport.send = async message => {
+    if (closing) throw new Error('StdioServerTransport is closed');
+    const payload = serializeMessage(message);
+    const offer = message?.result?._meta?.['papercusp/memoryEmission'];
+    const ledger = offer?.owner === env.PAPERCUSP_SID
+      ? openDeliveryLedger(env.PAPERCUSP_SID, env, 'mcp') : null;
+    if (ledger) ledger.offer(offer.token, {
+      payload, format: 'mcp', client: env.PAPERCUSP_AGENT,
+      nativeSessionId: env.PAPERCUSP_NATIVE_SESSION_ID ?? env.CODEX_SESSION_ID,
+      memoryFragmentOffers: offer.fragments,
+    });
+    pendingWrites++;
+    try {
+      await new Promise((resolve, reject) => {
+        stdout.write(payload, error => error ? reject(error) : resolve());
+      });
+      ledger?.commit();
+    } finally {
+      pendingWrites--;
+      cleanup();
+    }
+  };
+  return transport;
+}
+
+async function servePtoolStdio(client, toolName) {
+  const [{ Server }, types] = await Promise.all([
+    importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/server/index.js'),
     importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/types.js'),
   ]);
   const bridge = createPtoolStdioBridge(client, { toolName });
-  const server = new Server({ name: 'papercusp-ptool', version: '1.0.0' }, { capabilities: { tools: {} } });
+  const server = new Server({ name: 'papercusp-ptool', version: '1.0.0' }, {
+    capabilities: { tools: {} }, instructions: client.getInstructions?.(),
+  });
   server.setRequestHandler(types.ListToolsRequestSchema, () => bridge.listTools());
   server.setRequestHandler(types.CallToolRequestSchema, (request, extra) =>
     bridge.callTool(request.params, {
@@ -2013,7 +2075,7 @@ async function servePtoolStdio(client, toolName) {
   process.once('SIGTERM', close);
   process.once('SIGINT', close);
   try {
-    await server.connect(new StdioServerTransport());
+    await server.connect(await createPtoolStdioTransport());
     await closed;
   } finally {
     process.stdin.off('end', close);
@@ -4325,6 +4387,7 @@ export const PTOOL_SDK_MODULE_LOADERS = Object.freeze({
     import('@modelcontextprotocol/sdk/client/streamableHttp.js'),
   '@modelcontextprotocol/sdk/server/index.js': () => import('@modelcontextprotocol/sdk/server/index.js'),
   '@modelcontextprotocol/sdk/server/stdio.js': () => import('@modelcontextprotocol/sdk/server/stdio.js'),
+  '@modelcontextprotocol/sdk/shared/stdio.js': () => import('@modelcontextprotocol/sdk/shared/stdio.js'),
 });
 
 /** Default SDK importer: refuses a specifier with no bundle-traceable loader. */

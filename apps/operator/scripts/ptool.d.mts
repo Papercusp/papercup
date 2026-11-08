@@ -487,6 +487,10 @@ export function buildCallToolParams(toolName: string, callArgs: any, { outputSch
         format?: string;
         idempotencyKey?: string;
         'papercusp/servingGeneration'?: string;
+        'papercusp/memoryReceipt'?: {
+            version: number;
+            confirmations: object[];
+        };
     };
 };
 /**
@@ -503,20 +507,32 @@ export function requireServingGeneration(tool: any): string | undefined;
  * Older clients omit call metadata. Supply the listed generation, never a
  * newly fetched generation; stale mutations must reach the upstream fence.
  * @param {{ listTools: Function, callTool: Function }} client
- * @param {{ toolName?: string|null, listTools?: Function }} [options]
+ * @param {{ toolName?: string|null, listTools?: Function, env?: EnvironmentMap }} [options]
  */
 export function createPtoolStdioBridge(client: {
     listTools: Function;
     callTool: Function;
-}, { toolName, listTools }?: {
+}, { toolName, listTools, env }?: {
     toolName?: string | null;
     listTools?: Function;
+    env?: EnvironmentMap;
 }): {
     listTools(): Promise<{
         tools: any;
     }>;
     callTool(params: any, options?: {}): Promise<any>;
 };
+/** Keep SDK framing/input handling; strengthen send completion to the actual
+ * stdout callback. The SDK's send resolves when write() accepts a buffer, which
+ * precedes a possible EPIPE. Each response owns its ledger handle so overlapping
+ * sends cannot replace another response's offered token.
+ * @param {{ stdin?: import('node:stream').Readable, stdout?: import('node:stream').Writable, env?: EnvironmentMap }} [options]
+ */
+export function createPtoolStdioTransport({ stdin, stdout, env }?: {
+    stdin?: import("node:stream").Readable;
+    stdout?: import("node:stream").Writable;
+    env?: EnvironmentMap;
+}): Promise<any>;
 /**
  * Per-attempt handshake budget for one local MCP origin. Pure and exported so
  * the direct-vs-proxy distinction cannot silently collapse back to one number.
@@ -1145,6 +1161,7 @@ export const PTOOL_SDK_MODULE_LOADERS: Readonly<{
     '@modelcontextprotocol/sdk/client/streamableHttp.js': () => Promise<typeof import("@modelcontextprotocol/sdk/client/streamableHttp.js")>;
     '@modelcontextprotocol/sdk/server/index.js': () => Promise<typeof import("@modelcontextprotocol/sdk/server/index.js")>;
     '@modelcontextprotocol/sdk/server/stdio.js': () => Promise<typeof import("@modelcontextprotocol/sdk/server/stdio.js")>;
+    '@modelcontextprotocol/sdk/shared/stdio.js': () => Promise<typeof import("@modelcontextprotocol/sdk/shared/stdio.js")>;
 }>;
 /** Exit status when the call was delivered but the tool ANSWERED ok:false — a
  *  refused write, a missing id, a partially-failed batch. Distinct from 1 (the
