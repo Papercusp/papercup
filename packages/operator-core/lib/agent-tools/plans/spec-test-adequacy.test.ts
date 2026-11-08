@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { getBuildInfo } from '../../build-info';
 import type { SpecClauseRevision } from './spec-clauses-store';
 import type { SpecEvidenceForAdequacy } from './spec-test-adequacy';
@@ -15,6 +15,7 @@ import {
   evaluateSpecEvidenceMatrix,
   isAcceptedMutationTarget,
   resolveFixtureAbsenceVerifications,
+  resolveOracleIndependenceVerifications,
   latestLogicalEvidence,
   mutationMeasuredFailedCase,
   requiredProofFloor,
@@ -4346,7 +4347,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
   });
 
   it('pins the evaluator revision when an adequacy rule changes', () => {
-    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(40);
+    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(41);
   });
 
   it('accepts a non-automated ledger census without inventing executable fixture proof', () => {
@@ -4754,6 +4755,98 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       const { cited, review } = proofPair();
       const partial = { ...review, currentness: undefined } as unknown as SpecEvidenceForAdequacy;
       expect((await resolveFixtureAbsenceVerifications([cited, partial], async () => true)).size).toBe(0);
+    });
+
+    it('certifies an independently reviewed oracle for the exact frozen production, test and fixture inputs', async () => {
+      const { cited, review } = proofPair();
+      const fixture = { ...cited.fingerprints, fixtureFingerprint: 'frozen-inputs-v1' };
+      const details = { adequacy: { ...cited.details.adequacy as Record<string, unknown>, fixtureFree: false } };
+      const subject = { ...cited, fingerprints: fixture, details };
+      const outsideReview = { ...review, fingerprints: fixture, details };
+      const independence = vi.fn(async () => true);
+      expect(await resolveOracleIndependenceVerifications([subject, outsideReview], independence))
+        .toEqual(new Map([[cited.id, [review.id]]]));
+      expect(independence).toHaveBeenCalledWith(review.createdBy, cited.createdBy, cited.planSlug);
+      // Reviewing an oracle with fixtures does not certify fixture absence.
+      expect((await resolveFixtureAbsenceVerifications([subject, outsideReview], independence)).size).toBe(0);
+    });
+
+    it('rejects simultaneous production and expectation movement from the same unreviewed origin', async () => {
+      const { cited, review } = proofPair();
+      const changedInputs = { ...cited.fingerprints, sourceFingerprint: 'production-v2',
+        testFingerprint: 'expectation-v2', fixtureFingerprint: 'inputs-v2' };
+      const changed = { ...cited, fingerprints: changedInputs };
+      // The old outside review covers neither the changed production nor its new expected output.
+      expect((await resolveOracleIndependenceVerifications([changed, review], async () => true)).size).toBe(0);
+      // Re-stamping every hash from the implementer cannot manufacture independent origin.
+      const selfReview = { ...review, fingerprints: changedInputs, createdBy: cited.createdBy };
+      expect((await resolveOracleIndependenceVerifications([changed, selfReview], async () => true)).size).toBe(0);
+      // A distinct session from the same lineage is equally ineligible.
+      const relatedReview = { ...review, fingerprints: changedInputs };
+      expect((await resolveOracleIndependenceVerifications([changed, relatedReview], async () => false)).size).toBe(0);
+    });
+
+    it('keeps absent, stale, withdrawn, forged or mismatched oracle review unknown', async () => {
+      const { cited, review } = proofPair();
+      expect((await resolveOracleIndependenceVerifications([cited], async () => true)).size).toBe(0);
+      const ineligible: SpecEvidenceForAdequacy[] = [
+        { ...review, currentness: { ...review.currentness, overall: 'unknown' } },
+        { ...review, currentness: { ...review.currentness, overall: 'stale' } },
+        { ...review, currentness: { ...review.currentness, provenance: 'attested-current' } },
+        { ...review, withdrawal: { at: '2026-11-08T00:00:00Z' } },
+        { ...review, createdBy: undefined, details: { ...review.details, createdBy: 'outside-reviewer' } },
+        { ...review, testRunId: 9000 },
+        { ...review, specFingerprint: 'another-contract' },
+        { ...review, fingerprints: { ...review.fingerprints, rubricFingerprint: 'another-rubric' } },
+        { ...review, fingerprints: { ...review.fingerprints, fixtureFingerprint: 'another-input' } },
+        { ...review, details: { adequacy: { oracleIndependent: true, testCases: ['unreviewed case'] } } },
+        { ...review, details: { adequacy: { ...review.details.adequacy as Record<string, unknown>,
+          oracleIndependent: false } } },
+      ];
+      for (const candidate of ineligible) {
+        expect((await resolveOracleIndependenceVerifications([cited, candidate], async () => true)).size).toBe(0);
+      }
+      expect((await resolveOracleIndependenceVerifications([
+        { ...cited, withdrawal: { at: '2026-11-08T00:00:00Z' } }, review,
+      ], async () => true)).size).toBe(0);
+      expect((await resolveOracleIndependenceVerifications([cited, review], async () => {
+        throw new Error('lineage unavailable');
+      })).size).toBe(0);
+    });
+
+    it.each(['frozen independently reviewed', 'independently reviewed frozen'])(
+      'requires shared-reader certification for a declared %s oracle', async (declaration) => {
+        const { cited, review } = proofPair();
+        const frozenClause = clause({ behavior: `Execution must equal its ${declaration} canonical oracle.`,
+          requiredEvidence: ['tree'] });
+        const grade = (rows: SpecEvidenceForAdequacy[]) => evaluateSpecTestAdequacy({
+          clause: frozenClause, evidence: rows, classRef: 'plan-class-feature-ship',
+        }).ratings['oracle-independence'].rating;
+        // Implementer-authored true, and even a forged certificate in details, are insufficient.
+        expect(grade([cited, review])).toBe('unknown');
+        expect(grade([{ ...cited, details: { ...cited.details,
+          oracleIndependenceVerification: { verifierBindingIds: [review.id!] } } }, review])).toBe('unknown');
+        const certificates = await resolveOracleIndependenceVerifications([cited, review], async () => true);
+        const certified = { ...cited,
+          oracleIndependenceVerification: { verifierBindingIds: certificates.get(cited.id!)! } };
+        expect(grade([certified, review])).toBe('pass');
+        expect(grade([certified, { ...cited, id: 903 }])).toBe('unknown');
+        expect(grade([{ ...certified, details: { adequacy: { oracleIndependent: false } } }])).toBe('fail');
+      },
+    );
+
+    it('withdraws oracle eligibility when production and expectations change together after independent review', async () => {
+      const { cited, review } = proofPair();
+      const changed = { ...cited, fingerprints: { ...cited.fingerprints,
+        sourceFingerprint: 'production-v2', testFingerprint: 'expectation-v2' } };
+      const certificates = await resolveOracleIndependenceVerifications([changed, review], async () => true);
+      expect(certificates.size).toBe(0);
+      const result = evaluateSpecTestAdequacy({
+        clause: clause({ behavior: 'Execution equals its independently reviewed frozen oracle.' }),
+        evidence: [changed, review], classRef: 'plan-class-feature-ship',
+      });
+      expect(result.ratings['oracle-independence'].rating).toBe('unknown');
+      expect(result.verdict).not.toBe('pass');
     });
   });
 

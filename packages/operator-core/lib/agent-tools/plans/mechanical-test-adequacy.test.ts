@@ -47,6 +47,24 @@ describe('mechanical test adequacy', () => {
       passingTestBindingIds: { [file]: 1 }, caughtMutantBindingIds: [2] });
   });
 
+  it('preserves a frozen independently reviewed oracle obligation through mechanical acceptance', () => {
+    const frozenClause = { ...clause, behavior: 'Execution equals its independently reviewed frozen oracle.' };
+    const rows = [proof('test'), proof('mutation')];
+    const evaluate = (evidence: SpecEvidenceForAdequacy[]) => evaluateMechanicalTestAdequacy({
+      clause: frozenClause, evidence, sourceBarTestRequirements: { status: 'required', files: [file] },
+    });
+    expect(evaluate(rows)).toMatchObject({ applicable: true, verdict: 'unknown',
+      gaps: [expect.stringContaining('lacks eligible exact-proof review')] });
+    const certified = rows.map(row => ({ ...row,
+      oracleIndependenceVerification: { verifierBindingIds: [100 + row.id!] } }));
+    expect(evaluate(certified)).toMatchObject({ verdict: 'pass', gaps: [] });
+    expect(evaluate([certified[0]!, rows[1]!])).toMatchObject({ verdict: 'unknown' });
+    expect(evaluate([{ ...certified[0]!, details: { ...certified[0]!.details,
+      adequacy: { oracleIndependent: false } } }, certified[1]!])).toMatchObject({ verdict: 'fail' });
+    expect(evaluate([{ ...certified[0]!, testRunExecution: { ...certified[0]!.testRunExecution!,
+      status: 'fail', passed: 0, failed: 1 } }, certified[1]!])).toMatchObject({ verdict: 'fail' });
+  });
+
   it('requires a passing run for every named file', () => {
     expect(grade(undefined, [file, 'src/other.test.ts'])).toMatchObject({ verdict: 'fail' });
   });

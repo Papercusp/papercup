@@ -141,6 +141,10 @@ export interface SpecEvidenceForAdequacy {
   serverMeasurement?: { status: string };
   /** Certified by the shared reader from stored citations, pins and lineage. */
   fixtureAbsenceVerification?: { verifierBindingIds: number[] };
+  /** Same-proof oracle review certified by the shared reader, never binder details. */
+  oracleIndependenceVerification?: { verifierBindingIds: number[] };
+  /** Historical reads can include withdrawn rows; they cannot certify current proof. */
+  withdrawal?: { at: string | null };
   /** Canonical ledger attributes, independent of author-written evidenceRef prose. */
   testRunProvenance?: {
     filePath: string;
@@ -2849,8 +2853,10 @@ function appendRatingRerunProbes(
  *  38 — non-automated work-item census proof without test bytes does not require executable fixture evidence.
  *  39 — evidence-kind/plane compliance cannot turn unexercised layer reachability into a positive pass.
  *  40 — unknown currentness on an exact required plane is indeterminate, not absent; known absence still fails.
+ *  41 — explicitly frozen independently reviewed oracle declarations require exact outside-lineage review;
+ *       withdrawn proof cannot certify fixture absence or oracle independence.
  */
-export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 40;
+export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 41;
 
 /** One key on which a fixture-free review fails to pair with the binding it cites. */
 export type FixtureAbsencePairingKey =
@@ -2863,6 +2869,7 @@ export type FixtureAbsencePairingKey =
   | 'source-fingerprint'
   | 'test-fingerprint'
   | 'environment-fingerprint'
+  | 'rubric-fingerprint'
   | 'fixture-fingerprint'
   | 'test-cases';
 
@@ -2889,17 +2896,31 @@ export function fixtureAbsencePairingMismatches(
   cited: FixtureAbsencePairingSide,
   review: FixtureAbsencePairingSide,
 ): FixtureAbsencePairingKey[] {
+  const mismatched = independentProofPairingMismatches(cited, review);
+  if (detailsOf(cited).fixtureFree !== true) mismatched.splice(
+    mismatched.includes('author') ? 1 : 0, 0, 'cited-not-fixture-free',
+  );
+  if ((cited.fingerprints.fixtureFingerprint !== null || review.fingerprints.fixtureFingerprint !== null) &&
+      !mismatched.includes('fixture-fingerprint')) mismatched.push('fixture-fingerprint');
+  return mismatched;
+}
+
+/** Exact stored execution/input identity shared by fixture absence and oracle review. */
+export function independentProofPairingMismatches(
+  cited: FixtureAbsencePairingSide,
+  review: FixtureAbsencePairingSide,
+): FixtureAbsencePairingKey[] {
   const mismatched: FixtureAbsencePairingKey[] = [];
   const citedDetails = detailsOf(cited);
-  if (!cited.createdBy || cited.createdBy === review.createdBy) mismatched.push('author');
+  if (!cited.createdBy || !review.createdBy || cited.createdBy === review.createdBy) mismatched.push('author');
   if (!EXECUTABLE_EVIDENCE_KINDS.has(cited.evidenceKind)) mismatched.push('cited-kind');
-  if (citedDetails.fixtureFree !== true) mismatched.push('cited-not-fixture-free');
   if (cited.planSlug !== review.planSlug || cited.specId !== review.specId) mismatched.push('plan-clause');
   if (cited.specRevision !== review.specRevision || cited.specFingerprint !== review.specFingerprint) {
     mismatched.push('spec-revision');
   }
   if (!cited.testRunId || cited.testRunId !== review.testRunId) mismatched.push('test-run');
-  if (cited.fingerprints.sourceFingerprint !== review.fingerprints.sourceFingerprint) {
+  if (!cited.fingerprints.sourceFingerprint ||
+      cited.fingerprints.sourceFingerprint !== review.fingerprints.sourceFingerprint) {
     mismatched.push('source-fingerprint');
   }
   if (!cited.fingerprints.testFingerprint ||
@@ -2909,7 +2930,10 @@ export function fixtureAbsencePairingMismatches(
   if (cited.fingerprints.environmentFingerprint !== review.fingerprints.environmentFingerprint) {
     mismatched.push('environment-fingerprint');
   }
-  if (cited.fingerprints.fixtureFingerprint !== null || review.fingerprints.fixtureFingerprint !== null) {
+  if (cited.fingerprints.rubricFingerprint !== review.fingerprints.rubricFingerprint) {
+    mismatched.push('rubric-fingerprint');
+  }
+  if (cited.fingerprints.fixtureFingerprint !== review.fingerprints.fixtureFingerprint) {
     mismatched.push('fixture-fingerprint');
   }
   const cases = citedDetails.testCases ?? [];
@@ -2928,16 +2952,40 @@ export async function resolveFixtureAbsenceVerifications(
   rows: readonly SpecEvidenceForAdequacy[],
   isIndependent: (reviewer: string, citedAuthor: string, planSlug: string) => Promise<boolean>,
 ): Promise<Map<number, number[]>> {
+  return resolveIndependentProofVerifications(rows, isIndependent, 'fixture-absence');
+}
+
+/**
+ * D018: independently re-observe the frozen oracle through the existing proof citation.
+ * Moving production and expectations together cannot inherit the old review; a matching
+ * review from the same implementation lineage cannot certify the new expectation either.
+ * Missing identity/currentness/lineage yields no certificate (UNKNOWN), never a pass.
+ */
+export async function resolveOracleIndependenceVerifications(
+  rows: readonly SpecEvidenceForAdequacy[],
+  isIndependent: (reviewer: string, citedAuthor: string, planSlug: string) => Promise<boolean>,
+): Promise<Map<number, number[]>> {
+  return resolveIndependentProofVerifications(rows, isIndependent, 'oracle-independence');
+}
+
+async function resolveIndependentProofVerifications(
+  rows: readonly SpecEvidenceForAdequacy[],
+  isIndependent: (reviewer: string, citedAuthor: string, planSlug: string) => Promise<boolean>,
+  claim: 'fixture-absence' | 'oracle-independence',
+): Promise<Map<number, number[]>> {
   const verified = new Map<number, number[]>();
   const measured = (row: SpecEvidenceForAdequacy) =>
-    row.currentness?.overall === 'current' && row.currentness.provenance === 'server-measured';
+    !row.withdrawal && row.currentness?.overall === 'current' && row.currentness.provenance === 'server-measured';
   for (const review of rows) {
     if (review.evidenceKind !== 'independent-verification' || !review.id ||
         !review.verifiesBindingId || !review.createdBy || !measured(review) ||
-        detailsOf(review).fixtureFree !== true) continue;
+        (claim === 'fixture-absence' ? detailsOf(review).fixtureFree : detailsOf(review).oracleIndependent) !== true) continue;
     const cited = rows.find(row => row.id === review.verifiesBindingId);
     if (!cited?.id || !cited.createdBy || !measured(cited) ||
-        fixtureAbsencePairingMismatches(cited, review).length > 0) continue;
+        (claim === 'fixture-absence'
+          ? fixtureAbsencePairingMismatches(cited, review)
+          : independentProofPairingMismatches(cited, review)).length > 0 ||
+        (claim === 'oracle-independence' && detailsOf(cited).oracleIndependent !== true)) continue;
     try {
       if (!(await isIndependent(review.createdBy, cited.createdBy, cited.planSlug))) continue;
     } catch {
@@ -2947,6 +2995,32 @@ export async function resolveFixtureAbsenceVerifications(
     verified.set(cited.id, [...(verified.get(cited.id) ?? []), review.id]);
   }
   return verified;
+}
+
+/** The immutable declaration, shared by mechanical and judgment-based acceptance. */
+export function frozenOracleReviewRating(
+  clause: { planSlug: string; specId: string; revision: number; behavior?: string; requiredEvidence?: string[] },
+  evidence: readonly SpecEvidenceForAdequacy[],
+): AdequacyRatingEntry | null {
+  if (!/\b(?:frozen\s+independently\s+reviewed|independently\s+reviewed\s+frozen)\b/i
+    .test([clause.behavior ?? '', ...(clause.requiredEvidence ?? [])].join('\n'))) return null;
+  const identity = `${clause.planSlug}#${clause.specId}@${clause.revision}`;
+  const contradicted = evidence.filter(row => detailsOf(row).oracleIndependent === false);
+  if (contradicted.length) return {
+    rating: 'fail', evidence: evidenceWithBindings(`Bound proof explicitly reports a dependent oracle for ${identity}.`, contradicted),
+  };
+  const subjects = evidence.filter(row => EXECUTABLE_EVIDENCE_KINDS.has(row.evidenceKind));
+  const unreviewed = subjects.filter(row => row.withdrawal || row.currentness.overall !== 'current' ||
+    row.currentness.provenance !== 'server-measured' || !row.oracleIndependenceVerification?.verifierBindingIds.length);
+  const complete = subjects.length > 0 && unreviewed.length === 0;
+  return {
+    rating: complete ? 'pass' : 'unknown',
+    evidence: evidenceWithBindings(complete
+      ? `The shared reader certified outside-lineage review of the exact frozen source, test, fixture, run and cases for ${identity}.`
+      : `The frozen independently reviewed oracle declared by ${identity} lacks eligible exact-proof review. Missing, changed, withdrawn or same-lineage oracle evidence is UNKNOWN.`,
+    complete ? subjects : unreviewed),
+    ...(!complete ? { suggestion: 'Use the existing independent-verification citation to re-observe the exact frozen proof from outside the implementation lineage.' } : {}),
+  };
 }
 
 type MutationTargetClause = Pick<SpecClauseRevision, 'specId' | 'falsifier'>;
@@ -4052,6 +4126,12 @@ export function evaluateSpecTestAdequacy(input: {
     fail: `Bound metadata explicitly reports oracleIndependent=false for ${clauseIdentity(clause)}.`,
     unknown: `No bound evidence establishes oracle independence for ${clauseIdentity(clause)}.`,
   });
+
+  // Honor the explicit canonical declaration used by frozen-oracle contracts. Ordinary
+  // oracleIndependent attestations keep their existing meaning on other clauses; a
+  // declaration requiring independent review cannot be satisfied by that attestation.
+  // This reads the immutable clause, not an opt-out supplied in binding metadata.
+  ratings['oracle-independence'] = frozenOracleReviewRating(clause, evidence) ?? ratings['oracle-independence'];
 
   const executable = evidence.filter((row) => EXECUTABLE_EVIDENCE_KINDS.has(row.evidenceKind));
   const unbackedExecution = executable.filter((row) => !hasExecutionLedgerReference(row));

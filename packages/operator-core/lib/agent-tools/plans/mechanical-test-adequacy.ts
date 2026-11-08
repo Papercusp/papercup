@@ -18,12 +18,14 @@
  *     fingerprints on every read, so an edit to a named test or a measured source file makes the
  *     row stale and the verdict fails until fresh proof is bound. No re-check is scheduled; the
  *     check runs on every read.
+ *  4. an explicitly frozen independently reviewed oracle retains its exact outside-lineage
+ *     review requirement. Missing eligibility is unknown; an observed contradiction still fails.
  *
  * No judge card is requested on either verdict. A failing verdict names the missing proof.
  * A clause whose source BAR has another check kind, or whose pin cannot be resolved, is not
  * applicable here and keeps the evaluator + scorecard path.
  */
-import { hasLinkedMutationBaseline, latestLogicalEvidence, successfulPrerequisiteReceiptGaps, type SpecEvidenceForAdequacy } from './spec-test-adequacy';
+import { frozenOracleReviewRating, hasLinkedMutationBaseline, latestLogicalEvidence, successfulPrerequisiteReceiptGaps, type SpecEvidenceForAdequacy } from './spec-test-adequacy';
 import { hasMatchingDeclaredCaseTitle, repoFilesEvidenceMeasurementSchema } from './spec-evidence-store';
 import type { SourceBarTestRequirements } from './source-bar-test-requirements';
 import { CALIBRATION_LEGS } from '@papercusp/test-config/mutation-descriptor';
@@ -35,6 +37,8 @@ export interface MechanicalAdequacyClause {
   revision: number;
   /** When given, only rows bound to this exact clause content count. */
   contentHash?: string;
+  behavior?: string;
+  requiredEvidence?: string[];
   falsifier?: { requiredSuccessfulWorkItemIds?: string[] } | null;
 }
 
@@ -42,7 +46,7 @@ export type MechanicalTestAdequacy =
   | { applicable: false }
   | {
       applicable: true;
-      verdict: 'pass' | 'fail';
+      verdict: 'pass' | 'fail' | 'unknown';
       requiredFiles: string[];
       /** Per named file, the binding id of its current passing run (absent when none). */
       passingTestBindingIds: Record<string, number>;
@@ -258,9 +262,15 @@ export function evaluateMechanicalTestAdequacy(input: {
     }
   }
 
+  // Named runs replace judgment paperwork, never an explicit frozen-oracle obligation.
+  // Missing independent review is indeterminate even when execution itself passed.
+  const executionFailed = gaps.length > 0;
+  const oracle = frozenOracleReviewRating(clause, clauseRows);
+  if (oracle && oracle.rating !== 'pass') gaps.push(oracle.evidence);
   return {
     applicable: true,
-    verdict: gaps.length === 0 ? 'pass' : 'fail',
+    verdict: executionFailed || oracle?.rating === 'fail' ? 'fail'
+      : oracle?.rating === 'unknown' ? 'unknown' : 'pass',
     requiredFiles,
     passingTestBindingIds,
     caughtMutantBindingIds,

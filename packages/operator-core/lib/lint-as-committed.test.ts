@@ -1467,8 +1467,8 @@ describe('end-to-end — independent main and pinned runtime prerequisites (WI-1
     return sha;
   }
 
-  function fixture(build?: string, withMain = true) {
-    const root = mkdtempSync(join(tmpdir(), 'lac-prerequisites-'));
+  function fixture(build?: string, withMain = true, parent = tmpdir()) {
+    const root = mkdtempSync(join(parent, 'lac-prerequisites-'));
     gitFixture(root, ['init', '--quiet', '--initial-branch=staging']);
     const files = {
       '.gitignore': 'node_modules/\nlibs/runtime/dist/\n',
@@ -1934,8 +1934,11 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
   }, 30000);
 
   function retainedFixture(rootName = 'snapshot') {
-    const f = fixture('node build.cjs');
     const parent = mkdtempSync(join(realpathSync(tmpdir()), 'lac-resume-'));
+    // The real publisher imports direct sibling checkout pins during retention.
+    // Keep that census inside this fixture, as the dependency-generation suite
+    // does, rather than resolving every unrelated directory in shared /tmp.
+    const f = fixture('node build.cjs', true, parent);
     const workRoot = join(parent, rootName);
     const manifest = JSON.parse(readFileSync(join(f.root, 'libs/runtime/package.json'), 'utf8'));
     f.head = snapshot(f.root, {
@@ -2337,6 +2340,8 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
         for (const name of readdirSync(path)) makeWritable(join(path, name));
       };
       try {
+        expect(dirname(f.root)).toBe(f.parent);
+        expect(dirname(f.workRoot)).toBe(f.parent);
         // The real publisher requires every installed entry to realize a lock.
         // Put the generic byte fixtures inside a genuine installed package.
         for (const root of [f.root, f.workRoot]) {

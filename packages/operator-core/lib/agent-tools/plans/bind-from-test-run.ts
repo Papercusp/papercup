@@ -868,6 +868,10 @@ function mutationCausalControlsUnlinked(
     const expectedLeg = CAUSAL_CONTROL_LEGS[index];
     if (descriptor?.probeInvocationId === mutant.probeInvocationId
       && descriptor.subjectBeforeSha256 === mutant.subjectBeforeSha256
+      && descriptor.subjectPath === mutant.subjectPath
+      && descriptor.mode === mutant.mode
+      && descriptor.testCommandSha256 === mutant.testCommandSha256
+      && descriptor.testFileSha256 === mutant.testFileSha256
       && descriptor.leg === expectedLeg) continue;
     const found = descriptor
       ? `probeInvocationId ${JSON.stringify(descriptor.probeInvocationId)}, leg ${JSON.stringify(descriptor.leg)}`
@@ -875,7 +879,7 @@ function mutationCausalControlsUnlinked(
     return { ok: false, error: 'mutation_causal_controls_unlinked', testRunId,
       message: `Mutation causal control test-run ${controlIds[index]} records ${found}, but the bound mutant ${testRunId} ` +
         `is probeInvocationId ${JSON.stringify(mutant.probeInvocationId)}; its ${expectedLeg} control must be that ` +
-        `invocation's ${expectedLeg} leg for the same subject bytes. Take all three ids from one probe run's ledger rows ` +
+        `invocation's ${expectedLeg} leg for the same subject, test bytes and command. Take all three ids from one probe run's ledger rows ` +
         `(testing:runs on the guard file, grouped by execution_details.mutation.probeInvocationId), never from another probe.` };
   }
   return null;
@@ -1601,12 +1605,18 @@ async function expandTestRunBindingInScope(
       }
       return control;
     }));
+    const mutant = parseMutationDescriptor(executionDetails(row.execution_details).mutation);
+    // Background sync can advance HEAD between legs; copy-out may have no Git
+    // metadata at all. A complete descriptor instead identifies the immutable
+    // bytes under test. The linkage check below must still verify every leg.
+    const byteBoundProbe = mutant?.leg === 'mutant' && mutant.testFileSha256 !== null;
     for (const [index, control] of rows.entries()) {
       if (!control || Number(control.id) !== controlIds[index] || control.status !== 'pass'
         || control.workspace_id !== scope.workspaceId || control.harness_slug !== (row.harness_slug ?? scope.harnessSlug)
-        || !row.commit_sha || !control.commit_sha || control.commit_sha.toLowerCase() !== row.commit_sha.toLowerCase()) {
+        || (!byteBoundProbe && (!row.commit_sha || !control.commit_sha
+          || control.commit_sha.toLowerCase() !== row.commit_sha.toLowerCase()))) {
         return { ok: false, error: 'mutation_causal_controls_invalid', testRunId,
-          message: `Mutation causal control test-run ${controlIds[index]} must exist, pass and match the bound mutant's workspace, harness and known commit.` };
+          message: `Mutation causal control test-run ${controlIds[index]} must exist, pass and match the bound mutant's workspace and harness; legacy probes also require the same known commit.` };
       }
     }
     const unlinked = mutationCausalControlsUnlinked(row, rows as TestRunEvidenceRow[], controlIds);

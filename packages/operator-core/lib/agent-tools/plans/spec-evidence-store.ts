@@ -5817,11 +5817,13 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
   // Certify once at the common read seam. Both work-item acceptance and the BAR
   // ship snapshot consume these rows directly, without the evaluator tool.
   const absence = new Map<number, number[]>();
+  const oracles = new Map<number, number[]>();
   if (result.some(row => row.evidenceKind === 'independent-verification')) {
-    const { resolveFixtureAbsenceVerifications } = await import('./spec-test-adequacy');
+    const { resolveFixtureAbsenceVerifications, resolveOracleIndependenceVerifications } =
+      await import('./spec-test-adequacy');
     const implementers = new Map<string, Promise<string[]>>();
     const relations = new Map<string, Promise<boolean>>();
-    const certified = await resolveFixtureAbsenceVerifications(result, async (reviewer, citedAuthor, planSlug) => {
+    const isIndependent = async (reviewer: string, citedAuthor: string, planSlug: string) => {
       let authors = implementers.get(planSlug);
       if (!authors) {
         authors = resolvePlanImplementerIdentities(planSlug, { workspaceId: scope.workspaceId });
@@ -5838,11 +5840,15 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
         if (await relation) return false;
       }
       return true;
-    });
+    };
+    const certified = await resolveFixtureAbsenceVerifications(result, isIndependent);
     for (const [id, verifierIds] of certified) absence.set(id, verifierIds);
+    const reviewedOracles = await resolveOracleIndependenceVerifications(result, isIndependent);
+    for (const [id, verifierIds] of reviewedOracles) oracles.set(id, verifierIds);
   }
   recordPhase('total', totalStartedAt);
   return result.map(row => ({ ...row,
     ...(absence.has(row.id) ? { fixtureAbsenceVerification: { verifierBindingIds: absence.get(row.id)! } } : {}),
+    ...(oracles.has(row.id) ? { oracleIndependenceVerification: { verifierBindingIds: oracles.get(row.id)! } } : {}),
   }));
 }

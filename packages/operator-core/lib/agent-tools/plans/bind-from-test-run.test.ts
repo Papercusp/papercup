@@ -714,14 +714,18 @@ describe('expandTestRunBinding: mutation causal controls', () => {
       testFileSha256: 'f'.repeat(64),
       ...over,
     });
-    async function expandLinked(baseline: unknown, copyBaseline: unknown) {
+    async function expandLinked(
+      baseline: unknown,
+      copyBaseline: unknown,
+      overrides: Partial<Record<number, Partial<TestRunEvidenceRow>>> = {},
+    ) {
       const rows = new Map<number, TestRunEvidenceRow>([
         [42, run({ status: 'fail', source: 'mutation-probe',
-          execution_details: { mutationPhase: 'mutant', mutation: descriptor('mutant') } })],
+          execution_details: { mutationPhase: 'mutant', mutation: descriptor('mutant') }, ...overrides[42] })],
         [10, run({ id: 10, source: 'mutation-probe',
-          execution_details: { mutationPhase: 'baseline', ...(baseline ? { mutation: baseline } : {}) } })],
+          execution_details: { mutationPhase: 'baseline', ...(baseline ? { mutation: baseline } : {}) }, ...overrides[10] })],
         [11, run({ id: 11, source: 'mutation-probe',
-          execution_details: { mutationPhase: 'copy-baseline', ...(copyBaseline ? { mutation: copyBaseline } : {}) } })],
+          execution_details: { mutationPhase: 'copy-baseline', ...(copyBaseline ? { mutation: copyBaseline } : {}) }, ...overrides[11] })],
       ]);
       return expandTestRunBinding(input({ details: { causalControls: controls } }), SCOPE, {
         loadRun: async (_scope, id) => rows.get(Number(id)) ?? null,
@@ -737,8 +741,39 @@ describe('expandTestRunBinding: mutation causal controls', () => {
     });
 
     it.each([
+      ['an unrelated checkout commit between legs', { 10: { commit_sha: '1'.repeat(40) } }],
+      ['a copy-out mutant without Git metadata', { 42: { commit_sha: null } }],
+      ['a baseline without Git metadata', { 10: { commit_sha: null } }],
+    ] as const)('uses immutable probe bytes across %s', async (_label, overrides) => {
+      expect(await expandLinked(descriptor('baseline'), descriptor('copy-baseline'), overrides)).toMatchObject({
+        ok: true, binding: { testRunId: 42, details: { causalControls: controls } },
+      });
+    });
+
+    it.each([
+      ['another workspace', { workspace_id: 'other-workspace' }],
+      ['another harness', { harness_slug: 'other-harness' }],
+      ['a failed control', { status: 'fail' }],
+    ] as const)('retains scope and verdict guards with linked bytes from %s', async (_label, override) => {
+      expect(await expandLinked(descriptor('baseline'), descriptor('copy-baseline'), { 10: override }))
+        .toMatchObject({ ok: false, error: 'mutation_causal_controls_invalid', testRunId: 42 });
+    });
+
+    it('requires the legacy commit guard when the mutant has no test byte identity', async () => {
+      expect(await expandLinked(descriptor('baseline'), descriptor('copy-baseline'), {
+        42: { commit_sha: null, execution_details: {
+          mutationPhase: 'mutant', mutation: descriptor('mutant', { testFileSha256: null }),
+        } },
+      })).toMatchObject({ ok: false, error: 'mutation_causal_controls_invalid', testRunId: 42 });
+    });
+
+    it.each([
       ['another probe invocation', descriptor('baseline', { probeInvocationId: 'probe-other-0002' }), descriptor('copy-baseline'), 10],
       ['other subject bytes', descriptor('baseline'), descriptor('copy-baseline', { subjectBeforeSha256: 'a'.repeat(64) }), 11],
+      ['other test bytes', descriptor('baseline', { testFileSha256: 'a'.repeat(64) }), descriptor('copy-baseline'), 10],
+      ['missing control test bytes', descriptor('baseline'), descriptor('copy-baseline', { testFileSha256: null }), 11],
+      ['another command', descriptor('baseline', { testCommandSha256: 'a'.repeat(64) }), descriptor('copy-baseline'), 10],
+      ['another subject path', descriptor('baseline'), descriptor('copy-baseline', { subjectPath: 'pkg/lib/other.ts' }), 11],
       ['swapped calibration legs', descriptor('copy-baseline'), descriptor('baseline'), 10],
       ['a control with no descriptor', descriptor('baseline'), null, 11],
     ] as const)('refuses controls from %s', async (_label, baseline, copyBaseline, offending) => {

@@ -2,9 +2,12 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { Sql } from 'postgres';
+import type { PresenceRecord } from '../agent-tools/coordination/presence';
+import { resolveSessionStates } from '../agent-tools/coordination/liveness-oracle';
 import { pruneRunsWithReport, pruneStaleForeign } from '../../../../libs/generic/verification-harness/src/runner';
 import { isLeaseLive, readRetentionLeases } from '../release-cut-reclaim';
-import { createRetentionPin, pinProtectsPath, readRetentionPins, readRetentionPinsAsync, removeRetentionPin, renewWorkItemEvidencePins, withWorkItemEvidenceRetention } from './retention-pins';
+import { createRetentionPin, pinProtectsPath, readOpenWorkItemEvidenceReferences, readRetentionPins, readRetentionPinsAsync, removeRetentionPin, renewWorkItemEvidencePins, withWorkItemEvidenceRetention } from './retention-pins';
 import { withRetentionPinProtection as withPortablePinProtection } from '../../../../scripts/lib/retention-pins.mjs';
 
 const roots: string[] = [];
@@ -17,6 +20,43 @@ function fixture() {
 }
 
 describe('agent retention pins in the existing lease store', () => {
+  it.each(['live', 'parked', 'recorded', 'dead', 'abandoned', 'revoked', 'missing'] as const)(
+    'only renews an open item with an authorized actionable consumer (%s)', async state => {
+      const f = fixture();
+      const reference = { harness_slug: 'fixture', work_item_id: 'WI-consumer', evidence_ref: 'docs/evidence/consumer.json' };
+      const sql = vi.fn(async () => [{ ...reference, taken_by: state === 'abandoned' ? null : 'consumer' }]) as unknown as Sql;
+      const listPresence = vi.fn(async () => state === 'missing' ? [] : [{ ownerId: 'consumer', revoked: state === 'revoked',
+        heartbeatAt: new Date(f.nowMs).toISOString(), stale: false, host: null, pid: null, source: 'fixture', agentRole: 'su',
+      } as PresenceRecord]);
+      const references = await readOpenWorkItemEvidenceReferences(sql, 'fixture', {
+        nowMs: f.nowMs, listPresence,
+        resolveSessionStates: (subjects, options) => resolveSessionStates(subjects, { ...options,
+          fetchWakeabilityFn: async ids => new Map(ids.map(id => [id, {
+            wakeable: state === 'parked', liveTurn: state === 'live' || state === 'revoked',
+          }])),
+          fetchRecordedLiveFn: async () => new Set(state === 'recorded' ? ['consumer'] : []),
+          fetchRecordedEndedFn: async () => new Set(), probePidFn: () => null,
+        }),
+      });
+      expect(references).toEqual(['live', 'parked', 'recorded'].includes(state) ? [reference] : []);
+      if (state === 'abandoned') expect(listPresence).not.toHaveBeenCalled();
+    });
+
+  it('refuses an unknown liveness measurement instead of treating it as expired authority', async () => {
+    const f = fixture();
+    const sql = vi.fn(async () => [{ harness_slug: 'fixture', work_item_id: 'WI-unknown',
+      evidence_ref: 'docs/evidence/unknown.json', taken_by: 'consumer' }]) as unknown as Sql;
+    await expect(readOpenWorkItemEvidenceReferences(sql, 'fixture', {
+      nowMs: f.nowMs, listPresence: async () => [{ ownerId: 'consumer', revoked: false,
+        heartbeatAt: new Date(f.nowMs).toISOString(), stale: false, host: null, pid: null, source: 'fixture',
+      } as PresenceRecord],
+      resolveSessionStates: (subjects, options) => resolveSessionStates(subjects, { ...options,
+        fetchWakeabilityFn: async () => new Map(), fetchRecordedLiveFn: async () => new Set(),
+        fetchRecordedEndedFn: async () => new Set(), probePidFn: () => null,
+      }),
+    })).rejects.toThrow('consumer liveness unknown');
+  });
+
   it('renews one finite pin for an open item receipt and lets it expire when renewal stops', async () => {
     const f = fixture(); const repository = join(f.root, 'repo'), home = join(f.root, 'home');
     mkdirSync(join(repository, 'docs/evidence'), { recursive: true });
@@ -102,6 +142,43 @@ describe('agent retention pins in the existing lease store', () => {
     rmSync(target, { recursive: true });
     await expect(withWorkItemEvidenceRetention(reference, options, accept)).rejects.toThrow('missing declared evidence');
     expect(accept).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['renewal-first', 'reclaim-first'] as const)('serializes evidence custody with cleanup (%s)', async order => {
+    const f = fixture(), repository = join(f.root, 'repo'), home = join(f.root, 'home');
+    vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(f.root, 'mutex'));
+    const target = join(home, '.papercusp/evidence/race'); mkdirSync(target, { recursive: true });
+    mkdirSync(join(repository, 'docs/evidence'), { recursive: true });
+    const reference = { harness_slug: 'fixture', work_item_id: 'WI-race', evidence_ref: 'docs/evidence/race.json' };
+    writeFileSync(join(repository, reference.evidence_ref), JSON.stringify({ retainedEvidence: {
+      root: '.papercusp/evidence/race', pathBase: 'Operating account home directory',
+    } }));
+    const options = { ...f, home, repositories: new Map([['fixture', repository]]) };
+    let entered!: () => void, release!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const proceed = new Promise<void>(resolve => { release = resolve; });
+    const accept = vi.fn(async () => 'accepted');
+    if (order === 'renewal-first') {
+      const intake = withWorkItemEvidenceRetention(reference, options, async () => {
+        entered(); await proceed; return accept();
+      });
+      await started;
+      const reclaim = withPortablePinProtection(isPinned => {
+        if (!isPinned(target)) rmSync(target, { recursive: true });
+      }, f);
+      release(); await Promise.all([intake, reclaim]);
+      expect(accept).toHaveBeenCalledTimes(1); expect(existsSync(target)).toBe(true);
+    } else {
+      const reclaim = withPortablePinProtection(async isPinned => {
+        expect(isPinned(target)).toBe(false); entered(); await proceed;
+        rmSync(target, { recursive: true });
+      }, f);
+      await started;
+      const intake = withWorkItemEvidenceRetention(reference, options, accept);
+      const refused = expect(intake).rejects.toThrow('missing declared evidence');
+      release(); await Promise.all([reclaim, refused]);
+      expect(accept).not.toHaveBeenCalled(); expect(existsSync(target)).toBe(false);
+    }
   });
 
   it.each(['ambiguous', 'outside', 'symlink'])('refuses an unsafe %s evidence receipt', async kind => {

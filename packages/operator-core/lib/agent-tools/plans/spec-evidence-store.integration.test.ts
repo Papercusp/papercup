@@ -1231,6 +1231,68 @@ describe('exact spec evidence bindings', () => {
     expect(await refusedWith({})).toEqual(['spec-revision']);
   });
 
+  it('certifies a frozen oracle at the common reader and removes eligibility after same-origin production and expectation movement', async () => {
+    const identity = await import('../../acceptance-author-identity');
+    const implementers = vi.spyOn(identity, 'resolvePlanImplementerIdentities').mockResolvedValue(['su-implementer']);
+    const lineage = vi.spyOn(identity, 'areAcceptanceLineageRelated').mockResolvedValue(false);
+    const fixturePath = path.join(h.repoRoot, 'test/frozen-oracle.json');
+    try {
+      await specs.setSpecClause(clause({ mutationRequired: false,
+        behavior: 'Execution equals its independently reviewed frozen oracle.' }));
+      await writeFile(fixturePath, JSON.stringify({ expected: true }));
+      const { testRunId } = await seedExternalEvidence('test/reconnect.test.ts');
+      const caseTitle = 'does not replay acknowledged event 42';
+      const execution = { schemaVersion: 1, root: h.repoRoot, filePath: 'test/reconnect.test.ts',
+        runGroupId: null, workspaceId: WORKSPACE, harnessSlug: HARNESS, testNamePattern: null,
+        testLayer: 'integration', passed: 1, failed: 0, skipped: 0, collectionFailed: false,
+        mutationPhase: null, commitSha: null, worktreeDirty: true, passedCaseTitles: [caseTitle] };
+      await db.sql`UPDATE harness_shared.test_runs SET status = 'pass', finished_at = now(),
+        execution_details = ${JSON.stringify(execution)}::text::jsonb WHERE id = ${testRunId}`;
+      const measurement = { schemaVersion: 1 as const, kind: 'repo-files' as const,
+        sourcePaths: ['src/reconnect.ts'], testPaths: ['test/reconnect.test.ts'],
+        fixturePaths: ['test/frozen-oracle.json'] };
+      const fingerprints = await evidenceStore.measureRepoFilesEvidenceAtRoot(h.repoRoot, measurement);
+      const common = {
+        workItemId: 'WI-101', specId: 'SPEC-003-01', harnessSlug: HARNESS, planSlug: 'reconnect-plan',
+        evidenceRef: 'test/reconnect.test.ts#reviewed-oracle', testRunId, ...fingerprints,
+        details: { currentMeasurement: measurement, evidencePlane: 'tree',
+          adequacy: { oracleIndependent: true, fixtureFree: false, testCases: [caseTitle] },
+          // This binder-authored lookalike must never become a reader certificate.
+          oracleIndependenceVerification: { verifierBindingIds: [999999] } },
+      };
+      const subject = await evidenceStore.bindSpecEvidence({ ...common,
+        actorId: 'su-implementer', evidenceKind: 'test' });
+      expect(subject).toMatchObject({ status: 'created' });
+      const subjectId = (subject as { id: number }).id;
+      const read = async () => (await evidenceStore.listSpecEvidence({ harnessSlug: HARNESS,
+        planSlugs: ['reconnect-plan'], specIds: ['SPEC-003-01'] })).find(row => row.id === subjectId)!;
+      expect((await read()).oracleIndependenceVerification).toBeUndefined();
+      const review = await evidenceStore.bindSpecEvidence({ ...common, actorId: 'su-reviewer',
+        evidenceKind: 'independent-verification', verifiesBindingId: subjectId });
+      expect(review).toMatchObject({ status: 'created' });
+      const current = await read();
+      expect(current.currentness).toMatchObject({ overall: 'current', provenance: 'server-measured' });
+      expect(current.oracleIndependenceVerification).toEqual({ verifierBindingIds: [(review as { id: number }).id] });
+      expect(current.fixtureAbsenceVerification).toBeUndefined();
+      expect(implementers).toHaveBeenCalledWith('reconnect-plan', { workspaceId: WORKSPACE });
+      expect(lineage).toHaveBeenCalledWith('su-implementer', 'su-reviewer', { workspaceId: WORKSPACE });
+
+      lineage.mockResolvedValue(true);
+      expect((await read()).oracleIndependenceVerification).toBeUndefined();
+      lineage.mockResolvedValue(false);
+      await writeFile(path.join(h.repoRoot, 'src/reconnect.ts'), 'export const reconnect = false;\n');
+      await writeFile(path.join(h.repoRoot, 'test/reconnect.test.ts'), 'expect(reconnect).toBe(false);\n');
+      await writeFile(fixturePath, JSON.stringify({ expected: false }));
+      const moved = await read();
+      expect(moved.currentness.overall).toBe('stale');
+      expect(moved.oracleIndependenceVerification).toBeUndefined();
+    } finally {
+      implementers.mockRestore();
+      lineage.mockRestore();
+      await rm(fixturePath, { force: true });
+    }
+  });
+
   it('pins only matching execution-time ledger witnesses and never a binding-time caller runtime', async () => {
     await specs.setSpecClause(clause({ mutationRequired: false }));
     const { testRunId } = await seedExternalEvidence('test/reconnect.test.ts');

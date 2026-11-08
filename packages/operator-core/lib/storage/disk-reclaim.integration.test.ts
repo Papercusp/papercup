@@ -23,6 +23,8 @@ import { DetachedWalkAbandoned, readWalkState, walkAttemptFiles } from './disk-c
 import { readDiskHeadroomSoakEvidence } from './retention-interval-evidence';
 import { scanProcHolders } from '../release-cut-reclaim';
 import { readOpenWorkItemEvidenceReferences, readRetentionPins, renewWorkItemEvidencePins } from './retention-pins';
+import type { PresenceRecord } from '../agent-tools/coordination/presence';
+import { resolveSessionStates } from '../agent-tools/coordination/liveness-oracle';
 import { createFreshPgDb, applyEventSubstrateMigrationsForTest, COORD_SUBSCRIPTION_SUBSTRATE } from '../../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../../test/_work-items-schema';
 
@@ -266,7 +268,7 @@ describe('retention on a real fixture tree', () => {
     } finally { monotonic.mockRestore(); }
   });
 
-  it('retains old evidence bound to an open acceptance item and reclaims it after terminal lease expiry', async () => {
+  it.each(['terminal', 'dead', 'abandoned', 'revoked'] as const)('retains an active lease, then reclaims after %s consumer expiry', async loss => {
     const { root, options } = await setup();
     const db = await createFreshPgDb('open-evidence-retention');
     const home = join(root, 'home'), repository = join(fixture!, 'repo'), dir = join(fixture!, 'leases');
@@ -281,21 +283,32 @@ describe('retention on a real fixture tree', () => {
     } }));
     const nowMs = options.nowMs + 48 * 3_600_000;
     const repositories = new Map([['fixture', repository]]);
+    let lost = false;
+    const consumer = {
+      nowMs,
+      listPresence: async () => [{ ownerId: 'consumer', revoked: lost && loss === 'revoked',
+        heartbeatAt: new Date(nowMs).toISOString(), stale: false, host: null, pid: null, source: 'fixture', agentRole: 'su',
+      } as PresenceRecord],
+      resolveSessionStates: ((subjects, opts) => resolveSessionStates(subjects, { ...opts,
+        fetchWakeabilityFn: async ids => new Map(ids.map(id => [id, { wakeable: false, liveTurn: !lost }])),
+        fetchRecordedLiveFn: async () => new Set(), fetchRecordedEndedFn: async () => new Set(), probePidFn: () => null,
+      })) as typeof resolveSessionStates,
+    };
     try {
       await db.sql.unsafe(`CREATE SCHEMA IF NOT EXISTS harness_shared;
-        CREATE TABLE harness_shared.work_items (workspace_id text, harness_slug text, feature_id text, status text);
+        CREATE TABLE harness_shared.work_items (workspace_id text, harness_slug text, feature_id text, status text, taken_by text);
         CREATE TABLE harness_shared.spec_evidence_bindings (workspace_id text, harness_slug text, work_item_id text, evidence_ref text, retracted_at timestamptz)`);
-      await db.sql`INSERT INTO harness_shared.work_items VALUES ('fixture', 'fixture', 'WI-open', 'blocked'),
-        ('fixture', 'fixture', 'WI-done', 'done'), ('foreign', 'fixture', 'WI-foreign', 'open'),
-        ('fixture', 'fixture', 'WI-retracted', 'open')`;
+      await db.sql`INSERT INTO harness_shared.work_items VALUES ('fixture', 'fixture', 'WI-open', 'blocked', 'consumer'),
+        ('fixture', 'fixture', 'WI-done', 'done', 'consumer'), ('foreign', 'fixture', 'WI-foreign', 'open', 'consumer'),
+        ('fixture', 'fixture', 'WI-retracted', 'open', 'consumer')`;
       await db.sql`INSERT INTO harness_shared.spec_evidence_bindings VALUES
         ('fixture', 'fixture', 'WI-open', ${evidenceRef}, NULL), ('fixture', 'fixture', 'WI-done', ${evidenceRef}, NULL),
         ('fixture', 'fixture', 'WI-foreign', ${evidenceRef}, NULL), ('fixture', 'fixture', 'WI-retracted', ${evidenceRef}, now())`;
-      expect(await readOpenWorkItemEvidenceReferences(db.sql, 'fixture')).toEqual([
+      expect(await readOpenWorkItemEvidenceReferences(db.sql, 'fixture', consumer)).toEqual([
         { harness_slug: 'fixture', work_item_id: 'WI-open', evidence_ref: evidenceRef },
       ]);
       const readProtection = async () => {
-        const refs = await readOpenWorkItemEvidenceReferences(db.sql, 'fixture');
+        const refs = await readOpenWorkItemEvidenceReferences(db.sql, 'fixture', consumer);
         const renewal = await renewWorkItemEvidencePins(refs, { repositories, home, dir, nowMs });
         expect(renewal.missing).toEqual([]);
         return { paths: [], pins: readRetentionPins({ dir, nowMs }).pins };
@@ -307,8 +320,19 @@ describe('retention on a real fixture tree', () => {
       expect(receipt.entries).toContainEqual(expect.objectContaining({ path: unrelated, status: 'removed' }));
       expect(JSON.parse(await readFile(join(retained, 'result.json'), 'utf8'))).toEqual({ passed: true });
       await expect(stat(unrelated)).rejects.toMatchObject({ code: 'ENOENT' });
-      await db.sql`UPDATE harness_shared.work_items SET status = 'done' WHERE feature_id = 'WI-open'`;
-      expect(await readOpenWorkItemEvidenceReferences(db.sql, 'fixture')).toEqual([]);
+      const originalPin = readRetentionPins({ dir, nowMs }).pins[0]!;
+      if (loss === 'terminal') await db.sql`UPDATE harness_shared.work_items SET status = 'done' WHERE feature_id = 'WI-open'`;
+      if (loss === 'abandoned') await db.sql`UPDATE harness_shared.work_items SET taken_by = NULL WHERE feature_id = 'WI-open'`;
+      lost = true;
+      const refs = await readOpenWorkItemEvidenceReferences(db.sql, 'fixture', consumer);
+      expect(refs).toEqual([]);
+      await renewWorkItemEvidencePins(refs, { repositories, home, dir, nowMs: nowMs + 48 * 3_600_000 });
+      expect(readRetentionPins({ dir, nowMs }).pins).toEqual([originalPin]);
+      const protectedRun = await runDiskReclaimOnce({ ...options, nowMs: nowMs + 48 * 3_600_000,
+        policy, roots: [{ path: evidenceRoot, classId: 'fixture' }],
+        readProtection: async () => ({ paths: [], pins: readRetentionPins({ dir, nowMs: nowMs + 48 * 3_600_000 }).pins }) });
+      expect(protectedRun.errors).toEqual([]);
+      expect(protectedRun.entries).toContainEqual(expect.objectContaining({ path: retained, status: 'protected' }));
       const later = nowMs + 73 * 3_600_000;
       const final = await runDiskReclaimOnce({ ...options, nowMs: later, policy, roots: [{ path: evidenceRoot, classId: 'fixture' }],
         readProtection: async () => ({ paths: [], pins: readRetentionPins({ dir, nowMs: later }).pins }) });

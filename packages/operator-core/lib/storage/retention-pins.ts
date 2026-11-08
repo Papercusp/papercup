@@ -10,6 +10,8 @@ import { isAbsolute, join, normalize, relative, resolve } from 'node:path';
 import type { Sql } from 'postgres';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
+import type { listPresence } from '../agent-tools/coordination/presence';
+import type { resolveSessionStates } from '../agent-tools/coordination/liveness-oracle';
 import { AGENT_MAX_AGE_HOURS } from './retention-policy';
 import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 import { defaultRetentionDir, readRetentionPins, RETENTION_SCHEMA, withRetentionPinProtection,
@@ -69,20 +71,45 @@ export interface WorkItemEvidenceReference {
   evidence_ref: string;
 }
 
-/** Reuse immutable evidence bindings and the canonical work-item lifecycle.
- * Closed items stop renewing; their finite leases expire under normal policy. */
-export async function readOpenWorkItemEvidenceReferences(sql: Sql, workspaceId: string): Promise<WorkItemEvidenceReference[]> {
-  return sql<WorkItemEvidenceReference[]>`
-    SELECT DISTINCT b.work_item_id, b.harness_slug, b.evidence_ref
+/** Reuse immutable bindings, work-item custody and canonical session liveness.
+ * Losing custody or authority stops renewal, never shortens an existing lease.
+ * An unreadable liveness leg aborts reclaim rather than authorizing deletion. */
+export async function readOpenWorkItemEvidenceReferences(sql: Sql, workspaceId: string, options: {
+  nowMs?: number; listPresence?: typeof listPresence; resolveSessionStates?: typeof resolveSessionStates;
+} = {}): Promise<WorkItemEvidenceReference[]> {
+  const candidates = await sql<Array<WorkItemEvidenceReference & { taken_by: string | null }>>`
+    SELECT DISTINCT b.work_item_id, b.harness_slug, b.evidence_ref, w.taken_by
       FROM harness_shared.spec_evidence_bindings b
+      JOIN harness_shared.work_items w
+        ON w.workspace_id = ANY(${[...new Set([workspaceId, DEFAULT_COORD_WORKSPACE])]}::text[])
+       AND w.harness_slug = b.harness_slug AND w.feature_id = b.work_item_id
      WHERE b.workspace_id = ${workspaceId}
        AND b.retracted_at IS NULL
        AND b.evidence_ref LIKE 'docs/evidence/%.json'
-       AND EXISTS (
-         SELECT 1 FROM harness_shared.work_items w
-          WHERE w.workspace_id = ANY(${[...new Set([workspaceId, DEFAULT_COORD_WORKSPACE])]}::text[])
-            AND w.harness_slug = b.harness_slug AND w.feature_id = b.work_item_id
-            AND NOT (w.status = ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[])))`;
+       AND NOT (w.status = ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[]))
+       AND w.taken_by IS NOT NULL`;
+  const ownerIds = [...new Set(candidates.map(ref => ref.taken_by).filter((id): id is string => !!id))];
+  if (!ownerIds.length) return [];
+  const readPresence = options.listPresence ?? (await import('../agent-tools/coordination/presence')).listPresence;
+  const { classifyReadActionability, resolveSessionStates: resolveStates } = await import('../agent-tools/coordination/liveness-oracle');
+  const presence = (await readPresence({ ownerIds })).filter(row => !row.revoked);
+  const states = await (options.resolveSessionStates ?? resolveStates)(presence.map(row => ({
+    ownerId: row.ownerId, heartbeatAt: row.heartbeatAt, stale: row.stale, host: row.host,
+    pid: row.pid, source: row.source, agentRole: row.agentRole, claimsHeld: true,
+  })), { nowMs: options.nowMs });
+  const authorized = new Set<string>();
+  for (const row of presence) {
+    const actionability = classifyReadActionability(states.get(row.ownerId)?.sessionState);
+    if (actionability === 'unknown') throw new Error(`evidence retention: consumer liveness unknown for ${row.ownerId}`);
+    if (actionability === 'actionable') authorized.add(row.ownerId);
+  }
+  const references = new Map<string, WorkItemEvidenceReference>();
+  for (const { taken_by, ...ref } of candidates) {
+    if (taken_by && authorized.has(taken_by)) {
+      references.set(`${ref.harness_slug}\0${ref.work_item_id}\0${ref.evidence_ref}`, ref);
+    }
+  }
+  return [...references.values()];
 }
 
 /** Called only while holding papercusp-disk-retention, before selecting effects.
