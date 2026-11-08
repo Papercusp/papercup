@@ -52,6 +52,11 @@ function verifyBootParentManifest(
   const expected = parent.acceptedManifest;
   if (!expected || typeof expected.evidenceRef !== 'string' || !expected.evidenceRef.trim() ||
     /^(?:unknown|absent|unresolved)$/i.test(expected.evidenceRef.trim())) throw Error('parent-authority-unknown');
+  // Historical source-only authority protects compiler inputs. Even an equal
+  // member map cannot promote it to authority for a new artifact's boot.
+  if (expected.authorityKind !== undefined && expected.authorityKind !== 'full-output') {
+    throw Error('parent-full-output-authority-required');
+  }
   if (expected.schemaVersion !== 1) throw Error('parent-schema-mismatch');
   if (!DIGEST.test(expected.sha256)) throw Error('parent-digest-missing');
   if (!isAbsolute(parent.sourceRoot) || realpathSync(parent.sourceRoot) !== parent.sourceRoot ||

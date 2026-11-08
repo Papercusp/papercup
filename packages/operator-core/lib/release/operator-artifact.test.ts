@@ -245,6 +245,24 @@ describe('operator release artifact provenance', () => {
     expect(measureArtifact(f.entry, f.sourceSha, Date.now() + 1000, parent).status).toBe('measured');
   });
 
+  it('refuses explicit source-only boot authority even when its complete member map matches', async () => {
+    const f = fixture(), written = await f.write(), parent = inheritedParent(f);
+    const original = readFileSync(parent.acceptedManifest!.path);
+    const fullOutput = structuredClone(parent);
+    fullOutput.acceptedManifest!.authorityKind = 'full-output';
+    const sourceOnly = structuredClone(fullOutput);
+    sourceOnly.acceptedManifest!.authorityKind = 'source-only';
+    const boot = (input: OperatorArtifactParentExpectation) =>
+      measureArtifact(f.entry, f.sourceSha, Date.now() + 1000, input);
+    expect(boot(fullOutput)).toEqual(written);
+    // Only the authority kind changes: equal bytes, digest, paths and membership
+    // must not let historical source evidence authorize a new runtime.
+    expect(boot(sourceOnly)).toMatchObject({ status: 'unknown' });
+    expect(readFileSync(parent.acceptedManifest!.path)).toEqual(original);
+    expect(boot(fullOutput)).toEqual(written);
+    expect(boot(parent)).toEqual(written); // legacy full-population expectation
+  });
+
   it('withholds fresh-process runtime initialization for an unknown parent and refuses later parent relabeling', async () => {
     const f = fixture(), sourceRoot = resolve(import.meta.dirname, '../../../..');
     const runtimePath = join(sourceRoot, 'packages/operator-core/lib/observability/runtime.ts');
@@ -307,6 +325,14 @@ describe('operator release artifact provenance', () => {
     };
     expect(boot(parent)).toMatchObject({ ready: true, error: null, initialized: true,
       artifact: { status: 'measured', sourceSha: f.sourceSha, bundleSha256, sourceBlobs: members } });
+    const fullOutput = structuredClone(parent);
+    fullOutput.acceptedManifest!.authorityKind = 'full-output';
+    expect(boot(fullOutput)).toMatchObject({ ready: true, error: null, initialized: true,
+      artifact: { status: 'measured', sourceSha: f.sourceSha, bundleSha256, sourceBlobs: members } });
+    const sourceOnly = structuredClone(fullOutput);
+    sourceOnly.acceptedManifest!.authorityKind = 'source-only';
+    expect(boot(sourceOnly)).toMatchObject({ ready: false,
+      error: expect.stringContaining('BG boot parent artifact unqualified'), initialized: false, artifact: null });
     expect(boot({ ...parent, acceptedManifest: null })).toMatchObject({ ready: false,
       error: expect.stringContaining('BG boot parent artifact unqualified'), initialized: false, artifact: null });
     expect(boot(parent, true)).toMatchObject({ ready: false,
