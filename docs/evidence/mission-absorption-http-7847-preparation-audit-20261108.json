@@ -184,6 +184,63 @@
     "runnerRecheck": "Original audited runner hash changed before launch under another agent's lock; stable producer receipt required before execution. Other two recorded instrument hashes still matched at recheck.",
     "authorityRepair": "EI-27967556594211322"
   },
+  "prospectiveSuccessorContract": {
+    "decision": "agent-shipping-workflow-effort-reduction-2026-11-07#D-010",
+    "status": "AWAITING_QUALIFIED_COMMITTED_SUCCESSOR",
+    "candidate": null,
+    "preserveHistoricalEvidence": true,
+    "requiredQualification": [
+      "Complete intended production/test/fixture old-to-new blob census; changed intended blobs require normal meaningful-edition source/review mapping",
+      "Complete candidate diff and exact workspace/submodule/manifest/lock identities",
+      "Maintained immutable metadata and transitive dependency-selection preflight",
+      "Separately identified maintained verifier/CLI revision",
+      "Fresh migrated private database, normal authenticated operator HTTP boundary, dependency and custody assertions, cleanup receipts",
+      "Independent adoption and exact shipped-artifact acceptance through the fleet leader"
+    ],
+    "sourceOnlyPreparation": {
+      "script": "apps/operator/bin/release/setup-release-checkout.sh",
+      "requiredOptions": [
+        "--source-only",
+        "--source-root-mode clone",
+        "--source-integrity object-sourced",
+        "--ref <qualified immutable candidate>",
+        "--integration <canonical staging root>",
+        "--release <fresh task-owned disposable clone>"
+      ],
+      "executed": false,
+      "scope": "Independent source preparation only; never operate on the shared checkpoint/release tree or allocate a worktree"
+    },
+    "maintainedDependencySelection": {
+      "producer": "scripts/affected-tests.mjs --related --print-affected",
+      "input": "Exact candidate source checkout, bounded intended changed-path set or explicit intended comparison base",
+      "consumer": "apps/operator/lib/release/green-checkpoint.ts#parseCheckpointMaterializationSelection",
+      "normalizer": "apps/operator/lib/release/green-checkpoint.ts#normalizeCheckpointMaterializationSelection",
+      "forward": "Every validated RELATED_DEPENDENCY_WORKSPACE_DIR as repeated --workspace-dir to the maintained lint-as-committed runner",
+      "fallback": "Missing, nonpositive, malformed, unsafe, count-inconsistent or incomplete closure evidence returns null; omit narrowing and use full scope",
+      "regression": "apps/operator/lib/release/green-checkpoint-real-deps.test.ts",
+      "evidence": "consult post 1219778, closed answer 1219782; named current emitter/parser source read directly",
+      "supersedesExploratoryScope": "The initial declared manifest closure above is exploratory; it is not a maintained-selector receipt and must not be used as one",
+      "selectedScope": null
+    },
+    "originalIntendedBlobCensus": {
+      "sourceCommit": "7847dd7835b8ee0bdec9c319f0ff8a8959db7af6",
+      "procedure": "Native direct read-only git ls-tree -r over the 11 intended production/test/fixture paths",
+      "receipt": "native chunk faa072, exit 0",
+      "paths": [
+        { "role": "production", "path": "packages/operator-core/lib/agent-tools/plans/set-status.ts", "blob": "2b2e62f7e5439043119c38ef433631d31ce7f418" },
+        { "role": "production", "path": "packages/operator-core/lib/agent-tools/plans/with-plan-lock.ts", "blob": "1566d42ab8a706bd960a3547b99fada7f52009a5" },
+        { "role": "test", "path": "packages/operator-core/lib/blocker-resolution-decision.test.ts", "blob": "2f50d6ca7deedd1c49cfae909e5c88e7448ceec0" },
+        { "role": "production", "path": "packages/operator-core/lib/blocker-resolution-decision.ts", "blob": "706d0a66da94c9e4be25d8ba2eb69a6b858f2426" },
+        { "role": "test", "path": "packages/operator-core/lib/blocker-resolution-evidence.test.ts", "blob": "ca0f98d43152be9b48da9783c16ebc54c6489884" },
+        { "role": "production", "path": "packages/operator-core/lib/blocker-resolution-evidence.ts", "blob": "a8f059537b15e34a4943fc18a06b6242eb0eaab4" },
+        { "role": "production", "path": "packages/operator-core/lib/dbos/work-item-deps-store.ts", "blob": "13d07d0a5b7e29a5d6006e0d655228f647d589d4" },
+        { "role": "test", "path": "packages/operator-core/lib/plan-absorption-current-build-http.integration.test.ts", "blob": "01dcff8032d8ae71baca2ebe7201fc8c92742f82" },
+        { "role": "test", "path": "packages/operator-core/lib/plan-duplicate-absorption.integration.test.ts", "blob": "7fc3034e93071a30169794bc7a9a11f384364f4a" },
+        { "role": "production", "path": "packages/operator-core/lib/plan-duplicate-absorption.ts", "blob": "6007686310a0e0a62b1de0c6781a44d9acdd69d9" },
+        { "role": "fixture", "path": "packages/operator-core/test/plan-absorption-http-fixture.ts", "blob": "24871f1164d28a4ca1ab0435fd8233c7710dd770" }
+      ]
+    }
+  },
   "assertionsExecuted": false,
   "result": "NOT_MEASURED"
 }

@@ -1,0 +1,302 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Workbench P-005 native Windows Papercup chat transport and state",
+  "framework": "operational",
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "workItem": "WI-6554700010044411",
+  "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:/Users/user/AppData/Local/Temp/workbench-p005-chat-20261108-b3cf9/native-workbench-windows-bridge.ps1 -BridgeSource C:/Users/user/AppData/Local/Temp/workbench-p005-chat-20261108-b3cf9/PuiReadBridge.cs -Phase chat",
+  "exitCode": 0,
+  "summary": "Native production bridge/model passed43 maintained assertions, including incremental UTF8 pipe transport, helper cleanup, history, replay, acknowledgement, failure/draft and late-conversation isolation.",
+  "sourceSha256": {
+    "papercusp-desktop/native/windows/PuiReadBridge.cs": "2dcc7de38773df4ac56bb3c8210889e4c7318398d25fe00f20dd3e752934df54",
+    "papercusp-desktop/native/windows/WorkbenchModel.cs": "a296df75de8d6450c2bdecbafdecfc4fd69a6b25459ea05a16343e69b5500461",
+    "papercusp-desktop/test/fixtures/native-workbench-windows-bridge.ps1": "02096a5b3927d01409487326e2edf4c4667401bdf2505764b1b549a074a8e625",
+    "papercusp-desktop/test/native-workbench-windows.test.mjs": "5f000c7f7d9cc319a516d51e970e5aebae941ce316bb0ef88733543399f7b556"
+  },
+  "remoteSourceHashes": {
+    "papercusp-desktop/native/windows/PuiReadBridge.cs": "2dcc7de38773df4ac56bb3c8210889e4c7318398d25fe00f20dd3e752934df54",
+    "papercusp-desktop/native/windows/WorkbenchModel.cs": "a296df75de8d6450c2bdecbafdecfc4fd69a6b25459ea05a16343e69b5500461",
+    "papercusp-desktop/test/fixtures/native-workbench-windows-bridge.ps1": "02096a5b3927d01409487326e2edf4c4667401bdf2505764b1b549a074a8e625"
+  },
+  "remoteHashesVerifiedBy": "Get-FileHash SHA256 on win-vm, after v3 test; exact hashes matched before publication.",
+  "result": {
+    "ok": true,
+    "platform": "windows",
+    "phase": "chat",
+    "count": 43,
+    "cases": [
+      "native frames arrive before child exit and preserve split UTF8",
+      "chat helper reaped: incremental",
+      "reject native stream malformed",
+      "chat helper reaped: malformed",
+      "reject native stream shape",
+      "chat helper reaped: shape",
+      "reject native stream partial",
+      "chat helper reaped: partial",
+      "reject native stream empty",
+      "chat helper reaped: empty",
+      "reject native stream oversize",
+      "chat helper reaped: oversize",
+      "reject native stream exit",
+      "chat helper reaped: exit",
+      "stream deadline is enforced",
+      "chat helper reaped: timeout",
+      "pipe cancellation stays a transport failure",
+      "chat helper reaped: cancel",
+      "refused callback terminates stream",
+      "chat helper reaped: callback",
+      "canonical conversation and history bind",
+      "conversation B cannot inherit A draft",
+      "return to conversation A restores its draft",
+      "earlier history preserves exact ordered cursor",
+      "foreign history rejected",
+      "invalid history cannot partially mutate state",
+      "refuse changed endpoint",
+      "refuse changed workspaceId",
+      "refuse changed store",
+      "refuse changed agentChat",
+      "failed send retains draft and blocks duplicate resend",
+      "unknown saved turn cannot be replayed or resent",
+      "only exact saved-user acknowledgement clears draft",
+      "stream hides private text and partial closing tags",
+      "reply sequence gaps are refused",
+      "refused reply frame leaves cursor and text unchanged",
+      "identical replay is idempotent",
+      "conflicting replay is refused",
+      "canonical tool activity projected",
+      "reconnect uses saved identity and sequence without resend",
+      "foreign completion cannot claim success",
+      "exact durable completion acknowledgement permits next send",
+      "late A reply cannot enter B or clear its draft"
+    ]
+  },
+  "assertions": [
+    {
+      "id": "chat-core-1",
+      "passed": true,
+      "evidence": "native frames arrive before child exit and preserve split UTF8"
+    },
+    {
+      "id": "chat-core-2",
+      "passed": true,
+      "evidence": "chat helper reaped: incremental"
+    },
+    {
+      "id": "chat-core-3",
+      "passed": true,
+      "evidence": "reject native stream malformed"
+    },
+    {
+      "id": "chat-core-4",
+      "passed": true,
+      "evidence": "chat helper reaped: malformed"
+    },
+    {
+      "id": "chat-core-5",
+      "passed": true,
+      "evidence": "reject native stream shape"
+    },
+    {
+      "id": "chat-core-6",
+      "passed": true,
+      "evidence": "chat helper reaped: shape"
+    },
+    {
+      "id": "chat-core-7",
+      "passed": true,
+      "evidence": "reject native stream partial"
+    },
+    {
+      "id": "chat-core-8",
+      "passed": true,
+      "evidence": "chat helper reaped: partial"
+    },
+    {
+      "id": "chat-core-9",
+      "passed": true,
+      "evidence": "reject native stream empty"
+    },
+    {
+      "id": "chat-core-10",
+      "passed": true,
+      "evidence": "chat helper reaped: empty"
+    },
+    {
+      "id": "chat-core-11",
+      "passed": true,
+      "evidence": "reject native stream oversize"
+    },
+    {
+      "id": "chat-core-12",
+      "passed": true,
+      "evidence": "chat helper reaped: oversize"
+    },
+    {
+      "id": "chat-core-13",
+      "passed": true,
+      "evidence": "reject native stream exit"
+    },
+    {
+      "id": "chat-core-14",
+      "passed": true,
+      "evidence": "chat helper reaped: exit"
+    },
+    {
+      "id": "chat-core-15",
+      "passed": true,
+      "evidence": "stream deadline is enforced"
+    },
+    {
+      "id": "chat-core-16",
+      "passed": true,
+      "evidence": "chat helper reaped: timeout"
+    },
+    {
+      "id": "chat-core-17",
+      "passed": true,
+      "evidence": "pipe cancellation stays a transport failure"
+    },
+    {
+      "id": "chat-core-18",
+      "passed": true,
+      "evidence": "chat helper reaped: cancel"
+    },
+    {
+      "id": "chat-core-19",
+      "passed": true,
+      "evidence": "refused callback terminates stream"
+    },
+    {
+      "id": "chat-core-20",
+      "passed": true,
+      "evidence": "chat helper reaped: callback"
+    },
+    {
+      "id": "chat-core-21",
+      "passed": true,
+      "evidence": "canonical conversation and history bind"
+    },
+    {
+      "id": "chat-core-22",
+      "passed": true,
+      "evidence": "conversation B cannot inherit A draft"
+    },
+    {
+      "id": "chat-core-23",
+      "passed": true,
+      "evidence": "return to conversation A restores its draft"
+    },
+    {
+      "id": "chat-core-24",
+      "passed": true,
+      "evidence": "earlier history preserves exact ordered cursor"
+    },
+    {
+      "id": "chat-core-25",
+      "passed": true,
+      "evidence": "foreign history rejected"
+    },
+    {
+      "id": "chat-core-26",
+      "passed": true,
+      "evidence": "invalid history cannot partially mutate state"
+    },
+    {
+      "id": "chat-core-27",
+      "passed": true,
+      "evidence": "refuse changed endpoint"
+    },
+    {
+      "id": "chat-core-28",
+      "passed": true,
+      "evidence": "refuse changed workspaceId"
+    },
+    {
+      "id": "chat-core-29",
+      "passed": true,
+      "evidence": "refuse changed store"
+    },
+    {
+      "id": "chat-core-30",
+      "passed": true,
+      "evidence": "refuse changed agentChat"
+    },
+    {
+      "id": "chat-core-31",
+      "passed": true,
+      "evidence": "failed send retains draft and blocks duplicate resend"
+    },
+    {
+      "id": "chat-core-32",
+      "passed": true,
+      "evidence": "unknown saved turn cannot be replayed or resent"
+    },
+    {
+      "id": "chat-core-33",
+      "passed": true,
+      "evidence": "only exact saved-user acknowledgement clears draft"
+    },
+    {
+      "id": "chat-core-34",
+      "passed": true,
+      "evidence": "stream hides private text and partial closing tags"
+    },
+    {
+      "id": "chat-core-35",
+      "passed": true,
+      "evidence": "reply sequence gaps are refused"
+    },
+    {
+      "id": "chat-core-36",
+      "passed": true,
+      "evidence": "refused reply frame leaves cursor and text unchanged"
+    },
+    {
+      "id": "chat-core-37",
+      "passed": true,
+      "evidence": "identical replay is idempotent"
+    },
+    {
+      "id": "chat-core-38",
+      "passed": true,
+      "evidence": "conflicting replay is refused"
+    },
+    {
+      "id": "chat-core-39",
+      "passed": true,
+      "evidence": "canonical tool activity projected"
+    },
+    {
+      "id": "chat-core-40",
+      "passed": true,
+      "evidence": "reconnect uses saved identity and sequence without resend"
+    },
+    {
+      "id": "chat-core-41",
+      "passed": true,
+      "evidence": "foreign completion cannot claim success"
+    },
+    {
+      "id": "chat-core-42",
+      "passed": true,
+      "evidence": "exact durable completion acknowledgement permits next send"
+    },
+    {
+      "id": "chat-core-43",
+      "passed": true,
+      "evidence": "late A reply cannot enter B or clear its draft"
+    }
+  ],
+  "nativeLog": "{\"ok\":true,\"platform\":\"windows\",\"phase\":\"chat\",\"count\":43,\"cases\":[\"native frames arrive before child exit and preserve split UTF8\",\"chat helper reaped: incremental\",\"reject native stream malformed\",\"chat helper reaped: malformed\",\"reject native stream shape\",\"chat helper reaped: shape\",\"reject native stream partial\",\"chat helper reaped: partial\",\"reject native stream empty\",\"chat helper reaped: empty\",\"reject native stream oversize\",\"chat helper reaped: oversize\",\"reject native stream exit\",\"chat helper reaped: exit\",\"stream deadline is enforced\",\"chat helper reaped: timeout\",\"pipe cancellation stays a transport failure\",\"chat helper reaped: cancel\",\"refused callback terminates stream\",\"chat helper reaped: callback\",\"canonical conversation and history bind\",\"conversation B cannot inherit A draft\",\"return to conversation A restores its draft\",\"earlier history preserves exact ordered cursor\",\"foreign history rejected\",\"invalid history cannot partially mutate state\",\"refuse changed endpoint\",\"refuse changed workspaceId\",\"refuse changed store\",\"refuse changed agentChat\",\"failed send retains draft and blocks duplicate resend\",\"unknown saved turn cannot be replayed or resent\",\"only exact saved-user acknowledgement clears draft\",\"stream hides private text and partial closing tags\",\"reply sequence gaps are refused\",\"refused reply frame leaves cursor and text unchanged\",\"identical replay is idempotent\",\"conflicting replay is refused\",\"canonical tool activity projected\",\"reconnect uses saved identity and sequence without resend\",\"foreign completion cannot claim success\",\"exact durable completion acknowledgement permits next send\",\"late A reply cannot enter B or clear its draft\"]}\n",
+  "logSha256": "739b4aef79716bc57156ff8007948da34cb2ccb1319a96ff720332e91c15e724",
+  "audit": {
+    "rootCause": "The emitted fixture assembly loaded from a file stayed locked in .NET Framework during finally cleanup.",
+    "durableFix": "Load native assembly from bytes, use emitted DLL only as compiler reference, retain strict cleanup as exit-code guard.",
+    "verifiedHow": "v2 had43 passing assertions but EXIT1 on cleanup; v3 same43 and EXIT0."
+  },
+  "scopeLimits": [
+    "Fixture PUI/current copied Windows sources only; actual operator/installed-artifact acceptance unproven.",
+    "WPF chat UI, Markdown/code/work links/cards/voice, macOS runtime and complete three-OS acceptance/review/certificate/shipment remain required."
+  ]
+}
