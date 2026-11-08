@@ -1036,7 +1036,23 @@ impl OperatorClient {
             anyhow::ensure!(text.len() <= 32 * 1024, "voice transcript is too large");
             row["text"] = serde_json::json!(text);
         } else {
-            let audio = self.tts_speak(request.text.as_deref().unwrap()).await?;
+            let audio = if let Some(index) = request.chunk_index {
+                // Native reading is local-only; the endpoint explains how to select
+                // a local provider when the saved preference requires cloud/browser.
+                let chunk = self.post_json("/api/agent-mcp/operator-tts", serde_json::json!({
+                    "operation":"read", "text":request.text, "format":"text", "allowCloud":false, "chunkIndex":index
+                })).await?;
+                let total = chunk["total"].as_u64().context("reading receipt has no chunk total")?;
+                anyhow::ensure!(chunk["ok"] == true && chunk["type"] == "chunk"
+                    && chunk["index"].as_u64() == Some(u64::from(index))
+                    && total > u64::from(index) && total <= 32 * 1024, "reading chunk receipt mismatch");
+                let encoded = chunk["audioBase64"].as_str().context("reading receipt has no audio")?;
+                anyhow::ensure!(encoded.len() <= 11_184_812, "spoken audio is too large");
+                let audio = base64::engine::general_purpose::STANDARD.decode(encoded).context("invalid reading audio")?;
+                row["chunkIndex"] = serde_json::json!(index);
+                row["totalChunks"] = serde_json::json!(total);
+                audio
+            } else { self.tts_speak(request.text.as_deref().unwrap()).await? };
             anyhow::ensure!(!audio.is_empty() && audio.len() <= 8 * 1024 * 1024, "spoken audio is empty or too large");
             row["audioBase64"] = serde_json::json!(base64::engine::general_purpose::STANDARD.encode(audio));
         }
@@ -4235,7 +4251,10 @@ mod tests {
         use serde_json::json;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let conv = "c88bf103-8399-42ee-93ae-19e73114e3fd";
-        for scenario in ["speak", "denied", "bad-audio", "foreign", "changed-before", "changed-after"] {
+        for scenario in ["speak", "denied", "bad-audio", "foreign", "changed-before", "changed-after",
+            "chunk", "chunk-wrong-index", "chunk-zero-total", "chunk-string-total", "chunk-empty", "chunk-denied", "chunk-changed-after"] {
+            let indexed = scenario.starts_with("chunk");
+            let text = if indexed { "λ🙂 literal $() ".repeat(500) } else { "literal ' $() λ".to_string() };
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let base = format!("http://{}", listener.local_addr().unwrap());
             let identity = json!({"schemaVersion":1,"workspaceId":"selected","store":{"id":"store","target":"test","source":"test"},
@@ -4246,13 +4265,20 @@ mod tests {
                 steps.push(("/api/zero-harness/rest-query", json!({"rows":[{"id":if scenario == "foreign" {"foreign"} else {conv},
                     "workspaceId":"selected","subjectKind":"global","status":"active"}]})));
                 if scenario != "foreign" {
-                    steps.push(("/api/agent-mcp/operator-tts", json!({"ok":true,"audioBase64":if scenario == "bad-audio" {"invalid"} else {"AAEC"}})));
-                    if !matches!(scenario, "denied" | "bad-audio") {
-                        let mut after = identity.clone(); if scenario == "changed-after" {after["store"]["id"] = json!("other");}
+                    let mut receipt = json!({"ok":true,"audioBase64":if scenario == "bad-audio" {"invalid"} else if scenario == "chunk-empty" {""} else {"AAEC"}});
+                    if indexed {
+                        receipt["type"] = json!("chunk");
+                        receipt["index"] = json!(if scenario == "chunk-wrong-index" {0} else {1});
+                        receipt["total"] = if scenario == "chunk-string-total" {json!("3")} else {json!(if scenario == "chunk-zero-total" {0} else {3})};
+                    }
+                    steps.push(("/api/agent-mcp/operator-tts", receipt));
+                    if matches!(scenario, "speak" | "changed-after" | "chunk" | "chunk-changed-after") {
+                        let mut after = identity.clone(); if matches!(scenario, "changed-after" | "chunk-changed-after") {after["store"]["id"] = json!("other");}
                         steps.push(("/api/tui/identity", after));
                     }
                 }
             }
+            let expected_text = text.clone();
             let server = tokio::spawn(async move {
                 for (path, payload) in steps {
                     let (mut socket, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept()).await.unwrap().unwrap();
@@ -4269,19 +4295,27 @@ mod tests {
                     assert_eq!(reqwest::Url::parse(&format!("http://fixture{}", parts.next().unwrap())).unwrap().path(), path);
                     assert!(head.to_lowercase().contains("authorization: bearer native-voice-fixture"));
                     if path.ends_with("operator-tts") {
-                        assert_eq!(method,"POST"); assert_eq!(serde_json::from_slice::<serde_json::Value>(&bytes[offset..offset+length]).unwrap(),json!({"text":"literal ' $() λ"}));
+                        assert_eq!(method,"POST");
+                        let expected = if indexed {json!({"operation":"read","text":expected_text,"format":"text","allowCloud":false,"chunkIndex":1})}
+                            else {json!({"text":expected_text})};
+                        assert_eq!(serde_json::from_slice::<serde_json::Value>(&bytes[offset..offset+length]).unwrap(),expected);
                     } else {assert_eq!(method,"GET");}
-                    let body = payload.to_string(); let status = if path.ends_with("operator-tts") && scenario == "denied" {"403 Forbidden"} else {"200 OK"};
+                    let body = payload.to_string(); let status = if path.ends_with("operator-tts") && matches!(scenario,"denied" | "chunk-denied") {"403 Forbidden"} else {"200 OK"};
                     socket.write_all(format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).as_bytes()).await.unwrap();
                 }
             });
             let client = OperatorClient {transport:Transport::Http(HttpClient::new(base.clone(),Some("native-voice-fixture".into()))),endpoint:base.clone(),selection_source:"test".into()};
             let mut env = identity; env["endpoint"] = json!(base); env["transport"] = json!("http"); env["selectionSource"] = json!("test");
             if scenario == "changed-before" {env["store"]["id"] = json!("other");}
-            let request = serde_json::from_value(json!({"environment":env,"conversationId":conv,"operation":"speak",
-                "requestId":"15138297-1c15-4a94-8d70-e6bfdb15ae01","text":"literal ' $() λ"})).unwrap();
+            let mut request = json!({"environment":env,"conversationId":conv,"operation":"speak",
+                "requestId":"15138297-1c15-4a94-8d70-e6bfdb15ae01","text":text});
+            if indexed { request["chunkIndex"] = json!(1); }
+            let request = serde_json::from_value(request).unwrap();
             let result = client.native_voice(&request).await;
-            if scenario == "speak" {assert_eq!(result.unwrap()["rows"][0]["audioBase64"],"AAEC");}
+            if matches!(scenario,"speak" | "chunk") {
+                let row = &result.unwrap()["rows"][0]; assert_eq!(row["audioBase64"],"AAEC");
+                if indexed {assert_eq!(row["chunkIndex"],1); assert_eq!(row["totalChunks"],3);}
+            }
             else {assert!(result.is_err(),"accepted {scenario}");}
             server.await.unwrap();
         }
