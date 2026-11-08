@@ -20,7 +20,8 @@ import { pinModuleState } from '@papercusp/module-singleton';
 import { currentStageDiagnosticContext } from '../sync/hyperbee/stage-stall-log';
 
 /** Source-owned boundaries, never goal ids, query text, or caller payloads. */
-type NamedQueryStage = 'goal-detail-dependencies' | 'goal-detail-sql' | 'goal-holder-liveness' |
+type NamedQueryStage = 'goal-list-sql' | 'goal-list-portfolio' | 'goal-list-packages' |
+  'goal-detail-dependencies' | 'goal-detail-sql' | 'goal-holder-liveness' |
   'goal-mode-state' | 'goal-portfolio' | 'goal-stewardship' | 'goal-worklist-history' |
   'stewardship-dependencies' | 'stewardship-scorecards' | 'stewardship-rubrics' |
   'stewardship-repairs' | 'stewardship-lineage' | 'scorecards-generation' | 'scorecards-rubric' |

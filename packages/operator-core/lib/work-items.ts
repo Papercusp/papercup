@@ -4049,6 +4049,9 @@ export async function setWorkItemState(
       sessionId: string;
       payloadPatch?: Record<string, unknown>;
       unset?: readonly string[];
+      /** Host-validated prospective conditions, including a park's original
+       * caller ref. Never accepted from public tool arguments. */
+      additionalBlockers?: readonly ExternalBlockerRecord[];
       /** Stable public request; excludes resolved fact timestamps and other
        * generated measurements so exact retries survive later evidence drift. */
       effect?: unknown;
@@ -4174,6 +4177,9 @@ export async function setWorkItemState(
     const prepared = opts.blockerEvidenceContext
       ? await preflightBlockerDecision(wi, opts.blockerDecision.input, opts.blockerEvidenceContext, { effect,
           enteringDeferral: ['blocked', 'needs-human'].includes(targetState),
+          // Validate both the original row and the exact prospective payload.
+          // Otherwise the first blocker disappears at this second preflight.
+          additionalBlockers: [...activeExternalBlockers(patch), ...(opts.blockerDecision.additionalBlockers ?? [])],
           requireResolution: isSettledWorkItemState(targetState) })
       : prepareBlockerDecision(wi.payload, opts.blockerDecision.input, {
           ownerId: opts.by ?? '', sessionId: opts.blockerDecision.sessionId, workItemId: id, custodianId: wi.assignee,

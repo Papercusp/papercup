@@ -555,7 +555,7 @@ export async function resolveGoalsList(args: {
      line after. The callback keeps returning the row array exactly as it did
      before, and the count rides out on this binding. */
   let totalGoals = 0;
-  const rows = await sql.begin(async (tx) => {
+  const rows = await traceNamedQueryStage('goal-list-sql', () => sql.begin(async (tx) => {
     await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [workspaceId]);
     const goalRows = (await tx`
       SELECT g.id, g.title, g.body, g.status, g.standing, g.parent_id, g.kill_criterion, g.tripwires,
@@ -709,37 +709,39 @@ export async function resolveGoalsList(args: {
 
     totalGoals = totalRow?.total == null ? goalRows.length : Number(totalRow.total);
     return goalRows;
-  });
+  }));
   // P-001: liveness is folded in AFTER the transaction — the oracle is its own
   // read path (presence, wakeability, self-wake) and holding the goals tx open
   // across it would widen a hot-path transaction for no benefit.
   const pkgLookup = makeGoalPackageLookup();
-  const goals = await withHolderLiveness(
+  const goals = await traceNamedQueryStage('goal-holder-liveness', () => withHolderLiveness(
     workspaceId,
     rows.map((r) => toSummary(r, pkgLookup)),
-  );
+  ));
 
   // The portfolio total, over DISTINCT pots. Deliberately returned
   // alongside the rows the client already has: the natural thing to do with a
   // list of spend figures is add them up, and that answer is wrong by exactly
   // the shared work. Handing over the correct total removes the temptation.
   const { portfolioSpend } = await import('@papercusp/db-org');
-  const portfolio = await portfolioSpend(sql, {
+  const portfolio = await traceNamedQueryStage('goal-list-portfolio', () => portfolioSpend(sql, {
     workspaceId,
     goalIds: goals.map((g) => g.id),
-  });
+  }));
   // P-009: the packages rail. A DEDICATED bounded query, deliberately not a
   // correlation against `rows`: that list is capped by `limit`, and a package
   // instance falling past the cap would read on the rail as "never started" —
   // the same confident-wrong-answer class the `totalGoals` guard above names.
-  const pkgRows = (await sql`
+  const goalPackages = await traceNamedQueryStage('goal-list-packages', async () => {
+    const pkgRows = (await sql`
     SELECT id, status, metadata
       FROM harness_shared.goals
      WHERE workspace_id = ${workspaceId}
        AND metadata->>'goalPackageRef' IS NOT NULL
      ORDER BY id
      LIMIT 200`) as unknown as GoalPackageInstanceRow[];
-  const goalPackages = foldGoalPackageBoard(listLocalGoalPackages(), pkgRows);
+    return foldGoalPackageBoard(listLocalGoalPackages(), pkgRows);
+  });
 
   return {
     goals,

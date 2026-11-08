@@ -36,6 +36,7 @@ import {
   type DirectHumanCapability,
   type ExternalBlockerCapability,
   type ExternalBlockerKind,
+  type ExternalBlockerRecord,
   type OwnerAskDefaultAction,
 } from '../../external-blockers';
 import { lookupWorkItem } from './_lookup';
@@ -936,8 +937,9 @@ export default defineTool({
         // Measure the proposed external condition before opening any consult or
         // owner ask. Clearing still checks ALL prior obligations, including the
         // condition being cleared; an agent's clear flag is not clearance proof.
+        let proposedBlockers: ExternalBlockerRecord[] = [];
         if (input.blockerDecision) {
-          const proposed = !input.clear && input.kind && input.ref
+          proposedBlockers = !input.clear && input.kind && input.ref
             ? applyExternalBlockerUpdate(workItem.payload, { kind: input.kind, capability: input.capability,
                 ref: input.ref, summary: input.summary, evidence: input.evidence, nextVerb: input.nextVerb,
                 recheckAt: input.recheckAt, defaultIfUnanswered: input.defaultIfUnanswered,
@@ -945,7 +947,7 @@ export default defineTool({
                 ...(holdRow ? { hold: holdRow } : {}) }, identity.ownerId, { autoAuthority })
                 .blockers.filter((blocker) => blocker.status === 'active') : [];
           const checked = await preflightBlockerDecision(workItem, input.blockerDecision, boundary,
-            { effect, enteringDeferral: !input.clear, additionalBlockers: proposed });
+            { effect, enteringDeferral: !input.clear, additionalBlockers: proposedBlockers });
           if (!checked.ok) return { ...checked, id: input.id, error: checked.nextAction };
         }
 
@@ -1219,7 +1221,10 @@ export default defineTool({
                 harness: workItem.harness ?? input.harness, by: identity.ownerId,
                 blockerEvidenceContext: boundary,
                 blockerDecision: { input: input.blockerDecision, sessionId: identity.ownerId,
-                  effect, payloadPatch: { externalBlockers: history.blockers }, unset: ownerFlagUnset },
+                  effect, payloadPatch: { externalBlockers: history.blockers }, unset: ownerFlagUnset,
+                  // Keep the host-validated caller identity when the park door
+                  // replaces its ref with a generated consult ref below.
+                  additionalBlockers: proposedBlockers },
                 onBlockerDecision: (value) => { receipt = value; },
               }));
             if (!lifecycle.workItem) return { ok: false as const, id: input.id,

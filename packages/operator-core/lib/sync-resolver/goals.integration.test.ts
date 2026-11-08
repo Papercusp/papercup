@@ -42,6 +42,7 @@ import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../_baseli
 import { GOAL_SPEND_SNAPSHOT_SOURCE } from '@papercusp/db-org';
 import { readTypedPropertyCollection } from '../typed-properties';
 import { flushFallbackObservations, observeFallback } from '../degradation/fallback-observations';
+import { withNamedQueryDiagnosticContext, namedQueryStageTimings } from '../agent-tools/db-diagnostic-correlation-wiring';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const REPO = join(here, '..', '..', '..', '..');
@@ -892,7 +893,16 @@ describe('goals.* resolvers against real SQL', () => {
     await closedItem('WI-2');
     await workItem('WI-3', { needsHuman: true });
 
-    const out = await resolveGoalsList({ workspaceId: WS });
+    const out = await withNamedQueryDiagnosticContext('goals.list', async () => {
+      const result = await resolveGoalsList({ workspaceId: WS });
+      expect(namedQueryStageTimings()?.stages).toEqual([
+        { stage: 'goal-list-sql', outcome: 'fulfilled', elapsedMs: expect.any(Number) },
+        { stage: 'goal-holder-liveness', outcome: 'fulfilled', elapsedMs: expect.any(Number) },
+        { stage: 'goal-list-portfolio', outcome: 'fulfilled', elapsedMs: expect.any(Number) },
+        { stage: 'goal-list-packages', outcome: 'fulfilled', elapsedMs: expect.any(Number) },
+      ]);
+      return result;
+    });
     expect(out.goals).toHaveLength(1);
     const g = out.goals[0];
     expect(g.id).toBe(GOAL);
