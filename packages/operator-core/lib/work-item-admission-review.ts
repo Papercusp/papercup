@@ -206,6 +206,7 @@ export async function runAdmissionReviews(
        feature_id
      LIMIT 20`;
   const guardRefusals: AdmissionMergeGuardRefusal[] = [];
+  let lastGuardedReview: { result: PromoterRunResult; reviewedItemId: string } | undefined;
   for (const row of rows) {
     // Record an attempt before authority checks so a repeatedly refused request
     // cannot pin the fixed-size page. This scheduling marker is not part of the
@@ -267,6 +268,7 @@ export async function runAdmissionReviews(
     // Keep model work and its final beforeWrite revalidation outside the preflight
     // catch: late custody, request, or policy drift must still abort the run.
     const reviewRunId = `${options.runId}:review:${request.requestId}`;
+    let persistedGuardRefusals: readonly AdmissionMergeGuardRefusal[] = [];
     const result = await runWorkItemAdmissionPromoter({
       ...options, sql, llmCall, runId: reviewRunId,
       targetItemIds: [scope.workItemId],
@@ -316,10 +318,24 @@ export async function runAdmissionReviews(
                AND payload #>> '{_admissionReviewRequest,requestId}' = ${request.requestId}
              RETURNING feature_id`;
           if (rows.length !== 1) throw new Error('review request changed before guard refusal disposition persisted');
+          persistedGuardRefusals = refusals;
         },
       },
     });
+    // A durably refused component retains its protection, but must not consume
+    // the entire pass ahead of a request whose dependency has become ready.
+    // Keep the final guarded result when no later review can proceed; each
+    // individual review and its refusal receipt already have durable evidence.
+    if (persistedGuardRefusals.length > 0) {
+      guardRefusals.push(...persistedGuardRefusals);
+      lastGuardedReview = { result, reviewedItemId: scope.workItemId };
+      continue;
+    }
     return { result, guardRefusals, reviewedItemId: scope.workItemId };
   }
-  return { result: null, guardRefusals };
+  return {
+    result: lastGuardedReview?.result ?? null,
+    guardRefusals,
+    ...(lastGuardedReview ? { reviewedItemId: lastGuardedReview.reviewedItemId } : {}),
+  };
 }

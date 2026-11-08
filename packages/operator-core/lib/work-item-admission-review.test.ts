@@ -304,6 +304,67 @@ describe('signed admission review recovery', () => {
     expect(mocks.readVerifiedRecoveryTarget).toHaveBeenCalledWith(scope, sql);
   });
 
+  it.each([1, 3])('reviews a changed dependency after %i unrelated protected components in the same pass', async (heldCount) => {
+    const dependencyId = 'EI-review-changed-dependency';
+    const request = makeValidRequest(50, featureId);
+    const heldIds = Array.from({ length: heldCount }, (_, index) => 'EI-review-held-' + index);
+    const candidates: Candidate[] = [
+      ...heldIds.map((id, index) => ({
+        feature_id: id, request: makeValidRequest(60 + index, id), attemptedAtMs: null, receiptId: null,
+      })),
+      {
+        feature_id: featureId, request, attemptedAtMs: null, receiptId: request.requestId,
+        guardReceipt: {
+          requestId: request.requestId,
+          guardDisposition: {
+            schemaVersion: 1, outcome: 'guard-refused', policyRevision: canonical(7),
+            retryAfterMs: Date.now() + 30 * 60 * 1000,
+            guardRefusals: [{ itemId: featureId, canonicalId: null, reason: 'review-gated', detail: 'dependency pending' }],
+            dependencies: [{ itemId: dependencyId, fingerprint: 'dependency-pending' }],
+          },
+        },
+      },
+    ];
+    const requestsBefore = structuredClone(candidates.map(candidate => candidate.request));
+    prepare(candidates, Array(20).fill('su-reviewer'));
+    mocks.readSnapshots.mockImplementation(async (_sql: unknown, selection: { ids: string[] }) =>
+      new Map(selection.ids.map(id => [id, {
+        fingerprint: id === dependencyId ? 'dependency-approved' : 'subject:' + id,
+        assignee: null,
+        payload: { _admissionReviewRequest: candidates.find(candidate => candidate.feature_id === id)?.request },
+      }])));
+    const { sql, writes } = makeReviewSql(candidates, [...heldIds, featureId]);
+    const refusals = heldIds.map(id => ({
+      itemId: id, canonicalId: null, reason: 'review-gated', detail: 'unrelated protected component',
+    }));
+    mocks.runPromoter.mockImplementation(async (...args) => {
+      const input = args[0] as ReviewPromoterInput;
+      await input.reviewOnly.beforeWrite(input.sql);
+      const refusal = refusals.find(value => value.itemId === input.reviewOnly.itemId);
+      if (refusal) {
+        await input.reviewOnly.afterGuardRefusal!(input.sql, [refusal], []);
+        return { guardRefusals: [refusal] };
+      }
+      await input.reviewOnly.afterWrite(input.sql);
+      return { reviewedItemId: input.reviewOnly.itemId };
+    });
+
+    const result = await runAdmissionReviews(
+      { workspaceId, harnessSlug, runId: 'review-changed-dependency' }, sql, vi.fn() as never,
+    );
+
+    expect(result.reviewedItemId).toBe(featureId);
+    expect(mocks.runPromoter).toHaveBeenCalledTimes(heldCount + 1);
+    expect(result.guardRefusals).toEqual(refusals);
+    expect(candidates.at(-1)!.guardReceipt).not.toHaveProperty('guardDisposition');
+    expect(candidates.at(-1)!.receiptId).toBe(request.requestId);
+    expect(candidates.slice(0, -1).every(candidate =>
+      (candidate.guardReceipt as { guardDisposition: { outcome: string } }).guardDisposition.outcome === 'guard-refused',
+    )).toBe(true);
+    expect(candidates.map(candidate => candidate.request)).toEqual(requestsBefore);
+    expect(writes.some(write => /SET admission|SET assignee|SET state/.test(write.query))).toBe(false);
+  });
+
   it('caches a durable guard refusal until its protected dependency changes', async () => {
     const request = makeValidRequest(43, featureId);
     const candidates: Candidate[] = [
