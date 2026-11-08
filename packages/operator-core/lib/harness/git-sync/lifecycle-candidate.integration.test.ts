@@ -145,6 +145,41 @@ describe('lifecycle P004 capture recovery', () => {
 });
 
 describe('lifecycle P003 frozen publication', () => {
+  it('validates the exact selected metadata tree after callbacks and before the real publication CAS', async () => {
+    const f = fixture();
+    writeFileSync(join(f.repo, 'package.json'), JSON.stringify({ name: 'fixture', dependencies: { next: '1.0.0' } }));
+    writeFileSync(join(f.repo, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3,
+      packages: { '': { dependencies: { next: '1.0.0' } } } }));
+    f.git('add', 'package.json', 'package-lock.json');
+    f.git('commit', '-m', 'coherent metadata');
+    writeFileSync(join(f.repo, 'a.txt'), 'exact selected source\n');
+    const request = { requestId: 'exact-final-oid', generation: 1, base: f.git('rev-parse', 'HEAD'), paths: ['a.txt'] };
+    const captured = await captureGitSyncCandidate(f.runGit, f.repo, request);
+    if (!captured.ok) throw new Error(captured.error);
+    const before = unpublishedState(f);
+    const validated: string[] = [];
+    let callbackFinished = false;
+    let casTree: string | undefined;
+    const observed: RunGit = async (args, cwd, options) => {
+      if (args[0] === 'update-ref' && args.includes('HEAD')) {
+        expect(callbackFinished).toBe(true);
+        casTree = f.git('rev-parse', `${args[args.indexOf('HEAD') + 1]}^{tree}`);
+        expect(validated).toEqual([casTree, casTree]);
+        expect(casTree).toBe(captured.candidate.tree);
+      }
+      const result = await f.runGit(args, cwd, options);
+      if (args[0] === 'cat-file' && args[1] === '-t' && result.stdout.trim() === 'tree') validated.push(args[2]!);
+      return result;
+    };
+    const result = await publishGitSyncCandidate(observed, f.repo, request, {
+      assertHeld: () => {}, beforePublish: async () => { callbackFinished = true; return { ok: true }; },
+    });
+    expect(result).toMatchObject({ status: 'committed', tree: casTree });
+    expect(casTree).toBeTruthy();
+    expect(f.git('rev-parse', 'HEAD^{tree}')).toBe(casTree);
+    expect(unpublishedState(f)).toEqual(before);
+  });
+
   it.each(['coherent', 'incoherent'])('refuses a %s private-tree mutation after the last publication callback', async mutation => {
     const f = fixture();
     writeFileSync(join(f.repo, 'package.json'), JSON.stringify({ name: 'fixture', dependencies: { next: '1.0.0' } }));
