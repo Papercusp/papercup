@@ -299,6 +299,77 @@ describe('consult-backed parking against real Postgres (R-9)', () => {
     }, 60_000,
   );
 
+  it('retries blocker settlement after the verdict committed but its side effect failed', async () => {
+    const deadline = Date.now() + 3_600_000;
+    const now = new Date(deadline + 1_000).toISOString();
+    const park = await seedPark(new Date(deadline).toISOString());
+    const prod = seams(WS);
+    await expect(runParkTriggersForConsult(sql, WS, park.consultId, {
+      ...prod, clearBlocker: async () => { throw new Error('settlement interrupted'); },
+    }, now)).rejects.toThrow('settlement interrupted');
+    const before = await loadParkState(sql, WS, park.consultId);
+    expect(before?.outcomes.at(-1)?.verdict).toBe('proceed');
+    expect((await blockerStatus(park))?.status).toBe('active');
+
+    const retry = await sweepDueParks({ sql, seamsFor: seams, now });
+    expect(retry.failures).toEqual([]);
+    expect((await blockerStatus(park))?.status).toBe('cleared');
+    expect((await loadParkState(sql, WS, park.consultId))?.outcomes).toEqual(before?.outcomes);
+  }, 60_000);
+
+  it.each(['settled', 'durable-park', 'event-remains', 'credential-remains'] as const)(
+    'reconciles historical settled classification without changing the decision or other holds (%s)',
+    async (scenario) => {
+      const deadline = Date.now() + 3_600_000;
+      const now = new Date(deadline + 1_000).toISOString();
+      const park = await seedPark(new Date(deadline).toISOString());
+      await runParkTriggersForConsult(sql, WS, park.consultId, seams(WS), now);
+      const [row] = await sql<Array<{ payload: Record<string, unknown> }>>`
+        SELECT payload FROM harness_shared.work_items
+         WHERE workspace_id = ${WS} AND feature_id = ${park.workItemId}`;
+      let payload: Record<string, unknown> = { ...row.payload, needsOwnerAction: true, needsHuman: true };
+      if (scenario.endsWith('-remains')) {
+        const human = scenario === 'credential-remains';
+        const { blockers } = updateExternalBlockerHistory(payload, {
+          kind: human ? 'human' : 'event', ref: `remaining:${park.consultId}`,
+          summary: 'Preserve the independent condition',
+          ...(human ? { capability: 'credential' as const, defaultIfUnanswered: 'Keep blocked' } : {}),
+        }, park.setterId);
+        payload = { ...payload, externalBlockers: blockers };
+      }
+      const stored = scenario === 'durable-park'
+        ? { ...payload, _claimHold: true, claim_hold_by: park.setterId, claim_hold_reason: 'Keep parked' }
+        : payload;
+      await sql`UPDATE harness_shared.work_items
+        SET item_kind = 'bug', status = 'needs-human', payload = ${sql.json(stored as never)}
+        WHERE workspace_id = ${WS} AND feature_id = ${park.workItemId}`;
+      const outcomes = (await loadParkState(sql, WS, park.consultId))?.outcomes;
+      const awaits = await verdictAwaits(park);
+
+      const repaired = await sweepDueParks({ sql, seamsFor: seams, now });
+      expect(repaired.failures).toEqual([]);
+      const [after] = await sql<Array<{ status: string; payload: Record<string, unknown> }>>`
+        SELECT status, payload FROM harness_shared.work_items
+         WHERE workspace_id = ${WS} AND feature_id = ${park.workItemId}`;
+      expect(after.status).toBe(scenario === 'credential-remains' ? 'needs-human' : 'blocked');
+      expect(after.payload.needsOwnerAction).toBe(scenario === 'credential-remains' ? true : undefined);
+      expect(after.payload.needsHuman).toBe(scenario === 'credential-remains' ? true : undefined);
+      expect(after.payload.externalBlockers).toEqual(stored.externalBlockers);
+      if (scenario === 'durable-park') {
+        expect(after.payload).toMatchObject({ _claimHold: true, claim_hold_by: park.setterId,
+          claim_hold_reason: 'Keep parked' });
+      }
+      if (scenario === 'settled' || scenario === 'durable-park') {
+        expect(after.payload.blockedReason).toContain(DEFAULT_ACTION);
+      }
+      expect((await loadParkState(sql, WS, park.consultId))?.outcomes).toEqual(outcomes);
+      expect(await verdictAwaits(park)).toEqual(awaits);
+      // The same sweep must converge, rather than continuously rewriting settled rows.
+      const again = await sweepDueParks({ sql, seamsFor: seams, now });
+      expect(again.resolved.some((r) => r.consultId === park.consultId)).toBe(false);
+    }, 60_000,
+  );
+
   it('persisted owner-authority survives park creation and expiry: no clear, exactly one owner question with both options', async () => {
     const deadline = Date.now() + 3_600_000;
     const park = await seedPark(new Date(deadline).toISOString(), 'spend');
