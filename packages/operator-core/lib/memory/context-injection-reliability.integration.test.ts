@@ -31,17 +31,26 @@ const services = vi.hoisted(() => ({
   control: { generation: 1, applied: 'cache-fixture-identity', scope: 'cache-fixture-task' },
   search: vi.fn(), lexical: vi.fn(), coverage: vi.fn(), writes: vi.fn(),
 }));
-vi.mock('@papercusp/db-org', async orig => ({ ...await orig<typeof import('@papercusp/db-org')>(),
-  getOrgPg: () => ({ sql: async (parts: TemplateStringsArray, ...values: unknown[]) => {
-    const query = parts.join('');
-    if (query.includes('control_generation AS generation')) return [{ ...services.control }];
-    if (/INSERT INTO harness_shared\.(memory|corpus)_session_surfaced/.test(query)) {
-      services.writes(query, values);
-      return [{}];
-    }
-    return [];
-  } }),
-}));
+vi.mock('@papercusp/db-org', async orig => {
+  const identifierKey = Symbol('fixture-sql-identifier');
+  type Identifier = { [identifierKey]: string };
+  const isIdentifier = (value: unknown): value is Identifier =>
+    typeof value === 'object' && value !== null && identifierKey in value;
+  return { ...await orig<typeof import('@papercusp/db-org')>(),
+    getOrgPg: () => ({ sql: (parts: TemplateStringsArray | string, ...values: unknown[]) => {
+      // postgres.sql(name) is synchronous; only tagged queries return rows.
+      if (typeof parts === 'string') return { [identifierKey]: parts };
+      const query = parts.reduce((text, part, index) =>
+        text + part + (isIdentifier(values[index]) ? values[index][identifierKey] : ''), '');
+      if (query.includes('control_generation AS generation')) return Promise.resolve([{ ...services.control }]);
+      if (/INSERT INTO harness_shared\.(memory|corpus)_session_surfaced/.test(query)) {
+        services.writes(query, values);
+        return Promise.resolve([{}]);
+      }
+      return Promise.resolve([]);
+    } }),
+  };
+});
 vi.mock('./backend', () => ({ getMemoryBackend: () => ({ name: 'query-integration-fixture',
   available: async () => ({ ok: !services.unavailable }), search: services.search, searchLexical: services.lexical,
 }) }));
@@ -138,6 +147,18 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks(); vi.unstubAllEnvs(); resetReadCursorStore();
   setSessionConfinementResolver(undefined);
+});
+
+it('supports synchronous SQL identifiers without interpreting parameter values as query text', async () => {
+  const { sql } = getOrgPg();
+  const table = sql('harness_shared.memory_session_surfaced');
+  expect(table).not.toBeInstanceOf(Promise);
+  await expect(sql`SELECT payload FROM ${table}`).resolves.toEqual([]);
+  await expect(sql`INSERT INTO ${table} VALUES (${'fixture'})`).resolves.toEqual([{}]);
+  expect(services.writes).toHaveBeenCalledOnce();
+  services.writes.mockClear();
+  await expect(sql`SELECT ${'INSERT INTO harness_shared.memory_session_surfaced'}`).resolves.toEqual([]);
+  expect(services.writes).not.toHaveBeenCalled();
 });
 
 function digest(client: typeof DELIVERY_MATRIX_CLIENTS[number], fixture: Fixture) {
