@@ -2,9 +2,10 @@ import { describe, expect, it, onTestFailed } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {spawnSync} from 'node:child_process';
+import {spawn, spawnSync} from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { bindRuntimeJitDump, bindRuntimeModelOpens, bindRuntimeProcessTree, observeRuntimePageSize, runtimeFileTraceArguments } from './runtime-file-opens.mjs';
+import { bindRuntimeJitDump, bindRuntimeJitMemory, bindRuntimeModelOpens, bindRuntimeProcessTree,
+  observeRuntimeExecutableMemory, observeRuntimeProcessIdentity, observeRuntimePageSize, runtimeFileTraceArguments } from './runtime-file-opens.mjs';
 
 describe('retained Linux perf JIT code bytes', () => {
   const witness = {processId:10, taskIds:[10,11], elfMachine:62,
@@ -24,6 +25,135 @@ describe('retained Linux perf JIT code bytes', () => {
     u32(end,0,3);u32(end,4,16);u64(end,8,120n);
     return Buffer.concat([header,load,...(move?[movement]:[]),...(close?[end]:[])]);
   }
+  const identity = {processId:10,parentProcessId:9,startTimeTicks:'42',executable:'/usr/bin/node'};
+  function memorySample() {
+    const tasks=[{taskId:10,state:'T',startTimeTicks:'42'},{taskId:11,state:'T',startTimeTicks:'43'}];
+    const maps='00001000-00003000 r-xp 00000000 00:00 0\n';
+    return {schema:'runtime-selected-executable-memory/v1' as const,process:{...identity},observerProcessId:9,
+      startedMonotonicNs:'116',finishedMonotonicNs:'118',tasksBefore:tasks,tasksAfter:structuredClone(tasks),
+      mapsBefore:maps,mapsAfter:maps,samples:[{codeIndex:'1',address:'0x1000',bytes:Buffer.from([0x90,0x90,0xc3])}]};
+  }
+  it('binds selected stopped executable memory bytes without granting population/origin/custody', () => {
+    const proof=bindRuntimeJitMemory(dump(),witness,memorySample(),identity);
+    expect(proof.bindings).toEqual([expect.objectContaining({codeIndex:'1',address:'0x1000',bytes:3,
+      sha256:sha(Buffer.from([0x90,0x90,0xc3])),mapping:expect.objectContaining({permissions:'r-xp'})})]);
+    expect(proof).toMatchObject({selectedExecutableBytesVerified:true,emittedLoadsNotSampled:0,
+      mappingPopulationComplete:false,executableBytesQualified:false,completeRuntimeClosureVerified:false,
+      jitByteOriginQualification:'required',runtimeCaptureCustody:'required',creatorFence:'required',
+      writableAliasQualification:'required'});
+  });
+  it('binds a moved code payload only at the observed destination', () => {
+    const sample=memorySample();sample.samples[0].address='0x2000';
+    expect(bindRuntimeJitMemory(dump(true,true),witness,sample,identity).bindings[0].address).toBe('0x2000');
+    sample.samples[0].address='0x1000';
+    expect(()=>bindRuntimeJitMemory(dump(true,true),witness,sample,identity)).toThrow('bytes/address differ');
+  });
+  it.each([109n,110n])('refuses an inverted or equal selected memory MOVE clock %s', timestamp => {
+    const bytes=dump(true,true);bytes.writeBigUInt64LE(timestamp,109);
+    expect(()=>bindRuntimeJitMemory(bytes,witness,memorySample(),identity)).toThrow('ambiguous per-code event clock');
+  });
+  it.each(['identity','pid','observer','start-ticks','before-load','outside','reversed','maps-change',
+    'not-executable','short-mapping','invalid-maps','running-task','foreign-task','duplicate-task',
+    'missing-main','task-change','wrong-code','wrong-address','wrong-bytes','empty','duplicate',
+    'partial-bytes','move-during','overlap','oversized'])('refuses selected memory %s evidence', variant => {
+    const sample=memorySample();let bytes=dump();
+    if(variant==='identity')sample.process.executable='/different/node';
+    if(variant==='pid')sample.process.processId=99;
+    if(variant==='observer')sample.observerProcessId=10;
+    if(variant==='start-ticks')sample.tasksBefore[0].startTimeTicks='41';
+    if(variant==='before-load')sample.startedMonotonicNs='109';
+    if(variant==='outside')sample.finishedMonotonicNs='201';
+    if(variant==='reversed')sample.finishedMonotonicNs='115';
+    if(variant==='maps-change')sample.mapsAfter+='changed';
+    if(variant==='not-executable')sample.mapsBefore=sample.mapsAfter=sample.mapsBefore.replace('r-xp','rw-p');
+    if(variant==='short-mapping')sample.mapsBefore=sample.mapsAfter=sample.mapsBefore.replace('00003000','00001002');
+    if(variant==='invalid-maps')sample.mapsBefore=sample.mapsAfter='unparsed maps';
+    if(variant==='running-task')sample.tasksBefore[1].state='R';
+    if(variant==='foreign-task')sample.tasksBefore[1].taskId=99;
+    if(variant==='duplicate-task')sample.tasksBefore.push(sample.tasksBefore[0]);
+    if(variant==='missing-main')sample.tasksBefore.shift();
+    if(variant!=='task-change')sample.tasksAfter=structuredClone(sample.tasksBefore);
+    if(variant==='task-change')sample.tasksAfter.pop();
+    if(variant==='wrong-code')sample.samples[0].codeIndex='2';
+    if(variant==='wrong-address')sample.samples[0].address='0x1001';
+    if(variant==='wrong-bytes')sample.samples[0].bytes[0]=0;
+    if(variant==='empty')sample.samples=[];
+    if(variant==='duplicate')sample.samples.push(sample.samples[0]);
+    if(variant==='partial-bytes')sample.samples[0].bytes=sample.samples[0].bytes.subarray(0,2);
+    if(variant==='oversized')sample.samples[0].bytes=Buffer.alloc(1024*1024+1);
+    if(variant==='move-during'){bytes=dump(true,true);sample.startedMonotonicNs='114';sample.finishedMonotonicNs='116';}
+    if(variant==='overlap'){
+      const load=Buffer.from(bytes.subarray(40,101));load.writeBigUInt64LE(2n,48);
+      bytes=Buffer.concat([bytes.subarray(0,101),load,bytes.subarray(101)]);
+    }
+    expect(()=>bindRuntimeJitMemory(bytes,witness,sample,identity)).toThrow('runtime executable memory:');
+  });
+  it.runIf(process.platform==='linux')('reads actual stopped V8 executable memory from its parent and catches changed bytes', async () => {
+    const root=fs.mkdtempSync(path.join(os.tmpdir(),'runtime-jit-memory-'));
+    const before=process.hrtime.bigint(), beforeEpochMs=Date.now();
+    const child=spawn(process.execPath,['--perf-prof','--perf-prof-path='+root,'--allow-natives-syntax','-e',
+      'function wi4858MemoryTarget(x){return x*3+1};%PrepareFunctionForOptimization(wi4858MemoryTarget);'+
+      'for(let i=0;i<10000;i++)wi4858MemoryTarget(i);%OptimizeFunctionOnNextCall(wi4858MemoryTarget);'+
+      'if(wi4858MemoryTarget(4)!==13)process.exit(2);process.stdout.write("ready\\n",()=>process.kill(process.pid,"SIGSTOP"));'],
+      {env:{PATH:'/usr/bin:/bin'},stdio:['ignore','pipe','pipe']});
+    let stderr='';child.stderr.on('data',chunk=>{stderr+=chunk;});
+    const closed=new Promise<{code:number|null,signal:string|null}>((resolve,reject)=>{
+      child.on('error',reject);child.on('close',(code,signal)=>resolve({code,signal}));
+    });
+    try {
+      const launched=observeRuntimeProcessIdentity(child.pid!);
+      await new Promise<void>((resolve,reject)=>{
+        const timer=setTimeout(()=>reject(new Error('private JIT child readiness timeout: '+stderr)),10000);
+        child.stdout.once('data',()=>{clearTimeout(timer);resolve();});
+        child.once('error',error=>{clearTimeout(timer);reject(error);});
+      });
+      const deadline=Date.now()+5000;
+      while(!fs.readdirSync('/proc/'+child.pid+'/task').every(id=>
+        fs.readFileSync('/proc/'+child.pid+'/task/'+id+'/stat','utf8').split(') ')[1].startsWith('T '))){
+        if(Date.now()>deadline)throw new Error('private JIT child did not stop');
+        await new Promise(resolve=>setTimeout(resolve,10));
+      }
+      const dumpPath=path.join(root,'jit-'+child.pid+'.dump'), prefix=fs.readFileSync(dumpPath);
+      // Selection only; terminal binding below reparses the complete dump. Never
+      // pass a fabricated EOF to the existing terminal-only dump qualifier.
+      const loads:{codeIndex:string,address:string,size:number,name:string}[]=[];
+      for(let offset=40;offset+16<=prefix.length;){
+        const size=prefix.readUInt32LE(offset+4);if(size<16||offset+size>prefix.length)break;
+        if(prefix.readUInt32LE(offset)===0){const nameEnd=prefix.indexOf(0,offset+56);
+          loads.push({codeIndex:prefix.readBigUInt64LE(offset+48).toString(),
+            address:'0x'+prefix.readBigUInt64LE(offset+32).toString(16),
+            size:Number(prefix.readBigUInt64LE(offset+40)),name:prefix.subarray(offset+56,nameEnd).toString()});}
+        offset+=size;
+      }
+      const target=loads.filter(load=>load.name.includes('wi4858MemoryTarget')).at(-1);
+      expect(target,stderr).toBeDefined();
+      expect(()=>observeRuntimeExecutableMemory({...launched,startTimeTicks:'1'},[target!])).toThrow('launch identity changed');
+      expect(()=>observeRuntimeExecutableMemory({...launched,parentProcessId:1},[target!])).toThrow('not the observer direct child');
+      const sample=observeRuntimeExecutableMemory(launched,[target!]);
+      child.kill('SIGCONT');
+      const terminal=await closed;
+      expect(terminal,stderr).toEqual({code:0,signal:null});
+      const complete=fs.readFileSync(dumpPath), elf=fs.readFileSync(process.execPath).subarray(0,20);
+      const proofWitness={processId:child.pid!,taskIds:sample.tasksBefore.map(task=>task.taskId),
+        elfMachine:elf[5]===1?elf.readUInt16LE(18):elf.readUInt16BE(18),
+        startedMonotonicNs:before.toString(),finishedMonotonicNs:process.hrtime.bigint().toString(),
+        startedEpochMs:beforeEpochMs,finishedEpochMs:Date.now(),headerClock:'v8-realtime-microseconds' as const,
+        exitCode:terminal.code!,signal:terminal.signal,eof:true,captureStartedBeforeExec:true};
+      if(process.env.PAPERCUSP_TEST_ARTIFACT_DIR){
+        fs.writeFileSync(path.join(process.env.PAPERCUSP_TEST_ARTIFACT_DIR,'memory-jit.dump'),complete);
+        fs.writeFileSync(path.join(process.env.PAPERCUSP_TEST_ARTIFACT_DIR,'memory-observation.json'),JSON.stringify(sample));
+        fs.writeFileSync(path.join(process.env.PAPERCUSP_TEST_ARTIFACT_DIR,'memory-witness.json'),JSON.stringify({proofWitness,launched}));
+      }
+      const proof=bindRuntimeJitMemory(complete,proofWitness,sample,launched);
+      expect(proof.bindings).toHaveLength(1);expect(proof.completeRuntimeClosureVerified).toBe(false);
+      expect(proof.bindings[0].mapping.permissions[2]).toBe('x');
+      sample.samples[0].bytes[0]^=1;
+      expect(()=>bindRuntimeJitMemory(complete,proofWitness,sample,launched)).toThrow('bytes/address differ');
+    } finally {
+      if(child.exitCode===null){child.kill('SIGCONT');child.kill('SIGKILL');}
+      await closed;fs.rmSync(root,{recursive:true,force:true});
+    }
+  },25000);
   it.each([true,false])('binds exact code payloads in the declared byte order: little=%s', little => {
     const bytes=dump(little), proof=bindRuntimeJitDump(bytes,witness);
     expect(proof.loads).toEqual([expect.objectContaining({taskId:11, codeIndex:'1', address:'0x1000',
