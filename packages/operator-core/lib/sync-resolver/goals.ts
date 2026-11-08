@@ -727,6 +727,7 @@ export async function resolveGoalsList(args: {
   const portfolio = await traceNamedQueryStage('goal-list-portfolio', () => portfolioSpend(sql, {
     workspaceId,
     goalIds: goals.map((g) => g.id),
+    summaryOnly: true,
   }));
   // P-009: the packages rail. A DEDICATED bounded query, deliberately not a
   // correlation against `rows`: that list is capped by `limit`, and a package
