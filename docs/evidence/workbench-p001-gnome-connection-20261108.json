@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Workbench P001 GNOME connection selector and installer preservation",
+  "framework": "node",
+  "command": [
+    "node",
+    "--test",
+    "--test-global-setup=./test/monorepo-host-preflight.mjs",
+    "--test-name-pattern=resident PUI connection selection|bundled production installer",
+    "test/native-workbench-gnome-live.test.mjs"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-11-08T16:29:30.103105+00:00",
+  "finishedAt": "2026-11-08T16:29:37.120392+00:00",
+  "timestampMethod": "Retained log mtime and recorded Node test duration",
+  "summary": "Retained focused maintained Node test run: two tests passed, zero failed/skipped. Real GJS/GTK helper isolation proves inherited/explicit selectors and cancellation; production installer fixture proves setting preservation across install/upgrade/repair. No unchanged rerun.",
+  "workItem": "WI-6554700010029572",
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "assertions": [
+    {
+      "id": "connection-lifecycle",
+      "passed": true,
+      "evidence": "resident PUI connection selection overrides inherited aliases and cancels old reads and streams; log reports PASS"
+    },
+    {
+      "id": "installer-preservation",
+      "passed": true,
+      "evidence": "bundled production installer preserves login, disabled and shortcut choices through upgrade and repair; log reports PASS; operator survives upgrade/repair"
+    }
+  ],
+  "rawLog": "GNOME_DISTRIBUTION_INSTALL_PASS {\"first\":{\"changed\":true,\"firstInstall\":true,\"sha256\":\"f87c953c890f2df3a95d793ca6e72f5d15e13b018ae4dfc4c1286e6398a3982f\",\"loginRequired\":false,\"reloadError\":null},\"laterServer\":{\"changed\":false,\"sha256\":\"f87c953c890f2df3a95d793ca6e72f5d15e13b018ae4dfc4c1286e6398a3982f\"},\"enabled\":[\"unrelated@example.invalid\",\"workbench@papercusp.ai\"],\"bundledPui\":\"/tmp/workbench-distribution-LhjkoP/pui '$ fixture\",\"defaultOperator\":\"\",\"operator\":\"http://127.0.0.1:3170\",\"upgrade\":{\"changed\":true,\"firstInstall\":false,\"sha256\":\"43180336206ae049bf0b6828f7b5e84cb9467696edfa189a54113e7d30ebd1a9\",\"loginRequired\":false,\"reloadError\":null},\"preserved\":[\"unrelated@example.invalid\"],\"unchanged\":{\"changed\":false,\"sha256\":\"43180336206ae049bf0b6828f7b5e84cb9467696edfa189a54113e7d30ebd1a9\"},\"repair\":{\"changed\":true,\"firstInstall\":false,\"sha256\":\"43180336206ae049bf0b6828f7b5e84cb9467696edfa189a54113e7d30ebd1a9\",\"loginRequired\":false,\"reloadError\":null},\"goals\":[\"<Super><Alt>g\"],\"pui\":\"/custom/operator/pui\",\"compiled\":true}\n✔ bundled production installer preserves login, disabled and shortcut choices through upgrade and repair (1101.587585ms)\n✔ resident PUI connection selection overrides inherited aliases and cancels old reads and streams (3289.471713ms)\nℹ tests 2\nℹ suites 0\nℹ pass 2\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 7017.286516\n",
+  "rawLogSha256": "c38178a85b933e2ee90eae7dee46dfa314609e0e1d5f4fea99cc2d72c44ab20e",
+  "scopeLimits": [
+    "Fixture PUI, not canonical report access.",
+    "Source custody is the P001 checkpoint ed9449221a01; current test gained a separate installed integration test afterward.",
+    "Actual installed bridge proof is in workbench-p001-installed-reports-20261108.json."
+  ]
+}
+

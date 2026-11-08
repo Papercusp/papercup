@@ -7,16 +7,23 @@ export interface RuntimeExecutableMemoryObservation {
   schema: 'runtime-selected-executable-memory/v1';
   process: RuntimeObservedProcessIdentity; observerProcessId: number;
   startedMonotonicNs: string; finishedMonotonicNs: string;
-  tasksBefore: {taskId: number; state: string; startTimeTicks: string}[];
-  tasksAfter: {taskId: number; state: string; startTimeTicks: string}[];
+  tasksBefore: {taskId: number; state: string; startTimeTicks: string; tracerProcessId?: number}[];
+  tasksAfter: {taskId: number; state: string; startTimeTicks: string; tracerProcessId?: number}[];
+  tracer?: {process: RuntimeObservedProcessIdentity;
+    tasksBefore: {taskId: number; state: string; startTimeTicks: string}[];
+    tasksAfter: {taskId: number; state: string; startTimeTicks: string}[]};
   mapsBefore: string; mapsAfter: string;
   samples: {codeIndex: string; address: string; bytes: Buffer}[];
 }
 export function observeRuntimeProcessIdentity(processId: number): RuntimeObservedProcessIdentity;
+export function observeRuntimeTracerIdentity(identity: RuntimeObservedProcessIdentity,
+  expectedExecutable: string): RuntimeObservedProcessIdentity;
 export function observeRuntimeExecutableMemory(identity: RuntimeObservedProcessIdentity,
-  ranges: {codeIndex: string; address: string; size: number}[]): RuntimeExecutableMemoryObservation;
+  ranges: {codeIndex: string; address: string; size: number}[],
+  tracerIdentity?: RuntimeObservedProcessIdentity): RuntimeExecutableMemoryObservation;
 export function bindRuntimeJitMemory(bytes: Buffer, witness: Parameters<typeof bindRuntimeJitDump>[1],
-  observation: RuntimeExecutableMemoryObservation, expectedIdentity: RuntimeObservedProcessIdentity): {
+  observation: RuntimeExecutableMemoryObservation, expectedIdentity: RuntimeObservedProcessIdentity,
+  expectedTracer?: RuntimeObservedProcessIdentity): {
     schema: 'runtime-jit-selected-memory-binding/v1'; processId: number;
     dumpSha256: string; mapsSha256: string; startedMonotonicNs: string; finishedMonotonicNs: string;
     bindings: {codeIndex: string; address: string; bytes: number; sha256: string;

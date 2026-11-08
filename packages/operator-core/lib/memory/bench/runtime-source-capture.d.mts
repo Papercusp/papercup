@@ -19,6 +19,7 @@ export function bindRuntimeSourcePopulation(trace: string, terminal: {
   memory?: {
     observation: import('./runtime-file-opens.mjs').RuntimeExecutableMemoryObservation;
     launchIdentity: import('./runtime-file-opens.mjs').RuntimeObservedProcessIdentity;
+    tracerIdentity?: import('./runtime-file-opens.mjs').RuntimeObservedProcessIdentity;
   };
 }[]): {
   schema: 'runtime-traced-source-population/v1'; processId: number; processes: ParsedSourceReceipt[];
