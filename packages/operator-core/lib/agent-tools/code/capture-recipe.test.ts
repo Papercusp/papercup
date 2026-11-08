@@ -252,6 +252,15 @@ describe('selectRecipeCaptureTarget (P-014)', () => {
     expect(selectRecipeCaptureTarget({ proposedId: 'new', similarRecipes: [{ id: 'legacy', similarity: 1 }] }).id).toBe('new');
   });
 
+  it.each(['structural-similarity', 'semantic-retrieval', 'unrecognized'])
+    ('does not reuse an equivalent verdict with a non-certifying %s basis', (basis) => {
+      expect(selectRecipeCaptureTarget({
+        proposedId: 'distinct-operation',
+        similarRecipes: [{ id: 'advisory-neighbor', similarity: 1,
+          matchingEvidence: { domain: { verdict: 'equivalent', basis } } }],
+      })).toEqual({ id: 'distinct-operation', disposition: 'created', matchedSimilarity: null });
+    });
+
   it('creates the proposed candidate when no exact or qualifying near match exists', () => {
     const similarRecipes = [{
       id: 'below',

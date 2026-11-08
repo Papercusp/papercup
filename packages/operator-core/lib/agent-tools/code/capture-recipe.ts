@@ -266,7 +266,8 @@ export function selectRecipeCaptureTarget(input: {
   const threshold = input.nearDuplicateThreshold ?? RECIPE_CAPTURE_NEAR_DUPLICATE_THRESHOLD;
   const near = input.similarRecipes
     .filter((candidate) => candidate.id !== input.proposedId && candidate.similarity >= threshold
-      && candidate.matchingEvidence?.domain.verdict === 'equivalent')
+      && candidate.matchingEvidence?.domain.verdict === 'equivalent'
+      && candidate.matchingEvidence.domain.basis === 'exact-source-and-contract')
     .sort((a, b) => b.similarity - a.similarity || a.id.localeCompare(b.id))[0];
   if (near) {
     return {
