@@ -1340,31 +1340,48 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
       if (tree.exitCode !== 0 || tree.output.trim() !== expectedTree)
         return { ran: false, reason: 'runner-failed', detail: `materialized tree differs from immutable pre-check identity; log=${logFile}` };
     }
-    if (opts.reusePreparedTree && expectedTree)
-      prepared = { commit, tree: expectedTree, root: precheckRoot };
-    // A foreign Papercusp fork registers the aggregate gate command, which
-    // deliberately rejects exact filenames. Resolve its existing file script
-    // from the pinned checkout rather than running that aggregate once per file.
+    // Resolve exact-file scripts from the pinned app. Aggregate npm test commands
+    // can run a build in pretest; running that lifecycle in every parallel file
+    // worker races on the same build directory (WI-6554700010046579).
     let fileTestCommand = opts.testCommand;
-    if (
-      fileTestCommand?.length === 3 &&
-      path.basename(fileTestCommand[0] ?? '') === 'npm' &&
-      fileTestCommand[1] === 'run' &&
-      fileTestCommand[2] === 'test:affected'
-    ) {
+    let npmPreparation: string[] | undefined;
+    let serializeAggregateNpmTest = false;
+    const npmExecutable = fileTestCommand?.[0];
+    const npmScript = path.basename(npmExecutable ?? '') === 'npm'
+      ? fileTestCommand?.length === 2 && fileTestCommand[1] === 'test'
+        ? 'test'
+        : fileTestCommand?.length === 3 && fileTestCommand[1] === 'run'
+          ? fileTestCommand[2]
+          : undefined
+      : undefined;
+    if (npmExecutable && (npmScript === 'test' || npmScript === 'test:affected')) {
       let fileScript: unknown;
+      let pretestScript: unknown;
+      let posttestScript: unknown;
       try {
         const manifest = JSON.parse(readFileSync(path.join(precheckRoot, 'package.json'), 'utf8'));
         fileScript = manifest.scripts?.['test:file'];
+        pretestScript = manifest.scripts?.pretest;
+        posttestScript = manifest.scripts?.posttest;
       } catch { /* an unreadable declaration is not permission to infer a runner */ }
-      if (typeof fileScript !== 'string' || !fileScript.trim()) {
+      // Keep custom aggregate cleanup attached to its original lifecycle. A
+      // bounded file group cannot know when the operation's last group finishes.
+      const aggregateCleanup = npmScript === 'test' && typeof posttestScript === 'string' && posttestScript.trim();
+      if (typeof fileScript === 'string' && fileScript.trim() && !aggregateCleanup) {
+        fileTestCommand = [npmExecutable, 'run', 'test:file'];
+        if (npmScript === 'test' && typeof pretestScript === 'string' && pretestScript.trim())
+          npmPreparation = [npmExecutable, 'run', 'pretest'];
+      } else if (npmScript === 'test:affected') {
         return {
           ran: false,
           reason: 'runner-failed',
           detail: 'The registered test:affected command cannot accept exact files and the pinned checkout has no registered test:file command; log=' + logFile,
         };
+      } else {
+        // Preserve a registered npm test command when there is no file script,
+        // but never overlap its aggregate lifecycle in the shared checkout.
+        serializeAggregateNpmTest = true;
       }
-      fileTestCommand = [fileTestCommand[0] as string, 'run', 'test:file'];
     }
     let environmentProgress: Promise<void> | undefined;
     let lastEnvironmentHeartbeat = -Infinity;
@@ -1376,10 +1393,38 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
         totalCount: files.length, heartbeatAtMs })).finally(() => { environmentProgress = undefined; });
     }) ?? {};
     await environmentProgress;
+    const fileEnvironment: NodeJS.ProcessEnv = {
+      PAPERCUSP_ADMISSION_PRECHECK: '1',
+      PAPERCUSP_TEST_RUN_GROUP: `admission-precheck:${commit.slice(0, 12)}`,
+      ...(opts.testRunHarness ? { PAPERCUSP_TEST_RUN_HARNESS: opts.testRunHarness } : {}),
+      ...clearedEnv,
+      ...testEnvironment,
+      // Frozen candidates can predate the exact-file router's test-mode boundary.
+      NODE_ENV: 'test',
+    };
+    if (npmPreparation && !reuse) {
+      opts.assertTestEnvironment?.();
+      const preparation = await execWithProgress(npmPreparation, {
+        cwd: precheckRoot, timeoutMs: perFileTimeoutMs, env: fileEnvironment, logFile,
+      }, () => ({ currentFile: files[0] as string, completedCount: 0, totalCount: files.length }));
+      opts.assertTestEnvironment?.();
+      if (preparation.exitCode !== 0) {
+        return {
+          ran: false, reason: 'runner-failed',
+          detail: `registered npm pretest exited ${preparation.exitCode ?? preparation.signal}; log=${logFile}: ${preparation.output.slice(-600)}`,
+        };
+      }
+    }
+    // Publish reuse readiness only after both environment and shared build setup
+    // succeed; a thrown/failed setup must never make the next group skip it.
+    if (opts.reusePreparedTree && expectedTree)
+      prepared = { commit, tree: expectedTree, root: precheckRoot };
     // WI-6554700010030140: up to `concurrency` files run at once; 1 is the historical strict
     // serial order. `completed` counts DURABLY recorded results only (it advances inside the
     // write chain, after onFileResult), so no progress snapshot ever claims an unrecorded file.
-    const concurrency = Math.max(1, Math.min(Math.floor(opts.fileConcurrency ?? 1), files.length));
+    const concurrency = serializeAggregateNpmTest
+      ? 1
+      : Math.max(1, Math.min(Math.floor(opts.fileConcurrency ?? 1), files.length));
     const results: (FixPrecheckFileResult | undefined)[] = new Array(files.length);
     let nextIndex = 0;
     let completed = 0;
@@ -1401,16 +1446,7 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
           const r = await execWithProgress(argv, {
             cwd: precheckRoot,
             timeoutMs: perFileTimeoutMs,
-            env: {
-              PAPERCUSP_ADMISSION_PRECHECK: '1',
-              PAPERCUSP_TEST_RUN_GROUP: `admission-precheck:${commit.slice(0, 12)}`,
-              ...(opts.testRunHarness ? { PAPERCUSP_TEST_RUN_HARNESS: opts.testRunHarness } : {}),
-              ...clearedEnv,
-              ...testEnvironment,
-              // Frozen candidates can predate the exact-file router's test-mode
-              // boundary. Never inherit the operator's production Vite/React mode.
-              NODE_ENV: 'test',
-            },
+            env: fileEnvironment,
             logFile,
           }, progressFor(file));
           opts.assertTestEnvironment?.();

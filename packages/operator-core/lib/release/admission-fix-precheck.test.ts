@@ -772,6 +772,102 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  it('WI-6554700010046579: prepares an npm build once before concurrent registered exact-file runs', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'precheck-npm-build-once-'));
+    const checkpointRoot = join(root, 'checkpoint');
+    const precheckRoot = `${checkpointRoot}-admission-precheck`;
+    const commands: string[][] = [];
+    let activeFiles = 0;
+    let maxActiveFiles = 0;
+    const exec = async (argv: readonly string[], opts: ExecOptions): Promise<ExecResult> => {
+      commands.push([...argv]);
+      if (argv.includes('/operator/apps/operator/bin/release/setup-release-checkout.sh')) {
+        mkdirSync(precheckRoot);
+        writeFileSync(join(precheckRoot, 'package.json'), JSON.stringify({
+          private: true,
+          scripts: {
+            pretest: 'node -e "const f=require(\'node:fs\'); if(f.existsSync(\'build.ready\')) throw new Error(\'build repeated\'); f.writeFileSync(\'build.ready\', \'ready\')"',
+            test: 'node -e "throw new Error(\'aggregate test must not run per file\')"',
+            'test:file': 'node -e "const a=require(\'node:assert/strict\'); a.equal(require(\'node:fs\').readFileSync(\'build.ready\', \'utf8\'), \'ready\'); a.match(process.argv[1], /[ab]\\.test\\.ts$/); console.log(\'Tests 1 passed (1)\')"',
+          },
+        }));
+        return { exitCode: 0, signal: null, timedOut: false, output: '', durationMs: 1 };
+      }
+      if (argv[2] !== 'test:file') return defaultExec(argv, opts);
+      activeFiles += 1;
+      maxActiveFiles = Math.max(maxActiveFiles, activeFiles);
+      try { return await defaultExec(argv, opts); }
+      finally { activeFiles -= 1; }
+    };
+    try {
+      const runner = createCheckpointTreeFixPrecheckRunner({
+        ...base, integrationRoot: '/app', toolingRoot: '/operator', checkpointRoot,
+        testCommand: ['npm', 'test'], fileConcurrency: 2, exec,
+        runLockHeld: () => ({ held: false, elapsedSec: null }),
+      });
+      expect(await runner({ commit: C, files: ['lib/a.test.ts', 'lib/b.test.ts'] })).toMatchObject({
+        ran: true, results: [{ status: 'pass' }, { status: 'pass' }],
+      });
+      expect(commands.filter((argv) => argv[2] === 'pretest')).toHaveLength(1);
+      expect(maxActiveFiles).toBe(2);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('WI-6554700010046579: a failed shared npm preparation never starts file measurements', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'precheck-npm-preparation-failed-'));
+    const checkpointRoot = join(root, 'checkpoint');
+    const precheckRoot = `${checkpointRoot}-admission-precheck`;
+    const commands: string[][] = [];
+    const exec = async (argv: readonly string[], opts: ExecOptions): Promise<ExecResult> => {
+      commands.push([...argv]);
+      if (argv.includes('/operator/apps/operator/bin/release/setup-release-checkout.sh')) {
+        mkdirSync(precheckRoot);
+        writeFileSync(join(precheckRoot, 'package.json'), JSON.stringify({
+          private: true,
+          scripts: {
+            pretest: 'node -e "throw new Error(\'required build failed\')"',
+            test: 'node -e "throw new Error(\'unexpected aggregate test\')"',
+            'test:file': 'node -e "console.log(\'Tests 1 passed (1)\')"',
+          },
+        }));
+        return { exitCode: 0, signal: null, timedOut: false, output: '', durationMs: 1 };
+      }
+      return defaultExec(argv, opts);
+    };
+    try {
+      const runner = createCheckpointTreeFixPrecheckRunner({
+        ...base, integrationRoot: '/app', toolingRoot: '/operator', checkpointRoot,
+        testCommand: ['npm', 'test'], fileConcurrency: 2, exec,
+        runLockHeld: () => ({ held: false, elapsedSec: null }),
+      });
+      expect(await runner({ commit: C, files: ['lib/a.test.ts', 'lib/b.test.ts'] })).toMatchObject({
+        ran: false, reason: 'runner-failed', detail: expect.stringContaining('required build failed'),
+      });
+      expect(commands.some((argv) => argv[2] === 'test:file')).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('WI-6554700010046579: aggregate npm lifecycles without an exact-file script never overlap', async () => {
+    let active = 0;
+    let maximum = 0;
+    const exec = async (argv: readonly string[]): Promise<ExecResult> => {
+      if (argv[0] !== 'npm') return { exitCode: 0, signal: null, timedOut: false, output: '', durationMs: 1 };
+      active += 1;
+      maximum = Math.max(maximum, active);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      active -= 1;
+      return { exitCode: 0, signal: null, timedOut: false, output: 'Tests 1 passed (1)', durationMs: 1 };
+    };
+    const runner = createCheckpointTreeFixPrecheckRunner({
+      ...base, integrationRoot: '/app', toolingRoot: '/operator', testCommand: ['npm', 'test'],
+      fileConcurrency: 4, exec, runLockHeld: () => ({ held: false, elapsedSec: null }),
+    });
+    expect(await runner({ commit: C, files: ['lib/a.test.ts', 'lib/b.test.ts'] })).toMatchObject({
+      ran: true, results: [{ status: 'pass' }, { status: 'pass' }],
+    });
+    expect(maximum).toBe(1);
+  });
+
   it('materializes a foreign app with operator tooling and runs its registered suite in the pinned app checkout', async () => {
     const exec = vi.fn(async (_argv: readonly string[], _opts: ExecOptions) => ({ exitCode: 0, signal: null, timedOut: false, output: '', durationMs: 1 } as ExecResult));
     const runner = createCheckpointTreeFixPrecheckRunner({ ...base, integrationRoot: '/app', toolingRoot: '/operator',
