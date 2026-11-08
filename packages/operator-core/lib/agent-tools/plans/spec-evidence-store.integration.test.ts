@@ -405,22 +405,33 @@ describe('canonical binding consumer custody', () => {
       const reference = { harness_slug: HARNESS, work_item_id: 'WI-101', evidence_ref: evidenceRef };
       const repositories = new Map([[HARNESS, h.repoRoot]]);
       const inserts: string[] = [];
+      // Retain actual constructed values and observed outcomes before cleanup.
+      // These diagnostics are bounded fixture evidence, not independent oracles.
+      const trace = (stage: string, value: unknown) => console.info('P017_CUSTODY_RUNTIME',
+        JSON.stringify({ schemaVersion: 1, loss, stage, value }));
       try {
+        trace('input', { workspace: WORKSPACE, harness: HARNESS, binding: args,
+          paths: { repoRoot: h.repoRoot, evidenceRoot, retained, unrelated, leaseDirectory: dir },
+          clock: { hour, nowMs, intakeMs }, resultBytes, consumer: await consumer.listPresence() });
         h.beforeBindingInsert = () => {
           const pins = readRetentionPins({ dir, nowMs: intakeMs });
+          trace('before-binding-insert', pins);
           expect(pins.errors).toEqual([]);
           expect(pins.pins).toEqual([expect.objectContaining({ owner: 'work-item:WI-101', paths: [retained] })]);
           inserts.push(pins.pins[0]!.id);
         };
         const bound = await bindTool.handler(args as never, CTX);
+        trace('binding-result', { bound, inserts });
         expect(bound, JSON.stringify(bound)).toMatchObject({ data: { ok: true, results: [{ ok: true, status: 'created' }] } });
         expect(inserts).toHaveLength(1);
         h.beforeBindingInsert = undefined;
         const [stored] = await db.sql`SELECT work_item_id, evidence_ref FROM harness_shared.spec_evidence_bindings`;
         expect(stored).toEqual({ work_item_id: 'WI-101', evidence_ref: evidenceRef });
         const intakePin = readRetentionPins({ dir, nowMs: intakeMs }).pins[0]!;
+        trace('stored-binding', { stored, intakePin });
         expect(inserts).toEqual([intakePin.id]);
         const refs = await readOpenWorkItemEvidenceReferences(db.sql, WORKSPACE, consumer);
+        trace('active-consumer-references', refs);
         expect(refs).toEqual([reference]);
         const policy: import('../../storage/retention-policy').RetentionClass[] = [{
           id: 'fixture', title: 'fixture', origin: 'agent', roots: [evidenceRoot],
@@ -434,6 +445,7 @@ describe('canonical binding consumer custody', () => {
           expect(await renewWorkItemEvidencePins(current, { repositories, dir, nowMs })).toMatchObject({ missing: [] });
           return { paths: [], pins: readRetentionPins({ dir, nowMs }).pins };
         } });
+        trace('active-reclaim', { nowMs, active, pins: readRetentionPins({ dir, nowMs }) });
         expect(active.errors).toEqual([]);
         expect(active.entries).toContainEqual(expect.objectContaining({ path: retained, status: 'protected' }));
         expect(active.entries).toContainEqual(expect.objectContaining({ path: unrelated, status: 'removed' }));
@@ -445,22 +457,27 @@ describe('canonical binding consumer custody', () => {
         if (loss === 'abandoned') await db.sql`UPDATE harness_shared.work_items SET taken_by = NULL WHERE feature_id = 'WI-101'`;
         lost = true;
         const lostRefs = await readOpenWorkItemEvidenceReferences(db.sql, WORKSPACE, consumer);
+        trace('consumer-loss', { lostRefs, consumer: await consumer.listPresence(), renewed });
         expect(lostRefs).toEqual([]);
         await renewWorkItemEvidencePins(lostRefs, { repositories, dir, nowMs: nowMs + 48 * hour });
         expect(readRetentionPins({ dir, nowMs }).pins).toEqual([renewed]);
         const reclaim = (at: number) => runDiskReclaimOnce({ ...options, nowMs: at,
           readProtection: async () => ({ paths: [], pins: readRetentionPins({ dir, nowMs: at }).pins }) });
         const grace = await reclaim(nowMs + 48 * hour);
+        trace('grace-reclaim', { nowMs: nowMs + 48 * hour, grace,
+          pins: readRetentionPins({ dir, nowMs: nowMs + 48 * hour }) });
         expect(grace.errors).toEqual([]);
         expect(grace.entries).toContainEqual(expect.objectContaining({ path: retained, status: 'protected' }));
         const later = nowMs + 73 * hour;
         const expired = await reclaim(later);
+        trace('expired-reclaim', { nowMs: later, expired, pins: readRetentionPins({ dir, nowMs: later }) });
         expect(expired.errors).toEqual([]);
         expect(expired.entries).toContainEqual(expect.objectContaining({ path: retained, status: 'removed' }));
         await expect(stat(retained)).rejects.toMatchObject({ code: 'ENOENT' });
         clock.mockReturnValue(later);
         const afterReclaim = vi.fn(); h.beforeBindingInsert = afterReclaim;
         const refused = await bindTool.handler(args as never, CTX);
+        trace('post-reclaim-binding', { nowMs: later, refused, attemptedInserts: afterReclaim.mock.calls.length });
         expect(refused).toMatchObject({ data: { ok: false, results: [{ ok: false }] } });
         expect(JSON.stringify(refused)).toContain('evidence retention: missing declared evidence');
         expect(afterReclaim).not.toHaveBeenCalled();
