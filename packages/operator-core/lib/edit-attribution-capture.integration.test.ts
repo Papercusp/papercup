@@ -42,6 +42,31 @@ function fixture() {
 }
 
 describe('preserveEditGeneration', () => {
+  it('correlates a staging refusal without exposing Git output or changing shared bytes', async () => {
+    const f = fixture();
+    const protectedText = 'protected source contents must stay out of diagnostics';
+    writeFileSync(join(f.repo, 'a.txt'), protectedText);
+    const before = f.state();
+    const git = vi.fn<RunGit>(async (args, cwd, options) => args[0] === 'add'
+      ? { code: 1, stdout: protectedText, stderr: protectedText }
+      : f.runGit(args, cwd, options));
+
+    await expect(preserveEditGeneration(f.input, git, async () => []))
+      .rejects.toThrow(/^source-custody-refused:candidate-stage$/);
+
+    const stage = git.mock.calls.find(([args]) => args[0] === 'add');
+    expect(stage).toBeDefined();
+    expect(stage![2]?.env?.GIT_INDEX_FILE).toBeDefined();
+    expect(stage![2]?.env?.GIT_INDEX_FILE).not.toBe(join(f.repo, '.git/index'));
+    for (const [, , options] of git.mock.calls) {
+      expect(options?.diagnosticTags).toEqual({
+        runId: f.input.dispatchCallId, commandClass: 'git',
+      });
+    }
+    expect(f.state()).toEqual(before);
+    expect(f.git('for-each-ref', '--format=%(refname)', SOURCE_CUSTODY_REF_PREFIX)).toBe('');
+  });
+
   it('labels an external native edit as unpreserved without invoking Git or manufacturing custody', async () => {
     const f = fixture();
     const git = vi.fn(f.runGit);

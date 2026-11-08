@@ -347,8 +347,16 @@ export async function preserveEditGeneration(
   }
   const { captureGitSyncCandidate, readGitSyncCandidate, runGitBounded, gitTimeoutMsFor } =
     await import('./harness/git-sync/run-git-sync');
-  const runGit: RunGit = runGitOverride ?? ((args, cwd, options) =>
+  const executeGit: RunGit = runGitOverride ?? ((args, cwd, options) =>
     runGitBounded(args, cwd, gitTimeoutMsFor(args), options));
+  // Correlate custody failures through the existing safe sidecar telemetry;
+  // Git output can contain protected source and must stay out of errors.
+  const runGit: RunGit = (args, cwd, options) => executeGit(args, cwd, {
+    ...options,
+    diagnosticTags: options?.diagnosticTags ?? {
+      runId: input.dispatchCallId, commandClass: 'git',
+    },
+  });
   const request = { requestId: input.dispatchCallId, generation: 1, paths: input.files };
   let captured = await readGitSyncCandidate(runGit, input.repoRoot, request);
   if (!captured.ok) {
