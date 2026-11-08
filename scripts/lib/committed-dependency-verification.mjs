@@ -227,9 +227,11 @@ async function* records(file, deadline) {
       const parts = raw.split('\t');
       if (parts.length !== 10 || !['f', 'd', 'l'].includes(parts[1])) fail('invalid census record');
       safeRelative(parts[0]);
-      // This is the existing materializer's rename of the helper's excluded
-      // root .package-lock.json, not an additional dependency exclusion.
-      if (parts[0] === '.papercusp-installed-package-lock.json') continue;
+      // Normalize the materializer's renamed npm lock and the release
+      // checkout's source-lock copy, as dependency-generation-proof does.
+      // Match tree-root records only; nested package data still participates.
+      if (parts[0] === '.papercusp-installed-package-lock.json' ||
+          parts[0] === '.papercusp-source-package-lock.json') continue;
       yield { raw, path: parts[0], type: parts[1], mode: parts[2], uid: parts[3],
         gid: parts[4], size: parts[5], mtime: parts[6], ino: parts[7], ctime: parts[8], link: parts[9] };
     }
@@ -301,18 +303,30 @@ function nanos(value) {
   return negative ? -result : result;
 }
 
-function sameMetadata(stat, record, device) {
-  return stat.isFile() && String(stat.dev) === device && String(stat.ino) === record.ino &&
-    String(stat.size) === record.size && (stat.mode & 0o7777n) === BigInt('0o' + record.mode) &&
-    String(stat.uid) === record.uid && String(stat.gid) === record.gid &&
-    stat.mtimeNs === nanos(record.mtime) && stat.ctimeNs === nanos(record.ctime);
+function assertMetadata(stat, record, device, path, side, phase) {
+  const expected = { regularFile: true, dev: device, ino: record.ino, size: record.size,
+    mode: BigInt('0o' + record.mode).toString(8), uid: record.uid, gid: record.gid,
+    mtimeNs: String(nanos(record.mtime)), ctimeNs: String(nanos(record.ctime)) };
+  const actual = { regularFile: stat.isFile(), dev: String(stat.dev), ino: String(stat.ino),
+    size: String(stat.size), mode: (stat.mode & 0o7777n).toString(8), uid: String(stat.uid),
+    gid: String(stat.gid), mtimeNs: String(stat.mtimeNs), ctimeNs: String(stat.ctimeNs) };
+  const differences = Object.fromEntries(Object.keys(expected)
+    .filter(key => expected[key] !== actual[key])
+    .map(key => [key, { expected: expected[key], actual: actual[key] }]));
+  if (!Object.keys(differences).length) return;
+  const detail = { side, phase, path, differences };
+  const message = phase === 'before-hash' ? 'dependency metadata changed: ' : 'dependency changed while hashing: ';
+  const error = new Error('retained dependency verification: ' + message + path + ' ' + JSON.stringify(detail));
+  error.code = 'DEPENDENCY_METADATA_CHANGED';
+  error.dependencyMetadata = detail;
+  throw error;
 }
 
-async function fileDigest(root, pair, record, device, deadline) {
+async function fileDigest(root, pair, record, device, deadline, side) {
   if (Date.now() >= deadline) throw new Incomplete();
   const handle = await open(join(root, pair.path), constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
-    if (!sameMetadata(await handle.stat({ bigint: true }), record, device)) fail('dependency metadata changed: ' + pair.path);
+    assertMetadata(await handle.stat({ bigint: true }), record, device, pair.path, side, 'before-hash');
     const hash = createHash('sha256');
     // Own the descriptor until both metadata checks finish. Destroying a
     // FileHandle stream closes its descriptor even with autoClose:false.
@@ -323,7 +337,7 @@ async function fileDigest(root, pair, record, device, deadline) {
       if (bytesRead === 0) break;
       hash.update(buffer.subarray(0, bytesRead));
     }
-    if (!sameMetadata(await handle.stat({ bigint: true }), record, device)) fail('dependency changed while hashing: ' + pair.path);
+    assertMetadata(await handle.stat({ bigint: true }), record, device, pair.path, side, 'after-hash');
     return hash.digest('hex');
   } finally { await handle.close(); }
 }
@@ -334,8 +348,8 @@ async function verifyBatch(batch, donor, destination, deadline) {
   for (let offset = 0; offset < files.length; offset += 4) {
     const results = await Promise.allSettled(files.slice(offset, offset + 4).map(async pair => {
       const hashes = await Promise.allSettled([
-        fileDigest(donor, pair, pair.source, pair.tree.sourceIdentity.dev, deadline),
-        fileDigest(destination, pair, pair.target, pair.tree.destinationIdentity.dev, deadline),
+        fileDigest(donor, pair, pair.source, pair.tree.sourceIdentity.dev, deadline, 'donor'),
+        fileDigest(destination, pair, pair.target, pair.tree.destinationIdentity.dev, deadline, 'destination'),
       ]);
       const failed = hashes.find(result => result.status === 'rejected');
       if (failed) throw failed.reason;

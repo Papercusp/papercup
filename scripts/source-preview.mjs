@@ -44,9 +44,8 @@
 //
 // Exit: 0 ok / in sync · 1 finding / drift / refused · 2 usage or cannot check.
 import assert from 'node:assert/strict';
-import { committedWorkRootDependencyDonor } from './lint-as-committed.mjs';
+import { assertCommittedWorkspaceLockMatches, committedWorkRootDependencyDonor } from './lint-as-committed.mjs';
 import { assertRootLockManifestMatches } from './npm-install-safe.mjs';
-import { expandWorkspaces } from './assert-workspace-links.mjs';
 import { admitTaskDeadline, readTaskDeadlineEpochMs } from './lib/task-deadline.mjs';
 import { PRIVATE_TEST_PG_RELEASE_TOKEN_ENV, requestPrivateTestPgRelease } from './lib/with-test-pg-cleanup.mjs';
 import { createProgressAwareWatchdog } from './lib/batch-watchdog.mjs';
@@ -435,40 +434,6 @@ function committedInputBlob(repo, sha, path, trees) {
   const input = committedInputObject(repo, sha, path, trees);
   assert.ok(input, 'Committed input must be present');
   return input.blob;
-}
-
-// Read the selected gitlinks, never their mutable checkout manifests. Reuse
-// install admission before allocating or copying the full verifier source.
-function assertCommittedWorkspaceLockMatches(repo, sha) {
-  const trees = new Map();
-  const object = path => committedInputObject(repo, sha, relative(repo, path).split(sep).join('/'), trees, true);
-  let directories;
-  const manifestDirectories = () => {
-    if (directories) return directories;
-    directories = [];
-    const collect = (source, commit, prefix = '') => {
-      committedInputObject(source, commit, 'package.json', trees, true);
-      const { entries, links } = trees.get(`${source}\0${commit}`);
-      for (const [path, fields] of entries) {
-        if (fields[1] !== 'blob' || basename(path) !== 'package.json') continue;
-        const dir = posixPath.dirname(prefix + path);
-        if (dir !== '.') directories.push(dir);
-      }
-      for (const link of links)
-        collect(materializedSubmodule(source, link, prefix + link.path), link.sha, prefix + link.path + '/');
-    };
-    collect(repo, sha);
-    return directories;
-  };
-  assertRootLockManifestMatches(repo, {
-    existsSync: path => object(path) !== null,
-    readJson: path => {
-      const input = object(path);
-      assert.ok(input, 'Committed manifest must be present');
-      return JSON.parse(git(input.repo, ['cat-file', 'blob', input.blob]));
-    },
-    expandWorkspaces: (patterns, root) => expandWorkspaces(patterns, root, { directories: manifestDirectories() }),
-  });
 }
 
 /** Conservative allocated source bytes for the exact recursive verifier export.
@@ -1479,7 +1444,8 @@ function readBgBuildInvocation(prepared, invocation) {
  * using the same pinned-manifest/physical-file fences as the source authority.
  * Optional builtin sources are pinned from the same independently selected Node
  * before the target starts, then joined to its native executable identity.
- * This does not attest vDSO, creator exclusion, or complete runtime coverage.
+ * Optional vDSO bytes are independently pinned from that reference host too.
+ * This does not attest creator exclusion or complete runtime coverage.
  * @typedef {{ schemaVersion: 1, path: string, sha256: string, evidenceRef: string }} BgExpectedHostManifest
  * @param {BgExpectedHostManifest} expected @param {string} root
  */
@@ -1500,7 +1466,8 @@ function readBgExpectedHostManifest(expected, root) {
     'BG expected host manifest changed while reading');
   assert.equal(identity.sha256, expected.sha256, 'BG expected host manifest identity mismatch');
   /** @type {{ schemaVersion: number, files: { path: string, sha256: string, bytes: number }[],
-   *   builtinSources?: { url: string, sha256: string, bytes: number }[] }} */
+   *   builtinSources?: { url: string, sha256: string, bytes: number }[],
+   *   vdso?: { origin: 'kernel-auxv-AT_SYSINFO_EHDR', sha256: string, bytes: number } }} */
   const manifest = JSON.parse(String(bytes));
   assert.ok(manifest.schemaVersion === 1 && Array.isArray(manifest.files)
     && manifest.files.length > 0 && manifest.files.length <= 1024,
@@ -1533,8 +1500,15 @@ function readBgExpectedHostManifest(expected, root) {
         'BG expected builtin source size is invalid');
     }
   }
+  if (manifest.vdso !== undefined) {
+    assert.ok(manifest.vdso?.origin === 'kernel-auxv-AT_SYSINFO_EHDR'
+      && Number.isSafeInteger(manifest.vdso.bytes) && manifest.vdso.bytes >= 64
+      && manifest.vdso.bytes <= 65536 && typeof manifest.vdso.sha256 === 'string'
+      && /^[a-f0-9]{64}$/.test(manifest.vdso.sha256), 'BG expected vDSO census is invalid');
+  }
   return { authority: expected, identity, files: manifest.files,
-    ...(manifest.builtinSources === undefined ? {} : { builtinSources: manifest.builtinSources }) };
+    ...(manifest.builtinSources === undefined ? {} : { builtinSources: manifest.builtinSources }),
+    ...(manifest.vdso === undefined ? {} : { vdso: manifest.vdso }) };
 }
 
 /** A distinct, detached invocation record, never a restamped source receipt.
@@ -2741,6 +2715,10 @@ export function qualifyBgVerifierRuntimeSources({ output, record, invocation, ex
       assert.ok(closure.executable.path === record.invocation.node.realpath
         && closure.executable.sha256 === record.invocation.node.sha256,
       'BG native executable differs from original compiler Node');
+      const expectedVdso = record.expectedHostManifest?.vdso;
+      if (expectedVdso) assert.ok(closure.vdso.origin === expectedVdso.origin
+        && closure.vdso.sha256 === expectedVdso.sha256 && closure.vdso.bytes === expectedVdso.bytes,
+      'BG native kernel vDSO differs from original expected manifest');
       const files = runtime.libraries.map(mapped => {
         const file = readBgFileIdentity(mapped.path);
         assert.ok(file.path === file.realpath && file.sha256 === mapped.sha256 && lstatSync(file.path).size === mapped.bytes,
@@ -2762,12 +2740,15 @@ export function qualifyBgVerifierRuntimeSources({ output, record, invocation, ex
         return { file, origin: original?.origin ?? (record.expectedHostManifest ? 'expected-host' : 'host-observed') };
       });
       nativeBindings.push({ processId, closure, files, expectedHostManifestQualified: !!record.expectedHostManifest,
+        expectedVdsoQualified: !!expectedVdso,
         expectedHostManifestSha256: record.expectedHostManifest?.identity.sha256 ?? null });
     }
   }
   for (const builtin of builtinBindings) assert.ok(nativeBindings.some(native =>
     native.processId === builtin.processId && native.expectedHostManifestQualified),
   'BG builtin source lacks original native executable qualification');
+  assert.ok(!record.expectedHostManifest?.vdso || nativeBindings.length > 0,
+    'BG expected vDSO lacks original native capture');
   for (const [path, identity] of inputIdentities)
     assert.deepEqual(readBgFileIdentity(path), identity, 'BG runtime original input changed during qualification');
   assert.deepEqual(readBgFileIdentity(execution.entry), entry, 'BG runtime entry changed during qualification');
@@ -2780,6 +2761,8 @@ export function qualifyBgVerifierRuntimeSources({ output, record, invocation, ex
     entry, population, bindings, inputBindings, builtinBindings, unqualifiedSources, nativeBindings,
     builtinQualification: builtinBindings.length ? 'original-node-bytes' : 'not-observed',
     nativeQualification: execution.nativeCaptures === undefined ? 'not-observed' : 'selected-windows-only',
+    vdsoQualification: nativeBindings.some(native => native.expectedVdsoQualified)
+      ? 'original-host-bytes' : execution.nativeCaptures === undefined ? 'not-observed' : 'required',
     compiledOutputBytesObserved: true,
     ...(inputCustody ? { inputCustody } : {}),
     completeRuntimeClosureVerified: false,

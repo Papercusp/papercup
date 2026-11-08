@@ -121,6 +121,7 @@ import { withFsMutex, withFsMutexRead } from './lib/fs-mutex.mjs';
 import { withRetentionPinProtection } from './lib/retention-pins.mjs';
 import { installLockNameForRoot } from './lib/install-lock-name.mjs';
 import { assertRootLockManifestMatches } from './npm-install-safe.mjs';
+import { expandWorkspaces } from './assert-workspace-links.mjs';
 import { normalizeDependencyWorkspaceDirs, verifyRetainedDependencies } from './lib/committed-dependency-verification.mjs';
 
 export function requireDurableTestRunSink(environment = process.env) {
@@ -1481,6 +1482,46 @@ export function showAtRef(repoRoot, ref, path) {
   return showAtRef(subRoot, pin, path.slice(owner.length + 1));
 }
 
+/** Check dependency metadata at the selected recursive pins before allocating source.
+ * The shared checkout can already contain a newer, coherent submodule manifest. */
+export function assertCommittedWorkspaceLockMatches(repoRoot, ref = 'HEAD') {
+  const sha = git(['rev-parse', '--verify', `${ref}^{commit}`], repoRoot);
+  const files = new Map();
+  const directories = [];
+  const collect = (source, commit, prefix = '') => {
+    for (const row of git(['ls-tree', '-r', '-z', commit], source).split('\0')) {
+      if (!row) continue;
+      const tab = row.indexOf('\t');
+      const path = row.slice(tab + 1);
+      const [mode, type, object] = row.slice(0, tab).split(' ');
+      if (mode === '160000' && type === 'commit') {
+        const subRoot = join(source, path);
+        if (!existsSync(subRoot) || git(['rev-parse', '--show-toplevel'], subRoot) !== realpathSync(subRoot))
+          throw new Error(`unresolvable gitlink ${prefix + path} @ ${object}`);
+        collect(subRoot, object, prefix + path + '/');
+      } else if (type === 'blob' && ['package.json', 'package-lock.json', 'npm-shrinkwrap.json'].includes(basename(path))) {
+        files.set(prefix + path, { source, commit, path });
+        if (basename(path) === 'package.json') directories.push(dirname(prefix + path).split(sep).join('/'));
+      }
+    }
+  };
+  collect(repoRoot, sha);
+  const cache = new Map();
+  const read = path => {
+    const name = relative(repoRoot, path).split(sep).join('/');
+    if (!cache.has(name)) {
+      const file = files.get(name);
+      cache.set(name, file ? showAtRef(file.source, file.commit, file.path) : null);
+    }
+    return cache.get(name);
+  };
+  assertRootLockManifestMatches(repoRoot, {
+    existsSync: path => read(path) !== null,
+    readJson: path => JSON.parse(read(path)),
+    expandWorkspaces: (patterns, root) => expandWorkspaces(patterns, root, { directories }),
+  });
+}
+
 /** Validate the focused runner's actual test-config imports before Node loads it.
  * Read both ends from the parent commit, never the newer checked-out submodule. */
 export async function assertCommittedFocusedRunnerImports(repoRoot, ref = 'HEAD') {
@@ -1623,6 +1664,14 @@ async function main() {
   } catch {
     console.error(`lint-as-committed: cannot resolve ref '${args.ref}'.`);
     process.exit(2);
+  }
+
+  try {
+    assertCommittedWorkspaceLockMatches(repoRoot, sha);
+  } catch (error) {
+    console.error(`lint-as-committed: ${error.message}`);
+    process.exitCode = 2;
+    return;
   }
 
   if (args.scripts.includes('test:file')) {

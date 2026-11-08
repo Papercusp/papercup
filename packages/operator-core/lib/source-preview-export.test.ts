@@ -72,6 +72,7 @@ import {
   sourceYear,
 } from '../../../scripts/source-preview.mjs';
 import { BG_INPUTS, DROPPED, INTERNAL_DOC_CONTENTS, SHIPPED, childEnv, git, makeBgCandidate, makeBgCompilerCandidate, makeSuperproject, write, type Superproject } from './source-preview.fixture';
+import { assertCommittedWorkspaceLockMatches } from '../../../scripts/lint-as-committed.mjs';
 import { BG_R1_CASE_REGISTRY, BG_R1_SOURCE_CASES, BG_R1_MEMBER_CASES, BG_R1_PARENT_SELECTORS, BG_R1_PARTITION_CASES } from './source-preview.fixture';
 import r1Manifest from './source-preview.r1-cases.fixture.json';
 import { BG_R4_CASE_REGISTRY, BG_R4_CUSTODY_CASES, BG_R4_TEARDOWN_CASES } from './source-preview.fixture';
@@ -772,10 +773,18 @@ describe('verifier dependency staging preparation boundary', () => {
         await expect(preparation).rejects.toThrow(
           /NPM_INSTALL_SAFE_WORKSPACE_LOCK_DRIFT[\s\S]*libs\/papercusp[\s\S]*16\.4\.0[\s\S]*16\.4\.1/);
         expect(existsSync(dest)).toBe(false);
+        const materialization = spawnSync(process.execPath,
+          [join(SOURCE_ROOT, 'scripts/lint-as-committed.mjs'), '--materialize-only'],
+          { cwd: source.repo, encoding: 'utf8', timeout: 30_000, env: { ...process.env, NODE_OPTIONS: '' } });
+        expect(materialization.error).toBeUndefined();
+        expect(materialization.status).toBe(2);
+        expect(materialization.stderr).toMatch(/NPM_INSTALL_SAFE_WORKSPACE_LOCK_DRIFT[\s\S]*libs\/papercusp/);
+        expect(materialization.stdout).not.toContain('materialised committed tree');
         expect(JSON.parse(readFileSync(join(source.repo, 'libs/papercusp/package.json'), 'utf8'))
           .dependencies.next).toBe('16.4.1');
         return;
       }
+      expect(() => assertCommittedWorkspaceLockMatches(source.repo, ref)).not.toThrow();
       const receipt = await preparation;
       const phases: string[] = [];
       await expect(prepareFixtureDependencies({ donor: source.repo, dest, receipt,
@@ -3998,9 +4007,9 @@ describe('BG inherited manifest and original source boundaries', () => {
     runtimeCustody?: Awaited<ReturnType<typeof createBgVerifierRuntimeCustody>>;
     generation?: { store: string, path: string };
   }> | undefined)[] = [];
-  async function compiledRuntime(transformed = false, native = false, host?: 'complete' | 'missing-member' | 'with-builtins',
+  async function compiledRuntime(transformed = false, native = false, host?: 'complete' | 'missing-member' | 'with-builtins' | 'with-vdso',
     custodyCase?: string, frozenGeneration = false) {
-    const index = host === 'with-builtins' ? 6 : host === 'complete' ? 4 : host === 'missing-member' ? 5
+    const index = host === 'with-vdso' ? 7 : host === 'with-builtins' ? 6 : host === 'complete' ? 4 : host === 'missing-member' ? 5
       : Number(transformed) + Number(native) * 2;
     const build = async () => {
       // Independently pin a reference-host file census before the compiler and
@@ -4014,6 +4023,7 @@ describe('BG inherited manifest and original source boundaries', () => {
 import { createHash } from 'node:crypto';
 const { libraries, loaderProcess } = sampleNativeRuntime('cpu');
 console.log(JSON.stringify({ files: libraries.map(({ path, sha256, bytes }) => ({ path, sha256, bytes })),
+  vdso: loaderProcess.vdso,
   builtinSources: Object.entries(process.binding('natives')).filter(([, source]) => typeof source === 'string').map(([name, source]) => ({
     url: 'node:' + name, sha256: createHash('sha256').update(source).digest('hex'), bytes: Buffer.byteLength(source) })),
   interpreter: loaderProcess.interpreterPath }));`], {
@@ -4022,7 +4032,8 @@ console.log(JSON.stringify({ files: libraries.map(({ path, sha256, bytes }) => (
         expect(reference.status, reference.stderr).toBe(0);
         expect(reference.error).toBeUndefined();
         const manifest: { files: { path: string, sha256: string, bytes: number }[], interpreter: string,
-          builtinSources: { url: string, sha256: string, bytes: number }[] } = JSON.parse(reference.stdout);
+          builtinSources: { url: string, sha256: string, bytes: number }[],
+          vdso: { origin: 'kernel-auxv-AT_SYSINFO_EHDR', sha256: string, bytes: number } } = JSON.parse(reference.stdout);
         expect(manifest.files.length).toBeGreaterThan(1);
         expect(manifest.builtinSources.length).toBeGreaterThan(1);
         expect(manifest.builtinSources.every(source => source.url.startsWith('node:')
@@ -4031,7 +4042,9 @@ console.log(JSON.stringify({ files: libraries.map(({ path, sha256, bytes }) => (
         if (host === 'missing-member') manifest.files = manifest.files.filter(file => file.path !== manifest.interpreter);
         const path = join(tmp, `runtime-expected-host-${host}.json`);
         writeFileSync(path, JSON.stringify({ schemaVersion: 1, files: manifest.files,
-          ...(host === 'with-builtins' ? { builtinSources: manifest.builtinSources } : {}) }));
+          ...(host === 'with-builtins' ? { builtinSources: manifest.builtinSources } : {}),
+          ...(host === 'with-vdso' ? { vdso: { origin: manifest.vdso.origin,
+            sha256: manifest.vdso.sha256, bytes: manifest.vdso.bytes } } : {}) }));
         expectedHostManifest = { schemaVersion: 1, path, sha256: digest(readFileSync(path)),
           evidenceRef: 'independent-reference-host-before-target/private-fixture' };
       }
@@ -4302,6 +4315,52 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
       expect(proof.completeRuntimeClosureVerified).toBe(false);
       expect(proof.dependencyQualification).toBe('required');
       expect(proof.creatorFence).toBe('required');
+    });
+
+  it.each(['positive', 'digest', 'size', 'missing-native', 'absent-expectation'] as const)(
+    'compiled runtime vDSO custody: %s', async defect => {
+      const fixture = await compiledRuntime(false, true, defect === 'absent-expectation' ? 'complete' : 'with-vdso');
+      const execution = structuredClone(fixture.execution);
+      execution.nativeCaptures!.forEach((capture, index) => {
+        capture.stderr = Buffer.from(fixture.execution.nativeCaptures![index]!.stderr);
+      });
+      const vdso = execution.nativeCaptures![0]!.firstRun.runtime.loaderProcess.vdso;
+      if (defect === 'digest') vdso.sha256 = 'a'.repeat(64);
+      if (defect === 'size') {
+        vdso.bytes++;
+        vdso.endAddress = (BigInt('0x' + vdso.endAddress) + 1n).toString(16);
+      }
+      if (defect === 'missing-native') delete execution.nativeCaptures;
+      const qualify = () => qualifyBgVerifierRuntimeSources({ ...fixture, execution });
+      if (defect === 'digest' || defect === 'size') {
+        expect(qualify).toThrow('BG native kernel vDSO differs from original expected manifest'); return;
+      }
+      if (defect === 'missing-native') {
+        expect(qualify).toThrow('BG expected vDSO lacks original native capture'); return;
+      }
+      const proof = qualify();
+      expect(proof.vdsoQualification).toBe(defect === 'positive' ? 'original-host-bytes' : 'required');
+      expect(proof.nativeBindings[0]!.expectedVdsoQualified).toBe(defect === 'positive');
+      expect(proof.nativeQualification).toBe('selected-windows-only');
+      expect(proof.completeRuntimeClosureVerified).toBe(false);
+      expect(proof.creatorFence).toBe('required');
+    });
+
+  it.each(['origin', 'digest', 'size', 'oversized', 'fraction'] as const)(
+    'compiled runtime vDSO manifest preflight: %s', async defect => {
+      const fixture = await compiledRuntime(false, true, 'with-vdso');
+      const manifest = JSON.parse(readFileSync(fixture.record.expectedHostManifest!.identity.path, 'utf8'));
+      if (defect === 'origin') manifest.vdso.origin = 'caller-assertion';
+      if (defect === 'digest') manifest.vdso.sha256 = 'unknown';
+      if (defect === 'size') manifest.vdso.bytes = 0;
+      if (defect === 'oversized') manifest.vdso.bytes = 65537;
+      if (defect === 'fraction') manifest.vdso.bytes += 0.5;
+      const path = join(tmp, `vdso-preflight-${defect}.json`);
+      writeFileSync(path, JSON.stringify(manifest));
+      expect(() => prepareBgVerifierBuildRecord({ prepared: fixture.record.prepared, dependencies: fixture.record.dependencies,
+        invocation: fixture.invocation, expectedHostManifest: { schemaVersion: 1, path,
+          sha256: digest(readFileSync(path)), evidenceRef: 'independent-reference-host-before-target/private-fixture' } }))
+        .toThrow('BG expected vDSO census is invalid');
     });
 
   it.each(['empty', 'url', 'digest', 'size', 'duplicate'] as const)(
