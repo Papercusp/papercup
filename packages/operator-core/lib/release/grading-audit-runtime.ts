@@ -757,13 +757,23 @@ export async function retireUnusedGradingAuditRuntimes(
         continue;
       }
       if (row.state === 'running' || row.state === 'pending') await (deps.stop ?? stopRuntime)(row.taskId);
-      // A newer task may share the same pin. Release only after EVERY sibling is unused.
-      const siblings = current.map(locatorFrom).filter((item): item is GradingAuditRuntimeLocator => item !== null);
-      if ((await Promise.all(siblings.map(async item => item.expiresAtSec > now
+      // Different evaluator roots can share a task label while owning separate pins.
+      // Re-read after the stop: pendingIssueIds treats an absent live runtime as
+      // unknown, so the just-retired snapshot row cannot prove its own pin unused.
+      // Other active tasks sharing this exact sourceRoot+ownerRef pair do participate.
+      const refreshed = await (deps.list ?? listRuntimeTasks)(workspaceId, label);
+      const activeSiblings = refreshed.filter(candidate => candidate.taskId !== row.taskId &&
+        candidate.detail.label === label &&
+        (candidate.state === 'pending' || candidate.state === 'running' || candidate.state === 'unaccounted'))
+        .map(candidate => ({ task: candidate, locator: locatorFrom(candidate) }));
+      if (activeSiblings.some(sibling => sibling.locator === null)) continue;
+      const pinSiblings = activeSiblings.map(sibling => sibling.locator!)
+        .filter(item => item.sourceRoot === locator.sourceRoot && item.ownerRef === locator.ownerRef);
+      if ((await Promise.all(pinSiblings.map(async item => item.expiresAtSec > now
         ? [...await pendingIssueIds(item.issueIds, item),
           ...await (deps.pendingAcceptanceRefs ?? pendingAcceptanceRefs)(workspaceId, item.acceptanceRefs ?? [])] : [])))
         .every(ids => ids.length === 0)) {
-        releaseGradingAuditSourcePin(locator.sourceRoot, label);
+        releaseGradingAuditSourcePin(locator.sourceRoot, locator.ownerRef);
       }
     }
   });

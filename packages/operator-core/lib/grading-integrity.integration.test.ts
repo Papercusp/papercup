@@ -142,6 +142,7 @@ async function reconcileRuntimeFixture(id: string, runtimeDeps: GradingAuditRunt
   await reconcilePendingGradingAudits({ ctx: { workspaceId } as never, harness: 'papercusp', targetIds: [id] }, {
     listTasks: filter => listTasks(filter, db.sql),
     listScorecards: listCards,
+    listWorkspaceWideLoopStanddownOwners: async () => new Set(),
     now: () => now.getTime(),
     retireRuntimes: async (ws, pendingIssueIds, _dispatchDeps, targetIds) => {
       cleanupPhase = true;
@@ -512,7 +513,8 @@ it('binds a no-consult direct fallback lease to the live grading task owner', as
   const task = await registerTask({
     class: 'agent-session', title: 'direct fallback grading auditor', argv: [],
     launchedBy: GRADING_AUDIT_DISPATCH_ACTOR, harnessSlug: 'papercusp',
-    detail: { label: reservation.key, coordOwnerId: 'su-dispatched-auditor' },
+    detail: { label: reservation.key, coordOwnerId: 'su-dispatched-auditor',
+      gradingAudit: { issueId, reservation } },
   }, { workspaceId }, db.sql);
 
   expect(await isCurrentSourceAuditResponder(issueId, reservation, 'su-dispatched-auditor'))
@@ -564,6 +566,30 @@ it('retires cancelled missions from real private ledgers and preserves a pending
   expect(launch).not.toHaveBeenCalled();
 });
 
+it('keeps a shared source pin while a same-build runtime sibling still needs it', async () => {
+  const id = 'EI-25100000000000035';
+  const nowSec = Math.floor(now.getTime() / 1000);
+  const scratchRoot = mkdtempSync(join(tmpdir(), 'grading-audit-shared-pin-'));
+  const taskIds: string[] = [];
+  try {
+    await seed(id, { state: 'pending' });
+    const first = await registerRuntimeFixture(id, scratchRoot, 'cccccccccc', 43229, nowSec + 3600);
+    taskIds.push(first.taskId);
+    const second = await registerRuntimeFixture(id, scratchRoot, 'cccccccccc', 43230, nowSec + 3600);
+    taskIds.push(second.taskId);
+    expect(second.locator.sourceRoot).toBe(first.locator.sourceRoot);
+    expect(second.locator.ownerRef).toBe(first.locator.ownerRef);
+
+    await reconcileRuntimeFixture(id, runtimeRetirementDeps(nowSec));
+
+    const states = await Promise.all(taskIds.map(async taskId => (await getTask(taskId, db.sql))?.state));
+    expect(states.filter(state => state === 'running')).toHaveLength(1);
+    expect(readGradingAuditSourcePin(first.locator.sourceRoot, first.locator.ownerRef, nowSec)).not.toBeNull();
+  } finally {
+    await cleanupRetirementFixture(taskIds, scratchRoot);
+  }
+});
+
 it('keeps one newest pinned sibling for an unbound pending audit and retires older roots', async () => {
   const id = 'EI-25100000000000030';
   const nowSec = Math.floor(now.getTime() / 1000);
@@ -602,6 +628,11 @@ it('keeps the exact recorded evaluator sibling when a newer unbound build is pre
       SET payload = jsonb_set(payload, '{observation,rerunRecipe}',
         ${JSON.stringify({ evaluatorBuild: exact.locator.evaluatorBuild })}::jsonb)
       WHERE workspace_id = ${workspaceId} AND feature_id = ${id}`;
+    const [persistedRecipe] = await db.sql<Array<{ rerun_recipe: unknown }>>`
+      SELECT payload->'observation'->'rerunRecipe' AS rerun_recipe
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${workspaceId} AND feature_id = ${id}`;
+    expect(persistedRecipe?.rerun_recipe).toEqual({ evaluatorBuild: exact.locator.evaluatorBuild });
 
     await reconcileRuntimeFixture(id, runtimeRetirementDeps(nowSec));
 
