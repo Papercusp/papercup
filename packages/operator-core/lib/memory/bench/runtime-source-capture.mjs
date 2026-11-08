@@ -13,7 +13,7 @@ import inspector from 'node:inspector';
 import { isMainThread } from 'node:worker_threads';
 import { isAbsolute, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { bindRuntimeJitDump, bindRuntimeProcessTree } from './runtime-file-opens.mjs';
+import { bindRuntimeJitDump, bindRuntimeJitMemory, bindRuntimeProcessTree } from './runtime-file-opens.mjs';
 
 const digest = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 
@@ -104,7 +104,7 @@ export function bindRuntimeSourcePopulation(trace, terminal, captures, fileInput
     if (!Array.isArray(jitCaptures) || jitCaptures.length !== processes.length)
       throw new Error('runtime JIT capture population differs from independent trace');
     const seen = new Set();
-    let retainedBytes = 0;
+    let retainedBytes = 0, retainedMemoryBytes = 0;
     jitBindings = jitCaptures.map(capture => {
       const witness = capture?.witness, task = processes.find(task => task.taskId === witness?.processId);
       if (!task || seen.has(task.taskId) || !Buffer.isBuffer(capture.bytes)
@@ -129,7 +129,27 @@ export function bindRuntimeSourcePopulation(trace, terminal, captures, fileInput
         || witness.startedEpochMs > Math.floor(task.execs[0].atMs)
         || witness.finishedEpochMs < Math.ceil(task.terminalAtMs))
         throw new Error('runtime JIT witness does not enclose traced process and source clocks');
-      return { ...proof, tracedTaskIds: taskIds, sourceCaptureSha256: digest(JSON.stringify(rows)),
+      let selectedMemory;
+      if (capture.memory !== undefined) {
+        const observation = capture.memory?.observation, identity = capture.memory?.launchIdentity;
+        const parent = processTree.tasks.find(member => member.taskId === task.parentTaskId);
+        if (!identity || identity.processId !== task.taskId || identity.executable !== task.execs[0].executable
+          || !Number.isSafeInteger(identity.parentProcessId) || identity.parentProcessId <= 0
+          || parent && identity.parentProcessId !== parent.threadGroupId
+          || observation?.observerProcessId !== identity.parentProcessId
+          || !ns(observation?.startedMonotonicNs) || !ns(observation?.finishedMonotonicNs)
+          || BigInt(observation.startedMonotonicNs) < BigInt(start.monotonicNs)
+          || BigInt(observation.finishedMonotonicNs) > BigInt(end.monotonicNs)
+          || !Array.isArray(observation.samples) || observation.samples.some(sample => !Buffer.isBuffer(sample?.bytes)
+            || (retainedMemoryBytes += sample.bytes.length) > 64*1024*1024))
+          throw new Error('runtime JIT memory identity, source interval or byte extent differs');
+        // Reparse raw terminal dump and raw parent observation. A precomputed
+        // proof cannot stand in for either; selected ranges confer no custody,
+        // original-source origin or process-lifetime population authority.
+        selectedMemory = bindRuntimeJitMemory(capture.bytes, witness, observation, identity);
+      }
+      return { ...proof, ...(selectedMemory ? { selectedMemory } : {}),
+        tracedTaskIds: taskIds, sourceCaptureSha256: digest(JSON.stringify(rows)),
         witnessSha256: digest(JSON.stringify(witness)) };
     });
   }

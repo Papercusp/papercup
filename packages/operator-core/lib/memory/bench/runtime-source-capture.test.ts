@@ -236,6 +236,44 @@ describe('parsed sources joined to independent process lifetimes', () => {
     expect(proof.completeRuntimeClosureVerified).toBe(false);
     expect(proof.mappingOrigins.executableBytesQualified).toBe(false);
   });
+  it.each(['positive','absent','null','missing-identity','foreign-process','foreign-parent','wrong-executable',
+    'wrong-observer','before-source','after-source','changed-bytes','serialized-bytes','foreign-task',
+    'unproven-summary'] as const)('joins retained selected JIT memory: %s', variant => {
+    const rows: Record<string, any>[][]=captures();
+    for(const capture of rows) {capture[0].monotonicNs='130';capture.at(-1)!.monotonicNs='190';}
+    const jit: NonNullable<Parameters<typeof bindRuntimeSourcePopulation>[4]>=[jitCapture(20),jitCapture(10)];
+    const launchIdentity={processId:20,parentProcessId:10,startTimeTicks:'42',executable:'/usr/bin/node'};
+    const tasks=[{taskId:20,state:'T',startTimeTicks:'42'}];
+    const maps='00001000-00002000 r-xp 00000000 00:00 0\n';
+    jit[0].memory={launchIdentity,observation:{schema:'runtime-selected-executable-memory/v1',
+      process:{...launchIdentity},observerProcessId:10,startedMonotonicNs:'160',finishedMonotonicNs:'170',
+      tasksBefore:tasks,tasksAfter:structuredClone(tasks),mapsBefore:maps,mapsAfter:maps,
+      samples:[{codeIndex:'1',address:'0x1000',bytes:Buffer.from([0xc3])}]}};
+    const memory=jit[0].memory, observation=memory.observation;
+    if(variant==='absent')delete jit[0].memory;
+    if(variant==='null')jit[0].memory=null as any;
+    if(variant==='missing-identity')delete (memory as any).launchIdentity;
+    if(variant==='foreign-process')launchIdentity.processId=10;
+    if(variant==='foreign-parent')launchIdentity.parentProcessId=30;
+    if(variant==='wrong-executable')launchIdentity.executable='/other/node';
+    if(variant==='wrong-observer')observation.observerProcessId=30;
+    if(variant==='before-source')observation.startedMonotonicNs='129';
+    if(variant==='after-source')observation.finishedMonotonicNs='191';
+    if(variant==='changed-bytes')observation.samples[0].bytes[0]=0;
+    if(variant==='serialized-bytes')observation.samples[0].bytes=JSON.parse(JSON.stringify(observation.samples[0].bytes));
+    if(variant==='foreign-task')observation.tasksBefore[0].taskId=10;
+    if(variant==='unproven-summary')jit[0].memory={selectedExecutableBytesVerified:true} as any;
+    const bind=()=>bindRuntimeSourcePopulation(trace,terminal,rows,undefined,jit);
+    if(variant!=='positive' && variant!=='absent'){expect(bind).toThrow();return;}
+    const proof=bind();
+    expect(proof.jitBindings![1].selectedMemory).toBeUndefined();
+    expect(proof.completeRuntimeClosureVerified).toBe(false);
+    if(variant==='absent'){expect(proof.jitBindings![0].selectedMemory).toBeUndefined();return;}
+    expect(proof.jitBindings![0].selectedMemory).toMatchObject({processId:20,selectedExecutableBytesVerified:true,
+      mappingPopulationComplete:false,executableBytesQualified:false,completeRuntimeClosureVerified:false,
+      jitByteOriginQualification:'required',runtimeCaptureCustody:'required',creatorFence:'required',
+      writableAliasQualification:'required',bindings:[{codeIndex:'1',address:'0x1000',bytes:1}]});
+  });
   it('requires a separate source receipt for each observed process', () => {
     const result = bindRuntimeSourcePopulation(trace,terminal,captures());
     expect(result.processes.map(row=>row.processId)).toEqual([10,20]);

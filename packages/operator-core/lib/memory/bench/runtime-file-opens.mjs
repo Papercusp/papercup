@@ -1,5 +1,180 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import fs from 'node:fs';
+
+const memoryRequire = (condition, message) => {
+  if (!condition) throw new Error('runtime executable memory: '+message);
+};
+const memoryHash = bytes => createHash('sha256').update(bytes).digest('hex');
+function procIdentity(root, processId) {
+  const stat = fs.readFileSync(root+'/stat','utf8');
+  const end = stat.lastIndexOf(')');
+  const fields = stat.slice(end+2).trim().split(/\s+/);
+  memoryRequire(stat.startsWith(String(processId)+' (') && end > 0
+    && /^[1-9]\d*$/.test(fields[19]), 'invalid proc identity');
+  return {processId, parentProcessId:Number(fields[1]), startTimeTicks:fields[19],
+    executable:fs.readlinkSync(root+'/exe')};
+}
+function sameProcess(actual, expected) {
+  return actual && expected && ['processId','parentProcessId','startTimeTicks','executable']
+    .every(key => actual[key] === expected[key]);
+}
+/** Observe the launcher's direct child identity; callers retain this BEFORE
+ * asking the child to stop. No signal, attach, or live-host operation is done. */
+export function observeRuntimeProcessIdentity(processId) {
+  memoryRequire(Number.isSafeInteger(processId) && processId > 0, 'invalid process id');
+  const identity = procIdentity('/proc/'+processId,processId);
+  memoryRequire(identity.parentProcessId === process.pid, 'not the observer direct child');
+  return identity;
+}
+function stoppedTasks(root) {
+  const ids = fs.readdirSync(root+'/task').map(Number).sort((a,b)=>a-b);
+  memoryRequire(ids.length > 0 && ids.length <= 10000
+    && ids.every(id => Number.isSafeInteger(id) && id > 0), 'invalid task population');
+  return ids.map(taskId => {
+    const stat = fs.readFileSync(root+'/task/'+taskId+'/stat','utf8');
+    const fields = stat.slice(stat.lastIndexOf(')')+2).trim().split(/\s+/);
+    memoryRequire(fields[0] === 'T' && /^[1-9]\d*$/.test(fields[19]), 'task is not group-stopped');
+    return {taskId, state:'T', startTimeTicks:fields[19]};
+  });
+}
+function executableMaps(text) {
+  memoryRequire(typeof text === 'string' && text.length > 0 && text.length <= 16*1024*1024,
+    'invalid maps extent');
+  const lines = text.trimEnd().split('\n'), maps = [];
+  memoryRequire(lines.length <= 100000, 'maps limit');
+  let previousEnd = 0n;
+  for (const line of lines) {
+    const match = /^([a-f0-9]+)-([a-f0-9]+) ([r-][w-][x-][ps]) ([a-f0-9]+) ([a-f0-9]+:[a-f0-9]+) (\d+)(?:\s+(.*))?$/.exec(line);
+    memoryRequire(match, 'unsupported kernel maps record');
+    const start = BigInt('0x'+match[1]), end = BigInt('0x'+match[2]);
+    memoryRequire(start < end && start >= previousEnd && end <= 1n<<64n, 'invalid kernel mapping range');
+    maps.push({start,end,permissions:match[3],offset:'0x'+match[4],
+      device:match[5],inode:match[6],path:match[7] ?? null});
+    previousEnd = end;
+  }
+  return maps;
+}
+function selectedMemoryRanges(ranges) {
+  memoryRequire(Array.isArray(ranges) && ranges.length > 0 && ranges.length <= 256, 'invalid selected ranges');
+  const seen = new Set();
+  let bytes = 0;
+  return ranges.map(range => {
+    memoryRequire(range && /^[1-9]\d*$/.test(range.codeIndex) && !seen.has(range.codeIndex)
+      && /^0x[1-9a-f][a-f0-9]*$/.test(range.address)
+      && Number.isSafeInteger(range.size) && range.size > 0 && range.size <= 1024*1024
+      && (bytes += range.size) <= 16*1024*1024, 'invalid selected range');
+    seen.add(range.codeIndex);
+    const address = BigInt(range.address);
+    // Node's positioned fs.readSync uses a JS number on this path.
+    memoryRequire(address+BigInt(range.size) <= BigInt(Number.MAX_SAFE_INTEGER), 'unsupported memory address');
+    return {...range,addressValue:address};
+  });
+}
+/** Retain parent-read raw maps/tasks/bytes from an already group-stopped direct
+ * child. The caller owns the bounded stop/resume/cleanup protocol. Endpoint
+ * observations do not prove continuous custody or rule out writable aliases. */
+export function observeRuntimeExecutableMemory(identity, ranges) {
+  const selected = selectedMemoryRanges(ranges);
+  memoryRequire(identity?.parentProcessId === process.pid, 'not the observer direct child');
+  const root = '/proc/'+identity.processId;
+  const startedMonotonicNs = process.hrtime.bigint().toString();
+  memoryRequire(sameProcess(procIdentity(root,identity.processId),identity), 'launch identity changed');
+  const tasksBefore = stoppedTasks(root), mapsBefore = fs.readFileSync(root+'/maps','utf8');
+  const maps = executableMaps(mapsBefore);
+  const fd = fs.openSync(root+'/mem','r');
+  let samples;
+  try {
+    samples = selected.map(range => {
+      memoryRequire(maps.some(map => map.start <= range.addressValue
+        && map.end >= range.addressValue+BigInt(range.size) && map.permissions[2] === 'x'),
+      'selected range lacks kernel executable mapping');
+      const bytes = Buffer.alloc(range.size);
+      memoryRequire(fs.readSync(fd,bytes,0,bytes.length,Number(range.addressValue)) === bytes.length,
+        'short memory read');
+      return {codeIndex:range.codeIndex,address:range.address,bytes};
+    });
+  } finally {fs.closeSync(fd);}
+  const mapsAfter = fs.readFileSync(root+'/maps','utf8'), tasksAfter = stoppedTasks(root);
+  memoryRequire(mapsBefore === mapsAfter && JSON.stringify(tasksBefore) === JSON.stringify(tasksAfter)
+    && sameProcess(procIdentity(root,identity.processId),identity), 'process/maps/tasks changed during observation');
+  return {schema:'runtime-selected-executable-memory/v1', process:{...identity}, observerProcessId:process.pid,
+    startedMonotonicNs,finishedMonotonicNs:process.hrtime.bigint().toString(),
+    tasksBefore,tasksAfter,mapsBefore,mapsAfter,samples};
+}
+
+/** Reparse retained dump AND independent raw memory evidence after terminal EOF.
+ * Only selected code indices at the observation time are qualified. An emitted
+ * name, matching URL, or matching bytes does not establish original JS origin. */
+export function bindRuntimeJitMemory(bytes, witness, observation, expectedIdentity) {
+  const dump = bindRuntimeJitDump(bytes,witness), sample = observation;
+  memoryRequire(sample?.schema === 'runtime-selected-executable-memory/v1'
+    && sameProcess(sample.process,expectedIdentity)
+    && sample.process.processId === witness.processId
+    && Number.isSafeInteger(sample.observerProcessId) && sample.observerProcessId > 0
+    && sample.observerProcessId !== witness.processId
+    && sample.process.parentProcessId === sample.observerProcessId
+    && /^[1-9]\d*$/.test(sample.process.startTimeTicks)
+    && typeof sample.process.executable === 'string' && sample.process.executable.startsWith('/'),
+  'independent launch/observer identity differs');
+  memoryRequire(/^[1-9]\d*$/.test(sample.startedMonotonicNs)
+    && /^[1-9]\d*$/.test(sample.finishedMonotonicNs), 'invalid observation clock');
+  const before = BigInt(sample.startedMonotonicNs), after = BigInt(sample.finishedMonotonicNs);
+  memoryRequire(before <= after && before >= BigInt(witness.startedMonotonicNs)
+    && after <= BigInt(witness.finishedMonotonicNs), 'observation outside witnessed lifetime');
+  memoryRequire(Array.isArray(sample.tasksBefore) && sample.tasksBefore.length > 0
+    && sample.tasksBefore.length <= 10000
+    && JSON.stringify(sample.tasksBefore) === JSON.stringify(sample.tasksAfter)
+    && new Set(sample.tasksBefore.map(task=>task.taskId)).size === sample.tasksBefore.length
+    && sample.tasksBefore.some(task=>task.taskId === witness.processId)
+    && sample.tasksBefore.every(task=>witness.taskIds.includes(task.taskId)
+      && task.state === 'T' && /^[1-9]\d*$/.test(task.startTimeTicks))
+    && sample.tasksBefore.find(task=>task.taskId === witness.processId).startTimeTicks === expectedIdentity.startTimeTicks,
+  'stopped task population differs');
+  memoryRequire(sample.mapsBefore === sample.mapsAfter, 'kernel maps changed');
+  const maps = executableMaps(sample.mapsBefore);
+  memoryRequire(Array.isArray(sample.samples), 'missing memory samples');
+  const selected = selectedMemoryRanges(sample.samples.map(row=>({...row,size:row.bytes?.length})));
+  // The raw dump orders MOVE against an existing load, but a clock inversion
+  // would let time-sorting resurrect an old address. Refuse that ambiguity.
+  const codeClocks = new Map(dump.loads.map(load=>[load.codeIndex,BigInt(load.timestampNs)]));
+  for (const move of dump.moves) {
+    memoryRequire(BigInt(move.timestampNs) > codeClocks.get(move.codeIndex), 'ambiguous per-code event clock');
+    codeClocks.set(move.codeIndex,BigInt(move.timestampNs));
+  }
+  const events = [...dump.loads.map(load=>({...load,kind:'load'})),
+    ...dump.moves.map(move=>({...move,kind:'move'}))]
+    .sort((a,b)=>BigInt(a.timestampNs) < BigInt(b.timestampNs) ? -1 : BigInt(a.timestampNs) > BigInt(b.timestampNs) ? 1 : 0);
+  const active = new Map();
+  for (const event of events) {
+    if (BigInt(event.timestampNs) >= before) continue;
+    if (event.kind === 'load') active.set(event.codeIndex,{...event});
+    else if (active.has(event.codeIndex)) active.get(event.codeIndex).address = event.to;
+  }
+  const bindings = selected.map(row => {
+    const load = active.get(row.codeIndex), start = row.addressValue, end = start+BigInt(row.size);
+    memoryRequire(load && load.address === row.address && load.bytes === row.size
+      && Buffer.isBuffer(row.bytes) && memoryHash(row.bytes) === load.sha256, 'selected JIT bytes/address differ');
+    const overlaps = (address,size)=>BigInt(address) < end && BigInt(address)+BigInt(size) > start;
+    memoryRequire(![...active.values()].some(other=>other.codeIndex !== row.codeIndex
+      && overlaps(other.address,other.bytes)), 'ambiguous overlapping emitted code');
+    memoryRequire(!events.some(event=>BigInt(event.timestampNs) >= before && BigInt(event.timestampNs) <= after
+      && (event.codeIndex === row.codeIndex || overlaps(event.address ?? event.from,event.bytes)
+        || event.to && overlaps(event.to,event.bytes))), 'code changed during memory observation');
+    const map = maps.find(map=>map.start <= start && map.end >= end && map.permissions[2] === 'x');
+    memoryRequire(map, 'selected range lacks kernel executable mapping');
+    return {codeIndex:row.codeIndex,address:row.address,bytes:row.size,sha256:load.sha256,
+      mapping:{start:'0x'+map.start.toString(16),end:'0x'+map.end.toString(16),
+        permissions:map.permissions,offset:map.offset,device:map.device,inode:map.inode,path:map.path}};
+  });
+  return {schema:'runtime-jit-selected-memory-binding/v1',processId:witness.processId,
+    dumpSha256:dump.sha256,mapsSha256:memoryHash(sample.mapsBefore),
+    startedMonotonicNs:sample.startedMonotonicNs,finishedMonotonicNs:sample.finishedMonotonicNs,bindings,
+    selectedExecutableBytesVerified:true, emittedLoadsNotSampled:dump.loads.length-bindings.length,
+    mappingPopulationComplete:false,executableBytesQualified:false,completeRuntimeClosureVerified:false,
+    jitByteOriginQualification:'required',runtimeCaptureCustody:'required',creatorFence:'required',
+    writableAliasQualification:'required',scope:'selected stopped-process memory ranges at the retained observation interval only'};
+}
 
 /** Read the tracer parent's actual host page size before launching the child.
  * This is a local observation, not a value supplied by the traced program.

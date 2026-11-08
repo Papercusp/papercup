@@ -4194,6 +4194,40 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
       expect(proof.population.mappingOrigins.executableBytesQualified).toBe(false);
     });
 
+  it.each(['positive','changed-bytes','foreign-identity','missing-identity','outside-source'] as const)(
+    'compiled runtime synthetic selected-memory contract: %s', async variant => {
+      const fixture=await compiledRuntime(false,false,undefined,undefined,false,true);
+      const execution=structuredClone(fixture.execution), capture=execution.jitCaptures![0];
+      const id=capture.witness.processId, start=BigInt(execution.captures[0][0].monotonicNs);
+      const header=Buffer.alloc(40), load=Buffer.alloc(59);
+      header.writeUInt32LE(0x4a695444,0);header.writeUInt32LE(1,4);header.writeUInt32LE(40,8);
+      header.writeUInt32LE(capture.witness.elfMachine,12);header.writeUInt32LE(id,20);header.writeBigUInt64LE(start+1n,24);
+      load.writeUInt32LE(59,4);load.writeBigUInt64LE(start+2n,8);
+      load.writeUInt32LE(id,16);load.writeUInt32LE(id,20);load.writeBigUInt64LE(0x1000n,24);
+      load.writeBigUInt64LE(0x1000n,32);load.writeBigUInt64LE(1n,40);load.writeBigUInt64LE(1n,48);
+      load.write('f\0',56);load[58]=0xc3;
+      capture.bytes=Buffer.concat([header,load]);capture.witness.headerClock='monotonic-nanoseconds';
+      const launchIdentity={processId:id,parentProcessId:10,startTimeTicks:'42',executable:process.execPath};
+      const tasks=[{taskId:id,state:'T',startTimeTicks:'42'}], maps='00001000-00002000 r-xp 00000000 00:00 0\n';
+      capture.memory={launchIdentity,observation:{schema:'runtime-selected-executable-memory/v1',process:{...launchIdentity},
+        observerProcessId:10,startedMonotonicNs:String(start+3n),finishedMonotonicNs:String(start+4n),
+        tasksBefore:tasks,tasksAfter:structuredClone(tasks),mapsBefore:maps,mapsAfter:maps,
+        samples:[{codeIndex:'1',address:'0x1000',bytes:Buffer.from([0xc3])}]}};
+      if(variant==='changed-bytes')capture.memory.observation.samples[0].bytes[0]=0;
+      if(variant==='foreign-identity')capture.memory.launchIdentity.processId++;
+      if(variant==='missing-identity')delete (capture.memory as any).launchIdentity;
+      if(variant==='outside-source')capture.memory.observation.finishedMonotonicNs=String(capture.witness.finishedMonotonicNs)+'0';
+      const qualify=()=>qualifyBgVerifierRuntimeSources({...fixture,execution});
+      if(variant!=='positive'){expect(qualify).toThrow();return;}
+      const proof=qualify();
+      expect(proof.jitBindings[0].selectedMemory).toEqual(proof.population.jitBindings![0].selectedMemory);
+      expect(proof.jitBindings[0].selectedMemory).toMatchObject({selectedExecutableBytesVerified:true,
+        completeRuntimeClosureVerified:false,mappingPopulationComplete:false,executableBytesQualified:false,
+        runtimeCaptureCustody:'required',jitByteOriginQualification:'required',creatorFence:'required'});
+      expect(proof).toMatchObject({creatorFence:'required',completeRuntimeClosureVerified:false,
+        executableMemoryQualification:'required',jitByteOriginQualification:'required'});
+    });
+
   it.each(['positive', 'copied', 'late', 'foreign', 'pin', 'selector', 'publication', 'materialization'] as const)(
     'compiled runtime frozen generation custody: %s', async variant => {
       const fixture = await compiledRuntime(false, false, undefined, `generation-${variant}`, true);
