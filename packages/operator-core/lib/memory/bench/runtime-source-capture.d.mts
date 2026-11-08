@@ -11,12 +11,14 @@ export function validateRuntimeSourceCapture(rows: Record<string, any>[], expect
   processTerminal?: {processId: number; exitCode: number; signal: string | null; eof: boolean}): ParsedSourceReceipt;
 export function bindRuntimeSourcePopulation(trace: string, terminal: {
   processId: number; exitCode: number; signal: string | null; eof: boolean; captureStartedBeforeExec: boolean;
+  pageSizeBytes?: number;
 }, captures: Record<string, any>[][], fileInputs?: {
   root: string; files: {path: string; kind: 'file' | 'symlink'; sha256: string}[];
 }): {
   schema: 'runtime-traced-source-population/v1'; processId: number; processes: ParsedSourceReceipt[];
   tracedTaskPopulationComplete: true; parsedSourceProcessPopulationComplete: true;
   memoryTransitions: ReturnType<typeof import('./runtime-file-opens.mjs').bindRuntimeProcessTree>['memoryTransitions'];
+  mappingOrigins: ReturnType<typeof import('./runtime-file-opens.mjs').bindRuntimeProcessTree>['mappingOrigins'];
   executableMemoryQualification: 'required';
   completeRuntimeClosureVerified: false; sourceQualification: 'required';
   dependencyQualification: 'required'; creatorFence: 'required'; scope: string;
