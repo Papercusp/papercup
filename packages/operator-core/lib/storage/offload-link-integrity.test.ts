@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { captureOffloadLinks, verifyOffloadLinks } from './offload-link-integrity';
+import { retainNativeProofPacket, verifyNativeProofPacket,
+  type NativeCustodyGroup } from '../../../../scripts/lib/budgeted-task-scheduler.mjs';
 
 const fixtures: string[] = [];
 afterEach(async () => { await Promise.all(fixtures.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
@@ -18,6 +20,22 @@ async function fixture() {
 }
 
 describe('offload symlink target integrity', () => {
+  it.each(['packet', 'nested/packet'])('refuses %s whose native consumer rejects redirected ancestors', async relativePacket => {
+    const f = await fixture();
+    const packet = join(f.source, relativePacket);
+    const expected: NativeCustodyGroup[] = [{ id: 'group-0', attempt: 'primary', selected: ['test.ts'],
+      runner: 'unsupported', armed: false, out: null, auxiliary: [] }];
+    const contract = { identity: { workspace: 'fixture', harness: 'papercusp', runId: relativePacket }, expected };
+    const saved = retainNativeProofPacket(packet, { ...contract, observations: [{ id: 'group-0', out: null }] });
+    expect(verifyNativeProofPacket(packet, saved.locator, contract).status).toBe(saved.status);
+    await expect(captureOffloadLinks(f.source)).rejects.toThrow('Native proof custody');
+
+    await cp(f.source, f.destination, { recursive: true, verbatimSymlinks: true });
+    await rm(f.source, { recursive: true });
+    await symlink(f.destination, f.source);
+    expect(() => verifyNativeProofPacket(packet, saved.locator, contract)).toThrow('custody redirected ancestor');
+  });
+
   it('refuses a source that can be mutated through a hard link outside its path prefix', async () => {
     const f = await fixture();
     const activeLock = join(f.root, 'live-lock.json');

@@ -63,6 +63,12 @@ async function scan(root: string, options: OffloadLinkScanOptions) {
       const path = join(directory, entry.name);
       if (entry.isDirectory()) pending.push(path);
       else if (entry.isFile()) {
+        // Native custody consumers require every ancestor to be a real
+        // directory. A checksum-preserving symlink offload still breaks them,
+        // including packets nested below the selected source root.
+        if (/^[a-f0-9]{64}\.native-proof\.json$/.test(entry.name)) {
+          throw new Error(`Native proof custody cannot use a symlink offload: ${path}`);
+        }
         const value = await lstat(join(canonicalRoot, path));
         if (!value.isFile()) throw new Error(`Offload file changed during observation: ${path}`);
         if (value.nlink > 1) {
