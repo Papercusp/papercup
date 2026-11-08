@@ -78,6 +78,9 @@ const mocks = vi.hoisted(() => ({
   // WI-6554700010030460: the door's gate run-lock probe; not held unless a test says so.
   runLockHeld: vi.fn((_root: string): { held: boolean; pid?: number; elapsedSec: number | null } => ({ held: false, elapsedSec: null })),
   healGeneratedRepair: vi.fn(),
+  beginGeneratedRepair: vi.fn(),
+  observeGeneratedRepair: vi.fn(),
+  cancelGeneratedRepair: vi.fn(),
   autoVerify: vi.fn(),
   read: vi.fn(),
   readState: vi.fn(),
@@ -135,6 +138,11 @@ vi.mock('../../coord/gate-ownership', async (importOriginal) => ({
 }));
 vi.mock('../../events/await/engine', () => ({ emitAwaitedEvent: mocks.emitAwaitedEvent }));
 vi.mock('../../../../../apps/operator/lib/release/heal-generated-repair', () => ({ healGeneratedRepair: mocks.healGeneratedRepair }));
+vi.mock('../../release/generated-repair-managed', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../release/generated-repair-managed')>()),
+  beginGeneratedRepair: mocks.beginGeneratedRepair, observeGeneratedRepair: mocks.observeGeneratedRepair,
+  cancelGeneratedRepair: mocks.cancelGeneratedRepair,
+}));
 vi.mock('../../release/repair-auto-verify', () => ({ scheduleRepairAutoVerify: mocks.autoVerify }));
 vi.mock('../../harness/routines/release-actions', () => ({
   applyFrozenCandidateRepairQueueTransition: mocks.transition,
@@ -352,23 +360,23 @@ describe('release:repair-queue explicit generated repair', () => {
       .toMatchObject({ reason: 'gate_condition_claimed_by_live_peer' });
     expect(mocks.healGeneratedRepair).not.toHaveBeenCalled();
   });
-  it('does not schedule verification when the measured declaration is already fresh', async () => {
+  it('returns the managed operation before preparation and publication', async () => {
     expect(body(await tool.handler(request as never, { role: 'su' } as never)))
-      .toMatchObject({ ok: true, admitted: false, outcome: { kind: 'already-fresh' } });
+      .toMatchObject({ ok: true, admitted: false, pending: true,
+        healGeneratedOperation: { operationId: 'generated-repair-fixture', taskId: 'task-fixture' },
+        completionReceipt: { effectRef: 'release:repair-queue:heal-generated-task:task-fixture' } });
     expect(mocks.transition).not.toHaveBeenCalled(); expect(mocks.autoVerify).not.toHaveBeenCalled();
+    expect(mocks.healGeneratedRepair).not.toHaveBeenCalled();
+    expect(mocks.beginGeneratedRepair).toHaveBeenCalledWith(expect.objectContaining({ queue,
+      queueTarget: expect.objectContaining({ installSlug: 'papercusp' }) }));
   });
-  it('publishes through the action receipt, records with the fresh-row reducer, then schedules that head', async () => {
-    mocks.gateOwnership.mockResolvedValue({ assessment: 'unowned', claimState: 'no-object',
-      takenBy: null, eventKey: 'gate:red:drill' });
-    const paths = ['apps/operator/scripts/tool-delivery.generated.d.mts'];
-    mocks.admit.mockReturnValue(admissionOf(true, paths));
-    mocks.healGeneratedRepair.mockImplementation(async (input) => {
-      const admitted = await input.admit({ root: '/repo', candidate: queue.candidate,
-        repairHead: queue.repairHead, paths, source: { ref: ALT_HEAD }, actor: 'gate', nowMs: 10 });
-      const healed = { kind: 'healed', entry: admitted.entry, fromRepairHead: queue.repairHead,
-        toRepairHead: admitted.commit, paths, healedIds: ['gen:declarations:check'], reason: 'paired writer/check passed' };
-      return { ...healed, persisted: await input.record(healed) };
-    });
+  it('replays stored terminal evidence at the old request identity without another launch', async () => {
+    const operation = { operationId: 'generated-repair-fixture', taskId: 'task-fixture', status: 'succeeded',
+      candidate: queue.candidate, repairHead: queue.repairHead, expectedUpdatedAtMs: queue.updatedAtMs,
+      result: { ok: true, admitted: true, persisted: true, repairQueue: { candidate: queue.candidate, repairHead: NEW_HEAD },
+        movedRepairHead: { from: queue.repairHead, to: NEW_HEAD }, completionReceipt: { status: 'recorded', effectRef: 'release:repair-queue:heal-generated:receipt' } } };
+    mocks.readState.mockResolvedValue({ status: 'value', queue: { ...queue, repairHead: NEW_HEAD, healGeneratedOperation: operation } });
+    mocks.observeGeneratedRepair.mockResolvedValue(operation);
     const result = body(await tool.handler(request as never, { role: 'su' } as never)) as Record<string, unknown>;
     expect(result).toMatchObject({ admitted: true, persisted: true,
       repairQueue: { candidate: queue.candidate, repairHead: NEW_HEAD },
@@ -381,8 +389,16 @@ describe('release:repair-queue explicit generated repair', () => {
     expect(reactions.find((action) => action.ruleId === 'gate:repair-admitted:event')?.args)
       .toMatchObject({ event: `gate:repair-admitted:${queue.candidate}`,
         payload: { candidate: queue.candidate, repairHead: NEW_HEAD } });
-    expect(mocks.autoVerify).toHaveBeenCalledWith(expect.objectContaining({ candidate: queue.candidate, repairHead: NEW_HEAD }));
-    expect(mocks.autoVerify.mock.invocationCallOrder[0]).toBeGreaterThan(mocks.transition.mock.invocationCallOrder[0]);
+    expect(mocks.beginGeneratedRepair).not.toHaveBeenCalled();
+    expect(mocks.healGeneratedRepair).not.toHaveBeenCalled();
+  });
+  it('returns the fresh queue CAS when get recovers a managed terminal transition', async () => {
+    const operation = { operationId: 'generated-repair-fixture', status: 'failed', queueUpdatedAtMs: 40 };
+    mocks.readState.mockResolvedValueOnce({ status: 'value', queue: { ...queue, healGeneratedOperation: operation } })
+      .mockResolvedValue({ status: 'value', queue: { ...queue, updatedAtMs: 40, healGeneratedOperation: operation } });
+    mocks.observeGeneratedRepair.mockResolvedValue(operation);
+    expect(body(await tool.handler({ op: 'get' } as never, { role: 'su' } as never)))
+      .toMatchObject({ healGeneratedOperation: operation, repairQueue: { updatedAtMs: 40 } });
   });
 });
 
@@ -483,6 +499,9 @@ beforeEach(() => {
   mocks.read.mockResolvedValue(queue);
   mocks.readState.mockResolvedValue({ status: 'value', queue });
   mocks.healGeneratedRepair.mockResolvedValue({ kind: 'already-fresh' });
+  mocks.beginGeneratedRepair.mockResolvedValue({ started: true,
+    operation: { operationId: 'generated-repair-fixture', taskId: 'task-fixture', status: 'running' } });
+  mocks.observeGeneratedRepair.mockResolvedValue(null);
   mocks.autoVerify.mockResolvedValue({ scheduled: true });
   mocks.alive.mockResolvedValue(false);
   mocks.retire.mockResolvedValue({ retired: true, current: null });

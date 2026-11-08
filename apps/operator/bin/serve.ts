@@ -1426,6 +1426,11 @@ async function main(): Promise<void> {
 
   // R6 admission pre-check workers are managed tasks whose lifetime is independent of this
   // serving host. Divert before the ordinary sidecar parent-death watch and before host boot.
+  if (process.env.PAPERCUSP_GENERATED_REPAIR_WORKER_MODE === "1") {
+    const { runGeneratedRepairWorkerMain } =
+      await import("@papercusp/operator-core/lib/release/generated-repair-managed");
+    await runGeneratedRepairWorkerMain();
+  }
   if (process.env.PAPERCUSP_REPAIR_PRECHECK_WORKER_MODE === "1") {
     const { runAdmissionPrecheckWorkerMain } =
       await import("@papercusp/operator-core/lib/release/admission-fix-precheck-managed");

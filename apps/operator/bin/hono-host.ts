@@ -137,6 +137,7 @@ import { runLiveHealthMonitorMain } from '@papercusp/operator-core/lib/resource-
 import { startSidecarParentDeathWatch } from '@papercusp/operator-core/lib/process-supervision/parent-death-watch';
 import { createLspDaemonShutdown } from '../lib/lsp-daemon-shutdown.mts';
 import { runAdmissionPrecheckWorkerMain } from '@papercusp/operator-core/lib/release/admission-fix-precheck-managed';
+import { runGeneratedRepairWorkerMain } from '@papercusp/operator-core/lib/release/generated-repair-managed';
 import { assertMobileJwtSecretDurableForCluster } from '@papercusp/operator-core/lib/device-jwt';
 import { installStdioPeerGuard } from '@papercusp/operator-core/lib/process-supervision/stdio-peer-guard';
 import { notifySystemdReady } from '@papercusp/operator-core/lib/systemd-readiness';
@@ -180,7 +181,7 @@ installFatalDiagnostics();
 // respawn — the all-day :3270 crash-loop that destabilized the substrate
 // primary (2026-07-09, EI-8810). Divert BEFORE any host boot side-effect; each
 // sidecar server keeps the process alive. Mirrors serve.ts main() exactly.
-const sidecarMode: 'substrate' | 'spawner' | 'gateway' | 'embed' | 'resource-health' | 'lsp' | 'repair-precheck' | null =
+const sidecarMode: 'substrate' | 'spawner' | 'gateway' | 'embed' | 'resource-health' | 'lsp' | 'repair-precheck' | 'generated-repair' | null =
   process.env.PAPERCUSP_SUBSTRATE_SIDECAR_MODE === '1'
     ? 'substrate'
     : process.env.PAPERCUSP_SPAWNER_SIDECAR_MODE === '1'
@@ -195,6 +196,8 @@ const sidecarMode: 'substrate' | 'spawner' | 'gateway' | 'embed' | 'resource-hea
             ? 'resource-health'
             : process.env.PAPERCUSP_REPAIR_PRECHECK_WORKER_MODE === '1'
               ? 'repair-precheck'
+            : process.env.PAPERCUSP_GENERATED_REPAIR_WORKER_MODE === '1'
+              ? 'generated-repair'
             : null;
 // WI-6554700010015388: arm the parent-death watch BEFORE any sidecar divert,
 // exactly as serve.ts main() does for its packaged sidecar modes. Without it,
@@ -205,7 +208,7 @@ const sidecarMode: 'substrate' | 'spawner' | 'gateway' | 'embed' | 'resource-hea
 // watch is a no-op off-desktop unless the launcher declared a parent pid.
 // R6 prechecks are managed tasks that outlive serving-host replacement. As in
 // serve.ts, leave their lifetime to managed-task supervision, not this watch.
-if (sidecarMode !== null && sidecarMode !== 'repair-precheck') startSidecarParentDeathWatch();
+if (sidecarMode !== null && sidecarMode !== 'repair-precheck' && sidecarMode !== 'generated-repair') startSidecarParentDeathWatch();
 if (sidecarMode === 'substrate') runSubstrateSidecarServer();
 if (sidecarMode === 'spawner') runSpawnerSidecarServer();
 if (sidecarMode === 'lsp') {
@@ -229,6 +232,9 @@ if (sidecarMode === 'resource-health') {
 }
 if (sidecarMode === 'repair-precheck') {
   void runAdmissionPrecheckWorkerMain();
+}
+if (sidecarMode === 'generated-repair') {
+  void runGeneratedRepairWorkerMain();
 }
 // WI-10002709: this process (primary AND every cluster worker — each re-evaluates
 // this entry) is a request host whose RSS makes a local fork cost ~240 ms of dead

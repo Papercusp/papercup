@@ -113,6 +113,8 @@ import {
 } from '../../release/admission-fix-precheck-managed';
 import { checkpointRootMirror } from '../../release-checkpoint-launch';
 import { scheduleRepairAutoVerify } from '../../release/repair-auto-verify';
+import { beginGeneratedRepair, cancelGeneratedRepair, generatedRepairActive,
+  generatedRepairMatchesRequest, observeGeneratedRepair } from '../../release/generated-repair-managed';
 import {
   describeDependencyPrediction,
   isDependencyInputPath,
@@ -398,6 +400,8 @@ const argsSchema = z.preprocess(
         /** Currently the proved selected tool-delivery declaration pair only. */
         generator: z.literal('tool-delivery-declaration'),
         confirm: z.boolean().optional(),
+        /** Cancel this stored operation before its publication reservation. */
+        cancelOperationId: z.string().min(4).max(100).optional(),
       }),
       z.object({
         op: z.literal('admit'),
@@ -1218,9 +1222,14 @@ export default defineTool({
           })
       : null;
     try {
-    const inspected = clock
+    let inspected = clock
       ? await clock.step('inspect-queue', () => inspectQueue(queueTarget, scopeRoot))
       : await inspectQueue(queueTarget, scopeRoot);
+    const healGeneratedOperation = args.op === 'get' && inspected.queue?.healGeneratedOperation
+      ? await observeGeneratedRepair(inspected.target) : null;
+    // Recovery can settle a stopped task or its terminal notifications, advancing the row CAS.
+    // Render the resulting revision so this very read can be used for a later exact-head action.
+    if (healGeneratedOperation) inspected = await inspectQueue(queueTarget, scopeRoot);
     const compactRead =
       inspected.read.status === 'value'
         ? { status: 'value' as const, schemaVersion: inspected.read.queue.schemaVersion }
@@ -1258,6 +1267,7 @@ export default defineTool({
         ok: true,
         op: 'get',
         ...(admissionPreview ? { admissionPreview } : {}),
+        ...(healGeneratedOperation ? { healGeneratedOperation } : {}),
         target: inspected.target,
         repairQueue: renderedQueue,
         repairQueueRead: compactRead,
@@ -1373,6 +1383,18 @@ export default defineTool({
           callerAuthorization.authorized !== true) return refuse('caller-not-authorized');
       if (!ownership) return refuse('gate-ownership-unmeasured');
       if (args.generator !== 'tool-delivery-declaration') return refuse('unsupported-generator');
+      const previous = queue.healGeneratedOperation;
+      if (previous && generatedRepairMatchesRequest(previous, args)) {
+        if (args.cancelOperationId) {
+          if (args.confirm !== true || args.cancelOperationId !== previous.operationId) return refuse('exact_operation_identity_mismatch');
+          return json({ ...base, ok: true, ...await cancelGeneratedRepair(inspected.target, previous.operationId) });
+        }
+        const operation = await observeGeneratedRepair(inspected.target) ?? previous;
+        return json({ ...base, ok: true, admitted: false, persisted: false,
+          ...operation.result, pending: generatedRepairActive(operation), healGeneratedOperation: operation });
+      }
+      if (args.cancelOperationId) return refuse('exact_operation_identity_mismatch');
+      if (previous && generatedRepairActive(previous)) return refuse('generated-repair-running');
       if (queue.candidate !== args.expectedCandidate || queue.repairHead !== args.expectedRepairHead ||
           queue.updatedAtMs !== args.expectedUpdatedAtMs) return refuse('exact_queue_identity_mismatch');
       if (queue.admissionPrecheck?.status === 'running') return refuse('precheck-running');
@@ -1383,48 +1405,19 @@ export default defineTool({
       if (args.confirm !== true) return json({ ...base, ok: true, dryRun: true, admitted: false,
         generator: args.generator, judgedSha: queue.repairHead,
         paths: ['apps/operator/scripts/tool-delivery.generated.d.mts'] });
-      const { healGeneratedRepair } = await import('../../../../../apps/operator/lib/release/heal-generated-repair');
-      const { genCheckHealTransition } = await import('../../../../../apps/operator/lib/release/green-checkpoint-gen-check-self-heal');
       const identity = readIdentity(ctx);
-      const outcome = await healGeneratedRepair({
-        integrationRoot: scopeRoot, queue,
-        readQueue: async () => {
-          const read = await readFrozenCandidateRepairQueueState(inspected.target);
-          if (read.status === 'unreadable') throw new Error('repair queue became unreadable');
-          return read.status === 'value' ? read.queue : null;
-        },
-        admit: async (input) => {
-          const receipt = await executeWithGateActionReceipt({
-            action: 'release:repair-queue', actor: identity.ownerId, ownerId: identity.ownerId,
-            conditionKey: ownership?.eventKey ?? '', allowUnowned: true,
-            delegate: { authorized: callerAuthorization.status === 'authorized-delegate',
-              callerSpawnId: callerAuthorization.callerSpawnId, queueFixerSpawnId: callerAuthorization.queueFixerSpawnId },
-            target: { op: 'heal-generated', candidate: queue.candidate, repairHead: queue.repairHead },
-            run: () => runAdmissionJob({ kind: 'admit', input, preflight: null }),
-            summarize: (effect) => ({ status: effect.ok ? 'lineage-ref-published' : 'not-published' }),
-          });
-          if (!receipt.ok) throw new Error(`generated repair publication refused: ${receipt.reason}`);
-          effectReceipt = { receiptId: receipt.receiptId, ownership: receipt.ownership };
-          return receipt.effect;
-        },
-        record: async (healed) => {
-          const written = await applyFrozenCandidateRepairQueueTransition(inspected.target,
-            (fresh) => genCheckHealTransition(fresh, queue, healed));
-          return written.queue?.candidate === queue.candidate && written.queue.repairHead === healed.toRepairHead &&
-            (written.queue.admissions ?? []).some((entry) => entry.toRepairHead === healed.toRepairHead);
-        },
+      const launched = await beginGeneratedRepair({ queueTarget: inspected.target, integrationRoot: scopeRoot, queue,
+        actor: identity.ownerId, conditionKey: ownership.eventKey,
+        delegate: { authorized: callerAuthorization.status === 'authorized-delegate',
+          callerSpawnId: callerAuthorization.callerSpawnId, queueFixerSpawnId: callerAuthorization.queueFixerSpawnId },
       });
-      const persisted = outcome.kind === 'healed' && outcome.persisted;
-      const autoVerify = persisted ? await scheduleRepairAutoVerify({ target: inspected.target,
-        candidate: queue.candidate, repairHead: outcome.toRepairHead, admittedAtMs: Date.now() }) : null;
-      stampActionEffect({ status: persisted ? 'repair-head-published' : 'not-persisted', kind: outcome.kind });
-      const savedReceipt = effectReceipt as { receiptId: string; ownership: Record<string, unknown> } | null;
-      return json({ ...base, ok: persisted || outcome.kind === 'already-fresh', admitted: persisted,
-        persisted, ...(outcome.kind === 'healed' && outcome.persisted ? {
-          repairQueue: { candidate: queue.candidate, repairHead: outcome.toRepairHead },
-          movedRepairHead: { from: queue.repairHead, to: outcome.toRepairHead },
-        } : {}), outcome, autoVerify, ...(persisted && savedReceipt ? { completionReceipt: { status: 'recorded',
-          effectRef: `release:repair-queue:heal-generated:${savedReceipt.receiptId}` } } : {}) });
+      const operation = launched.operation;
+      stampActionEffect({ status: operation ? 'managed-repair-recorded' : 'cas-miss', taskId: operation?.taskId });
+      return json({ ...base, ok: !!operation, admitted: false, persisted: false,
+        ...operation?.result, pending: operation ? generatedRepairActive(operation) : false,
+        healGeneratedOperation: operation, ...(!operation ? { refused: true, reason: 'exact_queue_identity_mismatch' } : {}),
+        ...(operation && generatedRepairActive(operation) ? { completionReceipt: { status: 'recorded',
+          effectRef: `release:repair-queue:heal-generated-task:${operation.taskId}` } } : {}) });
     }
     if (args.op === 'record-edit') {
       // P-019 (D-008 layer 1). The hook only calls this while the marker file exists, so the
