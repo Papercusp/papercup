@@ -303,4 +303,38 @@ describe('P008 capture target revision guard', () => {
     expect(result?.row.script).toBe('return 1;');
     expect(captureStore.rows.get('stale-neighbor')?.script).toBe('return 2;');
   });
+
+  it.each([
+    { label: 'binding schema', bindingSchema: { version: 1, additionalProperties: false,
+      properties: { value: { type: 'integer', required: true, lifetime: { kind: 'stable' } } } },
+    capabilityManifest: null },
+    { label: 'capability manifest', bindingSchema: null, capabilityManifest: {
+      version: 1, representation: 'recipe-script', topology: { premises: ['host:same'] },
+      requirements: [], lifecycle: { allowed: ['foreground'], default: 'foreground' },
+      replay: { class: 'non-replayable' }, content: { emits: ['text'] },
+    } },
+  ] satisfies Array<{ label: string } & Pick<CodeRecipeRow, 'bindingSchema' | 'capabilityManifest'>>)
+    ('creates a separate candidate when only the $label changed after the search read', async (revision) => {
+      captureStore.rows.clear(); vi.clearAllMocks();
+      captureStore.rows.set('stale-contract-neighbor', { id: 'stale-contract-neighbor', title: 'Old contract',
+        script: 'return 1;', status: 'active', bindingSchema: null, capabilityManifest: null } as CodeRecipeRow);
+      captureStore.similar.mockImplementationOnce(async () => {
+        Object.assign(captureStore.rows.get('stale-contract-neighbor')!, {
+          bindingSchema: revision.bindingSchema, capabilityManifest: revision.capabilityManifest,
+        });
+        return [{ id: 'stale-contract-neighbor', similarity: 1, toolsUsed: [],
+          matchingEvidence: { domain: { verdict: 'equivalent', basis: 'exact-source-and-contract' } } }];
+      });
+      const result = await captureRecipe({ sql: {} as never, embed: async () => null, resolveHive: async () => null }, {
+        script: 'return 1;', title: 'P008 current contract', workspaceId: 'p008-guard', harness: 'alpha',
+        ownerId: 'agent-a', role: 'operator', tools: [],
+      });
+      expect(result?.disposition).toBe('created');
+      expect(result?.row.id).toBe('p008-current-contract');
+      expect(result?.row.script).toBe('return 1;');
+      expect(captureStore.rows.get('stale-contract-neighbor')).toMatchObject({
+        id: 'stale-contract-neighbor', title: 'Old contract', script: 'return 1;',
+        bindingSchema: revision.bindingSchema, capabilityManifest: revision.capabilityManifest,
+      });
+    });
 });
