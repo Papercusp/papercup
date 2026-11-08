@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "workItem": "EI-28142336654347264",
+  "plane": "canonical staging operator API, one request with its serving-process journal",
+  "servingSource": {
+    "buildSha": "7ff629bbc9",
+    "path": "packages/operator-core/lib/attention/unhandled-directives-source.ts",
+    "containsChange": true,
+    "method": "dev:pipeline_position blob comparison",
+    "tracingCommit": "08f4deac023b0d46cdbf264a681944644c13e634"
+  },
+  "reservation": {
+    "resource": "staging-server",
+    "mode": "shared",
+    "lockId": "b8d65358-40a0-444c-8ccb-17d877d52a71",
+    "released": true
+  },
+  "request": {
+    "startedAt": "2026-11-08T20:41:23.599Z",
+    "finishedAt": "2026-11-08T20:41:30.411Z",
+    "url": "http://127.0.0.1:3170/api/zero-harness/rest-query?name=plans.attention&args=%7B%7D",
+    "status": 200,
+    "elapsedMs": 6812,
+    "requestId": "ada64ea9-0228-4ed7-b4ef-a9c272208fbd",
+    "responseKeys": ["rows", "version", "timing"],
+    "resolverTiming": {
+      "unit": "ms",
+      "resolverStartedAtMs": 1794170483603,
+      "resolverCompletedAtMs": 1794170490330,
+      "resolverMs": 6727
+    }
+  },
+  "journal": {
+    "unit": "papercusp-staging-api",
+    "pid": "3286181",
+    "requestId": "ada64ea9-0228-4ed7-b4ef-a9c272208fbd",
+    "omittedStages": 0,
+    "selection": "Directive phases from this request's complete 30-stage snapshot; overlapping stages are not additive.",
+    "stages": [
+      {"stage": "attention-directives", "elapsedMs": 6315, "outcome": "fulfilled"},
+      {"stage": "attention-directives-import", "elapsedMs": 0, "outcome": "fulfilled"},
+      {"stage": "attention-directives-list", "elapsedMs": 1591, "outcome": "fulfilled"},
+      {"stage": "attention-directives-routing", "elapsedMs": 4717, "outcome": "fulfilled"}
+    ]
+  },
+  "rawEvidence": {
+    "response": {
+      "path": "/tmp/wb-attention-trace-contained-20261108-2042.json",
+      "sha256": "498dde76f63e79c1cb8afa5898fa01bb5a49e8a576662116626e2ba2e102e8e5"
+    },
+    "journal": {
+      "path": "/tmp/wb-attention-trace-journal-20261108-2042.json",
+      "sha256": "8271affbf0d0f15820cdbc05ff1aa5642c6c5633a868978ab63f34e4a30b97e3"
+    },
+    "terminalTasks": ["0mw8as523ojdu5izqd1", "0mw8asl5e14p5v6bcmc"]
+  },
+  "scope": {
+    "observed": "This containing build completed one actual attention request; directive routing was its longest directive subphase.",
+    "unresolved": "The historical first-request 10-second timeout root cause is unknown. This successful request does not verify a durable latency fix.",
+    "nextMeasurement": "After new route diagnostics are contained, distinguish addressee liveness, canonical membership reads and related holder/leader liveness in the same request.",
+    "notVerified": ["installed Ubuntu/macOS/Windows shipment", "complete native acceptance matrix", "independent acceptance", "execution certificate"]
+  }
+}
