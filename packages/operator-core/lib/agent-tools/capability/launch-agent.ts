@@ -2131,10 +2131,8 @@ export default defineTool({
             headless: args.headless,
             extraArgs: requestedProfileExtraArgs,
           },
-          ...(originalRecoveryOwnerId ? {
-            memberOwnerId: originalRecoveryOwnerId,
-            preferMemberRecord: true,
-          } : {}),
+          memberOwnerId: originalRecoveryOwnerId ?? resumeOwnerId ?? undefined,
+          ...(originalRecoveryOwnerId ? { preferMemberRecord: true } : {}),
           reusePath: leaderRecoveryOwnerId
             ? 'fleet leader recovery -> capability:launch-agent resume -> agent-launch-core.buildAgentLaunchCommand'
             : 'capability:launch-agent resume/successor -> agent-launch-core.buildAgentLaunchCommand',

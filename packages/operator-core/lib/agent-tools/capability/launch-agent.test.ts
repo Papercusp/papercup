@@ -3838,6 +3838,42 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(readAdvSessionLaunchRecordByOwnerMock).toHaveBeenCalledWith(dead.ownerId, 'ws-test');
   });
 
+  it.each([false, true])('ordinary fleet resume uses the saved target member routing and rejects account drift (conflict=%s)', async (conflict) => {
+    findLiveHostMock.mockReturnValue(null);
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    latestFleetMembershipMock.mockResolvedValue({ fleetSlug: 'target-fleet', fleetRole: 'member' });
+    readAdvSessionLaunchRecordByOwnerMock.mockResolvedValue({
+      workspaceId: 'ws-test', agent: 'claude',
+      launchSpec: { v: 1, agent: 'claude', workspaceId: 'ws-test', harnessSlug: 'papercusp',
+        fleet: { slug: 'target-fleet', role: 'member' }, model: 'sonnet:high' },
+      launchArgv: ['psu', '--no-picker', '--fleet=target-fleet', '--agent=claude',
+        '--harness=papercusp', '--headless', '--carry=warm', '--account=auto',
+        '--model=sonnet:high', '--role=su'],
+    });
+
+    const res = await launchAgent.handler({ resume: { agentId: dead.ownerId }, fork: false,
+      brief: 'resume the same saved fleet member', ...(conflict ? { account: 'default' } : {}) }, ctx);
+
+    expect(readAdvSessionLaunchRecordByOwnerMock).toHaveBeenCalledWith(dead.ownerId, 'ws-test');
+    if (conflict) {
+      expect(isError(res), textOf(res)).toBe(true);
+      expect(textOf(res)).toContain('Saved launch spec conflict');
+      expect(spawnHeadlessMock).not.toHaveBeenCalled();
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+      return;
+    }
+    expect(isError(res), textOf(res)).toBe(false);
+    const command = spawnedCommand(spawnHeadlessMock);
+    expect(command).toContain('--resume=sid-dead');
+    expect(command).toContain('--fleet=target-fleet');
+    expect(command).toContain('--model=sonnet:high');
+    expect(command).toContain('--account=auto');
+    expect(command).toContain('--carry=warm');
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(dataOf(res)?.launch).toMatchObject({ mode: 'resume', fleet: 'target-fleet',
+      headcountProfile: { provenance: { source: 'adv_sessions.launch_spec' } } });
+  });
+
   it('leader recovery uses the ended owner launch record and restores the leader role', async () => {
     findLiveHostMock.mockReturnValue(null);
     resolveResumeTargetMock.mockResolvedValue(dead);
