@@ -1158,10 +1158,27 @@ describe('linkNodeModulesShadow (EI-24790229053787032 — a whole-directory link
       writeFileSync(join(dir, 'package.json'), JSON.stringify(manifest));
     };
     const measure = (cwd: string) => {
-      const run = spawnSync('npm', ['ls', '--omit=dev', '--all', '--json'], {
+      const logs = join(root, 'npm-logs');
+      const started = Date.now();
+      const fixture = relative(root, cwd);
+      process.stderr.write('CASE_TRACE ' + JSON.stringify({ case: 'npm-shadow-graph', event: 'launch', fixture }) + '\n');
+      const run = spawnSync('npm', ['ls', '--omit=dev', '--all', '--json',
+        '--timing', '--loglevel=verbose', `--logs-dir=${logs}`], {
         cwd, encoding: 'utf8', timeout: 15_000,
       });
-      expect(run.error).toBeUndefined();
+      const outcome = { case: 'npm-shadow-graph', event: 'exit', fixture,
+        elapsedMs: Date.now() - started, status: run.status, signal: run.signal,
+        error: run.error?.message };
+      process.stderr.write('CASE_TRACE ' + JSON.stringify(outcome) + '\n');
+      // Preserve npm's startup/config/timing evidence before fixture cleanup.
+      // An expired process deadline must identify the stalled phase, rather
+      // than leave only spawnSync's ETIMEDOUT after the logs have been removed.
+      const diagnostic = () => JSON.stringify(outcome) +
+        `\nstdout tail:\n${run.stdout?.slice(-2000)}\nstderr tail:\n${run.stderr?.slice(-4000)}` +
+        (existsSync(logs) ? readdirSync(logs).filter(name => name.endsWith('.log'))
+          .map(name => `\n${name}:\n${readFileSync(join(logs, name), 'utf8').slice(-6000)}`).join('') : '');
+      expect(run.error, run.error ? diagnostic() : undefined).toBeUndefined();
+      expect(run.signal, run.signal ? diagnostic() : undefined).toBeNull();
       return { status: run.status, tree: JSON.parse(run.stdout) };
     };
     try {
