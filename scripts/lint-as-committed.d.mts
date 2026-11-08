@@ -132,7 +132,7 @@ export function classifyWorkRoot({ inUse, dependentArtifactPresent, marker, owne
  * see every process), 'private' (a child PID namespace such as a bwrap sandbox: host pids
  * are invisible or alias other processes), or 'none' (no /proc, so no PID namespaces).
  */
-export function pidNamespaceView(readLink?: typeof readlinkSync): "initial" | "private" | "none";
+export function pidNamespaceView(readLink?: typeof readlinkSync): "none" | "initial" | "private";
 /**
  * Whether a marker's owner pid (a HOST pid) is alive; null when this process cannot tell.
  * WI-6554700010019046: from a private PID namespace kill(2) answers about that namespace,
@@ -392,6 +392,26 @@ export function owningSubmodule(path: any, submodulePaths: any): any;
 export function showAtRef(repoRoot: any, ref: any, path: any): string | null;
 /** Check dependency metadata at the selected recursive pins before allocating source.
  * The shared checkout can already contain a newer, coherent submodule manifest. */
+export function inspectSelectedWorkspaceLock(repoRoot: any, { oid, kind }: {
+    oid: any;
+    kind: any;
+}): {
+    ok: boolean;
+    inputs: any[];
+    mismatches: {
+        code: string;
+        lockfile: any;
+        manifest: any;
+        controllingPaths: any[];
+        workspace: any;
+        field: string;
+        differences: {};
+    }[];
+    errors: any[];
+    selectedOid: string;
+    treeOid: string;
+    kind: any;
+};
 export function assertCommittedWorkspaceLockMatches(repoRoot: any, ref?: string): void;
 /** Validate the focused runner's actual test-config imports before Node loads it.
  * Read both ends from the parent commit, never the newer checked-out submodule. */

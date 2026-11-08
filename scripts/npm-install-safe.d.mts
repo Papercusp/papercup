@@ -31,6 +31,45 @@ export function verificationScopeForNpmArgs({ repoRoot, npmArgs, deps, }?: {
     workspaceDirs: any[];
     repairWorkspaceArgs: string[];
 };
+/**
+ * Detect the measured npm failure class before either Arborist or a project test
+ * runner consumes the dependency graph. Root-lock workspace entries mirror the
+ * manifest dependency maps; stale copies can detach npm's ideal-tree link targets
+ * and crash inside build-ideal-tree before npm can repair them.
+ */
+export function findRootLockManifestMismatches(repoRoot?: string, deps?: {}): {
+    workspace: string;
+    field: string;
+    differences: {
+        packageLock: {
+            manifest: string;
+            lock: string;
+        };
+    };
+}[] | {
+    workspace: any;
+    field: string;
+    differences: {};
+}[];
+/** Inspect an immutable metadata census using the ordinary install comparator.
+ * Readers supply Git bytes and identity; this core never consults the checkout.
+ * Keep parse failures distinct from classified dependency disagreements. */
+export function inspectWorkspaceLockSnapshot(repoRoot: any, files: any, inputs?: any[]): {
+    ok: boolean;
+    inputs: any[];
+    mismatches: {
+        code: string;
+        lockfile: any;
+        manifest: any;
+        controllingPaths: any[];
+        workspace: any;
+        field: string;
+        differences: {};
+    }[];
+    errors: any[];
+};
+/** Preserve the established error prefix for existing install/publication callers. */
+export function assertWorkspaceLockInspection(inspection: any): void;
 /** Reuse install admission for a filesystem or an immutable manifest census.
  * The optional readers also feed the existing workspace expansion seam.
  */
@@ -185,7 +224,7 @@ export function verifyDepsExtracted({ repoRoot, npmArgs, runNpm, probeSpecifiers
 /** Restore the root's committed patches after reify, while the install writer is held. */
 export function restoreInstalledPatchPostimages({ repoRoot, env }?: {
     env?: NodeJS.ProcessEnv | undefined;
-}): Promise<1 | 0>;
+}): Promise<0 | 1>;
 export function repoLockName(repoRoot?: string): string;
 /**
  * Hold a shared host-wide cache lease while a package manager may read/write
