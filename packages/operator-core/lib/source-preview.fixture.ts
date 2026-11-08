@@ -11,7 +11,7 @@
  */
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { ROOT as SOURCE_ROOT, prepareBgVerifierSource, captureVerifierDependencies } from '../../../scripts/source-preview.mjs';
 import type { TestCasePopulationMember } from './testing-case-filter';
@@ -321,6 +321,7 @@ export function makeBgCandidate(base: string) {
 /** Real compiler inputs, retained independently of the suite registering a case. */
 export async function makeBgCompilerCandidate(base: string, {
   artifactInputs = false, cliHarness = false, sourceOnly = false, protectedUnconsumed = false, runtimeModules = false,
+  frozenGeneration = false,
   trace = (_stage: string) => {},
 } = {}) {
   trace('compiler-fixture:start');
@@ -336,6 +337,12 @@ export async function makeBgCompilerCandidate(base: string, {
   for (const path of ['papercusp-desktop/bin/lib/pinned-deps.sh', 'apps/operator/bin/release/dependency-generation.sh',
     'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh'])
     write(c.fixture.repo, path, readFileSync(join(SOURCE_ROOT, path), 'utf8'));
+  if (frozenGeneration) {
+    cpSync(join(SOURCE_ROOT, 'apps/operator/bin/release'), join(c.fixture.repo, 'apps/operator/bin/release'),
+      { recursive: true });
+    for (const path of ['packages/operator-core/lib/util/cli-entry.ts', 'libs/test-config/src/verifier-source.ts'])
+      write(c.fixture.repo, path, readFileSync(join(SOURCE_ROOT, path), 'utf8'));
+  }
   if (cliHarness) {
     write(c.fixture.repo, 'scripts/source-preview.mjs',
       `const { runCli } = await import(${JSON.stringify(new URL('../../../scripts/source-preview.mjs', import.meta.url).href)});\nprocess.exitCode = await runCli(process.argv.slice(2));\n`);

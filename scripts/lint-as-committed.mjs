@@ -120,6 +120,7 @@ import { applyEnvLocal, parseEnvFile, PG_URL_ENV_VARS } from './lib/pg-url.mjs';
 import { withFsMutex, withFsMutexRead } from './lib/fs-mutex.mjs';
 import { withRetentionPinProtection } from './lib/retention-pins.mjs';
 import { installLockNameForRoot } from './lib/install-lock-name.mjs';
+import { assertRootLockManifestMatches } from './npm-install-safe.mjs';
 import { normalizeDependencyWorkspaceDirs, verifyRetainedDependencies } from './lib/committed-dependency-verification.mjs';
 
 export function requireDurableTestRunSink(environment = process.env) {
@@ -1815,6 +1816,11 @@ async function main() {
         `  initialised ${submodules.length} submodule(s) from local checkouts in ${((Date.now() - t1) / 1000).toFixed(1)}s (no network)`,
       );
     }
+
+    // Validate the complete frozen source, including populated submodules, before
+    // selecting a dependency generation or copying/building dependency trees.
+    // A repaired donor cannot make inconsistent committed metadata runnable.
+    assertRootLockManifestMatches(workRoot);
 
     // Only snapshot acquisition borrows the mutable install. Commands use private
     // bytes, including after --keep/--materialize-only outlive this process.

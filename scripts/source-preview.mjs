@@ -76,6 +76,7 @@ import { writeOperatorArtifactManifest } from '@papercusp/operator-core/lib/rele
 import { bindRuntimeSourcePopulation } from '../packages/operator-core/lib/memory/bench/runtime-source-capture.mjs';
 import { bindRuntimeProcessTree } from '../packages/operator-core/lib/memory/bench/runtime-file-opens.mjs';
 import { bindNativeLoaderClosure } from '@papercusp/operator-core/lib/memory/bench/measurement-manifest';
+import { bindFrozenDependencyGeneration } from '@papercusp/operator-core/lib/dependency-generation-proof';
 
 export const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 export const PREVIEW_REPO = 'Papercusp/papercusp-preview';
@@ -1271,6 +1272,47 @@ export function createBgVerifierCompilerCustody({ prepared, dependencies }) {
     assert.deepEqual(captureVerifierDependencies({ dest: prepared.root, receipt: prepared.source }), original,
       'BG compiler dependency census changed');
   });
+}
+
+/** Bind original generation provenance before runtime effects, keeping its async
+ * verifier in this host alongside the existing input interval witness.
+ * @param {Parameters<typeof createBgVerifierCompilerCustody>[0]} options */
+export async function createBgVerifierRuntimeCustody(options) {
+  const prepared = freezeBgExpectation(options.prepared);
+  const dependencies = freezeBgExpectation(options.dependencies);
+  const inputCustody = createBgVerifierCompilerCustody({ prepared, dependencies });
+  const generation = await bindFrozenDependencyGeneration(prepared.root, prepared.source.sourceCommit);
+  const identity = freezeBgExpectation(generation.identity);
+  const boundAtMs = Date.now(), boundMonotonicNs = process.hrtime.bigint();
+  bgRuntimeInputCustodies.get(inputCustody).verify();
+  const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  const custody = Object.freeze({
+    /** @param {Parameters<typeof qualifyBgVerifierRuntimeSources>[0]} args */
+    async qualify(args) {
+      assert.equal(this, custody, 'BG frozen generation custody is not a retained host witness');
+      assert.ok(args.execution.inputCustody === undefined || args.execution.inputCustody === inputCustody,
+        'BG frozen generation input custody differs');
+      const qualify = () => qualifyBgVerifierRuntimeSources({ ...args,
+        execution: { ...args.execution, inputCustody } });
+      const before = qualify();
+      assert.ok(before.inputCustody, 'BG frozen generation input interval is missing');
+      assert.ok(boundAtMs < Math.floor(before.inputCustody.firstExecAtMs),
+        'BG frozen generation binding completed after traced execution');
+      const originalArgsSha256 = hash(args);
+      await generation.assertUnchanged();
+      assert.equal(hash(args), originalArgsSha256, 'BG frozen generation runtime evidence changed during qualification');
+      const proof = qualify();
+      assert.ok(proof.inputCustody, 'BG frozen generation input interval is missing');
+      const verifiedAtMs = Date.now(), verifiedMonotonicNs = process.hrtime.bigint();
+      assert.ok(verifiedAtMs >= Math.ceil(proof.inputCustody.lastTerminalAtMs)
+        && Math.abs((verifiedAtMs - boundAtMs) - Number(verifiedMonotonicNs - boundMonotonicNs) / 1e6) < 10,
+      'BG frozen generation clock or terminal boundary differs');
+      return freezeBgExpectation({ ...proof,
+        dependencyQualification: 'original-frozen-generation-stable-over-traced-lifetime',
+        frozenGeneration: { ...identity, boundAtMs, verifiedAtMs } });
+    },
+  });
+  return custody;
 }
 
 /** Host-local interval witnesses extend the existing input custody; serialized
