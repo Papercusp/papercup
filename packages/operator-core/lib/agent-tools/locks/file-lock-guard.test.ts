@@ -78,6 +78,17 @@ describe('toRepoRelative', () => {
 });
 
 describe('guardFileLock', () => {
+  it('never runs the next writer when predecessor preservation refuses, even without failClosed', async () => {
+    h.tryAcquire.mockRejectedValue(Object.assign(new Error('predecessor custody unavailable'), {
+      reason: 'file_lock_preservation_failed',
+    }));
+    const run = vi.fn();
+    expect(await guardFileLock(ctx, ['foo.ts'], { intent: 'capability:write' }, run))
+      .toMatchObject({ acquired: false, lockUnavailable: true, error: 'predecessor custody unavailable' });
+    expect(run).not.toHaveBeenCalled();
+    expect(h.tryFinish).not.toHaveBeenCalled();
+  });
+
   it('acquires, runs the body, and releases on success', async () => {
     h.tryAcquire.mockResolvedValue({ ok: true, lock_id: 'L1', expires_ts: new Date(), held: ['foo.ts'] });
     const run = vi.fn().mockResolvedValue('RESULT');

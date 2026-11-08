@@ -301,6 +301,8 @@ export function createBgVerifierRuntimeCustody(options: Parameters<typeof create
             processes: import("../packages/operator-core/lib/memory/bench/runtime-source-capture.mjs").ParsedSourceReceipt[];
             tracedTaskPopulationComplete: true;
             parsedSourceProcessPopulationComplete: true;
+            memoryTransitions: ReturnType<typeof import("../packages/operator-core/lib/memory/bench/runtime-file-opens.mjs").bindRuntimeProcessTree>["memoryTransitions"];
+            executableMemoryQualification: "required";
             completeRuntimeClosureVerified: false;
             sourceQualification: "required";
             dependencyQualification: "required";
@@ -435,6 +437,25 @@ export function createBgVerifierRuntimeCustody(options: Parameters<typeof create
                         fileOffset: string;
                         permissions: string;
                     }[];
+                }[];
+                fileBackedLifetimeClosureVerified: boolean;
+                finalizationJoins: {
+                    line: number;
+                    object: string;
+                    namespace: string;
+                    file: {
+                        path: string;
+                        bytes: number;
+                        sha256: string;
+                        mappedDevice: string;
+                        mappedInode: string;
+                        mappedRanges?: {
+                            startAddress: string;
+                            endAddress: string;
+                            fileOffset: string;
+                            permissions: string;
+                        }[];
+                    };
                 }[];
                 stderrReceipt: import("@papercusp/operator-core/lib/memory/bench/measurement-manifest").NativeLoaderCaptureReceipt;
                 completeBeforeInferenceClosureVerified: true;
@@ -2863,6 +2884,7 @@ export function verifyBgVerifierOutputRecord(output: BgVerifierOutputRecord, rec
  *     terminal: Parameters<typeof bindRuntimeSourcePopulation>[1],
  *     captures: Parameters<typeof bindRuntimeSourcePopulation>[2],
  *     inputCustody?: ReturnType<typeof createBgVerifierCompilerCustody>,
+ *     nativeScope?: 'selected-requests' | 'process-lifetime',
  *     nativeCaptures?: { stderr: Buffer,
  *       windows: Parameters<typeof bindNativeLoaderClosure>[1],
  *       firstRun: Parameters<typeof bindNativeLoaderClosure>[2],
@@ -2878,6 +2900,7 @@ export function qualifyBgVerifierRuntimeSources({ output, record, invocation, ex
         terminal: Parameters<typeof bindRuntimeSourcePopulation>[1];
         captures: Parameters<typeof bindRuntimeSourcePopulation>[2];
         inputCustody?: ReturnType<typeof createBgVerifierCompilerCustody>;
+        nativeScope?: "selected-requests" | "process-lifetime";
         nativeCaptures?: {
             stderr: Buffer;
             windows: Parameters<typeof bindNativeLoaderClosure>[1];
@@ -2916,6 +2939,8 @@ export function qualifyBgVerifierRuntimeSources({ output, record, invocation, ex
         processes: import("../packages/operator-core/lib/memory/bench/runtime-source-capture.mjs").ParsedSourceReceipt[];
         tracedTaskPopulationComplete: true;
         parsedSourceProcessPopulationComplete: true;
+        memoryTransitions: ReturnType<typeof import("../packages/operator-core/lib/memory/bench/runtime-file-opens.mjs").bindRuntimeProcessTree>["memoryTransitions"];
+        executableMemoryQualification: "required";
         completeRuntimeClosureVerified: false;
         sourceQualification: "required";
         dependencyQualification: "required";
@@ -3050,6 +3075,25 @@ export function qualifyBgVerifierRuntimeSources({ output, record, invocation, ex
                     fileOffset: string;
                     permissions: string;
                 }[];
+            }[];
+            fileBackedLifetimeClosureVerified: boolean;
+            finalizationJoins: {
+                line: number;
+                object: string;
+                namespace: string;
+                file: {
+                    path: string;
+                    bytes: number;
+                    sha256: string;
+                    mappedDevice: string;
+                    mappedInode: string;
+                    mappedRanges?: {
+                        startAddress: string;
+                        endAddress: string;
+                        fileOffset: string;
+                        permissions: string;
+                    }[];
+                };
             }[];
             stderrReceipt: import("@papercusp/operator-core/lib/memory/bench/measurement-manifest").NativeLoaderCaptureReceipt;
             completeBeforeInferenceClosureVerified: true;
@@ -3897,6 +3941,7 @@ export type Gate = (dir: string, opts: {
 }) => Promise<GateVerdict>;
 export type Log = (message: string) => void;
 import { verifierResourceInventory } from '@papercusp/operator-core/lib/verifier-source';
+import { bindRuntimeProcessTree } from '../packages/operator-core/lib/memory/bench/runtime-file-opens.mjs';
 import { bindRuntimeSourcePopulation } from '../packages/operator-core/lib/memory/bench/runtime-source-capture.mjs';
 import { bindNativeLoaderClosure } from '@papercusp/operator-core/lib/memory/bench/measurement-manifest';
 import { runTreeRestrictedHoldPreflight } from './lib/restricted-hold-preflight.mjs';

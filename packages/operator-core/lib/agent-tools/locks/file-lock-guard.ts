@@ -251,7 +251,7 @@ export async function guardFileLock<T>(
   } catch (err) {
     const contended = isWorkspaceContended(err);
     const detail = err instanceof Error ? err.message : String(err);
-    if (spec.failClosed) {
+    if (spec.failClosed || (err as { reason?: string })?.reason === 'file_lock_preservation_failed') {
       // The opt-in inversion. A wide offset-based write would rather not happen
       // at all than happen unarbitrated — see FileLockSpec.failClosed.
       ctx.log?.(`[file-lock] acquire ${contended ? 'contended after retries' : 'faulted'}, REFUSING edit (fail-closed): ${detail}`);

@@ -16,6 +16,8 @@ export function bindRuntimeSourcePopulation(trace: string, terminal: {
 }): {
   schema: 'runtime-traced-source-population/v1'; processId: number; processes: ParsedSourceReceipt[];
   tracedTaskPopulationComplete: true; parsedSourceProcessPopulationComplete: true;
+  memoryTransitions: ReturnType<typeof import('./runtime-file-opens.mjs').bindRuntimeProcessTree>['memoryTransitions'];
+  executableMemoryQualification: 'required';
   completeRuntimeClosureVerified: false; sourceQualification: 'required';
   dependencyQualification: 'required'; creatorFence: 'required'; scope: string;
   fileInputs?: {

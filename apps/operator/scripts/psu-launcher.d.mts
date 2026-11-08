@@ -3335,8 +3335,9 @@ export function reserveManagedRespawn(request: any, { fetchImpl, operatorUrl, to
  * notifies a carry announcer when a background retry succeeds; returning the first
  * failure alone loses that wake. A newer respawn supersedes reports and callbacks.
  */
-export function reportSessionRespawnedDurably(advSessionId: any, sessionId: any, { coordOwnerId, childLaunchSessionId, managedSuccessionPermit, reportImpl, retryDelaysMs, sleepImpl, onConfirmed, }?: {
+export function reportSessionRespawnedDurably(advSessionId: any, sessionId: any, { coordOwnerId, env, childLaunchSessionId, managedSuccessionPermit, reportImpl, retryDelaysMs, sleepImpl, onConfirmed, }?: {
     coordOwnerId?: null | undefined;
+    env?: NodeJS.ProcessEnv | undefined;
     childLaunchSessionId?: null | undefined;
     managedSuccessionPermit?: null | undefined;
     reportImpl?: typeof reportSessionRespawned | undefined;
@@ -4611,7 +4612,7 @@ export function codexForkMcpUrlForOwner(codexHome: any, ownerId: any): string | 
  * @param {string | null} owner
  * @param {string | null} codexHome
  * @param {string | number | null} advSessionId
- * @param {{sourcePolicy?: 'preserved-artifact' | null, expectedSpecificationRevision?: string | null, requireGatewayProvider?: boolean, model?: string | null, headless?: boolean, routeMode?: string | null, accountId?: string | null, priority?: string | null, fetchImpl?: (...args: any[]) => Promise<any>, operatorUrl?: string, env?: NodeJS.ProcessEnv, probe?: typeof probeOmpOperatorMcp, onRecovery?: Function, onFailure?: (failure: {stage: string, reason: string, status: number | null, errorName?: string, diagnostic: {attemptId: string, startedAtMs: number, elapsedMs: number, target: {kind: string, protocol: string, port: number} | null, phaseTimingsMs: Record<string, number>}}) => void, token?: string | null, timeoutMs?: number, now?: () => number}} options
+ * @param {{sourcePolicy?: 'preserved-artifact' | null, expectedSpecificationRevision?: string | null, requireGatewayProvider?: boolean, model?: string | null, headless?: boolean, routeMode?: string | null, accountId?: string | null, priority?: string | null, fetchImpl?: (...args: any[]) => Promise<any>, operatorUrl?: string, env?: NodeJS.ProcessEnv, probe?: typeof probeOmpOperatorMcp, onRecovery?: Function, onFailure?: (failure: {stage: string, reason: string, status: number | null, errorName?: string, forwardingResult?: 'not_forwarded', diagnostic: {attemptId: string, startedAtMs: number, elapsedMs: number, target: {kind: string, protocol: string, port: number} | null, phaseTimingsMs: Record<string, number>}}) => void, token?: string | null, timeoutMs?: number, now?: () => number}} options
  */
 export function ensureCodexHomeViaOperator(owner: string | null, codexHome: string | null, advSessionId: string | number | null, { requireGatewayProvider, model, headless, sourcePolicy, expectedSpecificationRevision, routeMode, accountId, priority, fetchImpl, operatorUrl, env, probe, onRecovery, onFailure, token, timeoutMs, now, }?: {
     sourcePolicy?: "preserved-artifact" | null;
@@ -4632,6 +4633,7 @@ export function ensureCodexHomeViaOperator(owner: string | null, codexHome: stri
         reason: string;
         status: number | null;
         errorName?: string;
+        forwardingResult?: "not_forwarded";
         diagnostic: {
             attemptId: string;
             startedAtMs: number;
