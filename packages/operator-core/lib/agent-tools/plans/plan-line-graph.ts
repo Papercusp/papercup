@@ -91,6 +91,20 @@ function matchingLegacyPlanItems(items: unknown, content: string): PlanIndexItem
   }
 }
 
+/** A matching saved index can witness an old writer's addition to a partial graph.
+ * Refuse a rewrite rather than silently deleting that line or guessing that it
+ * should be resurrected. Graphless plans retain their validated fallback.
+ */
+export function missingStoredPlanLineIds(
+  nodes: readonly PlanLineNode[],
+  parentRow: { items: unknown; content: string | null },
+): string[] {
+  if (nodes.length === 0) return [];
+  const witnessed = matchingLegacyPlanItems(parentRow.items, parentRow.content ?? '');
+  const represented = new Set(nodes.map((node) => node.id));
+  return witnessed?.filter((item) => !represented.has(item.id)).map((item) => item.id) ?? [];
+}
+
 async function readValidatedLegacyPlanItems(
   tx: Sql,
   scope: Omit<PlanLineScope, 'slug'>,

@@ -281,6 +281,48 @@ describe('plan item anchors through the real plan tools', () => {
     expect(after['P-001']).toEqual(first);
     expect(added.map(result => after[result.itemId][0].change)).toEqual([{ ...change, action: 'create' }, change]);
   });
+  it.each(['prose', 'anchors'] as const)('refuses %s edits before a partial graph can erase a legacy-writer addition', async kind => {
+    const legacy = body().replace('\n## Decisions\n', '\n- **P-002** `blocked` Dependent item blocked-by: P-001\n\n## Decisions\n');
+    const index = deriveIndexFromContent(legacy);
+    // Model an old writer adding a line to both saved bytes and their JSON index
+    // after P-001 was already materialized by the graph-aware writer.
+    await fx.admin`UPDATE harness_shared.harness_plans
+      SET content=${legacy}, content_hash=${hashPlanContent(legacy)}, items=${JSON.stringify(index.items)}::jsonb
+      WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND plan_slug=${SLUG}`;
+    const scope = { workspaceId: WS, harnessSlug: HARNESS, slug: SLUG };
+    const nodes = await readPlanLineNodes(fx.admin, scope);
+    expect(nodes.map(item => item.id)).toEqual(['P-001']);
+    const saved = () => fx.admin`SELECT content, content_hash, version, items
+      FROM harness_shared.harness_plans
+      WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND plan_slug=${SLUG}`;
+    const before = await saved();
+
+    const edit = kind === 'prose'
+      ? { old_string: 'Check links.', new_string: 'Keep all registered tasks.' }
+      : { itemId: 'P-001', anchors: [{ path: 'code.ts', change }] };
+    const edited = data(await editTool.handler({ slug: SLUG, harness: HARNESS, ...edit } as never, ctx()));
+    expect(edited).toMatchObject({ ok: false, code: 'plan_line_graph_incomplete', missingItemIds: ['P-002'] });
+    expect(await saved()).toEqual(before);
+    expect(await readPlanLineNodes(fx.admin, scope)).toEqual(nodes);
+    expect(await anchorStore.readPlanItemAnchors({ ...scope, planSlug: SLUG })).toEqual({});
+  });
+
+  it.each(['empty', 'mismatched'] as const)('keeps graph authority when an %s legacy index cannot witness extra saved lines', async kind => {
+    const stale = body().replace('\n## Decisions\n', '\n- **P-002** `todo` Stale body-only item\n\n## Decisions\n');
+    const items = kind === 'empty' ? [] : deriveIndexFromContent(body()).items;
+    await fx.admin`UPDATE harness_shared.harness_plans
+      SET content=${stale}, content_hash=${hashPlanContent(stale)}, items=${JSON.stringify(items)}::jsonb
+      WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND plan_slug=${SLUG}`;
+    const edited = data(await editTool.handler({ slug: SLUG, harness: HARNESS,
+      old_string: 'Check links.', new_string: 'Keep graph authority.',
+    } as never, ctx()));
+    expect(edited.ok, JSON.stringify(edited)).toBe(true);
+    const [saved] = await fx.admin`SELECT content FROM harness_shared.harness_plans
+      WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND plan_slug=${SLUG}`;
+    expect(saved.content).toContain('Keep graph authority.');
+    expect(saved.content).not.toContain('Stale body-only item');
+  });
+
   it('preserves legacy item IDs and dependencies through an anchor-only edit without graph rows', async () => {
     const legacy = body().replace('\n## Decisions\n', '\n- **P-002** `blocked` Dependent item blocked-by: P-001\n\n## Decisions\n');
     const index = deriveIndexFromContent(legacy);

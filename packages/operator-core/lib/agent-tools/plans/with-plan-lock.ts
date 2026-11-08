@@ -55,7 +55,7 @@ import {
   type PlanCandidateDependencyDiagnostic,
 } from './plan-candidate-dependencies';
 import { writePlanIndexRows } from './plan-index-rows';
-import { readPlanLineItems, readPlanLineNodes, writePlanLineNodes } from './plan-line-graph';
+import { missingStoredPlanLineIds, readPlanLineItems, readPlanLineNodes, writePlanLineNodes } from './plan-line-graph';
 import { renderPlanLines } from './plan-line-render';
 import {
   noteFromContentWrite,
@@ -488,6 +488,7 @@ export interface RefusedResult {
     | ReturnType<typeof activationGateRefusalValue>
     | VerificationLoweringRefusal
     | { ok: false; code: 'initial_change_scope_missing'; message: string; problems: string[] }
+    | { ok: false; code: 'plan_line_graph_incomplete'; message: string; missingItemIds: string[] }
     | { ok: false; code: 'discovery_not_ready'; message: string };
   filePath: string;
   version: number;
@@ -599,15 +600,24 @@ export async function withPlanLock<T>(
     `;
     const cur = rows[0] ?? null;
     const storedContent = cur?.content;
+    const curVersion = cur ? Number(cur.version) : 0;
     const lineNodes = await readPlanLineNodes(tx, { workspaceId, harnessSlug, slug });
     if (cur) {
+      // Check the locked saved bytes BEFORE rendering: a nonempty older graph
+      // must not silently erase a registered old-writer addition on any write.
+      const missingItemIds = missingStoredPlanLineIds(lineNodes, cur);
+      if (missingItemIds.length) return {
+        kind: 'refused',
+        value: { ok: false, code: 'plan_line_graph_incomplete', missingItemIds,
+          message: 'Saved plan content and its matching item index contain lines absent from the work graph. Reconcile those lines before rewriting the plan.' },
+        filePath, version: curVersion, scope: { workspaceId, harnessSlug },
+      } satisfies RefusedResult;
       // Match the reader's validated legacy fallback. Rendering an empty graph
       // would otherwise erase old-writer items before the mutator sees them.
       // Keep lineNodes graph-only for the subsequent graph mutation diff.
       const items = lineNodes.length ? lineNodes : await readPlanLineItems(tx, { workspaceId, harnessSlug, slug }, cur);
       cur.content = renderPlanLines(cur.content, items, { preserveItemText: opts.preserveStoredItemText });
     }
-    const curVersion = cur ? Number(cur.version) : 0;
     // WI-10004529: opt-in read of the revision-spine head, under the SAME lock as `cur`.
     let latestRevision: { seq: number; body: string } | null = null;
     if (opts.loadLatestRevision && cur) {
