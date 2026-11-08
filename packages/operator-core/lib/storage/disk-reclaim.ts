@@ -428,14 +428,20 @@ async function scanPrivilegedRetentionHolders(paths: readonly string[], control:
   const worker = `
     import { readFile } from 'node:fs/promises';
     import { readdirSync, readlinkSync, readFileSync } from 'node:fs';
+    const started = Date.now();
+    const phase = (stage) => process.stderr.write(JSON.stringify({ stage, elapsedMs: Date.now() - started }) + '\\n');
+    phase('holder-worker-start');
     const input = [];
     for await (const chunk of process.stdin) input.push(chunk);
+    phase('holder-input-ready');
     const payload = JSON.parse(Buffer.concat(input).toString('utf8'));
     const paths = Array.isArray(payload) ? payload : payload.paths;
     const status = await readFile('/proc/self/status', 'utf8');
     const ids = /^NSpid:\\s*(.+)$/m.exec(status)?.[1]?.trim().split(/\\s+/);
     if (!ids || ids.length !== 1) process.exit(2);
+    phase('holder-source-import-start');
     const { openWriterPidsMany } = await import(process.argv[1]);
+    phase('holder-source-import-finished');
     const result = await openWriterPidsMany(paths, {
       descendants: true, includeCwd: true, failClosed: true, deadlineMs: ${RETENTION_HOLDER_SCAN_MS},
       includeProcessLinks: ${options.includeProcessLinks === true},
@@ -444,6 +450,7 @@ async function scanPrivilegedRetentionHolders(paths: readonly string[], control:
       // This process is an enrolled, isolated worker, never the operator loop.
       procIo: { readdir: (path) => readdirSync(path), readlink: (path) => readlinkSync(path), readFile: (path) => readFileSync(path, 'utf8') },
     });
+    phase('holder-scan-finished');
     process.stdout.write(JSON.stringify({ complete: result.complete, byPath: [...result.byPath], diagnostics: result.diagnostics }));
   `;
   const result = await nativeRetentionCommand(repoRoot, '/usr/bin/sudo', [

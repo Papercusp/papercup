@@ -813,13 +813,14 @@ describe('retention holder evidence', () => {
     const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
     delegateSpawn.mockImplementationOnce(async (_command, _args, _spec, options) => {
       options.onSpawn(child as unknown as ChildProcess, 'denied-holder-task');
-      child.stderr.write('x'.repeat(5000) + 'sudo: permission denied');
+      child.stderr.write('x'.repeat(5000) + '{"stage":"holder-source-import-start","elapsedMs":12}\nsudo: permission denied');
       child.emit('close', null, 'SIGTERM'); return { child, taskId: 'denied-holder-task' };
     });
     const result = await scanRetentionHolders(['/scratch'], { uid: () => 1000, readStatus: async () => 'NSpid:\t1\n' });
     expect(result.complete).toBe(false);
     expect(result.diagnostics).toMatchObject({ taskId: 'denied-holder-task', exitCode: null, signal: 'SIGTERM', outputTruncated: false });
     expect(result.diagnostics?.stderr).toHaveLength(4000);
+    expect(result.diagnostics?.stderr).toContain('{"stage":"holder-source-import-start","elapsedMs":12}');
     expect(result.diagnostics?.stderr).toContain('sudo: permission denied');
   });
 
