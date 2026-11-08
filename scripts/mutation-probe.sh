@@ -2225,12 +2225,16 @@ function acceptLauncherRecord(record) {
   const installSafeParent = record.entry === 'scripts/npm-install-safe.mjs'
     && record.pid === launcherParentPid;
   if (record.kind !== 'substituted' || record.via !== 'esm'
-    || !isAbsolute(record.top) || canonical(record.top) !== repoRoot
+    || !isAbsolute(record.top) || !within(repoRoot, canonical(record.top))
     || typeof record.rel !== 'string' || isAbsolute(record.rel) || record.rel.includes('\\')
     || !Number.isSafeInteger(record.pid) || record.pid < 1
     || (!testFilesRunner && !installSafeParent)) return false;
-  const sourcePath = canonical(resolve(repoRoot, record.rel));
-  if (!within(repoRoot, sourcePath)) fail('notice-path-outside-repository', record);
+  // Lazy launcher support imports can belong to a nested repository. Resolve
+  // their paths from the notice's actual Git root while keeping both process
+  // identity and that root's containment boundary intact.
+  const noticeRoot = canonical(record.top);
+  const sourcePath = canonical(resolve(noticeRoot, record.rel));
+  if (!within(noticeRoot, sourcePath)) fail('notice-path-outside-repository', record);
   // A launcher import of the intentional mutant is still a substitution,
   // including a subject reached transitively through a support dependency.
   if (sourcePath === canonical(subjectInput)) fail('launcher-subject-substituted', record);

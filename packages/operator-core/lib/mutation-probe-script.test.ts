@@ -4096,6 +4096,57 @@ fi
     expect(readFileSync(file, 'utf8')).toBe(ORIGINAL);
   });
 
+  it.each(['support', 'subject', 'different-pid', 'escape', 'parent-support'])(
+    'classifies nested-repository launcher %s imports by verified process identity', (variant) => {
+      const top = join(dir, 'nested-launcher-boundary');
+      const nested = join(top, 'libs/support');
+      mkdirSync(join(top, 'scripts'), { recursive: true });
+      mkdirSync(nested, { recursive: true });
+      git(top, ['init', '-q']);
+      git(nested, ['init', '-q']);
+      const probe = join(top, 'scripts/mutation-probe.sh');
+      writeFileSync(probe, readFileSync(SCRIPT));
+      const file = join(nested, 'subject.txt');
+      writeFileSync(file, ORIGINAL);
+      const launcher = {
+        schemaVersion: 'committed-source-notice-v1', kind: 'substituted', via: 'esm',
+        top, rel: 'scripts/test-files.mjs', entry: 'scripts/test-files.mjs', pid: 42,
+      };
+      const prefix = JSON.stringify(launcher) + '\n';
+      const notice = { ...launcher, top: nested,
+        rel: variant === 'subject' ? 'subject.txt' : variant === 'escape' ? '../../outside.mjs' : 'support.mjs',
+        pid: variant === 'different-pid' ? 43 : variant === 'parent-support' ? 41 : 42,
+        entry: variant === 'parent-support' ? 'scripts/npm-install-safe.mjs' : launcher.entry,
+      };
+      const guard = join(dir, 'nested-launcher.sh');
+      writeFileSync(guard, [
+        '#!/usr/bin/env bash',
+        `printf '%s' '${prefix}' >> "$PAPERCUSP_COMMITTED_SOURCE_NOTICES"`,
+        `printf '%s\\n' '${JSON.stringify(notice)}' >> "$PAPERCUSP_COMMITTED_SOURCE_NOTICES"`,
+        `printf 'TEST_FILE_RESULT requested=1 childSubstituted=1 childNoticeOffsetBytes=${Buffer.byteLength(prefix)} launcherParentPid=41 skippedTests=0\\n'`,
+        'if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then',
+        "  printf 'TEST_FILE_ASSERTION_FAILURE file=\"fixture.test.ts\" name=\"behavior\" message=\"AssertionError\"\\n'",
+        '  exit 1',
+        'fi',
+      ].join('\n'));
+      const { code, out } = runProbeIO([
+        '--file', file, '--mutate', 's/beta/BETA/', '--test', `bash ${guard} {}`,
+      ], { ...process.env, PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://ledger.example:5444/papercusp',
+        PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'never' }, top, probe);
+      if (variant === 'support' || variant === 'parent-support') {
+        expect(code, out).toBe(0);
+        expect(out).toContain('launcherNotices=2 childRecords=0');
+        expect(out).toContain('verdict=caught');
+      } else {
+        expect(code, out).toBe(2);
+        expect(out).toContain(variant === 'subject' ? 'launcher-subject-substituted'
+          : variant === 'escape' ? 'notice-path-outside-repository' : 'subject-dependent-or-unknown-child');
+        expect(out).toContain('verdict=harness-error');
+      }
+      expect(readFileSync(file, 'utf8')).toBe(ORIGINAL);
+    },
+  );
+
   it.each(['subject', 'different-pid', 'unverified-pid', 'refused', 'cjs', 'count-mismatch', 'pid-mismatch'])(
     'keeps the launcher boundary closed for %s notices', (variant) => {
       const top = join(dir, 'launcher-boundary');
