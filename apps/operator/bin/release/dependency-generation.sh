@@ -4306,7 +4306,7 @@ dependency_generation_main() {
   local integration_root='' generation_root='' select_inputs_from='' ensure_ref='' fingerprint_ref='' retention_rc=0 prune_only='' check_headroom=''
   local remember_store='' retired_store='' skip_recorded_stores='' current_root='' old_root='' record line registered=''
   local input_before='' input_after='' exact_input='' selector='' lease_owner_pid='' live_input='' build_root=''
-  local predict_ref='' predict_verdict='' predict_rc=0 line retain_as='' verifier_source=''
+  local predict_ref='' predict_verdict='' predict_rc=0 line retain_as='' retain_input_as='' verifier_source=''
   local workspace_dirs=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -4318,6 +4318,7 @@ dependency_generation_main() {
       --ensure-ref) ensure_ref="$2"; shift 2 ;;
       --verifier-source) verifier_source="$2"; shift 2 ;;
       --retain-as) retain_as="$2"; shift 2 ;;
+      --retain-input-as) retain_input_as="$2"; shift 2 ;;
       --fingerprint-ref) fingerprint_ref="$2"; shift 2 ;;
       --predict-ref) predict_ref="$2"; shift 2 ;;
       --prune-only) prune_only='1'; shift ;;
@@ -4343,15 +4344,28 @@ dependency_generation_main() {
     }
   }
   [ -z "$retain_as" ] || {
-    [ -z "$fingerprint_ref$prune_only$check_headroom$predict_ref$remember_store$retired_store$skip_recorded_stores" ] \
-      && [ "${#workspace_dirs[@]}" -eq 0 ] || {
-      dependency_generation_log '--retain-as requires full publication, selection, or --ensure-ref'
+    [ -n "$ensure_ref" ] || {
+      dependency_generation_log '--retain-as requires --ensure-ref'
       return 2
     }
     [[ "$retain_as" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || {
       dependency_generation_log "--retain-as label must match ^[a-z0-9][a-z0-9-]{0,63}\$: $retain_as"
       return 2
     }
+  }
+  [ -z "$retain_input_as" ] || {
+    [ -z "$retain_as$ensure_ref$verifier_source$fingerprint_ref$prune_only$check_headroom$predict_ref$remember_store$retired_store$skip_recorded_stores" ] \
+      && [ "${#workspace_dirs[@]}" -eq 0 ] || {
+      dependency_generation_log '--retain-input-as requires full publication or --select-inputs-from'
+      return 2
+    }
+    [[ "$retain_input_as" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || {
+      dependency_generation_log "--retain-input-as label must match ^[a-z0-9][a-z0-9-]{0,63}\$: $retain_input_as"
+      return 2
+    }
+    # Reuse the bounded, expiring pin implementation without changing the
+    # exact-ref-only --retain-as contract.
+    retain_as="$retain_input_as"
   }
   [ -n "$integration_root" ] || {
     dependency_generation_log '--integration is required'
