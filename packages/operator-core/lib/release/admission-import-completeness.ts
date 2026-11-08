@@ -32,6 +32,8 @@ import ts from 'typescript';
 
 import {
   ADMISSION_GIT_MAX_BUFFER,
+  admissionSubmoduleRepository,
+  findGitlinkAncestor,
   realAdmissionGit,
   type AdmissionGitRunner,
   type AdmissionMissingImport,
@@ -555,7 +557,7 @@ function batchGitlinks(
  * `ls-tree -d` over the ancestors of anything unresolved (to tell a submodule path from a
  * missing file), and one batch-check against `probeRef` for the missing set.
  */
-export function checkAdmissionImportCompleteness(input: ImportCompletenessInput): ImportCompletenessOutcome {
+function checkRepositoryImportCompleteness(input: ImportCompletenessInput): ImportCompletenessOutcome {
   const git = input.git ?? realAdmissionGit;
   const skipped: ImportCompletenessSkip[] = [];
   const checked: string[] = [];
@@ -691,6 +693,60 @@ export function checkAdmissionImportCompleteness(input: ImportCompletenessInput)
     runtimeData: runtimeDataCount,
     skipped,
   };
+}
+
+/** Git does not traverse gitlinks: check admitted inner files in their proved child tree. */
+export function checkAdmissionImportCompleteness(input: ImportCompletenessInput): ImportCompletenessOutcome {
+  const git = input.git ?? realAdmissionGit;
+  const run = (argv: readonly string[]) => git(argv, {
+    cwd: input.root, env: { ...process.env, GIT_LITERAL_PATHSPECS: '1' },
+  });
+  // Preserve the existing root fast path and its bounded Git-call budget. Only failed
+  // blob lookups can be inner paths that Git silently stopped at a gitlink.
+  const rootResult = checkRepositoryImportCompleteness(input);
+  if (!rootResult.ok && rootResult.code === 'git-failed') return rootResult;
+  const groups = new Map<string, { pin: string; paths: string[] }>();
+  const innerPaths = new Set<string>();
+  for (const { path, reason } of rootResult.skipped) {
+    if (reason !== 'not-a-blob') continue;
+    const found = findGitlinkAncestor(run, input.commit, path);
+    if (!found.ok) return { ok: false, code: 'git-failed', step: found.step, detail: found.result.stderr || found.result.stdout };
+    if (!found.entry) continue;
+    const { path: gitlink, sha: pin } = found.entry;
+    if (!pin) return { ok: false, code: 'git-failed', step: 'resolve child pin', detail: `No child pin for ${gitlink}` };
+    const group = groups.get(gitlink) ?? { pin, paths: [] };
+    group.paths.push(path.slice(gitlink.length + 1));
+    groups.set(gitlink, group);
+    innerPaths.add(path);
+  }
+  if (groups.size === 0) return rootResult;
+  const checked = [...rootResult.checked];
+  const skipped = rootResult.skipped.filter((entry) => !innerPaths.has(entry.path));
+  const missing: AdmissionMissingImport[] = rootResult.ok ? [] : [...rootResult.missing];
+  let imports = rootResult.imports;
+  let runtimeData = rootResult.runtimeData;
+  for (const [gitlink, group] of groups) {
+    const repo = admissionSubmoduleRepository(input.root, gitlink, [group.pin], git);
+    if (!repo) return { ok: false, code: 'git-failed', step: 'resolve child object store',
+      detail: `${gitlink}@${group.pin} is unavailable; child import completeness was not measured` };
+    let probeRef: string | undefined;
+    if (input.probeRef) {
+      const probe = findGitlinkAncestor(run, input.probeRef, `${gitlink}/${group.paths[0]}`);
+      if (probe.ok && probe.entry?.path === gitlink) probeRef = probe.entry.sha ?? undefined;
+    }
+    const child = checkAdmissionImportCompleteness({ root: repo, commit: group.pin, paths: group.paths, probeRef, git });
+    if (!child.ok && child.code === 'git-failed') return child;
+    const outer = (path: string) => `${gitlink}/${path}`;
+    checked.push(...child.checked.map(outer));
+    skipped.push(...child.skipped.map((entry) => ({ ...entry, path: outer(entry.path) })));
+    imports += child.imports;
+    runtimeData += child.runtimeData;
+    if (!child.ok) missing.push(...child.missing.map((entry) => ({ ...entry,
+      from: outer(entry.from), wanted: outer(entry.wanted), tried: entry.tried.map(outer),
+    })));
+  }
+  const measurements = { checked, skipped, imports, runtimeData };
+  return missing.length ? { ok: false, code: 'admission-incomplete', missing, ...measurements } : { ok: true, ...measurements };
 }
 
 /**

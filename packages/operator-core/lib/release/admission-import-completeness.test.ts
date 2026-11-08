@@ -102,6 +102,66 @@ const admit = (
     ...extra,
   });
 
+describe('admitted submodule files use the proved child pin', () => {
+  function childFixture() {
+    const { root } = repo();
+    const child = join(root, 'libs/nested');
+    mkdirSync(child, { recursive: true });
+    git(child, ['init', '-q', '-b', 'staging']);
+    const pin = sweep(child, { 'src/reader.ts': 'export const value = 1;\n' }, 'child base');
+    git(root, ['update-index', '--add', '--cacheinfo', `160000,${pin},libs/nested`]);
+    git(root, ['commit', '-qm', 'frozen child']);
+    const candidate = git(root, ['rev-parse', 'HEAD']);
+    const tip = sweep(child, {
+      'src/reader.ts': "export { value } from './sibling';\n",
+      'src/sibling.ts': 'export const value = 2;\n',
+    }, 'child dependency pair');
+    git(root, ['update-index', '--cacheinfo', `160000,${tip},libs/nested`]);
+    git(root, ['commit', '-qm', 'published child source']);
+    return { root, child, candidate, pin, tip, source: git(root, ['rev-parse', 'HEAD']) };
+  }
+
+  it('refuses a missing child sibling before publishing, then accepts the complete pair', () => {
+    const { root, child, candidate, tip } = childFixture();
+    const preflight = importCompletenessPreflight({ root, probeRef: 'staging' });
+    const parentIndex = git(root, ['write-tree']);
+    const childIndex = git(child, ['write-tree']);
+    const refused = admit(root, candidate, ['libs/nested/src/reader.ts'], { preflight });
+    expect(refused).toMatchObject({ ok: false, code: 'admission-incomplete', missing: [{
+      from: 'libs/nested/src/reader.ts', wanted: 'libs/nested/src/sibling.ts', atProbeRef: 'present',
+    }] });
+    expect(refAt(root, frozenLineageRef(candidate))).toBeNull();
+    expect(admit(root, candidate, ['libs/nested/src/reader.ts', 'libs/nested/src/sibling.ts'], { preflight }))
+      .toMatchObject({ ok: true, published: true });
+    expect(git(root, ['write-tree'])).toBe(parentIndex);
+    expect(git(child, ['write-tree'])).toBe(childIndex);
+    expect(git(child, ['rev-parse', 'HEAD'])).toBe(tip);
+  });
+
+  it('reads the canonical child when a linked serving checkout has stale child objects', () => {
+    const { root, child, candidate, tip, source } = childFixture();
+    const serving = join(mkdtempSync(join(tmpdir(), 'admit-child-serving-')), 'tree');
+    TEMP.push(dirname(serving));
+    git(root, ['worktree', 'add', '-q', '--detach', serving, candidate]);
+    // Only the frozen child object is available in the serving generation.
+    const staleChild = join(serving, 'libs/nested');
+    mkdirSync(staleChild, { recursive: true });
+    git(staleChild, ['init', '-q']);
+    expect(() => git(staleChild, ['cat-file', '-e', `${tip}^{commit}`])).toThrow();
+    write(child, 'src/reader.ts', "export * from './uncommitted-missing';\n");
+    expect(checkAdmissionImportCompleteness({ root: serving, commit: source,
+      paths: ['libs/nested/src/reader.ts'], probeRef: source }))
+      .toMatchObject({ ok: true, checked: ['libs/nested/src/reader.ts'], imports: 1 });
+  });
+
+  it('fails closed when the proved child object store is unavailable', () => {
+    const { root, child, source } = childFixture();
+    rmSync(join(child, '.git'), { recursive: true, force: true });
+    expect(checkAdmissionImportCompleteness({ root, commit: source, paths: ['libs/nested/src/reader.ts'] }))
+      .toMatchObject({ ok: false, code: 'git-failed' });
+  });
+});
+
 describe('extractRelativeImportSpecifiers — relative specifiers in import position only', () => {
   it('reads static, type-only, side-effect, re-export, dynamic and require forms, in order', () => {
     const src = [

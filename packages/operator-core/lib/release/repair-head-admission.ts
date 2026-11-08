@@ -118,6 +118,22 @@ export const realAdmissionGit: AdmissionGitRunner = (argv, opts) => {
   };
 };
 
+/** Use the durable child object store when a serving generation has a stale clone. */
+export function admissionSubmoduleRepository(
+  root: string,
+  gitlink: string,
+  pins: readonly string[],
+  git: AdmissionGitRunner = realAdmissionGit,
+): string | null {
+  const commonResult = git(['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: root });
+  const common = commonResult.status === 0 ? commonResult.stdout.trim() : '';
+  const mainRoot = common && basename(common) === '.git' ? dirname(common) : root;
+  return [...new Set([join(mainRoot, gitlink), join(root, gitlink)])].find((repo) =>
+    existsSync(join(repo, '.git')) &&
+    pins.every((pin) => git(['cat-file', '-e', `${pin}^{commit}`], { cwd: repo }).status === 0),
+  ) ?? null;
+}
+
 export type AdmissionEntryKind = 'blob' | 'symlink' | 'gitlink' | 'absent';
 
 export interface AdmissionTreeEntry {
@@ -571,14 +587,6 @@ export function admitPathsOntoRepairHead(input: AdmitPathsInput): AdmissionOutco
     const submoduleCommits: Array<{ gitlink: string; repo: string; commit: string }> = [];
     const submoduleBlobs: Record<string, string | null> = {};
     let subIndexes = 0;
-    // The main worktree the serving root belongs to (the root itself when it IS the main one):
-    // a linked worktree's common git dir is `<main>/.git`. Resolved only when a submodule is named.
-    const mainWorktreeRoot = ((): string => {
-      if (submoduleGroups.size === 0) return input.root;
-      const r = run(['rev-parse', '--path-format=absolute', '--git-common-dir']);
-      const common = r.status === 0 ? r.stdout.trim() : '';
-      return common && basename(common) === '.git' ? dirname(common) : input.root;
-    })();
     for (const group of submoduleGroups.values()) {
       if (allowlist.includes(group.gitlink)) {
         return {
@@ -597,12 +605,7 @@ export function admitPathsOntoRepairHead(input: AdmitPathsInput): AdmissionOutco
       // submodule (WI-6554700010030437). So build in the main worktree's submodule whenever it
       // holds both pins, and fall back to the serving root only when it cannot.
       const pins = [group.headPin, group.sourcePin];
-      const holdsPins = (candidateRepo: string): boolean =>
-        existsSync(join(candidateRepo, '.git')) &&
-        pins.every((pin) => git(['cat-file', '-e', `${pin}^{commit}`], { cwd: candidateRepo }).status === 0);
-      const mainRepo = join(mainWorktreeRoot, group.gitlink);
-      const servingRepo = join(input.root, group.gitlink);
-      const repo = [mainRepo, servingRepo].find(holdsPins) ?? mainRepo;
+      const repo = admissionSubmoduleRepository(input.root, group.gitlink, pins, git) ?? join(input.root, group.gitlink);
       const runSub = (argv: readonly string[], env?: NodeJS.ProcessEnv): AdmissionGitResult =>
         git(argv, { cwd: repo, env: env ? { ...process.env, ...env } : undefined });
       const outer = (inner: string) => `${group.gitlink}/${inner}`;
