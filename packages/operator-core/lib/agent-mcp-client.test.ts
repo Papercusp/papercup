@@ -88,6 +88,25 @@ describe('owned MCP listed generation', () => {
 });
 
 describe('owned MCP initialization failure evidence', () => {
+  it.each(['http', 'uds', 'auto'] as const)('prepares %s clients before initialize without changing transport selection', async mode => {
+    if (mode !== 'http') mock.readDiscovery.mockResolvedValueOnce({ agentMcp: {
+      socketPath: '/run/user/1000/fixture-agent-mcp.sock', operatorId: 'fixture', generation: 'fixture-1',
+    } });
+    const stages: string[] = [];
+    let prepared: unknown;
+    mock.connect.mockImplementationOnce(async () => { stages.push('connect'); });
+    const result = await connectAgentMcp({ url: 'http://127.0.0.1:3170/api/mcp', mode,
+      prepareClient(client) {
+        stages.push('prepare');
+        prepared = client;
+      },
+    });
+    expect(stages).toEqual(['prepare', 'connect']);
+    expect(result.client).toBe(prepared);
+    expect(result.transportKind).toBe(mode === 'http' ? 'http' : 'uds');
+    expect(mock.connect).toHaveBeenCalledOnce();
+  });
+
   it('moves managed HTTP SU profiles to the owned client while preserving their connection', () => {
     const server = { url: 'http://127.0.0.1:3170/api/mcp?client=private-owner',
       headers: { Authorization: 'Bearer private-token' } };

@@ -54,6 +54,9 @@ export interface AgentMcpClientOptions {
   home?: string;
   timeoutMs?: number;
   name?: string;
+  /** Install client-owned initialize observers before either transport starts.
+   * Authentication still belongs to the selected transport below. */
+  prepareClient?: (client: Client) => void;
   platform?: string;
   env?: NodeJS.ProcessEnv;
 }
@@ -217,6 +220,7 @@ export async function connectAgentMcp(options: AgentMcpClientOptions): Promise<{
   const ClientClass = endpoint ? UdsAgentMcpClient : CatalogAgentMcpClient;
   const client = new ClientClass({ name: options.name ?? 'papercusp-native', version: '1' });
   try {
+    options.prepareClient?.(client);
     await client.connect(transport, options.timeoutMs ? { timeout: options.timeoutMs } : undefined);
     return {
       client, transportKind: endpoint ? 'uds' : 'http',
