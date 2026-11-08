@@ -294,7 +294,7 @@ describe('retention on a real fixture tree', () => {
         capabilityTags: [], stale: false, userId: null, revoked: lost && loss === 'revoked',
       } satisfies PresenceRecord],
       resolveSessionStates: ((subjects, opts) => resolveSessionStates(subjects, { ...opts,
-        fetchWakeabilityFn: async ids => new Map(ids.map(id => [id, { wakeable: false, liveTurn: !lost }])),
+        fetchWakeabilityFn: async ids => new Map(ids.map(id => [id, { wakeable: false, liveTurn: !(lost && loss === 'dead') }])),
         fetchRecordedLiveFn: async () => new Set(), fetchRecordedEndedFn: async () => new Set(), probePidFn: () => null,
       })) as typeof resolveSessionStates,
     };
