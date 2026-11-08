@@ -218,17 +218,19 @@ function normalizedRecord(value) {
  * manifest dependency maps; stale copies can detach npm's ideal-tree link targets
  * and crash inside build-ideal-tree before npm can repair them.
  */
-function findRootLockManifestMismatches(repoRoot = DEFAULT_REPO_ROOT) {
+function findRootLockManifestMismatches(repoRoot = DEFAULT_REPO_ROOT, deps = {}) {
   const root = resolve(repoRoot);
+  const exists = deps.existsSync ?? existsSync;
+  const readJson = deps.readJson ?? ((path) => JSON.parse(readFileSync(path, "utf8")));
   const shrinkwrapPath = join(root, "npm-shrinkwrap.json");
-  const lockPath = existsSync(shrinkwrapPath)
+  const lockPath = exists(shrinkwrapPath)
     ? shrinkwrapPath
     : join(root, "package-lock.json");
-  if (!existsSync(lockPath)) return [];
+  if (!exists(lockPath)) return [];
 
   let lock;
   try {
-    lock = JSON.parse(readFileSync(lockPath, "utf8"));
+    lock = readJson(lockPath);
   } catch {
     return [{
       workspace: "<lockfile>",
@@ -242,13 +244,13 @@ function findRootLockManifestMismatches(repoRoot = DEFAULT_REPO_ROOT) {
   if (!lockPackages || typeof lockPackages !== "object" || Array.isArray(lockPackages))
     return [];
 
-  const candidates = new Set(["", ...resolveWorkspaceDirs(root)]);
+  const candidates = new Set(["", ...resolveWorkspaceDirs(root, deps)]);
   for (const key of Object.keys(lockPackages)) {
     if (!key || key.includes("node_modules/") || lockPackages[key]?.link) continue;
     const absolute = resolve(root, key);
     if (!isStrictlyWithin(root, absolute)) continue;
     const rel = relative(root, absolute).split(sep).join("/");
-    if (existsSync(join(absolute, "package.json"))) candidates.add(rel);
+    if (exists(join(absolute, "package.json"))) candidates.add(rel);
   }
 
   const mismatches = [];
@@ -256,7 +258,7 @@ function findRootLockManifestMismatches(repoRoot = DEFAULT_REPO_ROOT) {
     const manifestPath = workspace
       ? join(root, workspace, "package.json")
       : join(root, "package.json");
-    if (!existsSync(manifestPath)) continue;
+    if (!exists(manifestPath)) continue;
 
     const lockEntry = lockPackages[workspace];
     if (!lockEntry || typeof lockEntry !== "object") {
@@ -271,7 +273,7 @@ function findRootLockManifestMismatches(repoRoot = DEFAULT_REPO_ROOT) {
 
     let manifest;
     try {
-      manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+      manifest = readJson(manifestPath);
     } catch {
       mismatches.push({
         workspace,
@@ -320,9 +322,11 @@ function formatRootLockManifestMismatches(mismatches) {
   return lines.join("\n");
 }
 
-/** Reuse install admission for consumers of an independently pinned source tree. */
-export function assertRootLockManifestMatches(repoRoot = DEFAULT_REPO_ROOT) {
-  const mismatches = findRootLockManifestMismatches(repoRoot);
+/** Reuse install admission for a filesystem or an immutable manifest census.
+ * The optional readers also feed the existing workspace expansion seam.
+ */
+export function assertRootLockManifestMatches(repoRoot = DEFAULT_REPO_ROOT, deps = {}) {
+  const mismatches = findRootLockManifestMismatches(repoRoot, deps);
   if (mismatches.length) throw new Error(formatRootLockManifestMismatches(mismatches));
 }
 
