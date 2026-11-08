@@ -1,5 +1,32 @@
 export function runtimeFileTraceArguments(output: string, command: string[]): string[];
 export function observeRuntimePageSize(): number;
+export interface RuntimeObservedProcessIdentity {
+  processId: number; parentProcessId: number; startTimeTicks: string; executable: string;
+}
+export interface RuntimeExecutableMemoryObservation {
+  schema: 'runtime-selected-executable-memory/v1';
+  process: RuntimeObservedProcessIdentity; observerProcessId: number;
+  startedMonotonicNs: string; finishedMonotonicNs: string;
+  tasksBefore: {taskId: number; state: string; startTimeTicks: string}[];
+  tasksAfter: {taskId: number; state: string; startTimeTicks: string}[];
+  mapsBefore: string; mapsAfter: string;
+  samples: {codeIndex: string; address: string; bytes: Buffer}[];
+}
+export function observeRuntimeProcessIdentity(processId: number): RuntimeObservedProcessIdentity;
+export function observeRuntimeExecutableMemory(identity: RuntimeObservedProcessIdentity,
+  ranges: {codeIndex: string; address: string; size: number}[]): RuntimeExecutableMemoryObservation;
+export function bindRuntimeJitMemory(bytes: Buffer, witness: Parameters<typeof bindRuntimeJitDump>[1],
+  observation: RuntimeExecutableMemoryObservation, expectedIdentity: RuntimeObservedProcessIdentity): {
+    schema: 'runtime-jit-selected-memory-binding/v1'; processId: number;
+    dumpSha256: string; mapsSha256: string; startedMonotonicNs: string; finishedMonotonicNs: string;
+    bindings: {codeIndex: string; address: string; bytes: number; sha256: string;
+      mapping: {start: string; end: string; permissions: string; offset: string;
+        device: string; inode: string; path: string | null}}[];
+    selectedExecutableBytesVerified: true; emittedLoadsNotSampled: number;
+    mappingPopulationComplete: false; executableBytesQualified: false; completeRuntimeClosureVerified: false;
+    jitByteOriginQualification: 'required'; runtimeCaptureCustody: 'required'; creatorFence: 'required';
+    writableAliasQualification: 'required'; scope: string;
+};
 export function bindRuntimeJitDump(bytes: Buffer, witness: {
   processId: number; taskIds: number[]; elfMachine: number;
   startedMonotonicNs: string; finishedMonotonicNs: string;

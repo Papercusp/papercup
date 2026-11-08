@@ -16,6 +16,10 @@ export function bindRuntimeSourcePopulation(trace: string, terminal: {
   root: string; files: {path: string; kind: 'file' | 'symlink'; sha256: string}[];
 }, jitCaptures?: {
   bytes: Buffer; witness: Parameters<typeof import('./runtime-file-opens.mjs').bindRuntimeJitDump>[1];
+  memory?: {
+    observation: import('./runtime-file-opens.mjs').RuntimeExecutableMemoryObservation;
+    launchIdentity: import('./runtime-file-opens.mjs').RuntimeObservedProcessIdentity;
+  };
 }[]): {
   schema: 'runtime-traced-source-population/v1'; processId: number; processes: ParsedSourceReceipt[];
   tracedTaskPopulationComplete: true; parsedSourceProcessPopulationComplete: true;
@@ -25,6 +29,7 @@ export function bindRuntimeSourcePopulation(trace: string, terminal: {
   jitByteCapture: 'not-observed' | 'runtime-reported-code-loads-for-traced-processes';
   jitBindings?: (ReturnType<typeof import('./runtime-file-opens.mjs').bindRuntimeJitDump> & {
     tracedTaskIds: number[]; sourceCaptureSha256: string; witnessSha256: string;
+    selectedMemory?: ReturnType<typeof import('./runtime-file-opens.mjs').bindRuntimeJitMemory>;
   })[];
   completeRuntimeClosureVerified: false; sourceQualification: 'required';
   dependencyQualification: 'required'; creatorFence: 'required'; scope: string;

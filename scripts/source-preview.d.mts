@@ -309,6 +309,7 @@ export function createBgVerifierRuntimeCustody(options: Parameters<typeof create
                 tracedTaskIds: number[];
                 sourceCaptureSha256: string;
                 witnessSha256: string;
+                selectedMemory?: ReturnType<typeof import("../packages/operator-core/lib/memory/bench/runtime-file-opens.mjs").bindRuntimeJitMemory>;
             })[];
             completeRuntimeClosureVerified: false;
             sourceQualification: "required";
@@ -573,6 +574,7 @@ export function createBgVerifierRuntimeCustody(options: Parameters<typeof create
             tracedTaskIds: number[];
             sourceCaptureSha256: string;
             witnessSha256: string;
+            selectedMemory?: ReturnType<typeof import("../packages/operator-core/lib/memory/bench/runtime-file-opens.mjs").bindRuntimeJitMemory>;
         })[];
         compiledOutputBytesObserved: boolean;
     }>;
@@ -3008,6 +3010,7 @@ export function qualifyBgVerifierRuntimeSources({ output, record, invocation, ex
             tracedTaskIds: number[];
             sourceCaptureSha256: string;
             witnessSha256: string;
+            selectedMemory?: ReturnType<typeof import("../packages/operator-core/lib/memory/bench/runtime-file-opens.mjs").bindRuntimeJitMemory>;
         })[];
         completeRuntimeClosureVerified: false;
         sourceQualification: "required";
@@ -3272,6 +3275,7 @@ export function qualifyBgVerifierRuntimeSources({ output, record, invocation, ex
         tracedTaskIds: number[];
         sourceCaptureSha256: string;
         witnessSha256: string;
+        selectedMemory?: ReturnType<typeof import("../packages/operator-core/lib/memory/bench/runtime-file-opens.mjs").bindRuntimeJitMemory>;
     })[];
     compiledOutputBytesObserved: boolean;
 };
