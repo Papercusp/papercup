@@ -21,7 +21,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it, onTestFailed, vi } from 'vitest';
-import { observeRuntimePageSize, runtimeFileTraceArguments } from './memory/bench/runtime-file-opens.mjs';
+import { bindRuntimeProcessTree, observeRuntimePageSize, runtimeFileTraceArguments } from './memory/bench/runtime-file-opens.mjs';
 import {
   ROOT as SOURCE_ROOT,
   ADDED_FILES,
@@ -4009,8 +4009,8 @@ describe('BG inherited manifest and original source boundaries', () => {
     generation?: { store: string, path: string };
   }> | undefined)[] = [];
   async function compiledRuntime(transformed = false, native = false, host?: 'complete' | 'missing-member' | 'with-builtins' | 'with-vdso',
-    custodyCase?: string, frozenGeneration = false) {
-    const index = host === 'with-vdso' ? 7 : host === 'with-builtins' ? 6 : host === 'complete' ? 4 : host === 'missing-member' ? 5
+    custodyCase?: string, frozenGeneration = false, jit = false) {
+    const index = jit ? 8 + Number(transformed) + Number(native)*2 : host === 'with-vdso' ? 7 : host === 'with-builtins' ? 6 : host === 'complete' ? 4 : host === 'missing-member' ? 5
       : Number(transformed) + Number(native) * 2;
     const build = async () => {
       // Independently pin a reference-host file census before the compiler and
@@ -4106,8 +4106,9 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
       if (custodyCase === 'dependency-aba') writeFileSync(metadata, Buffer.concat([originalMetadata, Buffer.from('\n')]));
       if (custodyCase === 'directory-aba') writeFileSync(transientMetadata, '{}');
       const pageSizeBytes = observeRuntimePageSize();
+      const startedEpochMs=Date.now(), startedMonotonicNs=process.hrtime.bigint().toString();
       const result = spawnSync('strace', runtimeFileTraceArguments(trace,
-        [process.execPath, '--import', pathToFileURL(preload).href,
+        [process.execPath, ...(jit ? ['--perf-prof','--perf-prof-path='+dirname(capture)] : []), '--import', pathToFileURL(preload).href,
           '--import', pathToFileURL(sourceInput).href,
           '--import', pathToFileURL(dependencyInput).href,
           ...(native ? ['--import', pathToFileURL(nativePreload).href] : []), entry]), {
@@ -4115,6 +4116,7 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
           ...(native ? { LD_DEBUG: 'files' } : {}) },
         encoding: 'utf8', timeout: 15_000, maxBuffer: 1024 * 1024,
       });
+      const finishedMonotonicNs=process.hrtime.bigint().toString(), finishedEpochMs=Date.now();
       if (custodyCase === 'dependency-aba') writeFileSync(metadata, originalMetadata);
       if (custodyCase === 'directory-aba') rmSync(transientMetadata);
       const rows = existsSync(capture) ? readFileSync(capture, 'utf8').trim().split('\n').map(line => JSON.parse(line)) : [];
@@ -4140,15 +4142,57 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
           eof: true as const, processId: rows[0].processId, exitCode: result.status!, signal: result.signal,
           bytes: stderr.length, sha256: digest(stderr) } };
       })()] : undefined;
+      const terminal={processId:rows[0].processId,pageSizeBytes,exitCode:result.status!,signal:result.signal,
+        eof:true,captureStartedBeforeExec:true};
+      let jitCaptures: Parameters<typeof qualifyBgVerifierRuntimeSources>[0]['execution']['jitCaptures'];
+      if(jit) {
+        const elf=Buffer.alloc(20), fd=nativeFs.openSync(process.execPath,'r');
+        try {expect(nativeFs.readSync(fd,elf,0,20,0)).toBe(20);}finally{nativeFs.closeSync(fd);}
+        const tree=bindRuntimeProcessTree(readFileSync(trace,'utf8'),terminal);
+        jitCaptures=[{bytes:readFileSync(join(dirname(capture),'jit-'+terminal.processId+'.dump')),
+          witness:{...terminal,taskIds:tree.tasks.map(task=>task.taskId),
+            elfMachine:elf[5]===1?elf.readUInt16LE(18):elf.readUInt16BE(18),
+            startedEpochMs,finishedEpochMs,startedMonotonicNs,finishedMonotonicNs,
+            headerClock:'v8-realtime-microseconds'}}];
+      }
       return { output, record: fixture.record, invocation: fixture.args.invocation, inputCustody, runtimeCustody,
         generation: fixture.generation,
         execution: { entry, trace: readFileSync(trace, 'utf8'), captures: [rows],
           ...(nativeCaptures ? { nativeCaptures } : {}),
-          terminal: { processId: rows[0].processId, pageSizeBytes, exitCode: result.status!, signal: result.signal,
-            eof: true, captureStartedBeforeExec: true } } };
+          ...(jitCaptures ? { jitCaptures } : {}), terminal } };
     };
     return custodyCase || frozenGeneration ? build() : runtimeCompilations[index] ??= build();
   }
+
+  it.each(['positive','absent','empty','duplicate','foreign','foreign-thread','source-clock','wall-clock','altered-bytes','unretained-bytes'] as const)(
+    'compiled runtime JIT byte custody: %s', async variant => {
+      const fixture=await compiledRuntime(false,false,undefined,undefined,false,true);
+      const execution=structuredClone(fixture.execution);
+      execution.jitCaptures!.forEach((capture,index)=>{capture.bytes=Buffer.from(fixture.execution.jitCaptures![index].bytes);});
+      const capture=execution.jitCaptures![0];
+      if(variant==='absent')delete execution.jitCaptures;
+      if(variant==='empty')execution.jitCaptures=[];
+      if(variant==='duplicate')execution.jitCaptures!.push(capture);
+      if(variant==='foreign')capture.witness.processId++;
+      if(variant==='foreign-thread')capture.witness.taskIds.push(99999999);
+      if(variant==='source-clock')delete execution.captures[0][0].monotonicNs;
+      if(variant==='wall-clock')capture.witness.finishedEpochMs=1;
+      if(variant==='altered-bytes')capture.bytes[0]=0;
+      if(variant==='unretained-bytes')capture.bytes=JSON.parse(JSON.stringify(capture.bytes));
+      const qualify=()=>qualifyBgVerifierRuntimeSources({...fixture,execution});
+      if(variant!=='positive' && variant!=='absent'){expect(qualify).toThrow();return;}
+      const proof=qualify();
+      expect(proof.jitBindings).toHaveLength(variant==='positive'?1:0);
+      if(variant==='positive') {
+        expect(proof.jitBindings[0].sha256).toBe(digest(capture.bytes));
+        expect(proof.jitBindings[0].loads.length).toBeGreaterThan(0);
+        expect(proof.jitBindings[0].runtimeCaptureCustody).toBe('required');
+      }
+      expect(proof.jitByteCapture).toBe(variant==='positive'?'runtime-reported-code-loads-for-traced-processes':'not-observed');
+      expect(proof).toMatchObject({jitByteOriginQualification:'required',executableMemoryQualification:'required',
+        creatorFence:'required',completeRuntimeClosureVerified:false});
+      expect(proof.population.mappingOrigins.executableBytesQualified).toBe(false);
+    });
 
   it.each(['positive', 'copied', 'late', 'foreign', 'pin', 'selector', 'publication', 'materialization'] as const)(
     'compiled runtime frozen generation custody: %s', async variant => {

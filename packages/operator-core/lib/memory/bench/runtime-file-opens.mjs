@@ -25,6 +25,8 @@ export function observeRuntimePageSize() {
  * @param {Buffer} bytes
  * @param {{processId:number, taskIds:number[], elfMachine:number,
  *   startedMonotonicNs:string, finishedMonotonicNs:string,
+ *   headerClock?:'monotonic-nanoseconds'|'v8-realtime-microseconds',
+ *   startedEpochMs?:number, finishedEpochMs?:number,
  *   exitCode:number, signal:string|null, eof:boolean, captureStartedBeforeExec:boolean}} witness
  */
 export function bindRuntimeJitDump(bytes, witness) {
@@ -51,14 +53,26 @@ export function bindRuntimeJitDump(bytes, witness) {
   require(u32(12) === witness.elfMachine && u32(20) === witness.processId, 'header process/architecture differs');
   require(u64(32) === 0n, 'unsupported timestamp clock/flags');
   const created = u64(24);
-  require(created >= before && created <= after, 'header outside observed lifetime');
+  const headerClock = witness.headerClock ?? 'monotonic-nanoseconds';
+  require(headerClock === 'monotonic-nanoseconds' || headerClock === 'v8-realtime-microseconds', 'unsupported header clock');
+  if (headerClock === 'v8-realtime-microseconds') {
+    // V8 perf-jit.cc writes realtime microseconds in the header, but uses
+    // TimeTicks nanoseconds for records. Never infer that dialect from an
+    // out-of-range timestamp: require an explicit independent wall witness.
+    require(Number.isSafeInteger(witness.startedEpochMs) && witness.startedEpochMs > 0
+      && Number.isSafeInteger(witness.finishedEpochMs) && witness.finishedEpochMs >= witness.startedEpochMs,
+    'invalid realtime header witness');
+    require(created >= BigInt(witness.startedEpochMs)*1000n
+      && created < (BigInt(witness.finishedEpochMs)+1n)*1000n, 'header outside observed realtime lifetime');
+  } else require(created >= before && created <= after, 'header outside observed lifetime');
+  const recordStart = headerClock === 'monotonic-nanoseconds' ? created : before;
   const loads = [], moves = [], metadata = [], current = new Map();
   let offset = 40, recordCount = 0, closed = false;
   while (offset < bytes.length) {
     require(!closed && bytes.length-offset >= 16 && ++recordCount <= 100000, 'trailing/incomplete record or record limit');
     const id = u32(offset), size = u32(offset+4), timestamp = u64(offset+8);
     require(size >= 16 && size <= bytes.length-offset, 'record extent differs');
-    require(timestamp >= created && timestamp <= after, 'record outside observed lifetime');
+    require(timestamp >= recordStart && timestamp <= after, 'record outside observed lifetime');
     const end = offset+size, body = offset+16;
     if (id === 0 || id === 1) {
       require(size >= (id === 0 ? 57 : 64), 'short code record');
@@ -99,7 +113,8 @@ export function bindRuntimeJitDump(bytes, witness) {
   require(loads.length > 0, 'no emitted code bytes');
   return {schema:'runtime-jitdump-code-bytes/v1', processId:witness.processId, elfMachine:witness.elfMachine,
     endianness:little ? 'little' : 'big', bytes:bytes.length, sha256:hash(bytes),
-    createdMonotonicNs:created.toString(), recordCount, closeRecordObserved:closed, loads, moves, metadata,
+    headerTimestamp:created.toString(), headerClock,
+    recordClock:'monotonic-nanoseconds', recordCount, closeRecordObserved:closed, loads, moves, metadata,
     byteEvidence:'runtime-reported-code-load-payloads', jitByteOriginQualification:'required',
     executableMemoryQualification:'required', runtimeCaptureCustody:'required', creatorFence:'required',
     completeRuntimeClosureVerified:false};

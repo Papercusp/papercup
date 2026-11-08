@@ -2594,6 +2594,7 @@ export function verifyBgVerifierOutputRecord(output, record, invocation) {
  *   execution: { entry: string, trace: string,
  *     terminal: Parameters<typeof bindRuntimeSourcePopulation>[1],
  *     captures: Parameters<typeof bindRuntimeSourcePopulation>[2],
+ *     jitCaptures?: Parameters<typeof bindRuntimeSourcePopulation>[4],
  *     inputCustody?: ReturnType<typeof createBgVerifierCompilerCustody>,
  *     nativeScope?: 'selected-requests' | 'process-lifetime',
  *     nativeCaptures?: { stderr: Buffer,
@@ -2612,7 +2613,8 @@ export function qualifyBgVerifierRuntimeSources({ output, record, invocation, ex
   const entry = readBgFileIdentity(execution.entry);
   assert.equal(entry.path, entry.realpath, 'BG runtime entry must be physical');
   assert.equal(entry.sha256, output.entry.sha256, 'BG runtime entry differs from original compiler output');
-  const population = bindRuntimeSourcePopulation(execution.trace, execution.terminal, execution.captures);
+  const population = bindRuntimeSourcePopulation(execution.trace, execution.terminal, execution.captures,
+    undefined, execution.jitCaptures);
   let inputCustody;
   if (execution.inputCustody !== undefined) {
     const retained = bgRuntimeInputCustodies.get(execution.inputCustody);
@@ -2773,6 +2775,8 @@ export function qualifyBgVerifierRuntimeSources({ output, record, invocation, ex
       ? 'original-host-bytes' : execution.nativeCaptures === undefined ? 'not-observed' : 'required',
     executableMemoryQualification: population.executableMemoryQualification,
     jitByteOriginQualification: population.mappingOrigins.jitByteOriginQualification,
+    jitByteCapture: population.jitByteCapture,
+    jitBindings: population.jitBindings ?? [],
     compiledOutputBytesObserved: true,
     ...(inputCustody ? { inputCustody } : {}),
     completeRuntimeClosureVerified: false,

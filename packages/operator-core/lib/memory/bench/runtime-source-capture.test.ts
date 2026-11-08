@@ -7,7 +7,7 @@ import inspector from 'node:inspector';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { bindRuntimeSourcePopulation, startRuntimeSourceCapture, validateRuntimeSourceCapture } from './runtime-source-capture.mjs';
-import { observeRuntimePageSize, runtimeFileTraceArguments } from './runtime-file-opens.mjs';
+import { bindRuntimeProcessTree, observeRuntimePageSize, runtimeFileTraceArguments } from './runtime-file-opens.mjs';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
@@ -188,6 +188,54 @@ describe('parsed sources joined to independent process lifetimes', () => {
       finishedAt:new Date(end).toISOString()},
   ];
   const captures = () => [capture(10,1100,1900),capture(20,1400,1700)];
+  function jitCapture(processId:number) {
+    const header=Buffer.alloc(40), load=Buffer.alloc(59);
+    header.writeUInt32LE(0x4a695444,0);header.writeUInt32LE(1,4);header.writeUInt32LE(40,8);
+    header.writeUInt32LE(62,12);header.writeUInt32LE(processId,20);header.writeBigUInt64LE(100n,24);
+    load.writeUInt32LE(59,4);load.writeBigUInt64LE(150n,8);
+    load.writeUInt32LE(processId,16);load.writeUInt32LE(processId,20);
+    load.writeBigUInt64LE(0x1000n,24);load.writeBigUInt64LE(0x1000n,32);
+    load.writeBigUInt64LE(1n,40);load.writeBigUInt64LE(1n,48);load.write('f\0',56);load[58]=0xc3;
+    return {bytes:Buffer.concat([header,load]),witness:{processId,taskIds:[processId],elfMachine:62,
+      startedMonotonicNs:'90',finishedMonotonicNs:'200',startedEpochMs:900,finishedEpochMs:2100,
+      exitCode:0,signal:null,eof:true,captureStartedBeforeExec:true}};
+  }
+  it.each(['positive','absent','empty','missing-process','duplicate','foreign','foreign-thread','missing-thread',
+    'missing-clock','source-before','source-after','source-reversed','late-witness','early-witness',
+    'architecture','altered-bytes','unretained-bytes'] as const)('joins retained JIT process bytes: %s', variant => {
+    const rows: Record<string, any>[][]=captures();
+    for(const capture of rows) {capture[0].monotonicNs='130';capture.at(-1)!.monotonicNs='190';}
+    const jit=[jitCapture(20),jitCapture(10)];
+    if(variant==='empty')jit.length=0;
+    if(variant==='missing-process')jit.pop();
+    if(variant==='duplicate')jit[1]=jit[0];
+    if(variant==='foreign')jit[0]=jitCapture(30);
+    if(variant==='foreign-thread')jit[0].witness.taskIds.push(10);
+    if(variant==='missing-thread')jit[0].witness.taskIds=[];
+    if(variant==='missing-clock')delete rows[0][0].monotonicNs;
+    if(variant==='source-before')rows[0][0].monotonicNs='89';
+    if(variant==='source-after')rows[0].at(-1)!.monotonicNs='201';
+    if(variant==='source-reversed')rows[0][0].monotonicNs='191';
+    if(variant==='late-witness')jit[0].witness.startedEpochMs=1301;
+    if(variant==='early-witness')jit[0].witness.finishedEpochMs=1799;
+    if(variant==='architecture')jit[0].witness.elfMachine=183;
+    if(variant==='altered-bytes')jit[0].bytes[0]=0;
+    if(variant==='unretained-bytes')jit[0].bytes=JSON.parse(JSON.stringify(jit[0].bytes));
+    const bind=()=>bindRuntimeSourcePopulation(trace,terminal,rows,undefined,variant==='absent'?undefined:jit);
+    if(variant!=='positive' && variant!=='absent') {expect(bind).toThrow();return;}
+    const proof=bind();
+    expect(proof.jitByteCapture).toBe(variant==='absent'?'not-observed':'runtime-reported-code-loads-for-traced-processes');
+    expect(proof.jitBindings?.map(row=>row.processId)).toEqual(variant==='absent'?undefined:[20,10]);
+    if(variant==='positive')for(const binding of proof.jitBindings!) {
+      expect(binding.sourceCaptureSha256).toBe(crypto.createHash('sha256').update(JSON.stringify(
+        rows.find(rows=>rows[0].processId===binding.processId))).digest('hex'));
+      expect(binding.tracedTaskIds).toEqual([binding.processId]);
+      expect(binding).toMatchObject({jitByteOriginQualification:'required',runtimeCaptureCustody:'required',
+        executableMemoryQualification:'required',creatorFence:'required',completeRuntimeClosureVerified:false});
+    }
+    expect(proof.completeRuntimeClosureVerified).toBe(false);
+    expect(proof.mappingOrigins.executableBytesQualified).toBe(false);
+  });
   it('requires a separate source receipt for each observed process', () => {
     const result = bindRuntimeSourcePopulation(trace,terminal,captures());
     expect(result.processes.map(row=>row.processId)).toEqual([10,20]);
@@ -265,23 +313,38 @@ describe('parsed sources joined to independent process lifetimes', () => {
     const env:NodeJS.ProcessEnv={...process.env,PAPERCUSP_RUNTIME_SOURCE_CAPTURE:path.join(root,'source-%p.jsonl')};
     delete env.NODE_OPTIONS;
     const pageSizeBytes = observeRuntimePageSize();
+    const elf=Buffer.alloc(20), fd=fs.openSync(process.execPath,'r');
+    try {expect(fs.readSync(fd,elf,0,20,0)).toBe(20);}finally{fs.closeSync(fd);}
+    const elfMachine=elf[5]===1?elf.readUInt16LE(18):elf.readUInt16BE(18);
+    const jitArgs=['--perf-prof','--perf-prof-path='+root];
     const runChild=(instrumented:boolean)=> {
       const tracePath=path.join(root,instrumented?'traced.log':'uncaptured.log');
-      const child=spawnSync('/usr/bin/strace',runtimeFileTraceArguments(tracePath,[process.execPath,'--import',preload,'-e',`
+      const startedEpochMs=Date.now(), startedMonotonicNs=process.hrtime.bigint().toString();
+      const child=spawnSync('/usr/bin/strace',runtimeFileTraceArguments(tracePath,[process.execPath,...jitArgs,'--import',preload,'-e',`
         require(${JSON.stringify(fixture)});
         const {spawnSync}=require('node:child_process');
-        const child=spawnSync(process.execPath,${JSON.stringify(instrumented?['--import',preload]:[])}.concat(
+        const child=spawnSync(process.execPath,${JSON.stringify(instrumented?[...jitArgs,'--import',preload]:[])}.concat(
           ['-e',${JSON.stringify('require('+JSON.stringify(fixture)+')')}]),{stdio:'inherit'});
         if(child.status!==0)process.exit(1);process.stdout.write(String(process.pid));
       `]),{env,encoding:'utf8',timeout:20_000,maxBuffer:1024*1024});
+      const finishedMonotonicNs=process.hrtime.bigint().toString(), finishedEpochMs=Date.now();
       expect(child.status,child.stderr).toBe(0);
       const rows=fs.readdirSync(root).filter(file=>/^source-\d+\.jsonl$/.test(file)).map(file=>
         fs.readFileSync(path.join(root,file),'utf8').trim().split('\n').map(line=>JSON.parse(line)));
-      return {text:fs.readFileSync(tracePath,'utf8'),proof:{...terminal,pageSizeBytes,processId:Number(child.stdout)},rows};
+      const text=fs.readFileSync(tracePath,'utf8'), proof={...terminal,pageSizeBytes,processId:Number(child.stdout)};
+      const tree=bindRuntimeProcessTree(text,proof);
+      const jitCaptures=instrumented?rows.map(rows=>({bytes:fs.readFileSync(path.join(root,'jit-'+rows[0].processId+'.dump')),
+        witness:{...proof,processId:rows[0].processId,elfMachine,
+          taskIds:tree.tasks.filter(task=>task.threadGroupId===rows[0].processId).map(task=>task.taskId),
+          startedEpochMs,finishedEpochMs,startedMonotonicNs,finishedMonotonicNs,
+          headerClock:'v8-realtime-microseconds' as const}})):undefined;
+      return {text,proof,rows,jitCaptures};
     };
     const observed=runChild(true);
-    const result=bindRuntimeSourcePopulation(observed.text,observed.proof,observed.rows);
+    const result=bindRuntimeSourcePopulation(observed.text,observed.proof,observed.rows,undefined,observed.jitCaptures);
     expect(result.processes).toHaveLength(2);
+    expect(result.jitBindings).toHaveLength(2);
+    expect(result.jitBindings!.every(binding=>binding.loads.length>0 && binding.runtimeCaptureCustody==='required')).toBe(true);
     expect(result.mappingOrigins.pageSizeBytes).toBe(pageSizeBytes);
     expect(result.mappingOrigins.gaps.some(gap => gap.reason === 'independent-host-page-size-required')).toBe(false);
     const originalFiles=[preload,fileURLToPath(new URL('./runtime-file-opens.mjs',import.meta.url)),fixture];

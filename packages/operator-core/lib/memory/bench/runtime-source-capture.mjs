@@ -13,7 +13,7 @@ import inspector from 'node:inspector';
 import { isMainThread } from 'node:worker_threads';
 import { isAbsolute, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { bindRuntimeProcessTree } from './runtime-file-opens.mjs';
+import { bindRuntimeJitDump, bindRuntimeProcessTree } from './runtime-file-opens.mjs';
 
 const digest = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 
@@ -70,7 +70,7 @@ export function validateRuntimeSourceCapture(rows, expectedWorkerIds = [], proce
  * parsed-source evidence only: original loader inputs, executable/native bytes,
  * dependencies and creator exclusion need their separate maintained producers.
  */
-export function bindRuntimeSourcePopulation(trace, terminal, captures, fileInputs) {
+export function bindRuntimeSourcePopulation(trace, terminal, captures, fileInputs, jitCaptures) {
   const processTree = bindRuntimeProcessTree(trace, terminal);
   const processes = processTree.tasks.filter(task => task.taskId === task.threadGroupId);
   if (!Array.isArray(captures) || !captures.length || captures.length !== processes.length)
@@ -99,11 +99,47 @@ export function bindRuntimeSourcePopulation(trace, terminal, captures, fileInput
       processId: task.taskId, exitCode: 0, signal: null, eof: terminal.eof,
     });
   });
+  let jitBindings;
+  if (jitCaptures !== undefined) {
+    if (!Array.isArray(jitCaptures) || jitCaptures.length !== processes.length)
+      throw new Error('runtime JIT capture population differs from independent trace');
+    const seen = new Set();
+    let retainedBytes = 0;
+    jitBindings = jitCaptures.map(capture => {
+      const witness = capture?.witness, task = processes.find(task => task.taskId === witness?.processId);
+      if (!task || seen.has(task.taskId) || !Buffer.isBuffer(capture.bytes)
+        || (retainedBytes += capture.bytes.length) > 64*1024*1024)
+        throw new Error('runtime JIT capture duplicate, foreign or oversized');
+      seen.add(task.taskId);
+      const taskIds = processTree.tasks.filter(member => member.threadGroupId === task.taskId)
+        .map(member => member.taskId).sort((a,b) => a-b);
+      // A child process cannot borrow its parent's dump, and a sibling's thread
+      // cannot become an allowed CODE_LOAD writer through a caller's task list.
+      if (!Array.isArray(witness.taskIds) || JSON.stringify([...witness.taskIds].sort((a,b) => a-b)) !== JSON.stringify(taskIds))
+        throw new Error('runtime JIT task population differs from traced thread group');
+      const proof = bindRuntimeJitDump(capture.bytes, witness);
+      const rows = byProcess.get(task.taskId), start = rows[0], end = rows.at(-1);
+      const ns = value => typeof value === 'string' && /^[1-9]\d*$/.test(value);
+      if (!ns(start.monotonicNs) || !ns(end.monotonicNs)
+        || BigInt(start.monotonicNs) > BigInt(end.monotonicNs)
+        || BigInt(start.monotonicNs) < BigInt(witness.startedMonotonicNs)
+        || BigInt(end.monotonicNs) > BigInt(witness.finishedMonotonicNs)
+        || !Number.isSafeInteger(witness.startedEpochMs) || witness.startedEpochMs <= 0
+        || !Number.isSafeInteger(witness.finishedEpochMs) || witness.finishedEpochMs < witness.startedEpochMs
+        || witness.startedEpochMs > Math.floor(task.execs[0].atMs)
+        || witness.finishedEpochMs < Math.ceil(task.terminalAtMs))
+        throw new Error('runtime JIT witness does not enclose traced process and source clocks');
+      return { ...proof, tracedTaskIds: taskIds, sourceCaptureSha256: digest(JSON.stringify(rows)),
+        witnessSha256: digest(JSON.stringify(witness)) };
+    });
+  }
   return { schema: 'runtime-traced-source-population/v1', processId: processTree.processId,
     processes: receipts, tracedTaskPopulationComplete: true,
     memoryTransitions: processTree.memoryTransitions,
     mappingOrigins: processTree.mappingOrigins,
     executableMemoryQualification: processTree.executableMemoryQualification,
+    jitByteCapture: jitBindings ? 'runtime-reported-code-loads-for-traced-processes' : 'not-observed',
+    ...(jitBindings ? { jitBindings } : {}),
     parsedSourceProcessPopulationComplete: true, completeRuntimeClosureVerified: false,
     ...(fileInputs === undefined ? {} : { fileInputs: bindParsedFiles(captures, fileInputs) }),
     sourceQualification: 'required', dependencyQualification: 'required', creatorFence: 'required',

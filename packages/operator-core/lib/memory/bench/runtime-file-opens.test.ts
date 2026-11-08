@@ -44,6 +44,20 @@ describe('retained Linux perf JIT code bytes', () => {
     const bytes=dump();bytes.writeUInt32LE(reserved,16);
     expect(bindRuntimeJitDump(bytes,witness).loads).toHaveLength(1);
   });
+  it('requires explicit independent realtime bounds for the V8 header dialect', () => {
+    const bytes=dump();bytes.writeBigUInt64LE(1700500n,24);
+    const realtime={...witness,headerClock:'v8-realtime-microseconds' as const,startedEpochMs:1700,finishedEpochMs:1701};
+    expect(()=>bindRuntimeJitDump(bytes,witness)).toThrow('header outside observed lifetime');
+    expect(bindRuntimeJitDump(bytes,realtime)).toMatchObject({headerTimestamp:'1700500',
+      headerClock:'v8-realtime-microseconds',recordClock:'monotonic-nanoseconds'});
+    for(const change of [{startedEpochMs:1702},{finishedEpochMs:1699},{startedEpochMs:undefined},
+      {finishedEpochMs:Number.NaN},{startedEpochMs:1699,finishedEpochMs:1699}])
+      expect(()=>bindRuntimeJitDump(bytes,{...realtime,...change})).toThrow('runtime jitdump:');
+    bytes.writeBigUInt64LE(89n,48);
+    expect(()=>bindRuntimeJitDump(bytes,realtime)).toThrow('record outside observed lifetime');
+    bytes.writeBigUInt64LE(201n,48);
+    expect(()=>bindRuntimeJitDump(bytes,realtime)).toThrow('record outside observed lifetime');
+  });
   it.each(['magic','version','header-size','pid','architecture','clock','short-header','truncated-record',
     'extent','timestamp','unknown-kind','name','code-size','address-wrap','duplicate-index','no-loads','after-close','foreign-pid','foreign-tid'])(
     'refuses malformed or foreign %s evidence', variant => {
@@ -92,21 +106,28 @@ describe('retained Linux perf JIT code bytes', () => {
       try {expect(fs.readSync(fd,elf,0,20,0)).toBe(20);}finally{fs.closeSync(fd);}
       expect(elf.subarray(0,4).toString('hex')).toBe('7f454c46');
       const elfMachine=elf[5]===1?elf.readUInt16LE(18):elf.readUInt16BE(18);
-      const pageSizeBytes=observeRuntimePageSize(), before=process.hrtime.bigint();
+      const pageSizeBytes=observeRuntimePageSize(), beforeEpochMs=Date.now(), before=process.hrtime.bigint();
       const child=spawnSync('/usr/bin/strace',runtimeFileTraceArguments(trace,[process.execPath,
         '--perf-prof','--perf-prof-path='+root,'-e',
         'function retainedJitFixture(x){return x+1}; let sum=0; for(let i=0;i<50000;i++)sum+=retainedJitFixture(i); if(sum!==1250025000)process.exit(2);process.stdout.write(String(process.pid));']),
         {env,encoding:'utf8',timeout:20_000,maxBuffer:1024*1024});
-      const after=process.hrtime.bigint();
+      const after=process.hrtime.bigint(), afterEpochMs=Date.now();
       expect(child.error).toBeUndefined();expect(child.status,child.stderr).toBe(0);
       const processId=Number(child.stdout), dumpPath=path.join(root,'jit-'+processId+'.dump');
       const bytes=fs.readFileSync(dumpPath), tree=bindRuntimeProcessTree(fs.readFileSync(trace,'utf8'),{
         processId,exitCode:child.status!,signal:child.signal,eof:true,captureStartedBeforeExec:true,pageSizeBytes});
-      onTestFailed(()=>console.error('JIT_DUMP_CAPTURE_DIAGNOSTICS '+JSON.stringify({processId,elfMachine,
-        startedMonotonicNs:before.toString(),finishedMonotonicNs:after.toString(),bytes:bytes.length,
-        sha256:sha(bytes),headerHex:bytes.subarray(0,40).toString('hex'),taskIds:tree.tasks.map(task=>task.taskId)})));
+      onTestFailed(()=>{
+        const retained=process.env.PAPERCUSP_TEST_ARTIFACT_DIR
+          ? path.join(process.env.PAPERCUSP_TEST_ARTIFACT_DIR,'jitdump-failed-'+processId+'.dump') : null;
+        if(retained)fs.writeFileSync(retained,bytes,{flag:'wx',mode:0o600});
+        console.error('JIT_DUMP_CAPTURE_DIAGNOSTICS '+JSON.stringify({processId,elfMachine,retained,
+          startedMonotonicNs:before.toString(),finishedMonotonicNs:after.toString(),beforeEpochMs,afterEpochMs,
+          bytes:bytes.length,sha256:sha(bytes),headerHex:bytes.subarray(0,40).toString('hex'),
+          taskIds:tree.tasks.map(task=>task.taskId)}));
+      });
       const proof=bindRuntimeJitDump(bytes,{processId,elfMachine,taskIds:tree.tasks.map(task=>task.taskId),
         startedMonotonicNs:before.toString(),finishedMonotonicNs:after.toString(),
+        headerClock:'v8-realtime-microseconds',startedEpochMs:beforeEpochMs,finishedEpochMs:afterEpochMs,
         exitCode:child.status!,signal:child.signal,eof:true,captureStartedBeforeExec:true});
       expect(proof.loads.length).toBeGreaterThan(0);
       for(const load of proof.loads)expect(load.sha256).toBe(sha(bytes.subarray(load.byteOffset,load.byteOffset+load.bytes)));
