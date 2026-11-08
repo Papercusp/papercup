@@ -36,6 +36,34 @@ function report(files: unknown[]): string {
 }
 
 describe('parseVitestJsonForHarnessRows', () => {
+  it('preserves ordered case identities, duplicate occurrences and redacted diagnostics', () => {
+    const [row] = parseVitestJsonForHarnessRows(report([{
+      name: `${ROOT}/src/cases.test.ts`, status: 'failed', startTime: 1, endTime: 10,
+      assertionResults: [
+        { status: 'passed', ancestorTitles: ['suite'], title: 'repeat', fullName: 'suite repeat', duration: 1.4 },
+        { status: 'failed', ancestorTitles: ['suite'], title: 'repeat', duration: 2.6,
+          failureMessages: ['AssertionError: synthetic-child-secret-value'] },
+        { status: 'pending', ancestorTitles: ['suite'], title: 'excluded' },
+      ],
+    }]), ROOT, { EXAMPLE_API_KEY: 'synthetic-child-secret-value' });
+    expect(row.cases).toEqual([
+      { caseIndex: 0, caseKey: 'suite > repeat', occurrence: 1, status: 'pass', durationMs: 1, errorTail: null },
+      { caseIndex: 1, caseKey: 'suite > repeat', occurrence: 2, status: 'fail', durationMs: 3,
+        errorTail: expect.stringContaining('AssertionError:') },
+      { caseIndex: 2, caseKey: 'suite > excluded', occurrence: 1, status: 'skip', durationMs: null, errorTail: null },
+    ]);
+    expect(JSON.stringify(row)).not.toContain('synthetic-child-secret-value');
+  });
+
+  it('does not manufacture partial case evidence when identity or completed status is missing', () => {
+    for (const assertions of [[{ status: 'passed' }], [{ status: 'running', fullName: 'not finished' }]]) {
+      const [row] = parseVitestJsonForHarnessRows(report([{
+        name: `${ROOT}/src/incomplete.test.ts`, status: 'passed', assertionResults: assertions,
+      }]), ROOT);
+      expect(row.cases ?? null).toBeNull();
+    }
+  });
+
   it('maps a passing file to a root-relative POSIX path + pass status + duration', () => {
     const json = report([
       {
@@ -89,7 +117,8 @@ describe('parseVitestJsonForHarnessRows', () => {
       name: `${ROOT}/src/dom.test.ts`, status: 'failed',
       assertionResults: [
         { status: 'passed', fullName: 'suite > passes' },
-        ...names.map(fullName => ({ status: 'failed', fullName, failureMessages: ['DOM '.repeat(3_000)] })),
+        ...names.map(fullName => ({ status: 'failed', fullName,
+          failureMessages: [`AssertionError: ${'DOM '.repeat(3_000)}`] })),
       ],
     }]), ROOT);
     expect(row.outputTail).toHaveLength(4_000);

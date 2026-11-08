@@ -399,6 +399,90 @@ describe('startRunAsync', () => {
 });
 
 describe('task lifecycle handlers', () => {
+  it.each(['fresh', 'existing', 'wrong-scope', 'wrong-root', 'wrong-counts', 'case-write-failed'] as const)(
+    'keeps detached JSON case custody for %s file parents', async scenario => {
+      const reportDir = await mkdtemp('/tmp/papercusp-testing-run-cases-');
+      const reportPath = join(reportDir, 'report.json');
+      const previousPersistOptIn = process.env.PAPERCUSP_TEST_RUNS_PERSIST;
+      process.env.PAPERCUSP_TEST_RUNS_PERSIST = '1';
+      const writes: Array<Record<string, unknown>> = [];
+      const caseBatches: Array<Array<Record<string, unknown>>> = [];
+      let snapshot: ReturnType<Store['startRun']> | undefined;
+      try {
+        await writeFile(reportPath, JSON.stringify({ testResults: [{
+          name: '/tmp/lib/saved.test.ts', status: 'passed', startTime: 1, endTime: 10,
+          assertionResults: [
+            { status: 'passed', ancestorTitles: ['suite'], title: 'repeat', duration: 1 },
+            { status: 'passed', ancestorTitles: ['suite'], title: 'repeat', duration: 2 },
+            { status: 'pending', ancestorTitles: ['suite'], title: 'excluded' },
+          ],
+        }] }));
+        let finalized!: () => void;
+        const done = new Promise<void>(resolve => { finalized = resolve; });
+        persistSqlMock.mockImplementation((strings: TemplateStringsArray, ...values: unknown[]) => {
+          // postgres-js's sql(rows, ...columns) is a synchronous bulk-value helper.
+          if (!('raw' in strings)) return strings;
+          const statement = strings.join(' ');
+          if (statement.includes('SELECT DISTINCT ON (file_path) id')) {
+            expect(values.slice(0, 3)).toEqual(['papercusp-workspace', 'papercusp', snapshot!.runId]);
+            return Promise.resolve(scenario === 'wrong-scope' ? [] : [{
+              id: 42, file_path: 'lib/saved.test.ts', status: 'pass', execution_details: {
+                schemaVersion: 1, root: scenario === 'wrong-root' ? '/foreign' : '/tmp',
+                filePath: 'lib/saved.test.ts', runGroupId: snapshot!.runId,
+                workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', testNamePattern: null,
+                passed: scenario === 'wrong-counts' ? 3 : 2, failed: 0, skipped: 1, collectionFailed: false,
+                mutationPhase: null, commitSha: null, worktreeDirty: true,
+              },
+            }]);
+          }
+          if (statement.includes('FROM harness_shared.test_runs')) return Promise.resolve(
+            scenario === 'fresh' || scenario === 'case-write-failed' ? []
+              : [{ file_path: 'lib/saved.test.ts', status: 'pass' }]);
+          if (statement.includes('INSERT INTO harness_shared.test_runs')) {
+            writes.push(insertedColumns(strings, values));
+            return Promise.resolve([{ id: 42 }]);
+          }
+          if (statement.includes('INSERT INTO harness_shared.test_case_runs')) {
+            if (scenario === 'case-write-failed') return Promise.reject(new Error('case ledger unavailable'));
+            expect(statement).toContain('ON CONFLICT (test_run_id, case_index) DO NOTHING');
+            caseBatches.push(values[0] as Array<Record<string, unknown>>);
+          }
+          if (statement.includes('INSERT INTO harness_shared.testing_run_snapshots') && values[5] === 'pass') finalized();
+          return Promise.resolve([]);
+        });
+        snapshot = store.startRun(req({ detachedReportArtifacts: [{ reportPath, root: '/tmp',
+          scope: { harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
+        }] }));
+        lastChild._emitClose(0);
+        await done;
+        const successful = scenario === 'fresh' || scenario === 'existing';
+        expect(writes).toHaveLength(scenario === 'fresh' || scenario === 'case-write-failed' ? 1 : 0);
+        if (successful) {
+          expect(caseBatches).toEqual([[
+            { test_run_id: '42', case_index: 0, case_key: 'suite > repeat', occurrence: 1,
+              status: 'pass', duration_ms: 1, error_tail: null },
+            { test_run_id: '42', case_index: 1, case_key: 'suite > repeat', occurrence: 2,
+              status: 'pass', duration_ms: 2, error_tail: null },
+            { test_run_id: '42', case_index: 2, case_key: 'suite > excluded', occurrence: 1,
+              status: 'skip', duration_ms: null, error_tail: null },
+          ]]);
+          await expect(readFile(reportPath)).rejects.toMatchObject({ code: 'ENOENT' });
+        } else {
+          expect(caseBatches).toEqual([]);
+          await expect(readFile(reportPath, 'utf8')).resolves.toContain('testResults');
+        }
+      } finally {
+        if (previousPersistOptIn === undefined) delete process.env.PAPERCUSP_TEST_RUNS_PERSIST;
+        else process.env.PAPERCUSP_TEST_RUNS_PERSIST = previousPersistOptIn;
+        const output = snapshot && store.getRun(snapshot.runId)?.output;
+        for (const match of (output ?? '').matchAll(/retained report artifact (\{[^\n]+\})/g)) {
+          const retained = JSON.parse(match[1]!) as { manifestPath: string };
+          await rm(dirname(dirname(retained.manifestPath)), { recursive: true, force: true });
+        }
+        await rm(reportDir, { recursive: true, force: true });
+      }
+    });
+
   it('retains a saved report when close-time ledger ingestion fails', async () => {
     const reportDir = await mkdtemp('/tmp/papercusp-testing-run-retain-');
     const reportPath = join(reportDir, 'report.json');
@@ -1140,6 +1224,7 @@ describe('durable detached snapshot lifecycle', () => {
           assertionResults: [{
             status: options.failure ? 'failed' : 'passed',
             fullName: options.secretOutput ? `saved assertion ${childOnlySecret}` : 'saved assertion',
+            ancestorTitles: options.secretOutput ? [`suite ${childOnlySecret}`] : ['suite'],
             meta: { nativeToolSurface: { invocations: ['testing:run-status'] } },
             ...(options.secretOutput ? { failureMessages: [`child report included ${childOnlySecret}`] } : {}),
           }, { status: 'pending' }],
@@ -1211,6 +1296,9 @@ describe('durable detached snapshot lifecycle', () => {
         return;
       }
       const recovered = await recovery;
+      // No launch-time environment survives this path. Case titles and errors must
+      // never be reconstructed from opaque child text, even with a complete report.
+      expect(sql.mock.calls.some(([strings]) => strings.join(' ').includes('INSERT INTO harness_shared.test_case_runs'))).toBe(false);
       const recoveryOutput = recovered?.output ?? '';
       const retainedMatches = [...recoveryOutput.matchAll(/\[detached-recovery\] retained report artifact (\{[^\n]+\})/g)];
       const expectedRetainedCount = options.routerReports && !options.missingRouterGroup && !options.partialRouterGroup ? 2 : 1;

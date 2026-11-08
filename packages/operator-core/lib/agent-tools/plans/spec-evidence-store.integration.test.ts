@@ -687,7 +687,38 @@ describe('native P015 compiler dependency evidence', () => {
       VALUES (${WORKSPACE},${HARNESS},'guides/reconnect.md','manual',${['src/reconnect.ts']}::text[]),
              (${OTHER_WORKSPACE},${HARNESS},'guides/foreign.md','manual',${['src/reconnect.ts']}::text[])`;
     const input = { workspace: WORKSPACE, harness: HARNESS, owner: 'first-touch-test', calls: [] };
-    const links = await readPushSourceLinks(input, ['src/reconnect.ts', 'src/another.ts'], db.sql);
+    const diagnostics: NonNullable<Parameters<typeof readPushSourceLinks>[3]> = {
+      readId: 'p015-source-links', startedAtMs: Date.now(), phaseMs: {}, phaseOutcomes: {},
+    };
+    const waits: unknown[] = [];
+    let reading = true;
+    // Observe only this disposable DB, retaining the phase and actual backend
+    // waits if the production statement budget fails. Do not warm the query or
+    // infer resource pressure from a timeout alone.
+    const monitor = (async () => {
+      while (reading) {
+        const rows = await db.sql`SELECT pid, state, wait_event_type, wait_event,
+          extract(epoch FROM (clock_timestamp() - query_start)) * 1000 AS elapsed_ms,
+          pg_blocking_pids(pid) AS blockers
+          FROM pg_stat_activity WHERE datname = current_database()
+            AND pid <> pg_backend_pid() AND state = 'active'
+            AND query LIKE '%FROM harness_shared.harness_docs%'
+            AND query NOT LIKE '%pg_stat_activity%'`;
+        if (rows.length && waits.length < 8) waits.push(rows);
+        if (reading) await new Promise(resolve => setTimeout(resolve, 10));
+      }
+    })();
+    let links: Awaited<ReturnType<typeof readPushSourceLinks>>;
+    try {
+      links = await readPushSourceLinks(input, ['src/reconnect.ts', 'src/another.ts'], db.sql, diagnostics);
+    } catch (error) {
+      console.info('P015_SOURCE_LINK_FAILURE', JSON.stringify({ diagnostics, waits,
+        code: error && typeof error === 'object' && 'code' in error ? error.code : null }));
+      throw error;
+    } finally {
+      reading = false;
+      await monitor;
+    }
     expect(links.byPath?.['src/reconnect.ts']).toEqual({ docs: ['guides/reconnect.md'], specs: ['reconnect-plan#SPEC-003-01@1'] });
     expect(links.byPath?.['src/another.ts']).toEqual({ docs: [], specs: [] });
     const other = await readPushSourceLinks({ ...input, workspace: OTHER_WORKSPACE }, ['src/reconnect.ts'], db.sql);

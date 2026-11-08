@@ -46,6 +46,10 @@ import type { TestRunSource } from './testing-run-source';
 import { captureWorktreeSnapshot, captureWorktreeSnapshotAsync, computeWorktreeDirty, type WorktreeGitSnapshot } from './testing-worktree';
 import { currentLoopLag, classifyLoopPressure } from './event-loop-lag-monitor';
 import {
+  insertTestCaseRowsWithSql, TEST_CASE_KEY_MAX_CHARS, TEST_CASE_ERROR_TAIL_MAX_CHARS,
+  type PgSql, type TestCaseRecord,
+} from '@papercusp/test-config/admin-test-runs-reporter';
+import {
   beginSyncEnrolment,
   completeSyncEnrolment,
   finishSyncEnrolment,
@@ -1586,16 +1590,13 @@ async function reconcilePersistedReportArtifact(
       const existing = await readPersistedTestRunLedgerRows(snapshot.runId, scopedSql);
       if (existing === null) throw new Error('detached_report_ledger_unavailable');
       for (const { artifact, rows } of reports) {
-        const missing = rows!.filter(r => !existing.some(e => e.file_path === r.filePath));
-        if (missing.length === 0) continue;
-        const result = await persistHarnessTestRunsWithIds({
+        await persistDetachedReportRows({
           harnessSlug: artifact.scope!.harnessSlug, workspaceId: artifact.scope!.workspaceId,
-          rows: missing, runGroupId: snapshot.runId, source: 'local',
+          rows: rows!, runGroupId: snapshot.runId, source: 'local',
           runStartedAt: new Date(snapshot.startedAt).toISOString(),
           commit: artifact.worktreeBefore.commit, worktreeDirty: true,
           root: artifact.root, testNamePattern: artifact.testNamePattern ?? null, sql: scopedSql,
-        });
-        if (result.written !== missing.length) throw new Error('detached_report_ledger_write_failed');
+        }, existing);
       }
       const ledger = await readPersistedTestRunLedgerRows(snapshot.runId, scopedSql);
       const verdict = ledger && deriveDetachedRunLedgerRecovery(snapshot.runId, ledger);
@@ -1828,7 +1829,7 @@ async function retainDetachedReportEvidence(
         if (!value || typeof value !== 'object') return value;
         const result: Record<string, unknown> = {};
         for (const [key, entry] of Object.entries(value)) {
-          if (['actual', 'expected', 'failureMessages', 'fullName', 'message', 'stack', 'stackTrace', 'title']
+          if (['actual', 'expected', 'failureMessages', 'fullName', 'ancestorTitles', 'message', 'stack', 'stackTrace', 'title']
             .includes(key)) {
             result[key] = '[omitted: child launch environment unavailable]';
           } else if (key === 'meta') {
@@ -1932,11 +1933,10 @@ async function persistDetachedReportArtifacts(
             await scopedSql`SELECT pg_advisory_xact_lock(hashtextextended(${`testing-run-report:${snapshot.runId}`}, 0))`;
             const existing = await readPersistedTestRunLedgerRows(snapshot.runId, scopedSql);
             if (existing === null) throw new Error('detached_report_ledger_unavailable');
-            const missing = rows.filter(r => !existing.some(e => e.file_path === r.filePath));
-            const result = await persistHarnessTestRunsWithIds({
+            await persistDetachedReportRows({
               harnessSlug: artifact.scope!.harnessSlug,
               workspaceId: artifact.scope!.workspaceId,
-              rows: missing,
+              rows,
               runGroupId: snapshot.runId,
               source: 'local',
               runStartedAt: new Date(snapshot.startedAt).toISOString(),
@@ -1946,8 +1946,7 @@ async function persistDetachedReportArtifacts(
               testNamePattern: artifact.testNamePattern ?? null,
               configurationSnapshot,
               sql: scopedSql,
-            });
-            if (result.written !== missing.length) throw new Error('detached_report_ledger_write_failed');
+            }, existing);
           });
           consumed = true;
         } else if (rows.length > 0) {
@@ -2570,6 +2569,8 @@ export interface HarnessTestFileRow {
   /** Exact completed assertion counts when the source report exposed them. */
   execution?: Pick<TestRunExecutionDetails, 'passed' | 'failed' | 'skipped' | 'collectionFailed'
     | 'failedCaseTitles' | 'passedCaseTitles' | 'passedCaseTitlesTruncated' | 'runStartedAt' | 'operational'>;
+  /** Complete normalized assertions, available only with the child's redaction environment. */
+  cases?: readonly TestCaseRecord[] | null;
 }
 
 /** Minimal shape of the jest-compatible vitest `--reporter=json` output. */
@@ -2579,6 +2580,7 @@ interface VitestJsonAssertion {
   failureMessages?: unknown;
   title?: string;
   fullName?: string;
+  ancestorTitles?: string[];
 }
 interface VitestJsonFile {
   name?: string;
@@ -2638,6 +2640,32 @@ function countVitestAssertions(assertions: VitestJsonAssertion[]): HarnessTestFi
 function relToRootPosix(absPath: string, rootAbs: string): string {
   const rel = pathRelative(rootAbs, absPath);
   return rel.split(/[/\\]/).join(posix.sep);
+}
+
+function casesFromVitestAssertions(assertions: VitestJsonAssertion[]): TestCaseRecord[] | null {
+  const cases: TestCaseRecord[] = [];
+  const occurrences = new Map<string, number>();
+  for (const assertion of assertions) {
+    const status = assertion?.status === 'passed' ? 'pass' : assertion?.status === 'failed' ? 'fail'
+      : ['skipped', 'pending', 'todo'].includes(assertion?.status ?? '') ? 'skip' : null;
+    const title = typeof assertion?.title === 'string' && assertion.title.trim() ? assertion.title : null;
+    const ancestors = assertion?.ancestorTitles;
+    const key = title && Array.isArray(ancestors) && ancestors.every(a => typeof a === 'string')
+      ? [...ancestors, title].join(' > ')
+      : typeof assertion?.fullName === 'string' && assertion.fullName.trim() ? assertion.fullName : title;
+    if (status === null || key === null) return null;
+    const caseKey = key.slice(0, TEST_CASE_KEY_MAX_CHARS);
+    const occurrence = (occurrences.get(caseKey) ?? 0) + 1;
+    occurrences.set(caseKey, occurrence);
+    const duration = assertion.duration;
+    const durationMs = typeof duration === 'number' && Number.isFinite(duration) && duration >= 0
+      ? Math.round(duration) : null;
+    const error = status === 'fail' && Array.isArray(assertion.failureMessages)
+      ? assertion.failureMessages.filter((m): m is string => typeof m === 'string').join('\n') : '';
+    cases.push({ caseIndex: cases.length, caseKey, occurrence, status, durationMs,
+      errorTail: error ? error.slice(0, TEST_CASE_ERROR_TAIL_MAX_CHARS) : null });
+  }
+  return cases;
 }
 
 /**
@@ -2706,7 +2734,8 @@ export function parseVitestJsonForHarnessRows(
     }
     if (msgs.length > 0) outputTail = msgs.join('\n').slice(-4000);
 
-    rows.push({ filePath, status, durationMs, startedAt, finishedAt, outputTail, ...(execution ? { execution } : {}) });
+    rows.push({ filePath, status, durationMs, startedAt, finishedAt, outputTail,
+      ...(execution ? { execution, cases: execution.collectionFailed ? null : casesFromVitestAssertions(asserts) } : {}) });
   }
   return rows;
 }
@@ -3244,6 +3273,55 @@ export interface PersistHarnessTestRunsParams {
   configurationSnapshot?: ConfigurationSnapshot | null;
   /** Test seam: inject a fake sql client. Defaults to getOrgPg().sql. */
   sql?: SqlLike;
+}
+
+/** Called under the detached-report transaction lock: files and their cases commit together. */
+async function persistDetachedReportRows(
+  params: PersistHarnessTestRunsParams,
+  existing: PersistedTestRunRow[],
+): Promise<void> {
+  const missing = params.rows.filter(row => !existing.some(parent => parent.file_path === row.filePath));
+  const result = await persistHarnessTestRunsWithIds({ ...params, rows: missing });
+  if (result.written !== missing.length || result.ids.length !== missing.length) {
+    throw new Error('detached_report_ledger_write_failed');
+  }
+  const parents: Array<{ testRunId: string; cases: readonly TestCaseRecord[] }> = [];
+  for (const [index, row] of missing.entries()) {
+    if (row.cases?.length) parents.push({ testRunId: String(result.ids[index]), cases: row.cases });
+  }
+  const replay = params.rows.filter(row => row.cases?.length
+    && existing.some(parent => parent.file_path === row.filePath));
+  if (replay.length > 0) {
+    const sql = params.sql!;
+    const found = await sql`
+      SELECT DISTINCT ON (file_path) id, file_path, status, execution_details
+        FROM harness_shared.test_runs
+       WHERE workspace_id = ${params.workspaceId} AND harness_slug = ${params.harnessSlug}
+         AND run_group_id = ${params.runGroupId} AND framework = 'vitest'
+         AND file_path = ANY(${replay.map(row => row.filePath)}::text[])
+       ORDER BY file_path, finished_at DESC NULLS LAST, id DESC
+    `;
+    if (!Array.isArray(found)) throw new Error('detached_report_case_parent_unavailable');
+    for (const row of replay) {
+      const parent = found.find(parent => parent.file_path === row.filePath);
+      const id = positiveSafeInteger(parent?.id);
+      const details = parseTestRunExecutionDetails(parent?.execution_details);
+      if (id === null || parent?.status !== row.status || !details || !row.execution
+        || details.root !== params.root || details.filePath !== row.filePath
+        || details.workspaceId !== params.workspaceId || details.harnessSlug !== params.harnessSlug
+        || details.runGroupId !== params.runGroupId || details.testNamePattern !== (params.testNamePattern ?? null)
+        || details.passed !== row.execution.passed || details.failed !== row.execution.failed
+        || details.skipped !== row.execution.skipped || details.collectionFailed !== row.execution.collectionFailed) {
+        throw new Error('detached_report_case_parent_mismatch');
+      }
+      parents.push({ testRunId: String(id), cases: row.cases! });
+    }
+  }
+  if (parents.length > 0) {
+    const outcome = await insertTestCaseRowsWithSql(params.sql as unknown as PgSql, parents,
+      { deadline: Date.now() + TEST_RUN_PERSIST_TIMEOUT_MS, insertTimeoutMs: TEST_RUN_PERSIST_TIMEOUT_MS });
+    if (outcome.unwritten > 0) throw new Error('detached_report_case_write_failed');
+  }
 }
 
 export interface PersistHarnessTestRunsResult {
