@@ -1965,17 +1965,23 @@ ${build}`,
       expect(output).toContain(` -> ${childTmp}/${mod.WORK_ROOT_PREFIX}`);
       // Reify the actual donor while the pinned build remains paused. The
       // command must later read the independent bytes after this writer completes.
-      const writer = `import { withFsMutex } from ${JSON.stringify(pathToFileURL(join(repoRoot, 'scripts/lib/fs-mutex.mjs')).href)};
+      const writer = `const startedAt = performance.now();
+console.log('WRITER_STARTED');
+const { withFsMutex } = await import(${JSON.stringify(pathToFileURL(join(repoRoot, 'scripts/lib/fs-mutex.mjs')).href)});
 import { writeFileSync } from 'node:fs';
+console.log('WRITER_IMPORTED elapsedMs=' + (performance.now() - startedAt));
 await withFsMutex(${JSON.stringify(lockName)}, () => {
   writeFileSync(${JSON.stringify(installed)}, 'module.exports = "new-install";\\n');
   console.log('WRITER_ACQUIRED');
-}, { timeoutMs: 200, retryMs: 10 });`;
+}, { timeoutMs: 200, retryMs: 10,
+  onAcquired: timing => console.log('WRITER_ADMISSION ' + JSON.stringify(timing)),
+  onTimedOut: timing => console.error('WRITER_TIMEOUT ' + JSON.stringify(timing)),
+});`;
       const attempt = () => spawnSync(process.execPath, ['--input-type=module', '-e', writer], {
         env: { ...process.env, PAPERCUSP_FS_MUTEX_LOCK_DIR: lockDir }, encoding: 'utf8', timeout: 5000,
       });
       const concurrent = attempt();
-      expect(concurrent.status, concurrent.stdout + concurrent.stderr).toBe(0);
+      expect(concurrent.status, JSON.stringify({ error: concurrent.error?.message, signal: concurrent.signal }) + concurrent.stdout + concurrent.stderr).toBe(0);
       expect(concurrent.stdout).toContain('WRITER_ACQUIRED');
       expect(child.exitCode).toBeNull();
       writeFileSync(release, 'release');
