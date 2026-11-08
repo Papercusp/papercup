@@ -856,9 +856,12 @@ async function setWatchdogPark(id: string) {
     _ei: { source: 'su', created_by: 'system:improvement-watchdog', found_during: 'improvement-watchdog' },
     claim_hold_by: actor, claim_hold_reason: reason, claim_hold_at: at, claim_hold_release: releaseContract };
   await db.sql`UPDATE harness_shared.work_items SET created_ts = ${createdAtMs},
-    kind = 'bug', status = 'open', admission = 'admitted',
+    item_kind = 'bug', status = 'open', admission = 'admitted',
     taken_by = NULL, payload = payload || ${db.sql.typed(JSON.stringify(payload), 25)}::jsonb
     WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug} AND feature_id = ${id}`;
+  // The legacy kind column does not drive canonical admission snapshots. Verify
+  // the actual reader sees a bug before exercising the watchdog-only exception.
+  expect((await wi.getWorkItem(id, scope.harnessSlug))?.kind).toBe('bug');
   await db.sql`INSERT INTO harness_shared.audit_log (id, ts, workspace_id, actor, action, subject, details)
     VALUES (${id + '-watchdog-park'}, ${heldAtMs}, ${scope.workspaceId}, ${actor},
       'work_items:claim_hold:set', ${id},
