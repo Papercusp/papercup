@@ -3580,18 +3580,25 @@ exec /bin/cp "$@"
       const integration = makeIntegration();
       const competitor = makeIntegration();
       const generationRoot = join(integration, '.papercusp/dependency-generations');
+      const competingLock = join(competitor, 'package-lock.json');
+      writeFileSync(competingLock, JSON.stringify({
+        ...JSON.parse(readFileSync(competingLock, 'utf8')), name: 'delayed-handoff-competitor',
+      }) + '\n');
       if (mode === 'select') {
         const initial = publish(integration);
         expect(initial.status, initial.stderr).toBe(0);
       }
       const args = [SCRIPT, '--integration', integration, '--generation-root', generationRoot,
-        '--retain-as', 'delayed-consumer'];
+        '--retain-input-as', 'delayed-consumer'];
       if (mode === 'select') args.push('--select-inputs-from', integration);
       const retained = spawnSync('bash', args, { encoding: 'utf8', env: process.env });
       expect(retained.status, retained.stderr).toBe(0);
       const identity = publishedIdentity(retained.stdout);
       const generation = publishedPath(retained.stdout);
-      expect(readdirSync(join(generationRoot, '.leases'))).toEqual([]);
+      const retainedInput = retained.stdout.match(/\binput=([0-9a-f]{64})\b/)?.[1];
+      expect(retainedInput).toBeDefined();
+      expect(existsSync(join(generationRoot, '.leases'))
+        ? readdirSync(join(generationRoot, '.leases')) : []).toEqual([]);
 
       for (let i = 0; i < 3; i += 1) {
         writeFileSync(join(competitor, 'node_modules/pkg/index.js'), `competing-${i}\n`);
@@ -3600,6 +3607,7 @@ exec /bin/cp "$@"
           ...process.env, DEPENDENCY_GENERATION_RETAIN_COUNT: '1',
         } });
         expect(competing.status, competing.stderr).toBe(0);
+        expect(competing.stdout.match(/\binput=([0-9a-f]{64})\b/)?.[1]).not.toBe(retainedInput);
       }
       expect(existsSync(generation)).toBe(true);
       const selected = selectPrewarmed(generationRoot, integration);
