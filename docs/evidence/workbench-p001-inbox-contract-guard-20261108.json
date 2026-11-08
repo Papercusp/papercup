@@ -1,0 +1,257 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Workbench P001 inbox-contract-guard native GNOME regression",
+  "framework": "node",
+  "command": [
+    "env",
+    "PAPERCUSP_GNOME_JOURNEY=inbox",
+    "PAPERCUSP_NATIVE_EVIDENCE_DIR=/tmp/wb-inbox-guard-20261108-v3",
+    "node",
+    "bin/run-node-test-suite.mjs",
+    "--test-global-setup=test/monorepo-host-preflight.mjs",
+    "--test-name-pattern=private GNOME Shell renders actors",
+    "test/native-workbench-gnome-live.test.mjs"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-11-08T17:41:06.613782+00:00",
+  "finishedAt": "2026-11-08T17:41:18.191875+00:00",
+  "timestampMethod": "Retained Node duration and log mtime. Command ran from canonical papercusp-desktop submodule. $HOME denotes the executing account home.",
+  "summary": "25 maintained assertions passed; 1 Node test passed, zero failures and skips. Canonical context read uses id; Inbox actions preserve their existing itemId contract.",
+  "workItem": "EI-28241319018161842",
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "assertions": [
+    {
+      "id": "inbox-contract-guard-1",
+      "passed": true,
+      "evidence": "native shortcut acquisition"
+    },
+    {
+      "id": "inbox-contract-guard-2",
+      "passed": true,
+      "evidence": "native seat supports input injection"
+    },
+    {
+      "id": "inbox-contract-guard-3",
+      "passed": true,
+      "evidence": "native input methods exist"
+    },
+    {
+      "id": "inbox-contract-guard-4",
+      "passed": true,
+      "evidence": "desktop ready for normal shortcuts"
+    },
+    {
+      "id": "inbox-contract-guard-5",
+      "passed": true,
+      "evidence": "qualified plan reached native actor model"
+    },
+    {
+      "id": "inbox-contract-guard-6",
+      "passed": true,
+      "evidence": "Shell actor is attached"
+    },
+    {
+      "id": "inbox-contract-guard-7",
+      "passed": true,
+      "evidence": "native result controls rendered"
+    },
+    {
+      "id": "inbox-contract-guard-8",
+      "passed": true,
+      "evidence": "independent pinned panels coexist"
+    },
+    {
+      "id": "inbox-contract-guard-9",
+      "passed": true,
+      "evidence": "Goals requests only its canonical source"
+    },
+    {
+      "id": "inbox-contract-guard-10",
+      "passed": true,
+      "evidence": "panels and GTK helper create no application windows"
+    },
+    {
+      "id": "inbox-contract-guard-11",
+      "passed": true,
+      "evidence": "debounced canonical query renders current result"
+    },
+    {
+      "id": "inbox-contract-guard-12",
+      "passed": true,
+      "evidence": "exact report body in native detail"
+    },
+    {
+      "id": "inbox-contract-guard-13",
+      "passed": true,
+      "evidence": "first Escape dismisses detail only"
+    },
+    {
+      "id": "inbox-contract-guard-14",
+      "passed": true,
+      "evidence": "second Escape dismisses only its surface"
+    },
+    {
+      "id": "inbox-contract-guard-15",
+      "passed": true,
+      "evidence": "reopen retains query and exact selection"
+    },
+    {
+      "id": "inbox-contract-guard-16",
+      "passed": true,
+      "evidence": "outside dismissal preserves another pinned surface"
+    },
+    {
+      "id": "inbox-contract-guard-17",
+      "passed": true,
+      "evidence": "repeated shortcut toggles pinned surface"
+    },
+    {
+      "id": "inbox-contract-guard-18",
+      "passed": true,
+      "evidence": "Inbox canonical list reaches native actor"
+    },
+    {
+      "id": "inbox-contract-guard-19",
+      "passed": true,
+      "evidence": "Inbox persisted denominator reaches native status"
+    },
+    {
+      "id": "inbox-contract-guard-20",
+      "passed": true,
+      "evidence": "Inbox selected context preserves exact identity"
+    },
+    {
+      "id": "inbox-contract-guard-21",
+      "passed": true,
+      "evidence": "Inbox context read uses canonical id without action itemId"
+    },
+    {
+      "id": "inbox-contract-guard-22",
+      "passed": true,
+      "evidence": "Inbox confirmation freezes edited answer"
+    },
+    {
+      "id": "inbox-contract-guard-23",
+      "passed": true,
+      "evidence": "Inbox write uses helper native-inbox and verifies terminal receipt"
+    },
+    {
+      "id": "inbox-contract-guard-24",
+      "passed": true,
+      "evidence": "Inbox adds no application window"
+    },
+    {
+      "id": "inbox-contract-guard-25",
+      "passed": true,
+      "evidence": "Inbox dismissal removes native actors and run refresh"
+    }
+  ],
+  "proof": {
+    "ok": true,
+    "error": null,
+    "phase": "inbox",
+    "journey": "inbox",
+    "inputLog": [
+      {
+        "key": 65307,
+        "mode": 2
+      }
+    ],
+    "actionMode": 1,
+    "overview": false,
+    "windows": [],
+    "states": [
+      {
+        "surface": "quick-access",
+        "visible": false,
+        "pinned": false,
+        "selection": "[\"reports\",\"exact+/=&\"]",
+        "detail": null
+      },
+      {
+        "surface": "goals",
+        "visible": false,
+        "pinned": true,
+        "selection": null,
+        "detail": null
+      },
+      {
+        "surface": "inbox",
+        "visible": false,
+        "pinned": false,
+        "selection": null,
+        "detail": null
+      },
+      {
+        "surface": "organizer",
+        "visible": false,
+        "pinned": false,
+        "selection": null,
+        "detail": null
+      },
+      {
+        "surface": "papercup",
+        "visible": false,
+        "pinned": false,
+        "selection": null,
+        "detail": null
+      }
+    ],
+    "assertions": [
+      "native shortcut acquisition",
+      "native seat supports input injection",
+      "native input methods exist",
+      "desktop ready for normal shortcuts",
+      "qualified plan reached native actor model",
+      "Shell actor is attached",
+      "native result controls rendered",
+      "independent pinned panels coexist",
+      "Goals requests only its canonical source",
+      "panels and GTK helper create no application windows",
+      "debounced canonical query renders current result",
+      "exact report body in native detail",
+      "first Escape dismisses detail only",
+      "second Escape dismisses only its surface",
+      "reopen retains query and exact selection",
+      "outside dismissal preserves another pinned surface",
+      "repeated shortcut toggles pinned surface",
+      "Inbox canonical list reaches native actor",
+      "Inbox persisted denominator reaches native status",
+      "Inbox selected context preserves exact identity",
+      "Inbox context read uses canonical id without action itemId",
+      "Inbox confirmation freezes edited answer",
+      "Inbox write uses helper native-inbox and verifies terminal receipt",
+      "Inbox adds no application window",
+      "Inbox dismissal removes native actors and run refresh"
+    ]
+  },
+  "sourceCustody": {
+    "archiveSha256": "44907ead37c65e5fd349c3e6a2ab0926f4ed5616c1807a78aaeb7082d27506cc",
+    "journey": "inbox",
+    "files": {
+      "extension.js": "4c64f5e7d71262ac12c1588042fc10f3130c833f3d887d412bba2d673635b92e",
+      "workbench.js": "7405015af48526319c8e453dd9edd67e4775e4b8a1c54641031d3ad772c2a0cc",
+      "panel-model.mjs": "a1804b9d7fc6e196565175c570fc327cdb38ab22ece3e191ef228acab3d3bfc5",
+      "bridge.js": "78287f56f34e4e7968d91eb5bcd5d583357c173c09f95a77dca3d3f9bc21c63f",
+      "helper.js": "5604d173a62ad88583c884b0689ee1afc04da7a64ea5f41771e1fcd209416709",
+      "audio.js": "3e3d4927292d31494313a74fcee3438b3eaf3afefdacb5f430ba4fcb1827f6ad",
+      "chat-content.js": "97e4d37a47a1a99ecfc6e2f80872fd5d67fde3a5bbf8fb0d8b347a87d5f3c90e",
+      "schemas/org.gnome.shell.extensions.papercusp-workbench.gschema.xml": "9ce369583d10efb36667b16b771107f9ace1ef1eaf9f03d443d966b2e2298094"
+    },
+    "testSha256": "2e8d1cb3ecc7bdf103eee1f88c4739266aac78277f74b83e931f65c80166978f"
+  },
+  "retainedProofFile": "/tmp/wb-inbox-guard-20261108-v3/gnome-native-inbox/gnome-native-process.json",
+  "retainedProofSha256": "5780d4511843fdef30169c7972bc38ae280946aa2506f12d11d383b2c7571d58",
+  "rawLogFile": "/tmp/wb-inbox-guard-20261108-v3.log",
+  "rawLogSha256": "8a8004ea8f13907cb2ac3757a7e292d11138d026ea3d5c6de93ca74bbe193273",
+  "previewArchiveSha256": "ee64849d7fca27aa600539067078a0c4c6b375e2f5e33aeaffda4a7fc1da71e4",
+  "scopeLimits": [
+    "Ubuntu preview or private fixture only, as the retained proof plane states.",
+    "No Windows or macOS runtime proof. No full three-OS final distribution or shipment certificate.",
+    "Desktop login is still required to load updated extension into the owner session.",
+    "First-request canonical attention list timeout remains unresolved under EI-28142336654347264."
+  ],
+  "plane": "private GNOME Shell; fixture PUI; current build",
+  "currentTestSha256AtRecording": "2e8d1cb3ecc7bdf103eee1f88c4739266aac78277f74b83e931f65c80166978f"
+}

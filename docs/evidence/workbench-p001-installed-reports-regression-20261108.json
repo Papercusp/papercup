@@ -1,0 +1,141 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Workbench P001 installed-reports-regression native GNOME regression",
+  "framework": "node",
+  "command": [
+    "env",
+    "PAPERCUSP_NATIVE_INSTALLED_SHELL=1",
+    "PAPERCUSP_NATIVE_EXTENSION=$HOME/.local/share/gnome-shell/extensions/workbench@papercusp.ai",
+    "PAPERCUSP_NATIVE_PUI=$HOME/.local/share/papercusp/workbench-preview/20261108/pui",
+    "PAPERCUSP_NATIVE_OPERATOR=http://127.0.0.1:3170",
+    "PAPERCUSP_NATIVE_EVIDENCE_DIR=/tmp/wb-installed-reports-fix-20261108-v3",
+    "node",
+    "bin/run-node-test-suite.mjs",
+    "--test-global-setup=test/monorepo-host-preflight.mjs",
+    "--test-name-pattern=exact installed GNOME preview opens canonical Reports",
+    "test/native-workbench-gnome-live.test.mjs"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-11-08T17:41:34.319342+00:00",
+  "finishedAt": "2026-11-08T17:41:43.007035+00:00",
+  "timestampMethod": "Retained Node duration and log mtime. Command ran from canonical papercusp-desktop submodule. $HOME denotes the executing account home.",
+  "summary": "10 maintained assertions passed; 1 Node test passed, zero failures and skips. Canonical context read uses id; Inbox actions preserve their existing itemId contract.",
+  "workItem": "EI-28241319018161842",
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "assertions": [
+    {
+      "id": "installed-reports-regression-1",
+      "passed": true,
+      "evidence": "login loads the exact installed PUI selection"
+    },
+    {
+      "id": "installed-reports-regression-2",
+      "passed": true,
+      "evidence": "login retains the selected canonical operator"
+    },
+    {
+      "id": "installed-reports-regression-3",
+      "passed": true,
+      "evidence": "unmodified installed extension acquires native shortcuts"
+    },
+    {
+      "id": "installed-reports-regression-4",
+      "passed": true,
+      "evidence": "seat shortcut opens the installed native actor"
+    },
+    {
+      "id": "installed-reports-regression-5",
+      "passed": true,
+      "evidence": "actual canonical Reports rows reach the installed panel"
+    },
+    {
+      "id": "installed-reports-regression-6",
+      "passed": true,
+      "evidence": "exact canonical detail control returns full Markdown"
+    },
+    {
+      "id": "installed-reports-regression-7",
+      "passed": true,
+      "evidence": "seat Enter opens the exact selected canonical report body"
+    },
+    {
+      "id": "installed-reports-regression-8",
+      "passed": true,
+      "evidence": "installed report UI creates no application window"
+    },
+    {
+      "id": "installed-reports-regression-9",
+      "passed": true,
+      "evidence": "first seat Escape dismisses only canonical detail"
+    },
+    {
+      "id": "installed-reports-regression-10",
+      "passed": true,
+      "evidence": "second seat Escape dismisses the installed panel"
+    }
+  ],
+  "proof": {
+    "ok": true,
+    "error": null,
+    "phase": "nested Escape",
+    "assertions": [
+      "login loads the exact installed PUI selection",
+      "login retains the selected canonical operator",
+      "unmodified installed extension acquires native shortcuts",
+      "seat shortcut opens the installed native actor",
+      "actual canonical Reports rows reach the installed panel",
+      "exact canonical detail control returns full Markdown",
+      "seat Enter opens the exact selected canonical report body",
+      "installed report UI creates no application window",
+      "first seat Escape dismisses only canonical detail",
+      "second seat Escape dismisses the installed panel"
+    ],
+    "reportId": "rpt_24bb1413-7c0d-42b8-83bf-fb51ffafc394",
+    "bodyChars": 5666,
+    "questions": 0,
+    "savedRunId": null,
+    "inboxState": {
+      "listReady": false,
+      "listError": null,
+      "bulkReady": false,
+      "bulkError": null,
+      "contextError": null
+    },
+    "sources": [
+      {
+        "kind": "reports",
+        "status": "ready"
+      }
+    ]
+  },
+  "sourceCustody": {
+    "files": {
+      "extension.js": "7405015af48526319c8e453dd9edd67e4775e4b8a1c54641031d3ad772c2a0cc",
+      "panel-model.mjs": "a1804b9d7fc6e196565175c570fc327cdb38ab22ece3e191ef228acab3d3bfc5",
+      "bridge.js": "78287f56f34e4e7968d91eb5bcd5d583357c173c09f95a77dca3d3f9bc21c63f",
+      "helper.js": "5604d173a62ad88583c884b0689ee1afc04da7a64ea5f41771e1fcd209416709",
+      "audio.js": "3e3d4927292d31494313a74fcee3438b3eaf3afefdacb5f430ba4fcb1827f6ad",
+      "chat-content.js": "bc1cdc7aa8bd0422c2a3783bd05659660db49245906ec5c8dea7b8705afa8f8e",
+      "metadata.json": "b8c39f0fdfa34af6d33e513e90e62324e45d52ed2f08377cf9b3d52eba4f6cd5",
+      "stylesheet.css": "7768fa01ef52ade16120db9129a610321eced284ef9c3bd1fe13936e9122ca33",
+      "schemas/org.gnome.shell.extensions.papercusp-workbench.gschema.xml": "9ce369583d10efb36667b16b771107f9ace1ef1eaf9f03d443d966b2e2298094",
+      "schemas/gschemas.compiled": "661d9a8f45d7dfad4d2661f406d53905ecad7aa03b7216de2e065763e437bf90"
+    },
+    "puiSha256": "48279092bc6051c531161e0da62d09f85ee9a1f87e43933139f21803aee40867",
+    "testSha256": "2e8d1cb3ecc7bdf103eee1f88c4739266aac78277f74b83e931f65c80166978f"
+  },
+  "retainedProofFile": "/tmp/wb-installed-reports-fix-20261108-v3/installed-shell-reports.json",
+  "retainedProofSha256": "611d050d8226b692d5e904c3e451917b406e2ec17d83c6c01288f784d116a681",
+  "rawLogFile": "/tmp/wb-installed-reports-fix-20261108-v3.log",
+  "rawLogSha256": "0859f637a0ac417487ed23bcb012efc072775cd7f6ec4d8329a8a3a2fc031f64",
+  "previewArchiveSha256": "ee64849d7fca27aa600539067078a0c4c6b375e2f5e33aeaffda4a7fc1da71e4",
+  "scopeLimits": [
+    "Ubuntu preview or private fixture only, as the retained proof plane states.",
+    "No Windows or macOS runtime proof. No full three-OS final distribution or shipment certificate.",
+    "Desktop login is still required to load updated extension into the owner session.",
+    "First-request canonical attention list timeout remains unresolved under EI-28142336654347264."
+  ],
+  "plane": "exact installed preview files and real PUI/canonical operator in a private GNOME Shell; independent observer; reports scope only",
+  "currentTestSha256AtRecording": "2e8d1cb3ecc7bdf103eee1f88c4739266aac78277f74b83e931f65c80166978f"
+}
