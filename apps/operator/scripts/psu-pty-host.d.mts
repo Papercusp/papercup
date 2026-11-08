@@ -2201,7 +2201,7 @@ export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOw
      * 'superseded' when a PRODUCTION respawn replaced the payload of an
      * already-pending re-poll (EI-19480099650947832 — nothing is dropped).
      */
-    schedule(msg: any): "superseded" | "closed" | "duplicate" | "queued";
+    schedule(msg: any): "queued" | "closed" | "superseded" | "duplicate";
     /**
      * Close all detached re-arm work when this PTY host is ending. Every
      * accepted message receives one terminal settlement so its delivery dedup
@@ -5986,6 +5986,7 @@ export function resolveAgentPtyTarget({ command, args, env, cwd }: {
  *   injectable dead-operator-pin heal, run before each in-place respawn
  * @param {()=>number} [o.parentPidFn] injectable parent-pid probe
  * @param {number} [o.activityPersistMs] discovery activity refresh interval
+ * @param {number} [o.quotaResetGraceMs] test-only override for provider reset grace
  * @param {number} [o.nativePersistenceTimeoutMs] managed kickoff persistence deadline
  * @param {(...args:any[])=>any} [o.mcpReconnectMacro] injectable carry MCP reconnect macro
  */
@@ -6067,6 +6068,7 @@ export function hostThroughPty(o: {
     } | null>) | undefined;
     parentPidFn?: (() => number) | undefined;
     activityPersistMs?: number | undefined;
+    quotaResetGraceMs?: number | undefined;
     nativePersistenceTimeoutMs?: number | undefined;
     mcpReconnectMacro?: ((...args: any[]) => any) | undefined;
 }): Promise<any>;
