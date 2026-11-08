@@ -56,6 +56,56 @@ describe('independent initial exec mapping snapshot', () => {
     for(const delay of [0,999,30001,NaN])
       expect(()=>runtimeFileTraceArguments('/trace',command,{execEntryDelayMs:delay})).toThrow('invalid exec entry trace options');
   });
+  function replaySample() {
+    const observation=entrySample();
+    observation.startedEpochMs=1100;observation.finishedEpochMs=1101;
+    observation.startedMonotonicNs='1000000';observation.finishedMonotonicNs='2000000';
+    const terminal={processId:10,exitCode:0,signal:null,eof:true,captureStartedBeforeExec:true,pageSizeBytes:4096,
+      execEntries:[{observation,identity:{...identity},tracerIdentity:{...tracer}}]};
+    const text='10 1.000000 execve("/program", ["/program"], 0x1) = 0 (DELAYED) <0.000010>\n'
+      +'10 1.300000 mprotect(0x5000, 4096, PROT_READ|PROT_EXEC) = 0 <0.000001>\n'
+      +'10 2.000000 +++ exited with 0 +++\n';
+    return {observation,terminal,text};
+  }
+  it('seeds kernel-installed mapping metadata only at its independently observed exec', () => {
+    const {terminal,text}=replaySample(), receipt=bindRuntimeProcessTree(text,terminal);
+    expect(receipt.mappingOrigins.gaps).toEqual([]);
+    expect(receipt.mappingOrigins.changes[0]).toMatchObject({operation:'exec-entry-snapshot',ranges:[
+      {start:'0x1000',origin:{kind:'kernel-exec-mapping',path:'/program',inode:'42'}},
+      {start:'0x4000',origin:{kind:'kernel-exec-mapping',path:'/loader',offsetBytes:'0'}},
+      {start:'0x5000',origin:{kind:'kernel-exec-mapping',path:'/loader',offsetBytes:'4096'}}]});
+    expect(receipt.mappingOrigins.changes[1].ranges[0].origin).toMatchObject({kind:'kernel-exec-mapping',inode:'43'});
+    expect(receipt.mappingOrigins).toMatchObject({mappingPopulationComplete:false,executableBytesQualified:false});
+    expect(receipt.completeRuntimeClosureVerified).toBe(false);
+  });
+  it.each(['missing-epoch','partial-epoch','clock-step','wrong-process','wrong-executable','before-exec',
+    'after-next-event','straddles-next-event','missing-duration','duplicate-entry','ambiguous-exec','wrong-page','replay-barrier'])(
+    'refuses the initial mapping join for %s',variant=>{
+      const s=replaySample();
+      if(variant==='missing-epoch'){delete s.observation.startedEpochMs;delete s.observation.finishedEpochMs;}
+      if(variant==='partial-epoch')delete s.observation.finishedEpochMs;
+      if(variant==='clock-step')s.observation.finishedEpochMs=1105;
+      if(variant==='wrong-process')s.terminal.processId=11;
+      if(variant==='wrong-executable')s.text=s.text.replaceAll('/program','/other');
+      if(variant==='before-exec'){s.observation.startedEpochMs=900;s.observation.finishedEpochMs=901;}
+      if(variant==='after-next-event'){s.observation.startedEpochMs=1301;s.observation.finishedEpochMs=1302;}
+      if(variant==='straddles-next-event'){s.observation.startedEpochMs=1299;s.observation.finishedEpochMs=1300;}
+      if(variant==='missing-duration')s.text=s.text.replace(' <0.000010>','');
+      if(variant==='duplicate-entry')s.terminal.execEntries.push(s.terminal.execEntries[0]);
+      if(variant==='ambiguous-exec')s.text=s.text.replace('10 1.300000',
+        '10 1.000000 execve("/program", [], 0x1) = 0 <0.000010>\n10 1.300000');
+      if(variant==='wrong-page')s.terminal.pageSizeBytes=8192;
+      if(variant==='replay-barrier')s.text=s.text.replace('10 1.300000',
+        '10 1.050000 mmap(NULL, 4096, PROT_READ, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x7000 <0.001000>\n10 1.300000');
+      expect(()=>bindRuntimeProcessTree(s.text,s.terminal)).toThrow();
+    });
+  it('does not carry an entry snapshot forward to a later exec of the same path',()=>{
+    const s=replaySample();s.text=s.text.replace('10 2.000000',
+      '10 1.500000 execve("/program", [], 0x1) = 0 <0.100000>\n10 2.000000');
+    const result=bindRuntimeProcessTree(s.text,s.terminal).mappingOrigins;
+    expect(result.changes.map(c=>c.operation)).toEqual(['exec-entry-snapshot','mprotect','exec-reset']);
+    expect(result.gaps).toEqual([{taskId:10,atMs:1500,reason:'exec-kernel-installed-mappings-unobserved'}]);
+  });
   it.each(['later-syscall','syscall-entry','pc-moved','wrong-child','recycled-child','wrong-tracer',
     'running-tracer','changed-tracer','extra-target-task','maps-moved','auxv-moved','syscall-moved',
     'header-moved','wrong-abi','wrong-loader','entry-not-executable','foreign-program','auxv-truncated',

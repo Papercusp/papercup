@@ -115,6 +115,7 @@ export function observeRuntimeExecEntry(identity, tracerIdentity) {
   memoryRequire(process.platform === 'linux' && process.arch === 'x64', 'unsupported exec entry ABI');
   memoryRequire(identity?.parentProcessId === process.pid, 'not the observer direct child');
   const root = '/proc/'+identity.processId, startedMonotonicNs = process.hrtime.bigint().toString();
+  const startedEpochMs = Date.now();
   memoryRequire(sameProcess(procIdentity(root,identity.processId),identity), 'launch identity changed');
   const tracerTasksBefore = stoppedTracer(tracerIdentity,identity), tasksBefore = stoppedTasks(root,tracerIdentity);
   const syscallBefore = fs.readFileSync(root+'/syscall','utf8'), auxvBefore = fs.readFileSync(root+'/auxv');
@@ -129,7 +130,7 @@ export function observeRuntimeExecEntry(identity, tracerIdentity) {
   const tracerTasksAfter = stoppedTracer(tracerIdentity,identity);
   memoryRequire(sameProcess(procIdentity(root,identity.processId),identity), 'launch identity changed');
   const observation = {schema:'runtime-exec-entry-observation/v1',process:{...identity},observerProcessId:process.pid,
-    startedMonotonicNs,finishedMonotonicNs:process.hrtime.bigint().toString(),
+    startedMonotonicNs,startedEpochMs,finishedEpochMs:Date.now(),finishedMonotonicNs:process.hrtime.bigint().toString(),
     tracer:{process:{...tracerIdentity},tasksBefore:tracerTasksBefore,tasksAfter:tracerTasksAfter},
     tasksBefore,tasksAfter,syscallBefore,syscallAfter,auxvBefore,auxvAfter,mapsBefore,mapsAfter,
     elfHeader:{address:'0x'+address.toString(16),bytes:elfHeader}};
@@ -148,6 +149,18 @@ export function bindRuntimeExecEntry(observation, identity, tracerIdentity) {
     && tracerIdentity.processId !== o.observerProcessId, 'exec tracer identity differs');
   memoryRequire(/^\d+$/.test(o.startedMonotonicNs) && /^\d+$/.test(o.finishedMonotonicNs)
     && BigInt(o.startedMonotonicNs) < BigInt(o.finishedMonotonicNs), 'invalid exec observation clock');
+  // Old retained entry samples remain readable, but cannot be joined to an
+  // epoch-timestamped trace. Refuse clock steps rather than guessing an offset.
+  let epochWindow = null;
+  if (o.startedEpochMs !== undefined || o.finishedEpochMs !== undefined) {
+    memoryRequire(Number.isSafeInteger(o.startedEpochMs) && o.startedEpochMs > 0
+      && Number.isSafeInteger(o.finishedEpochMs) && o.finishedEpochMs >= o.startedEpochMs,
+    'invalid exec epoch clock');
+    const elapsedMs = Number(BigInt(o.finishedMonotonicNs)-BigInt(o.startedMonotonicNs))/1e6;
+    memoryRequire(Math.abs(o.finishedEpochMs-o.startedEpochMs-elapsedMs) <= 2,
+      'exec epoch/monotonic clocks diverged');
+    epochWindow = {startedEpochMs:o.startedEpochMs,finishedEpochMs:o.finishedEpochMs};
+  }
   const stable = (a,b) => JSON.stringify(a) === JSON.stringify(b);
   memoryRequire(Array.isArray(o.tasksBefore) && o.tasksBefore.length === 1
     && o.tasksBefore[0].taskId === identity.processId && o.tasksBefore[0].state === 't'
@@ -188,7 +201,7 @@ export function bindRuntimeExecEntry(observation, identity, tracerIdentity) {
   'auxv program entry is not mapped to the expected executable');
   return {schema:'runtime-exec-entry-binding/v1',process:{...identity},
     instructionPointer:'0x'+pc.toString(16),programEntry:'0x'+auxv.entry.toString(16),
-    interpreterBase:'0x'+auxv.base.toString(16),mapsSha256:memoryHash(o.mapsBefore),
+    interpreterBase:'0x'+auxv.base.toString(16),epochWindow,mapsSha256:memoryHash(o.mapsBefore),
     auxvSha256:memoryHash(o.auxvBefore),elfHeaderSha256:memoryHash(header),
     mappings:maps.map(memoryMapDescriptor),kernelEntryObserved:true,
     mappingPopulationComplete:false,executableBytesQualified:false,completeRuntimeClosureVerified:false,
@@ -595,7 +608,7 @@ function parseRuntimeFileTrace(text) {
  * pageSizeBytes must be supplied by the independent launcher's host witness;
  * guessing 4096 silently loses the tail of mappings on other Linux page sizes.
  */
-function replayRuntimeMappings(lines, processId, pageSizeBytes) {
+function replayRuntimeMappings(lines, processId, pageSizeBytes, execEntries = []) {
   const gaps = [], executableRanges = [], changes = [], spaces = [], tasks = new Map();
   let recordedRanges = 0, budgetExceeded = false;
   const page = Number.isSafeInteger(pageSizeBytes) && pageSizeBytes >= 1024
@@ -606,6 +619,43 @@ function replayRuntimeMappings(lines, processId, pageSizeBytes) {
     || /^(?:execve|execveat|clone|clone3|fork|vfork)\(/.test(row.call)
       && !/\)\s+=\s+-1\b/.test(row.call))
     .sort((a, b) => a.startedAtNs < b.startedAtNs ? -1 : a.startedAtNs > b.startedAtNs ? 1 : 0);
+  memoryRequire(Array.isArray(execEntries) && execEntries.length <= 256, 'invalid exec entry population');
+  const initialMaps = new Map();
+  const nextTaskEvent = new Map(), currentTime = new Map(), nextTime = new Map();
+  if (execEntries.length) for (const row of [...lines].sort((a,b) =>
+    a.startedAtNs > b.startedAtNs ? -1 : a.startedAtNs < b.startedAtNs ? 1 : 0)) {
+    if (currentTime.get(row.tid) !== row.startedAtNs) {
+      nextTime.set(row.tid,currentTime.get(row.tid));currentTime.set(row.tid,row.startedAtNs);
+    }
+    nextTaskEvent.set(row,nextTime.get(row.tid));
+  }
+  for (const entry of execEntries) {
+    const binding = bindRuntimeExecEntry(entry?.observation,entry?.identity,entry?.tracerIdentity);
+    memoryRequire(binding.process.processId === processId && binding.epochWindow && page,
+      'exec entry lacks root identity, epoch window or page size');
+    const {startedEpochMs,finishedEpochMs} = binding.epochWindow;
+    // strace -T EXCLUDES an injected exit delay. The independently validated
+    // kernel-entry stop must follow the exec's measured completion and precede
+    // the next recorded event on that task. Never stretch the syscall duration
+    // to the delay setting or use a later mapping snapshot as an initial one.
+    // Date.now floors: enclose its entire millisecond uncertainty as well.
+    const start = BigInt(startedEpochMs)*1_000_000n, end = BigInt(finishedEpochMs+1)*1_000_000n;
+    const matches = events.filter(row => row.tid === processId && /^execve(?:at)?\(/.test(row.call)
+      && /\)\s+=\s+0$/.test(row.call) && row.durationNs !== null && row.completedAtNs <= start
+      && nextTaskEvent.has(row) && nextTaskEvent.get(row) >= end);
+    memoryRequire(matches.length === 1 && !initialMaps.has(matches[0]), 'exec entry trace occurrence is not unique');
+    const row = matches[0];
+    const path = /^execve\(("(?:\\.|[^"\\])*"),/.exec(row.call)
+      ?? /^execveat\([^,]+, ("(?:\\.|[^"\\])*"),/.exec(row.call);
+    let executable;
+    try {executable = path && JSON.parse(path[1]);} catch { /* refused below */ }
+    memoryRequire(executable === binding.process.executable, 'exec entry trace executable differs');
+    const maps = executableMaps(entry.observation.mapsBefore);
+    memoryRequire(maps.length <= 8192 && maps.every(m => m.start % page === 0n && m.end % page === 0n
+      && BigInt(m.offset) % page === 0n), 'exec entry mapping alignment or population differs');
+    initialMaps.set(row,{binding,maps});
+  }
+  const consumedEntries = new Set();
   const makeSpace = maps => {
     const space = {id:spaces.length + 1, maps:[...maps], uncertain:false};
     spaces.push(space); return space;
@@ -722,8 +772,21 @@ function replayRuntimeMappings(lines, processId, pageSizeBytes) {
     }
     if (/^execve(?:at)?\(/.test(row.call)) {
       space = makeSpace([]); tasks.set(row.tid, space);
-      gap(row, 'exec-kernel-installed-mappings-unobserved');
-      record(row, space, 'exec-reset', []); continue;
+      const entry = initialMaps.get(row);
+      if (entry) {
+        space.maps = entry.maps.map(map => ({start:map.start,end:map.end,
+          permissions:[map.permissions[0] === 'r' ? 'PROT_READ' : null,
+            map.permissions[1] === 'w' ? 'PROT_WRITE' : null,
+            map.permissions[2] === 'x' ? 'PROT_EXEC' : null].filter(Boolean).join('|') || 'PROT_NONE',
+          origin:{kind:'kernel-exec-mapping',path:map.path,offsetBytes:BigInt(map.offset),
+            device:map.device,inode:map.inode,execEntryMapsSha256:entry.binding.mapsSha256}}));
+        consumedEntries.add(row);
+        record(row,space,'exec-entry-snapshot',space.maps);
+      } else {
+        gap(row, 'exec-kernel-installed-mappings-unobserved');
+        record(row, space, 'exec-reset', []);
+      }
+      continue;
     }
     if (!page) continue;
     if (space.uncertain) { gap(row, 'prior-address-space-transition-unresolved'); continue; }
@@ -811,6 +874,7 @@ function replayRuntimeMappings(lines, processId, pageSizeBytes) {
       gap(row, 'mapping-replay-population-limit'); break;
     }
   }
+  memoryRequire(consumedEntries.size === initialMaps.size, 'exec entry not reached by supported replay');
   return {schema:'runtime-mapping-origins/v1', pageSizeBytes:page ? Number(page) : null,
     changes, executableRanges, gaps, mappingPopulationComplete:false,
     executableBytesQualified:false, jitByteOriginQualification:'required',
@@ -912,7 +976,7 @@ export function bindRuntimeProcessTree(text, terminal) {
     throw new Error('process census lacks complete exec-to-exit population');
   return { schema: 'runtime-traced-process-tree/v1', processId,
     tasks: [...tasks.values()].sort((a, b) => a.taskId - b.taskId),
-    memoryTransitions, mappingOrigins:replayRuntimeMappings(lines, processId, terminal.pageSizeBytes),
+    memoryTransitions, mappingOrigins:replayRuntimeMappings(lines, processId, terminal.pageSizeBytes, terminal.execEntries),
     executableMemoryQualification: 'required',
     tracedTaskPopulationComplete: true, completeRuntimeClosureVerified: false,
     sourceQualification: 'required', creatorFence: 'required',
