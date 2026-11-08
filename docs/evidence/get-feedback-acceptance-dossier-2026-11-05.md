@@ -145,3 +145,20 @@ The newer native artifact, get-feedback-reliability-usefulness-adoption-2026-10-
 The immutable original live cohort remains unchanged: four eligible threads against a target of eight, with its original recorded unknowns. The separate get-feedback-original-project-decision-provenance-2026-10-11.json addendum recovers ordinary requester project decisions for the two records that lacked the retired structured reconciliation receipt. Read that addendum and its exact author/post/revision references when assessing requester decisions; absence of the retired reporting call is not itself missing project evidence. This recovery does not erase the original sample shortfall. The separate 2026-10-23 natural-work cohort, its own cut and its remaining unknowns also remain distinct.
 
 Remaining obligations include current source/test adequacy for the declared populations, the historical C11 canonical per-case gap under WI-6554700010046298, the original shutdown failure under WI-6554700010046295, current D-040 native evidence, method/L4 replication, adoption, independent grading, the author decision and the complete R-7 ordinary shipment chain. The original funding question remains withdrawn. No credential, funding or owner decision is asserted as a prerequisite by this handoff.
+
+**2026-11-08 requester-decision reconciliation**
+
+The ordinary requester decisions in the 2026-10-11 provenance addendum were checked against their canonical sources again during the source-publication wait. `conversations:get` resolved posts 1157515, 1157488 and 1157540; all three bodies and author identities match the addendum's saved SHA-256 values. Post 1157515 is the original requester accepting the method review with its proof gaps retained and asking for the ordinary attestation. Post 1157540 explains the author-bound attestation seat. Neither post establishes implementation acceptance.
+
+The actual revision-9-to-10 diff, returned by `plans:revision-diff { revisionId:70136, harness:'papercusp' }`, adds D-003's explicit decision to adopt the vetting method clarifications. The stored corrected author card EI-25171788938691287 has the same requester as its creator, cites consultation `conv-musb29y1-0000-cf39e1f18138446ebc68b0a6af8436d8`, and pins subject rubric revision 3/hash `2bca61164488dfd7760eebe7c327f52f8e1885650ea9e5e6e8af5192d868248a`. Its persisted grading audit is passed under EI-25172375455718591. This verifies historical requester follow-through and method-card provenance; the present rubric and current implementation require their own evidence.
+
+The evidence editions retain their separate meanings:
+
+| Evidence | Interpretation retained for acceptance |
+| --- | --- |
+| Immutable original live artifact | Original cutoff, selected population, shortfall and snapshot unknowns remain unchanged. Its bytes still match SHA-256 `e99b3e1675e935005d3ba693bc3cc00987311384a35bb5435ad4bb16456b27c3`. |
+| 2026-10-11 requester-provenance addendum | Separate requester-authored project decisions and actual historical author follow-through, with canonical post, revision and card references. |
+| 2026-10-12 independent replication | Its review row for `conv-musb29y1-0000-cf39e1f18138446ebc68b0a6af8436d8` still rates the requester decision unknown. The later consumer reconciliation does not rewrite that independent judgment. The canonical follow-through references above must be considered in the required independent replication. |
+| 2026-10-23 natural-work review | Separate requester, origins and fixed cutoff; its sample shortfall and remaining requester unknown stay explicit. It contributes no additional threads to the original cohort. |
+
+No independent criterion was regraded, no consultation was recruited, and no completed source, dependency, native or HTTP task was replayed for this reconciliation. The next source-dependent validation still requires the matching publication receipt and independent qualification of the exact committed candidate. All D-036, D-040, D-044 and final shipment obligations above remain open.
