@@ -3983,6 +3983,8 @@ export function forkBootstrapBody(session: any, account?: string | null, launchM
     account?: string | undefined;
     headless?: boolean | undefined;
     launched_by?: any;
+    model_source?: import("../../../packages/operator-core/lib/model-context-budget.mjs").CodexModelSource | undefined;
+    model?: any;
     launch_argv?: string[] | undefined;
     bootstrap_idempotency_key?: any;
     owner_id?: string | undefined;
