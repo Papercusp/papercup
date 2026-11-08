@@ -1529,6 +1529,54 @@ console.log('CLONE_PREREQUISITES_OK');
     });
   }
 
+  it.each(['compatible', 'mismatched'] as const)('uses an explicit %s dependency donor without changing source authority', state => {
+    const f = fixture('node build.cjs');
+    const donor = mkdtempSync(join(tmpdir(), 'lac-explicit-donor-'));
+    try {
+      cpSync(f.root, donor, { recursive: true, verbatimSymlinks: true });
+      const dependency = 'node_modules/fixture-dependency/index.cjs';
+      for (const [root, value] of [[f.root, 'source-install'], [donor, 'donor-install']]) {
+        mkdirSync(dirname(join(root, dependency)), { recursive: true });
+        writeFileSync(join(root, dependency), `module.exports = ${JSON.stringify(value)};\n`);
+      }
+      // The donor has neither this commit nor its probe. The source checkout's
+      // loose lockfile also differs, so selecting it as the donor must fail.
+      const probe = readFileSync(join(f.root, 'probe.cjs'), 'utf8');
+      snapshot(f.root, { 'probe.cjs': probe + `
+require('node:assert/strict').equal(require('fixture-dependency/index.cjs'), 'donor-install');
+console.log('EXPLICIT_DONOR_SOURCE_OK');
+` }, f.head);
+      writeFileSync(join(f.root, 'package-lock.json'), '{"lockfileVersion":3}\n');
+      if (state === 'mismatched') writeFileSync(join(donor, 'package-lock.json'), '{"lockfileVersion":2}\n');
+      const result = spawnSync(process.execPath, [scriptPath, 'lint:probe',
+        '--workspace-dir=libs/runtime', '--dependency-donor=' + donor], {
+        cwd: f.root, env: commandEnvironment(), encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL',
+      });
+      const output = result.stdout + result.stderr;
+      if (state === 'compatible') {
+        expect(result.status, output).toBe(0);
+        expect(output).toContain('EXPLICIT_DONOR_SOURCE_OK');
+        expect(output).toContain('CLONE_PREREQUISITES_OK');
+      } else {
+        expect(result.status, output).not.toBe(0);
+        expect(output).toContain('dependency inputs differ');
+        expect(output).not.toContain('EXPLICIT_DONOR_SOURCE_OK');
+      }
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+      rmSync(donor, { recursive: true, force: true });
+    }
+  }, 45_000);
+
+  it.each(['--dependency-donor=', '--dependency-donor=/unused'])(
+    'refuses an explicit donor without an exact workspace input scope (%s)', flag => {
+      const result = spawnSync(process.execPath, [scriptPath, 'lint:probe', flag], {
+        cwd: repoRoot, env: commandEnvironment(), encoding: 'utf8', timeout: 10_000,
+      });
+      expect(result.status, result.stdout + result.stderr).toBe(2);
+      expect(result.stderr).toContain('--dependency-donor requires a non-empty path and --workspace-dir');
+    });
+
   it.each(['pass', 'missing', 'failure', 'source-drift', 'receipts'] as const)(
     'shares one preparation across explicit checks while preserving %s evidence', async state => {
       const f = fixture('node build.cjs');
@@ -1673,7 +1721,9 @@ fs.appendFileSync(${JSON.stringify(received)}, JSON.stringify({ root: process.cw
       const published = spawnSync('bash', [helper, '--integration', f.root, '--generation-root', store], {
         env: currentRunnerEnvironment(), encoding: 'utf8', timeout: 30000,
       });
-      expect(published.status, published.stdout + published.stderr).toBe(0);
+      const publicationDiagnostic = JSON.stringify({ error: published.error?.message,
+        status: published.status, signal: published.signal }) + '\n' + published.stdout + published.stderr;
+      expect(published.status, publicationDiagnostic).toBe(0);
       const identity = published.stdout.match(/identity=(v1-[0-9a-f]{64})/)![1];
       const generation = join(store, identity);
       const dependency = 'node_modules/transitive/index.cjs';
@@ -1807,7 +1857,19 @@ const timer = setInterval(() => {
 }, 10);
 setTimeout(() => { if (!fs.existsSync(${JSON.stringify(release)})) process.exit(9); }, 15000).unref();
 `;
-    snapshot(f.root, { 'probe.cjs': probe }, f.head);
+    // Keep the pinned build behind the writer, so writer admission proves the
+    // reader is released before either the build or the committed command ends.
+    // Waiting for the command's ready file would include unrelated npm startup.
+    const build = readFileSync(join(f.root, 'libs/runtime/build.cjs'), 'utf8');
+    snapshot(f.root, {
+      'probe.cjs': probe,
+      'libs/runtime/build.cjs': `
+const releaseGate = new Int32Array(new SharedArrayBuffer(4));
+while (!require('node:fs').existsSync(${JSON.stringify(release)})) {
+  Atomics.wait(releaseGate, 0, 0, 20);
+}
+${build}`,
+    }, f.head);
     // A private mutex must guard private cleanup targets too. Otherwise startup
     // can sweep unrelated shared snapshots before this fixture reaches ready.
     const childTmp = mkdtempSync(join(tmpdir(), 'lac-reader-scratch-'));
@@ -1828,14 +1890,15 @@ setTimeout(() => { if (!fs.existsSync(${JSON.stringify(release)})) process.exit(
       child.once('close', resolveExit);
     });
     try {
+      const buildStarted = '"phase":"workspace-build","state":"started"';
       const deadline = Date.now() + 15000;
-      while (!existsSync(ready) && child.exitCode === null && Date.now() < deadline) {
+      while (!output.includes(buildStarted) && child.exitCode === null && Date.now() < deadline) {
         await new Promise(resolveWait => setTimeout(resolveWait, 20));
       }
-      if (!existsSync(ready)) throw new Error(`Donor reader did not start (exit=${child.exitCode}): ${output}`);
+      if (!output.includes(buildStarted)) throw new Error(`Workspace build did not start (exit=${child.exitCode}): ${output}`);
       expect(output).toContain(` -> ${childTmp}/${mod.WORK_ROOT_PREFIX}`);
-      // Reify the actual donor while the committed command remains paused. The
-      // child must re-read its old dependency bytes after this writer completes.
+      // Reify the actual donor while the pinned build remains paused. The
+      // command must later read the independent bytes after this writer completes.
       const writer = `import { withFsMutex } from ${JSON.stringify(pathToFileURL(join(repoRoot, 'scripts/lib/fs-mutex.mjs')).href)};
 import { writeFileSync } from 'node:fs';
 await withFsMutex(${JSON.stringify(lockName)}, () => {
@@ -1851,6 +1914,7 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
       expect(child.exitCode).toBeNull();
       writeFileSync(release, 'release');
       expect(await exited, output).toBe(0);
+      expect(existsSync(ready)).toBe(true);
       expect(output).toContain('INDEPENDENT_DEPENDENCIES_OK');
       // These records must reach the CLI's captured stderr, including when a
       // later timeout prevents setup from returning a final summary.
@@ -2298,7 +2362,9 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
         const published = spawnSync('bash', [helper, '--integration', f.root, '--generation-root', store], {
           env: currentRunnerEnvironment(), encoding: 'utf8', timeout: 30_000,
         });
-        expect(published.status, published.stdout + published.stderr).toBe(0);
+        const publicationDiagnostic = JSON.stringify({ error: published.error?.message,
+          status: published.status, signal: published.signal }) + '\n' + published.stdout + published.stderr;
+        expect(published.status, publicationDiagnostic).toBe(0);
         const identity = published.stdout.match(/identity=(v1-[0-9a-f]{64})/)![1];
         const generation = join(store, identity);
         expect(existsSync(join(generation, 'tree/package.json'))).toBe(false);
@@ -2934,6 +3000,16 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
         expect(existsSync(source)).toBe(true);
       });
       expect(warnings).toHaveBeenCalledTimes(2);
+      for (const [, diagnostic] of warnings.mock.calls) {
+        expect(diagnostic).toEqual(expect.objectContaining({
+          code: 'ETIMEDOUT',
+          message: expect.stringContaining('papercusp-disk-retention'),
+          timeoutMs: 50,
+          waitedMs: expect.any(Number),
+        }));
+        expect(diagnostic.waitedMs).toBeGreaterThanOrEqual(50);
+        expect(diagnostic.message).toContain('holder (last observed):');
+      }
       expect(await mod.cleanupCommittedWorkRoot(source)).toBe(true);
       expect(existsSync(source)).toBe(false);
     } finally {
