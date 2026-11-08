@@ -3,7 +3,7 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { constants, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { createServer } from 'node:http';
+import { createServer, type ServerResponse } from 'node:http';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +12,9 @@ import { codexGatewayConfigToml } from '@papercusp/orchestrator/codex-gateway-co
 import { nativeBuilds } from '../../../../omp-plugin/build-native.mjs';
 import { resolveOnPath, wellKnownBackendBin } from '../../backend-bin-resolve.mjs';
 import { bootstrapDescriptionForClient } from '../injection-delivery-coverage';
+import { memoryFragmentOffer } from '../session-epoch-ledger';
+import { openDeliveryLedger } from '../../../../../apps/operator/scripts/hooks/inject/delivery-ledger.mjs';
+import { codexCliResponsesBody } from '../../inference-gateway/codex-cli-bridge';
 
 export type Descriptor = { name: string; description: string };
 export type NativeExport = {
@@ -19,6 +22,7 @@ export type NativeExport = {
   evidencePlane: 'installed-client-local-request' | 'installed-client-registration';
   descriptors: Descriptor[]; request: Record<string, unknown>; methods: string[];
   clientSettings: { toolSearch?: 'disabled'; descriptionMode?: 'full' | 'default'; maxMcpDescriptionChars?: number };
+  stdoutDelivery?: { adapter: 'ptool-stdio'; owner: string; confirmations: object[] };
 };
 export const baselineHash = '986f440eeaf59cf02a400fcd1caf206edae88cc7b04ccd95a91ba29235560ed4';
 export const sha256 = (text: string | Buffer) => createHash('sha256').update(text).digest('hex');
@@ -49,14 +53,74 @@ export function requestDescriptors(value: unknown): Descriptor[] {
   return [...own, ...Object.values(row).flatMap(requestDescriptors)];
 }
 
+/** Reuse the maintained native sandbox's local Responses/Messages exchange.
+ * The installed client executes its advertised tool; no inference is sent. */
+function sendReceiptTurn(res: ServerResponse, client: 'codex' | 'claude',
+  request: Record<string, unknown>, toolName: string, done: boolean): void {
+  const event = (type: string, data: object) => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
+  if (client === 'claude') {
+    const name = requestDescriptors(request.tools).find(tool => tool.name.endsWith(toolName))?.name;
+    if (!done && !name) throw new Error('Native Claude receipt tool absent from request');
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.end(event('message_start', { message: { id: 'msg_receipt', type: 'message', role: 'assistant',
+      model: 'claude-haiku-4-5', content: [], stop_reason: null, stop_sequence: null,
+      usage: { input_tokens: 1, output_tokens: 0 } } })
+      + event('content_block_start', { index: 0, content_block: done
+        ? { type: 'text', text: '' } : { type: 'tool_use', id: 'receipt_call', name, input: {} } })
+      + event('content_block_delta', { index: 0, delta: done
+        ? { type: 'text_delta', text: 'Receipt observed.' } : { type: 'input_json_delta', partial_json: '{}' } })
+      + event('content_block_stop', { index: 0 })
+      + event('message_delta', { delta: { stop_reason: done ? 'end_turn' : 'tool_use', stop_sequence: null },
+        usage: { output_tokens: 1 } }) + event('message_stop', {}));
+    return;
+  }
+  const tools = [...(Array.isArray(request.tools) ? request.tools : []),
+    ...(Array.isArray(request.input) ? request.input.flatMap(item => Array.isArray(item.tools) ? item.tools : []) : [])] as Array<Record<string, unknown>>;
+  const namespace = tools.find(tool => tool.type === 'namespace' && Array.isArray(tool.tools)
+    && tool.tools.some(child => child.name === toolName));
+  const direct = tools.find(tool => tool.type === 'function' && typeof tool.name === 'string'
+    && tool.name.endsWith(toolName));
+  const executor = tools.find(tool => tool.type === 'namespace' && Array.isArray(tool.tools)
+    && tool.tools.some(child => child.type === 'custom' && child.name === 'exec'));
+  if (!done && !namespace && !direct && !executor) throw new Error('Native Codex receipt tool absent from request');
+  const item = done
+    ? { id: 'receipt_done', type: 'message', role: 'assistant', status: 'completed',
+      content: [{ type: 'output_text', text: 'Receipt observed.', annotations: [] }] }
+    : executor ? { id: 'receipt_exec', type: 'custom_tool_call', call_id: 'receipt_call',
+      namespace: executor.name, name: 'exec', status: 'completed', input:
+        `const tool = ALL_TOOLS.find(row => row.name.endsWith(${JSON.stringify(toolName)}));
+if (!tool) throw new Error('Receipt tool absent from native catalog');
+text(await tools[tool.name]({}));` }
+      : { id: 'receipt_function', type: 'function_call', call_id: 'receipt_call',
+        ...(namespace ? { namespace: namespace.name } : {}), name: direct?.name ?? toolName,
+        arguments: '{}', status: 'completed' };
+  const response = { ...codexCliResponsesBody({ model: 'gpt-6.1-sol', text: '', inputTokens: 1, outputTokens: 1 }),
+    output: [item] };
+  res.writeHead(200, { 'content-type': 'text/event-stream' });
+  res.end(event('response.output_item.added', { output_index: 0, item: { ...item, status: 'in_progress',
+    ...(!done ? executor ? { input: '' } : { arguments: '' } : {}) } })
+    + event('response.output_item.done', { output_index: 0, item })
+    + event('response.completed', { response }));
+}
+
 export async function captureNativeMcp(client: NativeExport['client'], tools: Descriptor[],
   instructions?: string, denied: string[] = [],
-  options: { claudeDescriptionMode?: 'full' | 'default' } = {}): Promise<NativeExport> {
+  options: { claudeDescriptionMode?: 'full' | 'default'; stdioReceipt?: 'memory' | 'corpus';
+    stdioPort?: 'initialize' | 'orient' | 'claim' | 'create' } = {}): Promise<NativeExport> {
+  // OMP's maintained adapter is in-process. A ptool subprocess would measure
+  // a different route, so never turn its registration proof into stdout proof.
+  if (options.stdioReceipt && (client === 'omp' || !instructions))
+    throw new Error('Native stdout receipt profile requires Codex/Claude instructions');
   const binary = wellKnownBackendBin(client === 'claude' ? 'claude-code' : client) ?? resolveOnPath(client);
   if (!binary) throw new Error(`Installed ${client} is required for native export evidence`);
   const clientVersion = execFileSync(binary, ['--version'], { encoding: 'utf8', timeout: 5000 }).trim();
   const clientSettings: NativeExport['clientSettings'] = {};
   const home = mkdtempSync(join(tmpdir(), `${client}-mcp-wire-`));
+  const receiptOwner = `su-native-receipt-${client}`;
+  const receiptPort = options.stdioPort ?? 'initialize';
+  const receiptOffer = options.stdioReceipt ? { owner: receiptOwner, token: `native-${receiptPort}-${client}`,
+    fragments: [memoryFragmentOffer(options.stdioReceipt, `native-${options.stdioReceipt}`, 3, receiptPort, instructions!)] } : null;
+  const callReceipt = !!receiptOffer && receiptPort !== 'initialize';
   const methods: string[] = [], captures: Record<string, unknown>[] = [];
   const server = createServer(async (req, res) => {
     try {
@@ -68,21 +132,37 @@ export async function captureNativeMcp(client: NativeExport['client'], tools: De
       const chunks: Buffer[] = [];
       for await (const chunk of req) chunks.push(Buffer.from(chunk));
       const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>;
-      if (req.url === '/mcp') {
+      const route = new URL(req.url ?? '/', 'http://offline.invalid').pathname;
+      if (route === '/mcp' || route === '/api/mcp') {
         const method = String(body.method); methods.push(method);
         if (body.id === undefined) { res.writeHead(202); res.end(); return; }
         const result = method === 'initialize'
           ? { protocolVersion: '2025-03-26', capabilities: { tools: {} },
-            serverInfo: { name: 'offline-canary', version: '1' }, ...(instructions ? { instructions } : {}) }
+            serverInfo: { name: 'offline-canary', version: '1' }, ...(instructions ? { instructions } : {}),
+            ...(receiptOffer && !callReceipt ? { _meta: { 'papercusp/memoryEmission': receiptOffer } } : {}) }
           : method === 'tools/list' ? { tools: tools.map(tool => ({ ...tool,
-            inputSchema: { type: 'object', properties: {} } })) } : {};
+            inputSchema: { type: 'object', properties: {} },
+            ...(receiptOffer ? { _meta: { 'papercusp/servingGeneration': 'native-receipt-fixture-v1' } } : {}) })) }
+            : method === 'tools/call' && callReceipt ? {
+              content: [{ type: 'text', text: JSON.stringify({ [receiptPort]: instructions }) }],
+              _meta: { 'papercusp/memoryEmission': receiptOffer } } : {};
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ jsonrpc: '2.0', id: body.id, result })); return;
       }
-      if (req.url?.includes('/responses') || Array.isArray(body.tools)) captures.push(body);
+      if (callReceipt && req.url?.includes('/count_tokens')) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ input_tokens: 1 })); return;
+      }
+      if (req.url?.includes('/responses') || Array.isArray(body.tools)) {
+        captures.push(body);
+        if (callReceipt && client !== 'omp') {
+          sendReceiptTurn(res, client, body, tools[0]!.name, methods.includes('tools/call'));
+          return;
+        }
+      }
       res.writeHead(400, { 'content-type': 'application/json' });
       res.end('{"type":"error","error":{"type":"invalid_request_error","message":"Offline capture complete; no forwarding."}}');
-    } catch (error) { res.writeHead(400); res.end(String(error)); }
+    } catch (error) { if (!res.headersSent) res.writeHead(400); res.end(String(error)); }
   });
   let child: ReturnType<typeof spawn> | undefined, stderr = '', stdout = '';
   const frameTypes: string[] = [];
@@ -90,18 +170,35 @@ export async function captureNativeMcp(client: NativeExport['client'], tools: De
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
     const baseURL = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
     const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, LANG: process.env.LANG ?? 'C.UTF-8', HOME: home };
+    const bridgeArgs = [fileURLToPath(new URL('../../../../../apps/operator/scripts/ptool.mjs', import.meta.url)),
+      tools[0]!.name, '--stdio', '--transport', 'http', '--url', baseURL, '--token-file', join(home, 'mcp-token')];
+    if (receiptOffer) {
+      writeFileSync(join(home, 'mcp-token'), 'offline-fixture-only', { mode: 0o600 });
+      Object.assign(env, { PAPERCUSP_HOME: home, PAPERCUSP_OPERATOR_HOME: home,
+        PAPERCUSP_SID: receiptOwner, PAPERCUSP_AGENT: client,
+        // The canonical test runner owns this ancestor reader lease. Preserve
+        // it in the nested ptool child; never fabricate a lease for a new root.
+        ...(process.env.PAPERCUSP_INSTALL_MUTEX_HELD
+          ? { PAPERCUSP_INSTALL_MUTEX_HELD: process.env.PAPERCUSP_INSTALL_MUTEX_HELD } : {}) });
+    }
     let argv: string[];
     const registrationPath = join(home, 'registrations.json');
     if (client === 'codex') {
       const gateway = codexGatewayConfigToml(null, { gateway: { baseURL, token: 'offline_capture_token_'.repeat(3) } });
       writeFileSync(join(home, 'config.toml'), ['model = "gpt-6.1-sol"', ...gateway.root, ...gateway.tables,
-        '[mcp_servers.offline_canary]', `url = "${baseURL}/mcp"`, 'required = true',
+        '[mcp_servers.offline_canary]', ...(receiptOffer
+          ? [`command = ${JSON.stringify(process.execPath)}`, `args = ${JSON.stringify(bridgeArgs)}`]
+          : [`url = "${baseURL}/mcp"`]), 'required = true',
         'startup_timeout_sec = 10', 'tool_timeout_sec = 10'].join('\n'));
       Object.assign(env, { CODEX_HOME: home, OPENAI_API_KEY: 'offline-fixture-only' });
-      argv = ['exec', '--skip-git-repo-check', '--ephemeral', '--json', '-C', home, 'Offline fixture: reply OK. Do not use tools.'];
+      argv = ['exec', '--skip-git-repo-check', '--ephemeral', '--json', '-C', home,
+        ...(callReceipt ? ['--config', 'approval_policy="never"'] : []),
+        callReceipt ? `Offline fixture: call ${tools[0]!.name} once then reply OK.` : 'Offline fixture: reply OK. Do not use tools.'];
     } else if (client === 'claude') {
       const path = join(home, 'mcp.json');
-      writeFileSync(path, JSON.stringify({ mcpServers: { offline_canary: { type: 'http', url: `${baseURL}/mcp` } } }));
+      writeFileSync(path, JSON.stringify({ mcpServers: { offline_canary: receiptOffer
+        ? { type: 'stdio', command: process.execPath, args: bridgeArgs }
+        : { type: 'http', url: `${baseURL}/mcp` } } }));
       const descriptionMode = options.claudeDescriptionMode ?? 'full';
       Object.assign(clientSettings, { toolSearch: 'disabled', descriptionMode });
       if (descriptionMode === 'full') {
@@ -123,6 +220,7 @@ export async function captureNativeMcp(client: NativeExport['client'], tools: De
         ENABLE_TOOL_SEARCH: 'false' });
       argv = ['--print', '--output-format', 'json', '--model', 'claude-haiku-4-5', '--no-session-persistence',
         '--setting-sources', '', '--strict-mcp-config', `--mcp-config=${path}`,
+        ...(callReceipt ? [`--allowedTools=mcp__offline_canary__${tools[0]!.name}`] : []),
         ...(denied.length ? [`--disallowedTools=${denied.join(',')}`] : []), '--', 'Offline fixture: reply OK.'];
     } else {
       // A fresh HOME makes the compiled OMP extract its large native addon
@@ -210,7 +308,8 @@ export default async function(pi) {
       running.once('exit', () => { clearTimeout(timer); resolve(); });
     });
     if (!methods.includes('initialize') || !methods.includes('tools/list')) throw new Error(`${client} MCP handshake missing: ${stderr}`);
-    const request = captures.find(body => client === 'omp' || JSON.stringify(body).includes(tools[0]!.name));
+    const request = callReceipt ? captures.at(-1)
+      : captures.find(body => client === 'omp' || JSON.stringify(body).includes(tools[0]!.name));
     if (!request) throw new Error(`${client} native export missing: ${stderr}`);
     const descriptors = client === 'omp' ? JSON.parse(readFileSync(registrationPath, 'utf8')) as Descriptor[]
       : requestDescriptors(request.tools);
@@ -221,7 +320,9 @@ export default async function(pi) {
     }
     return { client, clientVersion, clientSettings,
       evidencePlane: client === 'omp' ? 'installed-client-registration' : 'installed-client-local-request',
-      request, descriptors, methods };
+      request, descriptors, methods,
+      ...(receiptOffer ? { stdoutDelivery: { adapter: 'ptool-stdio' as const, owner: receiptOwner,
+        confirmations: openDeliveryLedger(receiptOwner, env, 'mcp')?.confirmedMemoryDeliveries() ?? [] } } : {}) };
   } finally {
     if (child && child.exitCode === null && child.signalCode === null) {
       const exited = new Promise<void>(resolve => child!.once('exit', () => resolve()));

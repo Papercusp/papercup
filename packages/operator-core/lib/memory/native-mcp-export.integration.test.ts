@@ -9,7 +9,7 @@ import { lintInstructionText } from '../instruction-lint';
 import { capabilityMapText } from '../agent-tools/tools/capability-map';
 import { DELIVERY_MATRIX_CLIENTS, bootstrapDescriptionForClient, validateBootstrapExportArtifact,
   type BootstrapExportArtifact, type BootstrapExportCell } from './injection-delivery-coverage';
-import { captureNativeMcp, frozenBootstrap, baselineHash, requestDescriptors } from './fixtures/native-mcp-export';
+import { captureNativeMcp, frozenBootstrap, baselineHash, requestDescriptors, sha256 } from './fixtures/native-mcp-export';
 
 const sha = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
@@ -234,6 +234,33 @@ it('observes the installed OMP registration and mounted route without inference'
   expect(result.descriptors).toEqual([{ name: 'mcp__offline_canary_echo', description: 'Offline registration canary.' }]);
   expect(result.evidencePlane).toBe('installed-client-registration');
 }, 45_000);
+
+for (const client of ['codex', 'claude'] as const) for (const kind of ['memory', 'corpus'] as const)
+  for (const port of ['initialize', 'orient', 'claim', 'create'] as const)
+  it(`context reliability R-1: installed ${client} ${kind} ${port} stdout`, async ({ task }) => {
+    const instructions = `Native ${kind} receipt canary.\nApproval is required after the final condition ☃`;
+    const capture = await captureNativeMcp(client, [{ name: 'receipt_canary', description: 'Local receipt observation.' }],
+      instructions, [], { stdioReceipt: kind, stdioPort: port });
+    expect(capture.methods).toEqual(expect.arrayContaining(['initialize', 'tools/list']));
+    if (port !== 'initialize') expect(capture.methods).toContain('tools/call');
+    // Two independent boundaries: the installed client's provider request
+    // contains the body AND the maintained stdio adapter saved its exact hash.
+    // Neither a prepared instruction nor a metadata-only offer suffices.
+    const visible = port === 'initialize' ? instructions : JSON.stringify({ [port]: instructions });
+    expect(JSON.stringify(capture.request)).toContain(JSON.stringify(visible).slice(1, -1));
+    expect(capture.stdoutDelivery).toEqual({ adapter: 'ptool-stdio', owner: `su-native-receipt-${client}`,
+      confirmations: [{ token: `native-${port}-${client}`, fragments: [{ kind, id: `native-${kind}`,
+        epoch: 3, port, bodySha256: sha256(instructions), bodyBytes: Buffer.byteLength(instructions) }] }] });
+    Object.assign(task.meta, { nativeMcpDelivery: { client, port, clientVersion: capture.clientVersion,
+      clientSettings: capture.clientSettings, ...capture.stdoutDelivery,
+      evidencePlane: 'installed-client-local-request', productionRuntime: 'UNKNOWN',
+      scope: 'stdio adapter and installed client; fixture source/envelopes/recipient; no production port or deployment claim' } });
+  }, 45_000);
+
+it('refuses to present the in-process OMP route as a ptool stdout profile', async () => {
+  await expect(captureNativeMcp('omp', [{ name: 'echo', description: 'Unchanged registration.' }],
+    'Complete instructions', [], { stdioReceipt: 'memory' })).rejects.toThrow('requires Codex/Claude');
+});
 
 it('context reliability R-7: claude-default-description-observation', async ({ task }) => {
   const description = 'Native default-budget canary. ' + 'x'.repeat(3500) + ' CONTRACT_END';
