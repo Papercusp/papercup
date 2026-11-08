@@ -210,6 +210,7 @@ export function parseArgs(argv: any): {
     sawSeparator: boolean;
 } | {
     workspace?: any;
+    workspaceDirs?: any[] | undefined;
     checkErrors?: string[] | undefined;
     checks?: {
         script: string;

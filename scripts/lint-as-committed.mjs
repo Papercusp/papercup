@@ -902,6 +902,7 @@ export function parseArgs(argv) {
   /** @type {{ script: string, args: string[], workspace?: string }[]} */
   const checks = [];
   const checkErrors = [];
+  let workspaceDirs = [];
   let ref = 'HEAD';
   let workspace;
   let keep = false;
@@ -923,6 +924,7 @@ export function parseArgs(argv) {
     else if (arg === '--any') any = true;
     else if (arg.startsWith('--ref=')) ref = arg.slice('--ref='.length);
     else if (arg.startsWith('--workspace=')) workspace = arg.slice('--workspace='.length);
+    else if (arg.startsWith('--workspace-dir=')) workspaceDirs.push(arg.slice('--workspace-dir='.length));
     else if (arg.startsWith('--check=')) {
       try {
         const check = JSON.parse(arg.slice('--check='.length));
@@ -965,11 +967,14 @@ export function parseArgs(argv) {
   // of guessing is silent: both scripts run, one of them against operands meant for the
   // other, and the summary reports on whatever came back. Refuse instead.
   const forwardAmbiguous = forward.length > 0 && scripts.length > 1;
+  try { workspaceDirs = normalizeDependencyWorkspaceDirs(workspaceDirs); }
+  catch (error) { checkErrors.push('invalid --workspace-dir: ' + error.message); }
   return { help: false, scripts, forward, ref, keep, any, unknown, nonLint, selfRecursive, forwardAmbiguous, sawSeparator,
     ...(materializeOnly ? { materializeOnly: true, keep: true } : {}),
     ...(retainFor !== undefined ? { retainFor } : {}),
     ...(checks.length > 0 ? { checks } : {}),
     ...(checkErrors.length > 0 ? { checkErrors } : {}),
+    ...(workspaceDirs.length ? { workspaceDirs } : {}),
     ...(workspace !== undefined ? { workspace } : {}) };
 }
 
@@ -1400,6 +1405,8 @@ lint-as-committed — run a lint as the release gate runs it (committed detector
   --ref=<git-ref>   which commit to test (default HEAD). e.g. --ref=origin/staging
   --workspace=<dir> select a committed npm workspace, e.g. apps/sidecar;
                     script definitions and forwarded file paths use that directory
+  --workspace-dir=<dir> repeat to select dependency workspaces plus the root install;
+                    omitted means full scope; the selection is bound to dependency provenance
   --keep            do not delete the extracted tree (path is printed)
   --materialize-only prepare committed source without running a lint/test (implies --keep)
   --retain-for=<path> retain source while this external artifact exists; requires --materialize-only
@@ -1817,6 +1824,7 @@ async function main() {
     let prerequisiteError;
     try {
       snapshot = await materializeIndependentDependencies(repoRoot, workRoot, {
+        workspaceDirs: args.workspaceDirs,
         prepareWorkspace: ({ paths, workspacePaths }) => {
           // Exclude the private install before a pinned build checks cleanliness.
           writeLinkExcludes(workRoot, planLinkExcludes(paths, submodules.map((s) => s.path)));
