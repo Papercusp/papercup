@@ -1,72 +1,43 @@
 {
   "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Workbench P-002 GNOME native Papercup chat, Markdown and work links",
   "plan": "quick-access-search-launcher-2026-10-26",
   "workItem": "WI-6554700010029573",
-  "scope": "GNOME private virtual seat and actual production Shell actors; fixture PUI; current source hashes only; no exact installed artifact or three-OS shipment claim",
-  "verification": {
-    "runner": "scripts/test-files.mjs",
-    "file": "papercusp-desktop/test/native-workbench-gnome-live.test.mjs",
-    "selectedJourney": "chat",
-    "namePattern": "native harness|private GNOME Shell renders actors",
-    "exitCode": 0,
-    "passed": 3,
-    "failed": 0,
-    "skipped": 0,
-    "assertionCount": 24,
-    "provenance": "The test router reported unknown commit provenance because shared HEAD moved. The runtime source hashes below were captured before Shell launch and independently matched the canonical files after the run.",
-    "log": "/tmp/wb-gnome-chat-native-20261107-v4.log",
-    "logSha256": "1fbdce5ad9ca76ec60728ca8268e70a0fcfba0614fe351fcda0b50757e83aa2f"
-  },
-  "assertions": [
-    "native shortcut acquisition",
-    "native seat supports input injection",
-    "native input methods exist",
-    "desktop ready for normal shortcuts",
-    "Papercup shortcut opens native Shell actor",
-    "saved transcript reaches native chat",
-    "canonical history completion focuses native composer",
-    "Earlier messages prepends canonical page",
-    "chat child control owns keyboard focus",
-    "Escape closes chat without application window",
-    "reopen preserves conversation draft",
-    "another conversation cannot inherit draft",
-    "returning to conversation restores only its draft",
-    "seat typing reaches native chat composer",
-    "partial reply renders before producer is released and blocks duplicate send",
-    "exact saved acknowledgement clears submitted draft",
-    "progressive reply is present in actual Shell actor",
-    "completion reloads persisted transcript without duplicate user turn",
-    "disconnect exposes reconciliation without a second send",
-    "Send retains exact selected environment conversation and saved user identity",
-    "Reconnect passes exact saved turn and cursor without replaying send",
-    "Cancel requires canonical saved cancellation receipt",
-    "Cancel retains exact conversation identity",
-    "Papercup remains outside Dock taskbar and Alt-Tab application windows"
-  ],
+  "plane": "current-build private GNOME virtual seat; fixture PUI; dirty worktree",
+  "framework": "node:test",
+  "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_GNOME_JOURNEY=chat PAPERCUSP_NATIVE_EVIDENCE_DIR=/tmp/wb-gnome-chat-content-native-20261107-v2 node scripts/test-files.mjs papercusp-desktop/test/native-workbench-gnome-live.test.mjs -t 'GNOME archive|bundled production installer|private GNOME Shell renders actors'",
+  "exitCode": 0,
+  "testResult": {"passed": 3, "failed": 0, "skipped": 0},
+  "nativeAssertions": 31,
+  "summary": "The maintained archive, installer and private Shell chat journey pass. Real virtual-seat input verifies native Markdown, literal code visibility, exact clipboard copy, plan-context selection, shared work popup targets, history, draft isolation, progressive send, reconnect, cancellation, Escape and no application window. External URI launching is intercepted at the launcher boundary to avoid opening a browser in the test.",
   "sourceCustody": {
-    "archiveSha256": "83cc979e4ef353701315e085267ac2b10f725ec2b4aef84743ab88632287faee",
-    "journey": "chat",
-    "files": {
-      "extension.js": "02aab67577dd4a4222e07e4d46ac16efb22a832c048b0c9b43bf1a9b83cda500",
-      "workbench.js": "fd91b14e1f73dad0838eeeec19576bc5e03ffd16d053ffc80f23c1f2839f3f20",
-      "panel-model.mjs": "1f0896e4bdedd5481aba7b1c3d82fc18c4b366caa259a06ca77c593d6805a8c6",
-      "bridge.js": "ffa041c796665b9ba4928a354fe72818464293d474b5f5c370e21c44f8969a0b",
-      "helper.js": "f1dc111c2b2e7d69881632b78fdf6e3f9afb7c4e08d6b5b2ef2f46e3d979f40f",
-      "schemas/org.gnome.shell.extensions.papercusp-workbench.gschema.xml": "5d2a51f63725674107512d43a7a8ec1383d1bfe9953f6e298d8c53a28229b3aa"
-    },
-    "testSha256": "fdc1da7fb7d3446653c26430e96542edd1598658e9e9b2cb43eb4b3a973f504a"
+    "archiveSha256": "ce404527970c6d0d717d9c05279e1c3b07e14c9a0724544b124c992380ef4712",
+    "workbench.js": "68576390a0ffbf0898f87a3ffd8a2c506f69f6f7c214dc3f9db8d2bb2191c45e",
+    "panel-model.mjs": "2cdd3c6475a8527c8d8afac29c45953fd370d0eab260f0fdc969a13bf04ea019",
+    "bridge.js": "ffa041c796665b9ba4928a354fe72818464293d474b5f5c370e21c44f8969a0b",
+    "helper.js": "f1dc111c2b2e7d69881632b78fdf6e3f9afb7c4e08d6b5b2ef2f46e3d979f40f",
+    "chat-content.js": "a347e9841f51f95216c0fa06a719f3238aca6481dc4545fcc78978f4859b3d4d",
+    "testSha256": "8a66367f570be18794460549d581803e07e7627941dbafc2a8bf501dd9acaf6b"
   },
-  "retained": {
-    "screenshot": "/tmp/wb-gnome-chat-native-20261107-v4/gnome-native-chat/gnome-native-input.png",
-    "process": "/tmp/wb-gnome-chat-native-20261107-v4/gnome-native-chat/gnome-native-process.json",
-    "loaderAudit": "/tmp/wb-gnome-chat-census-20261107-v4.jsonl"
+  "evidence": {
+    "log": "/tmp/wb-gnome-chat-content-native-20261107-v2.log",
+    "nativeResult": "/tmp/wb-gnome-chat-content-native-20261107-v2/gnome-native-chat/gnome-native-input.json",
+    "processResult": "/tmp/wb-gnome-chat-content-native-20261107-v2/gnome-native-chat/gnome-native-process.json",
+    "screenshot": "/tmp/wb-gnome-chat-content-native-20261107-v2/gnome-native-chat/gnome-native-input.png",
+    "unitLog": "/tmp/wb-gnome-chat-content-unit-20261107-v1.log",
+    "unitResult": {"passed": 39, "failed": 0, "skipped": 0}
   },
-  "pending": [
-    "GNOME Markdown/code/work-reference links and cards",
-    "GNOME voice",
-    "Windows chat",
-    "AppKit runtime acceptance",
-    "Independent exact installed Ubuntu/macOS/Windows proof, certificate and shipment"
-  ],
-  "preflight": "The mandatory restricted-hold census admitted naturally. EI-28171602541991051 remains unclaimed behind its duplicate-screening admission floor; timeout root cause is unknown. No admission bypass or preflight source edit."
+  "regression": {
+    "rootCause": "The code St.ScrollView had no reserved height, so its viewport collapsed even though the code label existed.",
+    "detectorFailure": "An actor-existence assertion passed while the screenshot showed clipped code.",
+    "fix": "Reserve bounded viewport height from code line count; assert mapped code and viewport height at least the code label height.",
+    "verified": "The new allocation assertion passes and visual readback shows the exact literal code above Copy code. Earlier v1 screenshot retains the failure.",
+    "priorScreenshot": "/tmp/wb-gnome-chat-content-native-20261107-v1/gnome-native-chat/gnome-native-input.png"
+  },
+  "limits": [
+    "This is local current-build evidence with captured runtime source custody, not a clean committed or shipped artifact.",
+    "Fixture PUI proves native integration behavior, not live operator chat service behavior.",
+    "Ubuntu structured cards and voice, Windows chat, macOS runtime proof, independent acceptance and exact installed-artifact three-OS shipment remain pending."
+  ]
 }
