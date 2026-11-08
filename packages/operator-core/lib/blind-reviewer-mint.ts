@@ -308,6 +308,7 @@ export interface MintBlindGapReviewerDeps {
   verifyNativeNoOpen?: typeof verifyBlindReviewNativeNoOpen;
   resolveResumeTarget?: typeof import('./agent-launch-core').resolveResumeTarget;
   verifyLiveBinding?: typeof verifyBlindReviewSessionBinding;
+  readLiveHost?: typeof import('./events/await/psu-pty-discovery').findLiveHostAsync;
   wakeReviewer?: typeof import('./agent-tools/coordination/inbox-wake').wakeRecipients;
   /** Registered tool names for the howToRun ceiling check; injected in tests. */
   knownTools?: () => Promise<ReadonlySet<string>>;
@@ -608,6 +609,19 @@ export async function resumeBlindGapReviewer(
         ...acquired.binding, ...acquired.endpoint,
       });
       if (!verified.ok) throw new Error(`The live reviewer binding was refused: ${verified.code}: ${verified.message}`);
+      // A bound identity is not proof that its native CLI can answer. In
+      // particular an older screen detector can report authBlocked:false while
+      // the same host records the native turn's non-retryable API 401.
+      const readLiveHost = deps.readLiveHost ?? (await import('./events/await/psu-pty-discovery')).findLiveHostAsync;
+      const host = await readLiveHost(acquired.binding.reviewerOwnerId, undefined, { workspaceId });
+      if (!host || host.ownerId !== acquired.binding.reviewerOwnerId) {
+        throw new Error('The bound reviewer has no verified live host reading. No wake or process was opened.');
+      }
+      const failure = host.execution?.phase === 'failed' ? host.execution.failure : undefined;
+      if (failure?.retryable === false) {
+        throw new Error(`The bound reviewer's native turn failed (${failure.code}); a queued wake is not recovery. ` +
+          'Repair the provider failure and recover this same confined reviewer before retrying. No wake or process was opened.');
+      }
       const wake = await (deps.wakeReviewer ?? (await import('./agent-tools/coordination/inbox-wake')).wakeRecipients)(
         [acquired.binding.reviewerOwnerId], {
           workspaceId, source: BLIND_GAP_REVIEW_ACTOR,

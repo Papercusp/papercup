@@ -18,7 +18,7 @@ vi.mock('../operator-state-pg', () => ({
 vi.mock('@papercusp/scheduled-registry', () => ({ managedSetInterval: vi.fn() }));
 
 import { SUPERUSER_FALLBACK_CLIENT_ID } from '../agent-tools/coordination/identity';
-import { directedImplementerConfinement } from './session-confinement';
+import { directedImplementerConfinement, type SessionToolConfinement } from './session-confinement';
 import { checkSessionConfinement, hasSessionConfinementResolver, sessionAllowsAmbientContext } from './session-confinement-port';
 import {
   __markSessionConfinementsPrimedForTest,
@@ -96,6 +96,29 @@ describe('session-confinement store — installation', () => {
 });
 
 describe('exact native launch ceilings', () => {
+  it('snapshots private benchmark allocation and refuses missing, foreign or corrupted host scope', async () => {
+    const confinement: SessionToolConfinement = { denyTools: [], denyOutside: ['benchmark:read-private-fixture'],
+      denyAmbientContext: true, denyWorkItemsOutside: { id: 'WI-own', harness: 'bench', checkout: '/private/assignment' },
+      imposedBy: 'benchmark-host bench-assignment:own', reason: 'private', denyBenchmarkReadsOutside: {
+        workspaceId: 'private', runId: 'run', preregHash: 'a'.repeat(64), assignmentId: 'bench-assignment:own',
+        taskId: 'LATENCY-M1:T01', armId: 'cold', seed: 1, fixtureSha256: 'b'.repeat(64),
+        cases: { A: { issueId: 'EI-a' }, B: { issueId: 'EI-b' } } } };
+    const input = structuredClone(confinement);
+    expect(await declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER, workspaceId: 'private', confinement: input })).toEqual({ ok: true });
+    const allocated = input.denyBenchmarkReadsOutside!;
+    if (allocated.taskId !== 'LATENCY-M1:T01') throw new Error('Expected the card fixture');
+    allocated.cases.A.issueId = 'EI-foreign';
+    expect((await readSessionConfinement(IMPLEMENTER_OWNER, 'private'))?.denyBenchmarkReadsOutside?.cases.A).toEqual({ issueId: 'EI-a' });
+    await expect(declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER, workspaceId: 'private', confinement: input })).rejects.toThrow(/cannot be replaced/);
+    for (const changed of [{ denyAmbientContext: undefined }, { denyWorkItemsOutside: undefined },
+      { denyOutside: undefined }, { imposedBy: 'foreign' }]) {
+      expect(await declareSessionConfinement({ ownerId: 'su-other', workspaceId: 'private', confinement: {
+        ...confinement, ...changed } })).toMatchObject({ ok: false });
+    }
+    expect(await declareSessionConfinement({ ownerId: 'su-other', workspaceId: 'foreign', confinement })).toMatchObject({ ok: false });
+    pgState.payload = { sessions: { [IMPLEMENTER_OWNER]: stored({ confinement }) } };
+    await expect(readSessionConfinement(IMPLEMENTER_OWNER, 'foreign')).rejects.toThrow(/malformed/);
+  });
   it('persists a private memory digest immutably and rejects malformed stored memory scope', async () => {
     const memory = { snapshotSha256: 'a'.repeat(64) };
     const confinement = { denyTools: [], denyOutside: ['memory:search'], denyMemoryOutside: memory,

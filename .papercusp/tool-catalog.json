@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 995,
+  "count": 996,
   "tools": [
     {
       "name": "ablation:report",
@@ -1991,6 +1991,33 @@
         "notWhen": "Not for raw model certification (cert:run), subjective gym scoring (gym:judge), or reading plan/work-item state (plans:get / work_items:list).",
         "chaining": "omp:sessions or dev:sessions → behaviour:run { mode:\"score\", sessionId }. Or create/pick a fixture plan → behaviour:run { mode:\"launch\", planSlug, model }."
       }
+    },
+    {
+      "name": "benchmark:read-private-fixture",
+      "http": {
+        "path": "/api/agent-tools/benchmark/read-private-fixture",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read the source fixture assigned by the native benchmark host. Choose input A/B and a declared read operation; follow card continuations using the same operation and case. Source identities and workspace are fixed by the host. Saved recipes are read as data only.",
+      "capabilities": [
+        "work_items:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator",
+        "worker",
+        "cup"
+      ]
     },
     {
       "name": "blender:attach-goal-evidence",

@@ -509,6 +509,12 @@ describe('mintBlindGapReviewer', () => {
       modelSource: null, endedAt: '2026-11-06T12:01:00Z', endedBy: null,
     }));
     const verifyLiveBinding = vi.fn<NonNullable<MintBlindGapReviewerDeps['verifyLiveBinding']>>(async () => ({ ok: true }));
+    const readLiveHost = vi.fn<NonNullable<MintBlindGapReviewerDeps['readLiveHost']>>(async ownerId => ({
+      ownerId, advSessionId: 'review-host-1', pid: 123, ptyPid: 124,
+      sock: '/tmp/review-host-1.sock', command: 'claude', startedAt: 1,
+      authBlocked: false,
+      execution: { phase: 'settled', turnStartedAt: 1, lastProgressAt: 2, pendingTools: 0, observedAt: 3 },
+    }));
     const wakeReviewer = vi.fn<NonNullable<MintBlindGapReviewerDeps['wakeReviewer']>>(async () => ({
       targets: [binding.reviewerOwnerId], keys: ['coord:inbox-wake:su-reviewer-1'], queued: 1, woken: 1, pickupConfirmed: false,
       pickup: [], staged: 0, stagedTargets: [], fanoutCapped: [], timedOutTargets: [],
@@ -520,10 +526,10 @@ describe('mintBlindGapReviewer', () => {
     const knownTools = async () => new Set(['capability:bash', 'testing:run', 'work_items:create', 'coord:send', 'events:emit']);
     return { handler, loadBrief, launcher, binding, findSessionBinding, createSessionBinding, killTask,
       acquireSessionResume, releaseSessionResume, readConfinement, reserveNativeAttempt, verifyNativeNoOpen,
-      resolveResumeTarget, verifyLiveBinding, wakeReviewer,
+      resolveResumeTarget, verifyLiveBinding, readLiveHost, wakeReviewer,
       deps: { loadBrief, launcher, findSessionBinding, createSessionBinding, killTask,
         acquireSessionResume, releaseSessionResume, reserveNativeAttempt, verifyNativeNoOpen,
-        resolveResumeTarget, verifyLiveBinding, wakeReviewer, readConfinement, knownTools } };
+        resolveResumeTarget, verifyLiveBinding, readLiveHost, wakeReviewer, readConfinement, knownTools } };
   }
 
   // EI-27120299877087815: review #109 was told to call tools its ceiling refuses.
@@ -964,6 +970,57 @@ describe('mintBlindGapReviewer', () => {
     expect(await resumeBlindGapReviewer({ slug: SLUG, harness: 'papercusp', recruiterOwnerId: 'su-author',
       ctx: { workspaceId: 'ws-1' } }, d.deps)).toMatchObject({ ok: false, code: 'resume_failed' });
     expect(d.wakeReviewer).not.toHaveBeenCalled();
+    expect(d.launcher).not.toHaveBeenCalled();
+    expect(d.releaseSessionResume).toHaveBeenCalledWith(7, 'lease-1');
+  });
+
+  it('refuses the native non-retryable 401 even when the older screen detector reports no auth wall', async () => {
+    const d = deps();
+    const target = await d.resolveResumeTarget({ sessionId: 'native-review-1' });
+    const host = await d.readLiveHost('su-reviewer-1');
+    if (!target.ok || !host) throw new Error('fixture target missing');
+    d.resolveResumeTarget.mockResolvedValue({ ...target, live: true, endedAt: null });
+    d.readLiveHost.mockResolvedValue({ ...host, authBlocked: false,
+      execution: { ...host.execution!, phase: 'failed',
+        failure: { code: 'api_error_401', retryable: false, retryAfterMs: null, atMs: 2 } } });
+    const result = await resumeBlindGapReviewer({ slug: SLUG, harness: 'papercusp', recruiterOwnerId: 'su-author',
+      ctx: { workspaceId: 'ws-1' } }, d.deps);
+    expect(result).toMatchObject({ ok: false, code: 'resume_failed',
+      message: expect.stringContaining('api_error_401') });
+    expect(d.readLiveHost).toHaveBeenLastCalledWith('su-reviewer-1', undefined, { workspaceId: 'ws-1' });
+    expect(d.wakeReviewer).not.toHaveBeenCalled();
+    expect(d.reserveNativeAttempt).not.toHaveBeenCalled();
+    expect(d.launcher).not.toHaveBeenCalled();
+    expect(d.releaseSessionResume).toHaveBeenCalledWith(7, 'lease-1');
+  });
+
+  it.each(['retryable', 'settled'])('allows a real recovery wake after a %s observation', async state => {
+    const d = deps();
+    const target = await d.resolveResumeTarget({ sessionId: 'native-review-1' });
+    const host = await d.readLiveHost('su-reviewer-1');
+    if (!target.ok || !host) throw new Error('fixture target missing');
+    d.resolveResumeTarget.mockResolvedValue({ ...target, live: true, endedAt: null });
+    d.readLiveHost.mockResolvedValue({ ...host, execution: { ...host.execution!,
+      phase: state === 'settled' ? 'settled' : 'failed',
+      failure: { code: 'api_error_401', retryable: state === 'retryable', retryAfterMs: null, atMs: 2 } } });
+    expect(await resumeBlindGapReviewer({ slug: SLUG, harness: 'papercusp', recruiterOwnerId: 'su-author',
+      ctx: { workspaceId: 'ws-1' } }, d.deps)).toMatchObject({ ok: true, leaseReleased: true });
+    expect(d.wakeReviewer).toHaveBeenCalledTimes(1);
+    expect(d.launcher).not.toHaveBeenCalled();
+  });
+
+  it.each(['missing', 'foreign', 'unreadable'])('refuses an %s current host reading without wake or launch', async state => {
+    const d = deps();
+    const target = await d.resolveResumeTarget({ sessionId: 'native-review-1' });
+    const host = await d.readLiveHost('su-reviewer-1');
+    if (!target.ok || !host) throw new Error('fixture target missing');
+    d.resolveResumeTarget.mockResolvedValue({ ...target, live: true, endedAt: null });
+    if (state === 'unreadable') d.readLiveHost.mockRejectedValue(new Error('host read unavailable'));
+    else d.readLiveHost.mockResolvedValue(state === 'missing' ? null : { ...host, ownerId: 'su-other' });
+    expect(await resumeBlindGapReviewer({ slug: SLUG, harness: 'papercusp', recruiterOwnerId: 'su-author',
+      ctx: { workspaceId: 'ws-1' } }, d.deps)).toMatchObject({ ok: false, code: 'resume_failed' });
+    expect(d.wakeReviewer).not.toHaveBeenCalled();
+    expect(d.reserveNativeAttempt).not.toHaveBeenCalled();
     expect(d.launcher).not.toHaveBeenCalled();
     expect(d.releaseSessionResume).toHaveBeenCalledWith(7, 'lease-1');
   });

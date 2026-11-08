@@ -2436,8 +2436,8 @@ describe('current benchmark restart and live binding', () => {
     await expect(recoverCurrentBenchRun(f.ports, options)).rejects.toThrow(/census exceeded/);
     expect(f.ports.killTask).not.toHaveBeenCalled();
   });
-  it.each([[undefined, 'off', 'off', undefined], ['on', 'off', 'off', 'off'], ['off', 'off', 'off', 'off'], ['on', 'on', 'off', 'off'],
-    ['off', 'on', 'off', 'off'], ['on', 'off', 'on', 'off'], ['off', 'off', 'on', 'off'], ['off', 'off', 'off', 'on'],
+  it.each([[undefined, 'off', 'off', undefined, false], ['on', 'off', 'off', 'off', false], ['off', 'off', 'off', 'off', false], ['on', 'on', 'off', 'off', false],
+    ['off', 'on', 'off', 'off', false], ['on', 'off', 'on', 'off', false], ['off', 'off', 'on', 'off', false], ['off', 'off', 'off', 'on', false],
     ['on', 'off', 'off', 'off', true]] as const)
     ('binds native ledger exposure %s planning %s memory %s carry %s while retaining authenticated observer ownership', async (ledger, planning, memory, carry, privateReads) => {
     const f = fixture();
@@ -2446,7 +2446,7 @@ describe('current benchmark restart and live binding', () => {
     const protocol = currentProtocolFixture(), preregHash = 'a'.repeat(64);
     const taskId = privateReads ? 'LATENCY-M1:T01' : 't1';
     protocol.taskIds = [taskId];
-    protocol.sampling.taskRepositories = { [taskId]: 'fixture-repo', 'withheld-1': 'withheld-repo' };
+    protocol.sampling!.taskRepositories = { [taskId]: 'fixture-repo', 'withheld-1': 'withheld-repo' };
     const readSources: BenchFixtureAllocation | undefined = privateReads ? {
       'LATENCY-M1:T01': { A: { issueId: 'EI-fixture-a' }, B: { issueId: 'EI-fixture-b' } },
       'LATENCY-M1:T02': {
