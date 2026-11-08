@@ -1984,7 +1984,9 @@ export function createWorkspaceHostCutRetentionDelegate(input: {
 }
 
 /** Runtime delegates preserve the owning program's leases and its original receipts. */
-export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 'dryRun' | 'runBudgetMs' | 'onlyRoots'> = {}): Promise<DiskReclaimReceipt> {
+/** Explicit recovery budgets remain bounded by the whole-pass deadline;
+ * ordinary scheduled calls keep their existing 60s effect allowance. */
+export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 'dryRun' | 'runBudgetMs' | 'effectBudgetMs' | 'onlyRoots'> = {}): Promise<DiskReclaimReceipt> {
   const repoRoot = process.env.PAPERCUSP_INTEGRATION_ROOT ?? moduleRepoRoot(import.meta.url);
   const { getOrgPg } = await import('@papercusp/db-org');
   const { activeWorkspaceId } = await import('../workspace-registry');

@@ -22,7 +22,7 @@ import { awaitRetentionCensusCompletion, inspectDetachedRetentionTrees, RETENTIO
 import { DetachedWalkAbandoned, readWalkState, walkAttemptFiles } from './disk-census-detached-walk';
 import { readDiskHeadroomSoakEvidence } from './retention-interval-evidence';
 import { scanProcHolders } from '../release-cut-reclaim';
-import { readOpenWorkItemEvidenceReferences, readRetentionPins, renewWorkItemEvidencePins } from './retention-pins';
+import { readOpenWorkItemEvidenceReferences, readRetentionPins, renewWorkItemEvidencePins, withWorkItemEvidenceRetention } from './retention-pins';
 import type { PresenceRecord } from '../agent-tools/coordination/presence';
 import { resolveSessionStates } from '../agent-tools/coordination/liveness-oracle';
 import { createFreshPgDb, applyEventSubstrateMigrationsForTest, COORD_SUBSCRIPTION_SUBSTRATE } from '../../test/_pg-helpers';
@@ -281,7 +281,7 @@ describe('retention on a real fixture tree', () => {
     await writeFile(join(repository, evidenceRef), JSON.stringify({ retainedEvidence: {
       root: '.papercusp/evidence/WI-open-native', pathBase: 'Operating account home directory',
     } }));
-    const nowMs = options.nowMs + 48 * 3_600_000;
+    const nowMs = options.nowMs + 48 * 3_600_000, intakeMs = nowMs - 24 * 3_600_000;
     const repositories = new Map([['fixture', repository]]);
     let lost = false;
     const consumer = {
@@ -306,8 +306,19 @@ describe('retention on a real fixture tree', () => {
         ('fixture', 'fixture', 'WI-done', 'done', 'consumer'), ('foreign', 'fixture', 'WI-foreign', 'open', 'consumer'),
         ('fixture', 'fixture', 'WI-retracted', 'open', 'consumer')`;
       await db.sql`INSERT INTO harness_shared.spec_evidence_bindings VALUES
-        ('fixture', 'fixture', 'WI-open', ${evidenceRef}, NULL), ('fixture', 'fixture', 'WI-done', ${evidenceRef}, NULL),
+        ('fixture', 'fixture', 'WI-done', ${evidenceRef}, NULL),
         ('fixture', 'fixture', 'WI-foreign', ${evidenceRef}, NULL), ('fixture', 'fixture', 'WI-retracted', ${evidenceRef}, now())`;
+      expect(await readOpenWorkItemEvidenceReferences(db.sql, 'fixture', consumer)).toEqual([]);
+      const reference = { harness_slug: 'fixture', work_item_id: 'WI-open', evidence_ref: evidenceRef };
+      const accept = vi.fn(async () => {
+        expect(pinProtection(readRetentionPins({ dir, nowMs: intakeMs }).pins, intakeMs)(retained)).toBe(true);
+        await db.sql`INSERT INTO harness_shared.spec_evidence_bindings VALUES
+          ('fixture', 'fixture', 'WI-open', ${evidenceRef}, NULL)`;
+        return 'accepted';
+      });
+      await expect(withWorkItemEvidenceRetention(reference, { repositories, home, dir, nowMs: intakeMs }, accept)).resolves.toBe('accepted');
+      expect(accept).toHaveBeenCalledTimes(1);
+      const intakePin = readRetentionPins({ dir, nowMs: intakeMs }).pins[0]!;
       expect(await readOpenWorkItemEvidenceReferences(db.sql, 'fixture', consumer)).toEqual([
         { harness_slug: 'fixture', work_item_id: 'WI-open', evidence_ref: evidenceRef },
       ]);
@@ -325,6 +336,8 @@ describe('retention on a real fixture tree', () => {
       expect(JSON.parse(await readFile(join(retained, 'result.json'), 'utf8'))).toEqual({ passed: true });
       await expect(stat(unrelated)).rejects.toMatchObject({ code: 'ENOENT' });
       const originalPin = readRetentionPins({ dir, nowMs }).pins[0]!;
+      expect(originalPin.id).toBe(intakePin.id);
+      expect(Date.parse(originalPin.expiresAt)).toBeGreaterThan(Date.parse(intakePin.expiresAt));
       if (loss === 'terminal') await db.sql`UPDATE harness_shared.work_items SET status = 'done' WHERE feature_id = 'WI-open'`;
       if (loss === 'abandoned') await db.sql`UPDATE harness_shared.work_items SET taken_by = NULL WHERE feature_id = 'WI-open'`;
       lost = true;
@@ -343,6 +356,9 @@ describe('retention on a real fixture tree', () => {
       expect(final.errors).toEqual([]);
       expect(final.entries).toContainEqual(expect.objectContaining({ path: retained, status: 'removed' }));
       await expect(stat(retained)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(withWorkItemEvidenceRetention(reference, { repositories, home, dir, nowMs: later }, accept))
+        .rejects.toThrow('evidence retention: missing declared evidence');
+      expect(accept).toHaveBeenCalledTimes(1);
     } finally { await db.cleanup(); }
   }, 120_000);
 

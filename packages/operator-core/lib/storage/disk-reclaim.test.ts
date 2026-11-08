@@ -12,13 +12,27 @@ import { promisify } from 'node:util';
 import { build } from 'esbuild';
 import { compilePolicy, RETENTION_POLICY, retentionRootSizeCap, type RetentionClass } from './retention-policy';
 import { createRetentionHolderScanner, DISK_RECLAIM_CRONTAB, drainScheduledDiskReclaim, nativeRetentionCommand, physicalRetentionRoots, policyRoots, prioritizeRetentionRoots, readReclaimReceipt, reclaimRunBudgetForDrain, runScheduledDiskReclaimWithFailureReceipt, scanRetentionRootHolders, scanRetentionHolders, selectRetentionEntries, type DiskReclaimReceipt, type ReclaimSql, type RetentionEntry, type RetentionCapReceipt } from './disk-reclaim';
-import { createWorkspaceHostCutRetentionDelegate, runDiskReclaimOnce } from './disk-reclaim';
+import { createWorkspaceHostCutRetentionDelegate, runDiskReclaimOnce, type runScheduledDiskReclaim } from './disk-reclaim';
 import { pinProtection } from '../../../../scripts/lib/retention-pins.mjs';
 
 const delegateSpawn = vi.hoisted(() => vi.fn());
 vi.mock('../task-manager/managed-spawn', () => ({ managedSpawn: delegateSpawn }));
 const delegateKill = vi.hoisted(() => vi.fn());
 vi.mock('../task-manager/control', () => ({ killTask: delegateKill }));
+// Keep real fixture serialization without joining the live retention queue.
+// The integration suite uses the same namespace seam for its fixture trees.
+const fixtureMutex = vi.hoisted(() => ({
+  name: `disk-reclaim-unit-${process.pid}-${Date.now()}`,
+  acquired: [] as string[],
+}));
+vi.mock('../../../../scripts/lib/fs-mutex.mjs', async original => {
+  const actual = await original<typeof import('../../../../scripts/lib/fs-mutex.mjs')>();
+  return { ...actual, withFsMutex: (...args: Parameters<typeof actual.withFsMutex>) => {
+    const name = args[0] === 'papercusp-disk-retention' ? fixtureMutex.name : args[0];
+    fixtureMutex.acquired.push(name);
+    return actual.withFsMutex(name, args[1], args[2]);
+  } };
+});
 const managedTask = (
   child: ChildProcess,
   taskId: string,
@@ -77,6 +91,44 @@ describe('scoped retention recovery on real files', () => {
     expect(await readFile(pinned, 'utf8')).toBe('open acceptance evidence');
     expect(await readFile(join(unrelated, 'keep'), 'utf8')).toBe('outside this recovery scope');
     expect(delegate).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { name: 'standing default', effectBudgetMs: undefined, runBudgetMs: 200_000, removed: 2 },
+    { name: 'explicit recovery allowance', effectBudgetMs: 150_000, runBudgetMs: 200_000, removed: 3 },
+    { name: 'whole-pass deadline', effectBudgetMs: 150_000, runBudgetMs: 70_000, removed: 2 },
+  ])('preserves pins and scope with the scheduled $name', async ({ effectBudgetMs, runBudgetMs, removed }) => {
+    const { root, options } = await setup();
+    const paths = ['old-a', 'old-b', 'old-c'].map(name => join(root, name));
+    const pinned = join(root, 'pinned');
+    for (const path of [...paths, pinned]) await writeFile(path, 'retained until eligible');
+    let clock = Date.now();
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const scheduled: Parameters<typeof runScheduledDiskReclaim>[0] = {
+      onlyRoots: [root], runBudgetMs, ...(effectBudgetMs === undefined ? {} : { effectBudgetMs }),
+    };
+    const checked: string[] = [];
+    try {
+      const receipt = await runDiskReclaimOnce({ ...options, ...scheduled,
+        protectedPaths: [pinned],
+        scanHolders: async wanted => {
+          checked.push(...wanted);
+          return { complete: true, byPath: new Map<string, string[]>() };
+        },
+        record: async phase => { if (phase === 'removed') clock += 40_000; },
+      });
+      expect(receipt.entries.filter(entry => entry.status === 'removed').map(entry => entry.path)).toEqual(paths.slice(0, removed));
+      for (const path of paths.slice(0, removed)) {
+        expect(checked).toContain(path);
+        await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
+      }
+      for (const path of [...paths.slice(removed), pinned]) {
+        expect(await readFile(path, 'utf8')).toBe('retained until eligible');
+      }
+      expect(receipt.roots?.map(value => value.path)).toEqual([root]);
+      expect(fixtureMutex.acquired).toContain(fixtureMutex.name);
+      expect(fixtureMutex.acquired).not.toContain('papercusp-disk-retention');
+    } finally { now.mockRestore(); }
   });
 
   it.each(['empty', 'unenrolled', 'relative'])('refuses a %s recovery scope before any effects', async kind => {
