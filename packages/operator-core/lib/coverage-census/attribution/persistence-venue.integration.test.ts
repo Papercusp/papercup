@@ -45,7 +45,19 @@ import { createPgEvidenceStore } from './pg-evidence-store';
 import { contractFixture, cleanupContractFixtures } from '../../code-intelligence/scoped-contracts.fixture';
 import type { RuntimeCodeEvidence } from '../../code-intelligence/runtime-code-evidence';
 import * as serving from '../../serving-host-identity';
+import { upsertRecipe } from '../../code-recipes-store';
+import { selectRecipeCaptureTarget } from '../../agent-tools/code/capture-recipe';
+import type { SimilarRecipe } from '../../code-recipes-search';
 import '../../agent-tools/gitnexus/query';
+
+// The real compiler worker resolves TypeScript from this installation root.
+// Match the existing first-party-callers tests by using the package dependency,
+// so a clean host does not need an unrelated ~/.papercusp/vendor/lsp install.
+vi.mock('../../code-intelligence/lsp-adapter', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../code-intelligence/lsp-adapter')>();
+  const { fileURLToPath: fromUrl } = await import('node:url');
+  return { ...actual, LSP_VENDOR_DIR: fromUrl(new URL('../../../', import.meta.url)) };
+});
 
 // Register the real tools before looking them up in the projected catalog. The change-queue
 // probes below deliberately select each tool's non-mutating path.
@@ -53,6 +65,7 @@ await Promise.all([
   import('../../agent-tools/facts/list'),
   import('../../agent-tools/improvements/capture'),
   import('../../agent-tools/work_items/bulk_dedup'),
+  import('../../agent-tools/recipes/search'),
 ]);
 
 const WORKSPACE = 'papercusp-workspace';
@@ -397,6 +410,72 @@ describe('persistent coverage-attribution venue', () => {
     });
     expect(rows[0]?.test_case).toContain('Learning observations REST transport');
   });
+
+  it('P008 discovers recipe candidates without certifying reuse and persists authored L3 search traffic', async () => {
+    expect(attributionStatus().armed).toBe(true);
+    const testCase = expect.getState().currentTestName;
+    if (typeof testCase !== 'string') throw new Error('Persistent recipe attribution requires the current test name');
+    const surfaces = await sql`SELECT id FROM harness_shared.testing_surfaces
+      WHERE workspace_id=${WORKSPACE} AND harness_slug=${HARNESS}
+        AND kind='mcp-tool' AND surface_id='recipes:search' AND retired_at IS NULL`;
+    expect(surfaces, 'the canonical census must already contain recipes:search').toHaveLength(1);
+
+    // Recipe contents stay in the owned fixture database; only the existing
+    // canonical attribution sink persists evidence of the real dispatcher call.
+    const functionalDb = await createOrgTestDb();
+    const functional = functionalDb.adminSql;
+    const orgPg = vi.spyOn(orgDb, 'getOrgPg')
+      .mockReturnValue({ sql: functional } as ReturnType<typeof orgDb.getOrgPg>);
+    try {
+      await upsertRecipe(functional, {
+        id: 'p008-zircon-discovery-candidate', potSlug: null,
+        title: 'P008 zircon discovery candidate',
+        description: 'Compute a generic constant without concrete entity bindings',
+        script: 'return 42;', toolsUsed: [],
+      });
+      const tool = lookupByMcpName('recipes:search');
+      expect(tool).toBeTruthy();
+      if (!tool) throw new Error('recipes:search is absent from the projected catalog');
+      const dispatched = await dispatchProjectedTool(tool, 'recipes:search', {
+        query: 'P008 zircon discovery candidate', semantic: false, limit: 5,
+      }, { ...dispatchContext(), tx: functional } as never, PROJECTED_DEPS);
+      expect(dispatched.ok, JSON.stringify(dispatched.error)).toBe(true);
+      const content = dispatched.result?.content.find(item => item.type === 'text');
+      if (!content || content.type !== 'text') throw new Error('recipes:search returned no serialized result');
+      const result = JSON.parse(content.text) as { ok: boolean; recipes: SimilarRecipe[] };
+      expect(result.ok).toBe(true);
+      expect(result.recipes).toHaveLength(1);
+      const candidate = result.recipes[0]!;
+      expect(candidate.id).toBe('p008-zircon-discovery-candidate');
+      expect(candidate.matchingEvidence?.domain.verdict).toBe('unknown');
+      // Lexical-only search normalizes its sole hit to 0.5. Set a literal lower
+      // threshold so the negative control exercises domain identity, not a
+      // below-threshold candidate that would already refuse reuse.
+      expect(candidate.similarity).toBe(0.5);
+      expect(selectRecipeCaptureTarget({ proposedId: 'p008-distinct-operation',
+        similarRecipes: result.recipes, nearDuplicateThreshold: 0.4,
+      })).toEqual({ id: 'p008-distinct-operation', disposition: 'created', matchedSimilarity: null });
+
+      await flushPendingTelemetry();
+      await flushTrafficEvidence();
+      expect(attributionStatus()).toMatchObject({ armed: true, disabled: false, buffered: 0,
+        unmatchedSurfaces: 0, lastError: null });
+      const rows = await sql<{ meets_l3: boolean; verdict: string; generated: boolean }[]>`
+        SELECT d.meets_l3, e.verdict, e.generated
+          FROM harness_shared.coverage_evidence e
+          JOIN harness_shared.testing_surface_depth d ON d.id=e.surface_ref
+         WHERE d.workspace_id=${WORKSPACE} AND d.harness_slug=${HARNESS}
+           AND d.surface_id='recipes:search' AND e.evidence_kind='traffic'
+           AND e.test_file=${TEST_FILE} AND e.test_case=${testCase}
+           AND e.details->>'runGroupId'=${runGroup}`;
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ meets_l3: true, verdict: 'pass', generated: false });
+    } finally {
+      await flushPendingTelemetry();
+      orgPg.mockRestore();
+      await functionalDb.cleanup();
+    }
+  }, 120_000);
 
   it('P017 marks observed linked implementation executed through graph:query and persists authored L3 traffic', async () => {
     // Fail before compiler/fixture work if the measuring instrument cannot
