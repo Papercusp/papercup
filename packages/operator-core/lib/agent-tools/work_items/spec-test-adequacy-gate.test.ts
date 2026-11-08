@@ -453,7 +453,8 @@ describe('test-checked completion uses mechanical adequacy', () => {
       ...row, specId: frozen.specId,
     }))]);
     deps.listCards.mockResolvedValue([{ ...matchingCard(),
-      gradingAudit: { ...PASSED_AUDIT, state: 'pending' } }]);
+      gradingAudit: { state: 'pending', metaRubricRef: 'grading-integrity',
+        stampedAt: '2026-08-20T00:02:00.000Z' } }]);
 
     const result = await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps);
     expect(result).toMatchObject({ ok: false, applicable: true, retryable: true, checked: [],

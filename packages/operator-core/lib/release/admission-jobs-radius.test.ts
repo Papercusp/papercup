@@ -18,8 +18,11 @@ import {
   admissionRadiusEdgeCache,
   executeAdmissionJob,
   groupRadiusSourceFilesByWorkspace,
+  immutablePrecheckPopulation,
   ordinaryAdmissionRadius,
 } from './admission-jobs';
+import { ADMISSION_TEST_ENVIRONMENT, runAdmissionPrecheckWorker } from './admission-fix-precheck-managed';
+import { createFrozenCandidateRepairQueue, parseFrozenCandidateRepairQueue, type FrozenCandidateRepairQueue } from './frozen-candidate-repair-queue';
 import { edgeCacheKey } from '../../../../scripts/lib/related-tests.mjs';
 import * as relatedTests from '../../../../scripts/lib/related-tests.mjs';
 import { evaluateFixPrecheck } from './admission-fix-precheck';
@@ -276,6 +279,48 @@ describe('ordinaryAdmissionRadius (P-007)', () => {
     } });
   });
 
+  it('carries the actual pinned over-cap producer through managed measurement and settlement without executing radius files', async () => {
+    const initial = createFrozenCandidateRepairQueue({ candidate: commit, base: null,
+      failingTests: ['pkg-a/lib/alias.test.ts'], nowMs: 10 });
+    const discovery = await immutablePrecheckPopulation({ root, commit, signature: initial.signature,
+      admittedPaths: ['wide/src/core.ts', 'pkg-b/src/util.test.ts'] });
+    if (!discovery.ok) throw new Error(discovery.detail);
+    const population = discovery.population;
+    expect(population.files).toEqual(['pkg-a/lib/alias.test.ts', 'pkg-b/src/util.test.ts']);
+    expect(population.radius).toMatchObject({ status: 'skipped', reason: 'over-cap(41/40)' });
+    let persisted: FrozenCandidateRepairQueue = { ...initial, updatedAtMs: 10, admissionPrecheck: {
+      schemaVersion: 1, operationId: 'radius-operation', runnerTaskId: 'radius-task', status: 'running',
+      candidate: commit, repairHead: commit, builtCommit: commit, builtTree: git(root, 'rev-parse', `${commit}^{tree}`),
+      testEnvironment: ADMISSION_TEST_ENVIRONMENT, actor: 'su-test', files: population.files, radius: population.radius,
+      startedAtMs: 10, updatedAtMs: 10, expiresAtMs: 60_000,
+    } };
+    const ran: string[] = [];
+    const outcome = await runAdmissionPrecheckWorker({ operationId: 'radius-operation', taskId: 'radius-task',
+      queueTarget: { workspaceId: 'radius-fixture', installSlug: 'papercusp' },
+      integrationRoot: root, checkpointRoot: join(root, 'unused-checkpoint'), expiresAtMs: 60_000,
+    }, {
+      getTask: async () => ({ state: 'running', confined: true }),
+      readQueue: async () => ({ status: 'value', queue: persisted }),
+      transition: async (_target, update) => {
+        const parsed = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(update(persisted))));
+        if (!parsed) throw new Error('managed round-trip lost the operation');
+        persisted = parsed;
+      },
+      createRunner: () => async run => {
+        ran.push(...run.files);
+        return { ran: true, commit: run.commit, results: run.files.map(path => ({ path, status: 'pass' as const })) };
+      },
+      now: () => 30,
+    });
+    expect(ran).toEqual(population.files);
+    expect(persisted.admissionPrecheck?.measurement?.results.map(row => row.path)).toEqual(population.files);
+    // The existing ratchet refuses to certify an unmeasured radius even though the
+    // signature and admitted files passed. The skip survives every managed write.
+    expect(outcome).toMatchObject({ status: 'settled', verdict: { ok: false,
+      code: 'admission-precheck-unavailable', population: { radius: { status: 'skipped', reason: 'over-cap(41/40)' } } } });
+    expect(persisted.admissionPrecheck).toMatchObject({ status: 'failed', radius: { status: 'skipped', reason: 'over-cap(41/40)' } });
+  });
+
   it('retains related tests when independent pinned workspaces share a package name', async () => {
     const fixture = mkdtempSync(join(tmpdir(), 'admission-duplicate-workspace-'));
     try {
@@ -414,7 +459,7 @@ describe('ordinaryAdmissionRadius (P-007)', () => {
     expect(radius.detail).toContain('full=@t/consumer:cross-root-unrelatable-change');
   });
 
-  it('native Vitest discovery independently agrees with full root-bootstrap and 41-file populations', () => {
+  it('native Vitest discovery independently checks measured bootstrap files and the skipped 41-file population', () => {
     const census = (dir: string): string[] => {
       const output = execFileSync(process.execPath, [resolve(import.meta.dirname, '../../../../node_modules/vitest/vitest.mjs'),
         'list', '--root', join(root, dir), '--config', join(root, dir, 'vitest.config.ts'), '--filesOnly'],
@@ -423,7 +468,11 @@ describe('ordinaryAdmissionRadius (P-007)', () => {
         .map(file => `${dir}/${file.replace(join(root, dir) + '/', '')}`).sort();
     };
     expect(radiusFor(['scripts/bootstrap.mjs']).guarded).toEqual([...census('packages/operator-core'), ...census('pkg-consumer')]);
-    expect(radiusFor(['wide/src/core.ts']).guarded).toEqual(census('wide'));
+    const wide = census('wide');
+    expect(wide).toHaveLength(41);
+    expect(radiusFor(['wide/src/core.ts'])).toMatchObject({ status: 'skipped', reason: `over-cap(${wide.length}/40)`,
+      guarded: [], reportOnly: [] });
+    expect(radiusFor(['wide/src/core.ts', wide[0]!]).guarded).toEqual(wide.slice(1));
   }, 60_000);
 
   it('assigns nested pinned workspace ownership without rescanning every gitlink for every repository', () => {

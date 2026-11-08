@@ -229,6 +229,17 @@ describe('P-007 (#D-040) — a red round attributes newly red entries to its win
     expect(parsed?.admissions?.[0]?.precheck?.radius).toEqual(OVER_CAP);
   });
 
+  it('keeps complete kind-prefixed identities and historical omission evidence on read', () => {
+    const files = ['a', 'b'].map(suffix => `lib/${'x'.repeat(490)}${suffix}.test.ts`);
+    const red = redAt(admit(opened(), H1, T0 + 10, { radius: OVER_CAP }), H1, T0 + 20, files);
+    const raw = JSON.parse(JSON.stringify(red));
+    raw.schemaVersion = 5;
+    raw.convergenceRounds.at(-1).attributions[0].omittedAdmissions = 2;
+    const parsed = parseFrozenCandidateRepairQueue(raw)!;
+    expect(lastRound(parsed)?.attributions?.map(a => a.entry)).toEqual(files.map(file => `test-file:${file}`));
+    expect(lastRound(parsed)?.attributions?.[0]?.omittedAdmissions).toBe(2);
+  });
+
   it('drops a malformed attribution or radius on parse instead of guessing', () => {
     const red = redAt(admit(opened(), H1, T0 + 10, { radius: OVER_CAP }), H1, T0 + 20, [OLD, NEW]);
     const raw = JSON.parse(JSON.stringify(red));
