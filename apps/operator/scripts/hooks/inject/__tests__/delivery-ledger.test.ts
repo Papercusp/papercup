@@ -49,7 +49,7 @@ describe('delivery ledger', () => {
           memoryFragmentOffers: [offer] });
         mcp.commit();
       }
-      expect(mcp.confirmedMemoryDeliveries().some(proof => proof.token.startsWith(token))).toBe(false);
+      expect(mcp.confirmedMemoryDeliveries().some((proof: { token: string }) => proof.token.startsWith(token))).toBe(false);
       mcp.offer(token, { payload: payload(rendered) + '\n', format: 'mcp', client, memoryFragmentOffers: [offer] });
       mcp.commit();
       const { rendered: _text, ...manifest } = offer;

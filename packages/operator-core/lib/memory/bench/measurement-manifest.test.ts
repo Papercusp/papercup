@@ -274,6 +274,49 @@ describe('complete native loader capture qualification', () => {
     expect(result.initializationJoins.map(join=>[join.file.path,join.namespaces])).toEqual([
       ['/lib/library.so',['0']],['/lib/interpreter.so',[]]]);
   });
+  it('native loader lifetime joins finalizers without turning a vDSO sample into kernel lifetime proof', () => {
+    const bytes = log();
+    const result = bindNativeLoaderClosure(bytes, [window], sample(), receipt(bytes), { scope: 'process-lifetime' });
+    expect(result.fileBackedLifetimeClosureVerified).toBe(true);
+    expect(result.finalizationJoins.map(join => [join.file.path, join.namespace])).toEqual([['/lib/library.so', '0']]);
+    expect(result.scope).toContain('arbitrary mmap code unqualified');
+    expect(bindNativeLoaderClosure(bytes, [window], sample(), receipt(bytes)).fileBackedLifetimeClosureVerified).toBe(false);
+  });
+  it.each(['late-load', 'late-unload', 'late-init', 'late-preinit', 'late-transfer', 'late-dynamic', 'late-headers',
+    'early-finalizer', 'unknown-finalizer', 'wrong-namespace', 'duplicate-finalizer', 'malformed-finalizer',
+    'retired-before-run', 'invalid-scope'] as const)('native loader lifetime refuses %s beyond selected windows', failure => {
+    let text = log().toString();
+    const after: Partial<Record<typeof failure, string>> = {
+      'late-load': 'file=/runtime/transient.so [0];  generating link map',
+      'late-unload': 'file=/lib/library.so [0];  destroying link map',
+      'late-init': 'calling init: /lib/library.so', 'late-preinit': 'calling preinit: /runtime/node',
+      'late-transfer': 'transferring control: /runtime/node',
+      'late-dynamic': 'dynamic: 0x1800 base: 0x1000 size: 0x1000',
+      'late-headers': 'entry: 0x1000 phdr: 0x1040 phnum: 9',
+    };
+    if (after[failure]) text += '123: ' + after[failure] + '\n';
+    if (failure === 'early-finalizer') text = text.replace(marker('start'), '123: calling fini: /lib/library.so [0]\n' + marker('start'));
+    if (failure === 'unknown-finalizer') text = text.replace('calling fini: /lib/library.so', 'calling fini: /runtime/foreign.so');
+    if (failure === 'wrong-namespace') text = text.replace('calling fini: /lib/library.so [0]', 'calling fini: /lib/library.so [9]');
+    if (failure === 'duplicate-finalizer') text += '123: calling fini: /lib/library.so [0]\n';
+    if (failure === 'malformed-finalizer') text = text.replace('calling fini: /lib/library.so [0]', 'calling fini:');
+    if (failure === 'retired-before-run') text = text.replace(marker('start'),
+      ['123: file=transient.so [2];  generating link map', '123: dynamic: 0x9800 base: 0x9000 size: 0x1000',
+        '123: entry: 0x9000 phdr: 0x9040 phnum: 9', '123: file=transient.so [2];  destroying link map', marker('start')].join('\n'));
+    const bytes = Buffer.from(text);
+    // These changes live outside the selected windows, where the old scoped
+    // result is still valid. A recomputed hash alone cannot bless the lifetime.
+    if (failure === 'late-load' || failure === 'late-unload')
+      expect(bindNativeLoaderClosure(bytes, [window], sample(), receipt(bytes)).completeBeforeInferenceClosureVerified).toBe(true);
+    expect(() => bindNativeLoaderClosure(bytes, [window], sample(), receipt(bytes),
+      { scope: failure === 'invalid-scope' ? 'caller-qualified' as never : 'process-lifetime' })).toThrow('native loader');
+  });
+  it.each(['main', 'interpreter'] as const)('native loader lifetime binds %s shutdown to its original image', kind => {
+    const bytes = Buffer.from(log().toString() + '123: calling fini: '
+      + (kind === 'main' ? '' : '/lib/interpreter.so') + ' [0]\n');
+    const result = bindNativeLoaderClosure(bytes, [window], sample(), receipt(bytes), { scope: 'process-lifetime' });
+    expect(result.finalizationJoins.at(-1)!.file.path).toBe(kind === 'main' ? '/runtime/node' : '/lib/interpreter.so');
+  });
   it.each(['source','late-start','missing-eof','exit','signal','pid','bytes','hash','encoding'])('refuses %s stderr receipts',failure=>{
     let bytes=log(); const observed=receipt(bytes);
     if(failure==='source') (observed as any).source='log-tail';

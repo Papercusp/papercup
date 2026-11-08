@@ -114,6 +114,19 @@ describe('rubric template schema', () => {
     ).toBe(false);
   });
 
+  it('retains required test files and case selectors alongside a nonempty probe conjunction', () => {
+    const probe = { kind: 'tool', tool: 'plans:spec-clauses', args: { slug: 'mission' },
+      schemaRevision: 'revision', expect: { path: '$.verdicts.pass', op: 'eq', value: 47 } };
+    const legacy = { kind: 'tests', files: ['mission.test.ts'], testName: 'mission > resumes' };
+    const conjunctive = { ...legacy, all: [probe] };
+
+    expect(rubricCriterionCheckSchema.parse(legacy)).toEqual(legacy);
+    expect(rubricCriterionCheckSchema.parse(conjunctive)).toEqual(conjunctive);
+    expect(rubricCriterionCheckSchema.safeParse({ ...legacy, all: [] }).success).toBe(false);
+    expect(rubricCriterionCheckSchema.safeParse({ ...conjunctive, files: [] }).success).toBe(false);
+    expect(rubricCriterionCheckSchema.safeParse({ ...conjunctive, files: ['one.test.ts', 'two.test.ts'] }).success).toBe(false);
+  });
+
   it('accepts an optional probe-check unit and refuses an empty one (test-rubric-unification P-010)', () => {
     const probe = { kind: 'sql', sql: 'SELECT 1 AS v', schemaRevision: 'r', expect: { path: '$.rows[0].v', op: 'lte', value: 100 } };
     expect(rubricCriterionCheckSchema.safeParse({ kind: 'probe', probe, unit: 'pct' }).success).toBe(true);

@@ -10,12 +10,16 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   ensureBootstrap, getTxPool, normalizePaths,
   tryAcquire, tryRelease, tryHeartbeat,
   readQueue, _resetForTests,
 } from '../su-lock-store';
 import { inWorkspaceTxn } from '../in-workspace-txn';
+import { liveLockHoldingsStrict } from '../live-lock-paths';
 
 async function dbLive(): Promise<boolean> {
   try {
@@ -69,6 +73,76 @@ describe('su-locks smoke', async () => {
     expect(q2.active_locks.length).toBe(0);
 
     await _resetForTests();
+  });
+
+  it.skipIf(!live)('EI-276489: released submodule edit is absent from the git-sync lock census', async () => {
+    await ensureBootstrap();
+
+    const temp = mkdtempSync(join(tmpdir(), 'ei-276489-submodule-lock-'));
+    const superproject = join(temp, 'papercusp');
+    const submodule = join(superproject, 'libs', 'papercusp');
+    mkdirSync(join(superproject, '.git'), { recursive: true });
+    writeFileSync(join(superproject, '.git', 'HEAD'), 'ref: refs/heads/staging\n');
+    mkdirSync(submodule, { recursive: true });
+    writeFileSync(join(submodule, '.git'), 'gitdir: ../../.git/modules/libs/papercusp\n');
+
+    const submoduleDomain = realpathSync(submodule);
+    const filePath = 'packages/orchestrator/src/managed-capability-effectiveness.ts';
+    const owner = `smoke-agent-ei-276489-${Date.now()}-${process.pid}`;
+    let lockId: string | undefined;
+
+    try {
+      const acquired = await inWorkspaceTxn(submoduleDomain, owner, (tx) => tryAcquire(tx, {
+        coordinationDomain: submoduleDomain,
+        owner,
+        ownerLabel: 'smoke:ei276489',
+        paths: normalizePaths([filePath]),
+        intent: 'EI-276489 submodule apply_patch lifecycle',
+        ttlSec: 60,
+      }));
+      if (!acquired.ok) throw new Error('expected the submodule edit lock to be granted');
+      lockId = acquired.lock_id;
+
+      const held = await liveLockHoldingsStrict();
+      expect(held).toContainEqual(expect.objectContaining({
+        path: filePath,
+        owner,
+        coordinationDomain: submoduleDomain,
+      }));
+
+      const released = await inWorkspaceTxn(submoduleDomain, owner, (tx) => tryRelease(tx, {
+        coordinationDomain: submoduleDomain,
+        owner,
+        lockId: lockId!,
+      }));
+      expect(released.released).toContain(filePath);
+      lockId = undefined;
+
+      const queue = await readQueue(getTxPool(), {
+        coordinationDomain: submoduleDomain,
+        paths: [filePath],
+      });
+      expect(queue.active_locks).toEqual([]);
+
+      // git-sync's lock refresh reads liveLockHoldingsStrict; once this physical
+      // submodule identity is absent, the file-lock gate no longer excludes it.
+      const gitSyncCensus = await liveLockHoldingsStrict();
+      expect(gitSyncCensus.filter((holding) =>
+        holding.owner === owner
+        && holding.path === filePath
+        && holding.coordinationDomain === submoduleDomain,
+      )).toEqual([]);
+    } finally {
+      if (lockId) {
+        await inWorkspaceTxn(submoduleDomain, owner, (tx) => tryRelease(tx, {
+          coordinationDomain: submoduleDomain,
+          owner,
+          lockId: lockId!,
+        }));
+      }
+      await _resetForTests();
+      rmSync(temp, { recursive: true, force: true });
+    }
   });
 
   it('path validation rejects absolute and parent paths', () => {

@@ -743,7 +743,10 @@ export interface NativeLoaderCaptureReceipt {
  * kernel memory, never described as an on-disk DLL. This does not qualify JIT,
  * arbitrary mmap code, model vectors, CUDA kernels, or GPU device binding. */
 export function bindNativeLoaderClosure(stderrBytes: Buffer, windows: NativeProfilerRequestWindow[],
-  firstRun: WorkerNativeInferenceTrace, receipt: NativeLoaderCaptureReceipt) {
+  firstRun: WorkerNativeInferenceTrace, receipt: NativeLoaderCaptureReceipt,
+  options: { scope?: 'selected-requests' | 'process-lifetime' } = {}) {
+  if (options.scope !== undefined && options.scope !== 'selected-requests' && options.scope !== 'process-lifetime')
+    throw new Error('native loader qualification scope unsupported');
   if (!Buffer.isBuffer(stderrBytes) || !receipt || receipt.source!=='spawn-pipe'
     || receipt.captureStartedBeforeExec!==true || receipt.eof!==true || receipt.exitCode!==0 || receipt.signal!==null
     || receipt.processId!==firstRun.processId || receipt.bytes!==stderrBytes.length || !stderrBytes.length
@@ -846,9 +849,42 @@ export function bindNativeLoaderClosure(stderrBytes: Buffer, windows: NativeProf
   const covered=new Set([executable.path,interpreter.path,...mapped.objectMapJoins.map(object=>object.file.path)]);
   const unjoinedMappedFiles=files.filter(file=>!covered.has(file.path));
   if(unjoinedMappedFiles.length) throw new Error('native loader mapped file census has residue');
+  const finalizationJoins: Array<{ line: number; object: string; namespace: string; file: typeof executable }> = [];
+  const lifetime = options.scope === 'process-lifetime';
+  if (lifetime) {
+    // A pre-Run census cannot identify an object which already unloaded. Nor
+    // can selected Run markers rule out a complete dlopen/dlclose afterwards.
+    // Keep this strict: every lifetime object must be in that same byte census.
+    if (mapped.retiredBeforeFirstRun.length || retiredInitializationPaths.length)
+      throw new Error('native loader lifetime contains unqualified retired objects');
+    const lines = stderr.split('\n');
+    const lastMarker = lines.findLastIndex(line => line.startsWith('PC_NATIVE_RUN\t'));
+    const finalized = new Set<string>();
+    for (const [index, line] of lines.entries()) {
+      const row = line.match(/^\s*(\d+):\s*(.*)$/);
+      if (!row || Number(row[1]) !== firstRun.processId) continue;
+      const text = row[2].trim();
+      if (index > firstMarker && /generating link map|destroying link map|^dynamic:|^entry:|calling (?:preinit|init):|transferring control:/i.test(text))
+        throw new Error('native loader activity outside lifetime census');
+      if (!/calling fini:/i.test(text)) continue;
+      const fini = /^calling fini:\s*(.*?)\s*\[(\d+)\]$/.exec(text);
+      if (!fini || index <= lastMarker) throw new Error('native loader lifetime finalization boundary invalid');
+      const file = fini[1] ? resolveFile(fini[1]) : executable;
+      const namespaces = mapped.objectMapJoins.filter(object => object.file === file).map(object => object.namespace);
+      if (file === executable || file === interpreter) namespaces.push('0');
+      const key = file.path + '\0' + fini[2];
+      if (!namespaces.includes(fini[2]) || finalized.has(key))
+        throw new Error('native loader lifetime finalization identity invalid');
+      finalized.add(key);
+      finalizationJoins.push({ line: index + 1, object: fini[1], namespace: fini[2], file });
+    }
+  }
   return {...mapped,executable,interpreter,vdso,initializationJoins,retiredInitializationPaths,unjoinedMappedFiles,
+    fileBackedLifetimeClosureVerified: lifetime, finalizationJoins,
     stderrReceipt:receipt,completeBeforeInferenceClosureVerified:true as const,
-    scope:'file-backed glibc ELF/addon closure before first selected Run; unchanged through last selected Run; vDSO separately fingerprinted kernel memory'};
+    scope:lifetime
+      ? 'file-backed glibc ELF/addon closure from exec through stderr EOF; every object joined to the pre-Run census; vDSO sampled separately; JIT and arbitrary mmap code unqualified'
+      : 'file-backed glibc ELF/addon closure before first selected Run; unchanged through last selected Run; vDSO separately fingerprinted kernel memory'};
 }
 export interface NativeProfilerLaunch {
   processId: number; nativeThreadId: number; correlationId: number; startNs: string; endNs: string;

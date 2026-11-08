@@ -46,6 +46,20 @@ describe('source BAR test requirement resolution', () => {
     expect(result).toEqual({ status: 'required', files: ['a.test.ts', 'z.test.ts'] });
   });
 
+  it('keeps the exact pinned required files and named cases when clause proof is conjunctive', async () => {
+    const files = ['mission.test.ts', 'mission-runtime.integration.test.ts'];
+    const cases = files.map(file => ({ file, testName: 'mission > preserves the original contract' }));
+    const all = [{ kind: 'tool', tool: 'plans:spec-clauses', args: { slug: 'mission' },
+      schemaRevision: 'revision', expect: { path: '$.verdicts.pass', op: 'eq', value: 47 } }];
+    rubricReads.getRubric.mockResolvedValue(sourceRubric({
+      criteria: [{ ...sourceRubric().criteria[0], check: { kind: 'tests', files, cases, all } }],
+    }));
+
+    await expect(resolveSourceBarTestRequirements(pin)).resolves.toEqual({
+      status: 'required', files: [...files].sort(), cases: [...cases].sort((a, b) => a.file.localeCompare(b.file)),
+    });
+  });
+
   it.each([
     ['rubric id', { rubricId: 'other-rubric' }],
     ['rubric revision', { revision: 5 }],
