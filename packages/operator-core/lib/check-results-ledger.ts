@@ -39,7 +39,7 @@ import {
   type RecordedRubricCheckSubject,
   type TestRunExecutionDetails,
 } from '@papercusp/test-config/execution-details';
-import type { ScorecardProbeCheckRun } from './harness/improvements/observation-types';
+import type { ScorecardProbeCheckRun, ScorecardTestsCheckRun } from './harness/improvements/observation-types';
 import { measurementProvenanceStatus, retainMeasurementProvenance } from './measurement-provenance';
 import { measureWorkOverheadWindow, type WorkOverheadMetrics, type WorkOverheadWindow } from './agent-work-overhead-metrics';
 import {
@@ -163,9 +163,10 @@ export function probeCheckResults(
   const out: RubricCheckResult[] = [];
   const unitByKey = new Map(criteria.map((c) => [c.key, probeCheckUnit(c.check)]));
   for (const [criterionKey, run] of Object.entries(checkRuns)) {
-    if (run.kind !== 'probe') continue;
-    const probeRun = run as ScorecardProbeCheckRun;
-    const children = 'all' in probeRun ? probeRun.all : [probeRun];
+    if (run.kind !== 'probe' && run.kind !== 'tests') continue;
+    const probeRun = run as ScorecardProbeCheckRun | ScorecardTestsCheckRun;
+    const children = probeRun.kind === 'tests' ? (probeRun.all ?? [])
+      : 'all' in probeRun ? probeRun.all : [probeRun];
     const unit = unitByKey.get(criterionKey) ?? null;
     children.forEach((child, childIndex) => {
       const value = scalarOrNull(child.observed);

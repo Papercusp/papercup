@@ -858,7 +858,7 @@ export function bindNativeLoaderClosure(stderrBytes: Buffer, windows: NativeProf
     if (mapped.retiredBeforeFirstRun.length || retiredInitializationPaths.length)
       throw new Error('native loader lifetime contains unqualified retired objects');
     const lines = stderr.split('\n');
-    const lastMarker = lines.findLastIndex(line => line.startsWith('PC_NATIVE_RUN\t'));
+    const lastMarker = lines.reduce((last, line, index) => line.startsWith('PC_NATIVE_RUN\t') ? index : last, -1);
     const finalized = new Set<string>();
     for (const [index, line] of lines.entries()) {
       const row = line.match(/^\s*(\d+):\s*(.*)$/);

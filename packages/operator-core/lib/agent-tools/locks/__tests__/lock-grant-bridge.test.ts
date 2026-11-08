@@ -117,6 +117,20 @@ describe('reconcileLockTicket', () => {
     expect(arg.payload).toMatchObject({ granted: false, ticket_status: 'expired' });
   });
 
+  it('rechecks a failed apply handoff and never wakes with an expired historical grant', async () => {
+    const emit = vi.fn();
+    const readStatus = vi.fn()
+      .mockResolvedValueOnce({ status: 'granted', granted_lock_id: 'old-lease', paths: ['boot.ts'] })
+      .mockResolvedValueOnce({ status: 'expired', granted_lock_id: 'old-lease', paths: ['boot.ts'] });
+    expect(await reconcileLockTicket('t-expired-apply', 'ws', {
+      readStatus, emit: emit as never, applyOnGrant: async () => 'fallback',
+    })).toBe('fired-terminal');
+    expect(readStatus).toHaveBeenCalledTimes(2);
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({
+      payload: { granted: false, ticket_status: 'expired', ticket_id: 't-expired-apply' },
+    }));
+  });
+
   it('released grant → reports that the lock is no longer held', async () => {
     const emit = vi.fn(async () => ({ ok: true as const, key: '', woken: 1, notified: [], msgId: null }));
     const out = await reconcileLockTicket('t-released', 'ws', {

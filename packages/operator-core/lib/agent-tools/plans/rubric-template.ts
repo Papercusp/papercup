@@ -216,6 +216,8 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('tests'),
+      all: z.array(z.unknown()).min(1).max(CONTINUITY_PROBE_MAX_PER_WAKE).optional()
+        .describe('Additional independently validated read-only probes. Every probe AND the named tests must pass; files and case selectors remain required.'),
       files: z
         .array(z.string().min(1))
         .min(1)
@@ -1406,7 +1408,8 @@ export function isForbiddenMandatoryPassRating(value: string): boolean {
  * scale has a label for evidence that cannot produce a verdict.
  */
 const canonicalRubricTemplateDataAuthoringSchema = rubricTemplateDataSchema.superRefine((d, ctx) => {
-  const probeCount = d.criteria.reduce((n, c) => n + (c.check?.kind === 'probe' ? (c.check.all?.length ?? 1) : 0), 0);
+  const probeCount = d.criteria.reduce((n, c) => n + (c.check?.kind === 'probe' ? (c.check.all?.length ?? 1)
+    : c.check?.kind === 'tests' ? (c.check.all?.length ?? 0) : 0), 0);
   if (probeCount > RUBRIC_PROBE_MAX_PER_EMIT) {
     ctx.addIssue({ code: 'custom', path: ['criteria'], message: `rubric declares ${probeCount} probes; execution cap is ${RUBRIC_PROBE_MAX_PER_EMIT}` });
   }

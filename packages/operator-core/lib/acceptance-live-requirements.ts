@@ -181,6 +181,8 @@ function checkBindingDowngraded(before: LiveRequirementCheck | undefined, after:
     return prior !== '' && prior !== 'none' && (next === '' || next === 'none');
   }
   if (before.kind !== 'tests') return false;
+  // Independent predicates are part of the proof contract, not a file relocation.
+  if (before.all !== undefined && JSON.stringify(before.all) !== JSON.stringify(after.all)) return true;
   return strictSubset(stringSet(before.files), stringSet(after.files))
     || strictSubset(caseBindings(before), caseBindings(after));
 }

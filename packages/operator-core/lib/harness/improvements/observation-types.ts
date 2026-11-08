@@ -664,6 +664,8 @@ export type ScorecardCheckRun =
 
 export interface ScorecardTestsCheckRun {
   kind: 'tests';
+  /** Complete receipts for additional probe conjuncts; counts still describe tests only. */
+  all?: ScorecardSingleProbeCheckRun[];
   /** The repo-root-relative files that ran. */
   files: string[];
   verdict: 'pass' | 'fail';
@@ -2125,8 +2127,24 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
         const testRunIds = Array.isArray(r.testRunIds)
           ? r.testRunIds.filter((x): x is number => Number.isSafeInteger(x) && x > 0)
           : undefined;
+        let all: ScorecardSingleProbeCheckRun[] | undefined;
+        if (r.all !== undefined) {
+          if (!Array.isArray(r.all) || r.all.length === 0 || r.all.length > CONTINUITY_PROBE_MAX_PER_WAKE) continue;
+          all = [];
+          for (const child of r.all) {
+            if (!child || typeof child !== 'object' || Array.isArray(child) || 'all' in child) break;
+            const normalized = asStructuredObservation({ checkRuns: { child } })?.checkRuns?.child;
+            if (!normalized || normalized.kind !== 'probe' || !('probe' in normalized)) break;
+            all.push(normalized);
+          }
+          if (all.length !== r.all.length || !Number.isSafeInteger(r.passed) || r.passed < 0 ||
+              !Number.isSafeInteger(r.failed) || r.failed < 0 || r.passed + r.failed === 0) continue;
+          const pass = r.failed === 0 && all.every(child => child.verdict === 'pass');
+          if (r.verdict !== (pass ? 'pass' : 'fail')) continue;
+        }
         runs[key] = {
           kind: 'tests',
+          ...(all ? { all } : {}),
           files,
           verdict: r.verdict,
           passed: r.passed,

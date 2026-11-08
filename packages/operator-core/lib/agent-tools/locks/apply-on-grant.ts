@@ -23,8 +23,9 @@
  * EXACTLY-ONCE across the two reconcile paths (NOTIFY fast-path + sweep
  * backstop) is enforced in the store by an atomic claim latch
  * (`claimGrantedPendingEdit`); only the winner applies, everyone else reads the
- * disposition. All post-apply side effects are best-effort — the edit has
- * already landed on disk, which is the load-bearing outcome.
+ * disposition. Preserving the applied generation precedes release; a failed
+ * handoff retains the lock and uses the existing fallback wake. Notifications remain
+ * best-effort after that durable handoff.
  */
 
 import fs from 'node:fs';
@@ -38,10 +39,11 @@ import {
   tryRelease,
   type GrantedPendingEdit,
   type PendingEdit,
+  type ReleaseLockRow,
 } from './su-lock-store';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { lockGrantKey } from './lock-grant-key';
-import { recordEditAttribution } from '../../edit-attribution';
+import { preserveReleasedEditGenerations, recordEditAttributionStrict } from '../../edit-attribution';
 import { listActiveAwaitsByKeyPrefix, cancelAwait } from '../../events/await/store';
 import { sendMessage } from '../coordination/messages';
 import type { AgentIdentity } from '../coordination/identity';
@@ -129,7 +131,7 @@ export interface ApplyOnGrantDeps {
     intent?: string;
     goalRef?: string;
   }) => Promise<void>;
-  releaseLock?: (g: GrantedPendingEdit) => Promise<void>;
+  releaseLock?: (g: GrantedPendingEdit, beforeRelease: (rows: ReleaseLockRow[]) => Promise<void>) => Promise<void>;
   cancelWakeAwaits?: (ticketId: string, owner: string) => Promise<void>;
   notify?: (n: {
     owner: string;
@@ -139,37 +141,27 @@ export interface ApplyOnGrantDeps {
   }) => Promise<void>;
 }
 
-async function defaultRecordAttribution(input: {
-  repoRoot: string;
-  file: string;
-  owner: string;
-  workspaceId?: string;
-  intent?: string;
-  goalRef?: string;
-}): Promise<void> {
-  await recordEditAttribution({
-    repoRoot: input.repoRoot,
-    files: [input.file],
-    agentId: input.owner,
-    intent: input.intent,
-    workspaceId: input.workspaceId,
-    goalRef: input.goalRef,
-    // R-5: a pending edit applied on grant has no hook payload, so the row carries
-    // the coord session of the agent whose lock was granted.
-    sessionId: input.owner,
-  });
-}
-
-async function defaultReleaseLock(g: GrantedPendingEdit): Promise<void> {
-  await inWorkspaceTxn(g.coordination_domain, g.owner, (tx) =>
+async function defaultReleaseLock(g: GrantedPendingEdit, beforeRelease: (rows: ReleaseLockRow[]) => Promise<void>): Promise<void> {
+  let protectedSelection = false;
+  const result = await inWorkspaceTxn(g.coordination_domain, g.owner, (tx) =>
     tryRelease(tx, {
       coordinationDomain: g.coordination_domain,
       owner: g.owner,
       lockId: g.granted_lock_id,
       paths: g.paths,
+      beforeRelease: async rows => {
+        if (rows.length !== g.paths.length || g.paths.some(p => !rows.some(row => row.path === p))) {
+          throw new Error('apply-on-grant:protected-release-missing');
+        }
+        await beforeRelease(rows);
+        protectedSelection = true;
+      },
     }),
     { paths: g.paths },
   );
+  if (!protectedSelection || result.released.length !== g.paths.length || g.paths.some(p => !result.released.includes(p))) {
+    throw new Error('apply-on-grant:protected-release-missing');
+  }
 }
 
 async function defaultCancelWakeAwaits(ticketId: string, owner: string): Promise<void> {
@@ -220,7 +212,6 @@ export async function applyPendingEditOnGrant(
     deps.readDisposition ?? ((t) => readPendingEditDisposition(getTxPool(), t));
   const setOutcome = deps.setOutcome ?? ((t, o) => setPendingEditOutcome(getTxPool(), t, o));
   const applyEdit = deps.applyEdit ?? ((root, edit) => applyExactEdit(root, edit));
-  const recordAttribution = deps.recordAttribution ?? defaultRecordAttribution;
   const releaseLock = deps.releaseLock ?? defaultReleaseLock;
   const cancelWakeAwaits = deps.cancelWakeAwaits ?? defaultCancelWakeAwaits;
   const notify = deps.notify ?? defaultNotify;
@@ -238,24 +229,32 @@ export async function applyPendingEditOnGrant(
     return 'fallback';
   }
 
-  const res = applyEdit(claimed.coordination_domain, claimed.pending_edit);
-  if (!res.applied) {
-    // Region changed under the holder (or a guardrail tripped) → do NOT apply;
-    // degrade to today's behaviour: the bridge wakes the agent to redo it.
+  try {
+    await releaseLock(claimed, async rows => {
+      // Mutate only after the exact live lease is selected under the existing
+      // path transaction. An expired historical grant cannot edit a successor.
+      const res = applyEdit(claimed.coordination_domain, claimed.pending_edit);
+      if (!res.applied) throw new Error(`apply-on-grant:${res.reason ?? 'edit-refused'}`);
+      const preserved = await preserveReleasedEditGenerations({
+        repoRoot: claimed.coordination_domain, rows, agentId: claimed.owner,
+        workspaceId, sessionId: claimed.owner,
+      });
+      const attribution = { repoRoot: claimed.coordination_domain, file: claimed.pending_edit.file,
+        owner: claimed.owner, workspaceId, intent: claimed.intent, goalRef: claimed.pending_edit.goal_ref };
+      if (deps.recordAttribution) await deps.recordAttribution(attribution);
+      else if (!preserved) await recordEditAttributionStrict({
+        repoRoot: attribution.repoRoot, files: [attribution.file], agentId: attribution.owner,
+        workspaceId, sessionId: attribution.owner, intent: attribution.intent, goalRef: attribution.goalRef,
+      });
+    });
+  } catch {
+    // A failed capture leaves the applied bytes protected. Wake the agent for
+    // recovery rather than strand 'claiming' or announce a successful handoff.
+    // A refused edit also uses this existing fallback without releasing its hold.
     await setOutcome(ticketId, 'fallback');
     return 'fallback';
   }
 
-  // Landed. Everything below is best-effort — the edit is already on disk.
-  await recordAttribution({
-    repoRoot: claimed.coordination_domain,
-    file: claimed.pending_edit.file,
-    owner: claimed.owner,
-    workspaceId,
-    intent: claimed.intent,
-    goalRef: claimed.pending_edit.goal_ref,
-  }).catch(() => {});
-  await releaseLock(claimed).catch(() => {});
   await setOutcome(ticketId, 'applied').catch(() => {});
   await cancelWakeAwaits(ticketId, claimed.owner).catch(() => {});
   await notify({

@@ -1,0 +1,265 @@
+{
+  "schemaVersion": 1,
+  "kind": "current-build-native-evidence",
+  "name": "Windows Papercup WPF cards, chat and resident lifecycle",
+  "framework": "operational",
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "workItem": "WI-6554700010044411",
+  "measuredAt": "2026-11-08T03:07:43.076305+00:00",
+  "exitCode": 0,
+  "summary": {
+    "cards": 46,
+    "chat": 26,
+    "resident": 51,
+    "allRunsExitedZero": true
+  },
+  "sourceSha256": {
+    "papercusp-desktop/native/windows/PuiReadBridge.cs": "28ab80438678026d56fe86654e1d0b671857cdd9d485bf4d136679ee3cbb4ee4",
+    "papercusp-desktop/native/windows/WorkbenchHost.cs": "007f9bb638707dffcf599d66b4bdba0223f1cd954be9fd10422bc82dcf24fad6",
+    "papercusp-desktop/native/windows/WorkbenchLifecycle.psm1": "020ad44185faead0767140b635fd660ea5970f6249088acb501db75da9730d8c",
+    "papercusp-desktop/native/windows/WorkbenchModel.cs": "d2bfaab6de63f341bf1a3801d14c4982c2a531b07f6c40dc71cf9904bb7db73f",
+    "papercusp-desktop/native/windows/workbench.ps1": "c20b256c32830830931f66a80de2eaa165f4668f2683d0368d8a39a4f14751d3",
+    "papercusp-desktop/test/fixtures/native-workbench-windows-host.ps1": "6e4c6b9f94880313f5047d95d2bbc70f432450bd3bf0bec75966a179f983d3b5",
+    "papercusp-desktop/test/fixtures/native-workbench-windows-lifecycle.ps1": "2a7f660d51cdbe8dcd661fc07a13d469c909f90c40034e2df364d887566773c6",
+    "papercusp-desktop/test/native-workbench-windows.test.mjs": "763b7740c23986a360c642da386b933453a65a171054d61f18f856309ac88708"
+  },
+  "remoteSourceHashes": [
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-chat-20261108-b3cf9\\PuiReadBridge.cs",
+      "Hash": "28AB80438678026D56FE86654E1D0B671857CDD9D485BF4D136679EE3CBB4EE4"
+    },
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-chat-20261108-b3cf9\\WorkbenchHost.cs",
+      "Hash": "007F9BB638707DFFCF599D66B4BDBA0223F1CD954BE9FD10422BC82DCF24FAD6"
+    },
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-chat-20261108-b3cf9\\WorkbenchLifecycle.psm1",
+      "Hash": "020AD44185FAEAD0767140B635FD660EA5970F6249088ACB501DB75DA9730D8C"
+    },
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-chat-20261108-b3cf9\\WorkbenchModel.cs",
+      "Hash": "D2BFAAB6DE63F341BF1A3801D14C4982C2A531B07F6C40DC71CF9904BB7DB73F"
+    },
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-chat-20261108-b3cf9\\workbench.ps1",
+      "Hash": "C20B256C32830830931F66A80DE2EAA165F4668F2683D0368D8A39A4F14751D3"
+    },
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-chat-20261108-b3cf9\\native-workbench-windows-host.ps1",
+      "Hash": "6E4C6B9F94880313F5047D95D2BBC70F432450BD3BF0BEC75966A179F983D3B5"
+    },
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-chat-20261108-b3cf9\\native-workbench-windows-lifecycle.ps1",
+      "Hash": "2A7F660D51CDBE8DCD661FC07A13D469C909F90C40034E2DF364D887566773C6"
+    }
+  ],
+  "remoteHashesVerifiedBy": "Independent Get-FileHash SHA256 on win-vm before regressions; all seven copied source/fixture files match local current bytes. Node registration hash retained locally. No production source edited between runs.",
+  "runs": [
+    {
+      "log": "/tmp/wb-p005-cards-ui-20261108-v4.log",
+      "sha256": "b1d337eff1623cfaf28901ee90c09db36f637be2cc756e2f49d22a58f89e0fc3",
+      "exitCode": 0,
+      "result": {
+        "ok": true,
+        "platform": "windows",
+        "phase": "cards",
+        "cases": [
+          "all six card kinds use native typed WPF controls",
+          "sensitive card answers are masked native password fields",
+          "card approval prose and structured report preserve canonical context",
+          "card details expand as copyable native text",
+          "decline policy expiry and unsupported kinds cannot fabricate a native submit",
+          "native card control enabled: secure link secret #5",
+          "native secure link uses the selected canonical operator origin",
+          "native card control enabled: submit radio #7",
+          "invalid native selection never invokes the response helper",
+          "identical new-version snapshots retain controls and exact multiline draft",
+          "native dropdown selects the canonical option identity",
+          "native dropdown captures the selected identity during the selection event",
+          "deliberately clearing the current dropdown clears its draft",
+          "native dropdown item selection captures the canonical identity",
+          "native card control enabled: submit radio #14",
+          "native card acknowledgement radio: ",
+          "unanswered dropdown draft and displayed selection survive radio acknowledgement",
+          "native card control enabled: submit checkbox #17",
+          "native card acknowledgement checkbox: ",
+          "unanswered dropdown draft and displayed selection survive checkbox acknowledgement",
+          "late selection event from detached dropdown cannot erase the current card draft",
+          "native card control enabled: submit select #21",
+          "native card acknowledgement select: ",
+          "native card control enabled: submit text #23",
+          "native card acknowledgement text: ",
+          "native card control enabled: submit date #25",
+          "native card acknowledgement date: ",
+          "native card control enabled: submit slider #27",
+          "native card acknowledgement slider: ",
+          "native card control enabled: submit secret #29",
+          "native card acknowledgement secret: ",
+          "native choices submit exact option identities despite duplicate labels",
+          "native typed answers reach the helper byte-for-byte with numeric slider payload",
+          "native card control enabled: decline decline #33",
+          "native card control enabled: cancel cancel #34",
+          "native decline and cancel wait for exact canonical receipts",
+          "native card control enabled: submit denied #36",
+          "denied native answer retains its draft and blocks blind resubmit",
+          "native card control enabled: reconnect questions #38",
+          "question reconnect preserves exact same-scope draft for reconciliation",
+          "native card control enabled: submit wrong #40",
+          "wrong correlation receipt cannot remove native card or claim success",
+          "native card control enabled: reconnect questions #42",
+          "changed card signature clears the old answer instead of reusing a stale draft",
+          "switching conversation fences old question frames and draft controls",
+          "dismissing native sidebar cancels subscription and invalidates card generation"
+        ],
+        "count": 46,
+        "organizerRuns": [],
+        "processSessionId": 1,
+        "interactiveDesktop": true,
+        "scope": "native-cards-fixture"
+      }
+    },
+    {
+      "log": "/tmp/wb-p005-cards-chat-20261108-v1.log",
+      "sha256": "cc46b149a87f426cf2827de0d5bcd22aa7f3bcff24a4d6f31983b904b8e11a10",
+      "exitCode": 0,
+      "result": {
+        "ok": true,
+        "platform": "windows",
+        "phase": "chat",
+        "cases": [
+          "Papercup is a resident native tool sidebar without app chrome",
+          "Papercup displays the canonical selected environment and conversation",
+          "native chat loads canonical history",
+          "native chat control enabled: earlier messages #3",
+          "native history prepends the exact earlier page",
+          "native Papercup retains its HWND and exact multiline draft across dismissal",
+          "native chat control enabled: send #6",
+          "denied native send retains draft without success or a duplicate send route",
+          "native chat control enabled: send #8",
+          "only canonical user acknowledgement clears the native draft",
+          "native incremental display excludes private text",
+          "completed native stream reloads the saved canonical assistant turn",
+          "native chat control enabled: send #12",
+          "disconnected native reply exposes reconciliation without resending",
+          "native chat control enabled: reconnect #14",
+          "native reconnect resumes the saved turn cursor without a second send",
+          "native chat control enabled: send #16",
+          "native chat control enabled: cancel reply #17",
+          "native cancel waits for a canonical cancelled acknowledgement",
+          "native chat control enabled: send #19",
+          "late A stream cannot enter conversation B or clear its native draft",
+          "returning to A reads its independently saved user event",
+          "native draft keys include the canonical conversation identity",
+          "native chat control enabled: send #23",
+          "foreign environment frame cannot alter native reply or acknowledge its draft",
+          "every native send is bound to conversation A in the helper receipt"
+        ],
+        "count": 26,
+        "organizerRuns": [],
+        "processSessionId": 1,
+        "interactiveDesktop": true,
+        "scope": "native-chat-fixture"
+      }
+    },
+    {
+      "log": "/tmp/wb-p005-cards-lifecycle-20261108-v1.log",
+      "sha256": "a53245aad8fbe7714519165417d76e85a887a4cf1a652d33793d15c8cf4b7572",
+      "exitCode": 0,
+      "result": {
+        "resident": true,
+        "ok": true,
+        "platform": "windows",
+        "cases": [
+          "first install enables native panels with distinct default shortcuts",
+          "first install enables the Accounts shortcut",
+          "first install enables Inbox on Ctrl Alt B",
+          "Inbox migration chooses a free accelerator without resetting existing panels",
+          "installer persists the migrated Inbox shortcut",
+          "upgrade preserves explicitly disabled Inbox",
+          "first install enables Organizer on Ctrl Alt O",
+          "Organizer migration avoids existing shortcuts",
+          "installer persists the migrated Organizer shortcut",
+          "upgrade preserves explicitly disabled Organizer",
+          "Organizer upgrade retains the prior Quick Access shortcut",
+          "first install enables Papercup on Ctrl Alt P",
+          "Papercup migration avoids existing shortcuts",
+          "installer persists migrated Papercup shortcut",
+          "upgrade preserves explicitly disabled Papercup",
+          "Papercup upgrade retains existing surface preferences",
+          "adding Accounts preserves legacy disable and shortcut choices",
+          "Accounts migration avoids existing Quick Access and Inbox shortcuts",
+          "preserve-existing installer persists the missing Accounts binding",
+          "login registration uses the exact installed controller and fixed argv",
+          "Workbench registration preserves unrelated login applications",
+          "native login command preserves spaces apostrophes and literal dollar signs",
+          "upgrade preserves account shortcuts and individual panel disable",
+          "upgrade refreshes the registered installation without resetting choices",
+          "disable removes this accounts Workbench login value",
+          "reinstall does not re-enable an explicitly disabled account",
+          "explicit enable restores login registration",
+          "duplicate enabled shortcuts are refused before writing",
+          "reserved F12 remains invalid even for a disabled panel",
+          "invalid native modifier bits are refused",
+          "invalid settings leave both persistence and login state unchanged",
+          "concurrent settings writer cannot bypass the per-account lock",
+          "registry failure is surfaced instead of accepting a partial settings update",
+          "registry failure restores the previous settings",
+          "missing resident is reported without starting a service or touching another account",
+          "settings wake targets the exact account and state-directory identity",
+          "uninstalling another role preserves the current roles login entry",
+          "uninstall removes owned login registration and retains account preferences",
+          "retained preferences survive uninstall and reinstall",
+          "corrupt preferences fail visibly instead of silently resetting shortcuts",
+          "resident fixture refuses to overwrite an existing Workbench login registration",
+          "actual controller starts the resident in the signed-in desktop and acknowledges native readiness",
+          "unchanged desktop preparation preserves the same resident process",
+          "settings command reaches the resident native WPF dialog through its account event",
+          "resident settings exposes the configurable Papercup shortcut",
+          "saving native disable releases the resident and removes login registration",
+          "native settings persist explicit disable",
+          "login invocation respects the saved disabled choice",
+          "explicit enable restarts the same configured native host",
+          "explicit disable waits for resident shutdown",
+          "controller uninstall leaves no owned login entry and retains account choices"
+        ],
+        "count": 51
+      }
+    }
+  ],
+  "rootCauseVerification": {
+    "hypothesis": "WPF SelectionChanged fires before SelectedValue updates, so the old handler persisted empty picks even though SelectedItem already holds the new option.",
+    "alternativeHypothesis": "The selected item binding fails, or only a detached dropdown event removes an initially correct draft.",
+    "distinguishingTest": "On win-vm, construct the same WPF ComboBox anonymous-option ItemsSource, set SelectedValue to two, and observe ancestry, SelectedValue and SelectedItem inside SelectionChanged and after the setter. Then exercise the production card controls through two other-card acknowledgements.",
+    "predictedObservations": {
+      "hypothesis": "Attached event: SelectedItem is two while SelectedValue is empty; after setter SelectedValue becomes two.",
+      "alternativeHypothesis": "Failed binding leaves no SelectedItem, or draft is initially correct and is lost only during a later detached event."
+    },
+    "actualObservation": [
+      "event ancestor=True value= item={ Id = two, Label = Same }",
+      "initial ancestor=True value=two item={ Id = two, Label = Same }",
+      "settled value=two item={ Id = two, Label = Same }",
+      "detached ancestor=False"
+    ],
+    "testResult": "Production now stores native ComboBoxItem.Tag from SelectedItem; immediate draft, explicit clear, direct item selection, two acknowledgement rebuilds and detached-event regression pass in the maintained cards journey.",
+    "testProcedure": "Existing test/fixtures/native-workbench-windows-host.ps1 -Phase cards -Interactive; Node registration test/native-workbench-windows.test.mjs.",
+    "evidenceRefs": [
+      "/tmp/wb-p005-cards-ui-20261108-v4.log",
+      "/tmp/wb-p005-cards-chat-20261108-v1.log",
+      "/tmp/wb-p005-cards-lifecycle-20261108-v1.log"
+    ]
+  },
+  "validation": [
+    "Scoped git diff --check PASS",
+    "Node syntax check PASS",
+    "46 maintained native WPF card assertions PASS",
+    "26 native WPF chat regression assertions PASS",
+    "51 native resident controller/lifecycle assertions PASS"
+  ],
+  "scopeLimits": [
+    "Current-source signed-in Windows WPF/private fixture-PUI proof only; no actual operator card or conversation journey asserted.",
+    "Complete installed Ubuntu/macOS/Windows acceptance, independent review, execution certificate and shipment remain outstanding.",
+    "Windows Markdown/code/scoped work links and voice remain outstanding.",
+    "The minimal diagnostic is a causal probe; the durable recurrence guard is in the maintained native test suite.",
+    "Earlier cards-core51/chat43 evidence is unchanged and was not rerun."
+  ]
+}

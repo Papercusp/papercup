@@ -22,6 +22,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
 import type { OrgTestDb } from '../../../../test/_org-test-db';
 
 const h = vi.hoisted(() => ({
@@ -261,15 +262,27 @@ describe('lock grant → wake, lease-backstopped (real PG ×2)', async () => {
   );
 
   it.skipIf(!live)(
-    'apply-on-grant stores an edit as a JSON object and applies it after the real grant cascade',
+    'apply-on-grant preserves applied A1 before the real grant handoff without changing the shared index or later B1',
     async () => {
       const root = mkdtempSync(join(tmpdir(), 'papercusp-lock-apply-'));
       const file = 'apply-probe.txt';
       const abs = join(root, file);
       const paths = [file];
       writeFileSync(abs, 'before OLD after\n', 'utf8');
+      const git = (...args: string[]) => {
+        const result = spawnSync('git', args, { cwd: root, encoding: 'utf8', timeout: 30_000,
+          env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } });
+        if (result.status !== 0) throw new Error(result.stderr || result.stdout);
+        return result.stdout.trim();
+      };
 
       try {
+        git('init', '-b', 'main');
+        git('config', 'user.name', 'apply-on-grant fixture');
+        git('config', 'user.email', 'fixture@example.test');
+        git('add', '--', file);
+        git('-c', 'commit.gpgsign=false', 'commit', '-m', 'baseline');
+        const sharedIndex = readFileSync(join(root, '.git/index'));
         // Use the temporary repository as the coordination domain because the
         // production apply path resolves its granted domain as the repo root.
         const holder = await inWorkspaceTxn(root, 'apply-holder', (tx) =>
@@ -316,8 +329,8 @@ describe('lock grant → wake, lease-backstopped (real PG ×2)', async () => {
         const outcome = await reconcileLockTicket(ticket, h.ws, {
           applyOnGrant: (ticketId, workspaceId) =>
             applyPendingEditOnGrant(ticketId, workspaceId, {
-              // The test verifies the real claim, filesystem apply, outcome,
-              // and lock release; keep unrelated audit/inbox stores hermetic.
+              // Keep notifications hermetic; production custody and its
+              // strict attribution use the real migrated org fixture.
               recordAttribution: async () => {},
               cancelWakeAwaits: async () => {},
               notify: async () => {},
@@ -325,6 +338,21 @@ describe('lock grant → wake, lease-backstopped (real PG ×2)', async () => {
         });
         expect(outcome).toBe('applied');
         expect(readFileSync(abs, 'utf8')).toBe('before NEW after\n');
+        expect(readFileSync(join(root, '.git/index'))).toEqual(sharedIndex);
+        const custody = git('for-each-ref', '--format=%(refname)', 'refs/papercusp/source-custody/').split('\n');
+        expect(custody).toHaveLength(1);
+        const manifest = JSON.parse(git('show', `${custody[0]}:manifest.json`));
+        expect(manifest).toMatchObject({ kind: 'candidate', paths, generation: 1 });
+        const captured = await (h.sql as NonNullable<typeof db>['adminSql'])<Array<{ dispatch_call_id: string }>>`
+          SELECT dispatch_call_id FROM harness_shared.edit_attribution_ledger
+           WHERE workspace_id = ${h.ws} AND repo_root = ${root} AND file = ${file}
+        `;
+        expect(captured).toHaveLength(1);
+        expect(captured[0].dispatch_call_id).toBe(manifest.requestId);
+        writeFileSync(abs, 'B1 from a later writer\n');
+        expect(git('show', `${custody[0]}:payload/${file}`)).toBe('before NEW after');
+        expect(readFileSync(abs, 'utf8')).toBe('B1 from a later writer\n');
+        expect(readFileSync(join(root, '.git/index'))).toEqual(sharedIndex);
         expect(await readPendingEditDisposition(getTxPool(), ticket)).toBe('applied');
         const queue = await readQueue(getTxPool(), { coordinationDomain: root, includeCompleted: true });
         expect(queue.active_locks).toHaveLength(0);

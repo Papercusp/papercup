@@ -61,7 +61,7 @@ export async function reconcileLockTicket(
   const emit = deps.emit ?? emitAwaitedEvent;
   const applyOnGrant = deps.applyOnGrant ?? applyPendingEditOnGrant;
 
-  const status = await readStatus(ticketId);
+  let status = await readStatus(ticketId);
   if (status.status === 'waiting') return 'waiting';
 
   if (status.status === 'granted' && status.granted_lock_id) {
@@ -73,6 +73,13 @@ export async function reconcileLockTicket(
     if (disposition === 'applied') return 'applied';
     if (disposition === 'in-flight') return 'no-op';
 
+    // Application/preservation can outlive the original grant or discover an
+    // expired lease. A fallback wake must describe the current hold.
+    if (disposition === 'fallback') status = await readStatus(ticketId);
+  }
+
+  if (status.status === 'waiting') return 'waiting';
+  if (status.status === 'granted' && status.granted_lock_id) {
     await emit({
       key: lockGrantKey(ticketId),
       summary: `file lock GRANTED — you now hold ${ (status.paths ?? []).join(', ') || 'your requested paths' } (lock ${status.granted_lock_id}). The TTL is already running: do the edit, then locks:release.`,

@@ -19,10 +19,17 @@ import {
   type FileIo,
 } from '../apply-on-grant';
 import type { GrantedPendingEdit } from '../su-lock-store';
-import { recordEditAttribution } from '../../../edit-attribution';
+import { preserveReleasedEditGenerations, recordEditAttributionStrict } from '../../../edit-attribution';
+import { tryRelease } from '../su-lock-store';
 
-// Only the DEFAULT attribution recorder reaches this; every other case injects its own.
-vi.mock('../../../edit-attribution', () => ({ recordEditAttribution: vi.fn(async () => {}) }));
+vi.mock('../../../edit-attribution', () => ({
+  preserveReleasedEditGenerations: vi.fn(async () => true),
+  recordEditAttributionStrict: vi.fn(async () => {}),
+}));
+vi.mock('../in-workspace-txn', () => ({
+  inWorkspaceTxn: vi.fn(async (_domain, _owner, body) => body({})),
+}));
+vi.mock('../su-lock-store', () => ({ tryRelease: vi.fn() }));
 
 const memIo = (files: Record<string, string>): FileIo & { files: Record<string, string> } => ({
   files,
@@ -98,7 +105,10 @@ const grant = (over: Partial<GrantedPendingEdit> = {}): GrantedPendingEdit => ({
 const spyDeps = (over: Partial<ApplyOnGrantDeps> = {}) => {
   const calls = {
     recordAttribution: vi.fn(async () => {}),
-    releaseLock: vi.fn(async () => {}),
+    releaseLock: vi.fn<NonNullable<ApplyOnGrantDeps['releaseLock']>>(async (g, beforeRelease) => {
+      await beforeRelease(g.paths.map(path => ({ path, lock_id: g.granted_lock_id,
+        intent: g.intent, goal_ref: g.pending_edit.goal_ref ?? null, acquired_ts: new Date() })));
+    }),
     setOutcome: vi.fn(async () => {}),
     cancelWakeAwaits: vi.fn(async () => {}),
     notify: vi.fn(async () => {}),
@@ -127,7 +137,7 @@ describe('applyPendingEditOnGrant (orchestration)', () => {
       intent: 'wire the new tool',
       goalRef: 'WI-queue-time',
     });
-    // lock released (edit done — don't strand the next waiter behind us)
+    // The edit and preservation run inside the selected release callback.
     expect(calls.releaseLock).toHaveBeenCalledOnce();
     // wake suppressed, then passive notify
     expect(calls.cancelWakeAwaits).toHaveBeenCalledWith('t-1', 'su-queuer');
@@ -141,13 +151,48 @@ describe('applyPendingEditOnGrant (orchestration)', () => {
     expect(calls.setOutcome).toHaveBeenCalledWith('t-1', 'applied');
   });
 
-  it('R-5: the default recorder stamps the granted agent’s coord session on the ledger row', async () => {
+  it('preserves the applied generation and agent session inside the selected release fence', async () => {
     const { deps } = spyDeps();
-    const { recordAttribution: _injected, ...withDefaultRecorder } = deps;
-    await applyPendingEditOnGrant('t-1', 'ws', withDefaultRecorder);
-    expect(recordEditAttribution).toHaveBeenCalledWith(
-      expect.objectContaining({ files: ['boot.ts'], agentId: 'su-queuer', sessionId: 'su-queuer' }),
-    );
+    const { recordAttribution: _audit, releaseLock: _release, ...defaults } = deps;
+    const rows = [{ path: 'boot.ts', lock_id: 'lock-1', intent: 'edit', goal_ref: 'WI-queue-time', acquired_ts: new Date() }];
+    vi.mocked(preserveReleasedEditGenerations).mockClear();
+    vi.mocked(recordEditAttributionStrict).mockClear();
+    vi.mocked(tryRelease).mockImplementationOnce(async (_tx, params) => {
+      expect(deps.notify).not.toHaveBeenCalled();
+      await params.beforeRelease?.(rows);
+      expect(preserveReleasedEditGenerations).toHaveBeenCalledWith({
+        repoRoot: '/repo', rows, agentId: 'su-queuer', workspaceId: 'ws', sessionId: 'su-queuer',
+      });
+      return { released: ['boot.ts'], heldBefore: 1 };
+    });
+    expect(await applyPendingEditOnGrant('t-1', 'ws', defaults)).toBe('applied');
+    expect(recordEditAttributionStrict).not.toHaveBeenCalled();
+    expect(deps.notify).toHaveBeenCalledOnce();
+  });
+
+  it('falls back without announcing a successful handoff when custody fails', async () => {
+    const { deps, calls } = spyDeps();
+    const { recordAttribution: _audit, releaseLock: _release, ...defaults } = deps;
+    vi.mocked(preserveReleasedEditGenerations).mockRejectedValueOnce(new Error('custody unavailable'));
+    vi.mocked(tryRelease).mockImplementationOnce(async (_tx, params) => {
+      await params.beforeRelease?.([{ path: 'boot.ts', lock_id: 'lock-1', intent: 'edit', goal_ref: null, acquired_ts: new Date() }]);
+      throw new Error('must not release after failed preservation');
+    });
+    expect(await applyPendingEditOnGrant('t-1', 'ws', defaults)).toBe('fallback');
+    expect(calls.setOutcome).toHaveBeenCalledWith('t-1', 'fallback');
+    expect(calls.cancelWakeAwaits).not.toHaveBeenCalled();
+    expect(calls.notify).not.toHaveBeenCalled();
+  });
+
+  it('refuses to announce a handoff after the selected lease expired', async () => {
+    const applyEdit = vi.fn(() => ({ applied: true }));
+    const { deps, calls } = spyDeps({ applyEdit });
+    const { recordAttribution: _audit, releaseLock: _release, ...defaults } = deps;
+    vi.mocked(tryRelease).mockResolvedValueOnce({ released: [], heldBefore: 0 });
+    expect(await applyPendingEditOnGrant('t-1', 'ws', defaults)).toBe('fallback');
+    expect(applyEdit).not.toHaveBeenCalled();
+    expect(calls.setOutcome).toHaveBeenCalledWith('t-1', 'fallback');
+    expect(calls.notify).not.toHaveBeenCalled();
   });
 
   it('mismatch-fallback: old_string no longer matches → fallback, NO apply side effects', async () => {
@@ -156,7 +201,8 @@ describe('applyPendingEditOnGrant (orchestration)', () => {
     expect(out).toBe('fallback');
     expect(calls.setOutcome).toHaveBeenCalledWith('t-1', 'fallback');
     expect(calls.recordAttribution).not.toHaveBeenCalled();
-    expect(calls.releaseLock).not.toHaveBeenCalled();
+    // The selected fence was entered, but the callback refused before deletion.
+    expect(calls.releaseLock).toHaveBeenCalledOnce();
     expect(calls.notify).not.toHaveBeenCalled();
     expect(calls.cancelWakeAwaits).not.toHaveBeenCalled();
   });
@@ -193,11 +239,8 @@ describe('applyPendingEditOnGrant (orchestration)', () => {
     }
   });
 
-  it('best-effort: a failing side effect still returns applied (the edit is already on disk)', async () => {
+  it('best-effort: a failed notification after durable release still returns applied', async () => {
     const { deps } = spyDeps({
-      releaseLock: vi.fn(async () => {
-        throw new Error('pg down');
-      }),
       notify: vi.fn(async () => {
         throw new Error('coord down');
       }),
