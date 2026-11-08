@@ -6,6 +6,7 @@
 import { createHash } from 'node:crypto';
 import type { DispatchProjectedDeps, PolicyDecisionPoint, AuthDecision, AuthzQuery, Principal } from '@papercusp/agent-mcp';
 import { createInvocationCapabilityContext, runWithInvocationCapabilities } from '@papercusp/plugin-loader';
+import { pinModuleState } from '@papercusp/module-singleton';
 import type { Capability } from '@papercusp/plugin-sdk';
 import { canonicalJson } from './authority/authority-rpc-envelope';
 import type { getGrantsForPluginInHarness } from './plugin-grants';
@@ -24,11 +25,15 @@ export interface HostPluginInvocationPolicy extends PolicyDecisionPoint {
   isCurrent(query: AuthzQuery, decision: AuthDecision): boolean;
 }
 
-let hostPolicy: HostPluginInvocationPolicy | null = null;
+// Boot and dispatch may reach this adapter through different loader records.
+// Policy installation/removal must be visible to every invocation lease.
+const policyState = pinModuleState('@papercusp/operator-core.plugin-invocation-policy', () => ({
+  hostPolicy: null as HostPluginInvocationPolicy | null,
+}));
 
 /** Trusted boot/control-plane capability; never exposed as a plugin/tool API. */
 export function setHostPluginInvocationPolicy(policy: HostPluginInvocationPolicy | null): void {
-  hostPolicy = policy;
+  policyState.hostPolicy = policy;
 }
 
 async function loadedManifest(pluginName: string, installation: Installation): Promise<readonly Capability[]> {
@@ -51,7 +56,7 @@ export function createPluginInvocationChokepoint(deps: {
 } = {}): NonNullable<DispatchProjectedDeps['aroundInvoke']> {
   return async request => {
     if (!request.tool.pluginInstallation) return request.invoke();
-    const resolvePolicy = deps.resolvePolicy ?? (() => hostPolicy);
+    const resolvePolicy = deps.resolvePolicy ?? (() => policyState.hostPolicy);
     const policy = resolvePolicy();
     if (!policy) return refuse('The host has not bound a current resource policy to this installation');
     const principal = request.ctx.principal;
@@ -143,7 +148,7 @@ export function createPluginInvocationChokepoint(deps: {
 export async function pluginInvocationChokepoint(request: Request,
   executeHandler?: PluginHandlerExecutor): ReturnType<Request['invoke']> {
   if (!request.tool.pluginInstallation) return request.invoke();
-  if (hostPolicy) return createPluginInvocationChokepoint({ executeHandler })(request);
+  if (policyState.hostPolicy) return createPluginInvocationChokepoint({ executeHandler })(request);
   try {
     const { withPinnedPluginInvocationPolicy } = await import('./plugin-invocation-policy-store');
     return await withPinnedPluginInvocationPolicy(request, (policy, grants) =>
