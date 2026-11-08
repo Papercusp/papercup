@@ -4333,14 +4333,33 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
           observation: { ...witness.observation, mapsAfter: witness.observation.mapsAfter + '\n' } }] } };
         await expect(fixture.runtimeCustody!.qualify({ ...fixture, execution: changed }))
           .rejects.toThrow('exec syscall/maps/auxv changed');
-        const out = process.env.PAPERCUSP_TEST_ARTIFACT_DIR;
-        if (out) {
-          writeFileSync(join(out, 'bg-entry-observation.json'), JSON.stringify(witness));
-          writeFileSync(join(out, 'bg-entry-trace.log'), execution.trace);
-          writeFileSync(join(out, 'bg-entry-sources.json'), JSON.stringify(execution.captures));
-          writeFileSync(join(out, 'bg-entry-binding.json'), JSON.stringify({ entry, tree,
-            output: fixture.output, record: fixture.record }));
-        }
+        const out = process.env.PAPERCUSP_TEST_ARTIFACT_DIR ?? join(tmp, `bg-entry-retained-${++serial}`);
+        mkdirSync(out, { recursive: true });
+        writeFileSync(join(out, 'bg-entry-observation.json'), JSON.stringify(witness));
+        writeFileSync(join(out, 'bg-entry-trace.log'), execution.trace);
+        writeFileSync(join(out, 'bg-entry-sources.json'), JSON.stringify(execution.captures));
+        // Derived bindings do not attest parent close/EOF. Retain the actual
+        // terminal (including its raw exec-entry witness) and build invocation
+        // so a later reader can replay the census without inventing either.
+        const binding = { entry, tree, output: fixture.output, record: fixture.record,
+          terminal: execution.terminal, invocation: fixture.invocation };
+        const bindingPath = join(out, 'bg-entry-binding.json');
+        writeFileSync(bindingPath, JSON.stringify(binding));
+        const retained = JSON.parse(readFileSync(bindingPath, 'utf8'), (_key, value) =>
+          value?.type === 'Buffer' && Array.isArray(value.data)
+            && value.data.every((byte: unknown) => Number.isInteger(byte) && Number(byte) >= 0 && Number(byte) <= 255)
+            ? Buffer.from(value.data) : value) as typeof binding;
+        const retainedTrace = readFileSync(join(out, 'bg-entry-trace.log'), 'utf8');
+        const retainedWitness = (retained.terminal as Parameters<typeof bindRuntimeProcessTree>[1]).execEntries![0];
+        expect(retained.terminal).toEqual(execution.terminal);
+        expect(retained.invocation).toEqual(fixture.invocation);
+        expect(Buffer.isBuffer(retainedWitness.observation.auxvBefore)).toBe(true);
+        expect(Buffer.isBuffer(retainedWitness.observation.elfHeader.bytes)).toBe(true);
+        expect(bindRuntimeExecEntry(retainedWitness.observation, retainedWitness.identity,
+          retainedWitness.tracerIdentity)).toEqual(entry);
+        expect(bindRuntimeProcessTree(retainedTrace, retained.terminal)).toEqual(tree);
+        expect(() => bindRuntimeProcessTree(retainedTrace, { ...retained.terminal, eof: false }))
+          .toThrow('process census lacks independent successful close/EOF evidence');
       } finally { vi.unstubAllEnvs(); }
     }, 60_000);
 
