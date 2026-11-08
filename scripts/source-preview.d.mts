@@ -304,6 +304,12 @@ export function createBgVerifierRuntimeCustody(options: Parameters<typeof create
             memoryTransitions: ReturnType<typeof import("../packages/operator-core/lib/memory/bench/runtime-file-opens.mjs").bindRuntimeProcessTree>["memoryTransitions"];
             mappingOrigins: ReturnType<typeof import("../packages/operator-core/lib/memory/bench/runtime-file-opens.mjs").bindRuntimeProcessTree>["mappingOrigins"];
             executableMemoryQualification: "required";
+            jitByteCapture: "not-observed" | "runtime-reported-code-loads-for-traced-processes";
+            jitBindings?: (ReturnType<typeof import("../packages/operator-core/lib/memory/bench/runtime-file-opens.mjs").bindRuntimeJitDump> & {
+                tracedTaskIds: number[];
+                sourceCaptureSha256: string;
+                witnessSha256: string;
+            })[];
             completeRuntimeClosureVerified: false;
             sourceQualification: "required";
             dependencyQualification: "required";
@@ -518,6 +524,56 @@ export function createBgVerifierRuntimeCustody(options: Parameters<typeof create
         vdsoQualification: string;
         executableMemoryQualification: "required";
         jitByteOriginQualification: "required";
+        jitByteCapture: "not-observed" | "runtime-reported-code-loads-for-traced-processes";
+        jitBindings: ({
+            schema: "runtime-jitdump-code-bytes/v1";
+            processId: number;
+            elfMachine: number;
+            endianness: "little" | "big";
+            bytes: number;
+            sha256: string;
+            headerTimestamp: string;
+            headerClock: "monotonic-nanoseconds" | "v8-realtime-microseconds";
+            recordClock: "monotonic-nanoseconds";
+            recordCount: number;
+            closeRecordObserved: boolean;
+            loads: {
+                taskId: number;
+                codeIndex: string;
+                address: string;
+                virtualAddress: string;
+                bytes: number;
+                sha256: string;
+                nameSha256: string;
+                timestampNs: string;
+                byteOffset: number;
+            }[];
+            moves: {
+                taskId: number;
+                codeIndex: string;
+                from: string;
+                to: string;
+                virtualAddress: string;
+                bytes: number;
+                timestampNs: string;
+                destinationBytesObserved: false;
+            }[];
+            metadata: {
+                kind: number;
+                bytes: number;
+                sha256: string;
+            }[];
+            byteEvidence: "runtime-reported-code-load-payloads";
+            jitByteOriginQualification: "required";
+            executableMemoryQualification: "required";
+            runtimeCaptureCustody: "required";
+            creatorFence: "required";
+            completeRuntimeClosureVerified: false;
+        } & {
+            tracedTaskIds: number[];
+            sourceCaptureSha256: string;
+            witnessSha256: string;
+        })[];
         compiledOutputBytesObserved: boolean;
     }>;
 }>>;
@@ -2886,6 +2942,7 @@ export function verifyBgVerifierOutputRecord(output: BgVerifierOutputRecord, rec
  *   execution: { entry: string, trace: string,
  *     terminal: Parameters<typeof bindRuntimeSourcePopulation>[1],
  *     captures: Parameters<typeof bindRuntimeSourcePopulation>[2],
+ *     jitCaptures?: Parameters<typeof bindRuntimeSourcePopulation>[4],
  *     inputCustody?: ReturnType<typeof createBgVerifierCompilerCustody>,
  *     nativeScope?: 'selected-requests' | 'process-lifetime',
  *     nativeCaptures?: { stderr: Buffer,
@@ -2902,6 +2959,7 @@ export function qualifyBgVerifierRuntimeSources({ output, record, invocation, ex
         trace: string;
         terminal: Parameters<typeof bindRuntimeSourcePopulation>[1];
         captures: Parameters<typeof bindRuntimeSourcePopulation>[2];
+        jitCaptures?: Parameters<typeof bindRuntimeSourcePopulation>[4];
         inputCustody?: ReturnType<typeof createBgVerifierCompilerCustody>;
         nativeScope?: "selected-requests" | "process-lifetime";
         nativeCaptures?: {
@@ -2945,6 +3003,12 @@ export function qualifyBgVerifierRuntimeSources({ output, record, invocation, ex
         memoryTransitions: ReturnType<typeof import("../packages/operator-core/lib/memory/bench/runtime-file-opens.mjs").bindRuntimeProcessTree>["memoryTransitions"];
         mappingOrigins: ReturnType<typeof import("../packages/operator-core/lib/memory/bench/runtime-file-opens.mjs").bindRuntimeProcessTree>["mappingOrigins"];
         executableMemoryQualification: "required";
+        jitByteCapture: "not-observed" | "runtime-reported-code-loads-for-traced-processes";
+        jitBindings?: (ReturnType<typeof import("../packages/operator-core/lib/memory/bench/runtime-file-opens.mjs").bindRuntimeJitDump> & {
+            tracedTaskIds: number[];
+            sourceCaptureSha256: string;
+            witnessSha256: string;
+        })[];
         completeRuntimeClosureVerified: false;
         sourceQualification: "required";
         dependencyQualification: "required";
@@ -3159,6 +3223,56 @@ export function qualifyBgVerifierRuntimeSources({ output, record, invocation, ex
     vdsoQualification: string;
     executableMemoryQualification: "required";
     jitByteOriginQualification: "required";
+    jitByteCapture: "not-observed" | "runtime-reported-code-loads-for-traced-processes";
+    jitBindings: ({
+        schema: "runtime-jitdump-code-bytes/v1";
+        processId: number;
+        elfMachine: number;
+        endianness: "little" | "big";
+        bytes: number;
+        sha256: string;
+        headerTimestamp: string;
+        headerClock: "monotonic-nanoseconds" | "v8-realtime-microseconds";
+        recordClock: "monotonic-nanoseconds";
+        recordCount: number;
+        closeRecordObserved: boolean;
+        loads: {
+            taskId: number;
+            codeIndex: string;
+            address: string;
+            virtualAddress: string;
+            bytes: number;
+            sha256: string;
+            nameSha256: string;
+            timestampNs: string;
+            byteOffset: number;
+        }[];
+        moves: {
+            taskId: number;
+            codeIndex: string;
+            from: string;
+            to: string;
+            virtualAddress: string;
+            bytes: number;
+            timestampNs: string;
+            destinationBytesObserved: false;
+        }[];
+        metadata: {
+            kind: number;
+            bytes: number;
+            sha256: string;
+        }[];
+        byteEvidence: "runtime-reported-code-load-payloads";
+        jitByteOriginQualification: "required";
+        executableMemoryQualification: "required";
+        runtimeCaptureCustody: "required";
+        creatorFence: "required";
+        completeRuntimeClosureVerified: false;
+    } & {
+        tracedTaskIds: number[];
+        sourceCaptureSha256: string;
+        witnessSha256: string;
+    })[];
     compiledOutputBytesObserved: boolean;
 };
 /** Attach dependencies to the independently invoked tree before its first Node

@@ -2558,6 +2558,13 @@ export function parseCli(argv) {
     : firstVitestArg >= 0
       ? argv.slice(firstVitestArg)
       : [];
+  const invalidRequireRanArg = argv.find(arg => arg === '--require-ran'
+    || (arg.startsWith('--require-ran=') && !arg.slice('--require-ran='.length).trim()));
+  const requireRanError = invalidRequireRanArg
+    ? 'use --require-ran=<substring> with a non-empty assertion name before Vitest options or the -- separator'
+    : vitestArgs.some(arg => arg.startsWith('--require-ran='))
+      ? '--require-ran=<substring> must appear before Vitest options or the -- separator'
+      : undefined;
   const budgetFromArgs = own.filter(arg => arg === '--budget-from' || arg.startsWith('--budget-from='));
   const childEstimateArgs = own.filter(arg => arg === '--child-estimate-ms' || arg.startsWith('--child-estimate-ms='));
   const misplacedBudgetArg = vitestArgs.find(arg => arg === '--budget-from' || arg.startsWith('--budget-from=')
@@ -2590,6 +2597,7 @@ export function parseCli(argv) {
   // re-run, and `nameFilterFrom` (which already accepts both forms) alike.
   return { dry, requireRan, files, vitestArgs: joinNameFilterArgs(vitestArgs), verifierBudget,
     verifierBudgetError,
+    ...(requireRanError ? { requireRanError } : {}),
     ...(own.includes('--startup-only') ? { startupOnly: true } : {}) };
 }
 
@@ -4036,10 +4044,10 @@ export async function main(
     },
   });
   try {
-  const { dry, requireRan, files, startupOnly, verifierBudget, verifierBudgetError,
+  const { dry, requireRan, files, startupOnly, requireRanError, verifierBudget, verifierBudgetError,
     vitestArgs: requestedVitestArgs } = parseCli(argv);
-  if (verifierBudgetError) {
-    console.error(formatRouteError(verifierBudgetError));
+  if (requireRanError || verifierBudgetError) {
+    console.error(formatRouteError(requireRanError || verifierBudgetError));
     return TEST_FILE_EXIT_NOT_MEASURED;
   }
   if (dry && verifierBudget) {
