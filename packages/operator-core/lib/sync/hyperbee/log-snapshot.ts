@@ -707,6 +707,10 @@ export interface SnapshotFoldProgress {
   processed: number;
   /** Source-log length captured for this scan. */
   total: number;
+  /** Preparation counts completed work, never an advancing source-log cursor. */
+  workUnit?: 'reads' | 'chunks';
+  /** A discovery's number of reads is not known in advance; total is then 0. */
+  totalKnown?: boolean;
   /** Decoded source operations consumed by the folder so far. */
   decodedOps: number;
   /** Approximate UTF-8 bytes represented by those decoded operations. */
@@ -737,8 +741,10 @@ export function formatSnapshotFoldStall(stall: SnapshotFoldStall): string {
   const core = stall.coreKey?.slice(0, 64).replace(/[^a-zA-Z0-9_.:-]/g, '_') || 'unknown';
   return (
     `phase=${phase} core=${core} sourceStart=${stall.sourceStart} sourceEnd=${stall.sourceEnd} ` +
-    `cursor=${stall.processed}/${stall.total} decodedOps=${stall.decodedOps} ` +
-    `decodedBytes=${stall.decodedBytes} stalledForMs=${stall.stalledForMs}`
+    (stall.workUnit
+      ? `completed${stall.workUnit === 'reads' ? 'Reads' : 'Chunks'}=${stall.processed} total=${stall.totalKnown === false ? 'unknown' : stall.total} `
+      : `cursor=${stall.processed}/${stall.total} decodedOps=${stall.decodedOps} decodedBytes=${stall.decodedBytes} `) +
+    `stalledForMs=${stall.stalledForMs}`
   );
 }
 
@@ -761,7 +767,11 @@ export function throttleSnapshotFoldProgress(
   const now = opts.now ?? Date.now;
   let lastEmittedAt = now();
   let lastProcessed = -1;
+  let lastPhase = '';
   return (progress) => {
+    const phase = `${progress.coreKey ?? ''}:${progress.phase}:${progress.workUnit ?? 'cursor'}`;
+    if (phase !== lastPhase || (progress.workUnit && progress.processed === 0)) lastProcessed = -1;
+    lastPhase = phase;
     if (progress.processed <= lastProcessed) return;
     lastProcessed = progress.processed;
     const at = now();
@@ -773,6 +783,11 @@ export function throttleSnapshotFoldProgress(
 
 /** One-line, bounded rendering of a fold position (the progress twin of `formatSnapshotFoldStall`). */
 export function formatSnapshotFoldProgress(progress: SnapshotFoldProgress): string {
+  if (progress.workUnit) {
+    const phase = progress.phase.slice(0, 64).replace(/[^a-zA-Z0-9_.:-]/g, '_');
+    return `phase=${phase} completed${progress.workUnit === 'reads' ? 'Reads' : 'Chunks'}=${progress.processed} ` +
+      `total=${progress.totalKnown === false ? 'unknown' : progress.total} sourceStart=${progress.sourceStart} sourceEnd=${progress.sourceEnd}`;
+  }
   const pct = progress.total <= 0 ? 100 : Math.min(100, Math.floor((progress.processed / progress.total) * 100));
   return (
     `cursor=${progress.processed}/${progress.total} (${pct}%) sourceStart=${progress.sourceStart} ` +
@@ -913,6 +928,7 @@ async function findLatestProducerSnapshot(
      * puts the previous set far outside `PRODUCER_SNAPSHOT_SCAN_LOOKBACK`.
      */
     hint?: { coversUpTo: number; chunkCount: number };
+    preparation?: SnapshotPreparationOptions;
   } = {},
 ): Promise<ProducerSnapshotSeed | null> {
   const length = log.length;
@@ -920,6 +936,10 @@ async function findLatestProducerSnapshot(
   const readBudgetMs = opts.readBudgetMs ?? FILTERED_SNAPSHOT_SCAN_STALL_MS;
   const cache = new Map<number, PeerLogOp | null>();
   let abandonedAt: number | null = null;
+  const discover = () => opts.preparation
+    ? watchSnapshotPreparation(log, opts.preparation, 'filtered-snapshot-discovery', 'reads')
+    : undefined;
+  let preparation = discover();
 
   const readAt = async (index: number): Promise<PeerLogOp | null> => {
     // Once abandoned, never issue another read: each one would race a FRESH budget,
@@ -961,6 +981,12 @@ async function findLatestProducerSnapshot(
     }
   };
 
+  const observedReadAt = async (index: number): Promise<PeerLogOp | null> => {
+    const op = await readAt(index);
+    if (abandonedAt === null) preparation?.advance();
+    return op;
+  };
+
   /**
    * Report an abandoned seek and disable seeding for this invocation.
    *
@@ -999,52 +1025,65 @@ async function findLatestProducerSnapshot(
 
   /** Every chunk of `[coversUpTo, coversUpTo + chunkCount)`, or null when the set is torn. */
   const readCompleteSet = async (coversUpTo: number, chunkCount: number): Promise<PeerLogOp[] | null> => {
-    const chunks: PeerLogOp[] = [];
-    for (let chunkIdx = 0; chunkIdx < chunkCount; chunkIdx++) {
-      const chunk = await readAt(coversUpTo + chunkIdx);
-      if (abandonedAt !== null) return null;
-      const chunkPayload = chunk?.value as SnapshotPayload | undefined;
-      if (
-        !chunk ||
-        !isSnapshotOp(chunk) ||
-        !chunkPayload ||
-        chunkPayload.coversUpTo !== coversUpTo ||
-        (chunkPayload.chunkCount ?? 1) !== chunkCount ||
-        (chunkPayload.chunkIdx ?? 0) !== chunkIdx
-      ) {
-        return null;
+    preparation?.stop();
+    preparation = opts.preparation
+      ? watchSnapshotPreparation(log, opts.preparation, 'filtered-snapshot-validation', 'reads', chunkCount)
+      : undefined;
+    try {
+      const chunks: PeerLogOp[] = [];
+      for (let chunkIdx = 0; chunkIdx < chunkCount; chunkIdx++) {
+        const chunk = await observedReadAt(coversUpTo + chunkIdx);
+        if (abandonedAt !== null) return null;
+        const chunkPayload = chunk?.value as SnapshotPayload | undefined;
+        if (
+          !chunk ||
+          !isSnapshotOp(chunk) ||
+          !chunkPayload ||
+          chunkPayload.coversUpTo !== coversUpTo ||
+          (chunkPayload.chunkCount ?? 1) !== chunkCount ||
+          (chunkPayload.chunkIdx ?? 0) !== chunkIdx
+        ) {
+          return null;
+        }
+        chunks.push(chunk);
       }
-      chunks.push(chunk);
+      return chunks;
+    } finally {
+      preparation?.stop();
+      preparation = discover();
     }
-    return chunks;
   };
 
-  const hint = opts.hint;
-  if (hint && validSpan(hint.coversUpTo, hint.chunkCount)) {
-    const chunks = await readCompleteSet(hint.coversUpTo, hint.chunkCount);
-    if (abandonedAt !== null) return abandon();
-    if (chunks) return { coversUpTo: hint.coversUpTo, chunkCount: hint.chunkCount, chunks };
+  try {
+    const hint = opts.hint;
+    if (hint && validSpan(hint.coversUpTo, hint.chunkCount)) {
+      const chunks = await readCompleteSet(hint.coversUpTo, hint.chunkCount);
+      if (abandonedAt !== null) return abandon();
+      if (chunks) return { coversUpTo: hint.coversUpTo, chunkCount: hint.chunkCount, chunks };
+    }
+
+    for (let index = length - 1; index >= floor; index--) {
+      const candidate = await observedReadAt(index);
+      if (abandonedAt !== null) return abandon();
+      if (!candidate || !isSnapshotOp(candidate)) continue;
+
+      const payload = candidate.value as SnapshotPayload | undefined;
+      const coversUpTo = payload?.coversUpTo;
+      const chunkCount = payload?.chunkCount ?? 1;
+      if (!validSpan(coversUpTo, chunkCount)) continue;
+
+      const chunks = await readCompleteSet(coversUpTo, chunkCount);
+      if (abandonedAt !== null) return abandon();
+      if (chunks) return { coversUpTo, chunkCount, chunks };
+
+      // Skip the rest of a known candidate span when it is torn. Keep the loop
+      // strictly moving backward even for malformed metadata that points ahead.
+      index = Math.min(index - 1, coversUpTo - 1);
+    }
+    return null;
+  } finally {
+    preparation?.stop();
   }
-
-  for (let index = length - 1; index >= floor; index--) {
-    const candidate = await readAt(index);
-    if (abandonedAt !== null) return abandon();
-    if (!candidate || !isSnapshotOp(candidate)) continue;
-
-    const payload = candidate.value as SnapshotPayload | undefined;
-    const coversUpTo = payload?.coversUpTo;
-    const chunkCount = payload?.chunkCount ?? 1;
-    if (!validSpan(coversUpTo, chunkCount)) continue;
-
-    const chunks = await readCompleteSet(coversUpTo, chunkCount);
-    if (abandonedAt !== null) return abandon();
-    if (chunks) return { coversUpTo, chunkCount, chunks };
-
-    // Skip the rest of a known candidate span when it is torn. Keep the loop
-    // strictly moving backward even for malformed metadata that points ahead.
-    index = Math.min(index - 1, coversUpTo - 1);
-  }
-  return null;
 }
 
 /**
@@ -1113,6 +1152,65 @@ function watchFoldCursor(
     stop(): void {
       if (timer !== undefined) clearTimeout(timer);
       timer = undefined;
+    },
+  };
+}
+
+interface SnapshotPreparationOptions {
+  onProgress?: SnapshotFoldProgressCallback;
+  onStall?: SnapshotFoldStallCallback;
+  stallMs?: number;
+}
+
+/** Reuse the edge-triggered fold watchdog for work before the source range scan.
+ * Discovery reads may go backwards or revisit a chunk, so count completed reads
+ * rather than presenting their positions as a forward source cursor. */
+export function watchSnapshotPreparation(
+  log: Pick<OwnLog, 'length'> & { keyHex?: string },
+  opts: SnapshotPreparationOptions,
+  phase: string,
+  workUnit: 'reads' | 'chunks',
+  total?: number,
+): { advance(): void; stop(): void } {
+  let processed = 0;
+  let emitted = 0;
+  let stopped = false;
+  const sourceEnd = log.length;
+  const progress = (): SnapshotFoldProgress => ({
+    phase, ...(log.keyHex ? { coreKey: log.keyHex } : {}),
+    sourceStart: 0, sourceEnd, processed, total: total ?? 0,
+    workUnit, totalKnown: total !== undefined,
+    // Source-fold decode counters do not measure preparation work.
+    decodedOps: 0, decodedBytes: 0,
+  });
+  const stallMs = opts.stallMs ?? FILTERED_SNAPSHOT_SCAN_STALL_MS;
+  const watchdog = stallMs > 0 ? watchFoldCursor(0, total ?? Infinity, {
+    phase, stallMs,
+    onStall: stall => (opts.onStall ?? (event => console.error(`[snapshot] ${formatSnapshotFoldStall(event)}`)))({
+      ...progress(), stalledForMs: stall.stalledForMs,
+    }),
+  }) : undefined;
+  try {
+    opts.onProgress?.(progress());
+  } catch (error) {
+    watchdog?.stop();
+    throw error;
+  }
+  return {
+    advance() {
+      if (stopped) return;
+      processed++;
+      watchdog?.advance(processed, 0, 0);
+      if (processed % SNAPSHOT_READ_CONCURRENCY === 0 || processed === total) {
+        emitted = processed;
+        opts.onProgress?.(progress());
+      }
+    },
+    stop() {
+      if (stopped) return;
+      stopped = true;
+      watchdog?.stop();
+      if (processed !== emitted) opts.onProgress?.(progress());
     },
   };
 }
@@ -2196,9 +2294,17 @@ export async function foldFilteredSnapshotRows(
   const { prior, seedIndex, chunkCount } = await selectFilteredSnapshotSeed(sourceLog, opts);
   let from = 0;
   if (prior) {
-    for (const [offset, chunk] of prior.chunks.entries()) {
-      opts.onSourceBlock?.(seedIndex + offset, chunk);
-      folder.add(chunk, chunk.value, seedIndex + offset);
+    const preparation = watchSnapshotPreparation(sourceLog, opts, 'filtered-prior-chunk-apply', 'chunks', prior.chunks.length);
+    try {
+      for (const [offset, chunk] of prior.chunks.entries()) {
+        opts.onSourceBlock?.(seedIndex + offset, chunk);
+        folder.add(chunk, chunk.value, seedIndex + offset);
+        // Permit the watchdog to report a long synchronous chunk application too.
+        await new Promise<void>(resolve => setImmediate(resolve));
+        preparation.advance();
+      }
+    } finally {
+      preparation.stop();
     }
     from = seedIndex + chunkCount;
   }
@@ -2224,6 +2330,7 @@ export async function selectFilteredSnapshotSeed(
   const prior = opts.priorSnapshotHint === null ? null : await findLatestProducerSnapshot(sourceLog, {
     readBudgetMs: opts.seekReadBudgetMs ?? PRODUCER_SNAPSHOT_SEEK_READ_BUDGET_MS,
     describe: 'filtered source scan',
+    preparation: opts,
     ...(opts.priorSnapshotHint ? { hint: opts.priorSnapshotHint } : {}),
   });
   // The guard that makes the seek safe to ship rather than merely fast: seeding from a set

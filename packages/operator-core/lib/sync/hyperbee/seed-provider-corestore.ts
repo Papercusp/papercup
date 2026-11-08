@@ -73,6 +73,7 @@ import {
   isSnapshotOp,
   summarizeOp,
   produceFilteredSnapshotIntoLog,
+  watchSnapshotPreparation,
   type SnapshotFoldProgressCallback,
   type SnapshotFoldStall,
   type SnapshotValueTransform,
@@ -198,7 +199,8 @@ export async function readSeedFrozenExecution(): Promise<SeedFrozenExecution> {
 const ORIGINAL_BLOCK_HASH = Symbol('proof-verified-original-block-sha256');
 
 /** A local get() alone cannot prove persisted bytes still match the signed head. */
-export async function signedSeedSource(core: ReadableCore, sourceKeyHex: string, sourceLength: number) {
+export async function signedSeedSource(core: ReadableCore, sourceKeyHex: string, sourceLength: number,
+  preparationOptions?: Parameters<typeof watchSnapshotPreparation>[1]) {
   const signed = core as ReadableCore & {
     state: { length: number; fork: number; byteLength: number; signature: Buffer;
       hash(): Buffer; createTreeBatch(): unknown };
@@ -232,10 +234,19 @@ export async function signedSeedSource(core: ReadableCore, sourceKeyHex: string,
     Object.defineProperty(op, ORIGINAL_BLOCK_HASH, { value: createHash('sha256').update(proof.block.value).digest('hex') });
     return op;
   } };
-  const selected = await findLatestCompleteSnapshotDetailed({ ...log, get: async index => {
-    const op = await log.get(index);
-    return op ? summarizeOp(op) : null;
-  } });
+  const preparation = preparationOptions
+    ? watchSnapshotPreparation(log, preparationOptions, 'filtered-external-snapshot-discovery', 'reads')
+    : undefined;
+  let selected: SnapshotScanOutcome;
+  try {
+    selected = await findLatestCompleteSnapshotDetailed({ ...log, get: async index => {
+      const op = await log.get(index);
+      preparation?.advance();
+      return op ? summarizeOp(op) : null;
+    } });
+  } finally {
+    preparation?.stop();
+  }
   if (selected.kind === 'unreadable') throw new Error('[seed:corestore] original snapshot selection unreadable');
   return { log, sourceHead, assertHead, hint: selected.kind === 'found' ? selected.seed : null };
 }
@@ -870,7 +881,8 @@ export async function mintFilteredSeedContentCore(inp: {
       if (censusInput?.executionBinding && JSON.stringify(await readSeedFrozenExecution()) !== JSON.stringify(censusInput.executionBinding)) {
         throw new Error('[seed:corestore] census/producer frozen execution mismatch');
       }
-      const boundSource = censusInput ? await signedSeedSource(sourceCore, inp.ownerKeyHex, boundSourceLength) : undefined;
+      const preparationOptions = { onProgress: inp.onProgress, onStall: reportStall, stallMs: inp.filteredScanStallMs };
+      const boundSource = censusInput ? await signedSeedSource(sourceCore, inp.ownerKeyHex, boundSourceLength, preparationOptions) : undefined;
       const recorder = censusInput ? sourceSpanRecorder(boundSourceLength) : undefined;
       const censusOriginal = censusInput ? new SnapshotRowFolder({ excludeTables: inp.excludeTables ?? SEED_EXCLUDED_TABLES }) : undefined;
       const censusPrivacy = censusInput ? new SnapshotRowFolder({ excludeTables: inp.excludeTables ?? SEED_EXCLUDED_TABLES,
@@ -884,7 +896,18 @@ export async function mintFilteredSeedContentCore(inp: {
       // P-003: the producer's own seek only scans a short tail window, and the
       // proportional cadence leaves the newest set far behind it. Locate it with the
       // reader's unbounded scan and hand it over; a miss still folds from 0 correctly.
-      const priorSet = boundSource ? boundSource.hint : await findLatestCompleteSnapshot(sourceLog).catch(() => null);
+      const priorSet = boundSource ? boundSource.hint : await (async () => {
+        const preparation = watchSnapshotPreparation(sourceLog, preparationOptions, 'filtered-external-snapshot-discovery', 'reads');
+        try {
+          return await findLatestCompleteSnapshot({ ...sourceLog, get: async index => {
+            const op = await sourceLog.get(index);
+            preparation.advance();
+            return op;
+          } }).catch(() => null);
+        } finally {
+          preparation.stop();
+        }
+      })();
       const produced = await produceFilteredSnapshotIntoLog(boundSource?.log ?? sourceLog, synthetic, {
         ...(boundSource ? { priorSnapshotHint: priorSet } : priorSet ? { priorSnapshotHint: priorSet } : {}),
         now: censusInput?.foldNow ?? inp.now ?? Date.now(),

@@ -2,6 +2,9 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   produceLogSnapshot,
   produceFilteredSnapshotIntoLog,
+  buildSnapshotOps,
+  throttleSnapshotFoldProgress,
+  formatSnapshotFoldProgress,
   formatSnapshotFoldStall,
   SnapshotRowFolder,
   isSnapshotOp,
@@ -376,7 +379,7 @@ describe('produceFilteredSnapshotIntoLog — the synthetic seed core (EI-2010816
     await produceFilteredSnapshotIntoLog(src, target, {
       now: 2000,
       schemaVersion: 1,
-      onProgress: (event) => progress.push(event),
+      onProgress: (event) => { if (event.phase === 'filtered-source-scan') progress.push(event); },
     });
 
     expect(progress.map(({ phase, processed, total }) => ({ phase, processed, total }))).toEqual([
@@ -406,6 +409,96 @@ describe('produceFilteredSnapshotIntoLog — the synthetic seed core (EI-2010816
     });
 
     expect(stalls).toEqual([]);
+  });
+
+  it.each(['discovery', 'validation'] as const)('reports a blocked preparation %s read without aborting or inventing a cursor', async phase => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const source = memLog('preparation-source');
+    const operation = put('plans', 'p-0', { secret: NEVER_EMIT_MARKER }, 1);
+    await source.append(phase === 'validation'
+      ? buildSnapshotOps({ ops: [operation], coversUpTo: 0, author_pubkey: 'me', ts: 1, schema_version: 1 })[0]!
+      : operation);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const originalGet = source.get.bind(source);
+    const reads = vi.spyOn(source, 'get').mockImplementation(async index => {
+      await gate;
+      return originalGet(index);
+    });
+    const progress: SnapshotFoldProgress[] = [];
+    const stalls: SnapshotFoldProgress[] = [];
+    const target = memLog('preparation-target');
+    let settled = false;
+    const pending = produceFilteredSnapshotIntoLog(source, target, {
+      now: 2000, schemaVersion: 1, stallMs: 25, seekReadBudgetMs: 1000,
+      ...(phase === 'validation' ? { priorSnapshotHint: { coversUpTo: 0, chunkCount: 1 } } : {}),
+      onProgress: event => progress.push(event), onStall: event => stalls.push(event),
+    }).then(result => { settled = true; return result; });
+    try {
+      await vi.advanceTimersByTimeAsync(24);
+      expect(stalls).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(stalls).toHaveLength(1);
+      expect(stalls[0]).toMatchObject({ phase: `filtered-snapshot-${phase}`, coreKey: source.keyHex,
+        sourceStart: 0, sourceEnd: 1, processed: 0, workUnit: 'reads', totalKnown: phase === 'validation' });
+      const message = formatSnapshotFoldProgress(stalls[0]!);
+      expect(message).toContain(`completedReads=0 total=${phase === 'validation' ? '1' : 'unknown'}`);
+      expect(message).not.toMatch(/cursor=|secret|never-emit/);
+      await vi.advanceTimersByTimeAsync(75);
+      expect(stalls).toHaveLength(1);
+      expect(settled).toBe(false);
+      expect(progress.some(event => event.phase === 'filtered-source-scan')).toBe(false);
+      release();
+      expect((await pending).rowCount).toBe(1);
+      expect(await rowsOfSetAt(target, 0, 1)).toEqual([{ table: 'plans', hbKey: 'p-0' }]);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      release();
+      await pending;
+      reads.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([false, true])('covers prior-chunk application and clears its timer after failure=%s', async fail => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const source = memLog('prior-chunk-source');
+    await source.append(buildSnapshotOps({ ops: [put('plans', 'p-0', {}, 1)], coversUpTo: 0,
+      author_pubkey: 'me', ts: 1, schema_version: 1 })[0]!);
+    const stalls: SnapshotFoldProgress[] = [];
+    const progress: SnapshotFoldProgress[] = [];
+    try {
+      const pending = produceFilteredSnapshotIntoLog(source, memLog('target'), {
+        now: 2000, schemaVersion: 1, stallMs: 25, priorSnapshotHint: { coversUpTo: 0, chunkCount: 1 },
+        onProgress: event => progress.push(event), onStall: event => stalls.push(event),
+        onSourceBlock: () => {
+          vi.advanceTimersByTime(30);
+          if (fail) throw new Error('prior application failed');
+        },
+      });
+      if (fail) await expect(pending).rejects.toThrow('prior application failed');
+      else expect((await pending).rowCount).toBe(1);
+      expect(stalls).toHaveLength(1);
+      expect(stalls[0]).toMatchObject({ phase: 'filtered-prior-chunk-apply', workUnit: 'chunks',
+        processed: 0, total: 1, totalKnown: true });
+      expect(progress.filter(event => event.phase === 'filtered-prior-chunk-apply').map(event => event.processed))
+        .toEqual(fail ? [0] : [0, 1]);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('throttles each phase independently of a preceding large source cursor', () => {
+    let now = 0;
+    const emit = vi.fn();
+    const progress = throttleSnapshotFoldProgress(emit, { minIntervalMs: 10, now: () => now });
+    const event = { phase: 'filtered-source-scan', sourceStart: 0, sourceEnd: 1000,
+      processed: 1000, total: 1000, decodedOps: 1000, decodedBytes: 1000 };
+    now = 10;
+    progress(event);
+    now = 20;
+    progress({ ...event, phase: 'filtered-prior-chunk-apply', workUnit: 'chunks', processed: 1, total: 2 });
+    expect(emit).toHaveBeenCalledTimes(2);
+    expect(formatSnapshotFoldProgress(emit.mock.calls[1]![0])).toContain('completedChunks=1 total=2');
   });
 
   it('abandons a hung prior-snapshot seek, then reports one edge-triggered fold stall', async () => {

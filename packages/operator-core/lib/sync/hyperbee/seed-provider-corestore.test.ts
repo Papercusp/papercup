@@ -486,7 +486,7 @@ interface TestCore {
 }
 
 describe('corestore seed provider', () => {
-  it('delivers bounded fold attribution through the default seed sink', async () => {
+  it('reports external snapshot discovery through the default seed sink before the fold', async () => {
     const source = makeStore(tmpDir('seed-stall-source-'));
     const staging = makeStore(tmpDir('seed-stall-staging-'));
     await source.ready();
@@ -520,10 +520,7 @@ describe('corestore seed provider', () => {
       stagingStore: staging,
       redactValues: [],
       filteredScanStallMs: 25,
-      // This fixture gates EVERY core read until `releaseRead()`, and the prior-snapshot
-      // seek reads before the fold does. Its production budget is minutes — deliberately,
-      // since abandoning costs an O(history) fold — so it must be shrunk here or the seek
-      // parks on the gate far past this test's timeout.
+      // The first external-discovery read is gated, before producer selection/folding.
       seekReadBudgetMs: 5,
       onProjection: () => {},
     }).then((result) => {
@@ -532,27 +529,21 @@ describe('corestore seed provider', () => {
     });
     try {
       await reported;
-      // Two distinct events, in order: the gated read first abandons the bounded seek
-      // (which FALLS BACK to the full fold — the scan this test is actually about),
-      // then that fold's cursor stalls on the very same gated read.
-      expect(errors).toHaveBeenCalledTimes(2);
-      expect(String(errors.mock.calls[0]![0])).toContain('prior-snapshot seek abandoned');
-      const message = String(errors.mock.calls[1]![0]);
+      expect(errors).toHaveBeenCalledTimes(1);
+      const message = String(errors.mock.calls[0]![0]);
       for (const field of [
         '[seed:corestore]',
-        'phase=filtered-source-scan',
+        'phase=filtered-external-snapshot-discovery',
         `core=${own.keyHex}`,
         'sourceStart=0',
         'sourceEnd=1',
-        'cursor=0/1',
-        'decodedOps=0',
-        'decodedBytes=0',
+        'completedReads=0 total=unknown',
         'stalledForMs=',
       ]) expect(message).toContain(field);
       expect(message).not.toContain(NEVER_EMIT_MARKER);
       expect(message.length).toBeLessThan(600);
       await new Promise<void>((resolve) => setTimeout(resolve, 75));
-      expect(errors).toHaveBeenCalledTimes(2);
+      expect(errors).toHaveBeenCalledTimes(1);
       expect(settled).toBe(false);
       releaseRead();
       expect((await pending).length).toBeGreaterThan(0);

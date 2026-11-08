@@ -22,6 +22,7 @@ fi
 
 TOOL="${VERIFY_TAURI_AGENT_TOOLS_BIN:-tauri-agent-tools}"
 command -v "$TOOL" >/dev/null 2>&1 || TOOL="tauri-agent-tools"
+source "${OPERATOR_SOURCE_ROOT:?missing owned operator source}/scripts/lib/verify-tauri-screenshot.sh"
 
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT_DIR="${TAURI_SURFACE_VERIFY_EMBED_DEVICE_OUT:-/tmp/pcv-embed-device-$STAMP}"
@@ -81,7 +82,7 @@ if "$TOOL" check --pid "$VERIFY_TAURI_PID" \
   >"$OUT_DIR/negative-control.json" 2>&1; then
   fail "step=negative-control missing-selector-unexpectedly-passed"
 fi
-"$TOOL" screenshot --pid "$VERIFY_TAURI_PID" --output "$OUT_DIR/embed-device-cpu.png" \
+capture_screenshot "$OUT_DIR/embed-device-cpu.png" \
   >/dev/null \
   || fail "step=screenshot"
 

@@ -861,6 +861,37 @@ describe('predecessor custody on expiry', () => {
       expect((await readWaiterStatus(getTxPool(), waiter.ticket_id)).status).toBe('granted');
     } finally { configureLocks(saved); }
   });
+
+  it.each(['lease', 'all-mine'] as const)('preserves rows expiring during the sweep before %s release deletes them', async selector => {
+    const ws = nextWs();
+    const held = await hold(ws, ['first.ts', 'later.ts']);
+    const waiter = await queue(ws, ['later.ts']);
+    await expire(ws, ['first.ts']);
+    const saved = locksHost();
+    const preserve = vi.fn<Preserve>(async input => {
+      if (input.coordinationDomain !== ws) return;
+      if (input.rows.some(row => row.path === 'first.ts')) await expire(ws, ['later.ts']);
+      if (input.rows.some(row => row.path === 'later.ts')) {
+        expect((await readWaiterStatus(getTxPool(), waiter.ticket_id)).status).toBe('waiting');
+        expect(await getTxPool()`SELECT owner FROM agent_file_locks
+          WHERE coordination_domain = ${ws} AND path = 'later.ts'`)
+          .toEqual([expect.objectContaining({ owner: 'predecessor' })]);
+      }
+    });
+    configureLocks({ ...saved, beforeFileLocksRelease: preserve });
+    try {
+      const released = await inWorkspaceTxn(ws, 'predecessor', tx => tryRelease(tx, {
+        coordinationDomain: ws, owner: 'predecessor',
+        ...(selector === 'lease' ? { lockId: held.lock_id } : { allMine: true }),
+      }));
+      expect(released.released).toEqual(['later.ts']);
+      expect(preserve.mock.calls.filter(([input]) => input.coordinationDomain === ws)
+        .map(([input]) => input.rows.map(row => row.path))).toEqual([['first.ts'], ['later.ts']]);
+      expect((await readWaiterStatus(getTxPool(), waiter.ticket_id)).status).toBe('granted');
+      expect(await getTxPool()`SELECT owner FROM agent_file_locks WHERE coordination_domain = ${ws}`)
+        .toEqual([expect.objectContaining({ owner: 'successor' })]);
+    } finally { configureLocks(saved); }
+  });
 });
 
 describe('coordinator predecessor custody', () => {

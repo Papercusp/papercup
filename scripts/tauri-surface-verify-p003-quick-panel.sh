@@ -35,6 +35,7 @@ set -uo pipefail
 : "${VERIFY_TAURI_PID:?missing VERIFY_TAURI_PID — run via scripts/verify-tauri-headless.sh}"
 TOOL="${VERIFY_TAURI_AGENT_TOOLS_BIN:-tauri-agent-tools}"
 command -v "$TOOL" >/dev/null 2>&1 || TOOL="tauri-agent-tools"
+source "${OPERATOR_SOURCE_ROOT:?missing owned operator source}/scripts/lib/verify-tauri-screenshot.sh"
 
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT_DIR="${TAURI_SURFACE_VERIFY_P003_QUICK_PANEL_OUT:-/tmp/pcv-p003-quick-panel-$STAMP}"
@@ -81,7 +82,7 @@ else
   echo "negative control confirmed (missing-selector check correctly failed)"
 fi
 
-"$TOOL" screenshot --pid "$VERIFY_TAURI_PID" --output "$OUT_DIR/quick-panel-brainstorm.png" >/dev/null \
+capture_screenshot "$OUT_DIR/quick-panel-brainstorm.png" \
   && validate_screenshot "$OUT_DIR/quick-panel-brainstorm.png" \
   || fail "quick-panel: screenshot capture failed"
 

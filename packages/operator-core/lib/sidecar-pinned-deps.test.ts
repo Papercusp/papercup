@@ -951,7 +951,7 @@ test "$after" != "$changed"
       expect(statSync(copied).nlink).toBe(1);
       expect(statSync(twin).nlink).toBe(1);
       expect(statSync(twin).ino).not.toBe(inode);
-      const assertion = runLib(['assert', snap, donor]);
+      const assertion = runLib(['assert', snap]);
       expect(assertion.code, assertion.err).toBe(0);
       const reused = runLib(['snapshot', donor, snap, 'copy']);
       expect(reused.code, reused.err).toBe(0);

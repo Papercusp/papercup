@@ -26,6 +26,7 @@ set -uo pipefail
 : "${VERIFY_TAURI_PID:?missing VERIFY_TAURI_PID — run via scripts/verify-tauri-headless.sh}"
 TOOL="${VERIFY_TAURI_AGENT_TOOLS_BIN:-tauri-agent-tools}"
 command -v "$TOOL" >/dev/null 2>&1 || TOOL="tauri-agent-tools"
+source "${OPERATOR_SOURCE_ROOT:?missing owned operator source}/scripts/lib/verify-tauri-screenshot.sh"
 
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT_DIR="${TAURI_SURFACE_VERIFY_P006_OUT:-/tmp/pcv-p006-prompt-studio-$STAMP}"
@@ -61,7 +62,7 @@ sleep 2
   --eval "/\\d[\\d,]* chars/.test(document.body.textContent || '')" \
   --json | tee "$OUT_DIR/prompt-studio-preview-check.json" \
   || fail "prompt-studio: preview 'N chars' readout never appeared after Refresh"
-"$TOOL" screenshot --pid "$VERIFY_TAURI_PID" --output "$OUT_DIR/prompt-studio.png" >/dev/null \
+capture_screenshot "$OUT_DIR/prompt-studio.png" \
   && validate_screenshot "$OUT_DIR/prompt-studio.png" \
   || fail "prompt-studio: screenshot capture failed"
 

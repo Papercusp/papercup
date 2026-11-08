@@ -6,8 +6,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 test('screenshots resolve the verifier PID to its Tauri window and retain diagnostics', () => {
-  const source = readFileSync(new URL('./tauri-surface-verify-ticket-integrations.sh', import.meta.url), 'utf8');
-  const helper = source.match(/^capture_screenshot\(\) \{[\s\S]*?(?=^fail\(\) \{)/m)?.[0]?.trimEnd();
+  const helper = readFileSync(new URL('./lib/verify-tauri-screenshot.sh', import.meta.url), 'utf8');
   assert.ok(helper);
   const dir = mkdtempSync(join(tmpdir(), 'ticket-native-capture-'));
   try {
@@ -32,7 +31,7 @@ exit 99
 `, { mode: 0o700 });
     const target = join(dir, 'capture.png');
     const run = (screenshotFail) => spawnSync('bash', ['-c', helper + '\ncapture_screenshot "$1"', 'verifier', target], {
-      env: { ...process.env, T: cli, VERIFY_TAURI_PID: '123', CAPTURE_ARGS_FILE: argsFile, SCREENSHOT_FAIL: screenshotFail }, encoding: 'utf8',
+      env: { ...process.env, VERIFY_TAURI_AGENT_TOOLS_BIN: cli, VERIFY_TAURI_PID: '123', CAPTURE_ARGS_FILE: argsFile, SCREENSHOT_FAIL: screenshotFail }, encoding: 'utf8',
     });
     const failed = run('1');
     assert.equal(failed.status, 7);
@@ -51,8 +50,7 @@ exit 99
 });
 
 test('screenshot refuses to fall back when the verifier PID has no visible Tauri window', () => {
-  const source = readFileSync(new URL('./tauri-surface-verify-ticket-integrations.sh', import.meta.url), 'utf8');
-  const helper = source.match(/^capture_screenshot\(\) \{[\s\S]*?(?=^fail\(\) \{)/m)?.[0]?.trimEnd();
+  const helper = readFileSync(new URL('./lib/verify-tauri-screenshot.sh', import.meta.url), 'utf8');
   assert.ok(helper);
   const dir = mkdtempSync(join(tmpdir(), 'ticket-native-no-window-'));
   try {
@@ -70,7 +68,7 @@ exit 0
 `, { mode: 0o700 });
     const target = join(dir, 'capture.png');
     const result = spawnSync('bash', ['-c', helper + '\ncapture_screenshot "$1"', 'verifier', target], {
-      env: { ...process.env, T: cli, VERIFY_TAURI_PID: '123', CAPTURE_ARGS_FILE: argsFile }, encoding: 'utf8',
+      env: { ...process.env, VERIFY_TAURI_AGENT_TOOLS_BIN: cli, VERIFY_TAURI_PID: '123', CAPTURE_ARGS_FILE: argsFile }, encoding: 'utf8',
     });
     assert.equal(result.status, 1);
     assert.match(result.stderr, /no-owned-tauri-window:pid=123/);

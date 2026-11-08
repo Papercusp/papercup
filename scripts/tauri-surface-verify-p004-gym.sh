@@ -33,6 +33,7 @@ set -uo pipefail
 : "${VERIFY_TAURI_POLL:?missing VERIFY_TAURI_POLL}"
 TOOL="${VERIFY_TAURI_AGENT_TOOLS_BIN:-tauri-agent-tools}"
 command -v "$TOOL" >/dev/null 2>&1 || TOOL="tauri-agent-tools"
+source "${OPERATOR_SOURCE_ROOT:?missing owned operator source}/scripts/lib/verify-tauri-screenshot.sh"
 
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT_DIR="${TAURI_SURFACE_VERIFY_P004_GYM_OUT:-/tmp/pcv-p004-gym-$STAMP}"
@@ -79,7 +80,7 @@ fi
   --eval "[...document.querySelectorAll('h1')].some((h) => h.textContent?.trim() === 'Harness Gym')" \
   --json | tee "$OUT_DIR/gym-check.json" \
   || fail "gym: h1/testid assertion failed"
-"$TOOL" screenshot --pid "$VERIFY_TAURI_PID" --output "$OUT_DIR/gym.png" >/dev/null \
+capture_screenshot "$OUT_DIR/gym.png" \
   && validate_screenshot "$OUT_DIR/gym.png" \
   || fail "gym: screenshot capture failed"
 
@@ -108,7 +109,7 @@ echo "=== primary interaction: click the 'prompts' tab (native click), confirm r
   --eval "document.querySelector('[data-testid=\"gym-tab-prompts\"]')?.getAttribute('aria-selected') === 'true' && document.querySelector('[data-testid=\"gym-tab-proposals\"]')?.getAttribute('aria-selected') === 'false' && new URLSearchParams(location.search).get('gymTab') === 'prompts'" \
   --json | tee "$OUT_DIR/gym-interaction-check.json" \
   || fail "gym: prompts tab did not activate (aria-selected/gymTab param) after click"
-"$TOOL" screenshot --pid "$VERIFY_TAURI_PID" --output "$OUT_DIR/gym-prompts-tab.png" >/dev/null \
+capture_screenshot "$OUT_DIR/gym-prompts-tab.png" \
   && validate_screenshot "$OUT_DIR/gym-prompts-tab.png" \
   || fail "gym: prompts-tab screenshot capture failed"
 

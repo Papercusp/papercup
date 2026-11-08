@@ -24,6 +24,7 @@ set -uo pipefail
 : "${VERIFY_TAURI_PID:?missing VERIFY_TAURI_PID — run via scripts/verify-tauri-headless.sh}"
 TOOL="${VERIFY_TAURI_AGENT_TOOLS_BIN:-tauri-agent-tools}"
 command -v "$TOOL" >/dev/null 2>&1 || TOOL="tauri-agent-tools"
+source "${OPERATOR_SOURCE_ROOT:?missing owned operator source}/scripts/lib/verify-tauri-screenshot.sh"
 
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT_DIR="${TAURI_SURFACE_VERIFY_P005_OUT:-/tmp/pcv-p005-cloud-eval-$STAMP}"
@@ -49,7 +50,7 @@ sleep 1.5
   --no-errors --duration 2000 --json \
   | tee "$OUT_DIR/cloud-workspaces-check.json" \
   || fail "cloud-workspaces: h1 'Cloud Workspaces' render / no-errors check failed"
-"$TOOL" screenshot --pid "$VERIFY_TAURI_PID" --output "$OUT_DIR/cloud-workspaces.png" >/dev/null \
+capture_screenshot "$OUT_DIR/cloud-workspaces.png" \
   && validate_screenshot "$OUT_DIR/cloud-workspaces.png" \
   || fail "cloud-workspaces: screenshot capture failed"
 
@@ -63,7 +64,7 @@ sleep 1.5
   --eval "document.querySelectorAll('.pc-evals__subnav [role=tab]').length > 0" \
   --json | tee "$OUT_DIR/eval-viz-subnav-check.json" \
   || fail "eval-viz: subnav tabs not present"
-"$TOOL" screenshot --pid "$VERIFY_TAURI_PID" --output "$OUT_DIR/eval-viz.png" >/dev/null \
+capture_screenshot "$OUT_DIR/eval-viz.png" \
   && validate_screenshot "$OUT_DIR/eval-viz.png" \
   || fail "eval-viz: screenshot capture failed"
 
@@ -103,7 +104,7 @@ if [ "${PAPERCUSP_VERIFY_TAURI_ISOLATED:-0}" = "1" ]; then
   "$TOOL" wait --pid "$VERIFY_TAURI_PID" --selector '[aria-label="Committed protocol run ID"]' --timeout 30000 --json >/dev/null \
     || fail "eval-viz: returning to Launch lost its controls"
   "$TOOL" check --pid "$VERIFY_TAURI_PID" \
-    --eval "new URLSearchParams(location.search).get('evalView') === 'launch' && !!document.querySelector('[aria-label=\"Benchmark arm\"]') && document.querySelector('[aria-label=\"Launch benchmark run\"]')?.disabled === true" \
+    --eval "(new URLSearchParams(location.search).get('evalView') ?? 'launch') === 'launch' && !!document.querySelector('[aria-label=\"Benchmark arm\"]') && document.querySelector('[aria-label=\"Launch benchmark run\"]')?.disabled === true" \
     --json | tee "$OUT_DIR/eval-launch-return-check.json" \
     || fail "eval-viz: returning to Launch failed"
 fi

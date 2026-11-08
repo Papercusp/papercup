@@ -6,7 +6,7 @@
  * records HOW it was chosen. R-5: the editing session id persists on the row.
  * Real Postgres with the real ledger migrations; the writer is the production function.
  */
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -26,11 +26,12 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 vi.mock('./agent-tools/coordination/presence', () => ({ getPresence: async () => h.presence }));
 
 const { recordEditAttribution, preserveEditGeneration, readEditPredecessors, describeEditCohort,
-  freezeEditCohort, checkFrozenEditCohortEvidence } = await import('./edit-attribution');
+  freezeEditCohort, checkFrozenEditCohortEvidence, preserveReleasedEditGenerations } = await import('./edit-attribution');
 
 const WS = 'ws-stamping';
 const AGENT = 'su-stamping';
 let root: string;
+let closeLocks: (() => Promise<void>) | undefined;
 
 beforeAll(async () => {
   h.db = await createFreshPgDb('edit-attr-stamping');
@@ -63,6 +64,7 @@ beforeAll(async () => {
   writeFileSync(join(root, 'tool.ts'), 'export const x = 1;\n');
 }, 120_000);
 afterAll(async () => {
+  await closeLocks?.();
   await h.db?.cleanup();
   if (root) rmSync(root, { recursive: true, force: true });
 });
@@ -213,6 +215,92 @@ describe('edit stamping from the editor held set', () => {
       intent: 'shell edit' }, { strict: true });
     const unknown = await readEditPredecessors({ ...input, dispatchCallId: 'after-legacy' }, runGit);
     expect(unknown).toEqual([{ requestId: expect.stringMatching(/^legacy-ledger:/), generation: 1, paths: ['tool.ts'], tree: null }]);
+  });
+
+  it.each([
+    { route: 'release', assigned: true }, { route: 'expiry', assigned: true },
+    { route: 'release', assigned: false }, { route: 'expiry', assigned: false },
+  ])('preserves real multi-file Git custody and PG attribution before $route handoff (assigned=$assigned)', async ({ route, assigned }) => {
+    const store = await import('./agent-tools/locks/su-lock-store');
+    const { inWorkspaceTxn } = await import('./agent-tools/locks/in-workspace-txn');
+    const { configureLocks, locksHost } = await import('@papercusp/locks');
+    closeLocks = store._resetForTests;
+    await store.ensureBootstrap();
+    const repo = mkdtempSync(join(root, 'handoff-'));
+    const git = (...args: string[]) => {
+      const result = spawnSync('git', args, { cwd: repo, encoding: 'utf8', timeout: 30_000 });
+      if (result.status !== 0) throw new Error(result.stderr);
+      return result.stdout.trim();
+    };
+    const runGit: RunGit = async (args, cwd, options) => {
+      const result = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000,
+        env: { ...process.env, ...options?.env } });
+      return { code: result.status ?? -1, stdout: result.stdout, stderr: result.stderr };
+    };
+    git('init', '-b', 'main'); git('config', 'user.name', 'fixture');
+    git('config', 'user.email', 'fixture@example.test');
+    for (const file of ['a.txt', 'b.txt']) writeFileSync(join(repo, file), 'base\n');
+    git('add', '-A'); git('-c', 'commit.gpgsign=false', 'commit', '-m', 'base');
+    if (assigned) await hold('WI-A');
+    const held = await inWorkspaceTxn(repo, AGENT, tx => store.tryAcquire(tx, {
+      coordinationDomain: repo, owner: AGENT, ownerLabel: 'predecessor', paths: ['a.txt', 'b.txt'],
+      intent: 'original edit', goalRef: assigned ? 'WI-A' : undefined, ttlSec: 60,
+    }));
+    if (!held.ok) throw new Error('predecessor setup failed');
+    const waiter = await inWorkspaceTxn(repo, 'successor', tx => store.tryInsertWaiter(tx, {
+      coordinationDomain: repo, owner: 'successor', ownerLabel: 'successor', paths: ['a.txt', 'b.txt'],
+      intent: 'next edit', ttlSec: 60, maxWaitSec: 120,
+    }));
+    if (!waiter.ok || 'self_granted' in waiter) throw new Error('successor setup failed');
+    writeFileSync(join(repo, 'a.txt'), 'A1 staged\n'); git('add', '--', 'a.txt');
+    writeFileSync(join(repo, 'a.txt'), 'A1 working\n');
+    writeFileSync(join(repo, 'b.txt'), Buffer.from([0, 255, 128, 1]));
+    const index = readFileSync(join(repo, '.git/index'));
+    const captures: Array<Awaited<ReturnType<typeof preserveEditGeneration>>> = [];
+    const saved = locksHost();
+    configureLocks({ ...saved, beforeFileLocksRelease: async input => {
+      expect(input.coordinationDomain).toBe(repo);
+      expect(input.rows.map(row => row.owner)).toEqual([AGENT, AGENT]);
+      expect((await store.readWaiterStatus(store.getTxPool(), waiter.ticket_id)).status).toBe('waiting');
+      await preserveReleasedEditGenerations({ repoRoot: repo, rows: input.rows,
+        agentId: AGENT, sessionId: AGENT, workspaceId: WS }, {
+        preserve: async input => {
+          const receipt = await preserveEditGeneration(input, runGit);
+          captures.push(receipt);
+          return receipt;
+        },
+      });
+    } });
+    try {
+      if (route === 'release') await inWorkspaceTxn(repo, AGENT, tx => store.tryRelease(tx, {
+        coordinationDomain: repo, owner: AGENT, lockId: held.lock_id,
+      }));
+      else {
+        await store.getTxPool()`UPDATE agent_file_locks SET expires_ts = clock_timestamp() - interval '1 second'
+          WHERE coordination_domain = ${repo}`;
+        await inWorkspaceTxn(repo, 'successor', tx => store.pokeWorkspace(tx, repo));
+      }
+      expect((await store.readWaiterStatus(store.getTxPool(), waiter.ticket_id)).status).toBe('granted');
+      expect(captures).toHaveLength(1);
+      const capture = captures[0].capture as { ref: string; candidate: { requestId: string } };
+      const ledger = await h.db!.sql`SELECT file, agent_id, session_id, work_item_id, dispatch_call_id
+        FROM harness_shared.edit_attribution_ledger WHERE repo_root = ${repo} ORDER BY file`;
+      expect(ledger).toEqual(['a.txt', 'b.txt'].map(file => ({ file, agent_id: AGENT, session_id: AGENT,
+        work_item_id: assigned ? 'WI-A' : null, dispatch_call_id: capture.candidate.requestId })));
+      expect(readFileSync(join(repo, '.git/index'))).toEqual(index);
+      expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('A1 working\n');
+      writeFileSync(join(repo, 'a.txt'), 'B1 working\n');
+      expect(git('show', `${capture.ref}:payload/a.txt`)).toBe('A1 working');
+      const binary = spawnSync('git', ['show', `${capture.ref}:payload/b.txt`], { cwd: repo });
+      expect(binary.status).toBe(0);
+      expect(binary.stdout).toEqual(Buffer.from([0, 255, 128, 1]));
+      expect(readFileSync(join(repo, '.git/index'))).toEqual(index);
+      expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('B1 working\n');
+    } finally {
+      configureLocks(saved);
+      await store.getTxPool()`DELETE FROM agent_file_locks WHERE coordination_domain = ${repo}`;
+      await store.getTxPool()`DELETE FROM agent_lock_waiters WHERE coordination_domain = ${repo}`;
+    }
   });
 
   const receipt = (path: string) => ({ version: 1, kind: 'edit-generation', pending: true,

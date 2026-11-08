@@ -77,6 +77,7 @@ set -uo pipefail
 : "${VERIFY_TAURI_POLL:?missing VERIFY_TAURI_POLL}"
 TOOL="${VERIFY_TAURI_AGENT_TOOLS_BIN:-tauri-agent-tools}"
 command -v "$TOOL" >/dev/null 2>&1 || TOOL="tauri-agent-tools"
+source "${OPERATOR_SOURCE_ROOT:?missing owned operator source}/scripts/lib/verify-tauri-screenshot.sh"
 
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT_DIR="${TAURI_SURFACE_VERIFY_P004_RUBRICS_WIKI_OUT:-/tmp/pcv-p004-rubrics-wiki-$STAMP}"
@@ -116,7 +117,7 @@ fi
   --eval "document.querySelector('.pc-rubrics')?.getAttribute('aria-label') === 'Rubric coverage' && location.pathname === '/adv'" \
   --json | tee "$OUT_DIR/rubrics-check.json" \
   || fail "rubrics: aria-label/route assertion failed"
-"$TOOL" screenshot --pid "$VERIFY_TAURI_PID" --output "$OUT_DIR/rubrics.png" >/dev/null \
+capture_screenshot "$OUT_DIR/rubrics.png" \
   && validate_screenshot "$OUT_DIR/rubrics.png" \
   || fail "rubrics: screenshot capture failed"
 
@@ -135,7 +136,7 @@ RUBRIC_ROW_SEL='.pc-rubrics__tablewrap table tbody tr:first-child'
   --eval "document.querySelector('aside.pc-learning__rubricdetail') !== null && document.querySelector('.pc-rubrics.is-compact') !== null" \
   --json | tee "$OUT_DIR/rubrics-interaction-check.json" \
   || fail "rubrics: detail panel did not open (aside.pc-learning__rubricdetail / compact layout) after row click"
-"$TOOL" screenshot --pid "$VERIFY_TAURI_PID" --output "$OUT_DIR/rubrics-detail.png" >/dev/null \
+capture_screenshot "$OUT_DIR/rubrics-detail.png" \
   && validate_screenshot "$OUT_DIR/rubrics-detail.png" \
   || fail "rubrics: detail-panel screenshot capture failed"
 
@@ -155,7 +156,7 @@ fi
   --eval "location.pathname === '/adv' && new URLSearchParams(location.search).get('tab') === 'harnesses' && new URLSearchParams(location.search).get('slug') === 'papercusp'" \
   --json | tee "$OUT_DIR/wiki-found-check.json" \
   || fail "wiki: final-route assertion failed"
-"$TOOL" screenshot --pid "$VERIFY_TAURI_PID" --output "$OUT_DIR/wiki-found.png" >/dev/null \
+capture_screenshot "$OUT_DIR/wiki-found.png" \
   && validate_screenshot "$OUT_DIR/wiki-found.png" \
   || fail "wiki: screenshot capture failed"
 
