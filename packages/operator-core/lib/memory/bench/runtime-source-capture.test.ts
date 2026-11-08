@@ -7,7 +7,7 @@ import inspector from 'node:inspector';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { bindRuntimeSourcePopulation, startRuntimeSourceCapture, validateRuntimeSourceCapture } from './runtime-source-capture.mjs';
-import { runtimeFileTraceArguments } from './runtime-file-opens.mjs';
+import { observeRuntimePageSize, runtimeFileTraceArguments } from './runtime-file-opens.mjs';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
@@ -264,6 +264,7 @@ describe('parsed sources joined to independent process lifetimes', () => {
     const fixture=path.join(root,'input.cjs'); fs.writeFileSync(fixture,'module.exports=42;\n');
     const env:NodeJS.ProcessEnv={...process.env,PAPERCUSP_RUNTIME_SOURCE_CAPTURE:path.join(root,'source-%p.jsonl')};
     delete env.NODE_OPTIONS;
+    const pageSizeBytes = observeRuntimePageSize();
     const runChild=(instrumented:boolean)=> {
       const tracePath=path.join(root,instrumented?'traced.log':'uncaptured.log');
       const child=spawnSync('/usr/bin/strace',runtimeFileTraceArguments(tracePath,[process.execPath,'--import',preload,'-e',`
@@ -276,11 +277,13 @@ describe('parsed sources joined to independent process lifetimes', () => {
       expect(child.status,child.stderr).toBe(0);
       const rows=fs.readdirSync(root).filter(file=>/^source-\d+\.jsonl$/.test(file)).map(file=>
         fs.readFileSync(path.join(root,file),'utf8').trim().split('\n').map(line=>JSON.parse(line)));
-      return {text:fs.readFileSync(tracePath,'utf8'),proof:{...terminal,processId:Number(child.stdout)},rows};
+      return {text:fs.readFileSync(tracePath,'utf8'),proof:{...terminal,pageSizeBytes,processId:Number(child.stdout)},rows};
     };
     const observed=runChild(true);
     const result=bindRuntimeSourcePopulation(observed.text,observed.proof,observed.rows);
     expect(result.processes).toHaveLength(2);
+    expect(result.mappingOrigins.pageSizeBytes).toBe(pageSizeBytes);
+    expect(result.mappingOrigins.gaps.some(gap => gap.reason === 'independent-host-page-size-required')).toBe(false);
     const originalFiles=[preload,fileURLToPath(new URL('./runtime-file-opens.mjs',import.meta.url)),fixture];
     const fileInputs={root:'/',files:originalFiles.map(file=>({path:file.slice(1),kind:'file' as const,
       sha256:crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')}))};

@@ -3,7 +3,113 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
-import { bindRuntimeModelOpens, bindRuntimeProcessTree, runtimeFileTraceArguments } from './runtime-file-opens.mjs';
+import { createHash } from 'node:crypto';
+import { bindRuntimeJitDump, bindRuntimeModelOpens, bindRuntimeProcessTree, observeRuntimePageSize, runtimeFileTraceArguments } from './runtime-file-opens.mjs';
+
+describe('retained Linux perf JIT code bytes', () => {
+  const witness = {processId:10, taskIds:[10,11], elfMachine:62,
+    startedMonotonicNs:'90', finishedMonotonicNs:'200',
+    exitCode:0, signal:null, eof:true, captureStartedBeforeExec:true};
+  const sha = (bytes:Buffer) => createHash('sha256').update(bytes).digest('hex');
+  function dump(little=true, move=false, close=true) {
+    const header=Buffer.alloc(40), load=Buffer.alloc(61), movement=Buffer.alloc(64), end=Buffer.alloc(16);
+    const u32=(bytes:Buffer, offset:number, value:number) => little ? bytes.writeUInt32LE(value,offset) : bytes.writeUInt32BE(value,offset);
+    const u64=(bytes:Buffer, offset:number, value:bigint) => little ? bytes.writeBigUInt64LE(value,offset) : bytes.writeBigUInt64BE(value,offset);
+    u32(header,0,0x4a695444);u32(header,4,1);u32(header,8,40);u32(header,12,62);u32(header,20,10);u64(header,24,100n);
+    u32(load,0,0);u32(load,4,load.length);u64(load,8,110n);u32(load,16,10);u32(load,20,11);
+    u64(load,24,0x1000n);u64(load,32,0x1000n);u64(load,40,3n);u64(load,48,1n);
+    load.write('f\0',56);Buffer.from([0x90,0x90,0xc3]).copy(load,58);
+    u32(movement,0,1);u32(movement,4,64);u64(movement,8,115n);u32(movement,16,10);u32(movement,20,11);
+    u64(movement,24,0x2000n);u64(movement,32,0x1000n);u64(movement,40,0x2000n);u64(movement,48,3n);u64(movement,56,1n);
+    u32(end,0,3);u32(end,4,16);u64(end,8,120n);
+    return Buffer.concat([header,load,...(move?[movement]:[]),...(close?[end]:[])]);
+  }
+  it.each([true,false])('binds exact code payloads in the declared byte order: little=%s', little => {
+    const bytes=dump(little), proof=bindRuntimeJitDump(bytes,witness);
+    expect(proof.loads).toEqual([expect.objectContaining({taskId:11, codeIndex:'1', address:'0x1000',
+      bytes:3, byteOffset:98, sha256:sha(Buffer.from([0x90,0x90,0xc3]))})]);
+    expect(proof.sha256).toBe(sha(bytes));
+    expect(proof.jitByteOriginQualification).toBe('required');
+    expect(proof.runtimeCaptureCustody).toBe('required');
+    expect(proof.creatorFence).toBe('required');
+    expect(proof.completeRuntimeClosureVerified).toBe(false);
+  });
+  it('links moves without claiming destination byte observation and permits terminal EOF instead of CLOSE', () => {
+    const proof=bindRuntimeJitDump(dump(true,true,false),witness);
+    expect(proof.moves).toEqual([expect.objectContaining({codeIndex:'1',from:'0x1000',to:'0x2000',destinationBytesObserved:false})]);
+    expect(proof.closeRecordObserved).toBe(false);
+    expect(proof.loads).toHaveLength(1);
+  });
+  it.each(['magic','version','header-size','padding','pid','architecture','clock','short-header','truncated-record',
+    'extent','timestamp','unknown-kind','name','code-size','address-wrap','duplicate-index','no-loads','after-close','foreign-pid','foreign-tid'])(
+    'refuses malformed or foreign %s evidence', variant => {
+      let bytes=dump();
+      if(variant==='magic')bytes.writeUInt32LE(0,0);
+      if(variant==='version')bytes.writeUInt32LE(2,4);
+      if(variant==='header-size')bytes.writeUInt32LE(44,8);
+      if(variant==='padding')bytes.writeUInt32LE(1,16);
+      if(variant==='pid')bytes.writeUInt32LE(99,20);
+      if(variant==='architecture')bytes.writeUInt32LE(183,12);
+      if(variant==='clock')bytes.writeBigUInt64LE(1n,32);
+      if(variant==='short-header')bytes=bytes.subarray(0,39);
+      if(variant==='truncated-record')bytes=bytes.subarray(0,-1);
+      if(variant==='extent')bytes.writeUInt32LE(0xffffffff,44);
+      if(variant==='timestamp')bytes.writeBigUInt64LE(99n,48);
+      if(variant==='unknown-kind')bytes.writeUInt32LE(99,40);
+      if(variant==='name')bytes.fill(255,96,101);
+      if(variant==='code-size')bytes.writeBigUInt64LE(4n,80);
+      if(variant==='address-wrap')bytes.writeBigUInt64LE((1n<<64n)-1n,72);
+      if(variant==='duplicate-index')bytes=Buffer.concat([bytes.subarray(0,101),bytes.subarray(40)]);
+      if(variant==='no-loads')bytes=Buffer.concat([bytes.subarray(0,40),bytes.subarray(101)]);
+      if(variant==='after-close')bytes=Buffer.concat([bytes,Buffer.alloc(1)]);
+      if(variant==='foreign-pid')bytes.writeUInt32LE(99,56);
+      if(variant==='foreign-tid')bytes.writeUInt32LE(99,60);
+      expect(()=>bindRuntimeJitDump(bytes,witness)).toThrow('runtime jitdump:');
+    });
+  it.each(['unknown-index','old-address','size','destination-wrap','extent'])(
+    'refuses a move with %s', variant => {
+      let bytes=dump(true,true);
+      if(variant==='unknown-index')bytes.writeBigUInt64LE(2n,157);
+      if(variant==='old-address')bytes.writeBigUInt64LE(0x3000n,133);
+      if(variant==='size')bytes.writeBigUInt64LE(4n,149);
+      if(variant==='destination-wrap')bytes.writeBigUInt64LE((1n<<64n)-1n,141);
+      if(variant==='extent')bytes.writeUInt32LE(63,105);
+      expect(()=>bindRuntimeJitDump(bytes,witness)).toThrow('runtime jitdump:');
+    });
+  it.each([{exitCode:1},{signal:'SIGKILL'},{eof:false},{captureStartedBeforeExec:false},
+    {taskIds:[11]},{startedMonotonicNs:'101'},{finishedMonotonicNs:'109'},{startedMonotonicNs:'201'},
+    {startedMonotonicNs:'unknown'}])('refuses incomplete or incompatible independent witness %j', change => {
+      expect(()=>bindRuntimeJitDump(dump(),{...witness,...change})).toThrow('runtime jitdump:');
+    });
+  it.runIf(process.platform==='linux')('captures real V8 generated bytes with independently traced tasks and host clocks', () => {
+    const root=fs.mkdtempSync(path.join(os.tmpdir(),'runtime-jit-bytes-'));
+    try {
+      const env={PATH:'/usr/bin:/bin'}, trace=path.join(root,'trace.log'), elf=Buffer.alloc(20);
+      const fd=fs.openSync(process.execPath,'r');
+      try {expect(fs.readSync(fd,elf,0,20,0)).toBe(20);}finally{fs.closeSync(fd);}
+      expect(elf.subarray(0,4).toString('hex')).toBe('7f454c46');
+      const elfMachine=elf[5]===1?elf.readUInt16LE(18):elf.readUInt16BE(18);
+      const pageSizeBytes=observeRuntimePageSize(), before=process.hrtime.bigint();
+      const child=spawnSync('/usr/bin/strace',runtimeFileTraceArguments(trace,[process.execPath,
+        '--perf-prof','--perf-prof-path='+root,'-e',
+        'function retainedJitFixture(x){return x+1}; let sum=0; for(let i=0;i<50000;i++)sum+=retainedJitFixture(i); if(sum!==1250025000)process.exit(2);process.stdout.write(String(process.pid));']),
+        {env,encoding:'utf8',timeout:20_000,maxBuffer:1024*1024});
+      const after=process.hrtime.bigint();
+      expect(child.error).toBeUndefined();expect(child.status,child.stderr).toBe(0);
+      const processId=Number(child.stdout), dumpPath=path.join(root,'jit-'+processId+'.dump');
+      const bytes=fs.readFileSync(dumpPath), tree=bindRuntimeProcessTree(fs.readFileSync(trace,'utf8'),{
+        processId,exitCode:child.status!,signal:child.signal,eof:true,captureStartedBeforeExec:true,pageSizeBytes});
+      const proof=bindRuntimeJitDump(bytes,{processId,elfMachine,taskIds:tree.tasks.map(task=>task.taskId),
+        startedMonotonicNs:before.toString(),finishedMonotonicNs:after.toString(),
+        exitCode:child.status!,signal:child.signal,eof:true,captureStartedBeforeExec:true});
+      expect(proof.loads.length).toBeGreaterThan(0);
+      for(const load of proof.loads)expect(load.sha256).toBe(sha(bytes.subarray(load.byteOffset,load.byteOffset+load.bytes)));
+      expect(proof.completeRuntimeClosureVerified).toBe(false);
+      expect(tree.mappingOrigins.pageSizeBytes).toBe(pageSizeBytes);
+      expect(tree.mappingOrigins.executableBytesQualified).toBe(false);
+    } finally {fs.rmSync(root,{recursive:true,force:true});}
+  });
+});
 
 const options = { processId: 10, assets: [{path:'/model/config.json'}, {path:'/model/model.onnx'}], beforeEpochMs: 2000 };
 const lines = [

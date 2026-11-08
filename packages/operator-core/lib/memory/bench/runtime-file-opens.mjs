@@ -1,3 +1,109 @@
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+
+/** Read the tracer parent's actual host page size before launching the child.
+ * This is a local observation, not a value supplied by the traced program.
+ * Call only when parent and tracee use the same Linux kernel/page-size ABI.
+ */
+export function observeRuntimePageSize() {
+  const output = execFileSync('/usr/bin/getconf', ['PAGESIZE'], {
+    encoding:'utf8', timeout:5000, maxBuffer:1024,
+    env:{PATH:'/usr/bin:/bin', LC_ALL:'C'},
+  }).trim();
+  const page = /^\d+$/.test(output) ? Number(output) : NaN;
+  if (!Number.isSafeInteger(page) || page < 1024 || !Number.isInteger(Math.log2(page)))
+    throw new Error('invalid independently observed runtime page size');
+  return page;
+}
+
+/** Bind the byte payloads actually retained in a Linux perf jitdump. Format:
+ * tools/perf/Documentation/jitdump-specification.txt in the Linux source tree.
+ * A runtime's CODE_LOAD is a report of emitted bytes, not an independent read
+ * of executable memory, a parsed-source join, or an exhaustive code census.
+ * MOVE records contain no bytes and cannot certify the destination contents.
+ * The caller must independently retain the terminal task/clock/ELF witness.
+ * @param {Buffer} bytes
+ * @param {{processId:number, taskIds:number[], elfMachine:number,
+ *   startedMonotonicNs:string, finishedMonotonicNs:string,
+ *   exitCode:number, signal:string|null, eof:boolean, captureStartedBeforeExec:boolean}} witness
+ */
+export function bindRuntimeJitDump(bytes, witness) {
+  const require = (condition, message) => { if (!condition) throw new Error('runtime jitdump: '+message); };
+  const hash = value => createHash('sha256').update(value).digest('hex');
+  require(Buffer.isBuffer(bytes) && bytes.length >= 40 && bytes.length <= 64*1024*1024, 'invalid byte extent');
+  require(witness.exitCode === 0 && witness.signal === null && witness.eof === true
+    && witness.captureStartedBeforeExec === true, 'incomplete terminal capture');
+  require(Number.isSafeInteger(witness.processId) && witness.processId > 0
+    && Number.isSafeInteger(witness.elfMachine) && witness.elfMachine > 0
+    && Array.isArray(witness.taskIds) && witness.taskIds.includes(witness.processId)
+    && witness.taskIds.every(id => Number.isSafeInteger(id) && id > 0)
+    && new Set(witness.taskIds).size === witness.taskIds.length, 'invalid independent process/ELF witness');
+  require(/^\d+$/.test(witness.startedMonotonicNs) && /^\d+$/.test(witness.finishedMonotonicNs), 'invalid clock witness');
+  const before = BigInt(witness.startedMonotonicNs), after = BigInt(witness.finishedMonotonicNs);
+  require(before <= after, 'reversed clock witness');
+  const little = bytes.readUInt32LE(0) === 0x4a695444;
+  require(little || bytes.readUInt32BE(0) === 0x4a695444, 'magic differs');
+  const u32 = offset => little ? bytes.readUInt32LE(offset) : bytes.readUInt32BE(offset);
+  const u64 = offset => little ? bytes.readBigUInt64LE(offset) : bytes.readBigUInt64BE(offset);
+  const hex = value => '0x'+value.toString(16), addressLimit = 1n << 64n;
+  require(u32(4) === 1 && u32(8) === 40 && u32(16) === 0, 'unsupported header');
+  require(u32(12) === witness.elfMachine && u32(20) === witness.processId, 'header process/architecture differs');
+  require(u64(32) === 0n, 'unsupported timestamp clock/flags');
+  const created = u64(24);
+  require(created >= before && created <= after, 'header outside observed lifetime');
+  const loads = [], moves = [], metadata = [], current = new Map();
+  let offset = 40, recordCount = 0, closed = false;
+  while (offset < bytes.length) {
+    require(!closed && bytes.length-offset >= 16 && ++recordCount <= 100000, 'trailing/incomplete record or record limit');
+    const id = u32(offset), size = u32(offset+4), timestamp = u64(offset+8);
+    require(size >= 16 && size <= bytes.length-offset, 'record extent differs');
+    require(timestamp >= created && timestamp <= after, 'record outside observed lifetime');
+    const end = offset+size, body = offset+16;
+    if (id === 0 || id === 1) {
+      require(size >= (id === 0 ? 57 : 64), 'short code record');
+      const pid = u32(body), tid = u32(body+4), vma = u64(body+8), address = u64(body+16);
+      require(pid === witness.processId && witness.taskIds.includes(tid), 'code process/task differs');
+      const codeSize = u64(body+(id === 0 ? 24 : 32)), index = u64(body+(id === 0 ? 32 : 40)).toString();
+      require(codeSize > 0n && vma > 0n && address > 0n && vma+codeSize <= addressLimit
+        && address+codeSize <= addressLimit, 'invalid code range');
+      if (id === 0) {
+        const nameEnd = bytes.indexOf(0, body+40);
+        require(nameEnd >= body+40 && nameEnd < end && BigInt(end-nameEnd-1) === codeSize, 'name/code payload extent differs');
+        require(!current.has(index), 'duplicate code index');
+        const code = {taskId:tid, codeIndex:index, address:hex(address), virtualAddress:hex(vma),
+          bytes:Number(codeSize), sha256:hash(bytes.subarray(nameEnd+1,end)),
+          nameSha256:hash(bytes.subarray(body+40,nameEnd)), timestampNs:timestamp.toString(),
+          byteOffset:nameEnd+1};
+        loads.push(code); current.set(index,{address,codeSize});
+      } else {
+        require(size === 64, 'move extent differs');
+        const destination = u64(body+24), prior = current.get(index);
+        require(prior && prior.address === address && prior.codeSize === codeSize
+          && destination > 0n && destination+codeSize <= addressLimit, 'move lacks matching prior load/address/size');
+        moves.push({taskId:tid, codeIndex:index, from:hex(address), to:hex(destination),
+          virtualAddress:hex(vma), bytes:Number(codeSize), timestampNs:timestamp.toString(),
+          destinationBytesObserved:false});
+        current.set(index,{address:destination,codeSize});
+      }
+    } else if (id === 2 || id === 4) {
+      // Keep debug/unwind records opaque. Neither names nor debug paths grant
+      // source provenance; the dump digest retains their exact byte identity.
+      require(size >= (id === 2 ? 32 : 40), 'short metadata record');
+      metadata.push({kind:id, bytes:size, sha256:hash(bytes.subarray(offset,end))});
+    } else if (id === 3) {
+      require(size === 16, 'close extent differs'); closed = true;
+    } else require(false, 'unsupported record kind');
+    offset = end;
+  }
+  require(loads.length > 0, 'no emitted code bytes');
+  return {schema:'runtime-jitdump-code-bytes/v1', processId:witness.processId, elfMachine:witness.elfMachine,
+    endianness:little ? 'little' : 'big', bytes:bytes.length, sha256:hash(bytes),
+    createdMonotonicNs:created.toString(), recordCount, closeRecordObserved:closed, loads, moves, metadata,
+    byteEvidence:'runtime-reported-code-load-payloads', jitByteOriginQualification:'required',
+    executableMemoryQualification:'required', runtimeCaptureCustody:'required', creatorFence:'required',
+    completeRuntimeClosureVerified:false};
+}
+
 /** Inspect retained strace -f -ttt -yy output. Successful opens are evidence of
  * access, not proof of which bytes were read. Join with stable pre/post hashes.
  * Fail closed on unfinished or unsupported open records, never infer from a

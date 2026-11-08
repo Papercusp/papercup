@@ -21,7 +21,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it, onTestFailed, vi } from 'vitest';
-import { runtimeFileTraceArguments } from './memory/bench/runtime-file-opens.mjs';
+import { observeRuntimePageSize, runtimeFileTraceArguments } from './memory/bench/runtime-file-opens.mjs';
 import {
   ROOT as SOURCE_ROOT,
   ADDED_FILES,
@@ -4105,6 +4105,7 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
       const transientMetadata = join(dirname(metadata), 'runtime-transient.json');
       if (custodyCase === 'dependency-aba') writeFileSync(metadata, Buffer.concat([originalMetadata, Buffer.from('\n')]));
       if (custodyCase === 'directory-aba') writeFileSync(transientMetadata, '{}');
+      const pageSizeBytes = observeRuntimePageSize();
       const result = spawnSync('strace', runtimeFileTraceArguments(trace,
         [process.execPath, '--import', pathToFileURL(preload).href,
           '--import', pathToFileURL(sourceInput).href,
@@ -4143,7 +4144,7 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
         generation: fixture.generation,
         execution: { entry, trace: readFileSync(trace, 'utf8'), captures: [rows],
           ...(nativeCaptures ? { nativeCaptures } : {}),
-          terminal: { processId: rows[0].processId, exitCode: result.status!, signal: result.signal,
+          terminal: { processId: rows[0].processId, pageSizeBytes, exitCode: result.status!, signal: result.signal,
             eof: true, captureStartedBeforeExec: true } } };
     };
     return custodyCase || frozenGeneration ? build() : runtimeCompilations[index] ??= build();
