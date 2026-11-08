@@ -23,6 +23,12 @@ import { writeFileSync } from 'node:fs';
 describe('EI-1754 — resolveCapabilityBaseDir', () => {
   const orig = process.env.PAPERCUSP_INTEGRATION_ROOT;
   const origCanonical = process.env.PAPERCUSP_CANONICAL_TREE;
+  beforeEach(() => {
+    // Each selection-order case owns both environment rungs; an operator's
+    // inherited canonical edit tree must not override the fixture's inputs.
+    delete process.env.PAPERCUSP_CANONICAL_TREE;
+    delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+  });
   afterEach(() => {
     if (orig === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
     else process.env.PAPERCUSP_INTEGRATION_ROOT = orig;

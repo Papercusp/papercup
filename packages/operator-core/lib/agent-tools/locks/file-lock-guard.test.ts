@@ -197,15 +197,21 @@ describe('guardFileLock', () => {
  */
 describe('EI-20881501070735530 — relative paths key off the capability base dir, not the operator cwd', () => {
   const origEnv = process.env.PAPERCUSP_INTEGRATION_ROOT;
+  const origCanonical = process.env.PAPERCUSP_CANONICAL_TREE;
   const NESTED = join(realpathSync(REPO), 'apps', 'operator');
 
   beforeEach(() => {
     mkdirSync(NESTED, { recursive: true });
+    // Exercise the integration-root fallback independently of an inherited
+    // canonical edit tree, which correctly takes precedence in production.
+    delete process.env.PAPERCUSP_CANONICAL_TREE;
     process.env.PAPERCUSP_INTEGRATION_ROOT = NESTED;
   });
   afterEach(() => {
     if (origEnv === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
     else process.env.PAPERCUSP_INTEGRATION_ROOT = origEnv;
+    if (origCanonical === undefined) delete process.env.PAPERCUSP_CANONICAL_TREE;
+    else process.env.PAPERCUSP_CANONICAL_TREE = origCanonical;
   });
 
   /** The paths handed to the lock store on the last acquire. */
@@ -215,6 +221,14 @@ describe('EI-20881501070735530 — relative paths key off the capability base di
     h.tryAcquire.mockResolvedValue({ ok: true, lock_id: 'L', expires_ts: new Date(), held: [] });
     const suCtx = { log: () => {} } as never; // projectDir deliberately absent
     await guardFileLock(suCtx, ['pkg/a.ts'], { intent: 'capability:write' }, async () => 'R');
+    expect(acquiredPaths()).toEqual(['apps/operator/pkg/a.ts']);
+  });
+
+  it('keys a superuser lock to the canonical edit tree ahead of the serving mirror', async () => {
+    process.env.PAPERCUSP_CANONICAL_TREE = NESTED;
+    process.env.PAPERCUSP_INTEGRATION_ROOT = REPO;
+    h.tryAcquire.mockResolvedValue({ ok: true, lock_id: 'L', expires_ts: new Date(), held: [] });
+    await guardFileLock({ log: () => {} } as never, ['pkg/a.ts'], { intent: 'capability:write' }, async () => 'R');
     expect(acquiredPaths()).toEqual(['apps/operator/pkg/a.ts']);
   });
 
