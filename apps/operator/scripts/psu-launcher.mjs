@@ -9129,6 +9129,30 @@ export function storeClaudeOAuthToken(token, { home = homedir() } = {}) {
  * Deps are injected for tests (psu-launcher.test.ts) — `fetchImpl`/`sleep`/`now`
  * make the retry timing deterministic without real timers or sockets.
  */
+/** Keep a lifecycle acknowledgement inside the request's keyed replay boundary.
+ * Fetch resolves at headers; a reset/abort while reading JSON is still an unknown
+ * transport outcome, not a malformed acknowledgement. Preserve other JSON failures
+ * for the caller's HTTP validation, and never parse a non-success response here. */
+async function readLifecycleResponse(response) {
+  if (!response?.ok || typeof response.json !== "function") return response;
+  let body;
+  try {
+    body = await response.json();
+  } catch (error) {
+    const code = error?.code ?? error?.cause?.code;
+    if (["AbortError", "TimeoutError"].includes(error?.name) ||
+        /^(UND_ERR_|ECONN|ETIMEDOUT|EPIPE)/.test(String(code ?? "")) ||
+        (error?.name === "TypeError" && error?.message === "terminated")) {
+      const failure = new Error(error?.message ?? "lifecycle response interrupted", { cause: error });
+      failure.name = error?.name ?? "Error";
+      failure.lifecyclePhase = "response-body";
+      throw failure;
+    }
+    return { ok: response.ok, status: response.status, json: async () => { throw error; } };
+  }
+  return { ok: response.ok, status: response.status, json: async () => body };
+}
+
 export async function fetchWithResilience(
   url,
   init = {},
@@ -9144,6 +9168,9 @@ export async function fetchWithResilience(
     bootstrapReplayMaxAttempts = BOOTSTRAP_REPLAY_MAX_ATTEMPTS,
     bootstrapReplayBudgetMs = BOOTSTRAP_REPLAY_BUDGET_MS,
     label = url,
+    // Opt in only for operations whose body read belongs to the same replay-safe
+    // request. Other callers retain the original streaming Response contract.
+    readResponse = /** @type {null | ((response: any) => Promise<any>)} */ (null),
     target = launcherOperatorTarget(),
     // Stale-shell heal (mac VM owner repro 2026-07-07): when the target keeps
     // refusing, look ONCE for a DIFFERENT live operator (proxy → fresh
@@ -9273,7 +9300,7 @@ export async function fetchWithResilience(
           }
         }
       }
-      return response;
+      return readResponse ? await readResponse(response) : response;
     } catch (e) {
       lastErr = e;
       if (!retryable) break;
@@ -9345,6 +9372,9 @@ export async function fetchWithResilience(
     }
   }
   const e = lastErr;
+  // Headers already arrived: preserve the body phase instead of reporting an
+  // unreachable operator when its acknowledgement stream was interrupted.
+  if (e?.lifecyclePhase) throw e;
   const shownUrl = target?.url ?? launcherOperatorTarget().url;
   // WI-3271: guidance must match the install. A desktop (discovery) target has
   // no systemd — telling a Windows/desktop user to systemctl is a dead end; the
@@ -11452,6 +11482,7 @@ export async function reportSessionEnded(advSessionId, exitCode, opts = {}) {
         timeoutRetries,
         retryBootstrapFailures: true,
         label: `session end report for #${advSessionId}`,
+        readResponse: readLifecycleResponse,
       },
     );
     if (!response?.ok) {
@@ -11483,6 +11514,7 @@ export async function reportSessionEnded(advSessionId, exitCode, opts = {}) {
       reason: "transport",
       detail: error instanceof Error ? error.message : String(error),
       endAttemptKey,
+      ...(error?.lifecyclePhase ? { phase: error.lifecyclePhase } : {}),
     };
   }
 }
@@ -11512,7 +11544,8 @@ export async function reportSessionEnded(advSessionId, exitCode, opts = {}) {
  *             legacyReactivation?: true }
  *   | { claimed: false, reason: 'no-session' | 'http' | 'contended' | 'transport',
  *       detail?: string, status?: 'reserved' | 'live' | 'missing' | 'retired',
- *       retryAfterMs?: number, leaseExpiresAt?: string, resumeClaimKey?: string }
+ *       retryAfterMs?: number, leaseExpiresAt?: string, resumeClaimKey?: string,
+ *       phase?: 'response-body' }
  * } ResumeClaimOutcome
  * @typedef {object} ResumeClaimOptions
  * @property {(input:any, init?:any)=>Promise<any>} [fetchImpl]
@@ -11590,6 +11623,7 @@ export async function reportSessionResumed(advSessionId, opts = {}) {
           timeoutRetries,
           retryBootstrapFailures: true,
           label: `resume claim for session #${advSessionId}`,
+          readResponse: readLifecycleResponse,
         },
       );
     let response = await post(canonicalLocalLivenessEvidence);
@@ -11726,6 +11760,7 @@ export async function reportSessionResumed(advSessionId, opts = {}) {
       claimed: false,
       reason: "transport",
       detail: err instanceof Error ? err.message : String(err),
+      ...(err?.lifecyclePhase ? { phase: err.lifecyclePhase } : {}),
     };
   }
 }
@@ -11892,6 +11927,7 @@ async function reportSessionResumeTransition(
         timeoutRetries,
         retryBootstrapFailures: true,
         label: `resume ${transition} for session #${advSessionId}`,
+        readResponse: readLifecycleResponse,
       },
     );
     if (!response?.ok || typeof response.json !== "function") {
@@ -11925,13 +11961,14 @@ async function reportSessionResumeTransition(
       reason: "transport",
       detail: error instanceof Error ? error.message : String(error),
       resumeClaimKey: claimKey,
+      ...(error?.lifecyclePhase ? { phase: error.lifecyclePhase } : {}),
     };
   }
 }
 
 /**
  * @typedef {{ finalized:boolean, reason?:string, status?:number|null,
- *             detail?:string, resumeClaimKey?:string }} ResumeFinalizeOutcome
+ *             detail?:string, resumeClaimKey?:string, phase?:'response-body' }} ResumeFinalizeOutcome
  * @param {number|string|null} advSessionId
  * @param {string} resumeClaimKey
  * @param {ResumeTransitionOptions} [opts]
@@ -11954,7 +11991,7 @@ export function reportSessionResumeFinalized(
 
 /**
  * @typedef {{ released:boolean, reason?:string, status?:number|null,
- *             detail?:string, resumeClaimKey?:string }} ResumeReleaseOutcome
+ *             detail?:string, resumeClaimKey?:string, phase?:'response-body' }} ResumeReleaseOutcome
  * @param {number|string|null} advSessionId
  * @param {string} resumeClaimKey
  * @param {ResumeTransitionOptions} [opts]
@@ -15193,9 +15230,21 @@ async function launchResume(
       resumeClaimed = false;
       return;
     }
+    const finalizeStartedAt = Date.now();
+    appendHostEvent(session.coordOwnerId, "resume-finalization-started", {
+      advSessionId: Number(session.id), resumeClaimKey,
+    });
     const outcome = await reportSessionResumeFinalized(session.id, resumeClaimKey, {
       ...(resumeLaunchArgv ? { launchArgv: resumeLaunchArgv } : {}),
       ...(allowRetiredResume ? { allowRetired: true } : {}),
+    });
+    // A false result resolves normally, so the PTY's rejection observer cannot
+    // record it. Keep the keyed settlement evidence in the existing host ledger.
+    appendHostEvent(session.coordOwnerId, "resume-finalization-settled", {
+      advSessionId: Number(session.id), resumeClaimKey,
+      finalized: outcome.finalized, reason: outcome.reason ?? null,
+      phase: outcome.phase ?? null, status: outcome.status ?? null,
+      elapsedMs: Date.now() - finalizeStartedAt,
     });
     if (outcome.finalized) {
       resumeClaimed = false;
@@ -15209,7 +15258,8 @@ async function launchResume(
     // still pending; never acquire a replacement key for this child.
     console.error(
       `psu: session #${session.id} spawned, but resume finalization was not acknowledged ` +
-        `(${outcome.reason ?? "unknown"}); continuing under claim ${resumeClaimKey}.`,
+        `(${outcome.reason ?? "unknown"}${outcome.phase ? `, ${outcome.phase}` : ""}); ` +
+        `continuing under claim ${resumeClaimKey}.`,
     );
   };
   // The manual resume and an already-queued loop wake can race after the old
