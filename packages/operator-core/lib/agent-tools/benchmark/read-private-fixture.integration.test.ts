@@ -47,6 +47,7 @@ import { proposeRubric } from '../../rubrics';
 import { seedPlan } from '../plans/__tests__/_pg-tool-fixture';
 import { recordPlanRevisionInTransaction } from '../plans/revisions';
 import { setSpecClause, type SpecClauseSql } from '../plans/spec-clauses-store';
+import { asStructuredObservation } from '../../harness/improvements/observation-types';
 
 const digest = (text: string) => createHash('sha256').update(text).digest('hex');
 const clock = '2026-11-06T00:00:00.000Z';
@@ -54,7 +55,19 @@ const ownerId = 'su-latency-private-reader';
 let fx: Awaited<ReturnType<typeof createLatencyPgFixture>>;
 const roots: string[] = [];
 let fixtureSerial = 0;
-beforeAll(async () => { fx = await createLatencyPgFixture(); h.sql = fx.db.adminSql; }, 180_000);
+beforeAll(async () => {
+  fx = await createLatencyPgFixture(); h.sql = fx.db.adminSql;
+  const clocks = await h.sql`SELECT table_name, column_name, data_type FROM information_schema.columns
+    WHERE table_schema = 'harness_shared' AND
+      ((table_name = 'plan_revisions' AND column_name = 'created_at') OR
+       (table_name = 'plan_spec_clause_revisions' AND column_name IN ('created_at', 'accepted_at')))
+    ORDER BY table_name, column_name`;
+  expect(clocks.map(row => [row.table_name, row.column_name, row.data_type])).toEqual([
+    ['plan_revisions', 'created_at', 'bigint'],
+    ['plan_spec_clause_revisions', 'accepted_at', 'timestamp with time zone'],
+    ['plan_spec_clause_revisions', 'created_at', 'timestamp with time zone'],
+  ]);
+}, 180_000);
 afterAll(async () => { h.sql = undefined; if (fx) expect(await fx.cleanup()).toBe('dropped'); }, 60_000);
 afterEach(() => { h.ceiling = undefined; vi.clearAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
@@ -67,10 +80,22 @@ async function fixture(armId: 'cold' | 'warm', taskId: 'LATENCY-M1:T01' | 'LATEN
     characteristic: 'fixture-read', criteria: [{ key: 'evidence', title: 'Exact evidence', model: 'read source',
       method: 'compare exact input', driftMarkers: 'lost text' }], status: 'active', by: ownerId }));
   const issueIds = Array.from({ length: taskId.endsWith('T02') ? 23 : 2 }, (_, i) => `EI-${rubricRef}-${i}`);
+  const recipes = issueIds.map((_, i) => {
+    const recipe = asStructuredObservation({ rerunRecipe: { schemaVersion: 1,
+      evaluator: 'plans:evaluate-spec-test-adequacy', classRef: 'plan-class-feature-ship',
+      selection: { planSlug: 'private-input-plan', specId: 'SPEC-1', specRevision: 1,
+        specFingerprint: 'a'.repeat(64), evidence: Array.from({ length: i < 2 ? 600 : 1 }, (_, n) =>
+          ({ evidenceKind: 'manual', evidenceRef: `private-recipe-data-${n}` })) },
+      current: { supplied: false, fingerprints: [] },
+      derivation: { kind: 'listSpecEvidence.currentness', classifier: 'classifySpecEvidenceCurrentness', unknownWhenMissing: true },
+    } })?.rerunRecipe;
+    expect(recipe, 'fixture must use a recipe accepted by the maintained reader').toBeDefined();
+    return recipe!;
+  });
   for (const [i, issueId] of issueIds.entries()) {
     const observation = { rubricRef, subject: { kind: 'fixture', ref: subjectRef },
       ratings: { evidence: { rating: 'healthy', evidence: `Exact input ${i}: ` + 'é🧪 source '.repeat(i < 2 ? 800 : 1) } },
-      rerunRecipe: { schemaVersion: 1, evaluator: 'fixture-reader', args: { retained: 'recipe-data '.repeat(i < 2 ? 600 : 1) } } };
+      rerunRecipe: recipes[i] };
     await sql`INSERT INTO harness_shared.engineer_issues
       (workspace_id, issue_id, title, kind, state, created_by, created_at, updated_at, payload)
       VALUES (${workspaceId}, ${issueId}, 'Private source card', 'change', 'open', ${ownerId},
@@ -89,26 +114,52 @@ async function fixture(armId: 'cold' | 'warm', taskId: 'LATENCY-M1:T01' | 'LATEN
       const slug = `history-${which.toLowerCase()}`;
       const body = `---\nslug: ${slug}\ntitle: Frozen history ${which}\nstatus: draft\n---\n\n## Work\n\n- **P-001** \`todo\` — Original task.\n\n## Original\n\n` + `Original ${which} é🧪. `.repeat(900);
       await seedPlan(sql, workspaceId, harness, slug, body);
-      await sql`INSERT INTO harness_shared.plan_items (workspace_id, harness_slug, plan_slug, item_id)
-        VALUES (${workspaceId}, ${harness}, ${slug}, 'P-001')`;
+      await sql`INSERT INTO harness_shared.plan_items (workspace_id, harness_slug, plan_slug, item_id, seq, status, item_text)
+        VALUES (${workspaceId}, ${harness}, ${slug}, 'P-001', 1, 'todo', 'Original task')`;
       const identity = { ownerId, ownerLabel: 'Private fixture', source: 'static-client' as const, workspaceId, userId: null };
       await sql.begin(tx => recordPlanRevisionInTransaction(tx, { workspaceId, harnessSlug: harness, planSlug: slug, content: body, identity }));
       const clause = { harnessSlug: harness, planSlug: slug, specId: 'SPEC-1', expectedRevision: 0,
-        planItemId: 'P-001', behavior: `Original accepted ${which}. `.repeat(800), behaviorClass: 'concurrency' as const,
+        planItemId: 'P-001', behavior: `Original accepted ${which}. `.repeat(800).trim(), behaviorClass: 'concurrency' as const,
         requiredEvidence: ['exact historical readback'], requiredTestLayers: ['integration'], mutationRequired: false,
         lifecycleStatus: 'active' as const, acceptanceRef: 'D-001', actorId: ownerId };
       const written = await sql.begin(tx => setSpecClause(clause, { workspaceId, harnessSlug: harness, executor: tx as unknown as SpecClauseSql }));
       expect(written.status).toBe('created');
-      await sql`UPDATE harness_shared.plan_revisions SET created_at = '2026-11-01' WHERE workspace_id = ${workspaceId}
-        AND harness_slug = ${harness} AND plan_slug = ${slug}`;
-      await sql`UPDATE harness_shared.plan_spec_clause_revisions SET created_at = '2026-11-01', accepted_at = '2026-11-01'
-        WHERE workspace_id = ${workspaceId} AND harness_slug = ${harness} AND plan_slug = ${slug}`;
+      // Preserve the maintained writers' immutable timestamps. Put the cutoff
+      // between real writes, rounding PG's sub-millisecond clock up to JS ms.
+      const [first] = await sql`SELECT r.created_at AS plan_ms, s.created_at, s.accepted_at,
+          ceil(extract(epoch FROM clock_timestamp()) * 1000)::bigint AS db_ms
+        FROM harness_shared.plan_revisions r JOIN harness_shared.plan_spec_clause_revisions s
+          USING (workspace_id, harness_slug, plan_slug)
+        WHERE r.workspace_id = ${workspaceId} AND r.harness_slug = ${harness}
+          AND r.plan_slug = ${slug} AND r.seq = 1 AND s.spec_id = 'SPEC-1' AND s.revision = 1`;
+      expect(first).toBeDefined();
+      expect(first!.accepted_at).not.toBeNull();
+      const cutoffMs = Math.max(Date.now(), Number(first!.db_ms), Number(first!.plan_ms),
+        new Date(first!.created_at).getTime(), new Date(first!.accepted_at).getTime());
+      const specAsOf = new Date(cutoffMs).toISOString();
+      await vi.waitFor(async () => {
+        expect(Date.now()).toBeGreaterThan(cutoffMs);
+        const [db] = await sql`SELECT clock_timestamp() > ${specAsOf}::timestamptz AS after_cutoff`;
+        expect(db!.after_cutoff).toBe(true);
+      }, { interval: 10, timeout: 2000 });
       await seedPlan(sql, workspaceId, harness, slug, body.replaceAll('Original', 'Later'));
       await sql.begin(tx => recordPlanRevisionInTransaction(tx, { workspaceId, harnessSlug: harness, planSlug: slug,
         content: body.replaceAll('Original', 'Later'), identity }));
-      await sql.begin(tx => setSpecClause({ ...clause, expectedRevision: 1, behavior: 'Later accepted behavior' },
+      const later = await sql.begin(tx => setSpecClause({ ...clause, expectedRevision: 1, behavior: 'Later accepted behavior' },
         { workspaceId, harnessSlug: harness, executor: tx as unknown as SpecClauseSql }));
-      allocation['LATENCY-M1:T03'][which] = { harness, slug, revision: 1, specAsOf: clock };
+      expect(later.status).toBe('revised');
+      const chronology = await sql`SELECT r.seq, r.created_at AS plan_ms, s.created_at, s.accepted_at
+        FROM harness_shared.plan_revisions r JOIN harness_shared.plan_spec_clause_revisions s
+          ON s.workspace_id = r.workspace_id AND s.harness_slug = r.harness_slug
+          AND s.plan_slug = r.plan_slug AND s.revision = r.seq AND s.spec_id = 'SPEC-1'
+        WHERE r.workspace_id = ${workspaceId} AND r.harness_slug = ${harness}
+          AND r.plan_slug = ${slug} ORDER BY r.seq`;
+      expect(chronology.map(row => ({ seq: row.seq, planBefore: Number(row.plan_ms) <= cutoffMs,
+        specBefore: new Date(row.created_at).getTime() <= cutoffMs && new Date(row.accepted_at).getTime() <= cutoffMs })))
+        .toEqual([{ seq: 1, planBefore: true, specBefore: true }, { seq: 2, planBefore: false, specBefore: false }]);
+      expect(chronology[0]).toEqual({ seq: 1, plan_ms: first!.plan_ms,
+        created_at: first!.created_at, accepted_at: first!.accepted_at });
+      allocation['LATENCY-M1:T03'][which] = { harness, slug, revision: 1, specAsOf };
     }
   }
   const task = { benchmark: 'harness-bench' as const, instanceId: taskId, problemStatement: 'Read both exact frozen inputs.',
@@ -130,7 +181,8 @@ async function fixture(armId: 'cold' | 'warm', taskId: 'LATENCY-M1:T01' | 'LATEN
     arm.control = { topology: 'solo', solverGroup: 'private-paired', solverToolsHash: 'f'.repeat(64),
       capabilities: allCapabilities('off'), fixtureReads: { kind: 'latency-m1-v1', sha256: benchFixtureAllocationSha256(allocation) } }; }
   const preregHash = digest(canonicalJson(protocol)), hostRunId = `host-${protocol.runId}`, loopId = `benchmark:${preregHash}`;
-  const ctx = { workspaceId, uiClientId: ownerId, principal: { slug: ownerId }, isSuperuser: true, role: 'worker',
+  const ctx = { workspaceId, uiClientId: ownerId, principal: { slug: ownerId, workspaceId,
+    capabilities: new Set(['work_items:read']) }, isSuperuser: true, role: 'worker',
     log: vi.fn(), progress: vi.fn(), emit: vi.fn(), signal: new AbortController().signal } as PapercuspUnifiedToolContext;
   const input: CurrentTaskInput = { options: { workspaceId, runId: protocol.runId, armId, seed: 1,
     agent: 'codex', model: 'configured-alias', effort: 'high', account: 'private-provider-account',
@@ -151,7 +203,7 @@ async function fixture(armId: 'cold' | 'warm', taskId: 'LATENCY-M1:T01' | 'LATEN
   const ports = liveCurrentSuBenchPorts(ctx, assignment.observations, assignment.options, { sql });
   const context = await ports.restoreContext(handle, taskId);
   await ports.launch(currentBenchLaunchRequest(assignment.options, handle, task.problemStatement, context));
-  return { input, ctx, assignment, issueIds, allocation, rubricRef };
+  return { input, ctx, assignment, issueIds, allocation, rubricRef, recipes };
 }
 
 async function readProduct<T>(args: BenchFixtureReadArgs, ctx: PapercuspUnifiedToolContext): Promise<T> {
@@ -210,13 +262,13 @@ describe('real factory through native ceiling and private PG product readers', (
         const reply: { ok: boolean; rerunRecipeRead: { text: string; chunk?: string; complete: boolean;
           next?: { tool: string; args: BenchFixtureReadArgs } } } = await readProduct<{ ok: boolean; rerunRecipeRead: { text: string; chunk?: string;
           complete: boolean; next?: { tool: string; args: BenchFixtureReadArgs } } }>(request, f.ctx);
-        expect(reply.ok).toBe(true);
+        expect(reply, 'actual saved-recipe page must be readable').toMatchObject({ ok: true });
         recipe += reply.rerunRecipeRead.text ?? reply.rerunRecipeRead.chunk ?? '';
         if (reply.rerunRecipeRead.complete) break;
         expect(reply.rerunRecipeRead.next!.tool).toBe(BENCH_PRIVATE_FIXTURE_TOOL);
         request = reply.rerunRecipeRead.next!.args;
       }
-      expect(JSON.parse(recipe)).toMatchObject({ args: { retained: 'recipe-data '.repeat(600) } });
+      expect(JSON.parse(recipe)).toEqual(f.recipes[0]);
       expect(recipe).not.toContain('private-answer-reference');
     } finally { await f.assignment.stop(); }
   }, 90_000);
@@ -248,7 +300,7 @@ describe('real factory through native ceiling and private PG product readers', (
         const specs = await readProduct<{ ok: boolean; specs: Array<{ revision: number; behavior: string }> }>(
           { operation: 'specs', case: which }, f.ctx);
         expect(specs.ok).toBe(true);
-        expect(specs.specs).toEqual([expect.objectContaining({ revision: 1, behavior: `Original accepted ${which}. `.repeat(800) })]);
+        expect(specs.specs).toEqual([expect.objectContaining({ revision: 1, behavior: `Original accepted ${which}. `.repeat(800).trim() })]);
       }
     } finally { await f.assignment.stop(); }
   }, 90_000);
@@ -259,7 +311,7 @@ describe('real factory through native ceiling and private PG product readers', (
       if (change === 'rubric') await sql`UPDATE harness_shared.harness_plans SET template_data =
         jsonb_set(template_data, '{criteria,0,method}', '"changed method"') WHERE plan_slug = ${f.rubricRef}`;
       if (change === 'sibling-recipe') await sql`UPDATE harness_shared.engineer_issues SET payload =
-        jsonb_set(payload, '{observation,rerunRecipe,args,retained}', '"changed recipe"') WHERE issue_id = ${f.issueIds[22]}`;
+        jsonb_set(payload, '{observation,rerunRecipe,selection,evidence,0,evidenceRef}', '"changed recipe"') WHERE issue_id = ${f.issueIds[22]}`;
       if (change === 'creator') await sql`UPDATE harness_shared.engineer_issues SET created_by = 'foreign-author' WHERE issue_id = ${f.issueIds[0]}`;
       await expect(tool.handler({ operation: 'card', case: 'A' }, f.ctx)).rejects.toThrow(/source content or size/);
     } finally { await f.assignment.stop(); }
