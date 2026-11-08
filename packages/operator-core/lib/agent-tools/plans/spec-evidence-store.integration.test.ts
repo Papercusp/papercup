@@ -24,7 +24,7 @@ import { configureRemoteRuntimeDescribe, measureRuntimeEnvironment, resetRemoteR
   from '../../remote-runtime-identity';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, repoRoot: '', siblingRoot: '',
-  beforeTransaction: undefined as (() => void) | undefined }));
+  beforeBindingInsert: undefined as (() => void) | undefined }));
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return {
@@ -32,8 +32,19 @@ vi.mock('@papercusp/db-org', async (orig) => {
     ...actual,
     getOrgPg: () => ({ sql: h.sql }),
     withWorkspace: async <T>(_workspaceId: string, fn: (tx: postgres.Sql) => Promise<T>) => {
-      h.beforeTransaction?.();
-      return h.sql.begin(async (tx) => fn(tx as unknown as postgres.Sql));
+      return h.sql.begin(async (tx) => {
+        if (!h.beforeBindingInsert) return fn(tx as unknown as postgres.Sql);
+        // Observe the real write without treating earlier clause/measurement
+        // read transactions as binding acceptance. Forward SQL unchanged.
+        const observed = new Proxy(tx, { apply(target, receiver, args) {
+          const query = args[0];
+          if (Array.isArray(query) && /INSERT\s+INTO\s+harness_shared\.spec_evidence_bindings/i.test(query.join(''))) {
+            h.beforeBindingInsert?.();
+          }
+          return Reflect.apply(target, receiver, args);
+        } });
+        return fn(observed as unknown as postgres.Sql);
+      });
     },
   };
 });
@@ -346,7 +357,7 @@ beforeEach(async () => {
 
 describe('canonical binding consumer custody', () => {
   it.each(['terminal', 'dead', 'abandoned', 'revoked'] as const)(
-    'pins before the real binding transaction and reclaims only after %s consumer expiry', async loss => {
+    'pins before the real binding insert and reclaims only after %s consumer expiry', async loss => {
       const { readOpenWorkItemEvidenceReferences, readRetentionPins, renewWorkItemEvidencePins } =
         await import('../../storage/retention-pins');
       const { runDiskReclaimOnce } = await import('../../storage/disk-reclaim');
@@ -393,22 +404,22 @@ describe('canonical binding consumer custody', () => {
       } });
       const reference = { harness_slug: HARNESS, work_item_id: 'WI-101', evidence_ref: evidenceRef };
       const repositories = new Map([[HARNESS, h.repoRoot]]);
-      const transactions: string[] = [];
+      const inserts: string[] = [];
       try {
-        h.beforeTransaction = () => {
+        h.beforeBindingInsert = () => {
           const pins = readRetentionPins({ dir, nowMs: intakeMs });
           expect(pins.errors).toEqual([]);
           expect(pins.pins).toEqual([expect.objectContaining({ owner: 'work-item:WI-101', paths: [retained] })]);
-          transactions.push(pins.pins[0]!.id);
+          inserts.push(pins.pins[0]!.id);
         };
         const bound = await bindTool.handler(args as never, CTX);
         expect(bound, JSON.stringify(bound)).toMatchObject({ data: { ok: true, results: [{ ok: true, status: 'created' }] } });
-        expect(transactions.length).toBeGreaterThan(0);
-        h.beforeTransaction = undefined;
+        expect(inserts).toHaveLength(1);
+        h.beforeBindingInsert = undefined;
         const [stored] = await db.sql`SELECT work_item_id, evidence_ref FROM harness_shared.spec_evidence_bindings`;
         expect(stored).toEqual({ work_item_id: 'WI-101', evidence_ref: evidenceRef });
         const intakePin = readRetentionPins({ dir, nowMs: intakeMs }).pins[0]!;
-        expect(transactions.every(id => id === intakePin.id)).toBe(true);
+        expect(inserts).toEqual([intakePin.id]);
         const refs = await readOpenWorkItemEvidenceReferences(db.sql, WORKSPACE, consumer);
         expect(refs).toEqual([reference]);
         const policy: import('../../storage/retention-policy').RetentionClass[] = [{
@@ -448,14 +459,14 @@ describe('canonical binding consumer custody', () => {
         expect(expired.entries).toContainEqual(expect.objectContaining({ path: retained, status: 'removed' }));
         await expect(stat(retained)).rejects.toMatchObject({ code: 'ENOENT' });
         clock.mockReturnValue(later);
-        const afterReclaim = vi.fn(); h.beforeTransaction = afterReclaim;
+        const afterReclaim = vi.fn(); h.beforeBindingInsert = afterReclaim;
         const refused = await bindTool.handler(args as never, CTX);
         expect(refused).toMatchObject({ data: { ok: false, results: [{ ok: false }] } });
         expect(JSON.stringify(refused)).toContain('evidence retention: missing declared evidence');
         expect(afterReclaim).not.toHaveBeenCalled();
         expect(await db.sql`SELECT id FROM harness_shared.spec_evidence_bindings`).toHaveLength(1);
       } finally {
-        h.beforeTransaction = undefined;
+        h.beforeBindingInsert = undefined;
         clock.mockRestore(); vi.unstubAllEnvs();
         await rm(dir, { recursive: true, force: true });
         await rm(evidenceRoot, { recursive: true, force: true });
