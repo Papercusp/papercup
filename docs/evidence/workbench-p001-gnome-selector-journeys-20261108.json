@@ -1,0 +1,704 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Workbench P001 GNOME connection change and exact Resume terminal environment",
+  "framework": "node",
+  "command": [
+    "node",
+    "--test",
+    "--test-global-setup=./test/monorepo-host-preflight.mjs",
+    "--test-name-pattern=private GNOME Shell renders actors",
+    "test/native-workbench-gnome-live.test.mjs"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-11-08T16:42:58.735530+00:00",
+  "finishedAt": "2026-11-08T16:43:39.368872+00:00",
+  "timestampMethod": "Per-run retained Node duration and log mtime; exact invocations in runs",
+  "summary": "Two maintained private GNOME46 Shell tests passed (38 input/connection assertions and 17 Resume assertions). Connection changes dismiss panels and clear old data; actual GIO terminal PTY receives both selected backend aliases. Separate fixture-PUI journeys, not owner desktop activation or canonical/native three-OS shipment proof.",
+  "workItem": "WI-6554700010029572",
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "assertions": [
+    {
+      "id": "input-1",
+      "passed": true,
+      "evidence": "native shortcut acquisition"
+    },
+    {
+      "id": "input-2",
+      "passed": true,
+      "evidence": "native seat supports input injection"
+    },
+    {
+      "id": "input-3",
+      "passed": true,
+      "evidence": "native input methods exist"
+    },
+    {
+      "id": "input-4",
+      "passed": true,
+      "evidence": "desktop ready for normal shortcuts"
+    },
+    {
+      "id": "input-5",
+      "passed": true,
+      "evidence": "qualified plan reached native actor model"
+    },
+    {
+      "id": "input-6",
+      "passed": true,
+      "evidence": "Shell actor is attached"
+    },
+    {
+      "id": "input-7",
+      "passed": true,
+      "evidence": "native result controls rendered"
+    },
+    {
+      "id": "input-8",
+      "passed": true,
+      "evidence": "independent pinned panels coexist"
+    },
+    {
+      "id": "input-9",
+      "passed": true,
+      "evidence": "Goals requests only its canonical source"
+    },
+    {
+      "id": "input-10",
+      "passed": true,
+      "evidence": "panels and GTK helper create no application windows"
+    },
+    {
+      "id": "input-11",
+      "passed": true,
+      "evidence": "debounced canonical query renders current result"
+    },
+    {
+      "id": "input-12",
+      "passed": true,
+      "evidence": "exact report body in native detail"
+    },
+    {
+      "id": "input-13",
+      "passed": true,
+      "evidence": "first Escape dismisses detail only"
+    },
+    {
+      "id": "input-14",
+      "passed": true,
+      "evidence": "second Escape dismisses only its surface"
+    },
+    {
+      "id": "input-15",
+      "passed": true,
+      "evidence": "reopen retains query and exact selection"
+    },
+    {
+      "id": "input-16",
+      "passed": true,
+      "evidence": "outside dismissal preserves another pinned surface"
+    },
+    {
+      "id": "input-17",
+      "passed": true,
+      "evidence": "repeated shortcut toggles pinned surface"
+    },
+    {
+      "id": "input-18",
+      "passed": true,
+      "evidence": "Inbox canonical list reaches native actor"
+    },
+    {
+      "id": "input-19",
+      "passed": true,
+      "evidence": "Inbox persisted denominator reaches native status"
+    },
+    {
+      "id": "input-20",
+      "passed": true,
+      "evidence": "Inbox selected context preserves exact identity"
+    },
+    {
+      "id": "input-21",
+      "passed": true,
+      "evidence": "Inbox confirmation freezes edited answer"
+    },
+    {
+      "id": "input-22",
+      "passed": true,
+      "evidence": "Inbox write uses helper native-inbox and verifies terminal receipt"
+    },
+    {
+      "id": "input-23",
+      "passed": true,
+      "evidence": "Inbox adds no application window"
+    },
+    {
+      "id": "input-24",
+      "passed": true,
+      "evidence": "Inbox dismissal removes native actors and run refresh"
+    },
+    {
+      "id": "input-25",
+      "passed": true,
+      "evidence": "seat shortcut opens panel"
+    },
+    {
+      "id": "input-26",
+      "passed": true,
+      "evidence": "seat typing reaches focused native search"
+    },
+    {
+      "id": "input-27",
+      "passed": true,
+      "evidence": "seat arrow navigates results"
+    },
+    {
+      "id": "input-28",
+      "passed": true,
+      "evidence": "seat Up restores exact report selection"
+    },
+    {
+      "id": "input-29",
+      "passed": true,
+      "evidence": "focused search consumes Enter through native activate signal"
+    },
+    {
+      "id": "input-30",
+      "passed": true,
+      "evidence": "seat Enter opens exact selected detail"
+    },
+    {
+      "id": "input-31",
+      "passed": true,
+      "evidence": "seat Escape dismisses detail before surface"
+    },
+    {
+      "id": "input-32",
+      "passed": true,
+      "evidence": "seat click pins native panel"
+    },
+    {
+      "id": "input-33",
+      "passed": true,
+      "evidence": "seat second shortcut preserves independent pin"
+    },
+    {
+      "id": "input-34",
+      "passed": true,
+      "evidence": "seat journey keeps native surfaces outside application windows"
+    },
+    {
+      "id": "input-35",
+      "passed": true,
+      "evidence": "seat outside click closes unpinned panel and preserves pin"
+    },
+    {
+      "id": "input-36",
+      "passed": true,
+      "evidence": "seat shortcut toggles pinned panel closed"
+    },
+    {
+      "id": "input-37",
+      "passed": true,
+      "evidence": "connection change dismisses panels and retires old data, detail and selection"
+    },
+    {
+      "id": "input-38",
+      "passed": true,
+      "evidence": "connection change selects the new helper backend and retires Inbox identity"
+    },
+    {
+      "id": "resume-1",
+      "passed": true,
+      "evidence": "native shortcut acquisition"
+    },
+    {
+      "id": "resume-2",
+      "passed": true,
+      "evidence": "native seat supports input injection"
+    },
+    {
+      "id": "resume-3",
+      "passed": true,
+      "evidence": "native input methods exist"
+    },
+    {
+      "id": "resume-4",
+      "passed": true,
+      "evidence": "desktop ready for normal shortcuts"
+    },
+    {
+      "id": "resume-5",
+      "passed": true,
+      "evidence": "native Resume refuses a running replacement before opening a terminal"
+    },
+    {
+      "id": "resume-6",
+      "passed": true,
+      "evidence": "failed terminal launch stays visible with its error"
+    },
+    {
+      "id": "resume-7",
+      "passed": true,
+      "evidence": "ended result exposes an explicit native Resume button"
+    },
+    {
+      "id": "resume-8",
+      "passed": true,
+      "evidence": "native click reacquires a result replaced during pointer motion"
+    },
+    {
+      "id": "resume-9",
+      "passed": true,
+      "evidence": "seat Resume passes the exact ID, host and owner through the configured PUI argv"
+    },
+    {
+      "id": "resume-10",
+      "passed": true,
+      "evidence": "accepted terminal handoff dismisses its native launcher"
+    },
+    {
+      "id": "resume-11",
+      "passed": true,
+      "evidence": "native remote Resume preserves the saved host for terminal-side connection selection"
+    },
+    {
+      "id": "resume-12",
+      "passed": true,
+      "evidence": "accepted Resume clears transient checking detail before reopen"
+    },
+    {
+      "id": "resume-13",
+      "passed": true,
+      "evidence": "real terminal journey exposes the selected Resume button"
+    },
+    {
+      "id": "resume-14",
+      "passed": true,
+      "evidence": "production GIO terminal launch preserves exact arguments and quoted PUI executable path"
+    },
+    {
+      "id": "resume-15",
+      "passed": true,
+      "evidence": "GIO launches the selected command inside a real terminal PTY"
+    },
+    {
+      "id": "resume-16",
+      "passed": true,
+      "evidence": "GIO terminal inherits both aliases of the selected Workbench connection"
+    },
+    {
+      "id": "resume-17",
+      "passed": true,
+      "evidence": "real terminal handoff dismisses its native launcher"
+    }
+  ],
+  "runs": {
+    "input": {
+      "evidence": {
+        "ok": true,
+        "error": null,
+        "phase": "connection change clears visible panel data",
+        "journey": "input",
+        "inputLog": [
+          {
+            "key": 65307,
+            "mode": 2
+          },
+          {
+            "key": 65513,
+            "mode": 1
+          },
+          {
+            "key": 65507,
+            "mode": 1
+          },
+          {
+            "key": 65507,
+            "mode": 1
+          },
+          {
+            "key": 97,
+            "mode": 1
+          },
+          {
+            "key": 97,
+            "mode": 1
+          },
+          {
+            "key": 110,
+            "mode": 1
+          },
+          {
+            "key": 110,
+            "mode": 1
+          },
+          {
+            "key": 101,
+            "mode": 1
+          },
+          {
+            "key": 101,
+            "mode": 1
+          },
+          {
+            "key": 101,
+            "mode": 1
+          },
+          {
+            "key": 101,
+            "mode": 1
+          },
+          {
+            "key": 100,
+            "mode": 1
+          },
+          {
+            "key": 100,
+            "mode": 1
+          },
+          {
+            "key": 108,
+            "mode": 1
+          },
+          {
+            "key": 108,
+            "mode": 1
+          },
+          {
+            "key": 101,
+            "mode": 1
+          },
+          {
+            "key": 101,
+            "mode": 1
+          },
+          {
+            "key": 65364,
+            "mode": 1
+          },
+          {
+            "key": 65364,
+            "mode": 1
+          },
+          {
+            "key": 65362,
+            "mode": 1
+          },
+          {
+            "key": 65362,
+            "mode": 1
+          },
+          {
+            "key": 65293,
+            "mode": 1
+          },
+          {
+            "key": 65293,
+            "mode": 1
+          },
+          {
+            "key": 65307,
+            "mode": 1
+          },
+          {
+            "key": 65307,
+            "mode": 1
+          },
+          {
+            "button": 1,
+            "x": 1160,
+            "y": 81,
+            "source": "null",
+            "picked": "[0x5c54de7853c0 StButton.button:hover (\"Pin\")]",
+            "inside": [
+              {
+                "surface": "quick-access",
+                "contains": true
+              }
+            ]
+          },
+          {
+            "key": 65505,
+            "mode": 1
+          },
+          {
+            "key": 65505,
+            "mode": 1
+          },
+          {
+            "button": 1,
+            "x": 5,
+            "y": 450,
+            "source": "null",
+            "picked": "[0x5c54d972b920 MetaBackgroundActor]",
+            "inside": [
+              {
+                "surface": "quick-access",
+                "contains": false
+              },
+              {
+                "surface": "goals",
+                "contains": false
+              }
+            ]
+          },
+          {
+            "key": 65513,
+            "mode": 1
+          },
+          {
+            "key": 65513,
+            "mode": 1
+          }
+        ],
+        "actionMode": 1,
+        "overview": false,
+        "windows": [],
+        "states": [
+          {
+            "surface": "quick-access",
+            "visible": false,
+            "pinned": true,
+            "selection": null,
+            "detail": null
+          },
+          {
+            "surface": "goals",
+            "visible": false,
+            "pinned": false,
+            "selection": null,
+            "detail": null
+          },
+          {
+            "surface": "inbox",
+            "visible": false,
+            "pinned": false,
+            "selection": null,
+            "detail": null
+          },
+          {
+            "surface": "organizer",
+            "visible": false,
+            "pinned": false,
+            "selection": null,
+            "detail": null
+          },
+          {
+            "surface": "papercup",
+            "visible": false,
+            "pinned": false,
+            "selection": null,
+            "detail": null
+          }
+        ],
+        "assertions": [
+          "native shortcut acquisition",
+          "native seat supports input injection",
+          "native input methods exist",
+          "desktop ready for normal shortcuts",
+          "qualified plan reached native actor model",
+          "Shell actor is attached",
+          "native result controls rendered",
+          "independent pinned panels coexist",
+          "Goals requests only its canonical source",
+          "panels and GTK helper create no application windows",
+          "debounced canonical query renders current result",
+          "exact report body in native detail",
+          "first Escape dismisses detail only",
+          "second Escape dismisses only its surface",
+          "reopen retains query and exact selection",
+          "outside dismissal preserves another pinned surface",
+          "repeated shortcut toggles pinned surface",
+          "Inbox canonical list reaches native actor",
+          "Inbox persisted denominator reaches native status",
+          "Inbox selected context preserves exact identity",
+          "Inbox confirmation freezes edited answer",
+          "Inbox write uses helper native-inbox and verifies terminal receipt",
+          "Inbox adds no application window",
+          "Inbox dismissal removes native actors and run refresh",
+          "seat shortcut opens panel",
+          "seat typing reaches focused native search",
+          "seat arrow navigates results",
+          "seat Up restores exact report selection",
+          "focused search consumes Enter through native activate signal",
+          "seat Enter opens exact selected detail",
+          "seat Escape dismisses detail before surface",
+          "seat click pins native panel",
+          "seat second shortcut preserves independent pin",
+          "seat journey keeps native surfaces outside application windows",
+          "seat outside click closes unpinned panel and preserves pin",
+          "seat shortcut toggles pinned panel closed",
+          "connection change dismisses panels and retires old data, detail and selection",
+          "connection change selects the new helper backend and retires Inbox identity"
+        ]
+      },
+      "sourceCustody": {
+        "archiveSha256": "76839c02f073a809e39351dbc3e032b2150a653db862f2cad97cf12247de8e8a",
+        "journey": "input",
+        "files": {
+          "extension.js": "55c153029f8ee36eb49afdaf5226d2166c41c88dee3793aa760dd3d71cef19ab",
+          "workbench.js": "c9e51811729257b92ecc26e59f88b29f5364dae80d3ff77bfe6ce8c8c4818f64",
+          "panel-model.mjs": "a1804b9d7fc6e196565175c570fc327cdb38ab22ece3e191ef228acab3d3bfc5",
+          "bridge.js": "78287f56f34e4e7968d91eb5bcd5d583357c173c09f95a77dca3d3f9bc21c63f",
+          "helper.js": "5604d173a62ad88583c884b0689ee1afc04da7a64ea5f41771e1fcd209416709",
+          "audio.js": "3e3d4927292d31494313a74fcee3438b3eaf3afefdacb5f430ba4fcb1827f6ad",
+          "chat-content.js": "97e4d37a47a1a99ecfc6e2f80872fd5d67fde3a5bbf8fb0d8b347a87d5f3c90e",
+          "schemas/org.gnome.shell.extensions.papercusp-workbench.gschema.xml": "9ce369583d10efb36667b16b771107f9ace1ef1eaf9f03d443d966b2e2298094"
+        },
+        "testSha256": "a485e37230f2547f5ffbb2ac0034a0562cfd6a9ca777c5aefd74eadb3dc38b7a"
+      },
+      "exitCode": 0,
+      "logSha256": "c6231adb6dec1ce472dfb565f2bf6d1161ec64737ea0591beace646c28349ac7",
+      "retainedPath": "/tmp/wb-selector-input-20261108/gnome-native-input/gnome-native-process.json",
+      "command": [
+        "env",
+        "PAPERCUSP_GNOME_JOURNEY=input",
+        "PAPERCUSP_NATIVE_EVIDENCE_DIR=/tmp/wb-selector-input-20261108",
+        "node",
+        "--test",
+        "--test-global-setup=./test/monorepo-host-preflight.mjs",
+        "--test-name-pattern=private GNOME Shell renders actors",
+        "test/native-workbench-gnome-live.test.mjs"
+      ]
+    },
+    "resume": {
+      "evidence": {
+        "ok": true,
+        "error": null,
+        "phase": "real GIO terminal launch",
+        "journey": "resume",
+        "inputLog": [
+          {
+            "key": 65307,
+            "mode": 2
+          },
+          {
+            "replacedActor": "native explicit resume"
+          },
+          {
+            "button": 1,
+            "x": 1104,
+            "y": 421,
+            "source": "null",
+            "picked": "[0x5df4ba1c7310 StButton.button:hover (\"Resume session\")]",
+            "inside": [
+              {
+                "surface": "quick-access",
+                "contains": true
+              }
+            ]
+          },
+          {
+            "button": 1,
+            "x": 1104,
+            "y": 421,
+            "source": "null",
+            "picked": "[0x5df4ba2a5c90 StButton.button:hover (\"Resume session\")]",
+            "inside": [
+              {
+                "surface": "quick-access",
+                "contains": true
+              }
+            ]
+          }
+        ],
+        "actionMode": 1,
+        "overview": false,
+        "windows": [],
+        "states": [
+          {
+            "surface": "quick-access",
+            "visible": false,
+            "pinned": false,
+            "selection": "[\"agents\",\"adv\",4241]",
+            "detail": null
+          },
+          {
+            "surface": "goals",
+            "visible": false,
+            "pinned": false,
+            "selection": null,
+            "detail": null
+          },
+          {
+            "surface": "inbox",
+            "visible": false,
+            "pinned": false,
+            "selection": null,
+            "detail": null
+          },
+          {
+            "surface": "organizer",
+            "visible": false,
+            "pinned": false,
+            "selection": null,
+            "detail": null
+          },
+          {
+            "surface": "papercup",
+            "visible": false,
+            "pinned": false,
+            "selection": null,
+            "detail": null
+          }
+        ],
+        "assertions": [
+          "native shortcut acquisition",
+          "native seat supports input injection",
+          "native input methods exist",
+          "desktop ready for normal shortcuts",
+          "native Resume refuses a running replacement before opening a terminal",
+          "failed terminal launch stays visible with its error",
+          "ended result exposes an explicit native Resume button",
+          "native click reacquires a result replaced during pointer motion",
+          "seat Resume passes the exact ID, host and owner through the configured PUI argv",
+          "accepted terminal handoff dismisses its native launcher",
+          "native remote Resume preserves the saved host for terminal-side connection selection",
+          "accepted Resume clears transient checking detail before reopen",
+          "real terminal journey exposes the selected Resume button",
+          "production GIO terminal launch preserves exact arguments and quoted PUI executable path",
+          "GIO launches the selected command inside a real terminal PTY",
+          "GIO terminal inherits both aliases of the selected Workbench connection",
+          "real terminal handoff dismisses its native launcher"
+        ]
+      },
+      "sourceCustody": {
+        "archiveSha256": "0ebd3988f585527fa0cc0f1a251c6d45ee91b99a8af9ab877f460470d06700d7",
+        "journey": "resume",
+        "files": {
+          "extension.js": "5a87e6638db5d785ec0ff226461cf0df3bd15be48032ddf08d87b28b39bce33c",
+          "workbench.js": "c9e51811729257b92ecc26e59f88b29f5364dae80d3ff77bfe6ce8c8c4818f64",
+          "panel-model.mjs": "a1804b9d7fc6e196565175c570fc327cdb38ab22ece3e191ef228acab3d3bfc5",
+          "bridge.js": "78287f56f34e4e7968d91eb5bcd5d583357c173c09f95a77dca3d3f9bc21c63f",
+          "helper.js": "5604d173a62ad88583c884b0689ee1afc04da7a64ea5f41771e1fcd209416709",
+          "audio.js": "3e3d4927292d31494313a74fcee3438b3eaf3afefdacb5f430ba4fcb1827f6ad",
+          "chat-content.js": "97e4d37a47a1a99ecfc6e2f80872fd5d67fde3a5bbf8fb0d8b347a87d5f3c90e",
+          "schemas/org.gnome.shell.extensions.papercusp-workbench.gschema.xml": "9ce369583d10efb36667b16b771107f9ace1ef1eaf9f03d443d966b2e2298094"
+        },
+        "testSha256": "a485e37230f2547f5ffbb2ac0034a0562cfd6a9ca777c5aefd74eadb3dc38b7a"
+      },
+      "exitCode": 0,
+      "logSha256": "b5edd69ca5e8aa3a2f0aace48b551fd5f2197b9fade25fb8c24e8f92c51230ee",
+      "retainedPath": "/tmp/wb-selector-resume-20261108/gnome-native-resume/gnome-native-process.json",
+      "command": [
+        "env",
+        "PAPERCUSP_GNOME_JOURNEY=resume",
+        "PAPERCUSP_NATIVE_EVIDENCE_DIR=/tmp/wb-selector-resume-20261108",
+        "node",
+        "--test",
+        "--test-global-setup=./test/monorepo-host-preflight.mjs",
+        "--test-name-pattern=private GNOME Shell renders actors",
+        "test/native-workbench-gnome-live.test.mjs"
+      ]
+    }
+  },
+  "scopeLimits": [
+    "Private GNOME Shell with packaged current source and fixture PUI.",
+    "Does not activate the owner desktop extension; real installation still reports loginRequired.",
+    "Canonical installed Reports proof is a separate evidence artifact.",
+    "No macOS/Windows installed-artifact acceptance or final shipment certificate."
+  ]
+}
+

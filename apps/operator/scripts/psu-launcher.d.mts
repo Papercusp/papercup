@@ -2454,26 +2454,7 @@ export function applyGithubTokenEnv(env: any, { runGh, }?: {
 export function storeClaudeOAuthToken(token: any, { home }?: {
     home?: string | undefined;
 }): string;
-/**
- * Resilient fetch: retries CONNECTION failures (refused/reset — "fetch failed",
- * i.e. the operator is mid-recycle) on a short backoff until `connectBudgetMs`
- * elapses, so a launch rides THROUGH a memory-watchdog drain+restart window
- * instead of failing on the first dead tick. TIMEOUTs (reachable but slow —
- * wedged, not restarting) are retried only a small fixed number of times, since
- * each retry costs another full timeout. A caller-supplied `init.signal` owns
- * the request lifetime and disables retry. Returns the Response (caller reads
- * the body); throws a descriptive Error when every attempt fails.
- *
- * On repeated connection failure it additionally attempts ONE health-gated
- * FAILOVER for launcher-managed targets to a different live operator (resolveFallbackOperatorTargets:
- * proxy → fresh operator.json → dev default) and adopts it session-wide
- * (adoptOperatorTarget) — the stale-shell heal for terminals whose
- * PAPERCUSP_OPERATOR_URL outlived the per-boot desktop operator port.
- *
- * Deps are injected for tests (psu-launcher.test.ts) — `fetchImpl`/`sleep`/`now`
- * make the retry timing deterministic without real timers or sockets.
- */
-export function fetchWithResilience(url: any, init?: {}, { fetchImpl, sleep, now, onNotice, timeoutMs, connectBudgetMs, timeoutRetries, retryBootstrapFailures, bootstrapReplayMaxAttempts, bootstrapReplayBudgetMs, label, target, resolveFallback, onFailover, healthProbeTimeoutMs, slowRequestNotice, slowNoticeAfterMs, }?: {
+export function fetchWithResilience(url: any, init?: {}, { fetchImpl, sleep, now, onNotice, timeoutMs, connectBudgetMs, timeoutRetries, retryBootstrapFailures, bootstrapReplayMaxAttempts, bootstrapReplayBudgetMs, label, readResponse, target, resolveFallback, onFailover, healthProbeTimeoutMs, slowRequestNotice, slowNoticeAfterMs, }?: {
     fetchImpl?: typeof fetch | undefined;
     sleep?: ((ms: any) => Promise<any>) | undefined;
     now?: (() => number) | undefined;
@@ -2485,13 +2466,14 @@ export function fetchWithResilience(url: any, init?: {}, { fetchImpl, sleep, now
     bootstrapReplayMaxAttempts?: number | undefined;
     bootstrapReplayBudgetMs?: number | undefined;
     label?: any;
+    readResponse?: ((response: any) => Promise<any>) | null | undefined;
     target?: any;
     resolveFallback?: typeof resolveFallbackOperatorTargets | undefined;
     onFailover?: typeof adoptOperatorTarget | undefined;
     healthProbeTimeoutMs?: number | undefined;
     slowRequestNotice?: typeof slowRequestNoticeOncePerLaunch | undefined;
     slowNoticeAfterMs?: number | undefined;
-}): Promise<Response>;
+}): Promise<any>;
 /** Turn a structured operator/proxy failure into an actionable launcher error.
  * Keep the stable error code, but retain the server's detail and retry hint so
  * a final exhausted overload is distinguishable from a programming failure.
@@ -3119,20 +3101,18 @@ export function reportSessionEnded(advSessionId: number | string | null, exitCod
     reason: string;
     status?: undefined;
     endAttemptKey?: undefined;
-    detail?: undefined;
 } | {
     reported: boolean;
     reason: string;
-    status: number;
+    status: any;
     endAttemptKey: string;
-    detail?: undefined;
 } | {
     reported: boolean;
     endAttemptKey: string;
     reason?: undefined;
     status?: undefined;
-    detail?: undefined;
 } | {
+    phase?: any;
     reported: boolean;
     reason: string;
     detail: string;
@@ -3164,7 +3144,8 @@ export function reportSessionEnded(advSessionId: number | string | null, exitCod
  *             legacyReactivation?: true }
  *   | { claimed: false, reason: 'no-session' | 'http' | 'contended' | 'transport',
  *       detail?: string, status?: 'reserved' | 'live' | 'missing' | 'retired',
- *       retryAfterMs?: number, leaseExpiresAt?: string, resumeClaimKey?: string }
+ *       retryAfterMs?: number, leaseExpiresAt?: string, resumeClaimKey?: string,
+ *       phase?: 'response-body' }
  * } ResumeClaimOutcome
  * @typedef {object} ResumeClaimOptions
  * @property {(input:any, init?:any)=>Promise<any>} [fetchImpl]
@@ -3209,7 +3190,7 @@ export function reportSessionResumed(advSessionId: number | string | null, opts?
 export function acquireSessionResumeWithRecovery(advSessionId: number | string | null, opts?: ResumeAcquireRecoveryOptions): Promise<ResumeClaimOutcome>;
 /**
  * @typedef {{ finalized:boolean, reason?:string, status?:number|null,
- *             detail?:string, resumeClaimKey?:string }} ResumeFinalizeOutcome
+ *             detail?:string, resumeClaimKey?:string, phase?:'response-body' }} ResumeFinalizeOutcome
  * @param {number|string|null} advSessionId
  * @param {string} resumeClaimKey
  * @param {ResumeTransitionOptions} [opts]
@@ -3218,7 +3199,7 @@ export function acquireSessionResumeWithRecovery(advSessionId: number | string |
 export function reportSessionResumeFinalized(advSessionId: number | string | null, resumeClaimKey: string, opts?: ResumeTransitionOptions): Promise<ResumeFinalizeOutcome>;
 /**
  * @typedef {{ released:boolean, reason?:string, status?:number|null,
- *             detail?:string, resumeClaimKey?:string }} ResumeReleaseOutcome
+ *             detail?:string, resumeClaimKey?:string, phase?:'response-body' }} ResumeReleaseOutcome
  * @param {number|string|null} advSessionId
  * @param {string} resumeClaimKey
  * @param {ResumeTransitionOptions} [opts]
@@ -5432,6 +5413,7 @@ export type ResumeClaimOutcome = {
     retryAfterMs?: number;
     leaseExpiresAt?: string;
     resumeClaimKey?: string;
+    phase?: "response-body";
 };
 /**
  * Atomically ACQUIRE the right to resume a tracked session without claiming the
@@ -5509,6 +5491,7 @@ export type ResumeFinalizeOutcome = {
     status?: number | null;
     detail?: string;
     resumeClaimKey?: string;
+    phase?: "response-body";
 };
 export type ResumeReleaseOutcome = {
     released: boolean;
@@ -5516,6 +5499,7 @@ export type ResumeReleaseOutcome = {
     status?: number | null;
     detail?: string;
     resumeClaimKey?: string;
+    phase?: "response-body";
 };
 export type SpawnInheritOptions = {
     wrapperBin: string;

@@ -1832,6 +1832,19 @@ describe('launchLogFailureReason (the launcher’s own words, from a real log)',
     expect(launchLogFailureReason(`The request quotes ${failure} for investigation.\n`)).toBeNull();
   });
 
+  it('retains the exact terminal login refusal after the native receipt and TUI redraw', () => {
+    // EI-28234461736895043: the real log redraws this result AFTER the
+    // nonretryable receipt, followed by status UI and a failed kickoff notice.
+    const failure = 'Not logged in · Please run /login';
+    const receipt = '[psu] native-turn-failed agent=claude code=api_error_401 retryable=false retryAfterMs=unknown';
+    const log = `${receipt}\n⎿  ${failure}\n✻ Cogitated for 4s · done 10:18 AM\n` +
+      '────────────────\n❯\n────────────────\n◉ xhigh · /effort\n' +
+      'psu: kickoff ACCEPTED BUT THE MODEL TURN NEVER STARTED — the child is alive and idle.\n';
+    expect(launchLogFailureReason(log)).toBe(failure);
+    expect(launchLogFailureReason(`The request quotes ${failure} for investigation.\n`)).toBeNull();
+    expect(launchLogFailureReason(`review brief\n\`\`\`log\n${log}\`\`\`\n`)).toBeNull();
+  });
+
   it.each(['low', 'medium', 'high', 'xhigh', 'max'])
     ('retains a native terminal failure followed by the %s effort footer', (effort) => {
       const receipt = '[psu] native-turn-failed agent=claude code=api_error_401 retryable=false retryAfterMs=unknown';
@@ -2191,6 +2204,27 @@ describe('rejudgeFirstTurn (the same first-turn judge, run after the window)', (
 
     const quotedLog = ['review brief', '```log', receipt, '```'].join('\n');
     expect(launchLogFailureReason(quotedLog)).toBeNull();
+  });
+
+  it.each([
+    '[psu] native-turn-failed agent=claude code=api_error_401 retryable=false retryAfterMs=unknown',
+    'Not logged in · Please run /login',
+  ])('settles terminal authentication as an account wall, while preserving a later real reply: %s', async reason => {
+    const claudeTarget = { agent: 'claude' as const, transcriptPath: '/native/auth.jsonl', launchLogPath: '/logs/auth.log' };
+    const read = {
+      analyzeClaudeTranscript: () => analyzeClaudeResumeTranscript(''),
+      analyzeCodexRollout: () => null,
+      readLaunchLogReason: async () => reason,
+    };
+    await expect(rejudgeFirstTurn(claudeTarget, read)).resolves.toMatchObject({
+      status: 'rejected', reason: 'account-walled',
+    });
+    const replied = analyzeClaudeResumeTranscript(JSON.stringify({
+      type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Here is the independent review.' }] },
+    }));
+    await expect(rejudgeFirstTurn(claudeTarget, {
+      ...read, analyzeClaudeTranscript: () => replied,
+    })).resolves.toEqual({ status: 'replied' });
   });
 
   it('a turn still running is pending, a clean turn is replied, an unreadable file is unreadable', async () => {

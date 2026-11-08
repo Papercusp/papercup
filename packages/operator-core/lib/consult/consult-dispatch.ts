@@ -623,7 +623,13 @@ function firstTurnRejectionFromLaunchLog(reason: string | null): FirstTurnReject
     /^(\[psu\] native-turn-failed agent=(?:claude|codex) code=[A-Za-z0-9_.-]{1,120} retryable=false retryAfterMs=(?:unknown|\d+))(?: · \[papercusp\] initial terminal command exited with status \d+)?$/i,
   );
   if (nativeFailure) {
+    if (/\bcode=api_error_401\b/i.test(nativeFailure[1])) {
+      return { turns: 1, tool: null, accountEvidence: nativeFailure[1] };
+    }
     return { turns: 1, tool: null, providerEvidence: nativeFailure[1] };
+  }
+  if (/^Not logged in\s*·\s*Please run \/login$/i.test(evidence)) {
+    return { turns: 1, tool: null, accountEvidence: evidence };
   }
   if (/(?:\b429\b|rate.?limit|(?:session|weekly|usage) limit|quota|credit)/i.test(evidence)) {
     return { turns: 1, tool: null, accountEvidence: evidence };
@@ -1353,6 +1359,9 @@ const NATIVE_DELIVERY_NOTICE_LINES = [
   /^psu: kickoff delivered — verified the exact provenance marker in the native transcript(?: \(model turn started only after one in-session retry\))?\.$/,
   /^psu: session port delivered — verified the exact seed checksum in the target native transcript\.$/,
 ];
+// Claude redraws this terminal result after the host's native failure receipt.
+// Its exact result glyph distinguishes it from prose quoting a login failure.
+const NATIVE_AUTH_RESULT_LINE = /^⎿\s*(Not logged in\s*·\s*Please run \/login)\s*$/i;
 /**
  * The CLI's own failures arrive inside TUI output drawn with cursor-movement
  * escapes, not newlines, so they sit mid-way through one long rendered "line"
@@ -1386,7 +1395,20 @@ export function launchLogFailureReason(logText: string): string | null {
     .filter(Boolean);
   let failure: string | null = null;
   let exit: string | null = null;
+  let fence: string | null = null;
   for (const [index, line] of lines.entries()) {
+    const marker = line.match(/^(`{3,}|~{3,})/);
+    if (marker) {
+      if (fence === null) fence = marker[1];
+      else if (marker[1][0] === fence[0] && marker[1].length >= fence.length) fence = null;
+      continue;
+    }
+    if (fence !== null) continue;
+    const authFailure = line.match(NATIVE_AUTH_RESULT_LINE);
+    if (authFailure) {
+      failure = authFailure[1];
+      continue;
+    }
     if (PSU_FAILURE_LINE.test(line)) {
       failure = line;
       continue;
