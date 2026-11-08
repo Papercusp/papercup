@@ -95,6 +95,20 @@ describe('commit-boundary workspace dependency coherence (real git)', () => {
     expect(await guardStagedWorkspaceLock(runGit, repo)).toEqual({ ok: true, held: [] });
   });
 
+  it('validates selected child locks when the parent has no root lock', async () => {
+    writeFileSync(join(child, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3,
+      packages: { '': { dependencies: { next: '1.0.0' } } } }));
+    git(child, 'add', 'package-lock.json');
+    git(child, 'commit', '-m', 'incoherent child lock');
+    git(repo, 'rm', '-f', 'package-lock.json');
+    git(repo, 'add', 'libs/app');
+    const tree = git(repo, 'write-tree');
+    await expect(workspaceLockTreeValidator()(runGit, repo, tree))
+      .rejects.toThrow('NPM_INSTALL_SAFE_WORKSPACE_LOCK_DRIFT');
+    expect(git(repo, 'write-tree')).toBe(tree);
+    expect(git(repo, 'rev-parse', 'HEAD:libs/app')).toBe(oldPin);
+  });
+
   it('refuses a missing pinned object without silently holding or rewriting the candidate', async () => {
     git(repo, 'update-index', '--cacheinfo', '160000', '1'.repeat(40), 'libs/app');
     git(repo, 'add', 'package-lock.json');

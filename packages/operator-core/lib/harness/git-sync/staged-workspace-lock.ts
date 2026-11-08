@@ -83,9 +83,11 @@ export function workspaceLockTreeInspector() {
 export function workspaceLockTreeValidator() {
   const inspect = workspaceLockTreeInspector();
   return async (runGit: RunGit, repoPath: string, tree: string): Promise<void> => {
-    const locks = await runGit(['ls-tree', '-z', tree, '--', 'package-lock.json', 'npm-shrinkwrap.json'], repoPath);
-    if (locks.code !== 0) throw new Error(`dependency tree read failed (ls-tree): ${locks.stderr}`);
-    if (!locks.stdout.trim()) return;
+    const metadata = await runGit(['ls-tree', '-z', tree, '--', 'package-lock.json', 'npm-shrinkwrap.json', 'package.json', '.gitmodules'], repoPath);
+    if (metadata.code !== 0) throw new Error(`dependency tree read failed (ls-tree): ${metadata.stderr}`);
+    // A parent can omit its own lock while still selecting independently locked
+    // workspaces or child projects. Those selected locks must also be inspected.
+    if (!metadata.stdout.trim()) return;
     // This established assertion accepts commit-ish inputs too. The new explicit
     // inspector remains strict; validate the exact peeled tree for this wrapper.
     const peeled = await runGit(['rev-parse', '--verify', `${tree}^{tree}`], repoPath);
