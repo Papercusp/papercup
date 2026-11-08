@@ -11,13 +11,13 @@ vi.mock('../../../harness-registry', () => ({ loadHarnessRegistry: vi.fn() }));
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws1' }));
 vi.mock('../in-workspace-txn', () => ({ inWorkspaceTxn: vi.fn(async (_d: string, _o: string, fn: (tx: unknown) => unknown) => fn({})) }));
 vi.mock('../su-lock-store', () => ({ tryAcquire: vi.fn(), tryRelease: vi.fn(), tryFinishHookOperation: vi.fn(), readQueue: vi.fn(), getTxPool: vi.fn() }));
-vi.mock('../../../edit-attribution', () => ({ recordEditAttributionStrict: vi.fn() }));
+vi.mock('../../../edit-attribution', () => ({ recordEditAttributionStrict: vi.fn(), preserveEditGeneration: vi.fn() }));
 
 import { loadHarnessRegistry } from '../../../harness-registry';
 import { getDomainToHarnessSlug, getHarnessToPotSlug } from '../../../authority/file-lock-routing';
 import { _testing, adaptSuLockStore, finishHookOperationAtAuthority } from '../file-lock-authority-wiring';
 import { tryAcquire, tryFinishHookOperation } from '../su-lock-store';
-import { recordEditAttributionStrict } from '../../../edit-attribution';
+import { recordEditAttributionStrict, preserveEditGeneration } from '../../../edit-attribution';
 import type { FileLockReleaseParams } from '../../../authority/file-lock-authority-ops';
 
 beforeEach(() => {
@@ -47,7 +47,12 @@ describe('hook operation authority store adapter', () => {
   beforeEach(() => {
     vi.mocked(tryFinishHookOperation).mockReset();
     vi.mocked(recordEditAttributionStrict).mockReset();
-    vi.mocked(tryFinishHookOperation).mockResolvedValue(finished);
+    vi.mocked(preserveEditGeneration).mockReset();
+    vi.mocked(preserveEditGeneration).mockResolvedValue({ pending: true, capture: 'A1' });
+    vi.mocked(tryFinishHookOperation).mockImplementation(async (_tx, p) => {
+      await p.beforeRelease?.({ requestedPaths: finished.requestedPaths, goalRef: finished.goalRef, state: 'granted' });
+      return finished;
+    });
     vi.mocked(recordEditAttributionStrict).mockResolvedValue(undefined);
   });
 
@@ -110,6 +115,26 @@ describe('hook operation authority store adapter', () => {
   it('strict ledger failure rejects completion so the enclosing transaction cannot commit release', async () => {
     vi.mocked(recordEditAttributionStrict).mockRejectedValue(new Error('ledger unavailable'));
     await expect(finishHookOperationAtAuthority(params)).rejects.toThrow('ledger unavailable');
+  });
+
+  it('requires custody readback before recording attribution or completing release', async () => {
+    vi.mocked(preserveEditGeneration).mockRejectedValue(new Error('custody unreadable'));
+    await expect(finishHookOperationAtAuthority(params)).rejects.toThrow('custody unreadable');
+    expect(recordEditAttributionStrict).not.toHaveBeenCalled();
+  });
+
+  it('passes the stored receipt and authoritative operation scope to preservation on replay', async () => {
+    const receipt = { pending: true, capture: 'original-A1' };
+    vi.mocked(tryFinishHookOperation).mockImplementation(async (_tx, p) => {
+      await p.beforeRelease?.({ requestedPaths: ['a.ts'], goalRef: 'WI-original',
+        state: 'completed', captureReceipt: receipt });
+      return { ...finished, captureReceipt: receipt };
+    });
+    await finishHookOperationAtAuthority(params);
+    expect(preserveEditGeneration).toHaveBeenCalledWith(expect.objectContaining({
+      files: ['a.ts'], goalRef: 'WI-original', dispatchCallId: operation.id,
+      operationState: 'completed', captureReceipt: receipt,
+    }));
   });
 
   it('passes fixed operation admission metadata through acquire and reports its refusal faithfully', async () => {

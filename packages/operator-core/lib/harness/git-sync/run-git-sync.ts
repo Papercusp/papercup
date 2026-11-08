@@ -5580,6 +5580,33 @@ export type GitSyncCandidateCaptureResult =
   | { ok: true; ref: string; candidate: GitSyncCandidateCapture }
   | { ok: false; error: string };
 
+/** Recover the frozen base after a pinned capture outlived its DB receipt.
+ * Reads only custody selected by the stable operation identity, then applies
+ * the same complete object/input validation as ordinary capture replay. */
+export async function readGitSyncCandidate(
+  runGit: RunGit,
+  repoPath: string,
+  request: Pick<GitSyncCandidateRequest, 'requestId' | 'generation' | 'paths'>,
+): Promise<GitSyncCandidateCaptureResult> {
+  try {
+    const env = { GIT_OPTIONAL_LOCKS: '0', GIT_LITERAL_PATHSPECS: '1' };
+    const common = await runGit(['rev-parse', '--path-format=absolute', '--git-common-dir'], repoPath, { env });
+    if (common.code !== 0 || !common.stdout.trim()) return custodyRefused('candidate-repository');
+    const repository = await realpath(common.stdout.trim());
+    const identity = { repository, requestId: request.requestId, generation: request.generation };
+    const ref = SOURCE_CUSTODY_REF_PREFIX + createHash('sha256').update(canonicalJson(identity)).digest('hex');
+    const exists = await runGit(['show-ref', '--verify', '--quiet', ref], repoPath, { env });
+    if (exists.code === 1) return custodyRefused('candidate-not-captured');
+    if (exists.code !== 0) return custodyRefused('candidate-ref-read');
+    const metadata = await runGit(['show', `${ref}:manifest.json`], repoPath, { env });
+    if (metadata.code !== 0) return custodyRefused('candidate-manifest-read');
+    const candidate = JSON.parse(metadata.stdout) as GitSyncCandidateCapture;
+    return await captureGitSyncCandidate(runGit, repoPath, { ...request, base: candidate.base }, { existingOnly: true });
+  } catch {
+    return custodyRefused('candidate-capture-exception');
+  }
+}
+
 /**
  * Freeze working content using the existing private index and custody namespace.
  * The caller owns the existing repository writer/capture fence. This is a local

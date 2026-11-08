@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { chmodSync, lstatSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { captureGitSyncCandidate, publishGitSyncCandidate, SOURCE_CUSTODY_REF_PREFIX, type RunGit } from './run-git-sync';
+import { captureGitSyncCandidate, readGitSyncCandidate, publishGitSyncCandidate, SOURCE_CUSTODY_REF_PREFIX, type RunGit } from './run-git-sync';
 import { createGitSyncLeaseFence } from './git-sync-lease-fence';
 import { runWithGitSyncPerInstallLease } from './git-sync-action';
 import { startDedicatedNativePg } from '@papercusp/test-config/pg';
@@ -98,6 +98,35 @@ function unpublishedState(f: ReturnType<typeof fixture>) {
 // Dedicated fixture repositories have no shared platform writer. Production
 // callers must supply the existing git-sync lease's assertHeld method.
 const pilotChecks = { assertHeld: () => {}, beforePublish: async () => ({ ok: true as const }) };
+
+describe('lifecycle P004 capture recovery', () => {
+  it('recovers the original pinned generation after a receipt loss and moving HEAD', async () => {
+    const f = fixture();
+    writeFileSync(join(f.repo, 'a.txt'), 'A1 preserved\n');
+    const request = { requestId: 'lost-db-receipt', generation: 1, base: f.git('rev-parse', 'HEAD'), paths: ['a.txt'] };
+    const captured = await captureGitSyncCandidate(f.runGit, f.repo, request);
+    if (!captured.ok) throw new Error(captured.error);
+    const laterCommit = f.git('commit-tree', captured.candidate.baseTree, '-p', request.base, '-m', 'unrelated advance');
+    f.git('update-ref', 'HEAD', laterCommit, request.base);
+    laterState(f, 'split');
+    const before = candidateState(f);
+    expect(await readGitSyncCandidate(f.runGit, f.repo, request)).toEqual(captured);
+    expect(candidateState(f)).toEqual(before);
+    expect(f.git('show', `${captured.ref}:payload/a.txt`)).toBe('A1 preserved');
+    expect(await readGitSyncCandidate(f.runGit, f.repo, { ...request, paths: ['b.txt'] }))
+      .toEqual({ ok: false, error: 'source-custody-refused:candidate-input-mismatch' });
+  });
+
+  it('never recreates an absent acknowledged capture from successor bytes', async () => {
+    const f = fixture();
+    writeFileSync(join(f.repo, 'a.txt'), 'B1 successor\n');
+    const before = candidateState(f);
+    expect(await readGitSyncCandidate(f.runGit, f.repo, { requestId: 'absent', generation: 1, paths: ['a.txt'] }))
+      .toEqual({ ok: false, error: 'source-custody-refused:candidate-not-captured' });
+    expect(f.git('for-each-ref', '--format=%(refname)', SOURCE_CUSTODY_REF_PREFIX)).toBe('');
+    expect(candidateState(f)).toEqual(before);
+  });
+});
 
 describe('lifecycle P003 frozen publication', () => {
   it.each(publicationStates)('publishes A1 preserving the real %s index and later working state', async state => {

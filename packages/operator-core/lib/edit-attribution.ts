@@ -19,6 +19,8 @@ import { getOrgPg } from '@papercusp/db-org';
 import { getPresence } from './agent-tools/coordination/presence';
 import { isLifecycleIntent } from './agent-tools/coordination/presence-payload';
 import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
+import type { RunGit } from './harness/git-sync/run-git-sync';
+import { canonicalJson } from './external-bench/reproducibility/canonical-json';
 
 export interface RecordEditAttributionInput {
   /** The lock's coordination domain — the physical repo root (the join key). */
@@ -282,6 +284,60 @@ export async function recordEditAttribution(
  */
 export async function recordEditAttributionStrict(input: RecordEditAttributionInput): Promise<void> {
   await recordEditAttribution(input, { strict: true });
+}
+
+/** Called while the operation's edit fence is still held. The existing
+ * operation JSONB owns this receipt; custody refs own the immutable bytes.
+ * Replay reads that custody and never samples a successor's working files. */
+export async function preserveEditGeneration(
+  input: RecordEditAttributionInput & {
+    dispatchCallId: string;
+    operationState: 'pending' | 'granted' | 'cancelled' | 'completed';
+    captureReceipt?: Record<string, unknown>;
+  },
+  runGitOverride?: RunGit,
+): Promise<Record<string, unknown>> {
+  const { captureGitSyncCandidate, readGitSyncCandidate, runGitBounded, gitTimeoutMsFor } =
+    await import('./harness/git-sync/run-git-sync');
+  const runGit: RunGit = runGitOverride ?? ((args, cwd, options) =>
+    runGitBounded(args, cwd, gitTimeoutMsFor(args), options));
+  const request = { requestId: input.dispatchCallId, generation: 1, paths: input.files };
+  let captured = await readGitSyncCandidate(runGit, input.repoRoot, request);
+  if (!input.captureReceipt && input.operationState !== 'granted') {
+    throw new Error('edit-capture-refused:operation-no-longer-protects-version');
+  }
+  if (!captured.ok) {
+    // An acknowledged receipt is never repaired by reading moving content.
+    if (input.captureReceipt || captured.error !== 'source-custody-refused:candidate-not-captured') {
+      throw new Error(captured.error);
+    }
+    const head = await runGit(['rev-parse', '--verify', 'HEAD'], input.repoRoot,
+      { env: { GIT_OPTIONAL_LOCKS: '0' } });
+    // Rev-parse alone cannot distinguish unborn from a corrupt repository.
+    let base: string | null = head.code === 0 ? head.stdout.trim() : null;
+    if (base === null) {
+      const symbolic = await runGit(['symbolic-ref', '-q', 'HEAD'], input.repoRoot);
+      const missing = symbolic.code === 0
+        ? await runGit(['show-ref', '--verify', '--quiet', symbolic.stdout.trim()], input.repoRoot)
+        : null;
+      if (missing?.code !== 1) throw new Error('edit-capture-refused:base-unreadable');
+    }
+    captured = await captureGitSyncCandidate(runGit, input.repoRoot, { ...request, base });
+    if (!captured.ok) throw new Error(captured.error);
+  }
+  const receipt = {
+    version: 1, kind: 'edit-generation', pending: true,
+    workspaceId: input.workspaceId ?? null, agentId: input.agentId,
+    goalRef: input.goalRef ?? null, capture: captured,
+  };
+  if (input.captureReceipt) {
+    // Settlement is mutable; the identity and preserved content are not.
+    if (canonicalJson({ ...input.captureReceipt, pending: true }) !== canonicalJson(receipt)) {
+      throw new Error('edit-capture-refused:receipt-identity-mismatch');
+    }
+    return input.captureReceipt;
+  }
+  return receipt;
 }
 
 /** One agent's attributed edits in a repo, as git-sync reads them back (P-003). Shaped to

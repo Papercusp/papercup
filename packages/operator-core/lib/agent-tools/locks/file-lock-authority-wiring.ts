@@ -83,7 +83,7 @@ import { loadHarnessRegistry } from '../../harness-registry';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { tryAcquire, tryRelease, tryFinishHookOperation, readQueue, getTxPool } from './su-lock-store';
-import { recordEditAttributionStrict } from '../../edit-attribution';
+import { recordEditAttributionStrict, preserveEditGeneration } from '../../edit-attribution';
 import { noteShaTokenRelease } from '../../authority/sha-token-registry';
 import { recordLockEvent } from '../../authority/lock-event-stream';
 
@@ -182,21 +182,24 @@ export async function finishHookOperationAtAuthority(p: FileLockReleaseParams): 
       coordinationDomain: p.coordinationDomain, owner: p.owner, ownerLabel: null,
       paths: operation.paths, intent: operation.intent, ttlSec: operation.ttlSec,
       automatic: true, operation, outcome: operation.outcome,
+      ...(proof ? { beforeRelease: async (stored: {
+        requestedPaths: string[]; goalRef: string | null;
+        state: 'pending' | 'granted' | 'cancelled' | 'completed';
+        captureReceipt?: Record<string, unknown>;
+      }) => {
+        const input = {
+          repoRoot: p.coordinationDomain, files: stored.requestedPaths, agentId: p.owner,
+          intent: `PostToolUse:${proof.source}:${proof.tool ?? proof.tools?.join(',')}`,
+          goalRef: stored.goalRef ?? undefined, dispatchCallId: operation.id,
+          workspaceId: p.workspaceId, contributor: p.contributor, sessionId: proof.sessionId,
+        };
+        const receipt = await preserveEditGeneration({ ...input,
+          operationState: stored.state, captureReceipt: stored.captureReceipt });
+        await recordEditAttributionStrict(input);
+        return receipt;
+      } } : {}),
     });
     if (!result.ok) return { ...result, operationId: operation.id };
-    if (proof) {
-      // Covers a lost acquire reply and a deliberately retained hold as well as
-      // paths released now. Only the validated operation's requested scope wins.
-      // WI-6554700010019499: workspaceId is load-bearing — git-sync reads this ledger
-      // scoped by workspace, so a NULL here makes the author invisible to commit
-      // attribution and to the migration-dependency fence.
-      await recordEditAttributionStrict({
-        repoRoot: p.coordinationDomain, files: result.requestedPaths, agentId: p.owner,
-        intent: `PostToolUse:${proof.source}:${proof.tool ?? proof.tools?.join(',')}`,
-        goalRef: result.goalRef ?? undefined, dispatchCallId: operation.id,
-        workspaceId: p.workspaceId, contributor: p.contributor, sessionId: proof.sessionId,
-      });
-    }
     return { ...result, operationId: operation.id, attributed: proof ? result.requestedPaths : [] };
   }, { paths: operation.paths });
 }
