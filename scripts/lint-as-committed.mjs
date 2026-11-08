@@ -650,7 +650,14 @@ async function withOptionalRetentionPinProtection(work, deferred, options = {}) 
     }, { ...options, timeoutMs: options.timeoutMs ?? 1000 });
   } catch (error) {
     if (admitted || error?.code !== 'ETIMEDOUT') throw error;
-    console.warn('lint-as-committed: optional cleanup deferred: retention admission timed out; extracted trees preserved');
+    console.warn('lint-as-committed: optional cleanup deferred: retention admission timed out; extracted trees preserved', {
+      code: error.code,
+      message: error.message ?? String(error),
+      waitedMs: error.waitedMs,
+      timeoutMs: error.timeoutMs,
+      ...(error.admissionSubphaseTimingsMs
+        ? { admissionSubphaseTimingsMs: error.admissionSubphaseTimingsMs } : {}),
+    });
     return deferred;
   }
 }
@@ -905,6 +912,7 @@ export function parseArgs(argv) {
   const checks = [];
   const checkErrors = [];
   let workspaceDirs = [];
+  let dependencyDonor;
   let ref = 'HEAD';
   let workspace;
   let keep = false;
@@ -927,6 +935,7 @@ export function parseArgs(argv) {
     else if (arg.startsWith('--ref=')) ref = arg.slice('--ref='.length);
     else if (arg.startsWith('--workspace=')) workspace = arg.slice('--workspace='.length);
     else if (arg.startsWith('--workspace-dir=')) workspaceDirs.push(arg.slice('--workspace-dir='.length));
+    else if (arg.startsWith('--dependency-donor=')) dependencyDonor = arg.slice('--dependency-donor='.length);
     else if (arg.startsWith('--check=')) {
       try {
         const check = JSON.parse(arg.slice('--check='.length));
@@ -971,12 +980,15 @@ export function parseArgs(argv) {
   const forwardAmbiguous = forward.length > 0 && scripts.length > 1;
   try { workspaceDirs = normalizeDependencyWorkspaceDirs(workspaceDirs); }
   catch (error) { checkErrors.push('invalid --workspace-dir: ' + error.message); }
+  if (dependencyDonor !== undefined && (!dependencyDonor || !workspaceDirs.length))
+    checkErrors.push('--dependency-donor requires a non-empty path and --workspace-dir for exact dependency input checks');
   return { help: false, scripts, forward, ref, keep, any, unknown, nonLint, selfRecursive, forwardAmbiguous, sawSeparator,
     ...(materializeOnly ? { materializeOnly: true, keep: true } : {}),
     ...(retainFor !== undefined ? { retainFor } : {}),
     ...(checks.length > 0 ? { checks } : {}),
     ...(checkErrors.length > 0 ? { checkErrors } : {}),
     ...(workspaceDirs.length ? { workspaceDirs } : {}),
+    ...(dependencyDonor !== undefined ? { dependencyDonor } : {}),
     ...(workspace !== undefined ? { workspace } : {}) };
 }
 
@@ -1411,6 +1423,7 @@ lint-as-committed — run a lint as the release gate runs it (committed detector
                     omitted means full scope; the selection is bound to dependency provenance
   --keep            do not delete the extracted tree (path is printed)
   --materialize-only prepare committed source without running a lint/test (implies --keep)
+  --dependency-donor=<dir> borrow dependencies from a compatible snapshot; requires --workspace-dir
   --retain-for=<path> retain source while this external artifact exists; requires --materialize-only
   --any             allow a non-'lint:' npm script (blast-radius opt-in)
   --check=<json>    repeat for sequential checks sharing ONE source/dependency preparation;
@@ -1659,6 +1672,17 @@ async function main() {
   }
 
   let sha;
+  let dependencyDonorRoot;
+  try {
+    // Git objects and committed source always come from repoRoot. Only the
+    // existing, input-checked dependency copier reads this optional donor.
+    dependencyDonorRoot = args.dependencyDonor === undefined
+      ? repoRoot : realpathSync(resolve(args.dependencyDonor));
+  } catch (error) {
+    console.error(`lint-as-committed: dependency donor unavailable: ${error.message}`);
+    process.exitCode = 2;
+    return;
+  }
   try {
     sha = git(['rev-parse', '--verify', `${args.ref}^{commit}`], repoRoot);
   } catch {
@@ -1878,7 +1902,7 @@ async function main() {
     let snapshot;
     let prerequisiteError;
     try {
-      snapshot = await materializeIndependentDependencies(repoRoot, workRoot, {
+      snapshot = await materializeIndependentDependencies(dependencyDonorRoot, workRoot, {
         workspaceDirs: args.workspaceDirs,
         prepareWorkspace: ({ paths, workspacePaths }) => {
           // Exclude the private install before a pinned build checks cleanliness.
