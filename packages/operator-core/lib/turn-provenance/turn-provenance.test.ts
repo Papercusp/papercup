@@ -10,7 +10,8 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as servingHostIdentity from '../serving-host-identity';
 import {
   appendLedgerRow,
   classify,
@@ -43,6 +44,7 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'turn-prov-'));
 });
 afterEach(() => {
+  vi.restoreAllMocks();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -693,6 +695,55 @@ describe('ledger write/read/GC', () => {
 });
 
 describe('tagTurnForInjection (the injector one-call API)', () => {
+  it('records the enrolling process on each exact nonce, including distinct runs of the same host', async () => {
+    const firstIssuer = { host: 'port-3170', processId: 'linux:boot:100', buildSha: 'abc123' };
+    const nextIssuer = { host: 'port-3170', processId: 'linux:boot:200', buildSha: 'def456' };
+    vi.spyOn(servingHostIdentity, 'getServingHostIdentity')
+      .mockReturnValueOnce(firstIssuer)
+      .mockReturnValueOnce(nextIssuer);
+
+    const first = await tagTurnForInjection({ sid: SID, origin: 'wake-pump', text: 'event wake', dir, nowMs: NOW });
+    const next = await tagTurnForInjection({
+      sid: SID, origin: 'loop-fire', text: 'loop wake', dir, nowMs: NOW + 1,
+      loopFire: { routineId: 'routine-issuer', wakeCount: 85 },
+      ttlMs: LOOP_FIRE_PROVENANCE_TTL_MS,
+    });
+    const rows = readLedgerRows(SID, { dir, nowMs: NOW + 2, includeExpired: true });
+
+    expect(first.nonce).not.toBe(next.nonce);
+    expect(rows).toEqual([
+      expect.objectContaining({ nonce: first.nonce, origin: 'wake-pump', issuer: firstIssuer }),
+      expect.objectContaining({
+        nonce: next.nonce, origin: 'loop-fire', issuer: nextIssuer,
+        loopFire: { routineId: 'routine-issuer', wakeCount: 85 }, ttlMs: LOOP_FIRE_PROVENANCE_TTL_MS,
+      }),
+    ]);
+    expect(classify(next.taggedText, rows, { nowMs: NOW + 2 }).verdict).toBe('verified-agent');
+  });
+
+  it('preserves unknown process and loaded build identity without borrowing the current checkout', async () => {
+    const issuer = { host: 'pid-4242', processId: null, buildSha: null };
+    vi.spyOn(servingHostIdentity, 'getServingHostIdentity').mockReturnValue(issuer);
+
+    const tagged = await tagTurnForInjection({ sid: SID, origin: 'self-compaction', text: 'continue', dir, nowMs: NOW });
+    const rows = readLedgerRows(SID, { dir, nowMs: NOW + 1 });
+
+    expect(rows[0]).toMatchObject({ nonce: tagged.nonce, issuer });
+    expect(rows[0].issuer?.processId).toBeNull();
+    expect(rows[0].issuer?.buildSha).toBeNull();
+  });
+
+  it('keeps legacy rows issuer-unknown while preserving nonce verification', async () => {
+    const text = 'legacy enrolled wake';
+    const legacy = row({ sha256: payloadSha256(text) });
+    await appendLedgerRow(legacy, { dir, nowMs: NOW });
+
+    const rows = readLedgerRows(SID, { dir, nowMs: NOW + 1 });
+    expect(rows[0]).not.toHaveProperty('issuer');
+    expect(classify(`${formatEnvelope(legacy.origin, legacy.nonce)}\n${text}`, rows, { nowMs: NOW + 1 }))
+      .toMatchObject({ verdict: 'verified-agent', matchedBy: 'nonce+hash' });
+  });
+
   it('writes the ledger row FIRST and returns envelope-prefixed text that classifies verified', async () => {
     const text = '[await-event] fired: fleet:x:gate — payload attached';
     const tagged = await tagTurnForInjection({ sid: SID, origin: 'wake-pump', text, dir, nowMs: NOW });

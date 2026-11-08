@@ -41,6 +41,7 @@ import { appendFile, mkdir, readFile, readdir, stat, unlink, writeFile } from 'n
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { getServingHostIdentity, type ServingHostIdentity } from '../serving-host-identity';
 import {
   CODEX_STOP_HOOK_PROMPT_RE,
   CROSS_SESSION_MESSAGE_RE,
@@ -299,6 +300,10 @@ export interface LedgerRow {
   origin: string;
   sha256: string;
   ts: number;
+  /** Process that enrolled this exact nonce, using the shared cached host and
+   *  loaded-build identity. Diagnostic only: legacy rows have no known issuer,
+   *  and unprovable process/build identities remain null. */
+  issuer?: ServingHostIdentity;
   /** Typed identity of the loop fire that started this prompt or whose verified
    *  work this managed self-compaction prompt continues. Kept on the existing
    *  provenance row so completion readers can reject a delayed earlier fire
@@ -632,6 +637,7 @@ export async function tagTurnForInjection(args: {
       origin,
       sha256: payloadSha256(args.text),
       ts: nowMs,
+      issuer: { ...getServingHostIdentity() },
       ...(args.ttlMs !== undefined ? { ttlMs: args.ttlMs } : {}),
       ...(args.loopFire ? { loopFire: args.loopFire } : {}),
     },
