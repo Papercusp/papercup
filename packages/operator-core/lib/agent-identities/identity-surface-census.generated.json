@@ -4,7 +4,7 @@
   "suRenderParityBaseline": "docs/evidence/idop-p001-baseline-2026-10-22.json#base (identity-definitions-own-policy-2026-10-17#P-001)",
   "counts": {
     "flat-role-prompt": 109,
-    "prompt-constant": 87,
+    "prompt-constant": 86,
     "injection-hook": 57,
     "kernel-splice": 28
   },
@@ -1553,13 +1553,6 @@
       "id": "prompt-constant:packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts#LEADER_AUTO_MODE_KICKOFF_DIRECTIVE",
       "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts",
       "name": "LEADER_AUTO_MODE_KICKOFF_DIRECTIVE",
-      "kind": "second-person"
-    },
-    {
-      "class": "prompt-constant",
-      "id": "prompt-constant:packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts#PAPERCUSP_MCP_INSTRUCTIONS",
-      "path": "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts",
-      "name": "PAPERCUSP_MCP_INSTRUCTIONS",
       "kind": "second-person"
     },
     {
