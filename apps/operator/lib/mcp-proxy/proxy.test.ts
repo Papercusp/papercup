@@ -11147,6 +11147,103 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     }
   }, 10_000);
 
+  it("WI-6554700010044894: Codex home queue refusal is deadline-bounded and correlated to its repair attempt", async () => {
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const logDir = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-home-repair-budget-"));
+    const logFile = path.join(logDir, "events.jsonl");
+    const previousLogFile = process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+    const repairAttemptId = "6a1f4418-ef99-4d62-86da-3315b760a3ca";
+    const events = (): Array<Record<string, any>> => fs.existsSync(logFile)
+      ? fs.readFileSync(logFile, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line))
+      : [];
+    let releaseCompletion: () => void = () => {};
+    const completionGate = new Promise<void>((resolve) => { releaseCompletion = resolve; });
+    const hits: string[] = [];
+    const logs: string[] = [];
+    const pending: Array<Promise<unknown>> = [];
+    const upstream = track(http.createServer((req, res) => {
+      const client = new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get("client") ?? "";
+      hits.push(client);
+      if (client === "held-completion") {
+        void completionGate.then(() => res.end('{"ok":true}'));
+        return;
+      }
+      res.end('{"ok":true}');
+    }));
+    await listen(upstream);
+    const proxy = track(createMcpProxy({
+      listenPort: 0,
+      targetHost: "127.0.0.1",
+      targetPort: port(upstream),
+      retryWindowMs: 1_000,
+      maxInFlight: 10,
+      controlPlaneReserve: 1,
+      maxCriticalContinuationQueue: 4,
+      maxCriticalContinuationQueueWaitMs: 0,
+      criticalContinuationQueueWaitLogMs: 20,
+      log: (line) => logs.push(line),
+    }));
+    await listen(proxy);
+    process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = logFile;
+    try {
+      const completion = request(port(proxy), JSON.stringify({
+        jsonrpc: "2.0", id: 1, method: "tools/call",
+        params: { name: "work_items:complete", arguments: { id: "WI-held" } },
+      }), "/api/mcp?client=held-completion");
+      pending.push(completion);
+      await waitFor(() => hits.includes("held-completion"));
+
+      const repair = request(
+        port(proxy),
+        JSON.stringify({ owner: "su-home-budget", advSessionId: 707 }),
+        "/api/adv/sessions/ensure-codex-home?client=repair",
+        {
+          "content-type": "application/json",
+          "x-papercusp-repair-attempt": repairAttemptId,
+          "x-papercusp-repair-queue-budget-ms": "500",
+        },
+      );
+      pending.push(repair);
+      await waitFor(() => logs.some(line => line.includes("queued critical-continuation request")));
+      const health = JSON.parse((await get(port(proxy), MCP_PROXY_LOCAL_HEALTH_PATH)).body);
+      expect(health.inFlight.criticalContinuationQueue.requests).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            tools: ["rest:/api/adv/sessions/ensure-codex-home"],
+            repairAttemptId,
+            maxWaitMs: 500,
+          }),
+        ]),
+      );
+
+      const refused = await repair;
+      expect(refused.status).toBe(429);
+      expect(JSON.parse(refused.body)).toMatchObject({
+        error: "mcp_proxy_critical_continuation_queue_dwell",
+        forwardingResult: "not_forwarded",
+        repairAttemptId,
+      });
+      expect(hits).toEqual(["held-completion"]);
+      for (const kind of [
+        "queue_critical_continuation",
+        "critical_continuation_queue_wait",
+        "shed_critical_continuation_queue_dwell",
+      ]) {
+        expect(events()).toContainEqual(expect.objectContaining({ kind, repairAttemptId }));
+      }
+      releaseCompletion();
+      expect((await completion).status).toBe(200);
+    } finally {
+      releaseCompletion();
+      await Promise.allSettled(pending);
+      if (previousLogFile === undefined) delete process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+      else process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = previousLogFile;
+      fs.rmSync(logDir, { recursive: true, force: true });
+    }
+  }, 10_000);
+
   it("WI-6554700010029903: a carry-respawn identity report is forwarded while unkeyed continuation writes hold the critical socket", async () => {
     let releaseHeld: () => void = () => {};
     const heldGate = new Promise<void>((resolve) => { releaseHeld = resolve; });

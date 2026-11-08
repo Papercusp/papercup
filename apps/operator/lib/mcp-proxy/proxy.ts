@@ -156,6 +156,10 @@ export const MCP_PROXY_TRACE_HEADER = MCP_REQUEST_TRACE_HEADER;
 const MCP_PROXY_CALLER_ATTEMPT_ID_HEADER = "x-papercusp-mcp-attempt-id";
 const SESSION_RESPAWNED_REPORT_PATH = "/api/agent-mcp/console/bootstrap-su/session-respawned";
 const CALLER_ATTEMPT_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const CODEX_HOME_REPAIR_PATH = "/api/adv/sessions/ensure-codex-home";
+const CODEX_HOME_REPAIR_ATTEMPT_ID_HEADER = "x-papercusp-repair-attempt";
+const CODEX_HOME_REPAIR_QUEUE_BUDGET_HEADER = "x-papercusp-repair-queue-budget-ms";
+const CODEX_HOME_REPAIR_MAX_QUEUE_BUDGET_MS = 10_000;
 
 function callerAttemptIdForRequest(req: http.IncomingMessage): string | undefined {
   const path = req.url?.split("?", 1)[0];
@@ -163,6 +167,28 @@ function callerAttemptIdForRequest(req: http.IncomingMessage): string | undefine
   const value = req.headers[MCP_PROXY_CALLER_ATTEMPT_ID_HEADER];
   if (typeof value !== "string" || !CALLER_ATTEMPT_ID_RE.test(value)) return undefined;
   return value.toLowerCase();
+}
+
+function codexHomeRepairMetadataForRequest(
+  req: http.IncomingMessage,
+): { repairAttemptId: string; queueBudgetMs: number | null } | null {
+  const path = req.url?.split("?", 1)[0];
+  if (req.method !== "POST" || path !== CODEX_HOME_REPAIR_PATH) return null;
+  const attemptId = req.headers[CODEX_HOME_REPAIR_ATTEMPT_ID_HEADER];
+  if (typeof attemptId !== "string" || !CALLER_ATTEMPT_ID_RE.test(attemptId))
+    return null;
+  const budget = req.headers[CODEX_HOME_REPAIR_QUEUE_BUDGET_HEADER];
+  const parsedBudget =
+    typeof budget === "string" && /^[0-9]{1,5}$/.test(budget)
+      ? Number(budget)
+      : null;
+  const queueBudgetMs =
+    Number.isSafeInteger(parsedBudget) &&
+    parsedBudget! > 0 &&
+    parsedBudget! <= CODEX_HOME_REPAIR_MAX_QUEUE_BUDGET_MS
+      ? parsedBudget
+      : null;
+  return { repairAttemptId: attemptId.toLowerCase(), queueBudgetMs };
 }
 export const MAX_MCP_PROXY_TRACE_ID_CHARS = MAX_MCP_REQUEST_TRACE_ID_CHARS;
 export const MCP_PROXY_DATA_PLANE_DEGRADED_AT_HEADER =
@@ -3904,6 +3930,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     traceId: string;
     tools: string[];
     conflictKeys: string[] | null;
+    repairAttemptId?: string;
     toolFailureCapture?: boolean;
   }
   const criticalContinuationRequests = new Map<
@@ -4033,6 +4060,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     tools: string[];
     conflictKeys: string[] | null;
     maxWaitMs: number;
+    repairAttemptId?: string;
   }
   type QueuedHandshake = QueuedAdmission;
   interface QueuedOrdinary extends QueuedAdmission {
@@ -4641,6 +4669,9 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           traceId: details.traceId,
           tools: details.tools,
           conflictKeys: details.conflictKeys,
+          ...(details.repairAttemptId
+            ? { repairAttemptId: details.repairAttemptId }
+            : {}),
           ageMs: Math.max(0, healthNow - details.startedAtMs),
         }));
       const waitingCriticalContinuationRequests = criticalContinuationQueue
@@ -4650,6 +4681,9 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           traceId: waiter.traceId,
           tools: waiter.tools,
           conflictKeys: waiter.conflictKeys,
+          ...(waiter.repairAttemptId
+            ? { repairAttemptId: waiter.repairAttemptId }
+            : {}),
           ageMs: Math.max(0, healthNow - waiter.enqueuedAtMs),
           maxWaitMs: waiter.maxWaitMs,
           blockedBy: criticalContinuationBlocker(waiter.conflictKeys, healthNow, waiter),
@@ -4906,6 +4940,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         const inFlightNow = inFlightStarts.size;
         const requestTraceId = randomUUID();
         const callerAttemptId = callerAttemptIdForRequest(req);
+        const codexHomeRepair = codexHomeRepairMetadataForRequest(req);
         const reservedControlPlaneBase = isReservedControlPlaneCall(
           rawBody,
           req.url,
@@ -4937,6 +4972,14 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         const criticalContinuationTools = criticalContinuationIdentity.tools;
         const criticalContinuationConflictKeys =
           criticalContinuationIdentity.conflictKeys;
+        const criticalContinuationRepairAttemptId =
+          criticalContinuation && codexHomeRepair
+            ? codexHomeRepair.repairAttemptId
+            : undefined;
+        const codexHomeRepairQueueBudgetMs =
+          criticalContinuationRepairAttemptId
+            ? codexHomeRepair?.queueBudgetMs ?? 0
+            : 0;
         const sessionHandshake = isMcpSessionHandshakeCall(rawBody);
         const watchdogSessionProbe =
           sessionHandshake && isMcpProxyWatchdogProbePath(req.url);
@@ -5546,6 +5589,9 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                 detail: `proxy critical-continuation FIFO already has ${criticalContinuationQueueLength()} waiter(s) (queue max ${maxCriticalContinuationQueue})`,
                 retryAfterSec,
                 traceId: requestTraceId,
+                ...(criticalContinuationRepairAttemptId
+                  ? { repairAttemptId: criticalContinuationRepairAttemptId }
+                  : {}),
               }),
             );
             log(
@@ -5559,6 +5605,9 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               traceId: requestTraceId,
               tools: criticalContinuationTools,
               conflictKeys: criticalContinuationConflictKeys,
+              ...(criticalContinuationRepairAttemptId
+                ? { repairAttemptId: criticalContinuationRepairAttemptId }
+                : {}),
               criticalContinuationInFlight,
               queueLength: criticalContinuationQueueLength(),
               maxCriticalContinuationQueue,
@@ -5585,6 +5634,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           const positiveQueueWaitBounds = [
             maxCriticalContinuationQueueWaitMs,
             improvementsCaptureWaitBound,
+            codexHomeRepairQueueBudgetMs,
           ].filter((waitMs): waitMs is number => waitMs > 0);
           const effectiveQueueWaitMs = nonExpiring
             ? 0
@@ -5604,6 +5654,9 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               tools: criticalContinuationTools,
               conflictKeys: criticalContinuationConflictKeys,
               maxWaitMs: effectiveQueueWaitMs,
+              ...(criticalContinuationRepairAttemptId
+                ? { repairAttemptId: criticalContinuationRepairAttemptId }
+                : {}),
             };
             if (
               compactionPriority ||
@@ -5700,6 +5753,9 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                   path: req.url,
                   traceId: requestTraceId,
                   tools: criticalContinuationTools,
+                  ...(criticalContinuationRepairAttemptId
+                    ? { repairAttemptId: criticalContinuationRepairAttemptId }
+                    : {}),
                   conflictKeys: criticalContinuationConflictKeys,
                   waitedMs: waitedSoFarMs,
                   criticalContinuationInFlight,
@@ -5726,6 +5782,9 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               path: req.url,
               traceId: requestTraceId,
               tools: criticalContinuationTools,
+              ...(criticalContinuationRepairAttemptId
+                ? { repairAttemptId: criticalContinuationRepairAttemptId }
+                : {}),
               conflictKeys: criticalContinuationConflictKeys,
               criticalContinuationInFlight,
               queueLength: criticalContinuationQueueLength(),
@@ -5772,6 +5831,9 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                   detail: `critical-continuation write waited ${waitedMs}ms in the FIFO (max ${queuedCriticalContinuation.maxWaitMs}ms, ${criticalContinuationQueueLength()} other waiter(s))${blockedByDetail}`,
                   retryAfterSec: 2,
                   traceId: requestTraceId,
+                  ...(criticalContinuationRepairAttemptId
+                    ? { repairAttemptId: criticalContinuationRepairAttemptId }
+                    : {}),
                   ...(blocker ? { blockedBy: blocker } : {}),
                 }),
               );
@@ -5781,6 +5843,9 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                 path: req.url,
                 traceId: requestTraceId,
                 tools: criticalContinuationTools,
+                ...(criticalContinuationRepairAttemptId
+                  ? { repairAttemptId: criticalContinuationRepairAttemptId }
+                  : {}),
                 waitedMs,
                 criticalContinuationInFlight,
                 queueLength: criticalContinuationQueueLength(),
@@ -6180,6 +6245,9 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             startedAtMs: inFlightStartedAt,
             traceId: requestTraceId,
             tools: criticalContinuationTools,
+            ...(criticalContinuationRepairAttemptId
+              ? { repairAttemptId: criticalContinuationRepairAttemptId }
+              : {}),
             conflictKeys: criticalContinuationConflictKeys,
           });
           // A newly active key may leave later disjoint waiters immediately runnable.
@@ -6457,16 +6525,22 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             const upstreamMs = Date.now() - attemptStartedAt;
             // Headers are not a mutation completion boundary, even if the caller
             // disconnected before they arrived. Hold the key while draining its body.
-            const continuationBodyDone = criticalContinuation && outcome.ures
+            const preserveUpstreamAfterClientGone =
+              criticalContinuation || fwd.klass === "opaque";
+            const upstreamBodyDone = preserveUpstreamAfterClientGone && outcome.ures
               ? new Promise<void>((resolve) => {
                   const response = outcome.ures!;
+                  let finished = false;
                   const finish = () => {
+                    if (finished) return;
+                    finished = true;
                     for (const event of ["end", "error", "aborted", "close"])
                       response.off(event, finish);
                     resolve();
                   };
                   for (const event of ["end", "error", "aborted", "close"])
                     response.once(event, finish);
+                  if (response.complete || response.readableEnded) finish();
                 })
               : null;
             // The abort above surfaces as an ordinary failed attempt; `clientGone` is what
@@ -6474,9 +6548,9 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             // write to a dead socket.
             if (clientGone) {
               // EI-21908521835344903: the client is gone, so nothing can be written back to
-              // it — but for a 'keyed'/'opaque' class this attempt was never aborted (only
-              // 'idempotent' gets an AbortController; see the comment above `attemptAbort`),
-              // so the write may have LANDED anyway. `outcome` already holds that answer right
+              // it — keyed writes are never aborted, and opaque writes are canceled only
+              // before socket connect. The write may have LANDED anyway. `outcome` already
+              // holds that answer right
               // here; record it instead of discarding it, so the forensic ledger can later
               // distinguish "committed after the client gave up" from "genuinely failed" —
               // exactly what a caller whose own MCP client surfaced a bare, undiscriminated
@@ -6484,7 +6558,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               // cannot rewrite) currently has no way to determine except by hand-verifying
               // application state. `upstreamStatus` present + 2xx means the write applied.
               if (outcome.ures) outcome.ures.resume(); // drain so the (keepAlive:false) socket is released
-              if (continuationBodyDone) await continuationBodyDone;
+              if (upstreamBodyDone) await upstreamBodyDone;
               record({
                 kind: "client_gone",
                 method: req.method,
@@ -6732,10 +6806,10 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               // SSE headers precede tool completion. Keep a continuation's conflict keys
               // until the upstream body ends, including when its caller disconnects.
               // Otherwise the next same-item write can overtake the first verifier.
-              // Drain a disconnected continuation so its upstream tool can finish before
-              // the conflict key is released. Other response streams retain normal cleanup.
+              // Drain disconnected continuations and opaque writes. Their upstream work may
+              // still be applying after headers, so client loss must not tear down the socket.
               res.on("close", () => {
-                if (criticalContinuation) {
+                if (criticalContinuation || fwd.klass === "opaque") {
                   ures.unpipe(res);
                   if (!ures.destroyed) ures.resume();
                 } else if (!ures.destroyed) ures.destroy();
@@ -6840,7 +6914,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                   ...rpcTrace,
                 });
               }
-              if (continuationBodyDone) await continuationBodyDone;
+              if (upstreamBodyDone) await upstreamBodyDone;
               return;
             }
             last = outcome;

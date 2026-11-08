@@ -933,6 +933,59 @@ describe('Codex managed carry keeps the selected account route', () => {
   });
 
   it.each([
+    ['matching proxy refusal', true],
+    ['receipt for another repair attempt', false],
+  ] as const)('sends a caller-bounded queue budget and trusts only a matching not_forwarded receipt: %s',
+    async (_label, correlated) => {
+      const root = mkdtempSync(join(tmpdir(), 'codex-queue-budget-'));
+      let requestAttempt: string | null = null;
+      const failures: any[] = [];
+      try {
+        const result = await launcher.ensureCodexHomeViaOperator(
+          'su-queue-budget',
+          join(root, 'session-7'),
+          7,
+          {
+            env: { PAPERCUSP_SU_CODEX_HOMES_DIR: root },
+            operatorUrl: 'http://operator',
+            timeoutMs: 10_000,
+            onFailure: failure => failures.push(failure),
+            fetchImpl: async (_url, init) => {
+              const headers = new Headers(init.headers);
+              requestAttempt = headers.get('x-papercusp-repair-attempt');
+              expect(headers.get('x-papercusp-repair-queue-budget-ms')).toBe('8000');
+              return {
+                ok: false,
+                status: 429,
+                json: async () => ({
+                  error: 'mcp_proxy_critical_continuation_queue_dwell',
+                  forwardingResult: 'not_forwarded',
+                  repairAttemptId: correlated
+                    ? requestAttempt
+                    : '00000000-0000-4000-8000-000000000001',
+                }),
+              };
+            },
+          },
+        );
+        expect(result).toBeNull();
+        expect(requestAttempt).toMatch(/^[0-9a-f-]{36}$/);
+        expect(failures).toHaveLength(1);
+        expect(failures[0]).toMatchObject({
+          stage: 'response',
+          reason: 'http-error',
+          status: 429,
+          diagnostic: { attemptId: requestAttempt },
+        });
+        expect(failures[0].forwardingResult).toBe(
+          correlated ? 'not_forwarded' : undefined,
+        );
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+  it.each([
     ['http', 'response', 'http-error', 503],
     ['json', 'response', 'invalid-response', 200],
     ['refused', 'response', 'operator-refused', 200],

@@ -335,10 +335,10 @@ it.each(['retry', 'late-native', 'rearmed-late-native', 'replaced', 'replaced-af
 
 it.each([
   {
-    label: 'transient HTTP 503',
+    label: 'HTTP 503 with unknown forwarding outcome',
     failure: { stage: 'response', reason: 'http-error', status: 503 },
-    retryable: true,
-    expectedPreparations: 2,
+    retryable: false,
+    expectedPreparations: 1,
   },
   {
     label: 'permanent HTTP 403',
@@ -347,8 +347,14 @@ it.each([
     expectedPreparations: 1,
   },
   {
-    label: 'request-stage TimeoutError without an HTTP status',
+    label: 'request-stage TimeoutError without a forwarding verdict',
     failure: { stage: 'request', reason: 'request-failed', status: null, errorName: 'TimeoutError' },
+    retryable: false,
+    expectedPreparations: 1,
+  },
+  {
+    label: 'critical queue refusal explicitly confirms no forwarding',
+    failure: { stage: 'response', reason: 'http-error', status: 429, forwardingResult: 'not_forwarded' },
     retryable: true,
     expectedPreparations: 2,
   },

@@ -10421,11 +10421,9 @@ export function deliveryDedupSettlement(deliveryOutcome, rearmOwnsDelivery = fal
 
 /** Persist the re-arm controller's retry window with a failed Codex-home attempt. */
 export function codexHomeEnsureFailureMetadata(failure, capMs) {
-  const statusCode = Number.isInteger(failure?.status) ? failure.status : null;
-  const retryable = failure?.stage === 'request' ||
-    (failure?.stage === 'response' &&
-      (statusCode === 408 || statusCode === 429 ||
-        (statusCode !== null && statusCode >= 500 && statusCode <= 599)));
+  // Only a proxy receipt tied to this repair attempt proves the request never
+  // reached the mutating handler. A timeout or HTTP error alone is ambiguous.
+  const retryable = failure?.forwardingResult === 'not_forwarded';
   return {
     retryable,
     capMs: Number.isFinite(capMs) && capMs > 0 ? Math.round(capMs) : null,

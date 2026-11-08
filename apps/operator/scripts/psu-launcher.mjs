@@ -12300,6 +12300,8 @@ export function reportSessionRespawnedDurably(
   sessionId,
   {
     coordOwnerId = null,
+    // Keep the child launch's namespace when this report is retried in the background.
+    env = /** @type {NodeJS.ProcessEnv | undefined} */ (undefined),
     childLaunchSessionId = null,
     managedSuccessionPermit = null,
     reportImpl = reportSessionRespawned,
@@ -12315,6 +12317,7 @@ export function reportSessionRespawnedDurably(
       .then(() => generation === respawnReportGeneration
         ? reportImpl(advSessionId, sessionId, {
           coordOwnerId,
+          ...(env !== undefined ? { env } : {}),
           ...(childLaunchSessionId ? { childLaunchSessionId } : {}),
           ...(managedSuccessionPermit ? { managedSuccessionPermit } : {}),
         }) : false)
@@ -13763,6 +13766,7 @@ export function runWrapper(options) {
         hostHandoff.nativeId,
         {
           coordOwnerId: ownerId,
+          env,
         },
       );
     }
@@ -13969,6 +13973,7 @@ export function runWrapper(options) {
             freshId,
             {
               coordOwnerId: ownerId,
+              env,
               onConfirmed,
               // WI-6554700010030031: only the in-place reset path supplies this.
               ...(childLaunchSessionId ? { childLaunchSessionId } : {}),
@@ -17654,7 +17659,7 @@ export function codexForkMcpUrlForOwner(codexHome, ownerId) {
  * @param {string | null} owner
  * @param {string | null} codexHome
  * @param {string | number | null} advSessionId
- * @param {{sourcePolicy?: 'preserved-artifact' | null, expectedSpecificationRevision?: string | null, requireGatewayProvider?: boolean, model?: string | null, headless?: boolean, routeMode?: string | null, accountId?: string | null, priority?: string | null, fetchImpl?: (...args: any[]) => Promise<any>, operatorUrl?: string, env?: NodeJS.ProcessEnv, probe?: typeof probeOmpOperatorMcp, onRecovery?: Function, onFailure?: (failure: {stage: string, reason: string, status: number | null, errorName?: string, diagnostic: {attemptId: string, startedAtMs: number, elapsedMs: number, target: {kind: string, protocol: string, port: number} | null, phaseTimingsMs: Record<string, number>}}) => void, token?: string | null, timeoutMs?: number, now?: () => number}} options
+ * @param {{sourcePolicy?: 'preserved-artifact' | null, expectedSpecificationRevision?: string | null, requireGatewayProvider?: boolean, model?: string | null, headless?: boolean, routeMode?: string | null, accountId?: string | null, priority?: string | null, fetchImpl?: (...args: any[]) => Promise<any>, operatorUrl?: string, env?: NodeJS.ProcessEnv, probe?: typeof probeOmpOperatorMcp, onRecovery?: Function, onFailure?: (failure: {stage: string, reason: string, status: number | null, errorName?: string, forwardingResult?: 'not_forwarded', diagnostic: {attemptId: string, startedAtMs: number, elapsedMs: number, target: {kind: string, protocol: string, port: number} | null, phaseTimingsMs: Record<string, number>}}) => void, token?: string | null, timeoutMs?: number, now?: () => number}} options
  */
 export async function ensureCodexHomeViaOperator(
   owner,
@@ -17698,10 +17703,10 @@ export async function ensureCodexHomeViaOperator(
   // Preserve the null-return contract without losing the cause at the PTY
   // boundary. Extend the existing host-event evidence, not a second log.
   // Never include response bodies, URLs, hostnames, credentials or error text.
-  const failed = (reason, err = null) => {
+  const failed = (reason, err = null, metadata = {}) => {
     const errorName = ['AbortError', 'TimeoutError', 'TypeError', 'SyntaxError', 'Error'].includes(err?.name)
       ? err.name : undefined;
-    try { onFailure?.({ stage, reason, status, ...(errorName ? { errorName } : {}),
+    try { onFailure?.({ stage, reason, status, ...(errorName ? { errorName } : {}), ...metadata,
       diagnostic: { attemptId, startedAtMs, elapsedMs: Math.max(0, now() - startedAtMs),
         target: requestTarget, phaseTimingsMs: { ...phaseTimingsMs } } }); } catch { /* diagnostics cannot block recovery */ }
     return null;
@@ -17761,6 +17766,9 @@ export async function ensureCodexHomeViaOperator(
     } catch { /* invalid targets are classified by the actual request below */ }
     const tok = token ?? readToken();
     stage = 'request';
+    // The proxy must be able to return its explicit not_forwarded queue refusal
+    // before this request's abort deadline closes the response channel.
+    const queueBudgetMs = Math.min(10_000, Math.max(1, Math.floor(timeoutMs * 0.8)));
     const res = await traceStep('request', () => fetchImpl(
       resolvedOperatorUrl + "/api/adv/sessions/ensure-codex-home",
       {
@@ -17769,6 +17777,7 @@ export async function ensureCodexHomeViaOperator(
         headers: {
           "content-type": "application/json",
           "x-papercusp-repair-attempt": attemptId,
+          "x-papercusp-repair-queue-budget-ms": String(queueBudgetMs),
           ...(tok ? { authorization: `Bearer ${tok}` } : {}),
         },
         body: JSON.stringify({
@@ -17786,7 +17795,21 @@ export async function ensureCodexHomeViaOperator(
     ));
     status = Number.isInteger(res.status) ? res.status : null;
     stage = 'response';
-    if (res.ok === false) return failed('http-error');
+    if (res.ok === false) {
+      const failureReceipt = await traceStep('response', async () => {
+        try { return typeof res.json === 'function' ? await res.json() : null; }
+        catch { return null; }
+      });
+      const explicitlyNotForwarded =
+        failureReceipt &&
+        typeof failureReceipt === 'object' &&
+        failureReceipt.repairAttemptId === attemptId &&
+        failureReceipt.forwardingResult === 'not_forwarded' &&
+        (failureReceipt.error === 'mcp_proxy_critical_continuation_queue_dwell' ||
+          failureReceipt.error === 'mcp_proxy_critical_continuation_queue_full');
+      return failed('http-error', null,
+        explicitlyNotForwarded ? { forwardingResult: 'not_forwarded' } : {});
+    }
     const r = await traceStep('response', () => res.json().catch(() => null));
     if (!r || typeof r !== 'object') return failed('invalid-response');
     if (r.ok !== true) return failed('operator-refused');

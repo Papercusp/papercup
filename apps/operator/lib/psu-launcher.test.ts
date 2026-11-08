@@ -16358,6 +16358,13 @@ describe("reportSessionRespawnedDurably (WI-10004917: a respawn report lost to a
     expect(pending).toHaveLength(0);
   });
 
+  it("forwards an explicit launcher environment through the durable report", async () => {
+    const env = { PAPERCUSP_TURN_PROVENANCE_DIR: "/runtime/launch-specific/turn-provenance" };
+    const reportImpl = vi.fn(async () => true);
+    await expect(reportSessionRespawnedDurably("42", freshId, { env, reportImpl })).resolves.toBe(true);
+    expect(reportImpl).toHaveBeenCalledWith("42", freshId, { coordOwnerId: null, env });
+  });
+
   it("does not retry an accepted first report", async () => {
     const reportImpl = vi.fn(async () => true);
     const { pending, sleepImpl, tick } = manualSleep();
@@ -16466,6 +16473,13 @@ describe("reportSessionRespawnedDurably (WI-10004917: a respawn report lost to a
     // Positive control: the scan found the call sites at all.
     expect(callers.length).toBeGreaterThanOrEqual(2);
     expect(new Set(callers)).toEqual(new Set(["reportSessionRespawnedDurably"]));
+    const callSites = [...src.matchAll(/(?:void|return) reportSessionRespawnedDurably\(/g)];
+    expect(callSites).toHaveLength(2);
+    for (const callSite of callSites) {
+      const start = callSite.index ?? -1;
+      const end = src.indexOf(");", start);
+      expect(src.slice(start, end)).toContain("env,");
+    }
   });
 });
 
