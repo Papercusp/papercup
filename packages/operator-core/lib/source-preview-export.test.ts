@@ -36,6 +36,7 @@ import {
   prepareBgVerifierSource,
   verifyBgVerifierSource,
   createBgVerifierCompilerCustody,
+  createBgVerifierRuntimeCustody,
   prepareBgVerifierBuildRecord,
   prepareBgVerifierBuildContexts,
   prepareBgVerifierBuildTransaction,
@@ -662,6 +663,10 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(() => {
+  // Published dependency generations deliberately make their directories read-only.
+  // Restore only this fixture's owned tree before removing those generations.
+  const writable = spawnSync('chmod', ['-R', 'u+rwX', tmp]);
+  expect(writable.status, writable.stderr?.toString()).toBe(0);
   rmSync(tmp, { recursive: true, force: true });
 });
 
@@ -3719,9 +3724,9 @@ describe('BG inherited manifest and original source boundaries', () => {
   });
 
   async function compilerCandidate(artifactInputs = false, cliHarness = false, sourceOnly = false, protectedUnconsumed = false,
-    runtimeModules = false) {
+    runtimeModules = false, frozenGeneration = false) {
     return makeBgCompilerCandidate(join(tmp, `bg-source-${++serial}`),
-      { artifactInputs, cliHarness, sourceOnly, protectedUnconsumed, runtimeModules, trace: bgFixtureTrace });
+      { artifactInputs, cliHarness, sourceOnly, protectedUnconsumed, runtimeModules, frozenGeneration, trace: bgFixtureTrace });
   }
 
   it('compiled runtime source fixture retains a root lock matching its own manifests', async () => {
@@ -3915,8 +3920,8 @@ describe('BG inherited manifest and original source boundaries', () => {
     });
 
   async function maintainedCompilerCandidate(sourceOnly = false, protectedUnconsumed = false, runtimeModules = false,
-    expectedHostManifest?: Parameters<typeof prepareBgVerifierBuildRecord>[0]['expectedHostManifest']) {
-    const { prepared } = await compilerCandidate(true, true, sourceOnly, protectedUnconsumed, runtimeModules);
+    expectedHostManifest?: Parameters<typeof prepareBgVerifierBuildRecord>[0]['expectedHostManifest'], frozenGeneration = false) {
+    const { prepared } = await compilerCandidate(true, true, sourceOnly, protectedUnconsumed, runtimeModules, frozenGeneration);
     const installed = dirname(createRequire(import.meta.url).resolve('@papercusp/host-esbuild/package.json'));
     const privateCompiler = join(prepared.root, 'node_modules/@papercusp/host-esbuild');
     bgFixtureTrace('private-compiler-copy:start');
@@ -3926,6 +3931,21 @@ describe('BG inherited manifest and original source boundaries', () => {
     cpSync(installed, privateCompiler, { recursive: true, dereference: true,
       filter: path => path !== join(installed, 'node_modules') });
     bgFixtureTrace('private-compiler-copy:completed');
+    let generation: { store: string, path: string } | undefined;
+    if (frozenGeneration) {
+      const store = join(tmp, `runtime-generations-${serial}`);
+      const env = { ...childEnv(), PAPERCUSP_DEPENDENCY_GENERATION_ROOT: store,
+        DEPENDENCY_GENERATION_COPY_LOCK_FILE: join(tmp, `runtime-generation-copy-${serial}.lock`) };
+      const published = spawnSync('bash', [join(prepared.root, 'apps/operator/bin/release/dependency-generation.sh'),
+        '--integration', prepared.root, '--generation-root', store], { env, encoding: 'utf8', timeout: 60_000 });
+      expect(published.status, published.stdout + published.stderr).toBe(0);
+      const path = published.stdout.match(/\bpath=([^\n]+)$/m)![1]!;
+      rmSync(join(prepared.root, 'node_modules'), { recursive: true, force: true });
+      const copied = spawnSync('bash', [join(prepared.root, 'papercusp-desktop/bin/lib/pinned-deps.sh'),
+        'snapshot-generation-locked', prepared.root, prepared.root, 'copy'], { env, encoding: 'utf8', timeout: 60_000 });
+      expect(copied.status, copied.stdout + copied.stderr).toBe(0);
+      generation = { store, path };
+    }
     const dependencies = captureVerifierDependencies({ dest: prepared.root, receipt: prepared.source });
     bgFixtureTrace('private-compiler:dependencies-ready');
     const entry = join(prepared.root, 'apps/operator/dist-verify/guarded.mjs');
@@ -3945,12 +3965,12 @@ describe('BG inherited manifest and original source boundaries', () => {
     bgFixtureTrace('private-compiler:record-ready');
     const expectedVersion = '0.25.0';
     expect(JSON.parse(readFileSync(join(privateCompiler, 'package.json'), 'utf8')).version).toBe(expectedVersion);
-    return { prepared, dependencies, invocation, record, argv, entry, expectedVersion, replayIdentityDefine };
+    return { prepared, dependencies, invocation, record, argv, entry, expectedVersion, replayIdentityDefine, generation };
   }
 
   async function partitionCompilation(sourceOnly = true, protectedUnconsumed = false, runtimeModules = false,
-    expectedHostManifest?: Parameters<typeof prepareBgVerifierBuildRecord>[0]['expectedHostManifest']) {
-    const fixture = await maintainedCompilerCandidate(sourceOnly, protectedUnconsumed, runtimeModules, expectedHostManifest);
+    expectedHostManifest?: Parameters<typeof prepareBgVerifierBuildRecord>[0]['expectedHostManifest'], frozenGeneration = false) {
+    const fixture = await maintainedCompilerCandidate(sourceOnly, protectedUnconsumed, runtimeModules, expectedHostManifest, frozenGeneration);
     const bank = dirname(fixture.entry), stageLeaf = 'partition-generation';
     mkdirSync(bank, { recursive: true });
     const temporary = 'hono-host.mjs.tmp.@BG_PID@';
@@ -3975,9 +3995,11 @@ describe('BG inherited manifest and original source boundaries', () => {
     invocation: Awaited<ReturnType<typeof partitionCompilation>>['args']['invocation'];
     execution: Parameters<typeof qualifyBgVerifierRuntimeSources>[0]['execution'];
     inputCustody: ReturnType<typeof createBgVerifierCompilerCustody>;
+    runtimeCustody?: Awaited<ReturnType<typeof createBgVerifierRuntimeCustody>>;
+    generation?: { store: string, path: string };
   }> | undefined)[] = [];
   async function compiledRuntime(transformed = false, native = false, host?: 'complete' | 'missing-member' | 'with-builtins',
-    custodyCase?: string) {
+    custodyCase?: string, frozenGeneration = false) {
     const index = host === 'with-builtins' ? 6 : host === 'complete' ? 4 : host === 'missing-member' ? 5
       : Number(transformed) + Number(native) * 2;
     const build = async () => {
@@ -4015,7 +4037,7 @@ console.log(JSON.stringify({ files: libraries.map(({ path, sha256, bytes }) => (
       }
       // No CommonJS syntax-detection attempt precedes the original ESM bytes.
       // A failed parse must continue to refuse qualification in the capture.
-      const fixture = await partitionCompilation(true, false, true, expectedHostManifest);
+      const fixture = await partitionCompilation(true, false, true, expectedHostManifest, frozenGeneration);
       const output = await qualifyBgVerifierOutput(fixture.args);
       // Preserve the original temporary output and compiler custody separately.
       const prefix = (host ? `runtime-host-${host}` : native ? 'runtime-native-output'
@@ -4056,6 +4078,12 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
 `);
       const inputCustody = createBgVerifierCompilerCustody({ prepared: fixture.prepared,
         dependencies: fixture.record.dependencies });
+      let runtimeCustody: Awaited<ReturnType<typeof createBgVerifierRuntimeCustody>> | undefined;
+      if (fixture.generation) {
+        vi.stubEnv('PAPERCUSP_DEPENDENCY_GENERATION_ROOT', fixture.generation.store);
+        try { runtimeCustody = await createBgVerifierRuntimeCustody(fixture); }
+        finally { vi.unstubAllEnvs(); }
+      }
       // Change and restore resolution metadata while the real child runs.
       // Endpoint byte censuses alone accept both of these controls.
       const metadata = join(fixture.prepared.root, 'node_modules/fixture-dependency/package.json');
@@ -4097,14 +4125,62 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
           eof: true as const, processId: rows[0].processId, exitCode: result.status!, signal: result.signal,
           bytes: stderr.length, sha256: digest(stderr) } };
       })()] : undefined;
-      return { output, record: fixture.record, invocation: fixture.args.invocation, inputCustody,
+      return { output, record: fixture.record, invocation: fixture.args.invocation, inputCustody, runtimeCustody,
+        generation: fixture.generation,
         execution: { entry, trace: readFileSync(trace, 'utf8'), captures: [rows],
           ...(nativeCaptures ? { nativeCaptures } : {}),
           terminal: { processId: rows[0].processId, exitCode: result.status!, signal: result.signal,
             eof: true, captureStartedBeforeExec: true } } };
     };
-    return custodyCase ? build() : runtimeCompilations[index] ??= build();
+    return custodyCase || frozenGeneration ? build() : runtimeCompilations[index] ??= build();
   }
+
+  it.each(['positive', 'copied', 'late', 'foreign', 'pin', 'selector', 'publication', 'materialization'] as const)(
+    'compiled runtime frozen generation custody: %s', async variant => {
+      const fixture = await compiledRuntime(false, false, undefined, `generation-${variant}`, true);
+      const args = { output: fixture.output, record: fixture.record, invocation: fixture.invocation,
+        execution: fixture.execution };
+      const custody = fixture.runtimeCustody!;
+      if (variant === 'copied') {
+        await expect(custody.qualify.call({ ...custody }, args)).rejects.toThrow('not a retained host witness');
+        return;
+      }
+      if (variant === 'late') {
+        vi.stubEnv('PAPERCUSP_DEPENDENCY_GENERATION_ROOT', fixture.generation!.store);
+        try {
+          const late = await createBgVerifierRuntimeCustody({ prepared: fixture.record.prepared,
+            dependencies: fixture.record.dependencies });
+          await expect(late.qualify(args)).rejects.toThrow(/after traced execution/);
+        } finally { vi.unstubAllEnvs(); }
+        return;
+      }
+      if (variant === 'foreign') {
+        const foreign = await compiledRuntime(false, false, undefined, 'generation-foreign-target', true);
+        await expect(custody.qualify({ output: foreign.output, record: foreign.record, invocation: foreign.invocation,
+          execution: foreign.execution })).rejects.toThrow('source differs');
+        return;
+      }
+      const pin = join(fixture.record.prepared.root, '.papercusp-pinned-deps');
+      const input = readFileSync(pin, 'utf8').match(/^selector=(.+)$/m)![1]!;
+      const target = variant === 'pin' ? pin : variant === 'selector' ? join(fixture.generation!.store, '.inputs', input)
+        : variant === 'publication' ? join(fixture.generation!.path, '.papercusp-dependency-generation')
+          : join(fixture.record.prepared.root, 'node_modules/fixture-dependency/index.js');
+      const original = readFileSync(target);
+      if (variant !== 'positive') {
+        chmodSync(target, 0o644);
+        writeFileSync(target, Buffer.concat([original, Buffer.from('\n')]));
+      }
+      try {
+        if (variant !== 'positive') { await expect(custody.qualify(args)).rejects.toThrow(); return; }
+        const proof = await custody.qualify(args);
+        expect(proof.dependencyQualification).toBe('original-frozen-generation-stable-over-traced-lifetime');
+        expect(proof.frozenGeneration.dependencyGeneration).toBe(fixture.generation!.path.split(sep).at(-1));
+        expect(proof.frozenGeneration.boundAtMs).toBeLessThan(proof.inputCustody!.firstExecAtMs);
+        expect(proof.frozenGeneration.verifiedAtMs).toBeGreaterThanOrEqual(proof.inputCustody!.lastTerminalAtMs);
+        expect(proof.completeRuntimeClosureVerified).toBe(false);
+        expect(proof.creatorFence).toBe('required');
+      } finally { if (variant !== 'positive') writeFileSync(target, original); }
+    }, 120_000);
 
   it.each(['positive', 'absent', 'copied', 'late', 'foreign', 'dependency-aba', 'directory-aba',
     'same-bytes-replacement'] as const)('compiled runtime dependency interval custody: %s', async variant => {
