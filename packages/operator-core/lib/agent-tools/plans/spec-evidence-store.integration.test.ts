@@ -4,7 +4,7 @@ import type postgres from 'postgres';
 import { restoreRawJsonbSerializer } from '@papercusp/db-org';
 import { once } from 'node:events';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer as createHttpServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -23,15 +23,18 @@ import { configureRuntimeVintageStore, resetRuntimeVintageStore, InMemoryRuntime
 import { configureRemoteRuntimeDescribe, measureRuntimeEnvironment, resetRemoteRuntimeDescribe }
   from '../../remote-runtime-identity';
 
-const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, repoRoot: '', siblingRoot: '' }));
+const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, repoRoot: '', siblingRoot: '',
+  beforeTransaction: undefined as (() => void) | undefined }));
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return {
     ...(await orig<typeof import('@papercusp/db-org')>()),
     ...actual,
     getOrgPg: () => ({ sql: h.sql }),
-    withWorkspace: async <T>(_workspaceId: string, fn: (tx: postgres.Sql) => Promise<T>) =>
-      h.sql.begin(async (tx) => fn(tx as unknown as postgres.Sql)),
+    withWorkspace: async <T>(_workspaceId: string, fn: (tx: postgres.Sql) => Promise<T>) => {
+      h.beforeTransaction?.();
+      return h.sql.begin(async (tx) => fn(tx as unknown as postgres.Sql));
+    },
   };
 });
 vi.mock('../../harness-registry', async (importOriginal) => ({
@@ -339,6 +342,126 @@ beforeEach(async () => {
       (workspace_id, harness_slug, feature_id, source_plan_slug, source_plan_item_ids)
     VALUES (${WORKSPACE}, ${HARNESS}, 'WI-101', 'reconnect-plan', ARRAY['P-003', 'P-004']::text[]),
            (${WORKSPACE}, ${HARNESS}, 'WI-102', 'reconnect-plan', ARRAY['P-003', 'P-004']::text[])`;
+});
+
+describe('canonical binding consumer custody', () => {
+  it.each(['terminal', 'dead', 'abandoned', 'revoked'] as const)(
+    'pins before the real binding transaction and reclaims only after %s consumer expiry', async loss => {
+      const { readOpenWorkItemEvidenceReferences, readRetentionPins, renewWorkItemEvidencePins } =
+        await import('../../storage/retention-pins');
+      const { runDiskReclaimOnce } = await import('../../storage/disk-reclaim');
+      const { resolveSessionStates } = await import('../coordination/liveness-oracle');
+      const evidenceRoot = path.join(h.repoRoot, '.papercusp/evidence');
+      const retained = path.join(evidenceRoot, `binding-${loss}`);
+      const unrelated = path.join(evidenceRoot, `unrelated-${loss}`);
+      const dir = await mkdtemp(path.join(tmpdir(), 'binding-retention-leases-'));
+      const evidenceRef = `docs/evidence/custody-${loss}.json`;
+      const resultBytes = '{"passed":true}\n';
+      await mkdir(path.join(h.repoRoot, 'docs/evidence'), { recursive: true });
+      await mkdir(retained, { recursive: true }); await mkdir(unrelated);
+      await writeFile(path.join(retained, 'result.json'), resultBytes);
+      await writeFile(path.join(unrelated, 'expired'), 'disposable');
+      await writeFile(path.join(h.repoRoot, evidenceRef), JSON.stringify({ retainedEvidence: {
+        root: `.papercusp/evidence/binding-${loss}`, pathBase: 'Repository root',
+      } }));
+      await specs.setSpecClause(clause({ mutationRequired: false }));
+      await db.sql`UPDATE harness_shared.work_items SET status = 'open', taken_by = 'consumer'
+        WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND feature_id = 'WI-101'`;
+      const hour = 3_600_000, nowMs = Date.now() + 48 * hour, intakeMs = nowMs - 24 * hour;
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(intakeMs);
+      vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', dir);
+      let lost = false;
+      const consumer = {
+        nowMs,
+        listPresence: async () => [{
+          ownerId: 'consumer', ownerLabel: 'Fixture consumer', workspaceId: WORKSPACE, source: 'fixture',
+          intent: '', currentPlanSlug: null, currentFiles: [], host: 'fixture-host', pid: null, tty: null,
+          startedAt: new Date(nowMs).toISOString(), heartbeatAt: new Date(nowMs).toISOString(),
+          lastActiveAt: null, intentDeclaredAt: null, agentRole: 'su', potSlug: null,
+          capabilityTags: [], stale: false, userId: null, revoked: lost && loss === 'revoked',
+        } satisfies import('../coordination/presence').PresenceRecord],
+        resolveSessionStates: ((subjects, opts) => resolveSessionStates(subjects, { ...opts,
+          fetchWakeabilityFn: async ids => new Map(ids.map(id => [id, {
+            wakeable: false, liveTurn: !(lost && loss === 'dead'),
+          }])),
+          fetchRecordedLiveFn: async () => new Set(), fetchRecordedEndedFn: async () => new Set(), probePidFn: () => null,
+        })) as typeof resolveSessionStates,
+      };
+      const args = bindTool.args.parse({ harness: HARNESS, slug: 'reconnect-plan', binding: {
+        workItemId: 'WI-101', specId: 'SPEC-003-01', specRevision: 1, evidenceKind: 'fixture', evidenceRef,
+        measurement: { schemaVersion: 1, kind: 'repo-files', sourcePaths: ['src/reconnect.ts'], fixturePaths: [evidenceRef] },
+      } });
+      const reference = { harness_slug: HARNESS, work_item_id: 'WI-101', evidence_ref: evidenceRef };
+      const repositories = new Map([[HARNESS, h.repoRoot]]);
+      const transactions: string[] = [];
+      try {
+        h.beforeTransaction = () => {
+          const pins = readRetentionPins({ dir, nowMs: intakeMs });
+          expect(pins.errors).toEqual([]);
+          expect(pins.pins).toEqual([expect.objectContaining({ owner: 'work-item:WI-101', paths: [retained] })]);
+          transactions.push(pins.pins[0]!.id);
+        };
+        const bound = await bindTool.handler(args as never, CTX);
+        expect(bound, JSON.stringify(bound)).toMatchObject({ data: { ok: true, results: [{ ok: true, status: 'created' }] } });
+        expect(transactions.length).toBeGreaterThan(0);
+        h.beforeTransaction = undefined;
+        const [stored] = await db.sql`SELECT work_item_id, evidence_ref FROM harness_shared.spec_evidence_bindings`;
+        expect(stored).toEqual({ work_item_id: 'WI-101', evidence_ref: evidenceRef });
+        const intakePin = readRetentionPins({ dir, nowMs: intakeMs }).pins[0]!;
+        expect(transactions.every(id => id === intakePin.id)).toBe(true);
+        const refs = await readOpenWorkItemEvidenceReferences(db.sql, WORKSPACE, consumer);
+        expect(refs).toEqual([reference]);
+        const policy: import('../../storage/retention-policy').RetentionClass[] = [{
+          id: 'fixture', title: 'fixture', origin: 'agent', roots: [evidenceRoot],
+          keep: { kind: 'max-age', maxAgeHours: 24 }, enforcers: [{ kind: 'standing-reclaim' }],
+        }];
+        const options = { policy, roots: [{ path: evidenceRoot, classId: 'fixture' }],
+          registeredWorkspaces: () => [], expectedDevices: [], sample: async () => [],
+          scanHolders: async () => ({ complete: true, byPath: new Map<string, string[]>() }) };
+        const active = await runDiskReclaimOnce({ ...options, nowMs, readProtection: async () => {
+          const current = await readOpenWorkItemEvidenceReferences(db.sql, WORKSPACE, consumer);
+          expect(await renewWorkItemEvidencePins(current, { repositories, dir, nowMs })).toMatchObject({ missing: [] });
+          return { paths: [], pins: readRetentionPins({ dir, nowMs }).pins };
+        } });
+        expect(active.errors).toEqual([]);
+        expect(active.entries).toContainEqual(expect.objectContaining({ path: retained, status: 'protected' }));
+        expect(active.entries).toContainEqual(expect.objectContaining({ path: unrelated, status: 'removed' }));
+        expect(await readFile(path.join(retained, 'result.json'), 'utf8')).toBe(resultBytes);
+        const renewed = readRetentionPins({ dir, nowMs }).pins[0]!;
+        expect(renewed.id).toBe(intakePin.id);
+        expect(Date.parse(renewed.expiresAt)).toBeGreaterThan(Date.parse(intakePin.expiresAt));
+        if (loss === 'terminal') await db.sql`UPDATE harness_shared.work_items SET status = 'done' WHERE feature_id = 'WI-101'`;
+        if (loss === 'abandoned') await db.sql`UPDATE harness_shared.work_items SET taken_by = NULL WHERE feature_id = 'WI-101'`;
+        lost = true;
+        const lostRefs = await readOpenWorkItemEvidenceReferences(db.sql, WORKSPACE, consumer);
+        expect(lostRefs).toEqual([]);
+        await renewWorkItemEvidencePins(lostRefs, { repositories, dir, nowMs: nowMs + 48 * hour });
+        expect(readRetentionPins({ dir, nowMs }).pins).toEqual([renewed]);
+        const reclaim = (at: number) => runDiskReclaimOnce({ ...options, nowMs: at,
+          readProtection: async () => ({ paths: [], pins: readRetentionPins({ dir, nowMs: at }).pins }) });
+        const grace = await reclaim(nowMs + 48 * hour);
+        expect(grace.errors).toEqual([]);
+        expect(grace.entries).toContainEqual(expect.objectContaining({ path: retained, status: 'protected' }));
+        const later = nowMs + 73 * hour;
+        const expired = await reclaim(later);
+        expect(expired.errors).toEqual([]);
+        expect(expired.entries).toContainEqual(expect.objectContaining({ path: retained, status: 'removed' }));
+        await expect(stat(retained)).rejects.toMatchObject({ code: 'ENOENT' });
+        clock.mockReturnValue(later);
+        const afterReclaim = vi.fn(); h.beforeTransaction = afterReclaim;
+        const refused = await bindTool.handler(args as never, CTX);
+        expect(refused).toMatchObject({ data: { ok: false, results: [{ ok: false }] } });
+        expect(JSON.stringify(refused)).toContain('evidence retention: missing declared evidence');
+        expect(afterReclaim).not.toHaveBeenCalled();
+        expect(await db.sql`SELECT id FROM harness_shared.spec_evidence_bindings`).toHaveLength(1);
+      } finally {
+        h.beforeTransaction = undefined;
+        clock.mockRestore(); vi.unstubAllEnvs();
+        await rm(dir, { recursive: true, force: true });
+        await rm(evidenceRoot, { recursive: true, force: true });
+      }
+    }, 120_000,
+  );
 });
 
 describe('promotion carry-forward of current spec evidence', () => {
