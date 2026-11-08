@@ -1,8 +1,32 @@
-export function runtimeFileTraceArguments(output: string, command: string[]): string[];
+export function runtimeFileTraceArguments(output: string, command: string[], options?: {execEntryDelayMs: number}): string[];
 export function observeRuntimePageSize(): number;
 export interface RuntimeObservedProcessIdentity {
   processId: number; parentProcessId: number; startTimeTicks: string; executable: string;
 }
+export interface RuntimeExecEntryObservation {
+  schema: 'runtime-exec-entry-observation/v1';
+  process: RuntimeObservedProcessIdentity; observerProcessId: number;
+  startedMonotonicNs: string; finishedMonotonicNs: string;
+  tracer: {process: RuntimeObservedProcessIdentity;
+    tasksBefore: {taskId: number; state: string; startTimeTicks: string}[];
+    tasksAfter: {taskId: number; state: string; startTimeTicks: string}[]};
+  tasksBefore: {taskId: number; state: string; startTimeTicks: string; tracerProcessId: number}[];
+  tasksAfter: {taskId: number; state: string; startTimeTicks: string; tracerProcessId: number}[];
+  syscallBefore: string; syscallAfter: string; auxvBefore: Buffer; auxvAfter: Buffer;
+  mapsBefore: string; mapsAfter: string; elfHeader: {address: string; bytes: Buffer};
+}
+export function observeRuntimeExecEntry(identity: RuntimeObservedProcessIdentity,
+  tracerIdentity: RuntimeObservedProcessIdentity): RuntimeExecEntryObservation;
+export function bindRuntimeExecEntry(observation: RuntimeExecEntryObservation,
+  identity: RuntimeObservedProcessIdentity, tracerIdentity: RuntimeObservedProcessIdentity): {
+  schema: 'runtime-exec-entry-binding/v1'; process: RuntimeObservedProcessIdentity;
+  instructionPointer: string; programEntry: string; interpreterBase: string;
+  mapsSha256: string; auxvSha256: string; elfHeaderSha256: string;
+  mappings: {start: string; end: string; permissions: string; offset: string;
+    device: string; inode: string; path: string | null}[];
+  kernelEntryObserved: true; mappingPopulationComplete: false; executableBytesQualified: false;
+  completeRuntimeClosureVerified: false; scope: string;
+};
 export interface RuntimeExecutableMemoryObservation {
   schema: 'runtime-selected-executable-memory/v1';
   process: RuntimeObservedProcessIdentity; observerProcessId: number;

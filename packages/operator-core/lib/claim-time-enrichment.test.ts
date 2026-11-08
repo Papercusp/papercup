@@ -1,6 +1,57 @@
 import { describe, expect, it, vi } from 'vitest';
+import { censusSites, changedSites } from '../../../scripts/lib/source-path-census.mjs';
 
 const behaviorContractResolver = vi.fn(async () => ({ groups: [], enforceable: [] }));
+
+/**
+ * R23 detector calibration, using the existing source-census implementation.
+ * These intentionally small source specimens are NOT an eight-flow inventory,
+ * ordinary-input replay, frozen output oracle or independent acceptance proof.
+ * They keep the no-residue source comparison falsifiable while those separate
+ * obligations remain UNKNOWN. Never give these the eight declared flow names.
+ */
+describe('paperwork census source-diff controls', () => {
+  const baseline = `const args = z.object({ id: z.string() });
+    async function handler(input) { return normalWrite(input); }`;
+  const frozen = censusSites('ordinary-input.ts', baseline);
+
+  it('finds no source residue for the unchanged ordinary surface', () => {
+    expect(changedSites(frozen, censusSites('ordinary-input.ts', baseline))).toEqual({
+      addedOrChanged: [], removedOrChanged: [],
+    });
+  });
+
+  it.each([
+    ['form', 'mandatoryForm'],
+    ['report', 'mandatoryReport'],
+    ['relevance label', 'relevanceLabel'],
+    ['checkpoint section', 'checkpointSection'],
+    ['copied receipt', 'copiedReceipt'],
+  ])('detects an added required %s without changing the frozen source', (_category, field) => {
+    const mutant = baseline.replace('id: z.string()', `id: z.string(), ${field}: z.string()`);
+    const delta = changedSites(frozen, censusSites('ordinary-input.ts', mutant));
+    expect(delta.addedOrChanged.some(site => site.expression === 'z.object' && site.source.includes(field))).toBe(true);
+    expect(delta.removedOrChanged.some(site => site.expression === 'z.object')).toBe(true);
+    expect(frozen.sha256).toBe(censusSites('ordinary-input.ts', baseline).sha256);
+  });
+
+  it('detects a newly required duplicate call even when the input schema is unchanged', () => {
+    const mutant = baseline.replace('return normalWrite(input);', 'normalWrite(input); return normalWrite(input);');
+    const current = censusSites('ordinary-input.ts', mutant);
+    expect(current.sites.find(site => site.expression === 'z.object')?.fingerprint)
+      .toBe(frozen.sites.find(site => site.expression === 'z.object')?.fingerprint);
+    const delta = changedSites(frozen, current);
+    expect(delta.addedOrChanged.filter(site => site.expression === 'normalWrite')).toHaveLength(1);
+    expect(delta.removedOrChanged).toEqual([]);
+  });
+
+  it('retains a removed surface as source residue instead of an empty passing comparison', () => {
+    const current = censusSites('ordinary-input.ts', baseline.slice(0, baseline.indexOf('async function')));
+    const delta = changedSites(frozen, current);
+    expect(delta.addedOrChanged).toEqual([]);
+    expect(delta.removedOrChanged.map(site => site.expression)).toEqual(['normalWrite']);
+  });
+});
 
 vi.mock('./plan-decisions-claim-port', () => ({
   getClaimTimePlanDecisions: vi.fn(async () => null),
