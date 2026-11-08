@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import { createFrozenCandidateQueue, parseFrozenCandidateRepairQueue, parseGeneratedRepairOperation,
   type FrozenCandidateRepairQueue } from './frozen-candidate-repair-queue';
 import type { AdmissionSuccess } from './repair-head-admission';
+import type { TaskRow } from '../task-manager/types';
 import { healGeneratedRepair, SELECTIVE_DECLARATION_OUTPUT as OUTPUT } from '../../../../apps/operator/lib/release/heal-generated-repair';
 import { beginGeneratedRepair, runGeneratedRepairWorker, cancelGeneratedRepair, observeGeneratedRepair,
   generatedRepairOwnsQueue, startGeneratedRepairWorker, buildGeneratedRepairSpawnPlan,
@@ -21,6 +22,11 @@ vi.mock('./repair-auto-verify', () => ({ scheduleRepairAutoVerify: vi.fn() }));
 
 const HEAD = 'a'.repeat(40), NEXT = 'b'.repeat(40);
 const target = { workspaceId: 'fixture-workspace', installSlug: 'fixture-drill' };
+function taskRow(state: TaskRow['state'], confined = true): TaskRow {
+  return { taskId: 'fixture-task', rootTaskId: 'fixture-task', workspaceId: target.workspaceId,
+    class: 'bash-job', title: 'Generated repair fixture', argv: [], launchedBy: 'fixture',
+    state, confined, startedAt: new Date(0).toISOString(), lastSeenAt: new Date(0).toISOString(), detail: {} };
+}
 function latch() {
   let release!: () => void;
   const promise = new Promise<void>(r => { release = r; });
@@ -156,6 +162,58 @@ describe('durable generated repair', () => {
     const f = fixture(); await f.begin(); vi.mocked(f.deps.getTask).mockRejectedValueOnce(new Error('ledger unavailable'));
     await expect(observeGeneratedRepair(target, f.deps)).rejects.toThrow('ledger unavailable');
     expect(f.queue.healGeneratedOperation?.status).toBe('running'); expect(f.deps.startWorker).toHaveBeenCalledOnce();
+  });
+  it('waits for delayed confinement enrollment before doing repair work', async () => {
+    const f = fixture(); await f.begin(); f.continueSetup.release();
+    vi.useFakeTimers();
+    try {
+      vi.mocked(f.deps.getTask)
+        .mockResolvedValueOnce(taskRow('pending', false))
+        .mockResolvedValueOnce(taskRow('running'));
+      const work = f.run();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(f.deps.heal).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(30_000); await work;
+      expect(f.deps.heal).toHaveBeenCalledOnce();
+      expect(f.queue.healGeneratedOperation?.status).toBe('succeeded');
+      expect(f.deps.startWorker).toHaveBeenCalledOnce();
+    } finally { vi.useRealTimers(); }
+  });
+  it.each(['pending', 'absent', 'unreadable'] as const)
+    ('bounds unconfirmed enrollment after parent loss (%s)', async state => {
+      const f = fixture(); await f.begin();
+      vi.useFakeTimers();
+      try {
+        if (state === 'unreadable') vi.mocked(f.deps.getTask).mockRejectedValue(new Error('ledger unavailable'));
+        else vi.mocked(f.deps.getTask).mockResolvedValue(state === 'absent' ? null : taskRow('pending', false));
+        const work = f.run();
+        await vi.advanceTimersByTimeAsync(30_000); await work;
+        expect(f.deps.heal).not.toHaveBeenCalled(); expect(f.deps.admit).not.toHaveBeenCalled();
+        expect(f.queue.healGeneratedOperation).toMatchObject({ status: 'interrupted',
+          result: { reason: 'managed-worker-enrollment-unconfirmed', effectMayHaveRun: false } });
+        await f.begin(); expect(f.deps.startWorker).toHaveBeenCalledOnce();
+      } finally { vi.useRealTimers(); }
+    });
+  it('refuses a confirmed unconfined task and records the interruption', async () => {
+    const f = fixture(); await f.begin();
+    vi.mocked(f.deps.getTask).mockResolvedValue(taskRow('running', false));
+    await f.run();
+    expect(f.deps.heal).not.toHaveBeenCalled();
+    expect(f.queue.healGeneratedOperation).toMatchObject({ status: 'interrupted',
+      result: { reason: 'managed-worker-enrollment-unconfirmed', effectMayHaveRun: false } });
+  });
+  it('retains publication uncertainty when reservation races a stale observer task read', async () => {
+    const f = fixture(); await f.begin();
+    vi.mocked(f.deps.getTask).mockImplementationOnce(async () => {
+      await f.deps.transition(target, q => ({ ...q, healGeneratedOperation: {
+        ...q.healGeneratedOperation!, status: 'publishing', phase: 'publishing',
+      }, updatedAtMs: q.updatedAtMs + 1 }));
+      return taskRow('exited');
+    });
+    expect(await observeGeneratedRepair(target, f.deps)).toMatchObject({ status: 'interrupted',
+      result: { effectMayHaveRun: true } });
+    expect(f.queue.healGeneratedOperation?.result?.effectMayHaveRun).toBe(true);
+    await f.begin(); expect(f.deps.startWorker).toHaveBeenCalledOnce();
   });
   it('retries terminal notifications from stored success without repeating generation or publication', async () => {
     const f = fixture(); await f.begin();

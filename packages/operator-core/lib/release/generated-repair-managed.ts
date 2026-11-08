@@ -144,7 +144,9 @@ async function settleGeneratedRepair(target: GateVerdictTarget, id: string,
     const op = fresh.healGeneratedOperation;
     if (!op || op.operationId !== id || !generatedRepairActive(op)) return fresh;
     return updateGeneratedRepair(fresh, op, { status, phase: 'settled', result: {
-      ...result, ...(op.status === 'publishing' && result.effectMayHaveRun !== false ? { effectMayHaveRun: true } : {}),
+      // Only this fresh CAS row can establish whether publication was reserved.
+      // A caller may have computed an explicit false before that reservation.
+      ...result, ...(op.status === 'publishing' ? { effectMayHaveRun: true } : {}),
     } });
   });
 }
@@ -200,12 +202,34 @@ export async function cancelGeneratedRepair(target: GateVerdictTarget, id: strin
 }
 
 export async function runGeneratedRepairWorker(input: GeneratedRepairWorkerInput, deps: GeneratedRepairDeps = defaultDeps) {
-  const task = await deps.getTask(input.taskId);
-  if (!task?.confined || !['pending', 'running'].includes(task.state)) return;
   const read = await deps.readQueue(input.queueTarget);
   if (read.status !== 'value') return;
   const initial = read.queue.healGeneratedOperation;
   if (!initial || initial.operationId !== input.operationId || initial.taskId !== input.taskId || initial.status !== 'running') return;
+  // registerTask precedes the fork, but markSpawned confirms confinement AFTER
+  // the child is already running. Await that acknowledgement rather than
+  // mistaking the normal pending row for an unconfined launch. Parent loss or
+  // a failed acknowledgement must terminate honestly without doing repair work.
+  const enrollmentDeadline = Math.min(Date.now() + 30_000, initial.expiresAtMs);
+  for (;;) {
+    let task: Awaited<ReturnType<GeneratedRepairDeps['getTask']>> | undefined;
+    let taskReadError: string | undefined;
+    try { task = await deps.getTask(input.taskId); }
+    catch (error) { taskReadError = String(error); }
+    if (task?.state === 'running' && task.confined) break;
+    if ((task && task.state !== 'pending') || Date.now() >= enrollmentDeadline) {
+      await settleGeneratedRepair(input.queueTarget, input.operationId, 'interrupted', {
+        ok: false, admitted: false, reason: 'managed-worker-enrollment-unconfirmed', effectMayHaveRun: false,
+        taskState: task?.state ?? 'unknown', ...(taskReadError ? { taskReadError } : {}),
+      }, deps);
+      return;
+    }
+    await new Promise<void>(resolve => setTimeout(resolve, Math.min(250, enrollmentDeadline - Date.now())));
+    const current = await deps.readQueue(input.queueTarget);
+    if (current.status !== 'value' || current.queue.healGeneratedOperation?.operationId !== input.operationId ||
+        current.queue.healGeneratedOperation.status !== 'running' ||
+        !generatedRepairOwnsQueue(current.queue, current.queue.healGeneratedOperation)) return;
+  }
   const base = { ...read.queue, updatedAtMs: initial.expectedUpdatedAtMs };
   let receiptId: string | undefined;
   try {
