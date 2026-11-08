@@ -1,0 +1,143 @@
+{
+  "schemaVersion": 1,
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "workItem": "WI-6554700010029573",
+  "result": "pass",
+  "plane": "private GNOME virtual seat; fixture PUI; current build",
+  "fix": {
+    "rootCause": "Asynchronous Gst GI imports remain pending inside the resident helper's synchronous GTK Application.run loop, leaving recording state unavailable.",
+    "change": "Load optional imports.gi.Gst synchronously before Application.run; retain operation-scoped unavailable-audio errors.",
+    "regression": "The maintained ResidentBridge/helper GTK regression failed with both dynamic-import candidates, then passed after synchronous import without bridge changes.",
+    "alternative": "Audio state frames lost by ResidentBridge; unchanged bridge delivers recording and playing frames after only the GI-load change."
+  },
+  "tests": {
+    "focused": {
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0,
+      "childSubstituted": 0,
+      "taskId": "0mw75pp596gzf7j1qua",
+      "log": "/tmp/wb-resident-audio-regression-20261108-v4.log"
+    },
+    "fullUnit": {
+      "passed": 50,
+      "failed": 0,
+      "skipped": 0,
+      "childSubstituted": 0,
+      "taskId": "0mw75ynibbs4d4g156a",
+      "log": "/tmp/wb-gnome-audio-full-unit-20261108-v1.log"
+    },
+    "native": {
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0,
+      "taskId": "0mw760lm7xhgw5gx96u",
+      "log": "/tmp/wb-gnome-voice-native-20261108-v3.log"
+    }
+  },
+  "nativeAssertions": [
+    "native shortcut acquisition",
+    "native seat supports input injection",
+    "native input methods exist",
+    "desktop ready for normal shortcuts",
+    "voice binds exact canonical UUID conversation",
+    "native voice controls offer explicit recording and reply playback",
+    "opening conversation never records sends or plays automatically",
+    "real GStreamer capture exposes stop and use controls without duplicate capture",
+    "exact transcription populates editable native draft with review before Send",
+    "native capture reaches PUI as a finalized WAV",
+    "voice transport retains selected environment store conversation and unique request identity",
+    "transcription neither sends a turn nor starts reply audio",
+    "Read reply synthesizes only the exact selected reply",
+    "stopping playback preserves the reviewed draft",
+    "speech service failure preserves draft and explains the failure",
+    "a foreign voice receipt cannot replace the draft",
+    "seat editing cancels and reaps pending speech before any late transcript can apply",
+    "refresh retires capture and preserves the conversation draft",
+    "Earlier messages retires capture before changing history",
+    "Escape retires devices without creating an application window",
+    "another conversation inherits neither recording nor voice draft",
+    "returning to original conversation restores only its draft",
+    "explicit native Send carries voice modality and exact reviewed text and identity",
+    "explicit Send retires a live recording before starting the saved turn",
+    "native voice remains outside Dock taskbar and Alt-Tab application windows",
+    "changing the selected PUI environment hides chat and retires its voice devices"
+  ],
+  "sourceCustody": {
+    "archiveSha256": "09fb1e9930e18ce4a8ef54584c93d993589edea4a0465816fc5201af0b66fc2b",
+    "journey": "voice",
+    "files": {
+      "extension.js": "dbc298b6a6ab6f6d74cad2929c7ba7e3d7a4a9b0eb3f1f58eee049286c61607c",
+      "workbench.js": "01ca1a31e49adbe218b0d9673a39ede049601a186723a53970ed974899f10eef",
+      "panel-model.mjs": "a1804b9d7fc6e196565175c570fc327cdb38ab22ece3e191ef228acab3d3bfc5",
+      "bridge.js": "d6a5e605192168b4e46335fbf47f23f1e0cf2f315e30c8f3d5aa909dd8fd53db",
+      "helper.js": "5604d173a62ad88583c884b0689ee1afc04da7a64ea5f41771e1fcd209416709",
+      "audio.js": "3e3d4927292d31494313a74fcee3438b3eaf3afefdacb5f430ba4fcb1827f6ad",
+      "chat-content.js": "97e4d37a47a1a99ecfc6e2f80872fd5d67fde3a5bbf8fb0d8b347a87d5f3c90e",
+      "schemas/org.gnome.shell.extensions.papercusp-workbench.gschema.xml": "5d2a51f63725674107512d43a7a8ec1383d1bfe9953f6e298d8c53a28229b3aa"
+    },
+    "testSha256": "98e17ad8b2e4ae4772457316d983031fdc28416d9c0a231e1d619639a5c57022",
+    "audioFixture": {
+      "path": "voice-helper.js",
+      "sha256": "4ccb32788ec846e9282115f9ca1e890d53e63af58b61570ee6b5ce249fbbf0fe",
+      "plane": "production AudioDevices and helper with constructor-selected audiotestsrc and fakesink; no physical microphone or speaker claim"
+    }
+  },
+  "sourceHashVerification": {
+    "workbench.js": {
+      "match": true,
+      "sha256": "01ca1a31e49adbe218b0d9673a39ede049601a186723a53970ed974899f10eef"
+    },
+    "panel-model.mjs": {
+      "match": true,
+      "sha256": "a1804b9d7fc6e196565175c570fc327cdb38ab22ece3e191ef228acab3d3bfc5"
+    },
+    "bridge.js": {
+      "match": true,
+      "sha256": "d6a5e605192168b4e46335fbf47f23f1e0cf2f315e30c8f3d5aa909dd8fd53db"
+    },
+    "helper.js": {
+      "match": true,
+      "sha256": "5604d173a62ad88583c884b0689ee1afc04da7a64ea5f41771e1fcd209416709"
+    },
+    "audio.js": {
+      "match": true,
+      "sha256": "3e3d4927292d31494313a74fcee3438b3eaf3afefdacb5f430ba4fcb1827f6ad"
+    },
+    "schemas/org.gnome.shell.extensions.papercusp-workbench.gschema.xml": {
+      "match": true,
+      "sha256": "5d2a51f63725674107512d43a7a8ec1383d1bfe9953f6e298d8c53a28229b3aa"
+    },
+    "test": {
+      "match": true
+    }
+  },
+  "custodyMapping": "workbench.js is the production extension; extension.js is the generated seat driver. chat-content.js is the generated runtime module captured in sourceCustody.",
+  "screenshotVisuallyVerified": true,
+  "evidence": {
+    "gnome-native-process.json": {
+      "sha256": "209997153c0aa5b52f14c0aaf29c3533d39eed0ccc4b9e0e329b697571cfad69",
+      "bytes": 27064
+    },
+    "gnome-native-input.png": {
+      "sha256": "386329f518516fe7a097afe1b37b3da31f909c0849eda0698e51a861f6bb6c20",
+      "bytes": 580756
+    },
+    "gnome-native-input.json": {
+      "sha256": "a31b623f4b159eea22d92ec8f041ffe291d1e776853f092454c70944d3ecfa30",
+      "bytes": 9943
+    }
+  },
+  "evidenceDirectory": "/tmp/wb-gnome-voice-native-20261108-v3/gnome-native-voice",
+  "sourceProvenance": {
+    "kind": "local-dirty-current-source",
+    "reportedSuperprojectHead": "5ea9a94084",
+    "reportedDesktopHead": "fe432f9557",
+    "cleanCommitClaim": false
+  },
+  "limitations": [
+    "Private real GNOME virtual seat with fixture PUI and production helper/device code.",
+    "Synthetic GStreamer source and sink; no physical microphone, speaker or live speech-service claim.",
+    "Exact installed Ubuntu/macOS/Windows acceptance, independent review, certificate and shipment remain required."
+  ]
+}
