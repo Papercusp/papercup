@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { classifyCallOrigin } from '../../../../../../packages/operator-core/lib/telemetry-call-origin';
 import {
   parseManagedCarryResponse,
   preCompactDecision,
@@ -84,7 +85,7 @@ describe('managed Codex PreCompact bridge', () => {
     expect(decision.systemMessage).toContain('no continue message is needed');
     expect(decision.systemMessage).not.toContain('Finish the atomic step');
     expect(fetchImpl).toHaveBeenCalledOnce();
-    expect(capturedUrl).toBe(ENV.PAPERCUSP_MCP_URL);
+    expect(capturedUrl).toBe(`${ENV.PAPERCUSP_MCP_URL}&origin=hook`);
     expect(capturedRequest?.headers).not.toHaveProperty('Authorization');
     expect(JSON.parse(String(capturedRequest?.body))).toMatchObject({
       method: 'tools/call',
@@ -94,6 +95,32 @@ describe('managed Codex PreCompact bridge', () => {
         _meta: { format: 'json' },
       },
     });
+  });
+
+  it('declares hook origin while preserving an explicitly agent-origin signed launch route', async () => {
+    const launchUrl = `${ENV.PAPERCUSP_MCP_URL}&profile=su&origin=agent`;
+    let capturedUrl = '';
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL) => {
+      capturedUrl = String(url);
+      return new Response(rpc({ ok: true, requested: true, respawn: 'queued' }));
+    });
+
+    const decision = await runManagedPreCompact(PAYLOAD, {
+      env: { ...ENV, PAPERCUSP_MCP_URL: launchUrl },
+      fetchImpl,
+    });
+
+    const actual = new URL(capturedUrl);
+    const expected = new URL(launchUrl);
+    expected.searchParams.set('origin', 'hook');
+    expect(actual.href).toBe(expected.href);
+    expect(classifyCallOrigin({
+      requestOrigin: { query: Object.fromEntries(actual.searchParams) },
+      spawnId: ENV.PAPERCUSP_SID,
+    })).toEqual({ origin: 'hook', source: 'declared' });
+    expect(decision.continue).toBe(false);
+    expect(decision.systemMessage).toContain('QUEUED');
+    expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
   it('accepts a structured MCP result when the text content block is absent', async () => {
@@ -173,7 +200,7 @@ describe('managed Codex PreCompact bridge', () => {
       fetchImpl,
       readToken: () => 'secret-token',
     });
-    expect(capturedUrl).toBe(env.PAPERCUSP_MCP_URL);
+    expect(capturedUrl).toBe(`${env.PAPERCUSP_MCP_URL}&origin=hook`);
     expect(capturedRequest?.headers).toHaveProperty('Authorization', 'Bearer secret-token');
   });
 

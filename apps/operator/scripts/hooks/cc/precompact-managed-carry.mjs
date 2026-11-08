@@ -358,7 +358,11 @@ export async function runManagedPreCompact(payload, options = {}) {
     },
   });
   try {
-    const response = await fetchImpl(mcpUrl, {
+    // This automatic hook reuses the model's signed route and native carrier.
+    // Override its origin declaration so telemetry identifies the actual chooser.
+    const hookUrl = new URL(mcpUrl);
+    hookUrl.searchParams.set('origin', 'hook');
+    const response = await fetchImpl(hookUrl.toString(), {
       method: 'POST',
       headers,
       body,
