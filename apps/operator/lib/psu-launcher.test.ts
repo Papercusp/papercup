@@ -12925,7 +12925,11 @@ describe("original Codex routing — existing profile only", () => {
     writeFileSync(join(home, "config.toml"), 'model = "gpt-6"\nmodel_reasoning_effort = "high"\n[mcp_servers.papercusp-su]\nurl = "http://localhost/api/mcp?client=su-original"\n[tui]\nterminal_title = []\nalternate_screen = "never"\n');
     writeFileSync(join(home, "papercusp-diagnostics.json"), JSON.stringify({ lockOwnerSid: "su-original" }));
     const hook = { hooks: [{ command: "PAPERCUSP_SID='su-original' lifecycle-report.sh" }] };
-    writeFileSync(join(home, "hooks.json"), JSON.stringify({ hooks: { SessionStart: [hook], SessionEnd: [hook], Stop: [hook] } }));
+    const provenanceHook = { hooks: [{ command: `PAPERCUSP_SID='su-original' PAPERCUSP_AGENT=codex PAPERCUSP_TURN_PROVENANCE_DIR='${process.env.PAPERCUSP_TURN_PROVENANCE_DIR || join(homedir(), ".papercusp", "turn-provenance")}' userpromptsubmit-provenance.sh` }] };
+    const journalHook = { hooks: [{ command: "PAPERCUSP_SID='su-original' PAPERCUSP_AGENT=codex PAPERCUSP_JOURNAL_SYNC=1 stop-turn-journal.sh" }] };
+    writeFileSync(join(home, "hooks.json"), JSON.stringify({ hooks: {
+      UserPromptSubmit: [provenanceHook], SessionStart: [hook], SessionEnd: [hook], Stop: [hook, journalHook],
+    } }));
     source = { id: 42, agent: "codex", coordOwnerId: "su-original", sessionId: uuid,
       endedAt: "2026-10-07T00:00:00Z", startedAt: "2026-10-06T00:00:00Z", codexHome: home,
       cwd: "/original", role: "su", feature: "WI-original", workspaceId: "workspace-original",
