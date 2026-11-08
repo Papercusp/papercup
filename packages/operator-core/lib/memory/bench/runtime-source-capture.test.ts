@@ -7,7 +7,7 @@ import inspector from 'node:inspector';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { bindRuntimeSourcePopulation, startRuntimeSourceCapture, validateRuntimeSourceCapture } from './runtime-source-capture.mjs';
-import { bindRuntimeProcessTree, observeRuntimeExecutableMemory, observeRuntimeProcessIdentity,
+import { bindRuntimeExecEntry, observeRuntimeExecEntry, bindRuntimeProcessTree, observeRuntimeExecutableMemory, observeRuntimeProcessIdentity,
   observeRuntimeTracerIdentity, observeRuntimePageSize, runtimeFileTraceArguments } from './runtime-file-opens.mjs';
 
 const roots: string[] = [];
@@ -409,6 +409,94 @@ describe('parsed sources joined to independent process lifetimes', () => {
       if (variant === 'missing-source') rows[1].splice(1,1);
       expect(()=>bindRuntimeSourcePopulation(input,terminal,rows)).toThrow();
     });
+  it.runIf(process.platform==='linux'&&process.arch==='x64')(
+    'consumes actual source exec-entry evidence without excusing the earlier shell image', async () => {
+      const root=fs.mkdtempSync(path.join(os.tmpdir(),'runtime-source-entry-')); roots.push(root);
+      const tracePath=path.join(root,'trace.log'), sourcePath=path.join(root,'sources.jsonl');
+      const child=spawn('/usr/bin/strace',runtimeFileTraceArguments(tracePath,[process.execPath,
+        '--import',preload,'-e','process.stdin.resume();process.stdout.write("ready\\n");'+
+        'process.stdin.once("data",()=>process.stdin.pause());'],{execEntryDelayMs:5000}),
+      {env:{PATH:'/usr/bin:/bin',PAPERCUSP_RUNTIME_SOURCE_CAPTURE:sourcePath},stdio:['pipe','pipe','pipe']});
+      let stdout='',stderr='';
+      child.stdout.on('data',chunk=>{stdout+=chunk;});child.stderr.on('data',chunk=>{stderr+=chunk;});
+      const closed=new Promise<{code:number|null,signal:NodeJS.Signals|null}>((resolve,reject)=>{
+        child.once('error',reject);child.once('close',(code,signal)=>resolve({code,signal}));
+      });
+      void closed.catch(()=>{});
+      const deadline=Date.now()+15000;
+      const until=async(check:()=>boolean,label:string)=>{
+        while(!check()){
+          if(Date.now()>deadline)throw Error(label+' timeout: '+stderr);
+          await new Promise(resolve=>setTimeout(resolve,5));
+        }
+      };
+      let identity:ReturnType<typeof observeRuntimeProcessIdentity>|undefined;
+      let tracer:ReturnType<typeof observeRuntimeTracerIdentity>|undefined;
+      const tracerAlive=()=>{
+        if(!tracer)return false;
+        try{
+          const state=fs.readFileSync('/proc/'+tracer.processId+'/stat','utf8').split(') ')[1][0];
+          return state!=='Z'&&state!=='X'&&observeRuntimeProcessIdentity(tracer.processId).startTimeTicks===tracer.startTimeTicks;
+        }catch(error){
+          if(['ENOENT','ESRCH'].includes((error as NodeJS.ErrnoException).code??''))return false;
+          throw error;
+        }
+      };
+      try{
+        await until(()=>{
+          try{
+            const candidate=observeRuntimeProcessIdentity(child.pid!);
+            if(candidate.executable!==process.execPath)return false;
+            tracer=observeRuntimeTracerIdentity(candidate,'/usr/bin/strace');identity=candidate;return true;
+          }catch{return false;}
+        },'source exec entry');
+        process.kill(tracer!.processId,'SIGSTOP');
+        await until(()=>fs.readFileSync('/proc/'+tracer!.processId+'/stat','utf8').split(') ')[1].startsWith('T '),
+          'source entry tracer stop');
+        const observation=observeRuntimeExecEntry(identity!,tracer!);
+        const entry=bindRuntimeExecEntry(observation,identity!,tracer!);
+        expect(stdout).toBe('');expect(fs.existsSync(sourcePath)).toBe(false);
+        process.kill(tracer!.processId,'SIGCONT');
+        await until(()=>stdout.includes('ready\n'),'source entry program readiness');
+        child.stdin.end('finish\n');
+        const outcome=await closed;expect(outcome,stderr).toEqual({code:0,signal:null});
+        if(outcome.code!==0||outcome.signal!==null)throw Error('source entry process failed');
+        await until(()=>!tracerAlive(),'source entry tracer termination');
+        const trace=fs.readFileSync(tracePath,'utf8');
+        const rows=fs.readFileSync(sourcePath,'utf8').trim().split('\n').map(line=>JSON.parse(line));
+        const terminal={processId:identity!.processId,exitCode:outcome.code,signal:outcome.signal,
+          eof:true,captureStartedBeforeExec:true,pageSizeBytes:observeRuntimePageSize(),
+          execEntries:[{observation,identity:identity!,tracerIdentity:tracer!}]};
+        const tree=bindRuntimeProcessTree(trace,terminal);
+        const task=tree.tasks.find(task=>task.taskId===identity!.processId)!;
+        expect(task.execs.map(exec=>exec.executable)).toEqual(['/bin/sh',process.execPath]);
+        const seeded=tree.mappingOrigins.changes.filter(change=>change.operation==='exec-entry-snapshot');
+        expect(seeded).toHaveLength(1);expect(seeded[0].atMs).toBe(task.execs[1].atMs);
+        expect(seeded[0].ranges.every(range=>range.origin.execEntryMapsSha256===entry.mapsSha256)).toBe(true);
+        expect(tree.mappingOrigins.gaps).toContainEqual({taskId:task.taskId,atMs:task.execs[0].atMs,
+          reason:'exec-kernel-installed-mappings-unobserved'});
+        expect(tree.mappingOrigins.gaps).not.toContainEqual({taskId:task.taskId,atMs:task.execs[1].atMs,
+          reason:'exec-kernel-installed-mappings-unobserved'});
+        expect(validateRuntimeSourceCapture(rows,[],terminal).parsedSourcePopulationComplete).toBe(true);
+        // A valid final-image V8 receipt does not cover the preceding shell.
+        expect(()=>bindRuntimeSourcePopulation(trace,terminal,[rows])).toThrow('process image missing, replaced or mismatched');
+        expect(tree.mappingOrigins).toMatchObject({mappingPopulationComplete:false,executableBytesQualified:false});
+        expect(tree.completeRuntimeClosureVerified).toBe(false);
+        const changed={...observation,mapsAfter:observation.mapsAfter+'\n'};
+        expect(()=>bindRuntimeProcessTree(trace,{...terminal,execEntries:[{...terminal.execEntries[0],observation:changed}]})).toThrow();
+        const out=process.env.PAPERCUSP_TEST_ARTIFACT_DIR;
+        if(out){
+          fs.writeFileSync(path.join(out,'source-entry-observation.json'),JSON.stringify({observation,identity,tracerIdentity:tracer}));
+          fs.writeFileSync(path.join(out,'source-entry-trace.log'),trace);
+          fs.writeFileSync(path.join(out,'source-entry-sources.jsonl'),fs.readFileSync(sourcePath));
+          fs.writeFileSync(path.join(out,'source-entry-binding.json'),JSON.stringify({entry,tree}));
+        }
+      }finally{
+        if(tracerAlive())process.kill(tracer!.processId,'SIGCONT');
+        child.kill('SIGCONT');child.kill('SIGKILL');await closed.catch(()=>{});
+        if(tracerAlive())process.kill(tracer!.processId,'SIGKILL');
+      }
+    },20000);
   async function captureTracedSourceMemory(qualified: boolean) {
     const root=fs.mkdtempSync(path.join(os.tmpdir(),'runtime-source-memory-')); roots.push(root);
     const tracePath=path.join(root,'trace.log'), sourcePath=path.join(root,'sources.jsonl');
