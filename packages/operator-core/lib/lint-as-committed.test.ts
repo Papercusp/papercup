@@ -637,6 +637,16 @@ describe('isolated clone module identity (EI-24824919200711849)', () => {
 });
 
 describe('parseArgs', () => {
+  it('normalizes explicit dependency workspace flags without changing command forwarding', () => {
+    const args = parseArgs(['test:file', '--any', '--workspace-dir=libs/runtime',
+      '--workspace-dir=apps/operator', '--workspace-dir=libs/runtime', '--', '--workspace-dir=forwarded']);
+    expect(args.workspaceDirs).toEqual(['apps/operator', 'libs/runtime']);
+    expect(args.forward).toEqual(['--workspace-dir=forwarded']);
+    expect(args.unknown).toEqual([]);
+    expect(parseArgs(['--materialize-only', '--workspace-dir=../outside']).checkErrors)
+      .toEqual([expect.stringContaining('invalid --workspace-dir')]);
+  });
+
   it('collects positional script names and defaults the ref to HEAD', () => {
     const a = parseArgs(['lint:no-owner-name-tags', 'lint:no-box-identity']);
     expect(a.scripts).toEqual(['lint:no-owner-name-tags', 'lint:no-box-identity']);
@@ -1888,6 +1898,34 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
     expect(marker).toMatchObject(f.marker);
     expect(marker).not.toHaveProperty('dependencyMode');
   }
+
+  it('materializes selected dependency scope through the maintained CLI', () => {
+    const f = fixture('node build.cjs');
+    let preparedRoot: string | undefined;
+    try {
+      const unrelated = join(f.root, 'apps/unrelated');
+      mkdirSync(join(unrelated, 'node_modules/leaf'), { recursive: true });
+      writeFileSync(join(unrelated, 'package.json'), '{"name":"unrelated"}');
+      writeFileSync(join(unrelated, 'package-lock.json'), '{"lockfileVersion":3}');
+      writeFileSync(join(unrelated, 'node_modules/leaf/index.cjs'), 'module.exports = true;');
+      const result = spawnSync(process.execPath, [scriptPath, '--materialize-only', '--workspace-dir=libs/runtime'], {
+        cwd: f.root, env: commandEnvironment(), encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL',
+      });
+      const output = result.stdout + result.stderr;
+      preparedRoot = output.match(/Committed source prepared at (.+); no lint or test was run\./)?.[1];
+      expect(result.status, output).toBe(0);
+      expect(preparedRoot).toBeTruthy();
+      expect(JSON.parse(readFileSync(join(preparedRoot!, '.git/lint-as-committed-owner.json'), 'utf8')))
+        .toMatchObject({ sha: f.head, dependencyMode: 'independent-copy-v1',
+          dependencyScope: { mode: 'selected', workspaceDirs: ['libs/runtime'] } });
+      expect(existsSync(join(preparedRoot!, 'apps/unrelated/node_modules'))).toBe(false);
+      expect(readFileSync(join(preparedRoot!, 'libs/runtime/dist/index.cjs'), 'utf8')).toContain('pinned-source');
+      expect(gitFixture(preparedRoot!, ['status', '--porcelain', '--untracked-files=all'])).toBe('');
+    } finally {
+      if (preparedRoot) rmSync(preparedRoot, { recursive: true, force: true });
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  }, 40_000);
 
   it.each(['copy', 'resume'] as const)('prepares only selected workspace dependencies with durable scope (%s)', async mode => {
     const f = retainedFixture();
