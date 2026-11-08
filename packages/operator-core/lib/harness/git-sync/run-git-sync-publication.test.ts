@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import ts from 'typescript';
 import { GitSyncYieldError, runGitSync, type GitSyncRootCommit, type GitSyncStepRunner, type RunGit, type RunGitSyncOpts } from './run-git-sync';
 
 const roots: string[] = [];
@@ -25,12 +26,24 @@ function fixture() {
   git('config', 'commit.gpgsign', 'false');
   writeFileSync(join(repo, 'a.txt'), 'baseline a\n');
   writeFileSync(join(repo, 'b.txt'), 'baseline b\n');
+  writeFileSync(join(repo, 'package.json'), JSON.stringify({ name: 'publication-fixture', dependencies: { next: '1.0.0' } }));
+  writeFileSync(join(repo, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3,
+    packages: { '': { dependencies: { next: '1.0.0' } } } }));
   git('add', '-A');
   git('commit', '-m', 'baseline');
+  const validatedTrees: string[] = [];
   const runGit: RunGit = async (args, cwd, options) => {
+    if (cwd === repo && args[0] === 'update-ref' && args.includes('HEAD')) {
+      const commit = args[args.indexOf('HEAD') + 1]!;
+      const tree = git('rev-parse', `${commit}^{tree}`);
+      // Each real ordinary/attributed/anonymous publication must validate its
+      // initial and final private tree, including after beforePublish callbacks.
+      expect(validatedTrees.slice(-2)).toEqual([tree, tree]);
+    }
     const result = spawnSync('git', args, {
       cwd, encoding: 'utf8', timeout: 30_000, env: { ...process.env, ...options?.env },
     });
+    if (cwd === repo && args[0] === 'cat-file' && args[1] === '-t' && result.stdout.trim() === 'tree') validatedTrees.push(args[2]!);
     return { code: result.status ?? -1, stdout: String(result.stdout ?? ''), stderr: String(result.stderr ?? '') };
   };
   const opts: RunGitSyncOpts = {
@@ -46,6 +59,63 @@ function gate() {
   const promise = new Promise<void>((done) => { resolve = done; });
   return { promise, resolve };
 }
+
+describe('metadata publication population', () => {
+  it('requires a disposition for every private publisher caller and parent ref writer', () => {
+    const path = new URL('./run-git-sync.ts', import.meta.url);
+    const source = ts.createSourceFile(path.pathname, readFileSync(path, 'utf8'), ts.ScriptTarget.Latest, true);
+    const owners = (node: ts.Node): string => {
+      for (let p = node.parent; p; p = p.parent) {
+        if (ts.isFunctionDeclaration(p) && p.name) return p.name.text;
+        if (ts.isVariableDeclaration(p) && p.initializer &&
+          (ts.isArrowFunction(p.initializer) || ts.isFunctionExpression(p.initializer))) return p.name.getText(source);
+      }
+      return '<root>';
+    };
+    const callers: string[] = [];
+    const writers: string[] = [];
+    const verbs = new Set(['update-ref', 'switch', 'checkout', 'reset', 'rebase', 'merge', 'commit', 'commit-tree', 'symbolic-ref', 'branch']);
+    const visit = (node: ts.Node) => {
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'publishPrivateIndexCommit')
+        callers.push(owners(node));
+      if (ts.isArrayLiteralExpression(node)) {
+        const argv = node.elements.filter(ts.isStringLiteral).map(value => value.text);
+        const verb = argv.find(value => verbs.has(value));
+        // Path resets update an index only. symbolic-ref --quiet is a read.
+        if (verb && !(verb === 'reset' && !argv.includes('--hard')) &&
+          !(verb === 'symbolic-ref' && argv.includes('--quiet'))) writers.push(`${owners(node)}:${argv.join(' ')}`);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+    expect(callers.sort()).toEqual(['commitAttributedGroupsPass', 'commitOneRepoWithScratch', 'commitPriorityPaths', 'publishGitSyncCandidate']);
+    // This is a closed source census, not proof that ingress/recovery routes are
+    // accepted. Those writers remain explicit in the plan's final population.
+    expect(writers.sort()).toEqual([
+      'ensureBranchAttachedForCommit:update-ref',
+      'ensureBranchAttachedForCommit:switch', 'ensureBranchAttachedForCommit:switch',
+      'ensureBranchAttachedForCommit:switch --create', 'ensureBranchAttachedForCommit:switch --create',
+      'transplantInstallerSeedSnapshot:update-ref', 'transplantInstallerSeedSnapshot:reset --hard',
+      'transplantInstallerSeedSnapshot:rebase --rebase-merges --onto', 'transplantInstallerSeedSnapshot:rebase --abort',
+      'publishPrivateIndexCommit:commit-tree', 'publishPrivateIndexCommit:update-ref -m HEAD',
+      'captureGitSyncCandidate:update-ref', 'publishGitSyncCandidate:update-ref',
+      'preserveVanishedStagedSourcesPass:update-ref',
+      'bridgeContainedCommitIntoCurrentBranch:merge --no-edit -s ours', 'bridgeContainedCommitIntoCurrentBranch:merge --abort',
+      'reconcileAndPushOneRepo:merge --no-edit', 'reconcileAndPushOneRepo:merge --abort', 'reconcileAndPushOneRepo:merge --abort',
+    ].sort());
+    const dispositions: Record<string, string> = {
+      publishPrivateIndexCommit: 'P001 private publication: exact initial/final tree and CAS probes',
+      captureGitSyncCandidate: 'non-publication: source custody ref',
+      publishGitSyncCandidate: 'non-publication: retained candidate commit ref; HEAD uses private publisher',
+      preserveVanishedStagedSourcesPass: 'non-publication: vanished-source custody ref',
+      ensureBranchAttachedForCommit: 'P003 pending: same-tree attachment and concurrent-ref refusal',
+      transplantInstallerSeedSnapshot: 'P003 pending: approved seed/source transform and recovery ref',
+      bridgeContainedCommitIntoCurrentBranch: 'P003 pending: same-tree ancestry bridge and mismatch refusal',
+      reconcileAndPushOneRepo: 'P003 pending: approved merge tree/parents and conflict abort',
+    };
+    for (const writer of writers) expect(dispositions[writer.split(':')[0]!], writer).toBeTruthy();
+  });
+});
 
 describe('EI-270796 root publication notifications', () => {
   it('notifies a published group while a later publication remains pending', async () => {
@@ -216,7 +286,9 @@ describe('EI-270796 root publication notifications', () => {
       runGit: (args, cwd) => f.runGit(args, cwd),
       onRootCommit: (commit) => commits.push(commit),
     });
-    expect(result).toMatchObject({ status: 'error', message: expect.stringContaining('catch-all private index unavailable') });
+    expect(result).toMatchObject({ status: 'error', errors: expect.arrayContaining([
+      expect.objectContaining({ message: expect.stringContaining('catch-all private index unavailable') }),
+    ]) });
     expect(commits).toEqual([]);
     expect(f.git('rev-parse', 'HEAD')).toBe(base);
     expect(f.git('diff', '--name-only', 'HEAD')).toContain('a.txt');
