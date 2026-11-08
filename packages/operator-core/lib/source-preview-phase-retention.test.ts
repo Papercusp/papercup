@@ -124,6 +124,68 @@ describe('verifier phase evidence retention', () => {
     expect(readdirSync(evidenceRoot).sort()).toEqual(['manifest.json', 'phases.jsonl', 'source.json', 'task.json']);
   });
 
+  it('keeps an unknown historical crash cause unknown after a successful replacement', () => {
+    const root = mkdtempSync(join(tmpdir(), 'verifier-historical-cause-'));
+    fixtures.push(root);
+    const inputs = join(root, 'temporary');
+    const originalRoot = join(root, 'original');
+    const replacementRoot = join(root, 'replacement');
+    for (const path of [inputs, originalRoot, replacementRoot]) mkdirSync(path);
+    const receiptPath = join(inputs, 'source.json');
+    const taskReceiptPath = join(inputs, 'task.json');
+    const phaseArchivePath = join(inputs, 'phases.jsonl');
+    // These are literal original observations. A lost child has no measured exit,
+    // signal, stderr or fault cause; a later success cannot supply any of them.
+    const original = {
+      'source.json': '{"sourceCommit":"original-source","runtime":"original-runtime","dependencies":"original-dependencies"}\n',
+      'task.json': '{"taskId":"original-attempt","cleanup":"completed"}\n',
+      'phases.jsonl': '{"phase":"source.freeze","event":"completed"}\n{"phase":"child.run","event":"started"}\n{"phase":"child.run","event":"failed","error":"child result unavailable"}\n',
+      'child.json': '{"pid":1234,"exitCode":null,"signal":null,"error":null}\n',
+    };
+    const paths = {
+      'source.json': receiptPath,
+      'task.json': taskReceiptPath,
+      'phases.jsonl': phaseArchivePath,
+      'child.json': `${receiptPath}.child.json`,
+    };
+    for (const name of Object.keys(original) as (keyof typeof original)[]) writeFileSync(paths[name], original[name]);
+    const args = { taskId: 'original-attempt', sourceCommit: 'original-source', receiptPath,
+      taskReceiptPath, phaseArchivePath, cleanup: 'completed', childExitCode: null,
+      error: new Error('child result unavailable') };
+    const originalManifestPath = archiveVerifierTaskEvidence({ ...args, evidenceRoot: originalRoot });
+    const originalManifestBytes = readFileSync(originalManifestPath);
+
+    // Reuse the temporary paths, as a replacement does, while retaining each
+    // attempt under its own existing immutable archive identity.
+    writeFileSync(receiptPath, '{"sourceCommit":"replacement-source"}\n');
+    writeFileSync(taskReceiptPath, '{"taskId":"replacement-attempt","cleanup":"completed"}\n');
+    writeFileSync(phaseArchivePath, '{"phase":"child.run","event":"completed"}\n');
+    writeFileSync(`${receiptPath}.child.json`, '{"pid":5678,"exitCode":0,"signal":null,"error":null}\n');
+    const replacementArgs = { ...args, taskId: 'replacement-attempt', sourceCommit: 'replacement-source',
+      childExitCode: 0, error: undefined };
+    const replacementManifestPath = archiveVerifierTaskEvidence({ ...replacementArgs, evidenceRoot: replacementRoot });
+    expect(JSON.parse(readFileSync(replacementManifestPath, 'utf8'))).toMatchObject({
+      taskId: 'replacement-attempt', wrapperStatus: 'completed', childExitCode: 0,
+    });
+    expect(() => archiveVerifierTaskEvidence({ ...replacementArgs, evidenceRoot: originalRoot })).toThrow('code=EEXIST');
+    rmSync(inputs, { recursive: true });
+
+    expect(readFileSync(originalManifestPath)).toEqual(originalManifestBytes);
+    const retained = JSON.parse(readFileSync(originalManifestPath, 'utf8'));
+    expect(retained).toMatchObject({ taskId: 'original-attempt', sourceCommit: 'original-source',
+      wrapperStatus: 'failed', childExitCode: null, error: 'child result unavailable' });
+    expect(Object.keys(retained.artifacts).sort()).toEqual(['child.json', 'phases.jsonl', 'source.json', 'task.json']);
+    for (const name of Object.keys(original) as (keyof typeof original)[]) {
+      expect(readFileSync(retained.artifacts[name].path, 'utf8')).toBe(original[name]);
+      expect(retained.artifacts[name].sha256).toBe(createHash('sha256').update(original[name]).digest('hex'));
+    }
+    expect(JSON.parse(readFileSync(retained.artifacts['child.json'].path, 'utf8'))).toEqual({
+      pid: 1234, exitCode: null, signal: null, error: null,
+    });
+    expect(retained.artifacts['stderr.log']).toBeUndefined();
+    expect(retained.artifacts['stdout.log']).toBeUndefined();
+  });
+
   it('keeps exact completed and failed phase bytes after temporary receipt deletion', async () => {
     const root = mkdtempSync(join(tmpdir(), 'verifier-phase-retention-'));
     fixtures.push(root);
