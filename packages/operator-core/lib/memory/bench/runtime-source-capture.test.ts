@@ -4,10 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import inspector from 'node:inspector';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { bindRuntimeSourcePopulation, startRuntimeSourceCapture, validateRuntimeSourceCapture } from './runtime-source-capture.mjs';
-import { bindRuntimeProcessTree, observeRuntimePageSize, runtimeFileTraceArguments } from './runtime-file-opens.mjs';
+import { bindRuntimeProcessTree, observeRuntimeExecutableMemory, observeRuntimeProcessIdentity,
+  observeRuntimePageSize, runtimeFileTraceArguments } from './runtime-file-opens.mjs';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
@@ -345,6 +346,89 @@ describe('parsed sources joined to independent process lifetimes', () => {
       if (variant === 'missing-source') rows[1].splice(1,1);
       expect(()=>bindRuntimeSourcePopulation(input,terminal,rows)).toThrow();
     });
+  it.runIf(process.platform==='linux')('refuses ptrace stops as group-stopped executable memory while retaining traced sources', async () => {
+    const root=fs.mkdtempSync(path.join(os.tmpdir(),'runtime-source-memory-')); roots.push(root);
+    const tracePath=path.join(root,'trace.log'), sourcePath=path.join(root,'sources.jsonl');
+    const startedEpochMs=Date.now(), startedMonotonicNs=process.hrtime.bigint().toString();
+    const child=spawn('/usr/bin/strace',['-D',...runtimeFileTraceArguments(tracePath,[process.execPath,
+      '--perf-prof','--perf-prof-path='+root,'--allow-natives-syntax','--import',preload,'-e',
+      'function sourceMemoryTarget(x){return x*3+1};%PrepareFunctionForOptimization(sourceMemoryTarget);'+
+      'for(let i=0;i<10000;i++)sourceMemoryTarget(i);%OptimizeFunctionOnNextCall(sourceMemoryTarget);'+
+      'if(sourceMemoryTarget(4)!==13)process.exit(2);process.stdin.resume();process.stdout.write("ready\\n");'+
+      'process.stdin.once("data",()=>process.stdin.pause());'])],
+      {env:{PATH:'/usr/bin:/bin',PAPERCUSP_RUNTIME_SOURCE_CAPTURE:sourcePath},stdio:['pipe','pipe','pipe']});
+    let stderr='', states:{taskId:number,state:string,tracerPid:number}[]=[];
+    child.stderr.on('data',chunk=>{stderr+=chunk;});
+    const closed=new Promise<{code:number|null,signal:string|null}>((resolve,reject)=>{
+      child.once('error',reject);child.once('close',(code,signal)=>resolve({code,signal}));
+    });
+    onTestFailed(()=>{
+      const diagnostic={processId:child.pid,states,stderr};
+      console.error('RUNTIME_SOURCE_MEMORY_DIAGNOSTICS '+JSON.stringify(diagnostic));
+      const out=process.env.PAPERCUSP_TEST_ARTIFACT_DIR;
+      if(out){
+        fs.writeFileSync(path.join(out,'source-memory-diagnostics.json'),JSON.stringify(diagnostic));
+        for(const file of ['trace.log','sources.jsonl'])if(fs.existsSync(path.join(root,file)))
+          fs.copyFileSync(path.join(root,file),path.join(out,'source-memory-'+file));
+      }
+    });
+    try {
+      await new Promise<void>((resolve,reject)=>{
+        const timer=setTimeout(()=>reject(new Error('source-memory ready timeout: '+stderr)),10000);
+        child.stdout.once('data',()=>{clearTimeout(timer);resolve();});
+        child.once('error',error=>{clearTimeout(timer);reject(error);});
+      });
+      const launchIdentity=observeRuntimeProcessIdentity(child.pid!);
+      expect(child.kill('SIGSTOP')).toBe(true);
+      const deadline=Date.now()+5000;
+      do {
+        states=fs.readdirSync('/proc/'+child.pid+'/task').map(id=>{
+          const status=fs.readFileSync('/proc/'+child.pid+'/task/'+id+'/status','utf8');
+          return {taskId:Number(id),state:/^State:\s+(\w)/m.exec(status)![1],
+            tracerPid:Number(/^TracerPid:\s+(\d+)/m.exec(status)![1])};
+        });
+        if(states.length&&states.every(task=>task.state==='t'&&task.tracerPid>0))break;
+        if(Date.now()>deadline)throw new Error('source-memory direct child did not ptrace-stop: '+JSON.stringify(states));
+        await new Promise(resolve=>setTimeout(resolve,10));
+      } while(true);
+      const dumpPath=path.join(root,'jit-'+child.pid+'.dump'), prefix=fs.readFileSync(dumpPath);
+      const loads:{codeIndex:string,address:string,size:number,name:string}[]=[];
+      for(let offset=40;offset+16<=prefix.length;){
+        const size=prefix.readUInt32LE(offset+4);if(size<16||offset+size>prefix.length)break;
+        if(prefix.readUInt32LE(offset)===0){const end=prefix.indexOf(0,offset+56);
+          loads.push({codeIndex:prefix.readBigUInt64LE(offset+48).toString(),
+            address:'0x'+prefix.readBigUInt64LE(offset+32).toString(16),
+            size:Number(prefix.readBigUInt64LE(offset+40)),name:prefix.subarray(offset+56,end).toString()});}
+        offset+=size;
+      }
+      const target=loads.filter(load=>load.name.includes('sourceMemoryTarget')).at(-1);expect(target).toBeDefined();
+      expect(new Set(states.map(task=>task.tracerPid)).size).toBe(1);
+      // A ptrace stop is not the independent group-stop contract. Require an
+      // explicit tracer witness before that observation can ever qualify.
+      expect(()=>observeRuntimeExecutableMemory(launchIdentity,[target!])).toThrow('task is not group-stopped');
+      child.kill('SIGCONT');child.stdin.end('finish\n');
+      const terminal=await closed;expect(terminal,stderr).toEqual({code:0,signal:null});
+      const trace=fs.readFileSync(tracePath,'utf8'), sources=fs.readFileSync(sourcePath,'utf8').trim().split('\n').map(line=>JSON.parse(line));
+      const processTerminal={processId:child.pid!,exitCode:terminal.code!,signal:terminal.signal,
+        eof:true,captureStartedBeforeExec:true,pageSizeBytes:observeRuntimePageSize()};
+      const tree=bindRuntimeProcessTree(trace,processTerminal), elf=fs.readFileSync(process.execPath).subarray(0,20);
+      const capture={bytes:fs.readFileSync(dumpPath),witness:{...processTerminal,
+        taskIds:tree.tasks.map(task=>task.taskId),elfMachine:elf[5]===1?elf.readUInt16LE(18):elf.readUInt16BE(18),
+        startedEpochMs,startedMonotonicNs,finishedEpochMs:Date.now(),finishedMonotonicNs:process.hrtime.bigint().toString(),
+        headerClock:'v8-realtime-microseconds' as const}};
+      const proof=bindRuntimeSourcePopulation(trace,processTerminal,[sources],undefined,[capture]);
+      expect(proof.jitBindings![0].selectedMemory).toBeUndefined();
+      expect(proof.completeRuntimeClosureVerified).toBe(false);
+      if(process.env.PAPERCUSP_TEST_ARTIFACT_DIR){const out=process.env.PAPERCUSP_TEST_ARTIFACT_DIR;
+        fs.writeFileSync(path.join(out,'source-memory-trace.log'),trace);
+        fs.writeFileSync(path.join(out,'source-memory-sources.jsonl'),fs.readFileSync(sourcePath));
+        fs.writeFileSync(path.join(out,'source-memory-jit.dump'),capture.bytes);
+        fs.writeFileSync(path.join(out,'source-memory-traced-stop.json'),JSON.stringify({states,launchIdentity,witness:capture.witness}));}
+    } finally {
+      if(child.exitCode===null){child.kill('SIGCONT');child.kill('SIGKILL');}
+      await closed;
+    }
+  },30000);
   it.runIf(process.platform==='linux')('captures a real Node subprocess and refuses a child that removes instrumentation', () => {
     const root=fs.mkdtempSync(path.join(os.tmpdir(),'runtime-source-process-')); roots.push(root);
     const fixture=path.join(root,'input.cjs'); fs.writeFileSync(fixture,'module.exports=42;\n');
