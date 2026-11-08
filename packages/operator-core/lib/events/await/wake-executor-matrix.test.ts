@@ -154,6 +154,54 @@ describe('wake-executor C4 liveness × handle/socket matrix (real socket seam)',
     expect(classify(host.received[0].data, rows).verdict).toBe('verified-agent');
   });
 
+  it('WI5739: the delivered no-carry loop nonce retains its fire identity through the real ledger and native-ingest reader', async () => {
+    const s = tb.session('loop-enrollment');
+    const host = await tb.spawnSocketHost(s.ownerId);
+    // This is the queued inbox-wake shape observed in delivery1143261: no carry field.
+    const loopFire = { routineId: 'routine-loop-enrollment', wakeCount: 54 };
+    const delivery = makeDelivery({
+      subscriberId: s.ownerId,
+      wakeHandle: null,
+      createdAt: new Date().toISOString(),
+      payload: { harness: 'papercusp', ...loopFire },
+    });
+    const out = await executeWake(delivery, baseDeps({
+      getLoopStatusFn: async () => ({ active: true, harnessSlug: 'papercusp',
+        armedAt: '1970-01-01T00:00:00.000Z' }) as never,
+      getLoopCarryNoteWithMetaFn: async () => ({ note: null, updatedAtMs: null }) as never,
+      prepareInboxWakeHeldWorkReminder: async () => '',
+      workspaceForCoordOwnerFn: async () => null,
+    }));
+    expect(out).toEqual<WakeOutcome>({ kind: 'delivered', channel: 'psu-socket-inject' });
+    expect(host.received).toHaveLength(1);
+    const text = host.received[0].data;
+    const { classify, parseEnvelope, readLedgerRows } = await import('../../turn-provenance/turn-provenance');
+    const { indexedLoopTurnStartRecord } = await import('../../harness/routines/loop-turn-start-stamp');
+    const envelope = parseEnvelope(text);
+    expect(envelope?.origin).toBe('loop-fire');
+    const rows = readLedgerRows(s.ownerId, { includeExpired: true, dir: provDir });
+    const enrollment = rows.find(row => row.nonce === envelope?.nonce);
+    expect(enrollment).toMatchObject({ sid: s.ownerId, origin: 'loop-fire', loopFire });
+    expect(classify(text, rows).verdict).toBe('verified-agent');
+
+    const turn = {
+      workspace_id: 'default', source_kind: 'codex', session_id: 'native-loop-enrollment',
+      turn_idx: 7, ts: new Date(enrollment!.ts + 1), owner: s.ownerId,
+      speaker: 'user', text, turn_origin: 'loop-fire',
+    };
+    const target = { dir: provDir, workspaceId: 'default' };
+    expect(indexedLoopTurnStartRecord(turn, rows, target)).toMatchObject({
+      owner: s.ownerId, sessionId: turn.session_id,
+      detail: { nonce: envelope!.nonce, loopFire, source: 'session-ingest' },
+    });
+    // Origin and delivery success alone cannot certify the fire. Keep both
+    // controls tied to the actual received nonce, rather than a sender's nonce.
+    expect(indexedLoopTurnStartRecord(turn,
+      rows.map(row => ({ ...row, loopFire: undefined })), target)).toBeNull();
+    expect(indexedLoopTurnStartRecord(turn,
+      rows.map(row => ({ ...row, nonce: '0000000000000000' })), target)).toBeNull();
+  });
+
   it('no handle + no socket + presence LIVE → park (inbox-only)', async () => {
     const s = tb.session('A');
     const d = makeDelivery({ subscriberId: s.ownerId, wakeHandle: null });
