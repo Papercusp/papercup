@@ -121,7 +121,11 @@ export class CheckpointSnapshotFailureError extends Error {
     readonly workItemId: string | undefined, readonly completedWorkItemIds: string[],
     waitSnapshot?: BoundedOrgTxnWaitSnapshot) {
     const message = error instanceof Error ? error.message : String(error);
-    const rawCode = error && typeof error === 'object' && 'code' in error ? error.code : null;
+    // boundedOrgTxn wraps PostgreSQL errors with pgCode, not code. Retain that
+    // SQLSTATE so a timed-out mandatory save remains distinguishable from an
+    // untyped persistence failure at the flush-gate boundary.
+    const rawCode = error instanceof OrgTxnTimeoutError ? error.pgCode
+      : error && typeof error === 'object' && 'code' in error ? error.code : null;
     const code = typeof rawCode === 'string' && /^[A-Z0-9_]{1,64}$/.test(rawCode)
       ? rawCode : 'checkpoint-write-failed';
     super(`Host checkpoint failed at ${checkpointStage}${workItemId ? ` for ${workItemId}` : ''} (${code})`, { cause: error });

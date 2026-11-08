@@ -263,7 +263,7 @@ describe('reportIdleRecipients — EI-19937974676482462 aliveNotWakeable reclass
     expect(r.aliveNotWakeable).toEqual(['su-cup-1']);
     expect(resolveSessionStates).toHaveBeenCalledWith(
       [{ ownerId: 'su-cup-1' }],
-      { hydratePerId: true, psuHostPositiveAuthority: true },
+      { hydratePerId: true, psuHostPositiveAuthority: true, selfWake: true },
     );
   });
 
@@ -320,12 +320,51 @@ describe('reportIdleRecipients — EI-19937974676482462 aliveNotWakeable reclass
     warn.mockRestore();
   });
 
-  it('never consults the oracle when there are no idle candidates (all live watchers)', async () => {
+  it('keeps a watcher-backed recipient live when the oracle confirms current activity', async () => {
     vi.mocked(listPresence).mockResolvedValue(presence('su-live'));
     vi.mocked(listActiveAwaitsForKey).mockResolvedValue(watchers(1));
+    vi.mocked(resolveSessionStates).mockResolvedValue(new Map([['su-live', verdict('live')]]));
     const r = await reportIdleRecipients(['su-live'], {});
     expect(r.live).toEqual(['su-live']);
-    expect(resolveSessionStates).not.toHaveBeenCalled();
+    expect(r.confirmedDead).toEqual([]);
+    expect(resolveSessionStates).toHaveBeenCalledWith(
+      [{ ownerId: 'su-live' }],
+      { hydratePerId: true, psuHostPositiveAuthority: true, selfWake: true },
+    );
+  });
+
+  it('does not treat a stale inbox watcher as live when the oracle confirms ended without self-wake', async () => {
+    vi.mocked(listPresence).mockResolvedValue(presence('su-ended'));
+    vi.mocked(listActiveAwaitsForKey).mockResolvedValue(watchers(1));
+    vi.mocked(resolveSessionStates).mockResolvedValue(new Map([
+      ['su-ended', { ...verdict('ended'), selfWake: 'none' }],
+    ]));
+
+    const r = await reportIdleRecipients(['su-ended'], {});
+
+    expect(r.live).toEqual([]);
+    expect(r.idle).toEqual(['su-ended']);
+    expect(r.confirmedDead).toEqual(['su-ended']);
+    expect(emitAwaitedEvent).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['active loop', { selfWake: 'loop' }],
+    ['standing event', { selfWake: 'event' }],
+    ['unmeasured self-wake', {}],
+    ['incomplete liveness', { selfWake: 'none', signalMissing: true }],
+    ['unconfirmed death', { selfWake: 'none', confirmLiveness: true }],
+  ] as const)('retains a watcher with %s instead of confirming death', async (_label, details) => {
+    vi.mocked(listPresence).mockResolvedValue(presence('su-ended'));
+    vi.mocked(listActiveAwaitsForKey).mockResolvedValue(watchers(1));
+    vi.mocked(resolveSessionStates).mockResolvedValue(new Map([
+      ['su-ended', { ...verdict('ended'), ...details }],
+    ]));
+
+    const r = await reportIdleRecipients(['su-ended'], {});
+
+    expect(r.live).toEqual(['su-ended']);
+    expect(r.confirmedDead).toEqual([]);
   });
 });
 

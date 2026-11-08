@@ -156,7 +156,7 @@ describe('host mechanical carry-respawn checkpoint (R-13)', () => {
     expect(log).toHaveBeenCalledWith(expect.stringContaining(out.snapshotFailure!.errorFingerprint!));
   });
 
-  it('preserves a targeted wait sample on a mandatory host checkpoint timeout', async () => {
+  it.each(['57014', '55P03'])('preserves SQLSTATE %s and a targeted wait sample on a mandatory host checkpoint timeout', async (pgCode) => {
     notes.set('WI-1', 'Judgment.');
     const waitSnapshot = {
       status: 'sampled' as const,
@@ -169,7 +169,7 @@ describe('host mechanical carry-respawn checkpoint (R-13)', () => {
       sampleAfterMs: 6_400,
       sampleRequestedAt: new Date(nowMs).toISOString(),
     };
-    const timeout = new OrgTxnTimeoutError('57014', new Error('statement timeout'));
+    const timeout = new OrgTxnTimeoutError(pgCode, new Error('statement timeout'));
     timeout.waitSnapshot = waitSnapshot;
     mocks.set.mockRejectedValueOnce(timeout);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -178,7 +178,10 @@ describe('host mechanical carry-respawn checkpoint (R-13)', () => {
 
     expect(mocks.set.mock.calls[0]![2]).toMatchObject({ captureWaitSnapshot: true });
     expect(out.verdict).toBe('refuse');
+    expect(out.snapshotFailure).toMatchObject({ code: pgCode, checkpointStage: 'write-item', workItemId: 'WI-1' });
+    expect(out.refusalText).toContain(`(${pgCode})`);
     expect(out.snapshotFailure?.waitSnapshot).toEqual(waitSnapshot);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`"code":"${pgCode}"`));
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('"waitEvent":"WALSync"'));
   });
 

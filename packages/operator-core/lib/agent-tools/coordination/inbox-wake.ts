@@ -838,15 +838,17 @@ export async function reportIdleRecipients(
   // simultaneously called dead). Lazy dynamic import — liveness-oracle.ts pulls
   // presence-wakeability.ts, which imports THIS module for COORD_INBOX_WAKE_PREFIX, so a
   // static import here would cycle (the same reason recipient-liveness.ts imports it
-  // lazily). Best-effort: an oracle hiccup leaves every candidate in `idle` (prior
-  // behavior), never invents a false alive verdict.
+  // lazily). A watcher can also outlive its session: check watcher-backed recipients
+  // against the same oracle before treating that subscription as current activity.
+  // Only positive ended evidence with measured absence of self-wake can override
+  // a watcher. Missing/failed oracle data preserves the original classification.
   const aliveNotWakeable: string[] = [];
   const confirmedDead: string[] = [];
-  if (idle.length > 0) {
+  if (idle.length > 0 || live.length > 0) {
     try {
       const { resolveSessionStates } = await import('./liveness-oracle');
       const verdicts = await resolveSessionStates(
-        idle.map((ownerId) => ({ ownerId })),
+        [...idle, ...live].map((ownerId) => ({ ownerId })),
         {
           hydratePerId: true,
           // EI-22546045794068839: this miss classifier must use the same
@@ -854,6 +856,7 @@ export async function reportIdleRecipients(
           // Otherwise a live hosted session can read `held-live` in
           // state:read while this required-wake path calls it dead.
           psuHostPositiveAuthority: true,
+          selfWake: true,
         },
       );
       for (let i = idle.length - 1; i >= 0; i--) {
@@ -871,6 +874,20 @@ export async function reportIdleRecipients(
           // this recipient. Missing/degraded oracle data and suspect/draining
           // states remain plain `idle`, never confirmed dead.
           confirmedDead.unshift(idle[i]);
+        }
+      }
+      for (let i = live.length - 1; i >= 0; i--) {
+        const ownerId = live[i];
+        const v = verdicts.get(ownerId);
+        if (
+          v?.sessionState === 'ended' &&
+          v.signalMissing !== true &&
+          v.confirmLiveness === false &&
+          v.selfWake === 'none'
+        ) {
+          live.splice(i, 1);
+          idle.push(ownerId);
+          confirmedDead.push(ownerId);
         }
       }
     } catch (e) {
