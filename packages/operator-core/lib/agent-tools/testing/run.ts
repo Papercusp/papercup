@@ -509,6 +509,7 @@ export function buildDetachedTestRunBootstrapScript(opts: {
     '};',
     'trace("bootstrap-start");',
     'let failedPhase = "core-import";',
+    'let exitCode = 1;',
     'try {',
     '  trace("core-import-start");',
     `  const { runTestFilesCore } = await import(${JSON.stringify(opts.coreModuleUrl)});`,
@@ -518,11 +519,18 @@ export function buildDetachedTestRunBootstrapScript(opts: {
     `  const result = await runTestFilesCore({ ...replay, runId: process.env.PAPERCUSP_TEST_RUN_GROUP }, { reportDirectories: ${JSON.stringify(opts.reportDirectories)} });`,
     '  trace("core-execution-complete", { ok: result.ok, error: result.error ?? null });',
     '  console.log(JSON.stringify(result));',
-    '  process.exitCode = result.ok ? 0 : 1;',
+    '  exitCode = result.ok ? 0 : 1;',
     '} catch (error) {',
     '  trace("bootstrap-error", { failedPhase, errorName: error instanceof Error ? error.name : "unknown" });',
-    '  throw error;',
+    '  console.error(error);',
     '}',
+    // The leaf worker imports operator clients that can retain sockets/timers.
+    // Its core has already completed cleanup; drain both evidence streams before
+    // explicitly exiting so those handles cannot outlive the terminal receipt.
+    'await Promise.all([process.stdout, process.stderr].map(stream => new Promise((resolve, reject) => {',
+    '  stream.write("", error => error ? reject(error) : resolve());',
+    '})));',
+    'process.exit(exitCode);',
   ].join('\n');
 }
 

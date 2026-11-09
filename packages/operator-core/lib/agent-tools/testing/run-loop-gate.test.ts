@@ -93,7 +93,8 @@ async function invokeBootstrap(source: string, deadline = testRunDeadline(120_00
     encoding: 'utf8', timeout: 10_000,
     env: { ...process.env, PAPERCUSP_TEST_RUN_GROUP: 'bootstrap-run' },
   });
-  expect(result.error).toBeUndefined();
+  expect(result.error, JSON.stringify({ status: result.status, signal: result.signal,
+    stdoutBytes: Buffer.byteLength(result.stdout), stderr: result.stderr })).toBeUndefined();
   const events = result.stderr.split('\n').filter(line => line.startsWith('{')).map(line => JSON.parse(line));
   return { ...result, events, root };
 }
@@ -118,6 +119,22 @@ it('retains worker startup, import and execution phases without changing the rep
   }
   expect(result.events.at(-1)).toMatchObject({ ok: true, error: null });
 });
+
+it.each([{ ok: true, code: 0 }, { ok: false, code: 1 }])(
+  'terminates a completed $ok worker after draining its report despite retained runtime handles', async ({ ok, code }) => {
+    const result = await invokeBootstrap(`
+      setInterval(() => {}, 1000);
+      export async function runTestFilesCore() {
+        return { ok: ${JSON.stringify(ok)}, payload: 'x'.repeat(256 * 1024) };
+      }
+    `);
+
+    expect(result.status).toBe(code);
+    expect(JSON.parse(result.stdout)).toEqual({ ok, payload: 'x'.repeat(256 * 1024) });
+    expect(result.events.at(-1)).toMatchObject({ phase: 'core-execution-complete', ok });
+  },
+  15_000,
+);
 
 it('retains an import failure before a core or artifact packet can start', async () => {
   const result = await invokeBootstrap('throw new TypeError("fixture import failure");');
