@@ -48,6 +48,69 @@ const STRUCTURED = [
 ].join('\n');
 
 describe('projectWorkItemOperationalBrief', () => {
+  describe('CLARITY delivery stages', () => {
+    const source = { path: 'a.ts', workingTreeBlobSha: 'a'.repeat(40), headBlobSha: 'a'.repeat(40) };
+    const completion = { testsRun: ['vitest a.test.ts'], testResult: 'PASS', filesChanged: ['a.ts'], treeStamp: { contentIdentity: [source] } };
+    const projection = (extra: Record<string, unknown> = {}, authority = 'committed') => projectWorkItemOperationalBrief(
+      row({ workItem: { state: 'done', completionAuthority: authority }, extra: { completion, hasCompletionEvidence: true, ...extra } }), { linksRead: false },
+    );
+    // Actual compactPosition output omits empty optional exception-marker arrays.
+    const position = { paths: [{ path: 'a.ts', targetSha: 'b'.repeat(40), deployedSha: 'c'.repeat(40), positions: { deployed: true } }], totalPaths: 1, truncated: false, unknownPaths: [] };
+
+    it('reports tests-only evidence without promoting prose or settlement into source/runtime/acceptance/shipment', () => {
+      const brief = projection({ completion: { ...completion, treeStamp: undefined, verifiedHow: 'accepted and shipped' } });
+      expect(brief.facts.delivery.localTests).toMatchObject({ status: 'known', value: { state: 'reported' } });
+      for (const stage of ['committedSource', 'runtimeAdoption', 'independentAcceptance', 'shipment'] as const) expect(brief.facts.delivery[stage].status).toBe('unknown');
+      expect(renderWorkItemFactLines(brief).join('\n')).toContain('reported completion evidence; test ledger not read');
+    });
+
+    it.each(['proposed', 'pending_human', 'invalid', 'missing'])('retains a terminal settlement action for %s authority', (authority) => {
+      const brief = projection({}, authority === 'missing' ? '' : authority);
+      expect(brief.state).toMatchObject({ status: 'known', value: 'done' });
+      expect(brief.nextAction).toMatchObject({ status: 'known', value: expect.stringContaining('reconcile completion settlement') });
+      if (authority === 'proposed' || authority === 'pending_human') expect(renderWorkItemFactLines(brief).join('\n')).toContain('completion proposed; settlement pending');
+      if (authority === 'invalid') expect(brief.facts.settlement).toMatchObject({ value: 'completion rejected; evidence requires repair' });
+    });
+
+    it.each(['committed', 'validated'])('settles only the claim for %s authority', (authority) => {
+      const brief = projection({}, authority);
+      expect(brief.nextAction).toMatchObject({ value: 'none — the item is terminal (done)' });
+      expect(brief.facts.settlement).toMatchObject({ value: expect.stringContaining('proves no delivery stage') });
+      expect(brief.facts.delivery.committedSource.status).toBe('unknown');
+    });
+
+    it('requires fresh, readable, matching server source identities', () => {
+      const fresh = { verdict: 'fresh' };
+      expect(projection({ completionFreshness: fresh }).facts.delivery.committedSource).toMatchObject({ status: 'known', value: { state: 'confirmed' } });
+      expect(projection({ completionFreshness: { verdict: 'stale', reason: 'changed source' } }).facts.delivery.committedSource).toMatchObject({ value: { state: 'stale' } });
+      const withIdentity = (identity: Record<string, unknown>) => projection({ completionFreshness: fresh, completion: { ...completion, treeStamp: { contentIdentity: [identity] } } }).facts.delivery.committedSource;
+      expect(withIdentity({ ...source, headBlobSha: 'd'.repeat(40) })).toMatchObject({ value: { state: 'absent' } });
+      expect(withIdentity({ path: 'a.ts' }).status).toBe('unknown');
+      expect(withIdentity({ path: 'a.ts', deletion: true }).status).toBe('unknown');
+      expect(withIdentity({ path: 'a.ts', deletion: true, workingTreeBlobSha: null, headBlobSha: null })).toMatchObject({ value: { state: 'confirmed' } });
+      expect(withIdentity({ ...source, headBlobUnresolvable: 'read failed' }).status).toBe('unknown');
+      expect(withIdentity({ outOfRepoArtifact: true, path: 'screenshot.png' }).status).toBe('unknown');
+      expect(projection({ completionFreshness: fresh }).facts.delivery.runtimeAdoption.status).toBe('unknown');
+    });
+
+    it('accepts only complete measured exact-target runtime positions and still leaves acceptance/shipment unknown', () => {
+      const brief = projection({ deploymentPosition: position });
+      expect(brief.facts.delivery.runtimeAdoption).toMatchObject({ value: { state: 'confirmed', summary: expect.stringContaining('target bbbbb') } });
+      expect(brief.facts.delivery.independentAcceptance.status).toBe('unknown');
+      expect(brief.facts.delivery.shipment.status).toBe('unknown');
+      for (const degraded of [
+        { ...position, truncated: true }, { ...position, totalPaths: 2 }, { ...position, paths: [] },
+        { ...position, unknownPaths: ['a.ts'] }, { ...position, unknownReason: 'timeout' },
+        { ...position, paths: [{ ...position.paths[0], positionsUnknown: ['deployed'] }] },
+        { ...position, paths: [{ ...position.paths[0], positionsNewerCommit: ['deployed'] }] },
+        { ...position, paths: [{ ...position.paths[0], path: 'other.ts' }] },
+        { ...position, paths: [{ ...position.paths[0], positions: {} }] },
+        { ...position, paths: [{ ...position.paths[0], positionsUnknown: 'deployed' }] },
+        { ...position, paths: [{ ...position.paths[0], positionsNewerCommit: 'deployed' }] },
+      ]) expect(projection({ deploymentPosition: degraded }).facts.delivery.runtimeAdoption.status).toBe('unknown');
+      expect(projection({ deploymentPosition: { ...position, paths: [{ ...position.paths[0], positions: { deployed: false } }] } }).facts.delivery.runtimeAdoption).toMatchObject({ value: { state: 'absent' } });
+    });
+  });
   it('surfaces an active claim, its structured next action and successor residue', () => {
     const brief = projectWorkItemOperationalBrief(
       row({
@@ -204,7 +267,7 @@ describe('projectWorkItemOperationalBrief', () => {
   it('reports completion evidence as last verified for a terminal item', () => {
     const brief = projectWorkItemOperationalBrief(
       row({
-        workItem: { state: 'done', closedAt: '2026-09-22T21:00:00.000Z' },
+        workItem: { state: 'done', completionAuthority: 'validated', closedAt: '2026-09-22T21:00:00.000Z' },
         extra: { completion: { summary: 'shipped', verifiedHow: 'integration run 42 green' }, hasCompletionEvidence: true },
       }),
       { linksRead: false },

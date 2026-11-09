@@ -52,6 +52,12 @@ export interface WorkItemBriefResidue {
   walls: string[];
 }
 
+export interface WorkItemDeliveryEvidence {
+  state: 'reported' | 'confirmed' | 'stale' | 'absent';
+  ref: string;
+  summary: string;
+}
+
 export interface WorkItemBriefFacts extends Record<string, unknown> {
   kind: string | null;
   plan: { slug: string; itemIds: string[] } | null;
@@ -65,6 +71,8 @@ export interface WorkItemBriefFacts extends Record<string, unknown> {
    * never reads incoming edges, so this is always an explicit gap with a pointer —
    * never a silent "no dependencies". */
   blockedByLinks: BriefField<string[]>;
+  settlement: BriefField<string>;
+  delivery: Record<'localTests' | 'committedSource' | 'runtimeAdoption' | 'independentAcceptance' | 'shipment', BriefField<WorkItemDeliveryEvidence>>;
 }
 
 export type WorkItemOperationalBrief = OperationalBrief<WorkItemBriefFacts>;
@@ -160,6 +168,65 @@ function readLastVerified(row: Rec, id: string): BriefField<BriefVerifiedEvidenc
   return unknown('no completion evidence is recorded; checkpoint prose is a claim, not verification');
 }
 
+function readDelivery(row: Rec, id: string): WorkItemBriefFacts['delivery'] {
+  const completion = rec(row.completion);
+  const evidence = (state: WorkItemDeliveryEvidence['state'], stage: string, summary: string) =>
+    known({ state, ref: `${id}#${stage}`, summary }, `work_items:get.${stage}`);
+  const tests = completion?.testsRun;
+  const testsRun = Array.isArray(tests) ? tests.filter((entry): entry is string => !!str(entry)).join('; ') : str(tests);
+  const result = str(completion?.testResult);
+  const localTests = testsRun && result
+    ? evidence('reported', 'completion', `${testsRun}: ${result} (reported completion evidence; test ledger not read)`)
+    : unknown<WorkItemDeliveryEvidence>('completion.testsRun/testResult are missing; test ledger not read');
+
+  const stamp = rec(completion?.treeStamp);
+  const freshness = rec(row.completionFreshness);
+  const identities = Array.isArray(stamp?.contentIdentity) ? stamp.contentIdentity.map(rec) : [];
+  const repoIdentities = identities.filter((entry) => entry?.outOfRepoArtifact !== true);
+  let committedSource: BriefField<WorkItemDeliveryEvidence> = unknown('server-stamped source content identity and read-time completionFreshness are required');
+  if (stamp && identities.length && repoIdentities.length && freshness) {
+    if (freshness.verdict === 'stale') {
+      committedSource = evidence('stale', 'completionFreshness', str(freshness.reason) ?? 'source evidence is stale');
+    } else if (freshness.verdict === 'fresh') {
+      const readable = repoIdentities.every((entry) => entry && str(entry.path) && !entry.headBlobUnresolvable &&
+        (entry.deletion === true
+          ? entry.workingTreeBlobSha === null && entry.headBlobSha === null
+          : str(entry.workingTreeBlobSha) && str(entry.headBlobSha)));
+      if (readable) {
+        const matched = repoIdentities.every((entry) => entry!.deletion === true
+          ? entry!.workingTreeBlobSha === null && entry!.headBlobSha === null
+          : entry!.workingTreeBlobSha === entry!.headBlobSha);
+        committedSource = evidence(matched ? 'confirmed' : 'absent', 'completion.treeStamp', matched
+          ? 'declared source content matches Git HEAD; completion evidence is fresh'
+          : 'declared source content differs from Git HEAD');
+      }
+    }
+  }
+
+  const position = rec(row.deploymentPosition);
+  const declaredPaths = Array.isArray(completion?.filesChanged)
+    ? [...new Set(completion.filesChanged.filter((path): path is string => !!str(path)))] : [];
+  const paths = Array.isArray(position?.paths) ? position.paths.map(rec) : [];
+  const complete = declaredPaths.length > 0 && position?.truncated === false && !position.unknownReason &&
+    position.totalPaths === declaredPaths.length && paths.length === declaredPaths.length &&
+    Array.isArray(position.unknownPaths) && position.unknownPaths.length === 0 &&
+    new Set(paths.map((path) => path?.path)).size === declaredPaths.length &&
+    paths.every((path) => path && declaredPaths.includes(String(path.path)) && str(path.targetSha) && str(path.deployedSha) &&
+      typeof rec(path.positions)?.deployed === 'boolean' &&
+      // compactPosition omits these optional markers when there are no exceptions.
+      (path.positionsUnknown === undefined || (Array.isArray(path.positionsUnknown) && path.positionsUnknown.length === 0)) &&
+      (path.positionsNewerCommit === undefined || (Array.isArray(path.positionsNewerCommit) && path.positionsNewerCommit.length === 0)));
+  const runtimeAdoption: BriefField<WorkItemDeliveryEvidence> = complete
+    ? evidence(paths.every((path) => rec(path!.positions)?.deployed === true) ? 'confirmed' : 'absent', 'deploymentPosition',
+      paths.map((path) => `${path!.path}: target ${path!.targetSha}, deployed ${path!.deployedSha}, contained=${rec(path!.positions)?.deployed === true}`).join('; '))
+    : unknown('exact-target deploymentPosition is missing, partial, degraded or marked as a newer-commit comparison; read dev:pipeline_position for the declared paths');
+  return {
+    localTests, committedSource, runtimeAdoption,
+    independentAcceptance: unknown('independent acceptance receipts are not read here; read plans:get with shipReadiness:true for the source plan'),
+    shipment: unknown('final shipment receipts are not read here; read the exact shipped-artifact release evidence'),
+  };
+}
+
 /** Project one work_items:get result row. The row must be the handler's unshaped
  * result (payload present) for set_blocker records to be measured. */
 export function projectWorkItemOperationalBrief(row: Rec, options: ProjectWorkItemBriefOptions): WorkItemOperationalBrief {
@@ -252,8 +319,18 @@ export function projectWorkItemOperationalBrief(row: Rec, options: ProjectWorkIt
   const claimableState = state === 'open' || state === 'failing';
 
   let nextAction: BriefField<string>;
+  const authority = str(workItem.completionAuthority) ?? str(row.completionAuthority);
+  const settlement: BriefField<string> = authority === 'proposed' || authority === 'pending_human'
+    ? known('completion proposed; settlement pending', 'work_items:get.workItem.completionAuthority')
+    : authority === 'invalid'
+      ? known('completion rejected; evidence requires repair', 'work_items:get.workItem.completionAuthority')
+      : authority === 'committed' || authority === 'validated'
+        ? known('completion claim settled; this proves no delivery stage', 'work_items:get.workItem.completionAuthority')
+        : unknown('completion settlement authority is missing or unrecognized');
   if (state === null) {
     nextAction = unknown('the work-item state is not in this read');
+  } else if (terminal && authority !== 'committed' && authority !== 'validated') {
+    nextAction = known(`reconcile completion settlement: work_items:get { id: '${id}' }; ${authority === 'invalid' ? 'repair rejected evidence before resubmitting completion' : 'settlement remains pending or unknown'}`, 'work_items:get.workItem.completionAuthority');
   } else if (terminal) {
     nextAction = known(`none — the item is terminal (${state})`, 'work_items:get.workItem.state');
   } else if (checkpoint.status === 'unknown') {
@@ -295,6 +372,8 @@ export function projectWorkItemOperationalBrief(row: Rec, options: ProjectWorkIt
       blockedByLinks: unknown(
         'work_items:get does not read incoming blocks edges; the scheduler resolves them at claim time (work_items:claimable)',
       ),
+      settlement,
+      delivery: readDelivery(row, id),
     },
   });
 }
@@ -321,5 +400,12 @@ export function renderWorkItemFactLines(brief: WorkItemOperationalBrief): string
     lines.push(`residue: ${left ?? 'none left'}${walls.length > 0 ? `; walls: ${walls.join('; ')}` : ''}`);
   }
   if (holdsUp.status === 'known' && holdsUp.value.length > 0) lines.push(`holds up: ${holdsUp.value.join(', ')}`);
+  const { settlement, delivery } = brief.facts;
+  lines.push(settlement.status === 'known' ? `completion settlement: ${settlement.value}` : `completion settlement: unknown (${settlement.reason})`);
+  for (const [stage, field] of Object.entries(delivery)) {
+    lines.push(field.status === 'known'
+      ? `delivery ${stage}: ${field.value.state} — ${field.value.summary} (${field.value.ref})`
+      : `delivery ${stage}: unknown (${field.reason})`);
+  }
   return lines;
 }
