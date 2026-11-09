@@ -18,6 +18,7 @@ vi.mock('./store', () => ({
   cancelInboxWakeAwaits: vi.fn(async () => 2),
 }));
 vi.mock('./engine', () => ({ startAwaitSweeper: vi.fn() }));
+vi.mock('./psu-pty-discovery', () => ({ findLiveHostAsync: vi.fn(async () => null) }));
 
 // The self-heal helper probes PG (getOrgPg().sql). hoist a routable tagged-template
 // mock: queries naming `event_awaits` return the "already armed?" rows, `adv_sessions`
@@ -30,7 +31,7 @@ const h = vi.hoisted(() => {
     // `live` remains the legacy any-live result so the regression fails against
     // the pre-fix implementation.
     latestLive: undefined as unknown[] | undefined,
-    cancelled: [] as Array<{ cancelled_at: string }>,
+    cancelled: [] as Array<{ cancelled_at: string; cancel_reason?: string | null }>,
     fail: false,
   };
   const sql = (strings: TemplateStringsArray, ...values: unknown[]) => {
@@ -38,7 +39,15 @@ const h = vi.hoisted(() => {
     const text = strings.join(' ');
     if (text.includes('cancelled_at IS NOT NULL')) {
       const cutoff = String(values[2] ?? '');
-      return Promise.resolve(state.cancelled.filter((row) => row.cancelled_at >= cutoff));
+      const rows = state.cancelled.filter((row) => row.cancelled_at >= cutoff);
+      if (text.includes('bool_or')) {
+        const lifecycleReason = values[3];
+        return Promise.resolve([{
+          opted_out: rows.some((row) => row.cancel_reason !== lifecycleReason),
+          lifecycle_cancelled: rows.some((row) => row.cancel_reason === lifecycleReason),
+        }]);
+      }
+      return Promise.resolve(rows);
     }
     if (text.includes('event_awaits')) return Promise.resolve(state.armed);
     if (text.includes('adv_sessions')) {
@@ -63,6 +72,15 @@ import {
 import { captureWakeHandleForOwner } from './handle';
 import { upsertInboxWakeAwait, cancelInboxWakeAwaits } from './store';
 import { startAwaitSweeper } from './engine';
+import { findLiveHostAsync, type PsuPtyHost } from './psu-pty-discovery';
+import { AWAIT_CANCEL_REASONS } from './cancel-reasons';
+
+function liveHost(ownerId: string, advSessionId: string | null): PsuPtyHost {
+  return {
+    ownerId, advSessionId, pid: 1, ptyPid: 2,
+    sock: '/unused-test-host.sock', command: 'codex', startedAt: 1,
+  };
+}
 
 const ENV_KEY = 'PAPERCUSP_WATCH_MIN_SLEEP_SEC';
 let savedEnv: string | undefined;
@@ -169,6 +187,7 @@ describe('ensureInboxWakeArmedForActiveSession (self-heal)', () => {
     h.state.latestLive = undefined;
     h.state.cancelled = [];
     h.state.fail = false;
+    vi.mocked(findLiveHostAsync).mockResolvedValue(null);
   });
 
   it('arms a LIVE tracked session that has NO inbox-wake yet (the lost-SessionStart-arm case)', async () => {
@@ -250,6 +269,54 @@ describe('ensureInboxWakeArmedForActiveSession (self-heal)', () => {
     await expect(
       ensureInboxWakeArmedForActiveSession({ ownerId: 'su-heal-5' }),
     ).resolves.toBe(false);
+    expect(upsertInboxWakeAwait).not.toHaveBeenCalled();
+  });
+
+  it('recovers a lifecycle-cancelled standing watch when its exact tracked session still has a live host', async () => {
+    const ownerId = 'su-heal-live-lifecycle-cancel';
+    h.state.latestLive = [{ id: '42', started_at: '2026-11-08T00:00:00.000Z' }];
+    h.state.cancelled = [{
+      cancelled_at: '2026-11-08T01:00:00.000Z',
+      cancel_reason: AWAIT_CANCEL_REASONS.inboxWakeSessionEnded,
+    }];
+    vi.mocked(findLiveHostAsync).mockResolvedValue(liveHost(ownerId, '42'));
+
+    await expect(ensureInboxWakeArmedForActiveSession({ ownerId, forceRecheck: true })).resolves.toBe(true);
+    expect(findLiveHostAsync).toHaveBeenCalledWith(ownerId);
+    expect(upsertInboxWakeAwait).toHaveBeenCalledWith(expect.objectContaining({
+      subscriberId: ownerId,
+      eventKey: inboxWakeKey(ownerId),
+    }));
+  });
+
+  it.each([
+    ['no live host', null],
+    ['a different tracked session', liveHost('su-heal-lifecycle-custody', '41')],
+    ['an unbound host', liveHost('su-heal-lifecycle-custody', null)],
+  ])('does not recover a lifecycle cancellation with %s', async (_label, host) => {
+    const ownerId = 'su-heal-lifecycle-custody';
+    h.state.latestLive = [{ id: '42', started_at: '2026-11-08T00:00:00.000Z' }];
+    h.state.cancelled = [{
+      cancelled_at: '2026-11-08T01:00:00.000Z',
+      cancel_reason: AWAIT_CANCEL_REASONS.inboxWakeSessionEnded,
+    }];
+    vi.mocked(findLiveHostAsync).mockResolvedValue(host);
+
+    await expect(ensureInboxWakeArmedForActiveSession({ ownerId, forceRecheck: true })).resolves.toBe(false);
+    expect(upsertInboxWakeAwait).not.toHaveBeenCalled();
+  });
+
+  it.each(['operator', 'unknown-cancellation', null])('preserves a current-session %s cancellation even with a live matching host', async (reason) => {
+    const ownerId = 'su-heal-protected-cancel-' + String(reason);
+    h.state.latestLive = [{ id: '42', started_at: '2026-11-08T00:00:00.000Z' }];
+    h.state.cancelled = [
+      { cancelled_at: '2026-11-08T01:00:00.000Z', cancel_reason: reason },
+      { cancelled_at: '2026-11-08T02:00:00.000Z', cancel_reason: AWAIT_CANCEL_REASONS.inboxWakeSessionEnded },
+    ];
+    vi.mocked(findLiveHostAsync).mockResolvedValue(liveHost(ownerId, '42'));
+
+    await expect(ensureInboxWakeArmedForActiveSession({ ownerId, forceRecheck: true })).resolves.toBe(false);
+    expect(findLiveHostAsync).not.toHaveBeenCalled();
     expect(upsertInboxWakeAwait).not.toHaveBeenCalled();
   });
 });

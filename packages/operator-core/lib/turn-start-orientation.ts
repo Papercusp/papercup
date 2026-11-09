@@ -4671,6 +4671,9 @@ export interface TurnStartOrientationDelivery {
    * caller echoes it back as `confirmedDeliveryToken` once it has emitted `block`.
    */
   deliveryToken: string | null;
+  /** Preparation for an aggregate sink: call only after selecting the complete
+   * block. An omitted preparation must never install a cursor candidate. */
+  stageDelivery?: () => Promise<string | null>;
 }
 
 const NO_ORIENTATION: TurnStartOrientationDelivery = { block: '', deliveryToken: null };
@@ -4698,6 +4701,8 @@ export async function buildTurnStartOrientationBlock(input: {
   workspaceId: string;
   budgetChars?: number;
   confirmedDeliveryToken?: string | null;
+  /** Turn-start packs all producers before staging any selected output. */
+  deferStaging?: boolean;
   deps?: Partial<OrientationDeps>;
   /** Test seam only; production always uses the receipt module's real writers. */
   progressReceiptDeps?: GoalPlacementTurnReceiptDeps;
@@ -4806,6 +4811,7 @@ export async function buildTurnStartOrientationBlock(input: {
     // re-read. A second read here could land after a boundary and commit a
     // generation the agent was never actually told about, which would
     // reproduce the exact stale suppression this change removes.
+    const stageDelivery = async (): Promise<string | null> => {
     const deliveryToken = proof ? randomUUID() : undefined;
     const deliveredFingerprint = fingerprintDeliveredOrientation(state, epoch, ack?.committed ?? null, block, contextTokens);
     const identityToken = deliveryToken ?? randomUUID();
@@ -4921,7 +4927,10 @@ export async function buildTurnStartOrientationBlock(input: {
     }
     // A token whose stage failed names no pending, so confirming it could never
     // promote anything; reporting none keeps the caller's ledger honest.
-    return { block, deliveryToken: staged && deliveryToken ? deliveryToken : null };
+    return staged && deliveryToken ? deliveryToken : null;
+    };
+    if (input.deferStaging) return { block, deliveryToken: null, stageDelivery };
+    return { block, deliveryToken: await stageDelivery() };
   } catch {
     // Fail-soft by contract — the endpoint must never surface an error into a turn.
     return NO_ORIENTATION;

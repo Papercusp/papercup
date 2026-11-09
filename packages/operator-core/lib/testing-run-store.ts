@@ -322,19 +322,42 @@ function requestedFilesFromTaskDetail(value: unknown): string[] | null {
   return requestedFilesFromValue((detail as { requestedFiles?: unknown }).requestedFiles);
 }
 
+/** Older routers persisted the exact request only in argv, before task manifests.
+ * Recover that request from the maintained router's narrow grammar, never from
+ * the observed ledger population or child-reported counts. Unknown commands
+ * and selectors remain unmeasured; an explicit task manifest takes precedence. */
+function requestedFilesFromRouterCommand(command: string[], taskCwd?: string | null): string[] | null {
+  const isNode = (binary: string | undefined) => /^node(?:\.exe)?$/i.test(basename(binary ?? ''));
+  if (!isNode(command[0])) return null;
+  const wrapped = basename(command[1] ?? '') === 'with-test-pg.mjs';
+  const routerIndex = wrapped ? 4 : 1;
+  if (wrapped && (command[2] !== '--' || !isNode(command[3]))) return null;
+  const router = command[routerIndex];
+  if (!router || !isAbsolute(router) || basename(router) !== 'test-files.mjs'
+    || basename(dirname(router)) !== 'scripts') return null;
+  const root = dirname(dirname(router));
+  if (taskCwd && pathResolve(taskCwd) !== root) return null;
+  if (wrapped && pathResolve(command[1]!) !== join(root, 'scripts', 'with-test-pg.mjs')) return null;
+  const separator = command.indexOf('--', routerIndex + 1);
+  const files = command.slice(routerIndex + 1, separator === -1 ? undefined : separator);
+  if (files.length === 0 || files.some(file => file.startsWith('-') || /[*?{}\[\]\r\n]/.test(file)
+    || !/\.(?:test|spec)\.[cm]?[jt]sx?$/i.test(file))) return null;
+  return normalizedRequestedReportPaths(root, files);
+}
+
 function snapshotFromRow(row: DurableRunSnapshotRow): RunSnapshot | null {
   const startedAt = epochMs(row.started_at);
   const command = commandFromRow(row.command);
   if (startedAt === null || command === null) return null;
+  const requestedFiles = requestedFilesFromTaskDetail(row.task_detail)
+    ?? (row.kind === 'vitest' ? requestedFilesFromRouterCommand(command, row.task_cwd) : null);
   return {
     runId: row.run_id,
     ...(row.task_id === null ? {} : { taskId: row.task_id }),
     kind: row.kind,
     label: row.label,
     ...(row.file_path === null ? {} : { filePath: row.file_path }),
-    ...(requestedFilesFromTaskDetail(row.task_detail) === null
-      ? {}
-      : { requestedFiles: requestedFilesFromTaskDetail(row.task_detail)! }),
+    ...(requestedFiles === null ? {} : { requestedFiles }),
     command,
     status: row.status,
     exitCode: row.exit_code,
@@ -842,7 +865,7 @@ function hasExactPassedFileCoverage(
 function hasExactFileCoverage(
   requestedFiles: string[] | null,
   files: DetachedRunLedgerRecovery['files'],
-): boolean {
+): requestedFiles is string[] {
   if (!requestedFiles || requestedFiles.length === 0
     || new Set(requestedFiles).size !== requestedFiles.length
     || files.length !== requestedFiles.length) return false;

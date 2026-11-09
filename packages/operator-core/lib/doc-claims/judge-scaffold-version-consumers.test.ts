@@ -23,10 +23,11 @@
  * consumers instead of to the prompt's inputs.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve, sep } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { describeUnscanned, listFilesIncludingUntracked } from '../../../../scripts/lib/tracked-files.mjs';
 
 const REPO_ROOT = resolve(__dirname, '../../../..');
 
@@ -99,27 +100,6 @@ const PINNED: Readonly<Record<string, Disposition>> = Object.freeze({
   },
 });
 
-function walk(dir: string, out: string[]): void {
-  let entries: string[];
-  try {
-    entries = readdirSync(dir);
-  } catch {
-    return;
-  }
-  for (const entry of entries) {
-    if (SKIP_DIRS.has(entry)) continue;
-    const full = join(dir, entry);
-    let isDir: boolean;
-    try {
-      isDir = statSync(full).isDirectory();
-    } catch {
-      continue;
-    }
-    if (isDir) walk(full, out);
-    else if (entry.endsWith('.ts') || entry.endsWith('.tsx')) out.push(full);
-  }
-}
-
 /**
  * Named bindings pulled from a judge module by `import { … } from` or
  * `export { … } from`. Both forms matter: the barrel re-exports rather than imports,
@@ -155,14 +135,19 @@ const SELF = toRepoPath(__filename);
 
 /** Every file that imports `judgeRun` by name, repo-relative and POSIX-separated. */
 function findJudgeRunImporters(root = REPO_ROOT): string[] {
-  const files: string[] = [];
-  for (const scanRoot of SCAN_ROOTS) walk(resolve(root, scanRoot), files);
+  // Include ordinary new source before git-sync, but not ignored verification
+  // copies. Keep the shared enumerator's submodule coverage explicit.
+  const scan = listFilesIncludingUntracked(root);
+  expect(scan.unscannedPresent, describeUnscanned(scan, root)).toEqual([]);
+  const files = (scan.files as string[]).filter(path =>
+    SCAN_ROOTS.some(scanRoot => path.startsWith(`${scanRoot}/`)) &&
+    /\.tsx?$/.test(path) && !path.split('/').some(part => SKIP_DIRS.has(part)));
 
   const found: string[] = [];
   for (const file of files) {
-    const repoPath = toRepoPath(file, root);
+    const repoPath = file;
     if (repoPath === SELF) continue;
-    const source = readFileSync(file, 'utf8');
+    const source = readFileSync(resolve(root, file), 'utf8');
     // Cheap reject before the regex: most of the tree never mentions it.
     if (!source.includes('judgeRun')) continue;
     if (judgeModuleBindings(source).includes('judgeRun')) found.push(repoPath);

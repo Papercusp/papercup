@@ -23,6 +23,8 @@ import { captureWakeHandleForOwner } from './handle';
 import { upsertInboxWakeAwait, cancelInboxWakeAwaits } from './store';
 import { startAwaitSweeper } from './engine';
 import { inboxWakeKey } from '../../agent-tools/coordination/inbox-wake';
+import { AWAIT_CANCEL_REASONS } from './cancel-reasons';
+import { findLiveHostAsync } from './psu-pty-discovery';
 
 /** Standing inbox-wake floor (seconds): bursts of sends inside this window
  *  coalesce into one wake. Shares the watch primitive's env knob so the
@@ -160,10 +162,10 @@ export async function ensureInboxWakeArmedForActiveSession(input: {
     // ended_at IS NULL even after the latest incarnation ended cleanly.  Using
     // "any live row" here resurrects the ended owner on every later tool
     // report, recreating the standing inbox-wake we just cancelled.
-    const live = await sql<{ started_at: string }[]>`
-      SELECT started_at::text AS started_at
+    const live = await sql<{ id: string; started_at: string }[]>`
+      SELECT id::text AS id, started_at::text AS started_at
         FROM (
-          SELECT started_at, ended_at
+          SELECT id, started_at, ended_at
             FROM harness_shared.adv_sessions
            WHERE coord_owner_id = ${ownerId}
            ORDER BY started_at DESC, id DESC
@@ -179,15 +181,31 @@ export async function ensureInboxWakeArmedForActiveSession(input: {
     // so loop:end + cancellation leaves a retired owner wakeable forever. Scope the marker to
     // the latest session incarnation: a new SessionStart naturally has a later started_at and
     // is entitled to arm a fresh standing watch.
-    const explicitlyCancelled = await sql`
-      SELECT 1 AS one
-        FROM harness_shared.event_awaits
-       WHERE subscriber_id = ${ownerId}
-         AND event_key = ${key}
-         AND cancelled_at IS NOT NULL
-         AND cancelled_at >= ${live[0]?.started_at}
-       LIMIT 1`;
-    if (explicitlyCancelled.length > 0) return false;
+    // A loop's automatic terminal guard also calls SessionEnd cleanup. Its
+    // lifecycle marker is not an explicit opt-out when the same tracked session
+    // still has a live host. Preserve every other marker (including legacy NULL)
+    // and require positive, exact custody before repairing that one case.
+    const cancellations = await sql<{
+      opted_out: boolean | null;
+      lifecycle_cancelled: boolean | null;
+    }[]>`
+      WITH session_cancellations AS (
+        SELECT cancel_reason
+          FROM harness_shared.event_awaits
+         WHERE subscriber_id = ${ownerId}
+           AND event_key = ${key}
+           AND cancelled_at IS NOT NULL
+           AND cancelled_at >= ${live[0]?.started_at}
+      )
+      SELECT bool_or(cancel_reason IS DISTINCT FROM ${AWAIT_CANCEL_REASONS.inboxWakeSessionEnded}) AS opted_out,
+             bool_or(cancel_reason = ${AWAIT_CANCEL_REASONS.inboxWakeSessionEnded}) AS lifecycle_cancelled
+        FROM session_cancellations`;
+    const cancellation = cancellations[0];
+    if (!cancellation || cancellation.opted_out) return false;
+    if (cancellation.lifecycle_cancelled) {
+      const host = await findLiveHostAsync(ownerId);
+      if (!host || host.advSessionId !== live[0]?.id) return false;
+    }
 
     await armInboxWake({ ownerId, workspaceId: input.workspaceId });
     return true;

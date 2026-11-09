@@ -17,9 +17,10 @@
 
 import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { listFilesIncludingUntracked } from '../../../../scripts/lib/tracked-files.mjs';
 
 import {
   CLASSIFY_HEAD_CHARS,
@@ -318,31 +319,12 @@ describe('machine-surface catalogue — ONE HOME (recurrence guard)', () => {
     /\.tsx?$/.test(name) && !/\.(?:test|spec)\.tsx?$/.test(name);
 
   function sourceFilesUnder(rel: string, root = ROOT): string[] {
-    const out: string[] = [];
-    const walk = (dir: string) => {
-      let entries: string[];
-      try {
-        entries = readdirSync(dir);
-      } catch {
-        return;
-      }
-      for (const name of entries) {
-        if (name === 'node_modules' || name === '.git' || name === 'dist') continue;
-        const full = join(dir, name);
-        let st;
-        try {
-          st = statSync(full);
-        } catch {
-          continue;
-        }
-        if (st.isDirectory()) walk(full);
-        // Test fixtures legitimately contain these literals; the guard scans
-        // source files, not Vitest or Playwright test fixtures.
-        else if (isSourceFile(name)) out.push(full);
-      }
-    };
-    walk(join(root, rel));
-    return out;
+    // Keep new source visible before git-sync, while respecting the repository's
+    // ignored verification/build trees instead of following their source copies.
+    const scan = listFilesIncludingUntracked(root);
+    return (scan.files as string[])
+      .filter(path => path.startsWith(`${rel}/`) && isSourceFile(path))
+      .map(path => join(root, path));
   }
 
   it('excludes Vitest and Playwright specs from the source census', () => {

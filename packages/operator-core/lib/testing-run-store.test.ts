@@ -2531,6 +2531,61 @@ describe('durable detached snapshot lifecycle', () => {
   });
 
   it.each([
+    { name: 'two original files', expected: 'pass', files: ['lib/first.test.ts', 'lib/second.test.ts'] },
+    { name: 'previously withheld pass', expected: 'pass', files: ['lib/first.test.ts', 'lib/second.test.ts'], withheld: true },
+    { name: 'private PG wrapper', expected: 'pass', files: ['lib/first.test.ts', 'lib/second.test.ts'], privatePg: true },
+    { name: 'absolute file arguments', expected: 'pass', files: ['/tmp/legacy-testing/lib/first.test.ts', '/tmp/legacy-testing/lib/second.test.ts'] },
+    { name: 'JSON command readback', expected: 'pass', files: ['lib/first.test.ts', 'lib/second.test.ts'], jsonCommand: true },
+    { name: 'wrong second ledger file', expected: 'error', files: ['lib/first.test.ts', 'lib/second.test.ts'], ledgerFiles: ['lib/first.test.ts', 'lib/other.test.ts'] },
+    { name: 'missing second ledger file', expected: 'error', files: ['lib/first.test.ts', 'lib/second.test.ts'], ledgerFiles: ['lib/first.test.ts'] },
+    { name: 'duplicate arguments', expected: 'error', files: ['lib/first.test.ts', 'lib/first.test.ts'] },
+    { name: 'glob arguments', expected: 'error', files: ['lib/*.test.ts'] },
+    { name: 'options among file arguments', expected: 'error', files: ['lib/first.test.ts', '--config', 'vitest.config.ts'] },
+    { name: 'paths outside the router root', expected: 'error', files: ['../first.test.ts', 'lib/second.test.ts'] },
+    { name: 'unrecognized command', expected: 'error', files: ['lib/first.test.ts', 'lib/second.test.ts'], otherCommand: true },
+    { name: 'explicit manifest takes precedence', expected: 'error', files: ['lib/first.test.ts', 'lib/second.test.ts'], manifest: ['lib/other.test.ts'] },
+  ])('recovers legacy router requests only with exact ledger coverage: $name', async (scenario) => {
+    const runId = `legacy-router-${scenario.name.replaceAll(' ', '-')}`;
+    const requested = ['lib/first.test.ts', 'lib/second.test.ts'];
+    const command = scenario.otherCommand
+      ? ['npx', 'vitest', 'run', ...scenario.files]
+      : ['node', ...(scenario.privatePg ? ['/tmp/legacy-testing/scripts/with-test-pg.mjs', '--', 'node'] : []),
+        '/tmp/legacy-testing/scripts/test-files.mjs', ...scenario.files, '--', '--reporter=admin-reporter.ts'];
+    const ledgerRows = (scenario.ledgerFiles ?? requested).map((file_path, index) => ({
+      file_path, status: 'pass', finished_at: new Date(1_700_000_001_000 + index * 1_000),
+      output_tail: null, execution_details: measuredPass(file_path, runId),
+    }));
+    const sql = vi.fn(async (strings: TemplateStringsArray) => {
+      const statement = strings.join(' ');
+      if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')) return [{
+        run_id: runId, task_id: 'legacy-router-task', kind: 'vitest', label: 'original two-file request',
+        file_path: null, command: scenario.jsonCommand ? JSON.stringify(command) : command,
+        status: scenario.withheld ? 'error' : 'pass', exit_code: 0,
+        started_at: new Date(1_700_000_000_000), finished_at: new Date(1_700_000_010_000),
+        output: scenario.withheld
+          ? '\n[coverage-gate] Vitest PASS withheld: the latest per-file ledger rows do not prove that every requested file passed.\n'
+          : '',
+        truncated: false, task_state: 'exited', task_exit_code: 0,
+        task_ended_at: new Date(1_700_000_010_000), task_cwd: '/tmp/legacy-testing',
+        task_detail: scenario.manifest ? { requestedFiles: scenario.manifest } : {},
+      }];
+      if (statement.includes('FROM harness_shared.test_runs')) return ledgerRows;
+      if (statement.includes('UPDATE harness_shared.testing_run_snapshots')) return [{ run_id: runId }];
+      return [];
+    }) as unknown as Sql;
+
+    const recovered = await store.getRunAsync(runId, sql);
+
+    expect(recovered?.status).toBe(scenario.expected);
+    if (scenario.expected === 'pass') {
+      expect(recovered?.requestedFiles).toEqual(requested);
+      expect(recovered?.output).not.toContain('[coverage-gate]');
+    } else {
+      expect(recovered?.output).toContain('[coverage-gate]');
+    }
+  });
+
+  it.each([
     { name: 'missing manifest', reason: 'requested-files-unavailable', requestedFiles: undefined,
       ledger: 'measured', rowCount: null, ledgerStatus: null },
     { name: 'unreadable ledger', reason: 'ledger-read-unavailable', requestedFiles: ['lib/first.test.ts'],
