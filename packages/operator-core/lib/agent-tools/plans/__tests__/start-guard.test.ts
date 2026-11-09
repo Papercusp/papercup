@@ -278,6 +278,24 @@ const run = async (args: Record<string, unknown>) => {
   };
 };
 
+const runHttp = async (input: Record<string, unknown>, ctx: Record<string, unknown>) => {
+  const originalInput = structuredClone(input);
+  expect(tool.args.parse(input)).toEqual(input);
+  const projected = lookupByMcpName('plans:start');
+  expect(projected).toBeTruthy();
+  const dispatched = await dispatchProjectedTool(projected!, 'plans:start', input, {
+    ...ctx,
+    runId: 'start-http-original-input-replay',
+    emit: vi.fn(),
+    gateBypass: { role: true, capability: true, quota: true },
+    requestedFormat: 'json',
+  } as never, {});
+  expect(dispatched.ok).toBe(true);
+  expect(dispatched.result?.isError).not.toBe(true);
+  expect(input).toEqual(originalInput);
+  return dispatched.result as any;
+};
+
 function legacyBarInput(): AcceptanceBarContractSnapshotInput {
   const empty = () => ({ rows: [], limit: 1, truncated: false });
   return {
@@ -1292,7 +1310,7 @@ describe('plans:start — the retired op_status axis (P-047)', () => {
       admissionMocks.preflight.mockResolvedValueOnce({ ready: false, status: 'refused',
         reason: 'floor-gated', message: 'P-001 is excluded.', diagnostic: 'detail '.repeat(4_000) });
       const ctx = { ...(MAKE_CTX() as object), transport: 'http', contextTier: 'trimmed' };
-      const out = await tool.handler({ harness: 'papercup', slug: 'live-plan-2026-06-02' } as never, ctx as never) as any;
+      const out = await runHttp({ harness: 'papercup', slug: 'live-plan-2026-06-02' }, ctx);
       const body = JSON.parse(out.content[0].text);
       expect(body.results[0]).toMatchObject({ error: 'admission_refused',
         promotion: { promoted: 0, skipped: 0 }, admission: { ready: false, reason: 'floor-gated' } });
@@ -1331,7 +1349,7 @@ describe('plans:start — the retired op_status axis (P-047)', () => {
         earlierSideEffectsMayHaveCommitted: true,
       });
       const ctx = { ...(MAKE_CTX() as object), transport: 'http', contextTier: 'trimmed', ...mode };
-      const out = await tool.handler({ harness: 'papercup', slug: 'live-plan-2026-06-02' } as never, ctx as never) as any;
+      const out = await runHttp({ harness: 'papercup', slug: 'live-plan-2026-06-02' }, ctx);
 
       const expectedAdmission = {
         executionStart,
