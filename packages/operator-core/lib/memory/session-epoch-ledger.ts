@@ -279,6 +279,37 @@ export async function bumpSessionEpoch(sql: SqlTag, sessionId: string): Promise<
   }
 }
 
+/** Schedule a bounded, fair re-read of confirmed versions in CURRENT pools.
+ * Scheduling is separate from delivery: neither fingerprint nor surfaced_at
+ * changes until an exact emitted-fragment receipt is confirmed. */
+export async function memorySourcesDueForRevalidation(
+  sql: SqlTag, sessionId: string, epoch: number, scopes: readonly string[], excludeIds: readonly string[] = [],
+): Promise<ContextSourceVersion[]> {
+  const namespaces = [...new Set(scopes.filter(scope => typeof scope === 'string' && scope.length > 0))]
+    .map(scope => `memory:${scope}`);
+  if (!sessionId || relationMissing || namespaces.length === 0) return [];
+  try {
+    const { boundedOrgTxn } = await import('../pg-bounded-txn');
+    const rows = await boundedOrgTxn(tx => tx<{ id: string; source_fingerprint: string; source_version: unknown }[]>`
+      WITH due AS (
+        SELECT memory_id FROM harness_shared.memory_session_surfaced
+        WHERE session_id = ${sessionId} AND epoch = ${epoch}
+          AND source_version->>'namespace' = ANY(${namespaces}::text[])
+          AND NOT (memory_id = ANY(${excludeIds.filter(id => UUID_SHAPE.test(id))}::uuid[]))
+          AND (source_checked_at IS NULL OR source_checked_at < now() - interval '1 minute')
+        ORDER BY source_checked_at NULLS FIRST, memory_id LIMIT 8 FOR UPDATE SKIP LOCKED
+      )
+      UPDATE harness_shared.memory_session_surfaced s SET source_checked_at = now()
+      FROM due WHERE s.session_id = ${sessionId} AND s.epoch = ${epoch} AND s.memory_id = due.memory_id
+      RETURNING s.memory_id::text AS id, s.source_fingerprint, s.source_version
+    `, { client: sql as unknown as import('postgres').Sql, statementTimeoutMs: 1_500 });
+    return rows.flatMap(row => {
+      const version = parseContextSourceVersion(JSON.stringify(row.source_version), row.id);
+      return version?.fingerprint === row.source_fingerprint && namespaces.includes(version.namespace) ? [version] : [];
+    });
+  } catch { return []; } // Unarmed migration or failed read is unknown.
+}
+
 /**
  * The subset of `memoryIds` already surfaced to this (session, epoch) —
  * the warm-session dedup read. Best-effort: errors return the EMPTY set so
