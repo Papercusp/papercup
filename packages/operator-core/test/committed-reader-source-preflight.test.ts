@@ -96,7 +96,7 @@ function observedBuildFixture(extraScript = '') {
   return { ...f, observedSource, produceObserved };
 }
 
-function loadedFixture(source?: string, admit = true, buildObservationOnly = false) {
+function loadedFixture(source?: string, admit = true, buildObservationOnly = false, duplicatePreload = false) {
   let f: ReturnType<typeof fixture>;
   if (buildObservationOnly) {
     const observed = observedBuildFixture(); observed.produceObserved(); f = observed;
@@ -116,8 +116,10 @@ function loadedFixture(source?: string, admit = true, buildObservationOnly = fal
     traceOut, pinnedSources: admit ? [{ path: f.bundle, sha256: f.closure.sha256,
       byteLength: readFileSync(f.bundle).length }] : [],
   });
-  const child = spawnSync(process.execPath, ['--import', pathToFileURL(resolve(import.meta.dirname,
-    '../../../scripts/lib/vitest-startup-trace.mjs')).href, f.bundle], {
+  // privateBundleRuntimeEnv already installs the tracer through NODE_OPTIONS.
+  // Keep the explicit second preload only for the cache-gap refusal control.
+  const child = spawnSync(process.execPath, [...(duplicatePreload ? ['--import', pathToFileURL(resolve(import.meta.dirname,
+    '../../../scripts/lib/vitest-startup-trace.mjs')).href] : []), f.bundle], {
     cwd: f.root, env: environment,
     encoding: 'utf8', timeout: 15_000,
   });
@@ -128,6 +130,11 @@ function loadedFixture(source?: string, admit = true, buildObservationOnly = fal
     configuration: captureConfigurationSnapshot(environment),
     ...(buildObservationOnly ? { preparationOnly: true as const, buildObservationOnly,
       receiptPath: join(f.dir, 'prepare/operator-api-preflight.json') } : {}) };
+  if (admit && !duplicatePreload) {
+    // Mutated negative controls must start from independently bound evidence.
+    expect(observeCommittedReaderLoadedSources(options)).toMatchObject({ status: 'bound',
+      resolutions: { status: 'bound', gaps: [] } });
+  }
   const rows = readdirSync(traceRoot).filter(name => name.endsWith('.json'))
     .map(name => ({ name, row: JSON.parse(readFileSync(join(traceRoot, name), 'utf8')) }));
   const kernelProcessIdentity: string | undefined = rows.find(({ row }) => row.event === 'node-entry')?.row.kernelProcessIdentity;
@@ -151,6 +158,18 @@ function loadedFixture(source?: string, admit = true, buildObservationOnly = fal
 }
 
 describe('committed reader loader-return source binding', () => {
+  it('keeps a duplicate preload cache hit without original loader bytes unknown', () => {
+    const baseline = loadedFixture();
+    expect(baseline.observe().resolutions).toMatchObject({ status: 'bound', gaps: [] });
+    const duplicate = loadedFixture(undefined, true, false, true);
+    const observed = duplicate.observe();
+    expect(observed.resolutions.status).toBe('unknown');
+    expect(observed.resolutions.gaps).toEqual(expect.arrayContaining([
+      expect.stringContaining(pathToFileURL(resolve(import.meta.dirname,
+        '../../../scripts/lib/vitest-startup-trace.mjs')).href),
+    ]));
+  });
+
   it('binds actual native external resolver returns to independently pinned loaded bytes', () => {
     const f = loadedFixture('import value from "example"; console.log(value);');
     const result = f.observe();
