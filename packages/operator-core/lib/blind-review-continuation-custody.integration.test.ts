@@ -79,13 +79,34 @@ function retainedAdoptionFixture(): RetainedAdoptionFixture {
     inputReceiptSha256: inputReceipt.sha256, observationReceiptPath: observations.path,
     observationReceiptSha256: observations.sha256 };
   const record = { ...identity, observationReceiptSha256: observations.sha256, omitted: [], opaque: [] };
-  const terminal = retain('terminal', { ...record, state: 'complete', exitCode: 0,
+  const proofHash = hash('synthetic-host-proof');
+  const hostObservation = retain('host-observation', {
+    schemaVersion: 'committed-reader-loader-source-v1', scope: 'node-loader-returned-source',
+    sourceCommit: identity.sourceCommit, runId: identity.runId, pid: identity.process.pid,
+    kernelProcessIdentity: identity.process.identity, processIdentity: 'synthetic-trace-process',
+    sourceReceiptSha256: sourceReceipt.sha256, status: 'bound', exitObserved: true, gaps: [], pending: [],
+    configurationInputs: { scope: 'native-node-entry-configuration-inputs', status: 'matched', gaps: [],
+      snapshot: { fingerprint: proofHash }, expectedFingerprint: proofHash },
+    configurationReads: { scope: 'javascript-configuration-property-gets', status: 'observed', gaps: [],
+      observation: { captureComplete: true, activeAtTermination: true }, receiptSha256: proofHash },
+    privateSchema: { scope: 'api-worker-information-schema-columns', status: 'observed', gaps: [],
+      schema: inputs.schema, receiptSha256: proofHash, querySha256: proofHash },
+    appliedSql: { scope: 'migration-client-unsafe-query', status: 'observed', gaps: [],
+      attempts: [{ outcome: 'returned', rawSource: { sha256: proofHash }, query: { sha256: proofHash },
+        plannedReceiptSha256: proofHash, terminalReceiptSha256: proofHash }] },
+    engineExecution: { scope: 'independently-pinned-bundle-outer-execution', status: 'observed', gaps: [],
+      sourceTextSha256: proofHash, sourceTextLength: 1, coverageRangesComplete: true,
+      coverageRanges: [{ startOffset: 0, endOffset: 1, count: 1 }] },
+    resolutions: { scope: 'native-node-resolver-returned-edges', status: 'bound', gaps: [] },
+  });
+  const terminal = retain('terminal', { ...record, hostObservationReceipt: hostObservation, state: 'complete', exitCode: 0,
     signalCode: null, cleanupComplete: true });
   const keys = ['apiManifestHash', 'launcherManifestHash', 'plannedHostManifestHash',
     'executedInputsHash', 'dependencyManifestHash'] as const;
   const manifests = Object.fromEntries(keys.map(key => [key, retain(key, { ...record,
-    scope: 'fixture-only', qualificationKey: key, terminalReceipt: terminal })])) as RetainedAdoptionFixture['manifests'];
-  return { original: { identity, handoff }, manifests, terminal };
+    hostObservationReceipt: hostObservation, scope: 'fixture-only', qualificationKey: key,
+    terminalReceipt: terminal })])) as RetainedAdoptionFixture['manifests'];
+  return { original: { identity, handoff }, hostObservation, manifests, terminal };
 }
 const migrationName = '1623-blind-review-continuation-custody.sql.DRAFT';
 const migrationBytes = readFileSync(new URL('../../../libs/papercusp/libs/db/sql/' + migrationName, import.meta.url));
@@ -620,7 +641,7 @@ describe('D011 legacy adoption authenticated request and policy adapter, real PG
     expect(calls).toBe(1);
   });
 
-  it.each(['manifest', 'original', 'dependency', 'current-effects'] as const)(
+  it.each(['manifest', 'original', 'dependency', 'host', 'current-effects'] as const)(
     'rolls back the real custody transaction when fixture %s evidence drifts', async changed => {
       const retained = retainedAdoptionFixture(), f = await adoption(true, retained);
       // Prove these exact originals and live PG inputs qualify before mutation.
@@ -634,6 +655,7 @@ describe('D011 legacy adoption authenticated request and policy adapter, real PG
           const current = await readLegacyAdoptionHistoryAndEffects(sameTx, samePayload);
           if (changed === 'manifest') appendFileSync(retained.manifests.apiManifestHash.path, '\n');
           if (changed === 'original') appendFileSync(retained.original.handoff.observationReceiptPath, '\n');
+          if (changed === 'host') appendFileSync(retained.hostObservation.path, '\n');
           if (changed === 'dependency') writeFileSync(join(retained.original.handoff.root, 'node_modules/changed.js'), 'drift');
           return { ...current, ...(changed === 'current-effects' ? { outstandingEffects: { changed: true } } : {}),
             independence: { fixtureOnly: true } };

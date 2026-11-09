@@ -318,19 +318,41 @@ describe('D014 transaction-local fixture evidence consumer', () => {
       const path = join(f.handoff.root, '..', name + '.json'), bytes = JSON.stringify(value);
       writeFileSync(path, bytes); return { path, sha256: digest(bytes) };
     };
-    const terminalRecord = { ...record, state: 'complete', exitCode: 0, signalCode: null, cleanupComplete: true };
+    // Synthetic observer output exercises this consumer, never actual-host proof.
+    const hash = digest('synthetic-host-proof');
+    const hostRecord = { schemaVersion: 'committed-reader-loader-source-v1', scope: 'node-loader-returned-source',
+      sourceCommit: f.identity.sourceCommit, runId: f.identity.runId, pid: f.identity.process.pid,
+      kernelProcessIdentity: f.identity.process.identity, processIdentity: 'synthetic-trace-process',
+      sourceReceiptSha256: f.handoff.sourceReceiptSha256, status: 'bound', exitObserved: true, gaps: [], pending: [],
+      configurationInputs: { scope: 'native-node-entry-configuration-inputs', status: 'matched', gaps: [],
+        snapshot: { fingerprint: hash }, expectedFingerprint: hash },
+      configurationReads: { scope: 'javascript-configuration-property-gets', status: 'observed', gaps: [],
+        observation: { captureComplete: true, activeAtTermination: true }, receiptSha256: hash },
+      privateSchema: { scope: 'api-worker-information-schema-columns', status: 'observed', gaps: [],
+        schema: f.inputs.schema, receiptSha256: hash, querySha256: hash },
+      appliedSql: { scope: 'migration-client-unsafe-query', status: 'observed', gaps: [],
+        attempts: [{ outcome: 'returned', rawSource: { sha256: hash }, query: { sha256: hash },
+          plannedReceiptSha256: hash, terminalReceiptSha256: hash }] },
+      engineExecution: { scope: 'independently-pinned-bundle-outer-execution', status: 'observed', gaps: [],
+        sourceTextSha256: hash, sourceTextLength: 1, coverageRangesComplete: true,
+        coverageRanges: [{ startOffset: 0, endOffset: 1, count: 1 }] },
+      resolutions: { scope: 'native-node-resolver-returned-edges', status: 'bound', gaps: [] } };
+    const hostObservation = retain('host-observation', hostRecord);
+    const terminalRecord = { ...record, hostObservationReceipt: hostObservation,
+      state: 'complete', exitCode: 0, signalCode: null, cleanupComplete: true };
     const terminal = retain('terminal', terminalRecord);
     const manifests = Object.fromEntries(keys.map(key => [key, retain(key,
-      { ...record, scope: 'fixture-only', qualificationKey: key, terminalReceipt: terminal })])) as
+      { ...record, hostObservationReceipt: hostObservation,
+        scope: 'fixture-only', qualificationKey: key, terminalReceipt: terminal })])) as
       Parameters<typeof readCommittedReaderLegacyAdoptionFixtureEvidence>[2]['manifests'];
     const payload = { qualification: Object.fromEntries(keys.map(key => [key, manifests[key].sha256])) } as
       Parameters<typeof readCommittedReaderLegacyAdoptionFixtureEvidence>[1];
     const tx = { savepoint: vi.fn() } as unknown as Parameters<typeof readCommittedReaderLegacyAdoptionFixtureEvidence>[0];
     const current = vi.fn<Parameters<typeof readCommittedReaderLegacyAdoptionFixtureEvidence>[3]>(async () => ({ bindingHistory: { fixtureOnly: true },
       outstandingEffects: { fixtureOnly: true }, independence: { fixtureOnly: true } }));
-    const retained = { original: f.options.original, manifests, terminal };
+    const retained = { original: f.options.original, hostObservation, manifests, terminal };
     const read = () => readCommittedReaderLegacyAdoptionFixtureEvidence(tx, payload, retained, current);
-    return { ...f, keys, record, retain, terminalRecord, retained, payload, tx, current, read };
+    return { ...f, keys, record, retain, hostRecord, terminalRecord, retained, payload, tx, current, read };
   }
 
   it('joins all five retained digests and passes the original custody transaction to the current reader', async () => {
@@ -363,7 +385,7 @@ describe('D014 transaction-local fixture evidence consumer', () => {
       const f = fixture(), key = 'executedInputsHash';
       await f.read(); f.current.mockClear();
       const record: Record<string, unknown> = { ...f.record, scope: 'fixture-only', qualificationKey: key,
-        terminalReceipt: f.retained.terminal };
+        terminalReceipt: f.retained.terminal, hostObservationReceipt: f.retained.hostObservation };
       if (variant === 'cross-run') record.runId = 'different-run';
       if (variant === 'cross-process') record.process = { ...f.identity.process, identity: 'different-process' };
       if (variant === 'wrong-kind') record.qualificationKey = 'apiManifestHash';
@@ -388,18 +410,63 @@ describe('D014 transaction-local fixture evidence consumer', () => {
     expect(f.current).not.toHaveBeenCalled();
   });
 
-  it.each(['manifest', 'dependency', 'original'])( 'rechecks %s bytes after an awaited current evidence read', async variant => {
+  it.each(['manifest', 'dependency', 'original', 'host'])( 'rechecks %s bytes after an awaited current evidence read', async variant => {
     const f = fixture();
     await f.read(); f.current.mockClear();
     f.current.mockImplementationOnce(async () => {
       const path = variant === 'manifest' ? f.retained.manifests.dependencyManifestHash.path
         : variant === 'dependency' ? join(f.handoff.root, 'node_modules/example/index.js')
+        : variant === 'host' ? f.retained.hostObservation.path
         : f.handoff.observationReceiptPath;
       writeFileSync(path, 'changed while waiting');
       return { bindingHistory: {}, outstandingEffects: {}, independence: {} };
     });
     await expect(f.read()).rejects.toThrow(/changed|differs|mismatch/i);
   });
+
+  it.each(['missing', 'commit', 'run', 'pid', 'kernel', 'source', 'unknown', 'pending', 'gaps', 'exit',
+    'configurationInputs', 'configurationReads', 'privateSchema', 'appliedSql', 'engineExecution', 'resolutions',
+    'schema-value', 'sql-empty', 'config-incomplete', 'engine-incomplete', 'proof-digest'] as const)(
+    'refuses %s host observation before reading current evidence', async variant => {
+      const f = fixture();
+      await f.read(); f.current.mockClear();
+      const host = structuredClone(f.hostRecord);
+      if (variant === 'commit') host.sourceCommit = 'b'.repeat(40);
+      if (variant === 'run') host.runId += '-other';
+      if (variant === 'pid') host.pid++;
+      if (variant === 'kernel') host.kernelProcessIdentity += '-other';
+      if (variant === 'source') host.sourceReceiptSha256 = 'b'.repeat(64);
+      if (variant === 'unknown') host.status = 'unknown';
+      if (variant === 'pending') (host.pending as string[]).push('preparation-qualification');
+      if (variant === 'gaps') (host.gaps as string[]).push('unobserved');
+      if (variant === 'exit') host.exitObserved = false;
+      if (['configurationInputs', 'configurationReads', 'privateSchema', 'appliedSql', 'engineExecution', 'resolutions'].includes(variant))
+        host[variant as 'configurationInputs'].status = 'unknown';
+      if (variant === 'schema-value') Object.assign(host.privateSchema.schema,
+        Object.fromEntries(Object.keys(host.privateSchema.schema).map(key => [key, 'b'.repeat(64)])));
+      if (variant === 'sql-empty') host.appliedSql.attempts = [];
+      if (variant === 'config-incomplete') host.configurationReads.observation.captureComplete = false;
+      if (variant === 'engine-incomplete') host.engineExecution.coverageRangesComplete = false;
+      if (variant === 'proof-digest') host.appliedSql.attempts[0].query.sha256 = '';
+      f.retained.hostObservation = f.retain('host-observation', host);
+      if (variant === 'missing') delete (f.retained as Partial<typeof f.retained>).hostObservation;
+      await expect(f.read()).rejects.toThrow(/Retained fixture/);
+      expect(f.current).not.toHaveBeenCalled();
+    });
+
+  it.each(['terminal', 'apiManifestHash', 'launcherManifestHash', 'plannedHostManifestHash',
+    'executedInputsHash', 'dependencyManifestHash'] as const)(
+    'refuses a %s from a different retained host observation', async key => {
+      const f = fixture(); await f.read(); f.current.mockClear();
+      const pin = key === 'terminal' ? f.retained.terminal : f.retained.manifests[key];
+      const record = JSON.parse(readFileSync(pin.path, 'utf8'));
+      record.hostObservationReceipt.sha256 = 'b'.repeat(64);
+      const changed = f.retain(key, record);
+      if (key === 'terminal') f.retained.terminal = changed;
+      else { f.retained.manifests[key] = changed; f.payload.qualification[key] = changed.sha256; }
+      await expect(f.read()).rejects.toThrow(/host observation receipt differs/);
+      expect(f.current).not.toHaveBeenCalled();
+    });
 
   it('refuses a missing custody transaction before any current read', async () => {
     const f = fixture();

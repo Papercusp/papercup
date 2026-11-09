@@ -942,6 +942,7 @@ export async function readCommittedReaderLegacyAdoptionFixtureEvidence(
   tx: Parameters<typeof readLegacyAdoptionHistoryAndEffects>[0], payload: LegacyAdoptionPayload,
   retained: {
     original: { handoff: CommittedReaderPreparationHandoff; identity: CommittedReaderObservationIdentity };
+    hostObservation: { path: string; sha256: string };
     manifests: Record<keyof LegacyAdoptionPayload['qualification'], { path: string; sha256: string }>;
     terminal: { path: string; sha256: string };
   },
@@ -953,19 +954,74 @@ export async function readCommittedReaderLegacyAdoptionFixtureEvidence(
   const selected = structuredClone(retained), request = structuredClone(payload);
   const original = qualifyCommittedReaderOriginalPreparation(selected.original.handoff, selected.original.identity);
   const pins: Array<{ path: string; bytes: Buffer }> = [];
-  const read = (pin: { path: string; sha256: string }) => {
+  const readPin = (pin: { path: string; sha256: string }) => {
+    assert.ok(pin && typeof pin.path === 'string', 'Retained fixture receipt pin required');
     assert.match(pin.sha256, /^[a-f0-9]{64}$/, 'Retained fixture receipt digest required');
     const bytes = readFileSync(pin.path);
     assert.ok(bytes.length > 0 && bytes.length <= 2 * 1024 * 1024, 'Retained fixture receipt size invalid');
     assert.equal(digestBytes(bytes), pin.sha256, 'Retained fixture receipt changed');
     pins.push({ path: pin.path, bytes });
-    const record = JSON.parse(String(bytes));
+    return JSON.parse(String(bytes));
+  };
+  // Consume the actual host observer's retained output separately from the
+  // six-dimension cohort. A caller-authored cohort or parent-PG observation
+  // cannot fill an unknown/pending leg of this process-bound observation.
+  const host = readPin(selected.hostObservation) as ReturnType<typeof observeCommittedReaderLoadedSources>;
+  assert.ok(host?.schemaVersion === 'committed-reader-loader-source-v1'
+    && host.scope === 'node-loader-returned-source', 'Retained fixture host observation kind differs');
+  assert.deepEqual({ sourceCommit: host.sourceCommit, runId: host.runId,
+    process: { pid: host.pid, identity: host.kernelProcessIdentity } },
+  selected.original.identity, 'Retained fixture host identity differs');
+  assert.equal(host.sourceReceiptSha256, selected.original.handoff.sourceReceiptSha256,
+    'Retained fixture host source receipt differs');
+  assert.ok(host.status === 'bound' && host.exitObserved === true
+    && typeof host.processIdentity === 'string' && host.processIdentity.length > 0,
+  'Retained fixture host observation incomplete');
+  assert.deepEqual(host.gaps, [], 'Retained fixture host observation has gaps');
+  assert.deepEqual(host.pending, [], 'Retained fixture host observation pending');
+  for (const [key, status, scope] of [
+    ['configurationInputs', 'matched', 'native-node-entry-configuration-inputs'],
+    ['configurationReads', 'observed', 'javascript-configuration-property-gets'],
+    ['privateSchema', 'observed', 'api-worker-information-schema-columns'],
+    ['appliedSql', 'observed', 'migration-client-unsafe-query'],
+    ['engineExecution', 'observed', 'independently-pinned-bundle-outer-execution'],
+    ['resolutions', 'bound', 'native-node-resolver-returned-edges'],
+  ] as const) {
+    assert.ok(host[key]?.status === status && host[key].scope === scope,
+      `Retained fixture host ${key} observation incomplete`);
+    assert.deepEqual(host[key].gaps, [], `Retained fixture host ${key} has gaps`);
+  }
+  assert.ok(host.configurationInputs.snapshot
+    && host.configurationInputs.snapshot.fingerprint === host.configurationInputs.expectedFingerprint,
+  'Retained fixture host configuration input proof missing');
+  assert.ok(host.configurationReads.observation?.captureComplete === true
+    && host.configurationReads.observation.activeAtTermination === true,
+  'Retained fixture host configuration read proof incomplete');
+  assert.deepEqual(host.privateSchema.schema, original.planned.inputs.schema,
+    'Retained fixture host schema differs from original');
+  assert.ok(Array.isArray(host.appliedSql.attempts) && host.appliedSql.attempts.length > 0
+    && host.appliedSql.attempts.some(attempt => attempt.outcome === 'returned'),
+  'Retained fixture host applied SQL proof missing');
+  for (const hash of [host.configurationReads.receiptSha256, host.privateSchema.receiptSha256,
+    host.privateSchema.querySha256, host.engineExecution.sourceTextSha256,
+    ...host.appliedSql.attempts.flatMap(attempt => [attempt.rawSource?.sha256, attempt.query?.sha256,
+      attempt.plannedReceiptSha256, attempt.terminalReceiptSha256])])
+    assert.ok(typeof hash === 'string' && /^[a-f0-9]{64}$/.test(hash),
+      'Retained fixture host observation proof digest missing');
+  assert.ok(host.engineExecution.coverageRangesComplete === true
+    && host.engineExecution.coverageRanges?.some(range => range.startOffset === 0
+      && range.endOffset === host.engineExecution.sourceTextLength && range.count > 0),
+  'Retained fixture host engine execution proof incomplete');
+  const read = (pin: { path: string; sha256: string }) => {
+    const record = readPin(pin);
     assert.deepEqual({ sourceCommit: record.sourceCommit, runId: record.runId, process: record.process },
       selected.original.identity, 'Retained fixture cohort identity differs');
     assert.equal(record.observationReceiptSha256, selected.original.handoff.observationReceiptSha256,
       'Retained fixture observation receipt differs');
     assert.deepEqual(record.omitted, [], 'Retained fixture observation incomplete');
     assert.deepEqual(record.opaque, [], 'Retained fixture observation opaque');
+    assert.deepEqual(record.hostObservationReceipt, selected.hostObservation,
+      'Retained fixture host observation receipt differs');
     return record;
   };
   const terminal = read(selected.terminal);
