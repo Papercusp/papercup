@@ -13,6 +13,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ExternalConditionReachability } from '../../external-condition-reachability';
 import { prepareBlockerDecision } from '../../blocker-resolution-decision';
 import { createBlockerEvidenceReader, preflightBlockerDecision } from '../../blocker-resolution-evidence';
+import { ParkRecoveryAdmissionUnchanged } from '../../durable-park-recovery';
 
 vi.mock('../../workspace-registry', async original => ({
   ...(await original<typeof import('../../workspace-registry')>()),
@@ -294,8 +295,8 @@ describe('work_items:release handler (keyed-array)', () => {
       claimHoldRelease: { condition: 'Repair accepted', trigger: 'dependency:repaired:42' } });
     expect(b.results[0]).toMatchObject({ ok: true, claimHold: true });
     expect(releaseM).toHaveBeenCalledWith('WI-1', expect.objectContaining({ enteringBlockerDeferral: true,
-      blockerDecision: expect.objectContaining({ payloadPatch: { _claimHold: true, claim_hold_by: 'me' },
-        unset: ['claim_hold_recheck'], effect: expect.objectContaining({ claimHold: true, reason: 'Await repair' }) }) }));
+      durablePark: expect.objectContaining({ parkedBy: 'me', parkedReason: 'Await repair' }),
+      blockerDecision: expect.objectContaining({ effect: expect.objectContaining({ claimHold: true, reason: 'Await repair' }) }) }));
     expect(holdM).not.toHaveBeenCalled();
   });
   it('returns a stored blocker receipt without repeating durable hold writes', async () => {
@@ -756,7 +757,7 @@ describe('work_items:release { claimHold } (WI-2797 claim-hold lever)', () => {
       // releaseWorkItem emits from the pre-hold snapshot; the handler must keep the
       // parked item out of the broad claimable pool wake.
       announceClaimable: false,
-      enteringBlockerDeferral: true,
+      enteringBlockerDeferral: false,
       expectedAssignee: 'me',
       releasingOwnerId: 'me',
       onPriorState: expect.any(Function),
@@ -842,8 +843,7 @@ describe('work_items:release { claimHold } (WI-2797 claim-hold lever)', () => {
       },
     });
     expect(reachabilityM).toHaveBeenCalledWith('deploy:ready:staging', { requireSpecificCondition: true });
-    expect(holdM).toHaveBeenCalledWith('WI-1', true, {
-      harness: undefined,
+    expect(releaseM).toHaveBeenCalledWith('WI-1', expect.objectContaining({ durablePark: {
       parkedBy: 'me',
       parkedReason: 'wait for deploy',
       releaseContract: {
@@ -853,7 +853,7 @@ describe('work_items:release { claimHold } (WI-2797 claim-hold lever)', () => {
         reachability: 'reachable',
         evidence: 'catalogued producer is live',
       },
-    });
+    } }));
     expect(b.results[0].claimHoldRelease).toMatchObject({
       trigger: 'deploy:ready:staging',
       reachability: 'reachable',
@@ -880,15 +880,14 @@ describe('work_items:release { claimHold } (WI-2797 claim-hold lever)', () => {
     });
 
     expect(reachabilityM).toHaveBeenCalledTimes(2);
-    expect(holdM).toHaveBeenCalledWith('WI-1', true, {
-      harness: undefined,
+    expect(releaseM).toHaveBeenCalledWith('WI-1', expect.objectContaining({ durablePark: {
       parkedBy: 'me',
       parkedReason: 'wait for deploy',
       releaseContract: {
         condition: 'deployment finishes', owner: 'release-owner', trigger: 'deploy:ready:staging',
         reachability: 'unknown', evidence,
       },
-    });
+    } }));
     expect(b.results[0].claimHoldRelease).toMatchObject({ reachability: 'unknown', evidence });
   });
 
@@ -911,9 +910,9 @@ describe('work_items:release { claimHold } (WI-2797 claim-hold lever)', () => {
       },
     });
 
-    expect(holdM).toHaveBeenCalledWith('WI-1', true, expect.objectContaining({
+    expect(releaseM).toHaveBeenCalledWith('WI-1', expect.objectContaining({ durablePark: expect.objectContaining({
       releaseContract: expect.objectContaining({ reachability: 'blocked', evidence }),
-    }));
+    }) }));
     expect(b.results[0].claimHoldRelease).toMatchObject({ reachability: 'blocked', evidence });
   });
 
@@ -1046,6 +1045,19 @@ describe('work_items:release { claimHold } (WI-2797 claim-hold lever)', () => {
 
 // WI-5974: a release resolves any pending work_items:request_release against the item early.
 describe('work_items:release resolves a pending release request (WI-5974)', () => {
+  it.each(['already-satisfied', 'replayed'] as const)('returns %s admission before post-release side effects', async disposition => {
+    const original = workItemFixture({ id: 'WI-UNCHANGED', assignee: 'me', state: 'wip' });
+    getM.mockResolvedValue(original);
+    releaseM.mockRejectedValueOnce(new ParkRecoveryAdmissionUnchanged(disposition));
+    const b = await body({ id: original.id, claimHold: true,
+      claimHoldRelease: { condition: 'deployment finishes', trigger: 'deploy:ready:staging' } });
+    expect(b.results[0]).toMatchObject({ ok: true, parkAdmission: disposition, workItem: original });
+    expect(holdM).not.toHaveBeenCalled();
+    expect(checkpointM).not.toHaveBeenCalled();
+    expect(releaseRequest.resolveWorkItemReleaseRequest).not.toHaveBeenCalled();
+    expect(commentM).not.toHaveBeenCalled();
+    expect(auditM).not.toHaveBeenCalled();
+  });
   it('no pending request on the item → no resolve attempt, no notify', async () => {
     releaseM.mockResolvedValue({ id: 'WI-1', assignee: null, harness: 'h', payload: null } as never);
     releaseRequest.readWorkItemReleaseRequest.mockReturnValue(null);

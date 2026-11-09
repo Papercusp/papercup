@@ -112,6 +112,7 @@ beforeAll(async () => {
   h.sql = db.sql;
   await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
+  await db.sql.unsafe(readFileSync(new URL('../../../../../libs/papercusp/libs/db/sql/741-work-items-condition-key-singleton.sql', import.meta.url), 'utf8'));
   await applyEventSubstrateMigrationsForTest(db.sql, {
     label: 'blocker-resolution-boundaries.integration.test.ts', ...COORD_SUBSCRIPTION_SUBSTRATE,
   });
@@ -251,6 +252,90 @@ async function expectPairedMutationTransaction(id: string) {
   expect(rows.map(row => row.phase)).toEqual(['decision', 'lifecycle']);
   expect(rows[0].transaction_id).toBe(rows[1].transaction_id);
 }
+
+// Four maintained callers, including both homogeneous ids and heterogeneous
+// items defaults. The request goes through the PUBLIC parser and handler; no
+// fixture release/admission substitute can make this census pass.
+const parkCallCensus = (['bug', 'feature'] as const).flatMap(kind =>
+  [false, true].flatMap(blocker => (['single', 'ids-default', 'items-default', 'items-override'] as const)
+    .map(form => ({ kind, blocker, form }))));
+type ParkCall = typeof parkCallCensus[number];
+async function publicParkCase(entry: ParkCall) {
+  const ids = await Promise.all(Array.from({ length: entry.form === 'single' ? 1 : 2 }, () => seed(entry.kind, entry.blocker)));
+  await db.sql`UPDATE harness_shared.work_items SET payload=payload - '_claimHold' - 'claim_hold_by'
+    WHERE feature_id=ANY(${ids}::text[])`;
+  const contract = { condition: 'Every input is qualified', trigger: EVENT, owner: 'fixture-producer' };
+  const defaults = { harness: HARNESS, claimHold: true, claimHoldRelease: contract,
+    ...(entry.blocker ? { blockerDecision: deferral(`park-${ids.join('-')}`) } : {}) };
+  const args = entry.form === 'single' ? { ...defaults, id: ids[0] }
+    : entry.form === 'ids-default' ? { ...defaults, ids }
+    : entry.form === 'items-default' ? { ...defaults, items: ids.map(id => ({ id })) }
+    : { ...defaults, claimHold: false,
+      claimHoldRelease: { condition: 'Unused default', trigger: 'fixture:unused-default' },
+      items: ids.map(id => ({ id, claimHold: true, claimHoldRelease: contract })) };
+  const run = async () => {
+    const result = await release.handler(release.args.parse(args) as never, CTX) as { data: { results: Result[] } };
+    return result.data.results;
+  };
+  const rows = async () => Promise.all(ids.map(async id => ({
+    row: (await snapshot(id)).row, checkpoint: await checkpoints.getWorkItemCheckpoint(checkpointRef(id)),
+  })));
+  return { ids, run, rows, contract };
+}
+async function parkTimers() {
+  return db.sql`SELECT id, subscriber_id, expires_ts, producer_health FROM harness_shared.event_awaits
+    WHERE producer_health->'producer'->>'kind'='durable-park-recovery' ORDER BY id`;
+}
+describe('PARK-ADMISSION unchanged public call census', () => {
+  it.each(parkCallCensus)('$kind blocker=$blocker $form: complete condition has no artifacts; unsatisfied commits exactly once', async entry => {
+    const fixture = await publicParkCase(entry);
+    await repairCondition();
+    const before = await fixture.rows();
+    for (const result of await fixture.run()) expect(result).toMatchObject({ ok: false, code: 'wait_ref_already_satisfied' });
+    expect(await fixture.rows()).toEqual(before);
+    expect(await parkTimers()).toHaveLength(0);
+    expect(await db.sql`SELECT feature_id FROM harness_shared.work_items WHERE condition_key IS NOT NULL`).toHaveLength(0);
+    await db.sql`UPDATE harness_shared.event_awaits SET fired_at=NULL, fired_reason=NULL, fired_payload=NULL
+      WHERE id=${announcementId}`;
+    for (const result of await fixture.run()) expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
+    const after = await fixture.rows();
+    const timers = await parkTimers();
+    expect(timers).toHaveLength(fixture.ids.length);
+    for (const saved of after) {
+      const admission = saved.row.payload.claim_hold_release.recovery;
+      expect(saved.row).toMatchObject({ taken_by: null, payload: { _claimHold: true,
+        keep: 'original', claim_hold_by: OWNER, claim_hold_release: fixture.contract } });
+      expect(admission.receipt).toMatchObject({ custodianId: OWNER, state: 'waiting',
+        workItemId: saved.row.feature_id, policy: { initialMs: 1_800_000, maxExtensions: 2, maxAgeMs: 5_400_000 } });
+      expect(timers.find(timer => Number(timer.id) === admission.awaitId)?.subscriber_id).toBe(admission.receipt.id);
+      expect(saved.row.payload.externalBlockers).toEqual(before.find(item => item.row.feature_id === saved.row.feature_id)!.row.payload.externalBlockers);
+    }
+    for (const result of await fixture.run()) expect(result).toMatchObject({ ok: true, replayed: true });
+    expect(await fixture.rows()).toEqual(after);
+    expect(await parkTimers()).toEqual(timers);
+  });
+
+  it.each((['bug', 'feature'] as const).flatMap(kind => [false, true].flatMap(blocker =>
+    ['insert', 'commit'].map(cut => ({ kind, blocker, cut })))))('$kind blocker=$blocker: rollback at $cut leaves claim, checkpoint and condition actionable', async ({ kind, blocker, cut }) => {
+    const fixture = await publicParkCase({ kind, blocker, form: 'single' });
+    const before = await fixture.rows();
+    await db.sql.unsafe(`CREATE FUNCTION harness_shared.reject_public_park() RETURNS trigger LANGUAGE plpgsql AS $fn$
+      BEGIN IF NEW.producer_health->'producer'->>'kind'='durable-park-recovery' THEN
+        RAISE EXCEPTION 'public park crash cut'; END IF; RETURN NEW; END $fn$`);
+    await db.sql.unsafe(cut === 'insert'
+      ? `CREATE TRIGGER reject_public_park BEFORE INSERT ON harness_shared.event_awaits FOR EACH ROW EXECUTE FUNCTION harness_shared.reject_public_park()`
+      : `CREATE CONSTRAINT TRIGGER reject_public_park AFTER INSERT ON harness_shared.event_awaits DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION harness_shared.reject_public_park()`);
+    try {
+      for (const result of await fixture.run()) expect(result).toMatchObject({ ok: false });
+      expect(await fixture.rows()).toEqual(before);
+      expect(await parkTimers()).toHaveLength(0);
+    } finally {
+      await db.sql.unsafe('DROP TRIGGER reject_public_park ON harness_shared.event_awaits; DROP FUNCTION harness_shared.reject_public_park()');
+    }
+    for (const result of await fixture.run()) expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
+    expect(await parkTimers()).toHaveLength(1);
+  });
+});
 
 describe('public blocker resolution boundaries', () => {
   async function legacyRuntime() {

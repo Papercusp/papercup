@@ -10517,6 +10517,12 @@ export async function releaseWorkItem(
     blockerEvidenceContext?: BlockerBoundaryContext;
     /** A public durable park is a deferral even before a blocker flag exists. */
     enteringBlockerDeferral?: boolean;
+    /** Internal composition of unchanged public park calls with their release. */
+    durablePark?: {
+      parkedBy: string;
+      parkedReason?: string;
+      releaseContract: import('./work-items-durable-park-audit').DurableParkReleaseContract;
+    };
     /** Park composes the existing carry store into this release transaction. */
     checkpoint?: {
       update: string;
@@ -10542,6 +10548,11 @@ export async function releaseWorkItem(
     phase: 'work_items:release:read-preflight',
   });
   if (!wi) return null;
+  if (opts.durablePark) {
+    const { matchingParkRecoveryAdmission, ParkRecoveryAdmissionUnchanged } = await import('./durable-park-recovery');
+    const replay = matchingParkRecoveryAdmission(wi.payload, { workItemId: id, ...opts.durablePark });
+    if (replay) throw new ParkRecoveryAdmissionUnchanged('replayed', replay);
+  }
   if (opts.retainPausedCallerBindings) {
     const retained = opts.retainPausedCallerBindings;
     const { readAssumeCallerPause } = await import('./session-assume-pause');
@@ -10681,21 +10692,39 @@ export async function releaseWorkItem(
   // A decision-bearing release must not touch a remote lane before its local
   // decision/claim transaction succeeds. Validation and CAS failures leave both
   // halves intact; successful release uses the existing lane reconciler.
-  const afterWrite = opts.checkpoint ? async (tx: Sql | TransactionSql) => {
-    const { setWorkItemCheckpointWithPrior } = await import('./work-item-checkpoint');
-    const result = await setWorkItemCheckpointWithPrior({ workspaceId: activeWorkspaceId(), harness: wi.harness,
-      workItemId: id }, opts.checkpoint!.update, { ...opts.checkpoint!.options, transaction: tx });
-    if (result.blockedReason) throw Object.assign(new Error(result.blockedReason), {
-      code: result.blockedReason, priorLength: result.priorLength,
-    });
-    opts.checkpoint!.onStored?.(result);
+  const beforeWrite = opts.durablePark ? async (tx: Sql | TransactionSql) => {
+    const { lockParkRecoveryCondition } = await import('./durable-park-recovery');
+    await lockParkRecoveryCondition(tx as TransactionSql, opts.durablePark!.releaseContract.trigger);
+  } : undefined;
+  let parkedPayload: WorkItem['payload'] | undefined;
+  const afterWrite = opts.checkpoint || opts.durablePark ? async (tx: Sql | TransactionSql,
+    scope: { workspaceId: string; harness: string }) => {
+    if (opts.checkpoint) {
+      const { setWorkItemCheckpointWithPrior } = await import('./work-item-checkpoint');
+      const result = await setWorkItemCheckpointWithPrior({ ...scope,
+        workItemId: id }, opts.checkpoint.update, { ...opts.checkpoint.options, transaction: tx });
+      if (result.blockedReason) throw Object.assign(new Error(result.blockedReason), {
+        code: result.blockedReason, priorLength: result.priorLength,
+      });
+      opts.checkpoint.onStored?.(result);
+    }
+    if (opts.durablePark) {
+      const { admitParkRecoveryInTransaction } = await import('./durable-park-recovery');
+      await admitParkRecoveryInTransaction(tx as TransactionSql, { ...scope, workItemId: id, ...opts.durablePark });
+      const [stored] = await tx<{ payload: WorkItem['payload'] }[]>`
+        SELECT payload FROM harness_shared.work_items WHERE workspace_id=${scope.workspaceId}
+          AND harness_slug=${scope.harness} AND feature_id=${id}`;
+      parkedPayload = stored.payload;
+    }
   } : undefined;
   const paired = Boolean(blockerMutation || afterWrite);
   if (!paired) await releaseLane();
   if (wi.family === 'issue') {
     const updated = await releaseIssue(id, { expectedAssignee: opts.expectedAssignee,
-      blockerDecisionMutation: blockerMutation, ...(afterWrite ? { afterWrite } : {}) });
+      blockerDecisionMutation: blockerMutation, ...(beforeWrite ? { beforeWrite } : {}),
+      ...(afterWrite ? { afterWrite } : {}) });
     const released = updated ? issueToWorkItem(updated) : null;
+    if (released && parkedPayload !== undefined) released.payload = parkedPayload;
     if (released && paired) await releaseLane();
     await emitReleased(released);
     if (released && !opts.retainPausedCallerBindings) {
@@ -10716,6 +10745,7 @@ export async function releaseWorkItem(
   // never depends on the JS-side state mapping.
   const nonRequeue = [...FEATURE_NON_REQUEUE_STATES];
   const write = async (tx: Sql | TransactionSql): Promise<WorkItem | null> => {
+    await beforeWrite?.(tx);
     if (blockerMutation) await applyBlockerDecisionMutation(tx, {
       workspace: activeWorkspaceId(), harness: wi.harness, id,
     }, blockerMutation);
@@ -10744,7 +10774,8 @@ export async function releaseWorkItem(
        AND (${opts.expectedAssignee ?? null}::text IS NULL OR taken_by IS NULL OR taken_by = ${opts.expectedAssignee ?? null})
     RETURNING ${tx.unsafe(FEATURE_COLS)}`;
     if (blockerMutation && !rows.length) throw new BlockerDecisionMutationConflict();
-    if (rows.length) await afterWrite?.(tx);
+    if (rows.length) await afterWrite?.(tx, { workspaceId: activeWorkspaceId(), harness: wi.harness ?? '' });
+    if (rows[0] && parkedPayload !== undefined) rows[0].payload = parkedPayload;
     return rows[0] ? featureRowToWorkItem(rows[0]) : null;
   };
   const released = paired

@@ -40,6 +40,7 @@ import { CLAIM_STATES_ALLOWLIST } from '../../scheduler/claim-states';
 import { STALE_CLAIM_GRACE_MS } from '../../work-items-stale-claims';
 import { clampText, softText } from '../limits';
 import { buildDurableParkReleaseContract } from '../../durable-park-release-contract';
+import { ParkRecoveryAdmissionUnchanged } from '../../durable-park-recovery';
 import { admitWaitRef } from '../../wait-ref-admission';
 import type { DurableParkReleaseContract } from '../../work-items-durable-park-audit';
 import { PREMISE_STAMPS_FIELD } from '../coordination/premise-resolve';
@@ -563,7 +564,7 @@ export default defineTool({
           claimHold === true && claimHoldReleaseInput
             ? await buildClaimHoldReleaseContract(claimHoldReleaseInput, ident.ownerId, it.id)
             : undefined;
-        const pairedHold = blockerInput && claimHold !== undefined
+        const pairedHold = blockerInput && claimHold === false
           ? await prepareWorkItemDurableParkMutation(claimHold, { parkedBy: ident.ownerId,
               parkedReason: reason, releaseContract }) : undefined;
         // WI-4198: force is a CHECKED override, not a bypass. Before releasing,
@@ -650,10 +651,7 @@ export default defineTool({
         // by someone else" — re-read to tell them apart and report an honest error.
         const releaseOpts: NonNullable<Parameters<typeof releaseWorkItem>[1]> = {
           harness,
-          // The durable claim hold is applied after releaseWorkItem returns. Suppress its
-          // broad pool announcement here so the pre-hold snapshot cannot advertise work
-          // that this same release is about to park. The targeted claim:released:<id> event
-          // remains available to agents already waiting on this exact item.
+          // A durable park is committed with release; never advertise it to pool waiters.
           ...(claimHold === true ? { announceClaimable: false } : {}),
           // Every cross-holder force is authorized against one exact pre-read holder.
           // Preserve that holder as the mutation CAS so a successor claim that races
@@ -661,7 +659,11 @@ export default defineTool({
           expectedAssignee: forced ? forced.holder : force ? undefined : ident.ownerId,
           releasingOwnerId: ident.ownerId,
           blockerEvidenceContext: await blockerBoundaryContext(ctx, ident.ownerId, harness),
-          ...(claimHold === true ? { enteringBlockerDeferral: true } : {}),
+          // Canonical unresolved blockers still require their decision. An
+          // ordinary typed park must not gain new caller paperwork.
+          ...(claimHold === true ? { enteringBlockerDeferral: Boolean(blockerInput) } : {}),
+          ...(claimHold === true && releaseContract ? {
+            durablePark: { parkedBy: ident.ownerId, parkedReason: reason, releaseContract } } : {}),
           ...(blockerInput ? { blockerDecision: {
             input: blockerInput, sessionId: ident.ownerId, effect: blockerEffect, ...pairedHold,
           } } : {}),
@@ -674,7 +676,24 @@ export default defineTool({
         let workItem: Awaited<ReturnType<typeof releaseWorkItem>>;
         try {
           workItem = await releaseWorkItem(it.id, releaseOpts);
+          // An own-node federated row may need the existing origin repair before
+          // retry. Keep admission's unchanged exception outside BOTH attempts.
+          if (!workItem) {
+            const probe = await getWorkItem(it.id, harness);
+            const probeHolder = probe?.assignee?.trim();
+            if (probe?.family === 'issue' && probe.origin === 'remote' &&
+                (!probeHolder || probeHolder === ident.ownerId || (forced && probeHolder === forced.holder)) &&
+                await healOwnNodeOrigin(it.id, probe.harness)) {
+              workItem = await releaseWorkItem(it.id, releaseOpts);
+            }
+          }
         } catch (error) {
+          if (error instanceof ParkRecoveryAdmissionUnchanged) {
+            const current = await getWorkItem(it.id, harness);
+            return { ok: true as const, id: it.id, workItem: current,
+              parkAdmission: error.disposition,
+              ...(error.disposition === 'replayed' ? { replayed: true as const } : {}) };
+          }
           if (error instanceof Error && 'code' in error && typeof error.code === 'string'
               && error.code.startsWith('blocker_decision_')) {
             return { ...error, ok: false as const, id: it.id, error: error.message };
@@ -683,23 +702,6 @@ export default defineTool({
         }
         if (blockerReceipt?.replayed) return { ok: true as const, id: it.id, workItem,
           blockerDecision: blockerReceipt.record, replayed: true };
-        // WI-10006515: a null release on an OWN-NODE issue row stranded at origin='remote' is
-        // the view trigger no-op'ing a write this node is entitled to make (`origin` records how
-        // the row arrived, not who wrote it). Heal it and retry ONCE. The heal's WHERE clause is
-        // the identity check, so a true peer row is untouched and falls through to the refusal
-        // below; a row a peer holds is never healed here (that is the not_holder answer).
-        if (!workItem) {
-          const probe = await getWorkItem(it.id, harness);
-          const probeHolder = probe?.assignee?.trim();
-          if (
-            probe?.family === 'issue' &&
-            probe.origin === 'remote' &&
-            (!probeHolder || probeHolder === ident.ownerId || (forced !== null && forced !== undefined && probeHolder === forced.holder)) &&
-            (await healOwnNodeOrigin(it.id, probe.harness))
-          ) {
-            workItem = await releaseWorkItem(it.id, releaseOpts);
-          }
-        }
         // The force path read the row a moment earlier for the authority guard; prefer the
         // library's read (it is the one the UPDATE acted on) and fall back to that read only
         // if the row vanished before it.
@@ -1073,7 +1075,7 @@ export default defineTool({
         // (WI-4531 reaper), so every park placed by an ephemeral agent boomeranged back
         // into scheduler:get_next. Parks never gate terminal transitions, so durability
         // costs nothing WI-4531 was defending against.
-        const held = pairedHold
+        const held = releaseOpts.durablePark || pairedHold
           ? { id: it.id, harness: workItem.harness, hold: claimHold!, applicable: true }
           : await setWorkItemClaimHold(it.id, claimHold, {
           harness,

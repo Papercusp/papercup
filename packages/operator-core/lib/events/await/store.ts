@@ -254,6 +254,9 @@ function mapWork(r: any): DeliveryWork {
   };
 }
 
+/** A caller transaction couples registration and retirement to its admission
+ * write. The shared bounded runner uses a savepoint on that transaction, so a
+ * later caller rollback also restores superseded waits and generation fences. */
 export async function registerAwait(input: {
   subscriberId: string;
   eventKey: string;
@@ -292,8 +295,11 @@ export async function registerAwait(input: {
     /** Restrict cancellation to one coordination surface (used by re-stage). */
     includeNotePrefix?: string;
   };
-}): Promise<AwaitRow> {
+}, transaction?: postgres.TransactionSql): Promise<AwaitRow> {
   const ws = eventsWs();
+  const transactionOptions: BoundedOrgTxnOptions = transaction
+    ? { ...AWAIT_PRE_REGISTRATION_TXN_OPTIONS, client: transaction as unknown as ReturnType<typeof getOrgPg>['sql'] }
+    : AWAIT_PRE_REGISTRATION_TXN_OPTIONS;
   // Safe-by-default (await-timeout-fallback-defaults-2026-07-03): a caller that sets a
   // deadline but names no behavior WAKEs at it (auto-woken to re-orient) rather than
   // lapsing silently. Every real caller (events:await / watch:create / the events sugar /
@@ -477,7 +483,7 @@ export async function registerAwait(input: {
       `;
       const row = await insertAwait(tx);
       return { ...row, supersededPendingCount: superseded.length };
-    }, AWAIT_PRE_REGISTRATION_TXN_OPTIONS);
+    }, transactionOptions);
   }
   // A generation-pinned registration must keep the declaration lock through
   // its insert even when the caller does not request supersession. Otherwise
@@ -488,20 +494,20 @@ export async function registerAwait(input: {
       await assertGenerationPin(tx);
       const explicit = await reconcileExactPending(tx);
       return explicit ?? insertAwait(tx);
-    }, AWAIT_PRE_REGISTRATION_TXN_OPTIONS);
+    }, transactionOptions);
   }
   if (exactOneShot) {
     return boundedOrgTxn(async (tx) => {
       const explicit = await reconcileExactPending(tx);
       return explicit ?? insertAwait(tx);
-    }, AWAIT_PRE_REGISTRATION_TXN_OPTIONS);
+    }, transactionOptions);
   }
   // Keep the legacy insert byte-for-byte free of `bound_to` when no binding was
   // supplied. Besides preserving manual-watch semantics, this lets older
   // hand-rolled test fixtures keep exercising the unbound path honestly. It is
   // still bounded: this is the final pre-registration write, so it must not
   // escape the interactive transaction budget merely because it is legacy.
-  return boundedOrgTxn((tx) => insertAwait(tx), AWAIT_PRE_REGISTRATION_TXN_OPTIONS);
+  return boundedOrgTxn((tx) => insertAwait(tx), transactionOptions);
 }
 
 /**
@@ -3116,7 +3122,9 @@ export async function fireTimedOutAwaits(): Promise<AwaitRow[]> {
   return rows.map(mapAwait);
 }
 
-/** Claim due verified waits without consuming them; stale verifier leases self-heal. */
+/** Claim due verified waits without consuming them; stale verifier leases self-heal.
+ * Park recovery additionally observes evidence BEFORE strict expiry. The persisted
+ * next check does not replace expires_ts or reset the admission deadline. */
 export async function claimDueVerifiedAwaits(limit = 100): Promise<AwaitRow[]> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
@@ -3127,7 +3135,11 @@ export async function claimDueVerifiedAwaits(limit = 100): Promise<AwaitRow[]> {
        WHERE workspace_id = ${ws}
          AND timeout_behavior = 'wake'
          AND producer_health IS NOT NULL
-         AND expires_ts IS NOT NULL AND expires_ts <= now()
+         AND expires_ts IS NOT NULL AND (expires_ts <= now() OR (
+           producer_health->'producer'->>'kind' = 'durable-park-recovery'
+           AND jsonb_typeof(producer_health->'details'->'nextCheckAtMs') = 'number'
+           AND (producer_health->'details'->>'nextCheckAtMs')::numeric <= extract(epoch FROM now()) * 1000
+         ))
          AND fired_at IS NULL AND cancelled_at IS NULL
          AND (verification_claimed_at IS NULL OR verification_claimed_at < now() - interval '2 minutes')
        ORDER BY expires_ts ASC
@@ -4620,7 +4632,7 @@ export async function probePatternMatchScope(glob: string, opts?: { limit?: numb
  * waiter registrations, wake outcomes, and the unconditional fire latch so an
  * agent does not have to stitch four partially ordered surfaces together by
  * hand. */
-export async function inspectEventKey(eventKey: string): Promise<{
+export async function inspectEventKey(eventKey: string, transaction?: postgres.TransactionSql): Promise<{
   announcements: AwaitRow[];
   waiters: AwaitRow[];
   deliveries: DeliveryRow[];
@@ -4693,7 +4705,9 @@ export async function inspectEventKey(eventKey: string): Promise<{
       fireLatch: fireLatchRows.length > 0 ? mapKeyFire(fireLatchRows[0]) : null,
       composedRoot,
     };
-  }, AWAIT_READ_TXN_OPTIONS) as Promise<{
+  }, transaction ? { ...AWAIT_READ_TXN_OPTIONS,
+    client: transaction as unknown as ReturnType<typeof getOrgPg>['sql'], readOnly: false,
+  } : AWAIT_READ_TXN_OPTIONS) as Promise<{
     announcements: AwaitRow[];
     waiters: AwaitRow[];
     deliveries: DeliveryRow[];

@@ -3602,7 +3602,8 @@ export async function recordWorkItemReleaseCooldown(opts: {
 export async function releaseIssue(
   id: string,
   opts: { expectedAssignee?: string; blockerDecisionMutation?: BlockerDecisionMutation;
-    afterWrite?: (tx: Sql | TransactionSql) => Promise<void> } = {},
+    beforeWrite?: (tx: Sql | TransactionSql) => Promise<void>;
+    afterWrite?: (tx: Sql | TransactionSql, scope: { workspaceId: string; harness: string }) => Promise<void> } = {},
 ): Promise<EngineerIssue | null> {
   // EI-23215738429986679: resolve the issue workspace, capture its prior holder, perform the
   // compare-and-release UPDATE, and persist release cooldown in ONE bounded admin transaction.
@@ -3615,6 +3616,7 @@ export async function releaseIssue(
   const released = await boundedOrgTxn(async (tx) => {
     releasePhase = 'resolve-workspace';
     const ws = await resolveIssueWorkspace(id, undefined, tx);
+    await opts.beforeWrite?.(tx);
     releasePhase = 'read-prior-holder';
     // EI-6480: capture the prior assignee BEFORE clearing it, so we can clean up that owner's
     // stale per-Hive claim lease below — else the just-freed issue stays lease-poisoned (reads
@@ -3662,7 +3664,7 @@ export async function releaseIssue(
       return null;
     }
     const issue = toIssue(rows[0]);
-    await opts.afterWrite?.(tx);
+    await opts.afterWrite?.(tx, { workspaceId: ws, harness: formerHarnessSlug ?? '' });
     if (formerAssignee && formerHarnessSlug) {
       releasePhase = 'persist-release-cooldown';
       await recordWorkItemReleaseCooldown(

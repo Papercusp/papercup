@@ -291,6 +291,82 @@ function runtimeBlocker() {
 }
 
 describe('await-event store (PG)', () => {
+  describe('caller-owned registration transaction', () => {
+    it('commits the park and bounded await together', async () => {
+      const awaited = await rootSql.begin(async (tx) => {
+        await tx`
+          INSERT INTO harness_shared.work_items (feature_id, status, payload)
+          VALUES ('WI-atomic-park', 'blocked', ${tx.json({ _claimHold: true })})`;
+        const row = await registerAwait({
+          subscriberId: 'delivery-owner', eventKey: 'task:terminal:dependency', timeoutSec: 30,
+        }, tx);
+        const registered = await tx`SELECT id FROM harness_shared.event_awaits WHERE id = ${row.id}`;
+        expect(registered).toHaveLength(1);
+        return row;
+      });
+
+      expect(await rootSql`SELECT feature_id FROM harness_shared.work_items`).toHaveLength(1);
+      const rows = await rootSql`SELECT id, expires_ts FROM harness_shared.event_awaits`;
+      expect(rows).toHaveLength(1);
+      expect(Number(rows[0]!.id)).toBe(awaited.id);
+      expect(rows[0]!.expires_ts).not.toBeNull();
+    });
+
+    it('rolls back both records after registration but before the caller commits', async () => {
+      await expect(rootSql.begin(async (tx) => {
+        await tx`
+          INSERT INTO harness_shared.work_items (feature_id, status, payload)
+          VALUES ('WI-atomic-park', 'blocked', ${tx.json({ _claimHold: true })})`;
+        await registerAwait({
+          subscriberId: 'delivery-owner', eventKey: 'task:terminal:dependency', timeoutSec: 30,
+        }, tx);
+        throw new Error('injected after-registration failure');
+      })).rejects.toThrow('injected after-registration failure');
+
+      expect(await rootSql`SELECT feature_id FROM harness_shared.work_items`).toHaveLength(0);
+      expect(await rootSql`SELECT id FROM harness_shared.event_awaits`).toHaveLength(0);
+    });
+
+    it('rolls back exact-key retirement without losing the original actionable wait', async () => {
+      const original = await registerAwait({
+        subscriberId: 'delivery-owner', eventKey: 'task:terminal:dependency', timeoutSec: 30,
+      });
+      await expect(rootSql.begin(async (tx) => {
+        await registerAwait({
+          subscriberId: 'delivery-owner', eventKey: 'task:terminal:dependency', timeoutSec: 60,
+        }, tx);
+        throw new Error('injected replacement failure');
+      })).rejects.toThrow('injected replacement failure');
+
+      const rows = await rootSql`SELECT id, cancelled_at FROM harness_shared.event_awaits`;
+      expect(rows).toHaveLength(1);
+      expect(Number(rows[0]!.id)).toBe(original.id);
+      expect(rows[0]!.cancelled_at).toBeNull();
+      expect((await listActiveAwaits('delivery-owner')).map((row) => row.id)).toEqual([original.id]);
+    });
+
+    it('rolls back surface-wide supersession and preserves unrelated manual waits', async () => {
+      const original = await registerAwait({
+        subscriberId: 'delivery-owner', eventKey: 'task:terminal:old', note: 'park-source:old',
+      });
+      const manual = await registerAwait({
+        subscriberId: 'delivery-owner', eventKey: 'manual:unrelated', note: 'manual wait',
+      });
+      await expect(rootSql.begin(async (tx) => {
+        await registerAwait({
+          subscriberId: 'delivery-owner', eventKey: 'task:terminal:new', note: 'park-source:new',
+          timeoutSec: 30,
+          supersedePending: { allEventKeys: true, includeNotePrefix: 'park-source:' },
+        }, tx);
+        throw new Error('injected supersession failure');
+      })).rejects.toThrow('injected supersession failure');
+
+      expect((await listActiveAwaits('delivery-owner')).map((row) => row.id).sort((a, b) => a - b))
+        .toEqual([original.id, manual.id].sort((a, b) => a - b));
+      expect(await rootSql`SELECT id FROM harness_shared.event_awaits`).toHaveLength(2);
+    });
+  });
+
   it('persists lifecycle bindings, folds their provenance into deliveries, and retires only matching machinery rows', async () => {
     const binding = { kind: 'fleet-leadership', ref: 'alpha' };
     const bound = await registerAwait({
