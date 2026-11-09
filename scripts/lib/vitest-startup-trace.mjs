@@ -6,7 +6,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { threadId } from 'node:worker_threads';
+import workerThreads, { threadId, isMainThread, getEnvironmentData, setEnvironmentData } from 'node:worker_threads';
 import { channel } from 'node:diagnostics_channel';
 import { captureConfigurationSnapshot, observeConfigurationReads } from '../../libs/test-config/src/configuration-snapshot.ts';
 import { readProcessIdentity } from './process-identity.mjs';
@@ -20,17 +20,174 @@ const sourcePinsEnv = 'PC_NATIVE_LOADER_SOURCE_PINS';
 const loaderCensusEnv = 'PC_NATIVE_LOADER_CENSUS';
 // An explicitly enrolled census uses the same OUT artifacts and authenticated
 // reader. Its count/byte budget fits within that reader's existing bounds.
-/** @typedef {{ events: number, bytes: number } | { batches: number, bytes: number }} NativeLoaderCensus */
+/** @typedef {{ epoch: string, maxIsolates: number, closeTimeoutMs: number }} CooperativeEnrollment */
+/** @typedef {({ events: number, bytes: number } | { batches: number, bytes: number }) & { cooperative?: CooperativeEnrollment }} NativeLoaderCensus */
 /** @param {unknown} value @returns {NativeLoaderCensus} */
 export function validateNativeLoaderCensus(value) {
   const batched = value && typeof value === 'object' && Object.hasOwn(value, 'batches');
   if (!value || typeof value !== 'object' || Array.isArray(value) ||
-      Object.keys(value).some(key => ![batched ? 'batches' : 'events', 'bytes'].includes(key)) ||
+      Object.keys(value).some(key => ![batched ? 'batches' : 'events', 'bytes', 'cooperative'].includes(key)) ||
       (batched ? !Number.isSafeInteger(value.batches) || value.batches < 1 || value.batches > 1024 :
         !Number.isSafeInteger(value.events) || value.events < 2 || value.events > 8192) ||
       !Number.isSafeInteger(value.bytes) || value.bytes < 1024 || value.bytes > 16 * 1024 ** 2)
     throw new Error('Invalid bounded native loader census');
-  return batched ? { batches: value.batches, bytes: value.bytes } : { events: value.events, bytes: value.bytes };
+  if (value.cooperative !== undefined) {
+    const c = value.cooperative;
+    if (!batched || !c || Object.keys(c).sort().join() !== 'closeTimeoutMs,epoch,maxIsolates' ||
+        typeof c.epoch !== 'string' || !/^[a-f0-9-]{36}$/.test(c.epoch) ||
+        !Number.isSafeInteger(c.maxIsolates) || c.maxIsolates < 1 || c.maxIsolates > 256 ||
+        !Number.isSafeInteger(c.closeTimeoutMs) || c.closeTimeoutMs < 1 || c.closeTimeoutMs > 30_000)
+      throw new Error('Invalid cooperative worker enrollment');
+  }
+  return { ...(batched ? { batches: value.batches } : { events: value.events }), bytes: value.bytes,
+    ...(value.cooperative === undefined ? {} : { cooperative: { ...value.cooperative } }) };
+}
+
+/** Qualification-only admission accounting. This is deliberately independent
+ * of the passive tracer: a balanced table is NOT source-eligibility or kernel
+ * death proof. The caller must join those independent observations separately.
+ * Shared cells travel through worker environmentData, never workerData/options.
+ * @param {{ epoch: string, maxIsolates: number, closeTimeoutMs: number, buffer?: SharedArrayBuffer, admission?: number }} options
+ * @param {{ publish: (event: string, fields: any) => boolean, now?: () => number }} io
+ */
+export function createCooperativeWorkerCensus(options, io) {
+  const { epoch, maxIsolates, closeTimeoutMs } = options;
+  if (typeof epoch !== 'string' || !/^[a-f0-9-]{36}$/.test(epoch) ||
+      !Number.isSafeInteger(maxIsolates) || maxIsolates < 1 || maxIsolates > 256 ||
+      !Number.isSafeInteger(closeTimeoutMs) || closeTimeoutMs < 1 || closeTimeoutMs > 30_000)
+    throw new Error('Invalid cooperative worker enrollment');
+  // phase, constructing, next admission, faults, active hooks, fixed count,
+  // release, wake sequence; then status/active hooks/thread id/parent per slot.
+  const buffer = options.buffer ?? new SharedArrayBuffer((16 + 4 * maxIsolates) * 4);
+  if (!(buffer instanceof SharedArrayBuffer) || buffer.byteLength !== (16 + 4 * maxIsolates) * 4)
+    throw new Error('Invalid cooperative worker shared cells');
+  const cells = new Int32Array(buffer), admission = options.admission ?? 0;
+  if (!Number.isSafeInteger(admission) || admission < 0 || admission >= maxIsolates)
+    throw new Error('Invalid cooperative worker admission');
+  const epochBytes = createHash('sha256').update(JSON.stringify({ epoch, maxIsolates, closeTimeoutMs })).digest();
+  if (!options.buffer) {
+    Atomics.store(cells, 2, 1); Atomics.store(cells, 16, 2);
+    for (let index = 0; index < 8; index++) Atomics.store(cells, 8 + index, epochBytes.readInt32LE(index * 4));
+  }
+  const now = io.now ?? (() => performance.now());
+  const slot = id => 16 + 4 * id;
+  const wake = () => { Atomics.add(cells, 7, 1); Atomics.notify(cells, 7); };
+  const fault = reason => {
+    Atomics.add(cells, 3, 1); wake();
+    try { io.publish('cooperative-unknown', { epoch, admission, reason }); } catch {}
+    return false;
+  };
+  const publish = (event, fields) => {
+    try { if (io.publish(event, { epoch, admission, ...fields }) === true) return true; } catch {}
+    return fault('failed-publication');
+  };
+  if (Array.from({ length: 8 }, (_, index) => Atomics.load(cells, 8 + index))
+      .some((value, index) => value !== epochBytes.readInt32LE(index * 4))) fault('epoch-or-budget-mismatch');
+  const snapshot = () => {
+    const count = Atomics.load(cells, 2);
+    return { epoch, phase: ['OPEN', 'CLOSING', 'CLOSED'][Atomics.load(cells, 0)] ?? 'UNKNOWN',
+      constructing: Atomics.load(cells, 1), activeHooks: Atomics.load(cells, 4),
+      faults: Atomics.load(cells, 3), fixedCount: Atomics.load(cells, 5), released: Atomics.load(cells, 6) !== 0,
+      slots: Array.from({ length: Math.min(count, maxIsolates) }, (_, id) => ({ admission: id,
+        status: ['missing', 'reserved', 'joined', 'aborted', 'ack'][Atomics.load(cells, slot(id))] ?? 'unknown',
+        activeHooks: Atomics.load(cells, slot(id) + 1), threadId: Atomics.load(cells, slot(id) + 2),
+        parent: Atomics.load(cells, slot(id) + 3) })) };
+  };
+  const join = id => {
+    if (Atomics.compareExchange(cells, slot(admission), 1, 2) !== 1)
+      return fault('missing-or-duplicate-admission');
+    Atomics.store(cells, slot(admission) + 2, id); wake();
+    return publish('cooperative-join', { threadId: id });
+  };
+  const enterHook = () => {
+    Atomics.add(cells, 4, 1); Atomics.add(cells, slot(admission) + 1, 1);
+    if (Atomics.load(cells, 0) !== 0 || Atomics.load(cells, slot(admission)) !== 2)
+      fault('hook-after-close');
+    let ended = false;
+    return () => {
+      if (ended) { fault('duplicate-hook-return'); return; }
+      ended = true;
+      Atomics.sub(cells, slot(admission) + 1, 1); Atomics.sub(cells, 4, 1); wake();
+    };
+  };
+  // Increment BEFORE reading admission state, and reserve BEFORE native
+  // construction. Even late and throwing constructors consume an identity.
+  const wrap = (target, withAdmission) => new Proxy(target, {
+    construct(target, args, newTarget) {
+      Atomics.add(cells, 1, 1);
+      const id = Atomics.add(cells, 2, 1), bounded = id < maxIsolates;
+      if (Atomics.load(cells, 0) !== 0) fault('late-construction');
+      if (!bounded) fault('admission-bound');
+      if (bounded) {
+        Atomics.store(cells, slot(id), 1); Atomics.store(cells, slot(id) + 3, admission);
+        publish('cooperative-reserve', { childAdmission: id });
+      }
+      try {
+        return withAdmission({ epoch, maxIsolates, closeTimeoutMs, buffer, admission: id },
+          () => Reflect.construct(target, args, newTarget));
+      } catch (error) {
+        if (bounded && Atomics.compareExchange(cells, slot(id), 1, 3) !== 1)
+          fault('constructor-threw-after-admission');
+        publish('cooperative-abort', { childAdmission: id });
+        throw error; // Never inspect or replace the native thrown value.
+      } finally { Atomics.sub(cells, 1, 1); wake(); }
+    },
+  });
+  let closeDeadline = null;
+  const close = () => {
+    if (admission !== 0 || Atomics.compareExchange(cells, 0, 0, 1) !== 0)
+      return fault('duplicate-or-non-main-close');
+    const started = now();
+    closeDeadline = started + closeTimeoutMs;
+    publish('cooperative-closing', { monotonicMs: started }); wake();
+    for (;;) {
+      const seen = Atomics.load(cells, 7), count = Atomics.load(cells, 2);
+      const pending = count > maxIsolates || Atomics.load(cells, 1) !== 0 ||
+        Array.from({ length: Math.min(count, maxIsolates) }, (_, id) => Atomics.load(cells, slot(id)))
+          .some(status => status !== 2 && status !== 3);
+      if (!pending) {
+        Atomics.store(cells, 5, count); Atomics.store(cells, 0, 2); wake();
+        return publish('cooperative-closed', { monotonicMs: now(), population: snapshot() });
+      }
+      const left = closeDeadline - now();
+      if (left <= 0) return fault('close-timeout');
+      Atomics.wait(cells, 7, seen, Math.min(left, 10));
+    }
+  };
+  let acknowledged = false;
+  const acknowledge = finish => {
+    if (acknowledged || Atomics.load(cells, 0) !== 2 || Atomics.load(cells, slot(admission)) !== 2 ||
+        Atomics.load(cells, slot(admission) + 1) !== 0)
+      return fault('duplicate-missing-or-pending-end-ack');
+    acknowledged = true;
+    let end;
+    try { end = finish(); } catch { return fault('failed-publication'); }
+    if (!end || !publish('cooperative-end-ack', { threadId, end, monotonicMs: now() })) return false;
+    Atomics.store(cells, slot(admission), 4); wake();
+    return true;
+  };
+  const awaitAcknowledgements = () => {
+    for (;;) {
+      const seen = Atomics.load(cells, 7), state = snapshot();
+      if (state.phase === 'CLOSED' && state.constructing === 0 && state.activeHooks === 0 &&
+          state.slots.length === state.fixedCount && state.slots.every(row => ['ack', 'aborted'].includes(row.status)))
+        return state.faults === 0 && publish('cooperative-held', { population: state, monotonicMs: now() });
+      const left = (closeDeadline ?? now()) - now();
+      if (left <= 0) return fault('close-timeout');
+      Atomics.wait(cells, 7, seen, Math.min(left, 10));
+    }
+  };
+  const hold = () => {
+    while (Atomics.load(cells, 6) === 0) Atomics.wait(cells, 6, 0);
+    // Only a failed native kill releases a live isolate. A release can NEVER
+    // produce qualification; successful holds end at independent kernel K.
+    return fault('observer-released-before-kernel-death');
+  };
+  const release = () => {
+    fault('native-kill-failed'); Atomics.store(cells, 6, 1); Atomics.notify(cells, 6);
+  };
+  return { buffer, admission, epoch, snapshot, fault, join, enterHook, wrap, close,
+    acknowledge, awaitAcknowledgements, hold, release };
 }
 /** Reuse the OUT channel and this preload without enabling stderr diagnostics.
  * @param {NodeJS.ProcessEnv} [env]
@@ -311,6 +468,33 @@ function installNativeProcessTrace(out) {
     configurationReads = observeConfigurationReads(process.env);
     process.env = configurationReads.environment;
   } catch { /* A missing observer remains unknown in the terminal receipt. */ }
+  let cooperative = null;
+  const cooperativeKey = 'papercusp.cooperative-worker-census.v1';
+  if (loaderCensus?.cooperative) {
+    try {
+      const inherited = getEnvironmentData(cooperativeKey);
+      cooperative = createCooperativeWorkerCensus({ ...loaderCensus.cooperative,
+        ...(isMainThread ? {} : inherited) }, { publish: (event, fields) => emit(event, fields, true) === true });
+      if (!isMainThread) {
+        if (!inherited || inherited.epoch !== loaderCensus.cooperative.epoch)
+          cooperative.fault('unaccounted-worker');
+        else cooperative.join(threadId);
+      }
+      const originalWorker = workerThreads.Worker;
+      workerThreads.Worker = cooperative.wrap(originalWorker, (enrollment, construct) => {
+        const previous = getEnvironmentData(cooperativeKey);
+        setEnvironmentData(cooperativeKey, enrollment);
+        try {
+          const worker = construct();
+          worker.once('exit', () => cooperative.fault('early-unexpected-exit'));
+          return worker;
+        } finally { setEnvironmentData(cooperativeKey, previous); }
+      });
+      syncBuiltinESMExports();
+      emit('cooperative-installed', { epoch: cooperative.epoch, admission: cooperative.admission,
+        threadId, supportedViews: 6, installationScope: 'pre-application-public-worker-views' }, true);
+    } catch { emit('cooperative-unknown', { reason: 'installation-failed' }, true); }
+  }
   // A preload's exit listener would run before the program's later listeners
   // and silently lose their writes. Delegate the original emission first and
   // retain bytes after its synchronous listeners, preserving its return/throw.
@@ -476,6 +660,29 @@ function installNativeProcessTrace(out) {
       pinnedSources: sourcePins, repositorySources: false,
     }); } catch { emit('engine-script-execution-unavailable'); }
   }
+  const finishCooperativeCensus = termination => {
+    try {
+      if (engine && emit('engine-script-execution', { observation: engine.snapshot(), termination }, true) !== true)
+        return null;
+      if (!configurationReads || emit('configuration-reads', {
+        runGroupId, observation: configurationReads.finish(process.env), termination,
+      }, true) !== true) return null;
+      flushCensus();
+      const end = { ...censusUsage, sha256: censusHash.copy().digest('hex'), termination };
+      return !end.stopped && emit('module-census-end', end, true) === true ? end : null;
+    } catch { return null; }
+  };
+  if (cooperative && !isMainThread) {
+    const poll = setInterval(() => {
+      if (cooperative.snapshot().phase !== 'CLOSED') return;
+      clearInterval(poll);
+      cooperative.acknowledge(() => finishCooperativeCensus({ phase: 'cooperative-close',
+        epoch: cooperative.epoch, admission: cooperative.admission }));
+      cooperative.hold();
+    }, 1);
+    poll.unref();
+    process.once('exit', () => cooperative.fault('early-unexpected-exit'));
+  }
   if (engine || loaderCensus) {
     const observedSignals = new Set();
     observeProcessTermination(termination => {
@@ -492,6 +699,14 @@ function installNativeProcessTrace(out) {
       // This is a request prefix. A reader needs the independently observed
       // native parent result before it can accept this census as terminal.
       emit('node-self-kill-request', { termination }, true);
+      if (cooperative) {
+        if (!isMainThread) cooperative.fault('worker-self-kill');
+        else if (cooperative.close()) {
+          cooperative.acknowledge(() => finishCooperativeCensus(termination));
+          cooperative.awaitAcknowledgements();
+        }
+        return; // The unchanged native kill runs even after a failed close.
+      }
       try { if (engine) emit('engine-script-execution', { observation: engine.snapshot(), termination }, true); }
       catch { emit('engine-script-execution-unavailable', { termination }, true); }
       try {
@@ -505,7 +720,7 @@ function installNativeProcessTrace(out) {
           emit('module-census-end', { ...censusUsage, sha256: censusHash.copy().digest('hex'), termination }, true);
         } catch { emit('module-census-unavailable', { termination }, true); }
       }
-    } });
+    }, selfKillFailed() { cooperative?.release(); } });
   }
   // Retain loader-returned bytes in bounded chunks. In particular, do not make
   // another full UTF-8 copy of the product bundle already owned by the loader.
@@ -607,6 +822,8 @@ function installNativeProcessTrace(out) {
   const observedPinnedLoads = new Set();
   try {
     registerHooks({ resolve(specifier, context, nextResolve) {
+      const leave = cooperative?.enterHook();
+      try {
       // Observe the resolver's return directly. A build graph, lockfile or
       // later require.resolve call cannot supply this worker's actual edge.
       if (loaderCensus ? censusUsage.stopped : resolveSequence >= 128) {
@@ -628,7 +845,10 @@ function installNativeProcessTrace(out) {
           errorCode: typeof error?.code === 'string' ? error.code : null });
         throw error;
       }
+      } finally { leave?.(); }
     }, load(url, context, nextLoad) {
+      const leave = cooperative?.enterHook();
+      try {
       if (!url.startsWith('file:')) return nextLoad(url, context);
       const enrolled = sourcePins.some(pin => pathToFileURL(pin.path).href === url) &&
         !observedPinnedLoads.has(url);
@@ -653,6 +873,7 @@ function installNativeProcessTrace(out) {
           errorName: typeof error?.name === 'string' ? error.name : typeof error }, enrolled);
         throw error;
       }
+      } finally { leave?.(); }
     } });
   } catch (error) {
     emit('module-load-unavailable', { errorCode: error?.code ?? null });
