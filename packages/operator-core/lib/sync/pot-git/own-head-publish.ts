@@ -54,8 +54,67 @@ import {
 } from './publish-guard';
 import type { SecretFinding } from './secrets-guard';
 import { findZeroByteLooseObjects, listTempPackFiles, pruneFailedFetchTempPacks } from '../../harness/git-sync/run-git-sync';
-import { readFile } from 'node:fs/promises';
-import { isAbsolute, join } from 'node:path';
+import { link, lstat, mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
+import { dirname, isAbsolute, join } from 'node:path';
+import { createHash, randomUUID } from 'node:crypto';
+import { inflateSync } from 'node:zlib';
+
+/** Recover only identities whose complete loose representation the checkout still has.
+ * Keep the failed object outside objects/ before atomically installing verified bytes.
+ * Missing, packed-only, oversized or invalid source objects remain fail-closed.
+ */
+async function recoverOwnHeadLooseObjects(
+  runGit: RunGit, source: string, destination: string, ids: readonly string[],
+): Promise<string[]> {
+  const common = await runGit(['rev-parse', '--git-common-dir'], source);
+  if (common.code !== 0 || !common.stdout.trim()) return [];
+  const sourceGitDir = isAbsolute(common.stdout.trim()) ? common.stdout.trim() : join(source, common.stdout.trim());
+  const recovered: string[] = [];
+  for (const id of ids) {
+    let temporary: string | undefined;
+    try {
+      const sourcePath = join(sourceGitDir, 'objects', id.slice(0, 2), id.slice(2));
+      const sourceStat = await lstat(sourcePath);
+      if (!sourceStat.isFile() || sourceStat.size === 0 || sourceStat.size > 16 * 1024 * 1024) continue;
+      const compressed = await readFile(sourcePath);
+      const bytes = inflateSync(compressed, { maxOutputLength: 16 * 1024 * 1024 });
+      const separator = bytes.indexOf(0);
+      if (separator < 0 || !/^(blob|tree|commit|tag) (0|[1-9][0-9]*)$/.test(bytes.subarray(0, separator).toString('ascii'))) continue;
+      const length = Number(bytes.subarray(0, separator).toString('ascii').split(' ')[1]);
+      if (length !== bytes.length - separator - 1 || createHash('sha1').update(bytes).digest('hex') !== id) continue;
+
+      const target = join(destination, 'objects', id.slice(0, 2), id.slice(2));
+      const before = await lstat(target);
+      if (!before.isFile() || before.size !== 0) continue;
+      const evidence = join(destination, 'papercusp-corrupt-objects');
+      await mkdir(evidence, { recursive: true, mode: 0o700 });
+      if (!(await lstat(evidence)).isDirectory()) continue;
+      // A no-replace link preserves the original inode even if publication is interrupted.
+      const backup = join(evidence, `${id}-${randomUUID()}.zero`);
+      await link(target, backup);
+      const preserved = await lstat(backup);
+      if (!preserved.isFile() || preserved.size !== 0 || preserved.ino !== before.ino || preserved.dev !== before.dev) continue;
+      const evidenceDirectory = await open(evidence, 'r');
+      try { await evidenceDirectory.sync(); } finally { await evidenceDirectory.close(); }
+      temporary = `${target}.recovery-${randomUUID()}`;
+      const output = await open(temporary, 'wx', 0o444);
+      try { await output.writeFile(compressed); await output.sync(); }
+      finally { await output.close(); }
+      const current = await lstat(target);
+      if (!current.isFile() || current.size !== 0 || current.ino !== before.ino || current.dev !== before.dev ||
+          current.mtimeMs !== preserved.mtimeMs || current.ctimeMs !== preserved.ctimeMs) continue;
+      await rename(temporary, target);
+      const objectDirectory = await open(dirname(target), 'r');
+      try { await objectDirectory.sync(); } finally { await objectDirectory.close(); }
+      recovered.push(id);
+    } catch {
+      // Recovery is optional; the existing corruption preflight still refuses transfer.
+    } finally {
+      if (temporary) await unlink(temporary).catch(() => {});
+    }
+  }
+  return recovered;
+}
 
 export interface OwnHeadPublishTickInput {
   /** Hive home slug — the bare-store directory key (storage.ts G-1). */
@@ -261,6 +320,8 @@ export interface OwnHeadPublishTickOutcome {
    *  `failed` attempted and failed (error names why),
    *  `deferred` skipped because a prior failure's backoff is still active. */
   unshallow?: { state: 'ok' | 'not-needed' | 'failed' | 'deferred'; error?: string; deferredUntil?: number };
+  /** Exact object IDs restored from verified checkout bytes; original zero-byte inodes retained. */
+  recoveredObjects?: string[];
   errors: string[];
 }
 
@@ -278,8 +339,11 @@ export async function runOwnHeadPublishTick(
   // WI-2142873: set to 'ok' once a shallow worktree was unshallowed this tick,
   // so every later outcome reports it and the caller clears its backoff.
   let unshallowResult: OwnHeadPublishTickOutcome['unshallow'];
-  const unshallowTag = (): Pick<OwnHeadPublishTickOutcome, 'unshallow'> =>
-    unshallowResult ? { unshallow: unshallowResult } : {};
+  const recoveredObjects: string[] = [];
+  const unshallowTag = (): Pick<OwnHeadPublishTickOutcome, 'unshallow' | 'recoveredObjects'> => ({
+    ...(unshallowResult ? { unshallow: unshallowResult } : {}),
+    ...(recoveredObjects.length ? { recoveredObjects } : {}),
+  });
   const noop = (branch: string | null): OwnHeadPublishTickOutcome => ({
     ran: false,
     changed: false,
@@ -322,10 +386,14 @@ export async function runOwnHeadPublishTick(
   // The checkout preflight does not inspect this separate destination ODB.
   // Reuse its non-destructive diagnosis before transfer, preserving object
   // identities for verified recovery without scanning an unchanged head.
-  const corruptObjects = await findZeroByteLooseObjects(runGit, repoPath);
+  let corruptObjects = await findZeroByteLooseObjects(runGit, repoPath);
+  if (corruptObjects.length > 0) {
+    recoveredObjects.push(...await recoverOwnHeadLooseObjects(runGit, input.worktreePath, repoPath, corruptObjects));
+    corruptObjects = await findZeroByteLooseObjects(runGit, repoPath);
+  }
   if (corruptObjects.length > 0) {
     errors.push(`own-head Git object database corrupt: zero-byte loose object(s): ${corruptObjects.join(', ')}; repair required before fetch`);
-    return { ...noop(branch), ran: true, headSha, priorSha };
+    return { ...noop(branch), ran: true, headSha, priorSha, ...unshallowTag() };
   }
 
   // WI-5163: a SHALLOW source worktree (from-repo's `shallow:true` smoke

@@ -263,6 +263,11 @@ import { contentSnapshotHash, detectorResultHash } from './content-guard';
 import { checkDirtyMigrationReservations } from '../../migration-reservation';
 import {
   runGitSync,
+  readGitSyncCandidate,
+  prepareGitSyncMetadataRepair,
+  captureGitSyncCandidate,
+  publishGitSyncCandidate,
+  type GitSyncCandidateRequest,
   runGitBounded,
   type GitSyncYieldError,
   DEFAULT_MAX_BLOB_BYTES,
@@ -8855,6 +8860,7 @@ export async function fireGitSyncNow(
   installSlug: string,
   workspaceId: string,
   repoPath?: string | null,
+  repairMetadata?: GitSyncMetadataRepairRequest,
 ): Promise<GitSyncFireOutcome> {
   // WI-10000734: this is the shared ON-DEMAND seam used by both git-sync:run
   // and release:deploy. A request-only host can intentionally serve an older
@@ -8869,6 +8875,7 @@ export async function fireGitSyncNow(
       'git-sync on-demand fire refused on request-only host: route the mutation to the background-worker host',
     );
   }
+  if (repairMetadata) return fireGitSyncMetadataRepair(installSlug, workspaceId, repoPath, { ...repairMetadata });
   const { sql } = getOrgPg();
   const rows = (await sql`
     SELECT trigger_config FROM harness_shared.routines
@@ -8876,6 +8883,118 @@ export async function fireGitSyncNow(
      LIMIT 1`) as Array<{ trigger_config: Record<string, unknown> | null }>;
   const triggerConfig = rows[0]?.trigger_config ?? {};
   return handleGitSync({ installSlug, workspaceId, triggerConfig, payloadTemplate: null }, repoPath);
+}
+
+export interface GitSyncMetadataRepairRequest {
+  base: string;
+  expectedPendingLockSha256: string | null;
+  requestId: string;
+  generation: number;
+}
+
+/** The on-demand repair stays within the existing action, custody and lease.
+ * It never enters the ordinary whole-tree/submodule sweep or claims egress. */
+async function fireGitSyncMetadataRepair(slug: string, workspaceId: string, repoPath: string | null | undefined,
+  repair: GitSyncMetadataRepairRequest): Promise<GitSyncFireOutcome> {
+  const empty = { dirtyPathCount: 0, committedCount: 0, oversized: [], contentErrors: [], strandedSubmodules: null };
+  let publicationProof: Pick<GitSyncOutcome, 'committedCount' | 'localCommitSha' | 'localCommitAtMs' |
+    'localCommitShas' | 'metadataRepair'> | undefined;
+  const failed = (message: string): GitSyncOutcome => ({ ...empty, ...publicationProof, status: 'error',
+    errors: [{ scope: 'superproject', message }], pushed: [], merged: [] });
+  const runGit: RunGit = (args, cwd, options) => runGitBounded(args, cwd, gitTimeoutMsFor(args), options);
+  let outcome: GitSyncOutcome;
+  try {
+    if (Object.keys(repair).sort().join(',') !== 'base,expectedPendingLockSha256,generation,requestId' ||
+        !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(repair.base) || !repair.requestId || repair.requestId.length > 200 ||
+        !Number.isSafeInteger(repair.generation) || repair.generation < 1 ||
+        (repair.expectedPendingLockSha256 !== null && !/^[a-f0-9]{64}$/.test(repair.expectedPendingLockSha256))) {
+      throw new Error('generated-lock-request');
+    }
+    const runtime = await gitSyncRuntimeGate(slug, workspaceId, repoPath);
+    if (!runtime.gate.eligible) return { status: 'skipped', reason: runtime.gate.reason ?? 'runtime-ineligible' };
+    const repo = repoPath ?? runtime.entry?.path;
+    if (!repo) throw new Error('generated-lock-repository-unavailable');
+    await patchRoutineMetadata(slug, workspaceId, { fire_started_at: Date.now() });
+    const prior = await readGitSyncCandidate(runGit, repo, { requestId: repair.requestId, generation: repair.generation });
+    let request: GitSyncCandidateRequest;
+    if (prior.ok) {
+      const { candidate } = prior;
+      if (!candidate.contentSource || candidate.base !== repair.base || candidate.paths.length !== 1 ||
+          candidate.paths[0] !== candidate.contentSource.fingerprint.output.path) {
+        throw new Error('generated-lock-request-conflict');
+      }
+      request = { requestId: repair.requestId, generation: repair.generation, base: candidate.base,
+        paths: candidate.paths, contentSource: candidate.contentSource };
+    } else {
+      if (prior.error !== 'candidate-not-captured') throw new Error(prior.error);
+      // npm resolution owns only private materialization and runs outside the writer lease.
+      const source = await prepareGitSyncMetadataRepair(runGit, repo,
+        { requestId: repair.requestId, generation: repair.generation, base: repair.base },
+        { expectedPendingLockSha256: repair.expectedPendingLockSha256 });
+      request = { requestId: repair.requestId, generation: repair.generation, base: repair.base,
+        paths: [source.fingerprint.output.path], contentSource: source };
+    }
+    const source = request.contentSource!;
+    if (source.custody.inputs.find(row => row.path === source.fingerprint.output.path)?.sha256 !==
+        repair.expectedPendingLockSha256) throw new Error('generated-lock-request-pending-mismatch');
+    const leased = await runWithGitSyncPerInstallLease(slug, workspaceId, async lease => {
+      const captured = await captureGitSyncCandidate(runGit, repo, request, lease);
+      if (!captured.ok) throw new Error(captured.error);
+      const publication = await publishGitSyncCandidate(runGit, repo, request, {
+        assertHeld: lease.assertHeld, beforePublish: async () => { lease.assertHeld(); return { ok: true }; },
+      });
+      if (publication.status !== 'committed' && publication.status !== 'already-published') {
+        throw new Error(publication.status === 'error' ? publication.error :
+          publication.status === 'cas-refused' ? publication.detail : 'generated-lock-empty-publication');
+      }
+      return { publication, ref: captured.ref };
+    });
+    if (leased.state === 'skipped') return { status: 'skipped', reason: leased.reason,
+      ...(leased.blockedOn ? { blockedOn: leased.blockedOn } : {}), ...(leased.holders ? { holders: leased.holders } : {}) };
+    if (leased.state === 'lease-lost') throw new Error('generated-lock-lease-lost: ' + leased.detail);
+    const { publication, ref } = leased.value;
+    const newlyCommitted = publication.status === 'committed';
+    publicationProof = {
+      committedCount: newlyCommitted ? 1 : 0,
+      ...(newlyCommitted ? { localCommitSha: publication.commit, localCommitAtMs: Date.now(),
+        localCommitShas: [publication.commit] } : {}),
+      metadataRepair: { requestId: repair.requestId, generation: repair.generation, base: repair.base,
+        custodyRef: ref, tree: publication.tree, commit: publication.commit, publication: publication.status,
+        remoteEgressConfirmed: false },
+    };
+    // Retained ancestry replay may occur after later commits. The publication
+    // receipt names that earlier commit; headSha always measures current HEAD.
+    let currentHead;
+    try {
+      currentHead = await runGit(['rev-parse', '--verify', 'HEAD^{commit}'], repo);
+    } catch (error) {
+      throw new Error('generated-lock-head-unavailable: ' + String(error));
+    }
+    const headSha = currentHead.stdout.trim();
+    if (currentHead.code !== 0 || !FULL_COMMIT_SHA.test(headSha)) {
+      throw new Error('generated-lock-head-unavailable');
+    }
+    outcome = { ...empty, ...publicationProof, status: 'synced', headSha, pushed: [], merged: [] };
+  } catch (error) {
+    outcome = failed(error instanceof Error ? error.message : String(error));
+  }
+  // Preserve unrelated sweep/counter fields: this operation measured only its selected lock.
+  try {
+    await patchRoutineMetadata(slug, workspaceId, { last_status: outcome.status, local_sync_status: outcome.status,
+      ...(outcome.status === 'synced' ? { head_sha: outcome.headSha, last_synced_at: Date.now() } : {}),
+    });
+    if (outcome.metadataRepair) outcome.metadataRepair.routineMetadataRecorded = true;
+  } catch (error) {
+    // A failed receipt write cannot erase a commit that the fenced publisher
+    // already made. Return its proof together with the recording failure.
+    outcome = { ...outcome, status: 'error', pushed: [], merged: [],
+      errors: [...('errors' in outcome ? outcome.errors : []), { scope: 'superproject',
+        message: 'generated-lock-outcome-persistence: ' + String(error) }],
+      ...(outcome.metadataRepair ? { metadataRepair: { ...outcome.metadataRepair,
+        routineMetadataRecorded: false } } : {}),
+    };
+  }
+  return outcome;
 }
 
 /**

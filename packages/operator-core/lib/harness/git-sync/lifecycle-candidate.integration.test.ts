@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { captureGitSyncCandidate, readGitSyncCandidate, publishGitSyncCandidate, prepareGeneratedGitSyncCandidateTree,
+import { captureGitSyncCandidate, readGitSyncCandidate, publishGitSyncCandidate, prepareGeneratedGitSyncCandidateTree, prepareGitSyncMetadataRepair,
   SOURCE_CUSTODY_REF_PREFIX, type RunGit, type GitSyncGeneratedLockTreeRequest } from './run-git-sync';
 import { createGitSyncLeaseFence } from './git-sync-lease-fence';
 import { runWithGitSyncPerInstallLease } from './git-sync-action';
@@ -100,6 +100,336 @@ function unpublishedState(f: ReturnType<typeof fixture>) {
 // Dedicated fixture repositories have no shared platform writer. Production
 // callers must supply the existing git-sync lease's assertHeld method.
 const pilotChecks = { assertHeld: () => {}, beforePublish: async () => ({ ok: true as const }) };
+
+describe('P003 generated custody', () => {
+  async function generatedCustodyFixture(configure?: (f: ReturnType<typeof fixture>) => void) {
+    const f = fixture();
+    const manifest = { name: 'closed-generated-custody', version: '1.0.0', workspaces: ['packages/*'],
+      dependencies: { target: 'file:./target' } };
+    mkdirSync(join(f.repo, 'target'));
+    mkdirSync(join(f.repo, 'packages/one'), { recursive: true });
+    writeFileSync(join(f.repo, 'target/package.json'), '{"name":"target","version":"1.0.0"}');
+    writeFileSync(join(f.repo, 'packages/one/package.json'), '{"name":"one","version":"1.0.0"}');
+    writeFileSync(join(f.repo, 'package.json'), JSON.stringify(manifest));
+    writeFileSync(join(f.repo, 'package-lock.json'), JSON.stringify({ name: manifest.name, version: manifest.version,
+      lockfileVersion: 3, packages: { '': manifest } }));
+    writeFileSync(join(f.repo, '.npmrc'), 'legacy-peer-deps=false\n');
+    configure?.(f);
+    f.git('add', '-A');
+    f.git('commit', '-m', 'selected resolver population');
+    // Pending lock and unrelated staged source belong to the original caller.
+    writeFileSync(join(f.repo, 'a.txt'), 'unrelated pre-staged source\n');
+    f.git('add', '--', 'a.txt');
+    writeFileSync(join(f.repo, 'package-lock.json'), '{"pending":"different raw bytes"}\n');
+    const base = f.git('rev-parse', 'HEAD');
+    const contentSource = await prepareGitSyncMetadataRepair(f.runGit, f.repo,
+      { requestId: 'closed-repair', generation: 1, base }, { log: () => {} });
+    return { ...f, request: { requestId: 'closed-repair', generation: 1, base,
+      paths: ['package-lock.json'], contentSource } };
+  }
+
+  it('refuses the caller pending-lock mismatch before npm without changing raw work or the shared index', async () => {
+    const f = await generatedCustodyFixture();
+    const index = readFileSync(join(f.repo, '.git/index'));
+    const pending = readFileSync(join(f.repo, 'package-lock.json'));
+    const launched: string[] = [];
+    await expect(prepareGitSyncMetadataRepair(f.runGit, f.repo,
+      { requestId: 'stale-pending-request', generation: 1, base: f.request.base },
+      { expectedPendingLockSha256: 'f'.repeat(64), log: line => launched.push(line) }))
+      .rejects.toThrow('generated-lock-request-pending-mismatch');
+    expect(launched).toEqual([]);
+    expect(readFileSync(join(f.repo, '.git/index'))).toEqual(index);
+    expect(readFileSync(join(f.repo, 'package-lock.json'))).toEqual(pending);
+    expect(f.git('rev-parse', 'HEAD')).toBe(f.request.base);
+    expect(f.git('for-each-ref', '--format=%(refname)', SOURCE_CUSTODY_REF_PREFIX)).toBe('');
+  }, 90_000);
+
+  it.each([{ mask: 0o077, outputMode: 0o600 }, { mask: 0o002, outputMode: 0o664 }])(
+    'retains the complete independently expected input population and generated lock bytes with umask $mask', async ({ mask, outputMode }) => {
+    const umask = process.umask(mask);
+    let f: Awaited<ReturnType<typeof generatedCustodyFixture>>;
+    try { f = await generatedCustodyFixture(); } finally { process.umask(umask); }
+    const source = f.request.contentSource;
+    expect(source.fingerprint.output.resolution.output.mode).toBe(outputMode);
+    expect(Object.keys(source.fingerprint).sort()).toEqual(['baseCommit', 'baseTree', 'command', 'environment', 'generation',
+      'output', 'projectConfig', 'repositoryRealpath', 'requestId', 'runtime', 'schemaVersion', 'selectedInputs']);
+    // This oracle is enumerated from the fixture, without asking the builder.
+    const expected = ['.npmrc', 'npm-shrinkwrap.json', 'package-lock.json', 'package.json',
+      'packages/one/.npmrc', 'packages/one/package.json', 'target/.npmrc', 'target/package.json'].sort();
+    expect(source.fingerprint.selectedInputs.map(row => row.path)).toEqual(expected);
+    for (const row of source.fingerprint.selectedInputs) {
+      const expectedObject = spawnSync('git', ['rev-parse', '--verify', `${f.request.base}:${row.path}`],
+        { cwd: f.repo, encoding: 'utf8', timeout: 30_000 });
+      if (expectedObject.status === 0) {
+        expect(row).toMatchObject({ kind: 'blob', oid: expectedObject.stdout.trim(), owner: '',
+          selectedOid: f.request.base, mode: '100644' });
+        const raw = spawnSync('git', ['cat-file', 'blob', row.oid!], { cwd: f.repo, timeout: 30_000 });
+        expect(row.sha256).toBe(createHash('sha256').update(raw.stdout).digest('hex'));
+      } else expect(row).toMatchObject({ kind: 'absent', mode: null, oid: null, sha256: null });
+    }
+    expect(Object.keys(source.fingerprint.environment).sort()).toEqual(['HOME', 'LANG', 'PATH', 'TMPDIR', 'TZ']);
+    expect(source.fingerprint.output.resolution.cache).toMatchObject({ emptyBeforeLaunch: true,
+      attemptId: source.fingerprint.output.resolution.attemptId });
+    const index = readFileSync(join(f.repo, '.git/index'));
+    const pending = readFileSync(join(f.repo, 'package-lock.json'));
+    const captured = await captureGitSyncCandidate(f.runGit, f.repo, f.request, pilotChecks);
+    if (!captured.ok) throw new Error(captured.error);
+    expect(captured.candidate.version).toBe(3);
+    expect(f.git('diff-tree', '--no-commit-id', '--name-only', '-r', f.request.base, captured.candidate.tree)).toBe('package-lock.json');
+    expect(f.git('show', `${captured.candidate.tree}:a.txt`)).toBe('baseline a');
+    expect(f.git('show', `${captured.candidate.tree}:package-lock.json`)).toBe(source.bytes.toString().trim());
+    expect(await readGitSyncCandidate(f.runGit, f.repo, { requestId: f.request.requestId, generation: 1 })).toEqual(captured);
+    expect(readFileSync(join(f.repo, '.git/index'))).toEqual(index);
+    expect(readFileSync(join(f.repo, 'package-lock.json'))).toEqual(pending);
+    expect(readdirSync(join(f.repo, '.git')).filter(name => name.startsWith('papercusp-'))).toEqual([]);
+  }, 90_000);
+
+  for (const stop of ['before-capture', 'after-capture', 'before-CAS', 'after-CAS'] as const) {
+    it(`recovers an interruption ${stop} with exact retained objects and owned cleanup`, async () => {
+      const f = await generatedCustodyFixture();
+      const index = readFileSync(join(f.repo, '.git/index'));
+      const pending = readFileSync(join(f.repo, 'package-lock.json'));
+      if (stop === 'before-capture') {
+        expect(await captureGitSyncCandidate(f.runGit, f.repo, f.request,
+          { assertHeld: () => { throw new Error('stop before capture'); } })).toMatchObject({ ok: false });
+        expect(f.git('for-each-ref', '--format=%(refname)', SOURCE_CUSTODY_REF_PREFIX)).toBe('');
+      }
+      const capture = await captureGitSyncCandidate(f.runGit, f.repo, f.request, pilotChecks);
+      if (!capture.ok) throw new Error(capture.error);
+      if (stop === 'before-CAS') {
+        let held = true;
+        expect(await publishGitSyncCandidate(f.runGit, f.repo, f.request, {
+          assertHeld: () => { if (!held) throw new Error('lease lost in beforePublish'); },
+          beforePublish: async () => { held = false; return { ok: true }; },
+        })).toMatchObject({ status: 'error' });
+        expect(f.git('rev-parse', 'HEAD')).toBe(f.request.base);
+      }
+      let lostReceipt = false;
+      const runner: RunGit = async (args, cwd, options) => {
+        const result = await f.runGit(args, cwd, options);
+        if (stop === 'after-CAS' && args[0] === 'update-ref' && args.includes('HEAD') && result.code === 0) {
+          lostReceipt = true;
+          throw new Error('stop after successful CAS');
+        }
+        return result;
+      };
+      const published = await publishGitSyncCandidate(runner, f.repo, f.request, pilotChecks);
+      expect(published.status, JSON.stringify(published)).toBe(stop === 'after-CAS' ? 'error' : 'committed');
+      expect(lostReceipt).toBe(stop === 'after-CAS');
+      const replay = await publishGitSyncCandidate(f.runGit, f.repo, f.request, pilotChecks);
+      expect(replay).toMatchObject({ status: 'already-published', tree: capture.candidate.tree,
+        commit: f.git('rev-parse', 'HEAD') });
+      expect(readFileSync(join(f.repo, '.git/index'))).toEqual(index);
+      expect(readFileSync(join(f.repo, 'package-lock.json'))).toEqual(pending);
+      expect(readdirSync(join(f.repo, '.git')).filter(name => name.startsWith('papercusp-'))).toEqual([]);
+    }, 90_000);
+  }
+
+  it('publishes through the existing CAS and replays after later HEAD without touching pending/index bytes', async () => {
+    const f = await generatedCustodyFixture();
+    const index = readFileSync(join(f.repo, '.git/index'));
+    const pending = readFileSync(join(f.repo, 'package-lock.json'));
+    expect(await captureGitSyncCandidate(f.runGit, f.repo, f.request, pilotChecks)).toMatchObject({ ok: true });
+    const retained = await readGitSyncCandidate(f.runGit, f.repo, f.request);
+    if (!retained.ok) throw new Error(retained.error);
+    const identity = retained.candidate.contentSource!.fingerprint;
+    const environment = identity.environment;
+    const digest = (env: Record<string, string>) => createHash('sha256').update(JSON.stringify({
+      node: identity.command.executable, argv: identity.command.argv, cwd: identity.command.cwd, env,
+    })).digest('hex');
+    // Independent launch oracle: canonical custody reorders the keys but may
+    // not change the fixed launch values or invalidate the original receipt.
+    expect(Object.keys(environment)).toEqual(['HOME', 'LANG', 'PATH', 'TMPDIR', 'TZ']);
+    expect(digest(environment)).not.toBe(identity.output.resolution.cache.launchSha256);
+    expect(digest({ HOME: environment.HOME, TMPDIR: environment.TMPDIR, PATH: environment.PATH,
+      LANG: environment.LANG, TZ: environment.TZ })).toBe(identity.output.resolution.cache.launchSha256);
+    const published = await publishGitSyncCandidate(f.runGit, f.repo, f.request, pilotChecks);
+    expect(published, JSON.stringify(published)).toMatchObject({ status: 'committed' });
+    if (published.status !== 'committed') throw new Error(JSON.stringify(published));
+    const later = f.git('commit-tree', published.tree, '-p', published.commit, '-m', 'unrelated later HEAD');
+    f.git('update-ref', 'HEAD', later, published.commit);
+    expect(await publishGitSyncCandidate(f.runGit, f.repo, f.request, pilotChecks)).toEqual({
+      status: 'already-published', commit: published.commit, tree: published.tree,
+    });
+    expect(f.git('rev-parse', 'HEAD')).toBe(later);
+    expect(readFileSync(join(f.repo, '.git/index'))).toEqual(index);
+    expect(readFileSync(join(f.repo, 'package-lock.json'))).toEqual(pending);
+  }, 90_000);
+
+  it.each(['callback-pending', 'final-tree-pending', 'post-validation-lease'] as const)(
+    'rechecks generated authority and raw custody at %s before HEAD dispatch', async point => {
+      const f = await generatedCustodyFixture();
+      const capture = await captureGitSyncCandidate(f.runGit, f.repo, f.request, pilotChecks);
+      if (!capture.ok) throw new Error(capture.error);
+      const index = readFileSync(join(f.repo, '.git/index'));
+      const pending = readFileSync(join(f.repo, 'package-lock.json'));
+      let callbackFinished = false;
+      let pinned = false;
+      let held = true;
+      let triggered = false;
+      let headWrites = 0;
+      const runner: RunGit = async (args, cwd, options) => {
+        if (args[0] === 'update-ref' && args.includes('HEAD')) headWrites++;
+        const result = await f.runGit(args, cwd, options);
+        if (args[0] === 'update-ref' && args[1]!.endsWith('-publication') && result.code === 0) pinned = true;
+        if (point === 'final-tree-pending' && callbackFinished && pinned && args[0] === 'write-tree') {
+          triggered = true;
+          writeFileSync(join(f.repo, 'package-lock.json'), 'pending moved after callback');
+        }
+        if (point === 'post-validation-lease' && pinned && args[0] === 'rev-parse' && args[1] === '--shared-index-path') {
+          triggered = true;
+          held = false;
+        }
+        return result;
+      };
+      const result = await publishGitSyncCandidate(runner, f.repo, f.request, {
+        assertHeld: () => { if (!held) throw new Error('lease lost after generated validation'); },
+        beforePublish: async () => {
+          callbackFinished = true;
+          if (point === 'callback-pending') {
+            triggered = true;
+            writeFileSync(join(f.repo, 'package-lock.json'), 'pending moved in callback');
+          }
+          return { ok: true };
+        },
+      });
+      expect(triggered, JSON.stringify(result)).toBe(true);
+      expect(result.status).toBe('error');
+      expect(headWrites).toBe(0);
+      expect(f.git('rev-parse', 'HEAD')).toBe(f.request.base);
+      expect(readFileSync(join(f.repo, '.git/index'))).toEqual(index);
+      expect(readFileSync(join(f.repo, 'package-lock.json'))).toEqual(point === 'post-validation-lease'
+        ? pending : Buffer.from(point === 'callback-pending' ? 'pending moved in callback' : 'pending moved after callback'));
+      expect(await readGitSyncCandidate(f.runGit, f.repo, f.request)).toEqual(capture);
+      expect(readdirSync(join(f.repo, '.git')).filter(name => name.startsWith('papercusp-'))).toEqual([]);
+    }, 90_000);
+
+  for (const control of ['pending-lock', 'pending-manifest', 'pending-config', 'shared-index', 'new-workspace', 'base', 'lease', 'output'] as const) {
+    it(`refuses changed ${control} after capture without publication`, async () => {
+      const f = await generatedCustodyFixture();
+      expect(await captureGitSyncCandidate(f.runGit, f.repo, f.request, pilotChecks)).toMatchObject({ ok: true });
+      const beforeHead = f.git('rev-parse', 'HEAD');
+      const beforeRefs = f.git('for-each-ref', '--format=%(refname) %(objectname)', SOURCE_CUSTODY_REF_PREFIX);
+      if (control === 'pending-lock') writeFileSync(join(f.repo, 'package-lock.json'), 'new pending lock');
+      if (control === 'pending-manifest') writeFileSync(join(f.repo, 'target/package.json'), '{"name":"moved"}');
+      if (control === 'pending-config') writeFileSync(join(f.repo, 'target/.npmrc'), 'strict-peer-deps=true\n');
+      if (control === 'shared-index') { writeFileSync(join(f.repo, 'b.txt'), 'later staged'); f.git('add', '--', 'b.txt'); }
+      if (control === 'new-workspace') {
+        mkdirSync(join(f.repo, 'packages/two'));
+        writeFileSync(join(f.repo, 'packages/two/package.json'), '{"name":"new","version":"1.0.0"}');
+      }
+      if (control === 'base') f.git('update-ref', 'HEAD', f.git('commit-tree', f.git('rev-parse', 'HEAD^{tree}'), '-p', beforeHead, '-m', 'later'));
+      if (control === 'output') f.request.contentSource.bytes.fill(0);
+      const state = candidateState(f);
+      const result = await publishGitSyncCandidate(f.runGit, f.repo, f.request, control === 'lease'
+        ? { ...pilotChecks, assertHeld: () => { throw new Error('lost lease'); } } : pilotChecks);
+      expect(['error', 'cas-refused']).toContain(result.status);
+      expect(candidateState(f)).toEqual(state);
+      expect(f.git('for-each-ref', '--format=%(refname) %(objectname)', SOURCE_CUSTODY_REF_PREFIX)).toBe(beforeRefs);
+    }, 90_000);
+  }
+
+  it('rejects missing, unknown, duplicated and altered fingerprint members under one generation', async () => {
+    const f = await generatedCustodyFixture();
+    const mutations: Array<(value: any) => void> = [];
+    for (const key of Object.keys(f.request.contentSource.fingerprint)) mutations.push(value => { delete value.fingerprint[key]; });
+    for (const section of ['command', 'runtime', 'environment', 'output']) {
+      for (const key of Object.keys((f.request.contentSource.fingerprint as any)[section])) {
+        mutations.push(value => { delete value.fingerprint[section][key]; });
+      }
+    }
+    mutations.push(value => { value.fingerprint.extra = 'unrecorded input'; },
+      value => { value.fingerprint.environment.NODE_OPTIONS = '--require=other'; },
+      value => { value.fingerprint.selectedInputs.push(value.fingerprint.selectedInputs[0]); },
+      value => { value.fingerprint.projectConfig[0].values['ignore-scripts'] = 'false'; },
+      value => { value.fingerprint.command.argv.push('--force'); },
+      value => { value.fingerprint.runtime.resolution.libc.version = 'different'; },
+      ...[0, 0o755, 0o1000].map(mode => (value: any) => { value.fingerprint.output.resolution.output.mode = mode; }),
+      value => { value.fingerprint.output.resolution.cache.launchSha256 = '0'.repeat(64); },
+      value => { value.fingerprint.output.resolution.cache.emptyBeforeLaunch = false; });
+    for (const key of ['registry', 'legacy-peer-deps', 'strict-peer-deps', 'install-links', 'engine-strict']) {
+      mutations.push(value => {
+        const config = value.fingerprint.projectConfig.find((row: any) => row.path === '.npmrc');
+        config.values[key] = key === 'registry' ? 'https://registry.npmjs.org/' : 'true';
+        value.fingerprint.output.resolution.projectConfig = structuredClone(value.fingerprint.projectConfig);
+      });
+    }
+    const state = candidateState(f);
+    for (const mutate of mutations) {
+      const contentSource = structuredClone(f.request.contentSource);
+      mutate(contentSource);
+      expect(await captureGitSyncCandidate(f.runGit, f.repo, { ...f.request, contentSource }, pilotChecks)).toMatchObject({ ok: false });
+      expect(f.git('for-each-ref', '--format=%(refname)', SOURCE_CUSTODY_REF_PREFIX)).toBe('');
+    }
+    expect(candidateState(f)).toEqual(state);
+    // A pre-existing capture would refuse every mutation as an identity clash,
+    // concealing missing validation. Retain the positive only after the controls.
+    expect(await captureGitSyncCandidate(f.runGit, f.repo, f.request, pilotChecks)).toMatchObject({ ok: true });
+  }, 90_000);
+
+  it('independently binds nested selected pins, config and local archive bytes while preserving newer checkouts', async () => {
+    const child = fixture();
+    const nested = fixture();
+    writeFileSync(join(nested.repo, 'package.json'), '{"name":"nested-pin","version":"1.0.0"}');
+    writeFileSync(join(nested.repo, '.npmrc'), 'engine-strict=false\n');
+    nested.git('add', '-A'); nested.git('commit', '-m', 'selected nested metadata');
+    const nestedOid = nested.git('rev-parse', 'HEAD');
+    writeFileSync(join(child.repo, 'package.json'), '{"name":"child-pin","version":"1.0.0"}');
+    writeFileSync(join(child.repo, '.npmrc'), 'strict-peer-deps=false\n');
+    child.git('-c', 'protocol.file.allow=always', 'submodule', 'add', nested.repo, 'nested');
+    child.git('add', '-A'); child.git('commit', '-m', 'selected child metadata');
+    const childOid = child.git('rev-parse', 'HEAD');
+    const f = await generatedCustodyFixture(f => {
+      f.git('-c', 'protocol.file.allow=always', 'submodule', 'add', child.repo, 'libs/child');
+      f.git('-c', 'protocol.file.allow=always', 'submodule', 'update', '--init', '--recursive');
+      const manifest = JSON.parse(readFileSync(join(f.repo, 'package.json'), 'utf8'));
+      manifest.workspaces.push('libs/child', 'libs/child/nested');
+      manifest.dependencies['archive-pin'] = 'file:./archive.tgz';
+      writeFileSync(join(f.repo, 'package.json'), JSON.stringify(manifest));
+      const archiveRoot = mkdtempSync(join(tmpdir(), 'git-sync-archive-')); roots.push(archiveRoot);
+      mkdirSync(join(archiveRoot, 'package'));
+      writeFileSync(join(archiveRoot, 'package/package.json'), '{"name":"archive-pin","version":"1.0.0"}');
+      const tar = spawnSync('tar', ['-czf', join(f.repo, 'archive.tgz'), '-C', archiveRoot, 'package'], { timeout: 30_000 });
+      expect(tar.status).toBe(0);
+    });
+    const expected = ['.gitmodules', '.npmrc', 'archive.tgz', 'npm-shrinkwrap.json', 'package-lock.json', 'package.json',
+      'packages/one/.npmrc', 'packages/one/package.json', 'target/.npmrc', 'target/package.json',
+      'libs/child', 'libs/child/.gitmodules', 'libs/child/.npmrc', 'libs/child/package.json',
+      'libs/child/nested', 'libs/child/nested/.npmrc', 'libs/child/nested/package.json'].sort();
+    const vector = f.request.contentSource.fingerprint.selectedInputs;
+    expect(vector.map(row => row.path)).toEqual(expected);
+    const at = (path: string) => vector.find(row => row.path === path)!;
+    expect(at('libs/child')).toMatchObject({ kind: 'gitlink', oid: childOid, owner: '', selectedOid: f.request.base, mode: '160000' });
+    expect(at('libs/child/nested')).toMatchObject({ kind: 'gitlink', oid: nestedOid, owner: 'libs/child', selectedOid: childOid, mode: '160000' });
+    for (const path of ['.gitmodules', 'archive.tgz', 'libs/child/.gitmodules', 'libs/child/.npmrc',
+      'libs/child/package.json', 'libs/child/nested/.npmrc', 'libs/child/nested/package.json']) {
+      const owner = path.startsWith('libs/child/nested/') ? 'libs/child/nested' : path.startsWith('libs/child/') ? 'libs/child' : '';
+      const oid = owner === 'libs/child/nested' ? nestedOid : owner === 'libs/child' ? childOid : f.request.base;
+      const relative = owner ? path.slice(owner.length + 1) : path;
+      const raw = spawnSync('git', ['show', `${oid}:${relative}`], { cwd: join(f.repo, owner), timeout: 30_000 });
+      expect(raw.status).toBe(0);
+      const blob = spawnSync('git', ['rev-parse', `${oid}:${relative}`], { cwd: join(f.repo, owner), encoding: 'utf8' });
+      expect(at(path)).toMatchObject({ kind: 'blob', owner, selectedOid: oid, mode: '100644',
+        oid: blob.stdout.trim(), sha256: createHash('sha256').update(raw.stdout).digest('hex') });
+    }
+    const capture = await captureGitSyncCandidate(f.runGit, f.repo, f.request, pilotChecks);
+    if (!capture.ok) throw new Error(capture.error);
+    const refs = f.git('for-each-ref', '--format=%(refname) %(objectname)', SOURCE_CUSTODY_REF_PREFIX);
+    // New checkout bytes are custody predicates, never substitutes for selected pins.
+    for (const path of ['libs/child/nested/package.json', 'libs/child/.npmrc', 'archive.tgz']) {
+      const absolute = join(f.repo, path);
+      const before = readFileSync(absolute);
+      writeFileSync(absolute, path.endsWith('package.json') ? '{"name":"nested-pin","version":"2.0.0"}' : 'changed pending input');
+      const pending = readFileSync(absolute);
+      expect(await publishGitSyncCandidate(f.runGit, f.repo, f.request, pilotChecks)).toMatchObject({ status: 'error' });
+      expect(readFileSync(absolute)).toEqual(pending);
+      expect(f.git('for-each-ref', '--format=%(refname) %(objectname)', SOURCE_CUSTODY_REF_PREFIX)).toBe(refs);
+      writeFileSync(absolute, before);
+    }
+    expect(f.git('rev-parse', 'HEAD:libs/child')).toBe(childOid);
+    expect(f.git('rev-parse', 'HEAD')).toBe(f.request.base);
+  }, 90_000);
+});
 
 describe('P003 generated lock tree preparation', () => {
   function generatedFixture(path: 'package-lock.json' | 'npm-shrinkwrap.json' = 'package-lock.json') {

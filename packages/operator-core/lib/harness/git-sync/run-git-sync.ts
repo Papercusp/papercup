@@ -35,11 +35,14 @@
  */
 import { spawn } from 'node:child_process';
 import pLimit from 'p-limit';
+import { z } from 'zod';
+import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { collectChildOutput } from '../../child-output.js';
 import { processGroupLifetime } from '../../fleet/process-group-lifetime';
 import { withGitFetchHeadroom } from './git-fetch-headroom';
 import { createHash, randomUUID } from 'node:crypto';
-import { lstat, mkdir, open, readFile, readdir, realpath, rm, unlink, utimes, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, unlink, utimes, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve as resolvePath, sep } from 'node:path';
 import { isUnderAnyPath, unpublishedNestedPotCheckouts } from './nested-pot-checkouts';
 import { mapLiveLockHoldingsForRepo } from './live-lock-coordinates';
@@ -87,7 +90,9 @@ import {
 } from './git-sync-attribution';
 import { attributionScopeLabel, resolveAttributionRepo } from './attribution-repo';
 import { canonicalJson } from '../../external-bench/reproducibility/canonical-json';
-import { guardStagedWorkspaceLock, workspaceLockTreeValidator } from './staged-workspace-lock';
+import { guardStagedWorkspaceLock, workspaceLockTreeInspector, workspaceLockTreeValidator } from './staged-workspace-lock';
+import { materializeCommit } from '../../../../../scripts/source-preview.mjs';
+import { metadataRepairInputLayout, metadataRepairRuntimeIdentity, resolveMetadataRepairLock } from '../../../../../scripts/npm-install-safe.mjs';
 
 /**
  * Per-call options a git runner must forward to the git child.
@@ -2122,6 +2127,19 @@ export interface GitSyncRootCommit {
 }
 
 export type GitSyncOutcome = {
+  /** Selected metadata publication is distinct from the current checkout HEAD
+   * and from remote egress. Preserve it even if outcome recording fails. */
+  metadataRepair?: {
+    requestId: string;
+    generation: number;
+    base: string;
+    custodyRef: string;
+    tree: string;
+    commit: string;
+    publication: 'committed' | 'already-published';
+    remoteEgressConfirmed: false;
+    routineMetadataRecorded?: boolean;
+  };
   /** Per-publication proof retained by the commit checkpoint, including on replay. */
   localCommits?: GitSyncRootCommit[];
   /**
@@ -5582,11 +5600,12 @@ export interface GitSyncCandidateRequest {
   base: string | null;
   paths: readonly string[];
   dependencies?: readonly GitSyncCandidateDependency[];
+  contentSource?: GitSyncGeneratedLockSource & { bytes?: Uint8Array };
 }
 
 /** Version two of the existing custody manifest roots an entire candidate tree. */
 export interface GitSyncCandidateCapture {
-  version: 2;
+  version: 2 | 3;
   kind: 'candidate';
   repository: string;
   requestId: string;
@@ -5596,6 +5615,270 @@ export interface GitSyncCandidateCapture {
   baseTree: string;
   tree: string;
   dependencies?: GitSyncCandidateDependency[];
+  contentSource?: GitSyncGeneratedLockSource;
+}
+
+const metadataSha = z.string().regex(/^[a-f0-9]{64}$/);
+const metadataOid = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/);
+const metadataPath = z.string().min(1).refine(path => !isAbsolute(path) && !path.includes('\\') &&
+  !path.includes('\0') && !path.split('/').some(part => !part || part === '.' || part === '..'));
+const metadataRawInput = z.object({ path: metadataPath, mode: z.number().int().nullable(), sha256: metadataSha.nullable() }).strict();
+const metadataRegistry = z.array(z.object({ path: z.string(), resolved: z.string().nullable(), integrity: z.string().nullable() }).strict());
+const metadataOutput = z.object({ path: z.enum(['package-lock.json', 'npm-shrinkwrap.json']),
+  sha256: metadataSha, mode: z.number().int().min(0).max(0o777)
+    .refine(mode => (mode & 0o111) === 0 && (mode & 0o400) !== 0), registry: metadataRegistry }).strict();
+const metadataCommand = z.object({ executable: z.string().min(1), executableSha256: metadataSha,
+  npmCli: z.string().min(1), npmCliSha256: metadataSha, argv: z.array(z.string()), cwd: z.string().min(1),
+  runner: z.string().min(1), runnerSha256: metadataSha }).strict();
+const metadataRuntime = z.object({ node: z.string().min(1), npm: z.string().min(1),
+  versions: z.record(z.string(), z.string()), platform: z.string().min(1), arch: z.string().min(1),
+  resolution: z.object({ os: z.string(), cpu: z.string(), libc: z.object({
+    family: z.enum(['glibc', 'not-applicable']), version: z.string().nullable(),
+  }).strict() }).strict() }).strict();
+const metadataConfig = z.array(z.object({ path: metadataPath, sha256: metadataSha.nullable(),
+  values: z.object({ registry: z.literal('https://registry.npmjs.org/').optional(),
+    'legacy-peer-deps': z.enum(['true', 'false']).optional(), 'strict-peer-deps': z.enum(['true', 'false']).optional(),
+    'install-links': z.enum(['true', 'false']).optional(), 'engine-strict': z.enum(['true', 'false']).optional(),
+  }).strict() }).strict());
+const metadataEnvironment = z.object({ HOME: z.string(), TMPDIR: z.string(), PATH: z.string(),
+  LANG: z.literal('C.UTF-8'), TZ: z.literal('UTC') }).strict();
+const metadataResolution = z.object({ schemaVersion: z.literal(1), attemptId: z.string().uuid(),
+  repositoryRealpath: z.string(), attemptRoot: z.string(),
+  attempt: z.object({ device: z.number().int(), inode: z.number().int(), createdAt: z.string().datetime() }).strict(),
+  cleanup: z.object({ removed: z.literal(true) }).strict(), command: metadataCommand, runtime: metadataRuntime,
+  projectConfig: metadataConfig, environment: metadataEnvironment,
+  selectedInputs: z.array(metadataRawInput),
+  configFiles: z.array(z.object({ path: z.string(), sha256: metadataSha }).strict()),
+  cache: z.object({ path: z.string(), attemptId: z.string().uuid(), device: z.number().int(), inode: z.number().int(),
+    emptyBeforeLaunch: z.literal(true), checkedAt: z.string().datetime(), launchSha256: metadataSha }).strict(),
+  output: metadataOutput }).strict();
+const metadataSelectedInput = z.object({ kind: z.enum(['blob', 'gitlink', 'absent']), path: metadataPath,
+  owner: z.string(), selectedOid: metadataOid, mode: z.enum(['100644', '160000']).nullable(),
+  oid: metadataOid.nullable(), sha256: metadataSha.nullable() }).strict();
+const metadataFingerprint = z.object({ schemaVersion: z.literal(1), repositoryRealpath: z.string(),
+  requestId: z.string().min(1), generation: z.number().int().positive(), baseCommit: metadataOid, baseTree: metadataOid,
+  selectedInputs: z.array(metadataSelectedInput), command: metadataCommand, runtime: metadataRuntime,
+  projectConfig: metadataConfig, environment: metadataEnvironment,
+  output: metadataOutput.extend({ mode: z.literal('100644'), blobOid: metadataOid, resolution: metadataResolution }).strict() }).strict();
+const metadataIndex = z.object({ path: z.string().min(1), mode: z.number().int().nullable(), sha256: metadataSha.nullable() }).strict();
+const generatedSourceSchema = z.object({ kind: z.literal('generated-lock'), fingerprint: metadataFingerprint,
+  custody: z.object({ repositoryRealpath: z.string(), index: metadataIndex, sharedIndex: metadataIndex.nullable(),
+    inputs: z.array(metadataRawInput) }).strict() }).strict();
+export type GitSyncGeneratedLockSource = z.infer<typeof generatedSourceSchema>;
+type MetadataSelectedInput = z.infer<typeof metadataSelectedInput>;
+const metadataDigest = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex');
+
+/** Read raw custody without Git status/add/reset or a shared-index refresh. */
+async function metadataRawFile(root: string, path: string) {
+  if (!metadataPath.safeParse(path).success) throw new Error('generated-lock-raw-path');
+  const absolute = join(root, path);
+  for (let cursor = absolute; cursor !== root; cursor = dirname(cursor)) {
+    try { if ((await lstat(cursor)).isSymbolicLink()) throw new Error('generated-lock-raw-symlink'); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  }
+  try {
+    const stat = await lstat(absolute);
+    if (!stat.isFile()) throw new Error('generated-lock-raw-type');
+    const bytes = await readFile(absolute);
+    const after = await lstat(absolute);
+    if (after.isSymbolicLink() || after.ino !== stat.ino || after.dev !== stat.dev ||
+        after.mode !== stat.mode || after.size !== stat.size || after.mtimeMs !== stat.mtimeMs) {
+      throw new Error('generated-lock-raw-moved');
+    }
+    return { path, mode: stat.mode & 0o777, sha256: metadataDigest(bytes) };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    return { path, mode: null, sha256: null };
+  }
+}
+
+async function metadataPendingCustody(runGit: RunGit, repo: string, selected: MetadataSelectedInput[]) {
+  const repositoryRealpath = await realpath(repo);
+  const { inputPaths } = metadataRepairInputLayout(repositoryRealpath);
+  const paths = [...new Set([...inputPaths, ...selected.filter(row => row.kind !== 'gitlink').map(row => row.path)])].sort();
+  const inputs = await Promise.all(paths.map(path => metadataRawFile(repositoryRealpath, path)));
+  const index = async (args: string[]) => {
+    const result = await runGit(args, repo, { env: { GIT_OPTIONAL_LOCKS: '0', GIT_LITERAL_PATHSPECS: '1' } });
+    if (result.code !== 0) throw new Error('generated-lock-index-path');
+    const path = result.stdout.trim();
+    if (!path) return null;
+    const absolute = resolvePath(repo, path);
+    const raw = await metadataRawFile(dirname(absolute), absolute.split(sep).at(-1)!);
+    return { ...raw, path: absolute };
+  };
+  const main = await index(['rev-parse', '--git-path', 'index']);
+  if (!main) throw new Error('generated-lock-index-path');
+  return { repositoryRealpath, index: main, sharedIndex: await index(['rev-parse', '--shared-index-path']), inputs };
+}
+
+/** Extend the existing object reader, reconciling npm's independently discovered layout. */
+async function metadataSelectedIdentity(runGit: RunGit, repo: string, base: string, materialized: string) {
+  const inspection = await workspaceLockTreeInspector({ includeObjectInventory: true })(runGit, repo, base, 'commit');
+  const objects = inspection.objects!;
+  const { inputPaths, configs } = metadataRepairInputLayout(materialized);
+  const paths = [...new Set([...inspection.inputs.map((row: { path: string }) => row.path), ...inputPaths])].sort();
+  const selectedInputs: MetadataSelectedInput[] = [];
+  for (const path of paths) {
+    const object = objects.find(row => row.path === path);
+    if (object?.kind === 'gitlink') {
+      selectedInputs.push({ kind: 'gitlink', path, owner: object.owner, selectedOid: object.selectedOid,
+        mode: '160000', oid: object.oid, sha256: null });
+      continue;
+    }
+    const raw = await metadataRawFile(materialized, path);
+    const controller = objects.filter(row => row.kind === 'gitlink' && path.startsWith(row.path + '/'))
+      .sort((a, b) => b.path.length - a.path.length)[0];
+    const owner = object?.owner ?? controller?.path ?? '';
+    const selectedOid = object?.selectedOid ?? controller?.oid ?? base;
+    if (!object) {
+      if (raw.sha256 !== null) throw new Error('generated-lock-unselected-input');
+      selectedInputs.push({ kind: 'absent', path, owner, selectedOid, mode: null, oid: null, sha256: null });
+    } else {
+      if (object.mode !== '100644' || raw.sha256 === null || raw.mode === null || (raw.mode & 0o111) !== 0) {
+        throw new Error('generated-lock-selected-mode');
+      }
+      // git archive applies the host umask. Normalize only our owned copy to the
+      // selected Git mode so resolution/capture across processes use one input.
+      await chmod(join(materialized, path), 0o644);
+      const bytes = await readFile(join(materialized, path));
+      const oid = createHash(object.oid.length === 64 ? 'sha256' : 'sha1')
+        .update(Buffer.from(`blob ${bytes.length}\0`)).update(bytes).digest('hex');
+      if (oid !== object.oid) throw new Error('generated-lock-materialization-mismatch');
+      selectedInputs.push({ kind: 'blob', path, owner, selectedOid, mode: '100644', oid, sha256: raw.sha256 });
+    }
+  }
+  return { baseTree: inspection.treeOid, selectedInputs, inputPaths, configs };
+}
+
+async function withMetadataMaterialization<T>(runGit: RunGit, repo: string, base: string,
+  body: (root: string) => Promise<T>): Promise<T> {
+  const root = await mkdtemp(join(tmpdir(), 'git-sync-metadata-selected-'));
+  try {
+    const entries = await runGit(['ls-tree', '-z', base], repo);
+    if (entries.code !== 0) throw new Error('generated-lock-base-read');
+    const allow = new Set(entries.stdout.split('\0').filter(Boolean).map(row => row.slice(row.indexOf('\t') + 1)));
+    materializeCommit({ repo, sha: base, dest: root, allow });
+    return await body(root);
+  } finally { await rm(root, { recursive: true, force: true }); }
+}
+
+/** Prepare a closed generated source outside the writer lease; capture rechecks it. */
+export async function prepareGitSyncMetadataRepair(runGit: RunGit, repo: string,
+  request: { requestId: string; generation: number; base: string },
+  options: { log?: (line: string) => void; expectedPendingLockSha256?: string | null } = {}) {
+  if (!request.requestId || !Number.isSafeInteger(request.generation) || request.generation < 1 ||
+      !metadataOid.safeParse(request.base).success) throw new Error('generated-lock-request');
+  return withMetadataMaterialization(runGit, repo, request.base, async root => {
+    const selected = await metadataSelectedIdentity(runGit, repo, request.base, root);
+    const custody = await metadataPendingCustody(runGit, repo, selected.selectedInputs);
+    const lockPath = selected.selectedInputs.some(row => row.path === 'npm-shrinkwrap.json' && row.kind === 'blob')
+      ? 'npm-shrinkwrap.json' : 'package-lock.json';
+    if (options.expectedPendingLockSha256 !== undefined &&
+        custody.inputs.find(row => row.path === lockPath)?.sha256 !== options.expectedPendingLockSha256) {
+      throw new Error('generated-lock-request-pending-mismatch');
+    }
+    const resolved = await resolveMetadataRepairLock({ repoRoot: root }, { log: options.log });
+    const resolution = metadataResolution.parse(resolved.receipt);
+    const oidFormat = request.base.length === 64 ? 'sha256' : 'sha1';
+    const blobOid = createHash(oidFormat).update(Buffer.from(`blob ${resolved.bytes.length}\0`)).update(resolved.bytes).digest('hex');
+    const fingerprint = { schemaVersion: 1 as const, repositoryRealpath: await realpath(repo), ...request,
+      baseCommit: request.base, baseTree: selected.baseTree, selectedInputs: selected.selectedInputs,
+      command: resolution.command, runtime: resolution.runtime, projectConfig: resolution.projectConfig,
+      environment: resolution.environment, output: { ...resolution.output, mode: '100644' as const, blobOid, resolution } };
+    // `base` belongs to the caller request, not the versioned fingerprint schema.
+    const { base: _base, ...closed } = fingerprint;
+    const source = generatedSourceSchema.parse({ kind: 'generated-lock', fingerprint: closed, custody });
+    if (canonicalJson(await metadataPendingCustody(runGit, repo, selected.selectedInputs)) !== canonicalJson(custody)) {
+      throw new Error('generated-lock-pending-moved');
+    }
+    return { ...source, bytes: Buffer.from(resolved.bytes) };
+  });
+}
+
+async function validateGeneratedSource(runGit: RunGit, repo: string, request: GitSyncCandidateRequest,
+  source: GitSyncGeneratedLockSource, current: boolean) {
+  const f = source.fingerprint;
+  const r = f.output.resolution;
+  const same = (a: unknown, b: unknown) => canonicalJson(a) === canonicalJson(b);
+  const fail = (phase: string) => { throw new Error('generated-lock-identity-' + phase); };
+  if (f.repositoryRealpath !== await realpath(repo) || source.custody.repositoryRealpath !== f.repositoryRealpath ||
+      f.requestId !== request.requestId || f.generation !== request.generation || f.baseCommit !== request.base ||
+      request.dependencies?.length || request.paths.length !== 1 || request.paths[0] !== f.output.path ||
+      f.selectedInputs.length === 0 || new Set(f.selectedInputs.map(row => row.path)).size !== f.selectedInputs.length ||
+      !same(f.command, r.command) || !same(f.runtime, r.runtime) || !same(f.projectConfig, r.projectConfig) ||
+      !same(f.environment, r.environment) ||
+      !same({ path: f.output.path, mode: r.output.mode, sha256: f.output.sha256, registry: f.output.registry }, r.output)) fail('binding');
+  const command = f.command;
+  const node = await realpath(process.execPath);
+  const cli = await realpath(join(dirname(node), 'npm'));
+  const runner = await realpath(fileURLToPath(new URL('../../../../../scripts/npm-install-safe.mjs', import.meta.url)));
+  const npm = JSON.parse(await readFile(join(dirname(cli), '../package.json'), 'utf8')).version;
+  if (!same(f.runtime, { ...metadataRepairRuntimeIdentity(), npm }) ||
+      command.executable !== node || command.npmCli !== cli || command.runner !== runner ||
+      metadataDigest(await readFile(node)) !== command.executableSha256 ||
+      metadataDigest(await readFile(cli)) !== command.npmCliSha256 ||
+      metadataDigest(await readFile(runner)) !== command.runnerSha256) fail('runtime');
+  const root = r.attemptRoot;
+  // Custody uses canonical JSON, so recovered object member order differs
+  // from the launch object. Hash the fixed launch profile after comparing all
+  // values, rather than letting JSON insertion order invalidate its receipt.
+  const launchEnvironment = { HOME: join(root, 'home'), TMPDIR: join(root, 'tmp'),
+    PATH: dirname(node), LANG: 'C.UTF-8', TZ: 'UTC' };
+  if (!isAbsolute(root) || !isAbsolute(r.repositoryRealpath) ||
+      dirname(root) !== await realpath(tmpdir()) || !root.split(sep).at(-1)!.startsWith('npm-metadata-repair-') ||
+      dirname(command.cwd) !== root || !command.cwd.split(sep).at(-1)!.startsWith('npm-install-safe-resolve-') ||
+      r.cache.attemptId !== r.attemptId || r.cache.path !== join(root, 'cache') ||
+      !same(f.environment, launchEnvironment) ||
+      !same(command.argv, [cli, 'install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund',
+        '--workspaces', '--include-workspace-root', '--registry=https://registry.npmjs.org/',
+        '--userconfig=' + join(root, 'user.npmrc'), '--globalconfig=' + join(root, 'global.npmrc'), '--cache=' + r.cache.path]) ||
+      !same(r.configFiles, ['user.npmrc', 'global.npmrc'].map(path => ({ path: join(root, path), sha256: metadataDigest('') }))) ||
+      r.cache.launchSha256 !== metadataDigest(JSON.stringify({ node, argv: command.argv, cwd: command.cwd, env: launchEnvironment })) ||
+      Date.parse(r.attempt.createdAt) > Date.parse(r.cache.checkedAt)) fail('launch');
+  // No mutable checkout bytes enter the selected vector. The filesystem layout
+  // and Git object census independently enumerate it, including local archives.
+  await withMetadataMaterialization(runGit, repo, f.baseCommit, async materialized => {
+    const selected = await metadataSelectedIdentity(runGit, repo, f.baseCommit, materialized);
+    if (selected.baseTree !== f.baseTree || !same(selected.selectedInputs, f.selectedInputs)) fail('selected-vector');
+    const raw = await Promise.all(selected.inputPaths.map((path: string) => metadataRawFile(materialized, path)));
+    if (!same(raw, r.selectedInputs) || !same(selected.configs, f.projectConfig.map(row => row.path))) fail('resolver-population');
+    for (const config of f.projectConfig) {
+      const bytes = config.sha256 === null ? null : await readFile(join(materialized, config.path));
+      if ((bytes === null ? null : metadataDigest(bytes)) !== config.sha256) fail('config-digest');
+      const values: Record<string, string> = {};
+      for (const line of bytes?.toString('utf8').split(/\r?\n/) ?? []) {
+        const text = line.trim();
+        if (!text || text.startsWith('#') || text.startsWith(';')) continue;
+        const match = /^(registry|legacy-peer-deps|strict-peer-deps|install-links|engine-strict)\s*=\s*(\S+)$/.exec(text);
+        if (!match || Object.hasOwn(values, match[1]!)) fail('config-key');
+        values[match![1]!] = match![2]!;
+      }
+      if (!same(values, config.values)) fail('config-values');
+    }
+  });
+  if (current) {
+    const head = await runGit(['rev-parse', '--verify', 'HEAD^{commit}'], repo);
+    if (head.code !== 0 || head.stdout.trim() !== f.baseCommit ||
+        !same(await metadataPendingCustody(runGit, repo, f.selectedInputs), source.custody)) fail('pending');
+  }
+}
+
+async function validateGeneratedTree(runGit: RunGit, repo: string, tree: string, source: GitSyncGeneratedLockSource) {
+  const f = source.fingerprint;
+  const changed = await runGit(['diff-tree', '--no-commit-id', '--name-only', '--no-renames', '-r', '-z', f.baseTree, tree], repo);
+  const blob = await runGit(['rev-parse', '--verify', `${tree}:${f.output.path}`], repo);
+  const output = await runGit(['cat-file', 'blob', f.output.blobOid], repo);
+  if (changed.code !== 0 || changed.stdout !== f.output.path + '\0' || blob.code !== 0 ||
+      blob.stdout.trim() !== f.output.blobOid || output.code !== 0 || metadataDigest(output.stdout) !== f.output.sha256) {
+    throw new Error('generated-lock-retained-output-mismatch');
+  }
+  const packages = JSON.parse(output.stdout).packages;
+  const registry = Object.entries(packages).sort(([a], [b]) => a.localeCompare(b)).map(([path, value]) => {
+    const entry = value as { resolved?: string; integrity?: string };
+    return { path, resolved: entry.resolved ?? null, integrity: entry.integrity ?? null };
+  });
+  if (canonicalJson(registry) !== canonicalJson(f.output.registry)) throw new Error('generated-lock-registry-output-mismatch');
+  await workspaceLockTreeValidator()(runGit, repo, tree);
 }
 
 export type GitSyncCandidateCaptureResult =
@@ -5727,9 +6010,11 @@ export async function readGitSyncCandidate(
     return await captureGitSyncCandidate(runGit, repoPath, {
       ...request, paths: request.paths ?? candidate.paths, base: candidate.base,
       ...(candidate.dependencies ? { dependencies: candidate.dependencies } : {}),
+      ...(candidate.contentSource ? { contentSource: candidate.contentSource } : {}),
     }, { existingOnly: true });
-  } catch {
-    return custodyRefused('candidate-capture-exception');
+  } catch (error) {
+    return custodyRefused(error instanceof Error && error.message.startsWith('generated-lock-')
+      ? error.message : 'candidate-capture-exception');
   }
 }
 
@@ -5744,8 +6029,24 @@ export async function captureGitSyncCandidate(
   runGit: RunGit,
   repoPath: string,
   request: GitSyncCandidateRequest,
-  options: { existingOnly?: boolean } = {},
+  options: { existingOnly?: boolean; assertHeld?: () => void } = {},
 ): Promise<GitSyncCandidateCaptureResult> {
+  // Copy before the first await: caller-owned descriptors/bytes cannot mutate
+  // the acknowledged generation while Git is resolving its immutable objects.
+  let source: GitSyncGeneratedLockSource | undefined;
+  let generatedBytes: Buffer | undefined;
+  try {
+    request = structuredClone(request);
+    if (request.contentSource) {
+      const { bytes, ...metadata } = request.contentSource;
+      source = generatedSourceSchema.parse(metadata);
+      if (bytes !== undefined && !(bytes instanceof Uint8Array)) return custodyRefused('generated-lock-bytes');
+      generatedBytes = bytes === undefined ? undefined : Buffer.from(bytes);
+      if (generatedBytes && metadataDigest(generatedBytes) !== source.fingerprint.output.sha256) {
+        return custodyRefused('generated-lock-digest');
+      }
+    }
+  } catch { return custodyRefused('candidate-input'); }
   const oidPattern = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
   const paths = [...new Set(request.paths)].sort();
   const dependencies = request.dependencies?.map(dependency => ({ ...dependency,
@@ -5774,7 +6075,9 @@ export async function captureGitSyncCandidate(
     const repository = await realpath(common.stdout.trim());
     const identity = { repository, requestId: request.requestId, generation: request.generation };
     const ref = SOURCE_CUSTODY_REF_PREFIX + createHash('sha256').update(canonicalJson(identity)).digest('hex');
-    const input = { version: 2 as const, kind: 'candidate' as const, ...identity, base: request.base, paths,
+    if (source) await validateGeneratedSource(sharedGit, repoPath, request, source, false);
+    const input = { version: source ? 3 as const : 2 as const, kind: 'candidate' as const, ...identity, base: request.base, paths,
+      ...(source ? { contentSource: source } : {}),
       ...(dependencies?.length ? { dependencies } : {}) };
     const readCapture = async (): Promise<GitSyncCandidateCaptureResult> => {
       const metadata = await sharedGit(['show', `${ref}:manifest.json`], repoPath);
@@ -5785,6 +6088,9 @@ export async function captureGitSyncCandidate(
           canonicalJson(candidate) !== canonicalJson({ ...input, baseTree: candidate.baseTree, tree: candidate.tree })) {
         return custodyRefused('candidate-input-mismatch');
       }
+      // v3 is a canonical closed document. This also refuses duplicate JSON
+      // keys that JSON.parse alone would silently overwrite during recovery.
+      if (source && metadata.stdout !== canonicalJson(candidate) + '\n') return custodyRefused('candidate-manifest-canonical');
       const contents = await sharedGit(['ls-tree', '-z', ref], repoPath);
       const rows = contents.stdout.split('\0').filter(Boolean);
       if (contents.code !== 0 || rows.length !== 2 ||
@@ -5800,17 +6106,25 @@ export async function captureGitSyncCandidate(
       }
       const objects = await sharedGit(['cat-file', '-e', `${candidate.tree}^{tree}`], repoPath);
       if (objects.code !== 0) return custodyRefused('candidate-tree-read');
+      if (source) await validateGeneratedTree(sharedGit, repoPath, candidate.tree, source);
       return { ok: true, ref, candidate };
     };
     const existing = await sharedGit(['show-ref', '--verify', '--quiet', ref], repoPath);
     if (existing.code === 0) return await readCapture();
     if (existing.code !== 1) return custodyRefused('candidate-ref-read');
     if (options.existingOnly) return custodyRefused('candidate-not-captured');
+    if (source) {
+      if (!options.assertHeld || !generatedBytes) return custodyRefused('generated-lock-fence-or-bytes');
+      options.assertHeld();
+      await validateGeneratedSource(sharedGit, repoPath, request, source, true);
+    }
     const conflicts = await sharedGit(['ls-files', '--unmerged', '-z', '--', ...paths], repoPath);
     if (conflicts.code !== 0 || conflicts.stdout) return custodyRefused('candidate-unmerged-index');
     // A canonical Git blob may differ from acknowledged working bytes. Until
     // raw/filter correspondence is preserved, refuse conversions before add
     // can invoke a clean filter (including LFS). Existing custody still replays.
+    let selectedPaths: string[] = [];
+    if (!source) {
     const autoCrlf = await sharedGit(['config', '--get', 'core.autocrlf'], repoPath);
     if ((autoCrlf.code !== 0 && autoCrlf.code !== 1) ||
         (autoCrlf.code === 0 && !['', 'false', 'no', 'off', '0'].includes(autoCrlf.stdout.trim().toLowerCase()))) {
@@ -5818,7 +6132,7 @@ export async function captureGitSyncCandidate(
     }
     const selected = await sharedGit(['ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', ...paths], repoPath);
     if (selected.code !== 0) return custodyRefused('candidate-attribute-paths');
-    const selectedPaths = [...new Set(selected.stdout.split('\0').filter(Boolean))];
+    selectedPaths = [...new Set(selected.stdout.split('\0').filter(Boolean))];
     for (let i = 0; i < selectedPaths.length; i += VANISHED_PATH_PROBE_BATCH) {
       const attributes = await sharedGit(['check-attr', '-z', 'filter', 'text', 'eol', 'working-tree-encoding', 'ident',
         '--', ...selectedPaths.slice(i, i + VANISHED_PATH_PROBE_BATCH)], repoPath);
@@ -5833,6 +6147,7 @@ export async function captureGitSyncCandidate(
         }
       }
     }
+    }
     const opened = await openPrivateIndexSite(sharedGit, repoPath, 'candidate capture', 'candidate');
     if (!opened.ok) return custodyRefused('candidate-private-index');
     const indexFile = opened.site.newIndexFile();
@@ -5840,6 +6155,33 @@ export async function captureGitSyncCandidate(
     const rootFile = indexFile + '.tree';
     const privateGit = opened.site.bindIndex(indexFile);
     try {
+      const retain = async (baseTree: string, tree: string): Promise<GitSyncCandidateCaptureResult> => {
+        const candidate: GitSyncCandidateCapture = { ...input, baseTree, tree };
+        await writeFile(manifestFile, canonicalJson(candidate) + '\n', { mode: 0o600, flag: 'wx' });
+        const metadata = await sharedGit(['hash-object', '-w', '--no-filters', '--', manifestFile], repoPath);
+        if (metadata.code !== 0 || !oidPattern.test(metadata.stdout.trim())) return custodyRefused('candidate-manifest-write');
+        await writeFile(rootFile, Buffer.concat([
+          Buffer.from('100644 manifest.json\0'), Buffer.from(metadata.stdout.trim(), 'hex'),
+          Buffer.from('40000 payload\0'), Buffer.from(candidate.tree, 'hex'),
+        ]), { mode: 0o600, flag: 'wx' });
+        const root = await sharedGit(['hash-object', '-w', '-t', 'tree', '--no-filters', '--', rootFile], repoPath);
+        if (root.code !== 0 || !oidPattern.test(root.stdout.trim())) return custodyRefused('candidate-root-tree');
+        if (source) {
+          await validateGeneratedSource(sharedGit, repoPath, request, source, true);
+          options.assertHeld!();
+        }
+        // Identical concurrent creators are accepted only after full readback.
+        await sharedGit(['update-ref', ref, root.stdout.trim(), '0'.repeat(root.stdout.trim().length)], repoPath);
+        return await readCapture();
+      };
+      if (source) {
+        const f = source.fingerprint;
+        const prepared = await prepareGeneratedGitSyncCandidateTree(sharedGit, repoPath, {
+          base: f.baseCommit, path: f.output.path, bytes: generatedBytes!, sha256: f.output.sha256, blobOid: f.output.blobOid,
+        });
+        if (!prepared.ok) return prepared;
+        return await retain(prepared.baseTree, prepared.tree);
+      }
       const seeded = await seedPrivateIndex(sharedGit, privateGit, repoPath, indexFile, opened.site.sharedIndex, 'candidate capture');
       if (!seeded.ok || seeded.base !== request.base) return custodyRefused('candidate-base-moved');
       // Shared stat/visibility flags are caller state, not permission to omit
@@ -5868,29 +6210,13 @@ export async function captureGitSyncCandidate(
       }
       const tree = await privateGit(['write-tree'], repoPath);
       if (tree.code !== 0 || !oidPattern.test(tree.stdout.trim())) return custodyRefused('candidate-tree-write');
-      const candidate: GitSyncCandidateCapture = { ...input, baseTree: seeded.baseTree, tree: tree.stdout.trim() };
-      await writeFile(manifestFile, canonicalJson(candidate) + '\n', { mode: 0o600, flag: 'wx' });
-      const metadata = await sharedGit(['hash-object', '-w', '--no-filters', '--', manifestFile], repoPath);
-      if (metadata.code !== 0 || !oidPattern.test(metadata.stdout.trim())) return custodyRefused('candidate-manifest-write');
-      // Indexes omit empty directories. Write the two fixed, sorted Git tree
-      // entries directly so even an empty payload remains reachable by GC.
-      await writeFile(rootFile, Buffer.concat([
-        Buffer.from('100644 manifest.json\0'), Buffer.from(metadata.stdout.trim(), 'hex'),
-        Buffer.from('40000 payload\0'), Buffer.from(candidate.tree, 'hex'),
-      ]), { mode: 0o600, flag: 'wx' });
-      const root = await sharedGit(['hash-object', '-w', '-t', 'tree', '--no-filters', '--', rootFile], repoPath);
-      if (root.code !== 0 || !oidPattern.test(root.stdout.trim())) return custodyRefused('candidate-root-tree');
-      // An identical concurrent creator is accepted only after complete readback.
-      await sharedGit(['update-ref', ref, root.stdout.trim(), '0'.repeat(root.stdout.trim().length)], repoPath);
-      return await readCapture();
+      return await retain(seeded.baseTree, tree.stdout.trim());
     } finally {
-      await rm(indexFile, { force: true }).catch(() => {});
-      await rm(indexFile + '.lock', { force: true }).catch(() => {});
-      await rm(manifestFile, { force: true }).catch(() => {});
-      await rm(rootFile, { force: true }).catch(() => {});
+      for (const file of [indexFile, indexFile + '.lock', manifestFile, rootFile]) await rm(file, { force: true });
     }
-  } catch {
-    return custodyRefused('candidate-capture-exception');
+  } catch (error) {
+    return custodyRefused(error instanceof Error && error.message.startsWith('generated-lock-')
+      ? error.message : 'candidate-capture-exception');
   }
 }
 
@@ -5916,15 +6242,24 @@ export async function publishGitSyncCandidate(
     beforePublish: (candidate: GitSyncCandidateCapture) => Promise<{ ok: true } | { ok: false; error: string }>;
   },
 ): Promise<GitSyncCandidatePublicationResult> {
-  const fencedGit: RunGit = (args, cwd, opts) => {
+  // Freeze the caller descriptor across the asynchronous validation/publication.
+  request = structuredClone(request);
+  const fencedGit: RunGit = async (args, cwd, opts) => {
     options.assertHeld();
+    if (request.contentSource && args[0] === 'update-ref' && args.includes('HEAD')) {
+      // Includes a retry after holderless-ref-lock recovery. Check the original
+      // raw predicates and authority again at the actual dispatch boundary.
+      const { bytes: _bytes, ...source } = request.contentSource;
+      await validateGeneratedSource(runGit, repoPath, request, generatedSourceSchema.parse(source), true);
+      options.assertHeld();
+    }
     return runGit(args, cwd, { ...opts,
       env: { ...opts?.env, GIT_OPTIONAL_LOCKS: '0', GIT_LITERAL_PATHSPECS: '1' } });
   };
   let indexFile: string | undefined;
   try {
     // Publication must never manufacture a missing A1 from current working B1.
-    const captured = await captureGitSyncCandidate(fencedGit, repoPath, request, { existingOnly: true });
+    const captured = await captureGitSyncCandidate(fencedGit, repoPath, request, { existingOnly: true, assertHeld: options.assertHeld });
     if (!captured.ok) return { status: 'error', error: captured.error };
     const { candidate, ref } = captured;
     const commitRef = ref + '-publication';
@@ -5948,6 +6283,7 @@ export async function publishGitSyncCandidate(
       }
     }
     if (current !== candidate.base) return { status: 'cas-refused', detail: 'candidate-publication-base-moved' };
+    if (candidate.contentSource) await validateGeneratedSource(fencedGit, repoPath, request, candidate.contentSource, true);
     const opened = await openPrivateIndexSite(fencedGit, repoPath, 'candidate publication', 'candidate-publication');
     if (!opened.ok) return { status: 'error', error: opened.error };
     indexFile = opened.site.newIndexFile();
@@ -5961,17 +6297,19 @@ export async function publishGitSyncCandidate(
       beforePublish: async commit => {
         const ready = await options.beforePublish(candidate);
         if (!ready.ok) return ready;
+        if (candidate.contentSource) await validateGeneratedSource(fencedGit, repoPath, request, candidate.contentSource, true);
         const pin = await fencedGit(['update-ref', commitRef, commit, materializedCommit ?? '0'.repeat(commit.length)], repoPath);
         if (pin.code !== 0) return { ok: false, error: 'candidate-publication-pin-cas' };
         return { ok: true };
       },
     });
-  } catch {
-    return { status: 'error', error: 'candidate-publication-interrupted' };
+  } catch (error) {
+    return { status: 'error', error: error instanceof Error && error.message.startsWith('generated-lock-')
+      ? error.message : 'candidate-publication-interrupted' };
   } finally {
     if (indexFile) {
-      await rm(indexFile, { force: true }).catch(() => {});
-      await rm(indexFile + '.lock', { force: true }).catch(() => {});
+      await rm(indexFile, { force: true });
+      await rm(indexFile + '.lock', { force: true });
     }
   }
 }

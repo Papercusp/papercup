@@ -305,6 +305,14 @@ export default defineTool({
       .boolean()
       .optional()
       .describe('Preview the selected checkout without firing git-sync, committing, or pushing.'),
+    repairMetadata: z.object({
+      base: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/),
+      expectedPendingLockSha256: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+      requestId: z.string().min(1).max(200),
+      generation: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    }).strict().optional().describe(
+      'Resolve selected parent metadata privately and publish through existing custody. Pending lock null means observed absence. Mutation requires an explicit exact background target; no caller-supplied path or bytes are accepted.',
+    ),
     reason: softText(LIMITS.SHORT_TITLE)
       .optional()
       .describe(
@@ -322,6 +330,11 @@ export default defineTool({
     // does not have to learn this tool's internal routine vocabulary.
     const slug = args.installSlug ?? args.harness ?? operatorHomeHarnessSlug();
     const workspaceId = activeWorkspaceId();
+    const repairMetadata = args.repairMetadata ? Object.freeze({ ...args.repairMetadata }) : undefined;
+
+    if (repairMetadata && !args.dryRun && !args.target) return { content: [{ type: 'text', text: JSON.stringify({
+      ok: false, fired: false, status: 'refused', reason: 'metadata-repair-target-required',
+    }) }] };
 
     // Resolve the workspace-scoped tree ONCE, then pin that exact path through
     // the HEAD probes and the action. Re-resolving inside the action used to let
@@ -360,6 +373,7 @@ export default defineTool({
               slug,
               status: 'preview',
               preview,
+              ...(repairMetadata ? { repair_metadata: repairMetadata } : {}),
               note: 'Read-only preview; git-sync was not fired and no commit or push was attempted.',
             }),
           },
@@ -412,7 +426,9 @@ export default defineTool({
 
     const syncRequestedAtMs = Date.now();
     const fired = await withBoundedTimeout<GitSyncFireOutcome | undefined>(
-      () => fireGitSyncNow(slug, workspaceId, repoDir),
+      () => repairMetadata
+        ? fireGitSyncNow(slug, workspaceId, repoDir, repairMetadata)
+        : fireGitSyncNow(slug, workspaceId, repoDir),
       {
         fallback: undefined,
         timeoutMs: GIT_SYNC_RUN_BUDGET_MS,
@@ -444,13 +460,14 @@ export default defineTool({
         : (outcome?.status ?? 'unknown');
     // HEAD may move because a different sync owns the lock. Attribute commits
     // only from this fire's result, keeping before/after as separate diagnostics.
+    const localOutcome = outcome && 'committedCount' in outcome ? outcome : undefined;
     const hasLocalCommitIdentity =
-      gitSha(outcome?.localCommitSha) !== null ||
-      (Array.isArray(outcome?.localCommitShas) &&
-        outcome.localCommitShas.some((sha) => gitSha(sha) !== null));
+      gitSha(localOutcome?.localCommitSha) !== null ||
+      (Array.isArray(localOutcome?.localCommitShas) &&
+        localOutcome.localCommitShas.some((sha) => gitSha(sha) !== null));
     const committedCount =
-      typeof outcome?.committedCount === 'number' && Number.isSafeInteger(outcome.committedCount)
-        ? outcome.committedCount
+      typeof localOutcome?.committedCount === 'number' && Number.isSafeInteger(localOutcome.committedCount)
+        ? localOutcome.committedCount
         : 0;
     const committed = outcome?.status === 'synced' || hasLocalCommitIdentity || committedCount > 0;
     const success = outcome?.status === 'synced' || outcome?.status === 'nothing';
@@ -587,6 +604,10 @@ export default defineTool({
         ? `git-sync fire failed before it returned an outcome: ${fired.errorMessage ?? 'unknown error'}.`
         : `git-sync fired but did not finish within ${GIT_SYNC_RUN_BUDGET_MS}ms — status is in_progress; ` +
           'the action may still commit/push or self-skip. Re-check the routine outcome before re-firing.'
+      : localOutcome?.metadataRepair
+        ? `Metadata repair ${localOutcome.metadataRepair.publication} at commit ${localOutcome.metadataRepair.commit}; ` +
+          `current HEAD ${localOutcome.headSha ?? 'unavailable'}. Remote egress is unconfirmed.` +
+          (outcome?.status === 'error' ? ' Operation reported errors; inspect outcome.errors and the retained publication receipt.' : '')
       : outcome?.status === 'synced'
         ? superprojectPushConfirmed
           ? 'git-sync completed a local commit and confirmed the superproject push in outcome.pushed.'

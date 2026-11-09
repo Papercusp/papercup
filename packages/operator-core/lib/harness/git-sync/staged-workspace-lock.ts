@@ -12,10 +12,10 @@ interface SelectedInput {
   kind: 'blob' | 'gitlink'; path: string; mode: string; oid: string;
   owner: string; selectedOid: string; gitmodules?: string; sha256?: string;
 }
-interface Census { files: Map<string, string>; inputs: SelectedInput[] }
+interface Census { files: Map<string, string>; inputs: SelectedInput[]; objects: SelectedInput[] }
 
 /** Existing production reader, exposing its selected identity and typed diagnostics. */
-export function workspaceLockTreeInspector() {
+export function workspaceLockTreeInspector(options: { includeObjectInventory?: boolean } = {}) {
   const trees = new Map<string, Promise<Census>>();
   const limit = pLimit(8);
   return async (runGit: RunGit, repoPath: string, oid: string, kind: 'commit' | 'tree' = 'tree') => {
@@ -35,6 +35,7 @@ export function workspaceLockTreeInspector() {
         pending = (async () => {
           const files = new Map<string, string>();
           const inputs: SelectedInput[] = [];
+          const objects: SelectedInput[] = [];
           const rows = (await run(['ls-tree', '-r', '-z', ref], source)).split('\0').filter(Boolean);
           const moduleRow = rows.find(row => row.slice(row.indexOf('\t') + 1) === '.gitmodules');
           const mapped = new Set<string>();
@@ -48,6 +49,10 @@ export function workspaceLockTreeInspector() {
             const tab = row.indexOf('\t');
             const path = row.slice(tab + 1);
             const [mode, type, object] = row.slice(0, tab).split(' ');
+            if (options.includeObjectInventory && (type === 'blob' || mode === '160000')) {
+              objects.push({ kind: mode === '160000' ? 'gitlink' : 'blob', path,
+                mode: mode!, oid: object!, owner: '', selectedOid: ref });
+            }
             if (mode === '160000' && type === 'commit') {
               if (!mapped.has(path)) throw new Error(`unmapped selected gitlink ${path} @ ${object}`);
               inputs.push({ kind: 'gitlink', path, mode, oid: object!, owner: '', selectedOid: ref, gitmodules: '.gitmodules' });
@@ -59,6 +64,8 @@ export function workspaceLockTreeInspector() {
               for (const [name, text] of nested.files) files.set(`${path}/${name}`, text);
               inputs.push(...nested.inputs.map(input => ({ ...input, path: `${path}/${input.path}`,
                 owner: `${path}/${input.owner}`, ...(input.gitmodules ? { gitmodules: `${path}/${input.gitmodules}` } : {}) })));
+              objects.push(...nested.objects.map(input => ({ ...input, path: `${path}/${input.path}`,
+                owner: input.owner ? `${path}/${input.owner}` : path })));
             } else if (type === 'blob' && (isManifest(path) || path === '.gitmodules')) {
               const text = await run(['cat-file', 'blob', object!], source);
               files.set(path, text);
@@ -66,7 +73,7 @@ export function workspaceLockTreeInspector() {
                 sha256: createHash('sha256').update(text).digest('hex') });
             }
           }));
-          return { files, inputs };
+          return { files, inputs, objects };
         })();
         trees.set(key, pending);
         // Missing objects may become available on a later pass; never cache a failure.
@@ -74,8 +81,9 @@ export function workspaceLockTreeInspector() {
       }
       return pending;
     };
-    const { files, inputs } = await collect(repoPath, selectedOid);
-    return { selectedOid, treeOid, kind, ...inspectWorkspaceLockSnapshot(repoPath, files, inputs) };
+    const { files, inputs, objects } = await collect(repoPath, selectedOid);
+    return { selectedOid, treeOid, kind, ...inspectWorkspaceLockSnapshot(repoPath, files, inputs),
+      ...(options.includeObjectInventory ? { objects } : {}) };
   };
 }
 

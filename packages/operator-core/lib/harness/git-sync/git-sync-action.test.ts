@@ -388,7 +388,15 @@ const yieldError = (reason: string, boundary: string, synced: number, total: num
 // vitest-fail-on-console reds every test whose tick reaches the sweep (EI-14928 class:
 // a mock missing a newly-consumed export). Empty submodule list → the sweep scans only
 // the (mkdtemp) super repo, finds no stashes, and no-ops.
+const readCandidateMock = vi.fn<(...args: unknown[]) => Promise<unknown>>();
+const prepareMetadataMock = vi.fn<(...args: unknown[]) => Promise<unknown>>();
+const captureCandidateMock = vi.fn<(...args: unknown[]) => Promise<unknown>>();
+const publishCandidateMock = vi.fn<(...args: unknown[]) => Promise<unknown>>();
 vi.mock('./run-git-sync', () => ({
+  readGitSyncCandidate: (...args: unknown[]) => readCandidateMock(...args),
+  prepareGitSyncMetadataRepair: (...args: unknown[]) => prepareMetadataMock(...args),
+  captureGitSyncCandidate: (...args: unknown[]) => captureCandidateMock(...args),
+  publishGitSyncCandidate: (...args: unknown[]) => publishCandidateMock(...args),
   runGitSync: (...a: unknown[]) => runGitSyncMock(a[0] as string, a[1] as Record<string, unknown>),
   discoverSubmodulesRecursive: async (): Promise<string[]> => [],
   listStashEntries: async (): Promise<unknown[]> => [],
@@ -1098,6 +1106,10 @@ function definitelyDeadPid(): Promise<number> {
 }
 
 beforeEach(() => {
+  readCandidateMock.mockReset().mockResolvedValue({ ok: false, error: 'candidate-not-captured' });
+  prepareMetadataMock.mockReset();
+  captureCandidateMock.mockReset();
+  publishCandidateMock.mockReset();
   process.env.PAPERCUSP_BACKGROUND_WORKERS = '1';
   process.env.PAPERCUSP_POT_GIT_ROOT = isolatedPotGitRoot;
   // Recreate the host rollout gate while the runner seam is mocked, so each
@@ -1343,6 +1355,98 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
 
     expect(result).toMatchObject({ status: 'synced', headSha: syncedOutcome.headSha, pushed: syncedOutcome.pushed });
   });
+
+  const repairMetadata = { base: 'a'.repeat(40), expectedPendingLockSha256: 'b'.repeat(64),
+    requestId: 'selected-parent-repair', generation: 1 };
+  const repairSource = { kind: 'generated-lock', fingerprint: { output: { path: 'package-lock.json' } },
+    custody: { inputs: [{ path: 'package-lock.json', sha256: repairMetadata.expectedPendingLockSha256 }] } };
+  const repairPublication = { status: 'committed', commit: 'c'.repeat(40), tree: 'd'.repeat(40) };
+
+  it('metadata repair prepares outside the writer lease and publishes under the same lease without a sweep', async () => {
+    prepareMetadataMock.mockImplementation(async () => {
+      expect(heldResourcesByOwner.size).toBe(0);
+      return repairSource;
+    });
+    captureCandidateMock.mockImplementation(async (...args) => {
+      expect([...heldResourcesByOwner.values()].flat()).toContain('git-sync:papercup');
+      (args[3] as { assertHeld(): void }).assertHeld();
+      return { ok: true, ref: 'refs/papercusp/source-custody/test' };
+    });
+    publishCandidateMock.mockImplementation(async (...args) => {
+      const options = args[3] as { assertHeld(): void; beforePublish(): Promise<unknown> };
+      options.assertHeld();
+      expect(await options.beforePublish()).toEqual({ ok: true });
+      return repairPublication;
+    });
+    const outcome = await fireGitSyncNow(ctx.installSlug, ctx.workspaceId, repoDir, repairMetadata);
+    expect(outcome).toMatchObject({ status: 'synced', committedCount: 1, pushed: [],
+      localCommitSha: repairPublication.commit, metadataRepair: { publication: 'committed',
+        remoteEgressConfirmed: false, tree: repairPublication.tree } });
+    expect(prepareMetadataMock).toHaveBeenCalledExactlyOnceWith(expect.any(Function), repoDir,
+      { base: repairMetadata.base, requestId: repairMetadata.requestId, generation: 1 },
+      { expectedPendingLockSha256: repairMetadata.expectedPendingLockSha256 });
+    expect(runGitSyncMock).not.toHaveBeenCalled();
+    expect(heldResourcesByOwner.size).toBe(0);
+  });
+
+  it('metadata repair reuses retained custody after publication without resolving npm again', async () => {
+    readCandidateMock.mockResolvedValue({ ok: true, candidate: { base: repairMetadata.base,
+      paths: ['package-lock.json'], contentSource: repairSource } });
+    captureCandidateMock.mockResolvedValue({ ok: true, ref: 'refs/papercusp/source-custody/test' });
+    publishCandidateMock.mockResolvedValue({ ...repairPublication, status: 'already-published' });
+    expect(await fireGitSyncNow(ctx.installSlug, ctx.workspaceId, repoDir, repairMetadata))
+      .toMatchObject({ status: 'synced', committedCount: 0, pushed: [], headSha: 'd'.repeat(40),
+        metadataRepair: { publication: 'already-published', commit: repairPublication.commit } });
+    expect(allRoutinePatches().at(-1)).toMatchObject({ head_sha: 'd'.repeat(40) });
+    expect(prepareMetadataMock).not.toHaveBeenCalled();
+    expect(runGitSyncMock).not.toHaveBeenCalled();
+  });
+
+  it('metadata repair preserves publication proof when terminal routine persistence fails', async () => {
+    prepareMetadataMock.mockResolvedValue(repairSource);
+    captureCandidateMock.mockResolvedValue({ ok: true, ref: 'refs/papercusp/source-custody/test' });
+    publishCandidateMock.mockResolvedValue(repairPublication);
+    // The first write records fire_started_at; fail only the outcome write.
+    rejectUnsafeAtCall = unsafeCallCount + 2;
+    await expect(fireGitSyncNow(ctx.installSlug, ctx.workspaceId, repoDir, repairMetadata))
+      .resolves.toMatchObject({ status: 'error', committedCount: 1, localCommitSha: repairPublication.commit,
+        headSha: 'd'.repeat(40), errors: [{ scope: 'superproject', message: expect.stringContaining('outcome-persistence') }],
+        metadataRepair: { commit: repairPublication.commit, publication: 'committed',
+          remoteEgressConfirmed: false, routineMetadataRecorded: false } });
+    expect(publishCandidateMock).toHaveBeenCalledTimes(1);
+    expect(heldResourcesByOwner.size).toBe(0);
+  });
+
+  it('metadata repair preserves publication proof when the current HEAD cannot be measured', async () => {
+    prepareMetadataMock.mockResolvedValue(repairSource);
+    captureCandidateMock.mockResolvedValue({ ok: true, ref: 'refs/papercusp/source-custody/test' });
+    publishCandidateMock.mockResolvedValue(repairPublication);
+    runGitBoundedMock.mockResolvedValue({ code: 1, stdout: '', stderr: 'unreadable HEAD' });
+    const outcome = await fireGitSyncNow(ctx.installSlug, ctx.workspaceId, repoDir, repairMetadata);
+    expect(outcome).toMatchObject({ status: 'error', committedCount: 1, localCommitSha: repairPublication.commit,
+      errors: [{ scope: 'superproject', message: expect.stringContaining('head-unavailable') }],
+      metadataRepair: { commit: repairPublication.commit, publication: 'committed', remoteEgressConfirmed: false } });
+    expect(outcome).not.toHaveProperty('headSha');
+    expect(allRoutinePatches().at(-1)).not.toHaveProperty('head_sha');
+    expect(heldResourcesByOwner.size).toBe(0);
+  });
+
+  it.each(['resolution', 'pending', 'capture', 'publication'] as const)(
+    'metadata repair refuses %s failure without falling through to ordinary git-sync', async phase => {
+      prepareMetadataMock.mockResolvedValue(repairSource);
+      captureCandidateMock.mockResolvedValue({ ok: true, ref: 'refs/papercusp/source-custody/test' });
+      publishCandidateMock.mockResolvedValue(repairPublication);
+      if (phase === 'resolution') prepareMetadataMock.mockRejectedValue(new Error('resolution refused'));
+      if (phase === 'pending') prepareMetadataMock.mockResolvedValue({ ...repairSource,
+        custody: { inputs: [{ path: 'package-lock.json', sha256: 'e'.repeat(64) }] } });
+      if (phase === 'capture') captureCandidateMock.mockResolvedValue({ ok: false, error: 'custody refused' });
+      if (phase === 'publication') publishCandidateMock.mockResolvedValue({ status: 'cas-refused', detail: 'base moved' });
+      expect(await fireGitSyncNow(ctx.installSlug, ctx.workspaceId, repoDir, repairMetadata))
+        .toMatchObject({ status: 'error', committedCount: 0, pushed: [] });
+      expect(runGitSyncMock).not.toHaveBeenCalled();
+      expect(heldResourcesByOwner.size).toBe(0);
+      if (phase !== 'publication') expect(publishCandidateMock).not.toHaveBeenCalled();
+    });
 
   it.each([errorOutcome, conflictOutcome])(
     'EI-255862: notifies a proven root local commit despite aggregate $status',

@@ -362,18 +362,27 @@ export function assertWorkspaceLockInspection(inspection) {
 
 function formatRootLockManifestMismatches(mismatches) {
   const lines = [
-    `NPM_INSTALL_SAFE_WORKSPACE_LOCK_DRIFT: ${mismatches.length} root lockfile field(s) disagree with package manifests.`,
+    `NPM_INSTALL_SAFE_WORKSPACE_LOCK_DRIFT: ${mismatches.length} lockfile field(s) disagree with package manifests.`,
     "The guarded operation was not started; stale dependency metadata can crash npm Arborist before it repairs the lock.",
   ];
   for (const mismatch of mismatches.slice(0, 20)) {
+    const manifestDir = mismatch.manifest && dirname(mismatch.manifest);
+    const workspace = mismatch.workspace || (manifestDir && manifestDir !== "." ? manifestDir : "<root>");
+    const location = [
+      mismatch.lockfile && `lockfile=${mismatch.lockfile}`,
+      mismatch.manifest && `manifest=${mismatch.manifest}`,
+      mismatch.controllingPaths?.length && `controllingPaths=${mismatch.controllingPaths.join(", ")}`,
+    ].filter(Boolean).join("; ");
     lines.push(
-      `  - ${mismatch.workspace || "<root>"} ${mismatch.field}: ${JSON.stringify(mismatch.differences)}`,
+      `  - ${workspace} ${mismatch.field}${location ? ` [${location}]` : ""}: ${JSON.stringify(mismatch.differences)}`,
     );
   }
   if (mismatches.length > 20)
     lines.push(`  - … ${mismatches.length - 20} more mismatch(es)`);
   lines.push(
-    "FIX: reconcile the reported workspace dependency maps in package-lock.json with package.json, review the lockfile, then retry the install.",
+    mismatches.some(mismatch => mismatch.lockfile)
+      ? "FIX: reconcile the named lockfiles with their package manifests and review any listed controlling paths before retrying the guarded operation."
+      : "FIX: reconcile the reported workspace dependency maps in package-lock.json with package.json, review the lockfile, then retry the install.",
   );
   return lines.join("\n");
 }
@@ -1821,6 +1830,25 @@ function manifestOnlyResolutionLayout(repoRoot) {
   };
 }
 
+/** The same closed population is used by resolution and selected-object custody. */
+export function metadataRepairInputLayout(repoRoot) {
+  const layout = manifestOnlyResolutionLayout(repoRoot);
+  if (!layout.supported) throw new Error("metadata-repair-layout-unsupported");
+  const configs = [...new Set([".npmrc", ...layout.inputPaths
+    .filter(path => basename(path) === "package.json")
+    .map(path => join(dirname(path), ".npmrc"))])].sort();
+  return { layout, configs, inputPaths: [...new Set([...layout.inputPaths, ...configs])].sort() };
+}
+
+export function metadataRepairRuntimeIdentity() {
+  const glibc = process.platform === "linux" ? process.report.getReport().header.glibcVersionRuntime : null;
+  // A libc that this profile cannot identify is unsupported, not a default.
+  if (process.platform === "linux" && !glibc) throw new Error("metadata-repair-libc-unknown");
+  return { node: process.version, versions: { ...process.versions }, platform: process.platform, arch: process.arch,
+    resolution: { os: process.platform, cpu: process.arch,
+      libc: { family: glibc ? "glibc" : "not-applicable", version: glibc ?? null } } };
+}
+
 function fileBytesEqual(left, right) {
   if (left === null || right === null) return left === right;
   return Buffer.isBuffer(left) && Buffer.isBuffer(right) && left.equals(right);
@@ -1860,8 +1888,7 @@ export async function resolveMetadataRepairLock({ repoRoot }, {
   log = (line) => console.error(line),
 } = {}) {
   const repositoryRealpath = realpathSync(repoRoot);
-  const layout = manifestOnlyResolutionLayout(repositoryRealpath);
-  if (!layout.supported) throw new Error("metadata-repair-layout-unsupported");
+  const { layout, configs, inputPaths } = metadataRepairInputLayout(repositoryRealpath);
   // The ordinary installer supports sources outside this repair profile. Reuse
   // its target classifier, but admit only public registry specs or the file:
   // inputs already enumerated by the manifest-only layout. Inspect raw schemes
@@ -1889,10 +1916,6 @@ export async function resolveMetadataRepairLock({ repoRoot }, {
     }
     if (manifest.overrides !== undefined) inspectOverrides(manifest.overrides);
   }
-  const configs = [...new Set([".npmrc", ...layout.inputPaths
-    .filter(path => basename(path) === "package.json")
-    .map(path => join(dirname(path), ".npmrc"))])].sort();
-  const inputPaths = [...new Set([...layout.inputPaths, ...configs])].sort();
   const digest = bytes => createHash("sha256").update(bytes).digest("hex");
   const projectConfig = [];
   for (const path of inputPaths) {
@@ -1931,6 +1954,7 @@ export async function resolveMetadataRepairLock({ repoRoot }, {
     for (const path of [home, temporary, cache]) mkdirSync(path, { mode: 0o700 });
     const ownedRoot = lstatSync(attemptRoot);
     const ownedCache = lstatSync(cache);
+    receipt.attempt = { device: ownedRoot.dev, inode: ownedRoot.ino, createdAt: new Date().toISOString() };
     const userconfig = join(attemptRoot, "user.npmrc");
     const globalconfig = join(attemptRoot, "global.npmrc");
     for (const path of [userconfig, globalconfig]) writeFileSync(path, "", { flag: "wx", mode: 0o600 });
@@ -1945,8 +1969,8 @@ export async function resolveMetadataRepairLock({ repoRoot }, {
     receipt.command = { executable: node, executableSha256: digest(readFileSync(node)),
       npmCli: cli, npmCliSha256: digest(readFileSync(cli)), argv: [...argv], cwd: input.scratchRoot,
       runner: realpathSync(fileURLToPath(import.meta.url)), runnerSha256: digest(readFileSync(fileURLToPath(import.meta.url))) };
-    receipt.runtime = { node: process.version, npm: JSON.parse(readFileSync(join(dirname(cli), "../package.json"), "utf8")).version,
-      versions: { ...process.versions }, platform: process.platform, arch: process.arch };
+    receipt.runtime = { ...metadataRepairRuntimeIdentity(),
+      npm: JSON.parse(readFileSync(join(dirname(cli), "../package.json"), "utf8")).version };
     receipt.projectConfig = projectConfig;
     receipt.environment = { ...env };
     receipt.selectedInputs = [...input.snapshot].map(([path, bytes]) => ({ path,
@@ -2023,7 +2047,12 @@ export async function resolveMetadataRepairLock({ repoRoot }, {
     const output = join(input.scratchRoot, lockPath);
     if (!lstatSync(output).isFile() || lstatSync(output).isSymbolicLink()) throw new Error("metadata-repair-output-type");
     const bytes = readFileSync(output);
-    receipt.output = { path: lockPath, sha256: digest(bytes), mode: lstatSync(output).mode & 0o777 };
+    const packages = JSON.parse(bytes).packages;
+    if (!packages || typeof packages !== "object" || Array.isArray(packages)) throw new Error("metadata-repair-output-graph");
+    receipt.output = { path: lockPath, sha256: digest(bytes), mode: lstatSync(output).mode & 0o777,
+      registry: Object.entries(packages).sort(([a], [b]) => a.localeCompare(b)).map(([path, entry]) => ({
+        path, resolved: entry.resolved ?? null, integrity: entry.integrity ?? null,
+      })) };
     return { bytes, snapshot: input.snapshot, receipt };
   } finally {
     // Only this attempt's exclusively-created root is owned here. A failure is

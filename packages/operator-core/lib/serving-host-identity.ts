@@ -44,10 +44,10 @@
  * Every field is a process CONSTANT, so all three are resolved once and cached — the
  * dispatch path pays a property read, not a syscall.
  */
-// psu-launcher.mjs imports this module in bare Node, whose TypeScript support
-// strips types but does not resolve extensionless relative imports.
-import { getBuildInfo } from './build-info.ts';
-import { readProcessIdentity } from './process-identity.ts';
+// Package self-references resolve in bare Node and the declaration compiler,
+// which rejects .ts-suffixed relative imports in its input graph.
+import { getBuildInfo } from '@papercusp/operator-core/lib/build-info';
+import { readProcessIdentity } from '@papercusp/operator-core/lib/process-identity';
 
 export interface ServingHostIdentity {
   /** Logical service: `port-3070`, else `pid-<n>` when no port is resolvable. */

@@ -12,10 +12,11 @@
  * Run: npm run test:file -- packages/operator-core/lib/sync/pot-git/own-head-publish.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { mkdtemp, rm, writeFile, mkdir, readFile, access } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, mkdir, readFile, access, readdir, stat, chmod } from 'node:fs/promises';
 import { generateKeyPairSync, type KeyObject } from 'node:crypto';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { deflateSync } from 'node:zlib';
 import {
   defaultRunGit,
   ensurePotGitRepo,
@@ -52,12 +53,18 @@ describe('own-head publish (G-2a: worktree head → own namespace, guarded)', ()
   let root: string;
   let worktree: string;
   let oldRoot: string | undefined;
+  let oldCanonicalRoot: string | undefined;
   const dev = devicePubkey();
 
   beforeAll(async () => {
     root = await mkdtemp(join(tmpdir(), 'hgohp-'));
     oldRoot = process.env.PAPERCUSP_HIVE_GIT_ROOT;
+    oldCanonicalRoot = process.env.PAPERCUSP_POT_GIT_ROOT;
     process.env.PAPERCUSP_HIVE_GIT_ROOT = join(root, 'store');
+    // The canonical variable outranks the legacy alias. Pin both before any
+    // fixture writes, including when the invoking runtime supplies a store.
+    process.env.PAPERCUSP_POT_GIT_ROOT = join(root, 'store');
+    expect(hiveGitRepoPath(HIVE, REPO_KEY)).toBe(join(root, 'store', HIVE, `${REPO_KEY}.git`));
     worktree = join(root, 'worktree');
     await git(['init', '-q', '-b', BRANCH, worktree], root);
   });
@@ -65,6 +72,8 @@ describe('own-head publish (G-2a: worktree head → own namespace, guarded)', ()
   afterAll(async () => {
     if (oldRoot === undefined) delete process.env.PAPERCUSP_HIVE_GIT_ROOT;
     else process.env.PAPERCUSP_HIVE_GIT_ROOT = oldRoot;
+    if (oldCanonicalRoot === undefined) delete process.env.PAPERCUSP_POT_GIT_ROOT;
+    else process.env.PAPERCUSP_POT_GIT_ROOT = oldCanonicalRoot;
     await rm(root, { recursive: true, force: true });
   });
 
@@ -140,6 +149,66 @@ describe('own-head publish (G-2a: worktree head → own namespace, guarded)', ()
     expect(recovered.changed).toBe(true);
     expect(transfers).toBe(1);
     expect(await readNamespaceRef(repoPath, dev, `refs/heads/${BRANCH}`)).toBe(recovered.headSha);
+  });
+
+  it.each(['blob', 'tree', 'commit'])('recovers a zero-byte %s only from verified source bytes and preserves its inode', async type => {
+    const key = `recover-${type}`;
+    const source = join(root, key);
+    await git(['init', '-q', '-b', BRANCH, source], root);
+    const head = await commitFile(source, 'a.txt', 'recoverable\n', key);
+    const oid = await git(['rev-parse', type === 'blob' ? 'HEAD:a.txt' : type === 'tree' ? 'HEAD^{tree}' : 'HEAD'], source);
+    const repoPath = await ensurePotGitRepo(HIVE, key);
+    const directory = join(repoPath, 'objects', oid.slice(0, 2));
+    const target = join(directory, oid.slice(2));
+    await mkdir(directory, { recursive: true });
+    await writeFile(target, '');
+    const failedInode = (await stat(target)).ino;
+    const sourceBytes = await readFile(join(source, '.git', 'objects', oid.slice(0, 2), oid.slice(2)));
+    const result = await runOwnHeadPublishTick({ potHomeSlug: HIVE, repoKey: key,
+      worktreePath: source, branch: BRANCH, devicePubkeyBase64: dev });
+    expect(result.errors).toEqual([]);
+    expect(result.changed).toBe(true);
+    expect(result.recoveredObjects).toEqual([oid]);
+    expect(await readFile(target)).toEqual(sourceBytes);
+    expect(await git(['cat-file', '-t', oid], repoPath)).toBe(type);
+    expect(await readNamespaceRef(repoPath, dev, `refs/heads/${BRANCH}`)).toBe(head);
+    const evidence = join(repoPath, 'papercusp-corrupt-objects');
+    const backups = await readdir(evidence);
+    expect(backups).toHaveLength(1);
+    expect(backups[0]).toMatch(new RegExp(`^${oid}-.*[.]zero$`));
+    expect(await readFile(join(evidence, backups[0]!))).toHaveLength(0);
+    expect((await stat(join(evidence, backups[0]!))).ino).toBe(failedInode);
+  });
+
+  it.each(['wrong-object', 'invalid-compression'])('refuses recovery from %s source bytes without transferring or overwriting evidence', async corruption => {
+    const key = `reject-${corruption}`;
+    const source = join(root, key);
+    await git(['init', '-q', '-b', BRANCH, source], root);
+    await commitFile(source, 'a.txt', 'original\n', key);
+    const oid = await git(['rev-parse', 'HEAD:a.txt'], source);
+    const sourcePath = join(source, '.git', 'objects', oid.slice(0, 2), oid.slice(2));
+    await chmod(sourcePath, 0o644);
+    await writeFile(sourcePath, corruption === 'wrong-object' ? deflateSync(Buffer.from('blob 4\0fake')) : Buffer.from('invalid zlib'));
+    const repoPath = await ensurePotGitRepo(HIVE, key);
+    const directory = join(repoPath, 'objects', oid.slice(0, 2));
+    const target = join(directory, oid.slice(2));
+    await mkdir(directory, { recursive: true });
+    await writeFile(target, '');
+    const failedInode = (await stat(target)).ino;
+    let transfers = 0;
+    const runGit: typeof defaultRunGit = async (args, cwd, options) => {
+      if (args[0] === 'fetch') transfers++;
+      return defaultRunGit(args, cwd, options);
+    };
+    const result = await runOwnHeadPublishTick({ potHomeSlug: HIVE, repoKey: key,
+      worktreePath: source, branch: BRANCH, devicePubkeyBase64: dev, runGit });
+    expect(result.changed).toBe(false);
+    expect(result.recoveredObjects).toBeUndefined();
+    expect(result.errors).toEqual([`own-head Git object database corrupt: zero-byte loose object(s): ${oid}; repair required before fetch`]);
+    expect(transfers).toBe(0);
+    expect(await readFile(target)).toHaveLength(0);
+    expect((await stat(target)).ino).toBe(failedInode);
+    expect(await listNamespaces(repoPath)).toHaveLength(0);
   });
 
   it('an unmoved head is a free changed:false no-op', async () => {

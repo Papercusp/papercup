@@ -105,7 +105,7 @@ describe('metadata publication population', () => {
       'transplantInstallerSeedSnapshot:update-ref', 'transplantInstallerSeedSnapshot:reset --hard',
       'transplantInstallerSeedSnapshot:rebase --rebase-merges --onto', 'transplantInstallerSeedSnapshot:rebase --abort',
       'publishPrivateIndexCommit:commit-tree', 'publishPrivateIndexCommit:update-ref -m HEAD',
-      'captureGitSyncCandidate:update-ref', 'publishGitSyncCandidate:update-ref',
+      'retain:update-ref', 'publishGitSyncCandidate:update-ref',
       'preserveVanishedStagedSourcesPass:update-ref',
       'bridgeContainedCommitIntoCurrentBranch:merge --no-edit -s ours', 'bridgeContainedCommitIntoCurrentBranch:merge --abort',
       'reconcileAndPushOneRepo:merge --no-edit', 'reconcileAndPushOneRepo:merge --abort', 'reconcileAndPushOneRepo:merge --abort',
@@ -113,7 +113,7 @@ describe('metadata publication population', () => {
     ].sort());
     const dispositions: Record<string, string> = {
       publishPrivateIndexCommit: 'P001 private publication: exact initial/final tree and CAS probes',
-      captureGitSyncCandidate: 'non-publication: source custody ref',
+      retain: 'non-publication: captureGitSyncCandidate retains its existing source custody ref for v2/v3',
       publishGitSyncCandidate: 'non-publication: retained candidate commit ref; HEAD uses private publisher',
       preserveVanishedStagedSourcesPass: 'non-publication: vanished-source custody ref',
       ensureBranchAttachedForCommit: 'P003 branch attachment preserves the selected tree: existing/new/racing branch controls',

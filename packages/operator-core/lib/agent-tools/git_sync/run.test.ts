@@ -47,6 +47,94 @@ afterEach(() => {
 });
 
 describe('git-sync:run', () => {
+  const repairMetadata = { base: 'a'.repeat(40), expectedPendingLockSha256: 'b'.repeat(64),
+    requestId: 'selected-parent-repair', generation: 1 };
+
+  it('keeps metadata repair inputs closed and requires an observed pending-lock identity', async () => {
+    const { default: tool } = await import('./run');
+    expect(tool.args.safeParse({ repairMetadata }).success).toBe(true);
+    expect(tool.args.safeParse({ repairMetadata: { ...repairMetadata, expectedPendingLockSha256: null } }).success).toBe(true);
+    for (const invalid of [{ ...repairMetadata, path: '/tmp/arbitrary' }, { ...repairMetadata, bytes: 'payload' },
+      { ...repairMetadata, base: 'HEAD' }, { ...repairMetadata, expectedPendingLockSha256: undefined },
+      { ...repairMetadata, generation: 0 }, { ...repairMetadata, generation: Number.MAX_SAFE_INTEGER + 1 }]) {
+      expect(tool.args.safeParse({ repairMetadata: invalid }).success).toBe(false);
+    }
+  });
+
+  it('refuses a metadata repair without an explicit execution target before firing', async () => {
+    const fireSpy = vi.fn();
+    vi.doMock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercusp' }));
+    vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
+    vi.doMock('../../harness/git-sync/git-sync-action', () => ({ fireGitSyncNow: fireSpy }));
+    const { default: tool } = await import('./run');
+    expect(parse(await tool.handler({ repairMetadata }, MAKE_CTX()) as never))
+      .toMatchObject({ ok: false, fired: false, reason: 'metadata-repair-target-required' });
+    expect(fireSpy).not.toHaveBeenCalled();
+  });
+
+  it('forwards the frozen typed repair exactly once to the existing action on the exact worker', async () => {
+    const fireSpy = vi.fn(async (..._args: unknown[]) => undefined);
+    vi.doMock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercusp' }));
+    vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
+    vi.doMock('../../operator-notes', () => ({ projectDirForSlug: async () => null }));
+    vi.doMock('../../harness/git-sync/git-sync-action', () => ({ fireGitSyncNow: fireSpy }));
+    vi.doMock('../../serving-build', () => ({ getServingBuild: () => 'staging', sameMcpExecutionTarget:
+      (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b) }));
+    vi.doMock('../../serving-host-identity', () => ({ getServingHostIdentity: () => ({ buildSha: 'c'.repeat(40) }) }));
+    vi.doMock('../../module-repo-root', () => ({ moduleRepoRoot: () => '/selected' }));
+    const { default: tool } = await import('./run');
+    const target = { environment: 'staging' as const, buildSha: 'c'.repeat(40), installRoot: '/selected' };
+    await tool.handler({ repairMetadata, target }, MAKE_CTX());
+    expect(fireSpy).toHaveBeenCalledExactlyOnceWith('papercusp', 'default', null, repairMetadata);
+    expect(Object.isFrozen(fireSpy.mock.calls[0]![3])).toBe(true);
+  });
+
+  it('previews a metadata repair on a request-only host without firing it', async () => {
+    process.env.PAPERCUSP_BACKGROUND_WORKERS = '0';
+    const fireSpy = vi.fn();
+    vi.doMock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercusp' }));
+    vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
+    vi.doMock('../../operator-notes', () => ({ projectDirForSlug: async () => null }));
+    vi.doMock('../../harness/git-sync/git-sync-action', () => ({ fireGitSyncNow: fireSpy }));
+    const { default: tool } = await import('./run');
+    expect(parse(await tool.handler({ repairMetadata, dryRun: true }, MAKE_CTX()) as never))
+      .toMatchObject({ ok: true, fired: false, status: 'preview', repair_metadata: repairMetadata });
+    expect(fireSpy).not.toHaveBeenCalled();
+  });
+
+  it.each(['committed', 'already-published', 'persistence-error'] as const)(
+    'reports metadata repair %s separately from current HEAD and egress', async phase => {
+      const commit = 'e'.repeat(40);
+      const head = 'd'.repeat(40);
+      const receipt = { ...repairMetadata, custodyRef: 'refs/papercusp/source-custody/test',
+        commit, tree: 'f'.repeat(40), publication: phase === 'already-published' ? phase : 'committed',
+        remoteEgressConfirmed: false, routineMetadataRecorded: phase !== 'persistence-error' };
+      const outcome = { status: phase === 'persistence-error' ? 'error' : 'synced', headSha: head,
+        committedCount: phase === 'already-published' ? 0 : 1, pushed: [], merged: [],
+        ...(phase === 'already-published' ? {} : { localCommitSha: commit }),
+        ...(phase === 'persistence-error' ? { errors: [{ scope: 'superproject', message: 'outcome-persistence' }] } : {}),
+        metadataRepair: receipt };
+      const fireSpy = vi.fn(async () => outcome);
+      vi.doMock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercusp' }));
+      vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
+      vi.doMock('../../operator-notes', () => ({ projectDirForSlug: async () => null }));
+      vi.doMock('../../harness/git-sync/git-sync-action', () => ({ fireGitSyncNow: fireSpy }));
+      vi.doMock('../../serving-build', () => ({ getServingBuild: () => 'staging', sameMcpExecutionTarget:
+        (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b) }));
+      vi.doMock('../../serving-host-identity', () => ({ getServingHostIdentity: () => ({ buildSha: 'c'.repeat(40) }) }));
+      vi.doMock('../../module-repo-root', () => ({ moduleRepoRoot: () => '/selected' }));
+      const { default: tool } = await import('./run');
+      const result = parse(await tool.handler({ repairMetadata,
+        target: { environment: 'staging', buildSha: 'c'.repeat(40), installRoot: '/selected' } }, MAKE_CTX()) as never);
+      expect(result).toMatchObject({ status: phase === 'persistence-error' ? 'error' : 'committed',
+        outcome: { metadataRepair: receipt, headSha: head } });
+      expect(result.note).toContain(`at commit ${commit}; current HEAD ${head}`);
+      expect(result.note).toContain('Remote egress is unconfirmed');
+      expect(result.note).toContain(phase === 'already-published' ? 'already-published' : 'committed');
+      if (phase === 'persistence-error') expect(result.note).toContain('Operation reported errors');
+      expect(fireSpy).toHaveBeenCalledTimes(1);
+    });
+
   it('checks the exact target again at the worker before firing', async () => {
     const fireSpy = vi.fn(async () => undefined);
     vi.doMock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercusp' }));

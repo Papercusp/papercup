@@ -18,9 +18,10 @@
  * Both halves are pinned against the REAL compiler options read from the config.
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import ts from 'typescript';
 import { afterAll, describe, expect, it } from 'vitest';
 
@@ -98,6 +99,31 @@ describe('tsconfig.declarations.json — imports in an input graph', () => {
     );
     expect(messages).toEqual([]);
   });
+
+  it('keeps serving-host identity loadable by bare Node and free of TS5097', () => {
+    const input = 'packages/operator-core/lib/serving-host-identity.ts';
+    const moduleUrl = pathToFileURL(join(ROOT, input)).href;
+    const output = execFileSync(process.execPath, ['--input-type=module', '--eval', [
+      `const { resolveServingHostIdentity } = await import(${JSON.stringify(moduleUrl)});`,
+      'process.stdout.write(JSON.stringify(resolveServingHostIdentity({',
+      '  env: {}, pid: 123, processId: () => null, buildSha: () => null,',
+      '})));',
+    ].join('\n')], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      env: { ...process.env, NODE_OPTIONS: '' },
+      timeout: 30_000,
+    });
+    expect(JSON.parse(output)).toEqual({ host: 'pid-123', processId: null, buildSha: null });
+
+    const program = programForInput(input);
+    expect(program.getSourceFile(resolve(ROOT, 'packages/operator-core/lib/build-info.ts'))).toBeDefined();
+    expect(program.getSourceFile(resolve(ROOT, 'packages/operator-core/lib/process-identity.ts'))).toBeDefined();
+    const extensionImportDiagnostics = ts.getPreEmitDiagnostics(program)
+      .filter((diagnostic) => diagnostic.code === TS_EXTENSION_IMPORT)
+      .map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n'));
+    expect(extensionImportDiagnostics).toEqual([]);
+  }, 120_000);
 
   it('keeps source-preview’s production declaration graph free of TS5097', () => {
     const program = programForInput('scripts/source-preview.mjs');

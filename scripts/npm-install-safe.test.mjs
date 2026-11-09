@@ -23,9 +23,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   assertPatchPostimageGitSource,
+  assertWorkspaceLockInspection,
   cacheVerifyArgs,
   dependencySelectionArgs,
   installLockWaitReporter,
+  inspectWorkspaceLockSnapshot,
   lockfileDepFlagOnlyChanges,
   main,
   publishDependencyGeneration,
@@ -114,6 +116,17 @@ test("metadata repair resolution owns an empty per-attempt cache and excludes am
     assert.equal(result.receipt.cleanup.removed, true);
     assert.equal(existsSync(result.receipt.attemptRoot), false);
     assert.equal(result.receipt.output.path, "package-lock.json");
+    assert.equal(result.receipt.runtime.node, process.version);
+    assert.deepEqual(result.receipt.runtime.versions, process.versions);
+    assert.deepEqual(result.receipt.runtime.resolution, { os: process.platform, cpu: process.arch,
+      libc: { family: process.platform === "linux" ? "glibc" : "not-applicable",
+        version: process.platform === "linux" ? process.report.getReport().header.glibcVersionRuntime : null } });
+    assert.ok(Number.isInteger(result.receipt.attempt.device));
+    assert.ok(Number.isInteger(result.receipt.attempt.inode));
+    assert.ok(Date.parse(result.receipt.attempt.createdAt) <= Date.parse(result.receipt.cache.checkedAt));
+    assert.deepEqual(result.receipt.output.registry, Object.entries(JSON.parse(result.bytes).packages)
+      .sort(([a], [b]) => a.localeCompare(b)).map(([path, entry]) => ({ path,
+        resolved: entry.resolved ?? null, integrity: entry.integrity ?? null })));
     assert.equal(JSON.parse(result.bytes).packages["packages/one"].version, "1.0.0");
     assert.ok(result.receipt.selectedInputs.some(row => row.path === "packages/one/.npmrc" && row.sha256 === null));
   }
@@ -1023,6 +1036,49 @@ test(`fallback ${command} with installed ${version} ${reserve ? "reserves repair
   }
 });
 }
+
+test("recursive lock refusal identifies each selected lockfile, manifest and controlling gitlink", () => {
+  const files = new Map(Object.entries({
+    "package.json": { private: true, workspaces: ["apps/*", "libs/*"] },
+    "package-lock.json": { lockfileVersion: 3, packages: {
+      "": {},
+      "apps/app": { dependencies: { next: "2.0.0" } },
+      "libs/one": { devDependencies: { typescript: "6.0.0" } },
+      "libs/two": { devDependencies: { typescript: "6.0.0" } },
+    } },
+    "apps/app/package.json": { dependencies: { next: "1.0.0" } },
+    "libs/one/package.json": { devDependencies: { typescript: "6.0.0" } },
+    "libs/one/package-lock.json": { lockfileVersion: 3, packages: {
+      "": { devDependencies: { typescript: "5.0.0" } },
+    } },
+    "libs/two/package.json": { devDependencies: { typescript: "6.0.0" } },
+    "libs/two/package-lock.json": { lockfileVersion: 3, packages: {
+      "": { devDependencies: { typescript: "6.0.0" } },
+    } },
+    "libs/two/npm-shrinkwrap.json": { lockfileVersion: 3, packages: {
+      "": { devDependencies: { typescript: "4.0.0" } },
+    } },
+  }).map(([path, value]) => [path, JSON.stringify(value)]));
+  const inputs = ["apps/app", "libs/one", "libs/two"].map(path => ({
+    kind: "gitlink", path, gitmodules: ".gitmodules",
+  }));
+  const inspection = inspectWorkspaceLockSnapshot(join(tmpdir(), "selected-lock-diagnostics"), files, inputs);
+  assert.equal(inspection.ok, false);
+  assert.deepEqual(inspection.errors, []);
+  assert.equal(inspection.mismatches.length, 3);
+  assert.throws(() => assertWorkspaceLockInspection(inspection), error => {
+    assert.match(error.message, /^NPM_INSTALL_SAFE_WORKSPACE_LOCK_DRIFT: 3 lockfile field\(s\)/);
+    assert.ok(error.message.includes("apps/app dependencies [lockfile=package-lock.json; manifest=apps/app/package.json; controllingPaths=.gitmodules, apps/app]"));
+    for (const [workspace, lockfile] of [["libs/one", "package-lock.json"], ["libs/two", "npm-shrinkwrap.json"]]) {
+      assert.ok(error.message.includes(`${workspace} devDependencies [lockfile=${workspace}/${lockfile}; manifest=${workspace}/package.json; controllingPaths=.gitmodules, ${workspace}]`));
+    }
+    assert.ok(!error.message.includes("root lockfile field"));
+    assert.ok(!error.message.includes("<root> devDependencies"));
+    assert.ok(!error.message.includes("lockfile=libs/two/package-lock.json"));
+    assert.match(error.message, /reconcile the named lockfiles with their package manifests/);
+    return true;
+  });
+});
 
 test("test:affected preflight refuses stale workspace lock metadata before launching tests", async () => {
   const fixture = createManifestResolutionFixture();
