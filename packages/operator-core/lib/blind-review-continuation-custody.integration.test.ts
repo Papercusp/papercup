@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createHash, randomUUID } from 'node:crypto';
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
@@ -30,7 +31,9 @@ import { allSessionsLiveResolver } from '../test/_admission-ledger-fixture';
 import { decideLegacyAdoption, LEGACY_ADOPTION_ACTION, lockLegacyAdoptionAuthorization,
   reserveLegacyAdoption, retainLegacyAdoptionHuman, validateLegacyAdoptionRequest,
   readLegacyAdoptionIndependence, readLegacyAdoptionHistoryAndEffects, readLegacyAdoptionRuntimeAbsence,
-  type LegacyAdoptionPayload } from './blind-review-continuation-custody';
+  type LegacyAdoptionEvidence, type LegacyAdoptionPayload } from './blind-review-continuation-custody';
+import { readCommittedReaderLegacyAdoptionFixtureEvidence } from '../test/private-http-workspace-preflight';
+import { verifierSourceFiles } from './verifier-source';
 import { applyGovernancePolicyChange, chainRevision } from './governance-policy/control';
 import { grantDelegation, recordBootstrapDelegation, revokeDelegation } from './governance-policy/authority';
 import { loadChainForWorkspace, upsertLayer } from './governance-policy/store';
@@ -38,6 +41,52 @@ import { decideSensitiveAction, executeSensitiveAction, executeSensitiveActionIn
   sensitivePayloadHash } from './governance-policy/sensitive-action';
 
 let fx: PlanPgFixture;
+const originalFixtureRoots: string[] = [];
+type RetainedAdoptionFixture = Parameters<typeof readCommittedReaderLegacyAdoptionFixtureEvidence>[2];
+
+/** Synthetic source/host originals exercise the adapter against real private PG.
+ * These records do not attest an observed API host or independent qualification. */
+function retainedAdoptionFixture(): RetainedAdoptionFixture {
+  const parent = mkdtempSync(join(tmpdir(), 'legacy-adapter-pg-'));
+  originalFixtureRoots.push(parent);
+  const root = join(parent, 'source'); mkdirSync(root);
+  const path = 'fixture.ts', sourceBytes = Buffer.from('// synthetic adapter fixture only\n');
+  writeFileSync(join(root, path), sourceBytes);
+  mkdirSync(join(root, 'node_modules'));
+  const hash = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex');
+  const retain = (name: string, record: unknown) => {
+    const bytes = Buffer.from(JSON.stringify(record)), path = join(parent, name + '.json');
+    writeFileSync(path, bytes, { flag: 'wx', mode: 0o600 });
+    return { path, sha256: hash(bytes) };
+  };
+  const identity = { sourceCommit: 'a'.repeat(40), runId: randomUUID(),
+    process: { pid: 42, identity: 'synthetic-ended-worker' } };
+  const source = { schemaVersion: 'verifier-source-v1', sourceCommit: identity.sourceCommit,
+    testedInputs: [{ path, sha256: hash(sourceBytes) }], files: verifierSourceFiles(root), submodules: [] };
+  writeFileSync(join(root, '.verifier-source.json'), JSON.stringify(source));
+  const inputs = { sourceCommit: identity.sourceCommit, phase: 'planned', testPaths: [path],
+    helperPaths: [path], configPaths: [path], executedImports: [path], copiedSources: [], copiedArtifacts: [],
+    dependencyFiles: [], externalResolutions: {}, schema: { 'fixture.column': hash('text') },
+    environment: { FIXTURE_ONLY: hash('1') }, omitted: [], opaque: [] };
+  const sourceReceipt = retain('source', source), inputReceipt = retain('inputs', inputs);
+  const values = { source, dependencies: { files: inputs.dependencyFiles, externalResolutions: {} },
+    config: inputs.configPaths, imports: inputs.executedImports, schema: inputs.schema, environment: inputs.environment };
+  const observations = retain('observations', { ...identity, sourceRoot: root, sourceReceipt, inputReceipt,
+    observations: Object.fromEntries(Object.entries(values).map(([key, value]) => [key, { ...identity, value }])),
+    omitted: [], opaque: [] });
+  const handoff = { root, selectedCommit: identity.sourceCommit, sourceReceiptPath: sourceReceipt.path,
+    sourceReceiptSha256: sourceReceipt.sha256, inputReceiptPath: inputReceipt.path,
+    inputReceiptSha256: inputReceipt.sha256, observationReceiptPath: observations.path,
+    observationReceiptSha256: observations.sha256 };
+  const record = { ...identity, observationReceiptSha256: observations.sha256, omitted: [], opaque: [] };
+  const terminal = retain('terminal', { ...record, state: 'complete', exitCode: 0,
+    signalCode: null, cleanupComplete: true });
+  const keys = ['apiManifestHash', 'launcherManifestHash', 'plannedHostManifestHash',
+    'executedInputsHash', 'dependencyManifestHash'] as const;
+  const manifests = Object.fromEntries(keys.map(key => [key, retain(key, { ...record,
+    scope: 'fixture-only', qualificationKey: key, terminalReceipt: terminal })])) as RetainedAdoptionFixture['manifests'];
+  return { original: { identity, handoff }, manifests, terminal };
+}
 const migrationName = '1623-blind-review-continuation-custody.sql.DRAFT';
 const migrationBytes = readFileSync(new URL('../../../libs/papercusp/libs/db/sql/' + migrationName, import.meta.url));
 const migration = migrationBytes.toString('utf8');
@@ -84,6 +133,7 @@ beforeAll(async () => {
     new URL('../../../libs/papercusp/libs/db/sql/1567-blind-review-replacement-attempts.sql', import.meta.url), 'utf8')));
 }, 120_000);
 afterAll(async () => {
+  for (const path of originalFixtureRoots.splice(0)) rmSync(path, { recursive: true, force: true });
   if (!fx) return;
   try {
     await fx.dispose();
@@ -163,7 +213,7 @@ async function fixture() {
 
 describe('D011 legacy adoption authenticated request and policy adapter, real PG', () => {
   let policy: LegacyAdoptionPayload['policy'];
-  async function adoption(forFence = false) {
+  async function adoption(forFence = false, retained?: RetainedAdoptionFixture) {
     const f = await fixture(), ws = fx.workspaceId, key = randomUUID();
     if (!policy) {
       const root = 'legacy-org-' + key, leaf = 'legacy-ws-' + key;
@@ -204,9 +254,11 @@ describe('D011 legacy adoption authenticated request and policy adapter, real PG
       bootstrapExpiresAt: new Date(Date.now() + 600_000).toISOString(), revocation: 'permanent-root-cutoff-no-reopen' };
     // This producer exercises the actual PG fence protocol. It deliberately
     // supplies NO claim of canonical independence or source qualification.
-    const evidence = { bindingHistory: { fixtureOnly: true, bindingId: f.input.bindingId },
+    const evidence: LegacyAdoptionEvidence = { bindingHistory: { fixtureOnly: true, bindingId: f.input.bindingId },
       outstandingEffects: { fixtureOnly: true, tasks: [] }, independence: { fixtureOnly: true },
       qualification: payload.qualification };
+    if (retained) payload.qualification = evidence.qualification = Object.fromEntries(
+      Object.entries(retained.manifests).map(([key, pin]) => [key, pin.sha256])) as LegacyAdoptionPayload['qualification'];
     if (forFence) {
       const b = (await f.read())!;
       const [revision] = await fx.admin`SELECT seq, content_hash FROM harness_shared.plan_revisions
@@ -225,6 +277,11 @@ describe('D011 legacy adoption authenticated request and policy adapter, real PG
       payload.independenceEvidenceHash = sensitivePayloadHash(evidence.independence);
       await fx.admin`UPDATE harness_shared.plan_blind_review_sessions SET status = 'ready',
         resume_lease_id = NULL, resume_lease_expires_at = NULL WHERE id = ${b.id}`;
+      if (retained) {
+        Object.assign(evidence, await f.inScope(tx => readLegacyAdoptionHistoryAndEffects(tx, payload)));
+        payload.bindingHistoryHash = sensitivePayloadHash(evidence.bindingHistory);
+        payload.outstandingEffectsHash = sensitivePayloadHash(evidence.outstandingEffects);
+      }
     }
     const request = await prepareSensitiveAction({ workspaceId: ws, actionKind: LEGACY_ADOPTION_ACTION,
       ...policy, payload, simulation: { fixtureOnly: true }, preparedBy: preparer, reason: 'isolated policy/provenance control' }, fx.admin);
@@ -242,7 +299,7 @@ describe('D011 legacy adoption authenticated request and policy adapter, real PG
     };
     const reserveInput = { workspaceId: ws, bindingId: f.input.bindingId,
       requestId: request.requestId, expectedPayloadHash: request.payloadHash };
-    const reserve = async (readEvidence = async () => evidence) => reserveLegacyAdoption(reserveInput,
+    const reserve = async (readEvidence: NonNullable<Parameters<typeof reserveLegacyAdoption>[2]>['readEvidence'] = async () => evidence) => reserveLegacyAdoption(reserveInput,
       await retainLegacyAdoptionHuman(headers, ws), { sql: fx.admin as never, readEvidence });
     const roots = () => fx.admin`SELECT * FROM harness_shared.blind_review_continuation_custody
       WHERE workspace_id = ${ws} AND binding_id = ${f.input.bindingId} ORDER BY id`;
@@ -542,6 +599,52 @@ describe('D011 legacy adoption authenticated request and policy adapter, real PG
     expect(await f.roots()).toHaveLength(0);
     expect((await getSensitiveAction(f.request.requestId, fx.admin))!.status).toBe('approved');
   });
+
+  it('uses the five-manifest fixture adapter inside the real custody transaction with current PG history and effects', async () => {
+    const retained = retainedAdoptionFixture(), f = await adoption(true, retained);
+    await f.approve();
+    let calls = 0;
+    const read: NonNullable<Parameters<typeof reserveLegacyAdoption>[2]>['readEvidence'] = (tx, payload) =>
+      readCommittedReaderLegacyAdoptionFixtureEvidence(tx, payload, retained, async (sameTx, samePayload) => {
+        calls++;
+        expect(sameTx).toBe(tx);
+        return { ...await readLegacyAdoptionHistoryAndEffects(sameTx, samePayload),
+          independence: { fixtureOnly: true } };
+      });
+    expect(await f.roots()).toHaveLength(0);
+    const result = await f.reserve(read);
+    expect(result.state).toBe('fenced');
+    expect(calls).toBe(1);
+    expect(await f.roots()).toHaveLength(1);
+    expect(await f.reserve(read)).toEqual(result);
+    expect(calls).toBe(1);
+  });
+
+  it.each(['manifest', 'original', 'dependency', 'current-effects'] as const)(
+    'rolls back the real custody transaction when fixture %s evidence drifts', async changed => {
+      const retained = retainedAdoptionFixture(), f = await adoption(true, retained);
+      // Prove these exact originals and live PG inputs qualify before mutation.
+      await f.inScope(tx => readCommittedReaderLegacyAdoptionFixtureEvidence(tx, f.payload, retained,
+        async (sameTx, payload) => ({ ...await readLegacyAdoptionHistoryAndEffects(sameTx, payload),
+          independence: { fixtureOnly: true } })));
+      await f.approve();
+      const bindingBefore = await f.read();
+      await expect(f.reserve((tx, payload) => readCommittedReaderLegacyAdoptionFixtureEvidence(
+        tx, payload, retained, async (sameTx, samePayload) => {
+          const current = await readLegacyAdoptionHistoryAndEffects(sameTx, samePayload);
+          if (changed === 'manifest') appendFileSync(retained.manifests.apiManifestHash.path, '\n');
+          if (changed === 'original') appendFileSync(retained.original.handoff.observationReceiptPath, '\n');
+          if (changed === 'dependency') writeFileSync(join(retained.original.handoff.root, 'node_modules/changed.js'), 'drift');
+          return { ...current, ...(changed === 'current-effects' ? { outstandingEffects: { changed: true } } : {}),
+            independence: { fixtureOnly: true } };
+        }))).rejects.toThrow(/changed|differs/);
+      expect(await f.roots()).toHaveLength(0);
+      expect(await f.read()).toEqual(bindingBefore);
+      expect((await getSensitiveAction(f.request.requestId, fx.admin))!.status)
+        .toBe(changed === 'current-effects' ? 'cancelled' : 'approved');
+      expect(await fx.admin`SELECT idempotency_key FROM harness_shared.agent_launch_idempotency
+        WHERE workspace_id = ${fx.workspaceId} AND idempotency_key = ${'bootstrap-su:' + f.payload.bootstrapKey}`).toHaveLength(0);
+    });
 
   it.each(['bindingHistory', 'outstandingEffects', 'independence', 'qualification'] as const)(
     'cancels stale %s evidence without committing a root or recruiter lease', async field => {

@@ -11,7 +11,8 @@ import type { Plugin } from 'esbuild';
 import { parse as parseToml } from '@iarna/toml';
 import { classifyHttpError } from '@papercusp/papercusp-shared/agent';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
-import { readConfigurationSnapshot, type ConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
+import { readConfigurationSnapshot, readConfigurationReadObservation,
+  type ConfigurationSnapshot, type ConfigurationReadObservation } from '@papercusp/test-config/configuration-snapshot';
 import { CODEX_REFUSAL_BODY_MAX_BYTES, codexModelRefusalDetail, isCodexModelRefusal } from '../lib/inference-gateway/codex-model-refusals';
 import { presentedSecretsFromHeaders, scrubErrorText } from '../lib/inference-gateway/error-body-scrub';
 import { ensureWorkspaceEntry, isKnownWorkspace } from '../lib/workspace-registry';
@@ -20,6 +21,8 @@ import { readVerifierSourceReceiptSync, verifierSourceFiles, type VerifierSource
 import { linuxProcStateFromStat, linuxStartTicksFromProcStat, readProcessIdentity } from '../lib/process-identity';
 import type { CommittedReaderObservationCohort, CommittedReaderObservationIdentity,
   CommittedReaderPreparationHandoff } from './isolated-integration-proof';
+import type { LegacyAdoptionEvidence, LegacyAdoptionPayload,
+  readLegacyAdoptionHistoryAndEffects } from '../lib/blind-review-continuation-custody';
 // @ts-ignore -- reuse the maintained JS router's watchdog policy, as isolated-integration-proof does.
 import { decideWatchdogExpiry } from '../../../scripts/lib/batch-watchdog.mjs';
 // @ts-ignore -- reuse install:safe's maintained direct-dependency range detector.
@@ -931,6 +934,69 @@ export async function produceCommittedReaderOriginalPreparation(o: {
   return qualifyCommittedReaderCallerContract({ ...o, original: o.original });
 }
 
+/** Fixture consumer of independently pinned records, never a canonical producer
+ * or a production admission grant. In particular this does not install the
+ * missing HTTP readEvidence dependency. Keep the transaction supplied by the
+ * custody caller; recheck originals after the current ledger/host read waits. */
+export async function readCommittedReaderLegacyAdoptionFixtureEvidence(
+  tx: Parameters<typeof readLegacyAdoptionHistoryAndEffects>[0], payload: LegacyAdoptionPayload,
+  retained: {
+    original: { handoff: CommittedReaderPreparationHandoff; identity: CommittedReaderObservationIdentity };
+    manifests: Record<keyof LegacyAdoptionPayload['qualification'], { path: string; sha256: string }>;
+    terminal: { path: string; sha256: string };
+  },
+  readCurrent: (tx: Parameters<typeof readLegacyAdoptionHistoryAndEffects>[0], payload: LegacyAdoptionPayload)
+    => Promise<Omit<LegacyAdoptionEvidence, 'qualification'>>,
+): Promise<LegacyAdoptionEvidence> {
+  assert.equal(typeof (tx as unknown as { savepoint?: unknown })?.savepoint, 'function',
+    'Fixture evidence requires the custody transaction');
+  const selected = structuredClone(retained), request = structuredClone(payload);
+  const original = qualifyCommittedReaderOriginalPreparation(selected.original.handoff, selected.original.identity);
+  const pins: Array<{ path: string; bytes: Buffer }> = [];
+  const read = (pin: { path: string; sha256: string }) => {
+    assert.match(pin.sha256, /^[a-f0-9]{64}$/, 'Retained fixture receipt digest required');
+    const bytes = readFileSync(pin.path);
+    assert.ok(bytes.length > 0 && bytes.length <= 2 * 1024 * 1024, 'Retained fixture receipt size invalid');
+    assert.equal(digestBytes(bytes), pin.sha256, 'Retained fixture receipt changed');
+    pins.push({ path: pin.path, bytes });
+    const record = JSON.parse(String(bytes));
+    assert.deepEqual({ sourceCommit: record.sourceCommit, runId: record.runId, process: record.process },
+      selected.original.identity, 'Retained fixture cohort identity differs');
+    assert.equal(record.observationReceiptSha256, selected.original.handoff.observationReceiptSha256,
+      'Retained fixture observation receipt differs');
+    assert.deepEqual(record.omitted, [], 'Retained fixture observation incomplete');
+    assert.deepEqual(record.opaque, [], 'Retained fixture observation opaque');
+    return record;
+  };
+  const terminal = read(selected.terminal);
+  assert.ok(terminal.state === 'complete' && terminal.exitCode === 0 && terminal.signalCode === null
+    && terminal.cleanupComplete === true, 'Retained fixture terminal outcome incomplete or failed');
+  assert.notEqual(readProcessIdentity(selected.original.identity.process.pid), selected.original.identity.process.identity,
+    'Original fixture worker still alive');
+  const keys = ['apiManifestHash', 'launcherManifestHash', 'plannedHostManifestHash',
+    'executedInputsHash', 'dependencyManifestHash'] as const;
+  assert.deepEqual(Object.keys(selected.manifests).sort(), [...keys].sort(), 'Exact five fixture manifests required');
+  const qualification = {} as LegacyAdoptionPayload['qualification'];
+  for (const key of keys) {
+    const pin = selected.manifests[key], record = read(pin);
+    assert.equal(record.qualificationKey, key, 'Retained fixture manifest kind differs');
+    assert.equal(record.scope, 'fixture-only', 'Fixture manifest scope required');
+    assert.deepEqual(record.terminalReceipt, selected.terminal, 'Retained fixture terminal receipt differs');
+    assert.equal(pin.sha256, request.qualification[key], 'Retained fixture qualification digest differs');
+    qualification[key] = pin.sha256;
+  }
+  const recheck = () => {
+    original.recheck();
+    for (const pin of pins) assert.deepEqual(readFileSync(pin.path), pin.bytes,
+      'Retained fixture receipt changed during current evidence read');
+  };
+  recheck();
+  try {
+    const current = await readCurrent(tx, request);
+    return { ...structuredClone(current), qualification };
+  } finally { recheck(); }
+}
+
 /** Observe the original exec environment while the selected worker is alive.
  * /proc/environ describes exec-time bytes, not subsequent process.env changes.
  * This closes only that input leg; it cannot qualify invoked configuration,
@@ -1118,6 +1184,11 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
       expectedFingerprint: o.configuration?.fingerprint ?? null,
       gaps: ['host entry not validated'],
     },
+    configurationReads: {
+      scope: 'javascript-configuration-property-gets', status: 'unknown' as 'observed' | 'unknown',
+      observation: null as ConfigurationReadObservation | null,
+      receiptSha256: null as string | null, gaps: ['host entry not validated'],
+    },
     resolutions: {
       scope: 'native-node-resolver-returned-edges', status: 'unknown' as 'bound' | 'unknown',
       edges: [] as Array<{ resolveId: number; specifier: string; parentURL: string | null;
@@ -1170,6 +1241,30 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
       assert.deepEqual(actual, expected, 'host entry configuration inputs differ');
       result.configurationInputs.status = 'matched';
     } catch (error) { result.configurationInputs.gaps.push((error as Error).message.split('\n')[0]); }
+    // This is a bounded record of actual JS property gets, not resolved config
+    // or a full configuration population. Keep runtime-config pending.
+    result.configurationReads.gaps.length = 0;
+    try {
+      assert.ok(result.runId, 'independent host run identity required for configuration reads');
+      const exits = own.filter(({ row }) => row.event === 'node-exit');
+      assert.ok(exits.length === 1 && exits[0].row.exitListenersComplete === true,
+        'host configuration read terminal observation missing or incomplete');
+      assert.ok(!own.some(({ row }) => ['trace-limit', 'trace-event-too-large',
+        'configuration-reads-unavailable'].includes(row.event)), 'host configuration read capture incomplete');
+      const receipts = own.filter(({ row }) => row.event === 'configuration-reads');
+      assert.equal(receipts.length, 1, 'one host configuration read receipt required');
+      const receipt = receipts[0];
+      assert.equal(receipt.row.runGroupId, result.runId, 'host configuration read receipt belongs to another run');
+      assert.ok(receipt.row.threadId === entry.row.threadId && receipt.row.atMs <= exits[0].row.atMs,
+        'host configuration read receipt isolate or terminal order differs');
+      const observation = readConfigurationReadObservation(receipt.row.observation);
+      assert.ok(observation, 'host configuration read observation missing or invalid');
+      assert.ok(observation.captureComplete && observation.activeAtTermination,
+        'host configuration read capture limited or replaced');
+      result.configurationReads.observation = observation;
+      result.configurationReads.receiptSha256 = digestBytes(receipt.bytes);
+      result.configurationReads.status = 'observed';
+    } catch (error) { result.configurationReads.gaps.push((error as Error).message.split('\n')[0]); }
     const source = JSON.parse(sourceBytes.toString('utf8'));
     const closure: CommittedReaderClosure = JSON.parse(closureBytes.toString('utf8'));
     const pins = new Map<string, string>();

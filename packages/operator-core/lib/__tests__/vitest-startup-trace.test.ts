@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
-import { execFile, execFileSync, fork } from 'node:child_process';
+import { execFile, execFileSync, fork, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -784,6 +784,84 @@ describe('focused runner startup tracing', () => {
       expect(starts.length).toBeLessThanOrEqual(128);
       expect(rows.filter(row => row.event === 'module-load-limit')).toHaveLength(1);
       expect(rows.find(row => row.event === 'node-exit')).toMatchObject({ code: 0 });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it.each(['SIGTERM', 'SIGINT', 'application-kill', 'application-exit', 'SIGKILL'] as const)(
+    'retains a scoped engine snapshot before catchable termination without changing %s', mode => {
+      const dir = mkdtempSync(join(tmpdir(), 'native-engine-signal-'));
+      const out = join(dir, 'sources.json'), main = join(dir, 'main.mjs');
+      const signal = mode === 'SIGINT' || mode === 'SIGKILL' ? mode : 'SIGTERM';
+      const source = `globalThis.__nativeSignalMarker = 42;
+        ${mode === 'application-kill' ? "process.once('SIGTERM', () => process.kill(process.pid, 'SIGKILL'));" : ''}
+        ${mode === 'application-exit' ? "process.once('SIGTERM', () => process.exit(23));" : ''}
+        setImmediate(() => process.kill(process.pid, ${JSON.stringify(signal)}));
+        setInterval(() => {}, 1000);`;
+      writeFileSync(main, source);
+      try {
+        const result = spawnSync(process.execPath, [main], {
+          env: nativeProcessTraceEnv({ ...process.env, NODE_OPTIONS: '',
+            PC_EXECUTED_SOURCE_MAP_OUT: out, PAPERCUSP_TEST_STARTUP_TRACE: '0' }, {
+            pinnedSources: [{ path: main, sha256: createHash('sha256').update(source).digest('hex'),
+              byteLength: Buffer.byteLength(source) }],
+          }), encoding: 'utf8', timeout: 10_000,
+        });
+        expect(result.error, result.stderr).toBeUndefined();
+        expect(result.status).toBe(mode === 'application-exit' ? 23 : null);
+        expect(result.signal).toBe(mode === 'application-exit' ? null :
+          mode === 'application-kill' ? 'SIGKILL' : signal);
+        const rows = readdirSync(`${out}.native-processes`).filter(name => name.endsWith('.json')).map(name =>
+          JSON.parse(readFileSync(join(`${out}.native-processes`, name), 'utf8')));
+        const snapshots = rows.filter(row => row.event === 'engine-script-execution');
+        if (mode === 'SIGKILL') expect(snapshots).toEqual([]);
+        else {
+          const snapshot = snapshots.find(row => row.termination?.phase === 'signal');
+          expect(snapshot).toMatchObject({ threadId: 0,
+            termination: { phase: 'signal', signal, exitCode: null },
+            observation: { populationStatus: 'unknown' } });
+          expect(snapshot.observation.scripts).toContainEqual(expect.objectContaining({
+            path: main, execution: 'observed', sourceTextSha256: createHash('sha256').update(source).digest('hex'),
+          }));
+        }
+        expect(rows.filter(row => row.event === 'node-exit')).toHaveLength(mode === 'application-exit' ? 1 : 0);
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
+
+  it('retains an independently enrolled late source after the generic observation budget is exhausted', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'native-late-pin-'));
+    const out = join(dir, 'sources.json'), pinned = join(dir, 'pinned.mjs');
+    const source = 'export const value = 777;';
+    const modules = Array.from({ length: 140 }, (_, index) => {
+      const path = join(dir, `generic-${index}.mjs`);
+      writeFileSync(path, `export const value = ${index};`);
+      return pathToFileURL(path).href;
+    });
+    writeFileSync(pinned, source);
+    const preload = new URL('../../../../scripts/lib/vitest-startup-trace.mjs?late-pin', import.meta.url).href;
+    const env: NodeJS.ProcessEnv = { ...process.env, NODE_OPTIONS: '', PAPERCUSP_TEST_STARTUP_TRACE: '0' };
+    delete env.PC_EXECUTED_SOURCE_MAP_OUT;
+    try {
+      const script = `process.env.PC_EXECUTED_SOURCE_MAP_OUT = ${JSON.stringify(out)};
+        process.env.PC_NATIVE_LOADER_SOURCE_PINS = ${JSON.stringify(JSON.stringify([{
+          path: pinned, sha256: createHash('sha256').update(source).digest('hex'), byteLength: Buffer.byteLength(source),
+        }]))};
+        await import(${JSON.stringify(preload)});
+        for (const url of ${JSON.stringify(modules)}) await import(url);
+        process.stdout.write(String((await import(${JSON.stringify(pathToFileURL(pinned).href)})).value));`;
+      const result = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', script], {
+        env, timeout: 10_000,
+      });
+      expect(result.stdout).toBe('777');
+      expect(result.stderr).toBe('');
+      const rows = readdirSync(`${out}.native-processes`).filter(name => name.endsWith('.json')).map(name =>
+        JSON.parse(readFileSync(join(`${out}.native-processes`, name), 'utf8')));
+      expect(rows.filter(row => row.event === 'module-load-limit')).toHaveLength(1);
+      expect(rows.filter(row => row.event === 'module-load-start' && row.url !== pathToFileURL(pinned).href).length)
+        .toBeLessThanOrEqual(128);
+      const loaded = rows.find(row => row.event === 'module-load-return' && row.url === pathToFileURL(pinned).href);
+      expect(loaded).toMatchObject({ source: { status: 'hashed',
+        sha256: createHash('sha256').update(source).digest('hex'), byteLength: Buffer.byteLength(source) } });
+      expect(readFileSync(join(`${out}.native-processes`, loaded.source.ref), 'utf8')).toBe(source);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 

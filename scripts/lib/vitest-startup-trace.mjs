@@ -7,11 +7,12 @@ import { closeSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, real
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { threadId } from 'node:worker_threads';
-import { captureConfigurationSnapshot } from '../../libs/test-config/src/configuration-snapshot.ts';
+import { captureConfigurationSnapshot, observeConfigurationReads } from '../../libs/test-config/src/configuration-snapshot.ts';
 import { readProcessIdentity } from './process-identity.mjs';
 import { nativeSourceRetentionLimits, validateSourcePins, observeEngineScriptExecution }
   from '../../libs/test-config/src/executed-config-load-capture.ts';
 import { nativeProcessTraceEnv as candidateNativeProcessTraceEnv } from './native-process-trace-env.mjs';
+import { observeProcessTermination } from '../../libs/test-config/src/process-termination-observer.mjs';
 
 export { nativeSourceRetentionLimits };
 const sourcePinsEnv = 'PC_NATIVE_LOADER_SOURCE_PINS';
@@ -127,15 +128,21 @@ function installNativeProcessTrace(out) {
         observedByteLength: state.observedByteLength, captureComplete: state.captureComplete }];
     } catch { return [role, { scope, captureComplete: false, artifactUnavailable: true }]; }
   }));
+  const runGroupId = process.env.PAPERCUSP_TEST_RUN_GROUP ?? null;
   try {
     emit('node-entry', { executable: process.execPath, argv: process.argv.slice(),
       execArgv: process.execArgv.slice(), cwd: process.cwd(), lifecycle: lifecycle(process.env),
       nodeOptions: loaderIdentity(process.env.NODE_OPTIONS), reporterOut: process.env.PC_EXECUTED_SOURCE_MAP_OUT ?? null,
-      runGroupId: process.env.PAPERCUSP_TEST_RUN_GROUP ?? null,
+      runGroupId,
       // Reuse the ledger's hashed configuration-input contract. This is the
       // original process at entry, not resolved config or later mutations.
       configuration: captureConfigurationSnapshot(process.env) });
   } catch { /* Even an unavailable cwd must not prevent the native entry. */ }
+  let configurationReads = null;
+  try {
+    configurationReads = observeConfigurationReads(process.env);
+    process.env = configurationReads.environment;
+  } catch { /* A missing observer remains unknown in the terminal receipt. */ }
   // A preload's exit listener would run before the program's later listeners
   // and silently lose their writes. Delegate the original emission first and
   // retain bytes after its synchronous listeners, preserving its return/throw.
@@ -155,9 +162,17 @@ function installNativeProcessTrace(out) {
     } finally {
       if (!listenersComplete) for (const state of Object.values(streams)) state.captureComplete = false;
       try {
-        if (engine) emit('engine-script-execution', { observation: engine.snapshot() }, true);
+        if (engine) emit('engine-script-execution', { observation: engine.snapshot(),
+          termination: { phase: 'exit', exitCode: args[0], signal: null } }, true);
       } catch { emit('engine-script-execution-unavailable', {}, true); }
       finally { engine?.disconnect(); }
+      try {
+        if (configurationReads) emit('configuration-reads', {
+          runGroupId,
+          observation: configurationReads.finish(process.env),
+        }, true);
+        else emit('configuration-reads-unavailable', {}, true);
+      } catch { emit('configuration-reads-unavailable', {}, true); }
       emit('node-exit', { code: args[0], exitListenersComplete: listenersComplete, streams: retainStreams() }, true);
     }
   };
@@ -270,7 +285,7 @@ function installNativeProcessTrace(out) {
   // including async hooks on Node's loader thread. Persist the attempt before
   // delegation so a killed/stuck child still names its last file boundary.
   // These are load observations, never claims that a module was evaluated.
-  let loadSequence = 0, resolveSequence = 0;
+  let loadSequence = 0, resolveSequence = 0, observedLoadSequence = 0;
   const sourceByteLimit = nativeSourceRetentionLimits.sourceBytes;
   const sourceTotalByteLimit = nativeSourceRetentionLimits.processBytes;
   let sourceBytesHashed = 0, pinnedBytesHashed = 0;
@@ -286,6 +301,18 @@ function installNativeProcessTrace(out) {
     try { engine = observeEngineScriptExecution(process.cwd(), {
       pinnedSources: sourcePins, repositorySources: false,
     }); } catch { emit('engine-script-execution-unavailable'); }
+  }
+  if (engine) {
+    const observedSignals = new Set();
+    observeProcessTermination(termination => {
+      if (termination.phase !== 'signal' || observedSignals.has(termination.signal)) return;
+      observedSignals.add(termination.signal);
+      // An application handler may SIGKILL itself without emitting exit. Keep
+      // this bounded signal-time prefix distinct from a completed shutdown;
+      // the existing observer preserves application/default signal semantics.
+      try { emit('engine-script-execution', { observation: engine.snapshot(), termination }, true); }
+      catch { emit('engine-script-execution-unavailable', { termination }, true); }
+    });
   }
   // Retain loader-returned bytes in bounded chunks. In particular, do not make
   // another full UTF-8 copy of the product bundle already owned by the loader.
@@ -317,7 +344,7 @@ function installNativeProcessTrace(out) {
       if (!text && !view && !(source instanceof ArrayBuffer))
         return { ...observation, status: 'unsupported' };
       const expected = sourcePins.find(pin => fileURLToPath(url) === pin.path);
-      if (expected && expected.byteLength > sourceByteLimit) {
+      if (expected) {
         const pin = { ...observation, admission: 'independently-pinned-large-source-v1',
           byteLimit: nativeSourceRetentionLimits.pinnedSourceBytes,
           totalByteLimit: nativeSourceRetentionLimits.pinnedProcessBytes };
@@ -381,6 +408,10 @@ function installNativeProcessTrace(out) {
       return { ...observation, status: 'unavailable', reason: 'source-fingerprint-failed' };
     }
   };
+  // Independently enrolled paths have their own existing count/byte bounds.
+  // Retain each once even when unrelated imports exhaust generic diagnostics.
+  // Neither population can masquerade as complete loader-chain coverage.
+  const observedPinnedLoads = new Set();
   try {
     registerHooks({ resolve(specifier, context, nextResolve) {
       // Observe the resolver's return directly. A build graph, lockfile or
@@ -404,23 +435,27 @@ function installNativeProcessTrace(out) {
       }
     }, load(url, context, nextLoad) {
       if (!url.startsWith('file:')) return nextLoad(url, context);
-      if (loadSequence >= 128) {
+      const enrolled = sourcePins.some(pin => pathToFileURL(pin.path).href === url) &&
+        !observedPinnedLoads.has(url);
+      if (enrolled) observedPinnedLoads.add(url);
+      if (!enrolled && loadSequence >= 128) {
         if (loadSequence++ === 128) emit('module-load-limit', { limit: 128 });
         return nextLoad(url, context);
       }
-      const loadId = ++loadSequence;
+      if (!enrolled) loadSequence++;
+      const loadId = ++observedLoadSequence;
       const started = performance.now();
       const fields = { loadId, url, scope: 'node-sync-load-hook' };
-      emit('module-load-start', fields);
+      emit('module-load-start', fields, enrolled);
       try {
         const result = nextLoad(url, context);
         emit('module-load-return', { ...fields, elapsedMs: performance.now() - started,
-          format: result.format ?? null, source: fingerprintSource(result, url) });
+          format: result.format ?? null, source: fingerprintSource(result, url) }, enrolled);
         return result;
       } catch (error) {
         emit('module-load-error', { ...fields, elapsedMs: performance.now() - started,
           errorCode: typeof error?.code === 'string' ? error.code : null,
-          errorName: typeof error?.name === 'string' ? error.name : typeof error });
+          errorName: typeof error?.name === 'string' ? error.name : typeof error }, enrolled);
         throw error;
       }
     } });

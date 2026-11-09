@@ -12,7 +12,7 @@ vi.mock('../../../scripts/source-preview.mjs', () => sourcePreview);
 
 import { produceCommittedReaderOriginalPreparation, qualifyCommittedReaderOriginalPreparation,
   withCommittedReaderOriginalPreparation, observeCommittedReaderWorkerEnvironment,
-  retainCommittedReaderWorkerEnvironment } from '../test/private-http-workspace-preflight';
+  retainCommittedReaderWorkerEnvironment, readCommittedReaderLegacyAdoptionFixtureEvidence } from '../test/private-http-workspace-preflight';
 import { readProcessIdentity } from './process-identity';
 import type { CommittedReaderCallerContract } from '../test/private-http-workspace-preflight';
 import type { CommittedReaderObservationCohort, CommittedReaderObservationIdentity,
@@ -304,6 +304,109 @@ describe('D050 caller entry before allocations', () => {
     const allocate = vi.fn(async () => { throw failure; });
     await expect(withCommittedReaderOriginalPreparation(contract(f), allocate)).rejects.toBe(failure);
     expect(allocate).toHaveBeenCalledTimes(1); f.noEffects();
+  });
+});
+
+describe('D014 transaction-local fixture evidence consumer', () => {
+  function fixture() {
+    const f = originalFixture();
+    const keys = ['apiManifestHash', 'launcherManifestHash', 'plannedHostManifestHash',
+      'executedInputsHash', 'dependencyManifestHash'] as const;
+    const record = { ...structuredClone(f.identity), observationReceiptSha256: f.handoff.observationReceiptSha256,
+      omitted: [], opaque: [] };
+    const retain = (name: string, value: unknown) => {
+      const path = join(f.handoff.root, '..', name + '.json'), bytes = JSON.stringify(value);
+      writeFileSync(path, bytes); return { path, sha256: digest(bytes) };
+    };
+    const terminalRecord = { ...record, state: 'complete', exitCode: 0, signalCode: null, cleanupComplete: true };
+    const terminal = retain('terminal', terminalRecord);
+    const manifests = Object.fromEntries(keys.map(key => [key, retain(key,
+      { ...record, scope: 'fixture-only', qualificationKey: key, terminalReceipt: terminal })])) as
+      Parameters<typeof readCommittedReaderLegacyAdoptionFixtureEvidence>[2]['manifests'];
+    const payload = { qualification: Object.fromEntries(keys.map(key => [key, manifests[key].sha256])) } as
+      Parameters<typeof readCommittedReaderLegacyAdoptionFixtureEvidence>[1];
+    const tx = { savepoint: vi.fn() } as unknown as Parameters<typeof readCommittedReaderLegacyAdoptionFixtureEvidence>[0];
+    const current = vi.fn<Parameters<typeof readCommittedReaderLegacyAdoptionFixtureEvidence>[3]>(async () => ({ bindingHistory: { fixtureOnly: true },
+      outstandingEffects: { fixtureOnly: true }, independence: { fixtureOnly: true } }));
+    const retained = { original: f.options.original, manifests, terminal };
+    const read = () => readCommittedReaderLegacyAdoptionFixtureEvidence(tx, payload, retained, current);
+    return { ...f, keys, record, retain, terminalRecord, retained, payload, tx, current, read };
+  }
+
+  it('joins all five retained digests and passes the original custody transaction to the current reader', async () => {
+    const f = fixture();
+    await expect(f.read()).resolves.toEqual({ bindingHistory: { fixtureOnly: true },
+      outstandingEffects: { fixtureOnly: true }, independence: { fixtureOnly: true }, qualification: f.payload.qualification });
+    expect(f.current).toHaveBeenCalledWith(f.tx, f.payload);
+    f.noEffects();
+  });
+
+  it.each(['source', 'dependencies', 'config', 'imports', 'schema', 'environment'] as const)(
+    'refuses a cross-process %s original before reading current evidence', async key => {
+      const f = fixture(); await f.read(); f.current.mockClear();
+      f.cohort.observations[key].process.identity = 'other-process'; f.save();
+      f.retained.original.handoff = f.handoff;
+      await expect(f.read()).rejects.toThrow(/cohort identity differs/);
+      expect(f.current).not.toHaveBeenCalled();
+    });
+
+  it.each(['apiManifestHash', 'launcherManifestHash', 'plannedHostManifestHash',
+    'executedInputsHash', 'dependencyManifestHash'] as const)('refuses a planned rather than retained %s', async key => {
+    const f = fixture(); await f.read(); f.current.mockClear();
+    f.payload.qualification[key] = 'f'.repeat(64);
+    await expect(f.read()).rejects.toThrow(/qualification digest differs/);
+    expect(f.current).not.toHaveBeenCalled();
+  });
+
+  it.each(['cross-run', 'cross-process', 'wrong-kind', 'opaque', 'limited', 'unjoined-terminal'])(
+    'refuses %s manifest even when its digest is explicitly selected', async variant => {
+      const f = fixture(), key = 'executedInputsHash';
+      await f.read(); f.current.mockClear();
+      const record: Record<string, unknown> = { ...f.record, scope: 'fixture-only', qualificationKey: key,
+        terminalReceipt: f.retained.terminal };
+      if (variant === 'cross-run') record.runId = 'different-run';
+      if (variant === 'cross-process') record.process = { ...f.identity.process, identity: 'different-process' };
+      if (variant === 'wrong-kind') record.qualificationKey = 'apiManifestHash';
+      if (variant === 'opaque') record.opaque = ['runtime'];
+      if (variant === 'limited') record.omitted = ['dependencies'];
+      if (variant === 'unjoined-terminal') record.terminalReceipt = { ...f.retained.terminal, sha256: 'b'.repeat(64) };
+      f.retained.manifests[key] = f.retain(key, record);
+      f.payload.qualification[key] = f.retained.manifests[key].sha256;
+      await expect(f.read()).rejects.toThrow(/identity differs|kind differs|opaque|incomplete|terminal receipt differs/);
+      expect(f.current).not.toHaveBeenCalled();
+    });
+
+  it.each(['pending', 'failed', 'signal', 'cleanup'])( 'refuses %s terminal observation', async variant => {
+    const f = fixture();
+    await f.read(); f.current.mockClear();
+    if (variant === 'pending') f.terminalRecord.state = 'pending';
+    if (variant === 'failed') f.terminalRecord.exitCode = 1;
+    if (variant === 'signal') Object.assign(f.terminalRecord, { exitCode: null, signalCode: 'SIGTERM' });
+    if (variant === 'cleanup') f.terminalRecord.cleanupComplete = false;
+    f.retained.terminal = f.retain('terminal', f.terminalRecord);
+    await expect(f.read()).rejects.toThrow(/terminal outcome incomplete or failed/);
+    expect(f.current).not.toHaveBeenCalled();
+  });
+
+  it.each(['manifest', 'dependency', 'original'])( 'rechecks %s bytes after an awaited current evidence read', async variant => {
+    const f = fixture();
+    await f.read(); f.current.mockClear();
+    f.current.mockImplementationOnce(async () => {
+      const path = variant === 'manifest' ? f.retained.manifests.dependencyManifestHash.path
+        : variant === 'dependency' ? join(f.handoff.root, 'node_modules/example/index.js')
+        : f.handoff.observationReceiptPath;
+      writeFileSync(path, 'changed while waiting');
+      return { bindingHistory: {}, outstandingEffects: {}, independence: {} };
+    });
+    await expect(f.read()).rejects.toThrow(/changed|differs|mismatch/i);
+  });
+
+  it('refuses a missing custody transaction before any current read', async () => {
+    const f = fixture();
+    await f.read(); f.current.mockClear();
+    await expect(readCommittedReaderLegacyAdoptionFixtureEvidence({} as typeof f.tx,
+      f.payload, f.retained, f.current)).rejects.toThrow(/custody transaction/);
+    expect(f.current).not.toHaveBeenCalled();
   });
 });
 
