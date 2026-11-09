@@ -1659,6 +1659,7 @@ export function parseCarryNote(text: string): CarryNoteFields {
   const lines = (text ?? '').split('\n');
   let cur: CarryNoteTextKey | 'walls' | 'checks' | null = null;
   let buf: string[] = [];
+  let systemBlock: 'flight' | 'mechanical' | null = null;
   const flush = () => {
     if (cur === 'walls') {
       const walls = buf.map(parseWallLine).filter((w): w is WallEntry => w !== null);
@@ -1673,6 +1674,30 @@ export function parseCarryNote(text: string): CarryNoteFields {
     buf = [];
   };
   for (const line of lines) {
+    if (systemBlock === 'flight') {
+      if (line === '⟦work-item-flight-record v1 end⟧') systemBlock = null;
+      continue;
+    }
+    if (systemBlock === 'mechanical') {
+      if (/^\s*---\s*$/.test(line)) {
+        systemBlock = null;
+        continue;
+      }
+      // Legacy snapshots may have agent-owned rows directly after the block.
+      if (!/^##\s+(?:Checks|Walls)\s*$/i.test(line)) continue;
+      systemBlock = null;
+    }
+    const flight = line === '⟦work-item-flight-record v1 begin⟧';
+    if (flight || /^⟦auto-checkpoint mechanical\s+@/.test(line)) {
+      // The writers append these records after a separator. Neither that
+      // separator nor headings inside machine telemetry are authored actions.
+      while (buf.length && !buf[buf.length - 1].trim()) buf.pop();
+      if (buf[buf.length - 1]?.trim() === '---') buf.pop();
+      flush();
+      cur = null;
+      systemBlock = flight ? 'flight' : 'mechanical';
+      continue;
+    }
     const m = /^##\s+(.+?)\s*$/.exec(line);
     const key = m ? byHeading.get(m[1].toLowerCase()) : undefined;
     if (key) {

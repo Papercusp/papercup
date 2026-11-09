@@ -25,12 +25,14 @@ import { describe, expect, it } from 'vitest';
 import {
   CARRY_NOTE_MAX_CHECKS,
   normalizeCheckEntries,
+  parseCarryNote,
   parseCheckLine,
   splitCarryNoteChecks,
   withCarryNoteChecks,
   type CheckEntry,
 } from './carry-note';
 import { formatWorkItemFlightRecord } from './work-item-flight-record';
+import { composeMechanicalCheckpoint } from './turn-end-tracking';
 
 const REAL_CHECK_LINE =
   '- ✓ [#gate-green] the gate is green — re-check: node scripts/x.mjs — evidence: verified 07:00Z (since 2026-08-26T00:00:00.000Z)';
@@ -64,6 +66,44 @@ function realFlightRecord(): string {
 }
 
 describe('WI-41774: flight-record telemetry is not a check row', () => {
+  it('keeps emitted system records out of the authored next action and retains real checks and walls', () => {
+    const mechanical = composeMechanicalCheckpoint({
+      atIso: '2026-11-09T00:08:39.545Z',
+      sessionId: 'su-holder',
+      boundary: 'respawn',
+      toolLog: '## Next action\nThis is tool-log output, not an authored instruction.',
+    });
+    const note = [
+      '## Next action', 'Verify the current discovery audit.',
+      '', '---', '', realFlightRecord(),
+      '', '---', '', mechanical,
+      '', '## Checks', REAL_CHECK_LINE,
+      '', '## Walls', '- Preserve the source bench.',
+    ].join('\n');
+
+    const parsed = parseCarryNote(note);
+    expect(parsed.next).toBe('Verify the current discovery audit.');
+    expect(parsed.checks?.map(check => check.claim)).toEqual(['the gate is green']);
+    expect(parsed.walls?.map(wall => wall.claim)).toEqual(['Preserve the source bench.']);
+  });
+
+  it('reads an authored update after a mechanical record without adopting its tool-log headings', () => {
+    const mechanical = composeMechanicalCheckpoint({
+      atIso: '2026-11-09T00:08:39.545Z',
+      toolLog: '## Next action\nHistorical tool-log text.',
+    });
+    const note = ['## Next action', 'Old authored action.', '', '---', '', mechanical,
+      '', '---', '', '## Next action', 'Current authored action.'].join('\n');
+
+    expect(parseCarryNote(note).next).toBe('Current authored action.');
+  });
+
+  it('preserves quoted and inline mentions of system markers in authored prose', () => {
+    const body = 'Inspect the marker ⟦auto-checkpoint mechanical before acting.\n' +
+      '> ⟦work-item-flight-record v1 begin⟧\nKeep this quoted example.';
+    expect(parseCarryNote(`## Next action\n${body}`).next).toBe(body);
+  });
+
   it('refuses EVERY line of a real formatted flight record (pinned to the emitter)', () => {
     const lines = realFlightRecord()
       .split('\n')
