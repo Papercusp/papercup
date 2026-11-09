@@ -8,6 +8,7 @@ import { runRootCensus, discoverRootCensusInputs, readMigrationCensusColumns, re
 import { collectStateCensus } from '../../../../packages/backup/src/state-census';
 import { archiveReapTail } from '../task-manager/reap-archive';
 import * as censusProducers from './state-census-producers';
+import { setEnvEnabled } from '../harness/env-switcher-prefs';
 
 // Filesystem-only census must load without the live account/task runtime.
 vi.mock('../deployment/account-pool-store', () => { throw new Error('host account store unavailable'); });
@@ -261,6 +262,34 @@ describe('unit census executable exit contract', () => {
       expect(result.declarations.every(entry => !entry.prune)).toBe(true);
       expect(result.declarations.filter(entry => entry.descendants).map(entry => entry.name))
         .toEqual(['crash-reports', 'snapshot-fold-checkpoints', 'crash-reports', 'snapshot-fold-checkpoints']);
+    } finally { rmSync(parent, { recursive: true, force: true }); }
+  });
+
+  it('keeps environment preferences in registered workspaces without claiming host logs or lookalikes', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'workspace-runtime-files-census-'));
+    try {
+      const active = join(parent, 'active');
+      const inactive = join(parent, 'inactive');
+      const unknown = ['env-switcher-prefs.json.bak', 'gateway.log', 'gateway.log.1', 'gateway.log.2', 'gateway.log.backup'];
+      for (const home of [active, inactive, join(parent, 'unregistered')]) {
+        mkdirSync(home, { recursive: true });
+        setEnvEnabled('staging', false, { filePath: join(home, 'env-switcher-prefs.json') });
+        for (const name of unknown) writeFileSync(join(home, name), 'unproven sibling');
+      }
+      const result = await readWorkspaceSetupHomes([{ id: 'inactive' }, { id: 'inactive' }],
+        workspace => join(parent, workspace), active);
+      expect(result.roots.map(root => root.path)).toEqual([active, inactive]);
+      const census = await collectStateCensus({ ...result, readCatalogs: async () => [] });
+      for (const root of result.roots) {
+        expect(census.inventory.filter(entry => entry.root === root.id && entry.classification === 'config'))
+          .toEqual([expect.objectContaining({ name: 'env-switcher-prefs.json', producers: ['env-switcher-prefs'] })]);
+        expect(census.inventory.filter(entry => entry.root === root.id && entry.classification === 'state')).toEqual([]);
+        expect(census.residue.filter(entry => entry.root === root.id).map(entry => entry.name).sort())
+          .toEqual(unknown.sort());
+        expect(JSON.parse(readFileSync(join(root.path, 'env-switcher-prefs.json'), 'utf8')))
+          .toEqual({ disabled: ['staging'] });
+      }
+      expect(result.declarations.every(entry => !entry.prune)).toBe(true);
     } finally { rmSync(parent, { recursive: true, force: true }); }
   });
 

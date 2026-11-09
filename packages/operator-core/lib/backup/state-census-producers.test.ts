@@ -791,6 +791,49 @@ describe('secret census producer adapters', () => {
       expect(writer).toContain("return re.sub(r'[^A-Za-z0-9_.-]', '_', str(sid))[:120]");
     } finally { vi.unstubAllEnvs(); await rm(home, { recursive: true, force: true }); }
   });
+  it('retains host gateway logs and one rotation across relocation without trusting workspace names or links', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'gateway-log-census-'));
+    const ordinary = join(home, '.papercusp');
+    const relocated = join(home, 'relocated');
+    const override = join(home, 'override', 'lifecycle.txt');
+    const logs = [join(ordinary, 'gateway.log'), join(relocated, 'gateway.log'), override];
+    const environment = { PAPERCUSP_HOME: relocated, PAPERCUSP_GATEWAY_LOG: override };
+    try {
+      for (const directory of [ordinary, relocated, join(home, 'override')]) await mkdir(directory);
+      for (const log of logs) {
+        await writeFile(log, 'retained gateway lifecycle');
+        await writeFile(`${log}.1`, 'retained gateway rotation');
+        await writeFile(`${log}.2`, 'unproven sibling');
+      }
+      const result = await runtimeSidefileCensusProducer(home, environment);
+      const declarations = result.declarations.filter(entry => entry.producer === 'inference-gateway-lifecycle-log');
+      expect(declarations).toHaveLength(6);
+      expect(declarations.every(entry => entry.classification === 'state' && !entry.descendants && !entry.prune)).toBe(true);
+      expect(result.roots.find(root => root.path === join(home, 'override'))?.fileNames?.sort())
+        .toEqual(['lifecycle.txt', 'lifecycle.txt.1']);
+      const merged = mergeNestedCensusRoots({ roots: [...result.roots, { id: 'relocated', path: relocated }],
+        declarations: result.declarations });
+      const census = await collectStateCensus({ ...merged, readCatalogs: async () => [] });
+      expect(census.inventory.filter(entry => entry.classification === 'state')).toHaveLength(6);
+      expect(census.residue.map(entry => entry.name)).toEqual(['gateway.log.2', 'gateway.log.2']);
+      expect(await readFile(override, 'utf8')).toBe('retained gateway lifecycle');
+      await rm(override);
+      await symlink(`${override}.1`, override);
+      await rename(relocated, join(home, 'relocated-target'));
+      await symlink(join(home, 'relocated-target'), relocated);
+      const linked = await runtimeSidefileCensusProducer(home, environment);
+      const owned = linked.declarations.filter(entry => entry.producer === 'inference-gateway-lifecycle-log');
+      expect(owned).toHaveLength(3);
+      expect(owned.filter(entry => entry.name.startsWith('lifecycle'))).toEqual([
+        expect.objectContaining({ name: 'lifecycle.txt.1' }),
+      ]);
+      const writer = await readFile(new URL('../inference-gateway/sidecar-main.ts', import.meta.url), 'utf8');
+      expect(writer).toContain("import { papercuspPath } from '@papercusp/host-platform/home'");
+      expect(writer).toContain("process.env.PAPERCUSP_GATEWAY_LOG || papercuspPath('gateway.log')");
+      expect(writer).toContain('const rotatedPath = `${path}.1`');
+    } finally { await rm(home, { recursive: true, force: true }); }
+  });
+
   it('retains backup-health writer histories and exact configured markers while exposing unknown files and links', async () => {
     const home = await mkdtemp(join(tmpdir(), 'backup-health-census-'));
     const ordinary = join(home, '.papercusp', 'backup-health');
@@ -1081,11 +1124,13 @@ describe('secret census producer adapters', () => {
     expect(result.roots).toEqual([{ id: 'runtime-retained', path: '/relocated/workspaces/registered-project/.papercusp' }]);
     expect(result.declarations.map(entry => [entry.name, entry.classification, entry.prune])).toEqual([
       ['deploy-credentials', 'state', undefined], ['crash-reports', 'state', undefined], ['snapshot-fold-checkpoints', 'state', undefined],
+      ['env-switcher-prefs.json', 'config', undefined],
     ]);
     const writers = [
       ['../deployment/account-link-cli.ts', "papercuspPath('deploy-credentials'"],
       ['../process-supervision/fatal-diagnostics.ts', "papercuspPath('crash-reports')"],
       ['../sync/hyperbee/boot.ts', "'snapshot-fold-checkpoints'"],
+      ['../harness/env-switcher-prefs.ts', "const FILE = 'env-switcher-prefs.json'"],
     ];
     for (const [path, marker] of writers) expect(await readFile(new URL(path, import.meta.url), 'utf8')).toContain(marker);
     const installed = installedRootCensusProducers();

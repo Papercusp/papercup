@@ -60,6 +60,9 @@ export function runtimeRetainedCensusProducer(path = papercuspRoot()) {
     { kind: 'path', root: root.id, name: 'deploy-credentials', classification: 'state', producer: 'deployment-account-link' },
     { kind: 'path', root: root.id, name: 'crash-reports', classification: 'state', producer: 'fatal-diagnostics', descendants: true },
     { kind: 'path', root: root.id, name: 'snapshot-fold-checkpoints', classification: 'state', producer: 'hyperbee-own-compaction', descendants: true },
+    // Keep the enabled-environment choice across transfer. Unlike endpoint
+    // discovery and console markers, this is a durable preference, not a lease.
+    { kind: 'path', root: root.id, name: 'env-switcher-prefs.json', classification: 'config', producer: 'env-switcher-prefs' },
   ];
   return { roots: [root], declarations };
 }
@@ -408,6 +411,31 @@ export async function runtimeSidefileCensusProducer(home = homedir(), environmen
   // The embedding worker uses ||, while the co-change host helper trims the
   // pin; preserve both writer contracts rather than substituting papercuspRoot.
   const ordinaryHome = join(home, '.papercusp');
+  // sidecar-main resolves through host-platform/home, not the workspace
+  // registry. Preserve the old default after relocation, the configured home,
+  // and an explicit log override. Its writer retains exactly one rotation.
+  const gatewayLogs = new Set([join(ordinaryHome, 'gateway.log'),
+    join(papercuspHome(environment, home), 'gateway.log')]);
+  if (environment.PAPERCUSP_GATEWAY_LOG) gatewayLogs.add(resolve(environment.PAPERCUSP_GATEWAY_LOG));
+  for (const log of gatewayLogs) {
+    try { if (!(await lstat(dirname(log))).isDirectory()) continue; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+    for (const path of [log, `${log}.1`]) {
+      try { if (!(await lstat(path)).isFile()) continue; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+      const directory = dirname(path);
+      let logRoot = roots.find(candidate => candidate.path === directory);
+      if (!logRoot) {
+        // An override authorizes these exact files, not their parent's other
+        // contents (which may be outside the Papercusp data tree altogether).
+        logRoot = { id: `runtime-gateway-log-${roots.length}`, path: directory, fileNames: [] };
+        roots.push(logRoot);
+      }
+      if (logRoot.fileNames && !logRoot.fileNames.includes(basename(path))) logRoot.fileNames.push(basename(path));
+      declarations.push({ kind: 'path', root: logRoot.id, name: basename(path),
+        classification: 'state', producer: 'inference-gateway-lifecycle-log' });
+    }
+  }
   // Session hooks retain their own records, independently of workspace roots.
   // Match the writers' direct-file grammar rather than claiming whole trees:
   // arbitrary siblings, nested source and symlinks remain census residue.
