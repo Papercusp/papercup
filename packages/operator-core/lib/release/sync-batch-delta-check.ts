@@ -145,7 +145,7 @@ export const SYNC_DELTA_SLA_MINUTES = 60;
 export interface RadiusCaps {
   /** Affected WORKSPACES the probe may select before the batch is refused. */
   maxWorkspaces: number;
-  /** Changed PATHS the union may carry before the batch is refused. */
+  /** Non-asset changed PATHS before refusal; public assets remain in the measured radius. */
   maxPaths: number;
   /** Commits one run may fold into a batch window before it is refused. */
   maxCommits: number;
@@ -366,11 +366,18 @@ export function parseSyncBatches(raw: string): SyncBatch[] {
 export interface UnionedPaths {
   /** De-duplicated union, in first-seen order across the batch window. */
   paths: string[];
-  /** True when the union was cut at `maxPaths` — the caller must treat the run as
+  /** True when non-asset paths exceed `maxPaths` — the caller must treat the run as
    *  a REFUSAL, never as a narrower measurement (a truncated radius under-reports). */
   truncated: boolean;
   /** Union size BEFORE truncation, so a refusal can say how wide it really was. */
   totalPaths: number;
+}
+
+/** Public assets stay in every probe and execution input. Only their contribution
+ * to the cheap source-path cap is exempt; measured task/workspace/time caps still
+ * bound their actual radius. Executable scripts and unknown kinds remain capped. */
+function countsTowardPathCap(file: string): boolean {
+  return !/^apps\/[^/]+\/public\/.+\.(?:html?|md|css|json|txt|svg|png|jpe?g|gif|webp|avif|ico|woff2?|ttf|otf|eot|mp[34]|webm|ogg|wav|pdf)$/i.test(file);
 }
 
 /** Union the changed paths of a batch window, capped. Order is stable (first-seen)
@@ -386,7 +393,7 @@ export function unionBatchPaths(batches: readonly SyncBatch[], maxPaths = DEFAUL
       paths.push(p);
     }
   }
-  const truncated = paths.length > maxPaths;
+  const truncated = paths.filter(countsTowardPathCap).length > maxPaths;
   return { paths: truncated ? paths.slice(0, maxPaths) : paths, truncated, totalPaths: paths.length };
 }
 
@@ -1794,6 +1801,7 @@ function selectOldestBoundedPrefix(
 ): OldestPrefixSelection {
   const commits: SyncBatch[] = [];
   const paths = new Set<string>();
+  let countedPaths = 0;
   for (let index = batchesNewestFirst.length - 1; index >= 0; index -= 1) {
     const batch = batchesNewestFirst[index]!;
     if (commits.length >= caps.maxCommits) break;
@@ -1801,7 +1809,7 @@ function selectOldestBoundedPrefix(
     for (const changedPath of batch.paths) {
       if (changedPath && !paths.has(changedPath)) newPaths.add(changedPath);
     }
-    const nextPathCount = paths.size + newPaths.size;
+    const nextPathCount = countedPaths + [...newPaths].filter(countsTowardPathCap).length;
     if (nextPathCount > caps.maxPaths) {
       if (commits.length === 0) {
         return {
@@ -1812,6 +1820,7 @@ function selectOldestBoundedPrefix(
       break;
     }
     commits.push(batch);
+    countedPaths = nextPathCount;
     for (const changedPath of newPaths) paths.add(changedPath);
   }
   return { commits };

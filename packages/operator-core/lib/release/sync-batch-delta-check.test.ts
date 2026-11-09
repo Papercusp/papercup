@@ -149,6 +149,24 @@ describe('parseSyncBatches', () => {
 });
 
 describe('unionBatchPaths', () => {
+  it('retains public assets without charging them against the source path cap (WI-6554700010018174)', () => {
+    const assets = Array.from({ length: 1400 }, (_, i) => `apps/operator/public/internal/docs/page-${i}.${i % 2 ? 'html' : 'md'}`);
+    const source = ['packages/operator-core/src/a.ts', 'apps/operator-vite/src/b.tsx'];
+    const union = unionBatchPaths([makeBatch({ paths: [...assets, ...source] })], 2);
+    expect(union.truncated).toBe(false);
+    expect(union.totalPaths).toBe(1402);
+    expect(union.paths).toEqual([...assets, ...source]);
+    for (const path of [
+      'apps/operator/public/worker.js',
+      'apps/operator/public/source.ts',
+      'apps/operator/public/unknown',
+      'apps/operator/src/page.html',
+      'packages/operator-core/src/metadata.json',
+    ]) {
+      expect(unionBatchPaths([makeBatch({ paths: [...source, path] })], 2).truncated).toBe(true);
+    }
+  });
+
   it('dedupes in first-seen order and reports truncation as a refusal, not a narrower set', () => {
     const b1 = makeBatch({ paths: ['a.ts', 'b.ts'] });
     const b2 = makeBatch({ sha: SHA_A, paths: ['b.ts', 'c.ts', 'd.ts'] });
@@ -552,6 +570,70 @@ describe('runSyncBatchDeltaCheck — cursor discipline', () => {
     expect(probed[1]).toEqual(['oldest.ts']);
     expect(testedPaths).toEqual(['oldest.ts']);
     expect(state.cursor?.sha).toBe(SHA_A);
+  });
+
+  it('judges an asset-heavy commit with the entire changed-path set (WI-6554700010018174)', async () => {
+    const assets = Array.from({ length: 1400 }, (_, i) => `apps/operator/public/internal/docs/page-${i}.${i % 2 ? 'html' : 'md'}`);
+    const source = ['packages/operator-core/src/a.ts', 'apps/operator-vite/src/b.tsx'];
+    const changed = [...assets, ...source];
+    const probed: string[][] = [];
+    const affected: string[][] = [];
+    const typechecked: string[][] = [];
+    const { deps, state } = makeDeps(
+      {
+        listBatches: async () => [makeBatch({ paths: changed })],
+        probeRadius: async (paths) => {
+          probed.push([...paths]);
+          return makeProbe();
+        },
+        runAffected: async (paths) => {
+          affected.push([...paths]);
+          return { ok: true, failing: [] };
+        },
+        runTsc: async (paths) => {
+          typechecked.push([...paths]);
+          return { ok: true, failing: [] };
+        },
+      },
+      { sha: SHA_A, updatedAtMs: 1 },
+    );
+    const res = await runSyncBatchDeltaCheck(deps, { caps: { maxPaths: 2, maxCommits: 10, maxWorkspaces: 10 } });
+    expect(res.status).toBe('green');
+    expect(res.pathCount).toBe(changed.length);
+    expect(probed).toEqual([changed]);
+    expect(affected).toEqual([changed]);
+    expect(typechecked).toEqual([source]);
+    expect(state.cursor?.sha).toBe(SHA_B);
+    expect(state.cursor?.coverage?.ticks.at(-1)?.evaluated).toBe(true);
+  });
+
+  it('still refuses an asset-heavy commit whose measured task radius is too wide (WI-6554700010018174)', async () => {
+    const changed = Array.from({ length: 100 }, (_, i) => `apps/operator/public/page-${i}.html`);
+    let probes = 0;
+    let executions = 0;
+    const { deps, state } = makeDeps(
+      {
+        listBatches: async () => [makeBatch({ paths: changed })],
+        probeRadius: async (paths) => {
+          probes += 1;
+          expect(paths).toEqual(changed);
+          return makeProbe({
+            taskCommands: Array.from({ length: 33 }, (_, i) => ({ workspace: 'foo', command: `task-${i}` })),
+          });
+        },
+        runAffected: async () => {
+          executions += 1;
+          return { ok: true, failing: [] };
+        },
+      },
+      { sha: SHA_A, updatedAtMs: 1 },
+    );
+    const res = await runSyncBatchDeltaCheck(deps);
+    expect(res.status).toBe('radius-too-wide');
+    expect(res.reason).toContain('maxTaskCommands=32');
+    expect(probes).toBe(1);
+    expect(executions).toBe(0);
+    expect(state.cursor?.coverage?.ticks.at(-1)?.evaluated).toBe(false);
   });
 
   it('advances past only a path-oversized oldest commit with an explicit non-evaluated reason', async () => {
