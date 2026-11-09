@@ -334,8 +334,41 @@ describe('turn-start-memory admission (F-E: no length floor)', () => {
     })]);
     expect(packed.receipt.candidates[4]).toMatchObject({ class: 'memory', required: false, sourceUnits: [
       { sourceRef: 'memory:m-1', class: 'memory', revision: `epoch:7:sha256:${memory.bodySha256}` },
+    ] });
+    expect(packed.receipt.candidates[5]).toMatchObject({ class: 'corpus', required: false, sourceUnits: [
       { sourceRef: 'corpus:WI-42', class: 'corpus', revision: `epoch:7:sha256:${corpus.bodySha256}` },
     ] });
+  });
+
+  it('packs smaller complete recall units and stages only their offers while keeping orientation atomic', async () => {
+    const large = memoryFragmentOffer('memory', 'large', 7, 'turn-start', '- ' + 'large condition '.repeat(30));
+    const small = memoryFragmentOffer('memory', 'small', 7, 'turn-start', '- complete ☃ condition unless waived');
+    const memory = `## Recall\n\n${large.rendered}\n${small.rendered}`;
+    const orientation = 'Avi: retain the whole owner duty';
+    const stageDelivery = vi.fn(async () => 'orientation-source-allocation');
+    buildTurnStartOrientationBlockMock.mockResolvedValue({ block: orientation, deliveryToken: null, stageDelivery });
+    getMemoryBlockBoundedResultMock.mockResolvedValue({ status: 'ready', block: { text: memory, fragments: [large, small] } });
+    packingMocks.budgetBytes = Buffer.byteLength(`${orientation}\n\n## Recall\n\n${small.rendered}`);
+    const out = await post({ owner: 'su-per-source', prompt: 'relevant query', client: 'codex', memoryReceiptMode: true });
+    expect(out.text).toBe(`${orientation}\n\n## Recall\n\n${small.rendered}`);
+    expect(out.memoryFragmentOffers).toEqual([small]);
+    expect(stageDelivery).toHaveBeenCalledTimes(1);
+    expect(packingMocks.save).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ candidates: expect.arrayContaining([
+      expect.objectContaining({ reason: 'budget', sourceUnits: [expect.objectContaining({ sourceRef: 'memory:large' })] }),
+      expect.objectContaining({ reason: 'selected', sourceUnits: [expect.objectContaining({ sourceRef: 'memory:small' })] }),
+    ]) }));
+  });
+
+  it('cannot stage an omitted recall source merely because orientation contains identical bytes', async () => {
+    const large = memoryFragmentOffer('memory', 'large', 7, 'turn-start', '- ' + 'large condition '.repeat(30));
+    const small = memoryFragmentOffer('memory', 'small', 7, 'turn-start', '- identical complete condition');
+    const memory = `## Recall\n\n${large.rendered}\n${small.rendered}`;
+    buildTurnStartOrientationBlockMock.mockResolvedValue({ block: small.rendered, deliveryToken: null });
+    getMemoryBlockBoundedResultMock.mockResolvedValue({ status: 'ready', block: { text: memory, fragments: [large, small] } });
+    packingMocks.budgetBytes = Buffer.byteLength(small.rendered);
+    const out = await post({ owner: 'su-source-collision', prompt: 'relevant query', client: 'codex', memoryReceiptMode: true });
+    expect(out.text).toBe(small.rendered);
+    expect(out.memoryFragmentOffers ?? []).toEqual([]);
   });
 
   it('context reliability: final aggregate packing reserves control owner and correction units', async () => {
@@ -361,6 +394,28 @@ describe('turn-start-memory admission (F-E: no length floor)', () => {
     expect(packingMocks.save).toHaveBeenCalledWith(expect.objectContaining({ ownerId: 'su-packing' }),
       expect.objectContaining({ attemptId: 'packing-zero', contextBytes: 0, status: 'mandatory-overflow' }));
     expect(memoryReceiptSqlMock.mock.calls.filter(([chunks]) => chunks.join('?').includes('memory-emission:'))).toHaveLength(0);
+  });
+
+  it('reserves the OMP stdout newline before staging a complete orientation', async () => {
+    const stageDelivery = vi.fn(async () => 'native-selected-token');
+    buildTurnStartOrientationBlockMock.mockResolvedValue({ block: '字', deliveryToken: null, stageDelivery });
+    packingMocks.budgetBytes = 3;
+    const omitted = await post({ owner: 'su-omp-carrier-omit', prompt: 'relevant query', client: 'omp', memoryEnabled: false });
+    expect(omitted.text).toBe('');
+    expect(stageDelivery).not.toHaveBeenCalled();
+    expect(packingMocks.save).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({
+      contextBytes: 0, bodyBytes: 0, status: 'mandatory-overflow',
+      carrier: expect.objectContaining({ client: 'omp', port: 'turn-start', framingBytes: 0 }),
+    }));
+    packingMocks.budgetBytes = 4;
+    const selected = await post({ owner: 'su-omp-carrier-fit', prompt: 'relevant query', client: 'omp', memoryEnabled: false });
+    expect(selected.text).toBe('字');
+    expect(selected.deliveryToken).toBe('native-selected-token');
+    expect(stageDelivery).toHaveBeenCalledTimes(1);
+    expect(packingMocks.save).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({
+      contextBytes: 4, bodyBytes: 3,
+      carrier: { client: 'omp', port: 'turn-start', framingBytes: 1, accounting: 'exact', emittedContextBytes: 'UNKNOWN' },
+    }));
   });
 
   it('persists the packing receipt before staging the selected orientation', async () => {

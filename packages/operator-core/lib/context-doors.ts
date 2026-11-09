@@ -185,6 +185,42 @@ export interface ContextSourceReceipt extends Omit<ContextCandidateSource, 'rend
   bytes: number;
 }
 
+/** Only the producer's complete recall units may compete separately. Repeat
+ * their section heading so each selected unit keeps its provenance, charging
+ * those bytes in the ordinary packer. Unknown prose, notices, overlapping or
+ * duplicate bodies keep the original atomic block and all of its caveats.
+ * Recalled headings never assign authority or change a source's class. */
+export function optionalRecallContextCandidates(candidate: ContextCandidate): ContextCandidate[] {
+  const sources = candidate.sourceUnits;
+  if (candidate.required || !sources || sources.length < 2 ||
+      sources.some(source => source.class !== 'memory' && source.class !== 'corpus')) return [candidate];
+  const padded = `\n${candidate.text}\n`;
+  const spans = sources.map(source => {
+    const needle = `\n${source.rendered}\n`;
+    const start = padded.indexOf(needle);
+    return { source, start, end: start + source.rendered.length,
+      unique: !!source.rendered && start >= 0 && padded.indexOf(needle, start + 1) < 0 };
+  }).sort((a, b) => a.start - b.start);
+  const units: ContextCandidate[] = [];
+  let cursor = 0, heading = '';
+  for (const { source, start, end, unique } of spans) {
+    if (!unique || start < cursor) return [candidate];
+    const gap = candidate.text.slice(cursor, start).trim();
+    if (gap) {
+      // These are the injection composer's section headings. Any other
+      // unowned text could qualify a source, so it cannot be split away.
+      if (!/^#{2,3} [^\r\n]+$/.test(gap)) return [candidate];
+      heading = gap;
+    }
+    const text = (heading ? `${heading}\n\n` : '') + source.rendered;
+    units.push({ sourceRef: JSON.stringify([candidate.sourceRef, source.sourceRef, source.revision]),
+      revision: createHash('sha256').update(text, 'utf8').digest('hex'),
+      class: source.class, required: false, text, sourceUnits: [source] });
+    cursor = end;
+  }
+  return candidate.text.slice(cursor).trim() ? [candidate] : units;
+}
+
 function contextSourceReceipts(candidate: ContextCandidate): ContextSourceReceipt[] | undefined {
   return candidate.sourceUnits?.map(source => {
     if (!source.sourceRef || !source.revision || !source.rendered ||
@@ -214,9 +250,32 @@ export interface ContextPackingReceipt {
   attemptId: string;
   budgetBytes: number;
   contextBytes: number;
+  /** Endpoint body before the native carrier adds framing. With a carrier,
+   * contextBytes includes that framing; OMP mid-turn reserves the string
+   * carrier's maximum, since the next tool result may instead be an array. */
+  bodyBytes?: number;
+  carrier?: ContextCarrier & { framingBytes: number; accounting: 'exact' | 'upper-bound'; emittedContextBytes: 'UNKNOWN' };
   status: 'packed' | 'mandatory-overflow';
   tokenEstimate: { kind: 'token-proxy-v1'; value: number; billedTokens: 'UNKNOWN' };
   candidates: ContextCandidateReceipt[];
+}
+
+export interface ContextCarrier {
+  client: 'claude' | 'codex' | 'omp';
+  port: 'turn-start' | 'mid-turn';
+}
+
+/** Unknown/direct API callers have no established native carrier. JSON hook
+ * envelopes are parsed by Claude/Codex: only additionalContext reaches the
+ * model. OMP preserves index.mjs's stdout newline, and appendAdvisories adds
+ * two leading newlines for a string tool result (none for a separate block).
+ * Keep those emitted bytes unchanged: delivery receipts fingerprint them. */
+export function contextPackingCarrier(client: unknown, port: ContextCarrier['port']): ContextCarrier | undefined {
+  return client === 'claude' || client === 'codex' || client === 'omp' ? { client, port } : undefined;
+}
+
+function contextCarrierBytes(text: string, carrier?: ContextCarrier): number {
+  return Buffer.byteLength(text, 'utf8') + (!text || carrier?.client !== 'omp' ? 0 : carrier.port === 'mid-turn' ? 3 : 1);
 }
 
 const CONTEXT_CLASS_ORDER: Record<ContextCandidate['class'], number> = {
@@ -233,6 +292,7 @@ export function packContextCandidates(input: {
   budgetBytes: number;
   candidates: readonly ContextCandidate[];
   framing?: { prefix?: string; separator?: string; suffix?: string };
+  carrier?: ContextCarrier;
 }): { text: string; selectedIndexes: number[]; receipt: ContextPackingReceipt } {
   if (!input.attemptId || !Number.isSafeInteger(input.budgetBytes) || input.budgetBytes < 0) {
     throw new Error('Context packing requires an attempt ID and a nonnegative integer byte budget');
@@ -250,22 +310,26 @@ export function packContextCandidates(input: {
   const render = (selected: readonly number[]) => selected.length
     ? prefix + selected.map(index => input.candidates[index].text).join(separator) + suffix : '';
   const selected = ordered.filter(row => row.required).map(row => row.index);
-  const mandatoryOverflow = Buffer.byteLength(render(selected), 'utf8') > input.budgetBytes;
+  const mandatoryOverflow = contextCarrierBytes(render(selected), input.carrier) > input.budgetBytes;
   if (mandatoryOverflow) {
     selected.length = 0;
     for (const row of ordered) row.reason = 'mandatory-overflow';
   } else {
     for (const row of ordered) {
       if (row.required) continue;
-      if (Buffer.byteLength(render([...selected, row.index]), 'utf8') <= input.budgetBytes) selected.push(row.index);
+      if (contextCarrierBytes(render([...selected, row.index]), input.carrier) <= input.budgetBytes) selected.push(row.index);
     }
     for (const index of selected) rows[index].reason = 'selected';
   }
   const text = render(selected);
-  const contextBytes = Buffer.byteLength(text, 'utf8');
+  const bodyBytes = Buffer.byteLength(text, 'utf8');
+  const contextBytes = contextCarrierBytes(text, input.carrier);
   return { text, selectedIndexes: selected, receipt: {
     schemaVersion: 'context-packing-v1', attemptId: input.attemptId,
     budgetBytes: input.budgetBytes, contextBytes,
+    ...(input.carrier ? { bodyBytes, carrier: { ...input.carrier, framingBytes: contextBytes - bodyBytes,
+      accounting: input.carrier.client === 'omp' && input.carrier.port === 'mid-turn' && text ? 'upper-bound' as const : 'exact' as const,
+      emittedContextBytes: 'UNKNOWN' as const } } : {}),
     status: mandatoryOverflow ? 'mandatory-overflow' : 'packed',
     tokenEstimate: { kind: 'token-proxy-v1', value: Math.ceil(contextBytes / 4), billedTokens: 'UNKNOWN' },
     candidates: rows,
@@ -278,11 +342,18 @@ export function validateContextPackingResult(result: ReturnType<typeof packConte
   expected: Parameters<typeof packContextCandidates>[0]): { valid: boolean; errors: string[] } {
   const errors: string[] = [];
   const { receipt, selectedIndexes, text } = result;
-  const bytes = Buffer.byteLength(text, 'utf8');
+  const bodyBytes = Buffer.byteLength(text, 'utf8');
+  const bytes = contextCarrierBytes(text, expected.carrier);
   const { prefix = '', separator = '\n\n', suffix = '' } = expected.framing ?? {};
   if (receipt.schemaVersion !== 'context-packing-v1' || receipt.attemptId !== expected.attemptId ||
       receipt.budgetBytes !== expected.budgetBytes) errors.push('attempt-identity');
   if (receipt.contextBytes !== bytes || bytes > expected.budgetBytes) errors.push('context-bytes');
+  if (expected.carrier) {
+    const accounting = expected.carrier.client === 'omp' && expected.carrier.port === 'mid-turn' && text ? 'upper-bound' : 'exact';
+    if (receipt.bodyBytes !== bodyBytes || receipt.carrier?.client !== expected.carrier.client ||
+        receipt.carrier.port !== expected.carrier.port || receipt.carrier.framingBytes !== bytes - bodyBytes ||
+        receipt.carrier.accounting !== accounting || receipt.carrier.emittedContextBytes !== 'UNKNOWN') errors.push('native-carrier');
+  } else if (receipt.carrier !== undefined || receipt.bodyBytes !== undefined) errors.push('native-carrier');
   if (receipt.tokenEstimate.kind !== 'token-proxy-v1' || receipt.tokenEstimate.value !== Math.ceil(bytes / 4) ||
       receipt.tokenEstimate.billedTokens !== 'UNKNOWN') errors.push('token-estimate');
   if (receipt.candidates.length !== expected.candidates.length) errors.push('candidate-population');
@@ -318,7 +389,7 @@ export function validateContextPackingResult(result: ReturnType<typeof packConte
     if (receipt.status === 'packed' && source.required && source.text && !selected.has(index)) errors.push(`required-omitted:${index}`);
   }
   const required = expected.candidates.filter(row => row.required && row.text);
-  const requiredBytes = required.length ? Buffer.byteLength(prefix + required.map(row => row.text).join(separator) + suffix, 'utf8') : 0;
+  const requiredBytes = required.length ? contextCarrierBytes(prefix + required.map(row => row.text).join(separator) + suffix, expected.carrier) : 0;
   if (receipt.status === 'mandatory-overflow') {
     if (text || selectedIndexes.length || requiredBytes <= expected.budgetBytes) errors.push('mandatory-overflow');
   } else if (receipt.status !== 'packed' || requiredBytes > expected.budgetBytes) errors.push('packing-status');

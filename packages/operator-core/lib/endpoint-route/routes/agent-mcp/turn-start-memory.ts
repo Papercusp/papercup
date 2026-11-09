@@ -33,7 +33,7 @@
  */
 import { defineTool } from '@papercusp/agent-mcp';
 import { createHash, randomUUID } from 'node:crypto';
-import { computeTurnDoors, packContextCandidates, type ContextCandidate, type ContextCandidateSource } from '../../../context-doors';
+import { computeTurnDoors, contextPackingCarrier, optionalRecallContextCandidates, packContextCandidates, type ContextCandidate, type ContextCandidateSource } from '../../../context-doors';
 import { getDoorConstantsSync } from '../../../context-doors-config';
 import { saveContextPackingReceipt, loadContextPackingReceipt, pageContextPackingReceipt } from '../../../context-packing-receipts';
 import type { ActivationRevision } from '../../../session-activation';
@@ -236,10 +236,10 @@ export function turnStartContextCandidates(parts: {
       sourceRef: `fact:${JSON.stringify([row.scope, row.ref, row.key])}`, revision: row.cellVersion,
       class: 'policy', rendered: row.rendered,
     }))),
-    unit('turn-start:memory', 'memory', false, parts.memory, parts.memoryFragments?.map(row => ({
+    ...optionalRecallContextCandidates(unit('turn-start:memory', 'memory', false, parts.memory, parts.memoryFragments?.map(row => ({
       sourceRef: `${row.kind}:${row.id}`, revision: `epoch:${row.epoch}:sha256:${row.bodySha256}`,
       class: row.kind, rendered: row.rendered,
-    }))),
+    })))),
     unit('turn-start:granted-sources', 'granted', false, parts.personal),
     unit('turn-start:packages', 'package', false, parts.packages ?? '')];
 }
@@ -1108,15 +1108,17 @@ const turnStartMemory = defineTool({
         memoryFragments: preparedMemory?.text === memory ? preparedMemory.fragments : undefined,
         facts: factBodies.text, memory, personal, packages: appendedPackages });
       const packed = packContextCandidates({ attemptId: turnStartRequestId ?? randomUUID(),
-        budgetBytes: contextInjectionBudgetBytes(owner), candidates });
+        budgetBytes: contextInjectionBudgetBytes(owner), candidates, carrier: contextPackingCarrier(body.client, 'turn-start') });
       const selected = (index: number) => packed.selectedIndexes.includes(index);
+      const selectedSource = (sourceRef: string) => packed.receipt.candidates.some(row =>
+        row.sourceRef === sourceRef && row.reason === 'selected');
       // Persist before staging or emission. A failed evidence write fails closed
       // through the endpoint's existing silent-response contract.
       const packingReceipt = await saveContextPackingReceipt({ workspaceId, ownerId: owner,
         harness: harness || 'operator', port: 'turn-start', client: body.client ?? '' }, packed.receipt);
       if (selected(2)) deliveryToken = orientation.stageDelivery
         ? await orientation.stageDelivery() : orientation.deliveryToken;
-      if (packages.receipt && (selected(6) || (!appendedPackages && selected(2)))) {
+      if (packages.receipt && (selectedSource('turn-start:packages') || (!appendedPackages && selected(2)))) {
         const token = deliveryToken ?? randomUUID();
         try {
           const { stage } = await import('../../../agent-tools/coordination/read-cursors');
@@ -1156,14 +1158,20 @@ const turnStartMemory = defineTool({
         } catch { /* No candidate means no body confirmation; prefer replay. */ }
       }
       let memoryFragmentOffers: MemoryFragmentOffer[] = [];
-      if (selected(4) && memory && preparedMemory && preparedMemory.text === memory && preparedMemory.fragments.length) {
+      const selectedMemoryFragments = preparedMemory?.text === memory
+        ? preparedMemory.fragments.filter(row => packed.receipt.candidates.some(candidate => candidate.reason === 'selected' &&
+          candidate.sourceUnits?.some(source => source.sourceRef === `${row.kind}:${row.id}` &&
+            source.revision === `epoch:${row.epoch}:sha256:${row.bodySha256}` &&
+            source.fragmentSha256 === row.bodySha256 && source.bytes === row.bodyBytes)) &&
+          (`\n${packed.text}\n`).includes(`\n${row.rendered}\n`)) : [];
+      if (selectedMemoryFragments.length) {
         const token = deliveryToken ?? randomUUID();
         try {
           const [{ stageMemoryEmission }, { getOrgPg }] = await Promise.all([
             import('../../../memory/session-epoch-ledger'), import('@papercusp/db-org'),
           ]);
-          await stageMemoryEmission(getOrgPg().sql, owner, token, preparedMemory.fragments);
-          memoryFragmentOffers = preparedMemory.fragments;
+          await stageMemoryEmission(getOrgPg().sql, owner, token, selectedMemoryFragments);
+          memoryFragmentOffers = selectedMemoryFragments;
           deliveryToken = token;
         } catch { /* No durable offer means no suppression; prefer replay. */ }
       }

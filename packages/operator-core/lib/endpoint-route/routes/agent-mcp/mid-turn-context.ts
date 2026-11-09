@@ -64,7 +64,7 @@ import { turnStartRespondBy } from './turn-start-memory';
 import { createMemoryWorkDeadline } from '../../../memory/op-deadline';
 import { randomUUID } from 'node:crypto';
 import { createHash } from 'node:crypto';
-import { packContextCandidates, type ContextCandidate } from '../../../context-doors';
+import { contextPackingCarrier, optionalRecallContextCandidates, packContextCandidates, type ContextCandidate } from '../../../context-doors';
 import { saveContextPackingReceipt, loadContextPackingReceipt, pageContextPackingReceipt } from '../../../context-packing-receipts';
 import { contextInjectionBudgetBytes } from './turn-start-memory';
 import type { PreparedMemoryBlock, MemoryFragmentOffer, MemoryEmissionConfirmation } from '../../../memory/session-epoch-ledger';
@@ -484,9 +484,9 @@ export function clampToBudget(block: string, budget: number = MID_TURN_BUDGET_CH
  * memory pipeline about failure-loop state or identity rules.
  */
 export function packMidTurnContext(memoryBlock: string, failureHint: string, ruleContext: string, codeIntel = '',
-  budgetBytes = contextInjectionBudgetBytes(''), attemptId = randomUUID(), fragments?: readonly MemoryFragmentOffer[]) {
+  budgetBytes = contextInjectionBudgetBytes(''), attemptId = randomUUID(), fragments?: readonly MemoryFragmentOffer[], client?: unknown) {
   const memory = clampToBudget(memoryBlock).trim();
-  return packContextCandidates({ attemptId, budgetBytes, candidates: [
+  return packContextCandidates({ attemptId, budgetBytes, carrier: contextPackingCarrier(client, 'mid-turn'), candidates: [
     { sourceRef: 'mid-turn:failure-hint', class: 'correction', required: true, text: failureHint },
     { sourceRef: 'mid-turn:binding-rules', class: 'policy', required: true, text: ruleContext },
     { sourceRef: 'mid-turn:code-intelligence', class: 'code', required: false, text: codeIntel },
@@ -495,7 +495,8 @@ export function packMidTurnContext(memoryBlock: string, failureHint: string, rul
         sourceRef: `${row.kind}:${row.id}`, revision: `epoch:${row.epoch}:sha256:${row.bodySha256}`,
         class: row.kind, rendered: row.rendered,
       })) } : {}) },
-  ].map(row => ({ ...row, class: row.class as ContextCandidate['class'], revision: createHash('sha256').update(row.text).digest('hex') })) });
+  ].map(row => ({ ...row, class: row.class as ContextCandidate['class'], revision: createHash('sha256').update(row.text).digest('hex') }))
+    .flatMap(candidate => candidate.sourceRef === 'mid-turn:memory' ? optionalRecallContextCandidates(candidate) : [candidate]) });
 }
 
 export function composeMidTurnContextText(memoryBlock: string, failureHint: string, ruleContext: string, codeIntel = ''): string {
@@ -884,7 +885,7 @@ const midTurnContext = defineTool({
         calls: Array.isArray(body.toolCalls) && body.toolCalls.length ? body.toolCalls : [{ tool: body.tool, toolInput: body.toolInput }],
       }).catch(() => ''); // Its own reserved budget: the memory block never shrinks it (P-005).
       const packed = packMidTurnContext(prepared?.text ?? '', failureHint, ruleContext, codeIntel,
-        contextInjectionBudgetBytes(owner), randomUUID(), prepared?.fragments);
+        contextInjectionBudgetBytes(owner), randomUUID(), prepared?.fragments, body.client);
       let packingReceipt: Awaited<ReturnType<typeof saveContextPackingReceipt>>;
       try {
         packingReceipt = await saveContextPackingReceipt({ workspaceId: await workspaceIdResolved,
@@ -896,7 +897,11 @@ const midTurnContext = defineTool({
       }
       const text = packed.text;
       const respondBy = turnStartRespondBy(arrivedAt, body.wallMs);
-      const fragments = prepared?.fragments.filter(row => (`\n${text}\n`).includes(`\n${row.rendered}\n`)) ?? [];
+      const fragments = prepared?.fragments.filter(row => packed.receipt.candidates.some(candidate => candidate.reason === 'selected' &&
+        candidate.sourceUnits?.some(source => source.sourceRef === `${row.kind}:${row.id}` &&
+          source.revision === `epoch:${row.epoch}:sha256:${row.bodySha256}` &&
+          source.fragmentSha256 === row.bodySha256 && source.bytes === row.bodyBytes)) &&
+        (`\n${text}\n`).includes(`\n${row.rendered}\n`)) ?? [];
       let delivery: object = {};
       if (body.memoryReceiptMode === true && ['codex', 'claude', 'omp'].includes(body.client ?? '') &&
           fragments.length && !req.signal.aborted && (respondBy === null || Date.now() < respondBy)) {
