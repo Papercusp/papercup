@@ -46,6 +46,8 @@ import {
   RESOLUTION_STALE_ATTEMPTS_DEFAULT,
   resolutionStaleAttempts,
   resolveMetadataRepairLock,
+  metadataRepairArboristIdentity,
+  METADATA_REPAIR_NPM_BOOTSTRAP,
   runCommandUnderInstallMutex,
   runNpmWithHeartbeat,
   USAGE,
@@ -326,6 +328,8 @@ test(`metadata repair resolves scoped devDependency kits across explicit library
     t.diagnostic(JSON.stringify({ label, exitCode,
       local: produced?.packages[appPath + "/node_modules/" + kit] ?? null,
       hoisted: produced?.packages["node_modules/" + kit] ?? null,
+      genericBefore: JSON.parse(before).packages[genericPath],
+      genericAfter: produced?.packages[genericPath] ?? null,
       target: produced?.packages[appPath + "/template-kit"] ?? null }));
     throw error;
   });
@@ -345,7 +349,7 @@ test(`metadata repair resolves scoped devDependency kits across explicit library
 });
 }
 
-test("Arborist deduplication must respect distinct equal-version directory link targets", async t => {
+test("Arborist child correction respects directory identity without changing npm", async t => {
   const root = mkdtempSync(join(tmpdir(), "metadata-arborist-identity-test-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const app = "apps/app";
@@ -371,6 +375,12 @@ test("Arborist deduplication must respect distinct equal-version directory link 
   const npmCli = realpathSync(join(dirname(process.execPath), "npm"));
   const requireNpm = createRequire(npmCli);
   const Arborist = requireNpm("@npmcli/arborist");
+  const Node = requireNpm("@npmcli/arborist/lib/node.js");
+  const Link = requireNpm("@npmcli/arborist/lib/link.js");
+  const originalMatches = Node.prototype.matches;
+  const identity = metadataRepairArboristIdentity(npmCli);
+  const originals = [npmCli, identity.nodePath, identity.packagePath, ...identity.files.map(file => file.path)]
+    .map(path => [path, readFileSync(path)]);
   const tree = await new Arborist({ path: root }).loadVirtual();
   const appNode = tree.inventory.get(app);
   const localLink = appNode.children.get("kit");
@@ -383,8 +393,70 @@ test("Arborist deduplication must respect distinct equal-version directory link 
   t.diagnostic(JSON.stringify({ local: localLink.realpath, generic: genericLink.realpath,
     matches: genericLink.matches(localLink), canDedupe: localLink.canDedupe(),
     genericSatisfies: edge.satisfiedBy(genericLink) }));
-  assert.equal(localLink.canDedupe(), false,
-    "a same-version workspace cannot replace a different declared file: target");
+  // Keep the unmodified-library oracle: it distinguishes the measured defect
+  // from a changed fixture or a correction leaking into this parent process.
+  assert.equal(genericLink.matches(localLink), true);
+  assert.equal(localLink.canDedupe(), true);
+  const sameTarget = new Link({ path: join(root, "copies/node_modules/kit"), target: localLink.target });
+  assert.equal(sameTarget.matches(localLink), true);
+  const oracle = `
+    (async () => {
+      const req = require('node:module').createRequire(process.argv[1]);
+      const tree = await new (req('@npmcli/arborist'))({ path: process.argv[2] }).loadVirtual();
+      const local = tree.inventory.get('apps/app').children.get('kit');
+      const generic = tree.children.get('kit');
+      const same = new (req('@npmcli/arborist/lib/link.js'))({
+        path: require('node:path').join(process.argv[2], 'copies/node_modules/kit'), target: local.target });
+      const Node = req('@npmcli/arborist/lib/node.js');
+      const compare = (left, right) => Node.prototype.matches.call(left, right);
+      const registry = { name: 'registry', packageName: 'registry', version: '1.0.0', isLink: false };
+      const missing = { name: 'kit', isLink: true, realpath: '', target: local.target };
+      const indeterminate = { name: 'kit', isLink: true, target: generic.target };
+      const normalized = { name: 'kit', isLink: true, realpath: local.realpath + '/../kit', target: local.target };
+      console.log(JSON.stringify({ distinct: generic.matches(local), dedupe: local.canDedupe(),
+        same: same.matches(local), satisfied: tree.inventory.get('apps/app').edgesOut.get('kit').satisfiedBy(generic),
+        missing: compare(missing, generic), indeterminate: compare(local, indeterminate),
+        normalized: compare(normalized, local), registry: compare(registry, { ...registry }),
+        differentVersion: compare(registry, { ...registry, version: '2.0.0' }),
+        differentIntegrity: compare({ ...registry, integrity: 'one' }, { ...registry, integrity: 'two' }) }));
+    })().catch(error => { console.error(error); process.exitCode = 1; });`;
+  const bootstrap = METADATA_REPAIR_NPM_BOOTSTRAP.replace("\nrequire(process.argv[1]);", oracle);
+  const run = (bound, source = bootstrap) => spawnSync(process.execPath,
+    ["--input-type=commonjs", "--eval", source, npmCli, JSON.stringify(bound), root],
+    { encoding: "utf8", timeout: 30_000, env: { PATH: dirname(process.execPath) } });
+  const oracleIdentity = { ...identity, bootstrapSha256: createHash('sha256').update(bootstrap).digest('hex') };
+  const result = run(oracleIdentity);
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), { distinct: false, dedupe: false, same: true, satisfied: false,
+    missing: true, indeterminate: true, normalized: true, registry: true, differentVersion: false, differentIntegrity: false });
+  const corruptions = [
+    ...['nodeSha256', 'packageSha256', 'bootstrapSha256', 'version', 'npmVersion', 'policy']
+      .map(field => ({ ...oracleIdentity, [field]: '0'.repeat(64) })),
+    ...oracleIdentity.files.map((_, index) => ({ ...oracleIdentity, files: oracleIdentity.files.map((file, i) =>
+      i === index ? { ...file, sha256: '0'.repeat(64) } : file) })),
+    { ...oracleIdentity, files: oracleIdentity.files.slice(1) },
+    { ...oracleIdentity, nodePath: identity.files.find(file => file.role === 'link').path },
+  ];
+  for (const corrupted of corruptions) {
+    const refused = run(corrupted);
+    assert.notEqual(refused.status, 0);
+    assert.match(refused.stderr, /metadata-repair-arborist-source/);
+  }
+  for (const consumer of [
+    '', // A CLI that never consumes the attested library cannot claim success.
+    `const req = require('node:module').createRequire(process.argv[1]);
+     req('@npmcli/arborist').Node = function DifferentNode() {};
+     req('@npmcli/arborist');`,
+  ]) {
+    const source = METADATA_REPAIR_NPM_BOOTSTRAP.replace('\nrequire(process.argv[1]);', consumer);
+    const refused = run({ ...identity, bootstrapSha256: createHash('sha256').update(source).digest('hex') }, source);
+    assert.notEqual(refused.status, 0);
+    assert.match(refused.stderr, /metadata-repair-arborist-source/);
+  }
+  assert.equal(Node.prototype.matches, originalMatches);
+  assert.equal(localLink.canDedupe(), true);
+  for (const [path, bytes] of originals) assert.deepEqual(readFileSync(path), bytes);
 });
 
 for (const mutation of ["local-target", "malformed", "oversized", "symlink"]) {
@@ -485,6 +557,21 @@ test("metadata graph admits a missing selected workspace mirror but refuses inve
   f.lock.packages[f.app].integrity = "sha512-invented";
   f.write();
   assert.throws(() => f.run(value => value, 0, baseline), /unrelated-lock-entry/);
+});
+
+test("metadata graph permits optional workspace name elision and refuses wrong names", t => {
+  const f = repairGraphFixture(t);
+  delete f.lock.packages[f.generic].name;
+  f.write();
+  f.run();
+  f.lock.packages[f.generic].name = 'wrong-name';
+  f.write();
+  assert.throws(() => f.run(), /manifest-mirror/);
+  delete f.lock.packages[f.generic].name;
+  f.write();
+  const before = JSON.parse(f.beforeLockBytes);
+  before.packages[f.generic].name = 'wrong-baseline';
+  assert.throws(() => f.run(value => value, 0, Buffer.from(JSON.stringify(before))), /unrelated-lock-entry/);
 });
 
 for (const mutation of ["wrong-local-target", "local-version", "child-next", "next-env", "unrelated-change", "unrelated-delete", "unrelated-add", "header"]) {
@@ -636,7 +723,8 @@ for (const [label, extra, expectedLaunch] of [
 
 for (const mutation of ["source-manifest", "source-config", "source-mode", "local-target", "local-archive",
   "workspace-added", "private-workspace-added", "private-manifest", "private-config", "private-symlink", "absent-config",
-  "user-config", "global-config", "npm-cli"]) {
+  "user-config", "global-config", "npm-cli", "npm-package", "arborist-node", "arborist-package",
+  "arborist-entry", "arborist-place-dep", "arborist-link", "arborist-dep-valid"]) {
   test(`metadata repair refuses changed ${mutation} at the actual launch boundary`, async (t) => {
     const root = mkdtempSync(join(tmpdir(), "metadata-repair-input-test-"));
     t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -651,7 +739,14 @@ for (const mutation of ["source-manifest", "source-config", "source-mode", "loca
     const npmCli = join(root, "tool/npm/bin/npm-cli.js");
     mkdirSync(dirname(npmCli), { recursive: true });
     writeFileSync(npmCli, "// selected CLI bytes\n");
-    writeFileSync(join(root, "tool/npm/package.json"), '{"version":"1.0.0"}');
+    writeFileSync(join(root, "tool/npm/package.json"), '{"version":"11.19.0"}');
+    const arboristRoot = join(root, "tool/npm/node_modules/@npmcli/arborist");
+    mkdirSync(join(arboristRoot, "lib"), { recursive: true });
+    writeFileSync(join(arboristRoot, "package.json"), '{"version":"9.9.1","main":"lib/index.js"}');
+    // This boundary-only fixture never executes npm; it must still supply the
+    // complete admitted file set so each mutation reaches the launch check.
+    for (const file of ['node', 'index', 'place-dep', 'link', 'dep-valid'])
+      writeFileSync(join(arboristRoot, 'lib/' + file + '.js'), '// selected ' + file + ' bytes\n');
     let launched = false;
     let attemptRoot;
     await assert.rejects(resolveMetadataRepairLock({ repoRoot: root }, {
@@ -685,6 +780,12 @@ for (const mutation of ["source-manifest", "source-config", "source-mode", "loca
         if (mutation === "user-config") writeFileSync(join(attemptRoot, "user.npmrc"), "engine-strict=true\n");
         if (mutation === "global-config") writeFileSync(join(attemptRoot, "global.npmrc"), "engine-strict=true\n");
         if (mutation === "npm-cli") writeFileSync(npmCli, "// changed CLI bytes\n");
+        if (mutation === "npm-package") writeFileSync(join(root, "tool/npm/package.json"), '{"version":"changed"}');
+        if (mutation === "arborist-node") writeFileSync(join(arboristRoot, "lib/node.js"), "// changed Arborist bytes\n");
+        if (mutation === "arborist-package") writeFileSync(join(arboristRoot, "package.json"), '{"version":"changed"}');
+        const file = { 'arborist-entry': 'index', 'arborist-place-dep': 'place-dep',
+          'arborist-link': 'link', 'arborist-dep-valid': 'dep-valid' }[mutation];
+        if (file) writeFileSync(join(arboristRoot, 'lib/' + file + '.js'), '// changed library bytes\n');
       },
     }), /metadata-repair-launch-inputs-changed/);
     assert.equal(launched, false);

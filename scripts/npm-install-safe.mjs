@@ -73,6 +73,7 @@ import {
 } from "node:fs";
 import { constants as osConstants, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { isCliEntry } from "../packages/operator-core/lib/util/cli-entry.ts";
@@ -1850,6 +1851,115 @@ export function metadataRepairRuntimeIdentity() {
       libc: { family: glibc ? "glibc" : "not-applicable", version: glibc ?? null } } };
 }
 
+/** Bind the library actually resolved from the selected npm, not this repo. */
+export function metadataRepairArboristIdentity(npmCli) {
+  const requireNpm = createRequire(npmCli);
+  const nodePath = realpathSync(requireNpm.resolve("@npmcli/arborist/lib/node.js"));
+  const packagePath = realpathSync(join(dirname(nodePath), "../package.json"));
+  const packageBytes = readFileSync(packagePath);
+  const digest = bytes => createHash("sha256").update(bytes).digest("hex");
+  const version = JSON.parse(packageBytes).version;
+  const npmPackage = realpathSync(join(dirname(npmCli), "../package.json"));
+  const npmVersion = JSON.parse(readFileSync(npmPackage)).version;
+  // Temporary compatibility policy for the measured upstream shortcut. Remove
+  // it when a pinned upstream release passes the distinct-target matrix without
+  // the shim; qualify any other version before admitting it to this profile.
+  if (version !== "9.9.1" || npmVersion !== "11.19.0") throw new Error("metadata-repair-arborist-version");
+  const files = [
+    ["entry", requireNpm.resolve("@npmcli/arborist")],
+    ["place-dep", requireNpm.resolve("@npmcli/arborist/lib/place-dep.js")],
+    ["link", requireNpm.resolve("@npmcli/arborist/lib/link.js")],
+    ["dep-valid", requireNpm.resolve("@npmcli/arborist/lib/dep-valid.js")],
+    ["npm-package", npmPackage], ["npm-cli", npmCli],
+  ].map(([role, path]) => ({ role, path: realpathSync(path), sha256: digest(readFileSync(path)) }));
+  return { nodePath, nodeSha256: digest(readFileSync(nodePath)), packagePath,
+    packageSha256: digest(packageBytes), version, npmVersion, policy: "directory-link-realpath-v1",
+    bootstrapSha256: digest(METADATA_REPAIR_NPM_BOOTSTRAP), files };
+}
+
+// Literal executable input: bundling must not reserialize a function body.
+// The parent/global installation stays unchanged. Loaders compile the exact
+// verified bytes, and the actual CLI consumer must use that module instance.
+export const METADATA_REPAIR_NPM_BOOTSTRAP = String.raw`(function (require) {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const Module = require("node:module");
+  const digest = bytes => require("node:crypto").createHash("sha256").update(bytes).digest("hex");
+  const cli = process.argv[1];
+  const expected = JSON.parse(process.argv[2]);
+  const fail = () => { throw new Error("metadata-repair-arborist-source"); };
+  const requireNpm = Module.createRequire(cli);
+  const nodePath = fs.realpathSync(requireNpm.resolve("@npmcli/arborist/lib/node.js"));
+  const packagePath = fs.realpathSync(path.join(path.dirname(nodePath), "../package.json"));
+  const packageBytes = fs.readFileSync(packagePath);
+  const npmPackage = fs.realpathSync(path.join(path.dirname(cli), "../package.json"));
+  const files = [
+    ["entry", requireNpm.resolve("@npmcli/arborist")],
+    ["place-dep", requireNpm.resolve("@npmcli/arborist/lib/place-dep.js")],
+    ["link", requireNpm.resolve("@npmcli/arborist/lib/link.js")],
+    ["dep-valid", requireNpm.resolve("@npmcli/arborist/lib/dep-valid.js")],
+    ["npm-package", npmPackage], ["npm-cli", cli],
+  ].map(([role, file]) => ({ role, path: fs.realpathSync(file), sha256: digest(fs.readFileSync(file)) }));
+  if (nodePath !== expected.nodePath || packagePath !== expected.packagePath ||
+      digest(packageBytes) !== expected.packageSha256 || JSON.parse(packageBytes).version !== expected.version ||
+      expected.version !== "9.9.1" || expected.npmVersion !== "11.19.0" ||
+      JSON.parse(fs.readFileSync(npmPackage)).version !== expected.npmVersion ||
+      expected.policy !== "directory-link-realpath-v1" || digest(process._eval) !== expected.bootstrapSha256 ||
+      JSON.stringify(files) !== JSON.stringify(expected.files) || require.cache[nodePath]) fail();
+  const bound = new Map(files.map(file => [file.path, file.sha256]));
+  bound.set(nodePath, expected.nodeSha256);
+  bound.set(packagePath, expected.packageSha256);
+  const compiled = new Set();
+  for (const extension of [".js", ".json"]) {
+    const originalLoader = Module._extensions[extension];
+    Module._extensions[extension] = (module, filename) => {
+      if (!bound.has(filename)) return originalLoader(module, filename);
+      const bytes = fs.readFileSync(filename);
+      if (digest(bytes) !== bound.get(filename)) fail();
+      compiled.add(filename);
+      if (extension === ".json") module.exports = JSON.parse(bytes.toString("utf8"));
+      else module._compile(bytes.toString("utf8"), filename);
+    };
+  }
+  const Node = requireNpm(nodePath);
+  if (!compiled.has(nodePath) || typeof Node.prototype.matches !== "function") fail();
+  const matches = Node.prototype.matches;
+  const normalized = value => typeof value === "string" && value.trim() && path.isAbsolute(value)
+    ? path.resolve(value) : null;
+  const corrected = function (other) {
+    if (this.isLink && other && other.isLink) {
+      const left = normalized(this.realpath);
+      const right = normalized(other.realpath);
+      if (left && right && left !== right) return false;
+    }
+    return Reflect.apply(matches, this, arguments);
+  };
+  Node.prototype.matches = corrected;
+  const entry = files.find(file => file.role === "entry").path;
+  if (requireNpm(entry).Node !== Node) fail();
+  const originalLoad = Module._load;
+  let consumers = 0;
+  Module._load = function (request, parent, isMain) {
+    const result = Reflect.apply(originalLoad, this, arguments);
+    if (request === "@npmcli/arborist") {
+      if (Module._resolveFilename(request, parent, isMain) !== entry || result.Node !== Node ||
+          require.cache[nodePath].exports !== Node || Node.prototype.matches !== corrected) fail();
+      consumers++;
+    }
+    return result;
+  };
+  process.on("exit", () => {
+    if (!consumers || require.cache[nodePath].exports !== Node || Node.prototype.matches !== corrected ||
+        files.filter(file => ["entry", "place-dep", "link", "dep-valid"].includes(file.role))
+          .some(file => !compiled.has(file.path))) {
+      console.error("metadata-repair-arborist-source");
+      process.exitCode = 1;
+    }
+  });
+  process.argv.splice(2, 1);
+})(require);
+require(process.argv[1]);`;
+
 function fileBytesEqual(left, right) {
   if (left === null || right === null) return left === right;
   return Buffer.isBuffer(left) && Buffer.isBuffer(right) && left.equals(right);
@@ -1947,14 +2057,18 @@ export function assertMetadataRepairGraph({ repoRoot, beforeLockBytes, lockPath 
   if (before) {
     addClosure(before.packages);
     const stripMirrors = entry => entry && Object.fromEntries(Object.entries(entry)
-      .filter(([key]) => !LOCK_MANIFEST_DEPENDENCY_FIELDS.includes(key)));
+      // npm elides the optional name of an unscoped workspace whose directory
+      // already supplies it. Explicit output names were checked above; reject
+      // a wrong baseline name too before comparing the remaining exact fields.
+      .filter(([key]) => key !== "name" && !LOCK_MANIFEST_DEPENDENCY_FIELDS.includes(key)));
     const top = value => ({ requires: true, ...Object.fromEntries(Object.entries(value).filter(([key]) => key !== "packages")) });
     if (!isDeepStrictEqual(top(before), top(lock))) refuse("unrelated-lock-header");
     for (const path of new Set([...Object.keys(before.packages), ...Object.keys(packages)])) {
       const old = before.packages[path];
       const current = packages[path];
       if (isDeepStrictEqual(old, current) || permitted.has(path)) continue;
-      if (manifests.has(path) && isDeepStrictEqual(stripMirrors(old), stripMirrors(current))) continue;
+      if (manifests.has(path) && (old?.name === undefined || old.name === manifests.get(path).name) &&
+          isDeepStrictEqual(stripMirrors(old), stripMirrors(current))) continue;
       if (!old && manifests.has(path) && current && Object.entries(current).every(([key, value]) =>
         Object.hasOwn(manifests.get(path), key) && isDeepStrictEqual(value, manifests.get(path)[key]))) continue;
       if (current?.link && manifests.has(current.resolved) &&
@@ -2191,14 +2305,16 @@ export async function resolveMetadataRepairLock({ repoRoot }, {
     for (const path of [userconfig, globalconfig]) writeFileSync(path, "", { flag: "wx", mode: 0o600 });
     const node = realpathSync(process.execPath);
     const cli = realpathSync(npmCli);
-    const argv = [cli, "install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund",
+    const arborist = metadataRepairArboristIdentity(cli);
+    const argv = ["--input-type=commonjs", "--eval", METADATA_REPAIR_NPM_BOOTSTRAP, cli, JSON.stringify(arborist),
+      "install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund",
       "--workspaces", "--include-workspace-root", "--registry=https://registry.npmjs.org/",
       "--userconfig=" + userconfig, "--globalconfig=" + globalconfig, "--cache=" + cache];
     // Construct from nothing. In particular npm_config, proxy, TLS and loader
     // settings from the calling shell are neither inherited nor serialized.
     const env = { HOME: home, TMPDIR: temporary, PATH: dirname(node), LANG: "C.UTF-8", TZ: "UTC" };
     receipt.command = { executable: node, executableSha256: digest(readFileSync(node)),
-      npmCli: cli, npmCliSha256: digest(readFileSync(cli)), argv: [...argv], cwd: input.scratchRoot,
+      npmCli: cli, npmCliSha256: digest(readFileSync(cli)), arborist, argv: [...argv], cwd: input.scratchRoot,
       runner: realpathSync(fileURLToPath(import.meta.url)), runnerSha256: digest(readFileSync(fileURLToPath(import.meta.url))) };
     receipt.runtime = { ...metadataRepairRuntimeIdentity(),
       npm: JSON.parse(readFileSync(join(dirname(cli), "../package.json"), "utf8")).version };
@@ -2241,6 +2357,9 @@ export async function resolveMetadataRepairLock({ repoRoot }, {
       // Logging/attribution is observable preparation, not the launch itself.
       // Reconcile the complete discovered population and raw bytes at spawn;
       // checking only argv/cache permits a different graph or npm config to run.
+      let currentArborist;
+      try { currentArborist = metadataRepairArboristIdentity(cli); }
+      catch { throw new Error("metadata-repair-launch-inputs-changed"); }
       if (JSON.stringify(manifestOnlyResolutionLayout(repositoryRealpath)) !== JSON.stringify(layout) ||
           JSON.stringify(manifestOnlyResolutionLayout(input.scratchRoot)) !== JSON.stringify(layout) ||
           receipt.selectedInputs.some(({ path, mode }) =>
@@ -2255,6 +2374,7 @@ export async function resolveMetadataRepairLock({ repoRoot }, {
             digest(readFileSync(path)) !== sha256) ||
           digest(readFileSync(node)) !== receipt.command.executableSha256 ||
           realpathSync(npmCli) !== cli || digest(readFileSync(cli)) !== receipt.command.npmCliSha256 ||
+          JSON.stringify(currentArborist) !== JSON.stringify(arborist) ||
           digest(readFileSync(receipt.command.runner)) !== receipt.command.runnerSha256) {
         throw new Error("metadata-repair-launch-inputs-changed");
       }

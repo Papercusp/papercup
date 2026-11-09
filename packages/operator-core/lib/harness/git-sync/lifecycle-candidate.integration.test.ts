@@ -366,6 +366,18 @@ describe('P003 generated custody', () => {
       }
     }
     mutations.push(value => { value.fingerprint.extra = 'unrecorded input'; },
+      ...Object.keys(f.request.contentSource.fingerprint.command.arborist).map(key => (value: any) => {
+        delete value.fingerprint.command.arborist[key];
+      }),
+      value => { value.fingerprint.command.arborist.nodeSha256 = '0'.repeat(64); },
+      value => { value.fingerprint.command.arborist.packageSha256 = '0'.repeat(64); },
+      value => { value.fingerprint.command.arborist.bootstrapSha256 = '0'.repeat(64); },
+      value => { value.fingerprint.command.arborist.policy = 'unreviewed'; },
+      ...f.request.contentSource.fingerprint.command.arborist.files.map((_: any, index: number) => (value: any) => {
+        value.fingerprint.command.arborist.files[index].sha256 = '0'.repeat(64);
+        value.fingerprint.output.resolution.command = structuredClone(value.fingerprint.command);
+      }),
+      value => { value.fingerprint.command.argv[2] += '\n// changed bootstrap'; },
       value => { value.fingerprint.environment.NODE_OPTIONS = '--require=other'; },
       value => { value.fingerprint.selectedInputs.push(value.fingerprint.selectedInputs[0]); },
       value => { value.fingerprint.projectConfig[0].values['ignore-scripts'] = 'false'; },

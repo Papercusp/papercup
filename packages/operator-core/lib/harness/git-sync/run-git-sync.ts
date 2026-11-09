@@ -92,7 +92,8 @@ import { attributionScopeLabel, resolveAttributionRepo } from './attribution-rep
 import { canonicalJson } from '../../external-bench/reproducibility/canonical-json';
 import { guardStagedWorkspaceLock, workspaceLockTreeInspector, workspaceLockTreeValidator } from './staged-workspace-lock';
 import { materializeCommit } from '../../../../../scripts/source-preview.mjs';
-import { assertMetadataRepairGraph, metadataRepairInputLayout, metadataRepairRuntimeIdentity, resolveMetadataRepairLock } from '../../../../../scripts/npm-install-safe.mjs';
+import { assertMetadataRepairGraph, metadataRepairInputLayout, metadataRepairRuntimeIdentity, metadataRepairArboristIdentity,
+  METADATA_REPAIR_NPM_BOOTSTRAP, resolveMetadataRepairLock } from '../../../../../scripts/npm-install-safe.mjs';
 
 /**
  * Per-call options a git runner must forward to the git child.
@@ -5628,7 +5629,13 @@ const metadataOutput = z.object({ path: z.enum(['package-lock.json', 'npm-shrink
   sha256: metadataSha, mode: z.number().int().min(0).max(0o777)
     .refine(mode => (mode & 0o111) === 0 && (mode & 0o400) !== 0), registry: metadataRegistry }).strict();
 const metadataCommand = z.object({ executable: z.string().min(1), executableSha256: metadataSha,
-  npmCli: z.string().min(1), npmCliSha256: metadataSha, argv: z.array(z.string()), cwd: z.string().min(1),
+  npmCli: z.string().min(1), npmCliSha256: metadataSha,
+  arborist: z.object({ nodePath: z.string().min(1), nodeSha256: metadataSha,
+    packagePath: z.string().min(1), packageSha256: metadataSha, version: z.literal('9.9.1'),
+    npmVersion: z.literal('11.19.0'), policy: z.literal('directory-link-realpath-v1'), bootstrapSha256: metadataSha,
+    files: z.array(z.object({ role: z.enum(['entry', 'place-dep', 'link', 'dep-valid', 'npm-package', 'npm-cli']),
+      path: z.string().min(1), sha256: metadataSha }).strict()).length(6) }).strict(),
+  argv: z.array(z.string()), cwd: z.string().min(1),
   runner: z.string().min(1), runnerSha256: metadataSha }).strict();
 const metadataRuntime = z.object({ node: z.string().min(1), npm: z.string().min(1),
   versions: z.record(z.string(), z.string()), platform: z.string().min(1), arch: z.string().min(1),
@@ -5813,7 +5820,9 @@ async function validateGeneratedSource(runGit: RunGit, repo: string, request: Gi
   const cli = await realpath(join(dirname(node), 'npm'));
   const runner = await realpath(fileURLToPath(new URL('../../../../../scripts/npm-install-safe.mjs', import.meta.url)));
   const npm = JSON.parse(await readFile(join(dirname(cli), '../package.json'), 'utf8')).version;
+  const arborist = metadataRepairArboristIdentity(cli);
   if (!same(f.runtime, { ...metadataRepairRuntimeIdentity(), npm }) ||
+      !same(command.arborist, arborist) ||
       command.executable !== node || command.npmCli !== cli || command.runner !== runner ||
       metadataDigest(await readFile(node)) !== command.executableSha256 ||
       metadataDigest(await readFile(cli)) !== command.npmCliSha256 ||
@@ -5829,7 +5838,8 @@ async function validateGeneratedSource(runGit: RunGit, repo: string, request: Gi
       dirname(command.cwd) !== root || !command.cwd.split(sep).at(-1)!.startsWith('npm-install-safe-resolve-') ||
       r.cache.attemptId !== r.attemptId || r.cache.path !== join(root, 'cache') ||
       !same(f.environment, launchEnvironment) ||
-      !same(command.argv, [cli, 'install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund',
+      !same(command.argv, ['--input-type=commonjs', '--eval', METADATA_REPAIR_NPM_BOOTSTRAP, cli, JSON.stringify(arborist),
+        'install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund',
         '--workspaces', '--include-workspace-root', '--registry=https://registry.npmjs.org/',
         '--userconfig=' + join(root, 'user.npmrc'), '--globalconfig=' + join(root, 'global.npmrc'), '--cache=' + r.cache.path]) ||
       !same(r.configFiles, ['user.npmrc', 'global.npmrc'].map(path => ({ path: join(root, path), sha256: metadataDigest('') }))) ||
