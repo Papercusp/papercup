@@ -349,9 +349,10 @@ export function deliveryTerminalOracle(cell: DeliveryMatrixCoordinate): Delivery
   // after native result hooks. Its in-process MCP callback alone is not proof,
   // and this boundary does not observe initialize's mounted instructions.
   if (cell.client === 'omp' && ['orient', 'claim', 'create'].includes(cell.sink)) return 'complete-stdout';
-  // The generated Claude SessionStart recovery hook has the same immutable
-  // stdout receipt boundary. Other compact hosts remain uninstrumented.
-  return cell.client === 'claude' && cell.sink === 'compact-reprime' ? 'complete-stdout' : 'NONE';
+  // Generated Claude recovery and the Codex SessionStart dispatcher both
+  // retain immutable stdout receipts. OMP compact remains uninstrumented.
+  return (cell.client === 'claude' || cell.client === 'codex') && cell.sink === 'compact-reprime'
+    ? 'complete-stdout' : 'NONE';
 }
 
 export function deliveryMatrixCellKey(cell: DeliveryMatrixCoordinate): string {

@@ -24,6 +24,7 @@ import { join } from 'node:path';
 import {
   foldInjectionCoverage,
   assessDeliveredContext,
+  DELIVERY_MATRIX_FAULTS,
   deliveryMatrixPopulation,
   deliveryMatrixCellKey,
   deliveryTerminalOracle,
@@ -91,7 +92,10 @@ describe('context reliability R-1: artifact-validator', () => {
       ['initialize', 'compact-reprime'].includes(c.sink))) {
       expect(deliveryTerminalOracle(c)).toBe('NONE');
     }
-    expect(deliveryTerminalOracle({ client: 'codex', sink: 'compact-reprime', source: 'memory', fault: 'retry' })).toBe('NONE');
+    for (const client of ['codex', 'claude'] as const)
+      for (const source of ['memory', 'corpus'] as const)
+        for (const fault of DELIVERY_MATRIX_FAULTS)
+          expect(deliveryTerminalOracle({ client, sink: 'compact-reprime', source, fault })).toBe('complete-stdout');
   });
 
   it('joins registered launch and compact receipts without admitting another port or an absent receipt', () => {
@@ -99,7 +103,7 @@ describe('context reliability R-1: artifact-validator', () => {
       ...(['codex', 'claude'] as const).flatMap(client =>
         (['initialize', 'orient', 'claim', 'create'] as const).map(sink => ({ client, sink }))),
       ...(['orient', 'claim', 'create'] as const).map(sink => ({ client: 'omp' as const, sink })),
-      { client: 'claude' as const, sink: 'compact-reprime' as const },
+      ...(['codex', 'claude'] as const).map(client => ({ client, sink: 'compact-reprime' as const })),
     ];
     for (const endpoint of endpoints) {
       const { manifest, cell: template } = emitted('duplicate-commit');
