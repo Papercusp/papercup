@@ -22,8 +22,13 @@
  * Fail direction is the working copy's: anything unknown or unset means commit-only,
  * never a push to a main repository.
  */
+import { execFile } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import type { Sql } from 'postgres';
 import { getHiveSetting, setHiveSetting } from '../../hive-settings-store';
 import { parseGithubUrl } from '../clone-github';
@@ -353,6 +358,102 @@ export interface UnpublishedGitlink extends GitlinkRef {
   branch: string;
 }
 
+/** Direct, read-only remote evidence. Never a local tracking-ref observation. */
+export interface GitlinkOriginObservation {
+  schemaVersion: 1;
+  policy: 'isolated-git-origin-v1';
+  observationId: string;
+  observedAt: string;
+  url: string;
+  authority: { kind: 'branch' | 'default-head'; ref: string };
+  tip: string;
+}
+
+const originExecFile = promisify(execFile);
+const originOid = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
+
+/**
+ * Observe the caller-authorized URL, outside every checkout and without inherited
+ * Git config, URL rewrites, includes, proxy variables or command overrides. This
+ * only reads advertised refs; it never fetches objects or updates child refs.
+ * The caller owns URL eligibility and binds each new invocation to its writer phase.
+ */
+export async function observeGitlinkOrigin(input: {
+  url: string;
+  /** Exact refs/heads authority; omission requires a symbolic remote HEAD. */
+  fullRef?: string;
+}): Promise<GitlinkOriginObservation> {
+  if (!input.url || input.url.startsWith('-') || /[\0\r\n]/.test(input.url)) {
+    throw new Error('gitlink-origin-url');
+  }
+  const root = await mkdtemp(join(tmpdir(), 'gitlink-origin-'));
+  try {
+    const env: NodeJS.ProcessEnv = {
+      PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: root, XDG_CONFIG_HOME: root,
+      LANG: 'C', LC_ALL: 'C', GIT_CONFIG_NOSYSTEM: '1',
+      GIT_CONFIG_SYSTEM: '/dev/null', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_COUNT: '0',
+      GIT_TERMINAL_PROMPT: '0', GIT_SSH_VARIANT: 'ssh',
+      GIT_SSH_COMMAND: 'ssh -F /dev/null -o BatchMode=yes',
+      // Reuse the existing agent socket, without admitting SSH commands/config.
+      ...(process.env.SSH_AUTH_SOCK ? { SSH_AUTH_SOCK: process.env.SSH_AUTH_SOCK } : {}),
+    };
+    const run = (args: string[]) => originExecFile('git', [
+      '-c', 'protocol.allow=never', '-c', 'protocol.https.allow=always',
+      '-c', 'protocol.ssh.allow=always', '-c', 'protocol.file.allow=always', ...args,
+    ], { cwd: root, env, timeout: 30_000, maxBuffer: 64 * 1024, encoding: 'utf8' });
+    if (input.fullRef !== undefined) {
+      if (!input.fullRef.startsWith('refs/heads/')) throw new Error('gitlink-origin-authority');
+      await run(['check-ref-format', input.fullRef]);
+    }
+    const { stdout } = await run(['ls-remote', '--symref', '--exit-code', '--', input.url, input.fullRef ?? 'HEAD']);
+    const lines = stdout.trimEnd().split('\n').map(line => line.split('\t'));
+    let ref = input.fullRef;
+    let tip: string;
+    if (ref !== undefined) {
+      if (lines.length !== 1 || lines[0]?.length !== 2 || lines[0][1] !== ref) {
+        throw new Error('gitlink-origin-advertisement');
+      }
+      tip = lines[0][0]!;
+    } else {
+      if (lines.length !== 2 || lines.some(line => line.length !== 2) ||
+          lines[0]![1] !== 'HEAD' || !lines[0]![0]!.startsWith('ref: refs/heads/') || lines[1]![1] !== 'HEAD') {
+        throw new Error('gitlink-origin-authority');
+      }
+      ref = lines[0]![0]!.slice('ref: '.length);
+      await run(['check-ref-format', ref]);
+      tip = lines[1]![0]!;
+    }
+    if (!originOid.test(tip)) throw new Error('gitlink-origin-tip');
+    return Object.freeze({ schemaVersion: 1, policy: 'isolated-git-origin-v1',
+      observationId: randomUUID(), observedAt: new Date().toISOString(), url: input.url,
+      authority: Object.freeze({ kind: input.fullRef === undefined ? 'default-head' : 'branch', ref }), tip });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+/** Reuse publication containment against exact observed OIDs, never tracking refs. */
+export async function inspectObservedGitlinkContainment(input: {
+  runGit: CodeRunGit; repoDir: string; selectedCommit: string; observation: GitlinkOriginObservation;
+}): Promise<{ selectedTree: string; tipTree: string; contained: boolean }> {
+  const { runGit, repoDir, selectedCommit, observation } = input;
+  if (observation.schemaVersion !== 1 || observation.policy !== 'isolated-git-origin-v1' ||
+      !originOid.test(selectedCommit) || !originOid.test(observation.tip) ||
+      !observation.authority.ref.startsWith('refs/heads/')) throw new Error('gitlink-origin-observation');
+  const tree = async (oid: string) => {
+    const type = await runGit(['--no-replace-objects', 'cat-file', '-t', oid], repoDir);
+    if (type.code !== 0 || type.stdout.trim() !== 'commit') throw new Error('gitlink-origin-commit-unavailable');
+    const result = await runGit(['--no-replace-objects', 'rev-parse', '--verify', `${oid}^{tree}`], repoDir);
+    if (result.code !== 0 || !originOid.test(result.stdout.trim())) throw new Error('gitlink-origin-tree-unavailable');
+    return result.stdout.trim();
+  };
+  const selectedTree = await tree(selectedCommit);
+  const tipTree = await tree(observation.tip);
+  const ancestor = await runGit(['--no-replace-objects', 'merge-base', '--is-ancestor', selectedCommit, observation.tip], repoDir);
+  if (ancestor.code !== 0 && ancestor.code !== 1) throw new Error('gitlink-origin-ancestry-unavailable');
+  return { selectedTree, tipTree, contained: ancestor.code === 0 };
+}
+
 /** The submodule's default branch on `origin` (origin/HEAD), else `main`. */
 async function originDefaultBranch(runGit: CodeRunGit, subDir: string): Promise<string> {
   const r = await runGit(['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], subDir);
@@ -376,6 +477,8 @@ export async function findUnpublishedGitlinks(input: {
   /** Network leg (fetch); defaults to `runGit`. */
   runNetworkGit?: CodeRunGit;
   fetch?: boolean;
+  /** Phase-fresh direct observations; when supplied, tracking refs/fetch are never used. */
+  originObservations?: Readonly<Record<string, GitlinkOriginObservation>>;
   prefix?: string;
   depth?: number;
 }): Promise<{ ok: true; unpublished: UnpublishedGitlink[] } | { ok: false; error: string }> {
@@ -390,7 +493,7 @@ export async function findUnpublishedGitlinks(input: {
   const changed = parseGitlinkDiff(diff.stdout);
   if (changed.length === 0) return { ok: true, unpublished: [] };
   const modules = await runGit(
-    ['config', '--blob', `${input.commit}:.gitmodules`, '--get-regexp', '^submodule\\..*\\.(path|url)$'],
+    ['config', '--blob', `${input.commit}:.gitmodules`, '--get-regexp', '^submodule\\..*\\.(path|url|branch)$'],
     repoDir,
   );
   const urls = new Map(parseGitmodulesConfig(modules.code === 0 ? modules.stdout : '').map((e) => [e.path, e.url]));
@@ -399,6 +502,31 @@ export async function findUnpublishedGitlinks(input: {
     const subDir = join(repoDir, link.path);
     const fullPath = prefix ? `${prefix}/${link.path}` : link.path;
     const url = urls.get(link.path) ?? '';
+    if (input.originObservations !== undefined) {
+      const observation = input.originObservations[fullPath];
+      const records = modules.stdout.split('\n').map(row => /^submodule\.(.+)\.(path|url|branch) (.*)$/.exec(row))
+        .filter((row): row is RegExpExecArray => row !== null);
+      const mapping = records.filter(row => row[2] === 'path' && row[3] === link.path);
+      const fields = mapping.length === 1 ? records.filter(row => row[1] === mapping[0]![1]) : [];
+      const branch = fields.filter(row => row[2] === 'branch');
+      const branchRef = branch[0]?.[3]?.startsWith('refs/heads/') ? branch[0][3] : `refs/heads/${branch[0]?.[3]}`;
+      if (!observation || observation.url !== url ||
+          mapping.length !== 1 || fields.filter(row => row[2] === 'path').length !== 1 ||
+          fields.filter(row => row[2] === 'url').length !== 1 || branch.length > 1 ||
+          (branch.length === 1 && (observation.authority.kind !== 'branch' || observation.authority.ref !== branchRef)) ||
+          (branch.length === 0 && observation.authority.kind !== 'default-head')) {
+        return { ok: false, error: `missing or mismatched direct origin observation for ${fullPath}` };
+      }
+      try {
+        const proof = await inspectObservedGitlinkContainment({ runGit, repoDir: subDir,
+          selectedCommit: link.sha, observation });
+        if (!proof.contained) unpublished.push({ path: fullPath, sha: link.sha, url,
+          branch: observation.authority.ref.slice('refs/heads/'.length) });
+      } catch (error) {
+        return { ok: false, error: `unavailable direct origin proof for ${fullPath}: ${errText(error)}` };
+      }
+      continue;
+    }
     if (!existsSync(join(subDir, '.git'))) {
       unpublished.push({ path: fullPath, sha: link.sha, url, branch: 'main' });
       continue;
