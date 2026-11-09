@@ -60,7 +60,7 @@ describe('unit census executable exit contract', () => {
       for (const id of ids) writeFileSync(join(directory, `${id}.tail.log`), 'archived tail without sidecar');
       const producer = await censusProducers.reapArchiveCensusProducer(home, [], taskIds =>
         readRetainedReapTaskIds(taskIds, [{ id: 'active' }, { id: 'inactive' }, { id: 'active' }],
-          { readTasks, readTerminalLatches }));
+          { readTasks, readTerminalLatches, readReaperMessages: async () => [] }));
       expect(readTasks.mock.calls).toHaveLength(2);
       expect(readTasks).toHaveBeenCalledWith('active', expect.arrayContaining(ids));
       expect(readTasks).toHaveBeenCalledWith('inactive', expect.arrayContaining(ids));
@@ -89,6 +89,42 @@ describe('unit census executable exit contract', () => {
     await expect(readRetainedReapTaskIds(['unknown'], [], {
       readTerminalLatches: async () => { throw new Error('latch evidence unavailable'); },
     })).rejects.toThrow('latch evidence unavailable');
+  });
+
+  it('recovers pre-latch archives only from exact canonical reaper outcomes in registered workspaces', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'reap-message-census-'));
+    const ids = ['known', 'failed', 'literal.id', 'literalXid', 'foreign', 'forged', 'unrelated', 'missing', 'prefix'];
+    const summary = (outcomes: string) => '[task-reaper] reaped 1/2 agent-session scope(s). '
+      + 'Log tails archived under ~/.papercusp/reap-archive/. ' + outcomes;
+    const message = (outcomes: string, overrides = {}) => ({ workspaceId: 'active', writerKey: 'task-manager',
+      from: 'task-manager', summary: summary(outcomes), ...overrides });
+    const readReaperMessages = vi.fn(async (_scopes: string[], _ids: string[]) => [
+      message('✓ known (quiet-zombie) · ✗ failed (terminal-residue) · ✓ literal.id (managed-residue)'),
+      message('✓ foreign (quiet-zombie)', { workspaceId: 'foreign' }),
+      message('✓ forged (quiet-zombie)', { writerKey: 'other' }),
+      message('✓ forged (quiet-zombie)', { from: 'other' }),
+      message('✓ unrelated (quiet-zombie)', { summary: 'unrelated ' + summary('✓ unrelated (quiet-zombie)') }),
+      message('✓ unrelated (quiet-zombie)', { summary: '[task-reaper] reaped ✓ unrelated (quiet-zombie)' }),
+      message('✓ prefix-extra (quiet-zombie) · ✓ missing (unknown-kind) · ✓ unrequested (quiet-zombie)'),
+    ]);
+    try {
+      const directory = join(home, '.papercusp', 'reap-archive', '2026-08-25');
+      mkdirSync(directory, { recursive: true });
+      for (const id of ids) writeFileSync(join(directory, `${id}.tail.log`), 'old archive without receipt');
+      const producer = await censusProducers.reapArchiveCensusProducer(home, [], taskIds => readRetainedReapTaskIds(
+        taskIds, [{ id: 'active' }, { id: 'active' }], {
+          readTasks: async () => [], readTerminalLatches: async () => [], readReaperMessages,
+        }));
+      expect(readReaperMessages).toHaveBeenCalledExactlyOnceWith(['active'], expect.arrayContaining(ids));
+      const census = await collectStateCensus({ ...producer, readCatalogs: async () => [] });
+      expect(census.inventory.filter(entry => entry.classification === 'state' && entry.name.endsWith('.tail.log'))
+        .map(entry => entry.name.split('/').at(-1)).sort()).toEqual(['failed.tail.log', 'known.tail.log', 'literal.id.tail.log']);
+      expect(census.residue).toHaveLength(ids.length - 3);
+      await expect(readRetainedReapTaskIds(['known'], [{ id: 'active' }], {
+        readTasks: async () => [], readTerminalLatches: async () => [],
+        readReaperMessages: async () => Array.from({ length: 2000 }, () => message('✓ known (quiet-zombie)')),
+      })).rejects.toThrow('Reaper message evidence bound exceeded');
+    } finally { rmSync(home, { recursive: true, force: true }); }
   });
 
   it('retains completed writer inputs when credential discovery fails', async () => {
