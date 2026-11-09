@@ -1542,8 +1542,30 @@ describe('exact spec evidence bindings', () => {
         actorId: 'su-implementer', evidenceKind: 'test' });
       expect(subject).toMatchObject({ status: 'created' });
       const subjectId = (subject as { id: number }).id;
-      const read = async () => (await evidenceStore.listSpecEvidence({ harnessSlug: HARNESS,
-        planSlugs: ['reconnect-plan'], specIds: ['SPEC-003-01'] })).find(row => row.id === subjectId)!;
+      const read = async () => {
+        const input = { harness: HARNESS, slug: 'reconnect-plan', specIds: ['SPEC-003-01'], detail: 'full' };
+        const originalInput = structuredClone(input);
+        const before = await db.sql`SELECT id FROM harness_shared.spec_evidence_bindings ORDER BY id`;
+        const projected = lookupByMcpName('plans:get-spec-evidence');
+        expect(projected).toBeTruthy();
+        const dispatched = await dispatchProjectedTool(projected!, 'plans:get-spec-evidence', input, {
+          workspaceId: WORKSPACE, harnessSlug: HARNESS, uiClientId: 'su-spec-evidence-integration',
+          signal: new AbortController().signal, log: vi.fn(), progress: vi.fn(), metadata: vi.fn(),
+          emit: vi.fn(), runId: 'frozen-oracle-common-reader', role: 'su',
+          gateBypass: { role: true, capability: true, quota: true },
+          transport: 'mcp', requestedFormat: 'json', requestedStructured: true,
+        } as never, {});
+        expect(dispatched.ok).toBe(true);
+        expect(input).toEqual(originalInput);
+        const data = dispatched.result?.structuredContent as {
+          ok: boolean; evidence: Awaited<ReturnType<typeof evidenceStore.listSpecEvidence>>;
+        } | undefined;
+        expect(data?.ok).toBe(true);
+        expect(await db.sql`SELECT id FROM harness_shared.spec_evidence_bindings ORDER BY id`).toEqual(before);
+        const row = data!.evidence.find(row => row.id === subjectId);
+        expect(row).toBeDefined();
+        return row!;
+      };
       expect((await read()).oracleIndependenceVerification).toBeUndefined();
       const review = await evidenceStore.bindSpecEvidence({ ...common, actorId: 'su-reviewer',
         evidenceKind: 'independent-verification', verifiesBindingId: subjectId });
