@@ -215,6 +215,40 @@ describe('composeMechanicalCheckpoint / mergeMechanicalCheckpoint', () => {
     expect(merged.indexOf(MECHANICAL_CHECKPOINT_MARKER)).toBeLessThan(merged.indexOf('## Checks'));
     expect(merged).not.toContain('P-015 legs 1-2 landed');
   });
+
+  it.each([2, 10])('preserves a near-capacity checkpoint with %i checks and authored updates after a legacy snapshot', async (count) => {
+    const { splitCarryNoteChecks, withCarryNoteChecks } = await import('./carry-note');
+    const suffix = withCarryNoteChecks(
+      '## Did\nNew authored evidence after the old snapshot.\n\n## Next action\nQualify the loaded writer before closing.',
+      Array.from({ length: count }, (_, index) => ({
+        id: `historical-proof-${index}`,
+        claim: `Preserve historical proof ${index}.`,
+        sinceMs: 1_794_000_000_000 + index,
+        verified: `Original durable evidence ${index}.`,
+        recheck: `Read original evidence ${index}; do not rerun it for recovery.`,
+      })),
+    );
+    const layout = `## Did\n\n\n---\n${block}\n\n---\n${suffix}`;
+    const prior = layout.replace('## Did\n', `## Did\n${'A'.repeat(CHECKPOINT_BODY_CAP_CHARS - 20 - layout.length)}`);
+    const originalChecks = splitCarryNoteChecks(suffix).checks;
+    const later = composeMechanicalCheckpoint({
+      atIso: '2026-11-09T01:30:00.000Z',
+      journalNote: 'Replace only the system snapshot.',
+      toolLog: 'Long system activity log.\n'.repeat(200),
+    });
+
+    expect(prior.length).toBe(CHECKPOINT_BODY_CAP_CHARS - 20);
+    let merged = prior;
+    for (let sweep = 0; sweep < 2; sweep++) {
+      merged = mergeMechanicalCheckpoint(merged, later);
+      expect(merged.length).toBeLessThanOrEqual(CHECKPOINT_BODY_CAP_CHARS);
+      expect(splitCarryNoteChecks(merged).checks).toEqual(originalChecks);
+      expect(merged).toContain('New authored evidence after the old snapshot.');
+      expect(merged).toContain('Qualify the loaded writer before closing.');
+      expect(merged.match(new RegExp(MECHANICAL_CHECKPOINT_MARKER, 'g'))).toHaveLength(1);
+      expect(merged).not.toContain('P-015 legs 1-2 landed');
+    }
+  });
 });
 
 describe('deliverable detection', () => {
