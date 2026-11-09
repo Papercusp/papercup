@@ -133,6 +133,118 @@ for (const text of ["registry=https://example.invalid/", "//registry.npmjs.org/:
   });
 }
 
+for (const [label, spec] of [
+  ["github shorthand", "example/repair-package#main"],
+  ["git protocol", "git://example.invalid/repair-package.git"],
+  ["git ssh", "git+ssh://git@example.invalid/repair-package.git"],
+  ["github protocol", "github:example/repair-package"],
+  ["gitlab protocol", "gitlab:example/repair-package"],
+  ["bitbucket protocol", "bitbucket:example/repair-package"],
+  ["ssh protocol", "ssh://git@example.invalid/repair-package.git"],
+  ["https archive", "https://example.invalid/repair-package.tgz"],
+  ["http archive", "http://example.invalid/repair-package.tgz"],
+  ["relative directory", "../repair-package"],
+  ["absolute directory", "/tmp/repair-package"],
+  ["aliased remote", "npm:repair-package@https://example.invalid/repair-package.tgz"],
+]) {
+  test(`metadata repair refuses unsupported dependency source ${label} before launch`, async (t) => {
+    const root = mkdtempSync(join(tmpdir(), "metadata-repair-target-test-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const manifest = JSON.stringify({ name: "repair-target", version: "1.0.0", dependencies: { target: spec } });
+    writeFileSync(join(root, "package.json"), manifest);
+    let launched = false;
+    await assert.rejects(resolveMetadataRepairLock({ repoRoot: root }, {
+      spawnCommand: () => { launched = true; throw new Error("unexpected resolver launch"); }, log: () => {},
+    }), /metadata-repair-(?:layout|dependency)-unsupported/);
+    assert.equal(launched, false);
+    assert.equal(readFileSync(join(root, "package.json"), "utf8"), manifest);
+    assert.equal(existsSync(join(root, "package-lock.json")), false);
+  });
+}
+
+for (const [label, extra, expectedLaunch] of [
+  ["optional Git source", { optionalDependencies: { target: "example/repair-package" } }, false],
+  ["peer Git source", { peerDependencies: { target: "example/repair-package" } }, false],
+  ["development Git source", { devDependencies: { target: "example/repair-package" } }, false],
+  ["nested override URL", { overrides: { target: { nested: "https://example.invalid/target.tgz" } } }, false],
+  ["override local input outside layout", { overrides: { target: "file:./not-enumerated" } }, false],
+  ["URL user info", { dependencies: { target: "https://user@example.invalid/a/b.tgz" } }, false],
+  ["scoped registry alias", { dependencies: { target: "npm:@scope/repair-package@^1.0.0" } }, true],
+  ["registry override", { overrides: { target: { ".": "^1.0.0", nested: "2.0.0" } } }, true],
+]) {
+  test(`metadata repair classifies ${label} before launch`, async (t) => {
+    const root = mkdtempSync(join(tmpdir(), "metadata-repair-spec-test-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "repair-spec", version: "1.0.0", ...extra }));
+    let launched = false;
+    await assert.rejects(resolveMetadataRepairLock({ repoRoot: root }, {
+      spawnCommand: () => { launched = true; throw new Error("admitted resolver launch"); }, log: () => {},
+    }), expectedLaunch ? /admitted resolver launch/ : /metadata-repair-(?:layout|dependency)-unsupported/);
+    assert.equal(launched, expectedLaunch);
+    assert.equal(existsSync(join(root, "package-lock.json")), false);
+  });
+}
+
+for (const mutation of ["source-manifest", "source-config", "source-mode", "local-target", "local-archive",
+  "workspace-added", "private-workspace-added", "private-manifest", "private-config", "private-symlink", "absent-config",
+  "user-config", "global-config", "npm-cli"]) {
+  test(`metadata repair refuses changed ${mutation} at the actual launch boundary`, async (t) => {
+    const root = mkdtempSync(join(tmpdir(), "metadata-repair-input-test-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    mkdirSync(join(root, "target"));
+    mkdirSync(join(root, "packages/one"), { recursive: true });
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "input-profile", version: "1.0.0",
+      workspaces: ["packages/*"], dependencies: { target: "file:./target", archive: "file:./local.tgz" } }));
+    writeFileSync(join(root, "target/package.json"), '{"name":"target","version":"1.0.0"}');
+    writeFileSync(join(root, "packages/one/package.json"), '{"name":"one","version":"1.0.0"}');
+    writeFileSync(join(root, "local.tgz"), "selected archive bytes");
+    writeFileSync(join(root, ".npmrc"), "strict-peer-deps=false\n");
+    const npmCli = join(root, "tool/npm/bin/npm-cli.js");
+    mkdirSync(dirname(npmCli), { recursive: true });
+    writeFileSync(npmCli, "// selected CLI bytes\n");
+    writeFileSync(join(root, "tool/npm/package.json"), '{"version":"1.0.0"}');
+    let launched = false;
+    let attemptRoot;
+    await assert.rejects(resolveMetadataRepairLock({ repoRoot: root }, {
+      npmCli,
+      spawnCommand: () => { launched = true; throw new Error("unexpected actual npm launch"); },
+      log: line => {
+        const cwd = /\(cwd=(.*)\)$/.exec(line)?.[1];
+        if (!cwd) return;
+        attemptRoot = dirname(cwd);
+        const changed = '{"name":"changed","version":"2.0.0"}';
+        if (mutation === "source-manifest") writeFileSync(join(root, "package.json"), changed);
+        if (mutation === "source-config") writeFileSync(join(root, ".npmrc"), "strict-peer-deps=true\n");
+        if (mutation === "source-mode") chmodSync(join(root, "package.json"), 0o700);
+        if (mutation === "local-target") writeFileSync(join(root, "target/package.json"), changed);
+        if (mutation === "local-archive") writeFileSync(join(root, "local.tgz"), "changed archive bytes");
+        if (mutation === "workspace-added") {
+          mkdirSync(join(root, "packages/two"));
+          writeFileSync(join(root, "packages/two/package.json"), changed);
+        }
+        if (mutation === "private-workspace-added") {
+          mkdirSync(join(cwd, "packages/two"));
+          writeFileSync(join(cwd, "packages/two/package.json"), changed);
+        }
+        if (mutation === "private-manifest") writeFileSync(join(cwd, "package.json"), changed);
+        if (mutation === "private-config") writeFileSync(join(cwd, ".npmrc"), "strict-peer-deps=true\n");
+        if (mutation === "private-symlink") {
+          rmSync(join(cwd, "target/package.json"));
+          symlinkSync(join(root, "target/package.json"), join(cwd, "target/package.json"));
+        }
+        if (mutation === "absent-config") writeFileSync(join(cwd, "target/.npmrc"), "engine-strict=true\n");
+        if (mutation === "user-config") writeFileSync(join(attemptRoot, "user.npmrc"), "engine-strict=true\n");
+        if (mutation === "global-config") writeFileSync(join(attemptRoot, "global.npmrc"), "engine-strict=true\n");
+        if (mutation === "npm-cli") writeFileSync(npmCli, "// changed CLI bytes\n");
+      },
+    }), /metadata-repair-launch-inputs-changed/);
+    assert.equal(launched, false);
+    assert.ok(attemptRoot);
+    assert.equal(existsSync(attemptRoot), false);
+    assert.equal(existsSync(join(root, "package-lock.json")), false);
+  });
+}
+
 for (const contamination of ["packument", "symlink", "removed", "replaced-empty"]) {
   test(`metadata repair refuses ${contamination} cache at the actual launch boundary`, async (t) => {
     const root = mkdtempSync(join(tmpdir(), "metadata-repair-cache-test-"));

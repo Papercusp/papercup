@@ -1862,6 +1862,33 @@ export async function resolveMetadataRepairLock({ repoRoot }, {
   const repositoryRealpath = realpathSync(repoRoot);
   const layout = manifestOnlyResolutionLayout(repositoryRealpath);
   if (!layout.supported) throw new Error("metadata-repair-layout-unsupported");
+  // The ordinary installer supports sources outside this repair profile. Reuse
+  // its target classifier, but admit only public registry specs or the file:
+  // inputs already enumerated by the manifest-only layout. Inspect raw schemes
+  // before name@range parsing so URL user-info cannot hide a remote source.
+  const inspectTarget = (spec, localAllowed) => {
+    if (typeof spec !== "string") throw new Error("metadata-repair-dependency-unsupported");
+    if (localAllowed && spec.startsWith("file:")) return;
+    const target = spec.startsWith("npm:") ? spec.slice(4) : spec;
+    if (/^[a-z][a-z0-9+.-]*:/i.test(target) || isLocalOrRemotePackageSpec(target)) {
+      throw new Error("metadata-repair-dependency-unsupported");
+    }
+  };
+  const inspectOverrides = value => {
+    if (typeof value === "string") return inspectTarget(value, false);
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error("metadata-repair-dependency-unsupported");
+    }
+    for (const nested of Object.values(value)) inspectOverrides(nested);
+  };
+  for (const path of layout.inputPaths.filter(path => basename(path) === "package.json")) {
+    if (!existsSync(join(repositoryRealpath, path))) continue;
+    const manifest = JSON.parse(readFileSync(join(repositoryRealpath, path), "utf8"));
+    for (const field of LOCK_MANIFEST_DEPENDENCY_FIELDS) {
+      for (const spec of Object.values(manifest[field] ?? {})) inspectTarget(spec, true);
+    }
+    if (manifest.overrides !== undefined) inspectOverrides(manifest.overrides);
+  }
   const configs = [...new Set([".npmrc", ...layout.inputPaths
     .filter(path => basename(path) === "package.json")
     .map(path => join(dirname(path), ".npmrc"))])].sort();
@@ -1926,6 +1953,23 @@ export async function resolveMetadataRepairLock({ repoRoot }, {
       sha256: bytes === null ? null : digest(bytes),
       mode: bytes === null ? null : lstatSync(join(repositoryRealpath, path)).mode & 0o777 }));
     receipt.configFiles = [userconfig, globalconfig].map(path => ({ path, sha256: digest(readFileSync(path)) }));
+    const privateModes = new Map([...input.snapshot].map(([path, bytes]) => [path,
+      bytes === null ? null : lstatSync(join(input.scratchRoot, path)).mode & 0o777]));
+    const matchesSnapshot = (root, path, bytes, mode) => {
+      // Absence is a measured input too. Inspect ancestors before reading so a
+      // replaced directory or a dangling symlink cannot escape this snapshot.
+      if (!lstatSync(root).isDirectory() || realpathSync(root) !== root) return false;
+      const absolute = join(root, path);
+      for (let cursor = absolute; cursor !== root; cursor = dirname(cursor)) {
+        try { if (lstatSync(cursor).isSymbolicLink()) return false; }
+        catch (error) { if (error?.code !== "ENOENT") throw error; }
+      }
+      let stat;
+      try { stat = lstatSync(absolute); }
+      catch (error) { if (error?.code !== "ENOENT") throw error; }
+      return bytes === null ? stat === undefined : stat?.isFile() &&
+        (stat.mode & 0o777) === mode && fileBytesEqual(bytes, readFileSync(absolute));
+    };
     // This wrapper executes at the actual spawn boundary of the maintained
     // observable runner, after its logging/attribution preparation.
     const launch = (_command, args, options) => {
@@ -1937,6 +1981,26 @@ export async function resolveMetadataRepairLock({ repoRoot }, {
           !rootStat.isDirectory() || rootStat.isSymbolicLink() || rootStat.dev !== ownedRoot.dev || rootStat.ino !== ownedRoot.ino ||
           realpathSync(attemptRoot) !== attemptRoot || !cacheStat.isDirectory() || cacheStat.dev !== ownedCache.dev ||
           cacheStat.ino !== ownedCache.ino || cacheStat.isSymbolicLink() || readdirSync(cache).length !== 0) {
+        throw new Error("metadata-repair-launch-inputs-changed");
+      }
+      // Logging/attribution is observable preparation, not the launch itself.
+      // Reconcile the complete discovered population and raw bytes at spawn;
+      // checking only argv/cache permits a different graph or npm config to run.
+      if (JSON.stringify(manifestOnlyResolutionLayout(repositoryRealpath)) !== JSON.stringify(layout) ||
+          JSON.stringify(manifestOnlyResolutionLayout(input.scratchRoot)) !== JSON.stringify(layout) ||
+          receipt.selectedInputs.some(({ path, mode }) =>
+            !matchesSnapshot(repositoryRealpath, path, input.snapshot.get(path), mode) ||
+            !matchesSnapshot(input.scratchRoot, path, input.snapshot.get(path), privateModes.get(path))) ||
+          projectConfig.some(({ path, sha256 }) => {
+            const bytes = input.snapshot.get(path);
+            return (bytes === null ? null : digest(bytes)) !== sha256;
+          }) ||
+          receipt.configFiles.some(({ path, sha256 }) =>
+            !matchesSnapshot(attemptRoot, basename(path), Buffer.alloc(0), 0o600) ||
+            digest(readFileSync(path)) !== sha256) ||
+          digest(readFileSync(node)) !== receipt.command.executableSha256 ||
+          realpathSync(npmCli) !== cli || digest(readFileSync(cli)) !== receipt.command.npmCliSha256 ||
+          digest(readFileSync(receipt.command.runner)) !== receipt.command.runnerSha256) {
         throw new Error("metadata-repair-launch-inputs-changed");
       }
       receipt.cache = { path: cache, attemptId, device: cacheStat.dev, inode: cacheStat.ino,
