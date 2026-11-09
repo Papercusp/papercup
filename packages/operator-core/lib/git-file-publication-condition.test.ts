@@ -1,12 +1,16 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { prepareRuntimeBlockerBinding, readRuntimeBlockerCondition } from './runtime-blocker-condition';
-import { createBlockerEvidenceReader } from './blocker-resolution-evidence';
+import { blockerBoundaryContext, createBlockerEvidenceReader } from './blocker-resolution-evidence';
 import { validateBlockerDecisionEvidence, type BlockerDecisionInput } from './blocker-resolution-decision';
 import type { ExternalBlockerRecord } from './external-blockers';
+
+const registry = vi.hoisted(() => ({ root: vi.fn() }));
+vi.mock('./harness/docs/harness-repo', () => ({ resolveHarnessRepoRoot: registry.root }));
+vi.mock('./workspace-registry', () => ({ resolveConcreteWorkspaceId: (workspace: string) => workspace }));
 
 const filePath = 'deps/lib/src/value.ts';
 let root: string, repository: string, sourceCommit: string, expectedBlob: string, parentCommit: string, oldParent: string;
@@ -33,6 +37,7 @@ function bound(input = binding()) {
 }
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'publication-condition-'));
+  registry.root.mockReset().mockImplementation(async (harness: string) => harness === 'publication-fixture' ? root : null);
   git(root, 'init', '-q');
   writeFileSync(join(root, 'root.txt'), 'root');
   git(root, 'add', 'root.txt'); oldParent = commit(root);
@@ -57,10 +62,20 @@ describe('legacy file-publication condition over real Git objects', () => {
       symptom: 'Legacy publication alias could not be measured', evidenceRefs: [ref], attempts: [],
       investigation: [{ action: 'Measure committed source and parent pin', outcome: 'Exact accepted blob is present', evidenceRefs: [ref] }],
       verification: { outcome: 'Original file-acceptance condition is satisfied', evidenceRefs: [ref] } };
-    const readEvidence = createBlockerEvidenceReader({ root, ownerId: 'su-fixture', workItemId: 'EI-source',
-      workspaceId: 'default', blockers: [current] });
+    const context = await blockerBoundaryContext({ workspaceId: 'default', role: 'operator' },
+      'su-fixture', 'publication-fixture');
+    const readEvidence = createBlockerEvidenceReader({ ...context, workItemId: 'EI-source', blockers: [current] });
     expect(await validateBlockerDecisionEvidence(decision, { ownerId: 'su-fixture', workItemId: 'EI-source',
       obligationRefs: [ref], readEvidence })).toEqual({ ok: true });
+    expect(registry.root).toHaveBeenCalledWith('publication-fixture');
+  });
+  it('keeps an unavailable registered root unknown instead of substituting the process directory', async () => {
+    const context = await blockerBoundaryContext({ workspaceId: 'default', role: 'operator' },
+      'su-fixture', 'unregistered-fixture');
+    const readEvidence = createBlockerEvidenceReader({ ...context, workItemId: 'EI-source', blockers: [bound()] });
+    expect(await readEvidence({ kind: 'runtime', ref: blocker().ref })).toMatchObject({ status: 'unknown' });
+    registry.root.mockRejectedValueOnce(new Error('registry unavailable'));
+    expect(await readEvidence({ kind: 'runtime', ref: blocker().ref })).toMatchObject({ status: 'unknown' });
   });
   it('does not accept an old parent, a mismatched blob, or dirty working content', async () => {
     expect(await readRuntimeBlockerCondition(bound({ ...binding(), parentCommit: oldParent }), root))

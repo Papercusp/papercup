@@ -151,6 +151,11 @@ const unknown = (detail: string): BlockerEvidenceMeasurement => ({ status: 'unkn
  * Plain refs omit the kind prefix except test refs, which retain testing:runs.
  */
 export function createBlockerEvidenceReader(context: BlockerEvidenceContext) {
+  async function repositoryRoot(): Promise<string | null> {
+    return context.root ?? (context.harnessSlug
+      ? await (await import('./harness/docs/harness-repo')).resolveHarnessRepoRoot(context.harnessSlug) : null);
+  }
+
   async function workItem(ref: string): Promise<BlockerEvidenceMeasurement> {
     const { activeWorkspaceId } = await import('./workspace-registry');
     // The work reader resolves the request's active tenant. A mismatch is not
@@ -185,7 +190,10 @@ export function createBlockerEvidenceReader(context: BlockerEvidenceContext) {
           const blockers = context.blockers.filter(entry => entry.kind === 'runtime' && entry.ref === ref.ref && entry.status === 'active');
           if (blockers.length !== 1) return absent('exact canonical active runtime blocker is required');
           const { readRuntimeBlockerCondition } = await import('./runtime-blocker-condition');
-          return await readRuntimeBlockerCondition(blockers[0], context.root);
+          const binding = blockers[0].runtimeConditionBinding;
+          const publication = binding !== null && typeof binding === 'object' &&
+            'kind' in binding && binding.kind === 'git-file-publication';
+          return await readRuntimeBlockerCondition(blockers[0], publication ? await repositoryRoot() : context.root);
         }
         case 'state': {
           const raw = ref.ref.replace(/^state:/, '');
@@ -243,8 +251,7 @@ export function createBlockerEvidenceReader(context: BlockerEvidenceContext) {
             responsibleParty: blocker.kind === 'hold' ? blocker.createdBy : policy.resolutionOwner };
         }
         case 'source': {
-          const registeredRoot = context.root ?? (context.harnessSlug
-            ? await (await import('./harness/docs/harness-repo')).resolveHarnessRepoRoot(context.harnessSlug) : null);
+          const registeredRoot = await repositoryRoot();
           if (!registeredRoot) return unknown('canonical repository root is unavailable');
           const raw = ref.ref.replace(/^source:/, '');
           const match = /^(.*?)(?::([1-9][0-9]*))?$/.exec(raw)!;
