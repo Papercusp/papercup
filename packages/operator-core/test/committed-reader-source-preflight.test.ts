@@ -100,7 +100,13 @@ function loadedFixture(source?: string, admit = true, buildObservationOnly = fal
   schema?: Record<string, string>) {
   let f: ReturnType<typeof fixture>;
   if (buildObservationOnly) {
-    const observed = observedBuildFixture(); observed.produceObserved(); f = observed;
+    const observed = observedBuildFixture(source === undefined ? '' : 'cp host-source.mjs "$2"\n');
+    if (source !== undefined) {
+      writeFileSync(join(observed.root, 'host-source.mjs'), source);
+      prepareBuilder(observed, readFileSync(join(observed.root, 'apps/operator/bin/bundle-host.sh'), 'utf8'));
+      observed.observedSource.sourceReceiptSha256 = digest(readFileSync(observed.selected.sourceReceiptPath));
+    }
+    observed.produceObserved(); f = observed;
   } else f = fixture();
   if (schema) { f.closure.schema = schema; f.options.schema = { ...schema }; f.save(); }
   const traceOut = join(f.dir, 'host-source.json');
@@ -393,14 +399,14 @@ describe('committed reader loader-return source binding', () => {
     expect(loadedSqlFixture(change).observe().appliedSql).toMatchObject({ status: 'unknown', gaps: [expect.any(String)] });
   });
 
-  function loadedSchemaFixture(messageChange = '') {
+  function loadedSchemaFixture(messageChange = '', buildObservationOnly = false) {
     const column = { table_schema: 'harness_shared', table_name: 'tool_invocations', column_name: 'args_json',
       data_type: 'jsonb', udt_name: 'jsonb', is_nullable: 'NO', column_default: 'private-schema-default', ordinal_position: 1 };
     return loadedFixture(`import { channel } from 'node:diagnostics_channel';
       const row = ${JSON.stringify(column)};
       const message = { query: 'SELECT catalogue fixture', backendPid: 512, rows: [row] };
       ${messageChange}
-      channel('papercusp:api-worker-schema').publish(message);`, true, false, false,
+      channel('papercusp:api-worker-schema').publish(message);`, true, buildObservationOnly, false,
     { 'harness_shared.tool_invocations.args_json': digest(JSON.stringify(column)) });
   }
 
@@ -415,6 +421,31 @@ describe('committed reader loader-return source binding', () => {
     expect(observed.pending).toContain('private-pg');
     expect(JSON.stringify(f.rows)).not.toContain('private-schema-default');
   });
+
+  it('retains actual build-only worker schema without claiming prepared-schema agreement', () => {
+    const f = loadedSchemaFixture('row.data_type = "text";', true);
+    const observed = f.observe();
+    expect(observed.privateSchema).toMatchObject({ status: 'observed', gaps: [], backendPid: 512,
+      receiptSha256: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    expect(observed.privateSchema.schema).not.toEqual(f.closure.schema);
+    expect(observed.pending).toEqual(expect.arrayContaining(['preparation-qualification', 'private-pg']));
+    expect(JSON.parse(readFileSync(f.options.receiptPath, 'utf8'))).toMatchObject({
+      phase: 'build-observation', qualification: { status: 'pending' } });
+    expect(() => qualifyCommittedReaderSource(f.options)).toThrow();
+  });
+
+  it.each(['missing', 'bytes', 'invalid'] as const)(
+    'refuses %s build-only worker schema evidence', control => {
+      const f = loadedSchemaFixture('', true);
+      expect(f.observe().privateSchema.status).toBe('observed');
+      const entry = f.rows.find(({ row }) => row.event === 'api-worker-schema')!;
+      if (control === 'missing') rmSync(join(f.traceRoot, entry.name));
+      else if (control === 'bytes') writeFileSync(join(f.traceRoot, entry.row.artifact.ref), 'changed');
+      else f.replace('api-worker-schema', row => { row.columns += 1; });
+      expect(f.observe().privateSchema).toMatchObject({ status: 'unknown', schema: null,
+        receiptSha256: null, gaps: [expect.any(String)] });
+      expect(f.observe().pending).toEqual(expect.arrayContaining(['preparation-qualification', 'private-pg']));
+    });
 
   it.each(['unexpected.schema', `${digest('opaque')}.catalogue`])(
     'refuses an unexpected trace artifact beside valid schema evidence: %s', name => {

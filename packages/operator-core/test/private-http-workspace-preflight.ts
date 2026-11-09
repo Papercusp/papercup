@@ -1343,9 +1343,15 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
         && Object.keys(schema).length === row.columns && Object.entries(schema).every(([key, value]) =>
           key.startsWith('harness_shared.') && typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)),
         'host schema catalogue invalid or limited');
-      const expectedSchema = (JSON.parse(closureBytes.toString('utf8')) as Partial<CommittedReaderClosure>).schema;
-      assert.ok(expectedSchema && Object.keys(expectedSchema).length, 'independent prepared schema missing');
-      assert.deepEqual(schema, expectedSchema, 'actual API worker schema differs from preparation');
+      // Build-only receipts intentionally have no prepared schema. Retain the
+      // actual worker catalogue as an original observation, while keeping its
+      // preparation/private-PG qualification pending. The qualified path still
+      // requires independent prepared bytes and exact agreement.
+      if (!o.buildObservationOnly) {
+        const expectedSchema = (JSON.parse(closureBytes.toString('utf8')) as Partial<CommittedReaderClosure>).schema;
+        assert.ok(expectedSchema && Object.keys(expectedSchema).length, 'independent prepared schema missing');
+        assert.deepEqual(schema, expectedSchema, 'actual API worker schema differs from preparation');
+      }
       result.privateSchema.schema = schema;
       result.privateSchema.backendPid = row.backendPid;
       result.privateSchema.querySha256 = row.querySha256;
