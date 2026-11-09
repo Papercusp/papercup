@@ -1546,13 +1546,21 @@ validate_runtime_dependency_toolchains() {
 
 # Source-verification preparation must satisfy the same committed-input binding
 # as dependency-generation-proof.ts, even when the caller supplied an explicit ID.
+# Ordinary exact, object-sourced admission also prefers a published target selector:
+# a nested app's live workspace install need not realise its standalone lock layout.
+# Only a missing optional selector falls back to live capture; an invalid one fails.
 select_dependencies_only_generation() {
-  [ "${DEPENDENCIES_ONLY:-0}" = "1" ] || return 0
+  local required="${DEPENDENCIES_ONLY:-0}"
+  if [ "$required" != "1" ]; then
+    [ "${SOURCE_INTEGRITY_MODE:-}" = "object-sourced" ] \
+      && [ "${REF_WAS_SET:-0}" = "1" ] || return 0
+  fi
   [ -z "${NODE_MODULES_GENERATION_ID:-}" ] || return 0
   local input selector identity token
   input="$(dependency_generation_input_fingerprint_ref "$RELEASE_ROOT" "$TARGET_SHA")" || return 1
   selector="$DEPENDENCY_GENERATION_ROOT/.inputs/$input"
   if [ ! -r "$selector" ]; then
+    if [ "$required" != "1" ] && [ ! -e "$selector" ]; then return 0; fi
     log "FATAL: dependencies-only needs a published generation for target inputs $input in $DEPENDENCY_GENERATION_ROOT; select its --dependency-generation-root and --node-modules-generation-id before preparation"
     return 1
   fi
@@ -1565,6 +1573,7 @@ select_dependencies_only_generation() {
   fi
   NODE_MODULES_GENERATION_ID="$identity"
   NODE_MODULES_GENERATION_TOKEN="$token"
+  log "selected committed dependency inputs $input as $identity"
 }
 
 validate_dependencies_only_input() {
