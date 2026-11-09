@@ -34,6 +34,107 @@ import { PARTIAL_TASK_CHECKPOINT_SCHEMA } from '../../../../scripts/lib/partial-
 import { defaultTestRunArtifactBase } from '../agent-tools/testing/run-artifacts';
 import { readNativeArtifactBytes, verifyNativeProofPacket } from '../../../../scripts/lib/budgeted-task-scheduler.mjs';
 
+/** Original verifier outputs need the writer's terminal retained custody, not a filename match. */
+async function verifierOriginalCensusDeclarations(home: string, root: string): Promise<CensusDeclaration[]> {
+  const base = join(home, 'test-artifacts');
+  const canonicalDirectory = async (path: string) => {
+    try { return (await lstat(path)).isDirectory() && await realpath(path) === resolve(path); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false; throw error; }
+  };
+  if (!await canonicalDirectory(base)) return [];
+  const signature = (stat: Awaited<ReturnType<typeof lstat>>) =>
+    [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs, stat.mode].join(':');
+  // Dependency receipts can be large. Hash through a bounded stream rather
+  // than loading them alongside the complete host inventory.
+  const inspect = async (path: string, metadata = false) => {
+    if (await realpath(path) !== resolve(path)) throw new Error('redirected verifier evidence');
+    const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile() || !Number.isSafeInteger(stat.size) || (metadata && stat.size > 8 * 1024 * 1024))
+        throw new Error('invalid verifier evidence file');
+      const hash = createHash('sha256');
+      const chunks: Buffer[] = [];
+      let sizeBytes = 0;
+      for await (const chunk of handle.createReadStream({ autoClose: false })) {
+        sizeBytes += chunk.length; hash.update(chunk);
+        if (metadata) chunks.push(chunk);
+      }
+      const stamp = signature(stat);
+      if (sizeBytes !== stat.size || signature(await handle.stat()) !== stamp
+        || signature(await lstat(path)) !== stamp || await realpath(path) !== resolve(path))
+        throw new Error('verifier evidence changed during read');
+      return { path, stamp, sizeBytes, sha256: hash.digest('hex'), bytes: Buffer.concat(chunks) };
+    } finally { await handle.close(); }
+  };
+  const unchanged = async (file: Awaited<ReturnType<typeof inspect>>) =>
+    signature(await lstat(file.path)) === file.stamp && await realpath(file.path) === resolve(file.path);
+  const containers = [base];
+  for (const entry of await readdir(base, { withFileTypes: true })) {
+    if (entry.isDirectory() && entry.name !== 'testing-run' && !entry.name.startsWith('native-router-')
+      && await canonicalDirectory(join(base, entry.name))) containers.push(join(base, entry.name));
+  }
+  const declarations = new Map<string, CensusDeclaration>();
+  const add = (path: string) => {
+    const name = relative(home, path).split(sep).join('/');
+    declarations.set(name, { kind: 'path', root, name, classification: 'state', producer: 'source-preview-verifier-original' });
+  };
+  for (const container of containers) for (const entry of await readdir(container, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith('.task.json')) continue;
+    try {
+      const task = await inspect(join(container, entry.name), true);
+      const receipt = JSON.parse(task.bytes.toString('utf8'));
+      if (receipt.schemaVersion !== 'verifier-task-v1' || typeof receipt.taskId !== 'string'
+        || !/^[A-Za-z0-9-]{1,100}$/.test(receipt.taskId) || !Number.isSafeInteger(receipt.pid) || receipt.pid <= 0
+        || typeof receipt.processIdentity !== 'string' || !receipt.processIdentity
+        || typeof receipt.repoRoot !== 'string' || !isAbsolute(receipt.repoRoot)
+        || typeof receipt.ownedRoot !== 'string' || !isAbsolute(receipt.ownedRoot)
+        || !['completed', 'failed', 'deferred'].includes(receipt.cleanup)) continue;
+      const receiptPath = task.path.slice(0, -'.task.json'.length);
+      const runId = createHash('sha256').update(resolve(receiptPath)).digest('hex');
+      const evidenceRoot = join(home, 'checkpoint-logs', `verifier-task-${receipt.taskId}`, runId);
+      const manifestPath = join(evidenceRoot, 'manifest.json');
+      if (receipt.evidenceManifestPath !== manifestPath || !await canonicalDirectory(evidenceRoot)) continue;
+      const manifestFile = await inspect(manifestPath, true);
+      const manifest = JSON.parse(manifestFile.bytes.toString('utf8'));
+      const suffixes: Record<string, string> = { 'task.json': '.task.json', 'phases.jsonl': '.phases.jsonl',
+        'resources.jsonl': '.resources.jsonl', 'source.json': '', 'snapshot.txt': '.snapshot.txt',
+        'dependencies.json': '.dependencies.json', 'dependencies-after.json': '.dependencies.after.json',
+        'child.json': '.child.json', 'stdout.log': '.stdout.log', 'stderr.log': '.stderr.log' };
+      if (manifest.schemaVersion !== 'verifier-task-evidence-v1' || manifest.taskId !== receipt.taskId
+        || manifest.runId !== runId || typeof manifest.sourceCommit !== 'string'
+        || !/^[0-9a-f]{40,64}$/.test(manifest.sourceCommit) || manifest.cleanup !== receipt.cleanup
+        || !['completed', 'failed'].includes(manifest.wrapperStatus)
+        || (manifest.childExitCode !== null && !Number.isSafeInteger(manifest.childExitCode))
+        || manifest.childLogs?.stdout !== 'stdout.log' || manifest.childLogs?.stderr !== 'stderr.log'
+        || !manifest.artifacts || !manifest.artifacts['task.json'] || !manifest.artifacts['phases.jsonl']) continue;
+      const witnesses = [task, manifestFile];
+      const originals: Array<Awaited<ReturnType<typeof inspect>>> = [];
+      for (const [role, pin] of Object.entries(manifest.artifacts) as Array<[string, { path: string; sizeBytes: number; sha256: string }]>) {
+        if (!Object.hasOwn(suffixes, role) || pin.path !== join(evidenceRoot, role)
+          || !Number.isSafeInteger(pin.sizeBytes) || pin.sizeBytes < 0 || !/^[0-9a-f]{64}$/.test(pin.sha256))
+          throw new Error('invalid verifier artifact pin');
+        const retained = await inspect(pin.path, role === 'task.json');
+        if (retained.sizeBytes !== pin.sizeBytes || retained.sha256 !== pin.sha256
+          || (role === 'task.json' && !retained.bytes.equals(task.bytes))) throw new Error('invalid retained verifier artifact');
+        witnesses.push(retained);
+        if (role === 'task.json') continue;
+        try {
+          const original = await inspect(`${receiptPath}${suffixes[role]}`);
+          if (original.sizeBytes === pin.sizeBytes && original.sha256 === pin.sha256) originals.push(original);
+        } catch { /* Missing, linked or changed originals remain residue independently. */ }
+      }
+      // Publish no declaration until the complete retained bundle and its
+      // external terminal receipt still match the observation above.
+      if (!(await Promise.all(witnesses.map(unchanged))).every(Boolean)) continue;
+      if (!await canonicalDirectory(container) || !await canonicalDirectory(evidenceRoot)) continue;
+      add(base); add(container); add(task.path);
+      for (const original of originals) if (await unchanged(original).catch(() => false)) add(original.path);
+    } catch { /* Partial, forged, redirected or corrupt custody proves no original ownership. */ }
+  }
+  return [...declarations.values()];
+}
+
 /** Inspect the router's retained packets, never arbitrary artifact siblings. */
 async function nativeRouterCensusDeclarations(home: string, root: string): Promise<CensusDeclaration[]> {
   const declarations = new Map<string, CensusDeclaration>();
@@ -707,9 +808,10 @@ export async function runtimeSidefileCensusProducer(home = homedir(), environmen
     let evidenceRoot = roots.find(candidate => candidate.path === directory);
     if (!evidenceRoot) { evidenceRoot = { id: `runtime-native-evidence-${roots.length}`, path: directory }; }
     const native = await nativeRouterCensusDeclarations(directory, evidenceRoot.id);
-    if (native.length) {
+    const verifier = await verifierOriginalCensusDeclarations(directory, evidenceRoot.id);
+    if (native.length || verifier.length) {
       if (!roots.includes(evidenceRoot)) roots.push(evidenceRoot);
-      declarations.push(...native);
+      declarations.push(...native, ...verifier);
     }
   }
   // Reuse the test runner's resolver for reports, executed inputs and native

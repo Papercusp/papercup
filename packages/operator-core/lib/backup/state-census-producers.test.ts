@@ -38,6 +38,7 @@ import { historicalStripeConfigConstruction, historicalStripeConfigCensusProduce
 import { createCipheriv, scryptSync, randomBytes, createHash } from 'node:crypto';
 import { hostname, userInfo } from 'node:os';
 import { defaultTestRunArtifactBase, TestRunArtifactPacket, testRunDeadline } from '../agent-tools/testing/run-artifacts';
+import { writeVerifierTaskReceipt } from '../verifier-source';
 
 describe('historical Stripe configuration construction proof', () => {
   // Exact measured dialect from canonical archive SHA06f909e2, call25vdj.
@@ -1759,6 +1760,102 @@ describe('secret census producer adapters', () => {
       await symlink(`${ordinary}-retained`, ordinary);
       expect(await owned()).toEqual([]);
     } finally { await rm(home, { recursive: true, force: true }); }
+  });
+  describe('source preview original census evidence', () => {
+    const fixture = async (runtimeHome: string) => {
+      const { archiveVerifierTaskEvidence } = await import('../../../../scripts/source-preview.mjs');
+      const container = join(runtimeHome, 'test-artifacts');
+      await mkdir(container, { recursive: true });
+      const owned = await mkdtemp(join(dirname(runtimeHome), 'verifier-command-'));
+      const receiptPath = join(container, 'arbitrary-name.json');
+      const taskReceiptPath = `${receiptPath}.task.json`;
+      const taskId = 'fixture-verifier-task';
+      const receipt = writeVerifierTaskReceipt(owned, dirname(runtimeHome),
+        { PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: taskId }, taskReceiptPath);
+      const runId = createHash('sha256').update(receiptPath).digest('hex');
+      const evidenceRoot = join(runtimeHome, 'checkpoint-logs', `verifier-task-${taskId}`, runId);
+      await mkdir(evidenceRoot, { recursive: true, mode: 0o700 });
+      const manifestPath = join(evidenceRoot, 'manifest.json');
+      await writeFile(taskReceiptPath, JSON.stringify({ ...receipt, cleanup: 'completed', evidenceManifestPath: manifestPath }) + '\n');
+      const suffixes = ['', '.snapshot.txt', '.dependencies.json', '.dependencies.after.json', '.child.json', '.stdout.log', '.stderr.log', '.resources.jsonl', '.phases.jsonl'];
+      for (const suffix of suffixes) await writeFile(`${receiptPath}${suffix}`, `writer output ${suffix}\n`, { mode: 0o600 });
+      archiveVerifierTaskEvidence({ evidenceRoot, taskId, sourceCommit: 'a'.repeat(40), receiptPath,
+        taskReceiptPath, phaseArchivePath: `${receiptPath}.phases.jsonl`, cleanup: 'completed', childExitCode: 0 });
+      return { container, receiptPath, taskReceiptPath, evidenceRoot, manifestPath, suffixes };
+    };
+    const originals = async (home: string, runtimeHomes: string[] = []) => {
+      const result = await runtimeSidefileCensusProducer(home, {}, [], runtimeHomes);
+      return { ...result, declarations: result.declarations.filter(entry => entry.producer === 'source-preview-verifier-original') };
+    };
+    it('uses actual retained writer bytes in ordinary and registered homes, leaving unknown siblings unresolved', async () => {
+      const home = await mkdtemp(join(tmpdir(), 'verifier-census-'));
+      try {
+        const first = await fixture(join(home, '.papercusp'));
+        await fixture(join(home, 'registered'));
+        await fixture(join(home, 'unregistered'));
+        const unknown = join(first.container, 'request.json');
+        await writeFile(unknown, 'unproven input');
+        const before = await readFile(first.taskReceiptPath);
+        const result = await originals(home, [join(home, 'registered')]);
+        expect(result.declarations.filter(entry => entry.name.endsWith('.task.json'))).toHaveLength(2);
+        expect(result.declarations.every(entry => entry.classification === 'state' && !entry.descendants && !entry.prune)).toBe(true);
+        expect(result.roots.some(root => root.path === join(home, 'unregistered'))).toBe(false);
+        for (const suffix of first.suffixes) expect(result.declarations.some(entry => entry.name === `test-artifacts/arbitrary-name.json${suffix}`)).toBe(true);
+        const census = await collectStateCensus({ ...result, readCatalogs: async () => [] });
+        expect(census.residue.some(entry => entry.name === 'test-artifacts/request.json')).toBe(true);
+        expect(census.ok).toBe(false);
+        expect(await readFile(first.taskReceiptPath)).toEqual(before);
+      } finally { await rm(home, { recursive: true, force: true }); }
+    });
+    it.each(['missing-manifest', 'partial-bundle', 'retained-bytes', 'retained-task', 'manifest-task', 'manifest-run',
+      'manifest-path', 'artifact-path', 'unknown-role', 'pending-task', 'linked-manifest', 'linked-retained', 'linked-root', 'linked-container'])
+      ('rejects %s custody without adopting any originals', async corruption => {
+        const home = await mkdtemp(join(tmpdir(), 'invalid-verifier-census-'));
+        try {
+          const f = await fixture(join(home, '.papercusp'));
+          const manifest = JSON.parse(await readFile(f.manifestPath, 'utf8'));
+          if (corruption === 'missing-manifest') await rm(f.manifestPath);
+          if (corruption === 'partial-bundle') await rm(join(f.evidenceRoot, 'phases.jsonl'));
+          if (corruption === 'retained-bytes') await writeFile(join(f.evidenceRoot, 'stdout.log'), 'corrupt');
+          if (corruption === 'retained-task') {
+            const bytes = Buffer.from((await readFile(f.taskReceiptPath, 'utf8')).replace('completed', 'deferred'));
+            await writeFile(join(f.evidenceRoot, 'task.json'), bytes);
+            manifest.artifacts['task.json'].sha256 = createHash('sha256').update(bytes).digest('hex');
+            manifest.artifacts['task.json'].sizeBytes = bytes.length;
+          }
+          if (corruption === 'manifest-task') manifest.taskId = 'foreign-task';
+          if (corruption === 'manifest-run') manifest.runId = 'f'.repeat(64);
+          if (corruption === 'artifact-path') manifest.artifacts['source.json'].path = f.receiptPath;
+          if (corruption === 'unknown-role') manifest.artifacts['request.json'] = manifest.artifacts['source.json'];
+          if (['retained-task', 'manifest-task', 'manifest-run', 'artifact-path', 'unknown-role'].includes(corruption))
+            await writeFile(f.manifestPath, JSON.stringify(manifest));
+          if (corruption === 'manifest-path' || corruption === 'pending-task') {
+            const receipt = JSON.parse(await readFile(f.taskReceiptPath, 'utf8'));
+            if (corruption === 'manifest-path') receipt.evidenceManifestPath = join(home, 'manifest.json');
+            else receipt.cleanup = 'pending';
+            await writeFile(f.taskReceiptPath, JSON.stringify(receipt));
+          }
+          const link = async (path: string) => { await rename(path, `${path}-target`); await symlink(`${path}-target`, path); };
+          if (corruption === 'linked-manifest') await link(f.manifestPath);
+          if (corruption === 'linked-retained') await link(join(f.evidenceRoot, 'source.json'));
+          if (corruption === 'linked-root') await link(f.evidenceRoot);
+          if (corruption === 'linked-container') await link(f.container);
+          expect((await originals(home)).declarations).toEqual([]);
+        } finally { await rm(home, { recursive: true, force: true }); }
+      });
+    it.each(['changed', 'linked', 'missing'])('leaves %s originals unknown while retaining independently proven siblings', async corruption => {
+      const home = await mkdtemp(join(tmpdir(), 'changed-verifier-census-'));
+      try {
+        const f = await fixture(join(home, '.papercusp'));
+        const path = `${f.receiptPath}.stdout.log`;
+        if (corruption === 'changed') await writeFile(path, 'changed stream');
+        if (corruption === 'missing') await rm(path);
+        if (corruption === 'linked') { await rename(path, `${path}-target`); await symlink(`${path}-target`, path); }
+        const result = await originals(home);
+        expect(result.declarations.some(entry => entry.name.endsWith('.stdout.log'))).toBe(false);
+        expect(result.declarations.some(entry => entry.name.endsWith('.stderr.log'))).toBe(true);
+      } finally { await rm(home, { recursive: true, force: true }); }
+    });
   });
   describe('native router retained census evidence', () => {
     const fixture = async (runtimeHome: string, partial = false) => {

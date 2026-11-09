@@ -46,7 +46,9 @@ describe('historical census writer index and canonical archive boundary', () => 
     const cold = postgres(db.url, { max: 1 });
     try {
       expect(await readRetainedReapTaskIds(
-        ['gc-archive', 'other-source', 'other-workspace', 'still-running', 'missing'], [], { terminalSql: cold },
+        ['gc-archive', 'other-source', 'other-workspace', 'still-running', 'missing'], [], {
+          terminalSql: cold, readTasks: async () => [],
+        },
       )).toEqual(['gc-archive']);
     } finally { await cold.end(); }
   });
