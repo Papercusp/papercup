@@ -1,17 +1,23 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { gunzipSync } from 'node:zlib';
 import { createLatencyPgFixture, seedLatencyTimelineSnapshot,
   type LatencyTimelineSnapshot } from '../../../test/_latency-pg-fixture';
 import { calibrateLatencyOracle, frozenOutputOracle, latencyFixtureDigest, latencyIntervalReference,
-  latencyRetrievalFixtures, observeLatencyRetrievalSchedule,
+  latencyBenchAssignments, latencyRetrievalFixtures, observeLatencyRetrievalSchedule,
   type LatencyReferenceInterval } from '../../../test/_latency-acceptance';
 import { interactiveEmbedAcquireBudgetMs } from '../search/embedder';
 import type { PapercuspUnifiedToolContext } from '../_tool-context';
 import timelineTool, { timelineResultSchema } from './timeline';
+import { benchFixtureBoundarySchema, readBenchFixtureSourceSnapshot, requireBenchFixturePreflight,
+  requireBenchFixtureSourcePins } from '../../external-bench/private-fixture-reads';
+import { restoreBenchmarkContext, readRestoredBenchmarkContext,
+  type BenchmarkContextInput } from '../../external-bench/reproducibility/context';
+import { canonicalJson } from '../../external-bench/reproducibility/canonical-json';
 
 const conditionScope = vi.hoisted(() => ({ sql: undefined as postgres.Sql | undefined, workspace: '' }));
 vi.mock('@papercusp/db-org', async importOriginal => ({
@@ -110,6 +116,133 @@ describe('LATENCY-M1 private migrated fixture preparation', () => {
       WHERE msg_id = 'latency-seed-message'`)[0]!.workspace_id).toBe(timelineWorkspace);
     await assertConditionScope();
   });
+
+  // This explicit evidence case exercises the maintained host preflight and
+  // physical context boundary. It neither launches a provider nor qualifies a
+  // loaded host runtime; those remain separate baseline prerequisites.
+  if (sourceRoot && process.env.PAPERCUSP_LATENCY_NATIVE_INPUTS_FILE) it(
+    'binds original timeline inputs to frozen solver context and host read boundaries', async () => {
+      const artifactDir = process.env.PAPERCUSP_TEST_ARTIFACT_DIR;
+      if (!artifactDir?.trim()) throw new Error('Original timeline context evidence requires PAPERCUSP_TEST_ARTIFACT_DIR before allocation');
+      const bindingFx = await createLatencyPgFixture({ locale: 'en_US.UTF-8' });
+      const { db } = bindingFx, workspaceId = timelineWorkspace;
+      const root = mkdtempSync(join(tmpdir(), 'latency-timeline-context-'));
+      const hash = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
+      try {
+        const sourceManifest = JSON.parse(readFileSync(join(sourceRoot,
+          'timeline-source-inputs-20261109-r1--manifest.json'), 'utf8'));
+        const taskManifest = JSON.parse(readFileSync(join(sourceRoot, 'benchmark-task-manifest.json'), 'utf8'));
+        const nativeInputs = JSON.parse(readFileSync(process.env.PAPERCUSP_LATENCY_NATIVE_INPUTS_FILE!, 'utf8'));
+        const windows: Record<string, LatencyTimelineSnapshot['window']> = {};
+        const entries: Array<{ key: string; text: string }> = [];
+        const rawReceipts = [];
+        for (const input of sourceManifest.windows) {
+          const bytes = readFileSync(join(sourceRoot, `timeline-source-inputs-20261109-r1--${input.id}.json`));
+          expect(bytes.length).toBe(input.bytes);
+          expect(hash(bytes)).toBe(input.sha256);
+          const snapshot: LatencyTimelineSnapshot = JSON.parse(bytes.toString('utf8'));
+          windows[input.id] = snapshot.window;
+          await seedLatencyTimelineSnapshot(db, { snapshot, workspaceId,
+            expectedSha256: latencyFixtureDigest(snapshot) });
+          const selected = taskManifest.windows.find((row: { id: string }) => row.id === input.id);
+          const envelope = nativeInputs.find((row: { window: { id: string } }) => row.window.id === input.id);
+          const zipped = Buffer.from(envelope.data, 'base64'), raw = gunzipSync(zipped);
+          expect(hash(zipped)).toBe(envelope.compressedSha256);
+          expect(raw.length).toBe(selected.sourceBytes);
+          expect(hash(raw)).toBe(selected.sourceSha256);
+          const intervalEnvelope = JSON.parse(readFileSync(join(sourceRoot, `${input.id}-interval-source-v2.json`), 'utf8'));
+          const intervalBytes = gunzipSync(Buffer.from(intervalEnvelope.data, 'base64'));
+          expect(hash(intervalBytes)).toBe(intervalEnvelope.uncompressedSha256);
+          const intervalSource = JSON.parse(intervalBytes.toString('utf8'));
+          // The complete pinned raw file is input data. Its selected half-open
+          // window governs replay; do not inject parsed operations, interval
+          // partitions, gap verdicts or independentReference into the context.
+          const rawSource = { window: snapshot.window, session: selected.session,
+            sourceSha256: selected.sourceSha256, sourceBytes: selected.sourceBytes,
+            replay: 'Replay only the declared half-open window; retain malformed records and missing evidence.',
+            nativeJsonl: raw.toString('utf8'), gatewayRows: intervalSource.gatewayRows };
+          entries.push({ key: `latency-raw:${input.id}`, text: canonicalJson(rawSource) });
+          rawReceipts.push({ id: input.id, nativeSha256: hash(raw), nativeBytes: raw.length,
+            contextSourceSha256: hash(canonicalJson(rawSource)) });
+        }
+        const decodeControl = JSON.parse(readFileSync(join(sourceRoot,
+          'W1-with-overlap-control-interval-source-v2.json'), 'utf8'));
+        const controlBytes = gunzipSync(Buffer.from(decodeControl.data, 'base64'));
+        expect(hash(controlBytes)).toBe(decodeControl.uncompressedSha256);
+        const control = JSON.parse(controlBytes.toString('utf8'));
+        const declaredControls = control.intervals.filter((row: { id: string }) => row.id.startsWith('control:'));
+        expect(declaredControls.map((row: { id: string }) => row.id))
+          .toEqual(['control:model', 'control:tool', 'control:stage', 'control:next']);
+        entries.push({ key: 'latency-raw:W1-with-overlap-control', text: canonicalJson({
+          originalInput: 'W1', declaration: control.controlDeclaration, declaredControls }) });
+        const corpus = canonicalJson({ entries }), memory = canonicalJson({ entries: [] });
+        const snapshots = join(root, 'snapshots'); mkdirSync(snapshots);
+        writeFileSync(join(snapshots, 'corpus.json'), corpus, { flag: 'wx' });
+        writeFileSync(join(snapshots, 'memory.json'), memory, { flag: 'wx' });
+        const context = { corpusRef: 'corpus.json', memoryRef: 'memory.json', corpusHash: hash(corpus),
+          memoryHash: hash(memory), isolation: 'fresh-per-assignment' as const,
+          forbiddenSources: ['other-arm-solutions', 'hidden-grader-answers'] };
+        const cases = { 'LATENCY-M1:T04': { A: windows.W1!, B: windows.W1! },
+          'LATENCY-M1:T05': { A: windows.W2!, B: windows.W3! } };
+        const fixtureSha256 = hash(canonicalJson(cases)), bindings = [];
+        for (const taskId of ['LATENCY-M1:T04', 'LATENCY-M1:T05'] as const) {
+          const task = latencyBenchAssignments(taskManifest).find(row => row.task.instanceId === taskId)!.task;
+          const boundary = benchFixtureBoundarySchema.parse({ workspaceId, runId: 'latency-context-preparation',
+            preregHash: hash(canonicalJson(taskManifest)), assignmentId: `bench-assignment:${taskId}:preparation`,
+            armId: 'cold', seed: 1, taskId, fixtureSha256, cases: cases[taskId] });
+          const sourcePins = {} as NonNullable<typeof boundary.sourcePins>;
+          for (const which of ['A', 'B'] as const) {
+            const bytes = canonicalJson(await readBenchFixtureSourceSnapshot(boundary, which, { sql: db.adminSql, workspaceId }));
+            sourcePins[which] = { sha256: hash(bytes), bytes: Buffer.byteLength(bytes) };
+          }
+          boundary.sourcePins = sourcePins;
+          const oracle = (task.graderMeta.latencyM1 as { qualityOracle: unknown }).qualityOracle;
+          // Only the selected task is read by preflight. This slice does not
+          // claim a complete T01–T10 host allocation or its admission digest.
+          const allocation = { verification: { [taskId]: { inputs: sourcePins,
+            promptSha256: hash(task.problemStatement), oracleSha256: hash(canonicalJson(oracle)) } } };
+          const preflight = () => requireBenchFixturePreflight(boundary,
+            allocation as Parameters<typeof requireBenchFixturePreflight>[1], task,
+            { sql: db.adminSql, workspaceId }, { context, snapshotRoot: snapshots });
+          await preflight();
+          const checkout = join(root, taskId.slice(-3)); mkdirSync(checkout);
+          const restore: BenchmarkContextInput = { binding: { workspaceId, runId: boundary.runId,
+            preregHash: boundary.preregHash, assignmentId: boundary.assignmentId, harnessSlug: 'papercusp' },
+            context, checkout, snapshotRoot: snapshots };
+          const receipt = restoreBenchmarkContext(restore);
+          expect(readRestoredBenchmarkContext(restore)).toEqual(receipt);
+          expect(readFileSync(receipt.corpusPath, 'utf8')).toBe(corpus);
+          const originalSourcePin = { ...boundary.sourcePins.A };
+          boundary.sourcePins.A.bytes++;
+          await expect(requireBenchFixtureSourcePins(boundary, { sql: db.adminSql, workspaceId }))
+            .rejects.toThrow(/source content or size/);
+          boundary.sourcePins.A = originalSourcePin;
+          const leaked = canonicalJson({ entries: [{ key: 'apparently-permitted', text: canonicalJson(oracle) }] });
+          writeFileSync(join(snapshots, 'corpus.json'), leaked); context.corpusHash = hash(leaked);
+          await expect(preflight()).rejects.toThrow(/hidden grading oracle/);
+          writeFileSync(join(snapshots, 'corpus.json'), corpus); context.corpusHash = hash(corpus);
+          await preflight();
+          bindings.push({ boundary, verification: allocation.verification[taskId],
+            restoredContext: { ...receipt, contextText: undefined } });
+        }
+        expect(bindings[0]!.boundary.sourcePins!.A).toEqual(bindings[0]!.boundary.sourcePins!.B);
+        const conditionRows = await db.adminSql`SELECT body FROM harness_shared.coord_event_log
+          WHERE workspace_id = ${bindingFx.fixture.workspace} ORDER BY msg_id`;
+        expect(conditionRows).toHaveLength(10_000);
+        expect(conditionRows.map(row => row.body)).toEqual(bindingFx.fixture.conditionEnvelopes);
+        await assertConditionScope();
+        mkdirSync(artifactDir, { recursive: true });
+        for (const [name, value] of Object.entries({ 'timeline-solver-corpus.json': corpus,
+          'timeline-solver-memory.json': memory, 'timeline-context-bindings.json': canonicalJson({
+            phase: 'preparation-only', actualTaskAttempts: 0,
+            scope: 'T04/T05 task boundaries and restored context only; full host allocation/runtime/native qualification remain pending.',
+            fixtureSha256, context, rawReceipts, bindings }) }))
+          writeFileSync(join(artifactDir, name), value, { flag: 'wx' });
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+        expect(await bindingFx.cleanup()).toBe('dropped');
+      }
+    }, 120_000);
 
   // CI always runs the synthetic schema/round-trip controls above. An explicit
   // evidence run also replays the separately retained original corpus; no live
