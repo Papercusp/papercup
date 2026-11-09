@@ -91,6 +91,7 @@ import {
 import { attributionScopeLabel, resolveAttributionRepo } from './attribution-repo';
 import { canonicalJson } from '../../external-bench/reproducibility/canonical-json';
 import { guardStagedWorkspaceLock, workspaceLockTreeInspector, workspaceLockTreeValidator } from './staged-workspace-lock';
+import { observeGitlinkOrigin, inspectObservedGitlinkContainment } from './submodule-forks';
 import { materializeCommit } from '../../../../../scripts/source-preview.mjs';
 import { expandWorkspaces } from '../../../../../scripts/assert-workspace-links.mjs';
 import { assertMetadataRepairGraph, metadataRepairInputLayout, metadataRepairRuntimeIdentity, metadataRepairArboristIdentity,
@@ -5669,10 +5670,6 @@ const metadataFingerprint = z.object({ schemaVersion: z.literal(1), repositoryRe
   projectConfig: metadataConfig, environment: metadataEnvironment,
   output: metadataOutput.extend({ mode: z.literal('100644'), blobOid: metadataOid, resolution: metadataResolution }).strict() }).strict();
 const metadataIndex = z.object({ path: z.string().min(1), mode: z.number().int().nullable(), sha256: metadataSha.nullable() }).strict();
-const generatedSourceSchema = z.object({ kind: z.literal('generated-lock'), fingerprint: metadataFingerprint,
-  custody: z.object({ repositoryRealpath: z.string(), index: metadataIndex, sharedIndex: metadataIndex.nullable(),
-    inputs: z.array(metadataRawInput) }).strict() }).strict();
-export type GitSyncGeneratedLockSource = z.infer<typeof generatedSourceSchema>;
 type MetadataSelectedInput = z.infer<typeof metadataSelectedInput>;
 const metadataDigest = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex');
 
@@ -5694,6 +5691,31 @@ export interface GitSyncMetadataSelectedLibrary extends GitSyncPublishedLibraryS
   gitmodulesBlob: string;
   mapping: { name: string; path: string; url: string; branch: string | null };
   authorizedUrl: string;
+}
+
+const metadataOriginObservation = z.object({ schemaVersion: z.literal(1), policy: z.literal('isolated-git-origin-v1'),
+  observationId: z.string().uuid(), observedAt: z.string().datetime(), url: z.string().min(1),
+  authority: z.object({ kind: z.enum(['branch', 'default-head']), ref: z.string().startsWith('refs/heads/') }).strict(),
+  tip: metadataOid }).strict();
+const metadataPublishedLibrary = metadataLibrarySelection.extend({ selectedTree: metadataOid,
+  selectedType: z.literal('commit'), treeType: z.literal('tree'), gitmodulesBlob: metadataOid,
+  mapping: z.object({ name: z.string().min(1), path: metadataPath, url: z.string().min(1), branch: z.string().nullable() }).strict(),
+  authorizedUrl: z.string().min(1), origin: metadataOriginObservation }).strict();
+const metadataJointFingerprint = metadataFingerprint.extend({ schemaVersion: z.literal(2),
+  selectedInputTree: metadataOid, publishedLibrarySelections: z.array(metadataPublishedLibrary).max(2) }).strict();
+const generatedSourceSchema = z.object({ kind: z.literal('generated-lock'),
+  fingerprint: z.discriminatedUnion('schemaVersion', [metadataFingerprint, metadataJointFingerprint]),
+  custody: z.object({ repositoryRealpath: z.string(), index: metadataIndex, sharedIndex: metadataIndex.nullable(),
+    inputs: z.array(metadataRawInput) }).strict() }).strict();
+export type GitSyncGeneratedLockSource = z.infer<typeof generatedSourceSchema>;
+
+function metadataSelectionRequest(f: z.infer<typeof metadataJointFingerprint>) {
+  return f.publishedLibrarySelections.map(({ path, expectedBasePin, selectedCommit }) => ({ path, expectedBasePin, selectedCommit }));
+}
+
+function metadataCandidatePaths(f: GitSyncGeneratedLockSource['fingerprint']) {
+  return [f.output.path, ...(f.schemaVersion === 2 ? f.publishedLibrarySelections
+    .filter(row => row.expectedBasePin !== row.selectedCommit).map(row => row.path) : [])].sort();
 }
 
 /**
@@ -5856,8 +5878,9 @@ async function metadataPendingCustody(runGit: RunGit, repo: string, selected: Me
 }
 
 /** Extend the existing object reader, reconciling npm's independently discovered layout. */
-async function metadataSelectedIdentity(runGit: RunGit, repo: string, base: string, materialized: string) {
-  const inspection = await workspaceLockTreeInspector({ includeObjectInventory: true })(runGit, repo, base, 'commit');
+async function metadataSelectedIdentity(runGit: RunGit, repo: string, base: string, materialized: string, inputTree?: string) {
+  const inspection = await workspaceLockTreeInspector({ includeObjectInventory: true })(runGit, repo,
+    inputTree ?? base, inputTree ? 'tree' : 'commit');
   const objects = inspection.objects!;
   const { inputPaths, configs } = metadataRepairInputLayout(materialized);
   const paths = [...new Set([...inspection.inputs.map((row: { path: string }) => row.path), ...inputPaths])].sort();
@@ -5865,7 +5888,7 @@ async function metadataSelectedIdentity(runGit: RunGit, repo: string, base: stri
   for (const path of paths) {
     const object = objects.find(row => row.path === path);
     if (object?.kind === 'gitlink') {
-      selectedInputs.push({ kind: 'gitlink', path, owner: object.owner, selectedOid: object.selectedOid,
+      selectedInputs.push({ kind: 'gitlink', path, owner: object.owner, selectedOid: object.owner ? object.selectedOid : base,
         mode: '160000', oid: object.oid, sha256: null });
       continue;
     }
@@ -5873,7 +5896,7 @@ async function metadataSelectedIdentity(runGit: RunGit, repo: string, base: stri
     const controller = objects.filter(row => row.kind === 'gitlink' && path.startsWith(row.path + '/'))
       .sort((a, b) => b.path.length - a.path.length)[0];
     const owner = object?.owner ?? controller?.path ?? '';
-    const selectedOid = object?.selectedOid ?? controller?.oid ?? base;
+    const selectedOid = object ? (object.owner ? object.selectedOid : base) : controller?.oid ?? base;
     if (!object) {
       if (raw.sha256 !== null) throw new Error('generated-lock-unselected-input');
       selectedInputs.push({ kind: 'absent', path, owner, selectedOid, mode: null, oid: null, sha256: null });
@@ -5908,12 +5931,28 @@ async function withMetadataMaterialization<T>(runGit: RunGit, repo: string, base
 
 /** Prepare a closed generated source outside the writer lease; capture rechecks it. */
 export async function prepareGitSyncMetadataRepair(runGit: RunGit, repo: string,
-  request: { requestId: string; generation: number; base: string },
+  request: { requestId: string; generation: number; base: string;
+    publishedLibrarySelections?: readonly GitSyncPublishedLibrarySelection[] },
   options: { log?: (line: string) => void; expectedPendingLockSha256?: string | null } = {}) {
-  if (!request.requestId || !Number.isSafeInteger(request.generation) || request.generation < 1 ||
+  if (!['base,generation,requestId', 'base,generation,publishedLibrarySelections,requestId']
+      .includes(Object.keys(request).sort().join(',')) ||
+      !request.requestId || !Number.isSafeInteger(request.generation) || request.generation < 1 ||
       !metadataOid.safeParse(request.base).success) throw new Error('generated-lock-request');
-  return withMetadataMaterialization(runGit, repo, request.base, async root => {
-    const selected = await metadataSelectedIdentity(runGit, repo, request.base, root);
+  request = structuredClone(request);
+  const joint = request.publishedLibrarySelections === undefined ? undefined : await prepareGitSyncMetadataSelectionTree(runGit, repo,
+    { base: request.base, publishedLibrarySelections: request.publishedLibrarySelections });
+  const publishedLibrarySelections = [] as z.infer<typeof metadataPublishedLibrary>[];
+  for (const row of joint?.publishedLibrarySelections ?? []) {
+    const branch = row.mapping.branch;
+    const origin = await observeGitlinkOrigin({ url: row.authorizedUrl,
+      ...(branch === null ? {} : { fullRef: branch.startsWith('refs/heads/') ? branch : `refs/heads/${branch}` }) });
+    const containment = await inspectObservedGitlinkContainment({ runGit, repoDir: join(repo, row.path),
+      selectedCommit: row.selectedCommit, observation: origin });
+    if (!containment.contained || containment.selectedTree !== row.selectedTree) throw new Error('generated-lock-library-origin');
+    publishedLibrarySelections.push({ ...row, origin });
+  }
+  return withMetadataMaterialization(runGit, repo, joint?.selectedInputTree ?? request.base, async root => {
+    const selected = await metadataSelectedIdentity(runGit, repo, request.base, root, joint?.selectedInputTree);
     const custody = await metadataPendingCustody(runGit, repo, selected.selectedInputs);
     const lockPath = selected.selectedInputs.some(row => row.path === 'npm-shrinkwrap.json' && row.kind === 'blob')
       ? 'npm-shrinkwrap.json' : 'package-lock.json';
@@ -5925,13 +5964,13 @@ export async function prepareGitSyncMetadataRepair(runGit: RunGit, repo: string,
     const resolution = metadataResolution.parse(resolved.receipt);
     const oidFormat = request.base.length === 64 ? 'sha256' : 'sha1';
     const blobOid = createHash(oidFormat).update(Buffer.from(`blob ${resolved.bytes.length}\0`)).update(resolved.bytes).digest('hex');
-    const fingerprint = { schemaVersion: 1 as const, repositoryRealpath: await realpath(repo), ...request,
-      baseCommit: request.base, baseTree: selected.baseTree, selectedInputs: selected.selectedInputs,
+    const fingerprint = { repositoryRealpath: await realpath(repo), requestId: request.requestId, generation: request.generation,
+      ...(joint ? { schemaVersion: 2 as const, selectedInputTree: joint.selectedInputTree, publishedLibrarySelections }
+        : { schemaVersion: 1 as const }),
+      baseCommit: request.base, baseTree: joint?.baseTree ?? selected.baseTree, selectedInputs: selected.selectedInputs,
       command: resolution.command, runtime: resolution.runtime, projectConfig: resolution.projectConfig,
       environment: resolution.environment, output: { ...resolution.output, mode: '100644' as const, blobOid, resolution } };
-    // `base` belongs to the caller request, not the versioned fingerprint schema.
-    const { base: _base, ...closed } = fingerprint;
-    const source = generatedSourceSchema.parse({ kind: 'generated-lock', fingerprint: closed, custody });
+    const source = generatedSourceSchema.parse({ kind: 'generated-lock', fingerprint, custody });
     if (canonicalJson(await metadataPendingCustody(runGit, repo, selected.selectedInputs)) !== canonicalJson(custody)) {
       throw new Error('generated-lock-pending-moved');
     }
@@ -5947,7 +5986,7 @@ async function validateGeneratedSource(runGit: RunGit, repo: string, request: Gi
   const fail = (phase: string) => { throw new Error('generated-lock-identity-' + phase); };
   if (f.repositoryRealpath !== await realpath(repo) || source.custody.repositoryRealpath !== f.repositoryRealpath ||
       f.requestId !== request.requestId || f.generation !== request.generation || f.baseCommit !== request.base ||
-      request.dependencies?.length || request.paths.length !== 1 || request.paths[0] !== f.output.path ||
+      request.dependencies?.length || !same(request.paths, metadataCandidatePaths(f)) ||
       f.selectedInputs.length === 0 || new Set(f.selectedInputs.map(row => row.path)).size !== f.selectedInputs.length ||
       !same(f.command, r.command) || !same(f.runtime, r.runtime) || !same(f.projectConfig, r.projectConfig) ||
       !same(f.environment, r.environment) ||
@@ -5984,9 +6023,20 @@ async function validateGeneratedSource(runGit: RunGit, repo: string, request: Gi
       Date.parse(r.attempt.createdAt) > Date.parse(r.cache.checkedAt)) fail('launch');
   // No mutable checkout bytes enter the selected vector. The filesystem layout
   // and Git object census independently enumerate it, including local archives.
-  await withMetadataMaterialization(runGit, repo, f.baseCommit, async materialized => {
-    const selected = await metadataSelectedIdentity(runGit, repo, f.baseCommit, materialized);
-    if (selected.baseTree !== f.baseTree || !same(selected.selectedInputs, f.selectedInputs)) fail('selected-vector');
+  const inputTree = f.schemaVersion === 2 ? f.selectedInputTree : undefined;
+  if (f.schemaVersion === 2) {
+    const selection = await prepareGitSyncMetadataSelectionTree(runGit, repo,
+      { base: f.baseCommit, publishedLibrarySelections: metadataSelectionRequest(f) });
+    if (selection.baseTree !== f.baseTree || selection.selectedInputTree !== f.selectedInputTree ||
+        !same(selection.publishedLibrarySelections, f.publishedLibrarySelections.map(({ origin: _origin, ...row }) => row))) fail('library-vector');
+    // The public route remains root-only until writer-bound capture, pre-CAS
+    // and every-egress origin proofs are wired. Preparation alone grants no
+    // custody/publication authority for a joint request.
+    if (f.publishedLibrarySelections.length) fail('joint-phase-unbound');
+  }
+  await withMetadataMaterialization(runGit, repo, inputTree ?? f.baseCommit, async materialized => {
+    const selected = await metadataSelectedIdentity(runGit, repo, f.baseCommit, materialized, inputTree);
+    if (selected.baseTree !== (inputTree ?? f.baseTree) || !same(selected.selectedInputs, f.selectedInputs)) fail('selected-vector');
     const raw = await Promise.all(selected.inputPaths.map((path: string) => metadataRawFile(materialized, path)));
     if (!same(raw, r.selectedInputs) || !same(selected.configs, f.projectConfig.map(row => row.path))) fail('resolver-population');
     for (const config of f.projectConfig) {
@@ -6015,7 +6065,7 @@ async function validateGeneratedTree(runGit: RunGit, repo: string, tree: string,
   const changed = await runGit(['diff-tree', '--no-commit-id', '--name-only', '--no-renames', '-r', '-z', f.baseTree, tree], repo);
   const blob = await runGit(['rev-parse', '--verify', `${tree}:${f.output.path}`], repo);
   const output = await runGit(['cat-file', 'blob', f.output.blobOid], repo);
-  if (changed.code !== 0 || changed.stdout !== f.output.path + '\0' || blob.code !== 0 ||
+  if (changed.code !== 0 || changed.stdout !== metadataCandidatePaths(f).map(path => path + '\0').join('') || blob.code !== 0 ||
       blob.stdout.trim() !== f.output.blobOid || output.code !== 0 || metadataDigest(output.stdout) !== f.output.sha256) {
     throw new Error('generated-lock-retained-output-mismatch');
   }
@@ -6029,7 +6079,7 @@ async function validateGeneratedTree(runGit: RunGit, repo: string, tree: string,
   // The exact diff and blob were measured above. Re-materialize the immutable
   // base and substitute only that verified blob; neither pending checkout bytes
   // nor installed links can supply this final graph proof.
-  await withMetadataMaterialization(runGit, repo, f.baseCommit, async materialized => {
+  await withMetadataMaterialization(runGit, repo, f.schemaVersion === 2 ? f.selectedInputTree : f.baseCommit, async materialized => {
     const path = join(materialized, f.output.path);
     const beforeLockBytes = await readFile(path).catch(error => {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
@@ -6052,6 +6102,9 @@ export interface GitSyncGeneratedLockTreeRequest {
   bytes: Uint8Array;
   sha256: string;
   blobOid: string;
+  /** Supplied together; reconstruct and compare before trusting the tree. */
+  selectedInputTree?: string;
+  publishedLibrarySelections?: readonly GitSyncPublishedLibrarySelection[];
 }
 
 /**
@@ -6069,7 +6122,9 @@ export async function prepareGeneratedGitSyncCandidateTree(
   | { ok: false; error: string }
 > {
   const oidPattern = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
-  if (!request || Object.keys(request).sort().join(',') !== 'base,blobOid,bytes,path,sha256' ||
+  const keys = Object.keys(request ?? {}).sort().join(',');
+  if (!request || !['base,blobOid,bytes,path,sha256',
+    'base,blobOid,bytes,path,publishedLibrarySelections,selectedInputTree,sha256'].includes(keys) ||
       !oidPattern.test(request.base) || !oidPattern.test(request.blobOid) ||
       !['package-lock.json', 'npm-shrinkwrap.json'].includes(request.path) ||
       !(request.bytes instanceof Uint8Array) || !/^[a-f0-9]{64}$/.test(request.sha256)) {
@@ -6094,6 +6149,9 @@ export async function prepareGeneratedGitSyncCandidateTree(
         baseTree.code !== 0 || !oidPattern.test(baseTree.stdout.trim())) {
       return custodyRefused('generated-lock-base');
     }
+    const selection = request.selectedInputTree === undefined ? undefined : await prepareGitSyncMetadataSelectionTree(sharedGit, repoPath,
+      { base: request.base, publishedLibrarySelections: request.publishedLibrarySelections! });
+    if (selection && selection.selectedInputTree !== request.selectedInputTree) return custodyRefused('generated-lock-selected-input-tree');
     const metadata = await sharedGit(['ls-tree', '-z', baseTree.stdout.trim(), '--',
       'package.json', 'package-lock.json', 'npm-shrinkwrap.json'], repoPath);
     if (metadata.code !== 0) return custodyRefused('generated-lock-base-metadata');
@@ -6113,7 +6171,7 @@ export async function prepareGeneratedGitSyncCandidateTree(
     const privateGit = opened.site.bindIndex(indexFile);
     // Deliberately bypass seedPrivateIndex: inherited shared entries are not
     // selected repair inputs, including unrelated pre-staged source.
-    const seeded = await privateGit(['read-tree', baseTree.stdout.trim()], repoPath);
+    const seeded = await privateGit(['read-tree', selection?.selectedInputTree ?? baseTree.stdout.trim()], repoPath);
     if (seeded.code !== 0) return custodyRefused('generated-lock-base-read');
     const attributes = await privateGit(['check-attr', '-z', '--cached', 'filter', 'text', 'eol',
       'working-tree-encoding', 'ident', '--', request.path], repoPath);
@@ -6130,7 +6188,7 @@ export async function prepareGeneratedGitSyncCandidateTree(
     const tree = await privateGit(['write-tree'], repoPath);
     if (tree.code !== 0 || !oidPattern.test(tree.stdout.trim())) return custodyRefused('generated-lock-tree-write');
     const changed = await sharedGit(['diff-tree', '--no-commit-id', '--name-only', '--no-renames', '-r', '-z',
-      baseTree.stdout.trim(), tree.stdout.trim()], repoPath);
+      selection?.selectedInputTree ?? baseTree.stdout.trim(), tree.stdout.trim()], repoPath);
     if (changed.code !== 0 || changed.stdout !== request.path + '\0') return custodyRefused('generated-lock-tree-scope');
     await workspaceLockTreeValidator()(privateGit, repoPath, tree.stdout.trim());
     return { ok: true, path: request.path, mode: '100644', sha256: request.sha256,
@@ -6342,6 +6400,8 @@ export async function captureGitSyncCandidate(
         const f = source.fingerprint;
         const prepared = await prepareGeneratedGitSyncCandidateTree(sharedGit, repoPath, {
           base: f.baseCommit, path: f.output.path, bytes: generatedBytes!, sha256: f.output.sha256, blobOid: f.output.blobOid,
+          ...(f.schemaVersion === 2 ? { selectedInputTree: f.selectedInputTree,
+            publishedLibrarySelections: metadataSelectionRequest(f) } : {}),
         });
         if (!prepared.ok) return prepared;
         return await retain(prepared.baseTree, prepared.tree);

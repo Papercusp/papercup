@@ -389,7 +389,7 @@ export async function observeGitlinkOrigin(input: {
   const root = await mkdtemp(join(tmpdir(), 'gitlink-origin-'));
   try {
     const env: NodeJS.ProcessEnv = {
-      PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: root, XDG_CONFIG_HOME: root,
+      PATH: '/usr/bin:/bin', HOME: root, XDG_CONFIG_HOME: root,
       LANG: 'C', LC_ALL: 'C', GIT_CONFIG_NOSYSTEM: '1',
       GIT_CONFIG_SYSTEM: '/dev/null', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_COUNT: '0',
       GIT_TERMINAL_PROMPT: '0', GIT_SSH_VARIANT: 'ssh',

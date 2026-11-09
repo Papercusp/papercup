@@ -1,5 +1,5 @@
 /** Real-Git capture and frozen-publication contracts in the maintained integration router. */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -10,12 +10,14 @@ import { captureGitSyncCandidate, readGitSyncCandidate, publishGitSyncCandidate,
   SOURCE_CUSTODY_REF_PREFIX, type RunGit, type GitSyncGeneratedLockTreeRequest } from './run-git-sync';
 import { createGitSyncLeaseFence } from './git-sync-lease-fence';
 import { runWithGitSyncPerInstallLease } from './git-sync-action';
+import * as gitlinkOrigins from './submodule-forks';
 import { startDedicatedNativePg } from '@papercusp/test-config/pg';
 import { getOrgPg, _resetForTests as resetOrgPg } from '@papercusp/db-org';
 import { configureLocks, locksHost, _resetForTests as resetLocks, getTxPool } from '../../agent-tools/locks/su-lock-store';
 
 const roots: string[] = [];
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -119,9 +121,15 @@ describe('P003 selected library input tree', () => {
       f.git('config', '-f', '.gitmodules', `submodule.${member.path}.url`, member.url);
       return { ...member, old: child.git('rev-parse', 'HEAD'), i };
     });
-    writeFileSync(join(f.repo, 'package.json'), JSON.stringify({ name: 'joint-parent', version: '1.0.0',
-      workspaces: control === 'nonworkspace' ? ['libs/papercusp'] : members.map(row => row.path) }));
-    writeFileSync(join(f.repo, 'package-lock.json'), '{"lockfileVersion":3,"packages":{}}');
+    const manifest = { name: 'joint-parent', version: '1.0.0',
+      workspaces: control === 'nonworkspace' ? ['libs/papercusp'] : members.map(row => row.path),
+      dependencies: Object.fromEntries(members.map(row => [row.name, 'file:./' + row.path])) };
+    writeFileSync(join(f.repo, 'package.json'), JSON.stringify(manifest));
+    writeFileSync(join(f.repo, 'package-lock.json'), JSON.stringify({ name: manifest.name, version: manifest.version,
+      lockfileVersion: 3, requires: true, packages: { '': manifest, ...Object.fromEntries(members.flatMap(row => [
+        [row.path, { name: row.name, version: '1.0.0' }],
+        ['node_modules/' + row.name, { resolved: row.path, link: true }],
+      ])) } }));
     if (control === 'duplicate-mapping') f.git('config', '-f', '.gitmodules', 'submodule.alias.path', members[0].path);
     if (control === 'duplicate-key') f.git('config', '-f', '.gitmodules', '--add', `submodule.${members[0].path}.url`, members[0].url);
     if (control === 'url-alias') f.git('config', '-f', '.gitmodules', `submodule.${members[0].path}.url`, 'https://github.com/Papercusp/resumable-download.git');
@@ -172,6 +180,76 @@ describe('P003 selected library input tree', () => {
     expect(f.git('for-each-ref', '--format=%(refname)', SOURCE_CUSTODY_REF_PREFIX)).toBe('');
   });
 
+  it('resolves v2 from the actual selected library trees and refuses custody until writer phases are bound', async () => {
+    const f = selectedFixture();
+    const before = candidateState(f);
+    const refs = members.map(row => f.git('-C', row.path, 'for-each-ref', '--format=%(refname):%(objectname)'));
+    // The observer's isolated real-network policy has its own real bare-origin
+    // suite. This case checks binding/materialization, with no GitHub traffic.
+    const observer = vi.spyOn(gitlinkOrigins, 'observeGitlinkOrigin').mockImplementation(async input => {
+      const row = f.selected[members.findIndex(member => member.url === input.url)]!;
+      return { schemaVersion: 1, policy: 'isolated-git-origin-v1',
+        observationId: 'd2366ffc-a597-44fc-9832-5a12bb849fdd', observedAt: new Date().toISOString(), url: input.url,
+        authority: { kind: 'default-head', ref: 'refs/heads/main' }, tip: row.selectedCommit };
+    });
+    const source = await prepareGitSyncMetadataRepair(f.runGit, f.repo,
+      { requestId: 'selected-v2', generation: 2, base: f.base, publishedLibrarySelections: f.selected }, { log: () => {} });
+    expect(observer.mock.calls.map(([input]) => input)).toEqual(members.map(row => ({ url: row.url })));
+    const identity = source.fingerprint;
+    expect(identity.schemaVersion).toBe(2);
+    if (identity.schemaVersion !== 2) throw new Error('expected explicit joint fingerprint');
+    expect(identity.baseTree).toBe(f.git('rev-parse', `${f.base}^{tree}`));
+    expect(identity.selectedInputTree).not.toBe(identity.baseTree);
+    expect(f.git('diff-tree', '--no-commit-id', '--name-only', '-r', identity.baseTree, identity.selectedInputTree))
+      .toBe(members.map(row => row.path).join('\n'));
+    const lock = JSON.parse(source.bytes.toString());
+    for (const [i, row] of members.entries()) {
+      expect(identity.publishedLibrarySelections[i]).toMatchObject({ ...f.selected[i],
+        selectedTree: f.git('-C', row.path, 'rev-parse', 'HEAD^{tree}'), authorizedUrl: row.url,
+        mapping: { path: row.path, url: row.url, branch: null }, origin: { tip: f.selected[i]!.selectedCommit } });
+      expect(lock.packages[row.path].version).toBe('2.0.0');
+      expect(identity.selectedInputs.find(input => input.path === row.path + '/package.json'))
+        .toMatchObject({ selectedOid: f.selected[i]!.selectedCommit,
+          oid: f.git('-C', row.path, 'rev-parse', 'HEAD:package.json') });
+      expect(identity.selectedInputs.find(input => input.path === row.path))
+        .toMatchObject({ selectedOid: f.base, oid: f.selected[i]!.selectedCommit, mode: '160000' });
+    }
+    expect(identity.selectedInputs.find(input => input.path === 'package.json'))
+      .toMatchObject({ selectedOid: f.base, oid: f.git('rev-parse', `${f.base}:package.json`) });
+    const prepared = await prepareGeneratedGitSyncCandidateTree(f.runGit, f.repo, {
+      base: f.base, path: identity.output.path, bytes: source.bytes, sha256: identity.output.sha256,
+      blobOid: identity.output.blobOid, selectedInputTree: identity.selectedInputTree, publishedLibrarySelections: f.selected,
+    });
+    if (!prepared.ok) throw new Error(prepared.error);
+    expect(f.git('diff-tree', '--no-commit-id', '--name-only', '-r', f.base, prepared.tree))
+      .toBe([...members.map(row => row.path), 'package-lock.json'].join('\n'));
+    for (const [i, row] of members.entries()) expect(f.git('rev-parse', `${prepared.tree}:${row.path}`)).toBe(f.selected[i]!.selectedCommit);
+    expect(await captureGitSyncCandidate(f.runGit, f.repo, { requestId: 'selected-v2', generation: 2,
+      base: f.base, paths: [...members.map(row => row.path), 'package-lock.json'], contentSource: source }, pilotChecks))
+      .toMatchObject({ ok: false, error: expect.stringContaining('joint-phase-unbound') });
+    expect(candidateState(f)).toEqual(before);
+    expect(members.map(row => f.git('-C', row.path, 'for-each-ref', '--format=%(refname):%(objectname)'))).toEqual(refs);
+    expect(f.git('for-each-ref', '--format=%(refname)', SOURCE_CUSTODY_REF_PREFIX)).toBe('');
+    expect(readdirSync(join(f.repo, '.git')).filter(name => name.startsWith('papercusp-'))).toEqual([]);
+  }, 90_000);
+
+  it.each(['uncontained', 'unavailable'])('refuses %s origin preparation before launching the resolver', async control => {
+    const f = selectedFixture();
+    const before = candidateState(f);
+    const launched: string[] = [];
+    vi.spyOn(gitlinkOrigins, 'observeGitlinkOrigin').mockImplementation(async input => {
+      if (control === 'unavailable') throw new Error('direct origin unavailable');
+      return { schemaVersion: 1, policy: 'isolated-git-origin-v1',
+        observationId: 'd2366ffc-a597-44fc-9832-5a12bb849fdd', observedAt: new Date().toISOString(), url: input.url,
+        authority: { kind: 'default-head', ref: 'refs/heads/main' }, tip: f.selected[0]!.expectedBasePin };
+    });
+    await expect(prepareGitSyncMetadataRepair(f.runGit, f.repo, { requestId: 'origin-negative', generation: 1,
+      base: f.base, publishedLibrarySelections: f.selected }, { log: line => launched.push(line) })).rejects.toThrow();
+    expect(launched).toEqual([]);
+    expect(candidateState(f)).toEqual(before);
+    expect(f.git('for-each-ref', '--format=%(refname)', SOURCE_CUSTODY_REF_PREFIX)).toBe('');
+  });
+
   it('retains an explicit empty root-only vector and permits a single reviewed member', async () => {
     const f = selectedFixture();
     expect(await prepareGitSyncMetadataSelectionTree(f.runGit, f.repo, { base: f.base, publishedLibrarySelections: [] }))
@@ -214,7 +292,7 @@ describe('P003 selected library input tree', () => {
 });
 
 describe('P003 generated custody', () => {
-  async function generatedCustodyFixture(configure?: (f: ReturnType<typeof fixture>) => void) {
+  async function generatedCustodyFixture(configure?: (f: ReturnType<typeof fixture>) => void, explicitEmptyVector = false) {
     const f = fixture();
     const manifest = { name: 'closed-generated-custody', version: '1.0.0', workspaces: ['packages/*'],
       dependencies: { target: 'file:./target' } };
@@ -235,10 +313,28 @@ describe('P003 generated custody', () => {
     writeFileSync(join(f.repo, 'package-lock.json'), '{"pending":"different raw bytes"}\n');
     const base = f.git('rev-parse', 'HEAD');
     const contentSource = await prepareGitSyncMetadataRepair(f.runGit, f.repo,
-      { requestId: 'closed-repair', generation: 1, base }, { log: () => {} });
+      { requestId: 'closed-repair', generation: 1, base,
+        ...(explicitEmptyVector ? { publishedLibrarySelections: [] } : {}) }, { log: () => {} });
     return { ...f, request: { requestId: 'closed-repair', generation: 1, base,
       paths: ['package-lock.json'], contentSource } };
   }
+
+  it('retains and publishes explicit v2 empty-vector custody with selectedInputTree equal to the base tree', async () => {
+    const f = await generatedCustodyFixture(undefined, true);
+    const before = unpublishedState(f);
+    const source = f.request.contentSource;
+    expect(source.fingerprint).toMatchObject({ schemaVersion: 2, publishedLibrarySelections: [],
+      selectedInputTree: f.git('rev-parse', `${f.request.base}^{tree}`) });
+    expect(source.fingerprint.selectedInputs.filter(row => row.owner === '').every(row => row.selectedOid === f.request.base)).toBe(true);
+    const captured = await captureGitSyncCandidate(f.runGit, f.repo, f.request, pilotChecks);
+    if (!captured.ok) throw new Error(captured.error);
+    expect(captured.candidate.version).toBe(3);
+    expect(await readGitSyncCandidate(f.runGit, f.repo, { requestId: f.request.requestId, generation: 1 })).toEqual(captured);
+    const published = await publishGitSyncCandidate(f.runGit, f.repo, f.request, pilotChecks);
+    expect(published).toMatchObject({ status: 'committed', tree: captured.candidate.tree });
+    expect(f.git('show', 'HEAD:package-lock.json')).toBe(source.bytes.toString().trim());
+    expect(unpublishedState(f)).toEqual(before);
+  }, 90_000);
 
   it('refuses the caller pending-lock mismatch before npm without changing raw work or the shared index', async () => {
     const f = await generatedCustodyFixture();
