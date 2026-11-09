@@ -321,6 +321,15 @@ describe('committed reader loader-return source binding', () => {
     expect(JSON.stringify(f.rows)).not.toContain('private-schema-default');
   });
 
+  it.each(['unexpected.schema', `${digest('opaque')}.catalogue`])(
+    'refuses an unexpected trace artifact beside valid schema evidence: %s', name => {
+      const f = loadedSchemaFixture();
+      expect(f.observe().privateSchema.status).toBe('observed');
+      writeFileSync(join(f.traceRoot, name), 'opaque');
+      expect(f.observe()).toMatchObject({ status: 'unknown', gaps: ['unexpected native process artifact'],
+        privateSchema: { status: 'unknown', schema: null } });
+    });
+
   it.each(['missing', 'duplicate', 'unavailable', 'unterminated', 'run', 'process', 'kernel', 'isolate',
     'late', 'scope', 'backend', 'query', 'columns', 'reference', 'limited', 'bytes'] as const)(
     'keeps %s worker schema evidence unknown', control => {
