@@ -5,7 +5,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import type postgres from 'postgres';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { applyEventSubstrateMigrationsForTest, applyDisclosureLedgerForTest,
+import { applyEventSubstrateMigrationsForTest, applyDisclosureLedgerForTest, applyMigrationsForTest,
+  COORD_SUBSCRIPTION_SUBSTRATE,
   createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL,
   applyClaimPathReadDeps } from '../../../test/_work-items-schema';
@@ -50,7 +51,7 @@ vi.mock('../coordination/presence', async original => ({
 
 const wi = await import('../../work-items');
 const checkpoints = await import('../../work-item-checkpoint');
-const { registerAnnouncement } = await import('../../events/await/store');
+const { registerAnnouncement, registerAwait } = await import('../../events/await/store');
 const { readEventConditionReachability } = await import('../../external-condition-reachability');
 const { readBlockerResolution } = await import('../../blocker-resolution-decision');
 const { default: setBlocker } = await import('./set_blocker');
@@ -111,7 +112,20 @@ beforeAll(async () => {
   h.sql = db.sql;
   await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
-  await applyEventSubstrateMigrationsForTest(db.sql, { label: 'blocker-resolution-boundaries.integration.test.ts' });
+  await applyEventSubstrateMigrationsForTest(db.sql, {
+    label: 'blocker-resolution-boundaries.integration.test.ts', ...COORD_SUBSCRIPTION_SUBSTRATE,
+  });
+  // Use the production routine table and loop extension, rather than the
+  // claim-reader's intentionally minimal live-holder projection.
+  const baseline = readFileSync(fileURLToPath(new URL('../../../../../libs/papercusp/libs/db/sql/000-baseline.sql', import.meta.url)), 'utf8');
+  const routines = baseline.match(/CREATE TABLE IF NOT EXISTS harness_shared\.routines \([\s\S]*?\n\);/);
+  if (!routines) throw new Error('production routines table not found');
+  await db.sql.unsafe(routines[0]);
+  await applyMigrationsForTest(db.sql, ['323-loop-routines-reschedule-interval.sql',
+    '408-routines-ephemeral-tier.sql', '909-routines-next-fire-ms-precision.sql',
+    '1046-in-process-sweep-arm-tier.sql'], {
+    label: 'blocker-resolution-boundaries.integration.test.ts',
+  });
   await applyDisclosureLedgerForTest(db.sql);
   for (const name of ['831-issue-occurrence-ledger.sql', '140-plan-item-assignments.sql']) {
     const ddl = readFileSync(fileURLToPath(new URL(`../../../../../libs/papercusp/libs/db/sql/${name}`, import.meta.url)), 'utf8')
@@ -153,7 +167,8 @@ beforeEach(async () => {
   h.parkNotify.mockReset().mockResolvedValue(undefined);
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps,
     harness_shared.carry_notes, harness_shared.coord_event_log, harness_shared.blocker_boundary_transactions,
-    harness_shared.event_awaits, harness_shared.event_key_fires RESTART IDENTITY CASCADE`;
+    harness_shared.event_awaits, harness_shared.event_key_fires, harness_shared.predicate_watches,
+    harness_shared.coord_entity_subscriptions, harness_shared.routines RESTART IDENTITY CASCADE`;
   await declareCondition();
 });
 async function seed(kind: 'task' | 'bug' | 'feature' = 'feature', blocked = true) {
@@ -190,7 +205,41 @@ async function snapshot(id: string) {
     WHERE workspace_id='default' AND harness_slug=${HARNESS} AND feature_id=${id}`;
   return { row: row.value, checkpoint: await checkpoints.getWorkItemCheckpoint(checkpointRef(id)),
     edges: [...await db.sql`SELECT * FROM harness_shared.work_item_deps ORDER BY id`],
-    events: [...await db.sql`SELECT * FROM harness_shared.coord_event_log ORDER BY id`] };
+    events: [...await db.sql`SELECT * FROM harness_shared.coord_event_log ORDER BY id`],
+    monitors: {
+      awaits: [...await db.sql`SELECT * FROM harness_shared.event_awaits ORDER BY id`],
+      watches: [...await db.sql`SELECT * FROM harness_shared.predicate_watches ORDER BY id`],
+      subscriptions: [...await db.sql`SELECT * FROM harness_shared.coord_entity_subscriptions ORDER BY id`],
+      routines: [...await db.sql`SELECT * FROM harness_shared.routines ORDER BY id`],
+    } };
+}
+async function seedMonitors(id: string) {
+  const event = `fixture:monitor:${id}`;
+  const bound = { kind: 'work-item', ref: id };
+  await registerAwait({ subscriberId: OWNER, eventKey: event, policy: 'notify',
+    boundTo: bound, note: 'Existing monitor remains owned' });
+  await db.sql`INSERT INTO harness_shared.predicate_watches
+    (workspace_id, owner_id, harness_slug, event_key, tool, args, path, op, value, bound_to)
+    VALUES ('default', ${OWNER}, ${HARNESS}, ${event}, 'work_items:get', ${db.sql.json({ id })},
+      'workItem.state', 'eq', '"done"'::jsonb, ${db.sql.json(bound)})`;
+  await db.sql`INSERT INTO harness_shared.coord_entity_subscriptions
+    (workspace_id, subscriber_id, target_kind, target_ref, follow_blockers)
+    VALUES ('default', ${OWNER}, 'object', ${`feature:${HARNESS}#${id}`}, true)
+    ON CONFLICT (workspace_id, subscriber_id, target_kind, target_ref)
+      WHERE cancelled_at IS NULL DO UPDATE SET follow_blockers=true`;
+  for (const loop of [false, true]) await db.sql`INSERT INTO harness_shared.routines
+    (id, workspace_id, install_slug, name, trigger_kind, trigger_config, target_role,
+      target_owner_id, reschedule_interval_sec, active, metadata)
+    VALUES (${`${loop ? 'loop' : 'routine'}:${id}`}, 'default', ${HARNESS},
+      ${`${loop ? 'loop' : 'routine'}:${id}`}, 'cron', '{"cron":"* * * * *"}'::jsonb,
+      'su', ${OWNER}, ${loop ? 60 : null}, true, ${db.sql.json({ workItemId: id })})`;
+  const { monitors } = await snapshot(id);
+  for (const rows of Object.values(monitors)) expect(rows.length).toBeGreaterThan(0);
+  expect(monitors.awaits).toEqual(expect.arrayContaining([expect.objectContaining({
+    event_key: event, policy: 'notify', bound_to: bound, cancelled_at: null })]));
+  expect(monitors.watches).toEqual(expect.arrayContaining([expect.objectContaining({
+    event_key: event, bound_to: bound, active: true })]));
+  expect(monitors.routines.filter(row => row.metadata.workItemId === id)).toHaveLength(2);
 }
 const state = (id: string, key: string) => call(setState, {
   id, harness: HARNESS, state: 'blocked', blockerDecision: deferral(key),
@@ -439,12 +488,14 @@ describe('public blocker resolution boundaries', () => {
 
   it('preserves custody when a fired event does not match its declared condition', async () => {
     const id = await seed();
-    const before = await snapshot(id);
     await db.sql`UPDATE harness_shared.event_awaits
       SET fired_at=now(), fired_reason='event', fired_by='fixture-producer', fired_payload='{"ready":false}'::jsonb
       WHERE id=${announcementId} AND event_key=${EVENT} AND superseded_at IS NULL`;
     expect(await readEventConditionReachability(EVENT, { requireSpecificCondition: true }))
       .toMatchObject({ verdict: 'unknown', authoritative: false, uncertifiedReason: 'expected-condition-unproven' });
+    // The producer emission is test setup; the refusal must preserve the state
+    // measured after it, including the canonical event registration.
+    const before = await snapshot(id);
     const args = { id, harness: HARNESS, ref: EVENT, clear: true, blockerDecision: resolution('matched-fire-only') };
     expect(await call(setBlocker, args)).toMatchObject({ ok: false, code: 'blocker_decision_evidence' });
     expect(await snapshot(id)).toEqual(before);
@@ -478,6 +529,19 @@ describe('public blocker resolution boundaries', () => {
       { ownerId: OWNER, sessionId: OWNER, workspaceId: 'default', harnessSlug: HARNESS,
         role: 'su', root: null }, { effect: { fixture: 'peer' }, enteringDeferral: true }),
     JSON.stringify({ peerMeasurement, dependencies })).toMatchObject({ ok: true });
+    // The edge above bypasses the production link writer. Establish the
+    // holder recovery interests that writer normally creates before measuring
+    // whether a repeated public link preserves the existing monitor rows.
+    const recovery = await wi.armWorkItemHolderInterests((await wi.getWorkItem(id, HARNESS))!, OWNER);
+    expect(recovery?.event_keys).toEqual([`work-item:done:${peer}`, `work-item:unblocked:${id}`]);
+    expect(recovery?.await_ids).toHaveLength(2);
+    const recoveryRows = (await snapshot(id)).monitors.awaits.filter(row =>
+      row.bound_to?.kind === 'work-item-blocked' && row.bound_to.ref === id);
+    expect(recoveryRows).toHaveLength(2);
+    for (const row of recoveryRows) expect(row).toMatchObject({
+      subscriber_id: OWNER, policy: 'wake', once: true, cancelled_at: null,
+    });
+    await seedMonitors(id);
     const before = await snapshot(id);
     expect(await call(setState, { id, harness: HARNESS, state: 'needs-human', blockerDecision: {
       ...peerDecision, deferral: { ...peerDecision.deferral, responsibleParty: 'absent-peer' },
@@ -496,6 +560,7 @@ describe('public blocker resolution boundaries', () => {
     expect(await wi.getWorkItem(peer, HARNESS)).toMatchObject({ state: 'wip', assignee: 'agent-repair' });
     expect(await wi.getWorkItem(id, HARNESS)).toMatchObject({ assignee: OWNER });
     expect((await snapshot(id)).edges).toEqual(before.edges);
+    expect((await snapshot(id)).monitors).toEqual(before.monitors);
 
     const human = await seed();
     const authority = { kind: 'authority' as const, ref: 'fixture:device-action' };
@@ -511,15 +576,20 @@ describe('public blocker resolution boundaries', () => {
       investigation: [{ action: 'Inspect capability and event', outcome: 'Physical action requires the device holder', evidenceRefs: [authority, ref] }],
       deferral: { reason: 'human-action', responsibleParty: 'device-holder', reasonEvidenceRefs: [authority],
         nextAction: 'Device holder performs physical confirmation; await its declared event', recheckRef: ref } };
+    await seedMonitors(human);
     const humanBefore = await snapshot(human);
     expect(await call(setState, { id: human, harness: HARNESS, state: 'needs-human', blockerDecision: humanDecision })).toMatchObject({ ok: true });
     expect(await wi.getWorkItem(human, HARNESS)).toMatchObject({ assignee: OWNER });
     expect(activeExternalBlockers((await wi.getWorkItem(human, HARNESS))?.payload)).toHaveLength(2);
     expect((await snapshot(human)).checkpoint).toBe(humanBefore.checkpoint);
+    expect((await snapshot(human)).monitors).toEqual(humanBefore.monitors);
 
     const external = await seed();
+    await seedMonitors(external);
+    const externalBefore = await snapshot(external);
     expect(await state(external, 'external-custody')).toMatchObject({ ok: true });
     expect(await wi.getWorkItem(external, HARNESS)).toMatchObject({ state: 'blocked', assignee: OWNER });
+    expect((await snapshot(external)).monitors).toEqual(externalBefore.monitors);
   });
 
   const PLAN = 'blocker-boundary-lane';
@@ -578,6 +648,7 @@ describe('public blocker resolution boundaries', () => {
         _claimHold: true, claim_hold_by: OWNER, claim_hold_reason: 'Independent physical acceptance',
         held_open_by: 'system:plan-item-lane-sync', keep: 'original' })))}
       WHERE workspace_id='default' AND harness_slug=${HARNESS} AND feature_id=${node}`;
+    await seedMonitors(node);
     const before = await snapshot(node);
     const result = await syncLinkedWorkItemsToPlanLane(lane, 'actionable');
     expect(result).toMatchObject({ ungated: [node] });
@@ -593,6 +664,7 @@ describe('public blocker resolution boundaries', () => {
     expect(after.edges).toEqual(before.edges);
     expect(await db.sql`SELECT * FROM harness_shared.plan_item_assignments`).toHaveLength(0);
     expect(after.events).toEqual(before.events);
+    expect(after.monitors).toEqual(before.monitors);
   });
 
   for (const [family, kind] of [['issue', 'task'], ['feature', 'feature']] as const) {
