@@ -10,6 +10,7 @@
  * real plan row.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/tooldef';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -920,11 +921,31 @@ describe('plans:start terminal guard', () => {
 
   it('starts a non-terminal (ready) plan — the guard lets it through to the plan row', async () => {
     H.state.frontmatterStatus = 'ready';
-    const res = await run({ slug: 'live-plan-2026-06-02' });
+    const input = { harness: 'papercup', slug: 'live-plan-2026-06-02' };
+    const originalInput = structuredClone(input);
+    const projected = lookupByMcpName('plans:start');
+    expect(projected).toBeTruthy();
+    const dispatched = await dispatchProjectedTool(projected!, 'plans:start', input, {
+      ...(MAKE_CTX() as unknown as Record<string, unknown>),
+      uiClientId: 'start-original-input-replay',
+      runId: 'start-original-input-replay',
+      emit: vi.fn(),
+      gateBypass: { role: true, capability: true, quota: true },
+      transport: 'mcp',
+      requestedFormat: 'json',
+      requestedStructured: true,
+    } as never, {});
+    expect(dispatched.ok).toBe(true);
+    expect(dispatched.result?.isError).not.toBe(true);
+    expect(input).toEqual(originalInput);
+    const res = { data: dispatched.result?.structuredContent as {
+      counts: { ok: number; failed: number };
+      results: Array<Record<string, unknown>>;
+    } };
 
-    expect(res.isError).toBeUndefined();
     expect(res.data.counts).toEqual({ ok: 1, failed: 0 });
     expect(res.data.results[0]).toMatchObject({ ok: true });
+    expect(promotePlanItemsMock).toHaveBeenCalledTimes(1);
     // The positive control for the two refusals above: a non-terminal plan gets
     // PAST the guard and reaches its row. What the handler does once there is the
     // retired-axis block's subject, not this one's.
