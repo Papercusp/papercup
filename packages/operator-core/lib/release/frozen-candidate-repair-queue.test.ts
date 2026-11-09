@@ -2064,11 +2064,18 @@ describe('P-013 / D-007 — convergence rounds + the owner-visible off switch', 
 
   it('lossless canonical evidence: persists 75 to 60 complete failures and measures the exact shrink', () => {
     const failures = Array.from({ length: 75 }, (_, i) => `lib/lossless-${i}.test.ts`);
+    const sharedPrefix = `lib/${'dir/'.repeat(140)}`;
+    // Both distinct long identities cross the old 50-item boundary and remain in the next 60-item frontier.
+    failures[51] = `${sharedPrefix}first.test.ts`;
+    failures[59] = `${sharedPrefix}second.test.ts`;
+    expect(sharedPrefix.length).toBeGreaterThan(500);
+    expect(new Set(failures).size).toBe(75);
     const input = { candidate: C, base: BASE, failingTests: failures, nowMs: T0,
       failureFrontierCompleteness: 'complete' as const };
     const first = createFrozenCandidateRepairQueue(input);
     expect(first.failingTests).toEqual(failures);
     expect(first.signature.map(entry => entry.id)).toEqual(failures);
+    expect(parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(first)))?.failingTests).toEqual(failures);
     const red = markFrozenRepairVerificationRed({ ...first, phase: 'ready-to-verify', attempts: 1,
       fixerSpawnId: 'lossless-fixer' }, { repairHead: C, failingTests: failures.slice(0, 60),
       nowMs: T0 + 1_000, ...{ failureFrontierCompleteness: 'complete' as const } });
