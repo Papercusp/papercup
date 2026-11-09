@@ -5,8 +5,39 @@ import { reportsLibraryDisabled } from '../reports/_shared';
 import { boundedSource, completeContextUnit, sectionExcerpt, type KnowledgeAudience } from './knowledge-sources';
 import { lastMarkdownHeading } from '../plans/semantic-leg';
 import { headlineTsQuery, lexicalLeg } from '../../search/lexical/rank';
+import { contextSourceVersion, type ContextSourceVersion } from '../../memory/temporal-render';
+import type { Sql } from 'postgres';
+import { boundedOrgTxn } from '../../pg-bounded-txn';
 
-type HitRow = { report_id: string; title: string; summary: string; origin_harness_slug: string | null;
+/** Lifecycle reads retain the report library's current viewer predicate.
+ * A hidden replacement never becomes a disclosed id or source body. */
+export async function revalidateReportSourceVersions(input: {
+  sql: Sql; workspaceId: string; viewer: ReportViewer; audience: KnowledgeAudience;
+  previous: readonly ContextSourceVersion[]; signal?: AbortSignal;
+}): Promise<ContextSourceVersion[]> {
+  if (await reportsLibraryDisabled()) return [];
+  return boundedOrgTxn(async sql => {
+    const ids = input.previous.slice(0, 8).filter(previous =>
+      previous.namespace === `corpus:report:${input.workspaceId}` && previous.ref.startsWith('report:') &&
+      !input.audience.excludedRefs?.has(previous.ref)).map(previous => previous.ref.slice('report:'.length));
+    if (!ids.length) return [];
+    const rows = await sql`SELECT r.report_id, r.title, r.body_md, r.published_at, r.retired_at,
+        EXISTS (SELECT 1 FROM harness_shared.report_library newer WHERE newer.workspace_id = ${input.workspaceId}
+          AND newer.lineage_id = r.lineage_id AND newer.retired_at IS NULL
+          AND (newer.published_at,newer.report_id) > (r.published_at,r.report_id)) AS superseded
+      FROM harness_shared.report_library r WHERE r.workspace_id = ${input.workspaceId}
+        AND r.report_id = ANY(${ids}::text[]) AND ${visibleTo(sql, input.viewer)}
+        AND (${input.audience.harnessSlugs?.length ? [...input.audience.harnessSlugs] : null}::text[] IS NULL
+          OR r.origin_harness_slug = ANY(${input.audience.harnessSlugs?.length ? [...input.audience.harnessSlugs] : null}::text[]))`;
+    return rows.map(row => contextSourceVersion({ namespace: `corpus:report:${input.workspaceId}`,
+      ref: `report:${row.report_id}`, fullText: `${row.title}\n${row.body_md}`, revision: row.report_id,
+      updatedAt: new Date(row.published_at).toISOString(), validity: {
+        status: row.retired_at ? 'retracted' : row.superseded ? 'superseded' : 'current', validAt: null,
+        invalidAt: row.retired_at == null ? null : new Date(row.retired_at).toISOString(), supersededBy: null } }));
+  }, { client: input.sql, signal: input.signal, readOnly: true, statementTimeoutMs: 1_500 });
+}
+
+type HitRow = { workspace_id: string; report_id: string; title: string; summary: string; origin_harness_slug: string | null;
   published_at: string; rank: number; highlight: string; body_md?: string;
   match_content?: string; section_prefix?: string | null; lineage_id?: string };
 function hits(rows: HitRow[], ranker: string): Listing {
@@ -21,6 +52,11 @@ function hits(rows: HitRow[], ranker: string): Listing {
     highlight: ranker === 'embeddings' ? content : r.highlight,
     score: Number(r.rank), rankers: [ranker], meta: {
       contextUnit: r.body_md == null ? null : completeContextUnit(`${r.title}\n${r.body_md}`),
+      contextSourceVersion: r.body_md == null ? null : JSON.stringify(contextSourceVersion({
+        namespace: `corpus:report:${r.workspace_id}`, ref: `report:${r.report_id}`, fullText: `${r.title}\n${r.body_md}`,
+        revision: r.report_id, updatedAt: r.published_at == null ? null : new Date(r.published_at).toISOString(),
+        validity: { status: 'current', validAt: null, invalidAt: null, supersededBy: null },
+      })),
       path: `/reports?sel=${encodeURIComponent(r.report_id)}`, section, title: r.title,
       currentness: 'dated-evidence', lineageId: r.lineage_id ?? null,
     },
@@ -66,7 +102,7 @@ export function createReportSearchSource(viewer: ReportViewer = {}, audience: Kn
         ? p.sql`''::text AS highlight`
         : p.sql`ts_headline('english', body_md, ${headlineTsQuery(p.sql, leg.engine, p.query)},
           'StartSel=<mark>,StopSel=</mark>,MaxWords=35,MinWords=15,MaxFragments=2') AS highlight`;
-      const selectRows = () => p.sql`SELECT report_id, title, summary, body_md, lineage_id, origin_harness_slug, published_at,
+      const selectRows = () => p.sql`SELECT workspace_id, report_id, title, summary, body_md, lineage_id, origin_harness_slug, published_at,
         (${leg.score})::float8 AS rank,
         ${highlightColumn}
         FROM harness_shared.report_library WHERE report_id IN (${latest(p)})
@@ -109,7 +145,7 @@ export function createReportSearchSource(viewer: ReportViewer = {}, audience: Kn
           AND c.embedding IS NOT NULL
           AND ${PROSE_EMBEDDING_SPACE.sourceFilterSql(p, 'c.embedding_profile', 'c.embedding_mode')}
         GROUP BY r.workspace_id, r.report_id ORDER BY distance, r.report_id LIMIT ${p.limit}
-      ) SELECT r.report_id, r.title, r.summary, r.lineage_id, r.origin_harness_slug, r.published_at,
+      ) SELECT r.workspace_id, r.report_id, r.title, r.summary, r.body_md, r.lineage_id, r.origin_harness_slug, r.published_at,
         1 - b.distance AS rank, c.content AS match_content, c.content AS highlight,
         left(concat_ws(E'\n',r.title,nullif(r.summary,''),r.body_md), c.chunk_idx * 1250 + 750) AS section_prefix
         FROM best b JOIN harness_shared.report_library r

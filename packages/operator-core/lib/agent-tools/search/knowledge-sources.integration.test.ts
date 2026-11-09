@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { DocSource } from '@papercusp/docs-engine';
 import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
-import { boundedSource, createDocSearchSource, createPlanSearchSource } from './knowledge-sources';
+import { boundedSource, createDocSearchSource, createPlanSearchSource, revalidateKnowledgeSourceVersions } from './knowledge-sources';
 import { runFullTextSearch } from '@papercusp/search';
 import { applyMigrationForTest } from '../../../test/_pg-helpers';
 import { existsSync } from 'node:fs';
@@ -13,6 +13,7 @@ import { bm25Corpus } from '../../search/lexical/corpora';
 import { bm25IndexesFor, bm25Leg } from '../../search/lexical/rank';
 import { SEARCH_SOURCES } from './sources';
 import { selectCorpusLines } from '../../memory/corpus-recall';
+import { contextSourceVersion, parseContextSourceVersion } from '../../memory/temporal-render';
 
 const profileId = EMBEDDER_DIM_SPECS.gemma.profileId;
 const vec = (match: boolean) => JSON.stringify([1, match ? 10 : 0, ...Array(766).fill(0)]);
@@ -67,6 +68,71 @@ describe('complete knowledge sections against canonical PostgreSQL', () => {
   },180_000);
   afterAll(async () => { await db?.cleanup(); });
 
+  it('revalidates disappeared plans and docs only within current workspace, harness and source grants', async () => {
+    const ref = 'plan:pot-a:lifecycle-plan';
+    const version = (ref: string) => contextSourceVersion({ namespace: `corpus:${ref.split(':')[0]}:${workspaceId}`,
+      ref, fullText: 'previous authorized body', revision: null, updatedAt: null,
+      validity: { status: 'current', validAt: null, invalidAt: null, supersededBy: null } });
+    const previous = [version(ref), version('doc:harness:pot-a:lifecycle-doc')];
+    await db.adminSql`INSERT INTO harness_shared.harness_plans
+      (workspace_id,harness_slug,plan_slug,title,content,status)
+      VALUES (${workspaceId},'pot-a','lifecycle-plan','Corrected plan','Unrelated new wording','active'),
+        (${otherWorkspace},'pot-a','lifecycle-plan','Foreign plan','Foreign body','active')`;
+    await db.adminSql`INSERT INTO harness_shared.harness_docs
+      (workspace_id,harness_slug,doc_id,content,content_mode)
+      VALUES (${workspaceId},'pot-a','lifecycle-doc.mdx','Corrected authored body','authored')`;
+    const input = { sql: db.adminSql, workspaceId, previous, audience: { harnessSlugs: ['pot-a'] },
+      allowed: new Set(['plan', 'doc']) };
+    const current = await revalidateKnowledgeSourceVersions(input);
+    expect(current).toHaveLength(2);
+    expect(current.every(row => row.validity.status === 'current')).toBe(true);
+    expect(current[0].fingerprint).not.toBe(previous[0].fingerprint);
+    expect(JSON.stringify(current)).not.toContain('Foreign body');
+    await db.adminSql`UPDATE harness_shared.harness_plans SET archived = true
+      WHERE workspace_id = ${workspaceId} AND plan_slug = 'lifecycle-plan'`;
+    await db.adminSql`UPDATE harness_shared.harness_docs SET retired_at = now()
+      WHERE workspace_id = ${workspaceId} AND doc_id = 'lifecycle-doc.mdx'`;
+    const closed = await revalidateKnowledgeSourceVersions({ ...input, previous: current });
+    expect(closed.map(row => row.validity.status)).toEqual(['retracted', 'retracted']);
+    expect(await createPlanSearchSource({ automatic: true }).lexical({ ...params(), query: 'Unrelated new wording' })).toEqual([]);
+    expect(await revalidateKnowledgeSourceVersions({ ...input, allowed: new Set() })).toEqual([]);
+    expect(await revalidateKnowledgeSourceVersions({ ...input, audience: { harnessSlugs: ['pot-b'] } })).toEqual([]);
+    expect(await revalidateKnowledgeSourceVersions({ ...input, workspaceId: otherWorkspace })).toEqual([]);
+    expect(await revalidateKnowledgeSourceVersions({ ...input, audience: { excludedRefs: new Set(previous.map(row => row.ref)) } })).toEqual([]);
+    await db.adminSql`DELETE FROM harness_shared.harness_plans WHERE workspace_id = ${workspaceId} AND plan_slug = 'lifecycle-plan'`;
+    await db.adminSql`UPDATE harness_shared.harness_docs SET retired_at = NULL, content_mode = 'composed'
+      WHERE workspace_id = ${workspaceId} AND doc_id = 'lifecycle-doc.mdx'`;
+    // A missing row or a composed projection is unknown, never a retraction.
+    expect(await revalidateKnowledgeSourceVersions(input)).toEqual([]);
+  });
+
+  it('binds both plan rankers to the canonical full body even when a matching chunk stays unchanged', async () => {
+    const source = createPlanSearchSource({ harnessSlugs: ['pot-a'], automatic: true });
+    const read = async (leg: typeof source.lexical) => {
+      const rows = await leg({ ...params(), limit: 10 });
+      const row = rows.find(hit => hit.row.source_id === 'pot-a:late-plan')!;
+      return parseContextSourceVersion(row.row.meta?.contextSourceVersion, 'plan:pot-a:late-plan')!;
+    };
+    const before = await read(source.lexical);
+    expect(before).toMatchObject({ namespace: `corpus:plan:${workspaceId}`, validity: { status: 'current' } });
+    expect(await read(source.embedding!)).toEqual(before);
+    const [original] = await db.adminSql`SELECT content FROM harness_shared.harness_plans
+      WHERE workspace_id = ${workspaceId} AND harness_slug = 'pot-a' AND plan_slug = 'late-plan'`;
+    try {
+      await db.adminSql`UPDATE harness_shared.harness_plans SET content = content || E'\nOnly after independent approval.'
+        WHERE workspace_id = ${workspaceId} AND harness_slug = 'pot-a' AND plan_slug = 'late-plan'`;
+      const after = await read(source.lexical);
+      expect(after.fingerprint).not.toBe(before.fingerprint);
+      expect(after.fullTextSha256).toBe(contextSourceVersion({ namespace: after.namespace, ref: after.ref,
+        fullText: `Knowledge plan\n${original.content}\nOnly after independent approval.`, revision: null,
+        updatedAt: after.updatedAt, validity: after.validity }).fullTextSha256);
+      expect(await read(source.embedding!)).toEqual(after);
+    } finally {
+      await db.adminSql`UPDATE harness_shared.harness_plans SET content = ${original.content}
+        WHERE workspace_id = ${workspaceId} AND harness_slug = 'pot-a' AND plan_slug = 'late-plan'`;
+    }
+  });
+
   it.each(['plan', 'session_turn'] as const)('%s quotes a complete source or only a pointer after upstream clipping', async kind => {
     const token = `zephyroperative${kind.replace('_', '')}`;
     const command = `Apply ${token} recovery.`;
@@ -90,6 +156,12 @@ describe('complete knowledge sections against canonical PostgreSQL', () => {
     for (const row of rows) {
       const isLong = row.row.source_id.includes(`${kind}-1`);
       expect(row.row.meta?.contextUnit == null).toBe(isLong);
+      const version = parseContextSourceVersion(row.row.meta?.contextSourceVersion,
+        kind === 'plan' ? `plan:${row.row.source_id}` : `codex:operative-${kind}-${isLong ? 1 : 0}`);
+      expect(version).not.toBeNull();
+      expect(version?.fullTextSha256).toBe(contextSourceVersion({ namespace: version!.namespace, ref: version!.ref,
+        fullText: kind === 'plan' ? `Approval-bound source\n${isLong ? long : short}` : isLong ? long : short,
+        revision: version!.revision, updatedAt: version!.updatedAt, validity: version!.validity }).fullTextSha256);
       const { lines } = selectCorpusLines({ queryText: token, budgetChars: 3000, hits: [{
         source: kind, sourceId: row.row.source_id, excerpt: row.row.excerpt ?? '',
         highlight: row.row.highlight, meta: row.row.meta, score: row.score,
@@ -254,6 +326,64 @@ describe('complete knowledge sections against canonical PostgreSQL', () => {
       expect(lines[0].operative).toBe(false);
       expect(lines[0].line).not.toContain('Apply zephyrquartz');
       expect(lines[0].line).toContain('source-pointer');
+    }
+  });
+
+  it('versions canonical doc corrections independently of a stale section cache on both rankers', async () => {
+    const source = createDocSearchSource({ harnessSlugs: ['pot-a'], automatic: true });
+    const slug = 'canonical-correction';
+    const original = '---\ntitle: Correction procedure\n---\nApply zephyrdocrevision only after approval.';
+    await db.adminSql`INSERT INTO harness_shared.harness_docs
+      (workspace_id,harness_slug,doc_id,content,content_mode)
+      VALUES (${workspaceId},'pot-a',${`${slug}.mdx`},${original},'authored'),
+        (${otherWorkspace},'pot-a',${`${slug}.mdx`},'Foreign canonical body','authored')`;
+    await db.adminSql`INSERT INTO harness_shared.doc_sections
+      (source_key,slug,anchor,title,url,content,page_sha,section_idx,embedding,embedding_profile,embedding_mode)
+      VALUES ('harness:pot-a',${slug},'','Correction procedure','/docs/correction',
+        'Apply zephyrdocrevision immediately.','stale-cache',0,${vec(true)}::vector,${profileId},'gemma')`;
+    const read = async () => {
+      const versions = [];
+      for (const leg of [source.lexical!, source.embedding!]) {
+        const rows = await leg({ ...params(), query: 'zephyrdocrevision', limit: 10 });
+        const row = rows.find(hit => hit.row.source_id === `harness:pot-a:${slug}`)!;
+        expect(row.row.excerpt).toContain('immediately');
+        const version = parseContextSourceVersion(row.row.meta?.contextSourceVersion, `doc:harness:pot-a:${slug}`)!;
+        expect(version).not.toBeNull();
+        const { lines } = selectCorpusLines({ queryText: 'zephyrdocrevision', budgetChars: 3000, hits: [{
+          source: 'doc', sourceId: row.row.source_id, excerpt: row.row.excerpt ?? '',
+          highlight: row.row.highlight, meta: row.row.meta, score: row.score,
+        }] });
+        expect(lines[0].operative).toBe(true);
+        expect(lines[0].line).toContain('only after approval');
+        expect(lines[0].line).not.toContain('immediately');
+        expect(lines[0].line).not.toContain('Foreign canonical body');
+        versions.push(version);
+      }
+      expect(versions[0]).toEqual(versions[1]);
+      return versions[0];
+    };
+    try {
+      const before = await read();
+      await db.adminSql`UPDATE harness_shared.harness_docs
+        SET content = content || E'\nRetain the backup as well.'
+        WHERE workspace_id = ${workspaceId} AND harness_slug = 'pot-a' AND doc_id = ${`${slug}.mdx`}`;
+      const after = await read();
+      expect(after.fingerprint).not.toBe(before.fingerprint);
+      expect(after.fullTextSha256).toBe(contextSourceVersion({ namespace: `corpus:doc:${workspaceId}`,
+        ref: after.ref, fullText: `${original}\nRetain the backup as well.`, revision: null,
+        updatedAt: after.updatedAt, validity: after.validity }).fullTextSha256);
+      await db.adminSql`UPDATE harness_shared.harness_docs SET content_mode = 'composed'
+        WHERE workspace_id = ${workspaceId} AND harness_slug = 'pot-a' AND doc_id = ${`${slug}.mdx`}`;
+      for (const leg of [source.lexical!, source.embedding!]) {
+        const row = (await leg({ ...params(), query: 'zephyrdocrevision', limit: 10 }))
+          .find(hit => hit.row.source_id === `harness:pot-a:${slug}`)!;
+        expect(row.row.meta?.contextSourceVersion).toBeNull();
+        expect(row.row.meta?.contextUnit).toBeNull();
+      }
+    } finally {
+      await db.adminSql`DELETE FROM harness_shared.doc_sections WHERE source_key = 'harness:pot-a' AND slug = ${slug}`;
+      await db.adminSql`DELETE FROM harness_shared.harness_docs WHERE workspace_id IN (${workspaceId},${otherWorkspace})
+        AND harness_slug = 'pot-a' AND doc_id = ${`${slug}.mdx`}`;
     }
   });
 

@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as recallStats from './recall-stats';
 import * as corpusRecallIo from './corpus-recall-io';
+import * as knowledgeSources from '../agent-tools/search/knowledge-sources';
+import * as reportSources from '../agent-tools/search/report-source';
+import * as corpusLedger from './corpus-surfaced-ledger';
 import * as coverageGate from '../search/coverage-gate';
 import * as recallStaleness from './recall-staleness';
 import * as flagServer from '@papercusp/flags/server';
@@ -1815,13 +1818,15 @@ describe('buildMemoryContextBlock', () => {
     const first = await prepareMemoryContextBlock(input);
     const firstFragment = first!.fragments.find(row => row.kind === 'memory')!;
     expect(firstFragment.sourceVersion?.fullTextSha256).toEqual(expect.stringMatching(/^[a-f0-9]{64}$/));
-    sqlMockState.rows = [{ id, source_fingerprint: firstFragment.sourceFingerprint }];
+    sqlMockState.rows = [{ id, source_fingerprint: firstFragment.sourceFingerprint, source_version: firstFragment.sourceVersion }];
     const unchanged = await prepareMemoryContextBlock(input);
     expect(unchanged?.fragments ?? []).toEqual([]);
     useBackend(mockBackend([{ id, text: 'zephyrrepair requires independent approval before execution' }]));
     const corrected = await prepareMemoryContextBlock(input);
     const correctedFragment = corrected!.fragments.find(row => row.kind === 'memory')!;
     expect(corrected?.text).toContain('independent approval');
+    expect(corrected?.text).toContain('source-change');
+    expect(corrected?.text).toContain('replace-earlier-version');
     expect(correctedFragment.sourceFingerprint).not.toBe(firstFragment.sourceFingerprint);
     sqlMockState.rows = [{ id, source_fingerprint: correctedFragment.sourceFingerprint }];
     expect((await prepareMemoryContextBlock(input))?.fragments ?? []).toEqual([]);
@@ -2704,11 +2709,12 @@ describe('records the corpus admission funnel on the same recall row (P-009)', (
       handle: { kind: 'plan' as const, ref, query: ['http2'], resolve: 'plans:get' } };
     const recall = { userId: 'u1', workspaceId: 'ws', queryContext: 'http2 transport approval',
       session: { sessionId: 'su-corpus-version', epoch: 2, port: 'mid-turn' } };
-    for (const persisted of [{ ref }, { ref, source_fingerprint: first.fingerprint }]) {
+    for (const persisted of [{ ref }, { ref, source_fingerprint: first.fingerprint, source_version: first }]) {
       sqlMockState.rows = [persisted];
       corpusIoResult = oneLine({ lines: [{ ...line, sourceVersion: corrected }] });
       const result = await prepareMemoryContextBlock(recall);
       expect(result?.text).toContain(body);
+      expect(result?.text?.includes('source-change')).toBe('source_version' in persisted);
       expect(result?.fragments.filter(fragment => fragment.kind === 'corpus')).toMatchObject([
         { id: ref, sourceFingerprint: corrected.fingerprint, sourceVersion: corrected },
       ]);
@@ -2718,6 +2724,42 @@ describe('records the corpus admission funnel on the same recall row (P-009)', (
     expect((await prepareMemoryContextBlock(recall))?.fragments ?? []).toEqual([]);
     corpusIoResult = oneLine({ lines: [line] });
     expect((await prepareMemoryContextBlock(recall))?.text).toContain(body);
+    // The whole source+correction unit is omitted when its notice would exceed
+    // the corpus budget; neither the instruction nor a receipt can escape alone.
+    sqlMockState.rows = [{ ref, source_fingerprint: first.fingerprint, source_version: first }];
+    corpusIoResult = oneLine({ lines: [{ ...line, line: line.line + 'x'.repeat(1700), sourceVersion: corrected }] });
+    const withheld = await prepareMemoryContextBlock(recall);
+    expect(withheld?.text ?? '').not.toContain(body);
+    expect(withheld?.fragments ?? []).toEqual([]);
+  });
+
+  it('offers content-free lifecycle notices for confirmed sources absent from ranked results and never stamps on read', async () => {
+    useBackend(mockBackend([]));
+    const ref = 'plan:papercusp:disappeared';
+    const previous = contextSourceVersion({ namespace: 'corpus:plan:ws', ref, fullText: 'Earlier private guidance',
+      revision: 'r1', updatedAt: null,
+      validity: { status: 'current', validAt: null, invalidAt: null, supersededBy: null } });
+    const closed = contextSourceVersion({ namespace: previous.namespace, ref, fullText: 'Earlier private guidance',
+      revision: 'r2', updatedAt: null,
+      validity: { status: 'retracted', validAt: null, invalidAt: null, supersededBy: null } });
+    corpusIoResult = oneLine({ lines: [] });
+    sqlMockState.rows = [{ ref, source_fingerprint: previous.fingerprint, source_version: previous }];
+    const knowledge = vi.spyOn(knowledgeSources, 'revalidateKnowledgeSourceVersions').mockResolvedValue([closed]);
+    const reports = vi.spyOn(reportSources, 'revalidateReportSourceVersions').mockResolvedValue([]);
+    const due = vi.spyOn(corpusLedger, 'corpusSourcesDueForRevalidation').mockResolvedValue([previous]);
+    const input = { userId: 'u1', workspaceId: 'ws', queryContext: 'unrelated current task',
+      session: { sessionId: 'su-disappeared-source', epoch: 2, port: 'mid-turn' } };
+    try {
+      const result = await prepareMemoryContextBlock(input);
+      expect(result?.text).toContain('withdraw-earlier-version');
+      expect(result?.text?.match(/source-change /g)).toHaveLength(1);
+      expect(result?.text).not.toContain('Earlier private guidance');
+      expect(result?.fragments).toMatchObject([{ kind: 'corpus', id: ref, sourceVersion: closed }]);
+      expect(sqlMockState.statements.some(statement => /INSERT INTO harness_shared.corpus_session_surfaced/.test(statement))).toBe(false);
+      knowledge.mockResolvedValue([]); // unavailable or no longer authorized is unknown
+      expect((await prepareMemoryContextBlock(input))?.text ?? '').not.toContain('source-change');
+      expect((await prepareMemoryContextBlock({ ...input, knowledgeSourcesAllowed: false }))?.text ?? '').not.toContain('source-change');
+    } finally { knowledge.mockRestore(); reports.mockRestore(); due.mockRestore(); }
   });
 
   it('records null when the corpus leg did not return a typed result', async () => {

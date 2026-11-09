@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { DocListPagesTimingEvent, DocPage, DocSource } from '@papercusp/docs-engine';
-import { overlayCanonicalDocs, overlayRequestedCanonicalDocs } from './_engineering-adapter';
+import { engineeringAdapterForSlugs, overlayCanonicalDocs, overlayRequestedCanonicalDocs } from './_engineering-adapter';
 
 const releasePage: DocPage = {
   slug: 'agent-insights/existing',
@@ -75,6 +75,19 @@ describe('overlayCanonicalDocs', () => {
     expect(base.listPages).not.toHaveBeenCalled();
     expect(readCanonical).toHaveBeenCalledOnce();
     expect(await source.getContent(page!)).toContain('Canonical body');
+  });
+
+  it('keeps source reads in the supplied request scope without consulting another workspace', async () => {
+    const slug = 'agent-insights/request-source-scope-fixture';
+    const readA = vi.fn(async () => new Map([[`${slug}.mdx`, '---\ntitle: A\n---\nCanonical A']]));
+    const readB = vi.fn(async () => new Map([[`${slug}.mdx`, '---\ntitle: B\n---\nCanonical B']]));
+    const a = engineeringAdapterForSlugs([slug], readA);
+    const b = engineeringAdapterForSlugs([slug], readB);
+    expect(await a.getSource!((await a.getPage(slug))!)).toBe('---\ntitle: A\n---\nCanonical A');
+    expect(await b.getSource!((await b.getPage(slug))!)).toBe('---\ntitle: B\n---\nCanonical B');
+    expect(readA).toHaveBeenCalledOnce();
+    expect(readB).toHaveBeenCalledOnce();
+    expect(readA).toHaveBeenCalledWith('papercusp', expect.arrayContaining([`${slug}.mdx`]));
   });
 
   it('drops the canonical cache when docs:author invalidates the shared adapter', async () => {

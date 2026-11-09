@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { runFullTextSearch, runHybridSearch } from '@papercusp/search';
 import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
-import { createReportSearchSource } from './report-source';
+import { createReportSearchSource, revalidateReportSourceVersions } from './report-source';
 import { publishReport, retireReport } from '../../report-library';
 import { publishReportWithEffects } from '../../report-publication';
 import { indexReport } from '../../search/report-index';
@@ -13,6 +13,7 @@ import { buildCoverageQuery,coverageTargets,surfaceKey } from '../../search/embe
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { resolveNamedQueryV2 } from '../../sync-resolver';
 import { selectCorpusLines } from '../../memory/corpus-recall';
+import { contextSourceVersion, parseContextSourceVersion } from '../../memory/temporal-render';
 
 const flag = vi.hoisted(() => ({ enabled: true }));
 const ui = vi.hoisted(() => ({ sql: undefined as unknown as import('postgres').Sql, workspaceId: '' }));
@@ -48,6 +49,56 @@ describe('Reports shared search (migrated PostgreSQL)', () => {
     await indexReport(db.adminSql, report, documentEmbedder);
     return report;
   }
+
+  it('revalidates disappeared report lifecycles without disclosing hidden replacements or revoked sources', async () => {
+    const report = await publish('workspace');
+    const ref = `report:${report.reportId}`;
+    const previous = [contextSourceVersion({ namespace: `corpus:report:${workspaceId}`, ref,
+      fullText: 'Search evidence\nzephyrquartz findings', revision: report.reportId, updatedAt: null,
+      validity: { status: 'current', validAt: null, invalidAt: null, supersededBy: null } })];
+    const input = { sql: db.adminSql, workspaceId, viewer: { ownerId: 'peer', potSlug: 'pot-a' },
+      audience: { harnessSlugs: ['pot-a'] }, previous };
+    const current = await revalidateReportSourceVersions(input);
+    expect(current[0].validity.status).toBe('current');
+    const hidden = await publishReport(db.adminSql, { workspaceId, title: 'Hidden replacement',
+      bodyMd: 'Private replacement body', supersedes: report.reportId, visibility: 'owner' }, author);
+    const superseded = await revalidateReportSourceVersions({ ...input, previous: current });
+    expect(superseded[0].validity.status).toBe('superseded');
+    expect(superseded[0].validity.supersededBy).toBeNull();
+    expect(JSON.stringify(superseded)).not.toContain(hidden.reportId);
+    expect(JSON.stringify(superseded)).not.toContain('Private replacement body');
+    await retireReport(db.adminSql, workspaceId, report.reportId);
+    expect((await revalidateReportSourceVersions(input))[0].validity.status).toBe('retracted');
+    expect(await revalidateReportSourceVersions({ ...input, audience: { harnessSlugs: ['pot-b'] } })).toEqual([]);
+    expect(await revalidateReportSourceVersions({ ...input, audience: { excludedRefs: new Set([ref]) } })).toEqual([]);
+    expect(await revalidateReportSourceVersions({ ...input, workspaceId: workspaceId + '-foreign' })).toEqual([]);
+    await db.adminSql`UPDATE harness_shared.report_library SET visibility = 'owner'
+      WHERE workspace_id = ${workspaceId} AND report_id = ${report.reportId}`;
+    expect(await revalidateReportSourceVersions(input)).toEqual([]);
+  });
+
+  it('binds both report rankers to the complete canonical published body and workspace', async () => {
+    const body = 'zephyrquartz findings. ' + 'unchanged chunk '.repeat(200) + 'Only after independent approval.';
+    const report = await publish('workspace', body);
+    const source = createReportSearchSource({}, { automatic: true });
+    const versions = [];
+    const params = { ...context(), qVec: JSON.stringify(vector('zephyrquartz')),
+      embeddingProfile: { profileId, legacyMode: 'gemma' as const } };
+    for (const leg of [source.lexical, source.embedding!]) {
+      const rows = await leg(params);
+      const row = rows.find(row => row.row.source_id === report.reportId)!;
+      expect(row).toBeDefined();
+      const version = parseContextSourceVersion(row.row.meta?.contextSourceVersion, `report:${report.reportId}`)!;
+      expect(version).toMatchObject({ namespace: `corpus:report:${workspaceId}`, revision: report.reportId,
+        fullTextBytes: Buffer.byteLength(`Search evidence\n${body}`), validity: { status: 'current' } });
+      expect(version.fullTextSha256).toBe(contextSourceVersion({ namespace: version.namespace, ref: version.ref,
+        fullText: `Search evidence\n${body}`, revision: version.revision, updatedAt: version.updatedAt,
+        validity: version.validity }).fullTextSha256);
+      expect(row.row.meta?.contextUnit).toBeNull();
+      versions.push(version);
+    }
+    expect(versions[0]).toEqual(versions[1]);
+  });
 
   it('never presents a clipped report command without its late approval condition', async () => {
     for (const body of ['Apply zephyrquartz recovery. Only after approval.',

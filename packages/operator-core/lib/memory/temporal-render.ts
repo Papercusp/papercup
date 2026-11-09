@@ -66,7 +66,15 @@ export function parseContextSourceVersion(wire: unknown, ref: string): ContextSo
         version.passage.startByte < 0 || version.passage.endByte < version.passage.startByte ||
         version.passage.endByte > version.fullTextBytes || !hash(version.passage.sha256) ||
         !hash(version.fingerprint) || sourceVersionFingerprint(version) !== version.fingerprint) return null;
-    return version;
+    // The carrier is untyped JSON at runtime. Do not retain extra source prose
+    // (including nested fields) when this metadata enters durable receipts.
+    return { schemaVersion: version.schemaVersion, normalizer: version.normalizer,
+      namespace: version.namespace, ref: version.ref, revision: version.revision, updatedAt: version.updatedAt,
+      validity: { status: version.validity.status, validAt: version.validity.validAt,
+        invalidAt: version.validity.invalidAt, supersededBy: version.validity.supersededBy },
+      fullTextSha256: version.fullTextSha256, fullTextBytes: version.fullTextBytes,
+      passage: { startByte: version.passage.startByte, endByte: version.passage.endByte, sha256: version.passage.sha256 },
+      fingerprint: version.fingerprint };
   } catch { return null; }
 }
 
@@ -110,6 +118,23 @@ export function contextSourceVersion(input: {
     namespace: input.namespace, ref: input.ref, revision: input.revision, updatedAt, validity,
     fullTextSha256, fullTextBytes: bytes.length, passage };
   return { ...version, fingerprint: sourceVersionFingerprint(version) };
+}
+
+/** Compare a previously confirmed source with a fresh, already-authorized
+ * canonical read. Absence is not a retraction, and another scope is not a
+ * correction. No prior source prose is repeated in the notice. */
+export function contextSourceChangeNotice(
+  previous: ContextSourceVersion | undefined, current: ContextSourceVersion | null | undefined,
+): string | null {
+  if (!previous || !current) return null;
+  const before = parseContextSourceVersion(JSON.stringify(previous), previous.ref);
+  const after = parseContextSourceVersion(JSON.stringify(current), previous.ref);
+  if (!before || !after || before.namespace !== after.namespace || before.fingerprint === after.fingerprint) return null;
+  const closed = ['superseded', 'retracted', 'expired'].includes(after.validity.status);
+  return `source-change ${JSON.stringify({ kind: closed ? after.validity.status : 'corrected',
+    ref: after.ref, previousFingerprint: before.fingerprint, currentFingerprint: after.fingerprint,
+    status: after.validity.status, action: closed ? 'withdraw-earlier-version' : 'replace-earlier-version',
+    ...(after.validity.supersededBy ? { supersededBy: after.validity.supersededBy } : {}) })}`;
 }
 
 /** MemoryBackend.text is the full stored body. Missing reader metadata stays

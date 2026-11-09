@@ -22,6 +22,7 @@
  */
 
 import type { SqlTag } from './bump-last-surfaced';
+import { parseContextSourceVersion, type ContextSourceVersion } from './temporal-render';
 
 let relationMissing = false;
 
@@ -34,6 +35,37 @@ function noteMissingRelation(err: unknown): void {
 
 /** Opportunistic GC horizon for ledger rows (days) — matches the mem0 sibling. */
 const SURFACED_GC_DAYS = 14;
+
+/** Fair, bounded revalidation of confirmed sources, independent of search rank.
+ * This timestamp schedules reads only; it never advances delivery or dedup.
+ * A failed/denied canonical read is unknown and becomes eligible again later. */
+export async function corpusSourcesDueForRevalidation(
+  sql: SqlTag, sessionId: string, epoch: number, excludeRefs: readonly string[] = [],
+): Promise<ContextSourceVersion[]> {
+  if (!sessionId || relationMissing) return [];
+  try {
+    const { boundedOrgTxn } = await import('../pg-bounded-txn');
+    const rows = await boundedOrgTxn(tx => tx<{ ref: string; source_fingerprint: string; source_version: unknown }[]>`
+      WITH due AS (
+        SELECT ref FROM harness_shared.corpus_session_surfaced
+        WHERE session_id = ${sessionId} AND epoch = ${epoch} AND source_version IS NOT NULL
+          AND NOT (ref = ANY(${[...excludeRefs]}::text[]))
+          AND (source_checked_at IS NULL OR source_checked_at < now() - interval '1 minute')
+        ORDER BY source_checked_at NULLS FIRST, ref LIMIT 8 FOR UPDATE SKIP LOCKED
+      )
+      UPDATE harness_shared.corpus_session_surfaced s SET source_checked_at = now()
+      FROM due WHERE s.session_id = ${sessionId} AND s.epoch = ${epoch} AND s.ref = due.ref
+      RETURNING s.ref, s.source_fingerprint, s.source_version
+    `, { client: sql as unknown as import('postgres').Sql, statementTimeoutMs: 1_500 });
+    return rows.flatMap(row => {
+      const version = parseContextSourceVersion(JSON.stringify(row.source_version), row.ref);
+      return version?.fingerprint === row.source_fingerprint ? [version] : [];
+    });
+  } catch {
+    // An unarmed additive migration must not disable ordinary recall/dedup.
+    return [];
+  }
+}
 
 /** Test seam: clear the latched no-op. */
 export function _resetCorpusLedgerLatchForTests(): void {
@@ -51,6 +83,7 @@ export async function alreadySurfacedRefs(
   epoch: number,
   refs: readonly string[],
   sourceFingerprints?: ReadonlyMap<string, string>,
+  previousVersions?: Map<string, ContextSourceVersion>,
 ): Promise<Set<string>> {
   const empty = new Set<string>();
   if (!sessionId || relationMissing || refs.length === 0) return empty;
@@ -58,11 +91,15 @@ export async function alreadySurfacedRefs(
   if (wanted.length === 0) return empty;
   try {
     if (sourceFingerprints) {
-      const rows = await sql<{ ref: string; source_fingerprint: string | null }[]>`
-        SELECT ref, source_fingerprint FROM harness_shared.corpus_session_surfaced
+      const rows = await sql<{ ref: string; source_fingerprint: string | null; source_version?: unknown }[]>`
+        SELECT ref, source_fingerprint, source_version FROM harness_shared.corpus_session_surfaced
         WHERE session_id = ${sessionId} AND epoch = ${epoch}
           AND ref = ANY(${wanted as string[]}::text[])
       `;
+      for (const row of rows) {
+        const version = parseContextSourceVersion(JSON.stringify(row.source_version) ?? '', row.ref);
+        if (version && version.fingerprint === row.source_fingerprint) previousVersions?.set(row.ref, version);
+      }
       return new Set(rows.filter(row => typeof row.source_fingerprint === 'string' &&
         /^[a-f0-9]{64}$/.test(row.source_fingerprint) &&
         row.source_fingerprint === sourceFingerprints.get(row.ref)).map(row => row.ref));
@@ -99,19 +136,25 @@ export async function stampSurfacedRefs(
 export async function stampSurfacedRefsResult(
   sql: SqlTag, sessionId: string, epoch: number, refs: readonly string[], port: string,
   sourceFingerprint?: string,
+  sourceVersion?: ContextSourceVersion,
 ): Promise<{ ok: boolean; inserted: number }> {
   if (!sessionId || relationMissing) return { ok: false, inserted: 0 };
   if (sourceFingerprint !== undefined && !/^[a-f0-9]{64}$/.test(sourceFingerprint)) return { ok: false, inserted: 0 };
   const wanted = [...new Set(refs.filter((r) => typeof r === 'string' && r.length > 0))];
   if (wanted.length === 0) return { ok: true, inserted: 0 };
+  const version = sourceVersion && wanted.length === 1
+    ? parseContextSourceVersion(JSON.stringify(sourceVersion), wanted[0]) : null;
+  if (sourceVersion && (!version || version.fingerprint !== sourceFingerprint)) return { ok: false, inserted: 0 };
   try {
     const rows = sourceFingerprint !== undefined ? await sql<unknown[]>`
-      INSERT INTO harness_shared.corpus_session_surfaced (session_id, epoch, ref, port, source_fingerprint)
-      SELECT ${sessionId}, ${epoch}, r, ${port}, ${sourceFingerprint}
+      INSERT INTO harness_shared.corpus_session_surfaced (session_id, epoch, ref, port, source_fingerprint, source_version)
+      SELECT ${sessionId}, ${epoch}, r, ${port}, ${sourceFingerprint}, ${version ? JSON.stringify(version) : null}::text::jsonb
         FROM unnest(${wanted as string[]}::text[]) AS r
       ON CONFLICT (session_id, epoch, ref) DO UPDATE
-        SET source_fingerprint = EXCLUDED.source_fingerprint, port = EXCLUDED.port, surfaced_at = now()
+        SET source_fingerprint = EXCLUDED.source_fingerprint, source_version = EXCLUDED.source_version,
+          port = EXCLUDED.port, surfaced_at = now()
         WHERE corpus_session_surfaced.source_fingerprint IS DISTINCT FROM EXCLUDED.source_fingerprint
+          OR (corpus_session_surfaced.source_version IS NULL AND EXCLUDED.source_version IS NOT NULL)
       RETURNING ref
     ` : await sql<unknown[]>`
       INSERT INTO harness_shared.corpus_session_surfaced (session_id, epoch, ref, port)

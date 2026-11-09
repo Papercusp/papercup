@@ -8,6 +8,7 @@ import { PLANS_CHUNK_SURFACE } from '../../search/chunks/registry';
 import { boundedExactTopK, headlineTsQuery, lexicalLeg, mergeExactAndBm25 } from '../../search/lexical/rank';
 import { PROSE_EMBEDDING_SPACE } from '../../search/prose-vector-dims';
 import { lastMarkdownHeading, planWindowMidpoint } from '../plans/semantic-leg';
+import { contextSourceVersion, type ContextSourceVersion } from '../../memory/temporal-render';
 
 export interface KnowledgeAudience {
   harnessSlugs?: readonly string[];
@@ -17,9 +18,65 @@ export interface KnowledgeAudience {
   draftItems?: boolean;
 }
 
+/** Re-read previously delivered knowledge by stable ref, never by search rank.
+ * The same workspace/harness/ambient fences apply even for closed sources.
+ * Missing authority, deleted rows and composed caches establish no lifecycle. */
+export async function revalidateKnowledgeSourceVersions(input: {
+  sql: Sql; workspaceId: string; previous: readonly ContextSourceVersion[];
+  audience: KnowledgeAudience; allowed: ReadonlySet<string>; signal?: AbortSignal;
+}): Promise<ContextSourceVersion[]> {
+  return boundedOrgTxn(async sql => {
+    const versions: ContextSourceVersion[] = [];
+    for (const previous of input.previous.slice(0, 8)) {
+      input.signal?.throwIfAborted();
+      if (input.audience.excludedRefs?.has(previous.ref)) continue;
+      const plan = /^plan:([^:]+):(.+)$/.exec(previous.ref);
+      if (plan && input.allowed.has('plan') && previous.namespace === `corpus:plan:${input.workspaceId}`) {
+        const [, harness, slug] = plan;
+        if (input.audience.harnessSlugs?.length && !input.audience.harnessSlugs.includes(harness)) continue;
+        const [row] = await sql`SELECT title, content, updated_at, archived, status, superseded_by
+          FROM harness_shared.harness_plans WHERE workspace_id = ${input.workspaceId}
+            AND harness_slug = ${harness} AND plan_slug = ${slug} AND template_slug IS NULL`;
+        if (!row || typeof row.content !== 'string') continue;
+        versions.push(contextSourceVersion({ namespace: previous.namespace, ref: previous.ref,
+          fullText: `${row.title ?? slug}\n${row.content}`, revision: null,
+          updatedAt: row.updated_at == null ? null : new Date(row.updated_at).toISOString(),
+          validity: { status: row.superseded_by || row.status === 'superseded' ? 'superseded'
+            : row.archived ? 'retracted' : 'current', validAt: null, invalidAt: null,
+            supersededBy: typeof row.superseded_by === 'string' ? row.superseded_by : null } }));
+        continue;
+      }
+      const doc = /^doc:(papercusp-engineering|harness:[^:]+):(.+)$/.exec(previous.ref);
+      if (!doc || !input.allowed.has('doc') || previous.namespace !== `corpus:doc:${input.workspaceId}`) continue;
+      const [, key, slug] = doc;
+      if (slug.startsWith('plans/') || slug.startsWith('reference/plans-')) continue;
+      const harness = key === 'papercusp-engineering' ? 'papercusp' : key.slice('harness:'.length);
+      if (key !== 'papercusp-engineering' && input.audience.harnessSlugs?.length &&
+          !input.audience.harnessSlugs.includes(harness)) continue;
+      const rows = await sql`SELECT d.content, d.content_mode, d.updated_at, d.retired_at
+        FROM harness_shared.harness_docs d WHERE d.workspace_id = ${input.workspaceId}
+          AND d.harness_slug = ${harness} AND d.doc_id = ANY(${[slug, `${slug}.mdx`, `${slug}.md`]}::text[])
+          AND (${key} = 'papercusp-engineering' OR EXISTS (
+            SELECT 1 FROM harness_shared.harness_registry h, jsonb_array_elements(h.payload->'projects') p
+            WHERE h.workspace_id = ${input.workspaceId} AND p->>'slug' = ${harness}))
+        ORDER BY (d.retired_at IS NOT NULL) DESC, (d.content_mode = 'composed') DESC, d.doc_id`;
+      // Retirement wins across aliases. Only authored bytes establish source identity.
+      const row = rows[0];
+      if (!row || row.content_mode !== 'authored' || typeof row.content !== 'string') continue;
+      versions.push(contextSourceVersion({ namespace: previous.namespace, ref: previous.ref,
+        fullText: row.content, revision: null,
+        updatedAt: row.updated_at == null ? null : new Date(row.updated_at).toISOString(),
+        validity: { status: row.retired_at ? 'retracted' : 'current', validAt: null,
+          invalidAt: row.retired_at == null ? null : new Date(row.retired_at).toISOString(), supersededBy: null } }));
+    }
+    return versions;
+  }, { client: input.sql, signal: input.signal, readOnly: true, statementTimeoutMs: 1_500 });
+}
+
 type SectionRow = {
   source_id: string; title: string; content: string; highlight: string;
   contextUnit?: string | null;
+  contextSourceVersion?: string | null;
   scope: string; rank: number; section: string | null; status: string | null;
   updated_at: string | Date | null; path: string; source_key?: string;
 };
@@ -76,6 +133,7 @@ function listing(rows: SectionRow[], source: 'plan' | 'doc', ranker: string): Li
     highlight: r.highlight || r.content.slice(0, 1500), score: Number(r.rank), rankers: [ranker],
     meta: { title: r.title, section: r.section, status: r.status,
       contextUnit: r.contextUnit ?? null,
+      contextSourceVersion: r.contextSourceVersion ?? null,
       currentness: source === 'doc' ? 'maintained-procedure' : r.status === 'historical' ? 'historical' : 'plan', path: r.path,
       ...(r.source_key ? { docSourceKey: r.source_key } : {}) },
   } }));
@@ -113,12 +171,18 @@ export function createPlanSearchSource(audience: KnowledgeAudience = {}): Search
     const harness = String(r.harness_slug), slug = String(r.plan_slug);
     const matched = sectionExcerpt(String(r.content ?? ''), String(r.highlight ?? ''));
     const content = r.match_content == null ? matched.content : String(r.match_content);
+    const fullText = typeof r.content === 'string' ? `${String(r.title ?? slug)}\n${r.content}` : null;
     const section = r.match_content != null
       ? lastMarkdownHeading(content) ?? (r.section_prefix ? lastMarkdownHeading(String(r.section_prefix)) : null)
       : matched.section;
     return { source_id: `${harness}:${slug}`, title: String(r.title ?? slug), content,
-      contextUnit: r.match_content == null
-        ? completeContextUnit(`${String(r.title ?? slug)}\n${String(r.content ?? '')}`) : null,
+      contextUnit: fullText === null ? null : completeContextUnit(fullText),
+      contextSourceVersion: fullText === null || typeof r.workspace_id !== 'string' ? null : JSON.stringify(contextSourceVersion({
+        namespace: `corpus:plan:${r.workspace_id}`, ref: `plan:${harness}:${slug}`, fullText,
+        revision: null, updatedAt: r.updated_at == null ? null : new Date(r.updated_at as string | Date).toISOString(),
+        validity: { status: r.superseded_by || r.status === 'superseded' ? 'superseded' : 'current',
+          validAt: null, invalidAt: null, supersededBy: typeof r.superseded_by === 'string' ? r.superseded_by : null },
+      })),
       highlight: String(r.highlight ?? content), scope: `harness:${harness}`, rank: Number(r.rank),
       section, status: r.archived || r.superseded_by || r.status === 'superseded' ? 'historical' : String(r.status),
       updated_at: r.updated_at as string | Date,
@@ -191,7 +255,7 @@ export function createPlanSearchSource(audience: KnowledgeAudience = {}): Search
         limit: p.limit, mode: 'retrieve', parentFilter: filter(p),
         spaceFilter: cols => space(cols.profileColumn, cols.modeColumn) });
       const rows = await p.sql`WITH best AS (${best})
-        SELECT p.plan_slug, p.harness_slug, p.title, p.status, p.archived, p.superseded_by, p.updated_at,
+        SELECT p.workspace_id, p.plan_slug, p.harness_slug, p.title, p.content, p.status, p.archived, p.superseded_by, p.updated_at,
           ${audience.draftItems ? p.sql`p.items` : p.sql`NULL::jsonb`} AS items,
           1 - b.distance AS rank, coalesce(c.content, left(p.content, 1500)) AS match_content,
           CASE WHEN c.chunk_idx IS NULL THEN NULL
@@ -209,7 +273,7 @@ export function createPlanSearchSource(audience: KnowledgeAudience = {}): Search
   });
 }
 
-/** doc_sections is a derived complete-body cache, scoped by the source key.
+/** doc_sections is a derived search cache, scoped by the source key.
  * Framework docs are shared; harness docs require workspace membership. */
 export function createDocSearchSource(audience: KnowledgeAudience = {}): SearchSource {
   const filter = (p: SearchSourceParams) => p.sql`
@@ -228,15 +292,65 @@ export function createDocSearchSource(audience: KnowledgeAudience = {}): SearchS
           ELSE substring(s.source_key from 9) END
         AND d.doc_id IN (s.slug || '.mdx',s.slug || '.md') AND d.retired_at IS NOT NULL)
     ${audience.automatic ? p.sql`AND s.slug NOT LIKE 'plans/%' AND s.slug NOT LIKE 'reference/plans-%'` : p.sql``}`;
-  const map = (rows: Array<Record<string, unknown>>, ranker: string) => listing(rows.map(r => {
+  const map = async (rows: Array<Record<string, unknown>>, ranker: string, p: SearchSourceParams) => {
+    if (!rows.length) return [];
+    // Refresh only the authorized candidates, using this request's connection
+    // and workspace. Section/page hashes describe a projection, not the source.
+    const harnessOf = (key: string) => key === 'papercusp-engineering' ? 'papercusp' : key.slice('harness:'.length);
+    const harnesses = [...new Set(rows.map(r => harnessOf(String(r.source_key))))];
+    const ids = [...new Set(rows.flatMap(r => [String(r.slug), `${r.slug}.mdx`, `${r.slug}.md`]))];
+    const canonical = await p.sql`SELECT harness_slug, doc_id, content, content_mode, updated_at, retired_at
+      FROM harness_shared.harness_docs WHERE workspace_id = ${p.workspaceId}
+        AND harness_slug = ANY(${harnesses}::text[]) AND doc_id = ANY(${ids}::text[])`;
+    const records = new Map(canonical.map(r => [`${r.harness_slug}\u0000${r.doc_id}`, r]));
+    const mapped = await Promise.all(rows.map(async r => {
     const key = String(r.source_key), slug = String(r.slug), anchor = sectionAnchorBase(String(r.anchor));
     const current = ranker === 'lexical' ? sectionExcerpt(String(r.content),String(r.highlight ?? ''),100).content : String(r.content);
     const content = `${r.previous_context ? `${r.previous_context}\n` : ''}${current}`;
+    const harness = harnessOf(key);
+    const candidates = [slug, `${slug}.mdx`, `${slug}.md`].map(id => records.get(`${harness}\u0000${id}`)).filter(r => r != null);
+    // Retirement wins even when an old alias still has content. Composed rows
+    // are caches of doc parts: neither those bytes nor a file projection may
+    // masquerade as their canonical authored source.
+    if (candidates.some(row => row.retired_at != null)) return null;
+    const record = candidates.find(row => row.content_mode === 'composed') ??
+      candidates.find(row => typeof row.content === 'string' && row.content.length > 0);
+    let raw: string | null = record?.content_mode === 'authored' && typeof record.content === 'string'
+      ? record.content : null;
+    if (!record) {
+      try {
+        // The SQL audience fence above authorizes this exact source key. Use
+        // getSource, preserving its distinction from rendered/preamble text.
+        // The canonical read already happened on p.sql. Never re-read through
+        // a process-default DB/workspace or a project-docs environment override.
+        if (key === 'papercusp-engineering') {
+          const { engineeringAdapterForSlugs } = await import('../docs/_engineering-adapter');
+          const adapter = engineeringAdapterForSlugs([slug], async () => new Map());
+          const page = await adapter.getPage(slug);
+          if (page) raw = await adapter.getSource?.(page) ?? null;
+        } else {
+          const { resolveAdapter } = await import('../docs/get');
+          const resolved = await resolveAdapter(harness, { slugs: [slug] });
+          if (!resolved.error) {
+            const page = await resolved.adapter.getPage(slug);
+            if (page) raw = await resolved.adapter.getSource?.(page) ?? null;
+          }
+        }
+      } catch { /* unavailable authority stays an unversioned pointer */ }
+    }
     return { source_id: `${key}:${slug}`, title: String(r.title), content,
+      contextUnit: raw === null ? null : completeContextUnit(raw),
+      contextSourceVersion: raw === null ? null : JSON.stringify(contextSourceVersion({
+        namespace: `corpus:doc:${p.workspaceId}`, ref: `doc:${key}:${slug}`, fullText: raw,
+        revision: null, updatedAt: record?.updated_at == null ? null : new Date(record.updated_at).toISOString(),
+        validity: { status: 'current', validAt: null, invalidAt: null, supersededBy: null },
+      })),
       highlight: content, scope: key === 'papercusp-engineering' ? 'operator' : key,
       rank: Number(r.rank), section: anchor || null, status: 'maintained', updated_at: r.updated_at as string | Date,
       path: String(r.url) + (anchor ? `#${anchor}` : ''), source_key: key };
-  }), 'doc', ranker);
+    }));
+    return listing(mapped.filter((row): row is NonNullable<typeof row> => row !== null), 'doc', ranker);
+  };
   /**
    * Keep enough nearest sections for document de-duplication while preserving
    * an ANN-compatible ORDER BY. The old query deduped the whole filtered
@@ -260,7 +374,7 @@ export function createDocSearchSource(audience: KnowledgeAudience = {}): SearchS
           AND to_tsvector('english', s.title || E'\n' || s.content) @@ plainto_tsquery('english', ${p.query})
         ORDER BY s.source_key,s.slug,rank DESC,s.anchor) best
         ORDER BY rank DESC,source_key,slug LIMIT ${p.limit}`;
-      return map(rows as Array<Record<string, unknown>>, 'lexical');
+      return map(rows as Array<Record<string, unknown>>, 'lexical', p);
     },
     async embedding(p) {
       if (!p.embeddingProfile) return [];
@@ -284,7 +398,7 @@ export function createDocSearchSource(audience: KnowledgeAudience = {}): SearchS
               AND best.section_idx > 0 AND prev.section_idx = best.section_idx - 1 LIMIT 1) AS previous_context
         FROM best
         ORDER BY rank DESC,source_key,slug LIMIT ${p.limit}`;
-      return map(rows as Array<Record<string, unknown>>, 'embeddings');
+      return map(rows as Array<Record<string, unknown>>, 'embeddings', p);
     },
   });
 }

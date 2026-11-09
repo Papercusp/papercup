@@ -26,6 +26,7 @@
 import '../../search/configure-search-defaults';
 import { createReportSearchSource } from './report-source';
 import { completeContextUnit, createDocSearchSource, createPlanSearchSource } from './knowledge-sources';
+import { contextSourceVersion } from '../../memory/temporal-render';
 import { HEADLINE_OPTS } from './headline-options';
 import { boundedOrgTxn } from '../../pg-bounded-txn';
 export { HEADLINE_OPTS } from './headline-options';
@@ -1358,7 +1359,11 @@ const sessionTurn: SearchSource = {
         // (RecencyRank.getTime defaults to hit.ts) can bias by freshness.
         ts: r.ts,
         rankers: ['lexical'],
-        meta: { contextUnit: completeContextUnit(r.text) },
+        meta: { contextUnit: completeContextUnit(r.text), contextSourceVersion: JSON.stringify(contextSourceVersion({
+          namespace: `corpus:session_turn:${p.workspaceId}`, ref: `${r.source_kind}:${r.session_id}`,
+          fullText: r.text, revision: String(r.turn_idx), updatedAt: null,
+          validity: { status: 'unknown', validAt: null, invalidAt: null, supersededBy: null },
+        })) },
       },
     }));
   },
@@ -1451,7 +1456,11 @@ const sessionTurn: SearchSource = {
         // Expose the turn timestamp for the engine's optional recency re-rank.
         ts: r.ts,
         rankers: ['embeddings'],
-        meta: { contextUnit: completeContextUnit(r.text) },
+        meta: { contextUnit: completeContextUnit(r.text), contextSourceVersion: JSON.stringify(contextSourceVersion({
+          namespace: `corpus:session_turn:${p.workspaceId}`, ref: `${r.source_kind}:${r.session_id}`,
+          fullText: r.text, revision: String(r.turn_idx), updatedAt: null,
+          validity: { status: 'unknown', validAt: null, invalidAt: null, supersededBy: null },
+        })) },
       },
     }));
   },

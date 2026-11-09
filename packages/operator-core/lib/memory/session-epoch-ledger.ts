@@ -28,7 +28,7 @@
 import type { SqlTag } from './bump-last-surfaced';
 import { createHash, randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import type { ContextSourceVersion } from './temporal-render';
+import { parseContextSourceVersion, type ContextSourceVersion } from './temporal-render';
 
 /** Private host metadata; no recalled plaintext is persisted in a receipt. */
 export type MemoryFragmentManifest = {
@@ -49,12 +49,12 @@ export function memoryFragmentOffer(
   kind: MemoryFragmentManifest['kind'], id: string, epoch: number, port: string, rendered: string,
   sourceVersion?: ContextSourceVersion,
 ): MemoryFragmentOffer {
-  if (sourceVersion && (sourceVersion.ref !== id || !/^[a-f0-9]{64}$/.test(sourceVersion.fingerprint))) {
+  const canonical = sourceVersion ? parseContextSourceVersion(JSON.stringify(sourceVersion), id) : null;
+  if (sourceVersion && !canonical) {
     throw new Error('Memory fragment source identity does not match its reference');
   }
   return { kind, id, epoch, port, rendered,
-    ...(sourceVersion ? { sourceFingerprint: sourceVersion.fingerprint,
-      sourceVersion: { ...sourceVersion, validity: { ...sourceVersion.validity }, passage: { ...sourceVersion.passage } } } : {}),
+    ...(canonical ? { sourceFingerprint: canonical.fingerprint, sourceVersion: canonical } : {}),
     bodySha256: createHash('sha256').update(rendered).digest('hex'), bodyBytes: Buffer.byteLength(rendered) };
 }
 
@@ -69,8 +69,9 @@ function validFragment(row: MemoryFragmentManifest): boolean {
     (row.sourceFingerprint === undefined || (typeof row.sourceFingerprint === 'string' && /^[a-f0-9]{64}$/.test(row.sourceFingerprint)));
 }
 function validOffer(row: MemoryFragmentOffer): boolean {
+  const source = row?.sourceVersion ? parseContextSourceVersion(JSON.stringify(row.sourceVersion), row.id) : null;
   return validFragment(row) && (row.sourceFingerprint === undefined ? row.sourceVersion === undefined :
-    !!row.sourceVersion && row.sourceVersion.ref === row.id && row.sourceVersion.fingerprint === row.sourceFingerprint);
+    !!source && source.fingerprint === row.sourceFingerprint);
 }
 const sameFragment = (a: MemoryFragmentManifest, b: MemoryFragmentManifest) =>
   a.kind === b.kind && a.id === b.id && a.epoch === b.epoch && a.port === b.port &&
@@ -147,7 +148,10 @@ export async function stageMemoryEmission(
   sql: SqlTag, ownerId: string, token: string, offers: readonly MemoryFragmentOffer[],
 ): Promise<void> {
   if (!emissionToken(token) || offers.length > 128) throw new Error('Invalid memory emission offer');
-  const fragments = offers.filter(validOffer).map(({ rendered: _text, ...manifest }) => manifest);
+  const fragments = offers.filter(validOffer).map(row => ({ kind: row.kind, id: row.id, epoch: row.epoch, port: row.port,
+    bodySha256: row.bodySha256, bodyBytes: row.bodyBytes,
+    ...(row.sourceFingerprint ? { sourceFingerprint: row.sourceFingerprint,
+      sourceVersion: parseContextSourceVersion(JSON.stringify(row.sourceVersion), row.id)! } : {}) }));
   if (!fragments.length) return;
   const { stage } = await import('../agent-tools/coordination/read-cursors');
   await stage(ownerId, EMISSION_SURFACE_PREFIX + token,
@@ -182,7 +186,7 @@ export async function confirmMemoryEmission(
     await clearReadCursor(ownerId, surface);
     return 0;
   }
-  const delivered = (candidate.fragments as MemoryFragmentManifest[]).filter(row => validFragment(row) &&
+  const delivered = (candidate.fragments as Array<MemoryFragmentManifest & { sourceVersion?: ContextSourceVersion }>).filter(row => validFragment(row) &&
     proof.fragments.some(actual => validFragment(actual) && sameFragment(row, actual)));
   if (!delivered.length) return 0;
   const { stampSurfacedRefsResult } = await import('./corpus-surfaced-ledger');
@@ -190,8 +194,8 @@ export async function confirmMemoryEmission(
   let inserted = 0;
   for (const row of delivered) {
     const stamped = row.kind === 'memory'
-      ? await stampSurfacedResult(sql, ownerId, row.epoch, [row.id], row.port, row.sourceFingerprint)
-      : await stampSurfacedRefsResult(sql, ownerId, row.epoch, [row.id], row.port, row.sourceFingerprint);
+      ? await stampSurfacedResult(sql, ownerId, row.epoch, [row.id], row.port, row.sourceFingerprint, row.sourceVersion)
+      : await stampSurfacedRefsResult(sql, ownerId, row.epoch, [row.id], row.port, row.sourceFingerprint, row.sourceVersion);
     succeeded = stamped.ok && succeeded;
     inserted += stamped.inserted;
   }
@@ -286,6 +290,7 @@ export async function alreadySurfacedIds(
   epoch: number,
   memoryIds: readonly string[],
   sourceFingerprints?: ReadonlyMap<string, string>,
+  previousVersions?: Map<string, ContextSourceVersion>,
 ): Promise<Set<string>> {
   const empty = new Set<string>();
   if (!sessionId || relationMissing || memoryIds.length === 0) return empty;
@@ -293,12 +298,16 @@ export async function alreadySurfacedIds(
   if (ids.length === 0) return empty;
   try {
     if (sourceFingerprints) {
-      const rows = await sql<{ id: string; source_fingerprint: string | null }[]>`
-        SELECT memory_id::text AS id, source_fingerprint
+      const rows = await sql<{ id: string; source_fingerprint: string | null; source_version?: unknown }[]>`
+        SELECT memory_id::text AS id, source_fingerprint, source_version
         FROM harness_shared.memory_session_surfaced
         WHERE session_id = ${sessionId} AND epoch = ${epoch}
           AND memory_id = ANY(${ids}::uuid[])
       `;
+      for (const row of rows) {
+        const version = parseContextSourceVersion(JSON.stringify(row.source_version) ?? '', row.id);
+        if (version && version.fingerprint === row.source_fingerprint) previousVersions?.set(row.id, version);
+      }
       return new Set(rows.filter(row => typeof row.source_fingerprint === 'string' &&
         /^[a-f0-9]{64}$/.test(row.source_fingerprint) &&
         row.source_fingerprint === sourceFingerprints.get(row.id)).map(row => row.id));
@@ -337,19 +346,27 @@ export async function stampSurfaced(
 export async function stampSurfacedResult(
   sql: SqlTag, sessionId: string, epoch: number, memoryIds: readonly string[], port: string,
   sourceFingerprint?: string,
+  sourceVersion?: ContextSourceVersion,
 ): Promise<{ ok: boolean; inserted: number }> {
   if (!sessionId || relationMissing) return { ok: false, inserted: 0 };
   if (sourceFingerprint !== undefined && !/^[a-f0-9]{64}$/.test(sourceFingerprint)) return { ok: false, inserted: 0 };
   const ids = [...new Set(memoryIds.filter((id) => typeof id === 'string' && UUID_SHAPE.test(id)))];
   if (ids.length === 0) return { ok: true, inserted: 0 };
+  // Native proofs carry only the fingerprint; source metadata comes from the
+  // host's staged receipt and must remain content-free and integrity checked.
+  const version = sourceVersion && ids.length === 1
+    ? parseContextSourceVersion(JSON.stringify(sourceVersion), ids[0]) : null;
+  if (sourceVersion && (!version || version.fingerprint !== sourceFingerprint)) return { ok: false, inserted: 0 };
   try {
     if (sourceFingerprint !== undefined) {
       const rows = await sql<unknown[]>`
-        INSERT INTO harness_shared.memory_session_surfaced (session_id, epoch, memory_id, port, source_fingerprint)
-        SELECT ${sessionId}, ${epoch}, unnest(${ids}::uuid[]), ${port}, ${sourceFingerprint}
+        INSERT INTO harness_shared.memory_session_surfaced (session_id, epoch, memory_id, port, source_fingerprint, source_version)
+        SELECT ${sessionId}, ${epoch}, unnest(${ids}::uuid[]), ${port}, ${sourceFingerprint}, ${version ? JSON.stringify(version) : null}::text::jsonb
         ON CONFLICT (session_id, epoch, memory_id) DO UPDATE
-          SET source_fingerprint = EXCLUDED.source_fingerprint, port = EXCLUDED.port, surfaced_at = now()
+          SET source_fingerprint = EXCLUDED.source_fingerprint, source_version = EXCLUDED.source_version,
+            port = EXCLUDED.port, surfaced_at = now()
           WHERE memory_session_surfaced.source_fingerprint IS DISTINCT FROM EXCLUDED.source_fingerprint
+            OR (memory_session_surfaced.source_version IS NULL AND EXCLUDED.source_version IS NOT NULL)
         RETURNING memory_id
       `;
       return { ok: true, inserted: rows.length };

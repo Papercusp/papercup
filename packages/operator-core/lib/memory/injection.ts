@@ -55,7 +55,8 @@ import {
 import { lexicalQueryText, retrievalQueryText, toRecallQuery, type RecallQueryInput } from './recall-query';
 import { memoryTierOf } from './two-tier';
 import { jevFunnelEntry, jevMemoryBudgetMs, runJevMemoryGate } from './jev-memory-gate';
-import { annotateSupersededMemory, renderContextSourceUnit, memoryEntrySourceVersion } from './temporal-render';
+import { annotateSupersededMemory, renderContextSourceUnit, memoryEntrySourceVersion,
+  contextSourceChangeNotice, type ContextSourceVersion } from './temporal-render';
 import { systemDistinctId } from '../flag-distinct-id';
 import {
   MEMORY_INJECT_TIMEOUT_MS,
@@ -818,7 +819,7 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
         query.agentSignals?.workItem?.id?.trim() || input.session?.currentWorkItemId?.trim() || null;
 
       const { recallCorpusContext } = await import('./corpus-recall-io');
-      const { CORPUS_BLOCK_HEADING } = await import('./corpus-recall');
+      const { CORPUS_BLOCK_HEADING, CORPUS_BUDGET_CHARS } = await import('./corpus-recall');
 
       // Cross-moment dedup (migration 712): a warm session must not be handed
       // the same pointer every turn. The compaction `epoch` is resolved here
@@ -902,10 +903,55 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
         | 'retrievalDepth' | 'rerank'
       >;
 
+      // A ranked search cannot prove that an earlier source was retracted.
+      // Revalidate a bounded set of confirmed sources through the registered
+      // canonical readers, retaining today's host/identity/audience fences.
+      let lifecycleLines: typeof res.lines = [];
+      if (sessionId && res.outcome === 'ok') {
+        try {
+          lifecycleLines = await deadline.run(async () => {
+            const { corpusSourceNamesFor } = await import('./corpus-recall-io');
+            const allowed = new Set<string>(corpusSourceNamesFor({ knowledgeSourcesAllowed: input.knowledgeSourcesAllowed,
+              corpora: input.identityRecall?.corpora }));
+            if (!['plan', 'doc', 'report'].some(kind => allowed.has(kind))) return [];
+            const { sql } = getOrgPg();
+            const { corpusSourcesDueForRevalidation } = await import('./corpus-surfaced-ledger');
+            const previous = await corpusSourcesDueForRevalidation(sql, sessionId, epoch,
+              res.lines.map(line => line.handle.ref));
+            if (!previous.length) return [];
+            const audience = { harnessSlugs: input.harnessSlugs, automatic: true, excludedRefs: ambientExcludedRefs };
+            const { revalidateKnowledgeSourceVersions } = await import('../agent-tools/search/knowledge-sources');
+            const { revalidateReportSourceVersions } = await import('../agent-tools/search/report-source');
+            const reads = await Promise.allSettled([
+              revalidateKnowledgeSourceVersions({ sql, workspaceId: input.workspaceId, previous,
+                audience, allowed, signal: deadline.signal }),
+              allowed.has('report') ? revalidateReportSourceVersions({ sql, workspaceId: input.workspaceId, previous,
+                audience, signal: deadline.signal, viewer: input.reportViewer ?? {
+                  ownerId: sessionId, potSlug: input.harnessSlugs?.length === 1 ? input.harnessSlugs[0] : null,
+                } }) : Promise.resolve([]),
+            ]);
+            deadline.signal.throwIfAborted();
+            const before = new Map(previous.map(version => [version.ref, version]));
+            return reads.flatMap(read => read.status === 'fulfilled' ? read.value : []).flatMap(version => {
+              const notice = contextSourceChangeNotice(before.get(version.ref), version);
+              if (!notice) return [];
+              const kind = version.ref.startsWith('plan:') ? 'plan' as const
+                : version.ref.startsWith('doc:') ? 'doc' as const : 'report' as const;
+              return [{ line: `- [${kind}] ${notice} Resolve the current source before using earlier guidance.`,
+                score: 1, operative: true, sourceVersion: version,
+                handle: { kind, ref: version.ref, query: [],
+                  resolve: kind === 'plan' ? 'plans:get' : kind === 'doc' ? 'docs:get' : 'reports:get' } }];
+            });
+          }, 'corpus lifecycle revalidation');
+        } catch { /* unavailable or denied authority establishes no lifecycle */ }
+      }
+      baseTelemetry.selected += lifecycleLines.length;
+      const lifecycleRefs = new Set(lifecycleLines.map(line => line.handle.ref));
+
       // P-001: a leg that ran and admitted nothing still reports HOW it ran.
       // Returning bare `null` here erased the one fact that explains an empty
       // section — whether the semantic half was even available.
-      if (res.lines.length === 0) {
+      if (res.lines.length === 0 && lifecycleLines.length === 0) {
         return emptyCorpusLeg(CORPUS_BLOCK_HEADING, res.embedderAvailable, res.candidateCount, gate, baseTelemetry);
       }
 
@@ -919,7 +965,7 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
       // Returned as an EMPTY leg, not `null`: the leg ran, and the health path
       // must keep saying so. `gate` rides along, so a suppressed turn is
       // diagnosable rather than merely absent.
-      if (gate?.verdict === 'sit-out') {
+      if (gate?.verdict === 'sit-out' && lifecycleLines.length === 0) {
         return emptyCorpusLeg(CORPUS_BLOCK_HEADING, res.embedderAvailable, res.candidateCount, gate, baseTelemetry);
       }
 
@@ -927,7 +973,8 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
       // candidates are ranked and collapsed, so the alternative would be a
       // second search. The cost of this ordering is at most an under-full
       // section, never a wrong one.
-      let lines = res.lines;
+      // Exact lifecycle reads do not depend on a degraded search's ranking.
+      let lines = [...lifecycleLines, ...(gate?.verdict === 'sit-out' ? [] : res.lines)];
       let sessionDedup = 0;
       if (sessionId) {
         try {
@@ -935,18 +982,25 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
           const { alreadySurfacedRefs } = await import('./corpus-surfaced-ledger');
           const versions = new Map(lines.flatMap(line => line.sourceVersion
             ? [[line.handle.ref, line.sourceVersion.fingerprint] as const] : []));
+          const previousVersions = new Map<string, ContextSourceVersion>();
           const seen = await deadline.run(() => alreadySurfacedRefs(
             sql,
             sessionId,
             epoch,
             lines.map((l) => l.handle.ref),
             versions,
+            previousVersions,
           ), 'corpus dedup');
           if (seen.size > 0) {
             const before = lines.length;
             lines = lines.filter((l) => !seen.has(l.handle.ref));
             sessionDedup = before - lines.length;
           }
+          lines = lines.map(line => {
+            if (lifecycleRefs.has(line.handle.ref)) return line;
+            const notice = contextSourceChangeNotice(previousVersions.get(line.handle.ref), line.sourceVersion);
+            return notice ? { ...line, line: `${line.line} ${notice}` } : line;
+          });
           // Selection is preparation, before final packing and native stdout.
           // Only a sink's exact-fragment emission receipt may stamp these refs.
           // An uninstrumented sink remains eligible to retry.
@@ -954,6 +1008,17 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
           /* dedup is hygiene — a failure delivers a duplicate, never nothing */
         }
       }
+      // A lifecycle notice is part of the source's complete emitted unit.
+      // Reapply the existing budget after adding it; never slice either half.
+      let renderedChars = 0;
+      lines = lines.filter(line => {
+        if (renderedChars + line.line.length > CORPUS_BUDGET_CHARS) {
+          baseTelemetry.dropped['budget-exhausted'] += 1;
+          return false;
+        }
+        renderedChars += line.line.length;
+        return true;
+      });
       if (lines.length === 0) {
         return emptyCorpusLeg(CORPUS_BLOCK_HEADING, res.embedderAvailable, res.candidateCount, gate, {
           ...baseTelemetry,
@@ -1629,6 +1694,7 @@ async function buildBlockInner(
     // ledger; the chat path keeps the wall-clock watermark. Same best-effort
     // posture either way: a failed read = no filtering, never a broken inject.
     let sessionEpoch: number | null = null;
+    const previousSourceVersions = new Map<string, ContextSourceVersion>();
     {
       const tDedup = Date.now();
       try {
@@ -1647,7 +1713,8 @@ async function buildBlockInner(
                 else versions.set(entry.id, version.fingerprint);
               }
               for (const id of ambiguous) versions.delete(id);
-              suppressed = await deadline.run(() => alreadySurfacedIds(sql, session.sessionId, sessionEpoch!, candidateIds, versions), 'memory dedup');
+              suppressed = await deadline.run(() => alreadySurfacedIds(sql, session.sessionId, sessionEpoch!, candidateIds, versions,
+                previousSourceVersions), 'memory dedup');
             } else {
               suppressed = await deadline.run(() => recentlySurfacedIds(sql, candidateIds, reinjectWindowMs()), 'memory dedup');
             }
@@ -1820,7 +1887,8 @@ async function buildBlockInner(
         const fullText = hit.text ?? '';
         const displayText = hit.injectionText ?? fullText;
         const annotatedText = annotateSupersededMemory(displayText, hit.metadata);
-        const prefix = `- ${fmtScope(hit, label)}${fmtId(hit)} `;
+        const notice = contextSourceChangeNotice(previousSourceVersions.get(hit.id), memoryEntrySourceVersion(hit));
+        const prefix = `- ${fmtScope(hit, label)}${fmtId(hit)} ${notice ? `${notice} ` : ''}`;
         const unit = renderContextSourceUnit(annotatedText, {
           kind: 'memory', ref: hit.id ?? 'unknown', link: `memory:${encodeURIComponent(hit.id ?? '')}`,
         }, Math.min(MAX_ENTRY_CHARS, Math.max(0, budget - prefix.length - heading.length - 5)), displayText !== fullText);

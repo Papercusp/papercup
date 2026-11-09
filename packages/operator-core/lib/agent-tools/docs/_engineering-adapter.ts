@@ -344,8 +344,11 @@ const engineeringBase = starlightContentAdapter({
 });
 
 /** Fresh, targeted engineering source for one docs:get request. */
-export function engineeringAdapterForSlugs(slugs: readonly string[]): InvalidatableDocSource {
-  return overlayRequestedCanonicalDocs(engineeringBase, getAuthoredDocContentsByIds, 'papercusp', slugs);
+export function engineeringAdapterForSlugs(
+  slugs: readonly string[],
+  readCanonical: (harnessSlug: string, docIds: readonly string[]) => Promise<Map<string, string>> = getAuthoredDocContentsByIds,
+): InvalidatableDocSource {
+  return overlayRequestedCanonicalDocs(engineeringBase, readCanonical, 'papercusp', slugs);
 }
 
 let engineeringAdapterRevision = 0;

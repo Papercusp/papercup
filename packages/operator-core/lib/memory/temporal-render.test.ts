@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { contextSourceVersion, memoryEntrySourceVersion, normalizeContextSourceText, parseContextSourceVersion, renderContextSourceUnit } from './temporal-render';
+import { contextSourceChangeNotice, contextSourceVersion, memoryEntrySourceVersion, normalizeContextSourceText, parseContextSourceVersion, renderContextSourceUnit } from './temporal-render';
 
 const current = { status: 'current' as const, validAt: null, invalidAt: null, supersededBy: null };
 const source = { namespace: 'memory', ref: 'memory-1', fullText: 'Approve cafe\u0301.\r\nOnly after review.\r',
@@ -38,6 +38,38 @@ describe('canonical context source versions', () => {
     expect(memoryEntrySourceVersion({ ...entry, scope: 'other' })?.fingerprint).not.toBe(unknown.fingerprint);
     expect(memoryEntrySourceVersion({ ...entry, metadata: { updated_at: 'bad-clock' } })).toBeNull();
     expect(memoryEntrySourceVersion({ ...entry, metadata: { validity: { invalid_at: {} } } })).toBeNull();
+  });
+
+  it('drops unrecognized prose fields at every level of the source metadata carrier', () => {
+    const version = contextSourceVersion(source);
+    const wire = { ...version, text: 'private canonical prose',
+      validity: { ...version.validity, body: 'private validity prose' },
+      passage: { ...version.passage, excerpt: 'private passage prose' } };
+    const parsed = parseContextSourceVersion(JSON.stringify(wire), source.ref);
+    expect(parsed).toEqual(version);
+    expect(JSON.stringify(parsed)).not.toContain('private');
+  });
+
+  it('emits content-free scoped change notices only for confirmed, changed canonical sources', () => {
+    const before = contextSourceVersion(source);
+    const corrected = contextSourceVersion({ ...source, fullText: 'New approval requirement.' });
+    const notice = contextSourceChangeNotice(before, corrected)!;
+    expect(notice).toContain('"kind":"corrected"');
+    expect(notice).toContain('replace-earlier-version');
+    expect(notice).not.toContain('New approval');
+    expect(notice).not.toContain('Only after');
+    for (const status of ['retracted', 'superseded', 'expired'] as const) {
+      const after = contextSourceVersion({ ...source, validity: { ...current, status, supersededBy: 'memory-2' } });
+      expect(contextSourceChangeNotice(before, after)).toContain(`"kind":"${status}"`);
+      expect(contextSourceChangeNotice(before, after)).toContain('withdraw-earlier-version');
+    }
+    for (const after of [undefined, null, before,
+      contextSourceVersion({ ...source, ref: 'another-source' }),
+      contextSourceVersion({ ...source, namespace: 'another-workspace' }),
+      { ...corrected, fingerprint: 'a'.repeat(64) }]) {
+      expect(contextSourceChangeNotice(before, after)).toBeNull();
+    }
+    expect(contextSourceChangeNotice(undefined, corrected)).toBeNull();
   });
 
   it('normalizes NFC and newlines without losing whitespace or the final condition', () => {
