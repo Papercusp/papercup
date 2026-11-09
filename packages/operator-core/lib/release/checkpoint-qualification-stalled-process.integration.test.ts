@@ -264,9 +264,11 @@ describe.runIf(process.platform === 'linux' && userManagerBusReachable())('quali
     const stalledId = newTaskId(), healthyId = newTaskId(), units = [stalledId, healthyId].map(id => scopeUnitForTask(id));
     const controller = new AbortController();
     let workerPid = 0, backendPid = 0, backendCheckInterval = '', output = '', diagnostics = '', messages = 0, spawnedAt = 0, releasedAt = 0;
+    const lifecycle: { event: string; taskId?: string; unit?: string; atMs: number; detail?: string }[] = [];
     const connection = buildConnectionOptions({ searchPath: 'public', applicationName: 'qualification-stalled-worker',
       idleInTxMs: 2000, stmtTimeoutMs: 0, pooled: false, clientConnCheckMs: 100 });
     const release = vi.fn<typeof recordStoredQualificationChildScope>(async (_target, change) => {
+      lifecycle.push({ event: change.operation, unit: change.unit, atMs: Date.now() });
       if (change.operation === 'release' && change.unit === units[0]) {
         expect(workerPid).toBeGreaterThan(0);
         expect(running(workerPid)).toBe(false);
@@ -286,9 +288,19 @@ describe.runIf(process.platform === 'linux' && userManagerBusReachable())('quali
       deadlineEpochMs: Date.now() + 15_000,
     });
     const deps = (id: string) => ({
-      spawn: (cmd: string, args: readonly string[], spec: Parameters<typeof managedSpawn>[2], launch: Parameters<typeof managedSpawn>[3]) =>
-        managedSpawn(cmd, args, spec, { ...launch, scopeAvailable: true }),
-      record: release, kill: killScopeUnit, taskId: () => id, now: Date.now,
+      spawn: (cmd: string, args: readonly string[], spec: Parameters<typeof managedSpawn>[2], launch: Parameters<typeof managedSpawn>[3]) => {
+        const pending = managedSpawn(cmd, args, spec, { ...launch, scopeAvailable: true });
+        void pending.then(() => lifecycle.push({ event: 'launch-settled', taskId: id, atMs: Date.now() }),
+          error => lifecycle.push({ event: 'launch-failed', taskId: id, atMs: Date.now(), detail: String(error) }));
+        return pending;
+      },
+      record: release,
+      kill: async (...args: Parameters<typeof killScopeUnit>) => {
+        lifecycle.push({ event: 'kill-start', unit: args[0], atMs: Date.now() });
+        try { return await killScopeUnit(...args); }
+        finally { lifecycle.push({ event: 'kill-finished', unit: args[0], atMs: Date.now() }); }
+      },
+      taskId: () => id, now: Date.now,
     });
     let stalled: Promise<unknown> | undefined;
     let healthy: ReturnType<typeof runQualificationCommand> | undefined;
@@ -345,7 +357,7 @@ describe.runIf(process.platform === 'linux' && userManagerBusReachable())('quali
         ...options('stalled'), deadlineEpochMs: cleanupCutoffEpochMs,
         env: { ...options('stalled').env, ...(database ? { QUALIFICATION_TEST_DB_URL: database.url } : {}) },
         hardTimeoutMs: 4000,
-        onSpawn() { spawnedAt = Date.now(); },
+        onSpawn() { spawnedAt = Date.now(); lifecycle.push({ event: 'spawned', taskId: stalledId, atMs: spawnedAt }); },
         onOutput(stream, text) {
           if (stream !== 'stdout') { diagnostics += text; return; }
           output += text; messages++;
@@ -404,8 +416,9 @@ describe.runIf(process.platform === 'linux' && userManagerBusReachable())('quali
       }
       expect(await outcome).toMatchObject({ message: 'qualification-worker-hard-timeout' });
       if (mode !== 'blocked-controller') expect(messages).toBeGreaterThan(2);
-      expect(releasedAt - spawnedAt).toBeGreaterThanOrEqual(3900);
-      expect(releasedAt - spawnedAt).toBeLessThan(6000);
+      const timingEvidence = JSON.stringify({ mode, stalledId, spawnedAt, releasedAt, cleanupCutoffEpochMs, lifecycle });
+      expect(releasedAt - spawnedAt, timingEvidence).toBeGreaterThanOrEqual(3900);
+      expect(releasedAt - spawnedAt, timingEvidence).toBeLessThan(6000);
       expect(running(workerPid)).toBe(false);
       if (sql) {
         expect(Date.now()).toBeLessThan(cleanupCutoffEpochMs);
