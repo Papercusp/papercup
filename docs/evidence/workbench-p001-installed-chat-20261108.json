@@ -235,6 +235,212 @@
       "passed": true,
       "evidence": "reopening the exact canonical conversation restores its local draft"
     }
+  ],
+  "diagnosticControls": [
+    {
+      "workItem": "EI-28263081559300552",
+      "variant": "isolated audio context",
+      "result": "pass",
+      "assertions": 24,
+      "nodeTests": {
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "childSubstituted": 0
+      },
+      "sourceCustody": {
+        "files": {
+          "extension.js": "eac080f1f5496b4b4fcb86946ed74ae3883fbba78bda7f414f25dae157136021",
+          "panel-model.mjs": "e189b55cbe28a5d452676207f0baae1668fcee735cfd65a93b009c7be68dfe97",
+          "bridge.js": "f0af6f85819867ea17c790d268b2c428af15d36e489d6c7134b5feeadeaf4eb2",
+          "helper.js": "5604d173a62ad88583c884b0689ee1afc04da7a64ea5f41771e1fcd209416709",
+          "audio.js": "3e3d4927292d31494313a74fcee3438b3eaf3afefdacb5f430ba4fcb1827f6ad",
+          "chat-content.js": "bc1cdc7aa8bd0422c2a3783bd05659660db49245906ec5c8dea7b8705afa8f8e",
+          "metadata.json": "b8c39f0fdfa34af6d33e513e90e62324e45d52ed2f08377cf9b3d52eba4f6cd5",
+          "stylesheet.css": "7768fa01ef52ade16120db9129a610321eced284ef9c3bd1fe13936e9122ca33",
+          "schemas/org.gnome.shell.extensions.papercusp-workbench.gschema.xml": "ac2f5d184f3e7f3156df421fd58139989c8990900eecc967ffb5f133d7e8b209",
+          "schemas/gschemas.compiled": "d14fe87b42f198341f707c48cd3625b05941ff9d0eb161665c5c9ae0f30962ef"
+        },
+        "puiSha256": "76d278fa5a80c6f0211cb88f665ff284ad8b3ecad59ae1403d3997e02a83f1d6",
+        "testSha256": "82fe1bef5adc87cd15c1a943222d15af8d7acebabfcb06e8c0a395c90214c733"
+      },
+      "startedAt": "2026-11-08T23:35:20.010Z",
+      "finishedAt": "2026-11-08T23:35:55.106Z",
+      "elapsedMs": 35092.018741,
+      "audioContext": "private PulseAudio server and two null sinks",
+      "telemetry": {
+        "heartbeat": 10,
+        "pendingReads": 0,
+        "lastInputDelivered": true
+      },
+      "chat": {
+        "conversationId": "dc1c7dc0-65b1-48e1-8561-50fa71cc2b89",
+        "historyTurns": 200,
+        "hasMoreEarlier": true,
+        "questionSubscriptionConnected": true,
+        "modelTurnStarted": false
+      },
+      "rawEvidence": "/tmp/wb-installed-chat-gc-control-20261108-v2/installed-shell-papercup-isolated-audio.json",
+      "rawEvidenceSha256": "8d981f065cb3df9c04e8aa4ab78f28105718eff899542d5829b59f093b03ec89",
+      "log": "/tmp/wb-installed-chat-gc-control-20261108-v2.log",
+      "logSha256": "4971ea6aa273390b2161f935d76e6155da78224f2b2498708488fd0bcbef6d6c",
+      "provenance": "LOCAL current build: child HEAD097022d41d contains test82fe1bef; parent HEADc94b545cf8 gitlink a43257ce differs. childSubstituted=0. This is not a release-gate verdict or shipment proof.",
+      "conclusion": "The exact installed chat journey can complete with the private PulseAudio environment. This single passing control neither establishes a GC/audio root cause nor verifies full voice acceptance.",
+      "stackSampling": "Attempted external sampling after this successful private Shell exited; no stack was obtained."
+    },
+    {
+      "workItem": "EI-28263081559300552",
+      "variant": "canonical speech preflight and isolated audio context",
+      "result": "pass",
+      "assertions": 24,
+      "nodeTests": {
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "childSubstituted": 0
+      },
+      "sourceCustody": {
+        "files": {
+          "extension.js": "eac080f1f5496b4b4fcb86946ed74ae3883fbba78bda7f414f25dae157136021",
+          "panel-model.mjs": "e189b55cbe28a5d452676207f0baae1668fcee735cfd65a93b009c7be68dfe97",
+          "bridge.js": "f0af6f85819867ea17c790d268b2c428af15d36e489d6c7134b5feeadeaf4eb2",
+          "helper.js": "5604d173a62ad88583c884b0689ee1afc04da7a64ea5f41771e1fcd209416709",
+          "audio.js": "3e3d4927292d31494313a74fcee3438b3eaf3afefdacb5f430ba4fcb1827f6ad",
+          "chat-content.js": "bc1cdc7aa8bd0422c2a3783bd05659660db49245906ec5c8dea7b8705afa8f8e",
+          "metadata.json": "b8c39f0fdfa34af6d33e513e90e62324e45d52ed2f08377cf9b3d52eba4f6cd5",
+          "stylesheet.css": "7768fa01ef52ade16120db9129a610321eced284ef9c3bd1fe13936e9122ca33",
+          "schemas/org.gnome.shell.extensions.papercusp-workbench.gschema.xml": "ac2f5d184f3e7f3156df421fd58139989c8990900eecc967ffb5f133d7e8b209",
+          "schemas/gschemas.compiled": "d14fe87b42f198341f707c48cd3625b05941ff9d0eb161665c5c9ae0f30962ef"
+        },
+        "puiSha256": "76d278fa5a80c6f0211cb88f665ff284ad8b3ecad59ae1403d3997e02a83f1d6",
+        "testSha256": "58825e249cfa12d23cd85ad1bd962076b5386692e96fda2775ef88b1ef7de9bb"
+      },
+      "startedAt": "2026-11-08T23:42:08.797Z",
+      "finishedAt": "2026-11-08T23:42:35.402Z",
+      "elapsedMs": 26602.081062999998,
+      "audioContext": "private PulseAudio server and two null sinks",
+      "telemetry": {
+        "heartbeat": 9,
+        "pendingReads": 0,
+        "lastInputDelivered": true
+      },
+      "speechPreflight": {
+        "phrase": "The quick brown fox jumps over the lazy dog.",
+        "conversationId": "dc1c7dc0-65b1-48e1-8561-50fa71cc2b89",
+        "requestId": "0c91f2df-7856-4519-ab35-1700ece4be48",
+        "controlTranscript": "The quick brown fox jumps over the lazy dog.",
+        "audioBytes": 143214,
+        "audioSha256": "ffe9c10579f22fcf94d4daeeb002e2507c126efe2d6ee5cb9070d7676a59d5b7",
+        "wavSha256": "3e3c8f916abc5422a55dc308e3704093e7dd8ef747cb1250528bf5d72dbaa8e7"
+      },
+      "chat": {
+        "conversationId": "dc1c7dc0-65b1-48e1-8561-50fa71cc2b89",
+        "historyTurns": 200,
+        "hasMoreEarlier": true,
+        "questionSubscriptionConnected": true,
+        "modelTurnStarted": false
+      },
+      "rawEvidence": "/tmp/wb-installed-chat-speech-preflight-20261108-v1/installed-shell-papercup-speech-preflight.json",
+      "rawEvidenceSha256": "7d423da100cb7ff41cfe39a59bfe1d1a03f498dfb35399371550cf69ef13e063",
+      "log": "/tmp/wb-installed-chat-speech-preflight-20261108-v1.log",
+      "logSha256": "14ab7fe9d326c85f89dfd8c7ba42f5899786ee5c006912ee6e9c1da88b13651b",
+      "provenance": "LOCAL current build: child HEADdc2e577bce contains test58825e24; parent HEADc94b545cf8 gitlink a43257ce differs. childSubstituted=0. No release-gate or shipment claim.",
+      "conclusion": "Canonical TTS and STT preflight plus private audio setup can precede successful exact installed chat. The full voice journey did not execute. GC/startup stall cause remains unproven.",
+      "stackSampling": "Bounded observer task0mw8h7rbyyee1yf6lyx completed0 after private Shell ended; no heartbeat stall was sampled."
+    },
+    {
+      "workItem": "EI-28263081559300552",
+      "variant": "forced collection after canonical speech preflight and isolated audio",
+      "result": "pass",
+      "assertions": 27,
+      "collectionChecks": [
+        "independent heartbeat resumes after startup collection",
+        "independent heartbeat resumes after rendered chat collection",
+        "independent heartbeat resumes after dismissed chat collection"
+      ],
+      "nodeTests": {
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "childSubstituted": 0
+      },
+      "sourceCustody": {
+        "files": {
+          "extension.js": "eac080f1f5496b4b4fcb86946ed74ae3883fbba78bda7f414f25dae157136021",
+          "panel-model.mjs": "e189b55cbe28a5d452676207f0baae1668fcee735cfd65a93b009c7be68dfe97",
+          "bridge.js": "f0af6f85819867ea17c790d268b2c428af15d36e489d6c7134b5feeadeaf4eb2",
+          "helper.js": "5604d173a62ad88583c884b0689ee1afc04da7a64ea5f41771e1fcd209416709",
+          "audio.js": "3e3d4927292d31494313a74fcee3438b3eaf3afefdacb5f430ba4fcb1827f6ad",
+          "chat-content.js": "bc1cdc7aa8bd0422c2a3783bd05659660db49245906ec5c8dea7b8705afa8f8e",
+          "metadata.json": "b8c39f0fdfa34af6d33e513e90e62324e45d52ed2f08377cf9b3d52eba4f6cd5",
+          "stylesheet.css": "7768fa01ef52ade16120db9129a610321eced284ef9c3bd1fe13936e9122ca33",
+          "schemas/org.gnome.shell.extensions.papercusp-workbench.gschema.xml": "ac2f5d184f3e7f3156df421fd58139989c8990900eecc967ffb5f133d7e8b209",
+          "schemas/gschemas.compiled": "d14fe87b42f198341f707c48cd3625b05941ff9d0eb161665c5c9ae0f30962ef"
+        },
+        "puiSha256": "76d278fa5a80c6f0211cb88f665ff284ad8b3ecad59ae1403d3997e02a83f1d6",
+        "testSha256": "d607ac7399470c90299d022abcf17a3a1a79bfb51eb600643459bf728098c814"
+      },
+      "startedAt": "2026-11-08T23:56:29.515Z",
+      "finishedAt": "2026-11-08T23:57:07.236Z",
+      "elapsedMs": 37717.564842,
+      "audioContext": "private PulseAudio server and two null sinks",
+      "telemetry": {
+        "heartbeat": 15,
+        "pendingReads": 0,
+        "lastInputDelivered": true
+      },
+      "speechPreflight": {
+        "wav": "/tmp/pcv/workbench-installed-shell-TaSrfG/reference.wav",
+        "phrase": "The quick brown fox jumps over the lazy dog.",
+        "conversationId": "dc1c7dc0-65b1-48e1-8561-50fa71cc2b89",
+        "requestId": "28b5532e-80c4-44c9-b6e8-2de09410c9e9",
+        "controlTranscript": "The quick brown fox jumps over the lazy dog.",
+        "audioBytes": 143870,
+        "audioSha256": "bc33547d0ee519c5523192afc670674aefccd2a5eed661a866052fc84034c229",
+        "wavSha256": "49eef3e1413f97d5c024e3f53ff92e5dc7da8b223bd9c39b1cb0e7dc128f0658",
+        "environment": {
+          "agentChat": {
+            "route": "/api/agent-chats",
+            "scope": "workspace:papercusp-workspace"
+          },
+          "build": {
+            "sha": "6829bca45a",
+            "version": "0.0.0"
+          },
+          "capabilities": {
+            "attachedSuSession": true,
+            "attachedSuSessionApprovals": true
+          },
+          "endpoint": "http://127.0.0.1:3170",
+          "schemaVersion": 1,
+          "selectionSource": "PUI_OPERATOR + PAPERCUSP_OPERATOR_URL",
+          "store": {
+            "id": "pg-a9c7b890119f",
+            "source": "env",
+            "target": "postgresql://localhost:5432/papercusp"
+          },
+          "transport": "http",
+          "workspaceId": "papercusp-workspace"
+        }
+      },
+      "chat": {
+        "conversationId": "dc1c7dc0-65b1-48e1-8561-50fa71cc2b89",
+        "historyTurns": 200,
+        "hasMoreEarlier": true,
+        "questionSubscriptionConnected": true,
+        "modelTurnStarted": false
+      },
+      "diagnostics": {
+        "gjsCritical": 0,
+        "blockedGcWarnings": 0
+      },
+      "rawEvidence": "/tmp/wb-installed-chat-forced-gc-20261108-v1/installed-shell-papercup-forced-gc.json",
+      "rawEvidenceSha256": "e84bef088200956f5d70c45528ecb66edb3c70a1954d6c9295427fc9878bb078",
+      "log": "/tmp/wb-installed-chat-forced-gc-20261108-v1.log",
+      "logSha256": "c83e2942c6bd22311dd6669eb08fc15d612ff27019001db4f0556c73a63743a0",
+      "provenance": "LOCAL current build: child HEAD3effe63562 contains testd607ac73; parent HEAD9a448692c7 gitlink a43257ce differs. Maintained launcher stamps path DIRTY due gitlink mismatch. childSubstituted=0; all ten installed product hashes and PUI unchanged from the preceding controls. No release-gate or shipment claim.",
+      "conclusion": "Forced synchronous GJS collection at startup, rendered chat and dismissal returned and the independent heartbeat resumed in this run. This narrows the stall investigation; it does not explain failed full voice V5 or verify recording/playback.",
+      "stackSampling": "Observer task0mw8hq6ixfqg3xiisj9 FAILED (exit 1): FileNotFoundError while stat(progress.json) raced successful fixture cleanup. No stack was obtained. Maintained native harness repair verified separately on 2026-11-09: seven focused node:test cases PASS, including progress deletion race, entire fixture disappearance, partial writes, one-shot stale capture with retained raw evidence, bounded sampler join, and actual gdb attachment to an owned process under the unchanged host ptrace policy. Log: /tmp/wb-stall-observer-regression-20261109-v3.log. Tested source SHA256: 3516b97a3071d3c428bec1e27e34b11e0a73feff71001f5d79df753e5b5d782f. Current working-source proof; automatic capture pending."
+    }
   ]
 }
-
