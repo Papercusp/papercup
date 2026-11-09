@@ -34,6 +34,42 @@ const fixtureHome = vi.hoisted(() => {
 afterAll(() => { vi.unstubAllEnvs(); rmSync(fixtureHome, { recursive: true, force: true }); });
 
 describe('unit census executable exit contract', () => {
+  it('retains complete collection inputs and replays them without discovery or host catalog reads', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'collection-only-census-'));
+    const installed = vi.spyOn(censusProducers, 'installedRootCensusProducers').mockImplementation(() => { throw new Error('discovery must not run'); });
+    try {
+      writeFileSync(join(directory, 'owned'), 'fixture');
+      writeFileSync(join(directory, 'unknown'), 'residue');
+      const inputs = { scope: 'saved-fixture-input', roots: [{ id: 'fixture', path: directory }],
+        declarations: [{ kind: 'path' as const, root: 'fixture', name: 'owned', producer: 'fixture', classification: 'state' as const },
+          { kind: 'database' as const, root: 'cluster', name: 'database', producer: 'schema', classification: 'state' as const }],
+        catalogEntries: [{ kind: 'database' as const, root: 'cluster', name: 'database' }] };
+      let saved: typeof inputs | undefined;
+      const phases: string[] = [];
+      const report = await runRootCensus({ inputs: JSON.parse(JSON.stringify(inputs)),
+        onDiscoverySnapshot: async snapshot => {
+          await Promise.resolve();
+          expect(snapshot.phase).toBe('before-collection');
+          expect(snapshot).not.toHaveProperty('ok');
+          saved = JSON.parse(JSON.stringify(snapshot));
+        },
+        onCollectionProgress: async progress => { expect(saved).toBeDefined(); phases.push(progress.phase); },
+      });
+      expect(installed).not.toHaveBeenCalled();
+      expect(saved).toMatchObject(inputs);
+      expect(report.scope).toBe(inputs.scope);
+      expect(report.wholeInstallVerified).toBe(false);
+      expect(report.residue.map(entry => entry.name)).toEqual(['unknown']);
+      expect(report.inventory.find(entry => entry.kind === 'database')?.producers).toEqual(['schema']);
+      expect(phases.at(-1)).toBe('complete');
+      const replay = await runRootCensus({ inputs: saved });
+      expect(replay).toEqual(report);
+      await expect(runRootCensus({ inputs, onDiscoverySnapshot: async () => { throw new Error('snapshot unavailable'); },
+        onCollectionProgress: () => { throw new Error('collection started too early'); },
+      })).rejects.toThrow('snapshot unavailable');
+    } finally { installed.mockRestore(); rmSync(directory, { recursive: true, force: true }); }
+  });
+
   it('recovers GCed reaper identities from canonical terminal latches and leaves unproven tails as residue', async () => {
     const home = mkdtempSync(join(tmpdir(), 'reap-latch-census-'));
     const terminalStates = ['exited', 'killed', 'timed_out', 'stranded', 'ended_unobserved'];

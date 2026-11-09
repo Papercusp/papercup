@@ -10,6 +10,92 @@ const declaration: CensusDeclaration = {
 };
 
 describe('producer-derived state census', () => {
+  it('awaits bounded progress and preserves the last frontier when diagnostics fail', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'progress-census-'));
+    try {
+      await Promise.all(Array.from({ length: 1005 }, (_, i) => writeFile(join(root, `file-${i}`), 'fixture')));
+      const progress: Array<{ phase: string; entries: number; root?: string }> = [];
+      let persisted = false;
+      const report = await collectStateCensus({ roots: [{ id: 'home', path: root }], declarations: [],
+        readCatalogs: async () => { expect(persisted).toBe(true); return []; },
+        onProgress: async value => { await Promise.resolve(); progress.push(value); if (value.phase === 'root-complete') persisted = true; },
+      });
+      expect(report.ok).toBe(false);
+      expect(progress.map(value => value.phase)).toEqual(['index', 'root-start', 'walk', 'root-complete', 'catalogs', 'classification', 'complete']);
+      expect(progress.find(value => value.phase === 'walk')).toEqual({ phase: 'walk', root: 'home', entries: 1000 });
+      expect(progress.at(-1)).toEqual({ phase: 'complete', entries: 1005 });
+      progress.length = 0;
+      await expect(collectStateCensus({ roots: [{ id: 'home', path: root }], declarations: [], readCatalogs: async () => [],
+        onProgress: async value => { progress.push(value); if (value.phase === 'walk') throw new Error('diagnostic write failed'); },
+      })).rejects.toThrow('diagnostic write failed');
+      expect(progress.at(-1)).toEqual({ phase: 'walk', root: 'home', entries: 1000 });
+      expect(progress.some(value => value.phase === 'complete')).toBe(false);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('preserves overlapping exact, descendant and multi-segment any-depth ownership across roots and kinds', () => {
+    const declarations: CensusDeclaration[] = [
+      { ...declaration, name: 'a', producer: 'parent' },
+      { ...declaration, name: 'b/c', anyDepth: true, descendants: false, producer: 'pattern', classification: 'cache' },
+      { ...declaration, name: 'a/b/c', descendants: false, producer: 'exact', classification: 'secret' },
+      { ...declaration, root: 'other', name: 'a', producer: 'other-root' },
+      { ...declaration, kind: 'unit', name: 'a', producer: 'unit' },
+      { ...declaration, name: 'a', descendants: false, producer: 'exact-parent' },
+    ];
+    const entries = ['a', 'a/b', 'a/b/c', 'x/b/c/b/c', 'ab/c', 'b/c', 'unknown']
+      .flatMap(name => (['path', 'unit'] as const).flatMap(kind =>
+        ['app-home', 'other', 'unknown'].map(root => ({ kind, root, name }))));
+    // Independent reference contract: the former exhaustive matcher, with
+    // deliberately overlapping declarations, boundary controls and residue.
+    const expected = entries.map(entry => {
+      const owners = declarations.filter(owner => owner.kind === entry.kind && owner.root === entry.root &&
+        (entry.kind === 'path' && owner.anyDepth === true
+          ? `/${entry.name}/`.includes(`/${owner.name}/`)
+          : entry.name === owner.name || entry.kind === 'path' && owner.descendants === true && entry.name.startsWith(`${owner.name}/`)));
+      const classes = new Set(owners.map(owner => owner.classification));
+      return { ...entry, classification: classes.size === 1 ? owners[0].classification : null,
+        producers: [...new Set(owners.map(owner => owner.producer))].sort(),
+        problem: !owners.length ? 'unclassified' : classes.size > 1 ? 'conflicting' : null };
+    }).sort((a, b) => JSON.stringify([a.kind, a.root, a.name]).localeCompare(JSON.stringify([b.kind, b.root, b.name])));
+    expect(generateStateCensus(entries, declarations)).toEqual({ inventory: expected,
+      residue: expected.filter(entry => entry.problem !== null), ok: false });
+  });
+
+  it('does not rescan a large same-root declaration set for each entry', () => {
+    let rootReads = 0;
+    const declarations: CensusDeclaration[] = Array.from({ length: 8000 }, (_, i) => ({
+      ...declaration, get root() { rootReads++; return 'app-home'; }, name: `store-${i}`, producer: `writer-${i}`,
+    }));
+    const entries = Array.from({ length: 2048 }, (_, i) => ({ kind: 'path' as const, root: 'app-home', name: `store-${i}/data` }));
+    const census = generateStateCensus(entries, declarations);
+    expect(census.ok).toBe(true);
+    expect(census.inventory).toHaveLength(2048);
+    // A structural bound, independent of machine speed. Exhaustive matching
+    // reads roots >16 million times on this fixture.
+    expect(rootReads).toBeLessThan(8000 * 10);
+  });
+
+  it('validates unused declarations before collection and retains cross-kind nested boundaries', async () => {
+    expect(() => generateStateCensus([], [{ ...declaration, root: 'unused', name: '../bad' }])).toThrow('Non-canonical');
+    expect(() => generateStateCensus([], [{ ...declaration, root: 'unused', producer: ' ' }])).toThrow('Missing census producer');
+    const readCatalogs = async () => [];
+    await expect(collectStateCensus({ roots: [], declarations: [{ ...declaration, name: '../bad' }], readCatalogs })).rejects.toThrow('Non-canonical');
+    const root = await mkdtemp(join(tmpdir(), 'indexed-census-'));
+    try {
+      await mkdir(join(root, 'history'));
+      await writeFile(join(root, 'history', 'verdict'), 'retained');
+      const owner: CensusDeclaration = { ...declaration, root: 'home', name: 'history',
+        retainedSubtree: { evidenceRef: 'fixture:first' } };
+      const input = { roots: [{ id: 'home', path: root }], declarations: [owner,
+        { ...owner, retainedSubtree: { evidenceRef: 'fixture:second' } }], readCatalogs };
+      expect((await collectStateCensus(input)).representedSubtrees[0].evidenceRef).toBe('fixture:first');
+      const expanded = await collectStateCensus({ ...input, declarations: [...input.declarations,
+        { ...declaration, kind: 'unit', root: 'home', name: 'history/verdict' }] });
+      expect(expanded.representedSubtrees).toEqual([]);
+      expect(expanded.inventory.map(entry => entry.name)).toEqual(['history', 'history/verdict']);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('reports unknown subtree frontier as failing residue without hiding registered descendants', async () => {
     const root = await mkdtemp(join(tmpdir(), 'frontier-census-'));
     try {

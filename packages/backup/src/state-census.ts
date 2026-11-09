@@ -56,18 +56,6 @@ export function backupCacheCensusDeclarations(root: string): CensusDeclaration[]
   }));
 }
 
-function matches(entry: CensusEntry, declaration: CensusDeclaration): boolean {
-  if (entry.kind === 'path' && declaration.kind === 'path' && entry.root === declaration.root &&
-    declaration.anyDepth === true) {
-    const name = `/${entry.name}/`;
-    return name.includes(`/${declaration.name}/`);
-  }
-  return entry.kind === declaration.kind && entry.root === declaration.root &&
-    (entry.name === declaration.name ||
-      (entry.kind === 'path' && declaration.descendants === true &&
-        entry.name.startsWith(`${declaration.name}/`)));
-}
-
 function validateEntry(entry: CensusEntry): void {
   if (!entry.root.trim() || !entry.name.trim()) throw new Error('Empty census identity');
   if (entry.kind === 'path' && (entry.name.startsWith('/') || entry.name.includes('\\') ||
@@ -76,17 +64,73 @@ function validateEntry(entry: CensusEntry): void {
   }
 }
 
+/** One index per census, shared by traversal and final classification. */
+function indexDeclarations(declarations: readonly CensusDeclaration[]) {
+  type Owner = { declaration: CensusDeclaration; order: number };
+  type Names = Map<string, Owner[]>;
+  const exact = new Map<string, Names>();
+  const anywhere = new Map<string, Names>();
+  const nested = new Map<string, Set<string>>();
+  declarations.forEach((declaration, order) => {
+    // Validate even declarations that no entry will query.
+    validateEntry(declaration);
+    if (!declaration.producer.trim()) throw new Error('Missing census producer');
+    const key = JSON.stringify([declaration.kind, declaration.root]);
+    const table = declaration.kind === 'path' && declaration.anyDepth === true ? anywhere : exact;
+    let names = table.get(key);
+    if (!names) table.set(key, names = new Map());
+    const owners = names.get(declaration.name) ?? [];
+    owners.push({ declaration, order });
+    names.set(declaration.name, owners);
+    let prefixes = nested.get(declaration.root);
+    if (!prefixes) nested.set(declaration.root, prefixes = new Set());
+    // The walker historically checks nested declarations of EVERY kind.
+    for (let end = declaration.name.lastIndexOf('/'); end > 0;
+      end = declaration.name.lastIndexOf('/', end - 1)) {
+      prefixes.add(declaration.name.slice(0, end));
+    }
+  });
+  return {
+    owners(entry: CensusEntry): CensusDeclaration[] {
+      const key = JSON.stringify([entry.kind, entry.root]);
+      const names = exact.get(key);
+      const found = new Map<number, CensusDeclaration>();
+      const add = (owners: Owner[] | undefined, descendantsOnly = false) => {
+        for (const owner of owners ?? []) {
+          if (!descendantsOnly || owner.declaration.descendants === true) found.set(owner.order, owner.declaration);
+        }
+      };
+      add(names?.get(entry.name));
+      if (entry.kind === 'path') {
+        const parts = entry.name.split('/');
+        for (let end = 1; end < parts.length; end++) add(names?.get(parts.slice(0, end).join('/')), true);
+        const patterns = anywhere.get(key);
+        if (patterns) {
+          // anyDepth permits multi-segment names and repeated occurrences;
+          // each declaration still contributes exactly once, in source order.
+          for (let start = 0; start < parts.length; start++) {
+            for (let end = start + 1; end <= parts.length; end++) add(patterns.get(parts.slice(start, end).join('/')));
+          }
+        }
+      }
+      return [...found].sort(([a], [b]) => a - b).map(([, owner]) => owner);
+    },
+    hasNested(root: string, name: string): boolean { return nested.get(root)?.has(name) ?? false; },
+  };
+}
+
 /** Unknown or conflicting ownership is residue, never silently exportable state. */
 export function generateStateCensus(
   entries: readonly CensusEntry[],
   declarations: readonly CensusDeclaration[],
 ) {
-  for (const entry of [...entries, ...declarations]) validateEntry(entry);
-  for (const declaration of declarations) {
-    if (!declaration.producer.trim()) throw new Error('Missing census producer');
-  }
+  return classifyEntries(entries, indexDeclarations(declarations));
+}
+
+function classifyEntries(entries: readonly CensusEntry[], index: ReturnType<typeof indexDeclarations>) {
+  for (const entry of entries) validateEntry(entry);
   const inventory = entries.map(entry => {
-    const owners = declarations.filter(declaration => matches(entry, declaration));
+    const owners = index.owners(entry);
     const classes = new Set(owners.map(owner => owner.classification));
     return {
       ...entry,
@@ -116,6 +160,12 @@ export interface CensusRoot {
   fileNames?: string[];
 }
 
+export interface CensusProgress {
+  phase: 'index' | 'root-start' | 'walk' | 'root-complete' | 'catalogs' | 'classification' | 'complete';
+  entries: number;
+  root?: string;
+}
+
 /**
  * Walk declared roots without following symlinks or reading secret contents.
  * A failed root/catalog read rejects the census rather than fabricating coverage.
@@ -129,6 +179,8 @@ export async function collectStateCensus(input: {
   maxEntries?: number;
   /** Diagnostic frontier only: unknown trees remain explicit failing residue. */
   representUnknownSubtrees?: boolean;
+  /** Await durable diagnostics; walk updates are bounded to every 1,000 entries. */
+  onProgress?: (progress: CensusProgress) => void | Promise<void>;
 }) {
   const maxEntries = input.maxEntries ?? 100_000;
   if (!Number.isSafeInteger(maxEntries) || maxEntries < 1) throw new Error('Invalid census entry bound');
@@ -172,6 +224,8 @@ export async function collectStateCensus(input: {
   }
   const ids = input.roots.map(root => root.id);
   if (new Set(ids).size !== ids.length) throw new Error('Duplicate census root identity');
+  await input.onProgress?.({ phase: 'index', entries: 0 });
+  const index = indexDeclarations(input.declarations);
   const entries: CensusEntry[] = [];
   const representedStorage: Array<CensusEntry & { systemIdentifier: string; evidenceRef: string; disposition: 'preserve-state-subtree' }> = [];
   const representedGit: Array<CensusEntry & { head: string; evidenceRef: string; disposition: 'preserve-state-subtree' }> = [];
@@ -192,14 +246,13 @@ export async function collectStateCensus(input: {
       const name = parent ? `${parent}/${child.name}` : child.name;
       entries.push({ kind: 'path', root: root.id, name });
       if (entries.length > maxEntries) throw new Error(`Census entry bound exceeded: ${maxEntries}; root=${root.id}; path=${name}`);
-      const owners = input.declarations.filter(declaration =>
-        matches({ kind: 'path', root: root.id, name }, declaration));
+      if (entries.length % 1000 === 0) await input.onProgress?.({ phase: 'walk', root: root.id, entries: entries.length });
+      const owners = index.owners({ kind: 'path', root: root.id, name });
       // A conflicting producer must not hide its descendants from drift checks.
       const prune = owners.length > 0 && owners.every(owner => owner.prune === true) &&
         new Set(owners.map(owner => owner.classification)).size === 1;
       const storage = owners.find(owner => owner.name === name && owner.databaseStorage);
-      const nestedOverride = input.declarations.some(declaration => declaration.root === root.id &&
-        declaration.name.startsWith(`${name}/`));
+      const nestedOverride = index.hasNested(root.id, name);
       const unknownSubtree = input.representUnknownSubtrees && child.isDirectory() && owners.length === 0 && !nestedOverride;
       if (unknownSubtree) representedUnknown.push({ kind: 'path', root: root.id, name, disposition: 'unclassified-subtree' });
       const represented = child.isDirectory() && storage?.databaseStorage && !nestedOverride &&
@@ -236,10 +289,18 @@ export async function collectStateCensus(input: {
       if (child.isDirectory() && !prune && !represented && !representedRepo && !representedPeer && !representedRelease && !representedRecovery && !representedSubtree && !unknownSubtree) await walk(root, name);
     }
   }
-  for (const root of input.roots) await walk(root, '');
+  for (const root of input.roots) {
+    await input.onProgress?.({ phase: 'root-start', root: root.id, entries: entries.length });
+    await walk(root, '');
+    await input.onProgress?.({ phase: 'root-complete', root: root.id, entries: entries.length });
+  }
+  await input.onProgress?.({ phase: 'catalogs', entries: entries.length });
   entries.push(...await input.readCatalogs());
   if (entries.length > maxEntries) throw new Error(`Census entry bound exceeded: ${maxEntries}`);
-  return { ...generateStateCensus(entries, input.declarations), representedStorage, representedGit, representedPeers, representedReleases, representedRecoveries, representedSubtrees, representedUnknown };
+  await input.onProgress?.({ phase: 'classification', entries: entries.length });
+  const census = classifyEntries(entries, index);
+  await input.onProgress?.({ phase: 'complete', entries: entries.length });
+  return { ...census, representedStorage, representedGit, representedPeers, representedReleases, representedRecoveries, representedSubtrees, representedUnknown };
 }
 
 /** Collect and validate in one call; consumers cannot accidentally ignore residue. */
