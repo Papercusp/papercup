@@ -6,8 +6,12 @@
  * Repeat source capture at cutover: path-prefix holder/pin checks cannot prove
  * quiescence when a regular file has another hard-link pathname outside the tree.
  */
+import { execFile } from 'node:child_process';
 import { lstat, opendir, readlink, realpath } from 'node:fs/promises';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 interface LinkObservation {
   path: string;
@@ -39,6 +43,34 @@ function within(root: string, target: string): boolean {
   return suffix === '' || (suffix !== '..' && !suffix.startsWith(`..${sep}`) && !isAbsolute(suffix));
 }
 
+/** Check the original logical namespace, before realpath follows an earlier
+ * offload. Git does not traverse a directory replaced by a symlink, even when
+ * every underlying byte survives. Generated, untracked directories remain
+ * eligible. Callers must hold the repository/index and offload identity locks.
+ */
+async function assertNoTrackedSource(sourceRoot: string, options: OffloadLinkScanOptions): Promise<void> {
+  const logicalRoot = resolve(sourceRoot);
+  for (let ancestor = logicalRoot; ; ancestor = dirname(ancestor)) {
+    options.signal?.throwIfAborted();
+    let repository = false;
+    try { await lstat(join(ancestor, '.git')); repository = true; }
+    catch (error) {
+      if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+    }
+    if (repository) {
+      if (ancestor === logicalRoot) throw new Error(`Git source tree cannot use a symlink offload: ${logicalRoot}`);
+      // Literal pathspecs also protect names containing Git wildcard syntax.
+      // Errors, timeouts and output-budget exhaustion fail the preflight closed.
+      const { stdout } = await execFileAsync('git', ['-C', ancestor, 'ls-files', '--cached', '-z', '--',
+        `:(literal)${relative(ancestor, logicalRoot).split(sep).join('/')}`],
+      { encoding: 'utf8', timeout: 30_000, maxBuffer: 8 * 1024 * 1024, signal: options.signal });
+      if (stdout.length) throw new Error(`Git-tracked source cannot use a symlink offload: ${logicalRoot}`);
+      return;
+    }
+    if (dirname(ancestor) === ancestor) return;
+  }
+}
+
 async function scan(root: string, options: OffloadLinkScanOptions) {
   const maxEntries = options.maxEntries ?? 1_000_000;
   if (!Number.isSafeInteger(maxEntries) || maxEntries < 1) throw new Error('maxEntries must be a positive safe integer');
@@ -61,6 +93,7 @@ async function scan(root: string, options: OffloadLinkScanOptions) {
       options.signal?.throwIfAborted();
       if (++entriesVisited > maxEntries) throw new Error(`Offload link scan exceeded ${maxEntries} entries`);
       const path = join(directory, entry.name);
+      if (entry.name === '.git') throw new Error(`Git source tree cannot use a symlink offload: ${path}`);
       if (entry.isDirectory()) pending.push(path);
       else if (entry.isFile()) {
         // Native custody consumers require every ancestor to be a real
@@ -114,6 +147,7 @@ async function scan(root: string, options: OffloadLinkScanOptions) {
 /** Snapshot every symlink, including external chains, without following linked
  * directories in the walk. Broken original targets fail closed. */
 export async function captureOffloadLinks(sourceRoot: string, options: OffloadLinkScanOptions = {}): Promise<OffloadLinkSnapshot> {
+  await assertNoTrackedSource(sourceRoot, options);
   const observed = await scan(sourceRoot, options);
   const links = observed.links.map(link => {
     if (link.target === null) throw new Error(`Original offload link is unresolved: ${link.path}`);
