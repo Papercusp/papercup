@@ -7,6 +7,9 @@ import * as flagServer from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { resetOperatorCacheForTests } from '../cache/instance';
 import { renderContextSourceUnit } from './temporal-render';
+import { getOrgPg } from '@papercusp/db-org';
+import { stageMemoryEmission, confirmMemoryEmission } from './session-epoch-ledger';
+import { configureReadCursorStore, InMemoryReadCursorStore, resetReadCursorStore } from '../agent-tools/coordination/read-cursors';
 
 describe('context reliability: complete source rendering', () => {
   it.each([
@@ -2162,6 +2165,46 @@ describe('corpus leg carries its own retrieval health (P-001)', () => {
     const suppressionWrites = sqlMockState.statements.filter(statement =>
       /\b(?:INSERT\s+INTO\s+harness_shared\.(?:memory_session_surfaced|corpus_session_surfaced)|UPDATE\s+harness_shared\.memory_canonical)\b/i.test(statement));
     expect(suppressionWrites).toEqual([]);
+  });
+
+  it('context reliability: only proven final fragments commit surfaced delivery', async () => {
+    configureReadCursorStore(new InMemoryReadCursorStore());
+    try {
+      useBackend(mockBackend([{
+        id: '11111111-1111-4111-8111-111111111111', text: 'retain verified delivery evidence ☃',
+      }]));
+      corpusIoResult = {
+        block: null, dropped: [], embedderAvailable: true, candidateCount: 1,
+        lines: [{ line: '- [doc fixture] cited delivery procedure', score: 1,
+          handle: { kind: 'doc', ref: 'doc:fixture', query: ['delivery'], resolve: 'docs:get' } }],
+      };
+      const prepared = await prepareMemoryContextBlock({ userId: 'u1', workspaceId: 'ws',
+        queryContext: 'retain verified delivery evidence', harnessSlugs: ['papercusp'], potSlugs: [], budgetChars: 1800,
+        session: { sessionId: 'su-exact-emission', epoch: 7, port: 'turn-start' } });
+      expect(prepared?.fragments.map(row => row.kind).sort()).toEqual(['corpus', 'memory']);
+      const memory = prepared!.fragments.find(row => row.kind === 'memory')!;
+      const { rendered: _text, ...manifest } = memory;
+      const sql = getOrgPg().sql;
+      const stamps = () => sqlMockState.statements.filter(statement =>
+        /INSERT\s+INTO\s+harness_shared\.(memory_session_surfaced|corpus_session_surfaced)/i.test(statement));
+      await stageMemoryEmission(sql, 'su-exact-emission', 'exact-fragments', prepared!.fragments);
+      expect(stamps()).toEqual([]); // Prepared, but the response may be lost.
+      for (const proof of [
+        { token: 'unoffered-token', fragments: [manifest] },
+        { token: 'exact-fragments', fragments: [] },
+        { token: 'exact-fragments', fragments: [{ ...manifest, bodyBytes: manifest.bodyBytes - 1 }] },
+      ]) expect(await confirmMemoryEmission(sql, 'su-exact-emission', proof)).toBe(0);
+      expect(stamps()).toEqual([]);
+      // The final output contains only memory; the corpus offer was omitted.
+      sqlMockState.rows = [{ memory_id: memory.id }];
+      const proof = { token: 'exact-fragments', fragments: [manifest] };
+      expect(await confirmMemoryEmission(sql, 'su-exact-emission', proof)).toBe(1);
+      expect(stamps()).toHaveLength(1);
+      expect(stamps()[0]).toContain('memory_session_surfaced');
+      expect(stamps().some(statement => statement.includes('corpus_session_surfaced'))).toBe(false);
+      expect(await confirmMemoryEmission(sql, 'su-exact-emission', proof)).toBe(0);
+      expect(stamps()).toHaveLength(1);
+    } finally { resetReadCursorStore(); }
   });
 
   it('retains eligible mem0 alongside new plan/doc/report contributions without expanding the memory budget', async () => {
