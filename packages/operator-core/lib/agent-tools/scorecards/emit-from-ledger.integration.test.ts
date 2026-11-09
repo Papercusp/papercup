@@ -194,6 +194,38 @@ async function emit(args: Record<string, unknown>) {
   return dispatched.result!.structuredContent as Awaited<ReturnType<typeof import('./emit').emitScorecard>>;
 }
 
+async function getScorecardThroughMcp(
+  input: Parameters<typeof getScorecard.handler>[0],
+  ctx: Parameters<typeof getScorecard.handler>[1],
+) {
+  const originalInput = structuredClone(input);
+  expect(resolveAgentIdentity(ctx).ownerId).toBe('system:judge/ledger-replay-judge');
+  const projected = lookupByMcpName('scorecards:get');
+  expect(projected).toBeTruthy();
+  const dispatched = await dispatchProjectedTool(projected!, 'scorecards:get', input, {
+    ...ctx,
+    signal: new AbortController().signal,
+    progress: vi.fn(),
+    emit: vi.fn(),
+    isSuperuser: false,
+    harnessSlug: 'papercusp',
+    runId: 'emit-from-ledger-historical-read-replay',
+    dispatchTool,
+    gateBypass: { role: true, capability: true, quota: true },
+    transport: 'mcp',
+    requestedFormat: 'json',
+    requestedStructured: true,
+    tx: {},
+  }, {});
+  expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+  expect(dispatched.result?.isError).not.toBe(true);
+  expect(input).toEqual(originalInput);
+  expect(dispatched.result?.structuredContent).toBeDefined();
+  // Keep the historical assertions on the handler's data body while exercising
+  // the registered projection, schema and MCP result shaping before reading it.
+  return { data: dispatched.result!.structuredContent };
+}
+
 beforeAll(async () => {
   // Check authenticated fixture identity before allocating an isolated database.
   expect(resolveAgentIdentity(REPLAY_JUDGE).ownerId).toBe('system:judge/ledger-replay-judge');
@@ -387,7 +419,7 @@ describe('R-7 — scorecards:emit { fromLedger: true } rates executable criteria
     if (evidenceRead.kind !== 'found') throw new Error('emitted card missing from evidence reader');
     // Judge-readable historical replay traverses the real ledger -> emitted
     // observation -> evidence reader path and cannot execute the live probe.
-    const historical = await getScorecard.handler({ issueId: issueId as string, criterionKey: 'disk-latest', replay: 'retained-measurement' }, {
+    const historical = await getScorecardThroughMcp({ issueId: issueId as string, criterionKey: 'disk-latest', replay: 'retained-measurement' }, {
       ...REPLAY_JUDGE, workspaceId, principal: { ...REPLAY_JUDGE.principal, workspaceId: workspaceId ?? activeWorkspaceId() },
       log: vi.fn(), metadata: vi.fn(),
     } as never);
@@ -395,7 +427,7 @@ describe('R-7 — scorecards:emit { fromLedger: true } rates executable criteria
     expect(historical.data).toMatchObject({ ok: true, replay: { mode: 'historical', status: 'reproduced',
       criterionKey: 'disk-latest', testRunId: ids.diskNewer, value: 42,
       window: { startedAt: '2026-10-13T01:30:00.000Z', finishedAt: '2026-10-13T01:30:00.000Z' } } });
-    const sqlHistorical = await getScorecard.handler({ issueId: issueId as string, criterionKey: 'query-cost', replay: 'retained-measurement' }, {
+    const sqlHistorical = await getScorecardThroughMcp({ issueId: issueId as string, criterionKey: 'query-cost', replay: 'retained-measurement' }, {
       ...REPLAY_JUDGE, workspaceId, principal: { ...REPLAY_JUDGE.principal, workspaceId: workspaceId ?? activeWorkspaceId() },
       log: vi.fn(), metadata: vi.fn(),
     } as never);
