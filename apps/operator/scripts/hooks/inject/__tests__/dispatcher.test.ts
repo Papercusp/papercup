@@ -15,7 +15,7 @@
  * i.e. the very failure mode being guarded would be invisible.
  */
 
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
@@ -25,6 +25,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { openDeliveryLedger } from '../delivery-ledger.mjs';
 
 const execFileAsync = promisify(execFile);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -65,7 +66,7 @@ const ports = await import(path.join(HERE, '..', 'ports.mjs'));
  * A fake operator. Records what it received; answers with injectable text.
  * `opts` is read per request, so a test may mutate it between turns.
  */
-function fakeOperator(opts: { text?: string | null; delayMs?: number; deliveryToken?: string; onRequest?: () => void } = {}) {
+function fakeOperator(opts: { text?: string | null; delayMs?: number; deliveryToken?: string; memoryFragmentOffers?: object[]; onRequest?: () => void } = {}) {
   const received: Array<{ url: string; body: Record<string, unknown> }> = [];
   const server: Server = createServer((req, res) => {
     let raw = '';
@@ -79,6 +80,7 @@ function fakeOperator(opts: { text?: string | null; delayMs?: number; deliveryTo
           JSON.stringify({
             text: opts.text ?? 'INJECTED',
             ...(opts.deliveryToken ? { deliveryToken: opts.deliveryToken } : {}),
+            ...(opts.memoryFragmentOffers ? { memoryFragmentOffers: opts.memoryFragmentOffers } : {}),
           }),
         );
       };
@@ -128,6 +130,67 @@ let running: { stop: () => Promise<void> } | null = null;
 afterEach(async () => {
   await running?.stop();
   running = null;
+});
+
+describe('native stdout memory receipts', () => {
+  for (const client of ['codex', 'claude', 'omp'] as const)
+    for (const port of ['turn-start', 'mid-turn'] as const)
+      for (const kind of ['memory', 'corpus'] as const)
+        it(`${client} ${port} ${kind}: broken stdout does not confirm; a complete retry does`, async () => {
+          const home = mkdtempSync(path.join(tmpdir(), 'inject-native-receipt-'));
+          const owner = `native-receipt-${client}-${port}-${kind}`;
+          const rendered = `- ${kind}: retain the complete snowman ☃ fragment`;
+          const fragment = { kind, id: kind === 'memory' ? '11111111-1111-1111-1111-111111111111' : 'WI-123',
+            epoch: 3, port, rendered, bodyBytes: Buffer.byteLength(rendered),
+            bodySha256: createHash('sha256').update(rendered).digest('hex') };
+          const opts = { text: rendered, deliveryToken: `receipt-${client}-${port}-${kind}`,
+            memoryFragmentOffers: [fragment] };
+          const op = fakeOperator(opts);
+          running = op;
+          const base = await op.start();
+          const env = { ...process.env, PAPERCUSP_SID: owner, PAPERCUSP_HOME: home,
+            PAPERCUSP_OPERATOR_URL: base };
+          const event = port === 'turn-start' ? { prompt: 'receipt delivery' }
+            : client === 'codex' ? { tool_name: 'Grep', tool_input: { pattern: 'receipt' }, tool_response: '' }
+            : client === 'claude' ? { tool_calls: [{ tool_name: 'Grep', tool_input: { pattern: 'receipt' }, tool_response: '' }] }
+            : { message: { content: [{ type: 'toolCall', id: 'call-1', name: 'Grep', arguments: { pattern: 'receipt' } }] },
+              toolResults: [{ toolCallId: 'call-1', toolName: 'Grep', content: [{ type: 'text', text: '' }] }] };
+          const nativeEvent = port === 'turn-start' ? (client === 'omp' ? 'before_agent_start' : 'UserPromptSubmit')
+            : client === 'codex' ? 'PostToolUse' : client === 'claude' ? 'PostToolBatch' : 'turn_end';
+          const args = [`--client=${client}`, `--event=${nativeEvent}`];
+          try {
+            // Close the actual consumer before the child can write. This is an
+            // OS pipe failure, not a mocked ledger.commit or dispatch return.
+            const closed = spawn(process.execPath, [copiedCli, ...args], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+            closed.stdout.destroy();
+            closed.stderr.resume();
+            const terminal = new Promise<number | null>((resolve, reject) => {
+              closed.once('error', reject);
+              closed.once('close', resolve);
+            });
+            closed.stdin.end(JSON.stringify(event));
+            await terminal;
+            expect(op.received).toHaveLength(1);
+            expect(openDeliveryLedger(owner, env, port)?.confirmedMemoryDeliveries()).toEqual([]);
+            expect(op.received[0]!.body.confirmedMemoryDeliveries).toEqual([]);
+
+            const retry = await runCli(args, JSON.stringify(event), env);
+            expect(retry.code).toBe(0);
+            expect(retry.stdout).toContain(rendered);
+            const { rendered: _text, ...manifest } = fragment;
+            const proof = [{ token: opts.deliveryToken, fragments: [manifest] }];
+            expect(openDeliveryLedger(owner, env, port)?.confirmedMemoryDeliveries()).toEqual(proof);
+            expect(op.received[1]!.body.confirmedMemoryDeliveries).toEqual([]);
+
+            // A subsequent real request, not an arrival-only guess, echoes
+            // the proof. Reprinting one token cannot multiply the receipt.
+            await runCli(args, JSON.stringify(event), env);
+            expect(op.received[2]!.body.confirmedMemoryDeliveries).toEqual(proof);
+            expect(openDeliveryLedger(owner, env, port)?.confirmedMemoryDeliveries()).toEqual(proof);
+          } finally {
+            rmSync(home, { recursive: true, force: true });
+          }
+        }, 30_000);
 });
 
 describe('standalone installed dispatcher', () => {
