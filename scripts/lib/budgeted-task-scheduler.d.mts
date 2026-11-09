@@ -114,7 +114,8 @@ export function readNativeProcessTraceArtifacts(out: string, startedAtMs?: numbe
   sourceRoot: string;
   rows: Array<{ row: Record<string, any>; bytes: Buffer }>;
   population: { artifactLimit: number; artifactsVisited: number; eventByteLimit: number;
-    eventBytesRead: number; complete: boolean; truncatedBy: string | null };
+    eventBytesRead: number; observationByteLimit: number; observationBytesRead: number;
+    complete: boolean; truncatedBy: string | null };
 };
 
 export interface NativeNpmLifecycleDiagnostics {
