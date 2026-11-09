@@ -184,10 +184,18 @@ export function createCooperativeWorkerCensus(options, io) {
     return fault('observer-released-before-kernel-death');
   };
   const release = () => {
-    fault('native-kill-failed'); Atomics.store(cells, 6, 1); Atomics.notify(cells, 6);
+    fault('native-kill-failed'); Atomics.store(cells, 6, 1); Atomics.notify(cells, 6); wake();
+  };
+  const waitForClose = async () => {
+    for (;;) {
+      const seen = Atomics.load(cells, 7);
+      if (Atomics.load(cells, 6) !== 0) return false;
+      if (Atomics.load(cells, 0) === 2) return true;
+      await Atomics.waitAsync(cells, 7, seen).value;
+    }
   };
   return { buffer, admission, epoch, snapshot, fault, join, enterHook, wrap, close,
-    acknowledge, awaitAcknowledgements, hold, release };
+    acknowledge, awaitAcknowledgements, hold, release, waitForClose };
 }
 /** Reuse the OUT channel and this preload without enabling stderr diagnostics.
  * @param {NodeJS.ProcessEnv} [env]
@@ -267,6 +275,7 @@ function installNativeProcessTrace(out) {
       emit('module-census-unavailable', { batchId }, true);
     }
   };
+  let cooperativeSequence = 0;
   const emit = (event, fields = {}, terminal = false) => {
     const observationScope = event.startsWith('module-') ? 'module' : 'general';
     const censusEvent = !terminal && observationScope === 'module' && loaderCensus;
@@ -274,7 +283,8 @@ function installNativeProcessTrace(out) {
     try {
       let row = { schemaVersion: 1, kind: 'native-node-process-event', event,
         processIdentity: identity, kernelProcessIdentity,
-        pid: process.pid, ppid: process.ppid, atMs: Date.now(), ...fields, threadId, runGroupId };
+        pid: process.pid, ppid: process.ppid, atMs: Date.now(), ...fields, threadId, runGroupId,
+        ...(loaderCensus?.cooperative ? { cooperativeSequence: ++cooperativeSequence } : {}) };
       if (!censusEvent && !terminal && remaining[observationScope] === -1)
         row = { ...row, event: 'trace-limit', observationScope };
       let bytes = Buffer.from(JSON.stringify(row));
@@ -486,6 +496,11 @@ function installNativeProcessTrace(out) {
         setEnvironmentData(cooperativeKey, enrollment);
         try {
           const worker = construct();
+          const terminate = worker.terminate;
+          worker.terminate = function(...args) {
+            cooperative.fault('early-worker-termination-request');
+            return Reflect.apply(terminate, this, args);
+          };
           worker.once('exit', () => cooperative.fault('early-unexpected-exit'));
           return worker;
         } finally { setEnvironmentData(cooperativeKey, previous); }
@@ -673,14 +688,12 @@ function installNativeProcessTrace(out) {
     } catch { return null; }
   };
   if (cooperative && !isMainThread) {
-    const poll = setInterval(() => {
-      if (cooperative.snapshot().phase !== 'CLOSED') return;
-      clearInterval(poll);
+    cooperative.waitForClose().then(closed => {
+      if (!closed) return;
       cooperative.acknowledge(() => finishCooperativeCensus({ phase: 'cooperative-close',
         epoch: cooperative.epoch, admission: cooperative.admission }));
       cooperative.hold();
-    }, 1);
-    poll.unref();
+    }).catch(() => cooperative.fault('closure-wait-failed'));
     process.once('exit', () => cooperative.fault('early-unexpected-exit'));
   }
   if (engine || loaderCensus) {

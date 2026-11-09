@@ -2267,6 +2267,32 @@ describe('secret census producer adapters', () => {
       expect(result.declarations.find(entry => entry.producer === 'publish-tui-release')).toMatchObject({ name: 'links.env', classification: 'config' });
     } finally { vi.unstubAllEnvs(); }
   });
+  it('retains the consumed VM environment as a secret after home relocation without owning neighboring files', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'vm-config-census-'));
+    const directory = join(home, '.papercusp');
+    const file = join(directory, 'build-vms.env');
+    try {
+      vi.stubEnv('PAPERCUSP_HOME', join(home, 'workspace-home'));
+      await mkdir(directory);
+      await writeFile(file, 'private VM config must not enter census output', { mode: 0o600 });
+      await writeFile(join(directory, 'unproven.env'), 'foreign');
+      await mkdir(join(directory, 'copied'));
+      await writeFile(join(directory, 'copied', 'build-vms.env'), 'foreign');
+      const before = await lstat(file);
+      const result = hostedConfigurationCensusProducers(home);
+      const declarations = result.declarations.filter(entry => entry.producer === 'admin-build-vm-config');
+      expect(declarations).toHaveLength(1);
+      const roots = result.roots.filter(root => root.id === declarations[0].root);
+      expect(roots[0].path).toBe(directory);
+      const census = await collectStateCensus({ roots, declarations, readCatalogs: async () => [] });
+      expect(census.inventory.find(entry => entry.name === 'build-vms.env')).toMatchObject({
+        classification: 'secret', producers: ['admin-build-vm-config'],
+      });
+      expect(census.residue.map(entry => entry.name).sort()).toEqual(['copied', 'copied/build-vms.env', 'unproven.env']);
+      expect(JSON.stringify(census)).not.toContain('private VM config');
+      expect(await lstat(file)).toEqual(before);
+    } finally { vi.unstubAllEnvs(); await rm(home, { recursive: true, force: true }); }
+  });
   it('qualifies operator state from the configured URL and pins the SU side-db to its writer', async () => {
     const source = await readFile(new URL('../../../../libs/papercusp/packages/locks/src/su-lock-store.ts', import.meta.url), 'utf8');
     expect(source).toContain("'/papercusp_su$1'");

@@ -183,7 +183,7 @@ export function readNativeProcessTraceArtifacts(out, startedAtMs = 0, finishedAt
     }
     for (const group of censusGroups.values()) {
       const enrollment = group.enrollment;
-      if (!enrollment || Object.keys(enrollment).some(key => !['batches', 'bytes'].includes(key)) ||
+      if (!enrollment || Object.keys(enrollment).some(key => !['batches', 'bytes', 'cooperative'].includes(key)) ||
           !Number.isSafeInteger(enrollment.batches) || enrollment.batches < 1 || enrollment.batches > 1024 ||
           !Number.isSafeInteger(enrollment.bytes) || enrollment.bytes < 1024 || enrollment.bytes > 16 * 1024 ** 2)
         throw new Error('native module census enrollment missing or invalid');
@@ -210,6 +210,9 @@ export function readNativeProcessTraceArtifacts(out, startedAtMs = 0, finishedAt
             terminal.pid === end.pid && terminal.kernelProcessIdentity === end.kernelProcessIdentity &&
             terminal.code === null && terminal.signal === 'SIGKILL');
         if (!matched) population.truncatedBy ??= 'module-census-terminal-unverified';
+      } else if (end?.termination?.phase === 'cooperative-close' && enrollment.cooperative) {
+        // Per-isolate END is checked against the fixed population below. A
+        // main self-kill request never supplies a missing sibling's END.
       } else if (end && (end.termination !== undefined ||
           !rows.some(({ row }) => row.event === 'node-exit' && row.exitListenersComplete === true &&
             row.processIdentity === end.processIdentity && row.kernelProcessIdentity === end.kernelProcessIdentity &&
@@ -222,6 +225,76 @@ export function readNativeProcessTraceArtifacts(out, startedAtMs = 0, finishedAt
           end.batches > enrollment.batches || size > enrollment.bytes || end.sha256 !== hash.digest('hex'))
         population.truncatedBy ??= 'module-census-incomplete';
     }
+    // This verifies only the authenticated cooperative trace protocol. Source
+    // eligibility, actually loaded runtime/config hashes, task boundaries and
+    // parent monotonic K still belong to independent qualification, not to this
+    // artifact reader's population.complete flag.
+    const cooperativeEntries = rows.filter(({ row }) => row.event === 'node-entry' && row.loaderCensus?.cooperative);
+    for (const { row: main } of cooperativeEntries.filter(({ row }) => row.threadId === 0)) {
+      const enrollment = main.loaderCensus.cooperative;
+      const own = rows.map(({ row }) => row).filter(row => row.pid === main.pid &&
+        row.kernelProcessIdentity === main.kernelProcessIdentity && row.runGroupId === main.runGroupId);
+      const one = (event, admission) => {
+        const found = own.filter(row => row.event === event && row.epoch === enrollment.epoch &&
+          (admission === undefined || row.admission === admission));
+        return found.length === 1 ? found[0] : null;
+      };
+      const closed = one('cooperative-closed', 0), held = one('cooperative-held', 0);
+      const state = held?.population;
+      let valid = typeof enrollment.epoch === 'string' && /^[a-f0-9-]{36}$/.test(enrollment.epoch) &&
+        Number.isSafeInteger(enrollment.maxIsolates) && enrollment.maxIsolates >= 1 && enrollment.maxIsolates <= 256 &&
+        Number.isSafeInteger(enrollment.closeTimeoutMs) && enrollment.closeTimeoutMs >= 1 && enrollment.closeTimeoutMs <= 30_000 &&
+        closed && held && state?.epoch === enrollment.epoch && state.phase === 'CLOSED' &&
+        state.constructing === 0 && state.activeHooks === 0 && state.faults === 0 && state.released === false &&
+        Number.isSafeInteger(state.fixedCount) && state.fixedCount >= 1 && state.fixedCount <= enrollment.maxIsolates &&
+        Array.isArray(state.slots) && state.slots.length === state.fixedCount &&
+        closed.population?.fixedCount === state.fixedCount &&
+        one('cooperative-closing', 0) && !own.some(row => row.event === 'cooperative-unknown') &&
+        options.terminations?.some(terminal => terminal.pid === main.pid &&
+          terminal.kernelProcessIdentity === main.kernelProcessIdentity && terminal.code === null && terminal.signal === 'SIGKILL');
+      const admittedIdentities = new Set();
+      if (valid) for (const [index, slot] of state.slots.entries()) {
+        if (slot.admission !== index || slot.activeHooks !== 0 ||
+            !['ack', 'aborted'].includes(slot.status) ||
+            index > 0 && (!Number.isSafeInteger(slot.parent) || slot.parent < 0 || slot.parent >= index)) {
+          valid = false; break;
+        }
+        if (index > 0 && own.filter(row => row.event === 'cooperative-reserve' &&
+            row.epoch === enrollment.epoch && row.admission === slot.parent && row.childAdmission === index).length !== 1) {
+          valid = false; break;
+        }
+        if (slot.status === 'aborted') {
+          if (index === 0 || own.filter(row => row.event === 'cooperative-abort' &&
+              row.epoch === enrollment.epoch && row.childAdmission === index).length !== 1 ||
+              one('cooperative-end-ack', index)) valid = false;
+          continue;
+        }
+        const ack = one('cooperative-end-ack', index), installed = one('cooperative-installed', index);
+        const group = censusGroups.get(ack?.processIdentity), end = group?.ends[0];
+        const events = own.filter(row => row.processIdentity === ack?.processIdentity);
+        if (!ack || !installed || installed.processIdentity !== ack.processIdentity ||
+            installed.threadId !== slot.threadId || installed.supportedViews !== 6 ||
+            !end || JSON.stringify(ack.end) !== JSON.stringify(Object.fromEntries(
+              ['events', 'bytes', 'batches', 'stopped', 'sha256', 'termination'].map(key => [key, end[key]]))) ||
+            end.processIdentity !== ack.processIdentity || end.threadId !== slot.threadId ||
+            index === 0 && ack.processIdentity !== main.processIdentity ||
+            index > 0 && (end.termination?.epoch !== enrollment.epoch || end.termination?.admission !== index ||
+              one('cooperative-join', index)?.processIdentity !== ack.processIdentity) ||
+            !events.every(row => Number.isSafeInteger(row.cooperativeSequence) && row.cooperativeSequence > 0) ||
+            new Set(events.map(row => row.cooperativeSequence)).size !== events.length ||
+            events.some(row => row.cooperativeSequence > ack.cooperativeSequence &&
+              !(index === 0 && row.event === 'cooperative-held'))) {
+          valid = false; break;
+        }
+        admittedIdentities.add(ack.processIdentity);
+      }
+      if (valid && (own.some(row => row.event === 'node-entry' && !admittedIdentities.has(row.processIdentity)) ||
+          own.filter(row => row.event === 'cooperative-end-ack').length !== admittedIdentities.size)) valid = false;
+      if (!valid) population.truncatedBy ??= 'cooperative-census-unverified';
+    }
+    if (cooperativeEntries.some(({ row }) => !cooperativeEntries.some(({ row: main }) => main.threadId === 0 &&
+        main.pid === row.pid && main.kernelProcessIdentity === row.kernelProcessIdentity)))
+      population.truncatedBy ??= 'cooperative-main-missing';
     population.complete = population.truncatedBy === null;
   } finally { directory.closeSync(); }
   return { sourceRoot, rows, population };

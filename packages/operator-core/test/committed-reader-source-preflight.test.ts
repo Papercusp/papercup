@@ -11,11 +11,65 @@ import { verifierSourceFiles } from '../lib/verifier-source';
 import { preparePrivateOperatorApiBundle, produceCommittedReaderPrivateApiBundle, qualifyCommittedReaderSource,
   resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle, preparePrivateWorkerSources,
   observeCommittedReaderLoadedSources, privateBundleRuntimeEnv,
+  assertCooperativeComparisonBoundary,
   type CommittedReaderClosure, type CommittedReaderPreparationInputs } from './private-http-workspace-preflight';
 
 const digest = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex');
 const temporary: string[] = [];
 afterEach(() => { vi.unstubAllEnvs(); for (const path of temporary.splice(0)) rmSync(path, { recursive: true, force: true }); });
+
+describe('cooperative observer comparison controls', () => {
+  const boundary = () => {
+    const expected = { epoch: '11111111-1111-4111-8111-111111111111',
+      loaded: { observer: 'a'.repeat(64), runtime: 'b'.repeat(64), configuration: 'c'.repeat(64) },
+      entry: { id: 'original-task-entry', atMs: 100 }, result: { id: 'original-business-result', atMs: 200 },
+      observerIntervalIds: ['setup', 'observer-a', 'observer-b', 'hold'] };
+    return { expected, observed: { epoch: expected.epoch, loaded: { ...expected.loaded },
+      entry: { ...expected.entry }, result: { ...expected.result }, elapsedMs: 100, observerDeductionMs: 0,
+      intervals: [{ id: 'setup', startMs: 50, endMs: 100 }, { id: 'observer-a', startMs: 110, endMs: 150 },
+        { id: 'observer-b', startMs: 130, endMs: 170 }, { id: 'hold', startMs: 200, endMs: 350 }]
+        .map(row => ({ ...row, parentAnchorRef: 'd'.repeat(64) })),
+      exclusions: [{ intervalId: 'setup', kind: 'setup' as const }, { intervalId: 'hold', kind: 'post-result-hold' as const }],
+      sourceEligibility: { preCaptureInstalled: true,
+        supportedViews: ['cjs-node', 'cjs-bare', 'esm-named-node', 'esm-named-bare', 'esm-default-node', 'esm-default-bare'],
+        unsupportedPaths: [] as string[] } } };
+  };
+  it('observer-runtime-config-hash-mismatch rejects actual drift even with identical requested settings', () => {
+    for (const role of ['observer', 'runtime', 'configuration'] as const) {
+      const f = boundary(); f.observed.loaded[role] = 'e'.repeat(64);
+      expect(() => assertCooperativeComparisonBoundary(f)).toThrow(`Actually loaded ${role} differs`);
+    }
+    for (const field of ['preCaptureInstalled', 'supportedViews', 'unsupportedPaths'] as const) {
+      const f = boundary();
+      if (field === 'preCaptureInstalled') f.observed.sourceEligibility[field] = false;
+      if (field === 'supportedViews') f.observed.sourceEligibility[field].pop();
+      if (field === 'unsupportedPaths') f.observed.sourceEligibility[field].push('captured-native-addon-constructor');
+      expect(() => assertCooperativeComparisonBoundary(f)).toThrow();
+    }
+  });
+  it('task-clock-retains-in-interval-observer-work including overlap, wait and verification', () => {
+    const f = boundary();
+    expect(assertCooperativeComparisonBoundary(f)).toEqual({ scope: 'parent-observed-comparison-boundaries',
+      instrumented: true, taskElapsedMs: 100, observerInTaskMs: 60, fullRuntimeQualification: 'unknown' });
+    f.observed.elapsedMs = 40;
+    expect(() => assertCooperativeComparisonBoundary(f)).toThrow('Task clock must retain');
+    f.observed.elapsedMs = 100; f.observed.observerDeductionMs = 60;
+    expect(() => assertCooperativeComparisonBoundary(f)).toThrow('No observer work may be subtracted');
+    f.observed.observerDeductionMs = 0; f.observed.entry.atMs = 160;
+    expect(() => assertCooperativeComparisonBoundary(f)).toThrow('Original task entry endpoint changed');
+  });
+  it('setup-and-post-result-hold-boundary-proof rejects missing, shifted and in-interval exclusions', () => {
+    const f = boundary();
+    f.observed.intervals[0].endMs = 101;
+    expect(() => assertCooperativeComparisonBoundary(f)).toThrow('exclusion overlaps');
+    f.observed.intervals[0].endMs = 100; f.observed.intervals[3].startMs = 199;
+    expect(() => assertCooperativeComparisonBoundary(f)).toThrow('exclusion overlaps');
+    f.observed.intervals[3].startMs = 200; f.observed.intervals[1].parentAnchorRef = '';
+    expect(() => assertCooperativeComparisonBoundary(f)).toThrow('Independent parent clock anchor required');
+    f.observed.intervals[1].parentAnchorRef = 'd'.repeat(64); f.observed.intervals.pop();
+    expect(() => assertCooperativeComparisonBoundary(f)).toThrow('Missing or duplicate observer boundary receipt');
+  });
+});
 
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), 'reader-source-preflight-')); temporary.push(dir);

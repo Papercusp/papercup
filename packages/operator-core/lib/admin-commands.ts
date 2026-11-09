@@ -34,13 +34,16 @@ const PAPERCUSP_DESKTOP = desktopRoot();
 /** Where a VM build drops the installer it just built. */
 const ARTIFACT_DIR = process.env.PAPERCUSP_ARTIFACT_DIR ?? homedir();
 
+/** Shared with the state census; commands resolve this against their runtime HOME. */
+export const BUILD_VM_ENV_HOME_RELATIVE_PATH = '.papercusp/build-vms.env';
+
 /**
  * Prelude for every command that talks to a build VM: load the machine's own VM
  * config and construct $SSH_MAC / $SSH_WIN from it. Missing config FAILS LOUD
  * with the fix, rather than silently ssh-ing at whatever the defaults happened
  * to be — a wrong-host build is worse than no build.
  */
-const LOAD_VM_ENV = `VM_ENV="$HOME/.papercusp/build-vms.env"
+const LOAD_VM_ENV = `VM_ENV="$HOME/${BUILD_VM_ENV_HOME_RELATIVE_PATH}"
 if [ ! -f "$VM_ENV" ]; then
   echo "ERROR: no $VM_ENV — the build VMs are machine-local config, not repo constants." >&2
   echo "Create it (chmod 600) with, e.g.:" >&2

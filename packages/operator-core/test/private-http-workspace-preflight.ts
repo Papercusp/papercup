@@ -35,6 +35,77 @@ import { nativeProcessTraceEnv, nativeSourceRetentionLimits, validateNativeLoade
 import { assertPrivateIntegrationEvidence as assertPrivatePreparationEvidence } from '../../../scripts/test-files.mjs';
 import { RESTRICTED_HOLD_PREFLIGHT_TIMEOUT_MS } from '../../../scripts/lib/restricted-hold-preflight.mjs';
 
+type CooperativeLoadedPins = { observer: string; runtime: string; configuration: string };
+type CooperativeTaskEndpoint = { id: string; atMs: number };
+
+/** Arithmetic/comparability guard over independently obtained parent receipts.
+ * This does not manufacture loaded-code, source-eligibility, clock-anchor or
+ * kernel observations. The real attempt must retain and independently join
+ * those receipts and the authenticated worker protocol before qualification.
+ * In particular an instrumented clock is never described as unperturbed.
+ */
+export function assertCooperativeComparisonBoundary(o: {
+  expected: { epoch: string; loaded: CooperativeLoadedPins;
+    entry: CooperativeTaskEndpoint; result: CooperativeTaskEndpoint; observerIntervalIds: string[] };
+  observed: { epoch: string; loaded: CooperativeLoadedPins;
+    entry: CooperativeTaskEndpoint; result: CooperativeTaskEndpoint;
+    elapsedMs: number; observerDeductionMs: number;
+    intervals: Array<{ id: string; startMs: number; endMs: number; parentAnchorRef: string }>;
+    exclusions: Array<{ intervalId: string; kind: 'setup' | 'post-result-hold' }>;
+    sourceEligibility: { preCaptureInstalled: boolean; supportedViews: string[]; unsupportedPaths: string[] } };
+}) {
+  const { expected, observed } = o;
+  assert.match(expected.epoch, /^[a-f0-9-]{36}$/);
+  assert.equal(observed.epoch, expected.epoch, 'Cooperative epoch changed');
+  for (const role of ['observer', 'runtime', 'configuration'] as const) {
+    assert.match(expected.loaded[role], /^[a-f0-9]{64}$/);
+    assert.equal(observed.loaded[role], expected.loaded[role], `Actually loaded ${role} differs`);
+  }
+  for (const name of ['entry', 'result'] as const) {
+    assert.ok(expected[name].id && Number.isFinite(expected[name].atMs) && expected[name].atMs >= 0);
+    assert.deepEqual(observed[name], expected[name], `Original task ${name} endpoint changed`);
+  }
+  assert.ok(expected.result.atMs >= expected.entry.atMs, 'Reversed original task clock');
+  assert.equal(observed.observerDeductionMs, 0, 'No observer work may be subtracted');
+  assert.equal(observed.elapsedMs, expected.result.atMs - expected.entry.atMs,
+    'Task clock must retain all in-interval observer work');
+  const views = ['cjs-node', 'cjs-bare', 'esm-named-node', 'esm-named-bare', 'esm-default-node', 'esm-default-bare'];
+  assert.equal(observed.sourceEligibility.preCaptureInstalled, true, 'Pre-capture installation proof required');
+  assert.deepEqual([...observed.sourceEligibility.supportedViews].sort(), [...views].sort(),
+    'Exact six audited public Worker views required');
+  assert.deepEqual(observed.sourceEligibility.unsupportedPaths, [], 'Unaudited or bypassed Worker paths remain UNKNOWN');
+  assert.ok(expected.observerIntervalIds.length > 0 && expected.observerIntervalIds.length <= 256 &&
+    new Set(expected.observerIntervalIds).size === expected.observerIntervalIds.length,
+  'Explicit bounded observer interval population required');
+  assert.deepEqual(observed.intervals.map(interval => interval.id).sort(), [...expected.observerIntervalIds].sort(),
+    'Missing or duplicate observer boundary receipt');
+  const intervals = new Map(observed.intervals.map(interval => [interval.id, interval]));
+  for (const interval of observed.intervals) {
+    assert.ok(Number.isFinite(interval.startMs) && Number.isFinite(interval.endMs) &&
+      interval.startMs >= 0 && interval.endMs >= interval.startMs, 'Invalid observer boundary');
+    assert.match(interval.parentAnchorRef, /^[a-f0-9]{64}$/, 'Independent parent clock anchor required');
+  }
+  assert.equal(new Set(observed.exclusions.map(row => row.intervalId)).size, observed.exclusions.length,
+    'Duplicate observer exclusion');
+  for (const exclusion of observed.exclusions) {
+    const interval = intervals.get(exclusion.intervalId);
+    assert.ok(interval, 'Excluded interval missing its boundary receipt');
+    assert.ok(exclusion.kind === 'setup' && interval.endMs <= expected.entry.atMs ||
+      exclusion.kind === 'post-result-hold' && interval.startMs >= expected.result.atMs,
+    'Setup/hold exclusion overlaps the unchanged task clock');
+  }
+  // Compute the union, not the sum of concurrent observer intervals. This is
+  // reported separately and is NEVER deducted from the original task metric.
+  const clipped = observed.intervals.map(interval => [Math.max(interval.startMs, expected.entry.atMs),
+    Math.min(interval.endMs, expected.result.atMs)]).filter(([start, end]) => end > start)
+    .sort((a, b) => a[0] - b[0]);
+  let observerInTaskMs = 0, right = expected.entry.atMs;
+  for (const [start, end] of clipped) { observerInTaskMs += Math.max(0, end - Math.max(start, right)); right = Math.max(right, end); }
+  return { scope: 'parent-observed-comparison-boundaries' as const, instrumented: true,
+    taskElapsedMs: observed.elapsedMs, observerInTaskMs,
+    fullRuntimeQualification: 'unknown' as const };
+}
+
 export interface PrivateUnrelatedCheckpointObservation {
   workspace: string;
   base: string;

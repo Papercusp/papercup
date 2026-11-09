@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { execFile, execFileSync, fork, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'node:fs';
@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createTextCollector } from '../child-output';
-import { controlForkStartupOnly, loaderIdentity, nativeProcessTraceEnv, observeForkStartup, startupTraceEnv } from '../../../../scripts/lib/vitest-startup-trace.mjs';
+import { controlForkStartupOnly, createCooperativeWorkerCensus, loaderIdentity, nativeProcessTraceEnv, observeForkStartup, startupTraceEnv } from '../../../../scripts/lib/vitest-startup-trace.mjs';
 import { readPartialNativeChannelCustody, readPartialNativeCompletion,
   registerPartialNativeProducerChannels } from '../../../../scripts/lib/partial-task-resume.mjs';
 import { writeRelatedFilterList } from '../../../../scripts/lib/related-tests.mjs';
@@ -35,6 +35,257 @@ function cleanupNativeReporterFixture(dir: string, completed: boolean,
   if (completed) rmSync(dir, { recursive: true, force: true });
   else reportRetained(`[native-reporter-channel] retained failure evidence: ${dir}\n`);
 }
+
+describe('cooperative worker census qualification controls', () => {
+  const fixture = (overrides: Record<string, any> = {}, publish?: (event: string, fields: any) => boolean) => {
+    const rows: any[] = [];
+    const options = { epoch: randomUUID(), maxIsolates: 8, closeTimeoutMs: 20, ...overrides };
+    const census = createCooperativeWorkerCensus(options, { publish: (event, fields) => {
+      rows.push({ event, ...fields }); return publish?.(event, fields) ?? true;
+    } });
+    return { census, rows, options };
+  };
+
+  it('synchronous-throw-exact-identity preserves arguments, new.target, returned instance and opaque thrown value', () => {
+    const f = fixture(), args = [{ private: true }, { workerData: { preserved: true } }];
+    const calls: any[] = [], expected = new Proxy({}, { get() { throw new Error('inspected native error'); } });
+    let shouldThrow = false;
+    class Native {
+      constructor(...values: any[]) {
+        calls.push({ target: new.target, values });
+        if (shouldThrow) throw expected;
+      }
+    }
+    const Wrapped = f.census.wrap(Native, (_: unknown, construct: () => any) => construct());
+    class Derived extends Wrapped { constructor(...values: any[]) { super(...values); } }
+    const value = new Derived(...args);
+    expect(value).toBeInstanceOf(Native);
+    expect(calls[0].target).toBe(Derived);
+    args.forEach((value, index) => expect(calls[0].values[index]).toBe(value));
+    shouldThrow = true;
+    let caught;
+    try { new Wrapped(...args); } catch (error) { caught = error; }
+    expect(caught).toBe(expected);
+    expect(f.census.snapshot()).toMatchObject({ constructing: 0, faults: 0 });
+    expect(f.census.snapshot().slots.map(row => row.status)).toEqual(['joined', 'reserved', 'aborted']);
+  });
+
+  it('constructor-pending-at-close remains unknown while preserving the original native return', () => {
+    const f = fixture();
+    class Native { constructor() { expect(f.census.close()).toBe(false); } }
+    const Wrapped = f.census.wrap(Native, (_: unknown, construct: () => any) => construct());
+    expect(new Wrapped()).toBeInstanceOf(Native);
+    expect(f.census.snapshot()).toMatchObject({ phase: 'CLOSING', constructing: 0, fixedCount: 0 });
+    expect(f.rows.some(row => row.reason === 'close-timeout')).toBe(true);
+  });
+
+  it('late-construction cannot enlarge an already fixed population or suppress the native constructor', () => {
+    const f = fixture();
+    expect(f.census.close()).toBe(true);
+    let calls = 0;
+    class Native { constructor() { calls++; } }
+    const Wrapped = f.census.wrap(Native, (_: unknown, construct: () => any) => construct());
+    expect(new Wrapped()).toBeInstanceOf(Native);
+    expect(calls).toBe(1);
+    expect(f.census.snapshot()).toMatchObject({ fixedCount: 1, faults: 1, constructing: 0 });
+    expect(f.rows.some(row => row.reason === 'late-construction')).toBe(true);
+    expect(f.census.awaitAcknowledgements()).toBe(false);
+  });
+
+  it('duplicate-missing-orphan-end-ack cannot stand in for a reserved sibling', () => {
+    const f = fixture();
+    const Wrapped = f.census.wrap(class {}, (_: unknown, construct: () => any) => construct());
+    new Wrapped();
+    expect(f.census.acknowledge(() => ({ sha256: 'a'.repeat(64) }))).toBe(false);
+    expect(f.census.close()).toBe(false);
+    const main = fixture();
+    expect(main.census.close()).toBe(true);
+    expect(main.census.acknowledge(() => ({ sha256: 'a'.repeat(64) }))).toBe(true);
+    expect(main.census.acknowledge(() => ({ sha256: 'a'.repeat(64) }))).toBe(false);
+    expect(main.census.awaitAcknowledgements()).toBe(false);
+  });
+
+  it('failed-publication never changes an unrecorded END into an acknowledged isolate', () => {
+    for (const mode of ['return-false', 'throw', 'finish-throws'] as const) {
+      const f = fixture({}, event => {
+        if (event !== 'cooperative-end-ack') return true;
+        if (mode === 'throw') throw new Error('disk publication failed');
+        return mode !== 'return-false';
+      });
+      expect(f.census.close()).toBe(true);
+      expect(f.census.acknowledge(() => {
+        if (mode === 'finish-throws') throw new Error('END unavailable');
+        return { sha256: 'a'.repeat(64) };
+      })).toBe(false);
+      expect(f.census.snapshot().slots[0].status).toBe('joined');
+      expect(f.census.awaitAcknowledgements()).toBe(false);
+    }
+  });
+
+  it('pending-hooks refuses END until the actual hook returns and never hides its work', () => {
+    const f = fixture(), leave = f.census.enterHook();
+    expect(f.census.close()).toBe(true);
+    let finished = false;
+    expect(f.census.acknowledge(() => { finished = true; return {}; })).toBe(false);
+    expect(finished).toBe(false);
+    expect(f.census.snapshot().activeHooks).toBe(1);
+    leave();
+    expect(f.census.snapshot().activeHooks).toBe(0);
+    expect(f.census.awaitAcknowledgements()).toBe(false);
+  });
+
+  it('close-timeout preserves a missing bootstrap as unknown with a finite close budget', () => {
+    const f = fixture({ closeTimeoutMs: 10 });
+    const Wrapped = f.census.wrap(class {}, (_: unknown, construct: () => any) => construct());
+    new Wrapped();
+    const start = performance.now();
+    expect(f.census.close()).toBe(false);
+    expect(performance.now() - start).toBeLessThan(1000);
+    expect(f.census.snapshot()).toMatchObject({ phase: 'CLOSING', fixedCount: 0, faults: 1 });
+  });
+
+  it('post-ack-activity invalidates an otherwise balanced closed census', () => {
+    const f = fixture();
+    expect(f.census.close()).toBe(true);
+    expect(f.census.acknowledge(() => ({}))).toBe(true);
+    expect(f.census.awaitAcknowledgements()).toBe(true);
+    f.census.enterHook()();
+    expect(f.census.awaitAcknowledgements()).toBe(false);
+    expect(f.rows.some(row => row.reason === 'hook-after-close')).toBe(true);
+  });
+
+  it('epoch-admission mismatch and admission exhaustion remain unknown without replacing construction', () => {
+    const f = fixture({ maxIsolates: 2 });
+    const other = fixture({ ...f.options, epoch: randomUUID(), buffer: f.census.buffer, admission: 1 });
+    expect(other.census.snapshot().faults).toBeGreaterThan(0);
+    expect(other.census.join(19)).toBe(false);
+    const Wrapped = f.census.wrap(class {}, (_: unknown, construct: () => any) => construct());
+    expect(new Wrapped()).toBeInstanceOf(Wrapped);
+    expect(new Wrapped()).toBeInstanceOf(Wrapped);
+    expect(f.rows.some(row => row.reason === 'admission-bound')).toBe(true);
+    expect(f.census.close()).toBe(false);
+  });
+
+  it('a failed native kill releases held isolates only into UNKNOWN', () => {
+    const f = fixture();
+    expect(f.census.close()).toBe(true);
+    expect(f.census.acknowledge(() => ({}))).toBe(true);
+    f.census.release();
+    expect(f.census.hold()).toBe(false);
+    expect(f.census.snapshot()).toMatchObject({ released: true });
+    expect(f.census.awaitAcknowledgements()).toBe(false);
+  });
+
+  it('native self-kill failure delegates unchanged inputs and preserves the exact thrown identity after release', () => {
+    const observer = new URL('../../../../libs/test-config/src/process-termination-observer.mjs', import.meta.url).href;
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      import { observeProcessTermination } from ${JSON.stringify(observer)};
+      const calls = [], expected = new Proxy({}, { get() { throw Error('error inspected'); } });
+      process.kill = function(...args) { calls.push({ receiver: this, args }); throw expected; };
+      let released = 0, requested = 0;
+      observeProcessTermination(() => {}, { beforeSelfKill() { requested++; }, selfKillFailed() { released++; } });
+      let caught; const receiver = {};
+      try { process.kill.call(receiver, process.pid, 9, 'original-extra-argument'); } catch (error) { caught = error; }
+      if (caught !== expected || calls.length !== 1 || calls[0].receiver !== receiver ||
+        calls[0].args.length !== 3 || calls[0].args[0] !== process.pid || calls[0].args[1] !== 9 ||
+        calls[0].args[2] !== 'original-extra-argument' || requested !== 1 || released !== 1) process.exitCode = 1;
+      process.stdout.write('native-throw-identity-preserved');`], {
+      env: { ...process.env, NODE_OPTIONS: '' }, encoding: 'utf8', timeout: 5000,
+    });
+    expect(result.error, result.stderr).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe('native-throw-identity-preserved');
+  });
+
+  const workerViews = [
+    "(await import('node:module')).createRequire(import.meta.url)('node:worker_threads').Worker",
+    "(await import('node:module')).createRequire(import.meta.url)('worker_threads').Worker",
+    "(await import('node:worker_threads')).Worker",
+    "(await import('worker_threads')).Worker",
+    "(await import('node:worker_threads')).default.Worker",
+    "(await import('worker_threads')).default.Worker",
+  ];
+  const runWorkerControl = (view: string, mode = 'sibling') => {
+    const dir = mkdtempSync(join(tmpdir(), 'native-cooperative-control-'));
+    const out = join(dir, 'sources.json'), workerPath = join(dir, 'worker.mjs');
+    const nestedPath = join(dir, 'nested.mjs');
+    writeFileSync(nestedPath, `import { parentPort } from 'node:worker_threads';
+      parentPort.postMessage('ready'); setTimeout(() => {}, 60000);`);
+    writeFileSync(workerPath, `import { parentPort, Worker } from 'node:worker_threads';
+      import { once } from 'node:events';
+      ${mode === 'nested' ? `const child = new Worker(${JSON.stringify(nestedPath)}, { execArgv: [] });
+        await once(child, 'message');` : ''}
+      parentPort.postMessage('ready'); ${mode === 'early-exit' ? '' : 'setTimeout(() => {}, 60000);'}`);
+    const capture = join(dir, 'capture.mjs');
+    writeFileSync(capture, `import { Worker } from 'node:worker_threads'; globalThis.capturedWorker = Worker;`);
+    const epoch = randomUUID();
+    try {
+      const result = spawnSync(process.execPath, [
+        ...(mode === 'captured' ? [`--import=${capture}`] : []), '--input-type=module', '-e', `
+        import { once } from 'node:events';
+        const Worker = ${mode === 'captured' ? 'globalThis.capturedWorker' : view};
+        const worker = new Worker(${JSON.stringify(workerPath)}, { execArgv: [],
+          ${mode === 'bootstrap-dropped' ? "env: { NODE_OPTIONS: '' }," : ''} workerData: { original: 7 } });
+        await once(worker, ${JSON.stringify(mode === 'early-exit' ? 'exit' : 'message')});
+        process.kill(process.pid, 'SIGKILL');`], {
+        env: nativeProcessTraceEnv({ ...process.env, NODE_OPTIONS: mode === 'captured' ? `--import=${capture}` : '',
+          PC_EXECUTED_SOURCE_MAP_OUT: out, PAPERCUSP_TEST_STARTUP_TRACE: '0',
+        }, { loaderCensus: { batches: 128, bytes: 16 * 1024 ** 2,
+          cooperative: { epoch, maxIsolates: 8, closeTimeoutMs: 2000 } } }),
+        encoding: 'utf8', timeout: 10_000,
+      });
+      expect(result.error, result.stderr).toBeUndefined();
+      expect(result.status, result.stderr).toBeNull();
+      expect(result.signal, result.stderr).toBe('SIGKILL');
+      const initial = readNativeProcessTraceArtifacts(out);
+      const main = initial.rows.find(({ row }: any) => row.event === 'node-entry' && row.threadId === 0)!.row;
+      const termination = { pid: result.pid, kernelProcessIdentity: main.kernelProcessIdentity,
+        code: result.status, signal: result.signal };
+      return { dir, out, epoch, initial, termination,
+        trace: readNativeProcessTraceArtifacts(out, 0, Number.MAX_SAFE_INTEGER, { terminations: [termination] }) };
+    } catch (error) { retainNativeStartupFailure(dir, error); throw error; }
+  };
+
+  it.each(workerViews)('live-sibling-main-self-kill seals and holds the actual supported public view %s', view => {
+    const f = runWorkerControl(view);
+    try {
+      expect(f.initial.population.complete).toBe(false);
+      expect(f.trace.population).toMatchObject({ complete: true, truncatedBy: null });
+      const rows = f.trace.rows.map(({ row }: any) => row);
+      expect(rows.filter((row: any) => row.event === 'cooperative-end-ack')).toHaveLength(2);
+      expect(rows.filter((row: any) => row.event === 'cooperative-held')[0].population)
+        .toMatchObject({ phase: 'CLOSED', fixedCount: 2, constructing: 0, activeHooks: 0, faults: 0, released: false });
+      expect(rows.filter((row: any) => row.event === 'node-exit')).toHaveLength(0);
+      // K is an independent falsifier. A different native outcome cannot
+      // certify even this narrow artifact protocol, much less full closure.
+      for (const terminal of [{ ...f.termination, signal: 'SIGTERM' },
+        { ...f.termination, kernelProcessIdentity: 'other-kernel-process' }])
+        expect(readNativeProcessTraceArtifacts(f.out, 0, Number.MAX_SAFE_INTEGER,
+          { terminations: [terminal] }).population.complete).toBe(false);
+    } finally { rmSync(f.dir, { recursive: true, force: true }); }
+  }, 20_000);
+
+  it('nested-worker contributes its own admission and END instead of borrowing its parent seal', () => {
+    const f = runWorkerControl(workerViews[2], 'nested');
+    try {
+      expect(f.trace.population.complete).toBe(true);
+      const acks = f.trace.rows.filter(({ row }: any) => row.event === 'cooperative-end-ack');
+      expect(acks).toHaveLength(3);
+      const sibling = acks.find(({ row }: any) => row.admission === 2)!;
+      const bytes = sibling.bytes, name = createHash('sha256').update(bytes).digest('hex') + '.json';
+      rmSync(join(f.out + '.native-processes', name));
+      expect(readNativeProcessTraceArtifacts(f.out, 0, Number.MAX_SAFE_INTEGER,
+        { terminations: [f.termination] }).population.complete).toBe(false);
+    } finally { rmSync(f.dir, { recursive: true, force: true }); }
+  }, 20_000);
+
+  it.each(['captured', 'bootstrap-dropped', 'early-exit'])(
+    'previously-captured-or-bypassed-constructor / unsupported-cjs-esm-view / early-unexpected-exit stays unknown (%s)', mode => {
+      const f = runWorkerControl(workerViews[2], mode);
+      try { expect(f.trace.population.complete).toBe(false); }
+      finally { rmSync(f.dir, { recursive: true, force: true }); }
+    }, 20_000);
+});
 
 describe('focused runner startup tracing', () => {
   it.each(['run', 'collect'])('passive execution transport preserves %s call and result identities without inspecting data', request => {

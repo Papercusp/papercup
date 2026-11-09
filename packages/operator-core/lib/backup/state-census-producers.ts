@@ -35,6 +35,7 @@ import { closureDigestManifestPath } from '../../../../scripts/lib/passing-task-
 import { PARTIAL_TASK_CHECKPOINT_SCHEMA } from '../../../../scripts/lib/partial-task-resume.mjs';
 import { defaultTestRunArtifactBase } from '../agent-tools/testing/run-artifacts';
 import { readNativeArtifactBytes, verifyNativeProofPacket } from '../../../../scripts/lib/budgeted-task-scheduler.mjs';
+import { BUILD_VM_ENV_HOME_RELATIVE_PATH } from '../admin-commands';
 
 /** Original verifier outputs need the writer's terminal retained custody, not a filename match. */
 async function verifierOriginalCensusDeclarations(home: string, root: string): Promise<CensusDeclaration[]> {
@@ -1226,13 +1227,14 @@ export function secretCensusProducers() {
   return { roots, declarations };
 }
 
-/** Exact paths resolved by the hosted deploy and public-download publishers. */
-export function hostedConfigurationCensusProducers() {
-  const config = process.env.XDG_CONFIG_HOME || join(homedir(), '.config');
+/** Exact paths resolved by deploy, download publishers and VM admin commands. */
+export function hostedConfigurationCensusProducers(home = homedir()) {
+  const config = process.env.XDG_CONFIG_HOME || join(home, '.config');
   const paths = [
     { path: process.env.PAPERCUSP_HOSTED_CP_ENV_FILE || join(config, 'papercusp', 'hosted-control-plane.env'), classification: 'secret' as const, producer: 'deploy-hosted-control-plane' },
     { path: process.env.PAPERCUSP_CLOUD_PORTAL_HOSTED_ENV_FILE || join(config, 'papercusp', 'hosted-control-plane.env'), classification: 'secret' as const, producer: 'deploy-cloud-portal' },
-    { path: process.env.PUI_PORTAL_LINKS_ENV || join(homedir(), '.config', 'papercusp', 'portal-public-links.env'), classification: 'config' as const, producer: 'publish-tui-release' },
+    { path: process.env.PUI_PORTAL_LINKS_ENV || join(home, '.config', 'papercusp', 'portal-public-links.env'), classification: 'config' as const, producer: 'publish-tui-release' },
+    { path: join(home, BUILD_VM_ENV_HOME_RELATIVE_PATH), classification: 'secret' as const, producer: 'admin-build-vm-config' },
   ];
   const roots: CensusRoot[] = [];
   const declarations: CensusDeclaration[] = [];

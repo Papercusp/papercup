@@ -3,7 +3,11 @@
  * and getCommand (lookup by id, null when absent).
  */
 import { describe, expect, it } from 'vitest';
-import { getCommand, listCommands } from './admin-commands';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { BUILD_VM_ENV_HOME_RELATIVE_PATH, getCommand, listCommands } from './admin-commands';
 
 const commands = listCommands();
 
@@ -26,6 +30,24 @@ describe('admin-commands registry', () => {
 
   it('command ids are unique', () => {
     expect(new Set(commands.map((c) => c.id)).size).toBe(commands.length);
+  });
+
+  it('loads VM config from the command runtime HOME rather than the workspace home', () => {
+    const home = mkdtempSync(join(tmpdir(), 'vm config home-'));
+    try {
+      const config = join(home, BUILD_VM_ENV_HOME_RELATIVE_PATH);
+      mkdirSync(dirname(config), { recursive: true });
+      writeFileSync(config, 'VM_MAC_SSH_KEY=fixture-mac\nVM_MAC_USER=fixture-user\nVM_WIN_SSH_KEY=fixture-win\nVM_WIN_USER=fixture-win-user\n', { mode: 0o600 });
+      const command = getCommand('build-mac-prod')!.command;
+      const boundary = command.indexOf('\necho "=== rsync');
+      expect(boundary).toBeGreaterThan(0);
+      // Execute only the config prelude; never run the build, SSH or rsync.
+      const output = execFileSync('bash', ['-c', `${command.slice(0, boundary)}\nprintf '%s\\n' "$VM_ENV" "$VM_MAC_USER"`], {
+        env: { ...process.env, HOME: home, PAPERCUSP_HOME: join(home, 'workspace-home') },
+        encoding: 'utf8', timeout: 5000,
+      });
+      expect(output).toBe(`${config}\nfixture-user\n`);
+    } finally { rmSync(home, { recursive: true, force: true }); }
   });
 
   it('EI-18666147162251862: start-mac-vm no longer self-matches via a bare `pgrep -f`', () => {
