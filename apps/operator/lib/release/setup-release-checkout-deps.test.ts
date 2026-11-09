@@ -2912,6 +2912,51 @@ exec "$REGRESSION_REAL_GIT" "$@"
     expect(existsSync(join(releaseRoot, 'node_modules/lease-fixture/package.json'))).toBe(true);
   }, 120_000);
 
+  it('object-sourced setup selects committed inputs when the live standalone install is incomplete', () => {
+    writeFileSync(join(integrationRoot, '.gitignore'), 'node_modules/\n');
+    writeFileSync(join(integrationRoot, 'package.json'), JSON.stringify({
+      name: 'standalone-selector-fixture', version: '1.0.0',
+      dependencies: { 'selector-fixture': '1.0.0' },
+    }));
+    writeFileSync(join(integrationRoot, 'package-lock.json'), JSON.stringify({
+      lockfileVersion: 3, packages: {
+        '': { name: 'standalone-selector-fixture', version: '1.0.0',
+          dependencies: { 'selector-fixture': '1.0.0' } },
+        'node_modules/selector-fixture': { version: '1.0.0' },
+      },
+    }));
+    const installedPackage = join(integrationRoot, 'node_modules/selector-fixture');
+    mkdirSync(installedPackage, { recursive: true });
+    writeFileSync(join(installedPackage, 'package.json'), JSON.stringify({
+      name: 'selector-fixture', version: '1.0.0',
+    }));
+    git(integrationRoot, 'add', '-A');
+    git(integrationRoot, 'commit', '-q', '-m', 'standalone locked inputs');
+    targetSha = git(integrationRoot, 'rev-parse', 'HEAD');
+    git(releaseRoot, 'fetch', '-q', 'origin');
+    git(releaseRoot, 'checkout', '-q', '--detach', targetSha);
+    const generationRoot = join(dirname(releaseRoot), 'generations');
+    const published = spawnSync('bash', [DEPENDENCY_GENERATION_SCRIPT,
+      '--integration', integrationRoot, '--generation-root', generationRoot,
+      '--retain-input-as', 'standalone-selector-regression',
+    ], { encoding: 'utf8', timeout: 30_000, env: sourceCloneEnv() });
+    expect(published.status, spawnFailureDetails('publish standalone donor', 0, published)).toBe(0);
+    const identity = /identity=(v1-[0-9a-f]{64})/.exec(published.stdout)?.[1];
+    expect(identity, published.stdout).toBeDefined();
+    rmSync(installedPackage, { recursive: true });
+    const prepared = spawnSync('bash', [SCRIPT_PATH, '--prepare-existing',
+      '--integration', integrationRoot, '--release', releaseRoot, '--ref', targetSha,
+      '--source-integrity', 'object-sourced', '--node-modules', 'force',
+      '--node-modules-copy', 'copy', '--dependency-generation-root', generationRoot,
+    ], { encoding: 'utf8', timeout: 30_000, env: sourceCloneEnv() });
+    expect(prepared.status, spawnFailureDetails('select committed standalone donor', 0, prepared)).toBe(0);
+    expect(readFileSync(join(releaseRoot, 'node_modules/.papercusp-dependency-generation'), 'utf8'))
+      .toContain(`identity=${identity}\n`);
+    expect(existsSync(join(releaseRoot, 'node_modules/selector-fixture/package.json'))).toBe(true);
+    expect(existsSync(installedPackage)).toBe(false);
+    expect(git(releaseRoot, 'rev-parse', 'HEAD')).toBe(targetSha);
+  }, 90_000);
+
   it('preserves an existing pinned clone while running dependency-only preparation', () => {
     mkdirSync(join(integrationRoot, 'node_modules', 'dependency-only-fixture'), { recursive: true });
     writeFileSync(join(integrationRoot, 'node_modules', 'dependency-only-fixture', 'package.json'), '{}');
