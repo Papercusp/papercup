@@ -247,9 +247,16 @@ export function savedOriginalMemberLaunchSpec(
 ): LegacyLaunchParseResult {
   const spec = record?.launchSpec as Record<string, unknown> | null;
   const original = spec?.originalMemberLaunch as Record<string, unknown> | undefined;
+  const custody = record?.originalMemberNativeCustody;
+  const nativeMatches = original?.sessionId === binding.sessionId ||
+    (custody?.workspaceId === workspaceId && custody.advSessionId === binding.advSessionId &&
+      custody.ownerId === binding.ownerId && custody.originalSessionId === original?.sessionId &&
+      custody.currentSessionId === binding.sessionId &&
+      /^[1-9][0-9]*$/.test(custody.originalEventId) && /^[1-9][0-9]*$/.test(custody.reanchorEventId) &&
+      custody.originalEventId !== custody.reanchorEventId);
   if (!record || record.workspaceId !== workspaceId || !original || original.v !== 1 ||
       original.advSessionId !== binding.advSessionId || original.ownerId !== binding.ownerId ||
-      original.sessionId !== binding.sessionId || original.workspaceId !== workspaceId ||
+      !nativeMatches || original.workspaceId !== workspaceId ||
       original.agent !== record.agent) {
     return { ok: false, message: 'Original member routing provenance is missing or its exact row/native/owner binding changed.' };
   }

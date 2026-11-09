@@ -2520,6 +2520,16 @@ export interface AdvSessionLaunchRecord {
   agent: SuAgent | null;
   launchSpec: unknown;
   launchArgv: unknown;
+  /** Derived from the append-only lifecycle ledger, never launch_spec input. */
+  originalMemberNativeCustody?: {
+    workspaceId: string;
+    advSessionId: number;
+    ownerId: string;
+    originalSessionId: string;
+    currentSessionId: string;
+    originalEventId: string;
+    reanchorEventId: string;
+  };
 }
 
 /** Read the newest launch record for one owner, optionally pinned to a workspace. */
@@ -2555,12 +2565,47 @@ export async function readAdvSessionLaunchRecordByOwner(
        LIMIT 1
     `;
     const row = rows[0];
+    if (!row) return null;
+    const spec = row.launch_spec as Record<string, unknown> | null;
+    const original = spec?.originalMemberLaunch as Record<string, unknown> | undefined;
+    let originalMemberNativeCustody: AdvSessionLaunchRecord['originalMemberNativeCustody'];
+    if (exact && original?.v === 1 && original.advSessionId === exact.advSessionId &&
+        original.ownerId === coordOwnerId && original.workspaceId === row.workspace_id &&
+        typeof original.sessionId === 'string' && original.sessionId !== exact.sessionId) {
+      // Managed carry rotates the native id in this SAME row without rewriting
+      // its immutable initial routing receipt. Require independent, ordered
+      // applied witnesses for both natives; a current render/argv is no proof.
+      const [custody] = await sql<{ original_event_id: string; reanchor_event_id: string }[]>`
+        SELECT original.id::text AS original_event_id, successor.id::text AS reanchor_event_id
+          FROM harness_shared.session_identity_activation_events original
+          JOIN harness_shared.session_identity_activation_events successor
+            ON successor.workspace_id = original.workspace_id
+           AND successor.owner_id = original.owner_id
+           AND successor.adv_session_id = original.adv_session_id
+           AND successor.phase = 'applied' AND successor.source = 'reanchor'
+           AND successor.native_session_id = ${exact.sessionId}
+           AND (original.recorded_at, original.id) < (successor.recorded_at, successor.id)
+         WHERE original.workspace_id = ${row.workspace_id}
+           AND original.owner_id = ${coordOwnerId}
+           AND original.adv_session_id = ${exact.advSessionId}
+           AND original.phase = 'applied'
+           AND original.native_session_id = ${original.sessionId}
+         ORDER BY successor.recorded_at DESC, successor.id DESC, original.recorded_at DESC, original.id DESC
+         LIMIT 1
+      `;
+      if (custody) originalMemberNativeCustody = {
+        workspaceId: row.workspace_id, advSessionId: exact.advSessionId, ownerId: coordOwnerId,
+        originalSessionId: original.sessionId, currentSessionId: exact.sessionId,
+        originalEventId: custody.original_event_id, reanchorEventId: custody.reanchor_event_id,
+      };
+    }
     return row
       ? {
           workspaceId: row.workspace_id,
           agent: (row.agent as SuAgent | null) ?? null,
           launchSpec: row.launch_spec,
           launchArgv: row.launch_argv,
+          ...(originalMemberNativeCustody ? { originalMemberNativeCustody } : {}),
         }
       : null;
   } catch (e) {

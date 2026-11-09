@@ -1661,6 +1661,52 @@ describe('resume finalization records the current headless posture (real PG)', (
     }
   });
 
+  it.each(['exact', 'owner'] as const)('recovers the original route after a lifecycle-proven %s native reanchor', async (route) => {
+    const owner = `su-original-route-${randomUUID()}`;
+    const fresh = randomUUID();
+    const id = await seedAdv({ coordOwnerId: owner, sessionId: DEAD_ID });
+    await admin`UPDATE harness_shared.adv_sessions SET agent = 'codex',
+      launch_argv = ${JSON.stringify(initialArgv)}::text::jsonb WHERE id = ${id}`;
+    expect(await recordSuLaunchSpec(id, owner, initialSpec)).toBe(true);
+    const before = await readAdvSessionLaunchRecordByOwner(owner, WS, { advSessionId: id, sessionId: DEAD_ID });
+    const original = (before!.launchSpec as Record<string, unknown>).originalMemberLaunch;
+    const revision = { specificationRevision: 'c'.repeat(64), stateRevision: `original-route-${route}` };
+    const requested = await requestSessionIdentityActivation({ ownerId: owner, workspaceId: WS, revision, source: 'launch',
+      attribution: { actorId: owner, principalId: owner, sessionId: owner } });
+    const applied = acknowledgeActivation(prepareActivation(requested.state.activation!, revision), revision);
+    await admin`UPDATE harness_shared.session_briefs
+      SET control_state = jsonb_set(control_state, '{activation}', ${admin.json(applied)}, true)
+      WHERE workspace_id = ${WS} AND owner_id = ${owner}`;
+    const reanchor = (native: string) => route === 'exact'
+      ? reanchorAdvSessionNativeId(id, native) : reanchorAdvSessionNativeIdByOwner(owner, native);
+    try {
+      // Both custody witnesses come from the real lifecycle writer, including
+      // a no-op first report followed by the managed successor's actual report.
+      expect((await reanchor(DEAD_ID)).owner).toBe(owner);
+      expect(await reanchor(fresh)).toEqual({ reanchored: true, owner });
+      const record = await readAdvSessionLaunchRecordByOwner(owner, WS, { advSessionId: id, sessionId: fresh });
+      expect((record!.launchSpec as Record<string, unknown>).originalMemberLaunch).toEqual(original);
+      const { savedOriginalMemberLaunchSpec } = await import('./agent-tools/fleet_registry/saved-launch-spec');
+      expect(savedOriginalMemberLaunchSpec(record, { advSessionId: id, ownerId: owner, sessionId: fresh }, WS, 'routing-test'))
+        .toMatchObject({ ok: true, config: { account: 'default', model: 'gpt-6', effort: 'high', carry: 'warm' } });
+      expect(await readAdvSessionLaunchRecordByOwner(owner, WS, { advSessionId: id, sessionId: DEAD_ID })).toBeNull();
+      expect(await readAdvSessionLaunchRecordByOwner('su-unrelated', WS, { advSessionId: id, sessionId: fresh })).toBeNull();
+    } finally {
+      await admin`DELETE FROM harness_shared.session_briefs WHERE workspace_id = ${WS} AND owner_id = ${owner}`;
+      await admin`DELETE FROM harness_shared.session_identity_activation_events WHERE workspace_id = ${WS} AND owner_id = ${owner}`;
+    }
+  });
+
+  it('refuses reanchored route recovery without independent lifecycle custody', async () => {
+    const id = await seedInitialMember(DEAD_ID);
+    expect(await recordSuLaunchSpec(id, OWNER, initialSpec)).toBe(true);
+    expect((await reanchorAdvSessionNativeId(id, FRESH_ID)).owner).toBe(OWNER);
+    const record = await readAdvSessionLaunchRecordByOwner(OWNER, WS, { advSessionId: id, sessionId: FRESH_ID });
+    const { savedOriginalMemberLaunchSpec } = await import('./agent-tools/fleet_registry/saved-launch-spec');
+    expect(savedOriginalMemberLaunchSpec(record, { advSessionId: id, ownerId: OWNER, sessionId: FRESH_ID }, WS, 'routing-test').ok)
+      .toBe(false);
+  });
+
   it('D019 retains the original native routing before repeated resumes and persona refreshes', async () => {
     const id = await seedAdv({ coordOwnerId: OWNER, sessionId: DEAD_ID });
     const originalArgv = ['psu', '--agent=codex', '--account=default', '--model=gpt-6:high', '--carry=warm'];

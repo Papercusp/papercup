@@ -135,6 +135,22 @@ describe('saved fleet launch spec resolver (agent-launch-unification P-043)', ()
     it('refuses missing original provenance instead of trusting a current owner launch', () => {
       expect(savedOriginalMemberLaunchSpec(legacyRecord, binding, 'ws-test', 'byoc').ok).toBe(false);
     });
+
+    it('retains the immutable route after a lifecycle-proven native reanchor', () => {
+      const current = { ...binding, sessionId: 'native-successor' };
+      const custody = { workspaceId: 'ws-test', advSessionId: 71, ownerId: binding.ownerId,
+        originalSessionId: binding.sessionId, currentSessionId: current.sessionId,
+        originalEventId: '101', reanchorEventId: '102' };
+      expect(savedOriginalMemberLaunchSpec({ ...record, originalMemberNativeCustody: custody }, current, 'ws-test', 'byoc'))
+        .toMatchObject({ ok: true, config: { account: 'default', model: 'gpt-5.6-sol', carry: 'warm' } });
+      for (const field of ['workspaceId', 'advSessionId', 'ownerId', 'originalSessionId', 'currentSessionId',
+        'originalEventId', 'reanchorEventId'] as const) {
+        const changed = { ...custody, [field]: field.endsWith('EventId') ? '' : 'unrelated' };
+        expect(savedOriginalMemberLaunchSpec({ ...record, originalMemberNativeCustody: changed }, current, 'ws-test', 'byoc').ok,
+          field).toBe(false);
+      }
+      expect(savedOriginalMemberLaunchSpec(record, current, 'ws-test', 'byoc').ok).toBe(false);
+    });
   });
 
   it('materializes the canonical command-neutral spec and defaults saved visibility to headless', () => {
