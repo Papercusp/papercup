@@ -979,6 +979,44 @@ describe('focused runner startup tracing', () => {
       } finally { rmSync(dir, { recursive: true, force: true }); }
     });
 
+  it('keeps an unsealed sibling worker incomplete despite a verified main self-kill seal', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'native-loader-worker-self-kill-'));
+    const out = join(dir, 'sources.json'), workerPath = join(dir, 'worker.mjs');
+    writeFileSync(workerPath, `import { parentPort } from 'node:worker_threads';
+      parentPort.postMessage('ready'); setInterval(() => {}, 1000);`);
+    try {
+      const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+        import { Worker } from 'node:worker_threads';
+        import { once } from 'node:events';
+        const worker = new Worker(${JSON.stringify(workerPath)}, { execArgv: [] });
+        await once(worker, 'message'); process.kill(process.pid, 'SIGKILL');`], {
+        env: nativeProcessTraceEnv({ ...process.env, NODE_OPTIONS: '',
+          PC_EXECUTED_SOURCE_MAP_OUT: out, PAPERCUSP_TEST_STARTUP_TRACE: '0',
+        }, { loaderCensus: { batches: 128, bytes: 16 * 1024 ** 2 } }),
+        encoding: 'utf8', timeout: 10_000,
+      });
+      expect(result.error, result.stderr).toBeUndefined();
+      expect(result.status).toBeNull();
+      expect(result.signal).toBe('SIGKILL');
+      const initial = readNativeProcessTraceArtifacts(out);
+      const entries = initial.rows.filter(({ row }: any) => row.event === 'node-entry');
+      const main = entries.find(({ row }: any) => row.threadId === 0)!.row;
+      const worker = entries.find(({ row }: any) => row.threadId > 0)!.row;
+      expect(worker.pid).toBe(main.pid);
+      expect(worker.kernelProcessIdentity).toBe(main.kernelProcessIdentity);
+      expect(worker.processIdentity).not.toBe(main.processIdentity);
+      const observed = readNativeProcessTraceArtifacts(out, 0, Number.MAX_SAFE_INTEGER, {
+        terminations: [{ pid: result.pid, kernelProcessIdentity: main.kernelProcessIdentity,
+          code: result.status, signal: result.signal }],
+      });
+      expect(observed.rows.filter(({ row }: any) => row.event === 'module-census-end'
+        && row.processIdentity === main.processIdentity)).toHaveLength(1);
+      expect(observed.rows.filter(({ row }: any) => row.event === 'module-census-end'
+        && row.processIdentity === worker.processIdentity)).toHaveLength(0);
+      expect(observed.population).toMatchObject({ complete: false, truncatedBy: 'module-census-incomplete' });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('rejects an unbounded loader census before launch', () => {
     for (const loaderCensus of [{ events: 8193, bytes: 1024 }, { events: 2, bytes: 16 * 1024 ** 2 + 1 },
       { events: 1, bytes: 1024 }, { events: 2, bytes: 1023 },
