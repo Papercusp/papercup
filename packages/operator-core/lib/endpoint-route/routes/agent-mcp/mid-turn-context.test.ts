@@ -193,25 +193,34 @@ describe('exact mid-turn emission receipts', () => {
     const b = memoryFragmentOffer('corpus', 'WI-42', 4, 'mid-turn', '- ' + 'clipped condition '.repeat(35));
     preparedFragmentsMock.mockReturnValue([a, b]);
     buildMemoryContextBlockMock.mockResolvedValue('## Memory\n\n' + a.rendered + '\n' + b.rendered);
+    const input = { owner: who, client: 'codex', memoryReceiptMode: true,
+      tool: 'Grep', toolInput: { pattern: 'receipt candidate' } };
+    const originalInput = structuredClone(input);
     const res = await endpoint.handler(new Request('http://localhost/agent-mcp/mid-turn-context', {
-      method: 'POST', body: JSON.stringify({ owner: who, client: 'codex', memoryReceiptMode: true,
-        tool: 'Grep', toolInput: { pattern: 'receipt candidate' } }),
+      method: 'POST', body: JSON.stringify(input),
     }));
     const out = await res.json();
+    expect(res.status).toBe(200);
+    expect(out.ok).toBe(true);
+    expect(input).toEqual(originalInput);
+    expect(buildMemoryContextBlockMock).toHaveBeenCalledTimes(1);
     expect(out.text).toContain(a.rendered);
     expect(out.text).not.toContain(b.rendered);
     expect(out.memoryFragmentOffers).toEqual([a]);
     expect(inserts()).toHaveLength(0);
     const { rendered: _text, ...fragment } = a;
-    await post({ owner: who, tool: 'unknown-tool', confirmedMemoryDeliveries: [
+    const confirmation = { owner: who, tool: 'unknown-tool', confirmedMemoryDeliveries: [
       { token: out.deliveryToken, fragments: [fragment] },
-    ] });
+    ] };
+    const originalConfirmation = structuredClone(confirmation);
+    expect(await post(confirmation)).toEqual({ ok: true, text: '' });
+    expect(confirmation).toEqual(originalConfirmation);
     expect(inserts()).toHaveLength(1);
     expect(inserts()[0]).toContain(4);
-    await post({ owner: who, tool: 'unknown-tool', confirmedMemoryDeliveries: [
-      { token: out.deliveryToken, fragments: [fragment] },
-    ] });
+    expect(await post(confirmation)).toEqual({ ok: true, text: '' });
+    expect(confirmation).toEqual(originalConfirmation);
     expect(inserts()).toHaveLength(1);
+    expect(buildMemoryContextBlockMock).toHaveBeenCalledTimes(1);
   });
 
   it.each([{ client: 'codex' }, { client: 'other', memoryReceiptMode: true },
