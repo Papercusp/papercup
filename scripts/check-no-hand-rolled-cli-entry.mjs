@@ -21,6 +21,7 @@
 import { readFileSync, readdirSync, statSync, realpathSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 
 import { stripCommentsAndStrings } from './lib/strip-comments-and-strings.mjs';
 import { isBuildOutput } from './check-declared-consumed.mjs';
@@ -221,6 +222,54 @@ function lineAt(source, offset) {
   return source.slice(0, offset).split('\n').length;
 }
 
+// Passing argv and import.meta.url through function parameters hid the same
+// unsafe comparison from the direct-expression scanner and the host build gate.
+function findIndirectGuards(source, fileName) {
+  if (!source.includes('fileURLToPath') || !source.includes('process.argv')) return [];
+  const sf = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true);
+  const helpers = new Map();
+  const unwrap = node => {
+    while (ts.isParenthesizedExpression(node) || (ts.isCallExpression(node) &&
+      node.arguments.length === 1 && /^(?:\w+\.)?(?:resolve|realpathSync)$/.test(node.expression.getText(sf)))) {
+      node = ts.isParenthesizedExpression(node) ? node.expression : node.arguments[0];
+    }
+    return node;
+  };
+  for (const fn of sf.statements) {
+    if (!ts.isFunctionDeclaration(fn) || !fn.name || !fn.body || fn.parameters.length !== 2 ||
+      !fn.parameters.every(p => ts.isIdentifier(p.name))) continue;
+    const parameters = fn.parameters.map(p => p.name.text);
+    const inspect = node => {
+      if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken) {
+        for (const [entry, url] of [[node.left, node.right], [node.right, node.left]]) {
+          const a = unwrap(entry), b = unwrap(url);
+          if (!ts.isIdentifier(a) || !ts.isCallExpression(b) || b.arguments.length !== 1 ||
+            b.expression.getText(sf) !== 'fileURLToPath' || !ts.isIdentifier(b.arguments[0])) continue;
+          const entryIndex = parameters.indexOf(a.text), urlIndex = parameters.indexOf(b.arguments[0].text);
+          if (entryIndex >= 0 && urlIndex >= 0 && entryIndex !== urlIndex) {
+            helpers.set(fn.name.text, { entryIndex, urlIndex });
+          }
+        }
+      }
+      ts.forEachChild(node, inspect);
+    };
+    inspect(fn.body);
+  }
+  const hits = [];
+  const visit = node => {
+    const helper = ts.isCallExpression(node) && ts.isIdentifier(node.expression) && helpers.get(node.expression.text);
+    if (helper && node.arguments.length === 2 &&
+      node.arguments[helper.entryIndex].getText(sf).replace(/\s/g, '') === 'process.argv[1]' &&
+      node.arguments[helper.urlIndex].getText(sf).replace(/\s/g, '') === 'import.meta.url') {
+      const offset = node.getStart(sf);
+      hits.push({ kind: 'file-url-to-path', offset, line: lineAt(source, offset), text: node.getText(sf) });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return hits;
+}
+
 /**
  * Find the three equivalent ESM self-exec idioms that collapse inside a bundle.
  * The input is masked first, so the expressions below only see executable code.
@@ -250,7 +299,7 @@ export function findGuards(source, fileName = 'cli-entry.mjs') {
       re: /(?:(?:\w+\s*\(\s*)?fileURLToPath\w*\s*\(\s*import\.meta\.url\s*\)\s*\)?\s*===\s*(?:\w+\s*\(\s*)?process\.argv\s*\[\s*1\s*\]\s*\)?|(?:\w+\s*\(\s*)?process\.argv\s*\[\s*1\s*\]\s*\)?\s*===\s*(?:\w+\s*\(\s*)?fileURLToPath\w*\s*\(\s*import\.meta\.url\s*\)\s*\)?)/g,
     },
   ];
-  const hits = [];
+  const hits = findIndirectGuards(source, fileName);
   for (const { kind, re } of patterns) {
     for (const match of masked.matchAll(re)) {
       hits.push({ kind, offset: match.index, line: lineAt(source, match.index), text: source.slice(match.index, match.index + match[0].length) });

@@ -64,6 +64,7 @@ import { createRequire, isBuiltin } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseEnv } from 'node:util';
 import { compileFunction } from 'node:vm';
+import { tsImport } from 'tsx/esm/api';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { verifierSourceFiles, verifierGitCheckoutSync, verifyVerifierSourceSync as verifyArchivedSourceSync, VerifierSourceError, writeVerifierTaskReceipt, verifierResourceInventory } from '@papercusp/operator-core/lib/verifier-source';
 import { NOTICES_FILE, collectThirdPartyNotices } from './check-licenses.mjs';
@@ -74,8 +75,14 @@ import { findUnusableRuntimeDeps, formatRuntimeFailures } from './check-declared
 import { writeOperatorArtifactManifest } from '@papercusp/operator-core/lib/release/operator-artifact';
 import { bindRuntimeSourcePopulation } from '../packages/operator-core/lib/memory/bench/runtime-source-capture.mjs';
 import { bindRuntimeProcessTree } from '../packages/operator-core/lib/memory/bench/runtime-file-opens.mjs';
-import { bindNativeLoaderClosure } from '@papercusp/operator-core/lib/memory/bench/measurement-manifest';
 import { bindFrozenDependencyGeneration } from '@papercusp/operator-core/lib/dependency-generation-proof';
+
+// The documented plain-Node CLI also serves the BG builder. This dependency
+// has extensionless TypeScript imports; load it through the maintained scoped
+// tsx API rather than requiring an ambient loader on every CLI caller.
+/** @type {typeof import('../packages/operator-core/lib/memory/bench/measurement-manifest.ts')} */
+const nativeLoader = await tsImport('../packages/operator-core/lib/memory/bench/measurement-manifest.ts', import.meta.url);
+const { bindNativeLoaderClosure } = nativeLoader;
 
 export const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 export const PREVIEW_REPO = 'Papercusp/papercusp-preview';
@@ -2025,6 +2032,11 @@ export function verifyBgVerifierBuildOutputSet(output, args) {
  * The maintained artifact writer qualifies the original main entry in place.
  * @param {{ output: ReturnType<typeof qualifyBgVerifierBuildOutputSet> } &
  *   Parameters<typeof qualifyBgVerifierBuildOutputSet>[0]} args
+ * @returns {Promise<{ schemaVersion: string, outputSetSha256: string,
+ *   directory: ReturnType<typeof readBgDirectoryIdentity>,
+ *   artifact: Awaited<ReturnType<typeof qualifyBgVerifierOutput>>,
+ *   controls: ReturnType<typeof readBgIndependentOutputIdentity>[],
+ *   files: { temporary: string, final: string, identity: ReturnType<typeof readBgIndependentOutputIdentity> }[] }>}
  */
 export async function qualifyBgVerifierLogicalOutputSet(args) {
   const { output, binding, receipts } = args;
@@ -4910,6 +4922,30 @@ function printGate(verdict) {
 }
 
 async function main(argv) {
+  if (argv[0] === 'bg-publication-check') {
+    assert.ok(argv.length === 5 && argv[1] === '--context' && argv[3] === '--sha256',
+      'BG publication check requires --context <retained expectation> --sha256 <independent digest>');
+    const contextPath = argv[2], expectedHash = argv[4];
+    assert.match(expectedHash ?? '', /^[a-f0-9]{64}$/, 'BG publication expectation digest is invalid');
+    const original = readBgIndependentOutputIdentity(contextPath);
+    assert.equal(original.sha256, expectedHash, 'BG publication expectation digest changed');
+    const bytes = readFileSync(contextPath);
+    assert.equal(createHash('sha256').update(bytes).digest('hex'), expectedHash,
+      'BG publication expectation changed while reading');
+    const publication = JSON.parse(bytes.toString('utf8'));
+    // The retained original expectation is external to both the candidate and
+    // its output stage. A published receipt cannot nominate its own authority.
+    assertOutsideArchive(publication.binding.transaction.contexts.record.prepared.root, contextPath);
+    assertOutsideArchive(publication.binding.transaction.stage, contextPath);
+    verifyBgVerifierPublication(publication, publication);
+    assert.deepEqual(readBgIndependentOutputIdentity(contextPath), original,
+      'BG publication expectation changed during verification');
+    // This verifies retained build evidence only. Full parent/runtime cohort,
+    // guarded service activation and rollback remain separate obligations.
+    console.log(JSON.stringify({ schemaVersion: 'bg-publication-check-v1', scope: 'publication-only',
+      publication: publication.identity, entry: publication.logical.artifact.entry.path }));
+    return 0;
+  }
   if (argv[0] === 'bg-build-begin' || argv[0] === 'bg-build-run') {
     const flags = ['--context', '--sha256', '--pid', '--entry', '--outfile', '--profile', '--builder', '--repo'];
     const budgetPath = argv[0] === 'bg-build-run' && argv[17] === '--budget-from' ? argv[18] : undefined;

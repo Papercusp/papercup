@@ -4,8 +4,8 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
+import { isCliEntry } from '../lib/util/cli-entry';
 // @ts-ignore -- reuse the maintained strict resolver, never a custom installer.
 import { metadataRepairInputLayout, resolveMetadataRepairLock } from '../../../scripts/npm-install-safe.mjs';
 
@@ -130,12 +130,16 @@ async function main() {
     assert.deepEqual(bytes, beforeInputs.get(path), 'baseline_repair_selected_input_changed:' + path);
   assertBaselineRepairInputs(sourceRoot, beforeInputs);
   assert.deepEqual(assertFrozenBaselineSources(sourceRoot, fixture.files), beforeSources);
-  assert.equal(result.receipt.output.path, 'package-lock.json');
+  assert.ok('output' in result.receipt, 'baseline_repair_output_receipt_missing');
+  const output = result.receipt.output;
+  assert.ok(output && typeof output === 'object' && 'path' in output && 'sha256' in output,
+    'baseline_repair_output_receipt_invalid');
+  assert.equal(output.path, 'package-lock.json');
   assert.equal(result.receipt.cleanup.removed, true);
   const originalLock = beforeInputs.get('package-lock.json');
   assert.ok(originalLock);
   const repairedLock: Buffer = result.bytes;
-  assert.equal(digest(repairedLock), result.receipt.output.sha256);
+  assert.equal(digest(repairedLock), output.sha256);
   const delta = baselineLockDelta(originalLock, repairedLock);
   assert.ok(delta.packages.length > 0, 'baseline_repair_missing_delta');
   writeFileSync(join(evidenceDir, 'dependency-lock-original.json'), originalLock, { flag: 'wx' });
@@ -159,5 +163,5 @@ async function main() {
   }), { flag: 'wx' });
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href)
+if (isCliEntry(import.meta.url))
   main().catch(error => { console.error(error); process.exitCode = 1; });

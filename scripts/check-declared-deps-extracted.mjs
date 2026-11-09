@@ -420,6 +420,18 @@ export function resolvesOnDisk(repoRoot, fromDir, dep, exists = fsExistsSync) {
  * passed every existing leg while `npm ls` was already calling it
  * ELSPROBLEMS/invalid. This is a read of an answer `npm ls --all --json`
  * already computes for the direct declarations we track, not a new resolver.
+ *
+ * @param {{
+ *   repoRoot?: string,
+ *   workspaceDirs?: string[],
+ *   deps?: {
+ *     readJson?: (path: string) => ReturnType<typeof JSON.parse>,
+ *     existsSync?: (path: string) => boolean,
+ *     readDir?: (path: string) => Array<{ name: string, isDir: boolean }>,
+ *     expandWorkspaces?: typeof expandWorkspaces
+ *   }
+ * }} [options]
+ * @returns {Array<{ dep: string, workspace: string, declared: string, installed: string }>}
  */
 export function findUnsatisfiedDeclaredDepRanges({
   repoRoot = REPO_ROOT,

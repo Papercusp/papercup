@@ -441,6 +441,28 @@ describe('package-local version guard catches readable stale dev tools (EI-20863
 });
 
 describe('edge-satisfaction guard catches a stale HOISTED placement (EI-21927402678532138)', () => {
+  it('checks only explicitly selected workspaces and honors an empty selection', () => {
+    const root = fixture({
+      packages: {
+        'apps/operator': { dependencies: { sharp: '^0.35.0' } },
+        'apps/operator-docs': { dependencies: { sharp: '^0.36.0' } },
+      },
+      extracted: { '': ['sharp'] },
+    });
+    writeFileSync(join(root, 'node_modules/sharp/package.json'),
+      JSON.stringify({ name: 'sharp', version: '0.34.5' }));
+
+    expect(findUnsatisfiedDeclaredDepRanges({ repoRoot: root,
+      workspaceDirs: ['apps/operator'] })).toEqual([
+      { dep: 'sharp', workspace: 'apps/operator', declared: '^0.35.0', installed: '0.34.5' },
+    ]);
+    expect(findUnsatisfiedDeclaredDepRanges({ repoRoot: root, workspaceDirs: [] })).toEqual([]);
+    expect(findUnsatisfiedDeclaredDepRanges({ repoRoot: root })).toEqual([
+      { dep: 'sharp', workspace: 'apps/operator', declared: '^0.35.0', installed: '0.34.5' },
+      { dep: 'sharp', workspace: 'apps/operator-docs', declared: '^0.36.0', installed: '0.34.5' },
+    ]);
+  });
+
   it('FLAGS a hoisted dep two workspaces declare when its resolved version does not satisfy either range', () => {
     // The observed shape: two workspaces both declare `sharp: ^0.35.0`, the
     // only reachable placement is the root-hoisted node_modules/sharp, and it

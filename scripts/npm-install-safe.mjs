@@ -75,6 +75,7 @@ import { constants as osConstants, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
+import { isCliEntry } from "../packages/operator-core/lib/util/cli-entry.ts";
 import {
   PACKAGE_CACHE_MUTEX_NAME,
   resolveFsMutexTimeoutMs,
@@ -3155,16 +3156,9 @@ export async function main(argv = process.argv.slice(2)) {
   return publishDependencyGeneration({ repoRoot, env: npmEnv });
 }
 
-function isInvokedDirectly(argv1, moduleUrl) {
-  if (!argv1) return false;
-  try {
-    return realpathSync(argv1) === realpathSync(fileURLToPath(moduleUrl));
-  } catch {
-    return false;
-  }
-}
-
-if (isInvokedDirectly(process.argv[1], import.meta.url)) {
+// Imported by the bundled host's metadata validator. A bundle gives every
+// inlined module its entry URL; only the shared guard keeps this CLI inert.
+if (isCliEntry(import.meta.url)) {
   main()
     .then((status) => {
       process.exitCode = status;

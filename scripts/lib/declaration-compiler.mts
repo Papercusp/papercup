@@ -3,9 +3,9 @@ import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { userInfo } from 'node:os';
-import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { withFsMutex } from './fs-mutex.mjs';
+import { isCliEntry } from '../../packages/operator-core/lib/util/cli-entry.ts';
 
 /**
  * Reuse the pinned compiler's own diagnostics/dependency/emit invalidation. A
@@ -128,8 +128,7 @@ export async function compileDeclarationsIncrementally(
   });
 }
 
-const isMain = process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-if (isMain) {
+if (isCliEntry(import.meta.url)) {
   void compileDeclarationsIncrementally(process.argv[2], process.argv[3], process.argv[4]).catch((error: unknown) => {
     console.error(error);
     process.exitCode = 1;

@@ -5865,6 +5865,71 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
     expect(existsSync(publication.identity.path + '.tmp.' + fixture.binding.ownerPid)).toBe(false);
   });
 
+  it('BG publication check CLI plain Node entry reaches argument validation without an ambient TypeScript loader', () => {
+    const child = spawnSync(process.execPath, [join(SOURCE_ROOT, 'scripts/source-preview.mjs'),
+      'bg-publication-check'], { env: childEnv(), encoding: 'utf8', timeout: 60_000 });
+    expect(child.error).toBeUndefined();
+    expect(child.status).not.toBe(0);
+    expect(child.stdout).toBe('');
+    expect(child.stderr).toContain('BG publication check requires --context');
+    expect(child.stderr).not.toContain('ERR_MODULE_NOT_FOUND');
+  });
+
+  it('BG publication check CLI verifies retained build evidence without selecting or changing a generation', async () => {
+    const fixture = await logicalTransaction(), logical = await qualifyBgVerifierLogicalOutputSet(fixture);
+    const publication = publishBgVerifierLogicalOutputSet({ ...fixture, logical });
+    const context = join(dirname(fixture.prepared.root), 'retained-publication.json');
+    const bytes = JSON.stringify(publication);
+    writeFileSync(context, bytes);
+    const source = readFileSync(join(fixture.prepared.root, '.verifier-source.json'));
+    const bank = readdirSync(fixture.args.bank).sort();
+    const child = spawnSync(process.execPath, [join(SOURCE_ROOT, 'scripts/source-preview.mjs'),
+      'bg-publication-check', '--context', context, '--sha256', digest(bytes)],
+    { env: childEnv(), encoding: 'utf8', timeout: 60_000 });
+    expectBgChild(child);
+    expect(JSON.parse(child.stdout)).toEqual({ schemaVersion: 'bg-publication-check-v1',
+      scope: 'publication-only', publication: publication.identity, entry: logical.artifact.entry.path });
+    expect(readFileSync(context, 'utf8')).toBe(bytes);
+    expect(readFileSync(join(fixture.prepared.root, '.verifier-source.json'))).toEqual(source);
+    expect(readdirSync(fixture.args.bank).sort()).toEqual(bank);
+    expect(verifyBgVerifierPublication(publication, { ...fixture, logical })).toBe(publication);
+  });
+
+  it('BG publication check CLI rejects substituted expectations and replaced published output', async () => {
+    const fixture = await logicalTransaction(), logical = await qualifyBgVerifierLogicalOutputSet(fixture);
+    const publication = publishBgVerifierLogicalOutputSet({ ...fixture, logical });
+    const context = join(dirname(fixture.prepared.root), 'retained-publication.json');
+    const bytes = JSON.stringify(publication), expectedHash = digest(bytes);
+    writeFileSync(context, bytes);
+    const run = (path = context, hash = expectedHash, extra: string[] = []) =>
+      spawnSync(process.execPath, [join(SOURCE_ROOT, 'scripts/source-preview.mjs'),
+        'bg-publication-check', '--context', path, '--sha256', hash, ...extra],
+      { env: childEnv(), encoding: 'utf8', timeout: 60_000 });
+    const reject = (child: SpawnSyncReturns<string>, message: string) => {
+      expect(child.error).toBeUndefined();
+      expect(child.status).not.toBe(0);
+      expect(child.stdout).toBe('');
+      expect(child.stderr).toContain(message);
+    };
+    reject(run(context, '0'.repeat(64)), 'BG publication expectation digest changed');
+    reject(run(context, expectedHash, ['--activate']), 'BG publication check requires');
+    writeFileSync(context, bytes.replace('bg-build-publication-v1', 'changed-publication'));
+    reject(run(), 'BG publication expectation digest changed');
+    writeFileSync(context, bytes);
+    const local = join(fixture.stage, 'candidate-expectation.json');
+    writeFileSync(local, bytes);
+    reject(run(local), 'receipt must be outside the archive');
+    rmSync(local);
+    const alias = context + '.link';
+    symlinkSync(context, alias);
+    reject(run(alias), 'BG output must be physical');
+    // A normal real-publication control must still pass before changing output.
+    expectBgChild(run());
+    const entry = logical.artifact.entry.path;
+    writeFileSync(entry, readFileSync(entry, 'utf8') + '\n// replaced after publication\n');
+    reject(run(), 'BG logical file changed');
+  });
+
   it.each(['metafile-name', 'output-directory'] as const)(
     'logical-output rejects original %s mismatch before converting any temporary file', async defect => {
       const fixture = await logicalTransaction(args => {

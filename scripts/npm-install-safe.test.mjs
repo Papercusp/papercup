@@ -3826,6 +3826,26 @@ test("test:file runs Vitest under the repo install reader mutex", () => {
   );
 });
 
+test("bundled npm-install-safe import never enters its installer CLI", t => {
+  const root = mkdtempSync(join(tmpdir(), "npm-install-safe-bundled-import-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const entry = join(root, "entry.mjs");
+  const bundle = join(root, "hono-host.mjs");
+  symlinkSync(fileURLToPath(new URL("../node_modules", import.meta.url)), join(root, "node_modules"), "dir");
+  writeFileSync(entry, `import ${JSON.stringify(fileURLToPath(new URL("./npm-install-safe.mjs", import.meta.url)))};\nconsole.log("imported");\n`);
+  const { buildSync } = createRequire(import.meta.url)("esbuild");
+  buildSync({ entryPoints: [entry], outfile: bundle, bundle: true,
+    platform: "node", format: "esm", packages: "external",
+    define: { __PAPERCUSP_BUNDLED_SIDECAR__: "true" }, logLevel: "silent" });
+  // --help safely exposes accidental main() entry without permitting an install.
+  const result = spawnSync(process.execPath, [bundle, "--help"], {
+    cwd: root, encoding: "utf8", timeout: 10_000,
+  });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "imported\n", "an imported CLI ran during host boot");
+});
+
 test("symlinked npm-install-safe CLI executes reader commands", () => {
   const root = mkdtempSync(join(tmpdir(), "npm-install-safe-symlink-"));
   const cliLink = join(root, "npm-install-safe.mjs");
