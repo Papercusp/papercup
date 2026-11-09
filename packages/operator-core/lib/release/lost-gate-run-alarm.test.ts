@@ -28,6 +28,9 @@ import {
 } from './lost-gate-run-alarm';
 import { currentRepairLimbExecutor, type RepairLimbExecutor } from './repair-limb-executor';
 import { GREEN_CHECKPOINT_RESULT_MARKER } from './checkpoint-log-tags';
+import { recordWatchdogPassOutcome } from './watchdog-health';
+
+vi.mock('./watchdog-health', () => ({ recordWatchdogPassOutcome: vi.fn(async () => 0) }));
 
 const NOW = 1_750_000_000_000;
 const SELF_PID = 7;
@@ -177,6 +180,25 @@ describe('resolveLostRunRoutes', () => {
 });
 
 describe('sweepLostGateRuns (P-005 / R-5)', () => {
+  it('records observer scan failure and healthy empty recovery without releasing custody', async () => {
+    const error = new Error('observer scan unavailable');
+    const sql = vi.fn().mockRejectedValueOnce(error).mockResolvedValueOnce([]) as unknown as Sql;
+    const d = deps();
+    const health = vi.mocked(recordWatchdogPassOutcome);
+    health.mockClear();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(sweepLostGateRuns(sql, d)).resolves.toEqual({ alarmed: [], deduped: [], failed: [] });
+      expect(health).toHaveBeenLastCalledWith(sql, 'lost-run-scan', { routineName: 'green-checkpoint' }, error);
+      await expect(sweepLostGateRuns(sql, d)).resolves.toEqual({ alarmed: [], deduped: [], failed: [] });
+      expect(health).toHaveBeenLastCalledWith(sql, 'lost-run-scan', { routineName: 'green-checkpoint' }, undefined);
+      expect(health).toHaveBeenCalledTimes(2);
+      expect(sql).toHaveBeenCalledTimes(2);
+      expect(d.broadcast).not.toHaveBeenCalled();
+      expect(d.notifyOwner).not.toHaveBeenCalled();
+    } finally { warn.mockRestore(); }
+  });
+
   it('pages the holder and fleet leader exactly once for a dead run, across passes and a restart', async () => {
     const { sql, row } = fakeRoutineRow(marker());
     const d = deps();

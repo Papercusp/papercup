@@ -78,6 +78,7 @@ export const WATCHDOG_HEALTH_METADATA_KEY = 'watchdog_health';
 /** The passes in `green-stall-watchdog.ts` that swallow their own failure. */
 export type WatchdogPassName =
   | 'paused-green-checkpoint'
+  | 'lost-run-scan'
   | 'green-stall'
   | 'main-behind-staging'
   | 'release-trigger-freeze'

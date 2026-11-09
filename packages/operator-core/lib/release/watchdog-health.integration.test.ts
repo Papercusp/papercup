@@ -23,6 +23,7 @@ vi.mock('../degradation/fallback-observations', async (importOriginal) => ({
 }));
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
+import { sweepLostGateRuns } from './lost-gate-run-alarm';
 import {
   recordWatchdogPassOutcome,
   WATCHDOG_HEALTH_METADATA_KEY,
@@ -76,6 +77,42 @@ async function readPass(id: string, pass: string): Promise<WatchdogPassHealth | 
 }
 
 describe('recordWatchdogPassOutcome (real PG)', () => {
+  it('makes an unreadable external qualification scan visible and clears only its own marker on recovery', async () => {
+    const custody = { attemptId: 'held-attempt', currentPhysicalRunner: { id: 'held-runner', childScopeUnits: ['held.scope'] } };
+    await seedRoutine({ id: 'rt-lost-scan', installSlug: 'papercusp', name: 'green-checkpoint',
+      metadata: { qualificationTransaction: custody } });
+    await seedRoutine({ id: 'rt-lost-scan-other', installSlug: 'other', name: 'green-checkpoint', workspaceId: WS_OTHER });
+    await seedRoutine({ id: 'rt-lost-scan-release', installSlug: 'papercusp', name: 'release-trigger' });
+    await recordWatchdogPassOutcome(sql, 'green-stall', { routineName: 'green-checkpoint' }, new Error('independent failure'));
+    let unreadable = true;
+    // Only the scan fails; the existing health writer still uses real migrated PG.
+    const observedSql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      if (/^\s*SELECT install_slug/.test(strings.join('?'))) {
+        if (unreadable) throw new Error('qualification scan unavailable');
+        return Promise.resolve([]);
+      }
+      return sql(strings, ...values as never[]);
+    }) as Sql;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await sweepLostGateRuns(observedSql);
+      for (const id of ['rt-lost-scan', 'rt-lost-scan-other']) {
+        expect(await readPass(id, 'lost-run-scan')).toMatchObject({
+          lastError: 'qualification scan unavailable', consecutiveFailures: 1,
+        });
+      }
+      expect(await readPass('rt-lost-scan-release', 'lost-run-scan')).toBeUndefined();
+      expect((await readMeta('rt-lost-scan'))?.qualificationTransaction).toEqual(custody);
+      unreadable = false;
+      await sweepLostGateRuns(observedSql);
+      for (const id of ['rt-lost-scan', 'rt-lost-scan-other']) {
+        expect(await readPass(id, 'lost-run-scan')).toBeUndefined();
+        expect(await readPass(id, 'green-stall')).toMatchObject({ lastError: 'independent failure' });
+      }
+      expect((await readMeta('rt-lost-scan'))?.qualificationTransaction).toEqual(custody);
+    } finally { warn.mockRestore(); }
+  });
+
   it('retains a fixer-silence failure across healthy outer passes until the subpass recovers', async () => {
     await seedRoutine({ id: 'rt-fixer-silence', installSlug: 'papercusp', name: 'green-checkpoint' });
     const scope = { routineName: 'green-checkpoint' as const, installSlug: 'papercusp' };

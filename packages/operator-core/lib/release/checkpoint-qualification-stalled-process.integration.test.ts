@@ -29,6 +29,12 @@ vi.mock('@papercusp/db-org', async importOriginal => ({
 vi.mock('../task-manager/enabled', () => ({ isTaskManagerEnabled: async () => true }));
 vi.mock('../task-manager/store', () => ({ registerTask: vi.fn(async () => ({})),
   markSpawned: vi.fn(async () => ({})), closeTask: vi.fn(async () => true) }));
+// Observer-health metadata uses the private SQL supplied to the sweep. Its
+// ambient fallback telemetry must not escape this fixture's private DB lifetime.
+vi.mock('../degradation/fallback-observations', async importOriginal => ({
+  ...(await importOriginal<typeof import('../degradation/fallback-observations')>()),
+  observeFallback: vi.fn(() => true),
+}));
 
 function running(pid: number) {
   try {
@@ -285,9 +291,32 @@ describe.runIf(process.platform === 'linux' && userManagerBusReachable())('quali
       record: release, kill: killScopeUnit, taskId: () => id, now: Date.now,
     });
     let stalled: Promise<unknown> | undefined;
+    let healthy: ReturnType<typeof runQualificationCommand> | undefined;
+    let healthyReady = false;
+    const peerDir = mkdtempSync(join(tmpdir(), 'qualification-peer-'));
+    const peerTrigger = join(peerDir, 'complete');
     let cleanupCutoffEpochMs = 0;
     try {
       if (sql) await sql`SELECT pg_advisory_lock(42)`;
+      // Establish both peers before the stalled worker's fixed 4s guard starts.
+      // Cold-spawning the healthy peer inside that budget tests startup latency
+      // instead of whether one worker's progress can renew another worker.
+      healthy = runQualificationCommand(process.execPath, ['-e', `
+        const fs = require('node:fs');
+        const timer = setInterval(() => {
+          if (!fs.existsSync(${JSON.stringify(peerTrigger)})) return;
+          const pid = Number(fs.readFileSync(${JSON.stringify(peerTrigger)}, 'utf8'));
+          const stat = fs.readFileSync('/proc/' + pid + '/stat', 'utf8');
+          console.log(JSON.stringify({ stalledPid: pid, stalledState: stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0] }));
+          console.log('completed healthy work');
+          clearInterval(timer);
+        }, 10);
+        console.log('healthy-ready');
+      `], { ...options('healthy'), onOutput(stream, text) {
+        if (stream === 'stdout' && text.includes('healthy-ready')) healthyReady = true;
+      } }, deps(healthyId));
+      void healthy.catch(() => {}); // joined below and in teardown, including readiness failure
+      await vi.waitFor(() => expect(healthyReady).toBe(true), { timeout: 3000 });
       const start = mode === 'database-lock' ? `
         const postgres = require('postgres');
         const client = postgres(process.env.QUALIFICATION_TEST_DB_URL, { max: 1, connection: ${JSON.stringify(connection)} });
@@ -335,11 +364,14 @@ describe.runIf(process.platform === 'linux' && userManagerBusReachable())('quali
         const rows = await sql`SELECT wait_event_type, wait_event FROM pg_stat_activity WHERE pid = ${backendPid}`;
         expect(rows[0]).toMatchObject({ wait_event_type: 'Lock', wait_event: 'advisory' });
       }, { timeout: 1500 });
-      const healthy = await runQualificationCommand(process.execPath, ['-e', "console.log('completed healthy work')"],
-        options('healthy'), deps(healthyId));
-      expect(healthy).toMatchObject({ code: 0, signal: null });
-      expect(healthy.stdout).toContain('completed healthy work');
-      expect(running(workerPid)).toBe(true);
+      writeFileSync(peerTrigger, String(workerPid));
+      const completedPeer = await healthy;
+      expect(completedPeer).toMatchObject({ code: 0, signal: null });
+      expect(completedPeer.stdout).toContain('completed healthy work');
+      const witness = JSON.parse(completedPeer.stdout.split('\n').find(line => line.startsWith('{"stalledPid":'))!);
+      expect(witness.stalledPid).toBe(workerPid);
+      // Read by the peer at completion, not after delayed parent output/cleanup.
+      expect(['Z', 'X']).not.toContain(witness.stalledState);
       if (mode === 'blocked-controller') {
         const heartbeatAtMs = spawnedAt;
         const fixture = beginQualificationTransaction(null, { attemptId: 'blocked-attempt',
@@ -385,9 +417,10 @@ describe.runIf(process.platform === 'linux' && userManagerBusReachable())('quali
     } finally {
       controller.abort();
       await Promise.allSettled(units.map(unit => killScopeUnit(unit, { signal: 'SIGKILL' })));
-      await Promise.allSettled(stalled ? [stalled] : []);
+      await Promise.allSettled([...(stalled ? [stalled] : []), ...(healthy ? [healthy] : [])]);
       if (sql) { await sql`SELECT pg_advisory_unlock(42)`; await sql.end({ timeout: 5 }); }
       await database?.drop();
+      rmSync(peerDir, { recursive: true, force: true });
     }
   }, 30_000);
 });

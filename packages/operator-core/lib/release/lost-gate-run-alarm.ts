@@ -31,6 +31,7 @@ import type { SevereEventRoute } from '../severe-event-broadcast';
 import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
 import type { AttentionNotifyInput } from '../attention-notify';
 import { currentRepairLimbExecutor, type RepairLimbExecutor } from './repair-limb-executor';
+import { recordWatchdogPassOutcome } from './watchdog-health';
 import {
   CHECKPOINT_QUALIFICATION_METADATA_KEY,
   classifyQualificationVerdict,
@@ -395,6 +396,7 @@ export async function sweepLostGateRuns(sql: Sql, deps: LostRunSweepDeps = {}): 
   const sequence = deps.observerSequence ?? ++observerSequence;
   const monotonicAtMs = deps.monotonicAtMs ?? performance.now();
   let rows: { install_slug: string; workspace_id: string; marker: unknown; alarmed_key: string | null; progress_alarmed_key?: string | null; qualification?: unknown }[];
+  let scanError: unknown;
   try {
     rows = await sql<typeof rows>`
       SELECT install_slug, workspace_id,
@@ -405,8 +407,14 @@ export async function sweepLostGateRuns(sql: Sql, deps: LostRunSweepDeps = {}): 
         FROM harness_shared.routines
        WHERE target_role = 'system:green-checkpoint'`;
   } catch (e) {
+    scanError = e;
     console.warn(`[lost-gate-run-alarm] row scan failed (will retry): ${e instanceof Error ? e.message : String(e)}`);
     return out;
+  } finally {
+    // The scan covers every checkpoint row. A failed scan measures no runner;
+    // retain custody and expose the observer failure through the existing health
+    // surface. A healthy empty scan must also clear this pass's old failure.
+    await recordWatchdogPassOutcome(sql, 'lost-run-scan', { routineName: 'green-checkpoint' }, scanError);
   }
 
   for (const row of rows) {
