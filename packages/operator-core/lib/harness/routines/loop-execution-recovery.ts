@@ -82,7 +82,8 @@ export function decideLoopExecutionRecovery(i: ExecutionRecoveryInput): {
   const fresh = eMatchesCurrentHost;
   if (fresh && (e.phase === 'running' || e.pendingTools > 0)) return protect('native-operation', 'running');
   if (fresh && e.phase === 'settled' && Number(e.lastProgressAt) >= i.firedAt) {
-    return { action: 'settle', state: { ...state, status: 'running', reason: 'native-turn-settled', attempts: 0, probes: 0 } };
+    return { action: 'settle', state: { ...state, status: 'running', reason: 'native-turn-settled', attempts: 0, probes: 0,
+      ...(verifiedSuccessorFireAt == null ? {} : { verifiedSuccessorFireAt }) } };
   }
   // The next routine fire still traverses the existing goal, permission,
   // budget and await gates. This decision only repairs its durable schedule.

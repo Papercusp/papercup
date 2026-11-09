@@ -304,7 +304,7 @@ export async function checkUnreachableTerminalGuard(
     const activeReason = execution.state?.reason;
     if (
       execution.state?.status === 'running' &&
-      (activeReason === 'active-inference' || activeReason === 'native-operation')
+      (activeReason === 'active-inference' || activeReason === 'native-operation' || activeReason === 'native-turn-settled')
     ) {
       return { breach: false, reason: `current-execution-active:${activeReason}`, reachability };
     }
