@@ -891,6 +891,80 @@ describe('secret census producer adapters', () => {
       expect(await readFile(new URL('../../../../apps/tui/src/client.rs', import.meta.url), 'utf8')).toContain('"plans-list-standard-v1"');
     } finally { vi.unstubAllEnvs(); await rm(home, { recursive: true, force: true }); }
   });
+  it('retains exact project MCP writer files as secrets at explicit homes and workspace roots', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'project-mcp-census-'));
+    const ordinary = join(home, '.papercusp');
+    const relocated = join(home, 'relocated');
+    const workspace = join(home, 'workspace', '.papercusp');
+    const unknown = join(home, 'unknown');
+    const linked = join(home, 'linked');
+    const superuser = JSON.stringify({ mcpServers: { papercusp: {
+      url: 'http://localhost:3070/api/mcp?superuser=1&workspace=fixture', headers: { Authorization: 'Bearer fixture' },
+    } } });
+    const role = JSON.stringify({ mcpServers: { papercusp: { type: 'http',
+      url: 'https://operator.example/api/mcp?workspace=fixture&role=test&run=r&spawn=s&client=c&exp=1&sig=fixture',
+    } } });
+    const names = ['.mcp.json', '.mcp.json.papercusp.bak', '.mcp.json.su-parked',
+      '.mcp.json.tmp-123-1234567890-aabbccddeeff', '.mcp.json.su-stub.123.12345678-1234-4234-8234-123456789abc.tmp'];
+    try {
+      for (const directory of [ordinary, relocated, workspace, unknown]) {
+        await mkdir(directory, { recursive: true });
+        for (const name of names) await writeFile(join(directory, name), name.includes('su-stub')
+          ? JSON.stringify({ mcpServers: {} }) : name.endsWith('su-parked') ? role : superuser);
+      }
+      await symlink(workspace, linked);
+      const result = await runtimeSidefileCensusProducer(home, { PAPERCUSP_HOME: relocated }, [workspace, workspace, linked]);
+      const entries = result.declarations.filter(entry => entry.producer === 'console-project-mcp-writer');
+      expect(entries).toHaveLength(names.length * 3);
+      expect(entries.every(entry => entry.classification === 'secret' && !entry.descendants && !entry.prune)).toBe(true);
+      expect(result.roots.map(root => root.path).sort()).toEqual([ordinary, relocated, workspace].sort());
+      const census = await collectStateCensus({ ...result, readCatalogs: async () => [] });
+      expect(census.residue).toEqual([]);
+      expect((await runtimeSidefileCensusProducer(home, {})).roots.map(root => root.path)).toEqual([ordinary]);
+      const consoleWriter = await readFile(new URL('../console-spawn.ts', import.meta.url), 'utf8');
+      const launcher = await readFile(new URL('../../../../apps/operator/scripts/psu-launcher.mjs', import.meta.url), 'utf8');
+      expect(consoleWriter).toContain("'.mcp.json.papercusp.bak'");
+      expect(consoleWriter).toContain('`.mcp.json.tmp-${process.pid}-${Date.now()}-${randomBytes(6).toString(\'hex\')}`');
+      expect(launcher).toContain('".mcp.json.su-parked"');
+      expect(launcher).toContain('`.mcp.json.su-stub.${process.pid}.${randomUUID()}.tmp`');
+    } finally { await rm(home, { recursive: true, force: true }); }
+  });
+  it('leaves malformed, foreign, oversized and linked project MCP files in census residue', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'foreign-project-mcp-census-'));
+    const workspace = join(home, 'workspace');
+    const valid = JSON.stringify({ mcpServers: { papercusp: { url: 'http://localhost/api/mcp?superuser=1&workspace=fixture' } } });
+    try {
+      await mkdir(workspace);
+      const unknownNames = ['.mcp.json.stale-role-bak-20260629-153755', '.mcp.json.pre-papercusp',
+        '.mcp.json.tmp-123-1234567890-not-hex', '.mcp.json.su-stub.123.not-a-uuid.tmp'];
+      for (const name of unknownNames) await writeFile(join(workspace, name), valid);
+      await writeFile(join(workspace, '.mcp.json'), '{');
+      await symlink(join(workspace, '.mcp.json'), join(workspace, '.mcp.json.papercusp.bak'));
+      await mkdir(join(workspace, '.mcp.json.su-parked'));
+      const directories: string[] = [];
+      const bodies = [JSON.stringify({ mcpServers: { foreign: {} } }),
+        valid.replace('/api/mcp?', '/other?'), valid.replace('superuser=1&', ''),
+        valid.replace('http:', 'file:'), JSON.stringify({ mcpServers: { papercusp: { command: 'foreign' } } }),
+        JSON.stringify({ mcpServers: [] }), JSON.stringify({ mcpServers: {}, unrelated: true }),
+        valid + ' '.repeat(65_536)];
+      for (const [index, body] of bodies.entries()) {
+        const directory = join(home, `negative-${index}`); directories.push(directory);
+        await mkdir(directory); await writeFile(join(directory, '.mcp.json'), body);
+      }
+      const parent = join(home, 'parent-link');
+      await mkdir(join(home, 'real', 'child'), { recursive: true });
+      await writeFile(join(home, 'real', 'child', '.mcp.json'), valid);
+      await symlink(join(home, 'real'), parent);
+      directories.push(join(parent, 'child'));
+      const result = await runtimeSidefileCensusProducer(home, {}, [workspace, ...directories]);
+      expect(result.declarations.filter(entry => entry.producer === 'console-project-mcp-writer')).toEqual([]);
+      const census = await collectStateCensus({ roots: [{ id: 'workspace', path: workspace }],
+        declarations: result.declarations, readCatalogs: async () => [] });
+      expect(census.residue.map(entry => entry.name).sort()).toEqual([
+        ...unknownNames, '.mcp.json', '.mcp.json.papercusp.bak', '.mcp.json.su-parked',
+      ].sort());
+    } finally { await rm(home, { recursive: true, force: true }); }
+  });
   it('classifies empty legacy console leases only at explicit writer roots and preserves foreign residue', async () => {
     const home = await mkdtemp(join(tmpdir(), 'console-sentinel-census-'));
     const ordinary = join(home, '.papercusp');

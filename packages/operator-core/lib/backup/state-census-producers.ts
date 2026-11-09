@@ -448,6 +448,48 @@ export async function runtimeSidefileCensusProducer(home = homedir(), environmen
   const root: CensusRoot = { id: 'runtime-sidefiles', path: join(home, '.papercusp') };
   const roots = [root];
   const declarations: CensusDeclaration[] = [];
+  // console-spawn preserves the displaced project config and writes an atomic
+  // replacement; psu-launcher parks role configs before installing an empty
+  // stub. They can contain bearer credentials, so retain them as secrets.
+  // Only inspect explicit writer roots and exact names; arbitrary backups and
+  // other MCP servers are not evidence of a Papercusp writer.
+  for (const directory of new Set([root.path, papercuspHome(environment, home), ...workingDirectories])) {
+    try {
+      if (!(await lstat(directory)).isDirectory() || await realpath(directory) !== resolve(directory)) continue;
+    } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      if (!entry.isFile() || !/^(?:\.mcp\.json(?:\.papercusp\.bak|\.su-parked)?|\.mcp\.json\.tmp-[1-9][0-9]*-[0-9]+-[0-9a-f]{12}|\.mcp\.json\.su-stub\.[1-9][0-9]*\.[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.tmp)$/.test(entry.name)) continue;
+      let handle;
+      try {
+        handle = await open(join(directory, entry.name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        const metadata = await handle.stat();
+        if (!metadata.isFile() || metadata.size > 65_536) continue;
+        const config = JSON.parse(await handle.readFile('utf8'));
+        if (!config || typeof config !== 'object' || Array.isArray(config)
+          || Object.keys(config).length !== 1 || !config.mcpServers
+          || typeof config.mcpServers !== 'object' || Array.isArray(config.mcpServers)) continue;
+        const servers = Object.keys(config.mcpServers);
+        if (servers.length !== 0) {
+          if (servers.length !== 1 || servers[0] !== 'papercusp') continue;
+          const server = config.mcpServers.papercusp;
+          if (!server || typeof server !== 'object' || Array.isArray(server)
+            || Object.keys(server).some(key => !['url', 'headers', 'type'].includes(key))
+            || typeof server.url !== 'string' || (server.type !== undefined && server.type !== 'http')) continue;
+          const url = new URL(server.url);
+          if (!['http:', 'https:'].includes(url.protocol) || url.pathname !== '/api/mcp'
+            || !url.searchParams.get('workspace') || (url.searchParams.get('superuser') !== '1'
+              && !['role', 'run', 'spawn', 'client', 'exp', 'sig'].every(key => url.searchParams.get(key)))) continue;
+        }
+        let mcpRoot = roots.find(candidate => candidate.path === directory);
+        if (!mcpRoot) { mcpRoot = { id: `runtime-mcp-${roots.length}`, path: directory }; roots.push(mcpRoot); }
+        declarations.push({ kind: 'path', root: mcpRoot.id, name: entry.name,
+          classification: 'secret', producer: 'console-project-mcp-writer' });
+      } catch (error) {
+        if (!(error instanceof SyntaxError) && !(error instanceof TypeError)
+          && !['ENOENT', 'ELOOP', 'EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+      } finally { await handle?.close(); }
+    }
+  }
   // Before console-spawn moved sentinels into scratch, its interactive shell
   // used `touch .papercup-console-active.$$` in the launch cwd (2b9578d44c^).
   // These empty process leases are regenerated on the destination. Do not
