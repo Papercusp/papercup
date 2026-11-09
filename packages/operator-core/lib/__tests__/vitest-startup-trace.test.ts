@@ -920,9 +920,62 @@ describe('focused runner startup tracing', () => {
         try { expect(readNativeProcessTraceArtifacts(out).population.complete).toBe(false); }
         catch (error) { expect(String(error)).toContain('batch sequence incomplete'); }
         writeFileSync(join(root, batch.name), batch.bytes);
+        const exited = originals.find(({ bytes }) => JSON.parse(bytes.toString()).event === 'node-exit')!;
+        rmSync(join(root, exited.name));
+        expect(readNativeProcessTraceArtifacts(out).population.complete).toBe(false);
+        writeFileSync(join(root, exited.name), exited.bytes);
         const terminal = originals.find(({ bytes }) => JSON.parse(bytes.toString()).event === 'module-census-end')!;
         rmSync(join(root, terminal.name));
         expect(readNativeProcessTraceArtifacts(out).population.complete).toBe(false);
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
+
+  it.each(['SIGKILL', 9, 'external'] as const)(
+    'binds a self-kill census only to the independently observed native termination (%s)', mode => {
+      const dir = mkdtempSync(join(tmpdir(), 'native-loader-self-kill-'));
+      const out = join(dir, 'sources.json');
+      const source = `import { spawnSync } from 'node:child_process';
+        await import('node:fs');
+        process.stdout.write('imports completed');
+        ${mode === 'external' ? "spawnSync('/bin/kill', ['-KILL', String(process.pid)]);" :
+          `process.kill(process.pid, ${JSON.stringify(mode)});`}`;
+      try {
+        const result = spawnSync(process.execPath, ['--input-type=module', '-e', source], {
+          env: nativeProcessTraceEnv({ ...process.env, NODE_OPTIONS: '',
+            PC_EXECUTED_SOURCE_MAP_OUT: out, PAPERCUSP_TEST_STARTUP_TRACE: '0',
+          }, { loaderCensus: { batches: 128, bytes: 16 * 1024 ** 2 } }),
+          encoding: 'utf8', timeout: 10_000,
+        });
+        expect(result.error, result.stderr).toBeUndefined();
+        expect(result.stdout).toBe('imports completed');
+        expect(result.status).toBeNull();
+        expect(result.signal).toBe('SIGKILL');
+        const unbound = readNativeProcessTraceArtifacts(out);
+        expect(unbound.population.complete).toBe(false);
+        const entry = unbound.rows.find(({ row }: any) => row.event === 'node-entry')!.row;
+        const terminal = { pid: entry.pid, kernelProcessIdentity: entry.kernelProcessIdentity,
+          code: result.status, signal: result.signal };
+        const read = (termination = terminal) => readNativeProcessTraceArtifacts(out, 0,
+          Number.MAX_SAFE_INTEGER, { terminations: [termination] });
+        if (mode === 'external') {
+          expect(unbound.rows.filter(({ row }: any) => row.event === 'node-self-kill-request')).toEqual([]);
+          expect(read().population.complete).toBe(false);
+          return;
+        }
+        expect(unbound.population.truncatedBy).toBe('module-census-terminal-unverified');
+        expect(read().population.complete).toBe(true);
+        expect(read({ ...terminal, pid: terminal.pid + 1 }).population.complete).toBe(false);
+        expect(read({ ...terminal, kernelProcessIdentity: 'wrong-process' }).population.complete).toBe(false);
+        expect(read({ ...terminal, signal: 'SIGTERM' }).population.complete).toBe(false);
+        expect(read({ ...terminal, code: 0 }).population.complete).toBe(false);
+        expect(unbound.rows.filter(({ row }: any) => row.event === 'node-exit')).toEqual([]);
+        const request = unbound.rows.find(({ row }: any) => row.event === 'node-self-kill-request')!.row;
+        const seal = unbound.rows.find(({ row }: any) => row.event === 'module-census-end')!.row;
+        expect(seal.termination).toEqual(request.termination);
+        const root = `${out}.native-processes`;
+        const requestBytes = Buffer.from(JSON.stringify(request));
+        rmSync(join(root, createHash('sha256').update(requestBytes).digest('hex') + '.json'));
+        expect(read().population.complete).toBe(false);
       } finally { rmSync(dir, { recursive: true, force: true }); }
     });
 
@@ -990,7 +1043,7 @@ describe('focused runner startup tracing', () => {
   });
 
   it.each(['SIGTERM', 'SIGINT', 'application-kill', 'application-exit', 'SIGKILL'] as const)(
-    'retains a scoped engine snapshot before catchable termination without changing %s', mode => {
+    'retains a scoped engine snapshot at a signal or self-kill request without changing %s', mode => {
       const dir = mkdtempSync(join(tmpdir(), 'native-engine-signal-'));
       const out = join(dir, 'sources.json'), main = join(dir, 'main.mjs');
       const signal = mode === 'SIGINT' || mode === 'SIGKILL' ? mode : 'SIGTERM';
@@ -1015,7 +1068,11 @@ describe('focused runner startup tracing', () => {
         const rows = readdirSync(`${out}.native-processes`).filter(name => name.endsWith('.json')).map(name =>
           JSON.parse(readFileSync(join(`${out}.native-processes`, name), 'utf8')));
         const snapshots = rows.filter(row => row.event === 'engine-script-execution');
-        if (mode === 'SIGKILL') expect(snapshots).toEqual([]);
+        if (mode === 'SIGKILL') {
+          expect(snapshots).toEqual([expect.objectContaining({
+            termination: expect.objectContaining({ phase: 'self-kill-request', signal: 'SIGKILL' }),
+          })]);
+        }
         else {
           const snapshot = snapshots.find(row => row.termination?.phase === 'signal');
           expect(snapshot).toMatchObject({ threadId: 0,

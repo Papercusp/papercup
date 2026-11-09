@@ -3,7 +3,8 @@ import { appendFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFil
 import { mkdir, lstat, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
-import { papercuspPath } from '@papercusp/host-platform/home';
+import { papercuspHome } from '@papercusp/host-platform/home';
+import { homedir } from 'node:os';
 import { defaultEvidenceRoot } from '@papercusp/verification-harness/evidence-root';
 import type { OwnedTestDbCleanupResult } from '@papercusp/test-config/pg';
 import { retainNativeProofPacketAsync, verifyNativeProofPacket,
@@ -56,10 +57,10 @@ export interface RetainedDetachedVitestReport {
 }
 
 /** The private-runtime launcher pins this existing root before replacing HOME. */
-function defaultTestRunArtifactBase(): string {
-  return process.env.VH_EVIDENCE_ROOT_BASE?.trim()
-    ? defaultEvidenceRoot('testing-run')
-    : papercuspPath('test-artifacts', 'testing-run');
+export function defaultTestRunArtifactBase(environment: NodeJS.ProcessEnv = process.env, home = homedir()): string {
+  return environment.VH_EVIDENCE_ROOT_BASE?.trim()
+    ? defaultEvidenceRoot('testing-run', environment)
+    : join(papercuspHome(environment, home), 'test-artifacts', 'testing-run');
 }
 
 async function ensureArtifactDirectory(path: string): Promise<void> {

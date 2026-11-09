@@ -21,6 +21,36 @@ async function fixture() {
 }
 
 describe('offload symlink target integrity', () => {
+  it('allows an info-only Git metadata ancestor without treating it as a checkout', async () => {
+    const f = await fixture();
+    await mkdir(join(f.root, 'original', '.git', 'info'), { recursive: true });
+    await writeFile(join(f.root, 'original', '.git', 'info', 'exclude'), '*.runtime\n');
+    await writeFile(join(f.source, 'generated'), 'payload');
+    const snapshot = await captureOffloadLinks(f.source);
+    expect(snapshot.entriesVisited).toBe(1);
+    expect(snapshot.gitPublication).toBeUndefined();
+  });
+
+  it('continues past info-only metadata to protect an outer tracked source tree', async () => {
+    const f = await fixture();
+    execFileSync('git', ['init', '--quiet', f.root]);
+    const file = join(f.source, 'source.ts');
+    await writeFile(file, 'export const value = 1;');
+    const object = execFileSync('git', ['-C', f.root, 'hash-object', '-w', '--', file], { encoding: 'utf8' }).trim();
+    execFileSync('git', ['-C', f.root, 'update-index', '--add', '--cacheinfo', '100644', object,
+      'original/node_modules/source.ts']);
+    await mkdir(join(f.root, 'original', '.git', 'info'), { recursive: true });
+    await expect(captureOffloadLinks(f.source)).rejects.toThrow('Git-tracked source');
+  });
+
+  it.each(['damaged-directory', 'malformed-file'])('fails closed for a %s Git marker', async kind => {
+    const f = await fixture();
+    const marker = join(f.root, 'original', '.git');
+    if (kind === 'damaged-directory') await mkdir(join(marker, 'objects'), { recursive: true });
+    else await writeFile(marker, 'not a gitdir file\n');
+    await expect(captureOffloadLinks(f.source)).rejects.toThrow();
+  });
+
   it('refuses tracked source before relocation and through an existing offload symlink', async () => {
     const f = await fixture();
     const repo = join(f.root, 'original');

@@ -36,6 +36,7 @@ import { historicalPlaywrightStateConstruction, historicalPlaywrightStateCensusP
 import { historicalStripeConfigConstruction, historicalStripeConfigCensusProducer } from './state-census-producers';
 import { createCipheriv, scryptSync, randomBytes, createHash } from 'node:crypto';
 import { hostname, userInfo } from 'node:os';
+import { defaultTestRunArtifactBase, TestRunArtifactPacket, testRunDeadline } from '../agent-tools/testing/run-artifacts';
 
 describe('historical Stripe configuration construction proof', () => {
   // Exact measured dialect from canonical archive SHA06f909e2, call25vdj.
@@ -1656,6 +1657,59 @@ describe('secret census producer adapters', () => {
       const result = await affectedTestCacheCensusProducer(home);
       expect(result.declarations.map(entry => entry.producer)).toEqual(['affected-tests-duration-history']);
     } finally { vi.unstubAllEnvs(); await rm(home, { recursive: true, force: true }); }
+  });
+  it('preserves real test-run packets in known homes and the pinned evidence root without claiming siblings', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'testing-evidence-census-'));
+    const ordinary = join(home, '.papercusp');
+    const registered = join(home, 'registered');
+    const unregistered = join(home, 'unregistered');
+    const environment = { PAPERCUSP_HOME: ordinary, VH_EVIDENCE_ROOT_BASE: join(home, 'offload') };
+    try {
+      const bases = [ordinary, registered, unregistered].map(directory =>
+        defaultTestRunArtifactBase({ PAPERCUSP_HOME: directory }, home));
+      bases.push(defaultTestRunArtifactBase(environment, home));
+      const packets = bases.map((base, index) => new TestRunArtifactPacket(`fixture-${index}`, home, testRunDeadline(1000), base));
+      for (const packet of packets) packet.write('proof.json', { opaque: 'retained fixture' });
+      const before = await Promise.all(packets.map(packet => readFile(join(packet.paths.directory, 'proof.json'), 'utf8')));
+      await writeFile(join(ordinary, 'test-artifacts', 'foreign.txt'), 'unproven sibling');
+      await mkdir(join(ordinary, 'test-artifacts-copy'));
+      await writeFile(join(ordinary, 'test-artifacts-copy', 'manifest.json'), '{}');
+      const result = await runtimeSidefileCensusProducer(home, environment, [], [registered, registered]);
+      const evidence = result.declarations.filter(entry => entry.producer === 'testing-run-retained-evidence');
+      expect(evidence.filter(entry => entry.retainedSubtree)).toHaveLength(3);
+      expect(evidence.every(entry => entry.classification === 'state' && !entry.prune)).toBe(true);
+      expect(result.roots.some(root => root.path.startsWith(unregistered))).toBe(false);
+      const census = await collectStateCensus({ ...result, readCatalogs: async () => [] });
+      expect(census.representedSubtrees).toHaveLength(3);
+      expect(census.residue.map(entry => entry.name).sort()).toEqual([
+        'test-artifacts-copy', 'test-artifacts-copy/manifest.json', 'test-artifacts/foreign.txt',
+      ]);
+      expect(await Promise.all(packets.map(packet => readFile(join(packet.paths.directory, 'proof.json'), 'utf8')))).toEqual(before);
+      expect(census.ok).toBe(false);
+    } finally { await rm(home, { recursive: true, force: true }); }
+  });
+  it('does not infer test evidence ownership through linked roots or absent directories', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'linked-testing-evidence-census-'));
+    const ordinary = join(home, '.papercusp');
+    const target = join(home, 'target');
+    const owned = async () => (await runtimeSidefileCensusProducer(home, {})).declarations
+      .filter(entry => entry.producer === 'testing-run-retained-evidence');
+    try {
+      await mkdir(ordinary);
+      expect(await owned()).toEqual([]);
+      await mkdir(join(target, 'testing-run'), { recursive: true });
+      await symlink(target, join(ordinary, 'test-artifacts'));
+      expect(await owned()).toEqual([]);
+      await rm(join(ordinary, 'test-artifacts'));
+      await mkdir(join(ordinary, 'test-artifacts'));
+      await symlink(join(target, 'testing-run'), join(ordinary, 'test-artifacts', 'testing-run'));
+      expect(await owned()).toEqual([]);
+      await rm(join(ordinary, 'test-artifacts'), { recursive: true });
+      await mkdir(join(ordinary, 'test-artifacts', 'testing-run'), { recursive: true });
+      await rename(ordinary, `${ordinary}-retained`);
+      await symlink(`${ordinary}-retained`, ordinary);
+      expect(await owned()).toEqual([]);
+    } finally { await rm(home, { recursive: true, force: true }); }
   });
   it('retains runtime writer directories under the relocated active workspace without pruning credentials or diagnostics', async () => {
     const result = runtimeRetainedCensusProducer();

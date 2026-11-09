@@ -97,7 +97,8 @@ function observedBuildFixture(extraScript = '') {
 }
 
 function loadedFixture(source?: string, admit = true, buildObservationOnly = false, duplicatePreload = false,
-  schema?: Record<string, string>, loaderCensus?: { events: number; bytes: number } | { batches: number; bytes: number }) {
+  schema?: Record<string, string>, loaderCensus?: { events: number; bytes: number } | { batches: number; bytes: number },
+  termination?: 'SIGKILL') {
   let f: ReturnType<typeof fixture>;
   if (buildObservationOnly) {
     const observed = observedBuildFixture(source === undefined ? '' : 'cp host-source.mjs "$2"\n');
@@ -132,10 +133,15 @@ function loadedFixture(source?: string, admit = true, buildObservationOnly = fal
     encoding: 'utf8', timeout: 15_000,
   });
   expect(child.error).toBeUndefined();
-  expect(child.status, child.stderr).toBe(0);
+  expect(child.status, child.stderr).toBe(termination ? null : 0);
+  if (termination) expect(child.signal).toBe(termination);
+  const terminalKernel = termination ? readdirSync(traceRoot).filter(name => name.endsWith('.json'))
+    .map(name => JSON.parse(readFileSync(join(traceRoot, name), 'utf8')))
+    .find(row => row.event === 'node-entry')?.kernelProcessIdentity : undefined;
   const options = { ...f.options, traceOut, pid: child.pid, startedAtMs, finishedAtMs: Date.now(),
     runId: environment.PAPERCUSP_TEST_RUN_GROUP,
     configuration: captureConfigurationSnapshot(environment), loaderCensus,
+    ...(termination ? { termination: { code: child.status, signal: child.signal }, kernelProcessIdentity: terminalKernel } : {}),
     ...(buildObservationOnly ? { preparationOnly: true as const, buildObservationOnly,
       receiptPath: join(f.dir, 'prepare/operator-api-preflight.json') } : {}) };
   if (admit && !duplicatePreload) {
@@ -145,7 +151,7 @@ function loadedFixture(source?: string, admit = true, buildObservationOnly = fal
     // Build-only receipts have no planned external-resolution contract. Their
     // actual returned edges are tested separately against retained source and
     // dependency bytes, without qualifying preparation or import closure.
-    if (!buildObservationOnly) expect(baseline.resolutions).toMatchObject({ status: 'bound', gaps: [] });
+    if (!buildObservationOnly && !termination) expect(baseline.resolutions).toMatchObject({ status: 'bound', gaps: [] });
   }
   const rows = readdirSync(traceRoot).filter(name => name.endsWith('.json'))
     .map(name => ({ name, row: JSON.parse(readFileSync(join(traceRoot, name), 'utf8')) }));
@@ -170,6 +176,21 @@ function loadedFixture(source?: string, admit = true, buildObservationOnly = fal
 }
 
 describe('committed reader loader-return source binding', () => {
+  it('binds a self-kill census using a separate parent result while retaining shutdown qualification gaps', () => {
+    const census = { batches: 128, bytes: 16 * 1024 ** 2 };
+    const f = loadedFixture("process.kill(process.pid, 'SIGKILL');", true, false, false,
+      undefined, census, 'SIGKILL');
+    expect(f.observe()).toMatchObject({ status: 'bound', exitObserved: false,
+      engineExecution: { status: 'observed' }, resolutions: { status: 'unknown' },
+      configurationReads: { status: 'unknown' } });
+    expect(observeCommittedReaderLoadedSources({ ...f.options, termination: undefined }))
+      .toMatchObject({ status: 'unknown', gaps: ['native trace population incomplete'] });
+    expect(observeCommittedReaderLoadedSources({ ...f.options, kernelProcessIdentity: 'other-kernel' }))
+      .toMatchObject({ status: 'unknown', gaps: ['native trace population incomplete'] });
+    expect(observeCommittedReaderLoadedSources({ ...f.options, termination: { code: null, signal: 'SIGTERM' } }))
+      .toMatchObject({ status: 'unknown', gaps: ['native trace population incomplete'] });
+  });
+
   it('binds independently enrolled census batches and rejects a missing terminal seal', () => {
     const loaderCensus = { batches: 128, bytes: 16 * 1024 ** 2 };
     const f = loadedFixture(undefined, true, false, false, undefined, loaderCensus);

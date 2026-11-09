@@ -30,6 +30,7 @@ import { stripCommentsAndStrings, stripSqlCommentsAndStrings } from '../../../..
 import { resolveFsMutexLockRoot } from '../../../../scripts/lib/fs-mutex.mjs';
 import { closureDigestManifestPath } from '../../../../scripts/lib/passing-task-verdict-cache.mjs';
 import { PARTIAL_TASK_CHECKPOINT_SCHEMA } from '../../../../scripts/lib/partial-task-resume.mjs';
+import { defaultTestRunArtifactBase } from '../agent-tools/testing/run-artifacts';
 
 /** Compose independent writers without traversing the same physical root twice. */
 export function installedRootCensusProducers() {
@@ -606,6 +607,32 @@ export async function runtimeSidefileCensusProducer(home = homedir(), environmen
   // discovery left in registered or legacy homes after switching workspaces;
   // arbitrary launch working directories are not runtime-home evidence.
   const discoveryHomes = new Set([ordinaryHome, papercuspHome(environment, home), ...runtimeHomes]);
+  // Reuse the test runner's resolver for reports, executed inputs and native
+  // proof. A path switch leaves earlier packets in known runtime homes.
+  // Only the testing-run subtree is opaque retained state; siblings still
+  // need their own producer, and redirected roots prove no ownership.
+  const evidenceLocations = new Map<string, string | undefined>();
+  for (const directory of discoveryHomes) {
+    evidenceLocations.set(defaultTestRunArtifactBase({ PAPERCUSP_HOME: directory }, home), directory);
+  }
+  const selectedEvidence = defaultTestRunArtifactBase(environment, home);
+  if (!evidenceLocations.has(selectedEvidence)) evidenceLocations.set(selectedEvidence, undefined);
+  for (const [base, runtimeHome] of evidenceLocations) {
+    try {
+      if (!(await lstat(base)).isDirectory() || await realpath(base) !== resolve(base)) continue;
+    } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+    const directory = runtimeHome ?? dirname(base);
+    let evidenceRoot = roots.find(candidate => candidate.path === directory);
+    if (!evidenceRoot) { evidenceRoot = { id: `runtime-test-evidence-${roots.length}`, path: directory }; roots.push(evidenceRoot); }
+    const name = relative(directory, base).split(sep).join('/');
+    const producer = 'testing-run-retained-evidence';
+    if (runtimeHome) declarations.push({ kind: 'path', root: evidenceRoot.id,
+      name: dirname(name).split(sep).join('/'), classification: 'state', producer });
+    declarations.push({ kind: 'path', root: evidenceRoot.id, name, classification: 'state', producer,
+      descendants: true, retainedSubtree: {
+        evidenceRef: 'source:packages/operator-core/lib/agent-tools/testing/run-artifacts.ts#defaultTestRunArtifactBase',
+      } });
+  }
   // serve.ts and embedded-postgres-server write these exact host-home files.
   // Discovery includes bearer/DSN credentials, even though its process address
   // will need regeneration after transfer. Never downgrade it to disposable cache.

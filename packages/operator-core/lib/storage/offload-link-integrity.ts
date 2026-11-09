@@ -7,7 +7,7 @@
  * quiescence when a regular file has another hard-link pathname outside the tree.
  */
 import { execFile } from 'node:child_process';
-import { lstat, opendir, readlink, realpath } from 'node:fs/promises';
+import { lstat, opendir, readdir, readlink, realpath } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 
@@ -70,7 +70,15 @@ async function assertNoTrackedSource(sourceRoot: string, options: OffloadLinkSca
   for (let ancestor = logicalRoot; ; ancestor = dirname(ancestor)) {
     options.signal?.throwIfAborted();
     let repository = false;
-    try { await lstat(join(ancestor, '.git')); repository = true; }
+    try {
+      const marker = join(ancestor, '.git');
+      const metadata = await lstat(marker);
+      // Match committed-source-loader's narrow exemption: home ignore tooling
+      // may create only .git/info/exclude without creating a checkout. Keep
+      // damaged repositories and malformed worktree gitfiles fail-closed.
+      const entries = metadata.isDirectory() ? await readdir(marker) : null;
+      repository = entries === null || entries.length !== 1 || entries[0] !== 'info';
+    }
     catch (error) {
       if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
     }

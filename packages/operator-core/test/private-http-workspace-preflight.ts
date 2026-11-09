@@ -1213,6 +1213,8 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
   kernelProcessIdentity?: string; runId?: string; buildObservationOnly?: boolean;
   configuration?: ConfigurationSnapshot;
   loaderCensus?: { events: number; bytes: number } | { batches: number; bytes: number };
+  /** Parent-owned result, never inferred from an in-process request receipt. */
+  termination?: { code: number | null; signal: string | null };
 }) {
   const closureBytes = readFileSync(o.receiptPath), sourceBytes = readFileSync(o.sourceReceiptPath);
   const preparation = (o.buildObservationOnly ? qualifyObservedPrivateApiBuild : qualifyCommittedReaderSource)({ ...o,
@@ -1276,7 +1278,10 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
   try {
     assert.ok(Number.isSafeInteger(o.pid) && o.pid > 0 && Number.isSafeInteger(o.startedAtMs)
       && Number.isSafeInteger(o.finishedAtMs) && o.startedAtMs <= o.finishedAtMs, 'invalid observation window');
-    const trace = readNativeProcessTraceArtifacts(o.traceOut, o.startedAtMs, o.finishedAtMs);
+    const trace = readNativeProcessTraceArtifacts(o.traceOut, o.startedAtMs, o.finishedAtMs, {
+      terminations: o.termination && o.kernelProcessIdentity ? [{ ...o.termination,
+        pid: o.pid, kernelProcessIdentity: o.kernelProcessIdentity }] : [],
+    });
     result.population = trace.population;
     assert.ok(trace.population.complete, 'native trace population incomplete');
     const own = trace.rows.filter(({ row }) => row.pid === o.pid);

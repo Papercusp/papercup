@@ -95,8 +95,12 @@ function withNativeArtifactFile(file, byteLength, consume) {
 
 /** Read the existing native OUT event protocol with the receipt writer's bounds.
  * A truncated census is useful diagnostically but cannot establish custody.
+ * @param {string} out
+ * @param {number} [startedAtMs]
+ * @param {number} [finishedAtMs]
+ * @param {{ terminations?: Array<{ pid: number, kernelProcessIdentity: string, code: number | null, signal: string | null }> }} [options]
  */
-export function readNativeProcessTraceArtifacts(out, startedAtMs = 0, finishedAtMs = Number.MAX_SAFE_INTEGER) {
+export function readNativeProcessTraceArtifacts(out, startedAtMs = 0, finishedAtMs = Number.MAX_SAFE_INTEGER, options = {}) {
   const path = `${out}.native-processes`;
   if (!lstatSync(path).isDirectory() || lstatSync(path).isSymbolicLink() || realpathSync(path) !== resolve(path))
     throw new Error("redirected native process trace");
@@ -194,6 +198,25 @@ export function readNativeProcessTraceArtifacts(out, startedAtMs = 0, finishedAt
         }
       }
       const end = group.ends[0];
+      if (end?.termination?.phase === 'self-kill-request') {
+        const request = rows.filter(({ row }) => row.event === 'node-self-kill-request' &&
+          row.processIdentity === end.processIdentity && row.kernelProcessIdentity === end.kernelProcessIdentity &&
+          row.pid === end.pid && row.threadId === end.threadId && row.runGroupId === end.runGroupId &&
+          row.atMs <= end.atMs && row.termination?.requestId === end.termination.requestId);
+        const matched = typeof end.kernelProcessIdentity === 'string' && end.kernelProcessIdentity.length > 0 &&
+          end.termination.pid === end.pid && end.termination.signal === 'SIGKILL' &&
+          typeof end.termination.requestId === 'string' && end.termination.requestId.length > 0 &&
+          request.length === 1 && options.terminations?.some(terminal =>
+            terminal.pid === end.pid && terminal.kernelProcessIdentity === end.kernelProcessIdentity &&
+            terminal.code === null && terminal.signal === 'SIGKILL');
+        if (!matched) population.truncatedBy ??= 'module-census-terminal-unverified';
+      } else if (end && (end.termination !== undefined ||
+          !rows.some(({ row }) => row.event === 'node-exit' && row.exitListenersComplete === true &&
+            row.processIdentity === end.processIdentity && row.kernelProcessIdentity === end.kernelProcessIdentity &&
+            row.pid === end.pid && row.threadId === end.threadId && row.runGroupId === end.runGroupId &&
+            row.atMs >= end.atMs))) {
+        population.truncatedBy ??= 'module-census-terminal-unverified';
+      }
       if (group.ends.length !== 1 || !end || end.stopped !== false ||
           end.events !== count || end.bytes !== size || end.batches !== batches.length ||
           end.batches > enrollment.batches || size > enrollment.bytes || end.sha256 !== hash.digest('hex'))
