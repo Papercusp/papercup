@@ -166,13 +166,47 @@ export interface ContextCandidate {
     'package' | 'memory' | 'corpus' | 'granted' | 'code' | 'failure' | 'ambient';
   required: boolean;
   text: string;
+  /** Producer identities inside an atomic block. These do not authorize a
+   * partial cursor ACK or derive authority from the rendered prose. */
+  sourceUnits?: readonly ContextCandidateSource[];
 }
 
-export interface ContextCandidateReceipt extends Omit<ContextCandidate, 'text'> {
+export interface ContextCandidateSource {
+  sourceRef: string;
+  revision: string;
+  class: ContextCandidate['class'];
+  /** Registry priority, when the producer has one. */
+  order?: number;
+  rendered: string;
+}
+
+export interface ContextSourceReceipt extends Omit<ContextCandidateSource, 'rendered'> {
+  fragmentSha256: string;
+  bytes: number;
+}
+
+function contextSourceReceipts(candidate: ContextCandidate): ContextSourceReceipt[] | undefined {
+  return candidate.sourceUnits?.map(source => {
+    if (!source.sourceRef || !source.revision || !source.rendered ||
+        !Object.hasOwn(CONTEXT_CLASS_ORDER, source.class) ||
+        (source.order !== undefined && (!Number.isSafeInteger(source.order) || source.order < 0)) ||
+        !(`\n${candidate.text}\n`).includes(`\n${source.rendered}\n`)) {
+      throw new Error('Context source identity must name a complete rendered unit in its atomic block');
+    }
+    return { sourceRef: source.sourceRef, revision: source.revision, class: source.class,
+      ...(source.order === undefined ? {} : { order: source.order }),
+      fragmentSha256: createHash('sha256').update(source.rendered, 'utf8').digest('hex'),
+      bytes: Buffer.byteLength(source.rendered, 'utf8') };
+  });
+}
+
+export interface ContextCandidateReceipt extends Omit<ContextCandidate, 'text' | 'sourceUnits'> {
   index: number;
   fragmentSha256: string;
   bytes: number;
   reason: 'selected' | 'empty' | 'budget' | 'mandatory-overflow';
+  /** Each member inherits this atomic candidate's selection/omission reason. */
+  sourceUnits?: ContextSourceReceipt[];
 }
 
 export interface ContextPackingReceipt {
@@ -208,6 +242,7 @@ export function packContextCandidates(input: {
     required: candidate.required, index,
     fragmentSha256: createHash('sha256').update(candidate.text, 'utf8').digest('hex'),
     bytes: Buffer.byteLength(candidate.text, 'utf8'), reason: candidate.text ? 'budget' : 'empty',
+    ...(candidate.sourceUnits ? { sourceUnits: contextSourceReceipts(candidate) } : {}),
   }));
   const ordered = rows.filter(row => row.bytes > 0).sort((a, b) =>
     Number(b.required) - Number(a.required) || CONTEXT_CLASS_ORDER[a.class] - CONTEXT_CLASS_ORDER[b.class] || a.index - b.index);
@@ -264,6 +299,19 @@ export function validateContextPackingResult(result: ReturnType<typeof packConte
         row.fragmentSha256 !== createHash('sha256').update(source.text, 'utf8').digest('hex')) {
       errors.push(`candidate-identity:${index}`); continue;
     }
+    try {
+      const expectedSources = contextSourceReceipts(source);
+      if ((expectedSources === undefined) !== (row.sourceUnits === undefined) ||
+          expectedSources?.length !== row.sourceUnits?.length ||
+          expectedSources?.some((expectedSource, sourceIndex) => {
+            const actual = row.sourceUnits?.[sourceIndex];
+            return !actual || actual.sourceRef !== expectedSource.sourceRef || actual.revision !== expectedSource.revision ||
+              actual.class !== expectedSource.class || actual.order !== expectedSource.order ||
+              actual.fragmentSha256 !== expectedSource.fragmentSha256 || actual.bytes !== expectedSource.bytes;
+          })) {
+        errors.push(`source-identities:${index}`);
+      }
+    } catch { errors.push(`source-identities:${index}`); }
     const reason = !source.text ? 'empty' : receipt.status === 'mandatory-overflow' ? 'mandatory-overflow'
       : selected.has(index) ? 'selected' : 'budget';
     if (row.reason !== reason) errors.push(`candidate-reason:${index}`);

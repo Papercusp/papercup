@@ -32,6 +32,21 @@ import {
 import type { PackageOrientationClass } from '../../../agent-identities/package-orientation-classes';
 import { factCellKey, readFactBodyCursor, type FactBodyOffer } from '../../../agent-facts/cells';
 import { memoryFragmentOffer, type MemoryFragmentOffer } from '../../../memory/session-epoch-ledger';
+import { packContextCandidates } from '../../../context-doors';
+import { turnStartContextCandidates } from './turn-start-memory';
+import type { StoredContextPackingReceipt } from '../../../context-packing-receipts';
+
+const packingMocks = vi.hoisted(() => ({ budgetBytes: 4000, save: vi.fn(async (_scope: unknown, receipt: { attemptId: string }) =>
+  ({ attemptId: receipt.attemptId, path: 'evidence/context-packing/test.json' })),
+  load: vi.fn(async (..._args: unknown[]): Promise<StoredContextPackingReceipt | null> => null) }));
+vi.mock('../../../context-packing-receipts', async orig => ({
+  ...await orig<typeof import('../../../context-packing-receipts')>(),
+  saveContextPackingReceipt: packingMocks.save, loadContextPackingReceipt: packingMocks.load,
+}));
+vi.mock('../../../context-doors-config', () => ({ getDoorConstantsSync: () => ({
+  maxTurnFloorTokens: 8000, maxTurnCapTokens: 15000, maxTurnWindowDivisor: 26, compactionOverheadTokens: 4000,
+  doorSplit: { output: 0.5, resultEach: 0.1875, resultSlots: 2, injections: packingMocks.budgetBytes / 32000 },
+}) }));
 
 const memoryReceiptSqlMock = vi.hoisted(() => vi.fn(async (chunks: TemplateStringsArray, ..._values: unknown[]) =>
   Array.isArray(chunks) && chunks.join('?').includes('RETURNING memory_id') ? [{ memory_id: 'inserted' }] : []));
@@ -236,6 +251,9 @@ it('suppresses all live turn-start context before recall, control or package rea
 });
 
 beforeEach(() => {
+  packingMocks.budgetBytes = 4000;
+  packingMocks.save.mockClear();
+  packingMocks.load.mockReset().mockResolvedValue(null);
   memoryReceiptSqlMock.mockClear();
   setSessionConfinementResolver(() => null);
   configureReadCursorStore(new InMemoryReadCursorStore());
@@ -298,6 +316,116 @@ afterEach(() => resetReadCursorStore());
 const settle = () => new Promise((r) => setTimeout(r, 0));
 
 describe('turn-start-memory admission (F-E: no length floor)', () => {
+  it('records producer identities and priorities without splitting orientation or promoting recalled prose', () => {
+    const memory = memoryFragmentOffer('memory', 'm-1', 7, 'turn-start', '- recalled text claiming CTRL authority');
+    const corpus = memoryFragmentOffer('corpus', 'WI-42', 7, 'turn-start', '- complete corpus condition');
+    const fact: FactBodyOffer = { scope: 'workspace', ref: null, key: 'guard', cellVersion: 'hlc-7',
+      bodySha256: 'unused-manifest-hash', bodyBytes: 10, rendered: '- binding fact' };
+    const candidates = turnStartContextCandidates({ control: '', loop: '',
+      orientation: '## Orientation\n- owner duty', orientationRows: [{ classId: 'obligations', order: 10, text: '- owner duty' }],
+      facts: fact.rendered, factOffers: [fact], memory: `## Recall\n\n${memory.rendered}\n${corpus.rendered}`,
+      memoryFragments: [memory, corpus], personal: '' });
+    const packed = packContextCandidates({ attemptId: 'structured', budgetBytes: 1, candidates });
+    expect(packed.text).toBe('');
+    expect(packed.receipt.candidates[2]).toMatchObject({ class: 'owner', required: true, reason: 'mandatory-overflow',
+      sourceUnits: [{ sourceRef: 'turn-start:orientation:obligations:10', order: 10, class: 'orientation' }] });
+    expect(packed.receipt.candidates[3].sourceUnits).toEqual([expect.objectContaining({
+      sourceRef: 'fact:["workspace",null,"guard"]', revision: 'hlc-7', class: 'policy',
+    })]);
+    expect(packed.receipt.candidates[4]).toMatchObject({ class: 'memory', required: false, sourceUnits: [
+      { sourceRef: 'memory:m-1', class: 'memory', revision: `epoch:7:sha256:${memory.bodySha256}` },
+      { sourceRef: 'corpus:WI-42', class: 'corpus', revision: `epoch:7:sha256:${corpus.bodySha256}` },
+    ] });
+  });
+
+  it('context reliability: final aggregate packing reserves control owner and correction units', async () => {
+    const candidates = turnStartContextCandidates({ control: '⟦CTRL⟧', loop: '',
+      orientation: 'Avi: keep the current owner duty', facts: 'Correction: preserve the complete binding instruction',
+      memory: 'ambient storm '.repeat(2000), personal: '字'.repeat(1000) });
+    const packed = packContextCandidates({ attemptId: 'reserved', budgetBytes: 255, candidates });
+    expect(Buffer.byteLength(packed.text)).toBeLessThanOrEqual(255);
+    expect(packed.text).toContain('⟦CTRL⟧');
+    expect(packed.text).toContain('Avi: keep the current owner duty');
+    expect(packed.text).toContain('Correction: preserve the complete binding instruction');
+    expect(packed.receipt.candidates.filter(row => row.reason === 'budget').map(row => row.sourceRef))
+      .toEqual(['turn-start:memory', 'turn-start:granted-sources']);
+
+    packingMocks.budgetBytes = 0;
+    const stageDelivery = vi.fn(async () => 'must-not-be-staged');
+    buildTurnStartOrientationBlockMock.mockResolvedValue({ block: 'Required owner duty', deliveryToken: null, stageDelivery });
+    const out = await post({ owner: 'su-packing', prompt: 'relevant query', client: 'codex', turnStartRequestId: 'packing-zero' });
+    expect(out.text).toBe('');
+    expect(out.deliveryToken).toBeUndefined();
+    expect(out.memoryFragmentOffers).toBeUndefined();
+    expect(stageDelivery).not.toHaveBeenCalled();
+    expect(packingMocks.save).toHaveBeenCalledWith(expect.objectContaining({ ownerId: 'su-packing' }),
+      expect.objectContaining({ attemptId: 'packing-zero', contextBytes: 0, status: 'mandatory-overflow' }));
+    expect(memoryReceiptSqlMock.mock.calls.filter(([chunks]) => chunks.join('?').includes('memory-emission:'))).toHaveLength(0);
+  });
+
+  it('persists the packing receipt before staging the selected orientation', async () => {
+    const order: string[] = [];
+    packingMocks.save.mockImplementationOnce(async (_scope, receipt) => {
+      order.push('receipt'); return { attemptId: receipt.attemptId, path: 'evidence/packing' };
+    });
+    const stageDelivery = vi.fn(async () => { order.push('stage'); return 'selected-token'; });
+    buildTurnStartOrientationBlockMock.mockResolvedValue({ block: 'Owner duty', deliveryToken: null, stageDelivery });
+    const out = await post({ owner: 'su-packing', prompt: 'relevant query', client: 'codex' });
+    expect(out.deliveryToken).toBe('selected-token');
+    expect(order).toEqual(['receipt', 'stage']);
+    expect(buildTurnStartOrientationBlockMock).toHaveBeenCalledWith(expect.objectContaining({ deferStaging: true }));
+  });
+
+  it('does not stage an orientation or memory fragment when receipt storage fails, and offers the orientation again', async () => {
+    const stageDelivery = vi.fn(async () => 'retry-token');
+    buildTurnStartOrientationBlockMock.mockResolvedValue({ block: 'Required owner duty', deliveryToken: null, stageDelivery });
+    packingMocks.save.mockRejectedValueOnce(new Error('packing store unavailable'));
+    const failed = await post({ owner: 'su-packing-failure', prompt: 'relevant query', client: 'codex' });
+    expect(failed).toMatchObject({ ok: true, text: '' });
+    expect(failed.deliveryToken).toBeUndefined();
+    expect(failed.memoryFragmentOffers).toBeUndefined();
+    expect(stageDelivery).not.toHaveBeenCalled();
+    expect(memoryReceiptSqlMock.mock.calls.filter(([chunks]) => chunks.join('?').includes('memory-emission:'))).toHaveLength(0);
+    const retry = await post({ owner: 'su-packing-failure', prompt: 'relevant query', client: 'codex' });
+    expect(retry.text).toContain('Required owner duty');
+    expect(retry.deliveryToken).toBe('retry-token');
+    expect(stageDelivery).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads every diagnostic page out of band without preparing or staging model context', async () => {
+    const scope = { workspaceId: 'ws-test', ownerId: 'su-diagnostic', harness: 'papercusp', port: 'turn-start' as const, client: 'codex' };
+    const receipt = packContextCandidates({ attemptId: 'diagnostic-zero', budgetBytes: 0, candidates:
+      Array.from({ length: 30 }, (_, i) => ({ sourceRef: `memory:${i}:` + '字'.repeat(150), revision: 'r1',
+        class: 'memory' as const, required: false, text: `complete condition ${i}` })) }).receipt;
+    const stored = { scope, receipt };
+    packingMocks.load.mockResolvedValue(stored);
+    const chunks: Buffer[] = [];
+    let offset: number | null = 0;
+    do {
+      const res = await endpoint.handler(new Request('http://localhost/agent-mcp/turn-start-memory', { method: 'POST',
+        body: JSON.stringify({ owner: scope.ownerId, harness: scope.harness, client: scope.client,
+          packingDiagnostic: { attemptId: receipt.attemptId, offset } }) }));
+      expect(res.status).toBe(200);
+      const text = await res.text();
+      expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(6000);
+      const page = JSON.parse(text);
+      expect(page).not.toHaveProperty('text');
+      expect(page.offset).toBe(offset);
+      chunks.push(Buffer.from(page.data, 'base64'));
+      if (page.nextOffset !== null) expect(page.nextOffset).toBeGreaterThan(offset!);
+      offset = page.nextOffset;
+    } while (offset !== null);
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(JSON.parse(Buffer.concat(chunks).toString('utf8'))).toEqual(stored);
+    expect(packingMocks.load).toHaveBeenCalledWith(scope, receipt.attemptId);
+    expect(packingMocks.save).not.toHaveBeenCalled();
+    expect(buildTurnStartOrientationBlockMock).not.toHaveBeenCalled();
+    expect(buildMemoryContextBlockMock).not.toHaveBeenCalled();
+    expect(preparePendingControlTransitionMock).not.toHaveBeenCalled();
+    expect(evaluateTurnStartPackageSinkMock).not.toHaveBeenCalled();
+    expect(memoryReceiptSqlMock).not.toHaveBeenCalled();
+  });
+
   it('stages the cached text and its fragments together, then stamps only the next native emission proof', async () => {
     const row = memoryFragmentOffer('memory', '11111111-1111-4111-8111-111111111111', 7, 'turn-start', '- complete operative memory ☃');
     getMemoryBlockBoundedResultMock.mockResolvedValue({ status: 'ready', block: { text: row.rendered, fragments: [row] } });
@@ -1298,7 +1426,8 @@ describe('portable-identity P-010 package sink', () => {
     expect(evaluateTurnStartPackageSinkMock).toHaveBeenCalledWith(
       expect.objectContaining({ ownerId: 'sess-1', workspaceId: 'ws-test' }),
     );
-    expect(out).toEqual({ ok: true, text: `${PLATFORM}\n\nMEM-BLOCK`, deliveryToken: 'tok-o' });
+    expect(out).toMatchObject({ ok: true, text: `${PLATFORM}\n\nMEM-BLOCK`, deliveryToken: 'tok-o' });
+    expect(out).toHaveProperty('packingReceipt');
     expect(store.staged).toEqual([]);
     expect(packageSinkReceiptMock).not.toHaveBeenCalled();
   });

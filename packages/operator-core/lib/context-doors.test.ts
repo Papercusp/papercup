@@ -12,6 +12,7 @@ import {
   MAX_TURN_CAP_TOKENS,
   MAX_TURN_FLOOR_TOKENS,
   packContextCandidates,
+  validateContextPackingResult,
   type ContextCandidate,
 } from './context-doors';
 
@@ -135,6 +136,60 @@ describe('capInjectionText (P-006 leg (b) — the pure door split)', () => {
 describe('final context byte packing', () => {
   const unit = (sourceRef: string, text: string, cls: ContextCandidate['class'] = 'ambient', required = false): ContextCandidate =>
     ({ sourceRef, text, revision: 'r1', class: cls, required });
+
+  it('retains nested producer identities when an atomic block is omitted, without storing their prose', () => {
+    const candidates: ContextCandidate[] = [{ ...unit('recall', '## Recall\n\n- private memory ☃\n- complete corpus condition', 'memory'),
+      sourceUnits: [
+        { sourceRef: 'memory:m1', revision: 'm-rev', class: 'memory', rendered: '- private memory ☃' },
+        { sourceRef: 'corpus:WI-42', revision: 'c-rev', class: 'corpus', rendered: '- complete corpus condition' },
+      ] }];
+    const input = { attemptId: 'nested', budgetBytes: 1, candidates };
+    const result = packContextCandidates(input);
+    expect(result.text).toBe('');
+    expect(result.receipt.candidates[0]).toMatchObject({ reason: 'budget', sourceUnits: [
+      { sourceRef: 'memory:m1', revision: 'm-rev', class: 'memory', bytes: Buffer.byteLength('- private memory ☃') },
+      { sourceRef: 'corpus:WI-42', revision: 'c-rev', class: 'corpus' },
+    ] });
+    expect(JSON.stringify(result.receipt)).not.toContain('private memory');
+    expect(validateContextPackingResult(result, input)).toEqual({ valid: true, errors: [] });
+    const reordered = structuredClone(result);
+    reordered.receipt.candidates[0].sourceUnits![0] = Object.fromEntries(
+      Object.entries(reordered.receipt.candidates[0].sourceUnits![0]).reverse(),
+    ) as typeof reordered.receipt.candidates[0]['sourceUnits'] extends (infer T)[] | undefined ? T : never;
+    expect(validateContextPackingResult(reordered, input)).toEqual({ valid: true, errors: [] });
+    for (const field of ['sourceRef', 'revision', 'class', 'bytes', 'fragmentSha256', 'order']) {
+      const forged = structuredClone(result);
+      Object.assign(forged.receipt.candidates[0].sourceUnits![0], { [field]: field === 'bytes' || field === 'order' ? 900 : 'forged' });
+      expect(validateContextPackingResult(forged, input).errors).toContain('source-identities:0');
+    }
+    const omitted = structuredClone(result);
+    omitted.receipt.candidates[0].sourceUnits!.pop();
+    expect(validateContextPackingResult(omitted, input).errors).toContain('source-identities:0');
+    candidates[0].sourceUnits![0].sourceRef = 'changed-after-packing';
+    expect(result.receipt.candidates[0].sourceUnits![0].sourceRef).toBe('memory:m1');
+  });
+
+  it('refuses source metadata for an absent, sliced, empty or embedded operative unit', () => {
+    for (const rendered of ['missing row', 'complete', '', 'condition']) {
+      expect(() => packContextCandidates({ attemptId: 'bad-membership', budgetBytes: 1000,
+        candidates: [{ ...unit('recall', '## Recall\n\n- complete condition'), sourceUnits: [
+          { sourceRef: 'memory:m1', revision: 'v1', class: 'memory', rendered },
+        ] }] })).toThrow('complete rendered unit');
+    }
+  });
+
+  it('keeps registry order as provenance while selecting or omitting the complete cursor block', () => {
+    const candidate: ContextCandidate = { ...unit('orientation', '## Orientation\n- duty\n- recheck', 'owner', true),
+      sourceUnits: [{ sourceRef: 'orientation:obligations', revision: 'r2', class: 'orientation', order: 10, rendered: '- duty' },
+        { sourceRef: 'orientation:checks', revision: 'r3', class: 'orientation', order: 20, rendered: '- recheck' }] };
+    const bytes = Buffer.byteLength(candidate.text);
+    for (const budgetBytes of [bytes - 1, bytes]) {
+      const result = packContextCandidates({ attemptId: 'atomic', budgetBytes, candidates: [candidate] });
+      expect(result.text).toBe(budgetBytes === bytes ? candidate.text : '');
+      expect(result.receipt.candidates[0].sourceUnits!.map(row => row.order)).toEqual([10, 20]);
+      expect(result.receipt.candidates[0].reason).toBe(budgetBytes === bytes ? 'selected' : 'mandatory-overflow');
+    }
+  });
 
   it.each([0, 1, 255, 4096, 6000, 24000, computeTurnDoors(204_800).injections * 4])(
     'reserves complete required units under byte budget %i, including multibyte framing', budgetBytes => {

@@ -4666,6 +4666,9 @@ export async function bindTurnStartIdentityOutputs(input: {
 export interface TurnStartOrientationDelivery {
   /** The rendered block; '' on every failure and every silence case. */
   block: string;
+  /** The exact producer rows retained by composition. The block and its
+   * delivery cursor remain atomic even when a sink records row provenance. */
+  rows?: readonly OrientationRow[];
   /**
    * Set only when the caller asked for ACK-ON-PROOF and `block` was staged: the
    * caller echoes it back as `confirmedDeliveryToken` once it has emitted `block`.
@@ -4929,8 +4932,8 @@ export async function buildTurnStartOrientationBlock(input: {
     // promote anything; reporting none keeps the caller's ledger honest.
     return staged && deliveryToken ? deliveryToken : null;
     };
-    if (input.deferStaging) return { block, deliveryToken: null, stageDelivery };
-    return { block, deliveryToken: await stageDelivery() };
+    if (input.deferStaging) return { block, rows: composed.rows, deliveryToken: null, stageDelivery };
+    return { block, rows: composed.rows, deliveryToken: await stageDelivery() };
   } catch {
     // Fail-soft by contract — the endpoint must never surface an error into a turn.
     return NO_ORIENTATION;

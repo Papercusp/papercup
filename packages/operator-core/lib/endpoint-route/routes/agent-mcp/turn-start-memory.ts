@@ -33,7 +33,7 @@
  */
 import { defineTool } from '@papercusp/agent-mcp';
 import { createHash, randomUUID } from 'node:crypto';
-import { computeTurnDoors, packContextCandidates, type ContextCandidate } from '../../../context-doors';
+import { computeTurnDoors, packContextCandidates, type ContextCandidate, type ContextCandidateSource } from '../../../context-doors';
 import { getDoorConstantsSync } from '../../../context-doors-config';
 import { saveContextPackingReceipt, loadContextPackingReceipt, pageContextPackingReceipt } from '../../../context-packing-receipts';
 import type { ActivationRevision } from '../../../session-activation';
@@ -216,16 +216,30 @@ export function contextInjectionBudgetBytes(ownerId: string): number {
 
 export function turnStartContextCandidates(parts: {
   control: string; loop: string; orientation: string; facts: string; memory: string; personal: string; packages?: string;
+  orientationRows?: readonly import('../../../turn-start-orientation').OrientationRow[];
+  memoryFragments?: readonly MemoryFragmentOffer[];
+  factOffers?: readonly import('../../../agent-facts/cells').FactBodyOffer[];
 }): ContextCandidate[] {
-  const unit = (sourceRef: string, cls: ContextCandidate['class'], required: boolean, text: string): ContextCandidate => ({
+  const unit = (sourceRef: string, cls: ContextCandidate['class'], required: boolean, text: string,
+    sourceUnits?: ContextCandidateSource[]): ContextCandidate => ({
     sourceRef, class: cls, required, text,
     revision: createHash('sha256').update(text).digest('hex'),
+    ...(sourceUnits ? { sourceUnits } : {}),
   });
   return [unit('turn-start:control', 'control', true, parts.control),
     unit('turn-start:loop-checkpoint', 'loop', true, parts.loop),
-    unit('turn-start:owner-orientation', 'owner', true, parts.orientation),
-    unit('turn-start:binding-facts', 'policy', true, parts.facts),
-    unit('turn-start:memory', 'memory', false, parts.memory),
+    unit('turn-start:owner-orientation', 'owner', true, parts.orientation, parts.orientationRows?.map(row => ({
+      sourceRef: `turn-start:orientation:${row.classId}:${row.order}`, order: row.order, class: 'orientation',
+      revision: createHash('sha256').update(row.text).digest('hex'), rendered: row.text,
+    }))),
+    unit('turn-start:binding-facts', 'policy', true, parts.facts, parts.factOffers?.map(row => ({
+      sourceRef: `fact:${JSON.stringify([row.scope, row.ref, row.key])}`, revision: row.cellVersion,
+      class: 'policy', rendered: row.rendered,
+    }))),
+    unit('turn-start:memory', 'memory', false, parts.memory, parts.memoryFragments?.map(row => ({
+      sourceRef: `${row.kind}:${row.id}`, revision: `epoch:${row.epoch}:sha256:${row.bodySha256}`,
+      class: row.kind, rendered: row.rendered,
+    }))),
     unit('turn-start:granted-sources', 'granted', false, parts.personal),
     unit('turn-start:packages', 'package', false, parts.packages ?? '')];
 }
@@ -1087,8 +1101,11 @@ const turnStartMemory = defineTool({
       // keep that composite as a required whole unit rather than infer a split.
       const appendedPackages = orientationBlock.startsWith(orientation.block)
         ? orientationBlock.slice(orientation.block.length) : '';
+      const preparedMemory = memoryPreparation.value;
       const candidates = turnStartContextCandidates({ control: control.text, loop: loopCheckpoint,
         orientation: appendedPackages ? orientation.block : orientationBlock,
+        orientationRows: orientation.rows, factOffers: factBodies.offers,
+        memoryFragments: preparedMemory?.text === memory ? preparedMemory.fragments : undefined,
         facts: factBodies.text, memory, personal, packages: appendedPackages });
       const packed = packContextCandidates({ attemptId: turnStartRequestId ?? randomUUID(),
         budgetBytes: contextInjectionBudgetBytes(owner), candidates });
@@ -1139,7 +1156,6 @@ const turnStartMemory = defineTool({
         } catch { /* No candidate means no body confirmation; prefer replay. */ }
       }
       let memoryFragmentOffers: MemoryFragmentOffer[] = [];
-      const preparedMemory = memoryPreparation.value;
       if (selected(4) && memory && preparedMemory && preparedMemory.text === memory && preparedMemory.fragments.length) {
         const token = deliveryToken ?? randomUUID();
         try {

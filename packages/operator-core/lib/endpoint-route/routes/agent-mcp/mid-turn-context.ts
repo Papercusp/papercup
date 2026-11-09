@@ -63,7 +63,11 @@ import { takePendingFailureLoopHint, type FailureLoopHint } from '../../../failu
 import { turnStartRespondBy } from './turn-start-memory';
 import { createMemoryWorkDeadline } from '../../../memory/op-deadline';
 import { randomUUID } from 'node:crypto';
-import type { PreparedMemoryBlock, MemoryEmissionConfirmation } from '../../../memory/session-epoch-ledger';
+import { createHash } from 'node:crypto';
+import { packContextCandidates, type ContextCandidate } from '../../../context-doors';
+import { saveContextPackingReceipt, loadContextPackingReceipt, pageContextPackingReceipt } from '../../../context-packing-receipts';
+import { contextInjectionBudgetBytes } from './turn-start-memory';
+import type { PreparedMemoryBlock, MemoryFragmentOffer, MemoryEmissionConfirmation } from '../../../memory/session-epoch-ledger';
 
 /**
  * Query clamp — embed the head of a long command, not a pasted heredoc.
@@ -479,9 +483,23 @@ export function clampToBudget(block: string, budget: number = MID_TURN_BUDGET_CH
  * composition here, at the shared delivery seam, rather than teaching the
  * memory pipeline about failure-loop state or identity rules.
  */
+export function packMidTurnContext(memoryBlock: string, failureHint: string, ruleContext: string, codeIntel = '',
+  budgetBytes = contextInjectionBudgetBytes(''), attemptId = randomUUID(), fragments?: readonly MemoryFragmentOffer[]) {
+  const memory = clampToBudget(memoryBlock).trim();
+  return packContextCandidates({ attemptId, budgetBytes, candidates: [
+    { sourceRef: 'mid-turn:failure-hint', class: 'correction', required: true, text: failureHint },
+    { sourceRef: 'mid-turn:binding-rules', class: 'policy', required: true, text: ruleContext },
+    { sourceRef: 'mid-turn:code-intelligence', class: 'code', required: false, text: codeIntel },
+    { sourceRef: 'mid-turn:memory', class: 'memory', required: false, text: memory,
+      ...(fragments ? { sourceUnits: fragments.filter(row => (`\n${memory}\n`).includes(`\n${row.rendered}\n`)).map(row => ({
+        sourceRef: `${row.kind}:${row.id}`, revision: `epoch:${row.epoch}:sha256:${row.bodySha256}`,
+        class: row.kind, rendered: row.rendered,
+      })) } : {}) },
+  ].map(row => ({ ...row, class: row.class as ContextCandidate['class'], revision: createHash('sha256').update(row.text).digest('hex') })) });
+}
+
 export function composeMidTurnContextText(memoryBlock: string, failureHint: string, ruleContext: string, codeIntel = ''): string {
-  const parts = [failureHint.trim(), ruleContext.trim(), codeIntel.trim(), clampToBudget(memoryBlock).trim()].filter(Boolean);
-  return parts.join('\n\n');
+  return packMidTurnContext(memoryBlock, failureHint, ruleContext, codeIntel).text;
 }
 
 /** The post-tool rule sink's share of the port's 1.5s hook wall. */
@@ -773,6 +791,7 @@ const midTurnContext = defineTool({
       /** Only a native hook with a writable stdout receipt ledger opts in. */
       memoryReceiptMode?: boolean;
       confirmedMemoryDeliveries?: MemoryEmissionConfirmation[];
+      packingDiagnostic?: { attemptId: string; offset?: number };
       /** Bounded, caller-measured P-018 attribution; never inferred here. */
       incidentAttribution?: import('../../../code-intelligence/push-channel').IncidentAttribution;
     };
@@ -808,6 +827,17 @@ const midTurnContext = defineTool({
       workspaceId: contextWorkspace && contextWorkspace !== '*' ? contextWorkspace : activeWorkspaceId() })) {
       recordSuppression('suppressed-ambient-policy');
       return Response.json({ ok: true, text: '' });
+    }
+
+    if (body.packingDiagnostic) {
+      try {
+        const stored = await loadContextPackingReceipt({ workspaceId: await workspaceIdResolved, ownerId: owner,
+          harness: (await resolveMidTurnHarness(body)) || 'operator', port: 'mid-turn', client: body.client ?? '' }, body.packingDiagnostic.attemptId);
+        if (!stored) return Response.json({ ok: false, error: 'packing receipt not found' }, { status: 404 });
+        return new Response(pageContextPackingReceipt(stored, body.packingDiagnostic.offset), {
+          headers: { 'content-type': 'application/json; charset=utf-8' },
+        });
+      } catch { return Response.json({ ok: false, error: 'packing receipt unavailable' }, { status: 400 }); }
     }
 
     // Confirm previous complete writes before every recall/admission branch.
@@ -853,7 +883,18 @@ const midTurnContext = defineTool({
         incidentAttribution: body.incidentAttribution,
         calls: Array.isArray(body.toolCalls) && body.toolCalls.length ? body.toolCalls : [{ tool: body.tool, toolInput: body.toolInput }],
       }).catch(() => ''); // Its own reserved budget: the memory block never shrinks it (P-005).
-      const text = composeMidTurnContextText(prepared?.text ?? '', failureHint, ruleContext, codeIntel);
+      const packed = packMidTurnContext(prepared?.text ?? '', failureHint, ruleContext, codeIntel,
+        contextInjectionBudgetBytes(owner), randomUUID(), prepared?.fragments);
+      let packingReceipt: Awaited<ReturnType<typeof saveContextPackingReceipt>>;
+      try {
+        packingReceipt = await saveContextPackingReceipt({ workspaceId: await workspaceIdResolved,
+          ownerId: owner, harness: (await harnessResolved) || 'operator', port: 'mid-turn', client: body.client ?? '' }, packed.receipt);
+      } catch {
+        // Preparation alone cannot justify emission. Preserve replay eligibility
+        // and the hook's silent failure contract if durable evidence is unavailable.
+        return Response.json({ ok: true, text: '' });
+      }
+      const text = packed.text;
       const respondBy = turnStartRespondBy(arrivedAt, body.wallMs);
       const fragments = prepared?.fragments.filter(row => (`\n${text}\n`).includes(`\n${row.rendered}\n`)) ?? [];
       let delivery: object = {};
@@ -870,7 +911,7 @@ const midTurnContext = defineTool({
       }
       return Response.json({
         ok: true,
-        text, ...delivery,
+        text, packingReceipt, ...delivery,
       });
     };
 

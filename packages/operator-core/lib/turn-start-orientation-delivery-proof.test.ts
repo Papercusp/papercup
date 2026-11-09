@@ -540,6 +540,12 @@ describe('goal placement receipts through the real orientation ACK path', () => 
       expect(first.block.length).toBeLessThanOrEqual(budget);
       expect(first.block).toContain(due.line);
       expect(first.block).toMatch(/orientation rows omitted/);
+      expect(first.rows?.length).toBeGreaterThan(0);
+      expect(first.rows).toContainEqual(expect.objectContaining({ text: due.line }));
+      for (const row of first.rows ?? []) {
+        expect(`\n${first.block}\n`).toContain(`\n${row.text}\n`);
+        expect(row.order).toEqual(expect.any(Number));
+      }
       f.finish();
       await f.turn(first.deliveryToken, { obligations: async () => null }); await drainDetached();
       expect(f.receiptDeps.append).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ detail: {
