@@ -187,7 +187,8 @@ export interface DiscoveryBlocker {
   code: 'discovery_missing' | 'discovery_invalid' | 'discovery_context_unknown'
     | 'discovery_question_missing' | 'discovery_unresolved' | 'discovery_finding_missing'
     | 'discovery_question_unknown' | 'discovery_evidence_unknown' | 'discovery_evidence_unusable'
-    | 'discovery_target_unknown' | 'discovery_disposition_invalid' | 'discovery_change_unsupported';
+    | 'discovery_target_unknown' | 'discovery_disposition_invalid' | 'discovery_change_unsupported'
+    | 'discovery_requirements_unparseable';
   path: string;
   detail: string;
 }
