@@ -17,12 +17,21 @@ describe('storage:pin', () => {
 
   it('writes and releases pins using the authenticated identity', async () => {
     const pin = { id: 'pin-id' }; h.createRetentionPin.mockReturnValue(pin); h.removeRetentionPin.mockReturnValue(true);
-    expect(await tool.handler({ op: 'pin', path: '/tmp/output', reason: 'review', expiresAt: '2026-12-01T00:00:00Z' }, {} as never))
+    // Preserve the historical ordinary inputs, including the wire schema that
+    // dispatch applies before the handler. No new worker field or call is added.
+    const create = tool.args.parse({ op: 'pin', path: '/tmp/output', reason: 'review', expiresAt: '2026-12-01T00:00:00Z' });
+    expect(await tool.handler(create, {} as never))
       .toEqual({ data: { ok: true, op: 'pin', pin } });
     expect(h.createRetentionPin).toHaveBeenCalledWith({ path: '/tmp/output', reason: 'review', expiresAt: '2026-12-01T00:00:00Z', owner: 'authenticated-agent' });
+    expect(h.createRetentionPin).toHaveBeenCalledTimes(1);
     expect(h.withFsMutex).toHaveBeenCalledWith('papercusp-disk-retention', expect.any(Function), {});
-    await tool.handler({ op: 'unpin', id: '58e49cc6-dd34-4438-b182-c13892d39a2e' }, {} as never);
+    const release = tool.args.parse({ op: 'unpin', id: '58e49cc6-dd34-4438-b182-c13892d39a2e' });
+    expect(await tool.handler(release, {} as never)).toEqual({ data: {
+      ok: true, op: 'unpin', id: '58e49cc6-dd34-4438-b182-c13892d39a2e', removed: true,
+    } });
     expect(h.removeRetentionPin).toHaveBeenCalledWith('58e49cc6-dd34-4438-b182-c13892d39a2e', 'authenticated-agent');
+    expect(h.removeRetentionPin).toHaveBeenCalledTimes(1);
+    expect(h.withFsMutex).toHaveBeenCalledTimes(2);
   });
 
   it('bounds retention-mutex admission to the remaining host deadline when one exists', async () => {
