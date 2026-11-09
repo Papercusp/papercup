@@ -165,6 +165,7 @@ function isReadOnlyPlanResearchInvocation(tokens: readonly string[]): boolean {
 
 const readOnlyPtoolTools = new Set([
   'tools:find', 'plans:get', 'plans:get-input-schema', 'plans:items', 'work_items:get', 'reports:get',
+  'plans:evaluate-spec-quality',
   'consult:get_feedback', 'conversations:get', 'coord:inbox', 'coord:read', 'docs:get', 'docs:search',
 ]);
 
@@ -185,18 +186,24 @@ function ptoolJsonHeredocTool(command: unknown): string | null {
   const match = /^(.*?)[ \t]+<<'([A-Za-z_][A-Za-z0-9_]*)'[ \t]*$/.exec(header);
   if (!match || closingDelimiter !== match[2] || lines.includes(match[2]!)) return null;
 
+  // Only the documented, double-quoted scope references are inert header
+  // inputs. The CLI/tool still validates their effective scope; never evaluate
+  // an expansion here. Wrong variables and every other expansion remain invalid.
+  const literalHeader = match[1]!
+    .replace(/(^|[ \t])--workspace="\$(?:PAPERCUSP_WORKSPACE|\{PAPERCUSP_WORKSPACE\})"(?=[ \t]|$)/g, '$1--workspace=scope')
+    .replace(/(^|[ \t])--harness="\$(?:PAPERCUSP_HARNESS_SLUG|\{PAPERCUSP_HARNESS_SLUG\})"(?=[ \t]|$)/g, '$1--harness=scope');
   // Validate complete, balanced shell words before parsing: shell-quote is
-  // permissive about unfinished quotes. No expansions, comments or operators
-  // belong in this header; the quoted JSON body remains inert data.
+  // permissive about unfinished quotes. No other expansions, comments or
+  // operators belong here; the quoted JSON body remains inert data.
   // Consume one lexical chunk at a time. An anchored repetition of these
   // variable-length alternatives backtracks exponentially on malformed input.
   const headerWords = /[A-Za-z0-9_./:=\[\]-]+|'[A-Za-z0-9_./:=\[\]-]*'|"[A-Za-z0-9_./:=\[\]-]*"|[ \t]+/y;
-  while (headerWords.lastIndex < match[1]!.length) {
-    if (!headerWords.exec(match[1]!)) return null;
+  while (headerWords.lastIndex < literalHeader.length) {
+    if (!headerWords.exec(literalHeader)) return null;
   }
   let words: string[];
   try {
-    const tokens = parseShell(match[1]!);
+    const tokens = parseShell(literalHeader);
     if (tokens.some(token => typeof token !== 'string')) return null;
     words = tokens as string[];
   } catch { return null; }

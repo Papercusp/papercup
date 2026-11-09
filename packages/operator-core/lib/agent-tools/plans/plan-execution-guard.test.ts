@@ -236,6 +236,49 @@ describe('implementation authority before direct writes (EI-27540173897381380)',
   });
 });
 
+describe('spec-quality evaluation is available before activation (EI-28269500162831951)', () => {
+  const ptool = (detail: 'full' | 'summary', wrapped = false, scope = '--harness=papercusp') => {
+    const args = { slug: 'review-plan', harness: 'papercusp', detail };
+    return [
+      `ptool ${wrapped ? 'tools:invoke' : 'plans:evaluate-spec-quality'} --json - ${scope} <<'JSON'`,
+      JSON.stringify(wrapped ? { name: 'plans:evaluate-spec-quality', args } : args),
+      'JSON',
+    ].join('\n');
+  };
+
+  it.each(['full', 'summary'] as const)('permits %s evaluation without consulting an unstarted plan', async detail => {
+    for (const wrapped of [false, true]) {
+      for (const scope of ['--harness=papercusp', '--workspace="$PAPERCUSP_WORKSPACE" --harness=papercusp',
+        '--workspace="${PAPERCUSP_WORKSPACE}" --harness="${PAPERCUSP_HARNESS_SLUG}"']) {
+        const cmd = ptool(detail, wrapped, scope);
+        const readBindings = vi.fn(async () => [binding]);
+        const checkPlan = vi.fn(async () => ['plan_not_started']);
+        expect(await checkPlanExecutionGuard(call('exec_command', { cmd }), { readBindings, checkPlan }), cmd).toBeNull();
+        expect(readBindings).not.toHaveBeenCalled();
+        expect(checkPlan).not.toHaveBeenCalled();
+      }
+    }
+  });
+
+  it('retains activation enforcement for shell side effects and non-canonical evaluator calls', async () => {
+    const valid = ptool('full');
+    const unsafe = [
+      valid + '\ntouch output',
+      valid.replace(" <<'JSON'", " > output <<'JSON'"),
+      valid.replace('plans:evaluate-spec-quality', 'work_items:set_state'),
+      ptool('full', false, '--workspace="$OTHER_WORKSPACE"'),
+      ptool('full', false, '--workspace="$(touch output)"'),
+      ptool('full', false, '--workspace="$PAPERCUSP_HARNESS_SLUG"'),
+      ptool('full', false, '--harness=papercusp --harness=other'),
+    ];
+    for (const cmd of unsafe) {
+      expect(await checkPlanExecutionGuard(call('exec_command', { cmd }), {
+        readBindings: async () => [binding], checkPlan: async () => ['plan_not_started'],
+      }), cmd).toMatchObject({ code: 'plan_execution_not_ready', blockers: ['plan_not_started'] });
+    }
+  });
+});
+
 describe('reviewer read and decline are independent of plan activation (EI-27697470834897410)', () => {
   const ptool = (name: string, args: unknown) =>
     [`ptool ${name} --json - <<'JSON'`, JSON.stringify(args), 'JSON'].join('\n');

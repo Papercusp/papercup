@@ -136,6 +136,42 @@ describe('runInjection writes one outcome record per invocation when opted in', 
   });
 });
 
+describe('spec-quality reads preserve the authority boundary (EI-28269500162831951)', () => {
+  const command = (detail: 'full' | 'summary', wrapped = false) => {
+    const args = { slug: 'review-plan', harness: 'papercusp', detail };
+    return [
+      `ptool ${wrapped ? 'tools:invoke' : 'plans:evaluate-spec-quality'} --json - --workspace="$PAPERCUSP_WORKSPACE" --harness=papercusp <<'JSON'`,
+      JSON.stringify(wrapped ? { name: 'plans:evaluate-spec-quality', args } : args),
+      'JSON',
+    ].join('\n');
+  };
+  const runCommand = (cmd: string, fetchImpl: typeof fetch) => runInjection({
+    adapter: { client: 'test', portForEvent: () => 'pre-tool',
+      parse: () => ({ tool: 'exec_command', input: { cmd } }), render: (_port: string, text: string) => text },
+    nativeEvent: 'PreToolUse', event: {},
+    env: { PAPERCUSP_SID: 'su-test', PAPERCUSP_WORKSPACE: 'papercusp-workspace' }, fetchImpl,
+  });
+  const unavailable = (async () => ({ ok: false, status: 503 })) as typeof fetch;
+
+  it.each(['full', 'summary'] as const)('allows canonical %s reads when authority cannot be reached', async detail => {
+    for (const wrapped of [false, true]) expect(await runCommand(command(detail, wrapped), unavailable)).toBeNull();
+  });
+
+  it('never replaces an actual server refusal with the read-only fallback', async () => {
+    expect(await runCommand(command('full'), answer('server-refused'))).toBe('server-refused');
+  });
+
+  it('keeps writes, substitutions and redirections fail-closed', async () => {
+    const valid = command('full');
+    for (const cmd of [valid + '\ntouch output', valid.replace(" <<'JSON'", " > output <<'JSON'"),
+      valid.replace('plans:evaluate-spec-quality', 'work_items:set_state'),
+      valid.replace('$PAPERCUSP_WORKSPACE', '$(touch output)'),
+      valid.replace('$PAPERCUSP_WORKSPACE', '$OTHER_WORKSPACE')]) {
+      expect(await runCommand(cmd, unavailable), cmd).toContain('execution-authority lookup failed');
+    }
+  });
+});
+
 describe('unavailable mutation authority reports its transport branch', () => {
   const adapter = { client: 'test', portForEvent: () => 'pre-tool',
     parse: () => ({ tool: 'exec_command', input: { cmd: 'read-only probe' } }),
