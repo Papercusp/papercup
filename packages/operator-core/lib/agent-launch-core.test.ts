@@ -223,7 +223,7 @@ describe('CLARITY exact source recovery receipts', () => {
 
   it('finds the unique prior key K1 by exact source/effect without requiring current key K2', async () => {
     launchCoreSql.mockResolvedValueOnce([{ idempotency_key: 'K1', summary, launched_at: 123, launched_by: 'su-prior-recoverer' }]);
-    expect(await readCompletedRecoveryForSource(source)).toMatchObject({ status: 'known', priorIdempotencyKey: 'K1', priorActor: 'su-prior-recoverer', receiptRef: 'agent-launch:K1', effectRef: 'original-session-resume:original' });
+    expect(await readCompletedRecoveryForSource(source)).toMatchObject({ status: 'known', priorIdempotencyKey: 'K1', priorActor: 'su-prior-recoverer', completedAt: '2026-01-01T00:00:00.000Z', receiptRef: 'agent-launch:K1', effectRef: 'original-session-resume:original' });
     const [query, ...values] = launchCoreSql.mock.calls[0];
     expect(query.join(' ')).toMatch(/^\s*SELECT /);
     expect(query.join(' ')).toContain('LIMIT 2');
@@ -237,8 +237,34 @@ describe('CLARITY exact source recovery receipts', () => {
     { sourceBinding: { ...source, effect: 'fork' } }, { sourceBinding: undefined },
     { requestKind: 'another-tool' }, { launchState: 'spawning' }, { opened: 0 }, { failed: 1 },
     { completedAt: 'bad' }, { completedAt: '9999-01-01T00:00:00.000Z' },
-  ])('keeps wrong, legacy, unfinished or unreadable binding UNKNOWN: %j', (patch) => {
-    expect(recoveryAttributionFromClaim(source, 'K1', { ...prior, priorSummary: { ...summary, ...patch } }).status).toBe('unknown');
+  ])('keeps wrong, legacy, unfinished or unreadable binding UNKNOWN: %j', async (patch) => {
+    const patchedSummary = { ...summary, ...patch };
+    expect(recoveryAttributionFromClaim(source, 'K1', { ...prior, priorSummary: patchedSummary }).status).toBe('unknown');
+    launchCoreSql.mockResolvedValueOnce([{ idempotency_key: 'K1', summary: patchedSummary, launched_at: 123, launched_by: 'su-prior-recoverer' }]);
+    expect(await readCompletedRecoveryForSource(source)).toMatchObject({ status: 'unknown' });
+    expect(launchCoreSql).toHaveBeenCalledOnce();
+    const [query] = launchCoreSql.mock.calls[0];
+    expect(query.join(' ')).toMatch(/^\s*SELECT /);
+    expect(query.join(' ')).not.toMatch(/INSERT|UPDATE|DELETE/);
+  });
+
+  it('keeps two individually valid completed receipts ambiguous instead of choosing either actor or key', async () => {
+    const rows = [
+      { idempotency_key: 'K1', summary, launched_at: 123, launched_by: 'su-first-recoverer' },
+      { idempotency_key: 'K2', summary: { ...summary, completedAt: '2026-01-02T00:00:00.000Z' }, launched_at: 456, launched_by: 'su-second-recoverer' },
+    ];
+    for (const row of rows) {
+      expect(recoveryAttributionFromClaim(source, row.idempotency_key, {
+        won: false, priorSummary: row.summary, priorLaunchedAt: row.launched_at, priorLaunchedBy: row.launched_by,
+      })).toMatchObject({ status: 'known', priorIdempotencyKey: row.idempotency_key,
+        priorActor: row.launched_by, completedAt: row.summary.completedAt });
+    }
+    launchCoreSql.mockResolvedValueOnce(rows);
+    expect(await readCompletedRecoveryForSource(source)).toEqual({ status: 'unknown', reason: 'ambiguous source/effect receipts' });
+    expect(launchCoreSql).toHaveBeenCalledOnce();
+    const [query] = launchCoreSql.mock.calls[0];
+    expect(query.join(' ')).toMatch(/^\s*SELECT /);
+    expect(query.join(' ')).not.toMatch(/INSERT|UPDATE|DELETE/);
   });
 
   it('keeps missing/ambiguous/unreadable candidates UNKNOWN without a lease mutation', async () => {
