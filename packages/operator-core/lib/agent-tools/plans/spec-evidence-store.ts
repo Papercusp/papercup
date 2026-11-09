@@ -1665,7 +1665,7 @@ export type BindSpecEvidenceResult =
   | {
       status: Extract<IndependentVerificationRefusalStatus, 'independent_fingerprint_mismatch'>;
       verifiesBindingId: number;
-      mismatched: Array<'source' | 'environment'>;
+      mismatched: Array<'source' | 'environment' | 'spec-revision' | 'spec-fingerprint'>;
       /** The cited binding's test run, when its proof is a recorded execution (EI-25847620673275477). */
       citedTestRunId?: number;
       message: string;
@@ -2483,6 +2483,21 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
               "cited binding's. If this review does not certify fixture absence, omit details.adequacy.fixtureFree.",
           };
         }
+      }
+      // Matching source/runtime does not make proof of an older contract proof of
+      // this one. Apply this to every independent review, including live/manual
+      // reviews that make no fixture-absence claim.
+      const specMismatches: Array<'spec-revision' | 'spec-fingerprint'> = [];
+      if (Number(cited.spec_revision) !== specRevision) specMismatches.push('spec-revision');
+      if (cited.spec_fingerprint !== revision.content_hash) specMismatches.push('spec-fingerprint');
+      if (specMismatches.length > 0) {
+        return {
+          status: 'independent_fingerprint_mismatch',
+          verifiesBindingId,
+          mismatched: specMismatches,
+          message: `independent-verification refused: ${specMismatches.join(' and ')} differs from cited binding ` +
+            `${verifiesBindingId}. Re-observe proof bound to this exact spec revision and fingerprint.`,
+        };
       }
     }
 

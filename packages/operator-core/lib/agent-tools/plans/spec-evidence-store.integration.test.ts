@@ -1363,6 +1363,57 @@ describe('exact spec evidence bindings', () => {
     expect(row.details).toMatchObject({ note: 'receipts re-read', evidencePlane: 'live', testRun });
   });
 
+  async function independentContractPair(direction: 'older' | 'newer' | 'same') {
+    await specs.setSpecClause(clause({ mutationRequired: false }));
+    const subject = {
+      workItemId: 'WI-101', specId: 'SPEC-003-01', harnessSlug: HARNESS, planSlug: 'reconnect-plan',
+      actorId: 'su-implementer', evidenceKind: 'test' as const, evidenceRef: 'test/reconnect.test.ts',
+      sourceFingerprint: 'unchanged-source', environmentFingerprint: 'unchanged-environment',
+    };
+    const first = await evidenceStore.bindSpecEvidence(subject);
+    expect(first).toMatchObject({ status: 'created' });
+    let citedId = (first as { id: number }).id;
+    if (direction !== 'same') {
+      await specs.setSpecClause(clause({ mutationRequired: false, expectedRevision: 1,
+        behavior: 'Acknowledged events 42 and 43 are not replayed after reconnect.' }));
+      if (direction === 'newer') {
+        const second = await evidenceStore.bindSpecEvidence(subject);
+        expect(second).toMatchObject({ status: 'created' });
+        citedId = (second as { id: number }).id;
+      }
+    }
+    const before = await db.sql`SELECT id FROM harness_shared.spec_evidence_bindings`;
+    const result = await evidenceStore.bindSpecEvidence({ ...subject, actorId: 'su-reviewer',
+      evidenceKind: 'independent-verification', verifiesBindingId: citedId,
+      ...(direction === 'newer' ? { specRevision: 1 } : {}),
+      // No fixtureFree claim: this exercises the general binder, not its specialized guard.
+      details: { note: 'Re-observed the same source and environment' },
+    });
+    const after = await db.sql`SELECT id FROM harness_shared.spec_evidence_bindings`;
+    if (direction === 'same') {
+      expect(result).toMatchObject({ status: 'created' });
+      expect(after).toHaveLength(before.length + 1);
+    } else {
+      expect(result).toMatchObject({ status: 'independent_fingerprint_mismatch', verifiesBindingId: citedId,
+        mismatched: ['spec-revision', 'spec-fingerprint'] });
+      expect(after).toEqual(before);
+    }
+    return result;
+  }
+
+  it('rejects older revision independent verification despite identical source and environment', async () => {
+    await independentContractPair('older');
+  });
+
+  it('rejects independent verification with a mismatched spec fingerprint', async () => {
+    // Reverse direction: an explicit historical review must not cite newer proof either.
+    await independentContractPair('newer');
+  });
+
+  it('accepts same revision and fingerprint independent verification', async () => {
+    await independentContractPair('same');
+  });
+
   // WI-6554700010018061: resolveFixtureAbsenceVerifications pairs a fixture-free review with its
   // cited binding on author, spec revision, test run, test fingerprint and reviewed cases, but bind
   // checked only source and environment. A review differing on any other key bound 'created' and
@@ -4477,6 +4528,107 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
 
     const listed = await evidenceStore.listSpecEvidence({ harnessSlug: HARNESS, planSlugs: ['reconnect-plan'] });
     expect(listed).toHaveLength(0);
+  });
+});
+
+describe('P032 comparator against persisted spec and per-case evidence', () => {
+  // Synthetic SQL fixtures exercise the production reader/comparator boundary.
+  // The explicit live admission below calibrates the algorithm only. These
+  // fixtures never qualify an installed native client or an R-13 observation.
+  it.each([
+    'client-mismatch', 'criterion-mismatch', 'environment-mismatch', 'missing-case',
+    'missing-refusal-control', 'not-checked-residue', 'removed-unproved-gap',
+    'runtime-mismatch', 'source-mismatch', 'stale-evidence', 'supported-measurement',
+    'truthful-failed-measurement', 'unknown-residue', 'unsupported-claim',
+  ] as const)('MC-P032 integration: %s', async mode => {
+    const { MANAGED_CAPABILITY_DISPOSITIONS } = await import('@papercusp/orchestrator/managed-capability-contract');
+    const { declareRealClientMatrix, compareManagedCapabilityInventory } =
+      await import('@papercusp/orchestrator/managed-capability-matrix');
+    const { managedCapabilityControlsFromEvidence } = await import('../../managed-capability-inventory-evidence');
+    const scenario = declareRealClientMatrix(undefined, { purpose: 'replacement-acceptance' })[0]!;
+    await specs.setSpecClause(clause({ mutationRequired: false, sourceBar: {
+      barKey: 'R-13', barHash: 'b'.repeat(64), barSetHash: 'c'.repeat(64),
+      rubricSlug: 'acceptance-reconnect-plan', rubricRevision: 1, evidencePlane: 'tree',
+    } }));
+    configureRuntimeVintageStore(new InMemoryRuntimeVintageStore());
+    try {
+      await reportRuntimeVintage({ workspaceId: WORKSPACE, unit: 'bg-host', treeSha: 'a'.repeat(40), pid: process.pid });
+      const runtimeFingerprint = measureRuntimeVintageEnvironment(await listRuntimeVintage(WORKSPACE), ['bg-host'])!;
+      const now = new Date();
+      const finished = new Date(now.getTime() - (mode === 'stale-evidence' ? 8 * 86400_000 : 60_000));
+      const started = new Date(finished.getTime() - 1000);
+      const witness = { schemaVersion: 1, units: ['bg-host'], fingerprint: runtimeFingerprint,
+        observedAt: started.toISOString() };
+      const failed = mode === 'truthful-failed-measurement' || mode === 'unsupported-claim';
+      const unknown = mode === 'unknown-residue';
+      const positive = 'P032 journey > positive';
+      const refusal = 'P032 journey > refusal';
+      const { testRunId } = await seedExternalEvidence('test/reconnect.test.ts');
+      const execution = { schemaVersion: 1, root: h.repoRoot, filePath: 'test/reconnect.test.ts',
+        runGroupId: null, workspaceId: WORKSPACE, harnessSlug: HARNESS, testNamePattern: null,
+        testLayer: 'integration', passed: failed || unknown ? 1 : 2, failed: failed ? 1 : 0,
+        skipped: unknown ? 1 : 0, collectionFailed: false, mutationPhase: null,
+        commitSha: null, worktreeDirty: true, runStartedAt: started.toISOString(),
+        runtimeEnvironmentBefore: witness, runtimeEnvironmentAfter: { ...witness, observedAt: finished.toISOString() } };
+      await db.sql`UPDATE harness_shared.test_runs SET status = ${failed ? 'fail' : 'pass'},
+        started_at = ${started}, finished_at = ${finished}, execution_details = ${db.sql.json(execution)}
+        WHERE id = ${testRunId}`;
+      await db.sql`INSERT INTO harness_shared.test_case_runs (test_run_id, case_index, case_key, status)
+        VALUES (${testRunId}, 0, ${positive}, ${failed ? 'fail' : unknown ? 'skip' : 'pass'}),
+               (${testRunId}, 1, ${refusal}, 'pass')`;
+      const measurement = { schemaVersion: 1 as const, kind: 'repo-files' as const,
+        sourcePaths: ['src/reconnect.ts'], testPaths: ['test/reconnect.test.ts'], runtimeUnits: ['bg-host'] };
+      const measured = await evidenceStore.measureAndPinRepoFilesEvidence(WORKSPACE, HARNESS, measurement);
+      for (const role of ['positive', 'refusal'] as const) {
+        if (mode === 'missing-refusal-control' && role === 'refusal') continue;
+        expect(await evidenceStore.bindSpecEvidence({ harnessSlug: HARNESS, planSlug: 'reconnect-plan',
+          workItemId: 'WI-101', specId: 'SPEC-003-01', actorId: 'su-test', evidenceKind: 'test',
+          evidenceRef: `test/reconnect.test.ts#p032-${role}`, testRunId,
+          sourceFingerprint: measured.sourceFingerprint, testFingerprint: measured.testFingerprint,
+          environmentFingerprint: measured.environmentFingerprint,
+          details: { evidencePlane: 'tree', currentMeasurement: measurement, measurementPin: measured.pin,
+            managedCapabilityObservation: { scenarioId: scenario.id, role, clientVersion: 'fixture-client-v1',
+              caseTitle: role === 'positive' ? positive : refusal, occurrence: 1 } },
+        })).toMatchObject({ status: 'created' });
+      }
+      const rows = await evidenceStore.listSpecEvidence({ harnessSlug: HARNESS, planSlugs: ['reconnect-plan'],
+        workItemIds: ['WI-101'], includeCaseEvidence: true });
+      const clauses = await specs.listSpecClauses({ harnessSlug: HARNESS, planSlug: 'reconnect-plan' });
+      const controls = managedCapabilityControlsFromEvidence(rows, clauses, [scenario]);
+      expect(controls).toHaveLength(mode === 'missing-refusal-control' ? 1 : 2);
+      expect(controls.every(c => !c.live)).toBe(true);
+      expect(controls.every(c => c.currentness === 'current')).toBe(true);
+      expect(controls.every(c => c.observedAt === finished.toISOString())).toBe(true);
+      const p = controls.find(c => c.role === 'positive')!;
+      const r = controls.find(c => c.role === 'refusal');
+      expect(p.outcome).toBe(failed ? 'fail' : unknown ? 'unknown' : 'pass');
+      const claim = { scenarioId: scenario.id, identity: { ...p.identity },
+        outcome: (mode === 'truthful-failed-measurement' ? 'fail' : unknown ? 'unknown' : 'pass') as 'pass' | 'fail' | 'unknown',
+        controls: { positive: { ...p.ref }, refusal: r?.ref ?? { ...p.ref, bindingId: p.ref.bindingId + 1000 } },
+        retainedEvidenceRefs: controls.map(c => c.evidenceRef) };
+      const mismatch = { 'client-mismatch': 'clientVersion', 'criterion-mismatch': 'barHash',
+        'environment-mismatch': 'environmentFingerprint', 'runtime-mismatch': 'runtimeFingerprint',
+        'source-mismatch': 'sourceFingerprint' } as const;
+      if (mode in mismatch) Object.assign(claim.identity, {
+        [mismatch[mode as keyof typeof mismatch]]: 'another-measurement',
+      });
+      if (mode === 'missing-case') claim.controls.positive.caseTitle = 'unrecorded exact case';
+      const inventory = [{ ...MANAGED_CAPABILITY_DISPOSITIONS.find(d => d.family === scenario.family)!,
+        gaps: [], cutoverReady: false, parityClaims: mode === 'not-checked-residue' ? [] : [claim] }];
+      const report = compareManagedCapabilityInventory({ scenarios: [scenario], inventory,
+        observations: controls.map(c => ({ ...c, live: true })), // algorithm calibration ONLY
+        clientVersions: { [scenario.client]: 'fixture-client-v1' }, now,
+        previousInventory: [{ family: scenario.family, gapIds: mode === 'removed-unproved-gap' ? ['unproved-gap'] : [] }] });
+      const honest = mode === 'supported-measurement' || mode === 'truthful-failed-measurement';
+      const uncertain = mode === 'not-checked-residue' || mode === 'unknown-residue';
+      expect(report.verdict).toBe(honest ? 'pass' : uncertain ? 'unknown' : 'fail');
+      expect(report.coverage.population).toEqual([scenario.id]);
+      expect(report.coverage.notChecked).toEqual(uncertain || mode === 'missing-case' || mode === 'missing-refusal-control'
+        ? [scenario.id] : []);
+      if (honest) expect(report.coverage.residue).toEqual([]);
+      else expect(report.coverage.residue.length).toBeGreaterThan(0);
+      expect(report.observations).toHaveLength(controls.length);
+    } finally { resetRuntimeVintageStore(); }
   });
 });
 
