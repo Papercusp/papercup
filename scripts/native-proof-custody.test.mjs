@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -9,7 +10,7 @@ import { after, test } from 'node:test';
 // Permanent coverage on the existing scripts/*.test.mjs Node route. The
 // scheduler transitively imports TypeScript, so use the normal install guard.
 const subjectUrl = new URL('./lib/budgeted-task-scheduler.mjs', import.meta.url).href;
-const { retainNativeProofPacket, verifyNativeProofPacket, preflightNativeProofCustody,
+const { retainNativeProofPacket, retainNativeProofPacketAsync, verifyNativeProofPacket, preflightNativeProofCustody,
   createNativeArtifactPersister } = await import(subjectUrl);
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const root = mkdtempSync(join(tmpdir(), 'native-custody-capsules-'));
@@ -109,4 +110,42 @@ test('preflights known population capacity and labels runtime capacity unknown',
   const large = Array.from({ length: 3277 }, (_, index) => ({ ...expected[0], id: `group-${index}`,
     processSources: undefined, auxiliary: Array(3).fill({ role: 'stream', state: 'produced' }) }));
   assert.throws(() => preflightNativeProofCustody(large), /custody minimum archive object capacity/);
+});
+
+test('reseals the original retained packet without reading retired producers or changing its verdicts', async () => {
+  const result = await retainNativeProofPacketAsync(directory, { ...contract, retainedLocator: saved.locator });
+  assert.equal(result.status, 'complete');
+  assert.deepEqual(result.locator, saved.locator);
+  assert.deepEqual(result.manifest, saved.manifest);
+  assert.equal(result.manifest.verdicts.nativeProof, 'unqualified');
+  assert.equal(result.manifest.verdicts.acceptance, 'unmeasured');
+  await assert.rejects(retainNativeProofPacketAsync(directory, {
+    ...contract, identity: { ...contract.identity, runId: 'foreign' }, retainedLocator: saved.locator,
+  }), /custody identity or expected population mismatch/);
+});
+
+test('bounds interrupted retained-packet sync and identifies the pending operation', async t => {
+  const probe = await open(join(directory, 'objects', saved.locator.manifest.ref));
+  const prototype = Object.getPrototypeOf(probe);
+  await probe.close();
+  let release;
+  const blocked = new Promise(resolve => { release = resolve; });
+  t.mock.method(prototype, 'sync', () => blocked);
+  const progress = [];
+  const pending = retainNativeProofPacketAsync(directory, { ...contract, retainedLocator: saved.locator,
+    deadlineAtMs: Date.now() + 30, onProgress: record => progress.push(record) });
+  try {
+    const outcome = await Promise.race([
+      pending.then(() => ({ status: 'resolved' }), error => ({ status: 'rejected', error })),
+      new Promise(resolve => setTimeout(() => resolve({ status: 'unbounded' }), 500)),
+    ]);
+    assert.equal(outcome.status, 'rejected');
+    assert.equal(outcome.error.code, 'NATIVE_PROOF_SYNC_DEADLINE');
+    assert.equal(outcome.error.phase, 'object');
+    assert.match(outcome.error.path, /\/objects\//);
+    assert.equal(progress.some(record => record.phase === 'sync-complete'), false);
+  } finally {
+    release();
+    await pending.catch(() => {});
+  }
 });
