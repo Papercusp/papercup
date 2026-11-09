@@ -4,12 +4,16 @@ import { mkdir, rm, symlink } from 'node:fs/promises';
 import { expect, it } from 'vitest';
 import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions,
   recordIsolatedIntegrationProof } from '../test/isolated-integration-proof';
+import { preparePrivateOperatorApiBundle, privateOperatorApiBuildBudget } from '../test/private-http-workspace-preflight';
 
 const root = resolve(import.meta.dirname, '../../..');
-const options = isolatedWorkerOptions(180_000);
+const builder = privateOperatorApiBuildBudget();
+const options = isolatedWorkerOptions(180_000, process.env, 180_000, {}, builder.maxMs);
 
 it('preserves fixed rubric coverage and historical ratings through private current-build HTTP readers', async context => {
-  const runId = await recordIsolatedIntegrationProof({ root,
+  let preparedApi!: Awaited<ReturnType<typeof preparePrivateOperatorApiBundle>>;
+  const runId = await recordIsolatedIntegrationProof({ root, signal: context.signal,
+    minimumFileRunTimeoutMs: options.testTimeoutMs,
     filePath: 'packages/operator-core/lib/rubric-coverage-http.integration.test.ts',
     sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/staging-first-http-fixture.ts',
       'packages/operator-core/test/rubric-coverage-http-scenario.ts',
@@ -17,7 +21,12 @@ it('preserves fixed rubric coverage and historical ratings through private curre
       'packages/operator-core/test/isolated-integration-proof.ts',
       'packages/operator-core/lib/scorecards.ts', 'packages/operator-core/lib/check-results-ledger.ts',
       'packages/operator-core/lib/agent-tools/scorecards/list.ts', 'packages/operator-core/lib/agent-tools/scorecards/get.ts',
-      'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/hono-host.ts'],
+      'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh', 'apps/operator/bin/hono-host.ts'],
+    prepare: async evidenceDir => {
+      const { assertRubricCoverageReaderContracts } = await import('../test/rubric-coverage-http-scenario');
+      assertRubricCoverageReaderContracts();
+      preparedApi = await preparePrivateOperatorApiBundle(root, evidenceDir, { builder });
+    },
     execute: async (observe, evidenceDir) => {
       await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
       await mkdir(join(evidenceDir, 'tmp'));
@@ -27,11 +36,12 @@ it('preserves fixed rubric coverage and historical ratings through private curre
       delete env.PC_HEAVY_PREEMPT_READY_FILE;
       delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
       const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
-        process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/staging-first-http-fixture.ts')],
+        process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/staging-first-http-fixture.ts'),
+        '--prepared-api-sha=' + preparedApi.sha256, '--prepared-receipt-sha=' + preparedApi.receiptSha256],
       { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
       observe(child);
       let result: Awaited<ReturnType<typeof captureIsolatedWorker>>;
-      try { result = await captureIsolatedWorker(child, evidenceDir, options); }
+      try { result = await captureIsolatedWorker(child, evidenceDir, { ...options, signal: context.signal }); }
       finally { await rm(join(evidenceDir, 'node_modules')); }
       expect(result, isolatedWorkerFailureDetail(result.output)).toMatchObject({ code: 0, signal: null,
         timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false });

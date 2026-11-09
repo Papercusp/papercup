@@ -100,7 +100,11 @@ export function readNativeProcessTraceArtifacts(out, startedAtMs = 0, finishedAt
   const path = `${out}.native-processes`;
   if (!lstatSync(path).isDirectory() || lstatSync(path).isSymbolicLink() || realpathSync(path) !== resolve(path))
     throw new Error("redirected native process trace");
-  const sourceRoot = realpathSync(path), rows = [];
+  const sourceRoot = realpathSync(path), rows = [], censusGroups = new Map();
+  const censusGroup = identity => {
+    if (!censusGroups.has(identity)) censusGroups.set(identity, { batches: [], ends: [], enrollment: null });
+    return censusGroups.get(identity);
+  };
   const population = { artifactLimit: 16384, artifactsVisited: 0,
     eventByteLimit: 64 * 1024 * 1024, eventBytesRead: 0,
     observationByteLimit: 64 * 1024 * 1024, observationBytesRead: 0,
@@ -134,6 +138,26 @@ export function readNativeProcessTraceArtifacts(out, startedAtMs = 0, finishedAt
           row.threadId !== undefined && (!Number.isSafeInteger(row.threadId) || row.threadId < 0))
         throw new Error("malformed native process event");
       if (row.atMs >= startedAtMs && row.atMs <= finishedAtMs) {
+        if (row.event === 'node-entry' && row.loaderCensus?.batches !== undefined)
+          censusGroup(row.processIdentity).enrollment = row.loaderCensus;
+        if (row.event === 'module-census-end') censusGroup(row.processIdentity).ends.push(row);
+        if (row.event === 'module-census-batch') {
+          if (!Number.isSafeInteger(row.batchId) || row.batchId < 1 || row.batchId > 1024 ||
+              !Array.isArray(row.events) || !row.events.length || row.events.length > 128)
+            throw new Error('malformed native module census batch');
+          censusGroup(row.processIdentity).batches.push(row);
+          for (const event of row.events) {
+            if (event.schemaVersion !== 1 || event.kind !== row.kind ||
+                !['module-load-start', 'module-load-return', 'module-load-error',
+                  'module-resolve-start', 'module-resolve-return', 'module-resolve-error'].includes(event.event) ||
+                ['processIdentity', 'kernelProcessIdentity', 'pid', 'ppid', 'threadId', 'runGroupId']
+                  .some(key => event[key] !== row[key]) ||
+                !Number.isSafeInteger(event.atMs) || event.atMs > row.atMs || event.atMs < startedAtMs)
+              throw new Error('native module census event identity mismatch');
+            rows.push({ row: event, bytes: Buffer.from(JSON.stringify(event)) });
+          }
+          continue;
+        }
         const pin = row.observationArtifact;
         if (pin !== undefined) {
           if (row.event !== 'engine-script-execution' || row.observation !== undefined ||
@@ -152,6 +176,28 @@ export function readNativeProcessTraceArtifacts(out, startedAtMs = 0, finishedAt
         }
         rows.push({ row, bytes });
       }
+    }
+    for (const group of censusGroups.values()) {
+      const enrollment = group.enrollment;
+      if (!enrollment || Object.keys(enrollment).some(key => !['batches', 'bytes'].includes(key)) ||
+          !Number.isSafeInteger(enrollment.batches) || enrollment.batches < 1 || enrollment.batches > 1024 ||
+          !Number.isSafeInteger(enrollment.bytes) || enrollment.bytes < 1024 || enrollment.bytes > 16 * 1024 ** 2)
+        throw new Error('native module census enrollment missing or invalid');
+      const batches = group.batches.sort((a, b) => a.batchId - b.batchId);
+      let count = 0, size = 0;
+      const hash = createHash('sha256');
+      for (let index = 0; index < batches.length; index++) {
+        if (batches[index].batchId !== index + 1) throw new Error('native module census batch sequence incomplete');
+        for (const event of batches[index].events) {
+          const encoded = Buffer.from(JSON.stringify(event));
+          hash.update(encoded).update('\n'); count++; size += encoded.length;
+        }
+      }
+      const end = group.ends[0];
+      if (group.ends.length !== 1 || !end || end.stopped !== false ||
+          end.events !== count || end.bytes !== size || end.batches !== batches.length ||
+          end.batches > enrollment.batches || size > enrollment.bytes || end.sha256 !== hash.digest('hex'))
+        population.truncatedBy ??= 'module-census-incomplete';
     }
     population.complete = population.truncatedBy === null;
   } finally { directory.closeSync(); }

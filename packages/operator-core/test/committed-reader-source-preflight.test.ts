@@ -97,7 +97,7 @@ function observedBuildFixture(extraScript = '') {
 }
 
 function loadedFixture(source?: string, admit = true, buildObservationOnly = false, duplicatePreload = false,
-  schema?: Record<string, string>, loaderCensus?: { events: number; bytes: number }) {
+  schema?: Record<string, string>, loaderCensus?: { events: number; bytes: number } | { batches: number; bytes: number }) {
   let f: ReturnType<typeof fixture>;
   if (buildObservationOnly) {
     const observed = observedBuildFixture(source === undefined ? '' : 'cp host-source.mjs "$2"\n');
@@ -170,6 +170,18 @@ function loadedFixture(source?: string, admit = true, buildObservationOnly = fal
 }
 
 describe('committed reader loader-return source binding', () => {
+  it('binds independently enrolled census batches and rejects a missing terminal seal', () => {
+    const loaderCensus = { batches: 128, bytes: 16 * 1024 ** 2 };
+    const f = loadedFixture(undefined, true, false, false, undefined, loaderCensus);
+    expect(f.observe()).toMatchObject({ status: 'bound', limits: { loaderCensus, resolves: 16384, loads: 16388 },
+      resolutions: { status: 'bound', gaps: [] } });
+    expect(observeCommittedReaderLoadedSources({ ...f.options, loaderCensus: { batches: 127, bytes: loaderCensus.bytes } }))
+      .toMatchObject({ status: 'unknown', gaps: [expect.stringContaining('host loader census differs')] });
+    const terminal = f.rows.find(({ row }) => row.event === 'module-census-end')!;
+    rmSync(join(f.traceRoot, terminal.name));
+    expect(f.observe()).toMatchObject({ status: 'unknown', gaps: ['native trace population incomplete'] });
+  });
+
   it('binds the independently enrolled loader census and refuses altered or missing enrollment', () => {
     const loaderCensus = { events: 2048, bytes: 2 * 1024 ** 2 };
     const f = loadedFixture(undefined, true, false, false, undefined, loaderCensus);

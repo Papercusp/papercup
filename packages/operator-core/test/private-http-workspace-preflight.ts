@@ -562,7 +562,7 @@ export function privateMcpSourceSha(root: string, env: NodeJS.ProcessEnv = proce
  * unrelated preloads and all resource limits. */
 export function privateBundleRuntimeEnv(env: NodeJS.ProcessEnv,
   observation?: { traceOut: string; pinnedSources?: Array<{ path: string; sha256: string; byteLength: number }>;
-    loaderCensus?: { events: number; bytes: number } }): NodeJS.ProcessEnv {
+    loaderCensus?: { events: number; bytes: number } | { batches: number; bytes: number } }): NodeJS.ProcessEnv {
   const tokens = (env.NODE_OPTIONS ?? '').match(/(?:[^\s"']+|"(?:\\.|[^"\\])*"|'[^']*')+/g) ?? [];
   const value = (token: string) => token.replace(/"((?:\\.|[^"\\])*)"|'([^']*)'/g,
     (_, double: string | undefined, single: string | undefined) => double?.replace(/\\(["\\])/g, '$1') ?? single!);
@@ -1212,7 +1212,7 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
   traceOut: string; pid: number; startedAtMs: number; finishedAtMs: number;
   kernelProcessIdentity?: string; runId?: string; buildObservationOnly?: boolean;
   configuration?: ConfigurationSnapshot;
-  loaderCensus?: { events: number; bytes: number };
+  loaderCensus?: { events: number; bytes: number } | { batches: number; bytes: number };
 }) {
   const closureBytes = readFileSync(o.receiptPath), sourceBytes = readFileSync(o.sourceReceiptPath);
   const preparation = (o.buildObservationOnly ? qualifyObservedPrivateApiBuild : qualifyCommittedReaderSource)({ ...o,
@@ -1267,7 +1267,7 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
       edges: [] as Array<{ resolveId: number; specifier: string; parentURL: string | null;
         conditions: string[]; url: string; format: string | null }>, gaps: [] as string[],
     },
-    limits: { loads: 128, resolves: 128, loaderCensus: null as { events: number; bytes: number } | null,
+    limits: { loads: 128, resolves: 128, loaderCensus: null as { events: number; bytes: number } | { batches: number; bytes: number } | null,
       ...nativeSourceRetentionLimits },
     sources, gaps, pending: [...(o.buildObservationOnly ? ['preparation-qualification', 'build-imports', 'observed-imports'] : []),
       'module-evaluation', 'runtime-config', 'private-pg', 'sidecars',
@@ -1310,8 +1310,9 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
       assert.ok(o.configuration && readConfigurationSnapshot(entry.row.configuration)?.fingerprint === o.configuration.fingerprint,
         'host loader census configuration not independently bound');
       result.limits.loaderCensus = expected;
-      result.limits.loads = expected.events + result.limits.pins;
-      result.limits.resolves = expected.events;
+      const events = 'events' in expected ? expected.events : expected.batches * 128;
+      result.limits.loads = events + result.limits.pins;
+      result.limits.resolves = events;
     }
     result.processIdentity = identity;
     result.kernelProcessIdentity = kernelIdentity;

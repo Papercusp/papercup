@@ -9,10 +9,28 @@ import type { StructuredObservation } from '../lib/harness/improvements/observat
 import { recordRubricCheckResults, readLatestRubricCheckResults } from '../lib/check-results-ledger';
 import { retainMeasurementProvenance } from '../lib/measurement-provenance';
 import { continuityProbeRevision, SQL_PROBE_TOOL } from '../lib/continuity-probes';
+import scorecardsList from '../lib/agent-tools/scorecards/list';
+import { scorecardGetArgs } from '../lib/agent-tools/scorecards/get';
 import '../lib/agent-tools/dev/pg_query';
 
 type Options = { workspace: string; harness: string; base: string;
   headers: Record<string, string>; evidenceDir: string; expectedSha: string };
+
+function listReaderArgs(rubricRef: string, subjectRef: string, comparisonTime: string, detail: 'scores' | 'full') {
+  return scorecardsList.args.parse({ rubricRef, subjectRef, comparisonTime, limit: 1, includeUnfinalized: true, detail });
+}
+
+function criterionReaderArgs(issueId: string, criterionKey: string, comparisonTime: string) {
+  return scorecardGetArgs.parse({ issueId, criterionKey, comparisonTime });
+}
+
+/** Validate the actual request builders before spending time on an API build. */
+export function assertRubricCoverageReaderContracts() {
+  const clock = '2026-11-02T00:00:00Z';
+  for (const detail of ['scores', 'full'] as const)
+    listReaderArgs('luna-max-coverage-fixture', 'fleet:luna-max-coverage-fixture', clock, detail);
+  criterionReaderArgs('EI-private-coverage', 'retained', clock);
+}
 
 export async function measureRubricCoverageScenario(o: Options) {
   assert.match(o.workspace, /^test-runtime-/);
@@ -92,12 +110,8 @@ export async function measureRubricCoverageScenario(o: Options) {
       WHERE workspace_id=${o.workspace} AND issue_id=${issue.id}`;
     const before = await sql`SELECT payload::text AS payload FROM harness_shared.engineer_issues
       WHERE workspace_id=${o.workspace} AND issue_id=${issue.id}`;
-    const pick = ['scorecards[].issueId', 'scorecards[].ratings', 'scorecards[].coverage',
-      'scorecards[].evidenceActions', 'scorecards[].omittedActionCount'];
-    const listArgs = { rubricRef, subjectRef: subject.ref, comparisonTime: clock, limit: 1,
-      includeUnfinalized: true, projection: { pick } };
-    const compact = (await invoke('scorecards:list', { ...listArgs, detail: 'scores' })).scorecards?.[0];
-    const full = (await invoke('scorecards:list', { ...listArgs, detail: 'full' })).scorecards?.[0];
+    const compact = (await invoke('scorecards:list', listReaderArgs(rubricRef, subject.ref, clock, 'scores'))).scorecards?.[0];
+    const full = (await invoke('scorecards:list', listReaderArgs(rubricRef, subject.ref, clock, 'full'))).scorecards?.[0];
     assert.equal(full?.issueId, issue.id);
     assert.equal(compact?.issueId, issue.id);
     assert.deepEqual(full.ratings, ratings);
@@ -110,8 +124,7 @@ export async function measureRubricCoverageScenario(o: Options) {
     assert.equal(full.coverage.requestedScope.state, 'unknown');
     assert.equal(full.coverage.fulfillment, 'unknown');
     for (const [index, key] of keys.entries()) {
-      const detail = await invoke('scorecards:get', { issueId: issue.id, criterionKey: key, comparisonTime: clock,
-        projection: { pick: ['kind', 'scorecard.coverage', 'scorecard.criteria'] } });
+      const detail = await invoke('scorecards:get', criterionReaderArgs(issue.id, key, clock));
       assert.equal(detail.kind, 'found');
       assert.deepEqual(detail.scorecard.coverage, full.coverage);
       const { key: returnedKey, evidenceAction, ...rating } = detail.scorecard.criteria[0];

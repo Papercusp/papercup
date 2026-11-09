@@ -866,9 +866,70 @@ describe('focused runner startup tracing', () => {
       } finally { rmSync(dir, { recursive: true, force: true }); }
     });
 
+  it.each(['complete', 'batches', 'bytes'] as const)(
+    'batched loader census retains more than 8192 events or an explicit %s gap', async mode => {
+      const dir = mkdtempSync(join(tmpdir(), 'native-loader-batches-'));
+      const out = join(dir, 'sources.json');
+      const preload = new URL('../../../../scripts/lib/vitest-startup-trace.mjs?loader-batches', import.meta.url).href;
+      const census = { batches: mode === 'batches' ? 1 : 128,
+        bytes: mode === 'bytes' ? 1024 : 16 * 1024 ** 2 };
+      try {
+        const source = `process.env.PC_EXECUTED_SOURCE_MAP_OUT = ${JSON.stringify(out)};
+          await import(${JSON.stringify(preload)});
+          for (let i = 0; i < 4300; i++) await import('node:fs');
+          process.stdout.write('all imports completed');`;
+        const result = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', source], {
+          env: { ...process.env, NODE_OPTIONS: '', PC_EXECUTED_SOURCE_MAP_OUT: '',
+            PAPERCUSP_TEST_STARTUP_TRACE: '0', PC_NATIVE_LOADER_SOURCE_PINS: '[]',
+            PC_NATIVE_LOADER_CENSUS: JSON.stringify(census) }, timeout: 15_000,
+        });
+        expect(result.stdout).toBe('all imports completed');
+        expect(result.stderr).toBe('');
+        const trace = readNativeProcessTraceArtifacts(out);
+        expect(trace.population.artifactsVisited).toBeLessThan(150);
+        const rows = trace.rows.map(({ row }: any) => row);
+        const end = rows.find((row: any) => row.event === 'module-census-end');
+        expect(end).toMatchObject({ stopped: mode !== 'complete' });
+        if (mode !== 'complete') {
+          expect(trace.population.complete).toBe(false);
+          expect(rows.filter((row: any) => row.event === 'trace-limit'))
+            .toEqual([expect.objectContaining({ reason: `loader-census-${mode}` })]);
+          return;
+        }
+        expect(trace.population.complete).toBe(true);
+        const starts = rows.filter((row: any) => row.event === 'module-resolve-start');
+        const returned = rows.filter((row: any) => row.event === 'module-resolve-return');
+        expect(starts).toHaveLength(4300);
+        expect(returned).toHaveLength(4300);
+        expect(end.events).toBe(8600);
+        expect(new Set(starts.map((row: any) => row.resolveId))).toEqual(new Set(returned.map((row: any) => row.resolveId)));
+        const root = `${out}.native-processes`;
+        const originals = readdirSync(root).filter(name => name.endsWith('.json'))
+          .map(name => ({ name, bytes: readFileSync(join(root, name)) }));
+        const batch = originals.find(({ bytes }) => JSON.parse(bytes.toString()).event === 'module-census-batch')!;
+        // Rehashing an altered packet still fails its independently retained
+        // terminal digest. A missing packet or seal cannot pass as a prefix.
+        const changed = JSON.parse(batch.bytes.toString());
+        changed.events[0].specifier = 'node:changed';
+        const replacement = Buffer.from(JSON.stringify(changed));
+        const replacementName = createHash('sha256').update(replacement).digest('hex') + '.json';
+        rmSync(join(root, batch.name)); writeFileSync(join(root, replacementName), replacement);
+        expect(readNativeProcessTraceArtifacts(out).population.complete).toBe(false);
+        rmSync(join(root, replacementName)); writeFileSync(join(root, batch.name), batch.bytes);
+        rmSync(join(root, batch.name));
+        try { expect(readNativeProcessTraceArtifacts(out).population.complete).toBe(false); }
+        catch (error) { expect(String(error)).toContain('batch sequence incomplete'); }
+        writeFileSync(join(root, batch.name), batch.bytes);
+        const terminal = originals.find(({ bytes }) => JSON.parse(bytes.toString()).event === 'module-census-end')!;
+        rmSync(join(root, terminal.name));
+        expect(readNativeProcessTraceArtifacts(out).population.complete).toBe(false);
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
+
   it('rejects an unbounded loader census before launch', () => {
     for (const loaderCensus of [{ events: 8193, bytes: 1024 }, { events: 2, bytes: 16 * 1024 ** 2 + 1 },
-      { events: 1, bytes: 1024 }, { events: 2, bytes: 1023 }]) {
+      { events: 1, bytes: 1024 }, { events: 2, bytes: 1023 },
+      { batches: 0, bytes: 1024 }, { batches: 1025, bytes: 1024 }, { batches: 1, events: 2, bytes: 1024 }]) {
       expect(() => nativeProcessTraceEnv({ PC_EXECUTED_SOURCE_MAP_OUT: '/tmp/unused-census.json' }, { loaderCensus }))
         .toThrow('Invalid bounded native loader census');
     }

@@ -20,18 +20,21 @@ const sourcePinsEnv = 'PC_NATIVE_LOADER_SOURCE_PINS';
 const loaderCensusEnv = 'PC_NATIVE_LOADER_CENSUS';
 // An explicitly enrolled census uses the same OUT artifacts and authenticated
 // reader. Its count/byte budget fits within that reader's existing bounds.
-/** @param {unknown} value @returns {{ events: number, bytes: number }} */
+/** @typedef {{ events: number, bytes: number } | { batches: number, bytes: number }} NativeLoaderCensus */
+/** @param {unknown} value @returns {NativeLoaderCensus} */
 export function validateNativeLoaderCensus(value) {
+  const batched = value && typeof value === 'object' && Object.hasOwn(value, 'batches');
   if (!value || typeof value !== 'object' || Array.isArray(value) ||
-      Object.keys(value).some(key => !['events', 'bytes'].includes(key)) ||
-      !Number.isSafeInteger(value.events) || value.events < 2 || value.events > 8192 ||
+      Object.keys(value).some(key => ![batched ? 'batches' : 'events', 'bytes'].includes(key)) ||
+      (batched ? !Number.isSafeInteger(value.batches) || value.batches < 1 || value.batches > 1024 :
+        !Number.isSafeInteger(value.events) || value.events < 2 || value.events > 8192) ||
       !Number.isSafeInteger(value.bytes) || value.bytes < 1024 || value.bytes > 16 * 1024 ** 2)
     throw new Error('Invalid bounded native loader census');
-  return { events: value.events, bytes: value.bytes };
+  return batched ? { batches: value.batches, bytes: value.bytes } : { events: value.events, bytes: value.bytes };
 }
 /** Reuse the OUT channel and this preload without enabling stderr diagnostics.
  * @param {NodeJS.ProcessEnv} [env]
- * @param {{ enabled?: boolean, pinnedSources?: Array<{ path: string, sha256: string, byteLength: number }>, loaderCensus?: { events: number, bytes: number } }} [options]
+ * @param {{ enabled?: boolean, pinnedSources?: Array<{ path: string, sha256: string, byteLength: number }>, loaderCensus?: NativeLoaderCensus }} [options]
  * Source-owned prediction and independent artifact pins before launch. The
  * default diagnostic limits stay unchanged; an enrolled census declares its
  * own finite event/byte budget and reports exhaustion instead of completeness.
@@ -91,7 +94,22 @@ function installNativeProcessTrace(out) {
       loaderCensus = validateNativeLoaderCensus(JSON.parse(encoded));
     }
   } catch { invalidLoaderCensus = true; }
-  const censusUsage = { events: 0, bytes: 0, stopped: false };
+  const censusUsage = { events: 0, bytes: 0, batches: 0, stopped: false };
+  // Lossless packets reuse the authenticated OUT event protocol. The byte
+  // allowance is unchanged; packing removes one-file-per-event amplification.
+  // An unsealed final packet is never evidence of a complete census.
+  let censusRows = [], censusPacketBytes = 2;
+  const censusHash = createHash('sha256');
+  const flushCensus = () => {
+    if (!censusRows.length) return;
+    const events = censusRows;
+    censusRows = []; censusPacketBytes = 2;
+    const batchId = ++censusUsage.batches;
+    if (emit('module-census-batch', { batchId, events }, true) !== true) {
+      censusUsage.stopped = true;
+      emit('module-census-unavailable', { batchId }, true);
+    }
+  };
   const emit = (event, fields = {}, terminal = false) => {
     const observationScope = event.startsWith('module-') ? 'module' : 'general';
     const censusEvent = !terminal && observationScope === 'module' && loaderCensus;
@@ -104,15 +122,26 @@ function installNativeProcessTrace(out) {
         row = { ...row, event: 'trace-limit', observationScope };
       let bytes = Buffer.from(JSON.stringify(row));
       if (censusEvent) {
-        if (censusUsage.events >= loaderCensus.events || bytes.length > loaderCensus.bytes - censusUsage.bytes) {
+        const batched = Object.hasOwn(loaderCensus, 'batches');
+        if (batched && censusRows.length &&
+            (censusRows.length === 128 || censusPacketBytes + bytes.length + 1 > 120 * 1024)) flushCensus();
+        const eventLimit = !batched && censusUsage.events >= loaderCensus.events;
+        const batchLimit = batched && !censusRows.length && censusUsage.batches >= loaderCensus.batches;
+        if (censusUsage.stopped || eventLimit || batchLimit || bytes.length > 120 * 1024 ||
+            bytes.length > loaderCensus.bytes - censusUsage.bytes) {
           censusUsage.stopped = true;
           row = { ...row, event: 'trace-limit', observationScope,
-            reason: censusUsage.events >= loaderCensus.events ? 'loader-census-events' : 'loader-census-bytes',
+            reason: eventLimit ? 'loader-census-events' : batchLimit ? 'loader-census-batches' : 'loader-census-bytes',
             limits: loaderCensus, retained: { events: censusUsage.events, bytes: censusUsage.bytes } };
           bytes = Buffer.from(JSON.stringify(row));
         } else {
           censusUsage.events++;
           censusUsage.bytes += bytes.length;
+          if (batched) {
+            censusHash.update(bytes).update('\n');
+            censusRows.push(row); censusPacketBytes += bytes.length + 1;
+            return true;
+          }
         }
       }
       if (event === 'engine-script-execution' && bytes.length > 128 * 1024 &&
@@ -139,6 +168,7 @@ function installNativeProcessTrace(out) {
       // Do not replace redirected or changed evidence on a repeated write.
       if (!lstatSync(path).isFile() || lstatSync(path).isSymbolicLink() ||
           !readFileSync(path).equals(bytes)) return;
+      return true;
     } catch { /* Observation failures never change the native command. */ }
   };
   if (invalidLoaderCensus) emit('module-census-invalid', {}, true);
@@ -299,6 +329,12 @@ function installNativeProcessTrace(out) {
       return result;
     } finally {
       if (!listenersComplete) for (const state of Object.values(streams)) state.captureComplete = false;
+      if (loaderCensus && Object.hasOwn(loaderCensus, 'batches')) {
+        try {
+          flushCensus();
+          emit('module-census-end', { ...censusUsage, sha256: censusHash.copy().digest('hex') }, true);
+        } catch { emit('module-census-unavailable', {}, true); }
+      }
       try {
         if (engine) emit('engine-script-execution', { observation: engine.snapshot(),
           termination: { phase: 'exit', exitCode: args[0], signal: null } }, true);
@@ -445,6 +481,7 @@ function installNativeProcessTrace(out) {
     observeProcessTermination(termination => {
       if (termination.phase !== 'signal' || observedSignals.has(termination.signal)) return;
       observedSignals.add(termination.signal);
+      flushCensus();
       // An application handler may SIGKILL itself without emitting exit. Keep
       // this bounded signal-time prefix distinct from a completed shutdown;
       // the existing observer preserves application/default signal semantics.

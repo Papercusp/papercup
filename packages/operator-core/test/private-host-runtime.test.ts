@@ -810,8 +810,11 @@ it('keeps request fixtures on the bounded progress-aware builder path', () => {
     'roster-stop-http-fixture.ts', 'staging-first-http-fixture.ts']);
 });
 
-it('keeps the consult API build in preparation and requires both original artifact pins in the worker', () => {
-  const file = join(import.meta.dirname, '../lib/consult/consult-cascade-http.integration.test.ts');
+it.each([
+  ['consult', '../lib/consult/consult-cascade-http.integration.test.ts', 'consult-cascade-http-fixture.ts'],
+  ['rubric coverage', '../lib/rubric-coverage-http.integration.test.ts', 'staging-first-http-fixture.ts'],
+])('keeps the %s API build in preparation and requires both original artifact pins in the worker', (_label, proof, fixture) => {
+  const file = join(import.meta.dirname, proof);
   const source = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
   let preparations = 0;
   let launches = 0;
@@ -838,11 +841,31 @@ it('keeps the consult API build in preparation and requires both original artifa
   };
   visit(source);
   expect({ preparations, launches }).toEqual({ preparations: 1, launches: 1 });
-  const worker = readFileSync(join(import.meta.dirname, 'consult-cascade-http-fixture.ts'), 'utf8');
+  const worker = readFileSync(join(import.meta.dirname, fixture), 'utf8');
   expect(worker).toContain('resolvePreparedPrivateApiBundle(process.argv.slice(2), evidenceDir)');
-  expect(worker).not.toContain('buildPrivateOperatorApiBundle');
-  expect(worker).toContain('original prepared API receipt pin');
+  if (fixture === 'consult-cascade-http-fixture.ts') {
+    expect(worker).not.toContain('buildPrivateOperatorApiBundle');
+    expect(worker).toContain('original prepared API receipt pin');
+  } else {
+    const fixtureSource = ts.createSourceFile(fixture, worker, ts.ScriptTarget.Latest, true);
+    let requiresPrepared: string | undefined;
+    const inspect = (node: ts.Node) => {
+      if (ts.isVariableDeclaration(node) && node.name.getText(fixtureSource) === 'requiresPrepared')
+        requiresPrepared = node.initializer?.getText(fixtureSource);
+      ts.forEachChild(node, inspect);
+    };
+    inspect(fixtureSource);
+    expect(requiresPrepared, 'rubric requests must refuse an absent prepared API instead of compiling inside execute')
+      .toContain("'rubric-coverage'");
+    expect(readFileSync(file, 'utf8')).toContain('isolatedWorkerOptions(180_000, process.env, 180_000, {}, builder.maxMs)');
+    expect(readFileSync(file, 'utf8')).toContain('minimumFileRunTimeoutMs: options.testTimeoutMs');
+  }
   expect(privateOperatorApiBuildBudget()).toMatchObject({ timeoutMs: 240_000, maxMs: 540_000 });
+});
+
+it('validates rubric HTTP reader request schemas before private API compilation', async () => {
+  const { assertRubricCoverageReaderContracts } = await import('./rubric-coverage-http-scenario');
+  expect(() => assertRubricCoverageReaderContracts()).not.toThrow();
 });
 
 it('prepares every roster API bundle before the private execute phase', () => {
