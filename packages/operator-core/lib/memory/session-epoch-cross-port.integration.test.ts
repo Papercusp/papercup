@@ -12,10 +12,19 @@
  * (the post-compaction re-prime property).
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { OrgTestDb } from '../../test/_org-test-db';
 import type { MemoryEntry } from './backend';
 import { sessionAllowsAmbientContext, setSessionConfinementResolver } from '../capability-envelope/session-confinement-port';
+import { ledgerDir, openDeliveryLedger } from '../../../../apps/operator/scripts/hooks/inject/delivery-ledger.mjs';
+import { DELIVERY_MATRIX_FAULTS, deliveryMatrixCellKey, deliveryMatrixPopulation, deliveryTerminalOracle,
+  validateDeliveryMatrix, type DeliveryMatrixCell } from './injection-delivery-coverage';
 
 const h = vi.hoisted(() => ({ sql: null as unknown, entries: [] as MemoryEntry[] }));
 
@@ -81,11 +90,22 @@ async function waitForStamps(sql: (s: TemplateStringsArray, ...v: unknown[]) => 
 
 describe('cross-port session-epoch dedup (real PG — P-004a)', () => {
   let db: OrgTestDb;
+  let dispatcherRoot: string;
+  const joinedCells = new Map<string, DeliveryMatrixCell>();
 
   beforeAll(async () => {
     setSessionConfinementResolver(() => null);
     db = await createOrgTestDb();
     h.sql = db.adminSql;
+    // Execute current hook bytes outside the repository child loader's HEAD
+    // substitution boundary, retaining the canonical source capture in CI.
+    dispatcherRoot = mkdtempSync(join(tmpdir(), 'receipt-pg-dispatcher-'));
+    const hooks = fileURLToPath(new URL('../../../../apps/operator/scripts/hooks/inject/', import.meta.url));
+    for (const rel of ['', 'adapters']) {
+      mkdirSync(join(dispatcherRoot, rel), { recursive: true });
+      for (const name of readdirSync(join(hooks, rel))) if (name.endsWith('.mjs'))
+        copyFileSync(join(hooks, rel, name), join(dispatcherRoot, rel, name));
+    }
     // Exercise production JSONB staging and ACK promotion as well as the
     // surfaced-table uniqueness constraint; an in-memory cursor masks both.
     resetReadCursorStore();
@@ -98,7 +118,214 @@ describe('cross-port session-epoch dedup (real PG — P-004a)', () => {
   afterAll(async () => {
     setSessionConfinementResolver(undefined);
     resetReadCursorStore();
+    if (dispatcherRoot) rmSync(dispatcherRoot, { recursive: true, force: true });
     await db?.cleanup();
+  });
+
+  // Join actual OS output, immutable native receipts, their next-request echo,
+  // and production PostgreSQL cursors/surfaced rows in ONE observation. The
+  // HTTP responder supplies fixture sources; it is not a production route or
+  // proof that an installed client consumed the hook's stdout (notably OMP).
+  for (const client of ['codex', 'claude', 'omp'] as const)
+    for (const sink of ['turn-start', 'mid-turn'] as const)
+      for (const source of ['memory', 'corpus'] as const)
+        for (const fault of DELIVERY_MATRIX_FAULTS)
+          it(`context reliability R-1: joined ${client} ${sink} ${source} ${fault}`, async ({ task }) => {
+            const owner = `joined-${randomUUID()}`;
+            const home = mkdtempSync(join(tmpdir(), 'receipt-pg-home-'));
+            const id = source === 'memory' ? randomUUID() : `WI-${randomUUID()}`;
+            const rendered = '- Full approval condition ☃' + (fault === 'partial-stdout' ? 'x'.repeat(512 * 1024) : '');
+            const offer = memoryFragmentOffer(source, id, 0, sink, rendered);
+            const { rendered: _text, ...fragment } = offer;
+            const token = `receipt-${randomUUID()}`;
+            const requests: Array<{ port: string; confirmations: unknown[]; inserted: number }> = [];
+            const errors: unknown[] = [];
+            const surfaced = () => source === 'memory'
+              ? db.adminSql<{ port: string }[]>`SELECT port FROM harness_shared.memory_session_surfaced WHERE session_id = ${owner}`
+              : db.adminSql<{ port: string }[]>`SELECT port FROM harness_shared.corpus_session_surfaced WHERE session_id = ${owner}`;
+            const server = createServer((req, res) => {
+              void (async () => {
+                const chunks: Buffer[] = [];
+                for await (const chunk of req) chunks.push(Buffer.from(chunk));
+                const body = JSON.parse(Buffer.concat(chunks).toString() || '{}');
+                expect(body.owner).toBe(owner);
+                const port = req.url?.includes('mid-turn') ? 'mid-turn' : 'turn-start';
+                const confirmations = body.confirmedMemoryDeliveries ?? [];
+                let inserted = 0;
+                for (const proof of confirmations) inserted += await confirmMemoryEmission(db.adminSql as never, owner, proof);
+                requests.push({ port, confirmations, inserted });
+                if ((await surfaced()).length) { res.end(JSON.stringify({ text: null })); return; }
+                const portOffer = { ...offer, port };
+                const portToken = port === sink ? token : `${token}-other`;
+                await stageMemoryEmission(db.adminSql as never, owner, portToken, [portOffer]);
+                if (fault === 'lost-response') { req.socket.destroy(); return; }
+                if (fault === 'deadline') return; // real dispatcher wall aborts this socket
+                res.setHeader('Content-Type', 'application/json');
+                res.end(JSON.stringify({ text: rendered, deliveryToken: portToken, memoryFragmentOffers: [portOffer] }));
+              })().catch(error => { errors.push(String(error)); res.destroy(); });
+            });
+            await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+            const address = server.address();
+            if (!address || typeof address === 'string') throw new Error('Missing receipt fixture address');
+            const base = `http://127.0.0.1:${address.port}`;
+            const env = { ...process.env, PAPERCUSP_SID: owner, PAPERCUSP_HOME: home, PAPERCUSP_OPERATOR_URL: base };
+            const run = async (port = sink, output: 'complete' | 'closed' | 'partial' = 'complete') => {
+              const event = port === 'turn-start' ? { prompt: 'receipt delivery' }
+                : client === 'codex' ? { tool_name: 'Grep', tool_input: { pattern: 'receipt' }, tool_response: '' }
+                : client === 'claude' ? { tool_calls: [{ tool_name: 'Grep', tool_input: { pattern: 'receipt' }, tool_response: '' }] }
+                : { message: { content: [{ type: 'toolCall', id: 'call-1', name: 'Grep', arguments: { pattern: 'receipt' } }] },
+                  toolResults: [{ toolCallId: 'call-1', toolName: 'Grep', content: [{ type: 'text', text: '' }] }] };
+              const nativeEvent = port === 'turn-start' ? (client === 'omp' ? 'before_agent_start' : 'UserPromptSubmit')
+                : client === 'codex' ? 'PostToolUse' : client === 'claude' ? 'PostToolBatch' : 'turn_end';
+              const child = spawn(process.execPath, [join(dispatcherRoot, 'index.mjs'), `--client=${client}`, `--event=${nativeEvent}`],
+                { env, stdio: ['pipe', 'pipe', 'pipe'] });
+              const stdout: Buffer[] = [], stderr: Buffer[] = [];
+              let partialBytes = 0;
+              if (output === 'closed') child.stdout.destroy();
+              else child.stdout.on('data', (chunk: Buffer) => {
+                if (output === 'partial') { partialBytes += chunk.length; child.stdout.destroy(); }
+                else stdout.push(chunk);
+              });
+              child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
+              const timer = setTimeout(() => child.kill('SIGKILL'), 15_000);
+              try {
+                const terminal = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+                  child.once('error', reject);
+                  child.once('close', (code, signal) => resolve({ code, signal }));
+                });
+                child.stdin.end(JSON.stringify(event));
+                return { ...await terminal, stdout: Buffer.concat(stdout).toString(), stderr: Buffer.concat(stderr).toString(), partialBytes };
+              } finally { clearTimeout(timer); }
+            };
+            const proofFor = (port = sink) => openDeliveryLedger(owner, env, port)?.confirmedMemoryDeliveries() ?? [];
+            const attempt = { id: owner, recipient: owner, workspace: 'isolated-org-fixture', epoch: 0, token, fragment };
+            const cell: DeliveryMatrixCell = { client, sink, source, fault, attempt,
+              selector: task.name, evidenceRefs: [`vitest:${task.name}`], terminalOracle: 'complete-stdout',
+              state: 'prepared', verdict: 'UNKNOWN', suppressionWrites: 0 };
+            Object.assign(task.meta, { receiptBackendRequests: requests, receiptBackendErrors: errors });
+            try {
+              if (fault === 'prepare' || fault === 'abandon-expiry') {
+                const response = await fetch(`${base}/api/agent-mcp/${sink === 'mid-turn' ? 'mid-turn-context' : 'turn-start-memory'}`,
+                  { method: 'POST', body: JSON.stringify({ owner, confirmedMemoryDeliveries: [] }) });
+                expect((await response.json()).memoryFragmentOffers).toEqual([offer]);
+                if (fault === 'abandon-expiry') {
+                  await db.adminSql`UPDATE harness_shared.coord_read_cursors
+                    SET pending = jsonb_set(pending, '{expiresAt}', '1'::jsonb)
+                    WHERE owner_id = ${owner} AND surface = ${'memory-emission:' + token}`;
+                  expect(await confirmMemoryEmission(db.adminSql as never, owner, { token, fragments: [fragment] })).toBe(0);
+                  expect(await db.adminSql`SELECT surface FROM harness_shared.coord_read_cursors
+                    WHERE owner_id = ${owner} AND surface = ${'memory-emission:' + token}`).toHaveLength(0);
+                  cell.state = 'abandoned';
+                }
+              } else if (fault === 'lost-response' || fault === 'deadline' || fault === 'partial-stdout') {
+                const result = await run(sink, fault === 'partial-stdout' ? 'partial' : 'complete');
+                Object.assign(task.meta, { negativeNativeOutput: result });
+                expect(result.signal, result.stderr).toBeNull();
+                expect(result.code, result.stderr).toBe(0);
+                // A transport failure may emit a diagnostic context block;
+                // it must never emit or confirm the offered memory fragment.
+                expect(result.stdout).not.toContain(rendered);
+                if (fault === 'partial-stdout') {
+                  expect(result.partialBytes).toBeGreaterThan(0);
+                  expect(result.partialBytes).toBeLessThan(fragment.bodyBytes);
+                  cell.state = 'partial';
+                }
+                Object.assign(task.meta, { partialBytes: result.partialBytes });
+              } else {
+                if (fault === 'retry') {
+                  await run(sink, 'closed');
+                  expect(proofFor()).toEqual([]);
+                  expect(await surfaced()).toHaveLength(0);
+                }
+                const outputs = fault === 'overlapping-ports'
+                  ? await Promise.all([run(), run(sink === 'mid-turn' ? 'turn-start' : 'mid-turn')]) : [await run()];
+                for (const result of outputs) {
+                  expect(result.signal, result.stderr).toBeNull();
+                  expect(result.code, result.stderr).toBe(0);
+                  expect(result.stdout).toContain(rendered);
+                }
+                expect(await surfaced()).toHaveLength(0); // stdout alone has not ACKed PostgreSQL
+                const proof = [{ token, fragments: [fragment] }];
+                const expectedProofs = fault === 'overlapping-ports' ? [...proof,
+                  { token: `${token}-other`, fragments: [{ ...fragment, port: sink === 'mid-turn' ? 'turn-start' : 'mid-turn' }] }] : proof;
+                const actualProofs = proofFor();
+                Object.assign(task.meta, { nativeConfirmations: actualProofs });
+                // The production writer intentionally returns receipts from
+                // every native port, ordered by completion time, so neither
+                // overlap may erase the other's confirmation.
+                expect(actualProofs).toHaveLength(expectedProofs.length);
+                expect(actualProofs).toEqual(expect.arrayContaining(expectedProofs));
+                const namespace = sink === 'turn-start' ? owner : `${owner}.${sink}`;
+                const receiptPath = join(ledgerDir(env), `${namespace}.emissions`,
+                  `${createHash('sha256').update(token).digest('hex')}.json`);
+                const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+                const payloadSha256 = createHash('sha256').update(outputs[0]!.stdout).digest('hex');
+                expect(receipt).toMatchObject({ stage: 'stdout-emitted', owner, token, client,
+                  payloadSha256, payloadBytes: Buffer.byteLength(outputs[0]!.stdout), memoryFragments: [fragment] });
+                if (fault === 'duplicate-commit') {
+                  const results = await Promise.all(Array.from({ length: 8 }, () =>
+                    confirmMemoryEmission(db.adminSql as never, owner, proof[0]!)));
+                  expect(results.reduce((sum, count) => sum + count, 0)).toBe(1);
+                }
+                // A subsequent actual dispatcher request echoes the stored proof.
+                await run();
+                expect(requests.some(request => request.confirmations.some(row =>
+                  JSON.stringify(row) === JSON.stringify(proof[0])))).toBe(true);
+                if (fault === 'overlapping-ports') await run(sink === 'mid-turn' ? 'turn-start' : 'mid-turn');
+                expect(await surfaced()).toHaveLength(1);
+                expect(await confirmMemoryEmission(db.adminSql as never, owner, proof[0]!)).toBe(0);
+                cell.state = 'emitted'; cell.suppressionWrites = 1;
+                cell.proof = { event: 'complete-stdout', adapter: 'hook-dispatcher', receiptRef: `vitest:${task.name}#immutableReceipt`,
+                  attemptId: owner, recipient: owner, workspace: attempt.workspace, epoch: 0, token, client, sink,
+                  payloadSha256, payloadBytes: receipt.payloadBytes, fragment };
+                Object.assign(task.meta, { immutableReceipt: receipt, stdoutSha256: payloadSha256 });
+              }
+              if (cell.state !== 'emitted') {
+                expect(proofFor()).toEqual([]);
+                expect(await surfaced()).toHaveLength(0);
+                if (fault !== 'abandon-expiry') {
+                  const candidates = await db.adminSql<{ fragments: unknown[] }[]>`
+                    SELECT pending -> 'fragments' AS fragments FROM harness_shared.coord_read_cursors
+                    WHERE owner_id = ${owner} AND surface = ${'memory-emission:' + token}`;
+                  expect(candidates).toEqual([{ fragments: [fragment] }]);
+                }
+              }
+              expect(requests.length).toBeGreaterThan(0);
+              expect(errors).toEqual([]);
+              cell.verdict = 'passed';
+              joinedCells.set(deliveryMatrixCellKey(cell), cell);
+              Object.assign(task.meta, { deliveryMatrixCell: cell, receiptBackendObservation: {
+                cursorStore: 'postgresql', surfacedStore: 'postgresql', requests,
+                evidencePlane: 'dispatcher subprocess + production PostgreSQL receipt backend',
+                productionRoute: 'UNKNOWN', installedClientConsumption: 'UNKNOWN',
+                ompBoundary: 'dispatcher stdout only; native extension tool_result remains pre-host-final' } });
+            } finally {
+              server.closeAllConnections();
+              await new Promise<void>(resolve => server.close(() => resolve()));
+              rmSync(home, { recursive: true, force: true });
+            }
+          }, 45_000);
+
+  it('context reliability R-1: joined cell census retains the complete denominator', ({ task }) => {
+    const cells = deliveryMatrixPopulation().map(coordinate => joinedCells.get(deliveryMatrixCellKey(coordinate)) ?? {
+      ...coordinate, selector: 'not exercised by PostgreSQL dispatcher join',
+      evidenceRefs: ['session-epoch-cross-port.integration.test.ts: bounded join census'],
+      terminalOracle: deliveryTerminalOracle(coordinate), state: 'UNKNOWN' as const,
+      verdict: 'UNKNOWN' as const, suppressionWrites: 0,
+    });
+    expect(joinedCells.size).toBe(96);
+    expect(cells).toHaveLength(432);
+    // Structural fixture identity only. Acceptance binds the separately read
+    // plan/rubric/spec/runtime identities and independent evidence later.
+    const manifest = { schemaVersion: 'delivery-matrix-v1' as const,
+      identity: { planRevision: 1, rubricRevision: 1, planHash: '1'.repeat(64), rubricHash: '2'.repeat(64),
+        barHash: '3'.repeat(64), specHash: '4'.repeat(64), sourceHash: '5'.repeat(64), testHash: '6'.repeat(64),
+        runtimeGeneration: 'isolated-postgresql-dispatcher-fixture' }, cells };
+    const result = validateDeliveryMatrix(manifest);
+    expect(result).toMatchObject({ closed: true, valid: true, acceptanceReady: false, errors: [] });
+    expect(result.unknown).toHaveLength(336);
+    Object.assign(task.meta, { deliveryMatrixCensus: { manifest, result,
+      identityKind: 'structural fixture only; independent acceptance and shipment not asserted' } });
   });
 
   it('lost preparation stays eligible; proven final emission suppresses another port; a new epoch re-primes', async () => {
