@@ -1,10 +1,12 @@
 /** Real-Git capture and frozen-publication contracts in the maintained integration router. */
 import { afterEach, describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { captureGitSyncCandidate, readGitSyncCandidate, publishGitSyncCandidate, SOURCE_CUSTODY_REF_PREFIX, type RunGit } from './run-git-sync';
+import { captureGitSyncCandidate, readGitSyncCandidate, publishGitSyncCandidate, prepareGeneratedGitSyncCandidateTree,
+  SOURCE_CUSTODY_REF_PREFIX, type RunGit, type GitSyncGeneratedLockTreeRequest } from './run-git-sync';
 import { createGitSyncLeaseFence } from './git-sync-lease-fence';
 import { runWithGitSyncPerInstallLease } from './git-sync-action';
 import { startDedicatedNativePg } from '@papercusp/test-config/pg';
@@ -98,6 +100,117 @@ function unpublishedState(f: ReturnType<typeof fixture>) {
 // Dedicated fixture repositories have no shared platform writer. Production
 // callers must supply the existing git-sync lease's assertHeld method.
 const pilotChecks = { assertHeld: () => {}, beforePublish: async () => ({ ok: true as const }) };
+
+describe('P003 generated lock tree preparation', () => {
+  function generatedFixture(path: 'package-lock.json' | 'npm-shrinkwrap.json' = 'package-lock.json') {
+    const f = fixture();
+    const manifest = { name: 'generated-fixture', version: '1.0.0' };
+    const lock = { ...manifest, lockfileVersion: 3, packages: { '': manifest } };
+    writeFileSync(join(f.repo, 'package.json'), JSON.stringify(manifest));
+    writeFileSync(join(f.repo, path), JSON.stringify(lock));
+    f.git('add', '--', 'package.json', path);
+    f.git('commit', '-m', 'selected metadata');
+    const base = f.git('rev-parse', 'HEAD');
+    const bytes = Buffer.from(JSON.stringify({ ...lock, requires: true }));
+    // Independent raw Git oracle; do not obtain the expected blob from the
+    // implementation or through its private-index runner.
+    const blob = spawnSync('git', ['hash-object', '--no-filters', '--stdin'], {
+      cwd: f.repo, input: bytes, encoding: 'utf8', timeout: 30_000,
+    });
+    expect(blob.status).toBe(0);
+    const request: GitSyncGeneratedLockTreeRequest = { base, path, bytes,
+      sha256: createHash('sha256').update(bytes).digest('hex'), blobOid: blob.stdout.trim() };
+    return { ...f, request };
+  }
+
+  for (const path of ['package-lock.json', 'npm-shrinkwrap.json'] as const) {
+    it(`admits only generated ${path} from the base and preserves raw pending/index bytes`, async () => {
+      const f = generatedFixture(path);
+      writeFileSync(join(f.repo, 'a.txt'), 'unrelated staged source\n');
+      f.git('add', '--', 'a.txt');
+      writeFileSync(join(f.repo, path), 'pending lock differs from generated output\n');
+      const index = readFileSync(join(f.repo, '.git/index'));
+      const pending = readFileSync(join(f.repo, path));
+      const result = await prepareGeneratedGitSyncCandidateTree(f.runGit, f.repo, f.request);
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error(result.error);
+      expect(f.git('diff-tree', '--no-commit-id', '--name-only', '-r', f.request.base, result.tree)).toBe(path);
+      expect(f.git('show', `${result.tree}:a.txt`)).toBe('baseline a');
+      expect(f.git('show', `${result.tree}:${path}`)).toBe(f.request.bytes.toString());
+      expect(result).toMatchObject({ mode: '100644', blobOid: f.request.blobOid, sha256: f.request.sha256 });
+      expect(readFileSync(join(f.repo, '.git/index'))).toEqual(index);
+      expect(readFileSync(join(f.repo, path))).toEqual(pending);
+      expect(f.git('rev-parse', 'HEAD')).toBe(f.request.base);
+      expect(f.git('for-each-ref', '--format=%(refname)', SOURCE_CUSTODY_REF_PREFIX)).toBe('');
+      expect(readdirSync(join(f.repo, '.git')).filter(name => name.startsWith('papercusp-'))).toEqual([]);
+    });
+  }
+
+  it('owns descriptor identity and raw output bytes before the first asynchronous Git read', async () => {
+    const f = generatedFixture();
+    const expected = { ...f.request, bytes: Buffer.from(f.request.bytes) };
+    let mutated = false;
+    const runner: RunGit = async (args, cwd, options) => {
+      if (!mutated) {
+        mutated = true;
+        f.request.path = 'npm-shrinkwrap.json';
+        f.request.sha256 = '0'.repeat(64);
+        f.request.blobOid = '0'.repeat(40);
+        f.request.bytes.fill(0);
+      }
+      return f.runGit(args, cwd, options);
+    };
+    const result = await prepareGeneratedGitSyncCandidateTree(runner, f.repo, f.request);
+    expect(result).toMatchObject({ ok: true, path: expected.path, sha256: expected.sha256, blobOid: expected.blobOid });
+    if (!result.ok) throw new Error(result.error);
+    expect(f.git('show', `${result.tree}:${expected.path}`)).toBe(expected.bytes.toString());
+  });
+
+  for (const control of ['digest', 'blob', 'path', 'base', 'unchanged', 'unmerged', 'symlink', 'transform', 'invalid-metadata', 'wrong-index-runner'] as const) {
+    it(`refuses ${control} without changing pending source, index or HEAD`, async () => {
+      const f = generatedFixture();
+      const request = { ...f.request };
+      let runner = f.runGit;
+      if (control === 'digest') request.sha256 = '0'.repeat(64);
+      if (control === 'blob') request.blobOid = '0'.repeat(40);
+      if (control === 'path') {
+        writeFileSync(join(f.repo, 'npm-shrinkwrap.json'), f.request.bytes);
+        f.git('add', '--', 'npm-shrinkwrap.json');
+        f.git('commit', '-m', 'effective shrinkwrap');
+        request.base = f.git('rev-parse', 'HEAD');
+      }
+      if (control === 'base') request.base = f.git('rev-parse', 'HEAD^{tree}');
+      if (control === 'unmerged') unmerge(f);
+      if (control === 'symlink') {
+        rmSync(join(f.repo, request.path));
+        symlinkSync('a.txt', join(f.repo, request.path));
+        f.git('add', '--', request.path);
+        f.git('commit', '-m', 'unsupported selected mode');
+        request.base = f.git('rev-parse', 'HEAD');
+      }
+      if (control === 'transform') {
+        writeFileSync(join(f.repo, '.gitattributes'), 'package-lock.json text\n');
+        f.git('add', '--', '.gitattributes');
+        f.git('commit', '-m', 'selected transformation');
+        request.base = f.git('rev-parse', 'HEAD');
+      }
+      if (control === 'unchanged' || control === 'invalid-metadata') {
+        request.bytes = control === 'unchanged' ? readFileSync(join(f.repo, request.path)) : Buffer.from('{bad json');
+        request.sha256 = createHash('sha256').update(request.bytes).digest('hex');
+        request.blobOid = spawnSync('git', ['hash-object', '--no-filters', '--stdin'], {
+          cwd: f.repo, input: request.bytes, encoding: 'utf8', timeout: 30_000,
+        }).stdout.trim();
+      }
+      if (control === 'wrong-index-runner') runner = (args, cwd) => f.runGit(args, cwd);
+      const before = candidateState(f);
+      const lock = readFileSync(join(f.repo, request.path));
+      expect(await prepareGeneratedGitSyncCandidateTree(runner, f.repo, request)).toMatchObject({ ok: false });
+      expect(candidateState(f)).toEqual(before);
+      expect(readFileSync(join(f.repo, request.path))).toEqual(lock);
+      expect(f.git('for-each-ref', '--format=%(refname)', SOURCE_CUSTODY_REF_PREFIX)).toBe('');
+    });
+  }
+});
 
 describe('lifecycle P004 capture recovery', () => {
   it('pins dependency edges in custody and refuses changed ancestry under the same generation', async () => {

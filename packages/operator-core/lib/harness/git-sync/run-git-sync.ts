@@ -5602,6 +5602,107 @@ export type GitSyncCandidateCaptureResult =
   | { ok: true; ref: string; candidate: GitSyncCandidateCapture }
   | { ok: false; error: string };
 
+/** Internal generated content, before custody binds the complete resolver identity. */
+export interface GitSyncGeneratedLockTreeRequest {
+  base: string;
+  path: 'package-lock.json' | 'npm-shrinkwrap.json';
+  bytes: Uint8Array;
+  sha256: string;
+  blobOid: string;
+}
+
+/**
+ * Prepare only the generated lock in a base-seeded private index. This does not
+ * retain custody or publish: the capture caller must still bind/recheck selected
+ * resolver inputs and raw pending/index custody under the existing writer fence.
+ */
+export async function prepareGeneratedGitSyncCandidateTree(
+  runGit: RunGit,
+  repoPath: string,
+  request: GitSyncGeneratedLockTreeRequest,
+): Promise<
+  | { ok: true; path: GitSyncGeneratedLockTreeRequest['path']; mode: '100644';
+      sha256: string; blobOid: string; baseTree: string; tree: string }
+  | { ok: false; error: string }
+> {
+  const oidPattern = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
+  if (!request || Object.keys(request).sort().join(',') !== 'base,blobOid,bytes,path,sha256' ||
+      !oidPattern.test(request.base) || !oidPattern.test(request.blobOid) ||
+      !['package-lock.json', 'npm-shrinkwrap.json'].includes(request.path) ||
+      !(request.bytes instanceof Uint8Array) || !/^[a-f0-9]{64}$/.test(request.sha256)) {
+    return custodyRefused('generated-lock-input');
+  }
+  // Own the bytes across asynchronous Git calls; a caller cannot change the
+  // payload after the digest check by mutating its original Buffer.
+  request = { ...request };
+  const bytes = Buffer.from(request.bytes);
+  if (createHash('sha256').update(bytes).digest('hex') !== request.sha256) {
+    return custodyRefused('generated-lock-digest');
+  }
+  const sharedGit: RunGit = (args, cwd, options) => runGit(args, cwd, {
+    ...options, env: { ...options?.env, GIT_OPTIONAL_LOCKS: '0', GIT_LITERAL_PATHSPECS: '1' },
+  });
+  let indexFile: string | undefined;
+  let blobFile: string | undefined;
+  try {
+    const base = await sharedGit(['rev-parse', '--verify', `${request.base}^{commit}`], repoPath);
+    const baseTree = await sharedGit(['rev-parse', '--verify', `${request.base}^{tree}`], repoPath);
+    if (base.code !== 0 || base.stdout.trim() !== request.base ||
+        baseTree.code !== 0 || !oidPattern.test(baseTree.stdout.trim())) {
+      return custodyRefused('generated-lock-base');
+    }
+    const metadata = await sharedGit(['ls-tree', '-z', baseTree.stdout.trim(), '--',
+      'package.json', 'package-lock.json', 'npm-shrinkwrap.json'], repoPath);
+    if (metadata.code !== 0) return custodyRefused('generated-lock-base-metadata');
+    const entries = metadata.stdout.split('\0').filter(Boolean);
+    const entry = (path: string) => entries.find(row => row.slice(row.indexOf('\t') + 1) === path);
+    const effective = entry('npm-shrinkwrap.json') ? 'npm-shrinkwrap.json' : 'package-lock.json';
+    if (effective !== request.path || !/^100644 blob [a-f0-9]+\t/.test(entry(request.path) ?? '') ||
+        !/^100644 blob [a-f0-9]+\t/.test(entry('package.json') ?? '')) {
+      return custodyRefused('generated-lock-path-mode');
+    }
+    const conflicts = await sharedGit(['ls-files', '--unmerged', '-z'], repoPath);
+    if (conflicts.code !== 0 || conflicts.stdout) return custodyRefused('generated-lock-unmerged-index');
+    const opened = await openPrivateIndexSite(sharedGit, repoPath, 'generated lock preparation', 'generated-lock');
+    if (!opened.ok) return custodyRefused('generated-lock-private-index');
+    indexFile = opened.site.newIndexFile();
+    blobFile = indexFile + '.blob';
+    const privateGit = opened.site.bindIndex(indexFile);
+    // Deliberately bypass seedPrivateIndex: inherited shared entries are not
+    // selected repair inputs, including unrelated pre-staged source.
+    const seeded = await privateGit(['read-tree', baseTree.stdout.trim()], repoPath);
+    if (seeded.code !== 0) return custodyRefused('generated-lock-base-read');
+    const attributes = await privateGit(['check-attr', '-z', '--cached', 'filter', 'text', 'eol',
+      'working-tree-encoding', 'ident', '--', request.path], repoPath);
+    const fields = attributes.stdout.split('\0');
+    if (attributes.code !== 0 || fields.pop() !== '' || fields.length !== 15 ||
+        fields.some((value, i) => i % 3 === 2 && value !== 'unspecified' && value !== 'unset')) {
+      return custodyRefused('generated-lock-transform-unsupported');
+    }
+    await writeFile(blobFile, bytes, { mode: 0o600, flag: 'wx' });
+    const blob = await sharedGit(['hash-object', '-w', '--no-filters', '--', blobFile], repoPath);
+    if (blob.code !== 0 || blob.stdout.trim() !== request.blobOid) return custodyRefused('generated-lock-blob');
+    const added = await privateGit(['update-index', '--add', '--cacheinfo', '100644', request.blobOid, request.path], repoPath);
+    if (added.code !== 0) return custodyRefused('generated-lock-index-write');
+    const tree = await privateGit(['write-tree'], repoPath);
+    if (tree.code !== 0 || !oidPattern.test(tree.stdout.trim())) return custodyRefused('generated-lock-tree-write');
+    const changed = await sharedGit(['diff-tree', '--no-commit-id', '--name-only', '--no-renames', '-r', '-z',
+      baseTree.stdout.trim(), tree.stdout.trim()], repoPath);
+    if (changed.code !== 0 || changed.stdout !== request.path + '\0') return custodyRefused('generated-lock-tree-scope');
+    await workspaceLockTreeValidator()(privateGit, repoPath, tree.stdout.trim());
+    return { ok: true, path: request.path, mode: '100644', sha256: request.sha256,
+      blobOid: request.blobOid, baseTree: baseTree.stdout.trim(), tree: tree.stdout.trim() };
+  } catch {
+    return custodyRefused('generated-lock-preparation-exception');
+  } finally {
+    if (indexFile) {
+      await rm(indexFile, { force: true });
+      await rm(indexFile + '.lock', { force: true });
+    }
+    if (blobFile) await rm(blobFile, { force: true });
+  }
+}
+
 /** Recover the frozen base after a pinned capture outlived its DB receipt.
  * Reads only custody selected by the stable operation identity, then applies
  * the same complete object/input validation as ordinary capture replay. */
