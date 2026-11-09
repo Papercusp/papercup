@@ -188,11 +188,30 @@ export const CODE_FAMILIARITY_INDEXES = [
   },
 ] as const satisfies readonly SessionSearchIndexSpec[];
 
+/**
+ * Native dispatch authority rereads the complete exact-call population across
+ * scopes. Keep its fingerprint predicates unchanged and build their index online
+ * before applying migration 1626 on a populated invocation ledger.
+ */
+export const NATIVE_DISPATCH_FINGERPRINT_INDEXES = [
+  {
+    name: 'tool_invocations_native_dispatch_fingerprint_idx',
+    table: 'harness_shared.tool_invocations',
+    definition:
+      "((metadata_json->'requestOrigin'->'nativeSession'->>'valueFingerprint'), " +
+      "(metadata_json->'requestOrigin'->'nativeSession'->>'callIdFingerprint'), id) " +
+      "WHERE metadata_json->'requestOrigin'->'nativeSession'->>'valueFingerprint' IS NOT NULL " +
+      "AND metadata_json->'requestOrigin'->'nativeSession'->>'callIdFingerprint' IS NOT NULL",
+    stage: 'corpus',
+  },
+] as const satisfies readonly SessionSearchIndexSpec[];
+
 const ONLINE_SEARCH_INDEXES: readonly SessionSearchIndexSpec[] = [
   ...SESSION_SEARCH_INDEXES,
   ...ISSUE_Q_SEARCH_INDEXES,
   ...TEST_RUNS_SEARCH_INDEXES,
   ...CODE_FAMILIARITY_INDEXES,
+  ...NATIVE_DISPATCH_FINGERPRINT_INDEXES,
 ];
 
 export type SessionSearchIndexName = (typeof SESSION_SEARCH_INDEXES)[number]['name'];
