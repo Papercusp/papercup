@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { defaultEvidenceRoot, pruneRunsWithReport } from '@papercusp/verification-harness';
-import { llmBatteryEvidenceRoot, runScenarioBattery, scenarioPhaseOutcome } from './battery-harness';
+import { llmBatteryEvidenceRoot, providerAuthFailure, runScenarioBattery, scenarioPhaseOutcome } from './battery-harness';
+import type { LlmCallDiagnostic } from '@papercusp/testing-shell/llm';
 
 const scenarios = [
   { id: 'op-S01-a', target: 'operator', description: 'first' },
@@ -123,6 +124,60 @@ describe('LLM scenario battery on the verification-harness contract', () => {
     });
     expect(outcomes).toEqual(['failed']);
     expect(harness.verdict).toBe('fail');
+  });
+
+  const response = (status: number, callId = 'sut-call'): LlmCallDiagnostic => ({
+    callId, attempt: 1, phase: 'response', observedAt: '2026-11-09T15:00:00Z',
+    label: 'anthropic-direct', endpointOrigin: 'http://127.0.0.1:8788', loopback: true,
+    governorMode: 'unobserved', requestedAccount: null, servedAccount: 'console',
+    providerRequestId: 'request-1', status,
+  });
+
+  it.each([401, 403])('uses the first real scenario as a prerequisite before parallel auth-%s fan-out', async status => {
+    const population = [...scenarios.slice(0, 2), { ...scenarios[0]!, id: 'op-S04-d' }, scenarios[2]!];
+    const calls: string[] = [];
+    const { outcomes, harness } = await runScenarioBattery({
+      scenarios: population, concurrency: 3, evidenceRoot: path.join(retentionRoot, 'auth'),
+      transportDiagnostics: scenario => scenario.id === population[0]!.id ? [response(status)] : [],
+      runScenario: async (scenario, dir) => {
+        calls.push(scenario.id);
+        // Let other workers reach the prerequisite while the real first call is in flight.
+        await new Promise(resolve => setImmediate(resolve));
+        writeFileSync(path.join(dir, 'report-summary.json'), JSON.stringify({ scenarioId: scenario.id, status }));
+        return scenario.id === population[0]!.id ? 'failed' : 'executed';
+      },
+    });
+    expect(calls).toEqual([population[0]!.id, scenarios[2]!.id]);
+    expect(outcomes).toEqual(['failed', 'failed', 'failed', 'executed']);
+    expect(harness.phases[1]).toMatchObject({ status: 'failed', reasonCode: 'provider-auth-unavailable' });
+    const retained = path.join(retentionRoot, 'auth', 'retained', harness.runId, 'phases', population[1]!.id, 'report-summary.json');
+    expect(JSON.parse(readFileSync(retained, 'utf8'))).toMatchObject({
+      verdict: 'blocked', prerequisiteScenarioId: population[0]!.id,
+      transportDiagnostic: { status, servedAccount: 'console', providerRequestId: 'request-1' },
+    });
+  });
+
+  it('continues after a behavioral failure or recovered pool authentication attempt', async () => {
+    const calls: string[] = [];
+    const { outcomes } = await runScenarioBattery({
+      scenarios: scenarios.slice(0, 2), concurrency: 2, evidenceRoot: path.join(retentionRoot, 'healthy'),
+      transportDiagnostics: () => [response(401), response(200)],
+      runScenario: async scenario => { calls.push(scenario.id); return 'failed'; },
+    });
+    expect(calls).toEqual(scenarios.slice(0, 2).map(s => s.id));
+    expect(outcomes).toEqual(['failed', 'failed']);
+    expect(providerAuthFailure([response(401), response(200)])).toBeUndefined();
+    expect(providerAuthFailure([response(401), response(200, 'different-call')])).toMatchObject({ status: 401 });
+  });
+
+  it('releases the prerequisite after a thrown runner and preserves its auth failure', async () => {
+    const runScenario = vi.fn(async () => { throw new Error('provider rejected credential'); });
+    const { harness } = await runScenarioBattery({
+      scenarios: scenarios.slice(0, 2), concurrency: 2, evidenceRoot: path.join(retentionRoot, 'thrown-auth'),
+      transportDiagnostics: () => [response(401)], runScenario,
+    });
+    expect(runScenario).toHaveBeenCalledTimes(1);
+    expect(harness.phases[1]).toMatchObject({ status: 'failed', reasonCode: 'provider-auth-unavailable' });
   });
 
   it('claim-busy is not a pass, and LLM_TEST_EVIDENCE_ROOT overrides the shared default root', () => {
