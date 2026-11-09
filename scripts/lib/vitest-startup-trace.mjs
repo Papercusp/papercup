@@ -476,7 +476,7 @@ function installNativeProcessTrace(out) {
       pinnedSources: sourcePins, repositorySources: false,
     }); } catch { emit('engine-script-execution-unavailable'); }
   }
-  if (engine) {
+  if (engine || loaderCensus) {
     const observedSignals = new Set();
     observeProcessTermination(termination => {
       if (termination.phase !== 'signal' || observedSignals.has(termination.signal)) return;
@@ -485,9 +485,27 @@ function installNativeProcessTrace(out) {
       // An application handler may SIGKILL itself without emitting exit. Keep
       // this bounded signal-time prefix distinct from a completed shutdown;
       // the existing observer preserves application/default signal semantics.
-      try { emit('engine-script-execution', { observation: engine.snapshot(), termination }, true); }
+      try { if (engine) emit('engine-script-execution', { observation: engine.snapshot(), termination }, true); }
       catch { emit('engine-script-execution-unavailable', { termination }, true); }
-    });
+    }, { beforeSelfKill(request) {
+      const termination = { ...request, requestId: randomUUID() };
+      // This is a request prefix. A reader needs the independently observed
+      // native parent result before it can accept this census as terminal.
+      emit('node-self-kill-request', { termination }, true);
+      try { if (engine) emit('engine-script-execution', { observation: engine.snapshot(), termination }, true); }
+      catch { emit('engine-script-execution-unavailable', { termination }, true); }
+      try {
+        if (configurationReads) emit('configuration-reads', {
+          runGroupId, observation: configurationReads.finish(process.env), termination,
+        }, true);
+      } catch { emit('configuration-reads-unavailable', { termination }, true); }
+      if (loaderCensus && Object.hasOwn(loaderCensus, 'batches')) {
+        try {
+          flushCensus();
+          emit('module-census-end', { ...censusUsage, sha256: censusHash.copy().digest('hex'), termination }, true);
+        } catch { emit('module-census-unavailable', { termination }, true); }
+      }
+    } });
   }
   // Retain loader-returned bytes in bounded chunks. In particular, do not make
   // another full UTF-8 copy of the product bundle already owned by the loader.
