@@ -13,6 +13,7 @@ import { lstatSync, readFileSync } from 'node:fs';
 import type { Sql } from 'postgres';
 import { isDeepStrictEqual, promisify } from 'node:util';
 import { getOrgPg } from '@papercusp/db-org';
+import type { BuildShaSource } from '../build-info';
 import { canonicalJson } from '@papercusp/hash-chain';
 import type { GateVerdictTarget } from './gate-verdict-target';
 import { isCheckpointCandidateSource, type CheckpointCandidateSource } from './checkpoint-candidate-source';
@@ -1644,6 +1645,14 @@ export function projectCheckpointQualificationState(
     };
   } else if (runner) {
     safeNextAction = { code: 'await-current-run', reason: 'one physical runner owns the live lease', waitEvents: [] };
+  } else if (transaction.blockers.length > 0) {
+    // A request snapshot cannot override infrastructure observed afterwards.
+    // Keep the snapshot as history while projecting the current durable blockers.
+    safeNextAction = {
+      code: waitEvents.length ? 'await-blocker-events' : 'read-release-control',
+      reason: `${transaction.blockers.map(blocker => blocker.code).join(', ')} must clear before launch`,
+      waitEvents,
+    };
   } else if (transaction.eligibilitySnapshot) {
     // The snapshot describes request-time preflight only. A physical runner's lease is
     // action-time authority and must win over a stale snapshot, so this branch is reached
@@ -2090,6 +2099,114 @@ export function waitQualificationTransaction(
       currentPhysicalRunner: null,
       consumedPhysicalRuns: consumedRunner(current, outcome, nowMs, released.bind),
       evidenceRefs: uniqueStrings([...current.evidenceRefs, ...(input.evidenceRefs ?? [])]),
+    },
+  };
+}
+
+export const EXECUTOR_IDENTITY_BLOCKER = 'executor-build-identity-unavailable' as const;
+
+type ExecutorIdentityAttemptFence = Pick<CheckpointQualificationTransaction, 'attemptId' | 'candidate' | 'repairHead'>;
+
+function executorIdentityFenceRefusal(
+  current: CheckpointQualificationTransaction,
+  expected: ExecutorIdentityAttemptFence,
+): QualificationTransition | null {
+  if (current.attemptId !== expected.attemptId || current.candidate !== expected.candidate ||
+      current.repairHead !== expected.repairHead) {
+    return { status: 'conflict', transaction: current, refusalReason: 'executor-attempt-fence-mismatch' };
+  }
+  if (isTerminalQualificationOutcome(current.outcome) || current.phase === 'terminal') {
+    return { status: 'terminal', transaction: current };
+  }
+  if (current.currentPhysicalRunner !== null || current.phase === 'running') {
+    return { status: 'conflict', transaction: current, refusalReason: 'executor-runner-held' };
+  }
+  return null;
+}
+
+/** Record the scheduler's own identity refusal without replacing the attempt,
+ * clearing peer blockers, consuming a runner, or inventing a clear-event key. */
+export function recordQualificationExecutorIdentityBlock(
+  current: CheckpointQualificationTransaction,
+  input: ExecutorIdentityAttemptFence & { shaSource: BuildShaSource; evidenceRefs?: readonly string[]; nowMs?: number },
+): QualificationTransition {
+  const refusal = executorIdentityFenceRefusal(current, input);
+  if (refusal) return refusal;
+  const detail = `Executor build identity is unavailable (${input.shaSource}); qualified artifact recovery is required`;
+  if (current.phase === 'waiting' && current.outcome.kind === 'pre-suite-no-verdict' &&
+      current.blockers.some(blocker => blocker.code === EXECUTOR_IDENTITY_BLOCKER && blocker.detail === detail)) {
+    return { status: 'idempotent', transaction: current };
+  }
+  const nowMs = input.nowMs ?? Date.now();
+  if (!Number.isSafeInteger(nowMs) || nowMs < current.updatedAtMs) {
+    return { status: 'conflict', transaction: current, refusalReason: 'executor-observation-clock-mismatch' };
+  }
+  return {
+    status: 'updated',
+    transaction: {
+      ...current,
+      updatedAtMs: nowMs,
+      phase: 'waiting',
+      phaseEnteredAtMs: current.phase === 'waiting' ? current.phaseEnteredAtMs : nowMs,
+      phaseDurationsMs: completedPhaseDurations(current, 'waiting', nowMs),
+      outcome: current.outcome.kind === 'pre-suite-no-verdict'
+        ? current.outcome : { kind: 'pre-suite-no-verdict', reason: 'infra-inconclusive' },
+      blockers: [
+        ...current.blockers.filter(blocker => blocker.code !== EXECUTOR_IDENTITY_BLOCKER),
+        { code: EXECUTOR_IDENTITY_BLOCKER, detail, clearEvents: [], observedAtMs: nowMs },
+      ],
+      waitGeneration: current.waitGeneration + 1,
+      evidenceRefs: uniqueStrings([...current.evidenceRefs, ...(input.evidenceRefs ?? [])]),
+    },
+  };
+}
+
+/** The recovery adapter must recheck the original publication/binding/compiler
+ * evidence, qualified runtime cohort and exact selected/loaded artifact tuple.
+ * Its existing comparator must inspect THIS locked attempt. A SHA/PID or a
+ * loadedNewCode boolean alone is deliberately not a recovery input. */
+export type ExecutorIdentityRecoveryVerifier = (current: CheckpointQualificationTransaction) => Promise<
+  | { status: 'blocked'; reason: string }
+  | { status: 'matched'; attempt: CheckpointQualificationTransaction;
+      resolvedBlockerCode: typeof EXECUTOR_IDENTITY_BLOCKER; evidenceRefs: readonly string[] }
+>;
+
+export async function recoverQualificationExecutorIdentity(
+  current: CheckpointQualificationTransaction,
+  input: ExecutorIdentityAttemptFence & { nowMs?: number },
+  verifyArtifactRecovery: ExecutorIdentityRecoveryVerifier,
+): Promise<QualificationTransition> {
+  const refusal = executorIdentityFenceRefusal(current, input);
+  if (refusal) return refusal;
+  if (!current.blockers.some(blocker => blocker.code === EXECUTOR_IDENTITY_BLOCKER)) {
+    return { status: 'idempotent', transaction: current };
+  }
+  const verified = await verifyArtifactRecovery(current);
+  if (verified.status !== 'matched') {
+    return { status: 'conflict', transaction: current, refusalReason: verified.reason };
+  }
+  if (verified.attempt !== current || verified.resolvedBlockerCode !== EXECUTOR_IDENTITY_BLOCKER ||
+      !verified.evidenceRefs.length || verified.evidenceRefs.some(ref => typeof ref !== 'string' || !ref.trim())) {
+    return { status: 'conflict', transaction: current, refusalReason: 'executor-recovery-evidence-mismatch' };
+  }
+  const nowMs = input.nowMs ?? Date.now();
+  if (!Number.isSafeInteger(nowMs) || nowMs < current.updatedAtMs) {
+    return { status: 'conflict', transaction: current, refusalReason: 'executor-observation-clock-mismatch' };
+  }
+  const blockers = current.blockers.filter(blocker => blocker.code !== EXECUTOR_IDENTITY_BLOCKER);
+  const phase = blockers.length ? 'waiting' : 'ready';
+  return {
+    status: 'updated',
+    transaction: {
+      ...current, updatedAtMs: nowMs, phase,
+      phaseEnteredAtMs: current.phase === phase ? current.phaseEnteredAtMs : nowMs,
+      phaseDurationsMs: completedPhaseDurations(current, phase, nowMs),
+      outcome: blockers.length ? current.outcome : { kind: 'pending' },
+      blockers,
+      // The ordinary entrypoint must gather current eligibility again.
+      eligibilitySnapshot: null,
+      waitGeneration: current.waitGeneration + 1,
+      evidenceRefs: uniqueStrings([...current.evidenceRefs, ...verified.evidenceRefs]),
     },
   };
 }
@@ -3144,6 +3261,25 @@ export function waitStoredQualification(
   return mutateStoredQualification(target, (current) =>
     current ? waitQualificationTransaction(current, input) : { status: 'unreadable', error: 'missing attempt' },
   );
+}
+
+export function recordStoredQualificationExecutorIdentityBlock(
+  target: GateVerdictTarget,
+  input: Parameters<typeof recordQualificationExecutorIdentityBlock>[1],
+): Promise<StoredQualificationMutation> {
+  return mutateStoredQualification(target, current => current
+    ? recordQualificationExecutorIdentityBlock(current, input)
+    : { status: 'missing' });
+}
+
+export function recoverStoredQualificationExecutorIdentity(
+  target: GateVerdictTarget,
+  input: Parameters<typeof recoverQualificationExecutorIdentity>[1],
+  verifyArtifactRecovery: ExecutorIdentityRecoveryVerifier,
+): Promise<StoredQualificationMutation> {
+  return mutateStoredQualification(target, current => current
+    ? recoverQualificationExecutorIdentity(current, input, verifyArtifactRecovery)
+    : { status: 'missing' });
 }
 
 /**

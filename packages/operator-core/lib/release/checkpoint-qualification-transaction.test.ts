@@ -28,6 +28,8 @@ import {
   recoverQualificationHistoricalPreSuiteError,
   settleQualificationTransaction,
   waitQualificationTransaction,
+  recordQualificationExecutorIdentityBlock,
+  recoverQualificationExecutorIdentity,
   voidPreparedSelectionForMovedCandidate,
   type HistoricalPreSuiteRecoveryInput,
 } from './checkpoint-qualification-transaction';
@@ -72,6 +74,74 @@ function postgresJsonbOrder<T>(value: T): T {
       Buffer.compare(Buffer.from(left), Buffer.from(right)));
   return Object.fromEntries(entries.map(([key, nested]) => [key, postgresJsonbOrder(nested)])) as T;
 }
+
+describe('executor identity recovery preserves qualification custody', () => {
+  const fence = { attemptId: 'attempt-1', candidate: 'candidate-1', repairHead: null };
+  const blocked = () => recordQualificationExecutorIdentityBlock(begin(), { ...fence, shaSource: 'dirty', nowMs: 200 }).transaction;
+
+  it('records one blocker without replacing lineage or refreshing repeated evidence', () => {
+    const original = waitQualificationTransaction(begin(), { attemptId: fence.attemptId,
+      reason: 'dependency-generation', blockers: [{ code: 'dependency-generation', clearEvents: ['dependency:ready'] }], nowMs: 150 }).transaction;
+    const changed = recordQualificationExecutorIdentityBlock(original, { ...fence, shaSource: 'dirty', nowMs: 200 });
+    expect(changed.status).toBe('updated');
+    expect(changed.transaction).toMatchObject({ attemptId: original.attemptId, candidate: original.candidate,
+      repairHead: original.repairHead, currentPhysicalRunner: null, outcome: original.outcome });
+    expect(changed.transaction.blockers[0]).toBe(original.blockers[0]);
+    expect(changed.transaction.lastProgressAtMs).toBe(original.lastProgressAtMs);
+    expect(recordQualificationExecutorIdentityBlock(changed.transaction, { ...fence, shaSource: 'dirty', nowMs: 300 }))
+      .toEqual({ status: 'idempotent', transaction: changed.transaction });
+    expect(changed.transaction.blockers.at(-1)?.observedAtMs).toBe(200);
+  });
+
+  it.each(['attempt', 'candidate', 'repair', 'runner', 'terminal'] as const)('refuses a changed %s fence', async mode => {
+    let current = blocked();
+    if (mode === 'runner') current = reserveQualificationRunner(begin(), { attemptId: fence.attemptId,
+      runnerId: 'incumbent', leaseDurationMs: 1000, nowMs: 200 }).transaction;
+    if (mode === 'terminal') current = settleQualificationTransaction(begin(), { attemptId: fence.attemptId,
+      reason: 'not-green', green: false, nowMs: 200 }).transaction;
+    const expected = { ...fence, ...(mode === 'attempt' ? { attemptId: 'other' } : {}),
+      ...(mode === 'candidate' ? { candidate: 'other' } : {}), ...(mode === 'repair' ? { repairHead: 'other' } : {}) };
+    const verify = async () => { throw Error('must not inspect recovery behind a changed fence'); };
+    expect(recordQualificationExecutorIdentityBlock(current, { ...expected, shaSource: 'dirty', nowMs: 300 }).status)
+      .toBe(mode === 'terminal' ? 'terminal' : 'conflict');
+    const recovered = await recoverQualificationExecutorIdentity(current, { ...expected, nowMs: 300 }, verify);
+    expect(recovered.status).toBe(mode === 'terminal' ? 'terminal' : 'conflict');
+    expect(recovered.transaction).toBe(current);
+  });
+
+  it('retains the original attempt when full artifact recovery is unavailable', async () => {
+    const current = blocked();
+    expect(await recoverQualificationExecutorIdentity(current, { ...fence, nowMs: 300 }, async () => ({
+      status: 'blocked', reason: 'loaded-artifact-unavailable',
+    }))).toEqual({ status: 'conflict', transaction: current, refusalReason: 'loaded-artifact-unavailable' });
+  });
+
+  it('clears only its own blocker after verification of the locked attempt', async () => {
+    const current = blocked();
+    current.blockers.unshift({ code: 'dependency-generation', clearEvents: ['dependency:ready'], observedAtMs: 150 });
+    const recovered = await recoverQualificationExecutorIdentity(current, { ...fence, nowMs: 300 }, async observed => ({
+      status: 'matched', attempt: observed, resolvedBlockerCode: 'executor-build-identity-unavailable',
+      evidenceRefs: ['retained-original-publication-and-runtime-proof'],
+    }));
+    expect(recovered.status).toBe('updated');
+    expect(recovered.transaction).toMatchObject({ ...fence, phase: 'waiting', currentPhysicalRunner: null });
+    expect(recovered.transaction.blockers).toEqual([current.blockers[0]]);
+    expect(recovered.transaction.consumedPhysicalRuns).toBe(current.consumedPhysicalRuns);
+    expect(recovered.transaction.evidenceRefs).toContain('retained-original-publication-and-runtime-proof');
+    const ready = await recoverQualificationExecutorIdentity(blocked(), { ...fence, nowMs: 300 }, async observed => ({
+      status: 'matched', attempt: observed, resolvedBlockerCode: 'executor-build-identity-unavailable', evidenceRefs: ['original-proof'],
+    }));
+    expect(ready.transaction).toMatchObject({ ...fence, phase: 'ready', blockers: [], currentPhysicalRunner: null });
+  });
+
+  it('rejects a comparator result from an earlier copy of the attempt', async () => {
+    const current = blocked();
+    const recovered = await recoverQualificationExecutorIdentity(current, { ...fence, nowMs: 300 }, async () => ({
+      status: 'matched', attempt: { ...current }, resolvedBlockerCode: 'executor-build-identity-unavailable', evidenceRefs: ['old-proof'],
+    }));
+    expect(recovered).toEqual({ status: 'conflict', transaction: current, refusalReason: 'executor-recovery-evidence-mismatch' });
+  });
+});
 
 describe('qualification child scope custody', () => {
   const fence = { attemptId: 'attempt-1', runnerId: 'runner', runId: 'run', pidIdentity: 'boot:42' };
@@ -1276,6 +1346,26 @@ describe('logical checkpoint qualification transaction', () => {
       eligibilitySnapshot: { safeNextAction: { code: 'launch-preflight-runner' } },
       safeNextAction: { code: 'await-current-run' },
     });
+  });
+
+  it.each([{ clearEvents: [] }, { clearEvents: ['source:qualified'] }])('lets current blockers outrank an older launchable eligibility snapshot ($clearEvents)', ({ clearEvents }) => {
+    const snapshot = buildCheckpointEligibilitySnapshot({
+      attemptId: 'attempt-1', candidate: 'candidate-1', observedAtMs: 150,
+      predicates: CHECKPOINT_ELIGIBILITY_PREDICATES.map(code => ({
+        code, status: 'clear' as const, detail: code + ' clear', clearEvents: [], evidenceRefs: [],
+      })),
+    });
+    const blocked = waitQualificationTransaction({ ...begin(), eligibilitySnapshot: snapshot }, {
+      attemptId: 'attempt-1', reason: 'infra-inconclusive', nowMs: 200,
+      blockers: [{ code: 'executor-build-identity-unavailable', clearEvents }],
+    }).transaction;
+    const projected = projectCheckpointQualificationState(blocked, 250);
+    expect(projected.status).toBe('present');
+    expect(projected.eligibilitySnapshot?.safeNextAction.code).toBe('launch-physical-run');
+    expect(projected.safeNextAction).toMatchObject({
+      code: clearEvents.length ? 'await-blocker-events' : 'read-release-control', waitEvents: clearEvents,
+    });
+    expect(projected.safeNextAction.reason).toContain('executor-build-identity-unavailable');
   });
 
   it('treats a JSONB-reordered persisted eligibility snapshot as idempotent', () => {

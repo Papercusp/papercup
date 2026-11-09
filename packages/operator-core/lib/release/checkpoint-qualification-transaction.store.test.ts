@@ -30,6 +30,9 @@ import {
   settleQualificationTransaction,
   waitQualificationTransaction,
   waitStoredQualification,
+  recordQualificationExecutorIdentityBlock,
+  recordStoredQualificationExecutorIdentityBlock,
+  recoverStoredQualificationExecutorIdentity,
   commitPreparedCheckpointSelection,
   replacePreparedSelectionAfterRepairHeadAdvance,
   supersedePreparedSelectionBeforeStart,
@@ -73,6 +76,51 @@ describe('stored qualification child scope custody', () => {
 type QueryResult = Record<string, unknown>[];
 
 const target = { workspaceId: 'workspace-1', installSlug: 'papercusp' };
+
+describe('stored executor identity refusal and recovery', () => {
+  const fence = { attemptId: 'identity-attempt', candidate: 'candidate', repairHead: 'repair' };
+  const original = () => beginQualificationTransaction(null, { ...fence, nowMs: 100 }).transaction;
+
+  it('persists the refusal only under the original routine-row lock', async () => {
+    const current = original();
+    const { statements } = transactionHarness({ qualificationTransaction: current });
+    const result = await recordStoredQualificationExecutorIdentityBlock(target, { ...fence, shaSource: 'dirty', nowMs: 200 });
+    expect(statements[0]!.text).toContain('FOR UPDATE');
+    expect(result).toMatchObject({ status: 'updated', transaction: { ...fence, phase: 'waiting', blockers: [
+      { code: 'executor-build-identity-unavailable', clearEvents: [], observedAtMs: 200 },
+    ] } });
+    const update = statements.find(statement => statement.text.includes('UPDATE harness_shared.routines'));
+    expect(update).toBeDefined();
+    expect(update!.values).toContainEqual(expect.stringContaining('executor-build-identity-unavailable'));
+    expect(h.appendPipelineEvent).not.toHaveBeenCalled();
+  });
+
+  it('verifies artifact recovery inside the same lock and preserves peer blockers', async () => {
+    const current = recordQualificationExecutorIdentityBlock(original(), { ...fence, shaSource: 'dirty', nowMs: 200 }).transaction;
+    current.blockers.unshift({ code: 'dependency-generation', clearEvents: ['dependency:ready'], observedAtMs: 150 });
+    const { statements } = transactionHarness({ qualificationTransaction: current });
+    const result = await recoverStoredQualificationExecutorIdentity(target, { ...fence, nowMs: 300 }, async locked => {
+      expect(statements[0]!.text).toContain('FOR UPDATE');
+      expect(statements.some(statement => statement.text.includes('UPDATE harness_shared.routines'))).toBe(false);
+      return { status: 'matched', attempt: locked, resolvedBlockerCode: 'executor-build-identity-unavailable',
+        evidenceRefs: ['original-qualified-publication-and-loaded-artifact'] };
+    });
+    expect(result).toMatchObject({ status: 'updated', transaction: { ...fence, phase: 'waiting', blockers: [
+      { code: 'dependency-generation', observedAtMs: 150 },
+    ] } });
+  });
+
+  it('makes no write for a missing or changed attempt', async () => {
+    const missing = transactionHarness({});
+    expect(await recordStoredQualificationExecutorIdentityBlock(target, { ...fence, shaSource: 'unresolved', nowMs: 200 }))
+      .toMatchObject({ status: 'missing' });
+    expect(missing.statements.some(statement => statement.text.includes('UPDATE harness_shared.routines'))).toBe(false);
+    const changed = transactionHarness({ qualificationTransaction: { ...original(), candidate: 'new-candidate' } });
+    expect(await recordStoredQualificationExecutorIdentityBlock(target, { ...fence, shaSource: 'dirty', nowMs: 200 }))
+      .toMatchObject({ status: 'conflict', refusalReason: 'executor-attempt-fence-mismatch' });
+    expect(changed.statements.some(statement => statement.text.includes('UPDATE harness_shared.routines'))).toBe(false);
+  });
+});
 
 describe('stored independent qualification observation', () => {
   it.each(['current', 'old-fence', 'future'] as const)('checks %s evidence under the existing row lock', async mode => {
