@@ -8,7 +8,8 @@ import { join } from 'node:path';
 import { existsSync } from 'node:fs';
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { connectAgentMcp } from '../../../agent-mcp-client.ts';
-import { assertManagedToolSuccess, finishManagedApiTeardown } from './managed-api-result.ts';
+import { assertManagedRecoveryRefusal, assertManagedToolSuccess, excludedRecoveryTools,
+  finishManagedApiTeardown } from './managed-api-result.ts';
 import { privateBundleRuntimeEnv, resolvePreparedPrivateApiBundle, stopPrivateOperatorHost,
   waitForPrivateOperator } from '../../../../test/private-http-workspace-preflight.ts';
 import { readProcessIdentity } from '../../../process-identity.ts';
@@ -105,6 +106,42 @@ async function invoke(current: Client, name: string, args: Record<string, unknow
   if (expectSuccess) assertManagedToolSuccess(name, result, body);
   stage('settled:' + name);
   return { result, body };
+}
+// Reuse the same pinned private operator, authenticated MCP dispatcher and
+// teardown. This probes only named absent routes; it never implements or enables
+// D-010's excluded recovery mechanism, nor substitutes for installed-client proof.
+if (process.argv.includes('--offline-recovery-only')) {
+  const effectPath = join(process.env.HOME!, 'excluded-recovery-effect.txt');
+  const before = 'recovery-effect-control:' + randomBytes(16).toString('hex');
+  try {
+    await writeFile(effectPath, before, { flag: 'wx' });
+    const current = await client(owner);
+    const positive = await invoke(current, 'capability:read', { file_path: effectPath });
+    assert(JSON.stringify(positive.result).includes(before), 'Managed read must return the actual control bytes');
+    for (const name of excludedRecoveryTools) {
+      const refusal = await invoke(current, name, { localRecoveryGrant: 'invalid-private-control',
+        file_path: effectPath, content: 'recovery-must-not-write' }, false);
+      assertManagedRecoveryRefusal(name, refusal.result, before, await readFile(effectPath, 'utf8'));
+    }
+    const rows = await getOrgPg().sql`SELECT task_id FROM harness_shared.task_ledger WHERE workspace_id = ${workspace}`;
+    assert.equal(rows.length, 0, 'Recovery refusal must not launch an owned task');
+    const proof = { transport: 'http', workspace, recovery: 'explicit-absent-route-refusals',
+      positiveControl: 'original-file-read', effectControl: 'unchanged', checked: excludedRecoveryTools,
+      scope: 'three-named-routes-only', installedClientJourney: 'not-executed',
+      notChecked: ['other route spellings', 'flag/env/config reachability', 'installed clients', 'deployed release'] };
+    console.log('MANAGED_API_PROOF ' + JSON.stringify(proof));
+  } finally {
+    await finishManagedApiTeardown({ hasProof: false, rowCount: 0, cleanupErrors: [], close: [
+      async () => { await rm(effectPath, { force: true }); },
+      ...clients.map(entry => async () => { await entry.close(); }),
+      async () => { await stopPrivateOperatorHost(host);
+        assert.notEqual(readProcessIdentity(host.pid!), hostIdentity, 'Private host survived cleanup'); },
+      async () => { await getOrgPg().sql.end({ timeout: 2 }); },
+    ] });
+    console.log('MANAGED_API_CLEANUP ' + JSON.stringify({ workspace, rows: 0,
+      ownedIdentity: verifiedOwners.get(owner), processes: 'gone', browserRoots: 'gone', terminalRecorded: true }));
+  }
+  process.exit(0);
 }
 const pageServer = createServer((_req, res) => {
   res.writeHead(200, { 'content-type': 'text/html' });
