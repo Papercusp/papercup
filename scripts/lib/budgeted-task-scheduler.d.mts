@@ -94,8 +94,12 @@ export function preflightNativeProofCustody(expected: NativeCustodyGroup[]): {
 };
 export function retainNativeProofPacketAsync(directory: string, input: {
   identity: NativeCustodyIdentity; expected: NativeCustodyGroup[];
-  observations: Array<{ id: string; out: string | null; captureComplete?: boolean }>;
+  observations?: Array<{ id: string; out: string | null; captureComplete?: boolean }>;
   execution?: unknown; cleanup?: unknown; predecessor?: NativeCustodyLocator;
+  /** Reseal existing objects after contract verification; never recapture sources. */
+  retainedLocator?: NativeCustodyLocator;
+  /** Absolute budget inherited from the owning task, including sync operations. */
+  deadlineAtMs?: number;
   /** Bounded diagnostic phases; observer errors never change the custody verdict. */
   onProgress?: (progress: { phase: string; elapsedMs: number; group?: string; family?: string;
     objectsRead?: number; bytesRead?: number; completed?: number; total?: number; status?: string }) => void;
