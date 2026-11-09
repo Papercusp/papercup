@@ -19,7 +19,7 @@
   "startedAt": "2026-11-09T05:39:54.623Z",
   "finishedAt": "2026-11-09T05:40:18.682270+00:00",
   "exitCode": 0,
-  "summary": "Current-build proof: GNOME Inbox Node tests 8 pass; portable Swift WorkbenchControlsTests 22 pass; maintained PUI HTTP wire test 1 pass with 29 scenarios including 10 phase-control cases. Native Windows fixture updated but not executed. No installed-native or shipment claim.",
+  "summary": "Current-build proof: GNOME Inbox Node tests 8 pass; portable Swift WorkbenchControlsTests 22 pass; maintained PUI HTTP wire test 1 pass with 29 scenarios including 10 phase-control cases. Native Windows fixture updated but not executed. No installed-native or shipment claim. Actual-button extension: private GNOME Shell Inbox journey 57 assertions pass, including 32 sensitivity/focusability checks; intended pre-fix pending Resume failure preserved. Windows actual-button fixture added but not executed.",
   "assertions": [
     {
       "id": "gnome-inbox-phase-partition",
@@ -107,7 +107,243 @@
   "limitations": [
     "Windows WPF/PowerShell maintained InboxModel phase regression was changed but not executed in this unit; no local native Windows toolchain and no VM mutation.",
     "Swift proof is portable Foundation/XCTest on Linux, not macOS AppKit or installed-native acceptance.",
-    "No GNOME Shell live actor, canonical operator mutation, exact installed three-OS acceptance, independent review or execution-certificate proof.",
+    "No canonical operator mutation, exact installed three-OS acceptance, independent review or execution-certificate proof.",
     "Source hashes were captured after terminal commands; this artifact does not assert parent gitlink containment or exact installed-artifact custody."
-  ]
+  ],
+  "uiFacet": {
+    "recordedAt": "2026-11-09T06:07:39.145704+00:00",
+    "plane": "current-build private GNOME Shell virtual seat, packaged extension and fixture PUI; no installed-artifact or canonical operator mutation claim",
+    "sourceHashScope": "Top-level sourceHashes retain the original request-guard verification snapshot. This facet adds renderer and actual-button test hashes; its Windows fixture extends the original snapshot and still requires native execution.",
+    "sourceHashes": {
+      "papercusp-desktop/native/gnome/extension.js": "3783403e56b8c04160c8b17dbe2754d96d4dbf3b8d79b407cbe50dc9a1b909fe",
+      "papercusp-desktop/native/windows/WorkbenchHost.cs": "086dc8a1b374e629666a753c9a011bb9528c439a0e110f5403dd34d62f6daa7d",
+      "papercusp-desktop/test/native-workbench-gnome-live.test.mjs": "c583a314e89988d612f1b4291291d6a30611b431044f849dffb2f401a284396a",
+      "papercusp-desktop/test/fixtures/native-workbench-windows-host.ps1": "dd929a6725182a7facf9afc5a1f1c6571fa3c7d7acebc1f0d3327eba599dbea3",
+      "papercusp-desktop/test/native-workbench-windows.test.mjs": "f34f3be62e72ec2721be4c5581bde8c125cec352178885772c88ccbbb9636ab0"
+    },
+    "commands": {
+      "before": "cd papercusp-desktop && PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_TEST_RUN_GROUP_ID=workbench-inbox-buttons-before-20261109-v2 PAPERCUSP_GNOME_JOURNEY=inbox PAPERCUSP_NATIVE_EVIDENCE_DIR=/tmp/wb-inbox-buttons-before-20261109-v2 bash ../scripts/pc-heavy.sh node --test --test-global-setup=test/monorepo-host-preflight.mjs --test-name-pattern='private GNOME Shell renders actors' test/native-workbench-gnome-live.test.mjs",
+      "after": "cd papercusp-desktop && PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_TEST_RUN_GROUP_ID=workbench-inbox-buttons-after-20261109 PAPERCUSP_GNOME_JOURNEY=inbox PAPERCUSP_NATIVE_EVIDENCE_DIR=/tmp/wb-inbox-buttons-after-20261109 bash ../scripts/pc-heavy.sh node --test --test-global-setup=test/monorepo-host-preflight.mjs --test-name-pattern='private GNOME Shell renders actors' test/native-workbench-gnome-live.test.mjs"
+    },
+    "before": {
+      "commandExit": 1,
+      "ok": false,
+      "error": "Error: Inbox pending Resume actual button sensitivity; check@file://<private-fixture>/data/gnome-shell/extensions/workbench@papercusp.ai/extension.js:15:44\ncheckRunButtons@file://<private-fixture>/data/gnome-shell/extensions/workbench@papercusp.ai/extension.js:504:10\nprobe@file://<private-fixture>/data/gnome-shell/extensions/workbench@papercusp.ai/extension.js:512:20\nasync*enable/<@file://<private-fixture>/data/gnome-shell/extensions/workbench@papercusp.ai/extension.js:20:538\n@resource:///org/gnome/shell/ui/init.js:21:20\n",
+      "passedAssertions": [
+        "native shortcut acquisition",
+        "native seat supports input injection",
+        "native input methods exist",
+        "desktop ready for normal shortcuts",
+        "qualified plan reached native actor model",
+        "Shell actor is attached",
+        "native result controls rendered",
+        "independent pinned panels coexist",
+        "Goals requests only its canonical source",
+        "panels and GTK helper create no application windows",
+        "debounced canonical query renders current result",
+        "exact report body in native detail",
+        "first Escape dismisses detail only",
+        "second Escape dismisses only its surface",
+        "reopen retains query and exact selection",
+        "outside dismissal preserves another pinned surface",
+        "repeated shortcut toggles pinned surface",
+        "Inbox canonical list reaches native actor",
+        "Inbox persisted denominator reaches native status",
+        "Inbox pending Stop actual button sensitivity",
+        "Inbox pending Stop actual button focusability"
+      ],
+      "sourceCustody": {
+        "archiveSha256": "36cfb568c262fcda056431471e86ee72f80df250f04262747cd9fff09832cde3",
+        "journey": "inbox",
+        "files": {
+          "extension.js": "6b50e35c174e4bb4ebec40f5af7b70c8540b6c118b802755ea5dba5b07db9186",
+          "workbench.js": "710f8fe1179ad67e71a7e7e35e0e8bed60f1018a259efa5ca1717b3196efd478",
+          "panel-model.mjs": "101c42dab2b251ad37a5deb3ace4331e31d40693fbeba2e17ba5ed87cda76002",
+          "bridge.js": "f0af6f85819867ea17c790d268b2c428af15d36e489d6c7134b5feeadeaf4eb2",
+          "helper.js": "5604d173a62ad88583c884b0689ee1afc04da7a64ea5f41771e1fcd209416709",
+          "audio.js": "3e3d4927292d31494313a74fcee3438b3eaf3afefdacb5f430ba4fcb1827f6ad",
+          "chat-content.js": "97e4d37a47a1a99ecfc6e2f80872fd5d67fde3a5bbf8fb0d8b347a87d5f3c90e",
+          "schemas/org.gnome.shell.extensions.papercusp-workbench.gschema.xml": "ac2f5d184f3e7f3156df421fd58139989c8990900eecc967ffb5f133d7e8b209"
+        },
+        "testSha256": "c583a314e89988d612f1b4291291d6a30611b431044f849dffb2f401a284396a"
+      }
+    },
+    "after": {
+      "ok": true,
+      "error": null,
+      "phase": "inbox",
+      "journey": "inbox",
+      "inputLog": [
+        {
+          "key": 65307,
+          "mode": 2
+        }
+      ],
+      "actionMode": 1,
+      "overview": false,
+      "windows": [],
+      "states": [
+        {
+          "surface": "quick-access",
+          "visible": false,
+          "pinned": false,
+          "selection": "[\"reports\",\"exact+/=&\"]",
+          "detail": null
+        },
+        {
+          "surface": "goals",
+          "visible": false,
+          "pinned": true,
+          "selection": null,
+          "detail": null
+        },
+        {
+          "surface": "inbox",
+          "visible": false,
+          "pinned": false,
+          "selection": null,
+          "detail": null
+        },
+        {
+          "surface": "organizer",
+          "visible": false,
+          "pinned": false,
+          "selection": null,
+          "detail": null
+        },
+        {
+          "surface": "papercup",
+          "visible": false,
+          "pinned": false,
+          "selection": null,
+          "detail": null
+        },
+        {
+          "surface": "accounts",
+          "visible": false,
+          "pinned": false,
+          "selection": null,
+          "detail": null
+        }
+      ],
+      "assertions": [
+        "native shortcut acquisition",
+        "native seat supports input injection",
+        "native input methods exist",
+        "desktop ready for normal shortcuts",
+        "qualified plan reached native actor model",
+        "Shell actor is attached",
+        "native result controls rendered",
+        "independent pinned panels coexist",
+        "Goals requests only its canonical source",
+        "panels and GTK helper create no application windows",
+        "debounced canonical query renders current result",
+        "exact report body in native detail",
+        "first Escape dismisses detail only",
+        "second Escape dismisses only its surface",
+        "reopen retains query and exact selection",
+        "outside dismissal preserves another pinned surface",
+        "repeated shortcut toggles pinned surface",
+        "Inbox canonical list reaches native actor",
+        "Inbox persisted denominator reaches native status",
+        "Inbox pending Stop actual button sensitivity",
+        "Inbox pending Stop actual button focusability",
+        "Inbox pending Resume actual button sensitivity",
+        "Inbox pending Resume actual button focusability",
+        "Inbox running Stop actual button sensitivity",
+        "Inbox running Stop actual button focusability",
+        "Inbox running Resume actual button sensitivity",
+        "Inbox running Resume actual button focusability",
+        "Inbox review Stop actual button sensitivity",
+        "Inbox review Stop actual button focusability",
+        "Inbox review Resume actual button sensitivity",
+        "Inbox review Resume actual button focusability",
+        "Inbox failed Stop actual button sensitivity",
+        "Inbox failed Stop actual button focusability",
+        "Inbox failed Resume actual button sensitivity",
+        "Inbox failed Resume actual button focusability",
+        "Inbox complete Stop actual button sensitivity",
+        "Inbox complete Stop actual button focusability",
+        "Inbox complete Resume actual button sensitivity",
+        "Inbox complete Resume actual button focusability",
+        "Inbox review without retryable items Stop actual button sensitivity",
+        "Inbox review without retryable items Stop actual button focusability",
+        "Inbox review without retryable items Resume actual button sensitivity",
+        "Inbox review without retryable items Resume actual button focusability",
+        "Inbox pending action Stop actual button sensitivity",
+        "Inbox pending action Stop actual button focusability",
+        "Inbox pending action Resume actual button sensitivity",
+        "Inbox pending action Resume actual button focusability",
+        "Inbox no saved run Stop actual button sensitivity",
+        "Inbox no saved run Stop actual button focusability",
+        "Inbox no saved run Resume actual button sensitivity",
+        "Inbox no saved run Resume actual button focusability",
+        "Inbox selected context preserves exact identity",
+        "Inbox context read uses canonical id without action itemId",
+        "Inbox confirmation freezes edited answer",
+        "Inbox write uses helper native-inbox and verifies terminal receipt",
+        "Inbox adds no application window",
+        "Inbox dismissal removes native actors and run refresh"
+      ],
+      "sourceCustody": {
+        "archiveSha256": "002e4eed6e5190180b0eea0b0adbda9e81bec6bfdad4844246f3c14aa884dab7",
+        "journey": "inbox",
+        "files": {
+          "extension.js": "1c918a81202d76b84102dd998d943305ebfb70fc0b30e43ce76d0a36acc164d6",
+          "workbench.js": "3783403e56b8c04160c8b17dbe2754d96d4dbf3b8d79b407cbe50dc9a1b909fe",
+          "panel-model.mjs": "101c42dab2b251ad37a5deb3ace4331e31d40693fbeba2e17ba5ed87cda76002",
+          "bridge.js": "f0af6f85819867ea17c790d268b2c428af15d36e489d6c7134b5feeadeaf4eb2",
+          "helper.js": "5604d173a62ad88583c884b0689ee1afc04da7a64ea5f41771e1fcd209416709",
+          "audio.js": "3e3d4927292d31494313a74fcee3438b3eaf3afefdacb5f430ba4fcb1827f6ad",
+          "chat-content.js": "97e4d37a47a1a99ecfc6e2f80872fd5d67fde3a5bbf8fb0d8b347a87d5f3c90e",
+          "schemas/org.gnome.shell.extensions.papercusp-workbench.gschema.xml": "ac2f5d184f3e7f3156df421fd58139989c8990900eecc967ffb5f133d7e8b209"
+        },
+        "testSha256": "c583a314e89988d612f1b4291291d6a30611b431044f849dffb2f401a284396a"
+      },
+      "plane": "private GNOME virtual seat; fixture PUI; current build"
+    },
+    "rawEvidence": [
+      {
+        "path": "/tmp/wb-inbox-buttons-before-20261109.log",
+        "sha256": "fbca6cb59e8154d554ef8243f1fe9f55b466aa117fc6d622a9c7de327dea9fa0"
+      },
+      {
+        "path": "/tmp/wb-inbox-buttons-before-20261109-v2.log",
+        "sha256": "c5f5db95cede17a1edeea7af015d28bab4013a52a43e8c99ecc635f6f282ff16"
+      },
+      {
+        "path": "/tmp/wb-inbox-buttons-after-20261109.log",
+        "sha256": "50fbc6ab7d1acc157e9a59a899c272b51155efc033dc03a6b966c9ce33022ead"
+      },
+      {
+        "path": "/tmp/wb-inbox-buttons-before-20261109-v2/gnome-native-inbox/gnome-native-process.json",
+        "sha256": "d52928d2dc7305f661d47b17105497d0041652c3e65f12af54887262d2435ecf"
+      },
+      {
+        "path": "/tmp/wb-inbox-buttons-after-20261109/gnome-native-inbox/gnome-native-input.json",
+        "sha256": "c4c512d5b28d5a2bc7db6a0ebe8ca5690ab09d6a7df760f27978495029a8e1b5"
+      }
+    ],
+    "rootCauseVerification": {
+      "hypothesis": "GNOME and Windows renderers enabled run controls without checking the existing request validator. Request guards alone leave wrong-phase actions visibly available.",
+      "alternativeHypothesis": "The displayed button availability already follows request validity; only a later server call fails.",
+      "distinguishingTest": "Render the actual Stop and Resume controls in all five phases, no-retryable-items review, pending action and missing run; inspect actual actor reactive/can_focus or WPF IsEnabled.",
+      "predictedObservations": {
+        "hypothesis": "Before the GNOME renderer repair, pending Resume is reactive; after repair all phase and navigation assertions pass with identical test bytes.",
+        "alternativeHypothesis": "The pre-fix actor already disables pending Resume and the same oracle passes before the renderer change."
+      },
+      "actualObservation": "Before-source v2 failed at pending Resume actual button sensitivity; after-source exited 0 with 57 assertions including 32 actual sensitivity/focusability assertions. Native test hashes match across red/green, and green packaged workbench.js matches current extension.js.",
+      "testResult": "Confirmed for GNOME current-build actual actors. Windows source and maintained WPF oracle changed but not executed.",
+      "testProcedure": "uiFacet.commands",
+      "evidenceRefs": [
+        "/tmp/wb-inbox-buttons-before-20261109.log",
+        "/tmp/wb-inbox-buttons-before-20261109-v2.log",
+        "/tmp/wb-inbox-buttons-after-20261109.log",
+        "/tmp/wb-inbox-buttons-before-20261109-v2/gnome-native-inbox/gnome-native-process.json",
+        "/tmp/wb-inbox-buttons-after-20261109/gnome-native-inbox/gnome-native-input.json"
+      ]
+    },
+    "harnessAudit": "Initial before-source attempt omitted the required bulk item runId and failed the existing count validation before reaching button assertions. Inspected both count writers and repaired identity shape in both GNOME and Windows fixtures; corrected before-source v2 reached the intended pending Resume assertion. No product defect inferred from the initial fixture mistake.",
+    "windowsVerification": "Maintained WPF fixture and Node wrapper include all eight states for Stop and Resume. Native Windows execution is pending; no authorized non-VM Windows route was available and no VM was mutated."
+  }
 }
