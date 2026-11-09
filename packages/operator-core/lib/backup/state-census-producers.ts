@@ -725,6 +725,30 @@ export interface PlaywrightStateWriterEvidence extends HostedProfileWriterEviden
 
 export interface IndexedCensusWriterEvidence extends HostedProfileWriterEvidence { sessionId: string }
 
+/** Locate writers independently of receipt layout. An adjacent result is only
+ * the legacy fallback timestamp; canonical archive recovery pairs by call_id.
+ */
+export async function readHistoricalCensusWriterCandidates(sql: Sql) {
+  const candidates = await sql<IndexedCensusWriterEvidence[]>`
+    SELECT 'session-part:' || writer.source_kind || ':' || writer.session_id || ':' || writer.part_idx AS ref,
+      writer.session_id AS "sessionId", writer.text AS "toolInput", writer.ts::text AS "startedAt",
+      COALESCE(receipt.ts::text, '') AS "finishedAt"
+    FROM harness_shared.session_turn_parts writer
+    LEFT JOIN harness_shared.session_turn_parts receipt
+      ON receipt.workspace_id = writer.workspace_id AND receipt.source_kind = writer.source_kind
+      AND receipt.session_id = writer.session_id AND receipt.part_idx = writer.part_idx + 1
+      AND receipt.part_kind = 'tool_result'
+    WHERE writer.workspace_id = 'default' AND writer.source_kind = 'codex' AND writer.part_kind = 'tool_use'
+      AND (writer.text LIKE '%writeFileSync(destination,encrypt(%'
+        OR (writer.text LIKE '%chromium%' AND writer.text LIKE '%statePath%')
+        OR writer.text LIKE '%securewrite(%')
+    ORDER BY writer.session_id, writer.part_idx
+    LIMIT 101
+  `;
+  if (candidates.length > 100) throw new Error('Historical census evidence bound exceeded');
+  return candidates;
+}
+
 /** Attest the complete measured Python dialect without executing archived code.
  * Only its three private path literals vary. The hash covers securewrite, test
  * account checks, result construction, the final write and printed receipt.
