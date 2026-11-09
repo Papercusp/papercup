@@ -198,7 +198,10 @@ export async function cliSetupHomeCensusProducer(path = papercuspRoot(), codexCl
   const root: CensusRoot = { id: 'cli-setup-homes', path };
   const declarations: CensusDeclaration[] = [];
   let entries;
-  try { entries = await readdir(join(path, 'deploy-credentials'), { withFileTypes: true }); }
+  try {
+    if (!(await lstat(join(path, 'deploy-credentials'))).isDirectory()) return { roots: [root], declarations };
+    entries = await readdir(join(path, 'deploy-credentials'), { withFileTypes: true });
+  }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { roots: [root], declarations }; throw error; }
   // Keep explicit selection authoritative. Default discovery also proves older
   // npm installs: login-shell and operator PATHs may select different copies.
@@ -235,8 +238,26 @@ export async function cliSetupHomeCensusProducer(path = papercuspRoot(), codexCl
     if (!entry.isDirectory() || !/^\.(?:codex-)?setup-[A-Za-z0-9._-]+-[0-9a-f]{8}$/.test(entry.name)) continue;
     const name = `deploy-credentials/${entry.name}`;
     declarations.push({ kind: 'path', root: root.id, name, classification: 'state', producer: 'account-link-cli-setup-home' });
-    if (!entry.name.startsWith('.codex-setup-')) continue;
     const files = await readdir(join(path, name), { withFileTypes: true });
+    if (!entry.name.startsWith('.codex-setup-')) {
+      // account-link-cli selects CLAUDE_CONFIG_DIR for these homes. Claude's
+      // config writer retains .claude.json and exact timestamped backup or
+      // corruption copies under backups (including its legacy adjacent copy).
+      // Config can embed MCP credentials: preserve every such copy as secret.
+      const configCopy = /^\.claude\.json\.(?:backup|corrupted)\.[0-9]{13}$/;
+      const addSecret = (file: string) => declarations.push({ kind: 'path', root: root.id,
+        name: `${name}/${file}`, classification: 'secret', producer: 'claude-cli-setup-config' });
+      for (const file of files) {
+        if (file.isFile() && (file.name === '.claude.json' || file.name === '.claude.json.backup' || configCopy.test(file.name))) addSecret(file.name);
+        if (file.name !== 'backups' || !file.isDirectory()) continue;
+        declarations.push({ kind: 'path', root: root.id, name: `${name}/backups`,
+          classification: 'state', producer: 'claude-cli-setup-config' });
+        for (const backup of await readdir(join(path, name, 'backups'), { withFileTypes: true })) {
+          if (backup.isFile() && configCopy.test(backup.name)) addSecret(`backups/${backup.name}`);
+        }
+      }
+      continue;
+    }
     if (files.some(file => file.name === 'auth.json' && file.isFile())) {
       declarations.push({ kind: 'path', root: root.id, name: `${name}/auth.json`, classification: 'secret', producer: 'account-link-cli-completed-login' });
     }

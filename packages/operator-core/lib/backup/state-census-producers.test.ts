@@ -581,6 +581,39 @@ describe('secret census producer adapters', () => {
         .not.toContain(`deploy-credentials/${names[0]}/log`);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
+  it('retains Claude setup config and backup secrets while exposing foreign files and links', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'claude-setup-census-'));
+    const name = 'deploy-credentials/.setup-acme-1234abcd';
+    const backup = '.claude.json.backup.1794230000000';
+    const corrupted = '.claude.json.corrupted.1794230000001';
+    try {
+      const home = join(root, name);
+      await mkdir(join(home, 'backups'), { recursive: true });
+      for (const file of ['.claude.json', '.claude.json.backup', backup, `backups/${backup}`, `backups/${corrupted}`,
+        'foreign.ts', 'backups/foreign.json', 'backups/.claude.json.backup.invalid']) await writeFile(join(home, file), 'opaque fixture');
+      await mkdir(join(home, 'backups', '.claude.json.backup.1794230000002'));
+      await symlink(join(home, '.claude.json'), join(home, 'backups', '.claude.json.backup.1794230000003'));
+      const result = await cliSetupHomeCensusProducer(root, null);
+      expect(result.declarations.filter(entry => entry.classification === 'secret').map(entry => entry.name).sort())
+        .toEqual(['.claude.json', '.claude.json.backup', backup, `backups/${backup}`, `backups/${corrupted}`].map(file => `${name}/${file}`).sort());
+      expect(result.declarations.every(entry => !entry.descendants && !entry.prune)).toBe(true);
+      const census = await collectStateCensus({ ...result, readCatalogs: async () => [] });
+      expect(census.residue.map(entry => entry.name)).toEqual(expect.arrayContaining([
+        `${name}/foreign.ts`, `${name}/backups/foreign.json`, `${name}/backups/.claude.json.backup.invalid`,
+        `${name}/backups/.claude.json.backup.1794230000002`, `${name}/backups/.claude.json.backup.1794230000003`,
+      ]));
+      await rename(join(home, 'backups'), join(root, 'backup-target'));
+      await symlink(join(root, 'backup-target'), join(home, 'backups'));
+      await rm(join(home, '.claude.json'));
+      await symlink(join(home, '.claude.json.backup'), join(home, '.claude.json'));
+      const linked = await cliSetupHomeCensusProducer(root, null);
+      expect(linked.declarations.map(entry => entry.name)).not.toContain(`${name}/backups`);
+      expect(linked.declarations.map(entry => entry.name)).not.toContain(`${name}/.claude.json`);
+      await rename(join(root, 'deploy-credentials'), join(root, 'credential-target'));
+      await symlink(join(root, 'credential-target'), join(root, 'deploy-credentials'));
+      expect((await cliSetupHomeCensusProducer(root, null)).declarations).toEqual([]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
   it('classifies exact Codex arg0 directories and locks without claiming helpers or foreign descendants', async () => {
     const root = await mkdtemp(join(tmpdir(), 'arg0-census-'));
     try {

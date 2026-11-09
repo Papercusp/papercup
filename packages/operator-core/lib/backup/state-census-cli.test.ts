@@ -62,9 +62,10 @@ describe('unit census executable exit contract', () => {
       const producer = await censusProducers.reapArchiveCensusProducer(home, [], taskIds =>
         readRetainedReapTaskIds(taskIds, [{ id: 'active' }, { id: 'inactive' }, { id: 'active' }],
           { readTasks, readTerminalLatches, readReaperMessages: async () => [] }));
-      expect(readTasks.mock.calls).toHaveLength(2);
+      expect(readTasks.mock.calls).toHaveLength(3);
       expect(readTasks).toHaveBeenCalledWith('active', expect.arrayContaining(ids));
       expect(readTasks).toHaveBeenCalledWith('inactive', expect.arrayContaining(ids));
+      expect(readTasks).toHaveBeenCalledWith('default', expect.arrayContaining(ids));
       expect(readTerminalLatches).toHaveBeenCalledExactlyOnceWith(expect.arrayContaining(
         ids.filter(id => id !== 'ledger').map(id => `task:terminal:${id}`)));
       expect(readTerminalLatches.mock.calls[0][0]).not.toContain('task:terminal:ledger');
@@ -85,9 +86,10 @@ describe('unit census executable exit contract', () => {
       .rejects.toThrow('batch bound exceeded');
     expect(readTasks).not.toHaveBeenCalled(); expect(readTerminalLatches).not.toHaveBeenCalled();
     expect(await readRetainedReapTaskIds(['known', 'known'], [{ id: 'active' }], readers)).toEqual(['known']);
-    expect(readTasks).toHaveBeenCalledExactlyOnceWith('active', ['known']);
+    expect(readTasks.mock.calls).toEqual([['active', ['known']], ['default', ['known']]]);
     expect(readTerminalLatches).not.toHaveBeenCalled();
     await expect(readRetainedReapTaskIds(['unknown'], [], {
+      readTasks: async () => [],
       readTerminalLatches: async () => { throw new Error('latch evidence unavailable'); },
     })).rejects.toThrow('latch evidence unavailable');
   });
@@ -116,7 +118,7 @@ describe('unit census executable exit contract', () => {
         taskIds, [{ id: 'active' }, { id: 'active' }], {
           readTasks: async () => [], readTerminalLatches: async () => [], readReaperMessages,
         }));
-      expect(readReaperMessages).toHaveBeenCalledExactlyOnceWith(['active'], expect.arrayContaining(ids));
+      expect(readReaperMessages).toHaveBeenCalledExactlyOnceWith(['active', 'default'], expect.arrayContaining(ids));
       const census = await collectStateCensus({ ...producer, readCatalogs: async () => [] });
       expect(census.inventory.filter(entry => entry.classification === 'state' && entry.name.endsWith('.tail.log'))
         .map(entry => entry.name.split('/').at(-1)).sort()).toEqual(['failed.tail.log', 'known.tail.log', 'literal.id.tail.log']);
@@ -126,6 +128,26 @@ describe('unit census executable exit contract', () => {
         readReaperMessages: async () => Array.from({ length: 2000 }, () => message('✓ known (quiet-zombie)')),
       })).rejects.toThrow('Reaper message evidence bound exceeded');
     } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  it('retains exact legacy task and message identities when default is absent from the registry', async () => {
+    const ids = ['legacy-task', 'legacy-message', 'foreign', 'unrequested'];
+    const readTasks = vi.fn(async (workspace: string) => workspace === 'default'
+      ? [{ taskId: 'legacy-task' }, { taskId: 'not-requested' }] : []);
+    const summary = (id: string) => '[task-reaper] reaped 1/1 agent-session scope(s). '
+      + `Log tails archived under ~/.papercusp/reap-archive/. ✓ ${id} (quiet-zombie)`;
+    const readReaperMessages = vi.fn(async () => [
+      { workspaceId: 'default', writerKey: 'task-manager', from: 'task-manager', summary: summary('legacy-message') },
+      { workspaceId: 'unregistered-foreign', writerKey: 'task-manager', from: 'task-manager', summary: summary('foreign') },
+      { workspaceId: 'default', writerKey: 'another-writer', from: 'task-manager', summary: summary('unrequested') },
+    ]);
+    const result = await readRetainedReapTaskIds(ids, [], {
+      readTasks, readTerminalLatches: async () => [], readReaperMessages,
+    });
+    expect(result.sort()).toEqual(['legacy-message', 'legacy-task']);
+    expect(readTasks).toHaveBeenCalledExactlyOnceWith('default', ids);
+    expect(readReaperMessages).toHaveBeenCalledExactlyOnceWith(['default'],
+      ['legacy-message', 'foreign', 'unrequested']);
   });
 
   it('retains completed writer inputs when credential discovery fails', async () => {
@@ -262,6 +284,49 @@ describe('unit census executable exit contract', () => {
       expect(result.declarations.every(entry => !entry.prune)).toBe(true);
       expect(result.declarations.filter(entry => entry.descendants).map(entry => entry.name))
         .toEqual(['crash-reports', 'snapshot-fold-checkpoints', 'crash-reports', 'snapshot-fold-checkpoints']);
+    } finally { rmSync(parent, { recursive: true, force: true }); }
+  });
+
+  it('includes the legacy default writer home without registering arbitrary sibling homes', async () => {
+    const registry = join(fixtureHome, 'registry');
+    const legacy = join(registry, 'default', '.papercusp');
+    const foreign = join(registry, 'unregistered', '.papercusp');
+    const marker = '.papercup-console-active.123';
+    try {
+      for (const directory of [legacy, foreign]) {
+        mkdirSync(join(directory, 'crash-reports'), { recursive: true });
+        writeFileSync(join(directory, marker), '');
+        writeFileSync(join(directory, 'crash-reports', 'report.json'), 'retained diagnostic');
+        writeFileSync(join(directory, 'foreign-source.ts'), 'unrelated sibling');
+      }
+      writeFileSync(join(legacy, '.papercup-console-active.124'), 'retained data');
+      const report = await runRootCensus({ checkpointLogDir: join(fixtureHome, 'checkpoint-history') });
+      expect(report.inventory.find(entry => entry.name.endsWith(`default/.papercusp/${marker}`)))
+        .toMatchObject({ classification: 'cache', producers: ['console-spawn-legacy-sentinel'] });
+      expect(report.inventory.find(entry => entry.name.endsWith('default/.papercusp/crash-reports/report.json')))
+        .toMatchObject({ classification: 'state', producers: ['fatal-diagnostics'] });
+      expect(report.residue.some(entry => entry.name.endsWith('default/.papercusp/foreign-source.ts'))).toBe(true);
+      expect(report.residue.some(entry => entry.name.endsWith('default/.papercusp/.papercup-console-active.124'))).toBe(true);
+      expect(report.inventory.filter(entry => entry.name.includes('unregistered') && entry.classification)).toEqual([]);
+      expect(report.wholeInstallVerified).toBe(false);
+    } finally { rmSync(registry, { recursive: true, force: true }); }
+  });
+
+  it('does not follow a linked legacy default writer home or invent an absent one', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'legacy-workspace-census-'));
+    const active = join(parent, 'active');
+    const legacy = join(parent, 'default');
+    const foreign = join(parent, 'foreign');
+    const resolveRoot = (workspace: string) => join(parent, workspace);
+    try {
+      mkdirSync(active);
+      mkdirSync(foreign);
+      writeFileSync(join(foreign, 'env-switcher-prefs.json'), '{"disabled":["staging"]}');
+      expect((await readWorkspaceSetupHomes([], resolveRoot, active)).roots.map(root => root.path)).toEqual([active]);
+      symlinkSync(foreign, legacy);
+      const result = await readWorkspaceSetupHomes([], resolveRoot, active);
+      expect(result.roots.map(root => root.path)).toEqual([active]);
+      expect(result.declarations.some(entry => entry.name === 'env-switcher-prefs.json' && entry.root !== result.roots[0].id)).toBe(false);
     } finally { rmSync(parent, { recursive: true, force: true }); }
   });
 
