@@ -46,6 +46,7 @@ FAILURES=0
 PODMAN=(podman)
 PRIVATE_STORAGE_ROOT=""
 PRIVATE_RUN_ROOT=""
+RELEASE_PROBE_ROOT=""
 
 pass() { echo "  PASS  $*"; }
 fail() { echo "  FAIL  $*"; FAILURES=$((FAILURES + 1)); }
@@ -59,11 +60,16 @@ die() { echo "P306_IMAGE_BUILD_PROBE ERROR $*" >&2; exit 2; }
 # migrate the shared store here: detect the unsafe shape, then run the whole
 # probe in fresh storage whose graph root is explicitly isolated.  A temporary
 # root also makes the probe's image/build/run lifecycle self-contained.
-cleanup_private_storage() {
+cleanup_probe() {
+  local status=$?
   [ -z "$PRIVATE_STORAGE_ROOT" ] || rm -rf -- "$PRIVATE_STORAGE_ROOT"
   [ -z "$PRIVATE_RUN_ROOT" ] || rm -rf -- "$PRIVATE_RUN_ROOT"
+  [ -z "$RELEASE_PROBE_ROOT" ] || rm -rf -- "$RELEASE_PROBE_ROOT"
+  return "$status"
 }
-trap cleanup_private_storage EXIT
+# Keep one dispatcher for every phase; replacing EXIT later leaks private stores.
+# Builder transcripts stay outside these owned fixture roots for diagnosis.
+trap cleanup_probe EXIT
 
 storage_driver="$("${PODMAN[@]}" info --format '{{.Store.GraphDriverName}}' 2>/dev/null | tr -d '[:space:]')"
 graph_root="$("${PODMAN[@]}" info --format '{{.Store.GraphRoot}}' 2>/dev/null | tr -d '\r\n')"
@@ -475,7 +481,6 @@ sect "8. named release-context hardlinks survive COMMIT normalization"
 # small five-alias fixture: the source link count is the positive control, while
 # the committed image must contain five fresh 0:912/0640 inodes.
 RELEASE_PROBE_ROOT="$(mktemp -d /tmp/p306-release-hardlinks.XXXXXX)"
-trap 'rm -rf -- "$RELEASE_PROBE_ROOT"' EXIT
 RELEASE_PROBE_CONTEXT="$RELEASE_PROBE_ROOT/context"
 # Keep the builder transcript outside RELEASE_PROBE_ROOT: the EXIT cleanup must
 # not erase the only diagnosis when this recurrence target itself fails to build.
