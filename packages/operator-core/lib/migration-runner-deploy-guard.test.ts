@@ -1,6 +1,8 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { channel } from 'node:diagnostics_channel';
+import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { applyPendingMigrations, migrationTransactionChunks } from '../../../libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js';
 
@@ -27,6 +29,74 @@ afterEach(() => {
 });
 
 describe('migration runner beforeApply guard', () => {
+  it('observes exact raw input and actual transaction returns separately for each chunk', async () => {
+    const raw = '\\echo private fixture\nSELECT 1;\n--> statement-breakpoint\nSELECT 2;';
+    const sqlDir = fixtureDir(raw);
+    const observations: Array<Record<string, unknown>> = [];
+    const diagnostics = channel('papercusp:migration-transaction');
+    const observe = (message: unknown) => observations.push(message as Record<string, unknown>);
+    const client = fakeClient();
+    client.unsafe.mockImplementation(async (query: string) => {
+      if (query.includes('SELECT filename')) return [];
+      if (query.startsWith('BEGIN;')) {
+        expect(observations.at(-1)).toMatchObject({ phase: 'planned', query });
+        expect(observations.filter(row => row.attemptId === observations.at(-1)?.attemptId)).toHaveLength(1);
+        await Promise.resolve();
+      }
+      return undefined;
+    });
+    diagnostics.subscribe(observe);
+    try {
+      await applyPendingMigrations({ client, sqlDir });
+      expect(observations.map(row => row.phase)).toEqual(['planned', 'returned', 'planned', 'returned']);
+      expect(new Set(observations.map(row => row.attemptId)).size).toBe(2);
+      const transactions = client.unsafe.mock.calls.map(([query]) => query).filter(query => query.startsWith('BEGIN;'));
+      for (let i = 0; i < 2; i += 1) {
+        const planned = observations[i * 2];
+        const returned = observations[i * 2 + 1];
+        expect(planned).toMatchObject({ file: '001-guard.sql', migrationPath: join(sqlDir, '001-guard.sql'),
+          rawSource: raw, rawSourceSha256: createHash('sha256').update(raw).digest('hex'),
+          query: transactions[i], chunkIndex: i, chunkCount: 2, attempt: 1, isFinalChunk: i === 1 });
+        expect(returned).toEqual({ ...planned, phase: 'returned' });
+        expect(Object.isFrozen(planned)).toBe(true);
+        expect(String(planned.query)).not.toContain('\\echo');
+      }
+      expect(String(observations[0].query)).not.toContain('INSERT INTO harness_shared.schema_migrations');
+      expect(String(observations[2].query)).toContain('INSERT INTO harness_shared.schema_migrations');
+    } finally { diagnostics.unsubscribe(observe); }
+  });
+
+  it('records failed SQL without claiming a returned transaction', async () => {
+    const observations: Array<Record<string, unknown>> = [];
+    const diagnostics = channel('papercusp:migration-transaction');
+    const observe = (message: unknown) => observations.push(message as Record<string, unknown>);
+    const client = fakeClient();
+    client.unsafe.mockImplementation(async (query: string) => {
+      if (query.includes('SELECT filename')) return [];
+      if (query.startsWith('BEGIN;')) throw new Error('fixture apply rejected');
+      return undefined;
+    });
+    diagnostics.subscribe(observe);
+    try {
+      const result = await applyPendingMigrations({ client, sqlDir: fixtureDir(), continueOnError: true });
+      expect(result.appliedCount).toBe(0);
+      expect(observations.map(row => row.phase)).toEqual(['planned', 'failed']);
+      expect(observations[1]).toEqual({ ...observations[0], phase: 'failed' });
+      expect(client.unsafe.mock.calls.some(([query]) => query === 'ROLLBACK')).toBe(true);
+    } finally { diagnostics.unsubscribe(observe); }
+  });
+
+  it('does not observe SQL when the pre-apply guard refuses', async () => {
+    const observe = vi.fn();
+    const diagnostics = channel('papercusp:migration-transaction');
+    diagnostics.subscribe(observe);
+    try {
+      await applyPendingMigrations({ client: fakeClient(), sqlDir: fixtureDir(), continueOnError: true,
+        beforeApply: () => { throw new Error('fixture pre-apply refusal'); } });
+      expect(observe).not.toHaveBeenCalled();
+    } finally { diagnostics.unsubscribe(observe); }
+  });
+
   it('bounds the exact immutable projection backfill and gates its final ledger', async () => {
     const chunks = migrationTransactionChunks(projectionSql);
     expect(chunks.filter((chunk) => chunk.includes('LIMIT 64'))).toHaveLength(1024);
