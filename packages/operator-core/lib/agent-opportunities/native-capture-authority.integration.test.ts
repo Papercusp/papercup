@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { provisionNativeRuntimeBearer, verifyNativeRuntimeBearer } from '@papercusp/agent-mcp/provisioning';
@@ -883,6 +884,70 @@ it.each(['same', 'other-harness', 'other-tool'])('D030 rejects duplicate/conflic
   await s.insert(kind === 'other-harness' ? 'other-harness' : harness, kind === 'other-tool' ? 'other:tool' : undefined);
   expect(await s.inspect()).toEqual(unknown);
 });
+
+it('indexes the full native dispatch fingerprint census without hiding cross-scope conflicts', async () => {
+  const s = await authorizedFixture();
+  const sql = f.db.adminSql;
+  // This is the fixture database only. Compare the same data and production
+  // query before/after the exact migration bytes, without disabling seqscans.
+  await sql`DROP INDEX IF EXISTS harness_shared.tool_invocations_native_dispatch_fingerprint_idx`;
+  await sql`INSERT INTO harness_shared.tool_invocations
+    (workspace_id,harness_slug,plugin_name,tool_name,role,spawn_id,window_key,status,metadata_json)
+    SELECT 'other-workspace','other-harness','agent-mcp','other:tool','operator','test-request','test','ok',
+      jsonb_build_object('requestOrigin',jsonb_build_object('nativeSession',jsonb_build_object(
+        'valueFingerprint',md5(n::text),'callIdFingerprint',md5((n+1)::text))))
+    FROM generate_series(1,12000) n`;
+  await sql`ANALYZE harness_shared.tool_invocations`;
+  const census = () => sql<{ row: Record<string, unknown>; population: string }[]>`
+    SELECT to_jsonb(i) AS row,count(*) OVER ()::text AS population FROM harness_shared.tool_invocations i
+    WHERE i.metadata_json->'requestOrigin'->'nativeSession'->>'valueFingerprint'=${sha(s.source.namespace!)}
+      AND i.metadata_json->'requestOrigin'->'nativeSession'->>'callIdFingerprint'=${sha(s.source.callId!)}
+    ORDER BY i.id LIMIT 2`;
+  const plan = async () => JSON.stringify(await sql`EXPLAIN (FORMAT JSON)
+    SELECT to_jsonb(i) AS row,count(*) OVER ()::text AS population FROM harness_shared.tool_invocations i
+    WHERE i.metadata_json->'requestOrigin'->'nativeSession'->>'valueFingerprint'=${sha(s.source.namespace!)}
+      AND i.metadata_json->'requestOrigin'->'nativeSession'->>'callIdFingerprint'=${sha(s.source.callId!)}
+    ORDER BY i.id LIMIT 2`);
+  const before = await census();
+  expect(before).toHaveLength(1);
+  expect(await plan()).toContain('Seq Scan');
+  const migration = new URL('../../../../libs/papercusp/libs/db/sql/1626-native-dispatch-fingerprint-lookup-index.sql', import.meta.url);
+  const migrationSql = readFileSync(existsSync(migration) ? migration : new URL(migration.href + '.DRAFT'), 'utf8');
+  await sql.unsafe(migrationSql);
+  await sql.unsafe(migrationSql); // The migration remains idempotent.
+  await sql`ANALYZE harness_shared.tool_invocations`;
+  expect(await census()).toEqual(before);
+  const indexedPlan = await plan();
+  expect(indexedPlan).toContain('tool_invocations_native_dispatch_fingerprint_idx');
+  expect(indexedPlan).not.toContain('Seq Scan');
+  expect(await readAuthorizedNativeDispatch({ ...s.input, source: s.source }, s.opts)).not.toBeNull();
+  // Interrupted concurrent builds leave an INVALID index under its final
+  // name. IF NOT EXISTS must never stamp that as a successful migration.
+  await sql`DROP INDEX harness_shared.tool_invocations_native_dispatch_fingerprint_idx`;
+  try {
+    await expect(sql.unsafe(`CREATE UNIQUE INDEX CONCURRENTLY tool_invocations_native_dispatch_fingerprint_idx
+      ON harness_shared.tool_invocations (workspace_id)`)).rejects.toMatchObject({ code: '23505' });
+    await expect(sql.unsafe(migrationSql)).rejects.toMatchObject({ code: '55000' });
+  } finally {
+    await sql`DROP INDEX IF EXISTS harness_shared.tool_invocations_native_dispatch_fingerprint_idx`;
+    await sql.unsafe(migrationSql);
+  }
+  expect(await census()).toEqual(before);
+  // Two foreign-scope copies must count even beyond LIMIT 2. A scope filter,
+  // unique index or pre-count limit would incorrectly accept the first row.
+  await sql`INSERT INTO harness_shared.tool_invocations
+    (workspace_id,harness_slug,plugin_name,tool_name,role,spawn_id,window_key,status,
+     coord_owner_id,args_json,transport,principal_kind,principal_auth_method,principal_trust,metadata_json)
+    SELECT 'foreign-workspace','foreign-harness',plugin_name,'foreign:tool',role,spawn_id,window_key,status,
+      'foreign-owner',args_json,transport,principal_kind,principal_auth_method,principal_trust,metadata_json
+    FROM harness_shared.tool_invocations CROSS JOIN generate_series(1,2)
+    WHERE id=${s.id}::bigint`;
+  const conflicts = await census();
+  expect(conflicts).toHaveLength(2);
+  expect(conflicts.map(row => row.population)).toEqual(['3', '3']);
+  expect(await readAuthorizedNativeDispatch({ ...s.input, source: s.source }, s.opts)).toBeNull();
+  expect(await s.inspect()).toEqual(unknown);
+}, 30_000);
 
 it('D030 activity/reconciliation rows and declared origin=hook cannot manufacture a candidate', async () => {
   const s = await fixture();
