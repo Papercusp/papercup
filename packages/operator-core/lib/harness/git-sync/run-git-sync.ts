@@ -92,7 +92,7 @@ import { attributionScopeLabel, resolveAttributionRepo } from './attribution-rep
 import { canonicalJson } from '../../external-bench/reproducibility/canonical-json';
 import { guardStagedWorkspaceLock, workspaceLockTreeInspector, workspaceLockTreeValidator } from './staged-workspace-lock';
 import { materializeCommit } from '../../../../../scripts/source-preview.mjs';
-import { metadataRepairInputLayout, metadataRepairRuntimeIdentity, resolveMetadataRepairLock } from '../../../../../scripts/npm-install-safe.mjs';
+import { assertMetadataRepairGraph, metadataRepairInputLayout, metadataRepairRuntimeIdentity, resolveMetadataRepairLock } from '../../../../../scripts/npm-install-safe.mjs';
 
 /**
  * Per-call options a git runner must forward to the git child.
@@ -5879,6 +5879,19 @@ async function validateGeneratedTree(runGit: RunGit, repo: string, tree: string,
   });
   if (canonicalJson(registry) !== canonicalJson(f.output.registry)) throw new Error('generated-lock-registry-output-mismatch');
   await workspaceLockTreeValidator()(runGit, repo, tree);
+  // The exact diff and blob were measured above. Re-materialize the immutable
+  // base and substitute only that verified blob; neither pending checkout bytes
+  // nor installed links can supply this final graph proof.
+  await withMetadataMaterialization(runGit, repo, f.baseCommit, async materialized => {
+    const path = join(materialized, f.output.path);
+    const beforeLockBytes = await readFile(path).catch(error => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    });
+    await writeFile(path, output.stdout);
+    try { assertMetadataRepairGraph({ repoRoot: materialized, beforeLockBytes, lockPath: f.output.path }); }
+    catch (error) { throw new Error('generated-lock-graph: ' + String(error)); }
+  });
 }
 
 export type GitSyncCandidateCaptureResult =
@@ -6157,6 +6170,10 @@ export async function captureGitSyncCandidate(
     try {
       const retain = async (baseTree: string, tree: string): Promise<GitSyncCandidateCaptureResult> => {
         const candidate: GitSyncCandidateCapture = { ...input, baseTree, tree };
+        // A rejected graph must not become this generation's durable custody.
+        // Readback repeats the proof after retention; it cannot be the first
+        // graph check, since a refused readback would leave a poisoned ref.
+        if (source) await validateGeneratedTree(sharedGit, repoPath, tree, source);
         await writeFile(manifestFile, canonicalJson(candidate) + '\n', { mode: 0o600, flag: 'wx' });
         const metadata = await sharedGit(['hash-object', '-w', '--no-filters', '--', manifestFile], repoPath);
         if (metadata.code !== 0 || !oidPattern.test(metadata.stdout.trim())) return custodyRefused('candidate-manifest-write');

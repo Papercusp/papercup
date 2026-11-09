@@ -23,6 +23,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   assertPatchPostimageGitSource,
+  assertMetadataRepairGraph,
   assertWorkspaceLockInspection,
   cacheVerifyArgs,
   dependencySelectionArgs,
@@ -71,6 +72,125 @@ const NPM_FIXTURE_CONFIG_RESET = Object.fromEntries(
     ["NPM_CONFIG_" + name.toUpperCase(), undefined],
   ]),
 );
+
+function repairGraphFixture(t) {
+  const root = mkdtempSync(join(tmpdir(), "metadata-graph-test-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const app = "apps/slack-asana-bug-drill";
+  const target = app + "/template-kit";
+  const generic = "libs/generic/template-kit";
+  const manifests = {
+    "": { name: "graph-root", version: "1.0.0", workspaces: ["apps/*", "libs/generic/*"], dependencies: { next: "16.4.1" } },
+    [app]: { name: "drill", version: "1.0.0", dependencies: { next: "16.4.0", "template-kit": "file:./template-kit" } },
+    [target]: { name: "template-kit", version: "1.0.0" },
+    [generic]: { name: "template-kit", version: "2.0.0" },
+  };
+  for (const [dir, value] of Object.entries(manifests)) {
+    mkdirSync(join(root, dir), { recursive: true });
+    writeFileSync(join(root, dir, "package.json"), JSON.stringify(value));
+  }
+  const lock = { name: "graph-root", version: "1.0.0", requires: true, lockfileVersion: 3, packages: {
+    ...structuredClone(manifests),
+    "node_modules/drill": { resolved: app, link: true },
+    "node_modules/template-kit": { resolved: generic, link: true },
+    [app + "/node_modules/template-kit"]: { resolved: target, link: true },
+    "node_modules/next": { version: "16.4.1", dependencies: { "@next/env": "16.4.1", deep: "1.0.0" } },
+    "node_modules/@next/env": { version: "16.4.1" },
+    [app + "/node_modules/next"]: { version: "16.4.0", dependencies: { "@next/env": "16.4.0" } },
+    [app + "/node_modules/@next/env"]: { version: "16.4.0" },
+    "node_modules/deep": { version: "1.0.0", dependencies: { leaf: "1.0.0" } },
+    "node_modules/leaf": { version: "1.0.0" },
+    "node_modules/unrelated": { version: "1.0.0", integrity: "sha512-unchanged" },
+  } };
+  const beforeLockBytes = Buffer.from(JSON.stringify(lock));
+  const write = () => writeFileSync(join(root, "package-lock.json"), JSON.stringify(lock));
+  write();
+  const calls = [];
+  const graph = { name: "graph-root", problems: [], dependencies: { drill: { dependencies: {
+    "template-kit": { version: "1.0.0", problems: [] },
+    next: { version: "16.4.0", dependencies: { "@next/env": { version: "16.4.0", dependencies: {
+      deep: { dependencies: { leaf: { version: "1.0.0", problems: [] } } },
+    } } } },
+  } } } };
+  const run = (mutate = value => value, status = 0, baseline = beforeLockBytes) => assertMetadataRepairGraph({
+    repoRoot: root, beforeLockBytes: baseline, lockPath: "package-lock.json",
+  }, { spawnSyncCommand: (command, args, options) => {
+    calls.push({ command, args, options });
+    return { status, stdout: JSON.stringify(mutate(structuredClone(graph))) };
+  } });
+  return { root, app, target, generic, lock, graph, write, run, calls, beforeLockBytes };
+}
+
+test("metadata graph reads the full affected closure and preserves the parent/child Next split", t => {
+  const f = repairGraphFixture(t);
+  // A legitimate transitive Next update is inside the measured closure.
+  f.lock.packages["node_modules/leaf"].version = "1.0.1";
+  f.write();
+  f.run();
+  assert.equal(f.calls.length, 3);
+  assert.ok(f.calls[0].args.includes("--workspace=" + f.app));
+  for (const { args, options } of f.calls) {
+    assert.ok(args.includes("--all"));
+    assert.ok(args.includes("--package-lock-only"));
+    assert.ok(!args.some(arg => arg.startsWith("--depth")));
+    assert.equal(options.cwd, f.root);
+    assert.equal(Object.hasOwn(options.env, "NODE_OPTIONS"), false);
+    assert.notEqual(args.find(arg => arg.startsWith("--userconfig="))?.split("=")[1],
+      args.find(arg => arg.startsWith("--globalconfig="))?.split("=")[1]);
+  }
+  assert.deepEqual(f.lock.packages[f.app + "/node_modules/template-kit"], { resolved: f.target, link: true });
+  assert.equal(f.lock.packages["node_modules/next"].version, "16.4.1");
+  assert.equal(f.lock.packages[f.app + "/node_modules/next"].version, "16.4.0");
+  assert.equal(existsSync(dirname(f.calls[0].options.env.HOME)), true);
+  assert.equal(existsSync(f.calls[0].options.env.HOME), false);
+});
+
+for (const field of ["invalid", "extraneous", "problems"]) {
+  test(`metadata graph refuses zero-exit npm with deep descendant ${field}`, t => {
+    const f = repairGraphFixture(t);
+    assert.throws(() => f.run(graph => {
+      graph.dependencies.drill.dependencies.next.dependencies["@next/env"].dependencies.deep.dependencies.leaf[field] =
+        field === "problems" ? ["deep invalid edge"] : true;
+      return graph;
+    }), /metadata-repair-graph-npm-problems/);
+    assert.equal(f.calls.length, 1);
+    assert.equal(existsSync(f.calls[0].options.env.HOME), false);
+  });
+}
+
+test("metadata graph refuses root problems and nonzero npm exits", t => {
+  const f = repairGraphFixture(t);
+  assert.throws(() => f.run(graph => ({ ...graph, problems: ["root problem"] })), /npm-problems/);
+  assert.throws(() => f.run(graph => graph, 1), /npm-ls:1/);
+});
+
+test("metadata graph admits a missing selected workspace mirror but refuses invented mirror fields", t => {
+  const f = repairGraphFixture(t);
+  const before = JSON.parse(f.beforeLockBytes);
+  delete before.packages[f.app];
+  const baseline = Buffer.from(JSON.stringify(before));
+  f.run(value => value, 0, baseline);
+  f.lock.packages[f.app].integrity = "sha512-invented";
+  f.write();
+  assert.throws(() => f.run(value => value, 0, baseline), /unrelated-lock-entry/);
+});
+
+for (const mutation of ["wrong-local-target", "local-version", "child-next", "next-env", "unrelated-change", "unrelated-delete", "unrelated-add", "header"]) {
+  test(`metadata graph refuses ${mutation} before a reader can bless it`, t => {
+    const f = repairGraphFixture(t);
+    if (mutation === "wrong-local-target") f.lock.packages[f.app + "/node_modules/template-kit"].resolved = f.generic;
+    if (mutation === "local-version") f.lock.packages[f.target].version = "9.0.0";
+    if (mutation === "child-next") f.lock.packages[f.app + "/node_modules/next"].version = "16.4.1";
+    if (mutation === "next-env") f.lock.packages[f.app + "/node_modules/@next/env"].version = "16.4.1";
+    if (mutation === "unrelated-change") f.lock.packages["node_modules/unrelated"].integrity = "sha512-changed";
+    if (mutation === "unrelated-delete") delete f.lock.packages["node_modules/unrelated"];
+    if (mutation === "unrelated-add") f.lock.packages["node_modules/added"] = { version: "1.0.0" };
+    if (mutation === "header") f.lock.version = "9.0.0";
+    f.write();
+    assert.throws(() => f.run(), /metadata-repair-graph-(?:local-target|next-selection|next-edge|unrelated-lock)/);
+    assert.equal(f.calls.length, 0);
+  });
+}
 
 test("metadata repair resolution owns an empty per-attempt cache and excludes ambient launch inputs", async (t) => {
   const ambient = { NODE_OPTIONS: "--invalid-repair-loader", NODE_EXTRA_CA_CERTS: "/absent/repair-ca.pem",

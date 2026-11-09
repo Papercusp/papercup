@@ -1,11 +1,13 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { findBoxIdentityPaths, findIdentityLiterals, resolveIdentityLiterals } from '../../../scripts/lib/identity-leak-patterns.mjs';
-import { assertBaselineRepairInputs, assertFrozenBaselineSources, baselineLockDelta } from '../test/task-artifacts-baseline-repair';
+import { assertBaselineRepairInputs, assertFrozenBaselineSources, baselineLockDelta,
+  baselineProductBoundary } from '../test/task-artifacts-baseline-repair';
 
 // Original source bytes captured before product edits, independent of candidate
 // imports. Runtime paths stay in the immutable PG capture, outside release source.
@@ -90,7 +92,8 @@ describe('separately qualified baseline dependency repair custody', () => {
       const manifest = Buffer.from('{"name":"selected"}');
       const lock = Buffer.from('original lock');
       const repaired = Buffer.from('repaired lock');
-      const snapshot = new Map([['package.json', manifest], ['package-lock.json', lock], ['.npmrc', null]]);
+      const snapshot = new Map([['package.json', manifest], ['package-lock.json', lock],
+        ['npm-shrinkwrap.json', null], ['.npmrc', null]]);
       writeFileSync(join(root, 'package.json'), manifest);
       writeFileSync(join(root, 'package-lock.json'), repaired);
       const output = { path: 'package-lock.json', bytes: repaired };
@@ -100,6 +103,41 @@ describe('separately qualified baseline dependency repair custody', () => {
       rmSync(join(root, '.npmrc'));
       writeFileSync(join(root, 'package.json'), '{"name":"different"}');
       expect(() => assertBaselineRepairInputs(root, snapshot, output)).toThrow('baseline_repair_input_changed:package.json');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('rejects a new workspace selected after installation or build', () => {
+    const root = mkdtempSync(join(tmpdir(), 'artifact-baseline-population-'));
+    try {
+      const manifest = Buffer.from('{"name":"selected","workspaces":["packages/*"]}');
+      const lock = Buffer.from('{"lockfileVersion":3,"packages":{}}');
+      writeFileSync(join(root, 'package.json'), manifest);
+      writeFileSync(join(root, 'package-lock.json'), lock);
+      const snapshot = new Map([['package.json', manifest], ['package-lock.json', lock],
+        ['npm-shrinkwrap.json', null], ['.npmrc', null]]);
+      expect(() => assertBaselineRepairInputs(root, snapshot)).not.toThrow();
+      mkdirSync(join(root, 'packages', 'introduced'), { recursive: true });
+      writeFileSync(join(root, 'packages', 'introduced', 'package.json'), '{"name":"introduced"}');
+      expect(() => assertBaselineRepairInputs(root, snapshot)).toThrow('baseline_repair_input_population_changed');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('rejects untracked source while allowing ignored build caches', () => {
+    const root = mkdtempSync(join(tmpdir(), 'artifact-baseline-tree-'));
+    try {
+      const git = (...args: string[]) => execFileSync('git', args, { cwd: root, encoding: 'utf8' });
+      git('init', '-q');
+      writeFileSync(join(root, 'adapter.ts'), 'export const original = true;');
+      writeFileSync(join(root, '.gitignore'), 'cache/\n');
+      git('add', '.');
+      git('-c', 'user.name=Baseline fixture', '-c', 'user.email=baseline@example.invalid',
+        '-c', 'core.hooksPath=/dev/null', 'commit', '-qm', 'frozen test source');
+      mkdirSync(join(root, 'cache'));
+      writeFileSync(join(root, 'cache', 'build.bin'), 'build cache');
+      expect(baselineProductBoundary(root, []).changedPaths).toEqual([]);
+      writeFileSync(join(root, 'introduced.ts'), 'export const replacement = true;');
+      expect(() => baselineProductBoundary(root, [])).toThrow('baseline_product_tree_changed');
+      expect(baselineProductBoundary(root, ['introduced.ts']).changedPaths).toEqual(['introduced.ts']);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 

@@ -1854,6 +1854,149 @@ function fileBytesEqual(left, right) {
   return Buffer.isBuffer(left) && Buffer.isBuffer(right) && left.equals(right);
 }
 
+/** Read the affected virtual graph, never the installed tree. The same guard is
+ * used on resolver output and immutable retained candidates. npm owns graph
+ * interpretation; the comparisons below only bound the permitted repair. */
+export function assertMetadataRepairGraph({ repoRoot, beforeLockBytes, lockPath }, {
+  npmCli = realpathSync(join(dirname(process.execPath), "npm")),
+  spawnSyncCommand = spawnSync,
+} = {}) {
+  const refuse = detail => { throw new Error("metadata-repair-graph-" + detail); };
+  const bytes = readFileSync(join(repoRoot, lockPath));
+  const lock = JSON.parse(bytes);
+  const packages = lock.packages;
+  if (!packages || typeof packages !== "object" || Array.isArray(packages)) refuse("packages");
+  const before = beforeLockBytes === null ? null : JSON.parse(beforeLockBytes);
+  if (before !== null && (!before.packages || typeof before.packages !== "object")) refuse("base-packages");
+  const { layout } = metadataRepairInputLayout(repoRoot);
+  const manifests = new Map(layout.inputPaths.filter(path => basename(path) === "package.json")
+    .map(path => [dirname(path) === "." ? "" : dirname(path), JSON.parse(readFileSync(join(repoRoot, path), "utf8"))]));
+  const lookup = (population, from, name) => {
+    for (let cursor = from; ; cursor = dirname(cursor) === "." ? "" : dirname(cursor)) {
+      const path = (cursor ? cursor + "/" : "") + "node_modules/" + name;
+      if (population[path]) {
+        const entry = population[path];
+        return { path, target: entry.link ? entry.resolved : path,
+          entry: entry.link ? population[entry.resolved] : entry };
+      }
+      if (!cursor) return null;
+    }
+  };
+  const edges = entry => Object.assign({}, ...LOCK_MANIFEST_DEPENDENCY_FIELDS.map(field => entry?.[field] ?? {}));
+  const localPaths = new Set();
+  const nextRoots = [];
+  for (const [dir, manifest] of manifests) {
+    const mirror = packages[dir];
+    if (!mirror || mirror.link || (manifest.version !== undefined && mirror.version !== manifest.version) ||
+        (mirror.name !== undefined && mirror.name !== manifest.name)) refuse("manifest-mirror:" + dir);
+    for (const field of LOCK_MANIFEST_DEPENDENCY_FIELDS) {
+      if (!isDeepStrictEqual(normalizedRecord(manifest[field]), normalizedRecord(mirror[field]))) {
+        refuse("manifest-mirror:" + dir + ":" + field);
+      }
+    }
+    for (const [name, spec] of Object.entries(edges(manifest))) {
+      if (typeof spec !== "string") refuse("dependency-spec");
+      if (name === "next") {
+        const found = lookup(packages, dir, name);
+        if (!found?.entry || (/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(spec) && found.entry.version !== spec)) {
+          refuse("next-selection:" + dir);
+        }
+        nextRoots.push({ dir, name });
+        for (const [edge, version] of Object.entries(edges(found.entry))) {
+          if (edge !== "@next/env" && !edge.startsWith("@next/swc-")) continue;
+          const selected = lookup(packages, found.target, edge);
+          if (!selected?.entry || selected.entry.version !== version || version !== found.entry.version) {
+            refuse("next-edge:" + dir + ":" + edge);
+          }
+        }
+      }
+      if (!spec.startsWith("file:") || /\.(?:tgz|tar\.gz)$/i.test(spec)) continue;
+      const target = toRepoRelativePath(repoRoot, resolve(repoRoot, dir, spec.slice(5)));
+      const selected = manifests.get(target);
+      const found = lookup(packages, dir, name);
+      if (!selected || !found || !packages[found.path]?.link || found.target !== target ||
+          (found.entry?.name !== undefined && found.entry.name !== selected.name) || found.entry?.version !== selected.version) {
+        refuse("local-target:" + dir + ":" + name);
+      }
+      localPaths.add(found.path);
+      localPaths.add(target);
+    }
+  }
+  // npm may rewrite mirrors and the affected Next closure, not unrelated
+  // registry entries. Compute the union of the old/new closure so deletions are
+  // bounded too. This is a census over lock edges, not a second resolver.
+  const permitted = new Set(localPaths);
+  const addClosure = population => {
+    const queue = nextRoots.flatMap(({ dir, name }) => [lookup(population, dir, name)]).filter(Boolean);
+    const seen = new Set();
+    while (queue.length) {
+      const node = queue.shift();
+      if (seen.has(node.path)) continue;
+      seen.add(node.path); permitted.add(node.path); permitted.add(node.target);
+      for (const name of Object.keys(edges(node.entry))) {
+        const child = lookup(population, node.target, name);
+        if (child) queue.push(child);
+      }
+    }
+  };
+  addClosure(packages);
+  if (before) {
+    addClosure(before.packages);
+    const stripMirrors = entry => entry && Object.fromEntries(Object.entries(entry)
+      .filter(([key]) => !LOCK_MANIFEST_DEPENDENCY_FIELDS.includes(key)));
+    const top = value => ({ requires: true, ...Object.fromEntries(Object.entries(value).filter(([key]) => key !== "packages")) });
+    if (!isDeepStrictEqual(top(before), top(lock))) refuse("unrelated-lock-header");
+    for (const path of new Set([...Object.keys(before.packages), ...Object.keys(packages)])) {
+      const old = before.packages[path];
+      const current = packages[path];
+      if (isDeepStrictEqual(old, current) || permitted.has(path)) continue;
+      if (manifests.has(path) && isDeepStrictEqual(stripMirrors(old), stripMirrors(current))) continue;
+      if (!old && manifests.has(path) && current && Object.entries(current).every(([key, value]) =>
+        Object.hasOwn(manifests.get(path), key) && isDeepStrictEqual(value, manifests.get(path)[key]))) continue;
+      if (current?.link && manifests.has(current.resolved) &&
+          path === "node_modules/" + manifests.get(current.resolved).name &&
+          (!old || (old.link && old.resolved === current.resolved))) continue;
+      refuse("unrelated-lock-entry:" + path);
+    }
+  }
+  const privateRoot = mkdtempSync(join(tmpdir(), "npm-metadata-graph-"));
+  try {
+    const userconfig = join(privateRoot, "user.npmrc");
+    const globalconfig = join(privateRoot, "global.npmrc");
+    for (const path of [userconfig, globalconfig]) writeFileSync(path, "", { mode: 0o600 });
+    const env = { HOME: privateRoot, TMPDIR: privateRoot, PATH: dirname(process.execPath), LANG: "C.UTF-8", TZ: "UTC" };
+    const common = ["--package-lock-only", "--json", "--long", "--all", "--ignore-scripts", "--no-audit", "--no-fund",
+      "--userconfig=" + userconfig, "--globalconfig=" + globalconfig, "--cache=" + join(privateRoot, "cache")];
+    const affected = manifests.has("apps/slack-asana-bug-drill") ? "apps/slack-asana-bug-drill" : null;
+    const reads = affected ? [["--workspace=" + affected]] : [[]];
+    for (const { dir } of nextRoots) {
+      const next = lookup(packages, dir, "next");
+      reads.push(["next", ...Object.keys(edges(next.entry)).filter(name => name.startsWith("@next/")),
+        ...(dir ? ["--workspace=" + dir] : ["--workspaces=false"])]);
+    }
+    for (const selectors of reads) {
+      const result = spawnSyncCommand(process.execPath, [npmCli, "ls", ...common, ...selectors], {
+        cwd: repoRoot, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30_000, maxBuffer: 16 * 1024 * 1024,
+      });
+      if (result.error || result.signal || result.status !== 0) {
+        refuse("npm-ls:" + (result.error?.message ?? result.status) + ":" + String(result.stderr ?? "").slice(0, 1500));
+      }
+      let graph;
+      try { graph = JSON.parse(result.stdout); } catch { refuse("npm-json"); }
+      if (!graph || typeof graph !== "object" || Array.isArray(graph)) refuse("npm-json");
+      const visit = node => {
+        if (!node || typeof node !== "object" || Array.isArray(node) ||
+            (node.problems !== undefined && (!Array.isArray(node.problems) || node.problems.length !== 0)) ||
+            node.invalid || node.extraneous || node.missing || node.error) refuse("npm-problems");
+        if (node.dependencies !== undefined && (!node.dependencies || typeof node.dependencies !== "object" || Array.isArray(node.dependencies))) refuse("npm-dependencies");
+        for (const child of Object.values(node.dependencies ?? {})) visit(child);
+      };
+      visit(graph);
+    }
+    if (!bytes.equals(readFileSync(join(repoRoot, lockPath)))) refuse("lock-moved");
+  } finally { rmSync(privateRoot, { recursive: true, force: true }); }
+}
+
 function createManifestOnlyTree(repoRoot, inputPaths, parent = tmpdir()) {
   const scratchRoot = mkdtempSync(join(parent, "npm-install-safe-resolve-"));
   const snapshot = new Map();
@@ -2049,6 +2192,7 @@ export async function resolveMetadataRepairLock({ repoRoot }, {
     const bytes = readFileSync(output);
     const packages = JSON.parse(bytes).packages;
     if (!packages || typeof packages !== "object" || Array.isArray(packages)) throw new Error("metadata-repair-output-graph");
+    assertMetadataRepairGraph({ repoRoot: input.scratchRoot, beforeLockBytes: input.snapshot.get(lockPath), lockPath }, { npmCli: cli });
     receipt.output = { path: lockPath, sha256: digest(bytes), mode: lstatSync(output).mode & 0o777,
       registry: Object.entries(packages).sort(([a], [b]) => a.localeCompare(b)).map(([path, entry]) => ({
         path, resolved: entry.resolved ?? null, integrity: entry.integrity ?? null,

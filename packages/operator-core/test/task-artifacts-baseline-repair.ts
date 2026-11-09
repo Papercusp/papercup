@@ -29,6 +29,8 @@ export function assertFrozenBaselineSources(root: string, files: FrozenSource[])
 export function assertBaselineRepairInputs(root: string, snapshot: Map<string, Buffer | null>,
   output?: { path: string; bytes: Buffer }) {
   assert.ok(!output || snapshot.has(output.path), 'baseline_repair_output_not_selected');
+  assert.deepEqual(metadataRepairInputLayout(root).inputPaths, [...snapshot.keys()].sort(),
+    'baseline_repair_input_population_changed');
   for (const [path, before] of snapshot) {
     const absolute = join(root, path);
     const expected = output?.path === path ? output.bytes : before;
@@ -43,8 +45,10 @@ export function assertBaselineRepairInputs(root: string, snapshot: Map<string, B
 /** The complete original product tree may differ only by the declared lock. */
 export function baselineProductBoundary(root: string, expectedChangedPaths: string[]) {
   const git = (args: string[]) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
-  const changedPaths = git(['diff', '--name-only', '--ignore-submodules=none', 'HEAD', '--'])
-    .split('\n').filter(Boolean).sort();
+  const changedPaths = [...new Set([
+    ...git(['diff', '--name-only', '-z', '--ignore-submodules=none', 'HEAD', '--']).split('\0'),
+    ...git(['ls-files', '--others', '--exclude-standard', '-z', '--']).split('\0'),
+  ].filter(Boolean))].sort();
   assert.deepEqual(changedPaths, [...expectedChangedPaths].sort(), 'baseline_product_tree_changed');
   // Submodule dirtiness is reported as its path above; its commit identities
   // also stay in the immutable parent tree and are recorded explicitly here.

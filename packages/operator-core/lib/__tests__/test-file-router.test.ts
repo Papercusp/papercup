@@ -606,6 +606,17 @@ describe('test-files router', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  it.each(['integration', 'e2e'])('keeps the managed API %s suite on immutable private proof preparation', layer => {
+    const file = `packages/operator-core/lib/agent-tools/capability/managed-capability-api.${layer}.test.ts`;
+    const inputs = privateIntegrationVerifierInputs(REPO_ROOT, [file], {
+      NODE_OPTIONS: '--import=/repo/scripts/lib/committed-source-loader.mjs',
+    });
+    expect(inputs).toEqual(expect.arrayContaining([
+      file, 'packages/operator-core/test/isolated-integration-proof.ts',
+      'packages/operator-core/test/private-http-workspace-preflight.ts',
+    ]));
+  });
+
   it('forwards the private verifier forecast and defers PG admission until dependency preparation', async () => {
     const file = 'packages/operator-core/lib/endpoint-route/__tests__/portal-aggregate-create-private.e2e.test.ts';
     const oldOptions = process.env.NODE_OPTIONS;
@@ -4745,7 +4756,7 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
       expect(code).toBe(2);
       expect(runs).toBe(2);
       const marker = errSpy.mock.calls.map(([line]: unknown[]) => String(line))
-        .find(line => line.startsWith('TEST_FILE_NOT_MEASURED'));
+        .find((line: string) => line.startsWith('TEST_FILE_NOT_MEASURED'));
       expect(marker).toContain(`requested=2 executed=1 matched=2 measuredFiles=1 status=not-measured reason=${failureKind}`);
       expect(marker).toContain('1 file(s) ran in other groups');
       expect(marker).not.toContain('no test file ran');

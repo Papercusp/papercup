@@ -144,6 +144,33 @@ describe('P003 generated custody', () => {
     expect(f.git('for-each-ref', '--format=%(refname)', SOURCE_CUSTODY_REF_PREFIX)).toBe('');
   }, 90_000);
 
+  it('refuses unrelated generated graph churn even with self-consistent blob and resolver digests', async () => {
+    const f = await generatedCustodyFixture();
+    const state = candidateState(f);
+    // Real npm commonly omits a directory target's redundant name; identity is
+    // bound to its exact selected manifest/path, not an invented lock field.
+    const actual = JSON.parse(Buffer.from(f.request.contentSource.bytes).toString());
+    expect(actual.packages.target.version).toBe('1.0.0');
+    const contentSource = structuredClone(f.request.contentSource);
+    const lock = JSON.parse(Buffer.from(contentSource.bytes).toString());
+    lock.packages['node_modules/unrelated-injected'] = { version: '9.0.0' };
+    const bytes = Buffer.from(JSON.stringify(lock));
+    const sha256 = createHash('sha256').update(bytes).digest('hex');
+    const blobOid = createHash('sha1').update(Buffer.from(`blob ${bytes.length}\0`)).update(bytes).digest('hex');
+    const registry = Object.entries(lock.packages).sort(([a], [b]) => a.localeCompare(b)).map(([path, value]) => {
+      const entry = value as { resolved?: string; integrity?: string };
+      return { path, resolved: entry.resolved ?? null, integrity: entry.integrity ?? null };
+    });
+    contentSource.bytes = bytes;
+    Object.assign(contentSource.fingerprint.output, { sha256, blobOid, registry });
+    Object.assign(contentSource.fingerprint.output.resolution.output, { sha256, registry });
+    const refused = await captureGitSyncCandidate(f.runGit, f.repo, { ...f.request, contentSource }, pilotChecks);
+    expect(refused).toMatchObject({ ok: false, error: expect.stringContaining('generated-lock-graph:') });
+    expect(f.git('for-each-ref', '--format=%(refname)', SOURCE_CUSTODY_REF_PREFIX)).toBe('');
+    expect(candidateState(f)).toEqual(state);
+    expect(await captureGitSyncCandidate(f.runGit, f.repo, f.request, pilotChecks)).toMatchObject({ ok: true });
+  }, 90_000);
+
   it.each([{ mask: 0o077, outputMode: 0o600 }, { mask: 0o002, outputMode: 0o664 }])(
     'retains the complete independently expected input population and generated lock bytes with umask $mask', async ({ mask, outputMode }) => {
     const umask = process.umask(mask);
