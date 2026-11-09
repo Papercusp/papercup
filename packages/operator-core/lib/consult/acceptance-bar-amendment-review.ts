@@ -416,6 +416,7 @@ function buildPinnedAmendmentReviewBrief(input: AmendmentReviewBriefInput, answe
  * its own to the plans it reviews; the screen below still checks that.
  */
 export const ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR = 'system:acceptance-bar-amendment-review';
+const FRESH_REVIEWER_LAUNCH_KEY_PREFIX = 'acceptance-bar-amendment-review:';
 
 export type FreshAmendmentReviewerResult =
   | {
@@ -556,6 +557,16 @@ export interface FreshAmendmentReviewerHealth {
   evidence?: string;
 }
 
+type RetainedReviewerLaunch = { launchedBy: string | null; summary: unknown };
+
+async function readRetainedReviewerLaunch(workspaceId: string, idempotencyKey: string): Promise<RetainedReviewerLaunch | null> {
+  const { sql } = (await import('@papercusp/db-org')).getOrgPg();
+  const [row] = await sql<Array<{ launched_by: string | null; summary: unknown }>>`
+    SELECT launched_by, summary FROM harness_shared.agent_launch_idempotency
+     WHERE workspace_id = ${workspaceId} AND idempotency_key = ${idempotencyKey}`;
+  return row ? { launchedBy: row.launched_by, summary: row.summary } : null;
+}
+
 /**
  * Inspect a retained fresh reviewer before reporting or reclaiming its amend
  * receipt. A running ledger row is not proof that its native turn can still
@@ -566,6 +577,7 @@ export interface FreshAmendmentReviewerHealth {
 export async function inspectFreshAmendmentReviewer(
   input: { workspaceId: string; previewPostRef: string; reviewEvidencePost?: string; reviewer: unknown },
   deps: {
+    readRetainedLaunch?: typeof readRetainedReviewerLaunch;
     readTaskState?: (taskId: string) => Promise<TaskState | null>;
     resolveSessionStates?: ResolveSessionStates;
     analyzeTranscript?: typeof analyzeClaudeResumeTranscriptFile;
@@ -576,8 +588,38 @@ export async function inspectFreshAmendmentReviewer(
     ? input.reviewer as Record<string, unknown>
     : undefined;
   const taskId = typeof reviewer?.taskId === 'string' ? reviewer.taskId : undefined;
-  const nativeRef = typeof reviewer?.nativeRef === 'string' ? reviewer.nativeRef : undefined;
-  const ownerId = typeof reviewer?.ownerId === 'string' ? reviewer.ownerId : undefined;
+  let nativeRef = typeof reviewer?.nativeRef === 'string' ? reviewer.nativeRef : undefined;
+  let ownerId = typeof reviewer?.ownerId === 'string' ? reviewer.ownerId : undefined;
+  // Older amend receipts omitted these fields even though the original launch
+  // ledger retained them. Recover only that exact system launch and task; a
+  // label, process state or caller-supplied identity cannot establish custody.
+  if (reviewer?.state === 'launched' && taskId && (!ownerId || !nativeRef) &&
+    reviewer.launcherId === ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR &&
+    typeof reviewer.idempotencyKey === 'string' &&
+    reviewer.idempotencyKey.startsWith(FRESH_REVIEWER_LAUNCH_KEY_PREFIX) &&
+    PREVIEW_POST_REF.test(input.previewPostRef) &&
+    (input.reviewEvidencePost === undefined || PREVIEW_POST_REF.test(input.reviewEvidencePost))) {
+    const unknown = { state: 'unknown' as const, taskId, reason: 'retained reviewer launch custody could not be verified' };
+    let launch: RetainedReviewerLaunch | null;
+    try {
+      launch = await (deps.readRetainedLaunch ?? readRetainedReviewerLaunch)(input.workspaceId, reviewer.idempotencyKey);
+    } catch {
+      return unknown;
+    }
+    const summary = launch?.summary && typeof launch.summary === 'object' && !Array.isArray(launch.summary)
+      ? launch.summary as Record<string, unknown> : undefined;
+    const tasks = Array.isArray(summary?.tasks) ? summary.tasks.filter((task): task is Record<string, unknown> =>
+      task !== null && typeof task === 'object' && task.taskId === taskId) : [];
+    const task = tasks.length === 1 ? tasks[0] : undefined;
+    const proof = task?.kickoffProof && typeof task.kickoffProof === 'object'
+      ? task.kickoffProof as Record<string, unknown> : undefined;
+    if (launch?.launchedBy !== ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR ||
+      typeof task?.ownerId !== 'string' || !task.ownerId.trim() ||
+      proof?.persisted !== true || typeof proof.nativeRef !== 'string' || !proof.nativeRef.trim() ||
+      (ownerId && ownerId !== task.ownerId) || (nativeRef && nativeRef !== proof.nativeRef)) return unknown;
+    ownerId = task.ownerId;
+    nativeRef = proof.nativeRef;
+  }
   if (reviewer?.state !== 'launched' || !taskId || !ownerId || !PREVIEW_POST_REF.test(input.previewPostRef) ||
     (input.reviewEvidencePost !== undefined && !PREVIEW_POST_REF.test(input.reviewEvidencePost))) {
     return { state: 'unknown', ...(taskId ? { taskId } : {}), reason: 'reviewer or preview identity is incomplete' };
@@ -871,7 +913,7 @@ export async function launchFreshAmendmentReviewer(
     .update([input.workspaceId, rubricId, previewPostRef, JSON.stringify(input.preview.approval),
       ...(reviewerModel ? [JSON.stringify(reviewerModel)] : [])].join('\0'))
     .digest('hex');
-  const idempotencyKey = `acceptance-bar-amendment-review:${identity.slice(0, 32)}`;
+  const idempotencyKey = `${FRESH_REVIEWER_LAUNCH_KEY_PREFIX}${identity.slice(0, 32)}`;
   const label = `bar-amendment-review:${identity.slice(0, 12)}`;
   const launch: LaunchHandler =
     deps.launch ?? ((await import('../agent-tools/capability/launch-agent')).default.handler as unknown as LaunchHandler);

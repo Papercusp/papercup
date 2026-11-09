@@ -3998,9 +3998,18 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
     } })).toMatchObject({ ok: true, status: 'created' });
     const read = async () => (await evidenceStore.listSpecEvidence({
       harnessSlug: HARNESS, planSlugs: ['reconnect-plan'], workItemIds: ['WI-101'], evidenceRefs: [DERIVE_TEST],
+      includeCaseEvidence: true,
     })).find(row => row.testRunId === runId)!;
     const projected = await read();
     expect(projected.testRunExecution).toMatchObject({ passed: 1, skipped: 1, passedCaseTitles: [title] });
+    const [originalInterval] = await db.sql<{ started_at: Date; finished_at: Date }[]>`
+      SELECT started_at, finished_at FROM harness_shared.test_runs WHERE id = ${runId}`;
+    expect(projected.testRunExecution).toMatchObject({
+      startedAt: new Date(originalInterval.started_at).toISOString(),
+      finishedAt: new Date(originalInterval.finished_at).toISOString(),
+      cases: [expect.objectContaining({ caseKey: title, status: 'pass', occurrence: 1 }),
+        expect.objectContaining({ caseKey: 'outer > unselected', status: 'skip', occurrence: 1 })],
+    });
     expect(projected.testRunExecution).not.toHaveProperty('passedCaseTitlesIncomplete');
     const { evaluateSpecTestAdequacy } = await import('./spec-test-adequacy');
     const revisions = await specs.listSpecClauses({ harnessSlug: HARNESS, planSlug: 'reconnect-plan' });
@@ -4468,6 +4477,75 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
 
     const listed = await evidenceStore.listSpecEvidence({ harnessSlug: HARNESS, planSlugs: ['reconnect-plan'] });
     expect(listed).toHaveLength(0);
+  });
+});
+
+describe('P032 native receipt qualification against original source and the real ingest frontier', () => {
+  it.each(['supported', 'wrong-version', 'wrong-native-session', 'wrong-source', 'wrong-result', 'wrong-arguments',
+    'incomplete-frontier', 'foreign-workspace', 'foreign-harness', 'foreign-observer', 'unknown-enrollment'] as const)
+  ('qualifies only the original enrolled native observation: %s', async fault => {
+    const { readManagedCapabilityNativeObservation } = await import('../../managed-capability-inventory-evidence');
+    const session = '77777777-2222-3333-4444-555555555555', turn = 'p032-exact-turn';
+    const nativeHome = await mkdtemp(path.join(tmpdir(), 'p032-native-proof-'));
+    const sourceDir = path.join(nativeHome, 'sessions', '2026', '11', '09');
+    await mkdir(sourceDir, { recursive: true });
+    const file = path.join(sourceDir, `rollout-2026-11-09T00-00-00-${session}.jsonl`);
+    const call = { name: 'mcp__papercusp_su__capability_read', arguments: '{"file_path":"private.txt"}',
+      output: '{"text":"original private bytes"}', isError: null,
+      calledAt: '2026-11-09T00:00:01.000Z', at: '2026-11-09T00:00:02.000Z' };
+    const transcript = [
+      { type: 'session_meta', payload: { id: session, cli_version: '0.163.0' } },
+      { type: 'event_msg', payload: { type: 'task_started', turn_id: turn } },
+      { timestamp: call.calledAt, type: 'response_item', payload: { type: 'function_call',
+        name: call.name, call_id: 'p032-exact-call', arguments: call.arguments } },
+      { timestamp: call.at, type: 'response_item', payload: { type: 'function_call_output',
+        call_id: 'p032-exact-call', output: call.output } },
+      { type: 'turn_context', payload: { turn_id: turn, model: 'fixture-model' } },
+      { type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 100, output_tokens: 10 },
+        last_token_usage: { input_tokens: 100, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 10 } } } },
+      { type: 'event_msg', payload: { type: 'task_complete', turn_id: turn } },
+    ].map(row => JSON.stringify(row) + '\n').join('');
+    try {
+      await writeFile(file, transcript);
+      await db.sql`CREATE TABLE IF NOT EXISTS harness_shared.interactive_usage_files (
+        workspace_id text NOT NULL, file_path text NOT NULL, byte_offset bigint NOT NULL, parser_state jsonb NOT NULL,
+        PRIMARY KEY (workspace_id, file_path))`;
+      await db.sql`INSERT INTO harness_shared.interactive_usage_files (workspace_id, file_path, byte_offset, parser_state)
+        VALUES (${WORKSPACE}, ${file}, ${Buffer.byteLength(transcript) - (fault === 'incomplete-frontier' ? 1 : 0)},
+          ${db.sql.json({ initialized: true, fileGeneration: 0 })})`;
+      const observation = {
+        bindingId: 1, scenarioId: 'exact-read', role: 'positive' as const, file: 'test/native.test.ts',
+        caseTitle: 'original case', occurrence: 0, outcome: 'pass' as const, observedAt: call.at,
+        observerOwnerId: 'native-observer', sideEffects: [{ ref: 'private-file', observation: 'Original bytes retained' }],
+        identity: { planSlug: 'native-cutover', specId: 'exact-atom', specRevision: 1, specFingerprint: 'spec-hash',
+          barHash: 'bar-hash', sourceFingerprint: 'source-hash', clientVersion: '0.163.0',
+          runtimeFingerprint: 'runtime-hash', environmentFingerprint: 'environment-hash' },
+        native: { advSessionId: 42, nativeSessionId: session, nativeTurnId: turn,
+          sourceSha256: createHash('sha256').update(transcript).digest('hex'), callRecordIndex: 2, resultRecordIndex: 3 }, call,
+      };
+      if (fault === 'wrong-version') observation.identity.clientVersion = 'unobserved-version';
+      if (fault === 'wrong-native-session') observation.native.nativeSessionId = 'foreign-native';
+      if (fault === 'wrong-source') observation.native.sourceSha256 = '0'.repeat(64);
+      if (fault === 'wrong-result') observation.call = { ...call, output: 'invented pass' };
+      if (fault === 'wrong-arguments') observation.call = { ...call, arguments: '{"file_path":"other.txt"}' };
+      const enrollment = { id: 42, workspaceId: WORKSPACE, harnessSlug: HARNESS, agent: 'codex',
+        coordOwnerId: 'native-observer', sessionId: session, startedAt: '2026-11-09T00:00:00Z', endedAt: null };
+      if (fault === 'foreign-workspace') enrollment.workspaceId = OTHER_WORKSPACE;
+      if (fault === 'foreign-harness') enrollment.harnessSlug = 'another';
+      if (fault === 'foreign-observer') enrollment.coordOwnerId = 'another';
+      const result = await readManagedCapabilityNativeObservation({ workspaceId: WORKSPACE, harnessSlug: HARNESS },
+        observation, 'codex', {
+          // Only host enrollment/home allocation are substituted. The native
+          // source parser, filesystem proof and SQL ingest frontier are real.
+          session: async () => fault === 'unknown-enrollment' ? null : enrollment as never,
+          handle: () => ({ backend: 'codex', source: 'adv_sessions', ownerId: 'native-observer',
+            codexHome: nativeHome, rolloutId: session, exactResumeSupported: true, missingReason: null }),
+        });
+      expect(result).toBe(fault === 'supported');
+    } finally {
+      await db.sql`DELETE FROM harness_shared.interactive_usage_files WHERE workspace_id = ${WORKSPACE} AND file_path = ${file}`;
+      await rm(nativeHome, { recursive: true, force: true });
+    }
   });
 });
 

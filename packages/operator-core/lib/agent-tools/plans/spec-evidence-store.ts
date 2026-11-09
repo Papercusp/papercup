@@ -5709,6 +5709,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
                       parsedTestRunExecution.runtimeEnvironmentBefore,
                       parsedTestRunExecution.runtimeEnvironmentAfter,
                     ) ?? null,
+                    startedAt: row.test_run_started_at == null ? null : pgTimestampToIso(row.test_run_started_at),
                     finishedAt: row.test_run_finished_at == null ? null : pgTimestampToIso(row.test_run_finished_at),
                   } : {}),
                   ...(parsedTestRunExecution.testNamePattern !== null

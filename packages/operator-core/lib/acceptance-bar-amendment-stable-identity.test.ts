@@ -23,10 +23,12 @@ vi.mock('./agent-tools/plans/spec-clauses-store', async (importOriginal) => ({
 import {
   isProvenanceOnlyReprojection,
   synchronizeAcceptanceBarRevision,
+  validateAcceptanceBarRevisionProjectionPreview,
 } from './acceptance-bar-amendment';
 import { acceptanceBarBehaviorClass, buildAcceptanceBarSeed } from './acceptance-bar-seed';
 import { specClauseContentHash, type SpecClauseWrite } from './agent-tools/plans/spec-clauses-store';
 import { validExplicitExemption } from './agent-tools/plans/spec-quality';
+import { rubricTemplateDataAuthoringSchema } from './agent-tools/plans/rubric-template';
 import { computeAcceptanceBarHash, computeAcceptanceBarSetHash, formatRubricRevisionSnapshot } from './rubrics';
 
 const RUBRIC = 'acceptance-subject-plan';
@@ -102,6 +104,7 @@ const criterionOf = (barKey: string): Criterion => {
 function storedClause(barKey: string, planItemId: string, overrides: {
   barHash?: string; rubricSlug?: string; storedSetHash?: string | null; storedRubricRevision?: number | null;
   behaviorClass?: SpecClauseWrite['behaviorClass']; mutationRequired?: boolean; requiredTestLayers?: string[];
+  behavior?: string; falsifier?: SpecClauseWrite['falsifier'];
   lifecycleStatus?: 'active' | 'exempt'; exemption?: Record<string, unknown> | null;
 } = {}) {
   const criterion = criterionOf(barKey);
@@ -115,9 +118,9 @@ function storedClause(barKey: string, planItemId: string, overrides: {
     source_bar_key: barKey,
     source_bar_hash: overrides.barHash ?? criterion.barHash!,
     plan_item_id: planItemId,
-    behavior: `Reviewed atomic behavior for ${barKey}.`,
+    behavior: overrides.behavior ?? `Reviewed atomic behavior for ${barKey}.`,
     behavior_class: overrides.behaviorClass ?? 'happy-path',
-    falsifier: null,
+    falsifier: overrides.falsifier ?? null,
     required_evidence: ['tree'],
     required_test_layers: overrides.requiredTestLayers ?? [],
     mutation_required: overrides.mutationRequired ?? false,
@@ -133,7 +136,7 @@ function storedClause(barKey: string, planItemId: string, overrides: {
     planSlug: 'subject-plan', specId, expectedRevision: 4, planItemId,
     behavior: row.behavior, behaviorClass: row.behavior_class,
     requiredEvidence: row.required_evidence, requiredTestLayers: row.required_test_layers,
-    mutationRequired: row.mutation_required, lifecycleStatus, exemption, supersedes: null, falsifier: null,
+    mutationRequired: row.mutation_required, lifecycleStatus, exemption, supersedes: null, falsifier: row.falsifier,
     acceptanceRef: row.acceptance_ref,
     sourceBar: {
       barKey, barHash: row.source_bar_hash, barSetHash: OLD_SET_HASH,
@@ -432,6 +435,142 @@ describe('P-001 stable clause identity across acceptance-BAR amendments', () => 
     await amend([storedClause('R-1', 'P-001', { storedSetHash: null }), storedClause('R-2', 'P-002')]);
 
     expect(writtenSpecIds()).toEqual(['AUTO-BAR-R-1-P-001']);
+  });
+});
+
+describe('unchanged historical legacy projections (EI-28270326327739435)', () => {
+  const behavior = 'The writer persists the BAR; the reader consumes the BAR.';
+  const falsifier = { observation: 'The writer loses the BAR or the reader cannot consume it.' };
+  const legacy = () => storedClause('R-1', 'P-001', { behavior, falsifier });
+  const sibling = () => storedClause('R-2', 'P-002');
+  const snapshot = formatRubricRevisionSnapshot('', { ...template, barSetHash: OLD_SET_HASH }, null, 3);
+  const unrelatedAmendment = () => {
+    const criteria = template.criteria.map((criterion) => {
+      if (criterion.barKey !== 'R-2') return criterion;
+      const next = { ...criterion, model: 'The reader reads the latest canonical BAR.' };
+      return { ...next, barHash: computeAcceptanceBarHash(next as never) };
+    });
+    return { ...template, criteria, barSetHash: computeAcceptanceBarSetHash(criteria) };
+  };
+  function preview(rows: unknown[], next = unrelatedAmendment(), snapshots = [snapshot]) {
+    const sql = sqlStub(rows, rows, subjectPlan(), snapshots);
+    return validateAcceptanceBarRevisionProjectionPreview(sql as never, {
+      workspaceId: 'workspace', harnessSlug: 'papercusp', rubricSlug: RUBRIC, rubricRevision: 4,
+      templateData: next, previousTemplateData: template,
+    });
+  }
+
+  beforeEach(() => {
+    h.setSpecClause.mockReset();
+    h.setSpecClause.mockImplementation(async (write: SpecClauseWrite) => ({
+      status: 'revised', specId: write.specId, revision: write.expectedRevision! + 1,
+    }));
+  });
+
+  it('previews an unrelated amendment and applies it without rewriting the proven legacy promise', async () => {
+    const row = legacy();
+    const before = structuredClone(row);
+    const rows = [row, sibling()];
+    const next = unrelatedAmendment();
+    const result = await preview(rows, next);
+    expect(result).toMatchObject({ generatedSpecCount: 2, candidateHash: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    expect(await preview(rows, next)).toEqual(result);
+    expect(h.setSpecClause).not.toHaveBeenCalled();
+    const sql = sqlStub(rows);
+    const revisions = await synchronizeAcceptanceBarRevision(sql as never, {
+      workspaceId: 'workspace', harnessSlug: 'papercusp', rubricSlug: RUBRIC, rubricRevision: 4,
+      templateData: next, previousTemplateData: template, actorId: 'amender',
+    });
+    expect(writtenSpecIds()).toEqual([sibling().spec_id]);
+    expect(revisions.get(row.spec_id)).toBe(row.current_revision);
+    expect(row).toEqual(before);
+    expect(row).toMatchObject({ behavior, falsifier, acceptance_ref: `${RUBRIC}@3:R-1` });
+  });
+
+  it.each([
+    ['missing', []], ['markdown-only', ['# old rubric']], ['ambiguous', [snapshot, snapshot]],
+    ['wrong BAR set', [formatRubricRevisionSnapshot('', { ...template, barSetHash: 'b'.repeat(64) }, null, 3)]],
+  ])('still rejects the compound promise with %s history', async (_name, snapshots) => {
+    await expect(preview([legacy(), sibling()], unrelatedAmendment(), snapshots as string[]))
+      .rejects.toThrow(/behavior.atomicity/);
+  });
+
+  it.each([
+    ['removed', []], ['duplicated', [snapshot, snapshot]],
+    ['changed', [formatRubricRevisionSnapshot('', { ...template, barSetHash: 'b'.repeat(64) }, null, 3)]],
+  ])('rechecks history at apply when the successful preview snapshot was %s', async (_name, snapshots) => {
+    const row = legacy();
+    const rows = [row, sibling()];
+    const next = unrelatedAmendment();
+    await expect(preview(rows, next)).resolves.toMatchObject({ generatedSpecCount: 2 });
+
+    const revisions = await synchronizeAcceptanceBarRevision(
+      sqlStub(rows, rows, subjectPlan(), snapshots as string[]) as never, {
+        workspaceId: 'workspace', harnessSlug: 'papercusp', rubricSlug: RUBRIC, rubricRevision: 4,
+        templateData: next, previousTemplateData: template, actorId: 'amender',
+      },
+    );
+    // Missing proof must reach the ordinary writer instead of retaining the unreadable
+    // old pin. The writer owns validation; this suite spies on that boundary.
+    expect(writtenSpecIds()).toEqual(rows.map((clause) => clause.spec_id));
+    expect(h.setSpecClause.mock.calls[0]![0]).toMatchObject({
+      specId: row.spec_id, expectedRevision: row.current_revision, behavior, falsifier,
+      acceptanceRef: `${RUBRIC}@4:R-1`, sourceBar: { barSetHash: next.barSetHash, rubricRevision: 4 },
+    });
+    expect(revisions.get(row.spec_id)).toBe(row.current_revision + 1);
+  });
+
+  it('refuses to retain a matching historical BAR hash with the wrong evidence plane', async () => {
+    const historical = { ...template, barSetHash: OLD_SET_HASH, criteria: template.criteria.map((criterion) =>
+      criterion.barKey === 'R-1' ? { ...criterion, evidencePlane: 'live' as const } : criterion) };
+    expect(criterionOf('R-1').evidencePlane).toBe('tree');
+    expect(historical.criteria[0]!.barHash).toBe(criterionOf('R-1').barHash);
+    expect(rubricTemplateDataAuthoringSchema.safeParse(historical).success).toBe(true);
+    const snapshots = [formatRubricRevisionSnapshot('', historical, null, 3)];
+    const row = legacy();
+    const rows = [row, sibling()];
+    const next = unrelatedAmendment();
+    await expect(preview(rows, next, snapshots)).rejects.toThrow(/behavior.atomicity/);
+
+    const revisions = await synchronizeAcceptanceBarRevision(
+      sqlStub(rows, rows, subjectPlan(), snapshots) as never, {
+        workspaceId: 'workspace', harnessSlug: 'papercusp', rubricSlug: RUBRIC, rubricRevision: 4,
+        templateData: next, previousTemplateData: template, actorId: 'amender',
+      },
+    );
+    expect(writtenSpecIds()).toEqual([row.spec_id, sibling().spec_id]);
+    expect(h.setSpecClause.mock.calls[0]![0]).toMatchObject({
+      behavior, falsifier, sourceBar: { evidencePlane: 'tree', rubricRevision: 4 },
+    });
+    expect(revisions.get(row.spec_id)).toBe(row.current_revision + 1);
+  });
+
+  it.each([
+    ['missing content hash', { content_hash: null }],
+    ['changed meaning', { behavior: `${behavior} The observer records a verdict.` }],
+    ['missing provenance', { source_bar_set_hash: null }],
+  ])('does not trust legacy identity with %s', async (_name, patch) => {
+    await expect(preview([{ ...legacy(), ...patch }, sibling()])).rejects.toThrow(/behavior.atomicity/);
+  });
+
+  it.each([
+    ['schema', { requiredTestLayers: ['unrecordable-layer'] }, /test_layers_invalid/],
+    ['falsifier', { falsifier: { observation: ' ' } }, /falsifier_invalid/],
+  ] as const)('keeps %s validation even when the immutable meaning hash matches', async (_name, patch, reason) => {
+    await expect(preview([storedClause('R-1', 'P-001', { behavior, ...patch,
+      requiredTestLayers: 'requiredTestLayers' in patch ? [...patch.requiredTestLayers] : [] }), sibling()]))
+      .rejects.toThrow(reason);
+  });
+
+  it.each(['new', 'changed'])('rejects a %s compound projection despite available old history', async (kind) => {
+    const criteria = template.criteria.map((criterion) => {
+      if (criterion.barKey !== 'R-1') return criterion;
+      const next = { ...criterion, model: 'The observer records a verdict; the publisher sends the verdict.' };
+      return { ...next, barHash: computeAcceptanceBarHash(next as never) };
+    });
+    await expect(preview(kind === 'new' ? [] : [legacy(), sibling()], {
+      ...template, criteria, barSetHash: computeAcceptanceBarSetHash(criteria),
+    })).rejects.toThrow(/behavior.atomicity/);
   });
 });
 

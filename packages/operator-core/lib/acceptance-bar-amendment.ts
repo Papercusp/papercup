@@ -684,8 +684,46 @@ type ProjectedAcceptanceClause = {
   supersedes_spec_id: string | null;
   supersedes_revision: number | null;
   exemption: Record<string, unknown> | null;
+  content_hash?: string | null;
+  acceptance_ref?: string | null;
+  source_bar_set_hash?: string | null;
+  source_rubric_revision?: number | string | null;
 };
 type ProjectionCriterion = z.infer<typeof rubricTemplateDataAuthoringSchema>['criteria'][number];
+
+/** Share the immutable-pin proof between preview and apply, cached per old revision. */
+function historicalAcceptanceBarPinResolver(
+  sql: SpecClauseSql,
+  args: { workspaceId: string; harnessSlug: string; rubricSlug: string },
+) {
+  const pinnedSnapshots = new Map<number, Promise<unknown[]>>();
+  return async (clause: ProjectedAcceptanceClause, next: SpecClauseWrite): Promise<boolean> => {
+    const revision = Number(clause.source_rubric_revision);
+    let pending = pinnedSnapshots.get(revision);
+    if (!pending) {
+      const { inspectRubricRevisionSnapshot } = await import('./rubrics');
+      const marker = `"rubricRevision": ${revision},`;
+      pending = sql<Array<{ content_snapshot: string }>>`
+        SELECT content_snapshot FROM harness_shared.plan_revisions
+         WHERE workspace_id = ${args.workspaceId} AND harness_slug = ${args.harnessSlug}
+           AND plan_slug = ${args.rubricSlug}
+           AND position(${marker} in content_snapshot) > 0
+         ORDER BY seq DESC LIMIT 3`
+        .then((rows) => rows.length === 3 ? [] : rows.map((row) => inspectRubricRevisionSnapshot(row.content_snapshot))
+          .filter((snapshot) => snapshot.kind === 'enriched' && snapshot.rubricRevision === revision)
+          .map((snapshot) => snapshot.templateData));
+      pinnedSnapshots.set(revision, pending);
+    }
+    const snapshots = await pending;
+    if (snapshots.length !== 1) return false;
+    const historical = rubricTemplateDataAuthoringSchema.safeParse(snapshots[0]);
+    if (!historical.success || historical.data.kind !== 'acceptance'
+      || historical.data.barSetHash !== clause.source_bar_set_hash) return false;
+    const bars = historical.data.criteria.filter((bar) => bar.barKey === clause.source_bar_key);
+    return bars.length === 1 && bars[0]!.barHash === clause.source_bar_hash
+      && bars[0]!.evidencePlane === next.sourceBar?.evidencePlane;
+  };
+}
 
 /** Preview and apply derive the same payload, including retained atomic refinements. */
 async function acceptanceBarClauseWrite(args: {
@@ -803,7 +841,6 @@ export async function synchronizeAcceptanceBarRevision(
   if (!subjects.length) throw new Error('acceptance_bar_revision_subject_missing');
   const subject = subjects[0]!;
   const { parseRequirementBars, parseBarMappings } = await import('./acceptance-bar-seed');
-  const { inspectRubricRevisionSnapshot } = await import('./rubrics');
   const byKey = new Map(data.criteria.map((criterion) => [criterion.barKey ?? criterion.key, criterion]));
   const requirements = parseRequirementBars(subject.content);
   if (!requirements.ok) {
@@ -850,14 +887,7 @@ export async function synchronizeAcceptanceBarRevision(
     }),
   );
   const ownedSpecIds = [...barKeyBySpecId.keys()];
-  type ProjectedClause = ProjectedAcceptanceClause & {
-    // P-001: the stored revision's own hash and rubric-wide provenance, so a
-    // re-projection whose MEANING is unchanged can be recognised and skipped.
-    content_hash?: string | null;
-    acceptance_ref?: string | null;
-    source_bar_set_hash?: string | null;
-    source_rubric_revision?: number | string | null;
-  };
+  type ProjectedClause = ProjectedAcceptanceClause;
   const loadClauses = async (): Promise<ProjectedClause[]> => {
     const rows = await sql<ProjectedClause[]>`
       SELECT c.spec_id, c.source_val_id, c.current_revision, r.source_bar_key, r.source_bar_hash,
@@ -883,35 +913,7 @@ export async function synchronizeAcceptanceBarRevision(
   const barKeyOf = (clause: ProjectedClause): string | null =>
     clause.source_bar_key ?? barKeyBySpecId.get(clause.spec_id) ?? generatedProjectionIdentity(clause.spec_id)?.barKey ?? null;
   const revisions = new Map<string, number>();
-  // Reuse the immutable snapshot envelope inside this transaction. Keeping an
-  // unchanged clause's old pin is safe only while that historical BAR resolves.
-  // Cache by revision so an amendment reads each old snapshot cohort once.
-  const pinnedSnapshots = new Map<number, Promise<unknown[]>>();
-  const historicalPinResolves = async (clause: ProjectedClause, next: SpecClauseWrite): Promise<boolean> => {
-    const revision = Number(clause.source_rubric_revision);
-    let pending = pinnedSnapshots.get(revision);
-    if (!pending) {
-      const marker = `"rubricRevision": ${revision},`;
-      pending = sql<Array<{ content_snapshot: string }>>`
-        SELECT content_snapshot FROM harness_shared.plan_revisions
-         WHERE workspace_id = ${args.workspaceId} AND harness_slug = ${args.harnessSlug}
-           AND plan_slug = ${args.rubricSlug}
-           AND position(${marker} in content_snapshot) > 0
-         ORDER BY seq DESC LIMIT 3`
-        .then((rows) => rows.length === 3 ? [] : rows.map((row) => inspectRubricRevisionSnapshot(row.content_snapshot))
-          .filter((snapshot) => snapshot.kind === 'enriched' && snapshot.rubricRevision === revision)
-          .map((snapshot) => snapshot.templateData));
-      pinnedSnapshots.set(revision, pending);
-    }
-    const snapshots = await pending;
-    if (snapshots.length !== 1) return false;
-    const historical = rubricTemplateDataAuthoringSchema.safeParse(snapshots[0]);
-    if (!historical.success || historical.data.kind !== 'acceptance'
-      || historical.data.barSetHash !== clause.source_bar_set_hash) return false;
-    const bars = historical.data.criteria.filter((bar) => bar.barKey === clause.source_bar_key);
-    return bars.length === 1 && bars[0]!.barHash === clause.source_bar_hash
-      && bars[0]!.evidencePlane === next.sourceBar?.evidencePlane;
-  };
+  const historicalPinResolves = historicalAcceptanceBarPinResolver(sql, args);
   // The subject plan is the canonical discharge map. Diff every desired
   // (BAR, plan-item) edge, not merely whether a BAR has any clause: an existing
   // BAR may expand from one implementing item to several during an as-built
@@ -1209,7 +1211,8 @@ export async function validateAcceptanceBarRevisionProjectionPreview(
     SELECT c.spec_id, c.source_val_id, c.current_revision, r.source_bar_key, r.source_bar_hash,
            r.plan_item_id, r.behavior, r.behavior_class, r.falsifier, r.required_evidence,
            r.required_test_layers, r.mutation_required, r.lifecycle_status,
-           r.supersedes_spec_id, r.supersedes_revision, r.exemption
+           r.supersedes_spec_id, r.supersedes_revision, r.exemption,
+           r.content_hash, r.acceptance_ref, r.source_bar_set_hash, r.source_rubric_revision
       FROM harness_shared.plan_spec_clauses c
       JOIN harness_shared.plan_spec_clause_revisions r
         ON r.workspace_id = c.workspace_id AND r.harness_slug = c.harness_slug
@@ -1233,6 +1236,8 @@ export async function validateAcceptanceBarRevisionProjectionPreview(
       .map((planItemId) => ({ criterion, barKey: mapping.barKey, planItemId }));
   });
   const candidateWrites: SpecClauseWrite[] = [];
+  const retainedSpecIds = new Set<string>();
+  const historicalPinResolves = historicalAcceptanceBarPinResolver(sql, args);
   for (const { criterion, barKey, planItemId } of missingMappings) {
     if (!criterion.barHash || !criterion.evidencePlane || !data.barSetHash) {
       throw new Error(`acceptance_bar_revision_mapping_missing:${barKey}`);
@@ -1271,11 +1276,18 @@ export async function validateAcceptanceBarRevisionProjectionPreview(
     if (!criterion) throw new Error(`acceptance_bar_revision_projection_unmapped:${clause.spec_id}`);
     // A removed generated mapping is retired by apply, not re-projected.
     if (generatedIdentity && !currentPair) continue;
-    candidateWrites.push(await acceptanceBarClauseWrite({
+    const next = await acceptanceBarClauseWrite({
       ...args, subjectPlan, barSetHash: data.barSetHash!, barKey: effectiveBarKey!,
       planItemId: clause.plan_item_id, criterion, prior: previousByKey.get(effectiveBarKey!),
       clause, actorId: 'preview',
-    }));
+    });
+    // Apply does not write an identical, historically resolvable revision. Linting
+    // that retained promise as a new behavior made unrelated amendments impossible
+    // for accepted legacy clauses. Identity or matching text alone is not proof.
+    if (isProvenanceOnlyReprojection(clause, next) && await historicalPinResolves(clause, next)) {
+      retainedSpecIds.add(clause.spec_id);
+    }
+    candidateWrites.push(next);
   }
   const candidate = {
     workspaceId: args.workspaceId, harnessSlug: args.harnessSlug,
@@ -1287,10 +1299,10 @@ export async function validateAcceptanceBarRevisionProjectionPreview(
     return [
       ...(!shape.success ? shape.error.issues.map((issue) => `${write.specId}.${issue.path.join('.')}: ${issue.message}`) : []),
       ...specClauseWriteIssues(write).map((issue) => JSON.stringify(issue)),
-      ...[
+      ...(retainedSpecIds.has(write.specId) ? [] : [
         ['behavior.atomicity', specBehaviorNonAtomicReason(write.behavior)],
         ['behavior.falsifiability', specBehaviorNonFalsifiableReason(write.behavior)],
-      ].flatMap(([field, reason]) => reason ? [`${write.specId}.${field}: ${reason}`] : []),
+      ].flatMap(([field, reason]) => reason ? [`${write.specId}.${field}: ${reason}`] : [])),
     ];
   });
   if (issues.length) {

@@ -1739,6 +1739,71 @@ describe('inspectFreshAmendmentReviewer', () => {
     },
   };
 
+  const legacyInput = { ...input, reviewer: {
+    state: 'launched', taskId: 'reviewer-1', launcherId: ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR,
+    idempotencyKey: 'acceptance-bar-amendment-review:legacy',
+  } };
+  const retainedLaunch = () => ({ launchedBy: ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR, summary: {
+    tasks: [{ taskId: 'reviewer-1', ownerId: 'reviewer-owner',
+      kickoffProof: { persisted: true, nativeRef: '/retained/reviewer-1.jsonl' } }],
+  } });
+
+  it('recovers legacy receipt custody before detecting a running reviewer rejected with native 401', async () => {
+    const rejection = analyzeClaudeResumeTranscript([
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'Review the amendment' } }),
+      JSON.stringify({ type: 'assistant', isApiErrorMessage: true, error: 'authentication_failed',
+        message: { role: 'assistant', model: '<synthetic>',
+          content: [{ type: 'text', text: 'Authentication credentials unavailable' }] } }),
+    ].join('\n'));
+    const readRetainedLaunch = vi.fn(async () => retainedLaunch());
+    const hasLaterPost = vi.fn(async () => false);
+    const result = await inspectFreshAmendmentReviewer(legacyInput, {
+      readRetainedLaunch,
+      readTaskState: vi.fn(async () => 'running' as const),
+      resolveSessionStates: vi.fn(async () => new Map([['reviewer-owner', {
+        sessionState: 'parked', selfWake: 'none',
+      }]])) as never,
+      analyzeTranscript: vi.fn(() => rejection),
+      hasLaterPost,
+    });
+
+    expect(readRetainedLaunch).toHaveBeenCalledWith(input.workspaceId, legacyInput.reviewer.idempotencyKey);
+    expect(hasLaterPost).toHaveBeenCalledWith({ workspaceId: input.workspaceId,
+      previewPostRef: input.previewPostRef, authorId: 'reviewer-owner' });
+    expect(result).toMatchObject({ state: 'reclaimable', taskId: 'reviewer-1', taskState: 'running',
+      nativeRef: '/retained/reviewer-1.jsonl', reason: 'account-walled',
+      evidence: 'Authentication credentials unavailable' });
+  });
+
+  it.each(['launcher', 'task', 'kickoff', 'duplicate', 'owner', 'nativeRef'] as const)(
+    'keeps legacy custody unknown when the retained launch conflicts at %s', async (conflict) => {
+      const retained = retainedLaunch();
+      const reviewer: Record<string, unknown> = { ...legacyInput.reviewer };
+      if (conflict === 'launcher') retained.launchedBy = 'unrelated-launcher';
+      if (conflict === 'task') retained.summary.tasks[0]!.taskId = 'different-task';
+      if (conflict === 'kickoff') retained.summary.tasks[0]!.kickoffProof.persisted = false;
+      if (conflict === 'duplicate') retained.summary.tasks.push({ ...retained.summary.tasks[0]! });
+      if (conflict === 'owner') reviewer.ownerId = 'different-owner';
+      if (conflict === 'nativeRef') reviewer.nativeRef = '/different/transcript.jsonl';
+      const readTaskState = vi.fn(async () => 'exited' as const);
+      const hasLaterPost = vi.fn(async () => false);
+      expect(await inspectFreshAmendmentReviewer({ ...legacyInput, reviewer }, {
+        readRetainedLaunch: vi.fn(async () => retained), readTaskState, hasLaterPost,
+      })).toMatchObject({ state: 'unknown' });
+      expect(readTaskState).not.toHaveBeenCalled();
+      expect(hasLaterPost).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not infer legacy custody when its retained launch is unavailable', async () => {
+    for (const readRetainedLaunch of [vi.fn(async () => null), vi.fn(async () => { throw new Error('unavailable'); })]) {
+      const hasLaterPost = vi.fn(async () => false);
+      expect(await inspectFreshAmendmentReviewer(legacyInput, { readRetainedLaunch, hasLaterPost }))
+        .toMatchObject({ state: 'unknown' });
+      expect(hasLaterPost).not.toHaveBeenCalled();
+    }
+  });
+
   it('reclaims a terminal reviewer only when its preview has no later post', async () => {
     const analyzeTranscript = vi.fn(() => ({
       trailingAccountWallTurns: 0,

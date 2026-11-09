@@ -1,6 +1,10 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { isDeepStrictEqual } from 'node:util';
+import { z } from 'zod';
 import {
   MANAGED_CAPABILITY_DISPOSITIONS,
   MANAGED_CAPABILITY_FAMILY_IDS,
@@ -12,10 +16,11 @@ import {
   type ManagedCapabilityMeasuredControl, type RealClientScenario,
 } from '@papercusp/orchestrator/managed-capability-matrix';
 import type { CapabilityClientFamily } from '@papercusp/orchestrator/managed-capability-policy';
-import { listSpecEvidence } from './agent-tools/plans/spec-evidence-store';
+import { listSpecEvidence, readCurrentOperationalArtifacts } from './agent-tools/plans/spec-evidence-store';
 import { listSpecClauses } from './agent-tools/plans/spec-clauses-store';
 import type { PlatformInstrument } from './rubric-instrument-registry';
 import { moduleRepoRoot } from './module-repo-root';
+import { canonicalToolName } from './behaviour-suite/transcript';
 
 export const MANAGED_INVENTORY_EVIDENCE_INSTRUMENT = 'managed-capability:inventory-claim-integrity';
 export const MANAGED_NATIVE_CUTOVER_PLAN = 'managed-agent-capability-contract-and-native-cutover-2026-09-13';
@@ -115,7 +120,7 @@ async function installedClientVersions(): Promise<Partial<Record<CapabilityClien
   const rows = await Promise.all((['claude', 'codex', 'omp'] as const).map(async client => {
     try {
       const result = await execute(client, ['--version'], { timeout: 5000, maxBuffer: 8192 });
-      return [client, result.stdout.trim()] as const;
+      return [client, result.stdout.match(/\d+\.\d+\.\d+(?:[-+][\w.-]+)?/)?.[0] ?? ''] as const;
     } catch { return [client, ''] as const; }
   }));
   return Object.fromEntries(rows.filter(([, version]) => version.length > 0));
@@ -125,6 +130,130 @@ type Evidence = Awaited<ReturnType<typeof listSpecEvidence>>[number];
 type Clauses = Awaited<ReturnType<typeof listSpecClauses>>;
 const object = (value: unknown): Record<string, unknown> | undefined =>
   value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+
+const text = z.string().trim().min(1).max(2048);
+const ordinal = z.number().int().nonnegative();
+const instant = z.string().datetime({ offset: true });
+/** A manual receipt points to original native bytes; it cannot author a live
+ * flag. Reuse the operational artifact reader and enrolled transcript/frontier
+ * readers. IsolatedRuntimeReceipt alone only identifies a private worker. */
+export const managedCapabilityManualReceiptSchema = z.object({
+  schemaVersion: z.literal('managed-capability-manual-observations-v1'),
+  workspaceId: text, harnessSlug: text, planSlug: z.literal(MANAGED_NATIVE_CUTOVER_PLAN),
+  observations: z.array(z.object({
+    bindingId: z.number().int().positive(), scenarioId: text, role: z.enum(['positive', 'refusal']),
+    file: text, caseTitle: text, occurrence: ordinal,
+    identity: z.object({ planSlug: text, specId: text, specRevision: z.number().int().positive(),
+      specFingerprint: text, barHash: text, sourceFingerprint: text, clientVersion: text,
+      runtimeFingerprint: text, environmentFingerprint: text }).strict(),
+    outcome: z.enum(['pass', 'fail']), observedAt: instant, observerOwnerId: text,
+    sideEffects: z.array(z.object({ ref: text, observation: text }).strict()).min(1).max(32),
+    native: z.object({ advSessionId: z.number().int().positive(), nativeSessionId: text,
+      sourceSha256: z.string().regex(/^[a-f0-9]{64}$/), nativeTurnId: text.optional(),
+      nativeMessageId: text.optional(), messageRecordIndex: ordinal.optional(),
+      callRecordIndex: ordinal, resultRecordIndex: ordinal,
+      callContentIndex: ordinal.optional(), resultContentIndex: ordinal.optional() }).strict(),
+    call: z.object({ name: text, arguments: z.string().max(1_048_576),
+      output: z.union([z.string().max(1_048_576), z.array(z.unknown()).max(128)]),
+      isError: z.boolean().nullable(), calledAt: instant, at: instant }).strict(),
+  }).strict()).min(1).max(1000),
+}).strict();
+export type ManagedCapabilityManualObservation = z.infer<typeof managedCapabilityManualReceiptSchema>['observations'][number];
+
+/** Read the host's enrolled home, never a path supplied by the receipt. Native
+ * readers verify exact call/result ancestry, complete bytes and ingest frontier.
+ * Version comes from those same bytes, not today's --version or binder details. */
+export async function readManagedCapabilityNativeObservation(input: { workspaceId: string; harnessSlug: string },
+  observation: ManagedCapabilityManualObservation, client: CapabilityClientFamily, deps: {
+    session?: typeof import('./adv-sessions').getAdvSessionInWorkspace;
+    handle?: typeof import('./native-session-handles').nativeSessionHandleForAdvSession;
+  } = {}): Promise<boolean> {
+  try {
+    const [{ getAdvSessionInWorkspace }, { nativeSessionHandleForAdvSession }, readers, { getOrgPg }] = await Promise.all([
+      import('./adv-sessions'), import('./native-session-handles'), import('./session-transcript-resolvers'), import('@papercusp/db-org'),
+    ]);
+    const session = await (deps.session ?? getAdvSessionInWorkspace)(observation.native.advSessionId, input.workspaceId);
+    if (!session || session.workspaceId !== input.workspaceId || session.harnessSlug !== input.harnessSlug ||
+        session.agent !== client || session.coordOwnerId !== observation.observerOwnerId) return false;
+    const handle = (deps.handle ?? nativeSessionHandleForAdvSession)(session), native = observation.native;
+    const scope = { workspaceId: input.workspaceId, nativeSessionId: native.nativeSessionId,
+      callRecordIndex: native.callRecordIndex, resultRecordIndex: native.resultRecordIndex };
+    let pair: Awaited<ReturnType<typeof readers.readClosedCodexTurnToolResult>> |
+      Awaited<ReturnType<typeof readers.readClosedClaudeMessageToolResult>> = null;
+    if (handle?.backend === 'codex' && handle.rolloutId === native.nativeSessionId && native.nativeTurnId) {
+      pair = await readers.readClosedCodexTurnToolResult(getOrgPg().sql, { ...scope,
+        codexHome: handle.codexHome, nativeTurnId: native.nativeTurnId });
+    } else if (handle?.backend === 'claude' && handle.sessionId === native.nativeSessionId && handle.configDir &&
+        native.nativeMessageId && native.messageRecordIndex !== undefined && native.callContentIndex !== undefined &&
+        native.resultContentIndex !== undefined) {
+      pair = await readers.readClosedClaudeMessageToolResult(getOrgPg().sql, { ...scope,
+        claudeConfigDir: handle.configDir, nativeMessageId: native.nativeMessageId,
+        messageRecordIndex: native.messageRecordIndex, sourceSha256: native.sourceSha256,
+        callContentIndex: native.callContentIndex, resultContentIndex: native.resultContentIndex });
+    }
+    if (!pair || !Number.isFinite(Date.parse(session.startedAt)) ||
+        session.endedAt && !Number.isFinite(Date.parse(session.endedAt)) || pair.sourceSha256 !== native.sourceSha256 ||
+        !isDeepStrictEqual(observation.call, { name: pair.name, arguments: pair.arguments, output: pair.output,
+          isError: pair.isError, calledAt: pair.calledAt, at: pair.at }) ||
+        Date.parse(pair.calledAt) < Date.parse(session.startedAt) ||
+        session.endedAt && Date.parse(pair.at) > Date.parse(session.endedAt)) return false;
+    // Bracket version extraction with the canonical reader's content digest.
+    const bytes = await readFile(pair.file);
+    if (bytes.length > 16 * 1024 * 1024 || createHash('sha256').update(bytes).digest('hex') !== pair.sourceSha256) return false;
+    const records = bytes.toString('utf8').trimEnd().split('\n').map(line => JSON.parse(line));
+    const versions = client === 'codex' ? records.filter(r => r.type === 'session_meta' && r.payload?.id === native.nativeSessionId)
+      .map(r => r.payload.cli_version) : records.filter(r => r.sessionId === native.nativeSessionId).map(r => r.version).filter(Boolean);
+    return versions.length > 0 && versions.every(v => v === observation.identity.clientVersion);
+  } catch { return false; }
+}
+
+/** Join a separately measured manual artifact to the exact canonical case and
+ * native call. A binding tag, generic operational run or isolated worker cannot
+ * qualify itself. Duplicate/conflicting receipts refuse the whole control. */
+export async function qualifyManagedCapabilityNativeControls(input: { workspaceId: string; harnessSlug: string },
+  rows: readonly Evidence[], controls: readonly ManagedCapabilityMeasuredControl[], deps: {
+    artifacts?: typeof readCurrentOperationalArtifacts;
+    native?: typeof readManagedCapabilityNativeObservation;
+  } = {}): Promise<ManagedCapabilityMeasuredControl[]> {
+  const artifacts = await (deps.artifacts ?? readCurrentOperationalArtifacts)(input.workspaceId, input.harnessSlug, rows);
+  const byId = new Map(rows.map(row => [row.id, row]));
+  const nativeKeys = new Map<number, string>();
+  const qualified = await Promise.all(controls.map(async (control, index) => {
+    const row = byId.get(control.ref.bindingId), artifactId = row?.details.nativeObservationArtifactBindingId;
+    const artifactRow = typeof artifactId === 'number' ? byId.get(artifactId) : undefined;
+    const read = typeof artifactId === 'number' ? artifacts.get(artifactId) : undefined;
+    if (!row || control.currentness !== 'current' || control.withdrawn || control.outcome === 'unknown' ||
+        !artifactRow || artifactRow.withdrawal || artifactRow.currentness.overall !== 'current' ||
+        !read || 'error' in read || !read.measuredAtCommit) return { ...control, live: false };
+    const parsed = managedCapabilityManualReceiptSchema.safeParse(read.artifact);
+    if (!parsed.success || parsed.data.workspaceId !== input.workspaceId || parsed.data.harnessSlug !== input.harnessSlug ||
+        parsed.data.planSlug !== row.planSlug) return { ...control, live: false };
+    const receipts = parsed.data.observations.filter(o => o.bindingId === row.id &&
+      o.file === control.ref.file && o.caseTitle === control.ref.caseTitle && o.occurrence === control.ref.occurrence);
+    const receipt = receipts.length === 1 ? receipts[0] : undefined;
+    const execution = row.testRunExecution;
+    const start = Date.parse(execution?.startedAt ?? ''), end = Date.parse(execution?.finishedAt ?? '');
+    const authorities = MANAGED_CAPABILITY_DISPOSITIONS.find(d => d.family === control.family)?.managedAuthorities ?? [];
+    if (!receipt || receipt.scenarioId !== control.scenarioId || receipt.role !== control.role ||
+        !isDeepStrictEqual(receipt.identity, control.identity) || receipt.outcome !== control.outcome ||
+        receipt.observedAt !== control.observedAt || artifactRow.createdBy !== receipt.observerOwnerId ||
+        !Number.isFinite(start) || !Number.isFinite(end) || start > end ||
+        Date.parse(receipt.call.calledAt) < start || Date.parse(receipt.call.at) > end ||
+        Date.parse(receipt.call.at) < Date.parse(receipt.call.calledAt) ||
+        !authorities.some(name => name.includes(':') && canonicalToolName(name) === canonicalToolName(receipt.call.name))) {
+      return { ...control, live: false };
+    }
+    const live = await (deps.native ?? readManagedCapabilityNativeObservation)(input, receipt, control.client);
+    if (live) nativeKeys.set(index, JSON.stringify([control.client, receipt.native.nativeSessionId,
+      receipt.native.callRecordIndex, receipt.native.resultRecordIndex,
+      receipt.native.callContentIndex ?? null, receipt.native.resultContentIndex ?? null]));
+    return { ...control, live };
+  }));
+  const counts = new Map<string, number>();
+  for (const key of nativeKeys.values()) counts.set(key, (counts.get(key) ?? 0) + 1);
+  // Two binder refs cannot turn one original call into a positive/refusal pair.
+  return qualified.map((control, i) => ({ ...control, live: control.live && counts.get(nativeKeys.get(i) ?? '') === 1 }));
+}
 
 /** The tag selects a recorded observation; it cannot supply the case's verdict,
  * source/spec/environment pins, runtime identity or execution time. Those are
@@ -179,6 +308,8 @@ export async function measureManagedCapabilityInventory(input: { workspaceId: st
   inventory?: readonly ManagedCapabilityDisposition[];
   scenarios?: readonly RealClientScenario[];
   baseline?: () => ReturnType<typeof retainedInventoryHistory>;
+  artifacts?: typeof readCurrentOperationalArtifacts;
+  native?: typeof readManagedCapabilityNativeObservation;
   now?: Date;
 } = {}) {
   const inventory = deps.inventory ?? MANAGED_CAPABILITY_DISPOSITIONS;
@@ -195,7 +326,8 @@ export async function measureManagedCapabilityInventory(input: { workspaceId: st
   ]);
   const byId = new Map(history.map(row => [row.id, row]));
   for (const row of active) byId.set(row.id, row);
-  const observations = managedCapabilityControlsFromEvidence([...byId.values()], clauses, scenarios);
+  const observations = await qualifyManagedCapabilityNativeControls(input, [...byId.values()],
+    managedCapabilityControlsFromEvidence([...byId.values()], clauses, scenarios), deps);
   const report = compareManagedCapabilityInventory({ scenarios, inventory, observations, clientVersions,
     previousInventory: baseline?.inventory, now: deps.now });
   const missingDetectors = MANAGED_INVENTORY_REQUIRED_DETECTORS.filter(file => !active.some(row =>
