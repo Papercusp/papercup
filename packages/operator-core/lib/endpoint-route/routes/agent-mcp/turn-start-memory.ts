@@ -32,7 +32,10 @@
  * `auth: 'loopback'` — the hook runs on this box.
  */
 import { defineTool } from '@papercusp/agent-mcp';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { computeTurnDoors, packContextCandidates, type ContextCandidate } from '../../../context-doors';
+import { getDoorConstantsSync } from '../../../context-doors-config';
+import { saveContextPackingReceipt, loadContextPackingReceipt, pageContextPackingReceipt } from '../../../context-packing-receipts';
 import type { ActivationRevision } from '../../../session-activation';
 import type { LaunchGovernanceTarget } from '../../../governance-policy/session-governance';
 import type { PreparedMemoryBlock, MemoryFragmentOffer, MemoryEmissionConfirmation } from '../../../memory/session-epoch-ledger';
@@ -204,6 +207,29 @@ const TURN_START_BUDGET_CHARS = (() => {
   return Number.isFinite(raw) && raw > 0 ? raw : 4_000;
 })();
 
+/** Reuse the configured injection door, converting its labelled token proxy
+ * allocation once into a byte ceiling. The final body is then measured in
+ * UTF-8, rather than treating JS string length as bytes. */
+export function contextInjectionBudgetBytes(ownerId: string): number {
+  return computeTurnDoors(0, getDoorConstantsSync(ownerId)).injections * 4;
+}
+
+export function turnStartContextCandidates(parts: {
+  control: string; loop: string; orientation: string; facts: string; memory: string; personal: string; packages?: string;
+}): ContextCandidate[] {
+  const unit = (sourceRef: string, cls: ContextCandidate['class'], required: boolean, text: string): ContextCandidate => ({
+    sourceRef, class: cls, required, text,
+    revision: createHash('sha256').update(text).digest('hex'),
+  });
+  return [unit('turn-start:control', 'control', true, parts.control),
+    unit('turn-start:loop-checkpoint', 'loop', true, parts.loop),
+    unit('turn-start:owner-orientation', 'owner', true, parts.orientation),
+    unit('turn-start:binding-facts', 'policy', true, parts.facts),
+    unit('turn-start:memory', 'memory', false, parts.memory),
+    unit('turn-start:granted-sources', 'granted', false, parts.personal),
+    unit('turn-start:packages', 'package', false, parts.packages ?? '')];
+}
+
 const turnStartMemory = defineTool({
   method: 'POST',
   path: '/agent-mcp/turn-start-memory',
@@ -236,6 +262,8 @@ const turnStartMemory = defineTool({
       wallMs?: number;
       /** Opaque per-hook request id; never derived from prompt text. */
       turnStartRequestId?: string;
+      /** Out-of-band evidence read. It emits no model context and stages nothing. */
+      packingDiagnostic?: { attemptId: string; offset?: number };
     };
     let turnStartRequestId: string | null = null;
     let ambientOutcome: TurnStartAmbientOutcome = 'unknown';
@@ -350,6 +378,15 @@ const turnStartMemory = defineTool({
       if (!ambientAllowed) {
         await markerOutcomePromise;
         return responseWithOutcome('');
+      }
+      if (body.packingDiagnostic) {
+        const stored = await loadContextPackingReceipt({ workspaceId, ownerId: owner, harness: harness || 'operator',
+          port: 'turn-start', client: body.client ?? '' }, body.packingDiagnostic.attemptId);
+        await markerOutcomePromise;
+        if (!stored) return Response.json({ ok: false, error: 'packing receipt not found' }, { status: 404 });
+        return new Response(pageContextPackingReceipt(stored, body.packingDiagnostic.offset), {
+          headers: { 'content-type': 'application/json; charset=utf-8' },
+        });
       }
 
       /**
@@ -849,7 +886,7 @@ const turnStartMemory = defineTool({
       // 2.5s wall in the hook, so a third section must not add serial latency.
       // Flag-gated with a fail-OPEN default, and fail-soft internally, so the
       // worst case is the pre-P-004 `[control, memory]` composition unchanged.
-      const orientationPromise = (async (): Promise<{ block: string; deliveryToken: string | null }> => {
+      const orientationPromise = (async (): Promise<import('../../../turn-start-orientation').TurnStartOrientationDelivery> => {
         const none = { block: '', deliveryToken: null };
         try {
           const [{ getFlag }, { FLAGS }, { buildTurnStartOrientationBlock }] = await Promise.all([
@@ -862,6 +899,7 @@ const turnStartMemory = defineTool({
           return await buildTurnStartOrientationBlock({
             ownerId: owner,
             workspaceId,
+            deferStaging: true,
             ...('confirmedDelivery' in body
               ? {
                   confirmedDeliveryToken:
@@ -1034,7 +1072,7 @@ const turnStartMemory = defineTool({
             `(elapsedMs=${Date.now() - arrivedAt} wallMs=${String(body.wallMs)} client=${String(body.client ?? '')})`,
         );
       }
-      let deliveryToken = orientation.deliveryToken;
+      let deliveryToken: string | null = null;
       let orientationBlock = orientation.block;
       if (packages.classes.length > 0) {
         try {
@@ -1042,10 +1080,26 @@ const turnStartMemory = defineTool({
             await import('../../../agent-identities/package-orientation-classes');
           orientationBlock = appendPackageOrientationRows(orientation.block, packages.classes).block;
         } catch {
-          // The platform block is already staged; it is delivered unchanged.
+          // Keep the platform preparation unchanged.
         }
       }
-      if (packages.receipt) {
+      // Package rows append to orientation. If a renderer rewrites the base,
+      // keep that composite as a required whole unit rather than infer a split.
+      const appendedPackages = orientationBlock.startsWith(orientation.block)
+        ? orientationBlock.slice(orientation.block.length) : '';
+      const candidates = turnStartContextCandidates({ control: control.text, loop: loopCheckpoint,
+        orientation: appendedPackages ? orientation.block : orientationBlock,
+        facts: factBodies.text, memory, personal, packages: appendedPackages });
+      const packed = packContextCandidates({ attemptId: turnStartRequestId ?? randomUUID(),
+        budgetBytes: contextInjectionBudgetBytes(owner), candidates });
+      const selected = (index: number) => packed.selectedIndexes.includes(index);
+      // Persist before staging or emission. A failed evidence write fails closed
+      // through the endpoint's existing silent-response contract.
+      const packingReceipt = await saveContextPackingReceipt({ workspaceId, ownerId: owner,
+        harness: harness || 'operator', port: 'turn-start', client: body.client ?? '' }, packed.receipt);
+      if (selected(2)) deliveryToken = orientation.stageDelivery
+        ? await orientation.stageDelivery() : orientation.deliveryToken;
+      if (packages.receipt && (selected(6) || (!appendedPackages && selected(2)))) {
         const token = deliveryToken ?? randomUUID();
         try {
           const { stage } = await import('../../../agent-tools/coordination/read-cursors');
@@ -1063,7 +1117,7 @@ const turnStartMemory = defineTool({
           // An unstaged receipt only loses provenance; the rows are still delivered.
         }
       }
-      if (control.candidate) {
+      if (control.candidate && selected(0)) {
         const token = deliveryToken ?? randomUUID();
         try {
           const { stage } = await import('../../../agent-tools/coordination/read-cursors');
@@ -1075,7 +1129,7 @@ const turnStartMemory = defineTool({
         }
       }
       let factBodyOffers: import('../../../agent-facts/cells').FactBodyOffer[] = [];
-      if (factBodies.offers.length > 0) {
+      if (factBodies.offers.length > 0 && selected(3)) {
         const token = deliveryToken ?? randomUUID();
         try {
           const { stageNativeFactBodyDelivery } = await import('../../../agent-facts/cells');
@@ -1086,7 +1140,7 @@ const turnStartMemory = defineTool({
       }
       let memoryFragmentOffers: MemoryFragmentOffer[] = [];
       const preparedMemory = memoryPreparation.value;
-      if (memory && preparedMemory && preparedMemory.text === memory && preparedMemory.fragments.length) {
+      if (selected(4) && memory && preparedMemory && preparedMemory.text === memory && preparedMemory.fragments.length) {
         const token = deliveryToken ?? randomUUID();
         try {
           const [{ stageMemoryEmission }, { getOrgPg }] = await Promise.all([
@@ -1113,7 +1167,8 @@ const turnStartMemory = defineTool({
       await markerOutcomePromise;
       return Response.json({
         ok: true,
-        text: [control.text, loopCheckpoint, orientationBlock, factBodies.text, memory, personal].filter(Boolean).join('\n\n'),
+        text: packed.text,
+        packingReceipt,
         ...(deliveryToken ? { deliveryToken } : {}),
         ...(factBodyOffers.length ? { factBodyOffers } : {}),
         ...(memoryFragmentOffers.length ? { memoryFragmentOffers } : {}),

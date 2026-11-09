@@ -4,7 +4,7 @@
 import { createHash } from 'node:crypto';
 import type { ContextPackingReceipt } from './context-doors';
 import { activeWorkspaceId } from './workspace-registry';
-import { compareAndSwapTextArtifact, loadImmutableTextArtifact, loadTextArtifact, saveImmutableTextArtifact } from './text-artifacts';
+import { claimImmutableTextArtifact, loadImmutableTextArtifact, loadImmutableTextArtifactClaim, saveImmutableTextArtifact } from './text-artifacts';
 
 export interface ContextPackingScope {
   workspaceId: string;
@@ -18,33 +18,42 @@ export interface StoredContextPackingReceipt {
   receipt: ContextPackingReceipt;
 }
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
+const normalizedScope = (scope: ContextPackingScope): ContextPackingScope => ({
+  workspaceId: scope.workspaceId, ownerId: scope.ownerId, harness: scope.harness, port: scope.port, client: scope.client,
+});
 function indexPath(scope: ContextPackingScope, attemptId: string): string {
   if (!scope.ownerId || !scope.harness || scope.workspaceId !== activeWorkspaceId() ||
       !/^[A-Za-z0-9_-]{1,80}$/.test(attemptId)) throw new Error('context_packing_scope_invalid');
-  return `evidence/context-packing/${hash(JSON.stringify(scope))}/${attemptId}.json`;
+  return `evidence/context-packing/${hash(JSON.stringify(normalizedScope(scope)))}/${attemptId}.json`;
 }
 
 /** Immutable complete candidate population plus an attempt-keyed create-only
  * index. Same-attempt retries are idempotent; conflicting evidence is refused. */
 export async function saveContextPackingReceipt(scope: ContextPackingScope, receipt: ContextPackingReceipt) {
   const path = indexPath(scope, receipt.attemptId);
-  const content = JSON.stringify({ scope, receipt } satisfies StoredContextPackingReceipt);
+  const content = JSON.stringify({ scope: normalizedScope(scope), receipt } satisfies StoredContextPackingReceipt);
   const artifact = await saveImmutableTextArtifact(scope.harness, content);
   const pointer = JSON.stringify({ sha256: artifact.sha256 });
-  if (!await compareAndSwapTextArtifact(scope.harness, path, null, pointer) &&
-      await loadTextArtifact(scope.harness, path) !== pointer) throw new Error('context_packing_attempt_conflict');
-  return { attemptId: receipt.attemptId, path, ...artifact };
+  try {
+    await claimImmutableTextArtifact(scope.harness, path, pointer);
+  } catch (error) {
+    if (error instanceof Error && error.message === 'text_artifact_immutable_claim_conflict') {
+      throw new Error('context_packing_attempt_conflict');
+    }
+    throw error;
+  }
+  return { attemptId: receipt.attemptId, path: `immutable/claims/${hash(path)}.json`, ...artifact };
 }
 
 export async function loadContextPackingReceipt(scope: ContextPackingScope, attemptId: string): Promise<StoredContextPackingReceipt | null> {
   const path = indexPath(scope, attemptId);
-  const pointer = await loadTextArtifact(scope.harness, path);
+  const pointer = await loadImmutableTextArtifactClaim(scope.harness, path);
   if (!pointer) return null;
   const { sha256 } = JSON.parse(pointer);
   const content = await loadImmutableTextArtifact(scope.harness, sha256);
   if (!content) throw new Error('context_packing_artifact_missing');
   const stored = JSON.parse(content) as StoredContextPackingReceipt;
-  if (JSON.stringify(stored.scope) !== JSON.stringify(scope) || stored.receipt.attemptId !== attemptId) {
+  if (JSON.stringify(normalizedScope(stored.scope)) !== JSON.stringify(normalizedScope(scope)) || stored.receipt.attemptId !== attemptId) {
     throw new Error('context_packing_artifact_scope_mismatch');
   }
   return stored;
@@ -59,10 +68,11 @@ export function pageContextPackingReceipt(stored: StoredContextPackingReceipt, o
     throw new Error('context_packing_diagnostic_page_invalid');
   }
   const body = Buffer.from(JSON.stringify(stored), 'utf8');
+  const sha256 = hash(body.toString('utf8'));
   if (offset > body.length) throw new Error('context_packing_diagnostic_offset_invalid');
   const render = (length: number) => JSON.stringify({
     schemaVersion: 'context-packing-page-v1', attemptId: stored.receipt.attemptId,
-    encoding: 'base64', sha256: hash(body.toString('utf8')), offset, totalBytes: body.length,
+    encoding: 'base64', sha256, offset, totalBytes: body.length,
     nextOffset: offset + length < body.length ? offset + length : null,
     data: body.subarray(offset, offset + length).toString('base64'),
   });

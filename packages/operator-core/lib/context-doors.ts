@@ -187,7 +187,7 @@ export interface ContextPackingReceipt {
 
 const CONTEXT_CLASS_ORDER: Record<ContextCandidate['class'], number> = {
   control: 0, owner: 1, correction: 2, policy: 3, loop: 4, orientation: 5,
-  failure: 6, memory: 7, corpus: 8, code: 9, granted: 10, package: 11, ambient: 12,
+  failure: 6, code: 7, memory: 8, corpus: 9, granted: 10, package: 11, ambient: 12,
 };
 
 /** The budget is UTF-8 bytes of the final model-context body, including its
@@ -235,4 +235,46 @@ export function packContextCandidates(input: {
     tokenEstimate: { kind: 'token-proxy-v1', value: Math.ceil(contextBytes / 4), billedTokens: 'UNKNOWN' },
     candidates: rows,
   } };
+}
+
+/** Evidence validation checks the actual bytes and frozen source population;
+ * it does not re-run the selection algorithm or treat a receipt as delivery. */
+export function validateContextPackingResult(result: ReturnType<typeof packContextCandidates>,
+  expected: Parameters<typeof packContextCandidates>[0]): { valid: boolean; errors: string[] } {
+  const errors: string[] = [];
+  const { receipt, selectedIndexes, text } = result;
+  const bytes = Buffer.byteLength(text, 'utf8');
+  const { prefix = '', separator = '\n\n', suffix = '' } = expected.framing ?? {};
+  if (receipt.schemaVersion !== 'context-packing-v1' || receipt.attemptId !== expected.attemptId ||
+      receipt.budgetBytes !== expected.budgetBytes) errors.push('attempt-identity');
+  if (receipt.contextBytes !== bytes || bytes > expected.budgetBytes) errors.push('context-bytes');
+  if (receipt.tokenEstimate.kind !== 'token-proxy-v1' || receipt.tokenEstimate.value !== Math.ceil(bytes / 4) ||
+      receipt.tokenEstimate.billedTokens !== 'UNKNOWN') errors.push('token-estimate');
+  if (receipt.candidates.length !== expected.candidates.length) errors.push('candidate-population');
+  const selected = new Set(selectedIndexes);
+  if (selected.size !== selectedIndexes.length || selectedIndexes.some(index => !Number.isInteger(index) ||
+      index < 0 || index >= expected.candidates.length)) errors.push('selected-population');
+  const rendered = selectedIndexes.length ? prefix + selectedIndexes
+    .map(index => expected.candidates[index]?.text ?? '').join(separator) + suffix : '';
+  if (rendered !== text) errors.push('final-framing');
+  for (let index = 0; index < expected.candidates.length; index++) {
+    const source = expected.candidates[index], row = receipt.candidates[index];
+    if (!row || row.index !== index || row.sourceRef !== source.sourceRef || row.revision !== source.revision ||
+        row.class !== source.class || row.required !== source.required || row.bytes !== Buffer.byteLength(source.text, 'utf8') ||
+        row.fragmentSha256 !== createHash('sha256').update(source.text, 'utf8').digest('hex')) {
+      errors.push(`candidate-identity:${index}`); continue;
+    }
+    const reason = !source.text ? 'empty' : receipt.status === 'mandatory-overflow' ? 'mandatory-overflow'
+      : selected.has(index) ? 'selected' : 'budget';
+    if (row.reason !== reason) errors.push(`candidate-reason:${index}`);
+    if (receipt.status === 'packed' && source.required && source.text && !selected.has(index)) errors.push(`required-omitted:${index}`);
+  }
+  const required = expected.candidates.filter(row => row.required && row.text);
+  const requiredBytes = required.length ? Buffer.byteLength(prefix + required.map(row => row.text).join(separator) + suffix, 'utf8') : 0;
+  if (receipt.status === 'mandatory-overflow') {
+    if (text || selectedIndexes.length || requiredBytes <= expected.budgetBytes) errors.push('mandatory-overflow');
+  } else if (receipt.status !== 'packed' || requiredBytes > expected.budgetBytes) errors.push('packing-status');
+  const firstOptional = selectedIndexes.findIndex(index => !expected.candidates[index]?.required);
+  if (firstOptional >= 0 && selectedIndexes.slice(firstOptional).some(index => expected.candidates[index]?.required)) errors.push('required-priority');
+  return { valid: errors.length === 0, errors };
 }

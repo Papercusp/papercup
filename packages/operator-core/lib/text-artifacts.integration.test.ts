@@ -25,6 +25,9 @@ import { join } from 'node:path';
 import { createArtifactPreparationStore, openBoundPreparationLedger } from '../../../scripts/lib/source-path-census.mjs';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import type { UnifiedToolContext } from '@papercusp/tooldef';
+import { packContextCandidates } from './context-doors';
+import { loadContextPackingReceipt, pageContextPackingReceipt, saveContextPackingReceipt,
+  type ContextPackingScope } from './context-packing-receipts';
 
 const WS = 'ws-art';
 const h = vi.hoisted(() => ({ db: undefined as unknown, sql: undefined as unknown }));
@@ -95,6 +98,65 @@ const wsOf = async (slug: string, key: string) =>
   (await rootSql<{ workspace_id: string }[]>`SELECT workspace_id FROM harness_shared.harness_text_artifacts WHERE harness_slug=${slug} AND rel_path=${key}`)[0]?.workspace_id;
 
 describe('text-artifacts (drizzle, PG)', () => {
+  it.each([0, 1])('retains the complete packing attempt outside a B=%i context, including immutable lookup and diagnostic pages', async budgetBytes => {
+    const scope: ContextPackingScope = { workspaceId: WS, ownerId: 'receipt-owner', harness: 'web', port: 'turn-start', client: 'codex' };
+    const receipt = packContextCandidates({ attemptId: `packing-${budgetBytes}`, budgetBytes, candidates: [
+      { sourceRef: 'control:revision-1', revision: 'r1', class: 'control', required: true, text: '⟦CTRL⟧' },
+      ...Array.from({ length: 24 }, (_, i) => ({ sourceRef: `memory:${i}:` + '字'.repeat(150), revision: 'r1',
+        class: 'memory' as const, required: false, text: `- complete condition ${i}` })),
+    ] }).receipt;
+    const [first, retry] = await Promise.all([
+      saveContextPackingReceipt(scope, receipt), saveContextPackingReceipt(scope, receipt),
+    ]);
+    expect(first).toEqual(retry);
+    expect(receipt.contextBytes).toBe(0);
+    expect(receipt.status).toBe('mandatory-overflow');
+    const stored = await loadContextPackingReceipt(scope, receipt.attemptId);
+    expect(stored).toEqual({ scope, receipt });
+    expect(await wsOf('web', first.path)).toBe(WS);
+    expect(await wsOf('web', first.relPath)).toBe(WS);
+    for (const path of [first.path, first.relPath]) {
+      await expect(saveTextArtifact('web', path, 'replacement')).rejects.toThrow('immutable_namespace');
+      await expect(appendTextArtifact('web', path, 'append')).rejects.toThrow('immutable_namespace');
+      await expect(deleteTextArtifact('web', path)).rejects.toThrow('immutable_namespace');
+      await expect(compareAndSwapTextArtifact('web', path, null, 'replacement')).rejects.toThrow('immutable_namespace');
+    }
+    const chunks: Buffer[] = [];
+    let offset: number | null = 0;
+    do {
+      const text = pageContextPackingReceipt(stored!, offset);
+      expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(6000);
+      const page = JSON.parse(text);
+      expect(page.offset).toBe(offset);
+      chunks.push(Buffer.from(page.data, 'base64'));
+      if (page.nextOffset !== null) expect(page.nextOffset).toBeGreaterThan(offset!);
+      offset = page.nextOffset;
+    } while (offset !== null);
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(JSON.parse(Buffer.concat(chunks).toString('utf8'))).toEqual(stored);
+    expect(await loadContextPackingReceipt({ ...scope, ownerId: 'another-owner' }, receipt.attemptId)).toBeNull();
+    expect(await loadContextPackingReceipt({ ...scope, port: 'mid-turn' }, receipt.attemptId)).toBeNull();
+    expect(await loadContextPackingReceipt({ ...scope, client: 'claude' }, receipt.attemptId)).toBeNull();
+    await expect(loadContextPackingReceipt({ ...scope, workspaceId: 'foreign' }, receipt.attemptId)).rejects.toThrow('scope_invalid');
+  });
+
+  it('keeps one packing attempt winner under conflicting concurrent writes and detects corrupt index bytes', async () => {
+    const scope: ContextPackingScope = { workspaceId: WS, ownerId: 'receipt-race', harness: 'web', port: 'mid-turn', client: 'omp' };
+    const make = (budgetBytes: number) => packContextCandidates({ attemptId: 'same-attempt', budgetBytes, candidates: [] }).receipt;
+    const outcomes = await Promise.allSettled([saveContextPackingReceipt(scope, make(0)), saveContextPackingReceipt(scope, make(1))]);
+    const wins = outcomes.filter(row => row.status === 'fulfilled');
+    const losses = outcomes.filter(row => row.status === 'rejected');
+    expect(wins).toHaveLength(1);
+    expect(losses).toHaveLength(1);
+    expect((losses[0] as PromiseRejectedResult).reason.message).toBe('context_packing_attempt_conflict');
+    const winner = (wins[0] as PromiseFulfilledResult<Awaited<ReturnType<typeof saveContextPackingReceipt>>>).value;
+    const stored = await loadContextPackingReceipt(scope, 'same-attempt');
+    expect(createHash('sha256').update(JSON.stringify(stored)).digest('hex')).toBe(winner.sha256);
+    await rootSql`UPDATE harness_shared.harness_text_artifacts SET content=${JSON.stringify({ sha256: '0'.repeat(64), content: 'tampered' })}
+      WHERE harness_slug='web' AND rel_path=${winner.path}`;
+    await expect(loadContextPackingReceipt(scope, 'same-attempt')).rejects.toThrow('immutable_corrupt');
+  });
+
   it('captures signed full host discovery through real PG without granting population closure', async () => {
     const q = await import('./coverage-census/security-qualification');
     const runtime = await import('./observability/runtime');
