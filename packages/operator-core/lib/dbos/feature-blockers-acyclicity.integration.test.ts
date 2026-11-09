@@ -25,7 +25,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 
-const { getFeatureBlockers, syncFeatureBlockEdges, detectFeatureBlockGraphCycle } =
+const { getFeatureBlockers, syncFeatureBlockEdges, detectFeatureBlockGraphCycle, guardFeatureBlockEdgeAcyclic } =
   await import('./feature-blockers-edges');
 
 let db: FreshPgDb;
@@ -102,5 +102,28 @@ describe('syncFeatureBlockEdges enforces acyclicity (P-003 / F4) — real PG', (
   it('REJECTS a missing executable endpoint through canonical admission', async () => {
     await expect(syncFeatureBlockEdges(H, 'A', ['MISSING'])).rejects.toThrow(/does not resolve|missing/i);
     expect(sortMap(await getFeatureBlockers(H))).toEqual({});
+  });
+
+  it('admits a safe link beside a legacy cycle while still rejecting a new cycle without writes', async () => {
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, status, item_kind, created_ts, updated_ts, payload)
+      VALUES ('default', ${H}, 'D', 'D', 'open', 'feature', 0, 0, '{}'::jsonb)`;
+    // Fixture-only legacy corruption: ordinary admission cannot create this cycle.
+    await db.sql`
+      INSERT INTO harness_shared.work_item_deps
+        (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type)
+      VALUES
+        ('default', 'feature', ${`${H}#A`}, 'feature', ${`${H}#B`}, 'blocks'),
+        ('default', 'feature', ${`${H}#B`}, 'feature', ${`${H}#A`}, 'blocks')`;
+
+    expect(await guardFeatureBlockEdgeAcyclic(`${H}#D`, `${H}#C`)).toBeNull();
+    await syncFeatureBlockEdges(H, 'C', ['D']);
+    const admitted = { A: ['B'], B: ['A'], C: ['D'] };
+    expect(sortMap(await getFeatureBlockers(H))).toEqual(admitted);
+
+    expect(await guardFeatureBlockEdgeAcyclic(`${H}#C`, `${H}#D`)).toMatch(/dependency cycle/);
+    await expect(syncFeatureBlockEdges(H, 'D', ['C'])).rejects.toThrow(/dependency cycle/);
+    expect(sortMap(await getFeatureBlockers(H))).toEqual(admitted);
   });
 });

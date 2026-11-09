@@ -359,7 +359,7 @@ describe('scorecards:emit spec-test-adequacy replay guard', () => {
       { dispatchTool },
     );
 
-    expect(result).toMatchObject({ ok: true, created: true, issueId: 'EI-1' });
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true, created: true, issueId: 'EI-1' });
     expect(dispatchTool).toHaveBeenCalledWith('plans:evaluate-spec-test-adequacy', {
       ...RERUN_RECIPE.args,
       evaluatorBuild: driftedRecipe.evaluatorBuild,
@@ -374,7 +374,7 @@ describe('scorecards:emit spec-test-adequacy replay guard', () => {
 
     const result = await emitScorecard(emitArgs(), { createdBy: 'su-grader' }, { dispatchTool });
 
-    expect(result).toMatchObject({ ok: true, created: true, issueId: 'EI-1' });
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true, created: true, issueId: 'EI-1' });
     expect(dispatchTool).toHaveBeenCalledWith('plans:evaluate-spec-test-adequacy', {
       ...RERUN_RECIPE.args,
       detail: 'summary',
