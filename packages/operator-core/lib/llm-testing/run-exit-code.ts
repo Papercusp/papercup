@@ -15,6 +15,26 @@
 /** What one scenario did, as far as the exit code is concerned. */
 export type ScenarioOutcome = 'failed' | 'executed' | 'skipped';
 
+type ScenarioReport = {
+  verdict: 'pass' | 'fail' | 'preview' | 'errored';
+  runs: readonly { status: 'passed' | 'failed' | 'errored' }[];
+};
+
+/** Aggregate rubric policy may tolerate a failed repeat; CI does not. */
+export function scenarioExecutionVerdict(report: ScenarioReport): ScenarioReport['verdict'] {
+  if (report.verdict === 'errored' || report.runs.some((run) => run.status === 'errored')) return 'errored';
+  if (report.verdict === 'fail' || report.runs.some((run) => run.status === 'failed')) return 'fail';
+  return report.verdict;
+}
+
+/** Keep the visible headline on the same strict outcome as the process exit. */
+export function scenarioReportHeadline(report: ScenarioReport): string {
+  const verdict = scenarioExecutionVerdict(report);
+  const icon = verdict === 'pass' ? '✓' : verdict === 'preview' ? '○' : verdict === 'errored' ? '!' : '✗';
+  const aggregate = verdict === report.verdict ? '' : ` aggregateVerdict=${report.verdict}`;
+  return `  ${icon} verdict=${verdict}${aggregate} (${report.runs.length} run${report.runs.length === 1 ? '' : 's'})`;
+}
+
 export const LLM_TEST_EXIT_OK = 0;
 export const LLM_TEST_EXIT_FAILED = 1;
 /** Distinct from 1 so a caller can tell an un-run suite from a failing one. */

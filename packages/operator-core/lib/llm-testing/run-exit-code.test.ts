@@ -6,9 +6,40 @@ import {
   LLM_TEST_EXIT_OK,
   llmTestExitCode,
   runSummaryLine,
+  scenarioExecutionVerdict,
+  scenarioReportHeadline,
   tallyOutcomes,
   type ScenarioOutcome,
 } from './run-exit-code';
+
+describe('scenario report headline and CI outcome', () => {
+  it.each(['failed', 'errored'] as const)('does not label an aggregate pass green when a repeat is %s', (status) => {
+    const report = { verdict: 'pass' as const, runs: [{ status: 'passed' as const }, { status }, { status: 'passed' as const }] };
+    expect(scenarioExecutionVerdict(report)).toBe(status === 'failed' ? 'fail' : 'errored');
+    expect(scenarioReportHeadline(report)).toBe(status === 'failed'
+      ? '  ✗ verdict=fail aggregateVerdict=pass (3 runs)'
+      : '  ! verdict=errored aggregateVerdict=pass (3 runs)');
+    expect(llmTestExitCode([scenarioExecutionVerdict(report) === 'pass' ? 'executed' : 'failed'])).toBe(1);
+  });
+
+  it.each(['pass', 'preview'] as const)('preserves a healthy %s label', (verdict) => {
+    const report = { verdict, runs: [{ status: 'passed' as const }] };
+    expect(scenarioExecutionVerdict(report)).toBe(verdict);
+    expect(scenarioReportHeadline(report)).toBe(`  ${verdict === 'pass' ? '✓' : '○'} verdict=${verdict} (1 run)`);
+  });
+
+  it('preserves preview as the aggregate label while showing its failed execution', () => {
+    const report = { verdict: 'preview' as const, runs: [{ status: 'failed' as const }] };
+    expect(scenarioReportHeadline(report)).toBe('  ✗ verdict=fail aggregateVerdict=preview (1 run)');
+    expect(scenarioExecutionVerdict(report)).toBe('fail');
+  });
+
+  it('retains an aggregate failure even if individual run statuses passed', () => {
+    const report = { verdict: 'fail' as const, runs: [{ status: 'passed' as const }] };
+    expect(scenarioExecutionVerdict(report)).toBe('fail');
+    expect(scenarioReportHeadline(report)).toBe('  ✗ verdict=fail (1 run)');
+  });
+});
 
 describe('llmTestExitCode', () => {
   it('exits 0 when every requested scenario ran and passed', () => {
