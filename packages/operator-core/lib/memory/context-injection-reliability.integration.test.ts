@@ -4,12 +4,16 @@
  * native-mcp-export.integration.test.ts. Neither suite proves shipment. */
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createCache } from '@papercusp/cache';
 import { getMemoryBlockBoundedResult, MEMORY_CANONICAL_CACHE_TAG } from './injection-block-cache';
 import * as codex from '../../../../apps/operator/scripts/hooks/inject/adapters/codex.mjs';
 import * as claude from '../../../../apps/operator/scripts/hooks/inject/adapters/claude.mjs';
 import * as omp from '../../../../apps/operator/scripts/hooks/inject/adapters/omp.mjs';
+import { postInjection } from '../../../../apps/operator/scripts/hooks/inject/core.mjs';
+import { openDeliveryLedger } from '../../../../apps/operator/scripts/hooks/inject/delivery-ledger.mjs';
 import * as injection from './injection';
 import * as corpusIo from './corpus-recall-io';
 import * as recallStats from './recall-stats';
@@ -21,7 +25,9 @@ import { getOrgPg } from '@papercusp/db-org';
 import { selectCorpusLines, renderCorpusBlock } from './corpus-recall';
 import { configureReadCursorStore, InMemoryReadCursorStore, resetReadCursorStore } from '../agent-tools/coordination/read-cursors';
 import routes from '../endpoint-route/routes/agent-mcp/mid-turn-context';
-import { DELIVERY_MATRIX_CLIENTS, GROUNDED_QUERY_CASES, validateGroundedQueryArtifact,
+import { DELIVERY_MATRIX_CLIENTS, DELIVERY_MATRIX_FAULTS, DELIVERY_MATRIX_EXTRA_SINKS,
+  deliveryMatrixPopulation, deliveryMatrixCellKey, deliveryTerminalOracle, validateDeliveryMatrix,
+  type DeliveryMatrixManifest, GROUNDED_QUERY_CASES, validateGroundedQueryArtifact,
   CACHE_IDENTITY_CASES, validateCacheIdentityArtifact, type CacheIdentityCell, type CacheIdentityArtifact,
   OPERATIVE_UNIT_CONDITIONS, OPERATIVE_UNIT_BOUNDARIES, validateOperativeUnitArtifact,
   type OperativeUnitCell, type OperativeUnitArtifact,
@@ -45,8 +51,7 @@ vi.mock('@papercusp/db-org', async orig => {
         text + part + (isIdentifier(values[index]) ? values[index][identifierKey] : ''), '');
       if (query.includes('control_generation AS generation')) return Promise.resolve([{ ...services.control }]);
       if (/INSERT INTO harness_shared\.(memory|corpus)_session_surfaced/.test(query)) {
-        services.writes(query, values);
-        return Promise.resolve([{}]);
+        return Promise.resolve(services.writes(query, values) ?? [{}]);
       }
       return Promise.resolve([]);
     } }),
@@ -120,6 +125,7 @@ const sourceSnapshot = [
   '../endpoint-route/routes/agent-mcp/turn-start-memory.ts', '../../../../libs/generic/cache/src/cache.ts',
   '../endpoint-route/routes/agent-mcp/mid-turn-context.ts', '../../vitest.config.ts',
   '../../../../apps/operator/scripts/hooks/inject/core.mjs',
+  '../../../../apps/operator/scripts/hooks/inject/delivery-ledger.mjs',
   '../../../../apps/operator/scripts/hooks/inject/recall-query.mjs',
   '../../../../apps/operator/scripts/hooks/inject/ports.mjs',
   ...['codex', 'claude', 'omp'].map(client => `../../../../apps/operator/scripts/hooks/inject/adapters/${client}.mjs`),
@@ -278,7 +284,8 @@ async function prepareEndpointReceipt(client: typeof DELIVERY_MATRIX_CLIENTS[num
   expect(result.deliveryToken).toEqual(expect.any(String));
   expect(result.memoryFragmentOffers).toEqual(prepared?.fragments);
   expect(services.writes).not.toHaveBeenCalled();
-  return { token: result.deliveryToken, fragments: result.memoryFragmentOffers.map(({ rendered: _text, ...row }) => row) };
+  return { token: result.deliveryToken, fragments: result.memoryFragmentOffers.map(({ rendered: _text, ...row }) => row),
+    text: result.text, offers: result.memoryFragmentOffers };
 }
 
 async function acknowledgeWithoutQuery(client: typeof DELIVERY_MATRIX_CLIENTS[number], owner: string, proofs?: MemoryEmissionConfirmation[]) {
@@ -340,6 +347,222 @@ for (const client of DELIVERY_MATRIX_CLIENTS) for (const source of ['memory', 'c
     expect(services.writes).toHaveBeenCalledOnce();
   });
 }
+
+// The exact R-1 selectors exercise the real builder, endpoint, cursor ACK and
+// native serializer/receipt extractor with fixture storage. Calling commit()
+// below tests extraction only: it is deliberately NOT OS stdout evidence.
+// The subprocess/PostgreSQL joins remain in session-epoch-cross-port.integration.
+for (const client of DELIVERY_MATRIX_CLIENTS) for (const fault of DELIVERY_MATRIX_FAULTS)
+it(`context reliability R-1: ${client} ${fault}`, async ({ task, annotate }) => {
+  const home = mkdtempSync(join(tmpdir(), 'endpoint-receipt-'));
+  const observations: Array<Record<string, unknown>> = [];
+  const adapter = { codex, claude, omp }[client];
+  try {
+    for (const source of ['memory', 'corpus'] as const) {
+      services.writes.mockReset();
+      const owner = `receipt-matrix-${++sequence}`;
+      const prepared = await prepareEndpointReceipt(client, source, owner);
+      const payload = adapter.render('mid-turn', prepared.text, {}) + '\n';
+      const ledger = openDeliveryLedger(owner, { PAPERCUSP_HOME: home }, 'mid-turn')!;
+      const confirmations = (): MemoryEmissionConfirmation[] => ledger.confirmedMemoryDeliveries().map(row => {
+        expect(row).toMatchObject({ token: expect.any(String), fragments: expect.any(Array) });
+        // The JS adapter declares object[]; the exact fragment contents are
+        // compared to the independently prepared offers in each positive arm.
+        return row as MemoryEmissionConfirmation;
+      });
+      const extract = (body: string) => {
+        ledger.offer(prepared.token, { payload: body, client, memoryFragmentOffers: prepared.offers });
+        expect(ledger.commit()).toBe(true);
+        return confirmations();
+      };
+      let receiptCount = 0;
+      let deadlineStage: string | undefined;
+      if (fault === 'prepare') {
+        expect(ledger.confirmedMemoryDeliveries()).toEqual([]);
+        await acknowledgeWithoutQuery(client, owner, [{ token: prepared.token, fragments: [] }]);
+      } else if (fault === 'lost-response') {
+        await acknowledgeWithoutQuery(client, owner);
+        expect(ledger.confirmedMemoryDeliveries()).toEqual([]);
+        const retry = await prepareEndpointReceipt(client, source, owner);
+        expect(retry.fragments).toEqual(prepared.fragments);
+        expect(retry.token).not.toBe(prepared.token);
+      } else if (fault === 'partial-stdout') {
+        // An incomplete serialized payload is not an exact fragment, even if
+        // a caller incorrectly tries to publish a receipt for that prefix.
+        const prefix = payload.slice(0, Math.floor(payload.indexOf('source-evidence') / 2));
+        expect(prefix.length).toBeGreaterThan(0);
+        expect(Buffer.byteLength(prefix)).toBeLessThan(Buffer.byteLength(payload));
+        const proofs = extract(prefix);
+        expect(proofs).toEqual([]);
+        await acknowledgeWithoutQuery(client, owner, proofs);
+      } else if (fault === 'deadline') {
+        // Exercise the maintained transport's real abort wall after the
+        // endpoint has prepared its candidate. No native output is asserted.
+        const result = await postInjection('mid-turn', { owner, client, workspace: 'query-fixture-ws',
+          harness: 'query-fixture-harness', cwd: '/receipt-fixture' }, {
+          env: { PAPERCUSP_OPERATOR_URL: 'http://receipt-fixture.invalid' },
+          fetchImpl: async (_url: unknown, options?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+            const signal = options?.signal;
+            if (!signal) throw new Error('Transport must provide its abort signal');
+            const abort = () => reject(signal.reason);
+            if (signal.aborted) abort();
+            else signal.addEventListener('abort', abort, { once: true });
+          }),
+          onHookOutcome: (outcome: object) => {
+            deadlineStage = 'stage' in outcome && typeof outcome.stage === 'string' ? outcome.stage : undefined;
+          },
+        });
+        expect(result?.deliveryToken ?? null).toBeNull();
+        expect(result?.memoryFragmentOffers ?? []).toEqual([]);
+        expect(deadlineStage).toBe('wall-during-fetch');
+        await acknowledgeWithoutQuery(client, owner);
+        expect(ledger.confirmedMemoryDeliveries()).toEqual([]);
+      } else if (fault === 'abandon-expiry') {
+        const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + MEMORY_EMISSION_TTL_MS + 1);
+        try {
+          await acknowledgeWithoutQuery(client, owner, [prepared]);
+          await acknowledgeWithoutQuery(client, owner, [prepared]);
+        } finally { clock.mockRestore(); }
+        expect(services.writes).not.toHaveBeenCalled();
+        const fresh = await prepareEndpointReceipt(client, source, owner);
+        expect(fresh.token).not.toBe(prepared.token);
+        expect(fresh.fragments).toEqual(prepared.fragments);
+      } else if (fault === 'overlapping-ports') {
+        // Both candidates exist before either ACK. The fixture explicitly
+        // models the existing SQL unique key; actual PG races are tested in
+        // the cross-port suite, not inferred from this fixture.
+        const second = await prepareEndpointReceipt(client, source, owner);
+        expect(second.token).not.toBe(prepared.token);
+        const inserted = new Set<string>();
+        services.writes.mockImplementation((query, values) => {
+          const key = JSON.stringify([query.includes('corpus_session_surfaced') ? 'corpus' : 'memory', ...values.slice(0, 3)]);
+          if (inserted.has(key)) return [];
+          inserted.add(key); return [{}];
+        });
+        const proofs = extract(payload);
+        expect(proofs).toEqual([{ token: prepared.token, fragments: prepared.fragments }]);
+        const secondLedger = openDeliveryLedger(owner, { PAPERCUSP_HOME: home }, 'turn-start')!;
+        secondLedger.offer(second.token, { payload, client, memoryFragmentOffers: second.offers });
+        expect(secondLedger.commit()).toBe(true);
+        const both = confirmations();
+        expect(both).toHaveLength(2);
+        await acknowledgeWithoutQuery(client, owner, both);
+        expect(inserted.size).toBe(1);
+        expect(services.writes).toHaveBeenCalledTimes(2);
+        await acknowledgeWithoutQuery(client, owner, both);
+        expect(services.writes).toHaveBeenCalledTimes(2);
+        receiptCount = both.length;
+      } else {
+        if (fault === 'retry') {
+          await acknowledgeWithoutQuery(client, owner);
+          expect(services.writes).not.toHaveBeenCalled();
+          expect(ledger.confirmedMemoryDeliveries()).toEqual([]);
+        }
+        const proofs = extract(payload);
+        expect(proofs).toEqual([{ token: prepared.token, fragments: prepared.fragments }]);
+        await acknowledgeWithoutQuery(client, owner, proofs);
+        expect(services.writes).toHaveBeenCalledOnce();
+        await acknowledgeWithoutQuery(client, owner, proofs);
+        expect(services.writes).toHaveBeenCalledOnce();
+        receiptCount = proofs.length;
+      }
+      const positive = ['retry', 'duplicate-commit', 'overlapping-ports'].includes(fault);
+      if (!positive) expect(services.writes).not.toHaveBeenCalled();
+      observations.push({ client, sink: 'mid-turn', source, fault, selector: task.name,
+        evidenceRefs: [`vitest:${task.name}#${source}`], token: prepared.token,
+        fragments: prepared.fragments, payloadSha256: createHash('sha256').update(payload).digest('hex'),
+        payloadBytes: Buffer.byteLength(payload), receiptCount, stampAttempts: services.writes.mock.calls.length,
+        ...(deadlineStage ? { deadlineStage } : {}),
+        endpointVerdict: 'passed', nativeEmission: 'UNKNOWN', postgresUniqueness: 'UNKNOWN',
+        overlapScope: fault === 'overlapping-ports' ? 'same endpoint candidates, separate native receipt namespaces' : null });
+    }
+    expect(observations.map(cell => cell.source)).toEqual(['memory', 'corpus']);
+    const observation = { schemaVersion: 'endpoint-receipt-observations-v1',
+      evidencePlane: 'current-tree-builder-endpoint-serializer-cursor-fixture', sourceSnapshot, cells: observations };
+    Object.assign(task.meta, { endpointReceiptObservations: observation });
+    await annotate(`endpoint receipt observations: ${client}/${fault}`, {
+      contentType: 'application/json', bodyEncoding: 'utf-8', body: JSON.stringify(observation),
+    });
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+// Closed-population and corruption controls. These are synthetic validator
+// inputs, never a substitute for the separately captured native matrix.
+function deliveryValidatorFixture(): DeliveryMatrixManifest {
+  return { schemaVersion: 'delivery-matrix-v1',
+    identity: { planRevision: 54, planHash: '1'.repeat(64), rubricRevision: 4, rubricHash: '2'.repeat(64),
+      barHash: '3'.repeat(64), specHash: '4'.repeat(64), sourceHash: '5'.repeat(64), testHash: '6'.repeat(64),
+      runtimeGeneration: 'validator-fixture-only' },
+    cells: deliveryMatrixPopulation().map(cell => ({ ...cell, selector: 'synthetic-validator-control',
+      evidenceRefs: ['synthetic-validator-control'], terminalOracle: deliveryTerminalOracle(cell),
+      verdict: 'UNKNOWN', state: 'UNKNOWN', suppressionWrites: 0 })) };
+}
+
+it('context reliability R-1: closed-delivery-matrix', () => {
+  const artifact = deliveryValidatorFixture();
+  const keys = artifact.cells.map(deliveryMatrixCellKey);
+  expect(keys).toHaveLength(432);
+  expect(new Set(keys).size).toBe(432);
+  expect(validateDeliveryMatrix(artifact)).toMatchObject({ closed: true, valid: true, acceptanceReady: false });
+  expect(validateDeliveryMatrix(artifact).unknown).toEqual(keys);
+  for (const defect of ['missing', 'duplicate', 'unexpected'] as const) {
+    const copy = structuredClone(artifact);
+    if (defect === 'missing') copy.cells.pop();
+    else if (defect === 'duplicate') copy.cells.push(copy.cells[0]!);
+    else copy.cells[0]!.sink = 'unregistered' as never;
+    expect(validateDeliveryMatrix(copy)).toMatchObject({ closed: false, valid: false, acceptanceReady: false });
+  }
+});
+
+it('context reliability R-1: per-sink-terminal-oracle', () => {
+  const artifact = deliveryValidatorFixture();
+  for (const sink of DELIVERY_MATRIX_EXTRA_SINKS) {
+    const cells = artifact.cells.filter(cell => cell.sink === sink);
+    expect(cells).toHaveLength(16);
+    expect(cells.every(cell => cell.client === 'NONE' && cell.terminalOracle === 'NONE')).toBe(true);
+    const copy = structuredClone(artifact);
+    const promoted = copy.cells.find(cell => cell.sink === sink)!;
+    promoted.verdict = 'passed'; promoted.state = 'emitted'; promoted.suppressionWrites = 1;
+    expect(validateDeliveryMatrix(copy).errors).toContain(`${deliveryMatrixCellKey(promoted)}:uninstrumented-sink`);
+  }
+  // The census is capability-specific; a client's other instruments do not
+  // grant terminal authority to compact or in-process MCP boundaries.
+  for (const client of DELIVERY_MATRIX_CLIENTS) for (const sink of ['initialize', 'compact-reprime'] as const) {
+    const cell = { client, sink, source: 'memory' as const, fault: 'prepare' as const };
+    expect(deliveryTerminalOracle(cell)).toBe(sink === 'initialize'
+      ? client === 'omp' ? 'NONE' : 'complete-stdout'
+      : client === 'claude' ? 'complete-stdout' : 'NONE');
+  }
+});
+
+it('context reliability R-1: artifact-validator', () => {
+  const artifact = deliveryValidatorFixture();
+  const cell = artifact.cells.find(row => row.client === 'codex' && row.sink === 'mid-turn' &&
+    row.source === 'memory' && row.fault === 'retry')!;
+  const fragment = { kind: 'memory' as const, id: 'validator-source', epoch: 7, port: 'mid-turn',
+    bodySha256: 'a'.repeat(64), bodyBytes: 30 };
+  cell.verdict = 'passed'; cell.state = 'emitted'; cell.suppressionWrites = 1;
+  cell.attempt = { id: 'attempt', recipient: 'recipient', workspace: 'workspace', epoch: 7, token: 'token', fragment };
+  cell.proof = { event: 'complete-stdout', adapter: 'synthetic-validator-control', receiptRef: 'synthetic:receipt',
+    attemptId: 'attempt', recipient: 'recipient', workspace: 'workspace', epoch: 7, token: 'token',
+    client: 'codex', sink: 'mid-turn', payloadSha256: 'b'.repeat(64), payloadBytes: 90, fragment: { ...fragment } };
+  expect(validateDeliveryMatrix(artifact)).toMatchObject({ valid: true, acceptanceReady: false, errors: [] });
+  for (const field of ['attemptId', 'recipient', 'workspace', 'token', 'client', 'sink', 'epoch', 'payloadSha256'] as const) {
+    const copy = structuredClone(artifact);
+    const proof = copy.cells.find(row => deliveryMatrixCellKey(row) === deliveryMatrixCellKey(cell))!.proof!;
+    Object.assign(proof, { [field]: field === 'epoch' ? 8 : 'wrong' });
+    expect(validateDeliveryMatrix(copy).errors).toContain(`${deliveryMatrixCellKey(cell)}:receipt-join`);
+  }
+  const unproven = structuredClone(artifact);
+  unproven.cells.find(row => deliveryMatrixCellKey(row) === deliveryMatrixCellKey(cell))!.state = 'prepared';
+  expect(validateDeliveryMatrix(unproven).errors).toContain(`${deliveryMatrixCellKey(cell)}:unproven-suppression`);
+  const wrongFault = structuredClone(artifact);
+  wrongFault.cells.find(row => deliveryMatrixCellKey(row) === deliveryMatrixCellKey(cell))!.suppressionWrites = 0;
+  expect(validateDeliveryMatrix(wrongFault).errors).toContain(`${deliveryMatrixCellKey(cell)}:fault-outcome`);
+  const noIdentity = structuredClone(artifact);
+  noIdentity.identity.sourceHash = 'invalid';
+  expect(validateDeliveryMatrix(noIdentity).errors).toContain('measurement-identity');
+});
 
 const operativeConditions: Record<typeof OPERATIVE_UNIT_CONDITIONS[number], string> = {
   'late-negation': 'Do not apply it to production.',
