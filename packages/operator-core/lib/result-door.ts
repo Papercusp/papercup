@@ -4473,12 +4473,13 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       parsedJsonBody && isReleaseRepairQueueCall(opts)
         ? compactReleaseRepairQueueBody(bodyShape.json!.parsed)
         : null;
-    // Full fleet indexes can outgrow even the domain emergency shaper. The
+    // Full fleet and burn-down indexes can outgrow even the domain emergency shaper. The
     // source body has already been spilled above; retain the atomic numeric
     // contract inline instead of walking early obligation fields until the
     // generic budget runs out before it encounters the queue metrics.
     const leaderBriefCore = parsedJsonBody &&
-      (opts.toolName === 'fleet:leader-brief' || opts.nestedTargetToolName === 'fleet:leader-brief') &&
+      (opts.toolName === 'fleet:leader-brief' || opts.nestedTargetToolName === 'fleet:leader-brief' ||
+        opts.toolName === 'work_items:burn_down' || opts.nestedTargetToolName === 'work_items:burn_down') &&
       recovery?.cursor
       ? compactLeaderBriefForResultDoor(bodyShape.json!.parsed)
       : null;
@@ -4488,7 +4489,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       _projection: {
         kind: 'bounded-payload', truncated: true, tier: 'trimmed', forced: true,
         originalChars: totalChars, cursor: recovery!.cursor,
-        next: 'Page this cursor for the emitted snapshot, including all indexes and secondary metrics.',
+        next: 'Full snapshot and indexes: cursor.',
       },
     } : null;
     const leaderBriefFits = leaderBriefPreview !== null &&
@@ -4583,7 +4584,9 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         resultDoor: {
           ...baseResultDoorMeta,
           structural: true,
-          ...(leaderBriefFits ? { compactProjection: 'fleet:leader-brief-numeric-core' } : {}),
+          ...(leaderBriefFits ? { compactProjection:
+            opts.toolName === 'work_items:burn_down' || opts.nestedTargetToolName === 'work_items:burn_down'
+              ? 'work_items:burn_down-numeric-core' : 'fleet:leader-brief-numeric-core' } : {}),
           ...(releaseRepairQueueCompactBody != null
             ? { compactProjection: 'release:repair-queue:signature-evidence' }
             : {}),

@@ -369,17 +369,34 @@ export function compactLeaderBriefForResultDoor(data: unknown): Dict | null {
       ...(claimable.unknown ? { unknown: pick(claimable.unknown, ['code', 'detail'], 120) } : {}),
     };
   }
-  const fleetMetrics = metrics.data.ok
-    ? { ok: true, snapshot: pick(metrics.data.snapshot, [
+  const snapshot = metrics.data.ok
+    ? pick(metrics.data.snapshot, [
         'schemaVersion', 'generatedAt', 'scope', 'quality', 'flow', 'remaining',
         'authority', 'issueUnits', 'intakeStages', 'admissionParity',
-      ]) }
-    : metrics.data;
+      ])
+    : null;
+  if (snapshot && metrics.data.ok && metrics.data.snapshot.remaining.categorization) {
+    const remaining = metrics.data.snapshot.remaining;
+    const categories = remaining.categorization!;
+    // The prose repeats retained counts and can push a fully categorized
+    // burn-down over the transport cap. Keep every structured category and
+    // its semantics; the original explanation remains in the same cursor.
+    snapshot.remaining = {
+      ...remaining,
+      categorization: {
+        ...categories,
+        explanation: categories.explanation.length <= 180 ? categories.explanation
+          : 'States differ from floors; do not sum overlapping exclusions. ' +
+            'Investigate gaps before unblocking. Full text: _projection.cursor.',
+      },
+    };
+  }
+  const fleetMetrics = snapshot ? { ok: true, snapshot } : metrics.data;
   return {
     ok: source.ok === true,
     ...(source.degraded === true ? { degraded: true } : {}),
     ...(source.notLeader ? { notLeader: pick(source.notLeader, ['registeredLeader', 'leaderState'], 120) } : {}),
-    summary,
+    ...(Object.keys(summary).length ? { summary } : {}),
     fleetMetrics,
     ...(source.blockedAt ? { blockedAt: compactBlockedAt(source.blockedAt, 80, false) } : {}),
     leaderBriefProjection: {

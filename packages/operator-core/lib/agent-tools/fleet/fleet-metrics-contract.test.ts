@@ -241,6 +241,8 @@ describe('P-001 complete queue comparison and same-snapshot recovery', () => {
   it.each([
     { toolName: 'fleet:leader-brief' },
     { toolName: 'tools:invoke', nestedTargetToolName: 'fleet:leader-brief' },
+    { toolName: 'work_items:burn_down' },
+    { toolName: 'tools:invoke', nestedTargetToolName: 'work_items:burn_down' },
   ])('keeps the complete numeric preview and recovers every original UTF-8 byte through $toolName', (route) => {
     const directory = mkdtempSync(join(tmpdir(), 'fleet-metrics-door-'));
     const previousRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
@@ -270,6 +272,93 @@ describe('P-001 complete queue comparison and same-snapshot recovery', () => {
       expect(complete.summary.claimable_now.population.itemIds).toEqual(source.summary.claimable_now.population.itemIds);
       expect(complete.fleetMetrics.snapshot.generatedAt).toBe(source.fleetMetrics.snapshot.generatedAt);
       expect(complete.fleetMetrics.snapshot.intakeStages).toEqual(source.fleetMetrics.snapshot.intakeStages);
+    } finally {
+      if (previousRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
+      else process.env.PAPERCUSP_SCRATCH_ROOT = previousRoot;
+      if (previousOff === undefined) delete process.env.PAPERCUSP_RESULT_DOOR_OFF;
+      else process.env.PAPERCUSP_RESULT_DOOR_OFF = previousOff;
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { toolName: 'work_items:burn_down' },
+    { toolName: 'tools:invoke', nestedTargetToolName: 'work_items:burn_down' },
+  ])('fits a fully categorized burn-down snapshot through $toolName without losing comparison fields', (route) => {
+    // Include production-length recovery paths in the byte budget, rather
+    // than proving only the shorter temporary-directory case.
+    const directory = mkdtempSync(join(tmpdir(), 'papercusp-long-lived-workspace-evidence-path-for-burn-down-categories-'));
+    const previousRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
+    const previousOff = process.env.PAPERCUSP_RESULT_DOOR_OFF;
+    process.env.PAPERCUSP_SCRATCH_ROOT = directory;
+    delete process.env.PAPERCUSP_RESULT_DOOR_OFF;
+    try {
+      const source = oversizedBrief();
+      const snapshot = source.fleetMetrics.snapshot;
+      snapshot.scope.fleet = 'nonp2p-bug-drain-luna-max-0930';
+      snapshot.scope.stock.specId = snapshot.scope.flow.specId = 'fleet-launch-nonp2p-bug-drain-luna-max-0930-kinds';
+      Object.assign(snapshot.flow, {
+        opened: 30574, terminalLifecycle: 25301, terminalCounted: 24093, netLifecycle: 5273, netCounted: 6481,
+        openedBy: { fleet: 6653, otherAgents: 13817, system: 3553, unattributed: 6551, partitions: true, membershipBasis: 'ever-members' },
+        terminalBy: { fleet: 10061, otherAgents: 5235, system: 10005, unattributed: 0, partitions: true, membershipBasis: 'ever-members' },
+      });
+      Object.assign(snapshot.authority, {
+        lifecycleTerminal: 25301, counted: 24093, committed: 14112, validated: 0,
+        proposed: 1205, pendingHuman: 0, invalid: 3, legacy: 9981,
+      });
+      snapshot.remaining.total = 7001;
+      snapshot.remaining.buckets = {
+        needsHuman: 409, blocked: 1727, claimHeld: 782, inFlight: 120, claimable: 1319, otherUnclaimable: 2644,
+      };
+      snapshot.remaining.categorization = {
+        stateCounts: { open: 4953, blocked: 1657, 'needs-human': 389, wip: 1, todo: 1 },
+        primaryReasons: {
+          claimable: 1319, 'already-taken': 122, 'admission-pending': 1135, 'not-claimable-status': 2048,
+          'external-blocker': 15, 'agent-review': 1390, 'claim-hold': 740, 'admission-hold': 170,
+          'watchdog-recovery-window': 6, 'blocked-dep': 41, 'live-gate-ops': 10, 'admission-recovery': 3,
+          'needs-owner-action': 1, 'plan-lane-reserved': 1,
+        },
+        exclusionCounts: {
+          'already-taken': 131, 'admission-pending': 1153, 'admission-hold': 1637, 'not-claimable-status': 2048,
+          'external-blocker': 2012, 'claim-hold': 1035, 'plan-lane-reserved': 4, 'admission-recovery': 73,
+          'watchdog-recovery-window': 28, 'blocked-dep': 137, 'needs-owner-action': 408, cooldown: 4,
+          'agent-review': 1500, 'live-gate-ops': 12, 'cross-machine-rig': 2,
+        },
+        exclusionsOverlap: true,
+        floorCoverage: { measured: 7001, unknown: 0 },
+        exclusionCoverage: { complete: 7001, firstReasonOnly: 0, unknown: 0 },
+        evidenceGaps: { humanWithoutStrictAsk: 217, blockedWithoutRecordedGate: 0 },
+        explanation: '7001 remaining; 1319 scheduler-claimable; 1657 stored blocked; 389 stored needs-human. ' +
+          'Observed overlapping exclusions: 1500 agent review, 1153 admission pending, 1035 claim holds. ' +
+          'Complete exclusion coverage: 7001/7001; unknown floor rows: 0; first-reason-only rows: 0. ' +
+          'Stored labels and scheduler restrictions are separate views; exclusions must not be added together. ' +
+          'Evidence gaps require investigation, never automatic unblocking. 確認',
+      };
+      // A burn-down response has no leader-brief summary. Match that actual
+      // handler shape, including a large secondary index requiring recovery.
+      const { summary: _summary, ...burnDown } = source;
+      const original = JSON.stringify(burnDown);
+      const result = applyResultDoor({ content: [{ type: 'text', text: original }] }, {
+        ...route, workspaceId: 'burn-down-categories-test', runId: '11111111-2222-4333-8444-555555555555',
+      });
+      const body = JSON.parse((result.content.find((part) => part.type === 'text') as { text: string }).text);
+      const { explanation, ...categories } = snapshot.remaining.categorization;
+      expect(body.fleetMetrics.snapshot).toMatchObject({
+        scope: snapshot.scope, quality: snapshot.quality, flow: snapshot.flow,
+        authority: snapshot.authority, issueUnits: snapshot.issueUnits,
+        intakeStages: snapshot.intakeStages, admissionParity: snapshot.admissionParity,
+        remaining: { ...snapshot.remaining, categorization: { ...categories, explanation: expect.any(String) } },
+      });
+      expect(body.fleetMetrics.snapshot.remaining.categorization.explanation.length).toBeLessThan(explanation.length);
+      expect(body.fleetMetrics.snapshot.remaining.categorization.explanation).toContain('do not sum overlapping exclusions');
+      expect(body.fleetMetrics.snapshot.remaining.categorization.explanation).toContain('Investigate gaps before unblocking');
+      expect(body).not.toHaveProperty('summary');
+      expect(fleetMetricsResultSchema.safeParse(body.fleetMetrics).success).toBe(true);
+      expect(measureResultContextBytes(result)).toBeLessThanOrEqual(RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE);
+      const spillPath = (result._meta?.resultDoor as { spillPath: string }).spillPath;
+      const reference = parseScratchReference(readFileSync(spillPath));
+      expect(reference!.payload.subarray(body._projection.cursor.bodyOffsetInPayload).toString('utf8')).toBe(original);
+      expect(snapshot.remaining.categorization.explanation).toBe(explanation);
     } finally {
       if (previousRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
       else process.env.PAPERCUSP_SCRATCH_ROOT = previousRoot;
