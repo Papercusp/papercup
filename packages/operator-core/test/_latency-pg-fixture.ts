@@ -1,5 +1,5 @@
 /** LATENCY-M1 preparation in an owned migrated test database. No task timings. */
-import { createOrgTestDb, type OrgTestDb } from './_org-test-db';
+import { createOrgTestDb, type CreateOrgTestDbOptions, type OrgTestDb } from './_org-test-db';
 import { latencyDataFixtures, latencyFixtureDigest } from './_latency-acceptance';
 
 export interface LatencyTimelineSnapshot {
@@ -33,7 +33,7 @@ export async function seedLatencyTimelineSnapshot(db: OrgTestDb, input: {
     const receipts = [];
     for (const [key, table] of [['turns', 'session_turns'], ['tools', 'tool_invocations'],
       ['coord', 'coord_event_log']] as const) {
-      const rows = snapshot[key].map(({ row }) => ({ ...row,
+      const rows: Record<string, unknown>[] = snapshot[key].map(({ row }) => ({ ...row,
         workspace_id: key === 'turns' && row.workspace_id === 'default' ? 'default' : workspaceId }));
       if (!rows.length) { receipts.push({ table, count: 0 }); continue; }
       if (rows.length > 10_000) throw new Error('LATENCY-M1 timeline source exceeds its frozen bound');
@@ -74,8 +74,8 @@ export async function seedLatencyTimelineSnapshot(db: OrgTestDb, input: {
   });
 }
 
-export async function createLatencyPgFixture() {
-  const db = await createOrgTestDb();
+export async function createLatencyPgFixture(options: CreateOrgTestDbOptions = {}) {
+  const db = await createOrgTestDb(options);
   try {
     const fixture = latencyDataFixtures();
     await seedLatencyPgFixture(db, fixture);

@@ -164,7 +164,7 @@ export async function captureNativeMcp(client: NativeExport['client'], tools: De
   instructions?: string, denied: string[] = [],
   options: { claudeDescriptionMode?: 'full' | 'default'; stdioReceipt?: 'memory' | 'corpus';
     stdioPort?: 'initialize' | 'orient' | 'claim' | 'create'; maxProviderExchanges?: number;
-    stdioFault?: 'absent-offer' | 'partial-stdout';
+    stdioFault?: 'absent-offer' | 'partial-stdout' | 'lost-response' | 'deadline';
     stdioOwner?: string;
     // Let a backend integration supply the production response/offer while
     // retaining this fixture's installed client and real stdout boundary.
@@ -205,6 +205,9 @@ export async function captureNativeMcp(client: NativeExport['client'], tools: De
   let failure: string | null = null;
   let invocation: { argv: string[]; environment: Record<string, string | null> } | null = null;
   let child: ReturnType<typeof spawn> | undefined, stderr = '', stdout = '';
+  let cleanupStarted = false;
+  const transportFaults: Array<{ method: string; requestId: unknown; fault: string;
+    preparedToken: string; closedBeforeCleanup: boolean; writableEnded: boolean; elapsedMs: number | null }> = [];
   const server = createServer(async (req, res) => {
     try {
       if (req.method === 'GET') {
@@ -237,7 +240,26 @@ export async function captureNativeMcp(client: NativeExport['client'], tools: De
               content: [{ type: 'text', text: JSON.stringify({ [receiptPort]: instructions }) }],
               ...(responseOffer ? { _meta: { 'papercusp/memoryEmission': responseOffer } } : {}) } : {};
         res.writeHead(200, { 'content-type': 'application/json' });
-        const emitted = options.mcpResult ? await options.mcpResult(method, result, body) : result;
+        const emitted: Record<string, unknown> = options.mcpResult ? await options.mcpResult(method, result, body) : result;
+        if ((options.stdioFault === 'lost-response' || options.stdioFault === 'deadline')
+          && method === (receiptPort === 'initialize' ? 'initialize' : 'tools/call')) {
+          const offer = (emitted._meta as Record<string, unknown> | undefined)?.['papercusp/memoryEmission'] as
+            { token?: string } | undefined;
+          if (!offer?.token) throw new Error('Native transport fault requires an actual prepared emission offer');
+          const started = performance.now();
+          const observation = { method, requestId: body.id, fault: options.stdioFault,
+            preparedToken: offer.token, closedBeforeCleanup: false, writableEnded: false, elapsedMs: null as number | null };
+          transportFaults.push(observation);
+          res.once('close', () => {
+            observation.closedBeforeCleanup = !cleanupStarted;
+            observation.writableEnded = res.writableEnded;
+            observation.elapsedMs = performance.now() - started;
+          });
+          if (options.stdioFault === 'lost-response') res.destroy();
+          // Deadline leaves the actual HTTP response pending. Only the native
+          // client's deadline/cancellation may close it before fixture cleanup.
+          return;
+        }
         res.end(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: emitted })); return;
       }
       if (callReceipt && req.url?.includes('/count_tokens')) {
@@ -327,6 +349,8 @@ export async function captureNativeMcp(client: NativeExport['client'], tools: De
       }
       Object.assign(env, { CLAUDE_CONFIG_DIR: join(home, '.claude'), ANTHROPIC_BASE_URL: baseURL,
         ANTHROPIC_API_KEY: 'offline-fixture-only', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_AUTOUPDATER: '1',
+        ...(options.stdioFault === 'deadline' ? { MCP_TIMEOUT: '10000', MCP_CONNECT_TIMEOUT_MS: '10000',
+          MCP_TOOL_TIMEOUT: '10000' } : {}),
         // This paired full-schema profile does not establish parity with
         // default deferred ToolSearch or default description truncation.
         ENABLE_TOOL_SEARCH: 'false' });
@@ -382,6 +406,7 @@ export default async function(pi) {
     invocation = { argv, environment: Object.fromEntries([
       'HOME', 'CODEX_HOME', 'PAPERCUSP_HOME', 'PAPERCUSP_OPERATOR_HOME', 'PAPERCUSP_SID',
       'PAPERCUSP_AGENT', 'PAPERCUSP_INSTALL_MUTEX_HELD',
+      'MCP_TIMEOUT', 'MCP_CONNECT_TIMEOUT_MS', 'MCP_TOOL_TIMEOUT',
     ].map(key => [key, env[key] ?? null])) };
     child = spawn(binary, argv, { env, cwd: home, stdio: ['pipe', 'pipe', 'pipe'] });
     child.stderr!.setEncoding('utf8');
@@ -457,6 +482,7 @@ export default async function(pi) {
     failure ??= String(error);
     throw new Error(`${failure}; diagnostics: ${diagnosticsPath}`, { cause: error });
   } finally {
+    cleanupStarted = true;
     if (child && child.exitCode === null && child.signalCode === null) {
       const exited = new Promise<void>(resolve => child!.once('exit', () => resolve()));
       child.kill('SIGKILL'); await exited;
@@ -469,7 +495,7 @@ export default async function(pi) {
         confirmations: openDeliveryLedger(receiptOwner, { PAPERCUSP_HOME: home }, 'mcp')?.confirmedMemoryDeliveries() ?? [] } : null,
       pipeProbe: existsSync(pipeProbePath) ? JSON.parse(readFileSync(pipeProbePath, 'utf8')) : null,
       failure, invocation, exitCode: child?.exitCode ?? null, signal: child?.signalCode ?? null,
-      methods, mcpRequests, providerRoutes, requests: captures, frameTypes, stdout, stderr,
+      methods, mcpRequests, providerRoutes, requests: captures, frameTypes, stdout, stderr, transportFaults,
       // Parent environment is measured here; the MCP child's inheritance must
       // be established separately from its actual initialize request metadata.
       environmentScope: 'native-client-parent',

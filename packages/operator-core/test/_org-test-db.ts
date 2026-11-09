@@ -168,6 +168,9 @@ export async function provisionOrgTemplate(url: string): Promise<{ migrationCoun
 }
 
 export interface CreateOrgTestDbOptions {
+  /** Replay generated source values under the source database's locale.
+   * Uses a fresh migrated database; the shared template has a fixed locale. */
+  locale?: string;
   /** Size of the `adminSql` pool (default {@link clientOpts}.max = 2). A rig that
    *  stands `adminSql` in for getOrgPg() and MEASURES concurrency must size it like
    *  the production admin pool, or the pool, not the code under test, sets the
@@ -187,10 +190,10 @@ export async function createOrgTestDb(opts: CreateOrgTestDbOptions = {}): Promis
   // change rebuilds it (else a stale template serves the wrong schema).
   const db = await createFreshTestDb({
     prefix: 'org',
-    template: {
+    ...(opts.locale === undefined ? { template: {
       key: orgTemplateKey(),
       provision: provisionOrgTemplate,
-    },
+    } } : { locale: opts.locale, provision: async (url: string) => { await provisionOrgTemplate(url); } }),
   });
   const dbName = db.name;
   const u = new URL(db.url);

@@ -3,10 +3,15 @@ import type postgres from 'postgres';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
+import { gunzipSync } from 'node:zlib';
 import { createLatencyPgFixture, seedLatencyTimelineSnapshot,
   type LatencyTimelineSnapshot } from '../../../test/_latency-pg-fixture';
-import { latencyFixtureDigest, latencyRetrievalFixtures, observeLatencyRetrievalSchedule } from '../../../test/_latency-acceptance';
+import { calibrateLatencyOracle, frozenOutputOracle, latencyFixtureDigest, latencyIntervalReference,
+  latencyRetrievalFixtures, observeLatencyRetrievalSchedule,
+  type LatencyReferenceInterval } from '../../../test/_latency-acceptance';
 import { interactiveEmbedAcquireBudgetMs } from '../search/embedder';
+import type { PapercuspUnifiedToolContext } from '../_tool-context';
+import timelineTool, { timelineResultSchema } from './timeline';
 
 const conditionScope = vi.hoisted(() => ({ sql: undefined as postgres.Sql | undefined, workspace: '' }));
 vi.mock('@papercusp/db-org', async importOriginal => ({
@@ -29,11 +34,25 @@ import { computeConditionStates, readConditionEnvelopesForPrefix } from '../coor
 import { listCoveredPlanItemRefs } from '../../plan-items/convert';
 
 describe('LATENCY-M1 private migrated fixture preparation', () => {
+  const sourceRoot = process.env.PAPERCUSP_LATENCY_TIMELINE_SOURCE_DIR;
   let fx: Awaited<ReturnType<typeof createLatencyPgFixture>> | undefined;
+  let timelineWorkspace: string;
+  const assertConditionScope = async () => {
+    const { db, fixture } = fx!;
+    const rows = await db.adminSql`SELECT body FROM harness_shared.coord_event_log
+      WHERE workspace_id = ${fixture.workspace} ORDER BY msg_id`;
+    expect(rows).toHaveLength(10_000);
+    expect(rows.map(row => row.body)).toEqual(fixture.conditionEnvelopes);
+  };
   beforeAll(async () => {
-    fx = await createLatencyPgFixture();
+    // The frozen source's generated English tsvectors require its database
+    // ctype. The default portable C fixture changes Unicode tokenization.
+    fx = await createLatencyPgFixture(sourceRoot ? { locale: 'en_US.UTF-8' } : {});
+    timelineWorkspace = fx.fixture.workspace + '-timeline';
+    expect(timelineWorkspace).not.toBe(fx.fixture.workspace);
     conditionScope.sql = fx.db.adminSql;
     conditionScope.workspace = fx.fixture.workspace;
+    await assertConditionScope();
   }, 180_000);
   afterAll(async () => {
     conditionScope.sql = undefined;
@@ -42,7 +61,7 @@ describe('LATENCY-M1 private migrated fixture preparation', () => {
   }, 60_000);
 
   it('replays stored timeline columns exactly and rolls back generated-value or schema drift', async () => {
-    const { db, fixture } = fx!;
+    const { db } = fx!;
     const owner = 'su-latency-seed-control';
     const window = { owner, since: '2026-11-06T00:00:00.000Z', until: '2026-11-06T00:01:00.000Z' };
     const snapshot: LatencyTimelineSnapshot = await db.adminSql.begin(async tx => {
@@ -68,7 +87,7 @@ describe('LATENCY-M1 private migrated fixture preparation', () => {
     await db.adminSql`DELETE FROM harness_shared.tool_invocations WHERE coord_owner_id = ${owner}`;
     await db.adminSql`DELETE FROM harness_shared.coord_event_log WHERE msg_id = 'latency-seed-message'`;
     const seed = (value: LatencyTimelineSnapshot, expectedSha256 = latencyFixtureDigest(value)) =>
-      seedLatencyTimelineSnapshot(db, { snapshot: value, expectedSha256, workspaceId: fixture.workspace });
+      seedLatencyTimelineSnapshot(db, { snapshot: value, expectedSha256, workspaceId: timelineWorkspace });
     await expect(seed(snapshot, '0'.repeat(64))).rejects.toThrow(/fingerprint/);
     const unknownColumn = structuredClone(snapshot);
     unknownColumn.tools[0]!.row.unknown_original_column = 'must not disappear';
@@ -79,25 +98,31 @@ describe('LATENCY-M1 private migrated fixture preparation', () => {
     await expect(seed(generated)).rejects.toThrow(/readback differs/);
     expect(await db.adminSql`SELECT 1 FROM harness_shared.session_turns WHERE owner = ${owner}`).toHaveLength(0);
     await expect(seedLatencyTimelineSnapshot({ ...db, dbName: 'not-owned' }, {
-      snapshot, expectedSha256: latencyFixtureDigest(snapshot), workspaceId: fixture.workspace,
+      snapshot, expectedSha256: latencyFixtureDigest(snapshot), workspaceId: timelineWorkspace,
     })).rejects.toThrow(/owned org test fixture/);
     const receipt = await seed(snapshot);
     expect(receipt.tables.map(row => row.count)).toEqual([1, 1, 1]);
     expect(snapshot.turns[0]!.row.workspace_id).toBe('default');
     expect(snapshot.tools[0]!.row.workspace_id).toBe('source-workspace');
     expect((await db.adminSql`SELECT workspace_id FROM harness_shared.session_turns WHERE owner = ${owner}`)[0]!.workspace_id).toBe('default');
-    expect((await db.adminSql`SELECT workspace_id FROM harness_shared.tool_invocations WHERE coord_owner_id = ${owner}`)[0]!.workspace_id).toBe(fixture.workspace);
+    expect((await db.adminSql`SELECT workspace_id FROM harness_shared.tool_invocations WHERE coord_owner_id = ${owner}`)[0]!.workspace_id).toBe(timelineWorkspace);
+    expect((await db.adminSql`SELECT workspace_id FROM harness_shared.coord_event_log
+      WHERE msg_id = 'latency-seed-message'`)[0]!.workspace_id).toBe(timelineWorkspace);
+    await assertConditionScope();
   });
 
   // CI always runs the synthetic schema/round-trip controls above. An explicit
   // evidence run also replays the separately retained original corpus; no live
   // database or network fetch can replace these pinned input files.
-  const sourceRoot = process.env.PAPERCUSP_LATENCY_TIMELINE_SOURCE_DIR;
   if (sourceRoot) it('replays the exact canonical W1/W2/W3 stored inputs in the private database', async () => {
-    const { db, fixture } = fx!;
+    const { db } = fx!;
     const manifest = JSON.parse(readFileSync(join(sourceRoot, 'timeline-source-inputs-20261109-r1--manifest.json'), 'utf8'));
     expect(manifest.windows.map((row: { id: string }) => row.id)).toEqual(['W1', 'W2', 'W3']);
     const receipts = [];
+    const timelineReads = [];
+    const [environment] = await db.adminSql`SELECT datctype, datcollate, version() AS version
+      FROM pg_database WHERE datname = current_database()`;
+    expect(environment).toMatchObject({ datctype: 'en_US.UTF-8', datcollate: 'en_US.UTF-8' });
     for (const input of manifest.windows) {
       const bytes = readFileSync(join(sourceRoot, `timeline-source-inputs-20261109-r1--${input.id}.json`));
       expect(bytes.length).toBe(input.bytes);
@@ -107,9 +132,77 @@ describe('LATENCY-M1 private migrated fixture preparation', () => {
       expect(Object.fromEntries(['turns', 'tools', 'coord'].map(key =>
         [key, snapshot[key as 'turns'].length]))).toEqual(input.sourceRows);
       receipts.push(await seedLatencyTimelineSnapshot(db, { snapshot,
-        expectedSha256: latencyFixtureDigest(snapshot), workspaceId: fixture.workspace }));
+        expectedSha256: latencyFixtureDigest(snapshot), workspaceId: timelineWorkspace }));
+      // Exercise the actual historical reader, not a projection built from
+      // the expected answer. Its current source population must survive every
+      // bounded continuation, including automatic calls and legacy turns.
+      const ctx = { tx: db.adminSql, workspaceId: timelineWorkspace,
+        uiClientId: 'su-latency-original-reader', role: 'worker', isSuperuser: true,
+        principal: { slug: 'su-latency-original-reader', workspaceId: timelineWorkspace },
+        signal: new AbortController().signal } as unknown as PapercuspUnifiedToolContext;
+      const expectedRefs = [
+        ...snapshot.turns.map(({ row }) => `turn:session_turn:${row.source_kind}:${row.session_id}:${row.turn_idx}`),
+        ...snapshot.tools.map(({ row }) => `tool:${row.id}`),
+        ...snapshot.coord.map(({ row }) => `coord:${row.msg_id}`),
+      ].sort();
+      const observedRefs: string[] = [], pages = [], cursors = new Set<string>();
+      let cursor: string | undefined;
+      do {
+        const result = await timelineTool.handler(timelineTool.args.parse({ ...snapshot.window,
+          limit: 300, include_auto: true, group_repeated: false, ...(cursor ? { cursor } : {}) }), ctx);
+        if (!('content' in result) || result.content.length !== 1 || result.content[0]!.type !== 'text')
+          throw new Error('Original timeline reader returned an unsupported envelope');
+        const page = timelineResultSchema.parse(JSON.parse(result.content[0]!.text));
+        if (!page.ok) throw new Error(`Original timeline read failed: ${JSON.stringify(page)}`);
+        expect(page).toMatchObject({ ok: true, ...snapshot.window });
+        observedRefs.push(...page.entries.map(row => `${row.kind}:${row.ref}`));
+        pages.push(page);
+        cursor = page.nextCursor;
+        expect(!!cursor).toBe(page.hasMore);
+        expect(pages.length).toBeLessThan(200);
+        if (cursor) { expect(cursors.has(cursor)).toBe(false); cursors.add(cursor); }
+      } while (cursor);
+      expect(new Set(observedRefs).size).toBe(observedRefs.length);
+      expect([...observedRefs].sort()).toEqual(expectedRefs);
+      timelineReads.push({ id: input.id, window: snapshot.window, sourceRows: input.sourceRows,
+        observedRefs, pages, complete: true,
+        limitation: 'Indexed turns/tools/coord only; no native/gateway interval attribution is inferred from these entries.' });
     }
-    const receipt = { phase: 'preparation-only', actualTaskAttempts: 0, receipts };
+    await assertConditionScope();
+    const decodeInterval = (id: string, kind: 'source' | 'reference') => {
+      const bytes = readFileSync(join(sourceRoot, `${id}-interval-${kind}-v2.json`));
+      const envelope = JSON.parse(bytes.toString('utf8'));
+      const zipped = Buffer.from(envelope.data, 'base64');
+      expect(createHash('sha256').update(zipped).digest('hex')).toBe(envelope.gzipSha256);
+      const decoded = gunzipSync(zipped);
+      expect(decoded.length).toBe(envelope.uncompressedBytes);
+      expect(createHash('sha256').update(decoded).digest('hex')).toBe(envelope.uncompressedSha256);
+      return JSON.parse(decoded.toString('utf8'));
+    };
+    const calibrations = [];
+    for (const id of ['W1', 'W1-with-overlap-control', 'W2', 'W3']) {
+      const source = decodeInterval(id, 'source'), saved = decodeInterval(id, 'reference');
+      const recomputed = latencyIntervalReference(source.window, source.intervals);
+      const reference = Object.fromEntries(Object.keys(recomputed).map(key => [key, saved.reference[key]]));
+      expect(recomputed).toEqual(reference);
+      if (id === 'W1-with-overlap-control') {
+        const original = decodeInterval('W1', 'source');
+        expect(source.intervals.slice(0, original.intervals.length)).toEqual(original.intervals);
+        const controls: LatencyReferenceInterval[] = source.intervals.slice(original.intervals.length);
+        expect(controls.map(row => [row.startMs - source.window.startMs, row.endMs - source.window.startMs]))
+          .toEqual(source.controlDeclaration.relativeEndpointsMs);
+        expect(controls.map(row => row.id)).toEqual(['control:model', 'control:tool', 'control:stage', 'control:next']);
+        expect(controls[2]!.parentId).toBe('control:tool');
+      }
+      const calibration = calibrateLatencyOracle((observed, authorized) =>
+        frozenOutputOracle(reference, observed, authorized), { positive: recomputed,
+        incorrect: { ...recomputed, knownMs: recomputed.knownMs + 1 },
+        incomplete: { ...recomputed, intervals: recomputed.intervals.slice(1) } });
+      calibrations.push({ id, referenceSha256: latencyFixtureDigest(reference), calibration });
+    }
+    const receipt = { phase: 'preparation-only', actualTaskAttempts: 0, environment, receipts,
+      sourcePlane: 'Actual sessions:timeline handler over privately replayed original indexed inputs; interval oracles remain separate test-only inputs.',
+      timelineReads, calibrations };
     const artifactDir = process.env.PAPERCUSP_TEST_ARTIFACT_DIR;
     if (artifactDir) {
       mkdirSync(artifactDir, { recursive: true });

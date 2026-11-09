@@ -411,7 +411,8 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
   for (const client of ['codex', 'claude'] as const)
     for (const source of ['memory', 'corpus'] as const)
       for (const port of ['initialize', 'orient', 'claim', 'create'] as const)
-        for (const fault of ['duplicate-commit', 'partial-stdout', 'abandon-expiry', 'retry'] as const)
+        for (const fault of ['duplicate-commit', 'partial-stdout', 'abandon-expiry', 'retry',
+          'lost-response', 'deadline', 'overlapping-ports'] as const)
         it(`context reliability R-1: production launch ${client} ${source} ${port} ${fault === 'duplicate-commit' ? '' : fault + ' '}receipt join`, async ({ task }) => {
           const owner = `su-launch-${randomUUID()}`;
           const text = 'Apply zephyrrepair recovery.\nOnly after explicit final approval ☃.';
@@ -433,11 +434,21 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
           let rendered = '';
           let diagnosticsPath = '', failure: string | undefined;
           const echoedConfirmations: Array<{ token?: string }> = [];
+          const nativeAttempts: Array<{ port: typeof port; rendered: string; diagnosticsPath: string;
+            offers: NonNullable<typeof offered>[] }> = [];
+          let releaseOverlap!: () => void;
+          const overlapReady = new Promise<void>(resolve => { releaseOverlap = resolve; });
+          let overlapPrepared = 0;
           try {
-            const runNative = (partial: boolean) => captureNativeMcp(client, [{ name: 'receipt_canary', description: 'Local launch receipt observation.' }],
-              text, [], { stdioReceipt: source, stdioPort: port, stdioOwner: owner,
+            const runNative = (partial: boolean, nativePort: typeof port = port) => {
+              const attempt: typeof nativeAttempts[number] = { port: nativePort, rendered: '', diagnosticsPath: '', offers: [] };
+              nativeAttempts.push(attempt);
+              return captureNativeMcp(client, [{ name: 'receipt_canary', description: 'Local launch receipt observation.' }],
+              text, [], { stdioReceipt: source, stdioPort: nativePort, stdioOwner: owner,
                 ...(partial ? { stdioFault: 'partial-stdout' as const } : {}),
-                onDiagnostics: path => { diagnosticsPath = path; Object.assign(task.meta, { nativeMcpDiagnostics: path }); },
+                ...(fault === 'lost-response' || fault === 'deadline' ? { stdioFault: fault } : {}),
+                onDiagnostics: path => { diagnosticsPath = path; attempt.diagnosticsPath = path;
+                  Object.assign(task.meta, { nativeMcpDiagnostics: path }); },
                 mcpResult: async (method, result, request) => {
                   const metadata = (request.params as { _meta?: Record<string, unknown> } | undefined)?._meta;
                   const confirmations = (metadata?.['papercusp/memoryReceipt'] as { confirmations?: unknown } | undefined)?.confirmations;
@@ -445,20 +456,22 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
                   // The same production response wrapper handles preparation
                   // and any next-request receipts; no fabricated fragment offer.
                   return withMemoryEmissionReceipt(db.adminSql as never, owner, confirmations, async () => {
-                    if (method !== (port === 'initialize' ? 'initialize' : 'tools/call')) return result;
-                    rendered = await buildLaunchMemoryBlock(input) ?? '';
-                    expect(rendered).toContain('Only after explicit final approval ☃.');
-                    expect(rendered.match(/Only after explicit final approval/g)).toHaveLength(1);
+                    if (method !== (nativePort === 'initialize' ? 'initialize' : 'tools/call')) return result;
+                    attempt.rendered = await buildLaunchMemoryBlock({ ...input, session: { sessionId: owner, port: nativePort } }) ?? '';
+                    rendered = attempt.rendered;
+                    expect(attempt.rendered).toContain('Only after explicit final approval ☃.');
+                    expect(attempt.rendered.match(/Only after explicit final approval/g)).toHaveLength(1);
                     const { _meta: _fixtureOffer, ...base } = result;
                     // Force a multi-write native response without changing the
                     // production fragment or manufacturing a receipt for it.
-                    const payload = rendered + (partial ? '\n' + 'x'.repeat(512 * 1024) + ' FINAL_CONDITION' : '');
-                    return port === 'initialize' ? { ...base, instructions: payload }
-                      : { ...base, content: [{ type: 'text', text: JSON.stringify({ [port]: payload }) }] };
+                    const payload = attempt.rendered + (partial ? '\n' + 'x'.repeat(512 * 1024) + ' FINAL_CONDITION' : '');
+                    return nativePort === 'initialize' ? { ...base, instructions: payload }
+                      : { ...base, content: [{ type: 'text', text: JSON.stringify({ [nativePort]: payload }) }] };
                   }).then(async response => {
                     const offer = response._meta?.['papercusp/memoryEmission'] as typeof offered;
                     if (offer) {
                       offered = offer;
+                      attempt.offers.push(offer);
                       // This observer runs inside the actual native request,
                       // before the fixture can write its HTTP response or the
                       // production stdio adapter can emit a single byte.
@@ -492,14 +505,111 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
                         expect(Number(expired[0]?.expiresAt)).toBe(1);
                         Object.assign(task.meta, { nativeExpiredPreparation: { token: offer.token, expired, pending } });
                       }
+                      if (fault === 'overlapping-ports') {
+                        // Both actual production offers must exist before
+                        // either HTTP response can reach its native adapter.
+                        if (++overlapPrepared === 2) releaseOverlap();
+                        await overlapReady;
+                      }
                     }
                     return response;
                   });
                 } }).catch(error => {
-                  if (!partial) throw error;
+                  if (!partial && fault !== 'lost-response' && fault !== 'deadline') throw error;
                   failure = String(error);
                   return null;
                 });
+            };
+            if (fault === 'lost-response' || fault === 'deadline') {
+              await runNative(false);
+              const attempt = nativeAttempts[0]!;
+              const diagnostics = JSON.parse(readFileSync(attempt.diagnosticsPath, 'utf8'));
+              Object.assign(task.meta, { nativeTransportFault: { failure, diagnostics, attempt } });
+              expect(attempt.offers.length).toBeGreaterThan(0);
+              expect(diagnostics.transportFaults.length).toBe(attempt.offers.length);
+              expect(diagnostics.stdoutDelivery).toEqual({ adapter: 'ptool-stdio', owner, confirmations: [] });
+              expect(echoedConfirmations).toEqual([]);
+              expect(await surfaced()).toEqual([]);
+              for (const observation of diagnostics.transportFaults) {
+                expect(observation).toMatchObject({ method: port === 'initialize' ? 'initialize' : 'tools/call',
+                  fault, closedBeforeCleanup: true, writableEnded: false });
+                expect(observation.elapsedMs).toBeGreaterThanOrEqual(fault === 'deadline' ? 8000 : 0);
+                const offer = attempt.offers.find(row => row.token === observation.preparedToken)!;
+                expect(offer?.owner).toBe(owner);
+                const { rendered: fragmentText, ...fragment } = offer.fragments[0]!;
+                expect(attempt.rendered).toContain(fragmentText);
+                expect(fragment).toMatchObject({ kind: source, epoch: 0, port,
+                  bodySha256: createHash('sha256').update(fragmentText as string).digest('hex'),
+                  bodyBytes: Buffer.byteLength(fragmentText as string) });
+                const pending = await db.adminSql<{ fragments: unknown[]; committed: unknown }[]>`
+                  SELECT pending -> 'fragments' AS fragments, committed FROM harness_shared.coord_read_cursors
+                  WHERE owner_id = ${owner} AND surface = ${'memory-emission:' + offer.token}`;
+                expect(pending).toEqual([{ fragments: [fragment], committed: null }]);
+              }
+              expect(await buildLaunchMemoryBlock({ ...input, session: { sessionId: owner, port: 'mid-turn' } }))
+                .toContain('Only after explicit final approval ☃.');
+              expect(await surfaced()).toEqual([]);
+              const offer = attempt.offers[0]!;
+              const { rendered: _text, ...fragment } = offer.fragments[0]!;
+              const cell: DeliveryMatrixCell = { client, sink: port, source, fault,
+                selector: task.name, evidenceRefs: [`vitest:${task.name}#nativeTransportFault`],
+                terminalOracle: 'complete-stdout', state: 'prepared', verdict: 'passed', suppressionWrites: 0,
+                attempt: { id: owner, recipient: owner, workspace: 'isolated-org-fixture', epoch: 0,
+                  token: offer.token, fragment: fragment as NonNullable<DeliveryMatrixCell['attempt']>['fragment'] } };
+              joinedCells.set(deliveryMatrixCellKey(cell), cell);
+              Object.assign(task.meta, { deliveryMatrixCell: cell });
+              return;
+            }
+            if (fault === 'overlapping-ports') {
+              const otherPort = port === 'initialize' ? 'orient' : 'initialize';
+              const captures = await Promise.all([runNative(false), runNative(false, otherPort)]);
+              expect(overlapPrepared).toBe(2);
+              expect(nativeAttempts.map(attempt => attempt.offers.length)).toEqual([1, 1]);
+              expect(new Set(nativeAttempts.map(attempt => attempt.offers[0]!.token)).size).toBe(2);
+              const proofs = captures.map((capture, index) => {
+                expect(capture).not.toBeNull();
+                const attempt = nativeAttempts[index]!;
+                const offer = attempt.offers[0]!;
+                const { rendered: fragmentText, ...fragment } = offer.fragments[0]!;
+                expect(attempt.rendered).toContain(fragmentText);
+                expect(fragment).toMatchObject({ kind: source, epoch: 0, port: attempt.port,
+                  bodySha256: createHash('sha256').update(fragmentText as string).digest('hex'),
+                  bodyBytes: Buffer.byteLength(fragmentText as string) });
+                const proof = { token: offer.token, fragments: [fragment] };
+                expect(capture!.stdoutDelivery).toEqual({ adapter: 'ptool-stdio', owner, confirmations: [proof] });
+                expect(capture!.stdoutReceipts).toHaveLength(1);
+                expect(capture!.stdoutReceipts![0]).toMatchObject({ stage: 'stdout-emitted', owner,
+                  token: offer.token, memoryFragments: [fragment] });
+                const visible = attempt.port === 'initialize' ? attempt.rendered : JSON.stringify({ [attempt.port]: attempt.rendered });
+                expect(JSON.stringify(capture!.request)).toContain(JSON.stringify(visible).slice(1, -1));
+                return proof;
+              });
+              // Automatic next-request confirmations may race; explicit
+              // replay of both saved exact receipts must stay idempotent.
+              await Promise.all(proofs.map(proof => withMemoryEmissionReceipt(db.adminSql as never, owner, [proof],
+                async () => ({ content: [] }))));
+              const surfacedRows = await surfaced();
+              expect(surfacedRows).toHaveLength(1);
+              expect([port, otherPort]).toContain(surfacedRows[0]!.port);
+              for (const proof of proofs) expect(await confirmMemoryEmission(db.adminSql as never, owner, proof as never)).toBe(0);
+              expect(await buildLaunchMemoryBlock({ ...input, session: { sessionId: owner, port: 'mid-turn' } })).toBeNull();
+              const proof = proofs[0]!;
+              const receipt = captures[0]!.stdoutReceipts![0]!;
+              const fragment = proof.fragments[0] as NonNullable<DeliveryMatrixCell['attempt']>['fragment'];
+              const cell: DeliveryMatrixCell = { client, sink: port, source, fault,
+                selector: task.name, evidenceRefs: [`vitest:${task.name}#nativeOverlappingPorts`],
+                terminalOracle: 'complete-stdout', state: 'emitted', verdict: 'passed', suppressionWrites: 1,
+                attempt: { id: owner, recipient: owner, workspace: 'isolated-org-fixture', epoch: 0, token: proof.token, fragment },
+                proof: { event: 'complete-stdout', adapter: 'ptool-stdio', receiptRef: `vitest:${task.name}#nativeOverlappingPorts`,
+                  attemptId: owner, recipient: owner, workspace: 'isolated-org-fixture', epoch: 0, token: proof.token,
+                  client, sink: port, payloadSha256: receipt.payloadSha256, payloadBytes: receipt.payloadBytes, fragment } };
+              joinedCells.set(deliveryMatrixCellKey(cell), cell);
+              Object.assign(task.meta, { deliveryMatrixCell: cell, nativeOverlappingPorts: {
+                nativeAttempts, proofs, receipts: captures.map(capture => capture!.stdoutReceipts),
+                preparedBeforeEitherResponse: overlapPrepared, surfacedRows, backendConfirmation: 'exact saved native receipts replayed',
+                endpointHandler: 'UNKNOWN', deployedRuntime: 'UNKNOWN' } });
+              return;
+            }
             if (fault === 'retry') {
               await runNative(true);
               const diagnostics = JSON.parse(readFileSync(diagnosticsPath, 'utf8'));
@@ -997,7 +1107,7 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
       terminalOracle: deliveryTerminalOracle(coordinate), state: 'UNKNOWN' as const,
       verdict: 'UNKNOWN' as const, suppressionWrites: 0,
     });
-    expect(joinedCells.size).toBe(192);
+    expect(joinedCells.size).toBe(240);
     expect(cells).toHaveLength(432);
     // Structural fixture identity only; acceptance binds separately retained
     // plan/rubric/spec/runtime identities and independent evidence later.
@@ -1007,7 +1117,7 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
         runtimeGeneration: 'isolated-postgresql-dispatcher-fixture' }, cells };
     const result = validateDeliveryMatrix(manifest);
     expect(result).toMatchObject({ closed: true, valid: true, acceptanceReady: false, errors: [] });
-    expect(result.unknown).toHaveLength(240);
+    expect(result.unknown).toHaveLength(192);
     Object.assign(task.meta, { deliveryMatrixCensus: { manifest, result,
       identityKind: 'structural fixture only; independent acceptance and shipment not asserted' } });
   });
