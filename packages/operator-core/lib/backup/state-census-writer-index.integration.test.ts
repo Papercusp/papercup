@@ -21,8 +21,10 @@ describe('historical census writer index and canonical archive boundary', () => 
     await db.sql`CREATE TABLE harness_shared.event_key_fires (
       workspace_id text, event_key text, last_fired_by text, last_payload jsonb, fire_count bigint,
       PRIMARY KEY (workspace_id, event_key))`;
+    await db.sql`CREATE TABLE harness_shared.coord_event_log (
+      id bigserial PRIMARY KEY, workspace_id text, surface text, writer_key text, body jsonb)`;
   });
-  beforeEach(async () => { await db.sql`TRUNCATE harness_shared.session_turn_parts, harness_shared.event_key_fires`; });
+  beforeEach(async () => { await db.sql`TRUNCATE harness_shared.session_turn_parts, harness_shared.event_key_fires, harness_shared.coord_event_log`; });
   afterAll(async () => { await db?.cleanup(); });
 
   it('reads exact terminal latches as the first query on a fresh PostgreSQL connection', async () => {
@@ -46,6 +48,32 @@ describe('historical census writer index and canonical archive boundary', () => 
       expect(await readRetainedReapTaskIds(
         ['gc-archive', 'other-source', 'other-workspace', 'still-running', 'missing'], [], { terminalSql: cold },
       )).toEqual(['gc-archive']);
+    } finally { await cold.end(); }
+  });
+
+  it('reads pre-latch reaper messages on a cold connection in the registered workspace and escapes exact ids', async () => {
+    const summary = (id: string) => '[task-reaper] reaped 1/1 agent-session scope(s). '
+      + `Log tails archived under ~/.papercusp/reap-archive/. ✓ ${id} (quiet-zombie)`;
+    for (const [id, workspace, surface, writer, from] of [
+      ['legacy.id', 'active', 'messages', 'task-manager', 'task-manager'],
+      ['foreign', 'foreign', 'messages', 'task-manager', 'task-manager'],
+      ['wrong-surface', 'active', 'other', 'task-manager', 'task-manager'],
+      ['wrong-writer', 'active', 'messages', 'other', 'task-manager'],
+      ['wrong-from', 'active', 'messages', 'task-manager', 'other'],
+      ['literalXid', 'active', 'messages', 'task-manager', 'task-manager'],
+      ['prefix-extra', 'active', 'messages', 'task-manager', 'task-manager'],
+    ]) {
+      await db.sql`INSERT INTO harness_shared.coord_event_log (workspace_id, surface, writer_key, body)
+        VALUES (${workspace}, ${surface}, ${writer}, ${db.sql.json({ from, summary: summary(id) })})`;
+    }
+    const cold = postgres(db.url, { max: 1 });
+    try {
+      expect(await readRetainedReapTaskIds(
+        ['legacy.id', 'foreign', 'wrong-surface', 'wrong-writer', 'wrong-from', 'literal.id', 'prefix', 'missing'],
+        [{ id: 'active' }, { id: 'active' }], {
+          terminalSql: cold, readTasks: async () => [], readTerminalLatches: async () => [],
+        },
+      )).toEqual(['legacy.id']);
     } finally { await cold.end(); }
   });
 
