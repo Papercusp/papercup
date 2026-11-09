@@ -96,11 +96,13 @@ function observedBuildFixture(extraScript = '') {
   return { ...f, observedSource, produceObserved };
 }
 
-function loadedFixture(source?: string, admit = true, buildObservationOnly = false, duplicatePreload = false) {
+function loadedFixture(source?: string, admit = true, buildObservationOnly = false, duplicatePreload = false,
+  schema?: Record<string, string>) {
   let f: ReturnType<typeof fixture>;
   if (buildObservationOnly) {
     const observed = observedBuildFixture(); observed.produceObserved(); f = observed;
   } else f = fixture();
+  if (schema) { f.closure.schema = schema; f.options.schema = { ...schema }; f.save(); }
   const traceOut = join(f.dir, 'host-source.json');
   if (source !== undefined) {
     writeFileSync(f.bundle, source);
@@ -294,6 +296,150 @@ describe('committed reader loader-return source binding', () => {
     const f = loadedFixture();
     expect(f.observe()).toMatchObject({ status: 'bound', runId: 'reader-host-observed-run',
       configurationInputs: { status: 'matched' } });
+  });
+
+  function loadedSchemaFixture(messageChange = '') {
+    const column = { table_schema: 'harness_shared', table_name: 'tool_invocations', column_name: 'args_json',
+      data_type: 'jsonb', udt_name: 'jsonb', is_nullable: 'NO', column_default: 'private-schema-default', ordinal_position: 1 };
+    return loadedFixture(`import { channel } from 'node:diagnostics_channel';
+      const row = ${JSON.stringify(column)};
+      const message = { query: 'SELECT catalogue fixture', backendPid: 512, rows: [row] };
+      ${messageChange}
+      channel('papercusp:api-worker-schema').publish(message);`, true, false, false,
+    { 'harness_shared.tool_invocations.args_json': digest(JSON.stringify(column)) });
+  }
+
+  it('binds the same worker catalogue bytes while keeping applied SQL and private PG pending', () => {
+    // This child publishes controlled catalogue rows. The real API/PG journey
+    // remains separate; these controls verify only native retention and binding.
+    const f = loadedSchemaFixture();
+    const observed = f.observe();
+    expect(observed.privateSchema).toMatchObject({ status: 'observed', gaps: [], backendPid: 512,
+      schema: f.closure.schema, querySha256: digest('SELECT catalogue fixture'),
+      receiptSha256: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    expect(observed.pending).toContain('private-pg');
+    expect(JSON.stringify(f.rows)).not.toContain('private-schema-default');
+  });
+
+  it.each(['missing', 'duplicate', 'unavailable', 'unterminated', 'run', 'process', 'kernel', 'isolate',
+    'late', 'scope', 'backend', 'query', 'columns', 'reference', 'limited', 'bytes'] as const)(
+    'keeps %s worker schema evidence unknown', control => {
+      const f = loadedSchemaFixture();
+      expect(f.observe().privateSchema.status).toBe('observed');
+      const entry = f.rows.find(({ row }) => row.event === 'api-worker-schema')!;
+      if (control === 'missing') rmSync(join(f.traceRoot, entry.name));
+      else if (control === 'duplicate') {
+        const bytes = JSON.stringify({ ...entry.row, duplicate: true });
+        writeFileSync(join(f.traceRoot, digest(bytes) + '.json'), bytes);
+      } else if (control === 'unterminated') f.replace('node-exit', row => { row.exitListenersComplete = false; });
+      else if (control === 'bytes') writeFileSync(join(f.traceRoot, entry.row.artifact.ref), 'changed');
+      else f.replace('api-worker-schema', row => {
+        if (control === 'unavailable') row.event = 'api-worker-schema-unavailable';
+        else if (control === 'run') row.runGroupId = 'another-run';
+        else if (control === 'process') row.processIdentity = 'another-process';
+        else if (control === 'kernel') row.kernelProcessIdentity = 'another-kernel';
+        else if (control === 'isolate') row.threadId += 1;
+        else if (control === 'late') row.atMs = f.options.finishedAtMs + 1;
+        else if (control === 'scope') row.scope = 'parent-catalogue';
+        else if (control === 'backend') row.backendPid = null;
+        else if (control === 'query') row.querySha256 = null;
+        else if (control === 'columns') row.columns += 1;
+        else if (control === 'reference') row.artifact.ref = '../schema';
+        else row.artifact.byteLength = 8 * 1024 * 1024 + 1;
+      });
+      expect(f.observe().privateSchema).toMatchObject({ status: 'unknown', schema: null,
+        receiptSha256: null, gaps: [expect.any(String)] });
+      expect(f.observe().pending).toContain('private-pg');
+    });
+
+  it.each(['message.unavailable = true;', 'message.rows = [];', 'message.rows = Array(32769).fill(row);',
+    'message.rows.push(row);', 'row.ordinal_position = 0;', 'row.table_schema = "other";',
+    'message.backendPid = 0;', 'row.column_default = "x".repeat(65537);'])(
+    'refuses invalid or limited worker catalogue publication: %s', change => {
+      expect(loadedSchemaFixture().observe().privateSchema.status).toBe('observed');
+      const f = loadedSchemaFixture(change);
+      expect(f.observe().privateSchema).toMatchObject({ status: 'unknown',
+        gaps: ['host schema capture incomplete'] });
+    });
+
+  it('refuses changed catalogue values without filling from the parent prediction', () => {
+    expect(loadedSchemaFixture().observe().privateSchema.status).toBe('observed');
+    const observed = loadedSchemaFixture('row.data_type = "text";').observe();
+    expect(observed.privateSchema).toMatchObject({ status: 'unknown', schema: null,
+      gaps: ['actual API worker schema differs from preparation'] });
+  });
+
+  it('retains actual configuration gets through exit listeners, mutations and unset values', () => {
+    const f = loadedFixture(`
+      void process.env.PAPERCUSP_TEST_CONFIGURATION_SECRET;
+      process.env.PAPERCUSP_TEST_CONFIGURATION_SECRET = 'mutated-private-value';
+      void process.env.PAPERCUSP_TEST_CONFIGURATION_SECRET;
+      process.on('exit', () => {
+        delete process.env.PAPERCUSP_TEST_CONFIGURATION_SECRET;
+        void process.env.PAPERCUSP_TEST_CONFIGURATION_SECRET;
+      });
+    `);
+    const observed = f.observe();
+    expect(observed.configurationReads).toMatchObject({ status: 'observed', gaps: [],
+      receiptSha256: expect.stringMatching(/^[a-f0-9]{64}$/), observation: {
+        scope: 'javascript-configuration-property-gets', populationStatus: 'unknown',
+        captureComplete: true, activeAtTermination: true,
+      } });
+    expect(observed.configurationReads.observation!.reads.filter(row =>
+      row.key === 'PAPERCUSP_TEST_CONFIGURATION_SECRET')).toEqual([
+      { key: 'PAPERCUSP_TEST_CONFIGURATION_SECRET', sha256: digest('private-entry-value') },
+      { key: 'PAPERCUSP_TEST_CONFIGURATION_SECRET', sha256: digest('mutated-private-value') },
+      { key: 'PAPERCUSP_TEST_CONFIGURATION_SECRET', sha256: null },
+    ]);
+    expect(JSON.stringify(f.rows)).not.toContain('mutated-private-value');
+    expect(observed.pending).toContain('runtime-config');
+  });
+
+  it.each(['missing', 'duplicate', 'invalid', 'limited', 'replaced', 'unterminated',
+    'isolate', 'before-exit', 'terminal-order'] as const)('keeps %s configuration read evidence unknown', control => {
+    const f = loadedFixture();
+    expect(f.observe().configurationReads).toMatchObject({ status: 'observed', gaps: [] });
+    if (control === 'missing') {
+      rmSync(join(f.traceRoot, f.rows.find(({ row }) => row.event === 'configuration-reads')!.name));
+    } else if (control === 'duplicate') {
+      const receipt = f.rows.find(({ row }) => row.event === 'configuration-reads')!.row;
+      const bytes = JSON.stringify({ ...receipt, duplicate: true });
+      writeFileSync(join(f.traceRoot, digest(bytes) + '.json'), bytes);
+    } else if (control === 'unterminated') {
+      f.replace('node-exit', row => { row.exitListenersComplete = false; });
+    } else f.replace('configuration-reads', row => {
+      if (control === 'invalid') row.observation.reads = [{ key: 'NODE_ENV', sha256: 'invalid' }];
+      else if (control === 'limited') row.observation.captureComplete = false;
+      else if (control === 'replaced') row.observation.activeAtTermination = false;
+      else if (control === 'isolate') row.threadId += 1;
+      else if (control === 'before-exit') row.atMs = f.rows.find(({ row }) => row.event === 'node-exit-start')!.row.atMs - 1;
+      else row.atMs = f.options.finishedAtMs + 1;
+    });
+    expect(f.observe().configurationReads).toMatchObject({ status: 'unknown', observation: null,
+      receiptSha256: null, gaps: [expect.any(String)] });
+    expect(f.observe().pending).toContain('runtime-config');
+  });
+
+  it.each(['process', 'kernel', 'run'] as const)('refuses cross-%s configuration receipt identity', control => {
+    const f = loadedFixture();
+    expect(f.observe().configurationReads.status).toBe('observed');
+    f.replace('configuration-reads', row => {
+      if (control === 'process') row.processIdentity = 'another-process';
+      else if (control === 'kernel') row.kernelProcessIdentity = 'another-kernel-process';
+      else row.runGroupId = 'another-api-run';
+    });
+    // The run is selected by the authenticated entry; a per-receipt run field
+    // cannot override it or substitute another cohort.
+    const observed = f.observe();
+    expect(observed.configurationReads.status).toBe('unknown');
+  });
+
+  it('keeps actual read overflow unknown without changing native return values', () => {
+    const f = loadedFixture(`for (let i = 0; i < 513; i++) {
+      if (process.env.PAPERCUSP_TEST_CONFIGURATION_SECRET !== 'private-entry-value') throw Error('changed return');
+    }`);
+    expect(f.observe().configurationReads).toMatchObject({ status: 'unknown',
+      gaps: ['host configuration read capture limited or replaced'] });
   });
 
   it.each(['missing', 'different', 'empty-selection'] as const)(

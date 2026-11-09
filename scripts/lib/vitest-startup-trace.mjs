@@ -7,6 +7,7 @@ import { closeSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, real
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { threadId } from 'node:worker_threads';
+import { channel } from 'node:diagnostics_channel';
 import { captureConfigurationSnapshot, observeConfigurationReads } from '../../libs/test-config/src/configuration-snapshot.ts';
 import { readProcessIdentity } from './process-identity.mjs';
 import { nativeSourceRetentionLimits, validateSourcePins, observeEngineScriptExecution }
@@ -129,6 +130,48 @@ function installNativeProcessTrace(out) {
     } catch { return [role, { scope, captureComplete: false, artifactUnavailable: true }]; }
   }));
   const runGroupId = process.env.PAPERCUSP_TEST_RUN_GROUP ?? null;
+  // Extend the existing per-process trace rather than creating a second
+  // evidence writer. Only catalogue bytes returned in this process are hashed;
+  // endpoint scans and the parent's schema prediction never enter this channel.
+  channel('papercusp:api-worker-schema').subscribe(message => {
+    try {
+      if (!message || message.unavailable || !Array.isArray(message.rows)
+        || message.rows.length === 0 || message.rows.length > 32768
+        || !Number.isSafeInteger(message.backendPid) || message.backendPid <= 0
+        || typeof message.query !== 'string' || message.query.length > 4096)
+        throw new Error('schema observation unavailable or limited');
+      const schema = {};
+      let inputBytes = 0;
+      for (const row of message.rows) {
+        if (row.table_schema !== 'harness_shared'
+          || !['table_name', 'column_name', 'data_type', 'udt_name', 'is_nullable'].every(key =>
+            typeof row[key] === 'string' && row[key].length > 0 && row[key].length <= 256)
+          || !['YES', 'NO'].includes(row.is_nullable)
+          || !(row.column_default === null || typeof row.column_default === 'string' && row.column_default.length <= 65536)
+          || !Number.isSafeInteger(row.ordinal_position) || row.ordinal_position <= 0)
+          throw new Error('invalid schema column');
+        const key = `${row.table_schema}.${row.table_name}.${row.column_name}`;
+        if (Object.hasOwn(schema, key)) throw new Error('duplicate schema column');
+        const columnBytes = Buffer.from(JSON.stringify({ table_schema: row.table_schema,
+          table_name: row.table_name, column_name: row.column_name, data_type: row.data_type,
+          udt_name: row.udt_name, is_nullable: row.is_nullable, column_default: row.column_default,
+          ordinal_position: row.ordinal_position }));
+        inputBytes += columnBytes.length;
+        if (inputBytes > 8 * 1024 * 1024) throw new Error('schema input byte limit');
+        schema[key] = createHash('sha256').update(columnBytes).digest('hex');
+      }
+      const bytes = Buffer.from(JSON.stringify(schema));
+      if (bytes.length > 8 * 1024 * 1024) throw new Error('schema byte limit');
+      const sha256 = createHash('sha256').update(bytes).digest('hex');
+      const ref = `${sha256}.schema`, path = join(root, ref);
+      publish(path, bytes);
+      if (!lstatSync(path).isFile() || lstatSync(path).isSymbolicLink() || !readFileSync(path).equals(bytes))
+        throw new Error('redirected or changed schema artifact');
+      emit('api-worker-schema', { runGroupId, scope: 'api-worker-information-schema-columns',
+        backendPid: message.backendPid, querySha256: createHash('sha256').update(message.query).digest('hex'),
+        columns: message.rows.length, artifact: { ref, sha256, byteLength: bytes.length } });
+    } catch { emit('api-worker-schema-unavailable', { runGroupId }); }
+  });
   try {
     emit('node-entry', { executable: process.execPath, argv: process.argv.slice(),
       execArgv: process.execArgv.slice(), cwd: process.cwd(), lifecycle: lifecycle(process.env),
@@ -417,7 +460,9 @@ function installNativeProcessTrace(out) {
       // Observe the resolver's return directly. A build graph, lockfile or
       // later require.resolve call cannot supply this worker's actual edge.
       if (resolveSequence >= 128) {
-        if (resolveSequence++ === 128) emit('module-resolve-limit', { limit: 128 });
+        // Each limit marker is emitted once, even when the shared event budget
+        // ran out first. Missing population must remain explicit in the receipt.
+        if (resolveSequence++ === 128) emit('module-resolve-limit', { limit: 128 }, true);
         return nextResolve(specifier, context);
       }
       const resolveId = ++resolveSequence;
@@ -439,7 +484,7 @@ function installNativeProcessTrace(out) {
         !observedPinnedLoads.has(url);
       if (enrolled) observedPinnedLoads.add(url);
       if (!enrolled && loadSequence >= 128) {
-        if (loadSequence++ === 128) emit('module-load-limit', { limit: 128 });
+        if (loadSequence++ === 128) emit('module-load-limit', { limit: 128 }, true);
         return nextLoad(url, context);
       }
       if (!enrolled) loadSequence++;

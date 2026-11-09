@@ -589,6 +589,37 @@ describe('focused runner startup tracing', () => {
     expect(nativeProcessTraceEnv(armed).NODE_OPTIONS).toBe(armed.NODE_OPTIONS);
   });
 
+  it('collects real Vitest tests with native source capture and startup tracing both armed', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'native-capture-collection-'));
+    const out = join(dir, 'sources.json');
+    const vitest = fileURLToPath(new URL('../../../../node_modules/vitest/vitest.mjs', import.meta.url));
+    const api = new URL('../../../../node_modules/vitest/dist/index.js', import.meta.url).href;
+    writeFileSync(join(dir, 'vitest.config.mjs'),
+      "export default { test: { include: ['capture.test.mjs'], pool: 'forks', maxWorkers: 1 } };\n");
+    writeFileSync(join(dir, 'capture.test.mjs'),
+      `import { test } from ${JSON.stringify(api)}; test('capture collection reached', () => {});\n`);
+    let completed = false;
+    try {
+      const { stdout, stderr } = await promisify(execFile)(process.execPath,
+        [vitest, 'list', '--root', dir, '--config', join(dir, 'vitest.config.mjs'), '--json'], {
+          env: nativeProcessTraceEnv({ PATH: process.env.PATH, HOME: process.env.HOME,
+            NODE_OPTIONS: '', PC_EXECUTED_SOURCE_MAP_OUT: out, PAPERCUSP_TEST_STARTUP_TRACE: '1' }),
+          timeout: 30_000, maxBuffer: 4 * 1024 * 1024,
+        });
+      expect(JSON.parse(stdout)).toEqual([expect.objectContaining({ name: 'capture collection reached' })]);
+      expect(stderr).not.toContain('ERR_INVALID_OBJECT_DEFINE_PROPERTY');
+      expect(stderr).toContain('TEST_FILE_STARTUP_TRACE ');
+      const rows = readdirSync(`${out}.native-processes`).filter(name => name.endsWith('.json'))
+        .map(name => JSON.parse(readFileSync(join(`${out}.native-processes`, name), 'utf8')));
+      expect(rows.some(row => row.event === 'node-entry' && row.argv[1] === vitest)).toBe(true);
+      expect(rows.some(row => row.event === 'node-exit' && row.code === 0)).toBe(true);
+      completed = true;
+    } catch (error) {
+      retainNativeStartupFailure(dir, error);
+      throw error;
+    } finally { if (completed) rmSync(dir, { recursive: true, force: true }); }
+  }, 45_000);
+
   it('distinguishes worker threads from process entries while retaining thread source bytes', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'native-thread-source-'));
     const out = join(dir, 'sources.json');

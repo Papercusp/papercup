@@ -1189,6 +1189,12 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
       observation: null as ConfigurationReadObservation | null,
       receiptSha256: null as string | null, gaps: ['host entry not validated'],
     },
+    privateSchema: {
+      scope: 'api-worker-information-schema-columns', status: 'unknown' as 'observed' | 'unknown',
+      schema: null as Record<string, string> | null, backendPid: null as number | null,
+      querySha256: null as string | null, receiptSha256: null as string | null,
+      gaps: ['host entry not validated'],
+    },
     resolutions: {
       scope: 'native-node-resolver-returned-edges', status: 'unknown' as 'bound' | 'unknown',
       edges: [] as Array<{ resolveId: number; specifier: string; parentURL: string | null;
@@ -1241,6 +1247,46 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
       assert.deepEqual(actual, expected, 'host entry configuration inputs differ');
       result.configurationInputs.status = 'matched';
     } catch (error) { result.configurationInputs.gaps.push((error as Error).message.split('\n')[0]); }
+    // A catalogue observation establishes only its observed columns. Applied
+    // migration SQL, database lifetime/cleanup and full private-PG stay pending.
+    result.privateSchema.gaps.length = 0;
+    try {
+      assert.ok(result.runId, 'independent host run identity required for schema');
+      const exits = own.filter(({ row }) => row.event === 'node-exit');
+      assert.ok(exits.length === 1 && exits[0].row.exitListenersComplete === true,
+        'host schema terminal observation missing or incomplete');
+      assert.ok(!own.some(({ row }) => ['trace-limit', 'trace-event-too-large',
+        'api-worker-schema-unavailable'].includes(row.event)), 'host schema capture incomplete');
+      const receipts = own.filter(({ row }) => row.event === 'api-worker-schema');
+      assert.equal(receipts.length, 1, 'one host schema receipt required');
+      const receipt = receipts[0], row = receipt.row, pin = row.artifact;
+      assert.equal(row.runGroupId, result.runId, 'host schema receipt belongs to another run');
+      assert.ok(row.threadId === entry.row.threadId && row.atMs <= exits[0].row.atMs,
+        'host schema receipt isolate or terminal order differs');
+      assert.equal(row.scope, result.privateSchema.scope, 'host schema observation scope differs');
+      assert.ok(Number.isSafeInteger(row.backendPid) && row.backendPid > 0
+        && typeof row.querySha256 === 'string' && /^[a-f0-9]{64}$/.test(row.querySha256),
+        'host schema query identity missing');
+      assert.ok(pin && /^[a-f0-9]{64}$/.test(pin.sha256) && pin.ref === `${pin.sha256}.schema`
+        && Number.isSafeInteger(pin.byteLength) && pin.byteLength > 0 && pin.byteLength <= 8 * 1024 * 1024,
+        'host schema artifact missing or limited');
+      const bytes = readNativeArtifactBytes(join(trace.sourceRoot, pin.ref), pin.byteLength, 8 * 1024 * 1024);
+      assert.equal(digestBytes(bytes), pin.sha256, 'retained host schema digest differs');
+      const schema = JSON.parse(bytes.toString('utf8'));
+      assert.ok(schema && typeof schema === 'object' && !Array.isArray(schema)
+        && Number.isSafeInteger(row.columns) && row.columns > 0 && row.columns <= 32768
+        && Object.keys(schema).length === row.columns && Object.entries(schema).every(([key, value]) =>
+          key.startsWith('harness_shared.') && typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)),
+        'host schema catalogue invalid or limited');
+      const expectedSchema = (JSON.parse(closureBytes.toString('utf8')) as Partial<CommittedReaderClosure>).schema;
+      assert.ok(expectedSchema && Object.keys(expectedSchema).length, 'independent prepared schema missing');
+      assert.deepEqual(schema, expectedSchema, 'actual API worker schema differs from preparation');
+      result.privateSchema.schema = schema;
+      result.privateSchema.backendPid = row.backendPid;
+      result.privateSchema.querySha256 = row.querySha256;
+      result.privateSchema.receiptSha256 = digestBytes(receipt.bytes);
+      result.privateSchema.status = 'observed';
+    } catch (error) { result.privateSchema.gaps.push((error as Error).message.split('\n')[0]); }
     // This is a bounded record of actual JS property gets, not resolved config
     // or a full configuration population. Keep runtime-config pending.
     result.configurationReads.gaps.length = 0;
@@ -1255,7 +1301,11 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
       assert.equal(receipts.length, 1, 'one host configuration read receipt required');
       const receipt = receipts[0];
       assert.equal(receipt.row.runGroupId, result.runId, 'host configuration read receipt belongs to another run');
-      assert.ok(receipt.row.threadId === entry.row.threadId && receipt.row.atMs <= exits[0].row.atMs,
+      const exitStarts = own.filter(({ row }) => row.event === 'node-exit-start');
+      assert.ok(exitStarts.length === 1 && exitStarts[0].row.threadId === entry.row.threadId
+        && exits[0].row.threadId === entry.row.threadId
+        && receipt.row.threadId === entry.row.threadId
+        && exitStarts[0].row.atMs <= receipt.row.atMs && receipt.row.atMs <= exits[0].row.atMs,
         'host configuration read receipt isolate or terminal order differs');
       const observation = readConfigurationReadObservation(receipt.row.observation);
       assert.ok(observation, 'host configuration read observation missing or invalid');
