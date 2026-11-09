@@ -2107,9 +2107,48 @@ export async function resolveMetadataRepairLock({ repoRoot }, {
   const attemptRoot = mkdtempSync(join(tmpdir(), "npm-metadata-repair-"));
   const receipt = { schemaVersion: 1, attemptId, repositoryRealpath, attemptRoot,
     cleanup: { removed: false } };
+  let stage = "prepare";
+  let resolverRoot;
+  let resolverLockPath;
+  let resolution;
+  let failure;
+  const withFailureEvidence = error => {
+    const candidate = { path: resolverLockPath ?? null, bytes: null, sha256: null,
+      size: null, omission: "not-produced" };
+    // Keep diagnostics in memory, never the disposable tree. Do not follow a
+    // substituted path or read an unbounded output after a failed child.
+    if (resolution && resolverRoot && resolverLockPath) {
+      try {
+        const output = join(resolverRoot, resolverLockPath);
+        const rootStat = lstatSync(resolverRoot);
+        const stat = lstatSync(output);
+        if (!rootStat.isDirectory() || rootStat.isSymbolicLink() || realpathSync(resolverRoot) !== resolverRoot ||
+            !stat.isFile() || stat.isSymbolicLink()) candidate.omission = "unsafe-type";
+        else {
+          candidate.size = stat.size;
+          if (stat.size > 16 * 1024 * 1024) candidate.omission = "size-limit";
+          else {
+            candidate.bytes = readFileSync(output);
+            candidate.sha256 = digest(candidate.bytes);
+            candidate.omission = null;
+          }
+        }
+      } catch (readError) {
+        candidate.omission = readError?.code === "ENOENT" ? "absent" : "unreadable";
+      }
+    }
+    const caught = error instanceof Error ? error : new Error(String(error));
+    // Non-enumerable: ordinary error logging must not dump the lock bytes.
+    Object.defineProperty(caught, "metadataRepairFailure", { value: {
+      schemaVersion: 1, stage, candidate, resolution: resolution ?? null, receipt,
+    } });
+    return caught;
+  };
   try {
     const input = createManifestOnlyTree(repositoryRealpath, inputPaths, attemptRoot);
     const lockPath = input.snapshot.get("npm-shrinkwrap.json") !== null ? "npm-shrinkwrap.json" : "package-lock.json";
+    resolverRoot = input.scratchRoot;
+    resolverLockPath = lockPath;
     // Keep selected input evidence unchanged. Only the owned resolver copy's
     // mirrors are derived from selected manifests, before npm reads its graph.
     const privateSnapshot = new Map(input.snapshot);
@@ -2223,9 +2262,12 @@ export async function resolveMetadataRepairLock({ repoRoot }, {
         launchSha256: digest(JSON.stringify({ node, argv, cwd: options.cwd, env })) };
       return spawnCommand(node, args, options);
     };
+    stage = "resolve";
     const status = await runNpmWithHeartbeat({ phase: "metadata-repair-resolve", args: argv,
       cwd: input.scratchRoot, env, spawnCommand: launch, log });
+    resolution = { exitCode: status };
     if (status !== 0) throw new Error("metadata-repair-resolution-failed");
+    stage = "validate-inputs";
     // npm may rewrite mirror metadata in the lock; it may not change a source
     // manifest, config, local target or archive to make the graph look valid.
     for (const [path, bytes] of input.snapshot) {
@@ -2234,23 +2276,34 @@ export async function resolveMetadataRepairLock({ repoRoot }, {
       const actual = existsSync(output) ? readFileSync(output) : null;
       if (!fileBytesEqual(bytes, actual)) throw new Error("metadata-repair-resolver-changed-input");
     }
+    stage = "validate-output";
     const output = join(input.scratchRoot, lockPath);
     if (!lstatSync(output).isFile() || lstatSync(output).isSymbolicLink()) throw new Error("metadata-repair-output-type");
     const bytes = readFileSync(output);
     const packages = JSON.parse(bytes).packages;
     if (!packages || typeof packages !== "object" || Array.isArray(packages)) throw new Error("metadata-repair-output-graph");
+    stage = "validate-graph";
     assertMetadataRepairGraph({ repoRoot: input.scratchRoot, beforeLockBytes: input.snapshot.get(lockPath), lockPath }, { npmCli: cli });
     receipt.output = { path: lockPath, sha256: digest(bytes), mode: lstatSync(output).mode & 0o777,
       registry: Object.entries(packages).sort(([a], [b]) => a.localeCompare(b)).map(([path, entry]) => ({
         path, resolved: entry.resolved ?? null, integrity: entry.integrity ?? null,
       })) };
     return { bytes, snapshot: input.snapshot, receipt };
+  } catch (error) {
+    failure = withFailureEvidence(error);
+    throw failure;
   } finally {
     // Only this attempt's exclusively-created root is owned here. A failure is
     // surfaced, never converted into a successful cleanup receipt.
-    rmSync(attemptRoot, { recursive: true, force: true });
-    receipt.cleanup.removed = !existsSync(attemptRoot);
-    if (!receipt.cleanup.removed) throw new Error("metadata-repair-cleanup-incomplete");
+    try {
+      rmSync(attemptRoot, { recursive: true, force: true });
+      receipt.cleanup.removed = !existsSync(attemptRoot);
+      if (!receipt.cleanup.removed) throw new Error("metadata-repair-cleanup-incomplete");
+    } catch (error) {
+      receipt.cleanup.errorCode = error?.code ?? "metadata-repair-cleanup-incomplete";
+      // Preserve the original refusal and record cleanup failure alongside it.
+      if (!failure) { stage = "cleanup"; throw withFailureEvidence(error); }
+    }
   }
 }
 

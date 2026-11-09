@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { spawn, spawnSync } from "node:child_process";
 import test from "node:test";
@@ -217,6 +218,76 @@ test("metadata repair reconciles selected mirrors before npm without changing se
   assert.equal(JSON.parse(result.bytes).packages["packages/child"].dependencies, undefined);
 });
 
+for (const mutation of ["local-target", "malformed", "oversized", "symlink"]) {
+  test(`metadata repair retains bounded ${mutation} rejection evidence after real npm and cleanup`, async t => {
+    const root = mkdtempSync(join(tmpdir(), "metadata-repair-failure-test-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const manifests = {
+      "": { name: "failure-root", version: "1.0.0", private: true, workspaces: ["packages/*"] },
+      "packages/child": { name: "failure-child", version: "1.0.0", dependencies: { kit: "file:./kit" } },
+      "packages/child/kit": { name: "kit", version: "1.0.0" },
+      "packages/generic": { name: "kit", version: "1.0.0" },
+    };
+    for (const [path, manifest] of Object.entries(manifests)) {
+      mkdirSync(join(root, path), { recursive: true });
+      writeFileSync(join(root, path, "package.json"), JSON.stringify(manifest));
+    }
+    let rejectedBytes;
+    let childExit;
+    await assert.rejects(resolveMetadataRepairLock({ repoRoot: root }, {
+      log: () => {},
+      spawnCommand: (command, args, options) => {
+        const child = spawn(command, args, { ...options, stdio: "ignore" });
+        // Exercise the real npm boundary, then inject invalid output before
+        // its completion reaches the resolver's validator.
+        child.once("exit", status => {
+          childExit = status;
+          if (status !== 0) return;
+          const output = join(options.cwd, "package-lock.json");
+          if (mutation === "symlink") {
+            rmSync(output);
+            symlinkSync(join(root, "package.json"), output);
+            return;
+          }
+          if (mutation === "malformed") rejectedBytes = Buffer.from("{");
+          else if (mutation === "oversized") rejectedBytes = Buffer.alloc(16 * 1024 * 1024 + 1, 32);
+          else {
+            const lock = JSON.parse(readFileSync(output));
+            lock.packages["packages/child/node_modules/kit"] = { resolved: "packages/generic", link: true };
+            rejectedBytes = Buffer.from(JSON.stringify(lock));
+          }
+          writeFileSync(output, rejectedBytes);
+        });
+        return child;
+      },
+    }), error => {
+      assert.equal(childExit, 0);
+      const evidence = error.metadataRepairFailure;
+      assert.equal(evidence.schemaVersion, 1);
+      assert.equal(evidence.stage, mutation === "local-target" ? "validate-graph" : "validate-output");
+      assert.equal(evidence.resolution.exitCode, 0);
+      assert.equal(Object.hasOwn(evidence.receipt, "resolution"), false);
+      assert.equal(evidence.receipt.cleanup.removed, true);
+      assert.equal(existsSync(evidence.receipt.attemptRoot), false);
+      assert.equal(Object.keys(error).includes("metadataRepairFailure"), false);
+      if (mutation === "oversized" || mutation === "symlink") {
+        assert.equal(evidence.candidate.bytes, null);
+        assert.equal(evidence.candidate.sha256, null);
+        assert.equal(evidence.candidate.omission, mutation === "oversized" ? "size-limit" : "unsafe-type");
+      } else {
+        assert.deepEqual(evidence.candidate.bytes, rejectedBytes);
+        assert.equal(evidence.candidate.sha256, createHash("sha256").update(rejectedBytes).digest("hex"));
+        assert.equal(evidence.candidate.omission, null);
+      }
+      if (mutation === "local-target") assert.match(error.message, /metadata-repair-graph-local-target:packages\/child:kit/);
+      return true;
+    });
+    assert.equal(existsSync(join(root, "package-lock.json")), false);
+    for (const [path, manifest] of Object.entries(manifests))
+      assert.deepEqual(JSON.parse(readFileSync(join(root, path, "package.json"))), manifest);
+  });
+}
+
 for (const field of ["invalid", "extraneous", "problems"]) {
   test(`metadata graph refuses zero-exit npm with deep descendant ${field}`, t => {
     const f = repairGraphFixture(t);
@@ -303,6 +374,10 @@ test("metadata repair resolution owns an empty per-attempt cache and excludes am
   assert.notEqual(first.receipt.attemptId, second.receipt.attemptId);
   assert.notEqual(calls[0].cache, calls[1].cache);
   for (const result of [first, second]) {
+    // The existing generated-lock custody consumer parses this receipt with a
+    // closed schema. Failure-only diagnostics must not widen successful output.
+    assert.equal(Object.hasOwn(result.receipt, "resolution"), false);
+    assert.equal(Object.hasOwn(result, "metadataRepairFailure"), false);
     assert.equal(result.receipt.cache.emptyBeforeLaunch, true);
     assert.equal(result.receipt.cache.attemptId, result.receipt.attemptId);
     assert.equal(result.receipt.cleanup.removed, true);

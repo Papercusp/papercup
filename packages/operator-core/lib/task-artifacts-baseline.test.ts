@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { findBoxIdentityPaths, findIdentityLiterals, resolveIdentityLiterals } from '../../../scripts/lib/identity-leak-patterns.mjs';
 import { assertBaselineRepairInputs, assertFrozenBaselineSources, baselineLockDelta,
-  baselineProductBoundary } from '../test/task-artifacts-baseline-repair';
+  baselineProductBoundary, retainBaselineRepairFailure } from '../test/task-artifacts-baseline-repair';
 
 // Original source bytes captured before product edits, independent of candidate
 // imports. Runtime paths stay in the immutable PG capture, outside release source.
@@ -74,6 +74,28 @@ describe('managed artifact pre-feature baseline custody', () => {
 });
 
 describe('separately qualified baseline dependency repair custody', () => {
+  it('retains rejected bytes and cleanup receipt without treating them as a repaired edition', () => {
+    const root = mkdtempSync(join(tmpdir(), 'artifact-baseline-rejection-'));
+    try {
+      const bytes = Buffer.from('{"rejected":true}');
+      const candidate = { path: 'package-lock.json', bytes, sha256: sha256(bytes),
+        size: bytes.length, omission: null };
+      const receipt = { cleanup: { removed: true } };
+      const resolution = { exitCode: 0 };
+      const error = Object.assign(new Error('metadata-repair-graph-local-target'), {
+        metadataRepairFailure: { schemaVersion: 1, stage: 'validate-graph', candidate, resolution, receipt },
+      });
+      retainBaselineRepairFailure(root, error);
+      expect(readFileSync(join(root, 'dependency-lock-rejected.json'))).toEqual(bytes);
+      const evidence = JSON.parse(readFileSync(join(root, 'dependency-repair-failure.json'), 'utf8'));
+      expect(evidence).toEqual({ schemaVersion: 1, stage: 'validate-graph', receipt, resolution,
+        candidate: { path: candidate.path, sha256: candidate.sha256, size: bytes.length,
+          omission: null, evidenceFile: 'dependency-lock-rejected.json' } });
+      expect(() => readFileSync(join(root, 'dependency-edition.json'))).toThrow();
+      expect(() => retainBaselineRepairFailure(root, error)).toThrow();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('rejects a source replacement even when dependency metadata is otherwise valid', () => {
     const root = mkdtempSync(join(tmpdir(), 'artifact-baseline-freeze-'));
     try {

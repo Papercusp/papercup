@@ -69,6 +69,30 @@ export function baselineLockDelta(beforeBytes: Buffer, afterBytes: Buffer) {
   return { metadataBefore, metadataAfter, packages };
 }
 
+/** Retain rejected bytes as evidence only; never apply them to the source. */
+export function retainBaselineRepairFailure(evidenceDir: string, error: unknown) {
+  const failure = (error as { metadataRepairFailure?: {
+    schemaVersion: number; stage: string;
+    candidate: { path: string | null; bytes: Buffer | null; sha256: string | null;
+      size: number | null; omission: string | null };
+    resolution: { exitCode: number } | null;
+    receipt: unknown;
+  } })?.metadataRepairFailure;
+  if (!failure) return;
+  const { bytes, ...candidate } = failure.candidate;
+  if (bytes !== null) {
+    assert.ok(Buffer.isBuffer(bytes) && bytes.length <= 16 * 1024 * 1024, 'baseline_repair_failure_size');
+    assert.equal(digest(bytes), candidate.sha256, 'baseline_repair_failure_digest');
+    writeFileSync(join(evidenceDir, 'dependency-lock-rejected.json'), bytes, { flag: 'wx' });
+  }
+  writeFileSync(join(evidenceDir, 'dependency-repair-failure.json'), JSON.stringify({
+    schemaVersion: failure.schemaVersion, stage: failure.stage,
+    resolution: failure.resolution,
+    candidate: { ...candidate, evidenceFile: bytes === null ? null : 'dependency-lock-rejected.json' },
+    receipt: failure.receipt,
+  }), { flag: 'wx' });
+}
+
 async function main() {
   const argument = (name: string) => {
     const value = process.argv.find(arg => arg.startsWith('--' + name + '='))?.slice(name.length + 3);
@@ -93,7 +117,10 @@ async function main() {
     beforeSources, beforeProductBoundary, inputs: [...beforeInputs].map(([path, bytes]) => ({ path,
       sha256: bytes === null ? null : digest(bytes), base64: bytes?.toString('base64') ?? null })),
   }), { flag: 'wx' });
-  const result = await resolveMetadataRepairLock({ repoRoot: sourceRoot });
+  const result = await resolveMetadataRepairLock({ repoRoot: sourceRoot }).catch((error: unknown) => {
+    retainBaselineRepairFailure(evidenceDir, error);
+    throw error;
+  });
   assert.deepEqual([...result.snapshot.keys()], [...beforeInputs.keys()]);
   for (const [path, bytes] of result.snapshot as Map<string, Buffer | null>)
     assert.deepEqual(bytes, beforeInputs.get(path), 'baseline_repair_selected_input_changed:' + path);
