@@ -704,10 +704,15 @@ export function loadCandidateVectors(
   queryIds: string[],
 ): { manifest: CandidateVectors; suite: VectorSuite } {
   const manifest = JSON.parse(fs.readFileSync(file, 'utf8')) as CandidateVectors;
+  const hash = (p: string) => crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
+  return validateCandidateVectorSuite(manifest, corpus, hash(corpusFile), hash(goldFile), keys, queryIds);
+}
+
+function validateCandidateVectorSuite(manifest: CandidateVectors, corpus: 'memory' | 'prose',
+  corpusSha256: string, goldSha256: string, keys: string[], queryIds: string[]) {
   const suite = manifest.suites?.[corpus];
   if (!suite) throw new Error(`candidate vectors have no completed ${corpus} suite`);
-  const hash = (p: string) => crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
-  if (suite.corpusSha256 !== hash(corpusFile) || suite.goldSha256 !== hash(goldFile)) {
+  if (suite.corpusSha256 !== corpusSha256 || suite.goldSha256 !== goldSha256) {
     throw new Error('candidate vectors fixture fingerprint mismatch');
   }
   if (JSON.stringify(suite.keys) !== JSON.stringify(keys) || JSON.stringify(suite.queryIds) !== JSON.stringify(queryIds)) {
@@ -722,4 +727,69 @@ export function loadCandidateVectors(
     if (!Number.isFinite(n) || n <= 0) throw new Error('candidate vectors missing measured inference timing/footprint');
   }
   return { manifest, suite };
+}
+
+type RetainedParityPin = { path: string; sha256: string; bytes: number };
+
+/** Reconcile historical arrays without rewriting their frozen envelopes or
+ * loading a model. This proves array parity only: saved vectors cannot prove
+ * which process/tokenizer produced them, nor qualify a current live runtime. */
+export function verifyRetainedMdenseOnParity(input: { corpus: 'memory' | 'prose';
+  nativeVectors: RetainedParityPin; referenceVectors: RetainedParityPin;
+  corpusFixture: RetainedParityPin; goldFixture: RetainedParityPin }) {
+  const read = (pin: RetainedParityPin) => {
+    if (!/^[a-f0-9]{64}$/.test(pin.sha256) || !Number.isSafeInteger(pin.bytes) || pin.bytes < 1) {
+      throw new Error('invalid retained parity fingerprint');
+    }
+    const bytes = fs.readFileSync(pin.path);
+    if (bytes.length !== pin.bytes || crypto.createHash('sha256').update(bytes).digest('hex') !== pin.sha256) {
+      throw new Error(`retained parity fingerprint mismatch: ${pin.path}`);
+    }
+    return JSON.parse(bytes.toString('utf8'));
+  };
+  const native = read(input.nativeVectors), reference = read(input.referenceVectors) as CandidateVectors;
+  const corpus = read(input.corpusFixture), gold = read(input.goldFixture);
+  const keys = corpus.entries.map((entry: { key: string }) => entry.key) as string[];
+  const queryIds = gold.queries.map((query: { id: string }) => query.id) as string[];
+  for (const ids of [keys, queryIds]) {
+    if (!ids.length || ids.some((id) => typeof id !== 'string' || !id) || new Set(ids).size !== ids.length) {
+      throw new Error('retained parity empty/duplicate population');
+    }
+  }
+  if (reference.model !== MDENSEON_MODEL || reference.revision !== MDENSEON_REVISION
+    || reference.runtime !== 'python-sentence-transformers-cpu-fp32' || reference.dimensions !== 768
+    || typeof corpus.version !== 'string' || !corpus.version || gold.corpusVersion !== corpus.version
+    || native.corpus !== input.corpus || native.corpusVersion !== corpus.version
+    || JSON.stringify(native.keys) !== JSON.stringify(keys) || JSON.stringify(native.queryIds) !== JSON.stringify(queryIds)
+    || JSON.stringify(Object.keys(native.vectors ?? {})) !== JSON.stringify(['sidecar:mdenseon'])) {
+    throw new Error('retained parity model/corpus/order identity mismatch');
+  }
+  const { suite } = validateCandidateVectorSuite(reference, input.corpus, input.corpusFixture.sha256,
+    input.goldFixture.sha256, keys, queryIds);
+  const measured = native.vectors['sidecar:mdenseon'] as { docVectors: number[][]; queryVectors: number[][] };
+  const compare = (actual: number[][], expected: number[][]) => {
+    if (!Array.isArray(actual) || actual.length !== expected.length) throw new Error('retained parity incomplete vector population');
+    const rows = actual.map((vector, i) => {
+      const row = referenceVectorComparison(vector, expected[i], 768);
+      // Float32 unit vectors retain small norm error. Report cosine, not the
+      // uncorrected dot product; keep the original absolute-error gate.
+      const cosine = row.cosine / (Math.hypot(...vector) * Math.hypot(...expected[i]));
+      return { ...row, cosine, passed: cosine >= REFERENCE_PARITY_LIMITS.minimumCosine
+        && row.maximumAbsoluteError <= REFERENCE_PARITY_LIMITS.maximumAbsoluteError };
+    });
+    return { n: rows.length, minimumCosine: Math.min(...rows.map((row) => row.cosine)),
+      maximumAbsoluteError: Math.max(...rows.map((row) => row.maximumAbsoluteError)),
+      passed: rows.every((row) => row.passed) };
+  };
+  const documents = compare(measured.docVectors, suite.docVectors), queries = compare(measured.queryVectors, suite.queryVectors);
+  const rankings = (docs: number[][], queries: number[][]) => queries.map((query) => docs.map((doc, index) => ({
+    index, score: query.reduce((sum, value, dimension) => sum + value * doc[dimension], 0),
+  })).sort((a, b) => b.score - a.score || a.index - b.index).slice(0, 10).map((row) => keys[row.index]));
+  const actualRanks = rankings(measured.docVectors, measured.queryVectors), expectedRanks = rankings(suite.docVectors, suite.queryVectors);
+  const mismatchedQueryIds = queryIds.filter((_, i) => JSON.stringify(actualRanks[i]) !== JSON.stringify(expectedRanks[i]));
+  return { evidenceScope: 'retained-array-parity-only' as const, inferencePerformed: false as const,
+    runtimeAcceptance: false as const, tokenizationVerified: false as const,
+    inputs: input, documents, queries,
+    rankings: { queries: queryIds.length, exact: queryIds.length - mismatchedQueryIds.length, mismatchedQueryIds },
+    parityPassed: documents.passed && queries.passed && mismatchedQueryIds.length === 0 };
 }

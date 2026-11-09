@@ -959,7 +959,20 @@ export function validateMeasurementCoverage(m: MeasurementManifest, manifestSha2
   if (promised.size) throw new Error(`unfinished promised cells: ${[...promised].join(', ')}`);
 }
 
-export async function verifyMeasurementCoverage(m: MeasurementManifest, manifestSha256: string, outcomes: CellOutcome[]): Promise<void> {
+/** Captured by the executing host, not inferred from a successful test or copied
+ * from a summary. This validates retained execution evidence; a fixture passing
+ * the validator is only a regression guard, never a real-model measurement. */
+const measurementExecutionReceiptSchema = z.strictObject({
+  kind: z.literal('native'), protocolOnly: z.literal(false),
+  evidenceRuntime: z.string().min(1), startedAt: date,
+  requestedCaseIds: z.array(z.string().min(1)).min(1),
+  executedCaseIds: z.array(z.string().min(1)).min(1),
+  skips: z.literal(0), failures: z.literal(0),
+  arm: armSchema, inputs: z.record(id, fingerprint),
+});
+
+export async function verifyMeasurementCoverage(m: MeasurementManifest, manifestSha256: string, outcomes: CellOutcome[],
+  options: { requireExecution?: boolean } = {}): Promise<void> {
   validateMeasurementCoverage(m, manifestSha256, outcomes);
   for (const outcome of outcomes) {
     const cell = m.cells.find((c) => c.id === outcome.cellId)!;
@@ -970,6 +983,42 @@ export async function verifyMeasurementCoverage(m: MeasurementManifest, manifest
     const receipt = JSON.parse(fs.readFileSync(outcome.artifacts[0].path, 'utf8'));
     if (receipt.manifestSha256 !== manifestSha256 || receipt.cellId !== cell.id || receipt.armId !== cell.armId
       || receipt.ownerId !== m.ownerId || !receipt.measuredAt || !receipt.report) throw new Error('stored cell receipt identity mismatch');
+    if (!options.requireExecution) continue;
+    // Compatibility failures remain owned outcomes, but cannot satisfy a real
+    // execution acceptance check. Historical/partial receipts fail closed here.
+    if (outcome.status !== 'measured' || receipt.formatVersion !== 1
+      || typeof receipt.report !== 'object' || Array.isArray(receipt.report)
+      || receipt.report.protocolOnly === true || receipt.report.mocked === true || receipt.report.synthetic === true
+      || !date.safeParse(receipt.measuredAt).success
+      || Date.parse(receipt.measuredAt) < Date.parse(m.frozenAt)
+      || Date.parse(receipt.measuredAt) > Date.now()) throw new Error(`unexecuted/invalid-time cell: ${cell.id}`);
+    const execution = measurementExecutionReceiptSchema.parse(receipt.execution);
+    const cases = cell.parameters.requestedCaseIds;
+    if (!Array.isArray(cases) || !cases.length || cases.some((c) => typeof c !== 'string' || !c)
+      || new Set(cases).size !== cases.length
+      || typeof cell.parameters.evidenceRuntime !== 'string' || !cell.parameters.evidenceRuntime
+      || execution.evidenceRuntime !== cell.parameters.evidenceRuntime
+      || Date.parse(execution.startedAt) < Date.parse(m.frozenAt)
+      || Date.parse(execution.startedAt) > Date.parse(receipt.measuredAt)
+      || hashJson(execution.requestedCaseIds) !== hashJson(cases)
+      || hashJson(execution.executedCaseIds) !== hashJson(cases)) {
+      throw new Error(`execution runtime/time/requested-executed census mismatch: ${cell.id}`);
+    }
+    const arm = m.arms.find((a) => a.id === cell.armId)!;
+    const inputs = Object.fromEntries(cell.inputIds.map((key) => [key, m.inputs[key]]));
+    if (hashJson(execution.arm) !== hashJson(arm) || hashJson(execution.inputs) !== hashJson(inputs)) {
+      throw new Error(`execution source/runtime/model/fixture identity mismatch: ${cell.id}`);
+    }
+    // Re-read every declared source/model/input byte, rather than trusting a
+    // syntactically valid fingerprint in the report. Shared pins are checked once.
+    const pins = [arm.runtime.source, arm.artifacts.graph, arm.artifacts.tokenizer,
+      arm.artifacts.config, ...arm.artifacts.weights, ...Object.values(inputs)];
+    for (const pin of new Map(pins.map((pin) => [hashJson(pin), pin])).values()) {
+      const actual = await fingerprintFile(pin.path);
+      if (actual.sha256 !== pin.sha256 || actual.bytes !== pin.bytes) {
+        throw new Error(`execution pinned file changed: ${cell.id}: ${pin.path}`);
+      }
+    }
   }
 }
 

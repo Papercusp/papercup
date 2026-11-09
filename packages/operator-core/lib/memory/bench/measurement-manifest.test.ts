@@ -4,11 +4,87 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { assertNativeProfilerQualification, bindNativeProfilerKernelRequests, bindNativeLoaderMappedObjects, bindNativeLoaderClosure, inspectNativeLoaderActivity, loadIndependentMeasurementInputs, loadRetainedRelevanceVectors, alignRetainedRelevanceDocuments, embedIncrementalRelevanceQueries, embedIncrementalRelevanceDocuments, hashJson, validateIndependentCohort, writeMeasurementCell, failMeasurementCell, type PreparedMeasurement, type NativeLoaderCaptureReceipt } from './measurement-manifest';
+import { assertNativeProfilerQualification, bindNativeProfilerKernelRequests, bindNativeLoaderMappedObjects, bindNativeLoaderClosure, inspectNativeLoaderActivity, loadIndependentMeasurementInputs, loadRetainedRelevanceVectors, alignRetainedRelevanceDocuments, embedIncrementalRelevanceQueries, embedIncrementalRelevanceDocuments, hashJson, validateIndependentCohort, writeMeasurementCell, failMeasurementCell, verifyMeasurementCoverage, fingerprintFile, type CellOutcome, type PreparedMeasurement, type NativeLoaderCaptureReceipt } from './measurement-manifest';
 import type { WorkerNativeInferenceTrace } from '../../../../../libs/generic/memory/src/local-embedder-worker';
 import { independentCohortFixture, measurementManifestFixture } from './fixtures/measurement-manifest';
 
 const roots: string[] = [];
+describe('retained execution coverage (protocol guards, not model acceptance)', () => {
+  async function fixture() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'measurement-execution-')); roots.push(root);
+    const input = path.join(root, 'source-model-input'); fs.writeFileSync(input, 'pinned fixture bytes');
+    const pin = await fingerprintFile(input), manifest = measurementManifestFixture(root);
+    manifest.inputs = Object.fromEntries(Object.keys(manifest.inputs).map((key) => [key, pin]));
+    for (const arm of manifest.arms) {
+      arm.runtime.source = pin;
+      arm.artifacts = { graph: pin, tokenizer: pin, config: pin, weights: [], weightLayout: 'inline' };
+    }
+    const sha = 'a'.repeat(64);
+    const outcomes: CellOutcome[] = [];
+    for (const cell of manifest.cells) {
+      cell.parameters.requestedCaseIds = ['query-short', 'document-long', 'batch'];
+      cell.parameters.evidenceRuntime = 'runtime-vintage:fixture/native@fixture-host';
+      const receipt = { formatVersion: 1, manifestSha256: sha, cellId: cell.id, armId: cell.armId,
+        ownerId: manifest.ownerId, measuredAt: '2026-01-03T00:00:00.000Z', report: { result: 'fixture' },
+        execution: { kind: 'native', protocolOnly: false, evidenceRuntime: cell.parameters.evidenceRuntime,
+          startedAt: '2026-01-02T01:00:00.000Z', requestedCaseIds: cell.parameters.requestedCaseIds,
+          executedCaseIds: cell.parameters.requestedCaseIds, skips: 0, failures: 0,
+          arm: manifest.arms[0], inputs: Object.fromEntries(cell.inputIds.map((key) => [key, pin])) } };
+      const file = path.join(root, `${cell.id}.json`); fs.writeFileSync(file, JSON.stringify(receipt));
+      outcomes.push({ cellId: cell.id, manifestSha256: sha, status: 'measured', artifacts: [await fingerprintFile(file)] });
+    }
+    async function edit(change: (receipt: any) => void) {
+      const file = outcomes[0].artifacts[0].path, receipt = JSON.parse(fs.readFileSync(file, 'utf8'));
+      change(receipt); fs.writeFileSync(file, JSON.stringify(receipt)); outcomes[0].artifacts[0] = await fingerprintFile(file);
+    }
+    return { manifest, sha, outcomes, input, edit,
+      verify: () => verifyMeasurementCoverage(manifest, sha, outcomes, { requireExecution: true }) };
+  }
+  it('accepts a complete pinned calibration fixture without inference', async () => {
+    const f = await fixture(); await expect(f.verify()).resolves.toBeUndefined();
+  });
+  it.each(['missing', 'skip', 'failure', 'synthetic', 'synthetic-report', 'mocked-report', 'empty-report-array', 'partial', 'duplicate', 'reordered', 'foreign-runtime',
+    'model', 'source', 'fixture', 'before-freeze', 'after-measurement'])('refuses %s execution even with refreshed receipt fingerprints', async (fault) => {
+    const f = await fixture();
+    await f.edit((r) => {
+      if (fault === 'missing') delete r.execution;
+      if (fault === 'skip') r.execution.skips = 1;
+      if (fault === 'failure') r.execution.failures = 1;
+      if (fault === 'synthetic') r.execution.protocolOnly = true;
+      if (fault === 'synthetic-report') r.report.protocolOnly = true;
+      if (fault === 'mocked-report') r.report.mocked = true;
+      if (fault === 'empty-report-array') r.report = [];
+      if (fault === 'partial') r.execution.executedCaseIds.pop();
+      if (fault === 'duplicate') r.execution.executedCaseIds[1] = r.execution.executedCaseIds[0];
+      if (fault === 'reordered') r.execution.executedCaseIds.reverse();
+      if (fault === 'foreign-runtime') r.execution.evidenceRuntime = 'release-operator';
+      if (fault === 'model') r.execution.arm.artifacts.graph.sha256 = 'b'.repeat(64);
+      if (fault === 'source') r.execution.arm.runtime.source.sha256 = 'b'.repeat(64);
+      if (fault === 'fixture') r.execution.inputs.snapshot.sha256 = 'b'.repeat(64);
+      if (fault === 'before-freeze') r.execution.startedAt = '2025-01-01T00:00:00.000Z';
+      if (fault === 'after-measurement') r.execution.startedAt = '2026-01-04T00:00:00.000Z';
+    });
+    await expect(f.verify()).rejects.toThrow();
+  });
+  it('refuses a missing cell, an incompatibility and a manifest with no frozen case population', async () => {
+    const f = await fixture();
+    await expect(verifyMeasurementCoverage(f.manifest, f.sha, f.outcomes.slice(1), { requireExecution: true })).rejects.toThrow('unfinished promised cells');
+    f.outcomes[0].status = 'incompatible';
+    f.outcomes[0].defect = { owner: 'fixture', item: 'WI-1', rootCause: 'fixture', guard: 'fixture' };
+    await expect(f.verify()).rejects.toThrow('unexecuted');
+    f.outcomes[0].status = 'measured'; delete f.manifest.cells[0].parameters.requestedCaseIds;
+    await expect(f.verify()).rejects.toThrow('census mismatch');
+  });
+  it('re-reads pinned bytes instead of trusting matching receipt and manifest declarations', async () => {
+    const f = await fixture(); fs.appendFileSync(f.input, 'changed');
+    await expect(f.verify()).rejects.toThrow('execution pinned file changed');
+  });
+  it('keeps legacy artifact verification distinct from execution qualification', async () => {
+    const f = await fixture(); await f.edit((r) => { delete r.execution; });
+    await expect(verifyMeasurementCoverage(f.manifest, f.sha, f.outcomes)).resolves.toBeUndefined();
+    await expect(f.verify()).rejects.toThrow();
+  });
+});
 describe('native loader population evidence', () => {
   const window = { runTag: 'pc-embed:123:1:0:1:1', processId: 123, nativeThreadId: 456,
     startMonotonicNs: '100', endMonotonicNs: '200' };

@@ -15,9 +15,77 @@ import { buildPplxBenchmarkEmbedder, loadCandidateVectors, PPLX_OUTPUT, PPLX_REV
   nativeRuntimeTraceVerified, nativeObservedLibraryClosureVerified, nativeGpuCapacityObserved,
   summarizeNativeBoundaries, qualifyMdenseOnBoundaries, MDENSEON_BOUNDARY_IDS,
   type NativeBoundaryRequest, type NativeBoundaryRow, type NativeBoundaryBatchRow, type CandidateVectors } from './candidate-embedders';
-import { nativeBenchmarkOutputPaths } from './candidate-embedders';
+import { nativeBenchmarkOutputPaths, verifyRetainedMdenseOnParity } from './candidate-embedders';
 import { moduleRepoRoot } from '../../module-repo-root';
 import { incumbentReferenceFixture } from './fixtures/incumbent-reference';
+
+describe('retained native and Python array parity', () => {
+  const roots: string[] = [];
+  afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
+  function fixture() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'retained-parity-')); roots.push(root);
+    const vector = (index: number) => Array.from({ length: 768 }, (_, i) => i === index ? 1 : 0);
+    const pin = (name: string, value: unknown) => {
+      const file = path.join(root, name); fs.writeFileSync(file, JSON.stringify(value));
+      const bytes = fs.readFileSync(file);
+      return { path: file, bytes: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex') };
+    };
+    const keys = ['a', 'b', 'c'], queryIds = ['q1', 'q2'];
+    const corpusFixture = pin('corpus.json', { version: 'v1', entries: keys.map((key) => ({ key })) });
+    const goldFixture = pin('gold.json', { corpusVersion: 'v1', queries: queryIds.map((id) => ({ id })) });
+    const suite = { corpusSha256: corpusFixture.sha256, goldSha256: goldFixture.sha256, keys, queryIds,
+      docVectors: [vector(0), vector(1), vector(2)], queryVectors: [vector(0), vector(1)], docSeconds: 1, querySeconds: 1, peakRssMB: 1 };
+    const reference = { model: 'lightonai/mDenseOn', revision: 'a5fdb000f7a21da96c3bddde3a782ef777316df3',
+      runtime: 'python-sentence-transformers-cpu-fp32', dimensions: 768, suites: { prose: suite } };
+    const native = { corpus: 'prose', corpusVersion: 'v1', keys, queryIds,
+      vectors: { 'sidecar:mdenseon': { docVectors: structuredClone(suite.docVectors), queryVectors: structuredClone(suite.queryVectors) } } };
+    const input = () => ({ corpus: 'prose' as const, corpusFixture, goldFixture,
+      nativeVectors: pin('native.json', native), referenceVectors: pin('reference.json', reference) });
+    return { native, reference, input, vector };
+  }
+  it('recomputes exact parity without inferring runtime or tokenization acceptance', () => {
+    const f = fixture(); const result = verifyRetainedMdenseOnParity(f.input());
+    expect(result).toMatchObject({ parityPassed: true, inferencePerformed: false, runtimeAcceptance: false,
+      tokenizationVerified: false, documents: { n: 3, minimumCosine: 1, maximumAbsoluteError: 0 }, rankings: { queries: 2, exact: 2 } });
+    expect(mocks.loadModel).not.toHaveBeenCalled(); expect(mocks.loadTokenizer).not.toHaveBeenCalled();
+  });
+  it('returns a measured vector/ranking loss instead of trusting producer acceptance', () => {
+    const f = fixture(); f.native.vectors['sidecar:mdenseon'].docVectors[0] = f.vector(1);
+    Object.assign(f.native, { accepted: true });
+    expect(verifyRetainedMdenseOnParity(f.input())).toMatchObject({ parityPassed: false,
+      documents: { passed: false }, rankings: { mismatchedQueryIds: ['q2'] } });
+  });
+  it('computes normalized cosine despite retained float32 norm rounding', () => {
+    const f = fixture();
+    f.native.vectors['sidecar:mdenseon'].docVectors[0][0] = 1 - 2e-7;
+    expect(verifyRetainedMdenseOnParity(f.input()).documents.minimumCosine).toBeCloseTo(1, 14);
+  });
+  it('requires exact rankings even when every vector stays inside the parity thresholds', () => {
+    const f = fixture(), epsilon = 1e-6;
+    const near = (sign: number) => { const v = f.vector(0); v[0] = Math.sqrt(1 - epsilon ** 2); v[1] = sign * epsilon; return v; };
+    f.reference.suites.prose.docVectors = [near(1), near(-1), f.vector(2)];
+    f.native.vectors['sidecar:mdenseon'].docVectors = [near(-1), near(1), f.vector(2)];
+    f.reference.suites.prose.queryVectors = [f.vector(1), f.vector(1)];
+    f.native.vectors['sidecar:mdenseon'].queryVectors = [f.vector(1), f.vector(1)];
+    expect(verifyRetainedMdenseOnParity(f.input())).toMatchObject({ parityPassed: false,
+      documents: { passed: true }, queries: { passed: true }, rankings: { exact: 0, mismatchedQueryIds: ['q1', 'q2'] } });
+  });
+  it.each(['native-order', 'reference-order', 'truncated', 'wrong-model', 'duplicate', 'nonfinite', 'wrong-fixture'])('refuses %s evidence', (failure) => {
+    const f = fixture();
+    if (failure === 'native-order') f.native.keys = ['b', 'a', 'c'];
+    if (failure === 'reference-order') f.reference.suites.prose.queryIds = ['q2', 'q1'];
+    if (failure === 'truncated') f.native.vectors['sidecar:mdenseon'].docVectors.pop();
+    if (failure === 'wrong-model') f.reference.model = 'another-model';
+    if (failure === 'duplicate') f.native.queryIds = ['q1', 'q1'];
+    if (failure === 'nonfinite') f.native.vectors['sidecar:mdenseon'].docVectors[0][0] = Infinity;
+    if (failure === 'wrong-fixture') f.reference.suites.prose.goldSha256 = '0'.repeat(64);
+    expect(() => verifyRetainedMdenseOnParity(f.input())).toThrow();
+  });
+  it('refuses changed bytes before parsing or scoring them', () => {
+    const f = fixture(), input = f.input(); fs.appendFileSync(input.nativeVectors.path, ' ');
+    expect(() => verifyRetainedMdenseOnParity(input)).toThrow('fingerprint mismatch');
+  });
+});
 
 describe('native benchmark source and private output qualification', () => {
   function withSourceTree(run: (root: string, tree: string, moduleUrl: string) => void) {

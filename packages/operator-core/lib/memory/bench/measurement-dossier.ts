@@ -25,7 +25,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { isCliEntry } from '../../util/cli-entry';
-import { MEASUREMENT_BARS, fingerprintFile } from './measurement-manifest';
+import { MEASUREMENT_BARS, fingerprintFile, validateMeasurementManifest, verifyMeasurementCoverage, type CellOutcome } from './measurement-manifest';
 import { trackedEvidence, type TrackedEvidence } from './tracked-evidence';
 
 export const DOSSIER_PLAN = 'mdenseon-adoption-measurements-2026-10-01';
@@ -141,7 +141,16 @@ export async function verifyMeasurementDossier(file: string): Promise<DossierVer
 if (isCliEntry(import.meta.url)) {
   const [command, ...args] = process.argv.slice(2);
   try {
-    if (command === 'verify' && args.length === 1) {
+    if (command === 'verify-execution' && args.length === 3) {
+      const [manifestFile, expectedSha, outcomesFile] = args;
+      if (!/^[a-f0-9]{64}$/.test(expectedSha) || (await fingerprintFile(manifestFile)).sha256 !== expectedSha) {
+        throw new Error('frozen manifest fingerprint mismatch');
+      }
+      const manifest = validateMeasurementManifest(JSON.parse(fs.readFileSync(manifestFile, 'utf8')));
+      const outcomes = JSON.parse(fs.readFileSync(outcomesFile, 'utf8')) as CellOutcome[];
+      await verifyMeasurementCoverage(manifest, expectedSha, outcomes, { requireExecution: true });
+      console.log(`verified-execution\t${manifest.runId}\t${outcomes.length} cells\tinferencePerformed=false`);
+    } else if (command === 'verify' && args.length === 1) {
       const result = await verifyMeasurementDossier(args[0]);
       for (const b of result.bars) console.log(`${b.bar}\t${b.status}\t${b.evidence.map((e) => e.repoRelative).join(',')}`);
       console.log(`verified\t${result.dossier.repoRelative}\t${result.bars.length} bars`);
@@ -151,7 +160,7 @@ if (isCliEntry(import.meta.url)) {
       const root = rooted ? path.resolve(args[1]) : repoRootOf(path.join(process.cwd(), 'x')) ?? process.cwd();
       console.log(JSON.stringify(await fingerprintDossierEvidence(root, rooted ? args.slice(2) : args), null, 2));
     } else {
-      throw new Error('usage: measurement-dossier.ts verify <dossier.json> | fingerprint [--root <dir>] <repo-relative path>...');
+      throw new Error('usage: measurement-dossier.ts verify <dossier.json> | verify-execution <manifest.json> <sha256> <outcomes.json> | fingerprint [--root <dir>] <repo-relative path>...');
     }
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));

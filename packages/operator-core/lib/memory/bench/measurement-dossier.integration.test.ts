@@ -13,7 +13,9 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { MEASUREMENT_BARS } from './measurement-manifest';
+import { MEASUREMENT_BARS, hashJson, fingerprintFile, type CellOutcome } from './measurement-manifest';
+import { measurementManifestFixture } from './fixtures/measurement-manifest';
+import crypto from 'node:crypto';
 import { dossierFixture, type DossierFixture } from './measurement-dossier.fixture';
 
 const REPO_ROOT = path.resolve(__dirname, '../../../../..');
@@ -57,5 +59,45 @@ describe('measurement-dossier CLI over a real repository', () => {
     const r = runCli('verify');
     expect(r.status).toBe(1);
     expect(r.stderr).toContain('usage: measurement-dossier.ts verify');
+  });
+
+  it('calibrates execution receipt validation without inference, then refuses missing cells and a changed manifest', async () => {
+    const f = dossierFixture(); fixtures.push(f);
+    const manifestFile = path.join(f.root, 'manifest.json'), outcomesFile = path.join(f.root, 'outcomes.json');
+    const manifest = measurementManifestFixture(f.root), pin = await fingerprintFile(path.join(f.root, 'docs/evidence/relevance.json'));
+    manifest.inputs = Object.fromEntries(Object.keys(manifest.inputs).map((key) => [key, pin]));
+    for (const arm of manifest.arms) {
+      arm.runtime.source = pin;
+      arm.artifacts = { graph: pin, tokenizer: pin, config: pin, weights: [], weightLayout: 'inline' };
+    }
+    for (const cell of manifest.cells) {
+      cell.parameters.requestedCaseIds = ['fixture-case'];
+      cell.parameters.evidenceRuntime = 'runtime-vintage:fixture/native@fixture-host';
+    }
+    fs.writeFileSync(manifestFile, JSON.stringify(manifest));
+    const sha = crypto.createHash('sha256').update(fs.readFileSync(manifestFile)).digest('hex');
+    const outcomes: CellOutcome[] = [];
+    for (const cell of manifest.cells) {
+      const receiptPath = path.join(f.root, `${cell.id}.json`);
+      fs.writeFileSync(receiptPath, JSON.stringify({ formatVersion: 1, manifestSha256: sha,
+        cellId: cell.id, armId: cell.armId, ownerId: manifest.ownerId, measuredAt: '2026-01-03T00:00:00.000Z',
+        report: { result: 'fixture' }, execution: { kind: 'native', protocolOnly: false,
+          evidenceRuntime: cell.parameters.evidenceRuntime, startedAt: '2026-01-02T01:00:00.000Z',
+          requestedCaseIds: ['fixture-case'], executedCaseIds: ['fixture-case'], skips: 0, failures: 0,
+          arm: manifest.arms[0], inputs: manifest.inputs } }));
+      outcomes.push({ cellId: cell.id, manifestSha256: sha, status: 'measured', artifacts: [await fingerprintFile(receiptPath)] });
+    }
+    fs.writeFileSync(outcomesFile, JSON.stringify(outcomes));
+    const calibrated = runCli('verify-execution', manifestFile, sha, outcomesFile);
+    expect(calibrated.status, calibrated.stderr).toBe(0);
+    expect(calibrated.stdout).toContain('verified-execution\tsynthetic-protocol\t7 cells\tinferencePerformed=false');
+    fs.writeFileSync(outcomesFile, '[]');
+    const missing = runCli('verify-execution', manifestFile, sha, outcomesFile);
+    expect(missing.status).toBe(1);
+    expect(missing.stderr).toContain('unfinished promised cells');
+    expect(missing.stdout).not.toContain('verified-execution');
+    const changed = runCli('verify-execution', manifestFile, hashJson({ changed: true }), outcomesFile);
+    expect(changed.status).toBe(1);
+    expect(changed.stderr).toContain('frozen manifest fingerprint mismatch');
   });
 });
