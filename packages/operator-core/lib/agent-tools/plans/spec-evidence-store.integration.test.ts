@@ -14,6 +14,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/tooldef';
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import type { SpecClauseWrite } from './spec-clauses-store';
 import { carryUnchangedBarEvidenceBindings } from '../../acceptance-bar-amendment';
@@ -406,10 +407,12 @@ describe('canonical binding consumer custody', () => {
           fetchRecordedLiveFn: async () => new Set(), fetchRecordedEndedFn: async () => new Set(), probePidFn: () => null,
         })) as typeof resolveSessionStates,
       };
-      const args = bindTool.args.parse({ harness: HARNESS, slug: 'reconnect-plan', binding: {
+      const ordinaryInput = { harness: HARNESS, slug: 'reconnect-plan', binding: {
         workItemId: 'WI-101', specId: 'SPEC-003-01', specRevision: 1, evidenceKind: 'fixture', evidenceRef,
         measurement: { schemaVersion: 1, kind: 'repo-files', sourcePaths: ['src/reconnect.ts'], fixturePaths: [evidenceRef] },
-      } });
+      } };
+      const originalInput = structuredClone(ordinaryInput);
+      const args = bindTool.args.parse(ordinaryInput);
       const reference = { harness_slug: HARNESS, work_item_id: 'WI-101', evidence_ref: evidenceRef };
       const repositories = new Map([[HARNESS, h.repoRoot]]);
       const inserts: string[] = [];
@@ -419,6 +422,24 @@ describe('canonical binding consumer custody', () => {
       const trace = (stage: string, value: unknown) => console.info('P017_CUSTODY_RUNTIME',
         JSON.stringify({ schemaVersion: 1, loss, stage, value }));
       try {
+        const projected = lookupByMcpName('plans:bind-spec-evidence');
+        expect(projected).toBeTruthy();
+        // The same historical request crosses the real MCP schema, handler and
+        // response shaping both before intake and after evidence reclamation.
+        const dispatchBinding = async (stage: string) => {
+          const dispatched = await dispatchProjectedTool(projected!, 'plans:bind-spec-evidence', ordinaryInput, {
+            ...(CTX as Record<string, unknown>),
+            log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), emit: vi.fn(),
+            metadata: vi.fn(), role: 'su', runId: `custody-${loss}-${stage}`,
+            gateBypass: { role: true, capability: true, quota: true },
+            transport: 'mcp', requestedFormat: 'json', requestedStructured: true,
+          } as never, {});
+          trace('mcp-dispatch', { stage, request: ordinaryInput, dispatched });
+          expect(dispatched.ok).toBe(true);
+          expect(ordinaryInput).toEqual(originalInput);
+          expect(dispatched.result?.structuredContent).toBeDefined();
+          return { data: dispatched.result!.structuredContent };
+        };
         trace('input', { workspace: WORKSPACE, harness: HARNESS, binding: args,
           paths: { repoRoot: h.repoRoot, evidenceRoot, retained, unrelated, leaseDirectory: dir },
           clock: { hour, nowMs, intakeMs }, resultBytes, consumer: await consumer.listPresence() });
@@ -430,7 +451,7 @@ describe('canonical binding consumer custody', () => {
           expect(pins.pins).toEqual([expect.objectContaining({ owner: 'work-item:WI-101', paths: [retained] })]);
           inserts.push(pins.pins[0]!.id);
         };
-        const bound = await bindTool.handler(args as never, CTX);
+        const bound = await dispatchBinding('intake');
         trace('binding-result', { bound, inserts });
         expect(bound, JSON.stringify(bound)).toMatchObject({ data: { ok: true, results: [{ ok: true, status: 'created' }] } });
         expect(inserts).toHaveLength(1);
@@ -489,7 +510,7 @@ describe('canonical binding consumer custody', () => {
         expect(retainedStatCode).toBe('ENOENT');
         clock.mockReturnValue(later);
         const afterReclaim = vi.fn(); h.beforeBindingInsert = afterReclaim;
-        const refused = await bindTool.handler(args as never, CTX);
+        const refused = await dispatchBinding('after-reclaim');
         trace('post-reclaim-binding', { nowMs: later, refused, attemptedInserts: afterReclaim.mock.calls.length });
         expect(refused).toMatchObject({ data: { ok: false, results: [{ ok: false }] } });
         expect(JSON.stringify(refused)).toContain('evidence retention: missing declared evidence');
