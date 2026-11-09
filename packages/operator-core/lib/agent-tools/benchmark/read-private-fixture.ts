@@ -13,7 +13,8 @@ import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 import { BENCH_PRIVATE_FIXTURE_TOOL, benchFixtureReadArgs, benchFixtureProductCall,
   benchFixtureReadContinuations, validBenchFixtureReadBoundary,
   requireBenchFixtureReadLease, requireBenchFixtureSourcePins, benchFixtureResultSnapshot,
-  benchFixtureResultFits, benchFixtureResultPage, benchFixtureContextSnapshot } from '../../external-bench/private-fixture-reads';
+  benchFixtureResultFits, benchFixtureResultPage, benchFixtureContextSnapshot,
+  readBenchFixtureSourceSnapshot } from '../../external-bench/private-fixture-reads';
 import type { PapercuspUnifiedToolContext } from '../_tool-context';
 
 export default defineTool({
@@ -56,7 +57,41 @@ export default defineTool({
       // Invoke maintained read handlers, with their own argument validation.
       // No dynamic tool name, execution/replay option, source scope or SQL is accepted.
       let result: ToolResponse | ToolResult;
-      if (call.tool === 'condition-prefix') {
+      if (call.tool === 'retrieval-observation') {
+        const { interactiveEmbedAcquireBudgetMs } = await import('../search/embedder');
+        const { latencyRetrievalFixtures, observeLatencyRetrievalSchedule } = await import('../../external-bench/latency-retrieval');
+        const budgetMs = interactiveEmbedAcquireBudgetMs();
+        if (budgetMs !== call.args.budgetMs)
+          throw new InvalidInputError('Private retrieval requires the unchanged loaded runtime budget.');
+        const schedule = latencyRetrievalFixtures(budgetMs).cases.find(row => row.id === call.args.scenarioId);
+        if (!schedule) throw new InvalidInputError('Private retrieval scenario is unavailable.');
+        result = { data: { configuredBudgetMs: budgetMs,
+          budgetEnvironment: process.env.PAPERCUSP_QUERY_EMBED_ACQUIRE_BUDGET_MS ?? null,
+          observation: await observeLatencyRetrievalSchedule(schedule) } };
+      } else if (call.tool === 'coverage-read') {
+        const { listCoveredPlanItemRefs, findImplementingWorkItem, findConvertedWorkItemByStamp } = await import('../../plan-items/convert');
+        if (boundary.taskId !== 'LATENCY-M1:T07' && boundary.taskId !== 'LATENCY-M1:T08')
+          throw new InvalidInputError('Private coverage task is undeclared.');
+        const source = boundary.cases[args.case];
+        const observedCoveredRefs = [...await listCoveredPlanItemRefs(source.slug, source.harness,
+          source.itemIds, [workspaceId])].sort();
+        const lookups = [];
+        // These are the actual conversion readers, without a new eligibility
+        // filter. Their answer may disagree with the supplied source evidence.
+        const identity = (item: Awaited<ReturnType<typeof getWorkItem>>) => item && ({
+          id: item.id, harness: item.harness, state: item.state, payload: item.payload });
+        for (const itemId of source.itemIds) lookups.push({ itemId,
+          implementing: identity(await findImplementingWorkItem(source.slug, itemId, [workspaceId])),
+          stamped: identity(await findConvertedWorkItemByStamp(source.slug, itemId, source.harness, workspaceId)) });
+        const snapshot = await readBenchFixtureSourceSnapshot(boundary, args.case, { workspaceId }) as {
+          workItems: Array<{ row: Record<string, unknown> }>; edges: Array<{ row: Record<string, unknown> }> };
+        // Raw candidate evidence, not an oracle or a replacement matcher. The
+        // scope controls are pinned, but foreign source rows are not delivered.
+        result = { data: { source, observedCoveredRefs, lookups,
+          candidates: snapshot.workItems.filter(({ row }) => row.workspace_id === workspaceId && row.harness_slug === source.harness &&
+            [row.title, row.summary, JSON.stringify(row.payload)].join(' ').toLowerCase().includes(source.slug.toLowerCase())),
+          edges: snapshot.edges.filter(({ row }) => row.workspace_id === workspaceId) } };
+      } else if (call.tool === 'condition-prefix') {
         const { readConditionEnvelopesForPrefix, computeConditionStates } = await import('../coordination/condition-state');
         const prefix = call.args.prefix as string, effectiveNowMs = Date.now(), startedAtMs = performance.now();
         const envelopes = await readConditionEnvelopesForPrefix(prefix);

@@ -23,6 +23,12 @@ const timeline = z.object({
 }).strict().refine(value => Date.parse(value.until) > Date.parse(value.since),
   'Private timeline requires an increasing frozen window.');
 const conditions = z.object({ prefix: id }).strict();
+export const benchRetrievalScenarioId = z.enum(['on-time', 'synchronous-entry-block', 'queue-delay', 'late-timer',
+  'late-success', 'abort-network', 'abort-queued', 'lexical-fallback']);
+const retrieval = z.object({ budgetMs: z.number().int().min(4).max(60_000),
+  scenarioIds: z.array(benchRetrievalScenarioId).min(1).max(8).refine(ids => new Set(ids).size === ids.length) }).strict();
+const coverage = z.object({ harness: id, slug: id, sourceIdPrefix: id,
+  itemIds: z.array(z.string().regex(/^P-\d{3,}$/)).min(1).max(16) }).strict();
 const cases = <T extends z.ZodTypeAny>(schema: T) => z.object({ A: schema, B: schema }).strict();
 const sourcePin = z.object({ sha256: digest, bytes: z.number().int().positive().max(16 * 1024 * 1024) }).strict();
 const verification = z.object({ inputs: cases(sourcePin), promptSha256: digest, oracleSha256: digest }).strict();
@@ -32,11 +38,15 @@ export const benchFixtureAllocationSchema = z.object({
   'LATENCY-M1:T03': cases(plan),
   'LATENCY-M1:T04': cases(timeline).optional(),
   'LATENCY-M1:T05': cases(timeline).optional(),
+  'LATENCY-M1:T07': cases(coverage).optional(),
+  'LATENCY-M1:T08': cases(coverage).optional(),
   'LATENCY-M1:T09': cases(conditions).optional(),
+  'LATENCY-M1:T10': cases(retrieval).optional(),
   verification: z.object({ 'LATENCY-M1:T01': verification.optional(),
     'LATENCY-M1:T02': verification.optional(), 'LATENCY-M1:T03': verification.optional(),
     'LATENCY-M1:T04': verification.optional(), 'LATENCY-M1:T05': verification.optional(),
-    'LATENCY-M1:T09': verification.optional() }).strict().optional(),
+    'LATENCY-M1:T07': verification.optional(), 'LATENCY-M1:T08': verification.optional(),
+    'LATENCY-M1:T09': verification.optional(), 'LATENCY-M1:T10': verification.optional() }).strict().optional(),
 }).strict();
 export type BenchFixtureAllocation = z.infer<typeof benchFixtureAllocationSchema>;
 const bindingSchema = z.object({ workspaceId: id, runId: id, preregHash: digest,
@@ -50,7 +60,10 @@ export const benchFixtureBoundarySchema = z.discriminatedUnion('taskId', [
   bindingSchema.extend({ taskId: z.literal('LATENCY-M1:T03'), fixtureSha256: digest, cases: cases(plan) }).strict(),
   bindingSchema.extend({ taskId: z.literal('LATENCY-M1:T04'), fixtureSha256: digest, cases: cases(timeline) }).strict(),
   bindingSchema.extend({ taskId: z.literal('LATENCY-M1:T05'), fixtureSha256: digest, cases: cases(timeline) }).strict(),
+  bindingSchema.extend({ taskId: z.literal('LATENCY-M1:T07'), fixtureSha256: digest, cases: cases(coverage) }).strict(),
+  bindingSchema.extend({ taskId: z.literal('LATENCY-M1:T08'), fixtureSha256: digest, cases: cases(coverage) }).strict(),
   bindingSchema.extend({ taskId: z.literal('LATENCY-M1:T09'), fixtureSha256: digest, cases: cases(conditions) }).strict(),
+  bindingSchema.extend({ taskId: z.literal('LATENCY-M1:T10'), fixtureSha256: digest, cases: cases(retrieval) }).strict(),
 ]);
 export type BenchFixtureReadBoundary = z.infer<typeof benchFixtureBoundarySchema>;
 export const validBenchFixtureReadBoundary = (value: unknown): value is BenchFixtureReadBoundary =>
@@ -67,7 +80,7 @@ export function freezeBenchFixtureReadBoundary(input: {
   const allocation = benchFixtureAllocationSchema.parse(input.allocation);
   if (benchFixtureAllocationSha256(allocation) !== input.expectedSha256)
     throw new Error('Private benchmark fixture allocation differs from its frozen arm.');
-  if (!['LATENCY-M1:T01', 'LATENCY-M1:T02', 'LATENCY-M1:T03', 'LATENCY-M1:T04', 'LATENCY-M1:T05', 'LATENCY-M1:T09'].includes(input.taskId)) return undefined;
+  if (!['LATENCY-M1:T01', 'LATENCY-M1:T02', 'LATENCY-M1:T03', 'LATENCY-M1:T04', 'LATENCY-M1:T05', 'LATENCY-M1:T07', 'LATENCY-M1:T08', 'LATENCY-M1:T09', 'LATENCY-M1:T10'].includes(input.taskId)) return undefined;
   const taskId = input.taskId as BenchFixtureReadBoundary['taskId'];
   if (!allocation[taskId]) throw new Error('Private benchmark task has no frozen source allocation.');
   return benchFixtureBoundarySchema.parse({ ...input.binding, taskId: input.taskId,
@@ -99,6 +112,35 @@ export async function readBenchFixtureSourceSnapshot(boundary: BenchFixtureReadB
   which: 'A' | 'B', scope: DbScope): Promise<unknown> {
   const { sql, ws } = resolveDb(scope);
   if (ws !== boundary.workspaceId) throw new Error('Private fixture source workspace differs.');
+  if (boundary.taskId === 'LATENCY-M1:T10') {
+    const source = boundary.cases[which];
+    const { latencyRetrievalFixtures } = await import('./latency-retrieval');
+    const schedules = latencyRetrievalFixtures(source.budgetMs).cases
+      .filter(row => source.scenarioIds.includes(row.id as z.infer<typeof benchRetrievalScenarioId>))
+      .map(({ expected: _hiddenReference, ...input }) => input);
+    if (schedules.length !== source.scenarioIds.length) throw new Error('Private retrieval source is incomplete.');
+    return { source, schedules };
+  }
+  if (boundary.taskId === 'LATENCY-M1:T07' || boundary.taskId === 'LATENCY-M1:T08') {
+    const source = boundary.cases[which];
+    // Pin the inputs the existing coverage readers can see, including their
+    // cross-scope negative controls. Do not derive exact matches or eligibility
+    // here: those are the solver's task, checked by the independent oracle.
+    const edges = await sql`SELECT to_jsonb(e) AS row FROM harness_shared.coord_links e
+      WHERE dst_kind = 'plan_item' AND dst_ref = ANY(${source.itemIds.map(item => `${source.slug}#${item}`)})
+        AND rel = ANY(${['implements', 'relates']})
+      ORDER BY workspace_id, src_kind, src_ref, dst_ref, rel LIMIT 10001`;
+    const workItems = await sql`SELECT jsonb_build_object(
+      'feature_id', feature_id, 'workspace_id', workspace_id, 'harness_slug', harness_slug,
+      'item_kind', item_kind, 'status', status, 'title', title, 'summary', summary,
+      'payload', payload, 'created_ts', created_ts, 'updated_ts', updated_ts) AS row
+      FROM harness_shared.work_items
+      WHERE starts_with(feature_id, ${source.sourceIdPrefix})
+      ORDER BY workspace_id, harness_slug, feature_id LIMIT 10001`;
+    if (!workItems.length || workItems.length > 10000 || edges.length > 10000)
+      throw new Error('Private fixture coverage source is missing or oversized.');
+    return { source, workItems, edges };
+  }
   if (boundary.taskId === 'LATENCY-M1:T09') {
     // Pin the complete causal history before the production reader applies
     // its own age/prefix selection. Missing old holds must remain observable.
@@ -303,11 +345,13 @@ export const benchFixtureReadArgs = z.discriminatedUnion('operation', [
   common.extend({ operation: z.literal('specs') }).strict(),
   common.extend({ operation: z.literal('timeline'), cursor: z.string().min(1).max(512).optional() }).strict(),
   common.extend({ operation: z.literal('conditions') }).strict(),
+  common.extend({ operation: z.literal('coverage') }).strict(),
+  common.extend({ operation: z.literal('retrieval'), scenarioId: benchRetrievalScenarioId }).strict(),
   common.extend({ operation: z.literal('context'), source: z.enum(['corpus', 'memory']),
     entryKey: z.string().min(1).max(4096).optional() }).strict(),
 ]);
 export type BenchFixtureReadArgs = z.infer<typeof benchFixtureReadArgs>;
-export type BenchFixtureProductCall = { tool: 'scorecards:get' | 'scorecards:list' | 'plans:get' | 'plans:get-specs' | 'sessions:timeline' | 'condition-prefix' | 'frozen-context';
+export type BenchFixtureProductCall = { tool: 'scorecards:get' | 'scorecards:list' | 'plans:get' | 'plans:get-specs' | 'sessions:timeline' | 'condition-prefix' | 'coverage-read' | 'frozen-context' | 'retrieval-observation';
   args: Record<string, unknown> };
 
 /** Raw inputs use the existing physical context and operational lease. The
@@ -409,8 +453,15 @@ export function benchFixtureProductCall(boundary: BenchFixtureReadBoundary, rawA
   if (args.operation === 'context') return { tool: 'frozen-context', args: { source: args.source,
     ...(args.entryKey !== undefined ? { entryKey: args.entryKey } : {}) } };
   const source = pinned.cases[args.case];
+  if (args.operation === 'coverage' && (pinned.taskId === 'LATENCY-M1:T07' || pinned.taskId === 'LATENCY-M1:T08'))
+    return { tool: 'coverage-read', args: { ...pinned.cases[args.case], workspaceId: pinned.workspaceId } };
   if (args.operation === 'conditions' && pinned.taskId === 'LATENCY-M1:T09')
     return { tool: 'condition-prefix', args: { prefix: pinned.cases[args.case].prefix } };
+  if (args.operation === 'retrieval' && pinned.taskId === 'LATENCY-M1:T10') {
+    const source = pinned.cases[args.case];
+    if (!source.scenarioIds.includes(args.scenarioId)) throw new Error('Private retrieval scenario is not assigned to this case.');
+    return { tool: 'retrieval-observation', args: { budgetMs: source.budgetMs, scenarioId: args.scenarioId } };
+  }
   if (args.operation === 'card' && 'issueId' in source) {
     const { operation: _, case: __, resultCursor: ___, ...paging } = args;
     if (paging.criterionKey !== undefined && paging.indexOffset !== undefined ||
