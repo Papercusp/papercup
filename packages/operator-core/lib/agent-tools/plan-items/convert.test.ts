@@ -37,8 +37,6 @@ const convM = vi.mocked(convertPlanItem);
 const tool = (await import('./convert')).default;
 
 type Out = { data: any };
-const body = async (args: Record<string, unknown>) =>
-  (((await tool.handler(args as never, {} as never)) as Out).data);
 
 const mcpBody = async (input: Record<string, unknown>) => {
   const originalInput = structuredClone(input);
@@ -119,17 +117,28 @@ describe('plan_items:convert handler (bulk keyed-array)', () => {
         ? ({ status: 'refused', reason: 'assigned to builder-2', assignee: 'builder-2' } as never)
         : converted(opts.itemId, 'WI-1'),
     );
-    const b = await body({ plan: 'p1', itemIds: ['P-001', 'P-REF'] });
+    const input = { plan: 'p1', itemIds: ['P-001', 'P-REF'] };
+    expect(tool.args.parse(input)).toEqual(input);
+    const b = await mcpBody(input);
     expect(b).toMatchObject({ ok: false, counts: { ok: 1, failed: 1 } });
     expect(b.results[0]).toMatchObject({ ok: true, item: 'P-001', status: 'converted' });
     expect(b.results[1]).toMatchObject({ ok: false, item: 'P-REF', status: 'refused' });
+    expect(b.results[1]).toMatchObject({ reason: 'assigned to builder-2', assignee: 'builder-2' });
+    expect(convM).toHaveBeenCalledTimes(2);
+    expect(convM.mock.calls.map(([options]) => ({ plan: options.planSlug, item: options.itemId, owner: options.owner })))
+      .toEqual([{ plan: 'p1', item: 'P-001', owner: 'sess-A' }, { plan: 'p1', item: 'P-REF', owner: 'sess-A' }]);
   });
 
   it('a conflict is reported per item (ok:false) without failing the rest', async () => {
     convM.mockResolvedValue({ status: 'conflict', conflict: { owner: 'sess-B' } } as never);
-    const b = await body({ plan: 'p1', item: 'P-001' });
+    const input = { plan: 'p1', item: 'P-001' };
+    expect(tool.args.parse(input)).toEqual(input);
+    const b = await mcpBody(input);
     expect(b.counts).toEqual({ ok: 0, failed: 1 });
     expect(b.results[0]).toMatchObject({ ok: false, item: 'P-001', status: 'conflict' });
+    expect(b.results[0]).toMatchObject({ conflict: { owner: 'sess-B' } });
+    expect(convM).toHaveBeenCalledTimes(1);
+    expect(convM).toHaveBeenCalledWith(expect.objectContaining({ planSlug: 'p1', itemId: 'P-001', owner: 'sess-A' }));
   });
 
   it('the convert emits `dataOf` digs results[0] out of the envelope (pickup broadcast still fires)', () => {
