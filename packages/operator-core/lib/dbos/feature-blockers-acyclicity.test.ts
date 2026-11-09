@@ -82,6 +82,17 @@ describe('wouldFeatureBlockEdgeCreateCycle — adding ONE blocker edge (link-too
     setGraph({});
     expect(await wouldFeatureBlockEdgeCreateCycle(H, 'A', 'B')).toBe(false);
   });
+
+  it('accepts a safe link despite an unrelated existing cycle', async () => {
+    setGraph({ A: ['B'], B: ['A'] });
+    expect(await wouldFeatureBlockEdgeCreateCycle(H, 'C', 'D')).toBe(false);
+    expect(await guardFeatureBlockEdgeAcyclic(ref('D'), ref('C'))).toBeNull();
+  });
+
+  it('preserves rejection of a new cycle alongside an existing cycle', async () => {
+    setGraph({ A: ['B'], B: ['A'], C: ['D'] });
+    expect(await guardFeatureBlockEdgeAcyclic(ref('C'), ref('D'))).toMatch(/dependency cycle/);
+  });
 });
 
 describe('guardFeatureBlockEdgeAcyclic — tool-facing guard over raw coord_links refs', () => {

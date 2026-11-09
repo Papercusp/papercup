@@ -224,7 +224,7 @@ export function verifyDepsExtracted({ repoRoot, npmArgs, runNpm, probeSpecifiers
 /** Restore the root's committed patches after reify, while the install writer is held. */
 export function restoreInstalledPatchPostimages({ repoRoot, env }?: {
     env?: NodeJS.ProcessEnv | undefined;
-}): Promise<0 | 1>;
+}): Promise<1 | 0>;
 export function repoLockName(repoRoot?: string): string;
 /**
  * Hold a shared host-wide cache lease while a package manager may read/write
@@ -356,6 +356,31 @@ export function assertPatchPostimageGitSource({ repoRoot, npmArgs, env }: {
     npmArgs: any;
     env?: NodeJS.ProcessEnv | undefined;
 }): void;
+/**
+ * Resolve repair bytes in the existing manifest-only layout. The caller supplies
+ * a selected-object materialization, never the shared checkout. This does not
+ * apply output or authorize publication: custody must bind this receipt to its
+ * selected Git inputs and recheck them under the existing writer fence.
+ */
+export function resolveMetadataRepairLock({ repoRoot }: {
+    repoRoot: any;
+}, { spawnCommand, npmCli, log, }?: {
+    spawnCommand?: typeof spawn | undefined;
+    npmCli?: string | undefined;
+    log?: ((line: any) => void) | undefined;
+}): Promise<{
+    bytes: NonSharedBuffer;
+    snapshot: Map<any, any>;
+    receipt: {
+        schemaVersion: number;
+        attemptId: `${string}-${string}-${string}-${string}-${string}`;
+        repositoryRealpath: string;
+        attemptRoot: string;
+        cleanup: {
+            removed: boolean;
+        };
+    };
+}>;
 /** Apply resolver output only while the source snapshot is current. */
 export function applyResolvedManifestFiles({ repoRoot, snapshot, files, outputPaths, }: {
     repoRoot: any;

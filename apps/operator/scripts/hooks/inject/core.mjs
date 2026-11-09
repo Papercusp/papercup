@@ -996,7 +996,7 @@ function isCanonicalReviewPtoolCommand(command, env) {
       toolArgs = payload.args;
     }
     if (tool === 'events:await') return isCanonicalGradingAuditAwait(toolArgs);
-    return ['tools:find', 'dev:pg_query', 'plans:get', 'plans:items', 'work_items:get', 'events:status', 'reports:get',
+    return ['tools:find', 'dev:pg_query', 'plans:get', 'plans:items', 'plans:evaluate-spec-quality', 'work_items:get', 'events:status', 'reports:get',
       'scorecards:get', 'capability:read',
       'conversations:get', 'coord:inbox', 'coord:read', 'docs:get', 'docs:search',
       'consult:reply', 'consult:decline'].includes(tool);

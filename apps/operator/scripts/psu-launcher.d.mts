@@ -1922,7 +1922,7 @@ export function gatewayPinEnv(account: string, provider?: string, ownerId?: stri
  * account. So never emit '' / null / `default` on a path whose intent is "the machine's own login":
  * emit `system`. (That is why the picker's default row carries `system`.)
  */
-export function accountRoutingMode(value: any): "pin" | "default" | "auto";
+export function accountRoutingMode(value: any): "default" | "auto" | "pin";
 /**
  * Return whether raw Codex auth.json content contains a usable ChatGPT access
  * token. Pure and secret-free: this only parses the shape needed by the Codex
@@ -2169,10 +2169,11 @@ export function codexResumeProviderSwitchPreflight(boundProvider: any, accountRo
 };
 /** User-facing reason for refusing a native provider change that has not been
  * verified. The caller runs this before any CODEX_HOME repair or route write.
+ * @param {{ fork?: boolean, sessionId?: string | null }} [options]
  */
-export function codexResumeProviderSwitchRefusal(preflight: any, { fork, sessionId }?: {
-    fork?: boolean | undefined;
-    sessionId?: null | undefined;
+export function codexResumeProviderSwitchRefusal(preflight: any, options?: {
+    fork?: boolean;
+    sessionId?: string | null;
 }): string | null;
 /**
  * Build disclosure text after the installed Codex version passed the provider
@@ -2623,7 +2624,7 @@ export function preflightWindowGuard({ personaBytes, contextSize, model, agent, 
     agent?: string | undefined;
     budget?: null | undefined;
 }): {
-    level: "warn" | "ok" | "refuse";
+    level: "refuse" | "ok" | "warn";
     pct: number;
     estTokens: number;
     window: number;
@@ -2675,7 +2676,7 @@ export function runLaunchPreflight({ promptFile, contextSize, model, agent, budg
     budget?: null | undefined;
     force: any;
 }): {
-    level: "warn" | "ok" | "refuse";
+    level: "refuse" | "ok" | "warn";
     pct: number;
     estTokens: number;
     window: number;
@@ -3286,17 +3287,27 @@ export function describeResumeClaimRefusal(outcome: {
  * report on one silently exempted that whole cohort from the re-anchor (the
  * 2026-07-18 su-57b6247d successor-kill loop). Fire-and-forget, bounded, never
  * rejects — a respawn must never wait on it. Exported with injectables for tests.
+ * @param {object} [options]
+ * @param {string | null} [options.coordOwnerId]
+ * @param {string | null} [options.childLaunchSessionId]
+ * @param {any} [options.managedSuccessionPermit]
+ * @param {NodeJS.ProcessEnv} [options.env]
+ * @param {typeof fetch} [options.fetchImpl]
+ * @param {string} [options.operatorUrl]
+ * @param {string | null} [options.token]
+ * @param {number} [options.timeoutMs]
+ * @param {(ownerId: any, kind: any, extra?: Record<string, unknown>, dir?: string) => boolean} [options.appendEventImpl]
  */
-export function reportSessionRespawned(advSessionId: any, sessionId: any, { coordOwnerId, childLaunchSessionId, managedSuccessionPermit, env, fetchImpl, operatorUrl, token, timeoutMs, appendEventImpl, }?: {
-    coordOwnerId?: null | undefined;
-    childLaunchSessionId?: null | undefined;
-    managedSuccessionPermit?: null | undefined;
+export function reportSessionRespawned(advSessionId: any, sessionId: any, options?: {
+    coordOwnerId?: string | null | undefined;
+    childLaunchSessionId?: string | null | undefined;
+    managedSuccessionPermit?: any;
     env?: NodeJS.ProcessEnv | undefined;
     fetchImpl?: typeof fetch | undefined;
-    operatorUrl?: any;
-    token?: null | undefined;
+    operatorUrl?: string | undefined;
+    token?: string | null | undefined;
     timeoutMs?: number | undefined;
-    appendEventImpl?: typeof appendHostEvent | undefined;
+    appendEventImpl?: ((ownerId: any, kind: any, extra?: Record<string, unknown>, dir?: string) => boolean) | undefined;
 }): Promise<any>;
 /** Pre-child half of the existing authenticated lifecycle route. Uncertainty
  * never grants permission to create a blind-review successor. */
@@ -5573,8 +5584,8 @@ declare function api(path: any, opts?: {}): Promise<any>;
 declare function slowRequestNoticeOncePerLaunch({ url }: {
     url: any;
 }): Promise<string | null>;
-import { appendHostEvent } from "./psu-pty-host.mjs";
 import { fireSessionCompactedEvent } from "./psu-pty-host.mjs";
+import { appendHostEvent } from "./psu-pty-host.mjs";
 /**
  * The I/O half: verify enrollment for a claude launch; on a miss, self-repair
  * ONCE through the operator's existing idempotent install route
