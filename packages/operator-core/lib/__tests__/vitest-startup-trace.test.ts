@@ -382,6 +382,29 @@ describe('focused runner startup tracing', () => {
       const custody = readPartialNativeChannelCustody(producer, snapshot.nativeRun);
       expect(custody, JSON.stringify(custody)).toMatchObject({ status: 'bound',
         custody: { terminal: true, reporterPid: snapshot.nativeRun.pid } });
+      // This real reporter exceeds the module-event budget. Only that scoped
+      // gap is compatible with complete physical channel custody.
+      const traceRoot = `${out}.native-processes`;
+      const moduleLimit = readdirSync(traceRoot).filter(name => name.endsWith('.json'))
+        .map(name => ({ name, row: JSON.parse(readFileSync(join(traceRoot, name), 'utf8')) }))
+        .find(({ row }) => row.event === 'trace-limit' && row.observationScope === 'module' &&
+          row.pid === snapshot.nativeRun.pid && row.threadId === 0)!;
+      expect(moduleLimit).toBeDefined();
+      const originalLimit = readFileSync(join(traceRoot, moduleLimit.name));
+      for (const observationScope of [undefined, 'general']) {
+        const altered = { ...moduleLimit.row, observationScope };
+        const bytes = Buffer.from(JSON.stringify(altered));
+        const name = `${createHash('sha256').update(bytes).digest('hex')}.json`;
+        rmSync(join(traceRoot, moduleLimit.name));
+        writeFileSync(join(traceRoot, name), bytes);
+        try {
+          expect(readPartialNativeChannelCustody(producer, snapshot.nativeRun))
+            .toMatchObject({ status: 'refused', reason: 'native-channel-trace-gap' });
+        } finally {
+          rmSync(join(traceRoot, name));
+          writeFileSync(join(traceRoot, moduleLimit.name), originalLimit);
+        }
+      }
       const expected = { attemptId: producer.attemptId, root, taskKey: producer.taskKey,
         workspaceName: producer.workspaceName, producerPath: path,
         selectedSpecifications: selected.selectedSpecifications, manifest: { schemaVersion: 1,
@@ -803,6 +826,9 @@ describe('focused runner startup tracing', () => {
         await import(${JSON.stringify(preload)});
         let sum = 0;
         for (const url of ${JSON.stringify(modules)}) sum += (await import(url)).value;
+        const { channel } = await import('node:diagnostics_channel');
+        for (let index = 0; index < 200; index++)
+          channel('papercusp:api-worker-schema').publish({ unavailable: true });
         process.stdout.write(String(sum));`;
       const { stdout, stderr } = await promisify(execFile)(process.execPath,
         ['--input-type=module', '-e', source], { env, timeout: 10_000 });
@@ -814,6 +840,11 @@ describe('focused runner startup tracing', () => {
       expect(starts.length).toBeGreaterThan(0);
       expect(starts.length).toBeLessThanOrEqual(128);
       expect(rows.filter(row => row.event === 'module-load-limit')).toHaveLength(1);
+      expect(rows.filter(row => row.event === 'trace-limit').map(row => row.observationScope).sort())
+        .toEqual(['general', 'module']);
+      expect(rows.filter(row => row.event.startsWith('module-') &&
+        !['module-load-limit', 'module-resolve-limit'].includes(row.event)).length).toBeLessThanOrEqual(384);
+      expect(rows.filter(row => row.event === 'api-worker-schema-unavailable').length).toBeLessThanOrEqual(128);
       expect(rows.find(row => row.event === 'node-exit')).toMatchObject({ code: 0 });
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });

@@ -421,7 +421,12 @@ export function readPartialNativeChannelCustody(producer, native, { allowInterru
     const { rows, sourceRoot, population } = readNativeProcessTraceArtifacts(channel.traceOut);
     if (!population.complete) return refused("native-channel-trace-incomplete");
     const observations = rows.map(value => value.row);
-    if (observations.some(row => ["trace-limit", "trace-event-too-large", "native-channel-unavailable"].includes(row.event)))
+    // Module observations have a separate bounded portion of the writer's
+    // allowance. Their gap still forbids complete-import proof, but cannot
+    // consume the process events used below. Legacy/unscoped and general
+    // gaps remain fatal to channel custody.
+    if (observations.some(row => row.event === "trace-limit" && row.observationScope !== "module" ||
+        ["trace-event-too-large", "native-channel-unavailable"].includes(row.event)))
       return refused("native-channel-trace-gap");
     // Worker preloads share a PID with the reporter. Keep their source evidence,
     // but use only the main thread to establish OS-process ancestry and custody.

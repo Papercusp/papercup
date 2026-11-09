@@ -59,14 +59,19 @@ function installNativeProcessTrace(out) {
       try { unlinkSync(temporary); } catch { /* A killed writer may leave only staging evidence. */ }
     }
   };
-  let remaining = 512;
+  // Keep the 512 ordinary-event allowance, reserving process evidence so
+  // loader traffic cannot hide a later spawn/close. Each exhausted portion
+  // has its own marker; module gaps cannot establish complete imports.
+  const remaining = { module: 384, general: 128 };
   const emit = (event, fields = {}, terminal = false) => {
-    if (!terminal && remaining-- < 0) return;
+    const observationScope = event.startsWith('module-') ? 'module' : 'general';
+    if (!terminal && remaining[observationScope]-- < 0) return;
     try {
       let row = { schemaVersion: 1, kind: 'native-node-process-event', event,
         processIdentity: identity, kernelProcessIdentity,
         pid: process.pid, ppid: process.ppid, atMs: Date.now(), ...fields, threadId };
-      if (!terminal && remaining === -1) row = { ...row, event: 'trace-limit' };
+      if (!terminal && remaining[observationScope] === -1)
+        row = { ...row, event: 'trace-limit', observationScope };
       let bytes = Buffer.from(JSON.stringify(row));
       if (bytes.length > 128 * 1024) {
         bytes = Buffer.from(JSON.stringify({ schemaVersion: 1, kind: row.kind,

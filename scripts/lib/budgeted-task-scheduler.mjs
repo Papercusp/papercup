@@ -112,7 +112,7 @@ export function readNativeProcessTraceArtifacts(out, startedAtMs = 0, finishedAt
       }
       population.artifactsVisited++;
       const name = entry.name;
-      if (!/^[a-f0-9]{64}\.(json|stream|source)$/.test(name)) throw new Error("unexpected native process artifact");
+      if (!/^[a-f0-9]{64}\.(json|stream|source|schema)$/.test(name)) throw new Error("unexpected native process artifact");
       if (!name.endsWith(".json")) continue;
       const file = join(sourceRoot, name), stat = lstatSync(file);
       if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 128 * 1024)
