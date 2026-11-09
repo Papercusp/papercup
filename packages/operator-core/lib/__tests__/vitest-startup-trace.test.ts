@@ -12,6 +12,7 @@ import { controlForkStartupOnly, loaderIdentity, nativeProcessTraceEnv, observeF
 import { readPartialNativeChannelCustody, readPartialNativeCompletion,
   registerPartialNativeProducerChannels } from '../../../../scripts/lib/partial-task-resume.mjs';
 import { writeRelatedFilterList } from '../../../../scripts/lib/related-tests.mjs';
+import { readNativeProcessTraceArtifacts } from '../../../../scripts/lib/budgeted-task-scheduler.mjs';
 
 function retainNativeStartupFailure(dir: string, error: unknown) {
   // Preserve the actual execFile result as well as the source/trace fixture.
@@ -900,6 +901,41 @@ describe('focused runner startup tracing', () => {
         expect(rows.filter(row => row.event === 'node-exit')).toHaveLength(mode === 'application-exit' ? 1 : 0);
       } finally { rmSync(dir, { recursive: true, force: true }); }
     });
+
+  it('retains complete pinned engine ranges beyond the event bound and authenticates their attachment', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'native-engine-ranges-'));
+    const out = join(dir, 'sources.json'), main = join(dir, 'main.mjs');
+    const source = Array.from({ length: 2000 }, (_, index) =>
+      `function retained_${index}() { return ${index}; } retained_${index}();`).join('\n') +
+      '\nfunction untouched_suffix() { return 7; } console.log("complete");';
+    writeFileSync(main, source);
+    try {
+      const result = spawnSync(process.execPath, [main], {
+        env: nativeProcessTraceEnv({ ...process.env, NODE_OPTIONS: '',
+          PC_EXECUTED_SOURCE_MAP_OUT: out, PAPERCUSP_TEST_STARTUP_TRACE: '0' }, {
+          pinnedSources: [{ path: main, sha256: createHash('sha256').update(source).digest('hex'),
+            byteLength: Buffer.byteLength(source) }],
+        }), encoding: 'utf8', timeout: 10_000,
+      });
+      expect(result.error, result.stderr).toBeUndefined();
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe('complete\n');
+      const trace = readNativeProcessTraceArtifacts(out);
+      const snapshot = trace.rows.find(({ row }: any) => row.event === 'engine-script-execution')!.row;
+      expect(snapshot.observationArtifact.byteLength).toBeGreaterThan(128 * 1024);
+      const observed = snapshot.observation.scripts.find((row: any) => row.path === main);
+      expect(observed).toMatchObject({ execution: 'observed', coverageRangesComplete: true,
+        sourceTextSha256: createHash('sha256').update(source).digest('hex') });
+      expect(observed.coverageRanges).toContainEqual(expect.objectContaining({ functionName: 'retained_1999', count: 1 }));
+      expect(observed.coverageRanges).toContainEqual(expect.objectContaining({ functionName: 'untouched_suffix', count: 0 }));
+      expect(snapshot.observation.populationStatus).toBe('unknown');
+      expect(trace.rows.some(({ row }: any) => row.event === 'trace-event-too-large')).toBe(false);
+      const attachment = join(`${out}.native-processes`, snapshot.observationArtifact.ref);
+      const original = readFileSync(attachment);
+      writeFileSync(attachment, Buffer.from(original.map((value, index) => index === 0 ? 32 : value)));
+      expect(() => readNativeProcessTraceArtifacts(out)).toThrow('native engine observation hash mismatch');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
 
   it('retains an independently enrolled late source after the generic observation budget is exhausted', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'native-late-pin-'));

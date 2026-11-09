@@ -1600,7 +1600,7 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
       assert.deepEqual(script.independentPin, { path: o.bundle, sha256: closure.sha256, byteLength: loaded.byteLength },
         'bundle engine independent pin differs');
       assert.ok(typeof script.coverageRangesComplete === 'boolean' &&
-        Array.isArray(script.coverageRanges) && script.coverageRanges.length <= 128 &&
+        Array.isArray(script.coverageRanges) && script.coverageRanges.length <= script.sourceTextLength &&
         script.coverageRanges.every((range: { functionName: string; startOffset: number; endOffset: number; count: number }) =>
           typeof range.functionName === 'string' && Number.isSafeInteger(range.count) && range.count >= 0 &&
           Number.isSafeInteger(range.startOffset) && Number.isSafeInteger(range.endOffset) &&

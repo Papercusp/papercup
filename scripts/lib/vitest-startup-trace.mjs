@@ -74,6 +74,19 @@ function installNativeProcessTrace(out) {
       if (!terminal && remaining[observationScope] === -1)
         row = { ...row, event: 'trace-limit', observationScope };
       let bytes = Buffer.from(JSON.stringify(row));
+      if (event === 'engine-script-execution' && bytes.length > 128 * 1024 &&
+          row.observation && bytes.length <= nativeSourceRetentionLimits.processBytes) {
+        const observationBytes = Buffer.from(JSON.stringify(row.observation));
+        const sha256 = createHash('sha256').update(observationBytes).digest('hex');
+        const ref = `${sha256}.engine`;
+        publish(join(root, ref), observationBytes);
+        // Attachments use the same no-replace custody as event files.
+        if (!lstatSync(join(root, ref)).isFile() || lstatSync(join(root, ref)).isSymbolicLink() ||
+            !readFileSync(join(root, ref)).equals(observationBytes)) throw new Error('engine observation changed');
+        const { observation, ...envelope } = row;
+        row = { ...envelope, observationArtifact: { ref, sha256, byteLength: observationBytes.length } };
+        bytes = Buffer.from(JSON.stringify(row));
+      }
       if (bytes.length > 128 * 1024) {
         bytes = Buffer.from(JSON.stringify({ schemaVersion: 1, kind: row.kind,
           event: 'trace-event-too-large', processIdentity: identity, kernelProcessIdentity, pid: process.pid,

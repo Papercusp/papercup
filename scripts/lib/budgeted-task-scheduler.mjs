@@ -102,7 +102,9 @@ export function readNativeProcessTraceArtifacts(out, startedAtMs = 0, finishedAt
     throw new Error("redirected native process trace");
   const sourceRoot = realpathSync(path), rows = [];
   const population = { artifactLimit: 16384, artifactsVisited: 0,
-    eventByteLimit: 64 * 1024 * 1024, eventBytesRead: 0, complete: false, truncatedBy: null };
+    eventByteLimit: 64 * 1024 * 1024, eventBytesRead: 0,
+    observationByteLimit: 64 * 1024 * 1024, observationBytesRead: 0,
+    complete: false, truncatedBy: null };
   const directory = opendirSync(sourceRoot);
   try {
     for (let entry; (entry = directory.readSync()) !== null;) {
@@ -112,7 +114,7 @@ export function readNativeProcessTraceArtifacts(out, startedAtMs = 0, finishedAt
       }
       population.artifactsVisited++;
       const name = entry.name;
-      if (!/^[a-f0-9]{64}\.(json|stream|source|schema)$/.test(name)) throw new Error("unexpected native process artifact");
+      if (!/^[a-f0-9]{64}\.(json|stream|source|schema|engine)$/.test(name)) throw new Error("unexpected native process artifact");
       if (!name.endsWith(".json")) continue;
       const file = join(sourceRoot, name), stat = lstatSync(file);
       if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 128 * 1024)
@@ -131,7 +133,25 @@ export function readNativeProcessTraceArtifacts(out, startedAtMs = 0, finishedAt
           !Number.isSafeInteger(row.atMs) || typeof row.processIdentity !== "string" ||
           row.threadId !== undefined && (!Number.isSafeInteger(row.threadId) || row.threadId < 0))
         throw new Error("malformed native process event");
-      if (row.atMs >= startedAtMs && row.atMs <= finishedAtMs) rows.push({ row, bytes });
+      if (row.atMs >= startedAtMs && row.atMs <= finishedAtMs) {
+        const pin = row.observationArtifact;
+        if (pin !== undefined) {
+          if (row.event !== 'engine-script-execution' || row.observation !== undefined ||
+              !/^[a-f0-9]{64}$/.test(pin?.sha256) || pin.ref !== `${pin.sha256}.engine` ||
+              !Number.isSafeInteger(pin.byteLength) || pin.byteLength < 0)
+            throw new Error('malformed native engine observation reference');
+          const observationBytes = readNativeArtifactBytes(join(sourceRoot, pin.ref), pin.byteLength,
+            population.observationByteLimit - population.observationBytesRead,
+            count => { population.observationBytesRead += count; });
+          if (createHash('sha256').update(observationBytes).digest('hex') !== pin.sha256)
+            throw new Error('native engine observation hash mismatch');
+          const observation = JSON.parse(observationBytes.toString('utf8'));
+          if (observation?.schemaVersion !== 'node-engine-script-observations-v1' || !Array.isArray(observation.scripts))
+            throw new Error('malformed native engine observation');
+          row.observation = observation;
+        }
+        rows.push({ row, bytes });
+      }
     }
     population.complete = population.truncatedBy === null;
   } finally { directory.closeSync(); }
