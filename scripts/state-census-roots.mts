@@ -37,6 +37,9 @@ export async function readRetainedReapTaskIds(
     readTerminalLatches?: (keys: string[]) => Promise<readonly {
       eventKey: string; lastFiredBy: string | null; lastPayload: unknown; fireCount: number | string;
     }[]>;
+    readReaperMessages?: (workspaceIds: string[], ids: string[]) => Promise<readonly {
+      workspaceId: string; writerKey: string; from: string | null; summary: string | null;
+    }[]>;
   } = {},
 ) {
   // reapArchiveCensusProducer already batches at this bound. Refuse callers
@@ -82,6 +85,36 @@ export async function readRetainedReapTaskIds(
     if (typeof taskId === 'string' && requested.has(taskId)
       && latch.eventKey === taskTerminalEventKey(taskId)
       && typeof state === 'string' && terminalStates.has(state)) retained.add(taskId);
+  }
+  const unproven = [...requested].filter(id => !retained.has(id));
+  const workspaceIds = [...new Set(workspaces.map(workspace => workspace.id))];
+  if (!unproven.length || !workspaceIds.length) return [...retained];
+  // Older archives predate terminal latches. The reaper's canonical broadcasts
+  // preserve exact task identities after ledger GC, independently of filenames.
+  // A failed stop can also have an archived tail; this proves identity only.
+  const outcomePattern = '[✓✗] (' + unproven.map(id => id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
+    + ') \\((terminal-residue|managed-residue|consult-settled|quiet-zombie)\\)';
+  const readReaperMessages = readers.readReaperMessages ?? (async scopes => {
+    const sql = readers.terminalSql ?? postgres(getHarnessAdminUrl(), { max: 1, connect_timeout: 5 });
+    try {
+      return await sql<{ workspaceId: string; writerKey: string; from: string | null; summary: string | null }[]>`
+        SELECT workspace_id AS "workspaceId", writer_key AS "writerKey",
+               body->>'from' AS "from", body->>'summary' AS summary
+          FROM harness_shared.coord_event_log
+         WHERE workspace_id = ANY(${scopes}::text[]) AND surface = 'messages'
+           AND writer_key = 'task-manager' AND body->>'summary' ~ ${outcomePattern}
+         ORDER BY id LIMIT 2000`;
+    } finally { if (!readers.terminalSql) await sql.end(); }
+  });
+  const messages = await readReaperMessages(workspaceIds, unproven);
+  if (messages.length >= 2000) throw new Error('Reaper message evidence bound exceeded');
+  for (const message of messages) {
+    if (!workspaceIds.includes(message.workspaceId) || message.writerKey !== 'task-manager'
+      || message.from !== 'task-manager' || !message.summary?.startsWith('[task-reaper] reaped ')
+      || !message.summary.includes('Log tails archived under ~/.papercusp/reap-archive/. ')) continue;
+    for (const match of message.summary.matchAll(new RegExp(outcomePattern, 'g'))) {
+      if (requested.has(match[1])) retained.add(match[1]);
+    }
   }
   return [...retained];
 }
@@ -179,7 +212,7 @@ const combinedHosted = mergeNestedCensusRoots({ roots: [...installed.roots, ...h
 installed.roots = combinedHosted.roots;
 installed.declarations = combinedHosted.declarations;
 // Query exact archive identities BEFORE the ledger limit; a batch is smaller
-// than the cap. GCed ledger rows need a canonical terminal latch; an archive
+// than the cap. GCed ledger rows need a canonical terminal latch or reaper broadcast; an archive
 // filename alone never proves writer ownership.
 stage('reap-archive');
 const reapArchive = await reapArchiveCensusProducer(undefined, [], args.includes('--host-catalogs')
