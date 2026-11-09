@@ -234,39 +234,51 @@ describe('the healthy fold', () => {
   });
 
   it('hoists a NON-AUTHORITATIVE reading where it cannot be skipped', async () => {
+    const measured = vi.fn();
     readCellMock.mockResolvedValue(
       valueRead({ source: { value: 'run-probe', authoritative: false, why: 'inferred from the checkout HEAD' } }),
     );
 
-    const block = await prepareCellWakeFold(INPUT);
+    const block = await prepareCellWakeFold({ ...INPUT, onCurrentMeasurement: measured });
 
     expect(block).toContain('INFERRED, not observed');
     expect(block).toContain('inferred from the checkout HEAD');
+    expect(measured).toHaveBeenCalledOnce();
+    expect(measured).toHaveBeenCalledWith({ origin: 'canonical-cell-read', status: 'unknown',
+      measuredAt: expect.any(String), source: 'gate.greenCheckpoint.verdict',
+      summary: 'underlying source is inferred, not observed' });
+    expect(Number.isFinite(Date.parse(measured.mock.calls[0][0].measuredAt))).toBe(true);
   });
 
   it('reports UNKNOWN by its branchable code rather than omitting the block', async () => {
+    const measured = vi.fn();
     readCellMock.mockResolvedValue({
       status: 'unknown',
       cell: 'gate.greenCheckpoint.verdict',
       unknown: { code: 'resolver-failed', detail: 'git rev-parse died' },
     });
 
-    const block = await prepareCellWakeFold(INPUT);
+    const block = await prepareCellWakeFold({ ...INPUT, onCurrentMeasurement: measured });
 
     // The code is what the agent branches on: retry vs pointless vs supply-more-input.
     expect(block).toContain('UNKNOWN');
     expect(block).toContain('resolver-failed');
     expect(block).toContain('git rev-parse died');
+    expect(measured).toHaveBeenCalledOnce();
+    expect(measured).toHaveBeenCalledWith({ origin: 'canonical-cell-read', status: 'unknown',
+      measuredAt: expect.any(String), source: 'gate.greenCheckpoint.verdict', summary: 'resolver-failed' });
+    expect(Number.isFinite(Date.parse(measured.mock.calls[0][0].measuredAt))).toBe(true);
   });
 });
 
 describe('degrades — the wake is never delayed and never silently unqualified', () => {
   it('BUDGET BREACH: returns promptly and says the value was NOT re-read', async () => {
+    const measured = vi.fn();
     // The measured common case. Resolver never settles.
     readCellMock.mockReturnValue(new Promise(() => {}));
 
     const started = Date.now();
-    const block = await prepareCellWakeFold({ ...INPUT, budgetMs: 40 });
+    const block = await prepareCellWakeFold({ ...INPUT, budgetMs: 40, onCurrentMeasurement: measured });
     const elapsed = Date.now() - started;
 
     expect(elapsed).toBeLessThan(1000);
@@ -276,16 +288,25 @@ describe('degrades — the wake is never delayed and never silently unqualified'
     expect(block).toContain("state:read { cell: 'gate.greenCheckpoint.verdict' }");
     // And it must warn that what was quoted above is stale.
     expect(block).toContain('may be stale');
+    expect(measured).toHaveBeenCalledOnce();
+    expect(measured).toHaveBeenCalledWith({ origin: 'canonical-cell-read', status: 'unknown',
+      measuredAt: expect.any(String), source: 'gate.greenCheckpoint.verdict', summary: 'did not resolve within 40ms' });
+    expect(Number.isFinite(Date.parse(measured.mock.calls[0][0].measuredAt))).toBe(true);
   });
 
   it('RESOLVER THROWS: same qualified block, not a crash and not silence', async () => {
+    const measured = vi.fn();
     readCellMock.mockRejectedValue(new Error('boom'));
 
-    const block = await prepareCellWakeFold(INPUT);
+    const block = await prepareCellWakeFold({ ...INPUT, onCurrentMeasurement: measured });
 
     expect(block).toContain('NOT re-read at delivery');
     expect(block).toContain('could not be resolved');
     expect(block).toContain("state:read { cell: 'gate.greenCheckpoint.verdict' }");
+    expect(measured).toHaveBeenCalledOnce();
+    expect(measured).toHaveBeenCalledWith({ origin: 'canonical-cell-read', status: 'unknown',
+      measuredAt: expect.any(String), source: 'gate.greenCheckpoint.verdict', summary: 'could not be resolved' });
+    expect(Number.isFinite(Date.parse(measured.mock.calls[0][0].measuredAt))).toBe(true);
   });
 
   it('the two degrade reasons are DISTINGUISHABLE in the transcript', async () => {
