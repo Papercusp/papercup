@@ -7887,9 +7887,24 @@ export async function clearExternalBlockersOnLockedRow(
     cleared.push({ kind: target.kind, ref: target.ref });
   }
   const activeRemaining = blockers.filter((blocker) => blocker.status === 'active').length;
-  if (cleared.length === 0) return { changed: false, restored: false, cleared, activeRemaining };
+  // A previous consult settlement may have cleared history before legacy queue
+  // flags were reconciled. Only its own latest, already-cleared human target is
+  // evidence for repair; an arbitrary repeated clear must not lift owner flags.
+  const settledHumanTarget = actor === 'system:consult-park' && targets.some((target) => {
+    if (target.kind !== 'human' || !target.ref.startsWith('consult:')) return false;
+    const latest = [...blockers].reverse().find((blocker) => blocker.kind === target.kind && blocker.ref === target.ref);
+    return latest?.status === 'cleared' && latest.clearedBy === actor;
+  });
+  const humanCleared = cleared.some((blocker) => blocker.kind === 'human') || settledHumanTarget;
+  const active = blockers.filter((blocker) => blocker.status === 'active');
+  const releasedFlags = ownerActionFlagsReleasedByClear(payload, active, { kind: 'human', cleared: humanCleared });
 
   const issueFamily = (ISSUE_FAMILY_ROUTE_KINDS as readonly string[]).includes(String(row.item_kind));
+  const settledHumanClassification = issueFamily && humanCleared &&
+    String(row.status ?? '').toLowerCase() === 'needs-human' && !active.some((blocker) => blocker.kind === 'human');
+  if (cleared.length === 0 && releasedFlags.length === 0 && !settledHumanClassification) {
+    return { changed: false, restored: false, cleared, activeRemaining };
+  }
   const autoBlockedIssue =
     issueFamily && String(row.status ?? '').toLowerCase() === 'blocked' && payload.held_open_reason === 'blocked';
   const restoreIssue = autoBlockedIssue && activeRemaining === 0;
@@ -7898,20 +7913,16 @@ export async function clearExternalBlockersOnLockedRow(
     externalBlockers: blockers,
   };
 
-  const active = blockers.filter((blocker) => blocker.status === 'active');
-  const humanCleared = cleared.some((blocker) => blocker.kind === 'human');
-  for (const key of ownerActionFlagsReleasedByClear(payload, active, { kind: 'human', cleared: humanCleared })) {
+  for (const key of releasedFlags) {
     delete nextPayload[key];
   }
   // Settling a consult answers the decision, not the underlying bug. Correct the
   // stale human queue label conservatively without lifting defaults or durable parks.
-  const settledHumanClassification = issueFamily && humanCleared &&
-    String(row.status ?? '').toLowerCase() === 'needs-human' && !active.some((blocker) => blocker.kind === 'human');
   if (settledHumanClassification && active.length === 0) {
     // Settlement records a decision, not its application. Retain that concrete
     // triage reason until the woken parker applies the default or alternative.
-    const settled = blockers.find((blocker) => blocker.kind === 'human' &&
-      cleared.some((target) => target.kind === blocker.kind && target.ref === blocker.ref));
+    const settled = [...blockers].reverse().find((blocker) => blocker.kind === 'human' &&
+      targets.some((target) => target.kind === blocker.kind && target.ref === blocker.ref));
     nextPayload.blockedReason = `Apply settled decision ${settled?.ref ?? ''}: ` +
       (settled?.evidence || settled?.defaultIfUnanswered || 'parker must apply the recorded consult outcome');
     nextPayload.blockedAt = new Date().toISOString();

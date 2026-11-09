@@ -188,18 +188,26 @@ function outcomeActions(
   const actions: ParkAction[] = [
     { kind: 'record-outcome', outcome: { verdict, at, objectionId: objection?.id ?? null } },
   ];
-  if (TERMINAL_PARK_VERDICTS.has(verdict)) {
-    const recordedAs = verdict === 'owner-decided' ? 'owner' : 'peer-review';
-    const note =
-      verdict === 'proceed'
-        ? `Peer review: no standing objection at the deadline; proceeding with the default: ${state.defaultAction}`
-        : verdict === 'adopted'
-          ? `Peer review: adopted the reviewer's alternative: ${objection?.alternative ?? ''}`
-          : `Owner decided: ${ownerText ?? ''}`;
-    actions.push({ kind: 'clear-blocker', recordedAs, note });
-  }
+  const clear = parkClearBlockerAction(state, { verdict, at, objectionId: objection?.id ?? null });
+  if (clear) actions.push(clear);
   actions.push({ kind: 'emit-verdict', payload: payload(state, verdict, objection, ownerText) });
   return actions;
+}
+
+/** Rebuild only the idempotent blocker effect of a recorded verdict, without resolving again. */
+export function parkClearBlockerAction(
+  state: ParkState,
+  outcome: ParkOutcomeRecord,
+): Extract<ParkAction, { kind: 'clear-blocker' }> | null {
+  const { verdict } = outcome;
+  if (!TERMINAL_PARK_VERDICTS.has(verdict)) return null;
+  const objection = state.replies.find((reply) => reply.id === outcome.objectionId);
+  const note = verdict === 'proceed'
+    ? `Peer review: no standing objection at the deadline; proceeding with the default: ${state.defaultAction}`
+    : verdict === 'adopted'
+      ? `Peer review: adopted the reviewer's alternative: ${objection?.alternative ?? ''}`
+      : `Owner decided: ${state.ownerAnswer?.text ?? ''}`;
+  return { kind: 'clear-blocker', recordedAs: verdict === 'owner-decided' ? 'owner' : 'peer-review', note };
 }
 
 /** Decide what (if anything) happens to `state` at `now`. Pure and idempotent. */

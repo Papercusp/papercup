@@ -16,10 +16,12 @@
  * the real-Postgres integration test (P-009, park.integration.test.ts).
  */
 import type { Sql } from 'postgres';
+import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 import { decisionReviewMetaFromRouting, type DecisionReviewStance } from './decision-review';
 import {
   runParkTriggers,
   TERMINAL_PARK_VERDICTS,
+  parkClearBlockerAction,
   type OwnerAnswer,
   type ParkerResponse,
   type ParkOutcomeRecord,
@@ -294,7 +296,8 @@ export async function pollParkOwnerAnswers(opts: {
 /**
  * Parks the deadline sweep must resolve: decision-review consults (open OR closed —
  * the review cascade can expire before the park's deadline) whose deadline has passed
- * and which have no settling or owner-deciding outcome yet.
+ * and which have no settling or owner-deciding outcome yet. Also retry a recorded
+ * settlement whose exact blocker effect or legacy human classification is pending.
  */
 export async function findDueParks(
   sql: Sql,
@@ -305,10 +308,36 @@ export async function findDueParks(
     SELECT workspace_id, conversation_id
       FROM harness_shared.consult_state
      WHERE ${sql.unsafe(ROUTING_JSONB)} #>> '{cascade,flavor}' = 'decision-review'
-       AND (${sql.unsafe(ROUTING_JSONB)} #>> '{cascade,deadlineAt}')::timestamptz <= ${nowIso}::timestamptz
-       AND NOT EXISTS (
-         SELECT 1 FROM jsonb_array_elements(COALESCE(park_state->'outcomes', '[]'::jsonb)) o
-          WHERE o->>'verdict' IN ('proceed', 'adopted', 'owner-decided', 'owner-deciding'))
+       AND (
+         ((${sql.unsafe(ROUTING_JSONB)} #>> '{cascade,deadlineAt}')::timestamptz <= ${nowIso}::timestamptz
+          AND NOT EXISTS (
+            SELECT 1 FROM jsonb_array_elements(COALESCE(park_state->'outcomes', '[]'::jsonb)) o
+             WHERE o->>'verdict' IN ('proceed', 'adopted', 'owner-decided', 'owner-deciding')))
+         OR (
+           park_state->'outcomes'->-1->>'verdict' IN ('proceed', 'adopted', 'owner-decided')
+           AND EXISTS (
+             SELECT 1 FROM harness_shared.work_items wi
+             CROSS JOIN LATERAL (
+               SELECT b FROM jsonb_array_elements(COALESCE(wi.payload->'externalBlockers', '[]'::jsonb))
+                 WITH ORDINALITY AS history(b, ordinal)
+                WHERE b->>'kind' = 'human' AND b->>'ref' = 'consult:' || conversation_id
+                ORDER BY ordinal DESC LIMIT 1
+             ) target
+             WHERE wi.workspace_id = consult_state.workspace_id
+               AND wi.feature_id = ${sql.unsafe(ROUTING_JSONB)} #>> '{cascade,workItemId}'
+               AND NOT (wi.status = ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[]))
+               AND (target.b->>'status' = 'active' OR (
+                 target.b->>'status' = 'cleared' AND target.b->>'clearedBy' = 'system:consult-park'
+                 AND (wi.status = 'needs-human' OR wi.payload->'needsOwnerAction' = 'true'::jsonb
+                      OR wi.payload->'needsHuman' = 'true'::jsonb)
+                 AND NOT EXISTS (
+                   SELECT 1 FROM jsonb_array_elements(COALESCE(wi.payload->'externalBlockers', '[]'::jsonb)) other
+                    WHERE other->>'kind' = 'human' AND other->>'status' = 'active'
+                 )
+               ))
+           )
+         )
+       )
      ORDER BY (${sql.unsafe(ROUTING_JSONB)} #>> '{cascade,deadlineAt}')::timestamptz
      LIMIT ${limit}`;
 }
@@ -350,8 +379,8 @@ export interface ParkSweepResult {
 
 /**
  * The deadline leg (R-5): resolve every due park. Called from the consult expiry
- * sweep each tick. One park's failure never stops the others; it is retried next tick
- * because nothing was recorded for it.
+ * sweep each tick. One park's failure never stops the others. Recorded settlements
+ * with unfinished blocker effects are retried without recording or emitting a new verdict.
  */
 export async function sweepDueParks(opts: {
   sql: Sql;
@@ -365,6 +394,14 @@ export async function sweepDueParks(opts: {
   const result: ParkSweepResult = { resolved: [], failures: [], saturated: due.length >= limit };
   for (const row of due) {
     try {
+      const state = await loadParkState(opts.sql, row.workspace_id, row.conversation_id);
+      const outcome = state?.outcomes.at(-1);
+      const clear = state && outcome ? parkClearBlockerAction(state, outcome) : null;
+      if (state && clear) {
+        await opts.seamsFor(row.workspace_id).clearBlocker(state, clear);
+        result.resolved.push({ consultId: row.conversation_id, verdict: null, applied: ['clear-blocker'] });
+        continue;
+      }
       const r = await runParkTriggersForConsult(opts.sql, row.workspace_id, row.conversation_id, opts.seamsFor(row.workspace_id), now);
       if (r) result.resolved.push(r);
     } catch (e) {

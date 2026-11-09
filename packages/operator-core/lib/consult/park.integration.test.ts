@@ -327,7 +327,10 @@ describe('consult-backed parking against real Postgres (R-9)', () => {
       const [row] = await sql<Array<{ payload: Record<string, unknown> }>>`
         SELECT payload FROM harness_shared.work_items
          WHERE workspace_id = ${WS} AND feature_id = ${park.workItemId}`;
-      let payload: Record<string, unknown> = { ...row.payload, needsOwnerAction: true, needsHuman: true };
+      let payload: Record<string, unknown> = { ...row.payload, needsOwnerAction: true, needsHuman: true,
+        _admission: { status: 'pending', evidence: 'retain the admission gate' },
+        _review: { verdict: 'held', evidence: 'retain the review gate' },
+      };
       if (scenario.endsWith('-remains')) {
         const human = scenario === 'credential-remains';
         const { blockers } = updateExternalBlockerHistory(payload, {
@@ -355,6 +358,8 @@ describe('consult-backed parking against real Postgres (R-9)', () => {
       expect(after.payload.needsOwnerAction).toBe(scenario === 'credential-remains' ? true : undefined);
       expect(after.payload.needsHuman).toBe(scenario === 'credential-remains' ? true : undefined);
       expect(after.payload.externalBlockers).toEqual(stored.externalBlockers);
+      expect(after.payload._admission).toEqual(stored._admission);
+      expect(after.payload._review).toEqual(stored._review);
       if (scenario === 'durable-park') {
         expect(after.payload).toMatchObject({ _claimHold: true, claim_hold_by: park.setterId,
           claim_hold_reason: 'Keep parked' });
@@ -367,6 +372,39 @@ describe('consult-backed parking against real Postgres (R-9)', () => {
       // The same sweep must converge, rather than continuously rewriting settled rows.
       const again = await sweepDueParks({ sql, seamsFor: seams, now });
       expect(again.resolved.some((r) => r.consultId === park.consultId)).toBe(false);
+    }, 60_000,
+  );
+
+  it.each(['terminal', 'foreign-clearer', 'other-workspace'] as const)(
+    'does not repair an unrelated or terminal subject (%s)', async (scenario) => {
+      const deadline = Date.now() + 3_600_000;
+      const now = new Date(deadline + 1_000).toISOString();
+      const park = await seedPark(new Date(deadline).toISOString());
+      await runParkTriggersForConsult(sql, WS, park.consultId, seams(WS), now);
+      const [row] = await sql<Array<{ payload: Record<string, unknown> }>>`
+        SELECT payload FROM harness_shared.work_items
+         WHERE workspace_id = ${WS} AND feature_id = ${park.workItemId}`;
+      const payload = { ...row.payload, needsOwnerAction: true, needsHuman: true,
+        externalBlockers: readExternalBlockers(row.payload).map((b) => scenario === 'foreign-clearer'
+          ? { ...b, clearedBy: 'su-independent-clearer' } : b),
+      };
+      const subjectWorkspace = scenario === 'other-workspace' ? `${WS}-other` : WS;
+      await sql`UPDATE harness_shared.work_items
+        SET workspace_id = ${subjectWorkspace}, item_kind = 'bug',
+            status = ${scenario === 'terminal' ? 'done' : 'needs-human'}, payload = ${sql.json(payload as never)}
+        WHERE workspace_id = ${WS} AND feature_id = ${park.workItemId}`;
+      // Status-transition triggers may add completion metadata. The invariant is
+      // no sweep change to the persisted row, including that trigger output.
+      const [beforeSweep] = await sql<Array<{ status: string; payload: Record<string, unknown> }>>`
+        SELECT status, payload FROM harness_shared.work_items
+         WHERE workspace_id = ${subjectWorkspace} AND feature_id = ${park.workItemId}`;
+      const result = await sweepDueParks({ sql, seamsFor: seams, now });
+      expect(result.failures).toEqual([]);
+      expect(result.resolved.some((r) => r.consultId === park.consultId)).toBe(false);
+      const [after] = await sql<Array<{ status: string; payload: Record<string, unknown> }>>`
+        SELECT status, payload FROM harness_shared.work_items
+         WHERE workspace_id = ${subjectWorkspace} AND feature_id = ${park.workItemId}`;
+      expect(after).toEqual(beforeSweep);
     }, 60_000,
   );
 
