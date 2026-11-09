@@ -154,7 +154,12 @@ export async function confirmMemoryEmission(
   const surface = EMISSION_SURFACE_PREFIX + proof.token;
   const ack = await ackAndRead(ownerId, surface, { confirmedToken: proof.token });
   const candidate = ack.committed;
-  if (candidate?.schemaVersion !== 2 || !Array.isArray(candidate.fragments)) return 0;
+  if (candidate?.schemaVersion !== 2 || !Array.isArray(candidate.fragments)) {
+    // ACK creates a baseline row even when an earlier confirmation already
+    // consumed this token. Replays must not leave empty receipt cursors behind.
+    await clearReadCursor(ownerId, surface);
+    return 0;
+  }
   if (typeof candidate.expiresAt !== 'number' || !Number.isSafeInteger(candidate.expiresAt) || candidate.expiresAt <= Date.now()) {
     await clearReadCursor(ownerId, surface);
     return 0;
