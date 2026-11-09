@@ -398,7 +398,19 @@ describe('loop turn-start producer to reconciler, real Postgres', () => {
       owner: 'su-direct-loop-fire-exact-nonce',
       wakeCount: 17,
     };
-    await insertLoopFixture({ ...fixture, firedAt });
+    await insertLoopFixture({ ...fixture, firedAt, lastStatus: 'loop-delivered-wake-no-loop-turn' });
+    const [awaitRow] = await sql<Array<{ id: number }>>`
+      INSERT INTO harness_shared.event_awaits (workspace_id, subscriber_id, event_key)
+      VALUES (${WS}, ${fixture.owner}, 'direct-loop-nonce-recovery')
+      RETURNING id
+    `;
+    await sql`
+      INSERT INTO harness_shared.event_wake_deliveries
+        (workspace_id, await_id, subscriber_id, event_key, source, status, channel, created_at, delivered_at)
+      VALUES
+        (${WS}, ${awaitRow!.id}, ${fixture.owner}, 'direct-loop-nonce-recovery', ${'loop:' + fixture.id},
+         'delivered', 'inbox', ${new Date(firedAt.getTime() + 1_000)}, ${new Date(now - 10_000)})
+    `;
 
     const launchId = await recordAdvSession({
       workspaceId: WS, agent: 'codex', mode: 'omp',
@@ -449,7 +461,11 @@ describe('loop turn-start producer to reconciler, real Postgres', () => {
       `session-${fixture.id}-wrong-nonce`, wrongNoncePrompt.taggedText,
       wrongPromptAt, new Date(wrongPromptAt.getTime() + 2_000),
     );
-    expect((await getLoopStatus(fixture.owner, { sql }))?.lastLoopTurnAt).toBeNull();
+    expect(await getLoopStatus(fixture.owner, { sql })).toMatchObject({
+      lastLoopTurnAt: null,
+      lastSuppressedWakeLoopTurnAt: null,
+      lastFailedFireLoopTurnCompletedAt: null,
+    });
 
     const exactPromptAt = new Date(now - 30_000);
     const exactAssistantAt = new Date(now + 10_000);
@@ -460,6 +476,10 @@ describe('loop turn-start producer to reconciler, real Postgres', () => {
     );
 
     const status = await getLoopStatus(fixture.owner, { sql });
-    expect(status?.lastLoopTurnAt).toBe(exactAssistantAt.toISOString());
+    expect(status).toMatchObject({
+      lastLoopTurnAt: exactAssistantAt.toISOString(),
+      lastSuppressedWakeLoopTurnAt: exactAssistantAt.toISOString(),
+      lastFailedFireLoopTurnCompletedAt: exactAssistantAt.toISOString(),
+    });
   });
 });
