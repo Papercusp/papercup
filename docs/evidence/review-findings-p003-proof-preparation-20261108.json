@@ -15,7 +15,7 @@
     "independentReadinessReceipt": "/tmp/egm-cont3-execution-before.json"
   },
   "sourceReview": {
-    "reviewedHead": "6b87054b1944667bf17fc0c78a815cde8b884f45",
+    "reviewedHead": "cc4e2788d3abd0ef8b8e09b4b9faaf96fd5c0672",
     "pins": [
       {
         "path": "packages/operator-core/lib/agent-tools/consult/close.ts",
@@ -64,13 +64,13 @@
       },
       {
         "path": "packages/operator-core/lib/agent-tools/plans/item-anchors.integration.test.ts",
-        "headBlob": "f1022fd7e6aa74f9970a2c8759f544a866e3fc7b",
-        "workingBlob": "f1022fd7e6aa74f9970a2c8759f544a866e3fc7b"
+        "headBlob": "9e73729a62ae4b682c3af23cf3a4cb1fc4e8244b",
+        "workingBlob": "9e73729a62ae4b682c3af23cf3a4cb1fc4e8244b"
       },
       {
         "path": "packages/operator-core/lib/agent-tools/plans/plan-line-graph.ts",
-        "headBlob": "3f51fb6f2c4db68cac9134902d86b63a68f05a50",
-        "workingBlob": "3f51fb6f2c4db68cac9134902d86b63a68f05a50"
+        "headBlob": "c7cd7e57117b3534eb393baabf5e40c110f38c77",
+        "workingBlob": "c7cd7e57117b3534eb393baabf5e40c110f38c77"
       },
       {
         "path": "packages/operator-core/lib/agent-tools/plans/plan-start-gate.ts",
@@ -120,14 +120,38 @@
       "rawEditCall": "call_e590f07654bc4628970853f7a7c33d24",
       "relationTarget": "review-findings-and-initial-code-scope-2026-10-31#P-003"
     },
-    "note": "These blob pins describe reviewed source only. They do not establish a coherent dependency parent or runtime containment."
+    "note": "These blob pins describe reviewed source only. They do not establish a coherent dependency parent or runtime containment.",
+    "previousPreparation": {
+      "sha256": "a6a4883d3be641a24e9f45efacea11297f4f4f13b3c89067b023ab1fc69c0d16",
+      "reviewedHead": "6b87054b1944667bf17fc0c78a815cde8b884f45",
+      "changedPins": [
+        {
+          "path": "packages/operator-core/lib/agent-tools/plans/item-anchors.integration.test.ts",
+          "headBlob": "f1022fd7e6aa74f9970a2c8759f544a866e3fc7b",
+          "workingBlob": "f1022fd7e6aa74f9970a2c8759f544a866e3fc7b"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/plans/plan-line-graph.ts",
+          "headBlob": "3f51fb6f2c4db68cac9134902d86b63a68f05a50",
+          "workingBlob": "3f51fb6f2c4db68cac9134902d86b63a68f05a50"
+        }
+      ]
+    },
+    "blockedStateCompatibility": {
+      "workItem": "EI-28311055967815218",
+      "containingSourceCommit": "2308f56db20978885b086a66b5c6e7a79296245e",
+      "owningLocalTestRun": 23747681,
+      "review": "Read actual helper diff and complete added test bodies. Preserve explicit blocked reads, creation and updates across unrelated prose rewrites; preserve ordinary status projections and explicit reopening. The partial-graph guard mechanism is unchanged.",
+      "proofStatus": "Owning completion records local proof only; this preparation adds no measured current P003 assertion."
+    }
   },
   "base": {
     "recipeFile": "/tmp/egm-current-six-recipes.json",
     "recipeFileSha256": "4ec03091a7188c08f99e65d30ecf2a90dc37a263ec0d7685b8cc4a0b4bc233f6",
     "archiveRefs": [
       "thread-post:1220221",
-      "thread-post:1220173"
+      "thread-post:1220173",
+      "thread-post:1221914"
     ],
     "preservation": "All 24 historical recipe identities, their source/fixture paths and original titles are retained. Historical outcomes and adequacy booleans are intentionally absent from the proposed measured fields."
   },
@@ -420,7 +444,17 @@
           "plan item anchors through the real plan tools > refuses prose edits before a partial graph can erase a legacy-writer addition",
           "plan item anchors through the real plan tools > refuses anchors edits before a partial graph can erase a legacy-writer addition",
           "plan item anchors through the real plan tools > keeps graph authority when an empty legacy index cannot witness extra saved lines",
-          "plan item anchors through the real plan tools > keeps graph authority when an mismatched legacy index cannot witness extra saved lines"
+          "plan item anchors through the real plan tools > keeps graph authority when an mismatched legacy index cannot witness extra saved lines",
+          "plan item anchors through the real plan tools > preserves canonical blocked state and an external success dependency across a prose rewrite",
+          "plan item anchors through the real plan tools > persists explicit blocked creation and updates, then permits an explicit reopen",
+          "plan item anchors through the real plan tools > retains canonical needs-human projection as needs-human",
+          "plan item anchors through the real plan tools > retains canonical wip projection as wip",
+          "plan item anchors through the real plan tools > retains canonical done projection as done",
+          "plan item anchors through the real plan tools > retains canonical resolved projection as done",
+          "plan item anchors through the real plan tools > retains canonical closed projection as done",
+          "plan item anchors through the real plan tools > retains canonical dropped projection as dropped",
+          "plan item anchors through the real plan tools > retains canonical superseded projection as dropped",
+          "plan item anchors through the real plan tools > retains canonical open projection as todo"
         ],
         "testLayer": "integration"
       },
@@ -518,7 +552,17 @@
           "plan item anchors through the real plan tools > refuses prose edits before a partial graph can erase a legacy-writer addition",
           "plan item anchors through the real plan tools > refuses anchors edits before a partial graph can erase a legacy-writer addition",
           "plan item anchors through the real plan tools > keeps graph authority when an empty legacy index cannot witness extra saved lines",
-          "plan item anchors through the real plan tools > keeps graph authority when an mismatched legacy index cannot witness extra saved lines"
+          "plan item anchors through the real plan tools > keeps graph authority when an mismatched legacy index cannot witness extra saved lines",
+          "plan item anchors through the real plan tools > preserves canonical blocked state and an external success dependency across a prose rewrite",
+          "plan item anchors through the real plan tools > persists explicit blocked creation and updates, then permits an explicit reopen",
+          "plan item anchors through the real plan tools > retains canonical needs-human projection as needs-human",
+          "plan item anchors through the real plan tools > retains canonical wip projection as wip",
+          "plan item anchors through the real plan tools > retains canonical done projection as done",
+          "plan item anchors through the real plan tools > retains canonical resolved projection as done",
+          "plan item anchors through the real plan tools > retains canonical closed projection as done",
+          "plan item anchors through the real plan tools > retains canonical dropped projection as dropped",
+          "plan item anchors through the real plan tools > retains canonical superseded projection as dropped",
+          "plan item anchors through the real plan tools > retains canonical open projection as todo"
         ],
         "testLayer": "integration"
       },
@@ -587,7 +631,17 @@
           "plan item anchors through the real plan tools > refuses prose edits before a partial graph can erase a legacy-writer addition",
           "plan item anchors through the real plan tools > refuses anchors edits before a partial graph can erase a legacy-writer addition",
           "plan item anchors through the real plan tools > keeps graph authority when an empty legacy index cannot witness extra saved lines",
-          "plan item anchors through the real plan tools > keeps graph authority when an mismatched legacy index cannot witness extra saved lines"
+          "plan item anchors through the real plan tools > keeps graph authority when an mismatched legacy index cannot witness extra saved lines",
+          "plan item anchors through the real plan tools > preserves canonical blocked state and an external success dependency across a prose rewrite",
+          "plan item anchors through the real plan tools > persists explicit blocked creation and updates, then permits an explicit reopen",
+          "plan item anchors through the real plan tools > retains canonical needs-human projection as needs-human",
+          "plan item anchors through the real plan tools > retains canonical wip projection as wip",
+          "plan item anchors through the real plan tools > retains canonical done projection as done",
+          "plan item anchors through the real plan tools > retains canonical resolved projection as done",
+          "plan item anchors through the real plan tools > retains canonical closed projection as done",
+          "plan item anchors through the real plan tools > retains canonical dropped projection as dropped",
+          "plan item anchors through the real plan tools > retains canonical superseded projection as dropped",
+          "plan item anchors through the real plan tools > retains canonical open projection as todo"
         ],
         "testLayer": "integration"
       },
@@ -664,7 +718,17 @@
           "plan item anchors through the real plan tools > refuses prose edits before a partial graph can erase a legacy-writer addition",
           "plan item anchors through the real plan tools > refuses anchors edits before a partial graph can erase a legacy-writer addition",
           "plan item anchors through the real plan tools > keeps graph authority when an empty legacy index cannot witness extra saved lines",
-          "plan item anchors through the real plan tools > keeps graph authority when an mismatched legacy index cannot witness extra saved lines"
+          "plan item anchors through the real plan tools > keeps graph authority when an mismatched legacy index cannot witness extra saved lines",
+          "plan item anchors through the real plan tools > preserves canonical blocked state and an external success dependency across a prose rewrite",
+          "plan item anchors through the real plan tools > persists explicit blocked creation and updates, then permits an explicit reopen",
+          "plan item anchors through the real plan tools > retains canonical needs-human projection as needs-human",
+          "plan item anchors through the real plan tools > retains canonical wip projection as wip",
+          "plan item anchors through the real plan tools > retains canonical done projection as done",
+          "plan item anchors through the real plan tools > retains canonical resolved projection as done",
+          "plan item anchors through the real plan tools > retains canonical closed projection as done",
+          "plan item anchors through the real plan tools > retains canonical dropped projection as dropped",
+          "plan item anchors through the real plan tools > retains canonical superseded projection as dropped",
+          "plan item anchors through the real plan tools > retains canonical open projection as todo"
         ],
         "testLayer": "integration"
       },
@@ -704,7 +768,17 @@
           "plan item anchors through the real plan tools > refuses prose edits before a partial graph can erase a legacy-writer addition",
           "plan item anchors through the real plan tools > refuses anchors edits before a partial graph can erase a legacy-writer addition",
           "plan item anchors through the real plan tools > keeps graph authority when an empty legacy index cannot witness extra saved lines",
-          "plan item anchors through the real plan tools > keeps graph authority when an mismatched legacy index cannot witness extra saved lines"
+          "plan item anchors through the real plan tools > keeps graph authority when an mismatched legacy index cannot witness extra saved lines",
+          "plan item anchors through the real plan tools > preserves canonical blocked state and an external success dependency across a prose rewrite",
+          "plan item anchors through the real plan tools > persists explicit blocked creation and updates, then permits an explicit reopen",
+          "plan item anchors through the real plan tools > retains canonical needs-human projection as needs-human",
+          "plan item anchors through the real plan tools > retains canonical wip projection as wip",
+          "plan item anchors through the real plan tools > retains canonical done projection as done",
+          "plan item anchors through the real plan tools > retains canonical resolved projection as done",
+          "plan item anchors through the real plan tools > retains canonical closed projection as done",
+          "plan item anchors through the real plan tools > retains canonical dropped projection as dropped",
+          "plan item anchors through the real plan tools > retains canonical superseded projection as dropped",
+          "plan item anchors through the real plan tools > retains canonical open projection as todo"
         ],
         "testLayer": "integration"
       },
@@ -744,7 +818,17 @@
           "plan item anchors through the real plan tools > refuses prose edits before a partial graph can erase a legacy-writer addition",
           "plan item anchors through the real plan tools > refuses anchors edits before a partial graph can erase a legacy-writer addition",
           "plan item anchors through the real plan tools > keeps graph authority when an empty legacy index cannot witness extra saved lines",
-          "plan item anchors through the real plan tools > keeps graph authority when an mismatched legacy index cannot witness extra saved lines"
+          "plan item anchors through the real plan tools > keeps graph authority when an mismatched legacy index cannot witness extra saved lines",
+          "plan item anchors through the real plan tools > preserves canonical blocked state and an external success dependency across a prose rewrite",
+          "plan item anchors through the real plan tools > persists explicit blocked creation and updates, then permits an explicit reopen",
+          "plan item anchors through the real plan tools > retains canonical needs-human projection as needs-human",
+          "plan item anchors through the real plan tools > retains canonical wip projection as wip",
+          "plan item anchors through the real plan tools > retains canonical done projection as done",
+          "plan item anchors through the real plan tools > retains canonical resolved projection as done",
+          "plan item anchors through the real plan tools > retains canonical closed projection as done",
+          "plan item anchors through the real plan tools > retains canonical dropped projection as dropped",
+          "plan item anchors through the real plan tools > retains canonical superseded projection as dropped",
+          "plan item anchors through the real plan tools > retains canonical open projection as todo"
         ],
         "testLayer": "integration"
       },
@@ -961,19 +1045,51 @@
       "plan item anchors through the real plan tools > keeps graph authority when an mismatched legacy index cannot witness extra saved lines",
       "plan anchor handler unit contracts > adds an unlinked code item and returns its explicit no-links warning",
       "plan anchor handler unit contracts > adds an unlinked general item without a code-link warning",
-      "plan anchor handler unit contracts > item-edit and add preserve the same resolved symbol metadata at the storage boundary"
+      "plan anchor handler unit contracts > item-edit and add preserve the same resolved symbol metadata at the storage boundary",
+      "plan item anchors through the real plan tools > preserves canonical blocked state and an external success dependency across a prose rewrite",
+      "plan item anchors through the real plan tools > persists explicit blocked creation and updates, then permits an explicit reopen",
+      "plan item anchors through the real plan tools > retains canonical needs-human projection as needs-human",
+      "plan item anchors through the real plan tools > retains canonical wip projection as wip",
+      "plan item anchors through the real plan tools > retains canonical done projection as done",
+      "plan item anchors through the real plan tools > retains canonical resolved projection as done",
+      "plan item anchors through the real plan tools > retains canonical closed projection as done",
+      "plan item anchors through the real plan tools > retains canonical dropped projection as dropped",
+      "plan item anchors through the real plan tools > retains canonical superseded projection as dropped",
+      "plan item anchors through the real plan tools > retains canonical open projection as todo"
     ],
     "newCases": [
       "plan item anchors through the real plan tools > refuses prose edits before a partial graph can erase a legacy-writer addition",
       "plan item anchors through the real plan tools > refuses anchors edits before a partial graph can erase a legacy-writer addition",
       "plan item anchors through the real plan tools > keeps graph authority when an empty legacy index cannot witness extra saved lines",
-      "plan item anchors through the real plan tools > keeps graph authority when an mismatched legacy index cannot witness extra saved lines"
+      "plan item anchors through the real plan tools > keeps graph authority when an mismatched legacy index cannot witness extra saved lines",
+      "plan item anchors through the real plan tools > preserves canonical blocked state and an external success dependency across a prose rewrite",
+      "plan item anchors through the real plan tools > persists explicit blocked creation and updates, then permits an explicit reopen",
+      "plan item anchors through the real plan tools > retains canonical needs-human projection as needs-human",
+      "plan item anchors through the real plan tools > retains canonical wip projection as wip",
+      "plan item anchors through the real plan tools > retains canonical done projection as done",
+      "plan item anchors through the real plan tools > retains canonical resolved projection as done",
+      "plan item anchors through the real plan tools > retains canonical closed projection as done",
+      "plan item anchors through the real plan tools > retains canonical dropped projection as dropped",
+      "plan item anchors through the real plan tools > retains canonical superseded projection as dropped",
+      "plan item anchors through the real plan tools > retains canonical open projection as todo"
     ],
-    "testNamePattern": "preserving review findings through consult settlement > records requester dispositions after reviewer settlement without reopening or waking at the exchange cap|preserving review findings through consult settlement > refuses unrelated, unstructured and invented-finding terminal posts before mutation|preserving review findings through consult settlement > preserves unrelated accepted outcome data through review reply, disposition, close and canonical round trips|preserving review findings through consult settlement > preserves unrelated accepted outcome data through an ordinary edit to another field|preserving review findings through consult settlement > preserves unrelated and concurrently accepted outcome data during overlapping accepted updates|initial implementation scope > requires coding targets without imposing them on explicitly non-code items|initial implementation scope > allows honest unknowns and planned code without pretending symbols already exist|initial implementation scope > preserves intended change metadata when validating canonical anchors|plan item anchors through the real plan tools > refuses absent initial scope at the real start boundary without mutation|plan item anchors through the real plan tools > refuses incomplete target action intended change or rationale at the real start boundary without mutation|plan item anchors through the real plan tools > accepts valid scope and non-code planned-create and investigation controls at the real start boundary|plan item anchors through the real plan tools > refuses an active-plan coding item addition with absent or incomplete initial scope before mutation|plan item anchors through the real plan tools > refuses an active-plan edit that removes or invalidates executable initial scope before mutation|plan item anchors through the real plan tools > admits active-plan scoped additions and complete scope evolution with non-code controls|plan item anchors through the real plan tools > preserves unrelated accepted anchors across concurrent plan rewrites|plan item anchors through the real plan tools > anchor-only edits preserve stored prose and reconcile stale graph line text|plan item anchors through the real plan tools > file links retain content hashes, unresolved links retain reasons, and general plans get no no-links warning|plan item anchors through the real plan tools > refuses prose edits before a partial graph can erase a legacy-writer addition|plan item anchors through the real plan tools > refuses anchors edits before a partial graph can erase a legacy-writer addition|plan item anchors through the real plan tools > keeps graph authority when an empty legacy index cannot witness extra saved lines|plan item anchors through the real plan tools > keeps graph authority when an mismatched legacy index cannot witness extra saved lines|plan anchor handler unit contracts > adds an unlinked code item and returns its explicit no-links warning|plan anchor handler unit contracts > adds an unlinked general item without a code-link warning|plan anchor handler unit contracts > item-edit and add preserve the same resolved symbol metadata at the storage boundary|withPlanLock",
+    "testNamePattern": "preserving review findings through consult settlement > records requester dispositions after reviewer settlement without reopening or waking at the exchange cap|preserving review findings through consult settlement > refuses unrelated, unstructured and invented-finding terminal posts before mutation|preserving review findings through consult settlement > preserves unrelated accepted outcome data through review reply, disposition, close and canonical round trips|preserving review findings through consult settlement > preserves unrelated accepted outcome data through an ordinary edit to another field|preserving review findings through consult settlement > preserves unrelated and concurrently accepted outcome data during overlapping accepted updates|initial implementation scope > requires coding targets without imposing them on explicitly non-code items|initial implementation scope > allows honest unknowns and planned code without pretending symbols already exist|initial implementation scope > preserves intended change metadata when validating canonical anchors|plan item anchors through the real plan tools > refuses absent initial scope at the real start boundary without mutation|plan item anchors through the real plan tools > refuses incomplete target action intended change or rationale at the real start boundary without mutation|plan item anchors through the real plan tools > accepts valid scope and non-code planned-create and investigation controls at the real start boundary|plan item anchors through the real plan tools > refuses an active-plan coding item addition with absent or incomplete initial scope before mutation|plan item anchors through the real plan tools > refuses an active-plan edit that removes or invalidates executable initial scope before mutation|plan item anchors through the real plan tools > admits active-plan scoped additions and complete scope evolution with non-code controls|plan item anchors through the real plan tools > preserves unrelated accepted anchors across concurrent plan rewrites|plan item anchors through the real plan tools > anchor-only edits preserve stored prose and reconcile stale graph line text|plan item anchors through the real plan tools > file links retain content hashes, unresolved links retain reasons, and general plans get no no-links warning|plan item anchors through the real plan tools > refuses prose edits before a partial graph can erase a legacy-writer addition|plan item anchors through the real plan tools > refuses anchors edits before a partial graph can erase a legacy-writer addition|plan item anchors through the real plan tools > keeps graph authority when an empty legacy index cannot witness extra saved lines|plan item anchors through the real plan tools > keeps graph authority when an mismatched legacy index cannot witness extra saved lines|plan anchor handler unit contracts > adds an unlinked code item and returns its explicit no-links warning|plan anchor handler unit contracts > adds an unlinked general item without a code-link warning|plan anchor handler unit contracts > item-edit and add preserve the same resolved symbol metadata at the storage boundary|plan item anchors through the real plan tools > preserves canonical blocked state and an external success dependency across a prose rewrite|plan item anchors through the real plan tools > persists explicit blocked creation and updates, then permits an explicit reopen|plan item anchors through the real plan tools > retains canonical needs-human projection as needs-human|plan item anchors through the real plan tools > retains canonical wip projection as wip|plan item anchors through the real plan tools > retains canonical done projection as done|plan item anchors through the real plan tools > retains canonical resolved projection as done|plan item anchors through the real plan tools > retains canonical closed projection as done|plan item anchors through the real plan tools > retains canonical dropped projection as dropped|plan item anchors through the real plan tools > retains canonical superseded projection as dropped|plan item anchors through the real plan tools > retains canonical open projection as todo|withPlanLock",
     "predictedWithPlanLockCases": 8,
-    "predictedTotalCases": 32,
+    "predictedTotalCases": 42,
     "collectionStatus": "unmeasured; verify expansion with maintained npm test:file router after coherent-parent preparation",
-    "assertionStatus": "unmeasured"
+    "assertionStatus": "unmeasured",
+    "supplementalCompatibilityTitles": [
+      "plan item anchors through the real plan tools > preserves canonical blocked state and an external success dependency across a prose rewrite",
+      "plan item anchors through the real plan tools > persists explicit blocked creation and updates, then permits an explicit reopen",
+      "plan item anchors through the real plan tools > retains canonical needs-human projection as needs-human",
+      "plan item anchors through the real plan tools > retains canonical wip projection as wip",
+      "plan item anchors through the real plan tools > retains canonical done projection as done",
+      "plan item anchors through the real plan tools > retains canonical resolved projection as done",
+      "plan item anchors through the real plan tools > retains canonical closed projection as done",
+      "plan item anchors through the real plan tools > retains canonical dropped projection as dropped",
+      "plan item anchors through the real plan tools > retains canonical superseded projection as dropped",
+      "plan item anchors through the real plan tools > retains canonical open projection as todo"
+    ]
   },
   "runnerReuse": {
     "originalTranscript": {
@@ -1019,14 +1135,37 @@
     ]
   },
   "blocker": {
-    "sourceOwner": "su-96b7fe62-ee9a-4399-ad53-e30bc734d337",
-    "workItem": "WI-6554700010030253",
-    "publicationKey": "harness:papercusp:advisory-source-publication:WI-6554700010030253",
-    "lastDeliveredMessage": "coord-send-f0b3dd82e3b4fcf23cf74cf4981410a7083607bec83ccf33ac95610e9af3ee5f",
+    "sourceOwner": "su-7aba266e-c036-4a0a-bcc3-d0f03be40b5f",
+    "workItem": "WI-6554700010046610",
+    "publicationKey": null,
+    "lastDeliveredMessage": "coord-send-2408e19f8e78760f2f125737b9848a501174141769dc94e55bf93fbfe74ccd46",
     "handoffReceived": false,
     "noParallelMonitor": true,
     "noNewAwaitOrLoop": true,
-    "unlock": "Existing source owner supplies the coherent committed parent and publication proof; verify root app gitlink, committed app manifest/root lock coherence, all reviewed blobs and official dependency seal before tests."
+    "unlock": "Existing qualified producer supplies coherent committed root/app/library pins and effective root/child lock scope with maintained preflight receipts. Verify all reviewed blobs and official dependency seal before tests; the historical publication key is not clearance.",
+    "previousSourceOwner": "su-96b7fe62-ee9a-4399-ad53-e30bc734d337",
+    "historicalParentWorkItem": "WI-6554700010030253",
+    "historicalPublicationKey": "harness:papercusp:advisory-source-publication:WI-6554700010030253",
+    "producerWorkItem": "WI-6554700010046592",
+    "measuredPreflight": {
+      "at": "2026-11-09T14:12:22.446Z",
+      "selectedRoot": "cc4e2788d3abd0ef8b8e09b4b9faaf96fd5c0672",
+      "ok": false,
+      "mismatchedManifestLockPairs": [
+        [
+          "apps/slack-asana-bug-drill/package.json",
+          "package-lock.json"
+        ],
+        [
+          "libs/generic/resumable-download/package.json",
+          "libs/generic/resumable-download/package-lock.json"
+        ],
+        [
+          "libs/papercusp/packages/cli/package.json",
+          "libs/papercusp/packages/cli/package-lock.json"
+        ]
+      ]
+    }
   },
   "next": [
     "Verify actual coherent committed parent from existing source owner.",
