@@ -12,11 +12,26 @@
  * Run: npm run test:file -- packages/operator-core/lib/agent-tools/work_items/get.prior-attempts.test.ts
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+// Use the same dispatcher and registry implementations re-exported by agent-mcp.
+import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/tooldef';
 
+// Transitive read dependencies capture these functions at module load. Keep
+// those exports available without allowing a history read to mutate anything.
+const writes = vi.hoisted(() => {
+  const refuse = () => { throw new Error('History reads must not mutate work items'); };
+  return {
+    mergeWorkItemPayload: vi.fn(refuse),
+    releaseWorkItem: vi.fn(refuse),
+    claimWorkItem: vi.fn(refuse),
+    commentWorkItem: vi.fn(refuse),
+    setWorkItemState: vi.fn(refuse),
+  };
+});
 const getWorkItem = vi.fn();
 const getWorkItemDetail = vi.fn();
 const getWorkItemThreadWindow = vi.fn();
 vi.mock('../../work-items', () => ({
+  ...writes,
   getWorkItem: (...a: unknown[]) => getWorkItem(...a),
   getWorkItemDetail: (...a: unknown[]) => getWorkItemDetail(...a),
   getWorkItemThreadWindow: (...a: unknown[]) => getWorkItemThreadWindow(...a),
@@ -105,6 +120,7 @@ const BRIEF = {
 };
 
 beforeEach(() => {
+  Object.values(writes).forEach(write => write.mockClear());
   getWorkItem.mockReset().mockResolvedValue(ITEM);
   getWorkItemDetail.mockReset().mockResolvedValue(ITEM);
   getWorkItemThreadWindow.mockReset();
@@ -118,7 +134,36 @@ beforeEach(() => {
 
 describe('work_items:get — priorAttempts (the read that used to require a claim)', () => {
   it('folds the brief into detail:true, so history is readable WITHOUT claiming the item', async () => {
-    const r = await one({ id: 'WI-1', detail: true });
+    // Keep the historical ordinary input and expectations while exercising the
+    // MCP schema, handler and response shaping that a recovering caller uses.
+    const input = { id: 'WI-1', detail: true };
+    const originalInput = structuredClone(input);
+    const projected = lookupByMcpName('work_items:get');
+    expect(projected).toBeTruthy();
+    const dispatched = await dispatchProjectedTool(projected!, 'work_items:get', input, {
+      uiClientId: 'su-tester',
+      workspaceId: 'default',
+      log: vi.fn(),
+      signal: new AbortController().signal,
+      progress: vi.fn(),
+      emit: vi.fn(),
+      metadata: vi.fn(),
+      harnessSlug: 'papercusp',
+      runId: 'get-original-history-replay',
+      role: 'su',
+      gateBypass: { role: true, capability: true, quota: true },
+      transport: 'mcp',
+      requestedFormat: 'json',
+      requestedStructured: true,
+    } as never, {});
+    expect(dispatched.ok).toBe(true);
+    const data = dispatched.result?.structuredContent as Out['data'] | undefined;
+    expect(data?.results).toHaveLength(1);
+    const r = data!.results[0];
+    expect(input).toEqual(originalInput);
+    expect(getWorkItemDetail).toHaveBeenCalledTimes(1);
+    expect(getClaimTimePriorAttemptBrief).toHaveBeenCalledTimes(1);
+    Object.values(writes).forEach(write => expect(write).not.toHaveBeenCalled());
     expect(r.priorAttempts).toMatchObject({ fingerprint: 'fp-1' });
     // The whole point of the field: the caller learns "tried X, X was wrong"
     // from a READ. Before this, only work_items:claim carried that sentence.
