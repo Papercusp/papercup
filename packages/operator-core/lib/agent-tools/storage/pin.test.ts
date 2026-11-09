@@ -40,11 +40,19 @@ describe('storage:pin', () => {
     h.createRetentionPin.mockReturnValue({ id: 'pin-id' });
 
     try {
-      await tool.handler(
-        { op: 'pin', path: '/tmp/output', reason: 'review', expiresAt: '2026-12-01T00:00:00Z' },
+      const input = { op: 'pin', path: '/tmp/output', reason: 'review', expiresAt: '2026-12-01T00:00:00Z' };
+      const args = tool.args.parse(input);
+      expect(args).toEqual(input);
+      expect(await tool.handler(
+        args,
         { deadlineAtMs: nowMs + 10_000 } as never,
-      );
+      )).toEqual({ data: { ok: true, op: 'pin', pin: { id: 'pin-id' } } });
       expect(h.withFsMutex).toHaveBeenCalledWith('papercusp-disk-retention', expect.any(Function), { timeoutMs: 9_000 });
+      expect(h.withFsMutex).toHaveBeenCalledTimes(1);
+      expect(h.createRetentionPin).toHaveBeenCalledTimes(1);
+      expect(h.createRetentionPin).toHaveBeenCalledWith({ path: '/tmp/output', reason: 'review', expiresAt: '2026-12-01T00:00:00Z', owner: 'authenticated-agent' });
+      expect(h.readRetentionPins).not.toHaveBeenCalled();
+      expect(h.removeRetentionPin).not.toHaveBeenCalled();
     } finally {
       now.mockRestore();
     }
@@ -52,9 +60,16 @@ describe('storage:pin', () => {
 
   it('reports an unreadable lease store as an error on listing', async () => {
     h.readRetentionPins.mockReturnValue({ pins: [], errors: ['corrupt lease'] });
-    expect(await tool.handler({ op: 'list', includeExpired: true }, {} as never))
+    const input = { op: 'list', includeExpired: true };
+    const args = tool.args.parse(input);
+    expect(args).toEqual(input);
+    expect(await tool.handler(args, {} as never))
       .toEqual({ data: { ok: false, op: 'list', pins: [], errors: ['corrupt lease'] }, isError: true });
     expect(h.readRetentionPins).toHaveBeenCalledWith({ includeExpired: true });
+    expect(h.readRetentionPins).toHaveBeenCalledTimes(1);
+    expect(h.withFsMutex).not.toHaveBeenCalled();
+    expect(h.createRetentionPin).not.toHaveBeenCalled();
+    expect(h.removeRetentionPin).not.toHaveBeenCalled();
   });
 
   it('records exact mutation identities while treating lists and absent releases as no effect', () => {
