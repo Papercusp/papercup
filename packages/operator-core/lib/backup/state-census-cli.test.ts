@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { resolve, join, delimiter } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { runRootCensus, discoverRootCensusInputs, readMigrationCensusColumns, readWorkspaceCensusAccounts, readWorkspaceSetupHomes } from '../../../../scripts/state-census-roots.mts';
+import { runRootCensus, discoverRootCensusInputs, readMigrationCensusColumns, readWorkspaceCensusAccounts, readWorkspaceSetupHomes, readRetainedReapTaskIds } from '../../../../scripts/state-census-roots.mts';
 import { collectStateCensus } from '../../../../packages/backup/src/state-census';
 import { archiveReapTail } from '../task-manager/reap-archive';
 import * as censusProducers from './state-census-producers';
@@ -33,6 +33,64 @@ const fixtureHome = vi.hoisted(() => {
 afterAll(() => { vi.unstubAllEnvs(); rmSync(fixtureHome, { recursive: true, force: true }); });
 
 describe('unit census executable exit contract', () => {
+  it('recovers GCed reaper identities from canonical terminal latches and leaves unproven tails as residue', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'reap-latch-census-'));
+    const terminalStates = ['exited', 'killed', 'timed_out', 'stranded', 'ended_unobserved'];
+    const rejected = ['missing', 'null', 'array', 'string', 'wrong-key', 'wrong-task', 'wrong-source',
+      'running', 'unknown-state', 'zero-fire', 'invalid-fire'];
+    const ids = ['ledger', ...terminalStates, ...rejected];
+    const latch = (taskId: string, overrides = {}) => ({ eventKey: `task:terminal:${taskId}`,
+      lastFiredBy: 'task-manager', lastPayload: { taskId, state: 'stranded' }, fireCount: '1', ...overrides });
+    const readTasks = vi.fn(async (_workspace: string, _ids: string[]) => [{ taskId: 'ledger' }, { taskId: 'unrequested' }]);
+    const readTerminalLatches = vi.fn(async (_keys: string[]) => [
+      ...terminalStates.map(state => latch(state, { lastPayload: { taskId: state, state } })),
+      latch('null', { lastPayload: null }), latch('array', { lastPayload: [] }),
+      latch('string', { lastPayload: JSON.stringify({ taskId: 'string', state: 'stranded' }) }),
+      latch('wrong-key', { eventKey: 'task:other:wrong-key' }),
+      latch('wrong-task', { lastPayload: { taskId: 'missing', state: 'stranded' } }),
+      latch('wrong-source', { lastFiredBy: 'another-writer' }),
+      latch('running', { lastPayload: { taskId: 'running', state: 'running' } }),
+      latch('unknown-state', { lastPayload: { taskId: 'unknown-state', state: 'terminal' } }),
+      latch('zero-fire', { fireCount: 0 }), latch('invalid-fire', { fireCount: 'NaN' }),
+      latch('unrequested'),
+    ]);
+    try {
+      const directory = join(home, '.papercusp', 'reap-archive', '2026-10-11');
+      mkdirSync(directory, { recursive: true });
+      for (const id of ids) writeFileSync(join(directory, `${id}.tail.log`), 'archived tail without sidecar');
+      const producer = await censusProducers.reapArchiveCensusProducer(home, [], taskIds =>
+        readRetainedReapTaskIds(taskIds, [{ id: 'active' }, { id: 'inactive' }, { id: 'active' }],
+          { readTasks, readTerminalLatches }));
+      expect(readTasks.mock.calls).toHaveLength(2);
+      expect(readTasks).toHaveBeenCalledWith('active', expect.arrayContaining(ids));
+      expect(readTasks).toHaveBeenCalledWith('inactive', expect.arrayContaining(ids));
+      expect(readTerminalLatches).toHaveBeenCalledExactlyOnceWith(expect.arrayContaining(
+        ids.filter(id => id !== 'ledger').map(id => `task:terminal:${id}`)));
+      expect(readTerminalLatches.mock.calls[0][0]).not.toContain('task:terminal:ledger');
+      const census = await collectStateCensus({ ...producer, readCatalogs: async () => [] });
+      expect(census.inventory.filter(entry => entry.name.endsWith('.tail.log') && entry.classification === 'state')
+        .map(entry => entry.name.split('/').at(-1)).sort()).toEqual(['ledger', ...terminalStates].map(id => `${id}.tail.log`).sort());
+      expect(census.residue.map(entry => entry.name.split('/').at(-1)).sort())
+        .toEqual(rejected.map(id => `${id}.tail.log`).sort());
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  it('bounds reaper identity reads, skips needless latches and propagates unavailable evidence', async () => {
+    const readTasks = vi.fn(async (_workspace: string, ids: string[]) => ids.map(taskId => ({ taskId })));
+    const readTerminalLatches = vi.fn(async (_keys: string[]) => []);
+    const readers = { readTasks, readTerminalLatches };
+    expect(await readRetainedReapTaskIds([], [], readers)).toEqual([]);
+    await expect(readRetainedReapTaskIds(Array.from({ length: 1001 }, (_, n) => `${n}`), [], readers))
+      .rejects.toThrow('batch bound exceeded');
+    expect(readTasks).not.toHaveBeenCalled(); expect(readTerminalLatches).not.toHaveBeenCalled();
+    expect(await readRetainedReapTaskIds(['known', 'known'], [{ id: 'active' }], readers)).toEqual(['known']);
+    expect(readTasks).toHaveBeenCalledExactlyOnceWith('active', ['known']);
+    expect(readTerminalLatches).not.toHaveBeenCalled();
+    await expect(readRetainedReapTaskIds(['unknown'], [], {
+      readTerminalLatches: async () => { throw new Error('latch evidence unavailable'); },
+    })).rejects.toThrow('latch evidence unavailable');
+  });
+
   it('retains completed writer inputs when credential discovery fails', async () => {
     mkdirSync(join(fixtureHome, 'registry'), { recursive: true });
     const saved: { phase: string; roots: unknown[]; declarations: unknown[]; catalogEntries: unknown[] }[] = [];

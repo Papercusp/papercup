@@ -21,6 +21,70 @@ import { reapArchiveCensusProducer, maintenanceDatabaseCensusDeclarations } from
 import { historicalHostedProfileCensusProducer, historicalPlaywrightStateCensusProducer, historicalStripeConfigCensusProducer, readHistoricalCensusWriterCandidates, recoverHistoricalCensusWriterEvidence, type HostedProfileWriterEvidence, type PlaywrightStateWriterEvidence } from '../packages/operator-core/lib/backup/state-census-producers';
 import { papercuspRoot, papercuspRootForWorkspace } from '../packages/operator-core/lib/papercusp-root';
 import { checkpointLogDirFromEnv } from '../packages/operator-core/lib/release/checkpoint-log-dir';
+import { taskTerminalEventKey } from '../packages/operator-core/lib/task-manager/task-terminal-events';
+import { TERMINAL_TASK_STATES } from '../packages/operator-core/lib/task-manager/types';
+
+/** Recover exact reaper identities even after terminal task-ledger retention.
+ * A terminal latch proves writer identity, not tail contents or a successful task.
+ * The producer still checks the archive's file type and writer size bound.
+ */
+export async function readRetainedReapTaskIds(
+  taskIds: readonly string[],
+  workspaces: readonly { id: string }[],
+  readers: {
+    readTasks?: (workspaceId: string, ids: string[]) => Promise<readonly { taskId: string }[]>;
+    terminalSql?: ReturnType<typeof postgres>;
+    readTerminalLatches?: (keys: string[]) => Promise<readonly {
+      eventKey: string; lastFiredBy: string | null; lastPayload: unknown; fireCount: number | string;
+    }[]>;
+  } = {},
+) {
+  // reapArchiveCensusProducer already batches at this bound. Refuse callers
+  // that would silently truncate the ledger or perform an unbounded latch scan.
+  if (taskIds.length > 1000) throw new Error('Reaper identity census batch bound exceeded');
+  const requested = new Set(taskIds);
+  if (!requested.size) return [];
+  const readTasks = readers.readTasks ?? (async (workspaceId, ids) => {
+    const { listTasks } = await import('../packages/operator-core/lib/task-manager/store');
+    return listTasks({ workspaceId, includeEnded: true, taskIds: ids, limit: 2000 });
+  });
+  const retained = new Set<string>();
+  for (const workspaceId of new Set(workspaces.map(workspace => workspace.id))) {
+    for (const task of await readTasks(workspaceId, [...requested])) {
+      if (requested.has(task.taskId)) retained.add(task.taskId);
+    }
+  }
+  const missing = [...requested].filter(id => !retained.has(id));
+  if (!missing.length) return [...retained];
+  const readTerminalLatches = readers.readTerminalLatches ?? (async keys => {
+    // Same global event namespace and columns as getKeyFireLatch; read the
+    // requested keys together rather than opening one query per archived tail.
+    const { DEFAULT_COORD_WORKSPACE } = await import('@papercusp/coordination/event-log');
+    const sql = readers.terminalSql ?? postgres(getHarnessAdminUrl(), { max: 1, connect_timeout: 5 });
+    try {
+      return await sql<{ eventKey: string; lastFiredBy: string | null; lastPayload: unknown; fireCount: number | string }[]>`
+        SELECT event_key AS "eventKey", last_fired_by AS "lastFiredBy",
+               last_payload AS "lastPayload", fire_count AS "fireCount"
+          FROM harness_shared.event_key_fires
+         WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
+           AND event_key = ANY(${keys}::text[])
+         LIMIT 1000`;
+    } finally { if (!readers.terminalSql) await sql.end(); }
+  });
+  const missingKeys = new Set(missing.map(taskTerminalEventKey));
+  const terminalStates = new Set<string>(TERMINAL_TASK_STATES);
+  for (const latch of await readTerminalLatches([...missingKeys])) {
+    if (!missingKeys.has(latch.eventKey) || latch.lastFiredBy !== 'task-manager'
+      || !Number.isSafeInteger(Number(latch.fireCount)) || Number(latch.fireCount) <= 0) continue;
+    const payload = latch.lastPayload;
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) continue;
+    const { taskId, state } = payload as { taskId?: unknown; state?: unknown };
+    if (typeof taskId === 'string' && requested.has(taskId)
+      && latch.eventKey === taskTerminalEventKey(taskId)
+      && typeof state === 'string' && terminalStates.has(state)) retained.add(taskId);
+  }
+  return [...retained];
+}
 
 /** Reuse the setup writer's exact ownership rules across workspace homes. */
 export async function readWorkspaceSetupHomes(
@@ -115,17 +179,11 @@ const combinedHosted = mergeNestedCensusRoots({ roots: [...installed.roots, ...h
 installed.roots = combinedHosted.roots;
 installed.declarations = combinedHosted.declarations;
 // Query exact archive identities BEFORE the ledger limit; a batch is smaller
-// than the cap. Missing/GCed rows remain residue, never inferred from filenames.
+// than the cap. GCed ledger rows need a canonical terminal latch; an archive
+// filename alone never proves writer ownership.
 stage('reap-archive');
 const reapArchive = await reapArchiveCensusProducer(undefined, [], args.includes('--host-catalogs')
-  ? async taskIds => {
-    const { listTasks } = await import('../packages/operator-core/lib/task-manager/store');
-    const retained: string[] = [];
-    for (const workspace of readRegistry().workspaces) {
-      retained.push(...(await listTasks({ workspaceId: workspace.id, includeEnded: true, taskIds, limit: 2000 })).map(task => task.taskId));
-    }
-    return retained;
-  } : undefined);
+  ? taskIds => readRetainedReapTaskIds(taskIds, readRegistry().workspaces) : undefined);
 stage('affected-test-cache');
 const affectedCache = await affectedTestCacheCensusProducer();
 stage('runtime-sidefiles');
