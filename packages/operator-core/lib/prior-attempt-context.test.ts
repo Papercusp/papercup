@@ -83,6 +83,41 @@ describe('compilePriorAttempts', () => {
 });
 
 describe('buildBoundedPriorAttemptBrief', () => {
+  it('matches the complete paperwork authority history and omission manifest in prior attempts', () => {
+    // Candidate oracle only: eligibility requires review of these exact inputs and literals.
+    const brief = buildBoundedPriorAttemptBrief(compilePriorAttempts([
+      source({ rawRef: 'plan#SPEC-1@3', authority: 'current-spec', scope: 'same-spec', text: 'Current contract.' }),
+      source({ rawRef: 'plan#D-008', authority: 'plan-decision', text: 'Preserve the selected route.' }),
+      source({ rawRef: 'WI-2#comment:9', authority: 'retraction', scope: 'same-spec', text: 'Retraction: old proof is invalid; retain test-run:42.' }),
+      source({ rawRef: 'WI-2#comment:1', text: 'Historical attempt.' }),
+    ]), { maxRecords: 3 })!;
+    const manifest = {
+      authority: brief.authority.map(({ rawRef, authority, scope, at, text }) => ({ rawRef, authority, scope, at, text })),
+      attempts: brief.attempts,
+      omitted: brief.omission.omittedRefs,
+      omittedRecords: brief.omission.omittedRecords,
+      omittedRefsTruncated: brief.omission.omittedRefsTruncated,
+    };
+    const expected = {
+      authority: [
+        { rawRef: 'plan#SPEC-1@3', authority: 'current-spec', scope: 'same-spec', at: '2026-08-20T12:00:00.000Z', text: 'Current contract.' },
+        { rawRef: 'plan#D-008', authority: 'plan-decision', scope: 'plan-wide', at: '2026-08-20T12:00:00.000Z', text: 'Preserve the selected route.' },
+        { rawRef: 'WI-2#comment:9', authority: 'retraction', scope: 'same-spec', at: '2026-08-20T12:00:00.000Z', text: 'Retraction: old proof is invalid; retain test-run:42.' },
+      ],
+      attempts: [],
+      omitted: [{ authority: 'comment', scope: 'plan-wide', rawRef: 'WI-2#comment:1', workItemId: undefined, specId: undefined, at: '2026-08-20T12:00:00.000Z', reason: 'budget' }],
+      omittedRecords: 1,
+      omittedRefsTruncated: false,
+    };
+    const check = (candidate: typeof manifest) => expect(candidate).toEqual(expected);
+    check(manifest);
+    const missing = structuredClone(manifest); missing.authority.shift();
+    const extra = structuredClone(manifest); extra.authority.push({ ...extra.authority[0], rawRef: 'unrelated#D-999' });
+    const clipped = structuredClone(manifest); clipped.authority[2].text = 'Retraction:';
+    const reordered = structuredClone(manifest); reordered.authority.reverse();
+    for (const mutant of [missing, extra, clipped, reordered]) expect(() => check(mutant)).toThrow();
+  });
+
   it('keeps canonical authority and residue while disclosing large-history omissions', () => {
     const sources: PriorAttemptSource[] = [
       source({ rawRef: 'plan#SPEC-1@3', authority: 'current-spec', scope: 'same-spec', text: 'Current contract.' }),

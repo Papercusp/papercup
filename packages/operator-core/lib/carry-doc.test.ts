@@ -870,6 +870,38 @@ describe('renderCarryDoc (pure)', () => {
     expect(text.indexOf('omitted governing refs:')).toBeLessThan(text.indexOf('## Standing carry'));
   });
 
+  it('matches the complete paperwork authority history and omission manifest in carry delivery', () => {
+    const recovery = automaticRecovery();
+    const authority = recovery.recovery.planAuthority;
+    if (authority?.resolution !== 'current') throw new Error('fixture requires current authority');
+    authority.decisions = [
+      { id: 'D-009', title: 'Current restriction', body: 'P-017 remains paused. Retraction: old proof invalid; retain test-run:42.', truncated: false },
+      { id: 'D-010', title: 'Next action', body: 'Residue: native delivery. Inspect current source.', truncated: false },
+    ];
+    authority.taskLinkedDecisions = 2;
+    authority.decisionsMore = 1;
+    authority.omittedDecisionRefs = ['task-plan#D-001'];
+    const text = renderCarryDoc(doc({ automaticRecovery: recovery }), NOW);
+    const expected = [
+      '- current plan authority (PRECEDES carried summaries): plan=fleet-deltas-leader-primitives-2026-07-10 harness=papercusp version=31 contentHash=current-plan-hash status=ready controlGeneration=17',
+      '  - task-linked then recent governing decisions (+1 omitted):',
+      '    - D-009 Current restriction — P-017 remains paused. Retraction: old proof invalid; retain test-run:42.',
+      '    - D-010 Next action — Residue: native delivery. Inspect current source.',
+      '  - omitted governing refs: task-plan#D-001',
+      '  - scoped item states: P-017=wip',
+      '  - current scoped specs: SPEC-P-017@4#current-spec-hash',
+    ];
+    const actual = text.split('\n').slice(text.split('\n').findIndex(line => line.startsWith('- current plan authority')), text.split('\n').findIndex(line => line.startsWith('- current plan authority')) + 7);
+    const check = (candidate: string[]) => expect(candidate).toEqual(expected);
+    check(actual);
+    expect(text.indexOf(expected[0])).toBeLessThan(text.indexOf('## Standing carry'));
+    const missing = actual.filter(line => !line.includes('D-009 Current restriction'));
+    const extra = [...actual, '    - D-999 Unrelated — Other task.'];
+    const clipped = actual.map(line => line.replace(' Retraction: old proof invalid; retain test-run:42.', ''));
+    const reordered = [...actual]; [reordered[2], reordered[3]] = [reordered[3], reordered[2]];
+    for (const mutant of [missing, extra, clipped, reordered]) expect(() => check(mutant)).toThrow();
+  });
+
   it('renders an unavailable plan authority as an incomplete recovery instruction', () => {
     const recovery = automaticRecovery(false);
     recovery.marker.controlGeneration = 17;
