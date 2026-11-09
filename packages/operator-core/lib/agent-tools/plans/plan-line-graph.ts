@@ -45,7 +45,8 @@ export async function readPlanLineNodes(tx: Sql, scope: Omit<PlanLineScope, 'slu
     deliverable: r.plan_deliverable, ownerGateMarker: r.plan_owner_gate_marker,
     status: ['done', 'resolved', 'closed'].includes(r.status) ? 'done'
       : ['dropped', 'superseded'].includes(r.status) ? 'dropped'
-        : r.status === 'wip' ? 'wip' : r.status === 'needs-human' ? 'needs-human' : 'todo',
+        : r.status === 'wip' ? 'wip' : r.status === 'needs-human' ? 'needs-human'
+          : r.status === 'blocked' ? 'blocked' : 'todo',
     blockedBy: r.blocked_by,
   }));
 }
@@ -173,9 +174,9 @@ export async function writePlanLineNodes(
   const now = Date.now();
   for (const [seq, item] of items.entries()) {
     const old = prior.get(item.id);
-    const status = item.status === 'todo' || item.status === 'blocked' ? 'open' : item.status;
+    const status = item.status === 'todo' ? 'open' : item.status;
     if (old) {
-      const changeStatus = item.status !== old.status && !(item.status === 'blocked' && old.status === 'todo');
+      const changeStatus = item.status !== old.status;
       const changeText = item.text !== old.text;
       // A plan rewrite has no authenticated completion evidence. It must not
       // close a claimed node while preserving its holder and null authority,

@@ -281,6 +281,72 @@ describe('plan item anchors through the real plan tools', () => {
     expect(after['P-001']).toEqual(first);
     expect(added.map(result => after[result.itemId][0].change)).toEqual([{ ...change, action: 'create' }, change]);
   });
+  it('preserves canonical blocked state and an external success dependency across a prose rewrite', async () => {
+    const scope = { workspaceId: WS, harnessSlug: HARNESS, slug: SLUG };
+    const [node] = await readPlanLineNodes(fx.admin, scope);
+    const producerSlug = `${SLUG}-producer`;
+    await seedPlan(fx.admin, WS, HARNESS, producerSlug, body());
+    await fx.admin.begin(tx => writePlanLineNodes(tx as never, { ...scope, slug: producerSlug }, [],
+      deriveIndexFromContent(body()).items));
+    const [producer] = await readPlanLineNodes(fx.admin, { ...scope, slug: producerSlug });
+    const retainedPayload = { blockerResolution: { evidence: 'external producer must succeed' } };
+    await fx.admin`UPDATE harness_shared.work_items SET status='blocked', taken_by='agent-anchor-test',
+      payload=${JSON.stringify(retainedPayload)}::text::jsonb
+      WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND feature_id=${node.featureId}`;
+    await fx.admin`INSERT INTO harness_shared.work_item_deps
+      (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, created_by, satisfaction)
+      VALUES (${DEFAULT_COORD_WORKSPACE}, 'feature', ${`${HARNESS}#${node.featureId}`},
+        'feature', ${`${HARNESS}#${producer.featureId}`}, 'blocks', 'anchor-test', 'success')`;
+    const read = async () => data(await getTool.handler({ slug: SLUG, harness: HARNESS,
+      mode: 'full', includeRaw: true, includeEnrichments: false } as never, ctx())).results[0];
+    const preserved = async () => ({
+      node: [...await fx.admin`SELECT feature_id,status,taken_by,payload,closed_ts FROM harness_shared.work_items
+        WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND feature_id=${node.featureId}`],
+      deps: [...await fx.admin`SELECT * FROM harness_shared.work_item_deps
+        WHERE workspace_id=${DEFAULT_COORD_WORKSPACE} AND blocked_kind='feature'
+          AND blocked_ref=${`${HARNESS}#${node.featureId}`}`],
+    });
+    const before = await preserved();
+    expect(before.deps).toHaveLength(1);
+    expect(before.deps[0].satisfaction).toBe('success');
+    expect((await readPlanLineNodes(fx.admin, scope))[0]).toMatchObject({ status: 'blocked', blockedBy: [] });
+    expect((await read()).items[0]).toMatchObject({ storedStatus: 'blocked', effectiveStatus: 'blocked' });
+    const edited = data(await editTool.handler({ slug: SLUG, harness: HARNESS,
+      old_string: 'Check links.', new_string: 'Retain the producer gate.' } as never, ctx()));
+    expect(edited.ok, JSON.stringify(edited)).toBe(true);
+    const after = await read();
+    expect(after.items[0]).toMatchObject({ storedStatus: 'blocked', effectiveStatus: 'blocked' });
+    expect(after.raw).toContain('`blocked` Existing item');
+    expect(await preserved()).toEqual(before);
+  });
+  it('persists explicit blocked creation and updates, then permits an explicit reopen', async () => {
+    const scope = { workspaceId: WS, harnessSlug: HARNESS, slug: SLUG };
+    const original = await readPlanLineNodes(fx.admin, scope);
+    const desired = [{ ...original[0], status: 'blocked' },
+      { ...original[0], id: 'P-002', status: 'blocked', text: 'New explicit gate' }];
+    await fx.admin.begin(tx => writePlanLineNodes(tx as never, scope, original, desired));
+    const stored = await fx.admin`SELECT plan_line_id,status FROM harness_shared.work_items
+      WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND plan_slug=${SLUG} ORDER BY plan_seq`;
+    expect(stored.map(row => row.status)).toEqual(['blocked', 'blocked']);
+    const blocked = await readPlanLineNodes(fx.admin, scope);
+    expect(blocked.map(row => row.status)).toEqual(['blocked', 'blocked']);
+    // Reopening is an intentional lifecycle projection, not an unrelated edit.
+    await fx.admin.begin(tx => writePlanLineNodes(tx as never, scope, blocked,
+      blocked.map(row => ({ ...row, status: 'todo' }))));
+    expect((await readPlanLineNodes(fx.admin, scope)).map(row => row.status)).toEqual(['todo', 'todo']);
+    expect((await fx.admin`SELECT status FROM harness_shared.work_items
+      WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND plan_slug=${SLUG}`)
+      .map(row => row.status)).toEqual(['open', 'open']);
+  });
+  it.each([
+    ['needs-human', 'needs-human'], ['wip', 'wip'], ['done', 'done'], ['resolved', 'done'],
+    ['closed', 'done'], ['dropped', 'dropped'], ['superseded', 'dropped'], ['open', 'todo'],
+  ])('retains canonical %s projection as %s', async (status, expected) => {
+    await fx.admin`UPDATE harness_shared.work_items SET status=${status}
+      WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND plan_slug=${SLUG}`;
+    const [node] = await readPlanLineNodes(fx.admin, { workspaceId: WS, harnessSlug: HARNESS, slug: SLUG });
+    expect(node.status).toBe(expected);
+  });
   it.each(['prose', 'anchors'] as const)('refuses %s edits before a partial graph can erase a legacy-writer addition', async kind => {
     const legacy = body().replace('\n## Decisions\n', '\n- **P-002** `blocked` Dependent item blocked-by: P-001\n\n## Decisions\n');
     const index = deriveIndexFromContent(legacy);
