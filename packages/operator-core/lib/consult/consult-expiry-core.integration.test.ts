@@ -24,7 +24,7 @@ import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/p
 import { FIRST_TURN_REJUDGE_WINDOW_MS, sweepExpiredConsults, type ExpirySweepDeps } from './consult-expiry-core';
 import { launchLogFailureReason, makeDeferredConsultReachDispatcher, rejudgeFirstTurn } from './consult-dispatch';
 import { continueCascadeDispatchCore } from './cascade-core';
-import { consultExpiryDispatch, consultExpiryFindSilentResponders, consultExpiryNotifyRequester, consultExpiryRejudgeAnsweringTask } from './consult-expiry-adapters';
+import { consultExpiryDispatch, consultExpiryFileReviewWorkItem, consultExpiryFindSilentResponders, consultExpiryNotifyRequester, consultExpiryRejudgeAnsweringTask } from './consult-expiry-adapters';
 import { PgCoordLog, ensureCoordEventLogTable } from '@papercusp/coordination/event-log';
 import type { CoordEnvelope } from '@papercusp/coordination/core';
 import { currentRequestWorkspaceId } from '../workspace-als';
@@ -1562,9 +1562,26 @@ describe('review consult conversion at half TTL (review-system-rework-reduction-
     return { ...base, filed };
   }
 
+  async function seedUnroutedReview(routing: Record<string, unknown> = {}) {
+    const id = await seedReview({ routing: {}, createdMin: -1, expiresMin: 29 });
+    const snapshot = {
+      policy: 'rubric-vetting',
+      deliveryIntent: 'dispatch',
+      ...menuSnapshot([]),
+      request: { version: 1, result: { verdict: 'no_qualified_responder', reason: 'below_floor' } },
+      ...routing,
+    };
+    await rootSql`UPDATE harness_shared.consult_state
+      SET state = 'no_qualified_responder', responder_id = NULL, expires_at = NULL,
+          routing = ${rootSql.json(snapshot as never)}
+      WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+    return id;
+  }
+
   async function rowOf(id: string) {
     const rows = (await rootSql`
-      SELECT state, closed_at, cascade_cursor, outcome, responder_id FROM harness_shared.consult_state
+      SELECT state, closed_at, cascade_cursor, outcome, responder_id, expires_at, wakes_used, dispatch_attempts
+        FROM harness_shared.consult_state
        WHERE workspace_id = ${WS} AND conversation_id = ${id}`) as unknown as Array<Record<string, unknown>>;
     const row = rows[0]!;
     if (typeof row.outcome === 'string') row.outcome = JSON.parse(row.outcome);
@@ -1584,6 +1601,91 @@ describe('review consult conversion at half TTL (review-system-rework-reduction-
       await rootSql`UPDATE harness_shared.consult_state SET closed_at = ${NOW.toISOString()}
                      WHERE conversation_id = ANY(${seeded}) AND closed_at IS NULL`;
     }
+  });
+
+  it.each([
+    ['rubric-vetting', {}],
+    ['acceptance-grading', { cascade: { flavor: 'acceptance-grading', harnessSlug: 'hx' } }],
+    ['grading-integrity', { cascade: { flavor: 'grading-integrity', harnessSlug: 'hx' } }],
+  ] as const)('converts a completed no-qualified %s route without inventing a responder or expiry', async (kind, routing) => {
+    const id = await seedUnroutedReview(routing);
+    const { deps, filed, reachCalls, alerts, emits } = withFiler();
+    const stop = vi.fn(async () => 'must not stop a nonexistent answerer');
+    deps.stopAnsweringSession = stop;
+
+    const result = await sweepExpiredConsults(deps);
+    expect(result.converted).toContainEqual({ conversationId: id, workItemId: `WI-review-${id}`, kind });
+    expect(result).toMatchObject({ expired: 0, advanced: 0, answerFailures: [] });
+    expect(filed.filter((req) => req.conversationId === id)).toEqual([
+      expect.objectContaining({ workspaceId: WS, requesterId: 'rubric-author', silentResponderId: null, kind }),
+    ]);
+    expect(await rowOf(id)).toMatchObject({ state: 'expired', responder_id: null, expires_at: null,
+      wakes_used: 0, dispatch_attempts: [],
+      outcome: { disposition: 'converted_to_review_work_item', work_item_id: `WI-review-${id}`, review_kind: kind } });
+    expect((await conversationStateOf(id)).state).toBe('expired');
+    expect(alerts.find((alert) => alert.conversationId === id)?.body).toContain('finished routing without a qualified reviewer');
+    expect(alerts.find((alert) => alert.conversationId === id)?.body).toContain('nothing has been reviewed yet');
+    expect(reachCalls).toEqual([]);
+    expect(emits).toEqual([]);
+    expect(stop).not.toHaveBeenCalled();
+    await sweepExpiredConsults(deps);
+    expect(filed.filter((req) => req.conversationId === id)).toHaveLength(1);
+  });
+
+  it('retries a no-qualified conversion through the same harness-scoped pullable review identity', async () => {
+    const id = await seedUnroutedReview();
+    const items = new Map<string, string>();
+    const upsert = vi.fn(async (key: string) => {
+      if (!items.has(key)) items.set(key, `WI-review-${id}`);
+      return { id: items.get(key)! };
+    });
+    const resolveHarness = vi.fn(async () => 'papercusp');
+    const { deps, alerts } = withFiler();
+    deps.fileReviewWorkItem = consultExpiryFileReviewWorkItem({ upsert, resolveHarness });
+    deps.notifyRequester = async () => { throw new Error('alert store unavailable'); };
+    expect((await sweepExpiredConsults(deps)).conversionFailures).toContain(id);
+    expect(await rowOf(id)).toMatchObject({ state: 'no_qualified_responder', closed_at: null });
+    deps.notifyRequester = async (alert) => { alerts.push(alert); };
+    expect((await sweepExpiredConsults(deps)).converted).toContainEqual({ conversationId: id, workItemId: `WI-review-${id}`, kind: 'rubric-vetting' });
+    expect(items.size).toBe(1);
+    expect(upsert).toHaveBeenCalledTimes(2);
+    expect(resolveHarness).toHaveBeenCalledWith(WS, id);
+    expect(upsert).toHaveBeenLastCalledWith(expect.any(String), expect.objectContaining({
+      kind: 'task', harness: 'papercusp', workspaceId: WS,
+      payload: { reviewConsult: { conversationId: id, kind: 'rubric-vetting', requesterId: 'rubric-author', silentResponderId: null } },
+    }));
+  });
+
+  it('leaves retrieval-only, unmeasured, unfinished, ordinary, closed and answered empty routes untouched', async () => {
+    const ids = await Promise.all([
+      seedUnroutedReview({ deliveryIntent: 'retrieval-only' }),
+      seedUnroutedReview({ request: { version: 1, result: { verdict: 'relevance_unmeasured' } } }),
+      seedUnroutedReview({ request: { version: 1 } }),
+      seedUnroutedReview({ policy: 'consult-default' }),
+      seedUnroutedReview(),
+      seedUnroutedReview(),
+    ]);
+    await rootSql`UPDATE harness_shared.consult_state SET closed_at = ${NOW.toISOString()} WHERE conversation_id = ${ids[4]!}`;
+    await rootSql`INSERT INTO harness_shared.consult_post_meta (workspace_id, post_id, conversation_id, author_id, kind)
+      VALUES (${WS}, ${++seq}, ${ids[5]!}, 'actual-reviewer', 'answer')`;
+    const { deps, filed } = withFiler();
+    const result = await sweepExpiredConsults(deps);
+    expect(filed.filter((req) => ids.includes(req.conversationId))).toEqual([]);
+    expect(result.converted.filter((entry) => ids.includes(entry.conversationId))).toEqual([]);
+    for (const id of ids) expect(await rowOf(id)).toMatchObject({ state: 'no_qualified_responder' });
+  });
+
+  it('does not close an empty route reset while the conversion alert is being written', async () => {
+    const id = await seedUnroutedReview();
+    const { deps } = withFiler();
+    deps.notifyRequester = async () => {
+      await rootSql`UPDATE harness_shared.consult_state
+        SET state = 'routing', updated_at = ${at(1)}::timestamptz
+        WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+    };
+    expect((await sweepExpiredConsults(deps)).converted).toEqual([]);
+    expect(await rowOf(id)).toMatchObject({ state: 'routing', closed_at: null, outcome: null });
+    expect((await conversationStateOf(id)).state).toBe('open');
   });
 
   it('keeps an early silent review consult open when its cascade menu is exhausted', async () => {

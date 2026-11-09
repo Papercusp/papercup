@@ -34,6 +34,9 @@
  * ephemeral routine action (harness/routines/consult-expiry-action.ts), which
  * MUST pass `reach` (notifyAgents under a per-row workspace system identity)
  * or mid-chain advances silently stop waking anyone.
+ * Required reviews whose completed route found no qualified responder have no
+ * expiry window. The same sweep converts those measured dispatch-intent rows
+ * to the existing pullable review item, without treating that handoff as approval.
  */
 import type { Sql } from 'postgres';
 import { consultParkKey, HARD_BLOCKED_EXPIRY_MS } from './get-feedback-core';
@@ -448,6 +451,16 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
          OR (state = 'awaiting_responder' AND responder_id IS NOT NULL)
          OR (state = 'awaiting_responder' AND NOT engagement.has_responder_reply AND expires_at IS NOT NULL
              AND ${nowIso}::timestamptz >= created_at + (expires_at - created_at) / 2)
+         -- A measured empty review route has neither a responder nor a TTL.
+         -- Use its completed receipt: the same state also represents deliberate
+         -- retrieval and unmeasured relevance, neither of which requests review.
+         OR (${Boolean(deps.fileReviewWorkItem)}::boolean
+             AND state = 'no_qualified_responder' AND responder_id IS NULL AND expires_at IS NULL
+             AND NOT engagement.has_responder_reply
+             AND routing->>'deliveryIntent' = 'dispatch'
+             AND routing #>> '{request,result,verdict}' = 'no_qualified_responder'
+             AND (routing->>'policy' = ${RUBRIC_VETTING_POLICY}
+                  OR routing #>> '{cascade,flavor}' IN (${GRADING_CASCADE_FLAVOR}, 'grading-integrity')))
        )
        AND NOT (routing #>> '{cascadeDispatch,version}' = '1'
          AND (routing #>> '{cascadeDispatch,cursor}')::int = cascade_cursor
@@ -537,15 +550,17 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
     // P-014 / RSR-P-014-A: a silent REVIEW consult at half its TTL is converted to
     // pullable work. An unstamped dispatch with no thread after the bounded
     // pickup window is already known to have produced no reviewer, so convert
-    // it at that point too. Runs before the cascade branch in both cases.
+    // it at that point too. A completed empty review route has no window to wait
+    // on, so it uses the same conversion immediately. All run before cascading.
     const reviewKind = deps.fileReviewWorkItem ? reviewConsultKind(row.routing) : null;
     const unstampedDispatchFailed =
       unstampedCandidateIds.has(row.conversation_id) && silentResponderIds.has(row.conversation_id);
+    const noQualifiedReviewer = row.state === 'no_qualified_responder' && row.responder_id === null && row.expires_at === null;
     if (
       reviewKind &&
-      row.state === 'awaiting_responder' &&
+      (row.state === 'awaiting_responder' || noQualifiedReviewer) &&
       row.has_responder_reply === false &&
-      (row.is_half_silent === true || unstampedDispatchFailed)
+      (row.is_half_silent === true || unstampedDispatchFailed || noQualifiedReviewer)
     ) {
       const answeringOwnerId = currentReviewAnsweringOwner(row);
       if (!isDue && !unstampedDispatchFailed && answeringOwnerId) {
@@ -959,7 +974,9 @@ async function convertReviewConsult(
          WHERE workspace_id = ${row.workspace_id}
            AND conversation_id = ${row.conversation_id}
            AND closed_at IS NULL
-           AND state = 'awaiting_responder'
+           AND state = ${row.state}
+           AND updated_at = (${row.snapshot_updated_at}::text)::timestamptz
+           AND responder_id IS NOT DISTINCT FROM ${row.responder_id}::text
            AND NOT EXISTS (
              SELECT 1 FROM harness_shared.consult_post_meta reply
               WHERE reply.workspace_id = cs.workspace_id
@@ -986,7 +1003,8 @@ async function convertReviewConsult(
              )
            )
            AND (
-             ${nowIso}::timestamptz >= created_at + (expires_at - created_at) / 2
+             (state = 'no_qualified_responder' AND responder_id IS NULL AND expires_at IS NULL)
+             OR ${nowIso}::timestamptz >= created_at + (expires_at - created_at) / 2
              OR (
                ${unstampedDispatchFailed}::boolean
                AND updated_at IS NOT DISTINCT FROM (${row.snapshot_updated_at}::text)::timestamptz
@@ -1017,7 +1035,7 @@ async function convertReviewConsult(
       await deps.emitReplyEvent({
         key: consultParkKey(row.conversation_id),
         summary:
-          `consult ${row.conversation_id}: no reviewer engaged by half its window — converted to pullable ` +
+          `consult ${row.conversation_id}: no reviewer engaged — converted to pullable ` +
           `review work item ${workItemId}; follow that item instead of waiting on this consult`,
         payload: {
           conversation_id: row.conversation_id,
@@ -1062,8 +1080,10 @@ export function reviewConversionAlertForRow(input: {
     msgId,
     summary: `Consult ${row.conversation_id}: no reviewer engaged — review is now pullable work item ${workItemId}`,
     body:
-      `At ${input.nowIso}, ${kind} consult ${row.conversation_id} had no reviewer exchange at half its window ` +
-      `(silent selectee ${row.responder_id ?? '(unassigned)'}). Instead of cascading to another responder, the ` +
+      `At ${input.nowIso}, ${kind} consult ${row.conversation_id} ` +
+      (row.state === 'no_qualified_responder'
+        ? 'finished routing without a qualified reviewer. The '
+        : `had no reviewer exchange at half its window (silent selectee ${row.responder_id ?? '(unassigned)'}). The `) +
       `review was converted to work item ${workItemId}, which any eligible agent can claim ` +
       `(review-system-rework-reduction-2026-09-23 P-014). The consult is closed with outcome ` +
       `'converted_to_review_work_item'. ${next} This is not approval: nothing has been reviewed yet.`,

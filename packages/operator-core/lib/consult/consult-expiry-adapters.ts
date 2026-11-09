@@ -542,8 +542,8 @@ export function consultExpiryFileReviewWorkItem(
       : `Review needed (${req.kind}) — ${firstLine(req.question, 110)}`;
     const summary =
       `PULLABLE REVIEW (review-system-rework-reduction-2026-09-23 P-014). Consult ${req.conversationId} ` +
-      `(${req.kind}) had no reviewer exchange at half its window, so instead of cascading to another ` +
-      `responder it was converted to this work item. Requester: ${req.requesterId}; silent selectee: ` +
+      `(${req.kind}) had no reviewer exchange and was converted to this work item. ` +
+      `Requester: ${req.requesterId}; silent selectee: ` +
       `${req.silentResponderId ?? '(none)'}. You may take it unless you are the requester, the rubric's ` +
       `author, or an implementer of the subject plan — the emit gates refuse those parties anyway. ` +
       reviewInstructions(req.kind) +
