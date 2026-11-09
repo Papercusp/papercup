@@ -74,6 +74,18 @@ beforeEach(() => {
 });
 
 describe('the healthy fold', () => {
+  it('CLARITY produces typed current evidence only from the delivery-time canonical read', async () => {
+    const measured = vi.fn();
+    const block = await prepareCellWakeFold({ ...INPUT, onCurrentMeasurement: measured });
+    expect(block).toContain('measurement · gate.consecutiveReds = 0');
+    expect(measured).toHaveBeenCalledWith({ origin: 'canonical-cell-read', status: 'value',
+      measuredAt: expect.any(String), source: 'gate.greenCheckpoint.verdict', summary: '0' });
+    expect(Number.isFinite(Date.parse(measured.mock.calls[0][0].measuredAt))).toBe(true);
+    readCellMock.mockResolvedValue({ status: 'absent' });
+    measured.mockClear();
+    expect(await prepareCellWakeFold({ ...INPUT, onCurrentMeasurement: measured })).toBeNull();
+    expect(measured).not.toHaveBeenCalled();
+  });
   it('renders the delivery-time headline, a dated stamp, and the re-read handle', async () => {
     const block = await prepareCellWakeFold(INPUT);
 

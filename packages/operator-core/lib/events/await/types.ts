@@ -351,6 +351,16 @@ export interface HostDeliveryCancellation {
   handledMsgIds: string[];
 }
 
+/** Ephemeral delivery-time evidence, populated by the canonical cell-read producer.
+ * Event payloads never populate this field. */
+export interface WakeCurrentMeasurement {
+  origin: 'canonical-cell-read';
+  status: 'value' | 'unknown';
+  measuredAt: string;
+  source: string;
+  summary: string;
+}
+
 export interface DeliveryWork extends DeliveryRow {
   wakeHandle: WakeHandle | null;
   note: string | null;
@@ -372,6 +382,7 @@ export interface DeliveryWork extends DeliveryRow {
    * cell-backed predicate fire or the reading could not be taken in budget.
    */
   cellWakeFoldBlock?: string;
+  currentStateMeasurement?: WakeCurrentMeasurement;
   /**
    * WI-6554700010018536 — for a `coord:inbox-wake:<owner>` delivery only: a one-line
    * reminder of the recipient's held, unfinished work-items (and, in an autonomy mode

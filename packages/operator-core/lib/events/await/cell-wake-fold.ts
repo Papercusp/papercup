@@ -37,6 +37,7 @@
 
 import { briefCellValue, cellAssessmentLines, formatCellHoist, readCell } from '../../cell-read';
 import { deriveCellReread, getPredicateWatch } from './predicate-watch';
+import type { WakeCurrentMeasurement } from './types';
 
 /** Wake-safe resolve budget. Deliberately far below `readCell`'s own ~10s bound: that
  *  ceiling exists to stop a hung resolver wedging a caller, which is a different job
@@ -50,6 +51,8 @@ export interface CellWakeFoldInput {
   workspaceId: string;
   /** Overridable for tests; the real budget is CELL_WAKE_FOLD_BUDGET_MS. */
   budgetMs?: number;
+  /** Receives only a fresh canonical read (or its explicit delivery-time gap). */
+  onCurrentMeasurement?: (measurement: WakeCurrentMeasurement) => void;
 }
 
 function handleCall(handle: { args: { cell: string; as?: string } }): string {
@@ -130,6 +133,8 @@ export async function prepareCellWakeFold(input: CellWakeFoldInput): Promise<str
         outcome === 'budget-exceeded'
           ? `did not resolve within ${input.budgetMs ?? CELL_WAKE_FOLD_BUDGET_MS}ms`
           : 'could not be resolved';
+      input.onCurrentMeasurement?.({ origin: 'canonical-cell-read', status: 'unknown',
+        measuredAt: new Date().toISOString(), source: handle.args.cell, summary: why });
       return (
         `[cell] ${handle.args.cell} — NOT re-read at delivery: it ${why}, so the value quoted above ` +
         `is the FIRE-TIME snapshot and may be stale. Re-read before acting: ${handleCall(handle)}`
@@ -144,6 +149,14 @@ export async function prepareCellWakeFold(input: CellWakeFoldInput): Promise<str
       // "unregistered" from "not yours".
       return null;
     }
+
+    const authoritative = read.status === 'value' && read.source?.authoritative !== false;
+    input.onCurrentMeasurement?.({
+      origin: 'canonical-cell-read', status: authoritative ? 'value' : 'unknown', measuredAt: stamp,
+      source: read.cell,
+      summary: read.status === 'unknown' ? read.unknown.code
+        : authoritative ? briefCellValue(read.value) : 'underlying source is inferred, not observed',
+    });
 
     const lines: string[] = [];
     if (read.status === 'value') {
