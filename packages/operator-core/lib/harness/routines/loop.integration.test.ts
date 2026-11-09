@@ -288,12 +288,12 @@ describe('managed self-compaction continuation keeps loop status from reporting 
 
 /** Typed transcript origin alone is insufficient: the dispatcher also enrolls
  * the exact routine/fire at prompt start. Keep this fixture on that contract. */
-async function stampLoopPrompt(promptAt: Date, wakeCountOverride?: number) {
+async function stampLoopPrompt(promptAt: Date, wakeCountOverride?: number, nonce = '0123456789abcdef') {
   await sql`
     INSERT INTO harness_shared.agent_activity
       (workspace_id, owner_id, kind, summary, detail, created_at)
     SELECT ${WS}, ${OWNER}, 'lifecycle', ${LOOP_TURN_START_MARKER},
-           jsonb_build_object('source', 'turn-start', 'loopFire', jsonb_build_object(
+           jsonb_build_object('source', 'turn-start', 'origin', 'loop-fire', 'nonce', ${nonce}::text, 'loopFire', jsonb_build_object(
              'routineId', id,
              'wakeCount', COALESCE(${wakeCountOverride ?? null}::int, (metadata->>'fire_count')::int)
            )), ${promptAt.toISOString()}::timestamptz
@@ -811,7 +811,7 @@ describe('loop surface round-trip (real PG)', () => {
         (${WS}, 'claude', 'sess-1', 1, ${recentTurn.toISOString()}::timestamptz,
          ${OWNER}, ${HARNESS}, 'assistant', 'ordinary turn, no journal note', NULL, 'not-user-turn', 1)`;
 
-    await stampLoopPrompt(new Date(recentTurn.getTime() - 1000));
+    await stampLoopPrompt(new Date(recentTurn.getTime() - 1000), undefined, 'fedcba9876543210');
     const status = await getLoopStatus(OWNER, { sql });
     expect(status!.fireCount).toBe(209);
     // TEETH: without the session_turns leg this fix adds, lastTurnAt would be NULL here
@@ -933,7 +933,7 @@ describe('loop surface round-trip (real PG)', () => {
          ${OWNER}, ${HARNESS}, 'assistant', 'late loop turn completed', NULL, 'not-user-turn', 1)
     `;
 
-    await stampLoopPrompt(loopPrompt);
+    await stampLoopPrompt(loopPrompt, undefined, 'fedcba9876543210');
     const status = await getLoopStatus(OWNER, { sql });
     expect(status!.lastDeliveryOutcome).toBe('loop-delivered-wake-no-loop-turn');
     // The arm-scoped turn clock deliberately stays empty after re-arm; only the separate
@@ -997,7 +997,7 @@ describe('loop surface round-trip (real PG)', () => {
          turn_origin, turn_origin_verdict, turn_origin_classifier_version)
       VALUES
         (${WS}, 'claude', 'suppressed-loop-session', 0, ${loopPrompt.toISOString()}::timestamptz,
-         ${OWNER}, ${HARNESS}, 'user', 'loop wake', 'loop-fire', 'agent-injected', 1),
+         ${OWNER}, ${HARNESS}, 'user', '⟦turn-origin:loop-fire nonce:0123456789abcdef⟧ loop wake', 'loop-fire', 'agent-injected', 1),
         (${WS}, 'claude', 'suppressed-loop-session', 1, ${loopAssistant.toISOString()}::timestamptz,
          ${OWNER}, ${HARNESS}, 'assistant', 'loop turn completed', NULL, 'not-user-turn', 1)
     `;
@@ -1066,7 +1066,7 @@ describe('loop surface round-trip (real PG)', () => {
          turn_origin, turn_origin_verdict, turn_origin_classifier_version)
       VALUES
         (${WS}, 'codex', 'preexisting-loop-session', 0, ${loopPrompt.toISOString()}::timestamptz,
-         ${OWNER}, ${HARNESS}, 'user', 'loop wake', 'loop-fire', 'agent-injected', 1),
+         ${OWNER}, ${HARNESS}, 'user', '⟦turn-origin:loop-fire nonce:0123456789abcdef⟧ loop wake', 'loop-fire', 'agent-injected', 1),
         (${WS}, 'codex', 'preexisting-loop-session', 1, ${loopAssistant.toISOString()}::timestamptz,
          ${OWNER}, ${HARNESS}, 'assistant', 'pre-existing loop turn completed', NULL, 'not-user-turn', 1)
     `;

@@ -2358,8 +2358,10 @@ export async function getLoopStatuses(
                              AND start_stamp.detail->'indexedTurn'->>'sessionId' = st.session_id
                              AND start_stamp.detail->'indexedTurn'->>'turnIdx' = st.turn_idx::text)
                            OR (st.turn_origin = 'loop-fire'
-                             AND start_stamp.detail->>'source' IS DISTINCT FROM 'session-ingest'
-                             AND st.ts >= start_stamp.created_at)
+                             AND start_stamp.detail->>'source' = 'turn-start'
+                             AND start_stamp.detail->>'origin' = 'loop-fire'
+                             AND start_stamp.detail->>'nonce' =
+                               substring(st.text FROM '^[[:space:]]*⟦turn-origin:loop-fire nonce:([a-f0-9]{8,64})⟧'))
                            OR (
                              st.turn_origin = 'self-compaction'
                              AND start_stamp.detail->>'source' = 'turn-start'
@@ -2661,8 +2663,10 @@ export async function getLoopStatuses(
                             AND start_stamp.detail->'indexedTurn'->>'sessionId' = u.session_id
                             AND start_stamp.detail->'indexedTurn'->>'turnIdx' = u.turn_idx::text)
                           OR (u.turn_origin = 'loop-fire'
-                            AND start_stamp.detail->>'source' IS DISTINCT FROM 'session-ingest'
-                            AND u.ts >= start_stamp.created_at)
+                            AND start_stamp.detail->>'source' = 'turn-start'
+                            AND start_stamp.detail->>'origin' = 'loop-fire'
+                            AND start_stamp.detail->>'nonce' =
+                              substring(u.text FROM '^[[:space:]]*⟦turn-origin:loop-fire nonce:([a-f0-9]{8,64})⟧'))
                           OR (
                             u.turn_origin = 'self-compaction'
                             AND start_stamp.detail->>'source' = 'turn-start'
@@ -2728,8 +2732,10 @@ export async function getLoopStatuses(
                             AND start_stamp.detail->'indexedTurn'->>'sessionId' = u.session_id
                             AND start_stamp.detail->'indexedTurn'->>'turnIdx' = u.turn_idx::text)
                           OR (u.turn_origin = 'loop-fire'
-                            AND start_stamp.detail->>'source' IS DISTINCT FROM 'session-ingest'
-                            AND u.ts >= start_stamp.created_at)
+                            AND start_stamp.detail->>'source' = 'turn-start'
+                            AND start_stamp.detail->>'origin' = 'loop-fire'
+                            AND start_stamp.detail->>'nonce' =
+                              substring(u.text FROM '^[[:space:]]*⟦turn-origin:loop-fire nonce:([a-f0-9]{8,64})⟧'))
                         OR (
                           u.turn_origin = 'self-compaction'
                           AND start_stamp.detail->>'source' = 'turn-start'

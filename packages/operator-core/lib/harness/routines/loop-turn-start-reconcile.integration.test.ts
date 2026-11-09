@@ -455,12 +455,12 @@ describe('loop turn-start producer to reconciler, real Postgres', () => {
     `;
     const insertTurn = async (sessionId: string, prompt: string, promptAt: Date, assistantAt?: Date) => {
       await sql`
-      INSERT INTO harness_shared.session_turns
-        (workspace_id, source_kind, session_id, turn_idx, ts, owner, harness_slug,
-         speaker, text, turn_origin, turn_origin_verdict, turn_origin_classifier_version)
-      VALUES
-        (${WS}, 'codex', ${sessionId}, 0, ${promptAt}, ${fixture.owner}, 'papercusp',
-         'user', ${prompt}, 'loop-fire', 'agent-injected', 1)
+        INSERT INTO harness_shared.session_turns
+          (workspace_id, source_kind, session_id, turn_idx, ts, owner, harness_slug,
+           speaker, text, turn_origin, turn_origin_verdict, turn_origin_classifier_version)
+        VALUES
+          (${WS}, 'codex', ${sessionId}, 0, ${promptAt}, ${fixture.owner}, 'papercusp',
+           'user', ${prompt}, 'loop-fire', 'agent-injected', 1)
       `;
       if (assistantAt) await insertAssistant(sessionId, assistantAt);
     };
