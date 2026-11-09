@@ -115,7 +115,8 @@ export async function reapArchiveCensusProducer(home = homedir(), retainedTaskId
   return { roots: [root], declarations };
 }
 
-/** Pool references own credential files, never every file copied into a CLI home. */
+/** Pool references own credentials. Durable Codex homes also retain exact vendor
+ * runtime files; copied or unknown children still require their own provenance. */
 export async function accountCredentialCensusProducer(accounts: ReadonlyArray<{ credentialRef: string }>) {
   const roots: CensusRoot[] = [];
   const declarations: CensusDeclaration[] = [];
@@ -124,24 +125,79 @@ export async function accountCredentialCensusProducer(accounts: ReadonlyArray<{ 
     const path = home ? codexAuthPath(home) : /^(?:file|token):(.+)$/.exec(account.credentialRef)?.[1];
     if (!path || !isAbsolute(path)) continue;
     const directory = dirname(path);
-    try { await lstat(directory); }
+    let metadata;
+    try { metadata = await lstat(directory); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
-    let root = roots.find(entry => entry.path === directory);
-    if (!root) { root = { id: `account-credential-${roots.length}`, path: directory, fileNames: [] }; roots.push(root); }
-    const add = (name: string) => {
-      if (!root!.fileNames!.includes(name)) root!.fileNames!.push(name);
+    // completeCodexCliLink creates this home and the gateway runs Codex with
+    // CODEX_HOME pointing at it. A suffix without a pool reference is no proof.
+    const durable = home && metadata.isDirectory() && basename(dirname(directory)) === 'deploy-credentials' &&
+      /^[A-Za-z0-9._-]+\.codex-cli$/.test(basename(directory)) && (await lstat(dirname(directory))).isDirectory();
+    const rootPath = durable ? dirname(directory) : directory;
+    const prefix = durable ? `${basename(directory)}/` : '';
+    let root = roots.find(entry => entry.path === rootPath);
+    if (!root) {
+      root = { id: `account-credential-${roots.length}`, path: rootPath, ...(durable ? {} : { fileNames: [] }) };
+      roots.push(root);
+    }
+    // fileNames selects regular files only. A managed account container needs
+    // ordinary traversal so foreign siblings and descendants remain residue.
+    if (durable) delete root.fileNames;
+    const add = (name: string, classification: CensusDeclaration['classification'] = 'secret',
+      producer = 'account-pool-credential-reference') => {
+      const selected = name.split('/')[0];
+      if (root!.fileNames && !root!.fileNames.includes(selected)) root!.fileNames.push(selected);
       if (!declarations.some(entry => entry.root === root!.id && entry.name === name)) {
-        declarations.push({ kind: 'path', root: root!.id, name, classification: 'secret', producer: 'account-pool-credential-reference' });
+        declarations.push({ kind: 'path', root: root!.id, name, classification, producer });
       }
     };
-    add(basename(path));
+    if (durable) add(basename(directory), 'state', 'account-link-cli-completed-home');
+    add(`${prefix}${basename(path)}`);
     if (home) {
       let entries;
       try { entries = await readdir(directory, { withFileTypes: true }); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
       // persistCodexAuth's exact atomic writer; do not read token contents.
       for (const entry of entries ?? []) {
-        if (entry.isFile() && /^auth\.json\.[0-9]+\.tmp$/.test(entry.name)) add(entry.name);
+        if (entry.isFile() && /^auth\.json\.[0-9]+\.tmp$/.test(entry.name)) add(`${prefix}${entry.name}`);
+      }
+      if (!durable) continue;
+      const files = new Set((entries ?? []).filter(entry => entry.isFile()).map(entry => entry.name));
+      // Codex rust-v0.167.0 state/src/sqlite.rs RuntimeDbSpec. Preserve the
+      // database and its SQLite WAL/SHM companions together, never as cache.
+      // Check only the bounded header; do not open a live database via SQLite
+      // (even a read-only connection can create or mutate its shared memory).
+      for (const database of ['state_5.sqlite', 'logs_2.sqlite', 'goals_1.sqlite', 'memories_1.sqlite',
+        'memories_v2_1.sqlite', 'queue_1.sqlite', 'thread_history_1.sqlite']) {
+        if (!files.has(database)) continue;
+        let handle;
+        try {
+          handle = await open(join(directory, database), constants.O_RDONLY | constants.O_NOFOLLOW);
+          if (!(await handle.stat()).isFile()) continue;
+          const header = Buffer.alloc(16);
+          const { bytesRead } = await handle.read(header, 0, header.length, 0);
+          if (bytesRead !== header.length || header.toString('ascii') !== 'SQLite format 3\0') continue;
+          add(`${prefix}${database}`, 'state', 'codex-sqlite-runtime');
+          for (const suffix of ['-wal', '-shm']) if (files.has(`${database}${suffix}`)) {
+            add(`${prefix}${database}${suffix}`, 'state', 'codex-sqlite-runtime');
+          }
+        } catch (error) {
+          if (!['ENOENT', 'ELOOP'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+        } finally { await handle?.close(); }
+      }
+      // core/src/installation_id.rs persists a UUID, with no newline required.
+      if (files.has('installation_id')) {
+        let handle;
+        try {
+          handle = await open(join(directory, 'installation_id'), constants.O_RDONLY | constants.O_NOFOLLOW);
+          const info = await handle.stat();
+          if (!info.isFile() || info.size > 128) continue;
+          const value = (await handle.readFile('utf8')).trim();
+          if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) {
+            add(`${prefix}installation_id`, 'config', 'codex-installation-id');
+          }
+        } catch (error) {
+          if (!['ENOENT', 'ELOOP'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+        } finally { await handle?.close(); }
       }
     }
   }
@@ -546,6 +602,69 @@ export async function runtimeSidefileCensusProducer(home = homedir(), environmen
   // The embedding worker uses ||, while the co-change host helper trims the
   // pin; preserve both writer contracts rather than substituting papercuspRoot.
   const ordinaryHome = join(home, '.papercusp');
+  // serve.ts and embedded-postgres-server write these exact host-home files.
+  // Discovery includes bearer/DSN credentials, even though its process address
+  // will need regeneration after transfer. Never downgrade it to disposable cache.
+  for (const directory of new Set([ordinaryHome, papercuspHome(environment, home)])) {
+    try {
+      if (!(await lstat(directory)).isDirectory() || await realpath(directory) !== resolve(directory)) continue;
+    } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+    let operatorRoot = roots.find(candidate => candidate.path === directory);
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const match = /^(operator|operator-port|embedded-pg(?:\.([1-9][0-9]{0,4}))?|embedded-pg-credentials)\.json(?:\.tmp\.([1-9][0-9]{0,9}))?$/.exec(entry.name);
+      if (!entry.isFile() || !match || (match[2] && Number(match[2]) > 65535)
+        || (match[3] && Number(match[3]) > 2147483647)) continue;
+      let handle;
+      try {
+        handle = await open(join(directory, entry.name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        const metadata = await handle.stat();
+        if (!metadata.isFile() || metadata.size > 65_536) continue;
+        const record = JSON.parse(await handle.readFile('utf8'));
+        if (!record || typeof record !== 'object' || Array.isArray(record)) continue;
+        const port = (value: unknown) => Number.isInteger(value) && Number(value) >= 1 && Number(value) <= 65535;
+        const timestamp = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value > 0;
+        const pid = (value: unknown) => Number.isInteger(value) && Number(value) >= 1 && Number(value) <= 2147483647;
+        const only = (keys: string[]) => Object.keys(record).every(key => keys.includes(key));
+        const url = (value: unknown, protocols: string[], username?: string) => {
+          if (typeof value !== 'string') return false;
+          const parsed = new URL(value);
+          return protocols.includes(parsed.protocol) && !!parsed.hostname && !parsed.search && !parsed.hash
+            && Number(parsed.port || (parsed.protocol === 'https:' ? 443 : parsed.protocol === 'http:' ? 80 : 5432)) === record.port
+            && (username === undefined ? !parsed.username && !parsed.password && parsed.pathname === '/' : parsed.username === username);
+        };
+        let valid = false;
+        if (match[1] === 'embedded-pg-credentials') {
+          // Reuse the writer's maintained strength/default-password contract.
+          const { isValidRoleCredentials } = await import('@papercusp/embedded-postgres-server');
+          valid = only(['schemaVersion', 'owner', 'admin', 'app', 'zero'])
+            && (record.schemaVersion === undefined || record.schemaVersion === 1) && isValidRoleCredentials(record);
+        } else if (match[1] === 'operator-port') {
+          valid = only(['port', 'updatedAt']) && port(record.port) && timestamp(record.updatedAt);
+        } else if (match[1] === 'operator') {
+          valid = only(['httpUrl', 'port', 'token', 'pid', 'processIdentity', 'startedAt', 'version', 'sha'])
+            && port(record.port) && pid(record.pid) && timestamp(record.startedAt)
+            && typeof record.version === 'string' && record.version.length > 0
+            && (record.token === null || typeof record.token === 'string')
+            && (record.sha === undefined || record.sha === null || typeof record.sha === 'string')
+            && (record.processIdentity === undefined || record.processIdentity === null || typeof record.processIdentity === 'string')
+            && url(record.httpUrl, ['http:', 'https:']);
+        } else {
+          valid = only(['url', 'appUrl', 'port', 'pid', 'startedAt']) && port(record.port)
+            && pid(record.pid) && timestamp(record.startedAt) && (!match[2] || Number(match[2]) === record.port)
+            && url(record.url, ['postgres:', 'postgresql:'], 'harness_admin')
+            && (record.appUrl === undefined || url(record.appUrl, ['postgres:', 'postgresql:'], 'harness_app'));
+        }
+        if (!valid) continue;
+        if (!operatorRoot) { operatorRoot = { id: `runtime-operator-${roots.length}`, path: directory }; roots.push(operatorRoot); }
+        declarations.push({ kind: 'path', root: operatorRoot.id, name: entry.name,
+          classification: match[1] === 'operator-port' ? 'config' : 'secret',
+          producer: match[1] === 'embedded-pg-credentials' ? 'embedded-postgres-role-credentials' : 'operator-server-discovery' });
+      } catch (error) {
+        if (!(error instanceof SyntaxError) && !(error instanceof TypeError)
+          && !['ENOENT', 'ELOOP'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+      } finally { await handle?.close(); }
+    }
+  }
   // endpoint-ipc-discovery uses host-platform/home, including its override;
   // these advertisements and interrupted atomic writes describe live processes
   // and must be regenerated on the destination rather than transported.

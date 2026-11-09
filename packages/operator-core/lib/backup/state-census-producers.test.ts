@@ -18,7 +18,7 @@ vi.mock('../deployment/account-link-cli', () => { throw new Error('interactive l
 import { databaseCensusEntries, physicalDatabaseCensusEntries, integrationBaselineCensusDeclarations, secretCensusProducers, unitCensusEntries, unitCensusDeclarations, installedUnitCensusDeclarations, verifyHostStateCensus, workspaceRegistryCensusProducer, scratchCensusProducer, installedRootCensusProducers, mergeNestedCensusRoots, postgresStorageDeclaration, gitStorageDeclaration } from './state-census-producers';
 import { mkdtemp, writeFile, rm, symlink, readFile, mkdir, chmod, utimes, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { CensusDeclaration } from '@papercusp/backup';
 import { collectStateCensus } from '@papercusp/backup';
 import type { Sql } from 'postgres';
@@ -1140,6 +1140,82 @@ describe('secret census producer adapters', () => {
     } finally { await rm(home, { recursive: true, force: true }); }
   });
 
+  it('retains validated operator discovery credentials and port memory across host-home relocation', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'operator-discovery-census-'));
+    const ordinary = join(home, '.papercusp');
+    const relocated = join(home, 'relocated');
+    const cwd = join(home, 'project');
+    const operator = { httpUrl: 'http://127.0.0.1:3170', port: 3170, token: 'test-bearer', pid: 123,
+      processIdentity: 'test-boot:123', startedAt: 1730000000000, version: '0.1.0', sha: null };
+    const pg = { url: 'postgresql://harness_admin:test@127.0.0.1:5432/harness',
+      appUrl: 'postgresql://harness_app:test@127.0.0.1:5432/harness', port: 5432, pid: 123, startedAt: 1730000000000 };
+    const credentials = { schemaVersion: 1, owner: 'a'.repeat(43), admin: 'b'.repeat(43), app: 'c'.repeat(43), zero: 'd'.repeat(43) };
+    const records = { 'operator.json': operator, 'operator-port.json': { port: 3170, updatedAt: 1730000000000 },
+      'embedded-pg.json': pg, 'embedded-pg.5432.json': pg, 'embedded-pg-credentials.json': credentials };
+    try {
+      for (const directory of [ordinary, relocated, cwd]) {
+        await mkdir(directory);
+        for (const [name, record] of Object.entries(records)) {
+          await writeFile(join(directory, name), JSON.stringify(record));
+          await writeFile(join(directory, `${name}.tmp.123`), JSON.stringify(record));
+        }
+      }
+      const result = await runtimeSidefileCensusProducer(home, { PAPERCUSP_HOME: relocated }, [cwd]);
+      const owned = result.declarations.filter(entry => ['operator-server-discovery', 'embedded-postgres-role-credentials'].includes(entry.producer));
+      expect(owned).toHaveLength(20);
+      expect(owned.filter(entry => entry.classification === 'secret')).toHaveLength(16);
+      expect(owned.filter(entry => entry.classification === 'config')).toHaveLength(4);
+      expect(owned.every(entry => !entry.descendants && !entry.prune)).toBe(true);
+      expect(owned.every(entry => result.roots.find(root => root.id === entry.root)?.path !== cwd)).toBe(true);
+      const census = await collectStateCensus({ ...result, readCatalogs: async () => [] });
+      expect(census.residue.filter(entry => entry.name.startsWith('operator') || entry.name.startsWith('embedded-pg'))).toEqual([]);
+      expect(await readFile(join(relocated, 'embedded-pg-credentials.json'), 'utf8')).toBe(JSON.stringify(credentials));
+      const writer = await readFile(new URL('../../../../apps/operator/bin/serve.ts', import.meta.url), 'utf8');
+      expect(writer).toContain('const PAPERCUSP_DIR = papercuspHome()');
+      expect(writer).toContain('`embedded-pg.${pg.port}.json`');
+      expect(writer).toContain('const tmp = `${path}.tmp.${process.pid}`');
+    } finally { await rm(home, { recursive: true, force: true }); }
+  });
+
+  it('leaves foreign, malformed, mismatched, oversized and linked operator records unresolved', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'operator-discovery-invalid-'));
+    const ordinary = join(home, '.papercusp');
+    const linked = join(home, 'linked');
+    const pg = { url: 'postgresql://harness_admin:test@127.0.0.1:5432/harness', port: 5432, pid: 123, startedAt: 1730000000000 };
+    const invalid = {
+      'operator.json': { httpUrl: 'https://foreign.example:3170', port: 3070, token: 'bearer', pid: 123, startedAt: 1, version: '1' },
+      'operator-port.json': { port: 3170, updatedAt: 1, foreign: true },
+      'embedded-pg.json': { ...pg, url: 'file:///foreign' },
+      'embedded-pg.5433.json': pg,
+      'embedded-pg.65536.json': pg,
+      'embedded-pg-credentials.json': { owner: 'short', admin: 'short', app: 'short', zero: 'short' },
+      'embedded-pg-credentials.json.tmp.123': { schemaVersion: 2, owner: 'a'.repeat(43), admin: 'b'.repeat(43), app: 'c'.repeat(43), zero: 'd'.repeat(43) },
+      'operator-port.json.tmp.0': { port: 3170, updatedAt: 1 },
+      'operator-port.json.tmp.2147483648': { port: 3170, updatedAt: 1 },
+      'operator-port.json.bak': { port: 3170, updatedAt: 1 },
+      'embedded-pg.5440.json': { ...pg, port: 5440 },
+    };
+    try {
+      await mkdir(ordinary);
+      for (const [name, record] of Object.entries(invalid)) await writeFile(join(ordinary, name), JSON.stringify(record));
+      await writeFile(join(ordinary, 'operator.json.tmp.123'), '{');
+      await writeFile(join(ordinary, 'operator-port.json.tmp.124'), ' '.repeat(65_537));
+      await symlink(join(ordinary, 'operator-port.json'), join(ordinary, 'operator-port.json.tmp.125'));
+      await mkdir(join(ordinary, 'embedded-pg.5432.json'));
+      await symlink(ordinary, linked);
+      const result = await runtimeSidefileCensusProducer(home, { PAPERCUSP_HOME: linked });
+      expect(result.declarations.some(entry => ['operator-server-discovery', 'embedded-postgres-role-credentials'].includes(entry.producer))).toBe(false);
+      expect(result.roots.some(root => root.path === linked)).toBe(false);
+      const census = await collectStateCensus({ ...result, readCatalogs: async () => [] });
+      expect(census.residue.map(entry => entry.name)).toEqual(expect.arrayContaining(Object.keys(invalid)));
+      expect(await readFile(join(ordinary, 'operator.json.tmp.123'), 'utf8')).toBe('{');
+      await rename(ordinary, join(home, 'target'));
+      await symlink(join(home, 'target'), ordinary);
+      expect((await runtimeSidefileCensusProducer(home, {})).declarations
+        .some(entry => ['operator-server-discovery', 'embedded-postgres-role-credentials'].includes(entry.producer))).toBe(false);
+    } finally { await rm(home, { recursive: true, force: true }); }
+  });
+
   it('retains host gateway logs and one rotation across relocation without trusting workspace names or links', async () => {
     const home = await mkdtemp(join(tmpdir(), 'gateway-log-census-'));
     const ordinary = join(home, '.papercusp');
@@ -1367,6 +1443,83 @@ describe('secret census producer adapters', () => {
       expect((await collectStateCensus({ ...full, readCatalogs: async () => [] })).residue.map(entry => entry.name)).toContain('unknown');
       const writer = await readFile(new URL('../inference-gateway/codex-oauth-proxy.ts', import.meta.url), 'utf8');
       expect(writer).toContain('`${target}.${process.pid}.tmp`');
+    } finally { await rm(home, { recursive: true, force: true }); }
+  });
+  it('retains exact databases and their live companions in registered durable Codex homes without changing bytes', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'codex-account-census-'));
+    const name = 'account.name.codex-cli';
+    const home = join(parent, 'deploy-credentials', name);
+    const databases = ['state_5.sqlite', 'logs_2.sqlite', 'goals_1.sqlite', 'memories_1.sqlite',
+      'memories_v2_1.sqlite', 'queue_1.sqlite', 'thread_history_1.sqlite'];
+    const relativeNames = ['auth.json', 'auth.json.123.tmp', 'installation_id', ...databases.flatMap(file => [file, `${file}-wal`, `${file}-shm`])];
+    try {
+      await mkdir(home, { recursive: true });
+      await writeFile(join(home, 'auth.json'), 'credential bytes must not be parsed');
+      await writeFile(join(home, 'auth.json.123.tmp'), 'refresh credential');
+      await writeFile(join(home, 'installation_id'), 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+      for (const file of databases) {
+        await writeFile(join(home, file), Buffer.concat([Buffer.from('SQLite format 3\0'), Buffer.alloc(84)]));
+        for (const suffix of ['-wal', '-shm']) await writeFile(join(home, `${file}${suffix}`), `live ${suffix} bytes`);
+      }
+      const before = await Promise.all(relativeNames.map(file => readFile(join(home, file))));
+      const result = await accountCredentialCensusProducer([{ credentialRef: `codex-cli:${home}` }, { credentialRef: `codex-cli:${home}` }]);
+      expect(result.roots).toEqual([{ id: 'account-credential-0', path: dirname(home) }]);
+      expect(result.declarations.map(entry => entry.name).sort()).toEqual([name, ...relativeNames.map(file => `${name}/${file}`)].sort());
+      expect(result.declarations.filter(entry => entry.producer === 'codex-sqlite-runtime')).toHaveLength(21);
+      expect(result.declarations.find(entry => entry.name === `${name}/installation_id`)?.classification).toBe('config');
+      expect(result.declarations.filter(entry => entry.classification === 'secret')).toHaveLength(2);
+      expect(result.declarations.every(entry => !entry.descendants && !entry.prune)).toBe(true);
+      const census = await collectStateCensus({ ...result, readCatalogs: async () => [] });
+      expect(census.residue).toEqual([]);
+      expect(await Promise.all(relativeNames.map(file => readFile(join(home, file))))).toEqual(before);
+    } finally { await rm(parent, { recursive: true, force: true }); }
+  });
+  it('leaves unknown accounts, malformed databases, orphan companions, backups and links unresolved', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'codex-account-negative-'));
+    const home = join(parent, 'deploy-credentials', 'known.codex-cli');
+    try {
+      await mkdir(home, { recursive: true });
+      await writeFile(join(home, 'auth.json'), 'opaque');
+      for (const file of ['state_5.sqlite', 'state_5.sqlite-wal', 'goals_1.sqlite-shm', 'state_6.sqlite',
+        'state_5.sqlite.backup', 'installation_id', 'foreign.ts']) await writeFile(join(home, file), 'foreign bytes');
+      await writeFile(join(parent, 'external.sqlite'), 'SQLite format 3\0');
+      await symlink(join(parent, 'external.sqlite'), join(home, 'logs_2.sqlite'));
+      await writeFile(join(home, 'logs_2.sqlite-wal'), 'orphan');
+      await mkdir(join(home, 'memories_1.sqlite'));
+      await mkdir(join(parent, 'deploy-credentials', 'unknown.codex-cli'));
+      await writeFile(join(parent, 'deploy-credentials', 'unknown.codex-cli', 'state_5.sqlite'), 'SQLite format 3\0');
+      const result = await accountCredentialCensusProducer([{ credentialRef: `codex-cli:${home}` }]);
+      expect(result.declarations.map(entry => entry.name)).toEqual(['known.codex-cli', 'known.codex-cli/auth.json']);
+      const direct = await collectStateCensus({ ...result, readCatalogs: async () => [] });
+      expect(direct.residue.map(entry => entry.name)).toEqual(expect.arrayContaining([
+        'known.codex-cli/foreign.ts', 'unknown.codex-cli', 'unknown.codex-cli/state_5.sqlite',
+      ]));
+      const merged = mergeNestedCensusRoots({ roots: [...result.roots, { id: 'all', path: parent }], declarations: result.declarations });
+      const census = await collectStateCensus({ ...merged, readCatalogs: async () => [] });
+      expect(census.residue.map(entry => entry.name)).toEqual(expect.arrayContaining([
+        'deploy-credentials/known.codex-cli/state_5.sqlite', 'deploy-credentials/known.codex-cli/state_5.sqlite-wal',
+        'deploy-credentials/known.codex-cli/goals_1.sqlite-shm', 'deploy-credentials/known.codex-cli/logs_2.sqlite',
+        'deploy-credentials/unknown.codex-cli/state_5.sqlite',
+      ]));
+      await rm(join(home, 'installation_id'));
+      await symlink(join(parent, 'external.sqlite'), join(home, 'installation_id'));
+      expect((await accountCredentialCensusProducer([{ credentialRef: `codex-cli:${home}` }])).declarations)
+        .toEqual(result.declarations);
+      await rename(home, `${home}.retained`);
+      await symlink(`${home}.retained`, home);
+      expect((await accountCredentialCensusProducer([{ credentialRef: `codex-cli:${home}` }])).declarations
+        .some(entry => entry.producer === 'codex-sqlite-runtime' || entry.producer === 'account-link-cli-completed-home')).toBe(false);
+    } finally { await rm(parent, { recursive: true, force: true }); }
+  });
+  it('does not treat an arbitrary referenced CLI home as a managed account container', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'external-codex-account-'));
+    try {
+      await writeFile(join(home, 'auth.json'), 'opaque');
+      await writeFile(join(home, 'state_5.sqlite'), 'SQLite format 3\0');
+      await writeFile(join(home, 'installation_id'), 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+      const result = await accountCredentialCensusProducer([{ credentialRef: `codex-cli:${home}` }]);
+      expect(result.roots[0].fileNames).toEqual(['auth.json']);
+      expect(result.declarations.map(entry => entry.name)).toEqual(['auth.json']);
     } finally { await rm(home, { recursive: true, force: true }); }
   });
   it('unions external references without allowing a selected parent to hide an installed child', () => {

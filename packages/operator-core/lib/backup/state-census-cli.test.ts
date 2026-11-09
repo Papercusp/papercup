@@ -405,6 +405,12 @@ describe('unit census executable exit contract', () => {
       writeFileSync(join(peer, 'CORESTORE'), 'device/platform=linux\ndevice/inode=123\ndevice/created=456\n');
       writeFileSync(join(peer, 'db', 'persistent-log'), 'state');
       writeFileSync(join(peer, '..', 'unowned-sibling'), 'unknown state');
+      writeFileSync(join(directory, 'registry', 'fixture', 'unowned-workspace-file'), 'unknown state');
+      writeFileSync(join(directory, 'registry', 'fixture', '.papercusp', 'unowned-root-file'), 'unknown state');
+      mkdirSync(join(directory, 'registry', 'uninitialized', '.papercusp', 'harness', 'hyperbee'), { recursive: true });
+      const linkedWorkspace = join(directory, 'registry', 'linked');
+      mkdirSync(linkedWorkspace);
+      symlinkSync(join(directory, 'registry', 'fixture', '.papercusp'), join(linkedWorkspace, '.papercusp'));
       const restoredPeer = join(directory, 'registry', 'fixture', '.restored', 'snapshot', 'clone', '.papercusp', 'harness', 'hyperbee');
       mkdirSync(join(restoredPeer, 'db'), { recursive: true });
       writeFileSync(join(restoredPeer, 'CORESTORE'), 'device/platform=linux\ndevice/inode=789\ndevice/created=123\n');
@@ -507,6 +513,17 @@ describe('unit census executable exit contract', () => {
       expect(report.representedPeers.some((entry: { name: string }) => entry.name === 'registry/fixture/.papercusp/harness/hyperbee')).toBe(true);
       expect(report.inventory.find((entry: { name: string }) => entry.name === 'registry/fixture/.papercusp/harness'))
         .toMatchObject({ classification: 'state', producers: ['harness-corestore-container'] });
+      for (const name of ['registry/fixture', 'registry/fixture/.papercusp']) {
+        expect(report.inventory.find((entry: { name: string }) => entry.name === name))
+          .toMatchObject({ classification: 'state', producers: ['harness-corestore-container'] });
+      }
+      for (const name of ['registry/fixture/unowned-workspace-file', 'registry/fixture/.papercusp/unowned-root-file',
+        'registry/uninitialized', 'registry/linked', 'registry/fixture/.restored']) {
+        expect(report.residue.some((entry: { name: string }) => entry.name === name), name).toBe(true);
+      }
+      expect(report.inventory.some((entry: { name: string; classification: string | null }) =>
+        entry.name.startsWith('registry/linked/') && entry.classification)).toBe(false);
+      expect(readlinkSync(join(linkedWorkspace, '.papercusp'))).toBe(join(directory, 'registry', 'fixture', '.papercusp'));
       expect(report.residue.some((entry: { name: string }) => entry.name === 'registry/fixture/.papercusp/harness/unowned-sibling')).toBe(true);
       expect(report.residue.some((entry: { name: string }) => entry.name === 'registry/fixture/.papercusp/legacy')).toBe(true);
       expect(report.representedPeers.some((entry: { name: string }) => entry.name.includes('/.restored/snapshot/clone/'))).toBe(true);
