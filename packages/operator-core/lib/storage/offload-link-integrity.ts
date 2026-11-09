@@ -23,17 +23,21 @@ export interface OffloadLinkSnapshot {
   sourceRoot: string;
   entriesVisited: number;
   links: Array<LinkObservation & { target: string }>;
+  /** Preserve the original logical Git namespace even after realpath changes. */
+  gitPublication?: { repositoryRoot: string; ignoredPaths: string[] };
 }
 
 export interface OffloadLinkScanOptions {
   /** Exhausting the budget throws; a partial scan is never a successful proof. */
   maxEntries?: number;
   signal?: AbortSignal;
+  /** Planned temporary/retained names must be ignored before any rename. */
+  publicationPaths?: string[];
 }
 
 export interface OffloadLinkViolation {
   path: string;
-  reason: 'missing-link' | 'unexpected-link' | 'link-text-changed' | 'target-unresolved' | 'target-changed';
+  reason: 'missing-link' | 'unexpected-link' | 'link-text-changed' | 'target-unresolved' | 'target-changed' | 'git-publication-exposed';
   expected?: string;
   actual?: string;
 }
@@ -48,7 +52,20 @@ function within(root: string, target: string): boolean {
  * every underlying byte survives. Generated, untracked directories remain
  * eligible. Callers must hold the repository/index and offload identity locks.
  */
-async function assertNoTrackedSource(sourceRoot: string, options: OffloadLinkScanOptions): Promise<void> {
+async function gitIgnored(repositoryRoot: string, path: string, options: OffloadLinkScanOptions): Promise<boolean> {
+  if (!within(repositoryRoot, path) || path === repositoryRoot) throw new Error(`Git publication path outside repository: ${path}`);
+  try {
+    await execFileAsync('git', ['-C', repositoryRoot, 'check-ignore', '--quiet', '--no-index', '--',
+      relative(repositoryRoot, path).split(sep).join('/')],
+    { encoding: 'utf8', timeout: 30_000, maxBuffer: 1024 * 1024, signal: options.signal });
+    return true;
+  } catch (error) {
+    if ((error as { code?: unknown }).code === 1) return false;
+    throw error;
+  }
+}
+
+async function assertNoTrackedSource(sourceRoot: string, options: OffloadLinkScanOptions): Promise<OffloadLinkSnapshot['gitPublication']> {
   const logicalRoot = resolve(sourceRoot);
   for (let ancestor = logicalRoot; ; ancestor = dirname(ancestor)) {
     options.signal?.throwIfAborted();
@@ -65,7 +82,17 @@ async function assertNoTrackedSource(sourceRoot: string, options: OffloadLinkSca
         `:(literal)${relative(ancestor, logicalRoot).split(sep).join('/')}`],
       { encoding: 'utf8', timeout: 30_000, maxBuffer: 8 * 1024 * 1024, signal: options.signal });
       if (stdout.length) throw new Error(`Git-tracked source cannot use a symlink offload: ${logicalRoot}`);
-      return;
+      const ignoredPaths: string[] = [];
+      // Directory-only ignore rules can stop matching at symlink cutover.
+      // Remember ignored originals and recheck their logical names on EVERY
+      // verification, including when the caller verifies the physical copy.
+      if (await gitIgnored(ancestor, logicalRoot, options)) ignoredPaths.push(logicalRoot);
+      for (const path of options.publicationPaths ?? []) {
+        const planned = resolve(path);
+        if (!await gitIgnored(ancestor, planned, options)) throw new Error(`Git publication would expose offload path: ${planned}`);
+        ignoredPaths.push(planned);
+      }
+      return { repositoryRoot: ancestor, ignoredPaths: [...new Set(ignoredPaths)] };
     }
     if (dirname(ancestor) === ancestor) return;
   }
@@ -147,13 +174,14 @@ async function scan(root: string, options: OffloadLinkScanOptions) {
 /** Snapshot every symlink, including external chains, without following linked
  * directories in the walk. Broken original targets fail closed. */
 export async function captureOffloadLinks(sourceRoot: string, options: OffloadLinkScanOptions = {}): Promise<OffloadLinkSnapshot> {
-  await assertNoTrackedSource(sourceRoot, options);
+  const gitPublication = await assertNoTrackedSource(sourceRoot, options);
   const observed = await scan(sourceRoot, options);
   const links = observed.links.map(link => {
     if (link.target === null) throw new Error(`Original offload link is unresolved: ${link.path}`);
     return { ...link, target: link.target };
   });
-  return { sourceRoot: observed.root, entriesVisited: observed.entriesVisited, links };
+  return { sourceRoot: observed.root, entriesVisited: observed.entriesVisited, links,
+    ...(gitPublication ? { gitPublication } : {}) };
 }
 
 /** Internal targets must reach the corresponding destination object; external
@@ -167,6 +195,11 @@ export async function verifyOffloadLinks(snapshot: OffloadLinkSnapshot, destinat
   if (observed.root === snapshot.sourceRoot) throw new Error('Offload destination is the original source');
   const actual = new Map(observed.links.map(link => [link.path, link]));
   const violations: OffloadLinkViolation[] = [];
+  for (const path of snapshot.gitPublication?.ignoredPaths ?? []) {
+    if (!await gitIgnored(snapshot.gitPublication!.repositoryRoot, path, options)) {
+      violations.push({ path, reason: 'git-publication-exposed' });
+    }
+  }
   for (const link of snapshot.links) {
     const found = actual.get(link.path);
     if (!found) { violations.push({ path: link.path, reason: 'missing-link' }); continue; }

@@ -48,6 +48,49 @@ describe('offload symlink target integrity', () => {
     await expect(captureOffloadLinks(join(f.root, 'original'))).rejects.toThrow('Git source tree');
   });
 
+  it('refuses publication when a directory-only Git ignore exposes the offload alias', async () => {
+    const f = await fixture();
+    const repo = join(f.root, 'original');
+    execFileSync('git', ['init', '--quiet', repo]);
+    await writeFile(join(repo, '.gitignore'), '/node_modules/\n');
+    await writeFile(join(f.source, 'generated'), 'payload');
+    const snapshot = await captureOffloadLinks(f.source);
+    await cp(f.source, f.destination, { recursive: true });
+    expect((await verifyOffloadLinks(snapshot, f.destination)).ok).toBe(true);
+    await rename(f.source, `${f.source}.aside`);
+    await symlink(f.destination, f.source);
+    expect(execFileSync('git', ['-C', repo, 'status', '--porcelain', '--', 'node_modules'], { encoding: 'utf8' }))
+      .toContain('?? node_modules');
+    for (const path of [f.destination, f.source]) {
+      expect(await verifyOffloadLinks(snapshot, path)).toMatchObject({ ok: false,
+        violations: [{ path: f.source, reason: 'git-publication-exposed' }] });
+    }
+    expect(await readFile(join(`${f.source}.aside`, 'generated'), 'utf8')).toBe('payload');
+    await writeFile(join(repo, '.git', 'info', 'exclude'), '/node_modules\n');
+    expect((await verifyOffloadLinks(snapshot, f.source)).ok).toBe(true);
+    expect(execFileSync('git', ['-C', repo, 'status', '--porcelain', '--', 'node_modules'], { encoding: 'utf8' }))
+      .toBe('');
+  });
+
+  it('requires planned aside names to stay outside Git publication before moving the source', async () => {
+    const f = await fixture();
+    const repo = join(f.root, 'original');
+    execFileSync('git', ['init', '--quiet', repo]);
+    await writeFile(join(repo, '.gitignore'), '/node_modules\n');
+    const aside = `${f.source}.offload-aside`;
+    await expect(captureOffloadLinks(f.source, { publicationPaths: [aside] }))
+      .rejects.toThrow('Git publication');
+    await writeFile(join(repo, '.git', 'info', 'exclude'), '/node_modules.offload-aside\n');
+    const snapshot = await captureOffloadLinks(f.source, { publicationPaths: [aside] });
+    await cp(f.source, f.destination, { recursive: true });
+    await rename(f.source, aside);
+    await symlink(f.destination, f.source);
+    expect((await verifyOffloadLinks(snapshot, f.source)).ok).toBe(true);
+    await writeFile(join(repo, '.git', 'info', 'exclude'), '');
+    expect(await verifyOffloadLinks(snapshot, f.source)).toMatchObject({ ok: false,
+      violations: [{ path: aside, reason: 'git-publication-exposed' }] });
+  });
+
   it.each(['packet', 'nested/packet'])('refuses %s whose native consumer rejects redirected ancestors', async relativePacket => {
     const f = await fixture();
     const packet = join(f.source, relativePacket);
