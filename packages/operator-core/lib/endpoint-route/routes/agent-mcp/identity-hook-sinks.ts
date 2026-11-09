@@ -30,6 +30,7 @@ import { PG_ACQUIRE_TIMING_LIMIT, pgAcquireTimingSnapshot, pgResultDiagnosticSna
   withPgAcquireDiagnostics, type PgAcquireTimingSnapshot } from '@papercusp/db-org/acquire-registry';
 import { withNamedQueryDiagnosticContext } from '../../../agent-tools/db-diagnostic-correlation-wiring';
 import { tagTurnForInjection } from '../../../turn-provenance/turn-provenance';
+import type { MemoryFragmentOffer } from '../../../memory/session-epoch-ledger';
 import { checkPlanExecutionGuard, type PlanExecutionTimingObserver } from '../../../agent-tools/plans/plan-execution-guard';
 import {
   evaluateHookContextSink,
@@ -60,6 +61,8 @@ interface HookBody {
   guardRequestId?: string;
   // compaction
   source?: string;
+  memoryReceiptMode?: boolean;
+  confirmedMemoryDeliveries?: unknown;
 }
 
 async function readBody(req: Request): Promise<HookBody | null> {
@@ -374,6 +377,42 @@ async function boundedTurnEndHeldWorkText(input: { ownerId: string; workspaceId:
   return bounded.value;
 }
 
+/** The Codex SessionStart dispatcher owns this epoch boundary. Claude uses
+ * session-recovery-brief instead. Keep carry, recall and receipt IO inside one
+ * wall; a late carry read must never start a new epoch after the hook returned. */
+async function boundedCompactMemory(input: { ownerId: string; workspaceId: string; confirmations: unknown }) {
+  type MemoryResponse = { text: string; deliveryToken?: string; memoryFragmentOffers?: MemoryFragmentOffer[] };
+  const none: MemoryResponse = { text: '' };
+  const { withBoundedTimeout } = await import('../../../bounded-timeout');
+  const bounded = await withBoundedTimeout<MemoryResponse>(async signal => {
+    const [{ buildCarryBrief }, { buildCompactReprimeBlock }, { withMemoryEmissionReceipt }, { getOrgPg }] = await Promise.all([
+      import('../../../carry-brief'), import('../../../memory/compact-reprime'),
+      import('../../../memory/session-epoch-ledger'), import('@papercusp/db-org'),
+    ]);
+    if (signal.aborted) return none;
+    const response = await withMemoryEmissionReceipt(getOrgPg().sql, input.ownerId, input.confirmations, async () => {
+      // Closing this inner scope at the outer deadline prevents abandoned
+      // builders from collecting or staging fragments in a late response.
+      const prepared = await withBoundedTimeout(async childSignal => {
+        const brief = await buildCarryBrief(input.ownerId, { workspaceId: input.workspaceId });
+        if (childSignal.aborted) return '';
+        return await buildCompactReprimeBlock({
+          ownerId: input.ownerId, workspaceId: input.workspaceId,
+          heldItems: brief.heldItems.map(({ id, title, harness }) => ({ id, title, harness })),
+          fleetSlug: brief.fleet?.slug ?? null, awaits: brief.awaits, facts: brief.facts,
+        }) ?? '';
+      }, { fallback: '', timeoutMs: CONTEXT_SINK_BUDGET_MS, signal, label: 'identity-hook:compaction:reprime' });
+      return { content: [{ type: 'text' as const, text: prepared.value }] };
+    });
+    if (signal.aborted) return none;
+    const offer = response._meta?.['papercusp/memoryEmission'] as
+      { token: string; fragments: MemoryFragmentOffer[] } | undefined;
+    return { text: response.content[0]!.text,
+      ...(offer ? { deliveryToken: offer.token, memoryFragmentOffers: offer.fragments } : {}) };
+  }, { fallback: none, timeoutMs: CONTEXT_SINK_BUDGET_MS, label: 'identity-hook:compaction:memory' });
+  return bounded.value;
+}
+
 const compactionContext = defineTool({
   method: 'POST',
   path: '/agent-mcp/compaction-context',
@@ -385,8 +424,15 @@ const compactionContext = defineTool({
     if (!body || !ownerId || !source) return empty();
     const workspaceId = await resolveWorkspace(body);
     if (!(await compactionSinkDue({ ownerId, workspaceId, source }))) return empty();
-    const text = await boundedContextSinkText({ ownerId, workspaceId, sink: 'compaction' });
-    return Response.json({ ok: true, text });
+    const [identityText, memory] = await Promise.all([
+      boundedContextSinkText({ ownerId, workspaceId, sink: 'compaction' }),
+      body.client === 'codex' && body.memoryReceiptMode === true
+        ? boundedCompactMemory({ ownerId, workspaceId, confirmations: body.confirmedMemoryDeliveries })
+        : Promise.resolve({ text: '' }),
+    ]);
+    const { text: memoryText, ...delivery } = memory;
+    const text = [identityText, memoryText].filter(Boolean).join('\n\n');
+    return Response.json({ ok: true, text, ...delivery });
   },
 });
 

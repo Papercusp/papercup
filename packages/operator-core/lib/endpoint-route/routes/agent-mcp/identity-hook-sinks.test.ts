@@ -15,13 +15,17 @@ import * as acquireDiagnostics from '@papercusp/db-org/acquire-registry';
 import { withNamedQueryDiagnosticContext } from '../../../agent-tools/db-diagnostic-correlation-wiring';
 const planExecutionGuard = vi.hoisted(() => vi.fn());
 const compactMemory = vi.hoisted(() => ({ brief: vi.fn(), reprime: vi.fn(), receipt: vi.fn() }));
-vi.mock('../../../carry-brief', () => ({ buildCarryBrief: compactMemory.brief }));
-vi.mock('../../../memory/compact-reprime', () => ({ buildCompactReprimeBlock: compactMemory.reprime }));
-vi.mock('../../../memory/session-epoch-ledger', () => ({ withMemoryEmissionReceipt: compactMemory.receipt }));
+vi.mock('../../../carry-brief', async original => ({ ...await original<typeof import('../../../carry-brief')>(),
+  buildCarryBrief: compactMemory.brief }));
+vi.mock('../../../memory/compact-reprime', async original => ({ ...await original<typeof import('../../../memory/compact-reprime')>(),
+  buildCompactReprimeBlock: compactMemory.reprime }));
+vi.mock('../../../memory/session-epoch-ledger', async original => ({ ...await original<typeof import('../../../memory/session-epoch-ledger')>(),
+  withMemoryEmissionReceipt: compactMemory.receipt }));
 const priorityOrgPgMock = vi.hoisted(() => vi.fn(async (run: () => Promise<unknown>) => run()));
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   withPriorityOrgPg: priorityOrgPgMock,
+  getOrgPg: () => ({ sql: null }),
 }));
 vi.mock('../../../agent-tools/plans/plan-execution-guard', () => ({ checkPlanExecutionGuard: planExecutionGuard }));
 
@@ -805,5 +809,49 @@ describe('POST /agent-mcp/stop-context and /agent-mcp/compaction-context', () =>
       await vi.advanceTimersByTimeAsync(0);
       expect(compactMemory.reprime).not.toHaveBeenCalled();
     } finally { vi.useRealTimers(); warn.mockRestore(); }
+  });
+
+  it.each(['receipt-before-build', 'builder', 'receipt-after-build'] as const)(
+    'Codex compact re-prime bounds %s and drops late delivery metadata', async stall => {
+      await Promise.all([import('../../../carry-brief'), import('../../../memory/compact-reprime'),
+        import('../../../memory/session-epoch-ledger'), import('../../../bounded-timeout'), import('@papercusp/db-org')]);
+      vi.useFakeTimers();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      let release!: () => void;
+      const wait = () => new Promise<void>(resolve => { release = resolve; });
+      const meta = { 'papercusp/memoryEmission': { token: 'late-memory', fragments: [{ rendered: 'MEMORY REPRIME' }] } };
+      if (stall === 'builder') compactMemory.reprime.mockImplementation(async () => { await wait(); return 'MEMORY REPRIME'; });
+      compactMemory.receipt.mockImplementation(async (_sql, _owner, _proof, run) => {
+        if (stall === 'receipt-before-build') await wait();
+        const result = await run();
+        if (stall === 'receipt-after-build') await wait();
+        return { ...result, _meta: meta };
+      });
+      evaluateHookContextSinkMock.mockResolvedValue({ text: 'IDENTITY', result: null });
+      try {
+        const response = post('/agent-mcp/compaction-context', { owner: 'o', workspace: 'w', source: 'compact',
+          client: 'codex', memoryReceiptMode: true });
+        await vi.advanceTimersByTimeAsync(2000);
+        expect(await response).toEqual({ ok: true, text: 'IDENTITY' });
+        expect(release).toBeTypeOf('function');
+        release();
+        await vi.advanceTimersByTimeAsync(0);
+        if (stall === 'receipt-before-build') {
+          expect(compactMemory.brief).not.toHaveBeenCalled();
+          expect(compactMemory.reprime).not.toHaveBeenCalled();
+        }
+      } finally { vi.useRealTimers(); warn.mockRestore(); }
+    });
+
+  it('Codex compact re-prime returns only its memory token and exact offers', async () => {
+    const fragments = [{ kind: 'memory', id: 'm', epoch: 2, port: 'compact', rendered: 'MEMORY REPRIME',
+      bodySha256: 'f'.repeat(64), bodyBytes: 14 }];
+    compactMemory.receipt.mockImplementation(async (_sql, _owner, _proof, run) => ({ ...await run(), _meta: {
+      'papercusp/memoryEmission': { owner: 'o', token: 'compact-memory-token', fragments },
+      deliveryToken: 'foreign-orientation-token',
+    } }));
+    expect(await post('/agent-mcp/compaction-context', { owner: 'o', workspace: 'w', source: 'compact',
+      client: 'codex', memoryReceiptMode: true })).toEqual({ ok: true, text: 'MEMORY REPRIME',
+      deliveryToken: 'compact-memory-token', memoryFragmentOffers: fragments });
   });
 });
