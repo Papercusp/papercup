@@ -92,6 +92,7 @@ import { attributionScopeLabel, resolveAttributionRepo } from './attribution-rep
 import { canonicalJson } from '../../external-bench/reproducibility/canonical-json';
 import { guardStagedWorkspaceLock, workspaceLockTreeInspector, workspaceLockTreeValidator } from './staged-workspace-lock';
 import { materializeCommit } from '../../../../../scripts/source-preview.mjs';
+import { expandWorkspaces } from '../../../../../scripts/assert-workspace-links.mjs';
 import { assertMetadataRepairGraph, metadataRepairInputLayout, metadataRepairRuntimeIdentity, metadataRepairArboristIdentity,
   METADATA_REPAIR_NPM_BOOTSTRAP, resolveMetadataRepairLock } from '../../../../../scripts/npm-install-safe.mjs';
 
@@ -5674,6 +5675,142 @@ const generatedSourceSchema = z.object({ kind: z.literal('generated-lock'), fing
 export type GitSyncGeneratedLockSource = z.infer<typeof generatedSourceSchema>;
 type MetadataSelectedInput = z.infer<typeof metadataSelectedInput>;
 const metadataDigest = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex');
+
+/** The reviewed parent-pin exception is a closed pair set, not a library classifier. */
+const metadataLibraryOrigins = {
+  'libs/generic/resumable-download': 'git@github.com:Papercusp/resumable-download.git',
+  'libs/papercusp': 'git@github.com:Papercusp/papercusp.git',
+} as const;
+const metadataLibrarySelection = z.object({
+  path: z.enum(['libs/generic/resumable-download', 'libs/papercusp']),
+  expectedBasePin: metadataOid, selectedCommit: metadataOid,
+}).strict();
+export type GitSyncPublishedLibrarySelection = z.infer<typeof metadataLibrarySelection>;
+
+export interface GitSyncMetadataSelectedLibrary extends GitSyncPublishedLibrarySelection {
+  selectedTree: string;
+  selectedType: 'commit';
+  treeType: 'tree';
+  gitmodulesBlob: string;
+  mapping: { name: string; path: string; url: string; branch: string | null };
+  authorizedUrl: string;
+}
+
+/**
+ * Build the actual immutable resolver input tree through the existing private
+ * index. This proves only object eligibility and tree scope. Direct origin and
+ * writer-phase observations are separate required publication predicates.
+ */
+export async function prepareGitSyncMetadataSelectionTree(runGit: RunGit, repo: string,
+  request: { base: string; publishedLibrarySelections: readonly GitSyncPublishedLibrarySelection[] }) {
+  request = structuredClone(request);
+  if (Object.keys(request).sort().join(',') !== 'base,publishedLibrarySelections' ||
+      !metadataOid.safeParse(request.base).success || !Array.isArray(request.publishedLibrarySelections) ||
+      request.publishedLibrarySelections.length > 2) throw new Error('generated-lock-library-request');
+  const selections = request.publishedLibrarySelections.map(row => metadataLibrarySelection.parse(row));
+  const paths = selections.map(row => row.path);
+  if (new Set(paths).size !== paths.length || canonicalJson(paths) !== canonicalJson([...paths].sort())) {
+    throw new Error('generated-lock-library-order');
+  }
+  const git: RunGit = (args, cwd, options) => runGit(['--no-replace-objects', ...args], cwd, {
+    ...options, env: { ...options?.env, GIT_OPTIONAL_LOCKS: '0', GIT_LITERAL_PATHSPECS: '1' },
+  });
+  const read = async (args: string[], cwd = repo) => {
+    const result = await git(args, cwd);
+    if (result.code !== 0) throw new Error('generated-lock-library-object: ' + gitFailureDetail(result));
+    return result.stdout;
+  };
+  if ((await read(['cat-file', '-t', request.base])).trim() !== 'commit') {
+    throw new Error('generated-lock-library-base');
+  }
+  const baseTree = (await read(['rev-parse', '--verify', `${request.base}^{tree}`])).trim();
+  if (!metadataOid.safeParse(baseTree).success) throw new Error('generated-lock-library-base');
+  if (!selections.length) return { baseTree, selectedInputTree: baseTree, publishedLibrarySelections: [] as GitSyncMetadataSelectedLibrary[] };
+
+  const inspection = await workspaceLockTreeInspector({ includeObjectInventory: true })(git, repo, request.base, 'commit');
+  const objects = inspection.objects!;
+  const rootManifest = objects.find(row => row.path === 'package.json' && row.owner === '');
+  const modules = objects.find(row => row.path === '.gitmodules' && row.owner === '');
+  if (rootManifest?.mode !== '100644' || modules?.mode !== '100644') throw new Error('generated-lock-library-inventory');
+  const manifest = JSON.parse(await read(['cat-file', 'blob', rootManifest.oid]));
+  const patterns = Array.isArray(manifest.workspaces) ? manifest.workspaces : manifest.workspaces?.packages;
+  if (!Array.isArray(patterns) || patterns.some((pattern: unknown) => typeof pattern !== 'string')) {
+    throw new Error('generated-lock-library-workspaces');
+  }
+  const directories = objects.filter(row => row.kind === 'blob' && row.path.endsWith('/package.json'))
+    .map(row => row.path.slice(0, -'/package.json'.length));
+  const workspaces = new Set(expandWorkspaces(patterns, repo, { directories }));
+  // NUL output retains path/URL whitespace. Do not use the general discovery
+  // parser, which intentionally trims paths and coalesces duplicate keys.
+  const config = await git(['config', '--null', '--blob', modules.oid, '--get-regexp', '^submodule\\..*\\.(path|url|branch)$'], repo);
+  if (config.code !== 0) throw new Error('generated-lock-library-mapping');
+  const mappings = new Map<string, { path: string[]; url: string[]; branch: string[] }>();
+  for (const record of config.stdout.split('\0').filter(Boolean)) {
+    const match = /^submodule\.(.+)\.(path|url|branch)\n([\s\S]*)$/.exec(record);
+    if (!match) throw new Error('generated-lock-library-mapping');
+    const row = mappings.get(match[1]!) ?? { path: [], url: [], branch: [] };
+    row[match[2] as 'path' | 'url' | 'branch'].push(match[3]!);
+    mappings.set(match[1]!, row);
+  }
+  const admitted: GitSyncMetadataSelectedLibrary[] = [];
+  for (const selection of selections) {
+    const object = objects.find(row => row.path === selection.path && row.owner === '');
+    if (!workspaces.has(selection.path) || object?.kind !== 'gitlink' || object.mode !== '160000' ||
+        object.oid !== selection.expectedBasePin) throw new Error('generated-lock-library-eligibility');
+    const matches = [...mappings].filter(([, row]) => row.path.includes(selection.path));
+    if (matches.length !== 1) throw new Error('generated-lock-library-mapping');
+    const [name, mapping] = matches[0]!;
+    const authorizedUrl = metadataLibraryOrigins[selection.path];
+    if (mapping.path.length !== 1 || mapping.url.length !== 1 || mapping.branch.length > 1 ||
+        mapping.url[0] !== authorizedUrl) throw new Error('generated-lock-library-mapping');
+    const branch = mapping.branch[0] ?? null;
+    if (branch !== null) {
+      const fullRef = branch.startsWith('refs/heads/') ? branch : `refs/heads/${branch}`;
+      if (branch === '.' || branch.startsWith('refs/') && !branch.startsWith('refs/heads/') ||
+          (await git(['check-ref-format', fullRef], repo)).code !== 0) throw new Error('generated-lock-library-branch');
+    }
+    const child = join(repo, selection.path);
+    if (await realpath(child) !== await realpath((await read(['rev-parse', '--show-toplevel'], child)).trim()) ||
+        (await read(['cat-file', '-t', selection.selectedCommit], child)).trim() !== 'commit') {
+      throw new Error('generated-lock-library-selected-type');
+    }
+    const selectedTree = (await read(['rev-parse', '--verify', `${selection.selectedCommit}^{tree}`], child)).trim();
+    if (!metadataOid.safeParse(selectedTree).success || (await read(['cat-file', '-t', selectedTree], child)).trim() !== 'tree') {
+      throw new Error('generated-lock-library-selected-tree');
+    }
+    const selectedManifest = await read(['ls-tree', '-z', selectedTree, '--', 'package.json'], child);
+    if (!/^100644 blob [a-f0-9]+\tpackage\.json\0$/.test(selectedManifest)) {
+      throw new Error('generated-lock-library-selected-manifest');
+    }
+    admitted.push({ ...selection, selectedTree, selectedType: 'commit', treeType: 'tree',
+      gitmodulesBlob: modules.oid, mapping: { name, path: mapping.path[0]!, url: mapping.url[0]!, branch }, authorizedUrl });
+  }
+  const conflicts = await git(['ls-files', '--unmerged', '-z'], repo);
+  if (conflicts.code !== 0 || conflicts.stdout) throw new Error('generated-lock-unmerged-index');
+  const opened = await openPrivateIndexSite(git, repo, 'metadata selected input tree', 'metadata-selection');
+  if (!opened.ok) throw new Error('generated-lock-library-private-index');
+  const index = opened.site.newIndexFile();
+  const privateGit = opened.site.bindIndex(index);
+  try {
+    if ((await privateGit(['read-tree', baseTree], repo)).code !== 0) throw new Error('generated-lock-library-tree-read');
+    for (const row of admitted) {
+      if ((await privateGit(['update-index', '--add', '--cacheinfo', '160000', row.selectedCommit, row.path], repo)).code !== 0) {
+        throw new Error('generated-lock-library-tree-write');
+      }
+    }
+    const tree = await privateGit(['write-tree'], repo);
+    const selectedInputTree = tree.stdout.trim();
+    if (tree.code !== 0 || !metadataOid.safeParse(selectedInputTree).success) throw new Error('generated-lock-library-tree-write');
+    const diff = await git(['diff-tree', '--raw', '--no-abbrev', '--no-commit-id', '--no-renames', '-r', '-z', baseTree, selectedInputTree], repo);
+    const expected = admitted.filter(row => row.expectedBasePin !== row.selectedCommit)
+      .map(row => `:160000 160000 ${row.expectedBasePin} ${row.selectedCommit} M\0${row.path}\0`).join('');
+    if (diff.code !== 0 || diff.stdout !== expected) throw new Error('generated-lock-library-tree-scope');
+    return { baseTree, selectedInputTree, publishedLibrarySelections: admitted };
+  } finally {
+    await rm(index, { force: true });
+    await rm(index + '.lock', { force: true });
+  }
+}
 
 /** Read raw custody without Git status/add/reset or a shared-index refresh. */
 async function metadataRawFile(root: string, path: string) {

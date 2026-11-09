@@ -2,9 +2,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { build } from 'esbuild';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { BG_INPUTS, makeBgCompilerCandidate } from './source-preview.fixture';
 import { createBgVerifierCompilerCustody } from '../../../scripts/source-preview.mjs';
+import { findBundledTopLevelAwaits } from '../../../scripts/check-bundled-cli-entry-guards.mjs';
 
 // Exercise the maintained compiler against private fixture generations. These
 // source controls do not authorize preparation or activation of a real BG host.
@@ -44,6 +47,26 @@ async function ordinary(f: Awaited<ReturnType<typeof candidate>>) {
 }
 
 describe('BG private dependency compiler boundaries', () => {
+  it('keeps source-preview synchronous in a host bundle and importable by plain Node', async () => {
+    const repoRoot = resolve(import.meta.dirname, '../../..');
+    const entry = join(repoRoot, 'scripts/source-preview.mjs');
+    const compiled = await build({ absWorkingDir: repoRoot, entryPoints: [entry],
+      bundle: true, format: 'esm', platform: 'node', packages: 'external', write: false,
+      metafile: true, logLevel: 'silent', define: { __PAPERCUSP_BUNDLED_SIDECAR__: 'true' } });
+    const evidence = mkdtempSync(join(tmpdir(), 'source-preview-bundle-import-'));
+    roots.push(evidence);
+    const metafilePath = join(evidence, 'bundle.meta.json');
+    writeFileSync(metafilePath, JSON.stringify(compiled.metafile));
+    expect(await findBundledTopLevelAwaits({ metafilePath, baseDir: repoRoot })).toEqual([]);
+    const env = { ...process.env };
+    delete env.NODE_OPTIONS;
+    const plain = spawnSync(process.execPath, ['--input-type=module', '-e',
+      `const preview = await import(${JSON.stringify(pathToFileURL(entry).href)}); process.stdout.write(typeof preview.qualifyBgVerifierRuntimeSources);`],
+    { cwd: repoRoot, env, encoding: 'utf8', timeout: 30_000 });
+    expect({ status: plain.status, error: plain.error, stderr: plain.stderr }).toMatchObject({ status: 0, error: undefined });
+    expect(plain.stdout).toBe('function');
+  });
+
   it('canonical-dependency-mutation-isolated compiles accepted private bytes while the canonical dependency changes', async () => {
     const f = await candidate();
     const receipt = readFileSync(join(f.prepared.root, '.verifier-source.json'));

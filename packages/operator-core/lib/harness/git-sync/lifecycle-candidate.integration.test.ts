@@ -6,6 +6,7 @@ import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { captureGitSyncCandidate, readGitSyncCandidate, publishGitSyncCandidate, prepareGeneratedGitSyncCandidateTree, prepareGitSyncMetadataRepair,
+  prepareGitSyncMetadataSelectionTree,
   SOURCE_CUSTODY_REF_PREFIX, type RunGit, type GitSyncGeneratedLockTreeRequest } from './run-git-sync';
 import { createGitSyncLeaseFence } from './git-sync-lease-fence';
 import { runWithGitSyncPerInstallLease } from './git-sync-action';
@@ -100,6 +101,117 @@ function unpublishedState(f: ReturnType<typeof fixture>) {
 // Dedicated fixture repositories have no shared platform writer. Production
 // callers must supply the existing git-sync lease's assertHeld method.
 const pilotChecks = { assertHeld: () => {}, beforePublish: async () => ({ ok: true as const }) };
+
+describe('P003 selected library input tree', () => {
+  // This independent fixture names both reviewed members and mappings. It does
+  // not derive its expectations from production eligibility or fingerprint code.
+  const members = [
+    { path: 'libs/generic/resumable-download', url: 'git@github.com:Papercusp/resumable-download.git', name: 'download' },
+    { path: 'libs/papercusp', url: 'git@github.com:Papercusp/papercusp.git', name: 'papercusp' },
+  ] as const;
+  function selectedFixture(control?: string) {
+    const f = fixture();
+    const rows = members.map((member, i) => {
+      const child = fixture();
+      writeFileSync(join(child.repo, 'package.json'), JSON.stringify({ name: member.name, version: '1.0.0' }));
+      child.git('add', '-A'); child.git('commit', '-m', 'old published library');
+      f.git('-c', 'protocol.file.allow=always', 'submodule', 'add', child.repo, member.path);
+      f.git('config', '-f', '.gitmodules', `submodule.${member.path}.url`, member.url);
+      return { ...member, old: child.git('rev-parse', 'HEAD'), i };
+    });
+    writeFileSync(join(f.repo, 'package.json'), JSON.stringify({ name: 'joint-parent', version: '1.0.0',
+      workspaces: control === 'nonworkspace' ? ['libs/papercusp'] : members.map(row => row.path) }));
+    writeFileSync(join(f.repo, 'package-lock.json'), '{"lockfileVersion":3,"packages":{}}');
+    if (control === 'duplicate-mapping') f.git('config', '-f', '.gitmodules', 'submodule.alias.path', members[0].path);
+    if (control === 'duplicate-key') f.git('config', '-f', '.gitmodules', '--add', `submodule.${members[0].path}.url`, members[0].url);
+    if (control === 'url-alias') f.git('config', '-f', '.gitmodules', `submodule.${members[0].path}.url`, 'https://github.com/Papercusp/resumable-download.git');
+    if (control === 'raw-whitespace') f.git('config', '-f', '.gitmodules', `submodule.${members[0].path}.url`, members[0].url + ' ');
+    if (control === 'relative-url') f.git('config', '-f', '.gitmodules', `submodule.${members[0].path}.url`, '../resumable-download.git');
+    if (control === 'branch-dot') f.git('config', '-f', '.gitmodules', `submodule.${members[0].path}.branch`, '.');
+    if (control === 'branch-tag') f.git('config', '-f', '.gitmodules', `submodule.${members[0].path}.branch`, 'refs/tags/main');
+    f.git('add', '-A'); f.git('commit', '-m', 'parent selects old library vector');
+    const base = f.git('rev-parse', 'HEAD');
+    const selected = rows.map(row => {
+      writeFileSync(join(f.repo, row.path, 'package.json'), JSON.stringify({ name: row.name, version: '2.0.0' }));
+      f.git('-C', row.path, 'config', 'user.name', 'selected library');
+      f.git('-C', row.path, 'config', 'user.email', 'selected@papercusp.local');
+      f.git('-C', row.path, 'add', 'package.json');
+      f.git('-C', row.path, '-c', 'commit.gpgsign=false', 'commit', '-m', 'new selected library');
+      return { path: row.path, expectedBasePin: row.old, selectedCommit: f.git('-C', row.path, 'rev-parse', 'HEAD') };
+    });
+    writeFileSync(join(f.repo, 'a.txt'), 'peer staged work'); f.git('add', 'a.txt');
+    writeFileSync(join(f.repo, 'package-lock.json'), 'caller pending lock');
+    for (const row of rows) writeFileSync(join(f.repo, row.path, 'package.json'), '{"pending":"child checkout"}');
+    return { ...f, base, selected };
+  }
+
+  it('builds exactly the two selected gitlinks while preserving pending/index/child refs and all other parent entries', async () => {
+    const f = selectedFixture();
+    const before = candidateState(f);
+    const childRefs = members.map(row => f.git('-C', row.path, 'show-ref'));
+    const result = await prepareGitSyncMetadataSelectionTree(f.runGit, f.repo, { base: f.base, publishedLibrarySelections: f.selected });
+    expect(result.baseTree).toBe(f.git('rev-parse', `${f.base}^{tree}`));
+    expect(result.selectedInputTree).not.toBe(result.baseTree);
+    expect(f.git('diff-tree', '--no-commit-id', '--name-only', '-r', f.base, result.selectedInputTree))
+      .toBe(members.map(row => row.path).join('\n'));
+    for (const [i, member] of members.entries()) {
+      const selected = f.selected[i]!;
+      const tree = f.git('-C', member.path, 'rev-parse', `${selected.selectedCommit}^{tree}`);
+      expect(f.git('ls-tree', result.selectedInputTree, '--', member.path)).toBe(`160000 commit ${selected.selectedCommit}\t${member.path}`);
+      expect(result.publishedLibrarySelections[i]).toEqual({ ...selected, selectedTree: tree, selectedType: 'commit', treeType: 'tree',
+        gitmodulesBlob: f.git('rev-parse', `${f.base}:.gitmodules`),
+        mapping: { name: member.path, path: member.path, url: member.url, branch: null }, authorizedUrl: member.url });
+      expect(f.git('-C', member.path, 'show-ref')).toBe(childRefs[i]);
+      expect(readFileSync(join(f.repo, member.path, 'package.json'), 'utf8')).toBe('{"pending":"child checkout"}');
+    }
+    for (const path of ['package.json', 'package-lock.json', '.gitmodules', 'a.txt', 'b.txt']) {
+      expect(f.git('rev-parse', `${result.selectedInputTree}:${path}`)).toBe(f.git('rev-parse', `${f.base}:${path}`));
+    }
+    expect(candidateState(f)).toEqual(before);
+    expect(readdirSync(join(f.repo, '.git')).filter(name => name.startsWith('papercusp-'))).toEqual([]);
+    expect(f.git('for-each-ref', '--format=%(refname)', SOURCE_CUSTODY_REF_PREFIX)).toBe('');
+  });
+
+  it('retains an explicit empty root-only vector and permits a single reviewed member', async () => {
+    const f = selectedFixture();
+    expect(await prepareGitSyncMetadataSelectionTree(f.runGit, f.repo, { base: f.base, publishedLibrarySelections: [] }))
+      .toEqual({ baseTree: f.git('rev-parse', `${f.base}^{tree}`), selectedInputTree: f.git('rev-parse', `${f.base}^{tree}`), publishedLibrarySelections: [] });
+    const result = await prepareGitSyncMetadataSelectionTree(f.runGit, f.repo, { base: f.base, publishedLibrarySelections: [f.selected[1]!] });
+    expect(f.git('diff-tree', '--no-commit-id', '--name-only', '-r', f.base, result.selectedInputTree)).toBe('libs/papercusp');
+  });
+
+  for (const control of ['nonworkspace', 'duplicate-mapping', 'duplicate-key', 'url-alias', 'raw-whitespace',
+    'relative-url', 'branch-dot', 'branch-tag', 'app', 'other-library', 'path-alias', 'duplicate', 'reordered',
+    'old-pin', 'missing-object', 'wrong-type', 'extra-field', 'extra-tree-path'] as const) {
+    it(`refuses ${control} without publishing or changing shared state`, async () => {
+      const f = selectedFixture(control);
+      const selected = structuredClone(f.selected) as Array<{ path: string; expectedBasePin: string; selectedCommit: string; unknown?: string }>;
+      if (control === 'app') selected[0]!.path = 'apps/held';
+      if (control === 'other-library') selected[0]!.path = 'libs/other';
+      if (control === 'path-alias') selected[0]!.path = 'libs/generic/../generic/resumable-download';
+      if (control === 'duplicate') selected[1] = { ...selected[0]! };
+      if (control === 'reordered') selected.reverse();
+      if (control === 'old-pin') selected[0]!.expectedBasePin = selected[0]!.selectedCommit;
+      if (control === 'missing-object') selected[0]!.selectedCommit = 'f'.repeat(40);
+      if (control === 'wrong-type') selected[0]!.selectedCommit = f.git('-C', members[0].path, 'rev-parse', 'HEAD:package.json');
+      if (control === 'extra-field') selected[0]!.unknown = 'unadmitted';
+      const before = candidateState(f);
+      const runner: RunGit = async (args, cwd, options) => {
+        const result = await f.runGit(args, cwd, options);
+        if (control === 'extra-tree-path' && args.includes('update-index') && args.includes('160000')) {
+          await f.runGit(['update-index', '--add', '--cacheinfo', '100644', f.git('rev-parse', `${f.base}:b.txt`), 'unexpected.txt'], cwd, options);
+        }
+        return result;
+      };
+      await expect(prepareGitSyncMetadataSelectionTree(runner, f.repo, {
+        base: f.base, publishedLibrarySelections: selected as Parameters<typeof prepareGitSyncMetadataSelectionTree>[2]['publishedLibrarySelections'],
+      })).rejects.toThrow();
+      expect(candidateState(f)).toEqual(before);
+      expect(f.git('for-each-ref', '--format=%(refname)', SOURCE_CUSTODY_REF_PREFIX)).toBe('');
+      expect(readdirSync(join(f.repo, '.git')).filter(name => name.startsWith('papercusp-'))).toEqual([]);
+    });
+  }
+});
 
 describe('P003 generated custody', () => {
   async function generatedCustodyFixture(configure?: (f: ReturnType<typeof fixture>) => void) {

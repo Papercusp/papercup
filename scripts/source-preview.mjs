@@ -64,7 +64,7 @@ import { createRequire, isBuiltin } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseEnv } from 'node:util';
 import { compileFunction } from 'node:vm';
-import { tsImport } from 'tsx/esm/api';
+import { require as tsxRequire } from 'tsx/cjs/api';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { verifierSourceFiles, verifierGitCheckoutSync, verifyVerifierSourceSync as verifyArchivedSourceSync, VerifierSourceError, writeVerifierTaskReceipt, verifierResourceInventory } from '@papercusp/operator-core/lib/verifier-source';
 import { NOTICES_FILE, collectThirdPartyNotices } from './check-licenses.mjs';
@@ -77,12 +77,17 @@ import { bindRuntimeSourcePopulation } from '../packages/operator-core/lib/memor
 import { bindRuntimeProcessTree } from '../packages/operator-core/lib/memory/bench/runtime-file-opens.mjs';
 import { bindFrozenDependencyGeneration } from '@papercusp/operator-core/lib/dependency-generation-proof';
 
-// The documented plain-Node CLI also serves the BG builder. This dependency
-// has extensionless TypeScript imports; load it through the maintained scoped
-// tsx API rather than requiring an ambient loader on every CLI caller.
-/** @type {typeof import('../packages/operator-core/lib/memory/bench/measurement-manifest.ts')} */
-const nativeLoader = await tsImport('../packages/operator-core/lib/memory/bench/measurement-manifest.ts', import.meta.url);
-const { bindNativeLoaderClosure } = nativeLoader;
+// Keep the synchronous qualification API and the host's import graph free of
+// top-level await. esbuild owns the literal require in a host bundle; the
+// documented plain-Node CLI needs scoped TS resolution for extensionless imports.
+/** @type {typeof import('../packages/operator-core/lib/memory/bench/measurement-manifest.ts').bindNativeLoaderClosure} */
+const bindNativeLoaderClosure = (...args) => {
+  // @ts-ignore -- bundle-host defines this marker; plain Node takes the scoped loader.
+  const nativeLoader = typeof __PAPERCUSP_BUNDLED_SIDECAR__ !== 'undefined'
+    ? require('../packages/operator-core/lib/memory/bench/measurement-manifest.ts')
+    : tsxRequire('../packages/operator-core/lib/memory/bench/measurement-manifest.ts', import.meta.url);
+  return nativeLoader.bindNativeLoaderClosure(...args);
+};
 
 export const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 export const PREVIEW_REPO = 'Papercusp/papercusp-preview';
