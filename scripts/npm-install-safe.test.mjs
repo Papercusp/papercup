@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { createRequire } from "node:module";
 import { spawn, spawnSync } from "node:child_process";
 import test from "node:test";
 import {
@@ -12,6 +13,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -267,11 +269,13 @@ for (const genericVersion of ["1.0.0", "2.0.0"]) {
   });
 }
 
-for (const { label, field, kit, genericVersion } of [
+for (const { label, field, kit, genericVersion, genericDev = true, localDev = false } of [
   { label: "scoped-dev", field: "devDependencies", kit: "@papercusp/template-kit", genericVersion: "0.1.0" },
   { label: "scoped-prod", field: "dependencies", kit: "@papercusp/template-kit", genericVersion: "0.1.0" },
   { label: "unscoped-dev", field: "devDependencies", kit: "template-kit", genericVersion: "0.1.0" },
   { label: "scoped-dev-different-version", field: "devDependencies", kit: "@papercusp/template-kit", genericVersion: "0.2.0" },
+  { label: "scoped-dev-no-generic-dev", field: "devDependencies", kit: "@papercusp/template-kit", genericVersion: "0.1.0", genericDev: false },
+  { label: "scoped-dev-matching-dev", field: "devDependencies", kit: "@papercusp/template-kit", genericVersion: "0.1.0", localDev: true },
 ]) {
 test(`metadata repair resolves scoped devDependency kits across explicit library workspaces (${label})`, async t => {
   const root = mkdtempSync(join(tmpdir(), "metadata-scoped-dev-producer-test-"));
@@ -282,8 +286,10 @@ test(`metadata repair resolves scoped devDependency kits across explicit library
     "": { name: "scoped-dev-root", version: "1.0.0", private: true,
       workspaces: ["apps/*", genericPath, "libs/test-config"] },
     [appPath]: { name: "@bug-drill/fixture", version: "0.1.0", [field]: { [kit]: "file:./template-kit" } },
-    [appPath + "/template-kit"]: { name: kit, version: "0.1.0" },
-    [genericPath]: { name: kit, version: genericVersion, devDependencies: { "@papercusp/test-config": "*" } },
+    [appPath + "/template-kit"]: { name: kit, version: "0.1.0",
+      ...(localDev ? { devDependencies: { "@papercusp/test-config": "*" } } : {}) },
+    [genericPath]: { name: kit, version: genericVersion,
+      ...(genericDev ? { devDependencies: { "@papercusp/test-config": "*" } } : {}) },
     "libs/test-config": { name: "@papercusp/test-config", version: "0.1.0" },
   };
   for (const [path, manifest] of Object.entries(manifests)) {
@@ -338,6 +344,48 @@ test(`metadata repair resolves scoped devDependency kits across explicit library
   assert.equal(result.receipt.cleanup.removed, true);
 });
 }
+
+test("Arborist deduplication must respect distinct equal-version directory link targets", async t => {
+  const root = mkdtempSync(join(tmpdir(), "metadata-arborist-identity-test-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const app = "apps/app";
+  const local = app + "/kit";
+  const generic = "libs/kit";
+  const manifests = {
+    "": { name: "identity-root", version: "1.0.0", workspaces: [app, generic] },
+    [app]: { name: "identity-app", version: "1.0.0", dependencies: { kit: "file:./kit" } },
+    [local]: { name: "kit", version: "1.0.0" },
+    [generic]: { name: "kit", version: "1.0.0" },
+  };
+  for (const [path, manifest] of Object.entries(manifests)) {
+    mkdirSync(join(root, path), { recursive: true });
+    writeFileSync(join(root, path, "package.json"), JSON.stringify(manifest));
+  }
+  writeFileSync(join(root, "package-lock.json"), JSON.stringify({ lockfileVersion: 3, requires: true,
+    packages: { ...manifests,
+      "node_modules/identity-app": { resolved: app, link: true },
+      "node_modules/kit": { resolved: generic, link: true },
+      [app + "/node_modules/kit"]: { resolved: local, link: true },
+    } }));
+  // Use the exact Arborist shipped with the selected npm, without changing it.
+  const npmCli = realpathSync(join(dirname(process.execPath), "npm"));
+  const requireNpm = createRequire(npmCli);
+  const Arborist = requireNpm("@npmcli/arborist");
+  const tree = await new Arborist({ path: root }).loadVirtual();
+  const appNode = tree.inventory.get(app);
+  const localLink = appNode.children.get("kit");
+  const genericLink = tree.children.get("kit");
+  const edge = appNode.edgesOut.get("kit");
+  assert.equal(edge.to, localLink);
+  assert.equal(edge.satisfiedBy(localLink), true);
+  assert.equal(edge.satisfiedBy(genericLink), false);
+  assert.notEqual(localLink.realpath, genericLink.realpath);
+  t.diagnostic(JSON.stringify({ local: localLink.realpath, generic: genericLink.realpath,
+    matches: genericLink.matches(localLink), canDedupe: localLink.canDedupe(),
+    genericSatisfies: edge.satisfiedBy(genericLink) }));
+  assert.equal(localLink.canDedupe(), false,
+    "a same-version workspace cannot replace a different declared file: target");
+});
 
 for (const mutation of ["local-target", "malformed", "oversized", "symlink"]) {
   test(`metadata repair retains bounded ${mutation} rejection evidence after real npm and cleanup`, async t => {
