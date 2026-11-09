@@ -148,20 +148,10 @@ export async function accountCredentialCensusProducer(accounts: ReadonlyArray<{ 
   return { roots, declarations };
 }
 
-/** account-link-cli preserves completed setup homes when registration fails. */
-export async function cliSetupHomeCensusProducer(path = papercuspRoot(), codexCli?: string | null) {
-  const root: CensusRoot = { id: 'cli-setup-homes', path };
-  const declarations: CensusDeclaration[] = [];
-  let entries;
-  try { entries = await readdir(join(path, 'deploy-credentials'), { withFileTypes: true }); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { roots: [root], declarations }; throw error; }
-  // Reuse the login writer's CLI selection. Resolve npm's native optional
-  // dependency without running a candidate helper or importing its launcher.
+/** Resolve an installed CLI without executing its launcher or native helper. */
+async function nativeCodexCli(selectedCli: string | null) {
   let nativeCodex: string | null = null;
   try {
-    // Share binary selection without loading interactive login's RPC/DB runtime.
-    const selectedCli = codexCli === undefined
-      ? (await import('../deployment/account-cli-bin')).resolveCliBin('codex') : codexCli;
     const cli = await realpath(selectedCli ?? '');
     const handle = await open(cli, 'r');
     let header: Buffer;
@@ -184,6 +174,38 @@ export async function cliSetupHomeCensusProducer(path = papercuspRoot(), codexCl
     }
     if (nativeCodex && !(await lstat(nativeCodex)).isFile()) nativeCodex = null;
   } catch { nativeCodex = null; } // Missing/unrecognized install leaves helpers visibly unclassified.
+  return nativeCodex;
+}
+
+/** account-link-cli preserves completed setup homes when registration fails. */
+export async function cliSetupHomeCensusProducer(path = papercuspRoot(), codexCli?: string | null) {
+  const root: CensusRoot = { id: 'cli-setup-homes', path };
+  const declarations: CensusDeclaration[] = [];
+  let entries;
+  try { entries = await readdir(join(path, 'deploy-credentials'), { withFileTypes: true }); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { roots: [root], declarations }; throw error; }
+  // Keep explicit selection authoritative. Default discovery also proves older
+  // npm installs: login-shell and operator PATHs may select different copies.
+  let selectedCli = codexCli ?? null;
+  if (codexCli === undefined) {
+    try { selectedCli = (await import('../deployment/account-cli-bin')).resolveCliBin('codex'); }
+    catch { /* Independently verified npm installs can still own their helpers. */ }
+  }
+  const nativeCodex = await nativeCodexCli(selectedCli);
+  const installedTargets = new Map<string, boolean>();
+  async function ownsHelper(target: string) {
+    if (target === nativeCodex) return true;
+    if (codexCli !== undefined) return false;
+    if (!installedTargets.has(target)) {
+      const boundary = `${sep}node_modules${sep}@openai${sep}codex${sep}`;
+      const offset = target.indexOf(boundary);
+      const launcher = offset < 0 ? null : join(target.slice(0, offset + boundary.length - 1), 'bin', 'codex.js');
+      // The package manifest and its actual optional/bundled native resolution
+      // must agree with the target. A package-looking path alone proves nothing.
+      installedTargets.set(target, launcher !== null && await nativeCodexCli(launcher) === target);
+    }
+    return installedTargets.get(target)!;
+  }
   for (const entry of entries) {
     if (!entry.isDirectory() || !/^\.(?:codex-)?setup-[A-Za-z0-9._-]+-[0-9a-f]{8}$/.test(entry.name)) continue;
     const name = `deploy-credentials/${entry.name}`;
@@ -221,9 +243,9 @@ export async function cliSetupHomeCensusProducer(path = papercuspRoot(), codexCl
             declarations.push({ kind: 'path', root: root.id, name: `${session}/.lock`, classification: 'cache', producer: 'codex-arg0-dispatch' });
           }
           for (const child of children) {
-            if (!nativeCodex || !child.isSymbolicLink() || !['apply_patch', 'applypatch', 'codex-linux-sandbox', 'codex-execve-wrapper'].includes(child.name)) continue;
+            if (!child.isSymbolicLink() || !['apply_patch', 'applypatch', 'codex-linux-sandbox', 'codex-execve-wrapper'].includes(child.name)) continue;
             try {
-              if (await realpath(join(path, session, child.name)) === nativeCodex) {
+              if (await ownsHelper(await realpath(join(path, session, child.name)))) {
                 declarations.push({ kind: 'path', root: root.id, name: `${session}/${child.name}`, classification: 'cache', producer: 'codex-arg0-dispatch' });
               }
             } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT' && (error as NodeJS.ErrnoException).code !== 'ELOOP') throw error; }

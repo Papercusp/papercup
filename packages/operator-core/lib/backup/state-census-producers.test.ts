@@ -653,6 +653,41 @@ describe('secret census producer adapters', () => {
       expect((await cliSetupHomeCensusProducer(root, launcher)).declarations.map(entry => entry.name)).not.toContain(`${session}/apply_patch`);
     } finally { vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); }
   });
+  it('proves helpers from another installed npm Codex without depending on PATH selection', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'arg0-multiple-installs-'));
+    try {
+      const session = 'deploy-credentials/.codex-setup-acme-1234abcd/tmp/arg0/codex-arg0ABC123';
+      await mkdir(join(root, session), { recursive: true });
+      const selected = join(root, 'selected-codex');
+      await writeFile(selected, Buffer.from([0x7f, 0x45, 0x4c, 0x46]));
+      vi.stubEnv('CODEX_BIN', selected);
+      const packageRoot = join(root, 'older-install', 'node_modules', '@openai', 'codex');
+      await mkdir(join(packageRoot, 'bin'), { recursive: true });
+      const manifest = { name: '@openai/codex', bin: { codex: 'bin/codex.js' } };
+      await writeFile(join(packageRoot, 'package.json'), JSON.stringify(manifest));
+      await writeFile(join(packageRoot, 'bin', 'codex.js'), '#!/usr/bin/env node\nthrow new Error("must never execute");');
+      const cpu = process.arch === 'x64' ? 'x86_64' : 'aarch64';
+      const os = process.platform === 'linux' ? 'unknown-linux-musl' : process.platform === 'darwin' ? 'apple-darwin' : 'pc-windows-msvc';
+      const vendor = join(packageRoot, 'vendor', `${cpu}-${os}`, 'bin');
+      await mkdir(vendor, { recursive: true });
+      const native = join(vendor, process.platform === 'win32' ? 'codex.exe' : 'codex');
+      await writeFile(native, Buffer.from([0x7f, 0x45, 0x4c, 0x46]));
+      await symlink(native, join(root, session, 'apply_patch'));
+      const foreign = join(packageRoot, 'foreign-codex');
+      await writeFile(foreign, 'foreign');
+      await symlink(foreign, join(root, session, 'applypatch'));
+      const names = async (cli?: string | null) => (await cliSetupHomeCensusProducer(root, cli)).declarations.map(entry => entry.name);
+      expect(await names()).toContain(`${session}/apply_patch`);
+      expect(await names()).not.toContain(`${session}/applypatch`);
+      expect(await names(selected)).not.toContain(`${session}/apply_patch`);
+      expect(await names(null)).not.toContain(`${session}/apply_patch`);
+      await writeFile(join(packageRoot, 'package.json'), JSON.stringify({ ...manifest, name: 'foreign' }));
+      expect(await names()).not.toContain(`${session}/apply_patch`);
+      await writeFile(join(packageRoot, 'package.json'), JSON.stringify(manifest));
+      await rm(native);
+      expect(await names()).not.toContain(`${session}/apply_patch`);
+    } finally { vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); }
+  });
   it('retains exact pacing and gym sidefiles while leaving unknown siblings and links visible', async () => {
     const home = await mkdtemp(join(tmpdir(), 'sidefile-census-'));
     try {
