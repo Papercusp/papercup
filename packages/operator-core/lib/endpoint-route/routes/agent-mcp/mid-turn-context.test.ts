@@ -491,6 +491,30 @@ describe('mid-turn-context — the cost properties', () => {
     expect(coverageEvents().filter((event) => event.outcome === 'suppressed-duplicate-query')).toHaveLength(2);
   });
 
+  it('admits identical receipt-aware retries without allowing them past the rolling cost ceiling', async () => {
+    const call = { owner: owner(), client: 'codex', memoryReceiptMode: true,
+      tool: 'Bash', toolInput: { command: 'rg delivery packages' } };
+    for (let i = 0; i < 40; i++) await post(call);
+    expect(buildMemoryContextBlockMock).toHaveBeenCalledTimes(12);
+    await flushCoverage();
+    expect(coverageEvents().some(event => event.outcome === 'suppressed-duplicate-query')).toBe(false);
+    expect(coverageEvents().filter(event => event.outcome === 'suppressed-rate-limit')).toHaveLength(28);
+  });
+
+  it('expires the legacy duplicate-query optimization with the existing cost window', async () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      const call = { owner: owner(), tool: 'Bash', toolInput: { command: 'rg delivery packages' } };
+      await post(call);
+      clock.mockReturnValue(1_060_000);
+      await post(call);
+      expect(buildMemoryContextBlockMock).toHaveBeenCalledOnce();
+      clock.mockReturnValue(1_060_001);
+      await post(call);
+      expect(buildMemoryContextBlockMock).toHaveBeenCalledTimes(2);
+    } finally { clock.mockRestore(); }
+  });
+
   it('caps recalls per rolling minute so a burst cannot buy an embed each', async () => {
     const o = owner();
     for (let i = 0; i < 40; i++) {

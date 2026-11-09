@@ -15,7 +15,8 @@ import * as corpusIo from './corpus-recall-io';
 import * as recallStats from './recall-stats';
 import { setSessionConfinementResolver } from '../capability-envelope/session-confinement-port';
 import { resetMemoryDegradedForTest } from './op-deadline';
-import { _resetSessionEpochLedgerForTests, confirmMemoryEmission, type MemoryFragmentOffer } from './session-epoch-ledger';
+import { _resetSessionEpochLedgerForTests, confirmMemoryEmission, MEMORY_EMISSION_TTL_MS,
+  type MemoryEmissionConfirmation, type MemoryFragmentOffer } from './session-epoch-ledger';
 import { getOrgPg } from '@papercusp/db-org';
 import { selectCorpusLines, renderCorpusBlock } from './corpus-recall';
 import { configureReadCursorStore, InMemoryReadCursorStore, resetReadCursorStore } from '../agent-tools/coordination/read-cursors';
@@ -131,7 +132,7 @@ beforeEach(() => {
   _resetSessionEpochLedgerForTests();
   resetMemoryDegradedForTest();
   services.unavailable = false;
-  services.writes.mockClear();
+  services.writes.mockReset();
   services.control = { generation: 1, applied: 'cache-fixture-identity', scope: 'cache-fixture-task' };
   const rows = async (_query: string, opts: { scope: string[] }) => [
     { id: '11111111-1111-4111-8111-111111111111', text: 'grounded query fixture result', score: 0.95, scope: opts.scope[0] },
@@ -248,6 +249,97 @@ for (const scenario of GROUNDED_QUERY_CASES) it(`context reliability R-3: ${scen
     body: JSON.stringify(observation),
   });
 });
+
+// Endpoint ACK tests use the real builder and cursor state machine. Storage is
+// fault-injected; these are not native stdout or PostgreSQL uniqueness proofs.
+async function prepareEndpointReceipt(client: typeof DELIVERY_MATRIX_CLIENTS[number], source: 'memory' | 'corpus', owner: string) {
+  const sourceText = 'Use zephyrrepair only after explicit approval. Complete snowman ☃';
+  services.search.mockResolvedValue(source === 'memory'
+    ? [{ id: '11111111-1111-4111-8111-111111111111', text: sourceText, score: 0.95, scope: 'query-fixture-user' }] : []);
+  if (source === 'corpus') {
+    const selected = selectCorpusLines({ queryText: 'zephyrrepair', budgetChars: 3000,
+      hits: [{ source: 'plan', sourceId: 'query-fixture-harness:receipt', excerpt: sourceText,
+        meta: { contextUnit: sourceText }, score: 0.95 }] });
+    vi.mocked(corpusIo.recallCorpusContext).mockResolvedValue({ ...selected, block: renderCorpusBlock(selected.lines),
+      outcome: 'ok', embedderAvailable: true, candidateCount: 1, legs: null, retrievalDepth: 1, rerank: 'nothing-to-reorder' });
+  }
+  const prepared = await injection.prepareMemoryContextBlock({ userId: 'query-fixture-user', workspaceId: 'query-fixture-ws',
+    queryContext: 'zephyrrepair', harnessSlugs: [], potSlugs: [], budgetChars: 8000,
+    session: { sessionId: owner, port: 'mid-turn' } });
+  expect(prepared?.fragments).toHaveLength(1);
+  expect(prepared?.fragments[0]?.kind).toBe(source);
+  vi.mocked(injection.prepareMemoryContextBlock).mockResolvedValueOnce(prepared);
+  const response = await endpoint.handler(new Request('http://localhost/agent-mcp/mid-turn-context', { method: 'POST',
+    body: JSON.stringify({ ...digest(client, nativeFixture(client, 'search')), owner, client,
+      workspace: 'query-fixture-ws', harness: 'query-fixture-harness', memoryReceiptMode: true }) }));
+  const result = await response.json() as { ok: boolean; text: string; deliveryToken: string; memoryFragmentOffers: MemoryFragmentOffer[] };
+  expect(result.ok).toBe(true);
+  expect(result.text).toContain(sourceText);
+  expect(result.deliveryToken).toEqual(expect.any(String));
+  expect(result.memoryFragmentOffers).toEqual(prepared?.fragments);
+  expect(services.writes).not.toHaveBeenCalled();
+  return { token: result.deliveryToken, fragments: result.memoryFragmentOffers.map(({ rendered: _text, ...row }) => row) };
+}
+
+async function acknowledgeWithoutQuery(client: typeof DELIVERY_MATRIX_CLIENTS[number], owner: string, proofs?: MemoryEmissionConfirmation[]) {
+  const buildsBefore = vi.mocked(injection.prepareMemoryContextBlock).mock.calls.length;
+  const response = await endpoint.handler(new Request('http://localhost/agent-mcp/mid-turn-context', { method: 'POST',
+    body: JSON.stringify({ owner, client, workspace: 'query-fixture-ws', harness: 'query-fixture-harness',
+      toolCalls: [], confirmedMemoryDeliveries: proofs }) }));
+  expect(await response.json()).toEqual({ ok: true, text: '' });
+  expect(injection.prepareMemoryContextBlock).toHaveBeenCalledTimes(buildsBefore);
+}
+
+for (const client of DELIVERY_MATRIX_CLIENTS) for (const source of ['memory', 'corpus'] as const) {
+  it(`context reliability R-1 endpoint: ${client} ${source} lost-and-invalid-receipt`, async () => {
+    const owner = `receipt-lost-${++sequence}`;
+    const proof = await prepareEndpointReceipt(client, source, owner);
+    await acknowledgeWithoutQuery(client, owner); // Lost output / no receipt.
+    const retry = await prepareEndpointReceipt(client, source, owner);
+    expect(retry.token).not.toBe(proof.token); // Same query, still no emission proof.
+    await acknowledgeWithoutQuery(client, `${owner}-foreign`, [proof]);
+    await acknowledgeWithoutQuery(client, owner, [{ ...proof, token: 'unoffered-token' }]);
+    await acknowledgeWithoutQuery(client, owner, [{ ...proof, fragments: [] }]);
+    await acknowledgeWithoutQuery(client, owner, [{ ...proof,
+      fragments: proof.fragments.map(row => ({ ...row, bodyBytes: row.bodyBytes - 1 })) }]);
+    expect(services.writes).not.toHaveBeenCalled();
+    await acknowledgeWithoutQuery(client, owner, [proof]);
+    expect(services.writes).toHaveBeenCalledOnce();
+    expect(services.writes.mock.calls[0]![0]).toContain(`INSERT INTO harness_shared.${source}_session_surfaced`);
+    await acknowledgeWithoutQuery(client, owner, [proof]);
+    expect(services.writes).toHaveBeenCalledOnce(); // Cleared only after success.
+  });
+
+  it(`context reliability R-1 endpoint: ${client} ${source} failed-stamp-retry`, async () => {
+    const owner = `receipt-retry-${++sequence}`;
+    const proof = await prepareEndpointReceipt(client, source, owner);
+    services.writes.mockImplementationOnce(() => { throw new Error('receipt fixture: connection interrupted'); });
+    await acknowledgeWithoutQuery(client, owner, [proof]);
+    expect(services.writes).toHaveBeenCalledOnce();
+    await acknowledgeWithoutQuery(client, owner, [proof]);
+    expect(services.writes).toHaveBeenCalledTimes(2); // Same candidate survived failure.
+    expect(services.writes.mock.calls[1]).toEqual(services.writes.mock.calls[0]);
+    await acknowledgeWithoutQuery(client, owner, [proof]);
+    expect(services.writes).toHaveBeenCalledTimes(2);
+  });
+
+  it(`context reliability R-1 endpoint: ${client} ${source} expiry-boundary`, async () => {
+    const owner = `receipt-expiry-${++sequence}`;
+    const preparedAt = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(preparedAt);
+    const expired = await prepareEndpointReceipt(client, source, owner);
+    clock.mockReturnValue(preparedAt + MEMORY_EMISSION_TTL_MS);
+    await acknowledgeWithoutQuery(client, owner, [expired]);
+    expect(services.writes).not.toHaveBeenCalled();
+    // A second receipt cannot revive the cleared, expired candidate.
+    await acknowledgeWithoutQuery(client, owner, [expired]);
+    expect(services.writes).not.toHaveBeenCalled();
+    const fresh = await prepareEndpointReceipt(client, source, owner);
+    expect(fresh.token).not.toBe(expired.token);
+    await acknowledgeWithoutQuery(client, owner, [fresh]);
+    expect(services.writes).toHaveBeenCalledOnce();
+  });
+}
 
 const operativeConditions: Record<typeof OPERATIVE_UNIT_CONDITIONS[number], string> = {
   'late-negation': 'Do not apply it to production.',

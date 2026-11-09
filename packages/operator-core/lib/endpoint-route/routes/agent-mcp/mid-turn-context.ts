@@ -135,20 +135,21 @@ function pruneRateState(now: number): void {
 /**
  * Returns false when this call should be skipped WITHOUT doing any work.
  * Two guards, in order of cheapness:
- *   - identical consecutive query ⇒ nothing can have changed, skip for free.
- *     (`ls` then `ls` then `ls`, or a retry loop on one failing command.)
+ *   - legacy callers' identical query within the cost window ⇒ skip for free.
+ *     Receipt-aware callers must be able to retry unproven output; their
+ *     surfaced ledger, not a query fingerprint, governs delivery dedup.
  *   - more than MAX_PER_MIN recalls in the trailing minute ⇒ over the ceiling.
  */
 type MidTurnCallAdmission = 'admitted' | 'duplicate-query' | 'rate-limit';
 
-function admitCall(owner: string, query: string, now: number): MidTurnCallAdmission {
+function admitCall(owner: string, query: string, now: number, receiptAware = false): MidTurnCallAdmission {
   const state = recentCalls.get(owner);
   if (!state) {
     recentCalls.set(owner, { at: [now], lastQuery: query });
     return 'admitted';
   }
-  if (state.lastQuery === query) return 'duplicate-query';
   const fresh = state.at.filter((t) => now - t <= RATE_WINDOW_MS);
+  if (!receiptAware && fresh.length && state.lastQuery === query) return 'duplicate-query';
   if (fresh.length >= MAX_PER_MIN) {
     state.at = fresh;
     return 'rate-limit';
@@ -923,7 +924,7 @@ const midTurnContext = defineTool({
       // half — two batches that differ only in which files were read are
       // genuinely different questions for the lexical leg, and collapsing them
       // here would suppress the second one's recall entirely.
-      const callAdmission = admitCall(owner, grounded.fingerprint, Date.now());
+      const callAdmission = admitCall(owner, grounded.fingerprint, Date.now(), body.memoryReceiptMode === true);
       if (callAdmission !== 'admitted') {
         recordSuppression(callAdmission === 'duplicate-query'
           ? 'suppressed-duplicate-query'
