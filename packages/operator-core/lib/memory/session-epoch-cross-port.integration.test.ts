@@ -164,6 +164,41 @@ describe('cross-port session-epoch dedup (real PG — P-004a)', () => {
     expect(await db.adminSql`SELECT memory_id FROM harness_shared.memory_session_surfaced WHERE session_id = ${SID}`).toHaveLength(2);
   });
 
+  for (const kind of ['memory', 'corpus'] as const) {
+    it(`retains a PostgreSQL ${kind} candidate after invalid proof and commits concurrent retries once`, async ({ task }) => {
+      const sid = `${SID}-${kind}-same-token`;
+      const token = `same-token-${kind}`;
+      const id = kind === 'memory' ? randomUUID() : 'WI-same-token';
+      const offer = memoryFragmentOffer(kind, id, 4, 'mid-turn', '- complete receipt body with approval ☃');
+      const { rendered: _text, ...fragment } = offer;
+      await stageMemoryEmission(db.adminSql as never, sid, token, [offer]);
+      expect(await confirmMemoryEmission(db.adminSql as never, `${sid}-foreign`, { token, fragments: [fragment] })).toBe(0);
+      expect(await confirmMemoryEmission(db.adminSql as never, sid, {
+        token, fragments: [{ ...fragment, bodyBytes: fragment.bodyBytes - 1 }],
+      })).toBe(0);
+      const readStamps = () => kind === 'memory'
+        ? db.adminSql`SELECT port FROM harness_shared.memory_session_surfaced WHERE session_id = ${sid}`
+        : db.adminSql`SELECT port FROM harness_shared.corpus_session_surfaced WHERE session_id = ${sid}`;
+      expect(await readStamps()).toHaveLength(0);
+      const retained = await db.adminSql<{ committed: { fragments: unknown[] }; pending: unknown }[]>`
+        SELECT committed, pending FROM harness_shared.coord_read_cursors
+         WHERE owner_id = ${sid} AND surface = ${'memory-emission:' + token}
+      `;
+      expect(retained).toHaveLength(1);
+      expect(retained[0]!.committed.fragments).toEqual([fragment]);
+      expect(retained[0]!.pending).toBeNull();
+      const results = await Promise.all(Array.from({ length: 8 }, () =>
+        confirmMemoryEmission(db.adminSql as never, sid, { token, fragments: [fragment] })));
+      expect(results.reduce((sum, inserted) => sum + inserted, 0)).toBe(1);
+      expect(await readStamps()).toEqual([expect.objectContaining({ port: 'mid-turn' })]);
+      expect(await confirmMemoryEmission(db.adminSql as never, sid, { token, fragments: [fragment] })).toBe(0);
+      Object.assign(task.meta, { receiptBackendObservation: { source: kind, cursorStore: 'postgresql',
+        surfacedStore: 'postgresql', concurrentAcknowledgements: results.length, inserted: 1,
+        invalidProofWrites: 0, nativeDelivery: 'UNKNOWN',
+        scope: 'production cursor and surfaced ledgers; supplied receipt fixture, no native output claim' } });
+    });
+  }
+
   it.each(['memory', 'corpus'] as const)('atomically commits a competing %s fragment once across two proven ports', async kind => {
     const sid = `${SID}-${kind}-race`;
     const id = kind === 'memory' ? randomUUID() : 'WI-race';
