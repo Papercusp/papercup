@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/tooldef';
 
 const h = vi.hoisted(() => ({ createRetentionPin: vi.fn(), readRetentionPins: vi.fn(), removeRetentionPin: vi.fn(),
   withFsMutex: vi.fn(async (_name: string, run: () => Promise<unknown>) => run()) }));
@@ -6,6 +7,18 @@ vi.mock('../../storage/retention-pins', () => h);
 vi.mock('../../../../../scripts/lib/fs-mutex.mjs', () => ({ withFsMutex: h.withFsMutex }));
 vi.mock('../locks/identity', () => ({ readIdentity: () => ({ ownerId: 'authenticated-agent' }) }));
 import tool from './pin';
+
+async function replayOriginalPin(input: Record<string, unknown>, deadlineAtMs?: number) {
+  const projected = lookupByMcpName('storage:pin');
+  expect(projected).toBeTruthy();
+  return dispatchProjectedTool(projected!, 'storage:pin', input, {
+    uiClientId: 'authenticated-agent', workspaceId: 'ws-1', harnessSlug: 'papercusp',
+    log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(),
+    emit: vi.fn(), metadata: vi.fn(), runId: 'pin-original-input-replay', role: 'su',
+    gateBypass: { role: true, capability: true, quota: true }, transport: 'mcp',
+    requestedFormat: 'json', requestedStructured: true, deadlineAtMs,
+  } as never, {});
+}
 
 beforeEach(() => vi.clearAllMocks());
 describe('storage:pin', () => {
@@ -41,12 +54,13 @@ describe('storage:pin', () => {
 
     try {
       const input = { op: 'pin', path: '/tmp/output', reason: 'review', expiresAt: '2026-12-01T00:00:00Z' };
+      const originalInput = structuredClone(input);
       const args = tool.args.parse(input);
       expect(args).toEqual(input);
-      expect(await tool.handler(
-        args,
-        { deadlineAtMs: nowMs + 10_000 } as never,
-      )).toEqual({ data: { ok: true, op: 'pin', pin: { id: 'pin-id' } } });
+      const dispatched = await replayOriginalPin(input, nowMs + 10_000);
+      expect(dispatched.ok).toBe(true);
+      expect(dispatched.result?.structuredContent).toEqual({ ok: true, op: 'pin', pin: { id: 'pin-id' } });
+      expect(input).toEqual(originalInput);
       expect(h.withFsMutex).toHaveBeenCalledWith('papercusp-disk-retention', expect.any(Function), { timeoutMs: 9_000 });
       expect(h.withFsMutex).toHaveBeenCalledTimes(1);
       expect(h.createRetentionPin).toHaveBeenCalledTimes(1);
@@ -61,10 +75,14 @@ describe('storage:pin', () => {
   it('reports an unreadable lease store as an error on listing', async () => {
     h.readRetentionPins.mockReturnValue({ pins: [], errors: ['corrupt lease'] });
     const input = { op: 'list', includeExpired: true };
+    const originalInput = structuredClone(input);
     const args = tool.args.parse(input);
     expect(args).toEqual(input);
-    expect(await tool.handler(args, {} as never))
-      .toEqual({ data: { ok: false, op: 'list', pins: [], errors: ['corrupt lease'] }, isError: true });
+    const dispatched = await replayOriginalPin(input);
+    expect(dispatched.ok).toBe(true);
+    expect(dispatched.result?.structuredContent).toEqual({ ok: false, op: 'list', pins: [], errors: ['corrupt lease'] });
+    expect(dispatched.result?.isError).toBe(true);
+    expect(input).toEqual(originalInput);
     expect(h.readRetentionPins).toHaveBeenCalledWith({ includeExpired: true });
     expect(h.readRetentionPins).toHaveBeenCalledTimes(1);
     expect(h.withFsMutex).not.toHaveBeenCalled();
