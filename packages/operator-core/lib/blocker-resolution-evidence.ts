@@ -185,7 +185,7 @@ export function createBlockerEvidenceReader(context: BlockerEvidenceContext) {
           const blockers = context.blockers.filter(entry => entry.kind === 'runtime' && entry.ref === ref.ref && entry.status === 'active');
           if (blockers.length !== 1) return absent('exact canonical active runtime blocker is required');
           const { readRuntimeBlockerCondition } = await import('./runtime-blocker-condition');
-          return await readRuntimeBlockerCondition(blockers[0]);
+          return await readRuntimeBlockerCondition(blockers[0], context.root);
         }
         case 'state': {
           const raw = ref.ref.replace(/^state:/, '');

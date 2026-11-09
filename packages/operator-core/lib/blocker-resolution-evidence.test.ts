@@ -177,7 +177,7 @@ describe('canonical blocker boundary preflight', () => {
     mocks.deps.mockResolvedValue([]);
     mocks.runtime.mockResolvedValue({ status: 'available', condition: 'satisfied', reachable: true });
     expect(await preflightBlockerDecision(observed, input, context, { effect })).toMatchObject({ ok: true });
-    expect(mocks.runtime).toHaveBeenCalledWith(runtime);
+    expect(mocks.runtime).toHaveBeenCalledWith(runtime, context.root);
     for (const result of [{ status: 'unknown', detail: 'wrong host or unmeasured artifact' },
       { status: 'available', condition: 'pending', reachable: true }]) {
       mocks.runtime.mockResolvedValue(result);

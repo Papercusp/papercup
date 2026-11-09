@@ -5,11 +5,12 @@ import { canonicalJson } from '@papercusp/hash-chain';
 import type { ExternalBlockerRecord } from './external-blockers';
 import { readExternalBlockers } from './external-blockers';
 import type { BlockerEvidenceMeasurement } from './blocker-resolution-decision';
+import { gitFilePublicationBindingSchema, readGitFilePublicationCondition } from './git-file-publication-condition';
 
 const relativePath = z.string().min(1).max(1000).refine(path =>
   !path.startsWith('/') && !path.includes('\\') && path.split('/').every(part => part && part !== '.' && part !== '..'),
   'Expected a repository-relative source path');
-export const runtimeConditionBindingInputSchema = z.object({
+const servingRuntimeConditionBindingInputSchema = z.object({
   schemaVersion: z.literal(1),
   host: z.string().regex(/^port-[1-9][0-9]{0,4}$/),
   sourceBlobs: z.record(relativePath, z.string().regex(/^[a-f0-9]{40}$/))
@@ -18,10 +19,17 @@ export const runtimeConditionBindingInputSchema = z.object({
   reason: z.string().trim().min(1).max(2000),
   reasonRef: z.string().trim().min(1).max(1000),
 }).strict();
+export const runtimeConditionBindingInputSchema = z.union([
+  servingRuntimeConditionBindingInputSchema, gitFilePublicationBindingSchema,
+]);
 export type RuntimeConditionBindingInput = z.infer<typeof runtimeConditionBindingInputSchema>;
-const storedBindingSchema = runtimeConditionBindingInputSchema.extend({
+const provenance = {
   boundBy: z.string().min(1), boundAt: z.string().datetime({ offset: true }),
-}).strict();
+};
+const storedBindingSchema = z.union([
+  servingRuntimeConditionBindingInputSchema.extend(provenance).strict(),
+  gitFilePublicationBindingSchema.safeExtend(provenance),
+]);
 export type RuntimeConditionBinding = z.infer<typeof storedBindingSchema>;
 
 /** Metadata compatibility only: the custodian declares what the old alias meant.
@@ -37,7 +45,11 @@ export function prepareRuntimeBlockerBinding(
     return refuse('Only the current custodian of a non-terminal item may bind its runtime condition.');
   }
   const parsed = runtimeConditionBindingInputSchema.safeParse(input);
-  if (!parsed.success) return refuse('Supply a strict runtime source/schema binding with reason and reasonRef.');
+  if (!parsed.success) return refuse('Supply a strict source/schema or git-file-publication binding with reason and reasonRef.');
+  if ('kind' in parsed.data && parsed.data.kind === 'git-file-publication' &&
+      ref !== `git-sync:file-acceptance:${parsed.data.filePath}`) {
+    return refuse('Publication proof must name the exact original file-acceptance alias.');
+  }
   const blockers = readExternalBlockers(item.payload);
   const matches = blockers.map((row, index) => ({ row, index }))
     .filter(({ row }) => row.ref === ref && row.status === 'active');
@@ -62,13 +74,17 @@ export async function readRuntimeToolSchemaIdentity(toolName: string) {
   return { tool: toolName, sha256: createHash('sha256').update(canonicalJson(tool.inputSchema)).digest('hex') };
 }
 
-export async function readRuntimeBlockerCondition(blocker: { kind: string; ref: string; runtimeConditionBinding?: unknown }):
+export async function readRuntimeBlockerCondition(blocker: { kind: string; ref: string; runtimeConditionBinding?: unknown }, root?: string | null):
 Promise<BlockerEvidenceMeasurement> {
   const unknown = (detail: string): BlockerEvidenceMeasurement => ({ status: 'unknown', detail });
   if (blocker.kind !== 'runtime') return unknown('canonical runtime blocker is required');
   const parsed = storedBindingSchema.safeParse(blocker.runtimeConditionBinding);
   if (!parsed.success) return unknown('runtime alias needs an audited source/schema binding before resolution');
   const binding = parsed.data;
+  if ('kind' in binding && binding.kind === 'git-file-publication') {
+    if (blocker.ref !== `git-sync:file-acceptance:${binding.filePath}`) return unknown('publication binding does not match its original alias');
+    return readGitFilePublicationCondition(binding, root);
+  }
   try {
     const [{ getServingHostIdentity }, { runtimeObservabilityHealth }] = await Promise.all([
       import('./serving-host-identity'), import('./observability/runtime'),

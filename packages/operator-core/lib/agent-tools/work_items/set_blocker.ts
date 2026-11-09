@@ -252,7 +252,7 @@ async function openDirectHumanCapabilityQuestion(
 
 const fields = {
   bindRuntimeCondition: runtimeConditionBindingInputSchema.optional()
-    .describe('Bind one existing runtime alias to exact loaded source/schema evidence. Metadata only: pass id/ref/harness and this field; no clear or lifecycle fields. Current custodian only; provenance is host-authored.'),
+    .describe('Bind one existing runtime alias to exact loaded source/schema evidence, or kind:git-file-publication to the exact git-sync:file-acceptance:<filePath> alias using its accepted blob and canonical containing-parent commit. Publication binding proves local committed containment, not remote push or deployment. Metadata only: pass id/ref/harness and this field; no clear or lifecycle fields. Current custodian only; provenance is host-authored.'),
   blockerDecision: blockerDecisionInputSchema.optional(),
   kind: BLOCKER_KIND.optional(),
   capability: BLOCKER_CAPABILITY.optional(),

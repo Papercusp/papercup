@@ -235,6 +235,19 @@ describe('work_items:set_blocker audited runtime binding', () => {
     expect(setWorkItemClaimHold).not.toHaveBeenCalled();
     expect(ownerAskRun).not.toHaveBeenCalled();
   });
+  it('accepts exact committed-file publication binding through the metadata-only public door', async () => {
+    const ref = 'git-sync:file-acceptance:src/fixture.ts';
+    const publication = { schemaVersion: 1, kind: 'git-file-publication', filePath: 'src/fixture.ts',
+      sourceCommit: 'a'.repeat(40), expectedBlob: 'b'.repeat(40), parentCommit: 'c'.repeat(40),
+      reason: 'Bind original accepted file and parent', reasonRef: 'EI-source#publication-proof' };
+    getWorkItem.mockResolvedValue({ ...item, payload: { externalBlockers: [{ ...blocker, ref }] } });
+    const result = await one({ id: item.id, harness: item.harness, ref, bindRuntimeCondition: publication });
+    expect(result).toMatchObject({ ok: true, changed: true, workItem: { state: 'blocked', assignee: 'su-a', payload: {
+      externalBlockers: [{ ref, status: 'active', runtimeConditionBinding: { ...publication, boundBy: 'su-a' } }],
+    } } });
+    expect(preflightBlockerDecision).not.toHaveBeenCalled();
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
   it.each([{ assignee: 'su-b' }, { state: 'done' },
     { payload: { externalBlockers: [{ ...blocker, kind: 'human', capability: 'credential' }] } }])(
     'refuses foreign custody, terminal state and non-runtime targets without any write: %j', async change => {
