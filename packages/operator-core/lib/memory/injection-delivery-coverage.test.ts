@@ -87,8 +87,35 @@ describe('context reliability R-1: artifact-validator', () => {
       c.verdict = 'passed'; c.state = 'emitted'; c.suppressionWrites = 1;
       expect(validateDeliveryMatrix(bad).errors).toContain(`${deliveryMatrixCellKey(c)}:uninstrumented-sink`);
     }
-    // The current five native MCP/brief ports also lack terminal instruments.
-    expect(deliveryTerminalOracle(m.cells[0]!)).toBe('NONE');
+    for (const c of m.cells.filter(c => c.client === 'omp' &&
+      ['initialize', 'orient', 'claim', 'create', 'compact-reprime'].includes(c.sink))) {
+      expect(deliveryTerminalOracle(c)).toBe('NONE');
+    }
+    expect(deliveryTerminalOracle({ client: 'codex', sink: 'compact-reprime', source: 'memory', fault: 'retry' })).toBe('NONE');
+  });
+
+  it('joins registered launch and compact receipts without admitting another port or an absent receipt', () => {
+    const endpoints = [
+      ...(['codex', 'claude'] as const).flatMap(client =>
+        (['initialize', 'orient', 'claim', 'create'] as const).map(sink => ({ client, sink }))),
+      { client: 'claude' as const, sink: 'compact-reprime' as const },
+    ];
+    for (const endpoint of endpoints) {
+      const { manifest, cell: template } = emitted('duplicate-commit');
+      const cell = manifest.cells.find(c => c.client === endpoint.client && c.sink === endpoint.sink &&
+        c.source === 'memory' && c.fault === 'duplicate-commit')!;
+      const port = endpoint.sink === 'compact-reprime' ? 'compact' : endpoint.sink;
+      const fragment = { ...template.attempt!.fragment, port };
+      Object.assign(cell, { state: 'emitted', verdict: 'passed', suppressionWrites: 1,
+        attempt: { ...template.attempt!, fragment },
+        proof: { ...template.proof!, ...endpoint, fragment: { ...fragment } } });
+      expect(cell.terminalOracle).toBe('complete-stdout');
+      expect(validateDeliveryMatrix(manifest)).toMatchObject({ valid: true, acceptanceReady: false, errors: [] });
+      cell.proof!.fragment.port = 'another-port';
+      expect(validateDeliveryMatrix(manifest).errors).toContain(`${deliveryMatrixCellKey(cell)}:receipt-join`);
+      delete cell.proof;
+      expect(validateDeliveryMatrix(manifest).errors).toContain(`${deliveryMatrixCellKey(cell)}:receipt-join`);
+    }
   });
 
   it('accepts an exact receipt join without upgrading the other unknown cells', () => {

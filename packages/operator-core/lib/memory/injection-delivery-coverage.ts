@@ -339,8 +339,16 @@ export type DeliveryTerminalOracle = 'complete-stdout' | 'NONE';
  * Model-call acceptance, MCP response creation and first-turn activity are not
  * terminal events. Extend this census together with an adapter and its tests. */
 export function deliveryTerminalOracle(cell: DeliveryMatrixCoordinate): DeliveryTerminalOracle {
-  return DELIVERY_MATRIX_CLIENTS.includes(cell.client as typeof DELIVERY_MATRIX_CLIENTS[number]) &&
-    (cell.sink === 'turn-start' || cell.sink === 'mid-turn') ? 'complete-stdout' : 'NONE';
+  if (!DELIVERY_MATRIX_CLIENTS.includes(cell.client as typeof DELIVERY_MATRIX_CLIENTS[number])) return 'NONE';
+  if (cell.sink === 'turn-start' || cell.sink === 'mid-turn') return 'complete-stdout';
+  // ptool's stdio adapter retains the exact initialize/tool response before
+  // the installed Codex/Claude client consumes it. OMP uses a different,
+  // in-process adapter and cannot inherit this instrument's authority.
+  if ((cell.client === 'codex' || cell.client === 'claude') &&
+      ['initialize', 'orient', 'claim', 'create'].includes(cell.sink)) return 'complete-stdout';
+  // The generated Claude SessionStart recovery hook has the same immutable
+  // stdout receipt boundary. Other compact hosts remain uninstrumented.
+  return cell.client === 'claude' && cell.sink === 'compact-reprime' ? 'complete-stdout' : 'NONE';
 }
 
 export function deliveryMatrixCellKey(cell: DeliveryMatrixCoordinate): string {
@@ -404,7 +412,7 @@ export function validateDeliveryMatrix(manifest: DeliveryMatrixManifest): {
   const positive = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) > 0;
   const fragmentValid = (v: DeliveryMatrixFragment | undefined, cell: DeliveryMatrixCoordinate) => !!v &&
     v.kind === cell.source && text(v.id) && Number.isSafeInteger(v.epoch) && v.epoch >= 0 &&
-    v.port === cell.sink && hash(v.bodySha256) && positive(v.bodyBytes);
+    v.port === (cell.sink === 'compact-reprime' ? 'compact' : cell.sink) && hash(v.bodySha256) && positive(v.bodyBytes);
   const sameFragment = (a: DeliveryMatrixFragment, b: DeliveryMatrixFragment) =>
     a.kind === b.kind && a.id === b.id && a.epoch === b.epoch && a.port === b.port &&
     a.bodySha256 === b.bodySha256 && a.bodyBytes === b.bodyBytes;

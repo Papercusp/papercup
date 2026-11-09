@@ -13,7 +13,7 @@ import { nativeBuilds } from '../../../../omp-plugin/build-native.mjs';
 import { resolveOnPath, wellKnownBackendBin } from '../../backend-bin-resolve.mjs';
 import { bootstrapDescriptionForClient } from '../injection-delivery-coverage';
 import { memoryFragmentOffer } from '../session-epoch-ledger';
-import { openDeliveryLedger } from '../../../../../apps/operator/scripts/hooks/inject/delivery-ledger.mjs';
+import { ledgerDir, openDeliveryLedger } from '../../../../../apps/operator/scripts/hooks/inject/delivery-ledger.mjs';
 import { codexCliResponsesBody } from '../../inference-gateway/codex-cli-bridge';
 
 export type Descriptor = { name: string; description: string };
@@ -23,6 +23,8 @@ export type NativeExport = {
   descriptors: Descriptor[]; request: Record<string, unknown>; methods: string[];
   clientSettings: { toolSearch?: 'disabled'; descriptionMode?: 'full' | 'default'; maxMcpDescriptionChars?: number };
   stdoutDelivery?: { adapter: 'ptool-stdio'; owner: string; confirmations: object[] };
+  stdoutReceipts?: Array<{ stage: string; owner: string; token: string; payloadSha256: string;
+    payloadBytes: number; memoryFragments: object[] }>;
   diagnosticsPath: string;
 };
 export const baselineHash = '986f440eeaf59cf02a400fcd1caf206edae88cc7b04ccd95a91ba29235560ed4';
@@ -163,6 +165,10 @@ export async function captureNativeMcp(client: NativeExport['client'], tools: De
   options: { claudeDescriptionMode?: 'full' | 'default'; stdioReceipt?: 'memory' | 'corpus';
     stdioPort?: 'initialize' | 'orient' | 'claim' | 'create'; maxProviderExchanges?: number;
     stdioFault?: 'absent-offer' | 'partial-stdout';
+    stdioOwner?: string;
+    // Let a backend integration supply the production response/offer while
+    // retaining this fixture's installed client and real stdout boundary.
+    mcpResult?: (method: string, result: Record<string, unknown>, request: Record<string, unknown>) => Promise<Record<string, unknown>>;
     onDiagnostics?: (path: string) => void } = {}): Promise<NativeExport> {
   // OMP's maintained adapter is in-process. A ptool subprocess would measure
   // a different route, so never turn its registration proof into stdout proof.
@@ -187,7 +193,7 @@ export async function captureNativeMcp(client: NativeExport['client'], tools: De
   // This sibling survives private-home cleanup, including a failing exchange.
   const diagnosticsPath = `${home}.diagnostics.json`;
   const pipeProbePath = `${home}.pipe.json`;
-  const receiptOwner = `su-native-receipt-${client}`;
+  const receiptOwner = options.stdioOwner ?? `su-native-receipt-${client}`;
   const receiptPort = options.stdioPort ?? 'initialize';
   const receiptOffer = options.stdioReceipt ? { owner: receiptOwner, token: `native-${receiptPort}-${client}`,
     fragments: [memoryFragmentOffer(options.stdioReceipt, `native-${options.stdioReceipt}`, 3, receiptPort, instructions!)] } : null;
@@ -231,7 +237,8 @@ export async function captureNativeMcp(client: NativeExport['client'], tools: De
               content: [{ type: 'text', text: JSON.stringify({ [receiptPort]: instructions }) }],
               ...(responseOffer ? { _meta: { 'papercusp/memoryEmission': responseOffer } } : {}) } : {};
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ jsonrpc: '2.0', id: body.id, result })); return;
+        const emitted = options.mcpResult ? await options.mcpResult(method, result, body) : result;
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: emitted })); return;
       }
       if (callReceipt && req.url?.includes('/count_tokens')) {
         res.writeHead(200, { 'content-type': 'application/json' });
@@ -431,11 +438,21 @@ export default async function(pi) {
       const prompt = (data.systemPrompt as string[]).join('\n');
       if (request.success !== true || !prompt.includes('xd://mcp__offline_canary_')) throw new Error('OMP mounted route missing');
     }
+    const confirmations = receiptOffer
+      ? openDeliveryLedger(receiptOwner, env, 'mcp')?.confirmedMemoryDeliveries() ?? [] : [];
+    // Retain the production instrument's immutable exact-byte receipt before
+    // the private client home is removed. Provider input alone is not a
+    // replacement for the stdout terminal event.
+    const stdoutReceipts: NativeExport['stdoutReceipts'] = confirmations.map(proof => {
+      const { token } = proof as { token: string };
+      return JSON.parse(readFileSync(join(ledgerDir(env), `${receiptOwner}.mcp.emissions`,
+        `${sha256(token)}.json`), 'utf8'));
+    });
     return { client, clientVersion, clientSettings, diagnosticsPath,
       evidencePlane: client === 'omp' ? 'installed-client-registration' : 'installed-client-local-request',
       request, descriptors, methods,
       ...(receiptOffer ? { stdoutDelivery: { adapter: 'ptool-stdio' as const, owner: receiptOwner,
-        confirmations: openDeliveryLedger(receiptOwner, env, 'mcp')?.confirmedMemoryDeliveries() ?? [] } } : {}) };
+        confirmations }, stdoutReceipts } : {}) };
   } catch (error) {
     failure ??= String(error);
     throw new Error(`${failure}; diagnostics: ${diagnosticsPath}`, { cause: error });
