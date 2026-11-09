@@ -42,7 +42,15 @@ vi.mock('../../harness/improvements/capture-core', () => ({
   captureImprovement: (...args: unknown[]) => captureImprovement(...args),
 }));
 vi.mock('../../scout/generation-watermark', () => ({
-  readRunningGeneration: async () => null,
+  // Positive replay controls need an attributable generation. Unknown-generation
+  // refusal is covered separately in emit.grading-audit.test.ts.
+  readRunningGeneration: async () => ({
+    deployedSha: 'a'.repeat(40),
+    hostStartedAt: '2026-09-08T19:00:00.000Z',
+    bootHeadSha: null,
+    scoutCodeHash: null,
+    staleHost: false,
+  }),
 }));
 vi.mock('../../issues-engineer', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../issues-engineer')>();
