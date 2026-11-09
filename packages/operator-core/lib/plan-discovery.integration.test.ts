@@ -148,6 +148,54 @@ describe('discovery uses existing revision and audit authorities', () => {
     expect(discoverySubjectSnapshot(plan.replace('Preserve the helper behavior.', 'Replace the helper behavior.'))['R-1'])
       .not.toBe(discoverySubjectSnapshot(plan)['R-1']);
   });
+  it.each(['unsupported check field', 'malformed JSON'])('refuses %s before treating valid requirements as removed', async failure => {
+    const requirement = {
+      intent: { request: 'Keep the existing helper behavior.', sourceRefs: ['session_turn:fixture'] },
+      acceptance: { condition: 'The audit retains the helper contract.',
+        falsifier: 'A changed helper contract is admitted without reconciliation.', evidencePlane: 'tree',
+        requiredScope: ['P-001'], requiredTestLayers: ['integration'] },
+      verification: { method: 'Exercise the canonical Discovery writer.',
+        check: { kind: 'tests', files: ['packages/operator-core/lib/plan-discovery.integration.test.ts'] } },
+    };
+    const scopedDeclaration = { ...declaration, findings: declaration.findings.map(finding => ({ ...finding,
+      dispositions: [...finding.dispositions, ...['R-1', 'R-2'].map(target => ({ target, decision: 'reuse',
+        reason: 'The current helper establishes this requirement.' }))] })) };
+    const record = JSON.stringify(requirement);
+    const valid = draft.replace(JSON.stringify(declaration), JSON.stringify(scopedDeclaration)) +
+      '\n## Requirements\n\n**R-1 — Existing behavior.** Preserve the helper behavior.\n\n' +
+      '**R-2 — Helper contract.**\n```requirement\n' + record + '\n```\n';
+    const resolver = async (content: string, previous: string | null, prior?: Parameters<typeof resolveDiscoveryAuditContext>[2]['prior'],
+      historicalTargets?: Record<string, string>): Promise<DiscoveryAuditContext> => ({
+      ...await resolveDiscoveryAuditContext(content, previous, { repoRoot: null, workspaceId: fx.workspaceId,
+        harnessSlug: harness, ownerId: input().createdBy, planSlug: slug, sql: fx.admin, prior, historicalTargets }),
+      evidence: (await context()).evidence,
+    });
+    await revision(valid);
+    const first = await recordCurrentDiscoveryAudit(input(), { context: resolver });
+    expect(first).toMatchObject({ ok: true, discovery: { readiness: { ready: true } } });
+    const invalidRecord = failure === 'malformed JSON' ? '{ not JSON' : JSON.stringify({ ...requirement,
+      verification: { ...requirement.verification, check: { ...requirement.verification.check, futureCheckOption: true } } });
+    const invalid = valid.replace(record, invalidRecord);
+    expect(parseRequirementBars(invalid)).toMatchObject({ ok: false,
+      problems: [expect.objectContaining({ code: 'bar_requirement_parse_failed', barKey: 'R-2' })] });
+    await revision(invalid);
+    for (const dryRun of [true, false]) {
+      const rejected = await recordCurrentDiscoveryAudit({ ...input(), dryRun }, { context: resolver });
+      expect(rejected).toMatchObject({ ok: false, error: 'discovery_requirements_unparseable',
+        discovery: { removedTargets: [], readiness: { ready: false, state: 'unknown',
+          blockers: [expect.objectContaining({ code: 'discovery_requirements_unparseable', path: 'section:Requirements.R-2' })] } } });
+    }
+    let accepted = false;
+    expect(await withCurrentDiscovery(input(), async () => { accepted = true; }, { context: resolver }))
+      .toMatchObject({ ok: false, error: 'discovery_requirements_unparseable' });
+    expect(accepted).toBe(false);
+    const [{ count }] = await fx.admin`SELECT count(*)::int AS count FROM harness_shared.plan_audits
+      WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness} AND plan_slug=${slug}`;
+    expect(count).toBe(1);
+    await revision(valid);
+    expect(await withCurrentDiscovery(input(), async () => 'retained valid audit', { context: resolver }))
+      .toMatchObject({ ok: true, result: 'retained valid audit' });
+  });
   it('persists one typed assessment, round-trips questions, and never substitutes for activation/completion', async () => {
     const result = await recordCurrentDiscoveryAudit(input(), { context });
     expect(result).toMatchObject({ ok: true, reused: false, discovery: { readiness: { ready: true } }, audit: { auditKind: 'discovery', items: [], activation: null } });

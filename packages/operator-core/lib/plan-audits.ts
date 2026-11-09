@@ -292,7 +292,27 @@ export interface DiscoveryAuditContext {
   targets: DiscoveryReadinessContext['targets'];
 }
 
+function discoveryRequirementProblems(content: string): AcceptanceBarSeedProblem[] {
+  const requirements = parseRequirementBars(content);
+  // Discovery also supports drafts without a Requirements section. An existing
+  // section that this parser cannot read is unknown, never an empty BAR set.
+  return requirements.ok ? [] : requirements.problems.filter(problem => problem.code !== 'bar_requirements_missing');
+}
+
 export function assessDiscovery(content: string, context: DiscoveryAuditContext, previous?: DiscoveryAuditPayload | null): DiscoveryAuditPayload {
+  const requirementProblems = discoveryRequirementProblems(content);
+  if (requirementProblems.length) {
+    const subjectHash = createHash('sha256').update(content).digest('hex');
+    const declarationHash = discoveryDigest(previewDiscoveryDeclaration(content).data ?? null);
+    const evidence = [...context.evidence].sort((a, b) => a.ref.localeCompare(b.ref));
+    const nextAction = 'Resolve the Requirements parser/schema diagnostics before reconciling Discovery; requirement removal is unverified.';
+    return { schemaVersion: 1, subjectHash, declarationHash, targets: {}, removedTargets: [], evidence,
+      requestKey: discoveryDigest({ subjectHash, declarationHash, requirementProblems, evidence }),
+      readiness: { ready: false, state: 'unknown', evidenceRefs: [], supportedTargets: [],
+        blockers: requirementProblems.map(problem => ({ code: 'discovery_requirements_unparseable',
+          path: problem.barKey ? `section:Requirements.${problem.barKey}` : 'section:Requirements',
+          detail: `${problem.code}: ${problem.detail}` })), nextAction } };
+  }
   const targets = discoverySubjectSnapshot(content);
   const subjectHash = createHash('sha256').update(JSON.stringify(targets)).digest('hex');
   const { ready, state, blockers, evidenceRefs, supportedTargets, nextAction } = evaluateDiscoveryReadiness(content, {
@@ -2887,6 +2907,14 @@ async function currentDiscoveryInTransaction(input: CurrentDiscoveryInput, execu
       SELECT content, content_hash, version FROM harness_shared.harness_plans
        WHERE workspace_id=${input.workspaceId} AND harness_slug=${input.harnessSlug} AND plan_slug=${input.planSlug}`;
     if (!plan) return { ok: false as const, error: 'plan_not_found' };
+    const requirementProblems = discoveryRequirementProblems(plan.content);
+    if (requirementProblems.length) {
+      // Refuse before resolving target changes or replacing the last valid
+      // audit. A parser/schema failure supplies no evidence of removal.
+      const discovery = assessDiscovery(plan.content, { targets: [], evidence: [] });
+      return { ok: false as const, error: 'discovery_requirements_unparseable',
+        problems: requirementProblems, discovery, nextAction: discovery.readiness.nextAction };
+    }
     const [revision] = await executor<Array<{ id: string; seq: number; content_hash: string }>>`
       SELECT id, seq, content_hash FROM harness_shared.plan_revisions
        WHERE workspace_id=${input.workspaceId} AND harness_slug=${input.harnessSlug} AND plan_slug=${input.planSlug}
