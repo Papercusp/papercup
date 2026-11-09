@@ -22,6 +22,7 @@ const timeline = z.object({
   since: z.string().datetime({ offset: true }), until: z.string().datetime({ offset: true }),
 }).strict().refine(value => Date.parse(value.until) > Date.parse(value.since),
   'Private timeline requires an increasing frozen window.');
+const conditions = z.object({ prefix: id }).strict();
 const cases = <T extends z.ZodTypeAny>(schema: T) => z.object({ A: schema, B: schema }).strict();
 const sourcePin = z.object({ sha256: digest, bytes: z.number().int().positive().max(16 * 1024 * 1024) }).strict();
 const verification = z.object({ inputs: cases(sourcePin), promptSha256: digest, oracleSha256: digest }).strict();
@@ -31,9 +32,11 @@ export const benchFixtureAllocationSchema = z.object({
   'LATENCY-M1:T03': cases(plan),
   'LATENCY-M1:T04': cases(timeline).optional(),
   'LATENCY-M1:T05': cases(timeline).optional(),
+  'LATENCY-M1:T09': cases(conditions).optional(),
   verification: z.object({ 'LATENCY-M1:T01': verification.optional(),
     'LATENCY-M1:T02': verification.optional(), 'LATENCY-M1:T03': verification.optional(),
-    'LATENCY-M1:T04': verification.optional(), 'LATENCY-M1:T05': verification.optional() }).strict().optional(),
+    'LATENCY-M1:T04': verification.optional(), 'LATENCY-M1:T05': verification.optional(),
+    'LATENCY-M1:T09': verification.optional() }).strict().optional(),
 }).strict();
 export type BenchFixtureAllocation = z.infer<typeof benchFixtureAllocationSchema>;
 const bindingSchema = z.object({ workspaceId: id, runId: id, preregHash: digest,
@@ -47,6 +50,7 @@ export const benchFixtureBoundarySchema = z.discriminatedUnion('taskId', [
   bindingSchema.extend({ taskId: z.literal('LATENCY-M1:T03'), fixtureSha256: digest, cases: cases(plan) }).strict(),
   bindingSchema.extend({ taskId: z.literal('LATENCY-M1:T04'), fixtureSha256: digest, cases: cases(timeline) }).strict(),
   bindingSchema.extend({ taskId: z.literal('LATENCY-M1:T05'), fixtureSha256: digest, cases: cases(timeline) }).strict(),
+  bindingSchema.extend({ taskId: z.literal('LATENCY-M1:T09'), fixtureSha256: digest, cases: cases(conditions) }).strict(),
 ]);
 export type BenchFixtureReadBoundary = z.infer<typeof benchFixtureBoundarySchema>;
 export const validBenchFixtureReadBoundary = (value: unknown): value is BenchFixtureReadBoundary =>
@@ -63,7 +67,7 @@ export function freezeBenchFixtureReadBoundary(input: {
   const allocation = benchFixtureAllocationSchema.parse(input.allocation);
   if (benchFixtureAllocationSha256(allocation) !== input.expectedSha256)
     throw new Error('Private benchmark fixture allocation differs from its frozen arm.');
-  if (!['LATENCY-M1:T01', 'LATENCY-M1:T02', 'LATENCY-M1:T03', 'LATENCY-M1:T04', 'LATENCY-M1:T05'].includes(input.taskId)) return undefined;
+  if (!['LATENCY-M1:T01', 'LATENCY-M1:T02', 'LATENCY-M1:T03', 'LATENCY-M1:T04', 'LATENCY-M1:T05', 'LATENCY-M1:T09'].includes(input.taskId)) return undefined;
   const taskId = input.taskId as BenchFixtureReadBoundary['taskId'];
   if (!allocation[taskId]) throw new Error('Private benchmark task has no frozen source allocation.');
   return benchFixtureBoundarySchema.parse({ ...input.binding, taskId: input.taskId,
@@ -95,6 +99,17 @@ export async function readBenchFixtureSourceSnapshot(boundary: BenchFixtureReadB
   which: 'A' | 'B', scope: DbScope): Promise<unknown> {
   const { sql, ws } = resolveDb(scope);
   if (ws !== boundary.workspaceId) throw new Error('Private fixture source workspace differs.');
+  if (boundary.taskId === 'LATENCY-M1:T09') {
+    // Pin the complete causal history before the production reader applies
+    // its own age/prefix selection. Missing old holds must remain observable.
+    const rows = await sql`SELECT msg_id, body, ts FROM harness_shared.coord_event_log
+      WHERE workspace_id = ${ws} AND surface = 'messages'
+        AND (body ? 'condition_key' OR body ? 'resolves_condition' OR body ? 'resolves_conditions')
+      ORDER BY msg_id LIMIT 10001`;
+    if (!rows.length || rows.length > 10000)
+      throw new Error('Private fixture condition source is missing or oversized.');
+    return { source: boundary.cases[which], rows };
+  }
   if (boundary.taskId === 'LATENCY-M1:T04' || boundary.taskId === 'LATENCY-M1:T05') {
     const source = boundary.cases[which];
     // Pin the reader's complete source population, including automatic calls,
@@ -287,11 +302,12 @@ export const benchFixtureReadArgs = z.discriminatedUnion('operation', [
   common.extend({ operation: z.literal('plan') }).strict(),
   common.extend({ operation: z.literal('specs') }).strict(),
   common.extend({ operation: z.literal('timeline'), cursor: z.string().min(1).max(512).optional() }).strict(),
+  common.extend({ operation: z.literal('conditions') }).strict(),
   common.extend({ operation: z.literal('context'), source: z.enum(['corpus', 'memory']),
     entryKey: z.string().min(1).max(4096).optional() }).strict(),
 ]);
 export type BenchFixtureReadArgs = z.infer<typeof benchFixtureReadArgs>;
-export type BenchFixtureProductCall = { tool: 'scorecards:get' | 'scorecards:list' | 'plans:get' | 'plans:get-specs' | 'sessions:timeline' | 'frozen-context';
+export type BenchFixtureProductCall = { tool: 'scorecards:get' | 'scorecards:list' | 'plans:get' | 'plans:get-specs' | 'sessions:timeline' | 'condition-prefix' | 'frozen-context';
   args: Record<string, unknown> };
 
 /** Raw inputs use the existing physical context and operational lease. The
@@ -393,6 +409,8 @@ export function benchFixtureProductCall(boundary: BenchFixtureReadBoundary, rawA
   if (args.operation === 'context') return { tool: 'frozen-context', args: { source: args.source,
     ...(args.entryKey !== undefined ? { entryKey: args.entryKey } : {}) } };
   const source = pinned.cases[args.case];
+  if (args.operation === 'conditions' && pinned.taskId === 'LATENCY-M1:T09')
+    return { tool: 'condition-prefix', args: { prefix: pinned.cases[args.case].prefix } };
   if (args.operation === 'card' && 'issueId' in source) {
     const { operation: _, case: __, resultCursor: ___, ...paging } = args;
     if (paging.criterionKey !== undefined && paging.indexOffset !== undefined ||

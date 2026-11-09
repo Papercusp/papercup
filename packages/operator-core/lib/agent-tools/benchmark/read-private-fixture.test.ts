@@ -24,6 +24,7 @@ const allocation: BenchFixtureAllocation = {
     B: { issueId: 'EI-own-b', rubricRef: 'rubric', subjectRef: 'subject', comparisonTime: '2026-11-06T00:00:00Z' } },
   'LATENCY-M1:T03': { A: { harness: 'source', slug: 'historical-a', revision: 3, specAsOf: '2026-11-06T00:00:00Z' },
     B: { harness: 'source', slug: 'historical-b', revision: 4, specAsOf: '2026-11-07T00:00:00Z' } },
+  'LATENCY-M1:T09': { A: { prefix: 'frozen:busy:' }, B: { prefix: 'frozen:quiet:' } },
 };
 const reads = (taskId = 'LATENCY-M1:T01') => freezeBenchFixtureReadBoundary({
   binding: { workspaceId: 'private', runId: 'run', preregHash: 'a'.repeat(64), assignmentId: 'bench-assignment:own', armId: 'cold', seed: 1 },
@@ -43,6 +44,28 @@ beforeEach(() => {
   mocks.source.mockResolvedValue(undefined);
 });
 describe('assignment-holder private fixture read route', () => {
+  it('keeps open holds and accounts for resolution noise in one packet', async () => {
+    mocks.confinement.mockResolvedValue(confinement('LATENCY-M1:T09'));
+    const conditions = await import('../coordination/condition-state');
+    const ts = '2026-11-06T00:00:00.000Z';
+    const read = vi.spyOn(conditions, 'readConditionEnvelopesForPrefix').mockResolvedValue([
+      { ts, condition_key: 'frozen:busy:open', from: 'fixture-emitter' },
+      { ts, condition_key: 'frozen:busy:closed' },
+      { ts, resolves_condition: 'frozen:busy:closed' },
+      ...Array.from({ length: 9997 }, (_, i) => ({ ts, resolves_condition: `frozen:busy:noise-${i}` })),
+    ]);
+    try {
+      const response = await tool.handler({ operation: 'conditions', case: 'A' }, ctx);
+      expect(read).toHaveBeenCalledExactlyOnceWith('frozen:busy:');
+      expect(response).toMatchObject({ data: { envelopeCount: 10_000, foldedStateCount: 9999,
+        states: [{ condition_key: 'frozen:busy:open', open: true, from: 'fixture-emitter' }] } });
+      if (!('data' in response)) throw Error('Condition diagnosis returned no data');
+      expect(response.data).not.toHaveProperty('privateFixtureResult');
+      expect(response.data).not.toHaveProperty('envelopes');
+      expect(Buffer.byteLength(JSON.stringify({ content: [{ type: 'text', text: JSON.stringify(response.data) }] })))
+        .toBeLessThanOrEqual(6000);
+    } finally { read.mockRestore(); }
+  });
   it('uses the exact held checkout and host pins for context pages and withholds revoked reads', async () => {
     const { createHash } = await import('node:crypto');
     const text = JSON.stringify({ entry: { key: 'raw', text: 'é🧪 '.repeat(3000) } });

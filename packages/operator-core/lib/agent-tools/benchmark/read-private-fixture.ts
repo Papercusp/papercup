@@ -55,17 +55,32 @@ export default defineTool({
       }
       // Invoke maintained read handlers, with their own argument validation.
       // No dynamic tool name, execution/replay option, source scope or SQL is accepted.
-      const tool = call.tool === 'scorecards:get' ? (await import('../scorecards/get')).default :
-        call.tool === 'scorecards:list' ? (await import('../scorecards/list')).default :
-          call.tool === 'plans:get' ? (await import('../plans/get')).default :
-            call.tool === 'plans:get-specs' ? (await import('../plans/get-specs')).default : (await import('../sessions/timeline')).default;
-      const parsed = tool.args.parse(call.args);
-      const read = (context: PapercuspUnifiedToolContext) =>
-        (tool.handler as (args: unknown, ctx: PapercuspUnifiedToolContext) => Promise<ToolResponse | ToolResult>)(parsed, context);
-      const result = call.tool === 'sessions:timeline'
-        // Match the real crossWorkspace timeline dispatcher's admin handle.
-        // Read authority remains the exact host-pinned owner and time window.
-        ? await withWorkspace(workspaceId, tx => read({ ...ctx, tx }), { bypassRlsForAdmin: true }) : await read(ctx);
+      let result: ToolResponse | ToolResult;
+      if (call.tool === 'condition-prefix') {
+        const { readConditionEnvelopesForPrefix, computeConditionStates } = await import('../coordination/condition-state');
+        const prefix = call.args.prefix as string, effectiveNowMs = Date.now(), startedAtMs = performance.now();
+        const envelopes = await readConditionEnvelopesForPrefix(prefix);
+        const completedAtMs = performance.now();
+        // T09 requests observed holds. Resolution-only events produce closed
+        // fold entries too; returning that noise would spend the host lease
+        // replaying an already pinned causal input instead of the diagnosis.
+        const states = computeConditionStates(envelopes);
+        result = { data: { prefix, effectiveNowMs, startedAtMs, completedAtMs,
+          durationMs: completedAtMs - startedAtMs, envelopeCount: envelopes.length,
+          foldedStateCount: states.length, states: states.filter(state => state.open) } };
+      } else {
+        const tool = call.tool === 'scorecards:get' ? (await import('../scorecards/get')).default :
+          call.tool === 'scorecards:list' ? (await import('../scorecards/list')).default :
+            call.tool === 'plans:get' ? (await import('../plans/get')).default :
+              call.tool === 'plans:get-specs' ? (await import('../plans/get-specs')).default : (await import('../sessions/timeline')).default;
+        const parsed = tool.args.parse(call.args);
+        const read = (context: PapercuspUnifiedToolContext) =>
+          (tool.handler as (args: unknown, ctx: PapercuspUnifiedToolContext) => Promise<ToolResponse | ToolResult>)(parsed, context);
+        result = call.tool === 'sessions:timeline'
+          // Match the real crossWorkspace timeline dispatcher's admin handle.
+          // Read authority remains the exact host-pinned owner and time window.
+          ? await withWorkspace(workspaceId, tx => read({ ...ctx, tx }), { bypassRlsForAdmin: true }) : await read(ctx);
+      }
       await requireBenchFixtureSourcePins(boundary, { workspaceId });
       await requireBenchFixtureReadLease(boundary, { workspaceId });
       let response: ToolResponse;
