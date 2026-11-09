@@ -414,7 +414,7 @@ for (const [rootIndex, root] of producers.roots.entries()) {
   const workspacePrefix = relative(root.path, workspacesRoot());
   const ownsWorkspaces = !workspacePrefix.startsWith('..') && !workspacePrefix.startsWith('/');
   const workspaces = ownsWorkspaces ? await readdir(workspacesRoot(), { withFileTypes: true }) : [];
-  const layouts = workspaces.filter(entry => entry.isDirectory()).map(entry => ({ name: entry.name }));
+  const layouts = workspaces.filter(entry => entry.isDirectory()).map(entry => ({ name: entry.name, direct: true }));
   // restoreToClone's exact default shape. Probe embedded producer evidence,
   // keeping the clone and snapshot containers themselves unclassified.
   for (const workspace of [...layouts]) {
@@ -427,7 +427,7 @@ for (const [rootIndex, root] of producers.roots.entries()) {
         const name = `${workspace.name}/.restored/${snapshot.name}/${clone.name}`;
         const qualified = [workspacePrefix, name].filter(Boolean).join('/');
         if (declarations.some(entry => entry.root === root.id && entry.name === qualified && entry.recoveryStorage)) continue;
-        layouts.push({ name });
+        layouts.push({ name, direct: false });
         if (layouts.length > 1000) throw new Error('Recovery layout census bound exceeded');
       }
     }
@@ -436,7 +436,11 @@ for (const [rootIndex, root] of producers.roots.entries()) {
   for (const workspace of layouts) {
     const parent = join(workspacesRoot(), workspace.name, '.papercusp');
     let harnesses;
-    try { harnesses = await readdir(parent, { withFileTypes: true }); }
+    try {
+      // A linked .papercusp is not this workspace writer's directory entry.
+      if (!(await lstat(parent)).isDirectory()) continue;
+      harnesses = await readdir(parent, { withFileTypes: true });
+    }
     catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
     // Recognize producer evidence inside preserved copies too; the enclosing
     // unknown directories remain residue, never inferred state from their names.
@@ -514,6 +518,16 @@ for (const [rootIndex, root] of producers.roots.entries()) {
         try { await lstat(join(root.path, name, 'CORESTORE')); }
         catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
         await recordPeerStorage(root, name, pgName);
+        if (workspace.direct) {
+          // The direct Corestore writer mkdirs this entire path recursively.
+          // Own the two exact ancestor entries, without claiming descendants
+          // or inferring ownership of restored snapshot/clone containers.
+          const workspaceName = [workspacePrefix, workspace.name].filter(Boolean).join('/');
+          for (const ancestor of [workspaceName, `${workspaceName}/.papercusp`]) {
+            declarations.push({ kind: 'path', root: root.id, name: ancestor,
+              classification: 'state', producer: 'harness-corestore-container' });
+          }
+        }
       }
     }
   }
