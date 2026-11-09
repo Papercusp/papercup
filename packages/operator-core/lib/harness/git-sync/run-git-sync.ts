@@ -5755,8 +5755,16 @@ export async function captureGitSyncCandidate(
           if (flags.code !== 0) return custodyRefused('candidate-private-flags');
         }
       }
-      const added = await privateGit(['add', '--all', '--', ...paths], repoPath);
-      if (added.code !== 0) return custodyRefused('candidate-stage');
+      // Requested locks may cover ignored generated output or paths that no
+      // longer exist. Stage eligible leaves rather than those broad pathspecs.
+      // Include the seeded base entries: a staged deletion is absent from the
+      // shared index's selection, but must still be removed from this tree.
+      const stagePaths = [...new Set([...selectedPaths, ...trackedPaths])].sort();
+      for (let i = 0; i < stagePaths.length; i += VANISHED_PATH_PROBE_BATCH) {
+        const added = await privateGit(['add', '--all', '--',
+          ...stagePaths.slice(i, i + VANISHED_PATH_PROBE_BATCH)], repoPath);
+        if (added.code !== 0) return custodyRefused('candidate-stage');
+      }
       const tree = await privateGit(['write-tree'], repoPath);
       if (tree.code !== 0 || !oidPattern.test(tree.stdout.trim())) return custodyRefused('candidate-tree-write');
       const candidate: GitSyncCandidateCapture = { ...input, baseTree: seeded.baseTree, tree: tree.stdout.trim() };

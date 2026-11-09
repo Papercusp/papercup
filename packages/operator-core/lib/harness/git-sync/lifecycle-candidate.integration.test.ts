@@ -1,7 +1,7 @@
 /** Real-Git capture and frozen-publication contracts in the maintained integration router. */
 import { afterEach, describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, lstatSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { captureGitSyncCandidate, readGitSyncCandidate, publishGitSyncCandidate, SOURCE_CUSTODY_REF_PREFIX, type RunGit } from './run-git-sync';
@@ -449,6 +449,53 @@ describe('lifecycle P003 refusal boundaries', () => {
 });
 
 describe('lifecycle P002 immutable candidate custody', () => {
+  it.each(['ignored', 'absent'] as const)('captures an unchanged tree for %s requested cache paths', async state => {
+    const f = fixture();
+    const paths = ['.next-build/cache', '.next-build/cache-offload-tmp', '.next-build/cache-original-aside'];
+    writeFileSync(join(f.repo, '.gitignore'), '.next-build/\n');
+    if (state === 'ignored') {
+      mkdirSync(join(f.repo, paths[0]!), { recursive: true });
+      writeFileSync(join(f.repo, paths[0]!, 'generated.bin'), 'generated cache\n');
+    }
+    const before = candidateState(f);
+    const calls: string[][] = [];
+    const observed: RunGit = async (args, cwd, options) => {
+      calls.push([...args]);
+      return f.runGit(args, cwd, options);
+    };
+    const request = { requestId: `cache-${state}`, generation: 1, base: before.head!, paths };
+    const captured = await captureGitSyncCandidate(observed, f.repo, request);
+    expect(captured).toMatchObject({ ok: true });
+    if (!captured.ok) throw new Error(captured.error);
+    expect(captured.candidate.paths).toEqual([...paths].sort());
+    expect(captured.candidate.tree).toBe(captured.candidate.baseTree);
+    expect(calls.some(args => args[0] === 'add')).toBe(false);
+    expect(await readGitSyncCandidate(f.runGit, f.repo, request)).toEqual(captured);
+    expect(candidateState(f)).toEqual(before);
+  });
+
+  it('captures eligible source and staged deletions alongside ignored and missing requests', async () => {
+    const f = fixture();
+    writeFileSync(join(f.repo, '.gitignore'), '.next-build/\n');
+    mkdirSync(join(f.repo, '.next-build/cache'), { recursive: true });
+    writeFileSync(join(f.repo, '.next-build/cache/generated.bin'), 'generated cache\n');
+    mkdirSync(join(f.repo, 'source'), { recursive: true });
+    writeFileSync(join(f.repo, 'source/new[1].txt'), 'new source\n');
+    writeFileSync(join(f.repo, 'a.txt'), 'captured source\n');
+    f.git('rm', '--', 'b.txt');
+    const before = candidateState(f);
+    const request = { requestId: 'mixed-cache-source', generation: 1, base: before.head!,
+      paths: ['a.txt', 'b.txt', 'source', '.next-build/cache', '.next-build/cache-original-aside', 'missing.txt'] };
+    const captured = await captureGitSyncCandidate(f.runGit, f.repo, request);
+    expect(captured).toMatchObject({ ok: true });
+    if (!captured.ok) throw new Error(captured.error);
+    expect(f.git('show', `${captured.ref}:payload/a.txt`)).toBe('captured source');
+    expect(f.git('show', `${captured.ref}:payload/source/new[1].txt`)).toBe('new source');
+    expect(f.git('ls-tree', captured.candidate.tree, '--', 'b.txt', '.next-build', 'missing.txt')).toBe('');
+    expect(readFileSync(join(f.repo, '.next-build/cache/generated.bin'), 'utf8')).toBe('generated cache\n');
+    expect(candidateState(f)).toEqual(before);
+  });
+
   it.each(['staged', 'unstaged', 'split', 'deletion', 'executable', 'symlink', 'intent-to-add'] as const)(
     'captures A1 and replays it without changing a later %s shared index or B1', async state => {
       const f = fixture();
