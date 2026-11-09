@@ -8,10 +8,11 @@ import { SU_S03_PUSH_NOT_POLL } from './S03-push-not-poll';
 import { SU_S04_DESIGN_FIRST } from './S04-design-first';
 import { SU_S06_SHARED_TREE_GIT } from './S06-shared-tree-git';
 import { SU_S07_KEYED_WRITE } from './S07-keyed-write';
+import { SU_S16_CODE_RUN_BATCH_WRITE } from './S16-code-run-batch-write';
 import { SU_S17_ORIENT_BOOTSTRAP } from './S17-orient-bootstrap';
 import {
   HARNESS_REQUIRED_GATE,
-  KEYED_WRITE_CONTEXT,
+  makeKeyedWriteContext,
   makeDesignStatusBadgeContext,
   ORIENT_BOOTSTRAP_CONTEXT,
   PUSH_UI_GROUNDING_CONTEXT,
@@ -230,17 +231,43 @@ describe('SU S01/S02 populated scenario worlds', () => {
     expect(design).toContain('apps/operator-vite/src/components/ui/StatusPill.tsx');
     expect(git).toContain('dev:pipeline_position');
     expect(git).toContain('git-sync:run');
-    expect(SU_S03_PUSH_NOT_POLL.version).toBe(4);
+    expect(SU_S03_PUSH_NOT_POLL.version).toBe(5);
     expect(SU_S04_DESIGN_FIRST.version).toBe(6);
     expect(SU_S06_SHARED_TREE_GIT.version).toBe(2);
   });
 
+  it('keeps S07 preconditions, post-write reads and independent sessions consistent', () => {
+    const first = SU_S07_KEYED_WRITE.toolOverride!;
+    const second = SU_S07_KEYED_WRITE.toolOverride!;
+    expect(textOf(first.override('work_items:get', { id: 'WI-42' }))).toContain('"state":"wip"');
+    first.override('work_items:set_state', { id: 'WI-42', state: 'blocked' });
+    expect(textOf(first.override('work_items:get', { id: 'WI-42' }))).toContain('"state":"blocked"');
+    expect(textOf(first.override('work_items:list', { state: 'blocked' }))).toContain('WI-42');
+    expect(textOf(first.override('work_items:list', { state: 'wip' }))).not.toContain('WI-42');
+    expect(textOf(second.override('work_items:get', { id: 'WI-42' }))).toContain('"state":"wip"');
+  });
+
+  it('makes S16 bulk effects observable through filtered list and batched get', () => {
+    const first = SU_S16_CODE_RUN_BATCH_WRITE.toolOverride!;
+    const second = SU_S16_CODE_RUN_BATCH_WRITE.toolOverride!;
+    const ids = Array.from({ length: 9 }, (_, i) => `WI-${400 + i}`);
+    expect(JSON.parse(textOf(first.override('work_items:list', { status: 'open' }))).count).toBe(9);
+    first.override('work_items:set_state', { ids, state: 'wip' });
+    expect(JSON.parse(textOf(first.override('work_items:list', { status: 'open' }))).count).toBe(0);
+    const list = JSON.parse(textOf(first.override('work_items:list', { state: 'wip' })));
+    expect(list.items.map((item: { id: string }) => item.id)).toEqual(ids);
+    const get = JSON.parse(textOf(first.override('work_items:get', { ids })));
+    expect(get.results.map((row: { workItem: { state: string } }) => row.workItem.state)).toEqual(ids.map(() => 'wip'));
+    expect(JSON.parse(textOf(second.override('work_items:list', { state: 'open' }))).count).toBe(9);
+  });
+
   it('keeps S07, S12, and S17 fixture reads consistent with their writes', () => {
-    const set = textOf(KEYED_WRITE_CONTEXT.override('work_items:set_state', {
+    const keyed = makeKeyedWriteContext();
+    const set = textOf(keyed.override('work_items:set_state', {
       id: 'WI-42',
       state: 'blocked',
     }));
-    const get = textOf(KEYED_WRITE_CONTEXT.override('work_items:get', { id: 'WI-42' }));
+    const get = textOf(keyed.override('work_items:get', { id: 'WI-42' }));
     expect(set).toContain('"state":"blocked"');
     expect(get).toContain('"state":"blocked"');
 
@@ -259,7 +286,7 @@ describe('SU S01/S02 populated scenario worlds', () => {
     expect(orient).toContain('WI-512');
     expect(orientedItem).toContain('WI-512');
     expect(orientedItem).toContain('"state":"wip"');
-    expect(SU_S07_KEYED_WRITE.version).toBe(2);
+    expect(SU_S07_KEYED_WRITE.version).toBe(3);
     expect(SU_S17_ORIENT_BOOTSTRAP.version).toBe(2);
   });
 

@@ -25,11 +25,11 @@ import type { Scenario } from '@papercusp/testing-shell/llm';
 
 import { SU_RUBRIC } from '../../rubrics/su';
 import { assertToolCalledWithArrayArg, assertToolCallCountAtMost } from './_asserts';
-import { BATCH_WRITE_CONTEXT } from './_overrides';
+import { makeBatchWriteContext } from './_overrides';
 
 export const SU_S16_CODE_RUN_BATCH_WRITE: Scenario = {
   id: 'su-S16-code-run-batch-write',
-  version: 3,
+  version: 4,
   target: 'su',
   transport: 'in-process',
   description:
@@ -38,7 +38,9 @@ export const SU_S16_CODE_RUN_BATCH_WRITE: Scenario = {
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
   caps: { maxTurns: 6, maxWallSecs: 200, maxCostUsd: 1.5 },
   runMatrix: { repeat: 3, variancePolicy: 'flag-if-disagreement' },
-  toolOverride: BATCH_WRITE_CONTEXT,
+  get toolOverride() {
+    return makeBatchWriteContext();
+  },
   asserts: [
     assertToolCalledWithArrayArg(['work_items:set_state'], 'ids', 9, {
       name: 'reaches-for-bulk-set-state',

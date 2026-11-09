@@ -21,6 +21,8 @@
 
 import { describe, it, expect } from 'vitest';
 import type { RunSummary, TurnResult } from '@papercusp/testing-shell/llm';
+import { SU_S03_PUSH_NOT_POLL } from './S03-push-not-poll';
+import { SU_S07_KEYED_WRITE } from './S07-keyed-write';
 
 import {
   assertCodeRunOrBulkOrSingleTurnFanout,
@@ -87,6 +89,43 @@ function mkRun(turns: TurnResult[]): RunSummary {
 }
 
 const META = { name: 't', claim: 'c' };
+
+describe('S03 current-source grounding', () => {
+  const grounding = SU_S03_PUSH_NOT_POLL.asserts.find(
+    (assert) => assert.kind === 'custom' && assert.name === 'grounds-current-push-surface-first',
+  );
+
+  it('accepts a first-turn current-source read through either dispatch door', () => {
+    if (grounding?.kind !== 'custom') throw new Error('Missing S03 grounding detector');
+    for (const call of [
+      { name: 'capability:read', input: { file_path: 'packages/operator-core/lib/sync-sse.ts' } },
+      { name: 'tools:invoke', input: { name: 'capability:read', args: { file_path: 'packages/operator-core/lib/sync-sse.ts' } } },
+    ]) {
+      expect(grounding.eval(mkRun([mkTurn({ toolCalls: [call] })]))).toEqual([]);
+    }
+  });
+
+  it('rejects discovery without a read and a read deferred until the second turn', () => {
+    if (grounding?.kind !== 'custom') throw new Error('Missing S03 grounding detector');
+    const discover = mkTurn({ toolCalls: [{ name: 'tools:find', input: { query: 'sync' } }] });
+    const read = mkTurn({ toolCalls: [{ name: 'capability:read', input: { file_path: 'sync-sse.ts' } }] });
+    expect(grounding.eval(mkRun([discover]))).toHaveLength(1);
+    expect(grounding.eval(mkRun([discover, read]))).toHaveLength(1);
+  });
+});
+
+describe('S07 non-terminal scope', () => {
+  it('rejects an extra completion even when the requested keyed write is present', () => {
+    const guard = SU_S07_KEYED_WRITE.asserts.find(
+      (assert) => assert.kind === 'custom' && assert.name === 'does-not-complete-blocked-item',
+    );
+    if (guard?.kind !== 'custom') throw new Error('Missing S07 completion guard');
+    const requested = { name: 'work_items:set_state', input: { id: 'WI-42', state: 'blocked' } };
+    expect(guard.eval(mkRun([mkTurn({ toolCalls: [requested] })]))).toEqual([]);
+    const extra = { name: 'tools:invoke', input: { name: 'work_items:complete', args: { id: 'WI-42' } } };
+    expect(guard.eval(mkRun([mkTurn({ toolCalls: [requested, extra] })]))).toHaveLength(1);
+  });
+});
 
 describe('tools:invoke dispatch identity in su assertions', () => {
   const invoked = (name: string, args: Record<string, unknown>) =>

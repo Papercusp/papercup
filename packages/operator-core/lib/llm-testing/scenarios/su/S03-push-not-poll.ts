@@ -20,7 +20,7 @@ import { PUSH_UI_GROUNDING_CONTEXT } from './_overrides';
 
 export const SU_S03_PUSH_NOT_POLL: Scenario = {
   id: 'su-S03-push-not-poll',
-  version: 4,
+  version: 5,
   target: 'su',
   transport: 'in-process',
   description:
@@ -37,7 +37,7 @@ export const SU_S03_PUSH_NOT_POLL: Scenario = {
   runMatrix: { repeat: 3, variancePolicy: 'flag-if-stddev>0.5' },
   toolOverride: PUSH_UI_GROUNDING_CONTEXT,
   asserts: [
-    assertToolCalledWithin(['docs:*', 'search:*', 'repomix:pack'], 1, {
+    assertToolCalledWithin(['docs:*', 'search:*', 'repomix:pack', 'capability:read'], 1, {
       name: 'grounds-current-push-surface-first',
       claim:
         'Expected the engineer to inspect the current docs or source in the first assistant turn ' +

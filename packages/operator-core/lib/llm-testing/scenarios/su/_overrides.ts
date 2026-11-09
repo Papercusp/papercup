@@ -911,36 +911,54 @@ export const SHARED_TREE_GIT_CONTEXT: ToolDispatchOverride = {
   },
 };
 
-/** State-consistent lifecycle results for SU-S07. */
-export const KEYED_WRITE_CONTEXT: ToolDispatchOverride = {
-  override(name, args) {
+/** Keep lifecycle reads and effects in the same isolated scenario world. */
+function makeLifecycleWriteContext(initialItems: ReadonlyArray<{ id: string; state: string; title?: string }>): ToolDispatchOverride {
+  const items = new Map(initialItems.map((item) => [item.id, { ...item }]));
+  return { override(name, args) {
     const canon = canonical(name);
     const a = (args ?? {}) as Record<string, unknown>;
     if (canon === 'work_items:set_state') {
+      const ids = Array.isArray(a.ids) ? a.ids.map(String) : a.id ? [String(a.id)] : [];
+      const results = ids.map((id) => {
+        const item = items.get(id);
+        if (!item) return { ok: false, id, error: 'not_found' };
+        const previousState = item.state;
+        item.state = String(a.state ?? previousState);
+        return { ok: true, id, previousState, state: item.state, appliedState: item.state, updated: previousState !== item.state };
+      });
       return { content: [{ text: JSON.stringify({
-        ok: true,
-        id: a.id ?? 'WI-42',
-        previousState: 'wip',
-        state: a.state ?? 'blocked',
-        updated: true,
+        ok: results.every((result) => result.ok),
+        ...(a.id ? results[0] : {}),
+        results,
+        counts: { ok: results.filter((result) => result.ok).length, failed: results.filter((result) => !result.ok).length },
       }) }] };
     }
     if (canon === 'work_items:get') {
-      const id = String(a.id ?? 'WI-42');
+      const ids = Array.isArray(a.ids) ? a.ids.map(String) : [String(a.id ?? initialItems[0]?.id)];
       return { content: [{ text: JSON.stringify({
         ok: true,
-        results: [{ ok: true, id, workItem: { id, title: 'Waiting on upstream fix', state: 'blocked' } }],
+        results: ids.map((id) => {
+          const item = items.get(id);
+          return item ? { ok: true, id, workItem: item } : { ok: false, id, error: 'not_found' };
+        }),
       }) }] };
     }
     if (canon === 'work_items:list') {
+      const state = a.state ?? a.status;
+      const selected = [...items.values()].filter((item) => !state || item.state === state);
       return { content: [{ text: JSON.stringify({
         ok: true,
-        items: [{ id: 'WI-42', title: 'Waiting on upstream fix', state: 'blocked' }],
+        items: selected,
+        count: selected.length,
       }) }] };
     }
     return PASS_THROUGH;
-  },
-};
+  } };
+}
+
+export function makeKeyedWriteContext(): ToolDispatchOverride {
+  return makeLifecycleWriteContext([{ id: 'WI-42', title: 'Waiting on upstream fix', state: 'wip' }]);
+}
 
 /**
  * The three audit rows BOTH encoding arms of the SU-S08 read gate carry. Shared
@@ -1384,20 +1402,13 @@ export const SMALL_BATCH_CONTEXT: ToolDispatchOverride = {
  * not loop the scalar form or route a homogeneous mutation through code:run.
  */
 const S16_OPEN_ITEMS = Array.from({ length: 9 }, (_, i) => ({ id: `WI-${400 + i}`, state: 'open' }));
-export const BATCH_WRITE_CONTEXT: ToolDispatchOverride = {
-  override(name, args) {
+export function makeBatchWriteContext(): ToolDispatchOverride {
+  const lifecycle = makeLifecycleWriteContext(S16_OPEN_ITEMS);
+  return { override(name, args) {
+    const result = lifecycle.override(name, args);
+    if (result !== PASS_THROUGH) return result;
     const canon = canonical(name);
     const a = (args ?? {}) as Record<string, unknown>;
-    if (canon === 'work_items:list') {
-      return { content: [{ text: JSON.stringify({ items: S16_OPEN_ITEMS, count: S16_OPEN_ITEMS.length }) }] };
-    }
-    if (canon === 'work_items:set_state') {
-      const ids = Array.isArray(a.ids) ? (a.ids as string[]) : a.id ? [String(a.id)] : [];
-      const results = ids.map((id) => ({ ok: true, id, appliedState: a.state ?? null }));
-      return {
-        content: [{ text: JSON.stringify({ ok: true, results, counts: { ok: results.length, failed: 0 } }) }],
-      };
-    }
     if (canon === 'code:tools') {
       return { content: [{ text: JSON.stringify({ namespaces: [{ ns: 'work_items', verbs: ['list', 'setState'] }], count: 2 }) }] };
     }
@@ -1416,8 +1427,8 @@ export const BATCH_WRITE_CONTEXT: ToolDispatchOverride = {
       };
     }
     return PASS_THROUGH;
-  },
-};
+  } };
+}
 
 /**
  * Realistic single-fact result for SU-S14 (no code:run over-application): a
