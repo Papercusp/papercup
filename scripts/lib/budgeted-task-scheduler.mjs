@@ -832,6 +832,11 @@ function prepareNativeProofPacket(directory, input) {
   // locator. A newly sealed manifest cannot redefine which objects were captured.
   const locator = { manifest: manifestPin, identity: input.identity, expectedHash: manifest.expectedHash,
     inventoryHash: custodyHash({ groups, gaps, segments: retainedSegments }) };
+  // Preserve the original capture identity before any asynchronous durability
+  // work. This is a pending locator, never a claim that sync has completed.
+  const pendingFd = openSync(join(root, 'pending-locator.json'),
+    constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600);
+  try { writeFileSync(pendingFd, JSON.stringify(locator)); } finally { closeSync(pendingFd); }
   const directoryPaths = [objectRoot, root, dirname(root)];
   progress('sync-start', { total: syncNames.length });
   return { root, locator, identity: input.identity, expected: input.expected,
@@ -879,7 +884,22 @@ function syncNativeProofPacket(prepared) {
   return finishNativeProofPacket(prepared, { maxConcurrent: prepared.syncNames.length ? 1 : 0 });
 }
 
-async function syncNativeProofPacketAsync(prepared) {
+async function syncNativeProofPacketAsync(prepared, deadlineAtMs) {
+  const sync = async (path, phase) => {
+    const remaining = deadlineAtMs === undefined ? undefined : deadlineAtMs - Date.now();
+    const expired = () => Object.assign(new Error(`native proof sync deadline: ${phase} ${path}`),
+      { code: 'NATIVE_PROOF_SYNC_DEADLINE', phase, path });
+    if (remaining !== undefined && remaining <= 0) throw expired();
+    if (remaining === undefined) return syncNativeProofPathAsync(path);
+    let timer;
+    try {
+      // This bounds the waiter, not the kernel operation. No completion is
+      // reported on expiry; pending objects remain available for later sealing.
+      await Promise.race([syncNativeProofPathAsync(path), new Promise((_, reject) => {
+        timer = setTimeout(() => reject(expired()), remaining);
+      })]);
+    } finally { clearTimeout(timer); }
+  };
   let next = 0, completed = 0, active = 0, maxConcurrent = 0, failed = false, failure;
   const worker = async () => {
     while (!failed) {
@@ -888,7 +908,7 @@ async function syncNativeProofPacketAsync(prepared) {
       active++;
       maxConcurrent = Math.max(maxConcurrent, active);
       try {
-        await syncNativeProofPathAsync(join(prepared.objectRoot, prepared.syncNames[index]));
+        await sync(join(prepared.objectRoot, prepared.syncNames[index]), 'object');
       } catch (error) {
         if (!failed) { failed = true; failure = error; }
       } finally {
@@ -896,7 +916,7 @@ async function syncNativeProofPacketAsync(prepared) {
       }
       if (failed) return;
       completed++;
-      if (completed % 128 === 0) {
+      if (prepared.syncNames.length <= 128 || completed % 128 === 0) {
         prepared.progress('sync-progress', {
           completed, total: prepared.syncNames.length, maxConcurrent,
         });
@@ -906,7 +926,7 @@ async function syncNativeProofPacketAsync(prepared) {
   const workerCount = Math.min(NATIVE_PROOF_SYNC_CONCURRENCY, prepared.syncNames.length);
   await Promise.all(Array.from({ length: workerCount }, () => worker()));
   if (failed) throw failure;
-  for (const path of prepared.directoryPaths) await syncNativeProofPathAsync(path);
+  for (const path of prepared.directoryPaths) await sync(path, 'directory');
   return finishNativeProofPacket(prepared, { maxConcurrent });
 }
 
@@ -921,7 +941,27 @@ export function retainNativeProofPacket(directory, input) {
  * operator's main event loop.
  */
 export async function retainNativeProofPacketAsync(directory, input) {
-  return syncNativeProofPacketAsync(prepareNativeProofPacket(directory, input));
+  if (input.deadlineAtMs !== undefined && (!Number.isSafeInteger(input.deadlineAtMs) || input.deadlineAtMs <= 0))
+    throw new Error('native proof deadline must be a positive epoch millisecond integer');
+  let prepared;
+  if (input.retainedLocator) {
+    // Resume only the retained bytes under an independently supplied contract.
+    // Never recapture producers, change gaps/verdicts, or synthesize execution.
+    const root = custodyDirectory(directory, true), objectRoot = custodyDirectory(join(root, 'objects'), true);
+    const locator = structuredClone(input.retainedLocator);
+    verifyNativeProofPacket(root, locator, { identity: input.identity, expected: input.expected });
+    const startedAt = performance.now();
+    const progress = (phase, detail = {}) => {
+      try { input.onProgress?.({ phase, elapsedMs: Math.round(performance.now() - startedAt), ...detail }); }
+      catch { /* diagnostics never change custody */ }
+    };
+    const syncNames = custodyInventory(objectRoot,
+      custodyLimits.objects + custodyArchiveLimits.segments + custodyMetadataParts + 1);
+    prepared = { root, objectRoot, locator, identity: input.identity, expected: input.expected,
+      syncNames, directoryPaths: [objectRoot, root, dirname(root)], progress };
+    progress('sync-start', { total: syncNames.length, retained: true });
+  } else prepared = prepareNativeProofPacket(directory, input);
+  return syncNativeProofPacketAsync(prepared, input.deadlineAtMs);
 }
 
 /** Consumer reads only retained objects. Callers MUST provide independently

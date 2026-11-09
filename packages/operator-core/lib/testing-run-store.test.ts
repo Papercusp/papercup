@@ -1849,6 +1849,49 @@ describe('durable detached snapshot lifecycle', () => {
     }
   });
 
+  it.each([
+    { state: 'timed_out', exitCode: 1, expected: 'error' },
+    { state: 'exited', exitCode: 143, expected: 'error' },
+    { state: 'running', exitCode: null, expected: 'error' },
+    { state: 'ended_unobserved', exitCode: null, expected: 'error' },
+    { state: 'ended_unobserved', exitCode: null, expected: 'error', reportMarker: true },
+    { state: null, exitCode: null, expected: 'error' },
+    { state: 'exited', exitCode: 0, expected: 'pass' },
+  ])('preserves the outer task verdict when all four files passed: $state/$exitCode', async (scenario) => {
+    const runId = 'outer-finalization-failure';
+    const requestedFiles = ['publication.test.ts', 'action.test.ts', 'public.test.ts', 'lifecycle.test.ts'];
+    const rows = requestedFiles.map((file_path, index) => ({
+      file_path, status: 'pass', finished_at: new Date(1_700_000_001_000 + index), output_tail: null,
+      execution_details: { ...measuredPass(file_path, runId), passed: [30, 252, 42, 131][index] },
+    }));
+    const sql = vi.fn(async (strings: TemplateStringsArray) => {
+      const statement = strings.join(' ');
+      if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')) return [{
+        run_id: runId, task_id: 'outer-task', kind: 'vitest', label: 'outer finalization', file_path: null,
+        command: ['node', 'scripts/test-files.mjs'], status: 'error', exit_code: scenario.reportMarker ? null : 0,
+        started_at: new Date(1_700_000_000_000), finished_at: new Date(1_700_000_010_000),
+        output: '\n[coverage-gate] Vitest PASS withheld: the latest per-file ledger rows do not prove that every requested file passed.\n'
+          + (scenario.reportMarker ? '[detached-recovery] recovered completed saved Vitest report.\n' : ''),
+        truncated: false, task_state: scenario.state, task_exit_code: scenario.exitCode,
+        task_ended_at: new Date(1_700_000_010_000), task_detail: { requestedFiles },
+      }];
+      if (statement.includes('FROM harness_shared.task_ledger')) {
+        throw new Error('The joined task verdict must be reused, not read again.');
+      }
+      if (statement.includes('FROM harness_shared.test_runs')) return rows;
+      if (statement.includes('UPDATE harness_shared.testing_run_snapshots')) return [{ run_id: runId }];
+      return [];
+    }) as unknown as Sql;
+
+    const snapshot = await store.getRunAsync(runId, sql);
+    expect(snapshot?.status).toBe(scenario.expected);
+    if (scenario.expected === 'error') {
+      expect(snapshot?.provisionalVerdict).toMatchObject({ status: 'pass', passed: 455, failed: 0, fileCount: 4 });
+      expect(snapshot?.output).toContain('task-verdict-not-passed');
+      expect(snapshot?.exitCode).toBe(scenario.exitCode ?? (scenario.state === null ? 0 : null));
+    }
+  });
+
   it('does not recover an unmanifested all-pass detached ledger as a pass', async () => {
     const ledgerRows = [{
       file_path: 'lib/unmanifested.test.ts',
@@ -2691,7 +2734,8 @@ describe('durable detached snapshot lifecycle', () => {
       file_path: null, command: ['node', 'scripts/test-files.mjs'], status: 'error', exit_code: 0,
       started_at: new Date(1_700_000_000_000), finished_at: new Date(1_700_000_010_000),
       output: '\n[coverage-gate] Vitest PASS withheld: the latest per-file ledger rows do not prove that every requested file passed.\n',
-      truncated: false, task_detail: { requestedFiles: [filePath] },
+      truncated: false, task_state: 'exited', task_exit_code: 0,
+      task_detail: { requestedFiles: [filePath] },
     };
     let ledgerRows: Array<Record<string, unknown>> = [];
     const updates: unknown[][] = [];

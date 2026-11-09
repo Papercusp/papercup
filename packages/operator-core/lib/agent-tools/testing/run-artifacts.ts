@@ -221,6 +221,7 @@ export class TestRunArtifactPacket {
     const group: NativeCustodyGroup = { id: 'packet', attempt: 'primary', selected: this.selectedFiles.length
       ? this.selectedFiles : [this.root], runner: 'unsupported', armed: false, out: null, auxiliary };
     const saved = await retainNativeProofPacketAsync(this.paths.nativeProof, { identity, expected: [group],
+      deadlineAtMs: this.deadline.taskDeadlineAtMs,
       observations: [{ id: group.id, out: null }], execution: { childState: this.childState, result: detail.result ?? null },
       cleanup: detail.cleanup ?? null, ...(this.nativeLocator ? { predecessor: this.nativeLocator } : {}) });
     this.nativeLocator = saved.locator;

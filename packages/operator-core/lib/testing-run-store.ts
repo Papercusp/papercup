@@ -167,6 +167,8 @@ interface RunState {
   /** Launch-time environment stays process-local so recovery can redact child output exactly. */
   childEnv: NodeJS.ProcessEnv;
   finalization: Promise<void> | null;
+  /** Set only by this process's child close event, independent of snapshot recovery. */
+  observedProcessExit?: number | null;
   snapshotSql?: SqlLike;
   progressTimer: ReturnType<typeof setTimeout> | null;
   progressWrite: Promise<boolean> | null;
@@ -225,6 +227,12 @@ interface DurableRunSnapshotRow {
   task_harness_slug?: string | null;
   task_workspace_id?: string | null;
   snapshot_missing?: boolean;
+}
+
+interface PersistedSnapshotRead {
+  snapshot: RunSnapshot;
+  /** The task verdict from the same database read as the snapshot. */
+  task?: PersistedDetachedTaskRow | null;
 }
 
 function snapshotPersistenceEnabled(sqlOverride?: SqlLike): boolean {
@@ -750,7 +758,7 @@ async function readPersistedRunSnapshot(
   sqlOverride?: SqlLike,
   recoveryScope?: DetachedReportRecoveryScope,
   environment?: Readonly<Record<string, string | undefined>>,
-): Promise<RunSnapshot | null> {
+): Promise<PersistedSnapshotRead | null> {
   const sql = await snapshotSql(sqlOverride);
   if (!sql) throw new TestingRunSnapshotUnavailableError();
   let query: PromiseLike<unknown>;
@@ -782,19 +790,25 @@ async function readPersistedRunSnapshot(
   if (rows === null) throw new TestingRunSnapshotUnavailableError();
   const reportTaskRecovery = rows.length === 0 && recoveryScope !== undefined;
   const row = rows[0] ?? (recoveryScope ? await readReportRecoveryTask(runId, recoveryScope, sql) : null);
-  if (!row) return recoveryScope ? readLiveForegroundSnapshot(runId, recoveryScope, sql) : null;
+  if (!row) {
+    const live = recoveryScope ? await readLiveForegroundSnapshot(runId, recoveryScope, sql) : null;
+    return live ? { snapshot: live } : null;
+  }
   // Exact evidence mappings supply the missing harness on older enrolments.
   // Their durable workspace and execution root must still agree.
   if (!row.task_harness_slug && recoveryScope && row.task_workspace_id === recoveryScope.workspaceId
     && row.task_cwd === recoveryScope.root) row.task_harness_slug = recoveryScope.harnessSlug;
   const snapshot = snapshotFromRow(row);
   if (!snapshot) throw new TestingRunSnapshotUnavailableError();
+  const task = row.task_state ? {
+    state: row.task_state, exit_code: row.task_exit_code ?? null,
+  } : null;
   if (reportTaskRecovery) {
     const recovered = await reconcilePersistedReportArtifact(snapshot, row, sql, environment);
     // A task reconstructed for evidence recovery is never a liveness verdict.
-    return recovered === snapshot ? null : recovered;
+    return recovered === snapshot ? null : { snapshot: recovered, task };
   }
-  return reconcilePersistedOrphan(snapshot, row, sql, environment);
+  return { snapshot: await reconcilePersistedOrphan(snapshot, row, sql, environment), task };
 }
 
 async function readPersistedRunSnapshotWithRetry(
@@ -802,7 +816,7 @@ async function readPersistedRunSnapshotWithRetry(
   sqlOverride?: SqlLike,
   recoveryScope?: DetachedReportRecoveryScope,
   environment?: Readonly<Record<string, string | undefined>>,
-): Promise<RunSnapshot | null> {
+): Promise<PersistedSnapshotRead | null> {
   let snapshot = await readPersistedRunSnapshot(runId, sqlOverride, recoveryScope, environment);
   if (snapshot) return snapshot;
 
@@ -2173,6 +2187,7 @@ function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot
     // that first terminal outcome and let the finalization guard suppress the
     // duplicate snapshot/ledger work.
     if (state.snapshot.finishedAt === null) {
+      state.observedProcessExit = code;
       state.snapshot.exitCode = code;
       state.snapshot.finishedAt = Date.now();
       if (state.snapshot.status !== 'cancelled' && state.snapshot.status !== 'error') {
@@ -2368,18 +2383,20 @@ type VitestCoverageWithheldReason =
   | 'ledger-empty'
   | 'ledger-verdict-unavailable'
   | 'ledger-not-passed'
+  | 'task-store-unavailable'
+  | 'task-verdict-not-passed'
   | 'exact-file-coverage-unverified';
 
 function isWithheldUnverifiedVitestPass(snapshot: RunSnapshot): boolean {
   return snapshot.kind === 'vitest'
     && snapshot.status === 'error'
-    && snapshot.exitCode === 0
     && snapshot.output.includes(UNVERIFIED_VITEST_PASS_NOTE);
 }
 
 async function withholdUnverifiedVitestPass(
   snapshot: RunSnapshot,
   sqlOverride?: SqlLike,
+  observedTask?: PersistedDetachedTaskRow | null,
 ): Promise<RunSnapshot> {
   const withheldPass = isWithheldUnverifiedVitestPass(snapshot);
   if (snapshot.kind !== 'vitest' || (snapshot.status !== 'pass' && !withheldPass)) return snapshot;
@@ -2391,6 +2408,8 @@ async function withholdUnverifiedVitestPass(
   let ledgerRowCount: number | null = null;
   let ledgerStatus: DetachedRunLedgerRecovery['status'] | null = null;
   let ledgerReadFailure: SnapshotQueryFailure | undefined;
+  let task: PersistedDetachedTaskRow | null = null;
+  let provisionalVerdict: ProvisionalTestVerdict | null = null;
   if (requestedFiles && sql) {
     const rows = await readPersistedTestRunLedgerRows(snapshot.runId, sql, failure => { ledgerReadFailure = failure; });
     const recovery = rows ? deriveDetachedRunLedgerRecovery(snapshot.runId, rows) : null;
@@ -2402,18 +2421,36 @@ async function withholdUnverifiedVitestPass(
       : recovery.status !== 'pass' ? 'ledger-not-passed'
       : 'exact-file-coverage-unverified';
     if (recovery?.status === 'pass' && hasExactPassedFileCoverage(requestedFiles, recovery.files)) {
-      if (!withheldPass) return snapshot;
-      const restored: RunSnapshot = {
-        ...snapshot,
-        status: 'pass',
-        exitCode: recovery.exitCode,
-        finishedAt: recovery.finishedAt,
-        output: snapshot.output.replace(
-          UNVERIFIED_VITEST_PASS_NOTE,
-          '\n[detached-recovery] recovered pass from exact requested-file ledger rows.\n',
-        ).replace(VITEST_COVERAGE_DIAGNOSTIC_RE, ''),
-      };
-      return persistReconciledSnapshot(snapshot, restored, sql);
+      provisionalVerdict = provisionalVerdictFromLedger(requestedFiles, recovery);
+      // Reporter rows measure assertions. They cannot erase a timeout or a
+      // failed outer finalization, including when late rows fill a coverage gap.
+      const lookup: DetachedTaskLedgerLookup = observedTask === undefined
+        ? await readPersistedDetachedTask(snapshot.runId, sql)
+        : observedTask ? { kind: 'found', task: observedTask } : { kind: 'absent' };
+      task = lookup.kind === 'found' ? lookup.task : null;
+      // Preserve an existing reporter PASS with unknown process exit. A
+      // withheld/error snapshot and child output cannot establish that verdict.
+      const reportOnlyPass = task?.state === 'ended_unobserved' && task.exit_code === null
+        && snapshot.status === 'pass' && snapshot.exitCode === null;
+      if (lookup.kind === 'unavailable' || lookup.kind === 'ambiguous') {
+        reason = 'task-store-unavailable';
+      } else if (!reportOnlyPass
+        && !taskAllowsDetachedLedgerRecovery(task, Boolean(snapshot.taskId) || lookup.kind === 'found', 'pass')) {
+        reason = 'task-verdict-not-passed';
+      } else {
+        if (!withheldPass) return snapshot;
+        const restored: RunSnapshot = {
+          ...snapshot,
+          status: 'pass',
+          exitCode: reportOnlyPass ? null : recovery.exitCode,
+          finishedAt: recovery.finishedAt,
+          output: snapshot.output.replace(
+            UNVERIFIED_VITEST_PASS_NOTE,
+            '\n[detached-recovery] recovered pass from exact requested-file ledger rows.\n',
+          ).replace(VITEST_COVERAGE_DIAGNOSTIC_RE, ''),
+        };
+        return persistReconciledSnapshot(snapshot, restored, sql);
+      }
     }
   }
 
@@ -2422,11 +2459,14 @@ async function withholdUnverifiedVitestPass(
   // it is never labelled a timeout without evidence from that query.
   const unverified: RunSnapshot = {
     ...snapshot, status: 'error',
+    ...(task ? { exitCode: task.exit_code } : {}),
+    ...(provisionalVerdict ? { provisionalVerdict } : {}),
     output: snapshot.output.replace(VITEST_COVERAGE_DIAGNOSTIC_RE, ''),
   };
   if (!withheldPass) appendSnapshotOutput(unverified, UNVERIFIED_VITEST_PASS_NOTE);
   appendSnapshotOutput(unverified, '\n[coverage-gate:verification] ' + JSON.stringify({
     reason, requestedFileCount: requestedFiles?.length ?? null, ledgerRowCount, ledgerStatus,
+    ...(task ? { taskState: task.state, taskExitCode: task.exit_code } : {}),
     ...(ledgerReadFailure ? { ledgerReadFailure } : {}),
   }) + '\n');
   if (withheldPass && unverified.output === snapshot.output) return snapshot;
@@ -2451,6 +2491,7 @@ export async function getRunAsync(
   const local = _runs.get(runId);
   if (local) {
     let provisionalVerdict: ProvisionalTestVerdict | undefined;
+    let observedTask: PersistedDetachedTaskRow | null | undefined;
     if ((local.snapshot.status === 'running' || isDetachedNoVerdictError(local.snapshot)) && local.snapshot.taskId) {
       const persisted = await readPersistedRunSnapshot(
         runId, sqlOverride ?? local.snapshotSql, recoveryScope, local.childEnv,
@@ -2458,16 +2499,20 @@ export async function getRunAsync(
       // Preserve fresher local progress while the task is live, and never
       // overwrite a cancellation/close that completed during the durable read.
       if ((local.snapshot.status === 'running' || isDetachedNoVerdictError(local.snapshot)) && persisted) {
-        if (persisted.status !== 'running') {
-          Object.assign(local.snapshot, persisted);
+        if (persisted.snapshot.status !== 'running') {
+          Object.assign(local.snapshot, persisted.snapshot);
+          observedTask = persisted.task;
           stopProgressSnapshot(local);
         } else {
-          provisionalVerdict = persisted.provisionalVerdict;
+          provisionalVerdict = persisted.snapshot.provisionalVerdict;
         }
       }
     }
     if (local.snapshot.finishedAt !== null && local.finalization) await local.finalization;
-    let snapshot = await withholdUnverifiedVitestPass({ ...local.snapshot }, sqlOverride);
+    if (observedTask === undefined && local.observedProcessExit !== undefined) {
+      observedTask = { state: 'exited', exit_code: local.observedProcessExit };
+    }
+    let snapshot = await withholdUnverifiedVitestPass({ ...local.snapshot }, sqlOverride, observedTask);
     if ((local.snapshot.status === 'pass' && snapshot.status !== 'pass')
       || (isWithheldUnverifiedVitestPass(local.snapshot)
         && (snapshot.status === 'pass' || snapshot.output !== local.snapshot.output))) {
@@ -2479,7 +2524,7 @@ export async function getRunAsync(
     return snapshot;
   }
   const persisted = await readPersistedRunSnapshotWithRetry(runId, sqlOverride, recoveryScope, environment);
-  if (persisted) return withholdUnverifiedVitestPass(persisted, sqlOverride);
+  if (persisted) return withholdUnverifiedVitestPass(persisted.snapshot, sqlOverride, persisted.task);
 
   const detachedRunId = await readDetachedRunIdForOrigin(runId, sqlOverride);
   if (!detachedRunId || detachedRunId === runId) return null;

@@ -2157,6 +2157,14 @@ describe('testing:run (integration)', () => {
     expect(manifest).toMatchObject({ childState: 'closed', cleanup: { complete: true },
       nativeCustody: { byteCustody: 'complete', writerState: 'settled', producerRetirement: 'not-performed',
         nativeProof: 'unqualified', acceptance: 'unmeasured' } });
+    const retainedManifest = JSON.parse(await readFile(join(paths.nativeProof, 'objects',
+      manifest.nativeCustody.locator.manifest.ref), 'utf8'));
+    const phasePin = retainedManifest.groups[0].auxiliary.find((row: { role: string }) => row.role === 'phases.jsonl').artifact;
+    const retainedPhases = (await readFile(join(paths.nativeProof, 'objects', phasePin.ref), 'utf8'))
+      .trim().split('\n').map(line => JSON.parse(line));
+    const producerPhases = (await readFile(paths.phases, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    expect(retainedPhases.map(row => row.stage)).toEqual(expect.arrayContaining(['report-finalized', 'cleanup-complete', 'retained']));
+    expect(retainedPhases).toEqual(producerPhases);
     // Derive the expected auxiliary population from original packet surfaces,
     // independently of the native manifest that the consumer will verify.
     const auxiliary: Array<{ role: string; state: 'produced'; path: string }> = [];

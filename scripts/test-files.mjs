@@ -728,7 +728,9 @@ export async function createRouterProofCustody(groups, env, repoRoot) {
       return id;
     },
     async finish() {
+      const cutoff = Number(env.PAPERCUSP_TEST_CHILD_CUTOFF_AT_MS);
       const result = await retainNativeProofPacketAsync(directory, { identity, expected, observations, execution: 'router-settled',
+        ...(Number.isSafeInteger(cutoff) && cutoff > 0 ? { deadlineAtMs: cutoff } : {}),
         onProgress: record => console.error('TEST_FILE_FINALIZATION ' + JSON.stringify({
           pid: process.pid, phase: 'native-proof-custody', ...record, custodyDirectory: directory,
         })),
