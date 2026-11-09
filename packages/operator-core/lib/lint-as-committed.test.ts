@@ -27,7 +27,7 @@
  * to prove the fix; a unit test over `parseGitmodules` alone would prove the parser
  * works and say nothing about whether the tree it feeds actually gets materialised.
  */
-import { execFileSync, spawnSync, spawn } from 'node:child_process';
+import { execFileSync, spawnSync, spawn, type SpawnSyncReturns } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
@@ -72,6 +72,71 @@ function currentRunnerEnvironment(overrides: NodeJS.ProcessEnv = {}): NodeJS.Pro
   if (!env.NODE_OPTIONS) delete env.NODE_OPTIONS;
   return env;
 }
+
+// Preserve process-level evidence on EVERY attempt, including a second probe
+// after a successful command. A null status alone cannot distinguish startup,
+// import, admission, callback, cleanup, or process termination.
+function fixtureProcessEvidence(run: SpawnSyncReturns<string>, startedAt: number) {
+  return {
+    elapsedMs: Date.now() - startedAt,
+    status: run.status,
+    signal: run.signal,
+    error: run.error ? { message: run.error.message, code: (run.error as NodeJS.ErrnoException).code } : null,
+    stdoutTail: run.stdout?.slice(-2000) ?? '',
+    stderrTail: run.stderr?.slice(-4000) ?? '',
+  };
+}
+
+function fixtureNpmLogs(logs: string) {
+  if (!existsSync(logs)) return [];
+  return readdirSync(logs).filter(name => name.endsWith('.log') || name.endsWith('-timing.json'))
+    .map(name => ({ name, tail: readFileSync(join(logs, name), 'utf8').slice(-6000) }));
+}
+
+describe('fixture subprocess evidence', () => {
+  it('retains termination and import milestones from a later failing writer attempt', () => {
+    const started = Date.now();
+    const run = spawnSync(process.execPath, ['--input-type=module', '-e',
+      "console.log('WRITER_STARTED'); await import('node:fs'); console.log('WRITER_IMPORTED'); process.exit(7);"],
+    { encoding: 'utf8', timeout: 5000 });
+    const evidence = fixtureProcessEvidence(run, started);
+    expect(evidence).toMatchObject({ status: 7, signal: null, error: null });
+    expect(evidence.stdoutTail).toContain('WRITER_STARTED');
+    expect(evidence.stdoutTail).toContain('WRITER_IMPORTED');
+    expect(evidence.stdoutTail).not.toContain('WRITER_ACQUIRED');
+    expect(evidence.elapsedMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('retains the process error when no child could enter its operation', () => {
+    const root = mkdtempSync(join(tmpdir(), 'lac-process-evidence-'));
+    try {
+      const started = Date.now();
+      const run = spawnSync(join(root, 'missing-node'), [], { encoding: 'utf8', timeout: 5000 });
+      expect(fixtureProcessEvidence(run, started)).toMatchObject({
+        status: null, signal: null, error: { code: 'ENOENT' }, stdoutTail: '', stderrTail: '',
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('retains npm timing JSON as well as debug logs before fixture cleanup', () => {
+    const root = mkdtempSync(join(tmpdir(), 'lac-npm-evidence-'));
+    try {
+      writeFileSync(join(root, 'attempt-debug-0.log'), 'verbose cli entered');
+      writeFileSync(join(root, 'attempt-timing.json'), JSON.stringify({
+        timers: { 'npm:load': 12 }, unfinishedTimers: { 'command:ls': [12, 15_000] },
+      }));
+      const evidence = fixtureNpmLogs(root);
+      expect(evidence).toEqual(expect.arrayContaining([
+        { name: 'attempt-debug-0.log', tail: 'verbose cli entered' },
+        { name: 'attempt-timing.json', tail: expect.stringContaining('"command:ls"') },
+      ]));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 type PublicDocsViteConfig = {
   resolve?: { preserveSymlinks?: boolean };
@@ -1157,29 +1222,33 @@ describe('linkNodeModulesShadow (EI-24790229053787032 — a whole-directory link
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, 'package.json'), JSON.stringify(manifest));
     };
+    let attemptNumber = 0;
     const measure = (cwd: string) => {
-      const logs = join(root, 'npm-logs');
-      const started = Date.now();
       const fixture = relative(root, cwd);
+      // Two clone measurements have different expected verdicts. Keep each
+      // launch's timing/config evidence separate rather than mixing their logs.
+      const logs = join(root, `npm-logs-${++attemptNumber}-${fixture}`);
+      const started = Date.now();
       process.stderr.write('CASE_TRACE ' + JSON.stringify({ case: 'npm-shadow-graph', event: 'launch', fixture }) + '\n');
       const run = spawnSync('npm', ['ls', '--omit=dev', '--all', '--json',
         '--timing', '--loglevel=verbose', `--logs-dir=${logs}`], {
         cwd, encoding: 'utf8', timeout: 15_000,
       });
-      const outcome = { case: 'npm-shadow-graph', event: 'exit', fixture,
-        elapsedMs: Date.now() - started, status: run.status, signal: run.signal,
-        error: run.error?.message };
-      process.stderr.write('CASE_TRACE ' + JSON.stringify(outcome) + '\n');
+      const evidence = fixtureProcessEvidence(run, started);
+      const npmLogs = fixtureNpmLogs(logs);
+      const outcome = { case: 'npm-shadow-graph', event: 'exit', fixture, attemptNumber, ...evidence };
+      process.stderr.write('CASE_TRACE ' + JSON.stringify({ ...outcome,
+        npmTiming: npmLogs.filter(log => log.name.endsWith('-timing.json')) }) + '\n');
       // Preserve npm's startup/config/timing evidence before fixture cleanup.
       // An expired process deadline must identify the stalled phase, rather
       // than leave only spawnSync's ETIMEDOUT after the logs have been removed.
-      const diagnostic = () => JSON.stringify(outcome) +
-        `\nstdout tail:\n${run.stdout?.slice(-2000)}\nstderr tail:\n${run.stderr?.slice(-4000)}` +
-        (existsSync(logs) ? readdirSync(logs).filter(name => name.endsWith('.log'))
-          .map(name => `\n${name}:\n${readFileSync(join(logs, name), 'utf8').slice(-6000)}`).join('') : '');
+      const diagnostic = () => JSON.stringify({ ...outcome, npmLogs });
       expect(run.error, run.error ? diagnostic() : undefined).toBeUndefined();
       expect(run.signal, run.signal ? diagnostic() : undefined).toBeNull();
-      return { status: run.status, tree: JSON.parse(run.stdout) };
+      let tree;
+      try { tree = JSON.parse(run.stdout); }
+      catch { throw new Error(`npm graph did not produce JSON: ${diagnostic()}`); }
+      return { status: run.status, tree };
     };
     try {
       for (const dir of [shared, clone, broken]) {
@@ -1983,7 +2052,7 @@ ${build}`,
       // Reify the actual donor while the pinned build remains paused. The
       // command must later read the independent bytes after this writer completes.
       const writer = `const startedAt = performance.now();
-console.log('WRITER_STARTED');
+console.log('WRITER_STARTED at=' + Date.now());
 const { withFsMutex } = await import(${JSON.stringify(pathToFileURL(join(repoRoot, 'scripts/lib/fs-mutex.mjs')).href)});
 import { writeFileSync } from 'node:fs';
 console.log('WRITER_IMPORTED elapsedMs=' + (performance.now() - startedAt));
@@ -1993,12 +2062,21 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
 }, { timeoutMs: 200, retryMs: 10,
   onAcquired: timing => console.log('WRITER_ADMISSION ' + JSON.stringify(timing)),
   onTimedOut: timing => console.error('WRITER_TIMEOUT ' + JSON.stringify(timing)),
-});`;
-      const attempt = () => spawnSync(process.execPath, ['--input-type=module', '-e', writer], {
-        env: { ...process.env, PAPERCUSP_FS_MUTEX_LOCK_DIR: lockDir }, encoding: 'utf8', timeout: 5000,
-      });
-      const concurrent = attempt();
-      expect(concurrent.status, JSON.stringify({ error: concurrent.error?.message, signal: concurrent.signal }) + concurrent.stdout + concurrent.stderr).toBe(0);
+});
+console.log('WRITER_RELEASED elapsedMs=' + (performance.now() - startedAt));`;
+      const attempt = (phase: string) => {
+        const started = Date.now();
+        process.stderr.write('CASE_TRACE ' + JSON.stringify({ case: 'donor-writer', event: 'launch', phase, startedAt: started }) + '\n');
+        const run = spawnSync(process.execPath, ['--input-type=module', '-e', writer], {
+          env: { ...process.env, PAPERCUSP_FS_MUTEX_LOCK_DIR: lockDir }, encoding: 'utf8', timeout: 5000,
+        });
+        const evidence = { case: 'donor-writer', event: 'exit', phase, ...fixtureProcessEvidence(run, started) };
+        process.stderr.write('CASE_TRACE ' + JSON.stringify(evidence) + '\n');
+        expect(run.status, JSON.stringify(evidence)).toBe(0);
+        expect(run.stdout).toContain('WRITER_RELEASED');
+        return run;
+      };
+      const concurrent = attempt('during-paused-build');
       expect(concurrent.stdout).toContain('WRITER_ACQUIRED');
       expect(child.exitCode).toBeNull();
       writeFileSync(release, 'release');
@@ -2010,8 +2088,7 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
       expect(output).toContain('COMMITTED_DEPENDENCY_COPY state=started mode=donor path=node_modules');
       expect(output).toContain('COMMITTED_DEPENDENCY_COPY state=complete mode=donor path=node_modules elapsedSec=');
       expect(output).toContain('"phase":"workspace-build","state":"complete"');
-      const acquired = attempt();
-      expect(acquired.status, acquired.stdout + acquired.stderr).toBe(0);
+      const acquired = attempt('after-command-exit');
       expect(acquired.stdout).toContain('WRITER_ACQUIRED');
     } finally {
       writeFileSync(release, 'release');
