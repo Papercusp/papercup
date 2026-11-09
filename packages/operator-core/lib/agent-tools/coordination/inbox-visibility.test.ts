@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { changedSystemNoticeDelivery, relevantSystemNoticeDelivery, prioritizedInboxWindow } from './inbox-visibility';
+import { changedSystemNoticeDelivery, coalesceRepeatedBroadcasts, relevantSystemNoticeDelivery, prioritizedInboxWindow } from './inbox-visibility';
 import { renderSevereEventEmitter } from '../../severe-event-emitter';
 import { sectionsToText } from './message-fields';
 import { chunkOverCapMessage } from './tools/send-chunking';
@@ -59,6 +59,28 @@ describe('changed system notice delivery', () => {
     const rows = [alarm({ blocking: true }), alarm({ expects: 'action' }), alarm({ expects: 'answer' })];
     const first = changedSystemNoticeDelivery(rows, {});
     expect(changedSystemNoticeDelivery(rows, first.state).entries).toEqual(rows);
+  });
+
+  it.each(['source', 'object_ref', 'severity', 'state_version', 'event_key'])(
+    'preserves a changed structured %s despite identical rendered prose', (field) => {
+      const initial = alarm({ source: 'detector-a', object_ref: 'WI-1', severity: 'info',
+        state_version: 'v1', event_key: 'episode-a' });
+      const first = changedSystemNoticeDelivery([initial], {});
+      const changed = { ...initial, msg_id: 'changed', [field]: `${field}-changed` };
+      expect(changedSystemNoticeDelivery([changed], first.state).entries).toEqual([changed]);
+      expect(coalesceRepeatedBroadcasts([initial, changed])).toEqual([initial, changed]);
+    },
+  );
+
+  it('keeps critical producer data through relevance and repeat filtering', () => {
+    const data = { severity: 'critical', state_version: 1, object_ref: 'WI-other' };
+    const critical = alarm({ data });
+    const scope = { ownerId: 'reader', workItemIds: ['WI-mine'] };
+    expect(relevantSystemNoticeDelivery([critical], scope).entries).toEqual([critical]);
+    const first = changedSystemNoticeDelivery([critical], {});
+    expect(changedSystemNoticeDelivery([critical], first.state).entries).toEqual([critical]);
+    const changed = { ...critical, data: { ...data, state_version: 2 } };
+    expect(coalesceRepeatedBroadcasts([critical, changed])).toEqual([critical, changed]);
   });
 });
 

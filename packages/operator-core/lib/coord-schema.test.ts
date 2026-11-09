@@ -8,6 +8,7 @@ import {
   type CoordLineSource,
 } from './coord-schema';
 import { canonicalRefKey, type HydratedRef } from './agent-tools/coordination/ref-hydrate';
+import { changedSystemNoticeDelivery, coalesceRepeatedBroadcasts, relevantSystemNoticeDelivery } from './agent-tools/coordination/inbox-visibility';
 import {
   COORD_EXECUTABLE_KINDS,
   COORD_CONVERSATIONAL_KINDS,
@@ -33,6 +34,27 @@ const e = (over: Partial<CoordLineSource>): CoordLineSource => ({
  * agent-tools/coordination/message-age.test.ts.
  */
 const FIXTURE_NOW = Date.parse('2026-06-06T00:01:00.000Z');
+
+it('context reliability: unchanged ambient events coalesce without losing actionable transitions', () => {
+  const initial = { msg_id: 'notice-1', from: 'detector', to: ['*'], auto: true,
+    kind: 'message', category: 'severe-event', condition_key: 'condition:WI-1',
+    source: 'source-a', object_ref: 'WI-1', severity: 'info', state_version: 1,
+    summary: 'WI-1 needs attention', ts: '2026-06-06T00:00:00.000Z' };
+  const previous = changedSystemNoticeDelivery([initial], {}).state;
+  const duplicate = { ...initial, msg_id: 'notice-2', ts: '2026-06-06T00:00:10.000Z' };
+  const changed = { ...duplicate, msg_id: 'changed', state_version: 2 };
+  const critical = { ...duplicate, msg_id: 'critical', severity: 'critical', object_ref: 'WI-other' };
+  const scope = { ownerId: 'reader', workItemIds: ['WI-1'] };
+  const coalesced = coalesceRepeatedBroadcasts([duplicate, changed, critical]);
+  const relevant = relevantSystemNoticeDelivery(coalesced, scope);
+  const selected = changedSystemNoticeDelivery(relevant.entries, previous);
+  expect(selected.entries.map(row => row.msg_id)).toEqual(['changed', 'critical']);
+  const rendered = renderInjection(selected.entries.map(row => e({
+    from: String(row.from), kind: String(row.kind), ts: String(row.ts), summary: String(row.summary),
+  })), { nowMs: FIXTURE_NOW });
+  expect(rendered).toContain('[coord+2]');
+  expect(rendered).toContain('WI-1 needs attention');
+});
 
 describe('glyphFor — lifecycle category > kind > default', () => {
   it('lifecycle category wins (kind=message + category=intent → intent glyph)', () => {

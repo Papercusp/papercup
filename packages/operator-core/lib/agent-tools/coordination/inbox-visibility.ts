@@ -157,6 +157,24 @@ function isSystemNotice(entry: Record<string, unknown>): boolean {
     typeof entry['category'] === 'string' && typeof entry['summary'] === 'string';
 }
 
+/** Producer-owned episode fields, never inferred from the rendered summary.
+ * Keep them in both the within-read and cross-read identities: otherwise an
+ * early fold can erase a changed or critical event before delivery sees it. */
+function noticeEpisode(entry: Record<string, unknown>): unknown[] {
+  const data = entry['data'];
+  const fields = data && typeof data === 'object' && !Array.isArray(data)
+    ? data as Record<string, unknown> : {};
+  return [[entry['condition_key'] ?? null, entry['event_key'] ?? null],
+    entry['source'] ?? fields['source'] ?? entry['from'] ?? null,
+    entry['object_ref'] ?? fields['object_ref'] ?? null,
+    entry['severity'] ?? fields['severity'] ?? null,
+    entry['state_version'] ?? fields['state_version'] ?? null];
+}
+
+function isCriticalSystemNotice(entry: Record<string, unknown>): boolean {
+  return noticeEpisode(entry)[3] === 'critical';
+}
+
 /** Native delivery only: derive scope from live presence and held claims, never
  * from an alarm's guessed audience. VIEW/feed history keeps the complete rows.
  * A failed scope read passes null and preserves delivery. */
@@ -177,12 +195,13 @@ export function relevantSystemNoticeDelivery<T extends Record<string, unknown>>(
     return false;
   };
   const kept = entries.filter(entry => {
-    if (!isSystemNotice(entry) || entry['blocking'] === true ||
+    if (!isSystemNotice(entry) || isCriticalSystemNotice(entry) || entry['blocking'] === true ||
         ['ack', 'answer', 'action'].includes(String(entry['expects']))) return true;
     // Exclude emitter bookkeeping: its checkout/cwd identifies the producer,
     // not the subject. Preserve both structured references and literal prose.
     const text = JSON.stringify([entry['summary'], entry['body'], entry['sections'],
       entry['condition_key'], entry['resolves_condition'], entry['resolves_conditions'],
+      entry['event_key'], noticeEpisode(entry)[2],
       entry['plan_slug'], entry['files'], entry['items'], entry['why']]);
     return refs.some(ref => mentions(text, ref));
   });
@@ -209,7 +228,7 @@ export function changedSystemNoticeDelivery<T extends Record<string, unknown>>(
   const kept: T[] = [];
   const pending = new Map<T, { key: string; fingerprint: string }>();
   for (const entry of entries) {
-    if (!isSystemNotice(entry) || entry['blocking'] === true ||
+    if (!isSystemNotice(entry) || isCriticalSystemNotice(entry) || entry['blocking'] === true ||
         ['ack', 'answer', 'action'].includes(String(entry['expects']))) {
       kept.push(entry);
       continue;
@@ -223,13 +242,15 @@ export function changedSystemNoticeDelivery<T extends Record<string, unknown>>(
       if (body.endsWith(trailer)) body = body.slice(0, -trailer.length);
     }
     const condition = entry['condition_key'];
-    const key = digest([entry['from'], typeof condition === 'string' && condition
-      ? condition : [entry['kind'], entry['category'], normalize(entry['summary'])]]);
+    const episode = noticeEpisode(entry);
+    const key = digest([entry['from'], episode[1], episode[2],
+      typeof condition === 'string' && condition
+        ? condition : [entry['event_key'], entry['kind'], entry['category'], normalize(entry['summary'])]]);
     const sectionText = body === undefined && Array.isArray(entry['sections'])
       ? entry['sections'].map((section) => section && typeof section === 'object'
         ? normalize((section as Record<string, unknown>)['text']) : null) : null;
     const fingerprint = digest([entry['kind'], entry['category'], normalize(entry['summary']),
-      normalize(body), sectionText, entry['resolved'] === true, emitter?.pid, emitter?.startedAt]);
+      normalize(body), sectionText, episode, entry['resolved'] === true, emitter?.pid, emitter?.startedAt]);
     if (state[key] !== fingerprint) kept.push(entry);
     pending.set(entry, { key, fingerprint });
   }
@@ -263,7 +284,8 @@ export function coalesceRepeatedBroadcasts<T extends Record<string, unknown>>(
     if (typeof summary !== "string" || !summary) return null;
     if (!Array.isArray(to) || !to.includes("*")) return null;
     const summaryKey = summary.replace(VOLATILE_TIMESTAMP_RE, "<ts>");
-    return `${String(e["from"] ?? "")}\x00${String(e["kind"] ?? "")}\x00${category}\x00${summaryKey}`;
+    return JSON.stringify([e['from'] ?? null, e['kind'] ?? null, category,
+      summaryKey, noticeEpisode(e)]);
   };
   entries.forEach((e, i) => {
     const key = keyOf(e);
