@@ -1,16 +1,29 @@
-/** Real PostgreSQL admission tests. Public call-census and process-restart
- * recovery cases are additional acceptance obligations, not implied by these. */
+/** Real PostgreSQL admission, public-call and actual process/store restart tests. */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
-import { readFileSync } from 'node:fs';
-import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
-import { CARRY_NOTES_DDL, HARNESS_FEATURES_CONSOLIDATED_DDL } from '../test/_work-items-schema';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import type { FreshPgDb } from '../test/_pg-helpers';
+import { createPublicParkTestDb } from '../test/_public-park-pg';
+import type {} from '../test/_park-recovery-child';
 import type { ParkRecoveryAdmission } from './durable-park-recovery';
 import type { SessionState } from './agent-tools/coordination/presence-wakeability';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async original => ({
   ...(await original<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: h.sql }),
+}));
+vi.mock('./workspace-registry', async original => ({
+  ...(await original<typeof import('./workspace-registry')>()), activeWorkspaceId: () => 'default',
+}));
+vi.mock('./harness-core', async original => ({
+  ...(await original<typeof import('./harness-core')>()), resolveProject: async (slug: string) => ({ slug, path: `/tmp/${slug}` }),
+}));
+vi.mock('./blueprint/operation-worker-binding', async original => ({
+  ...(await original<typeof import('./blueprint/operation-worker-binding')>()), readActiveOperationWorkerClaimBinding: async () => ({ status: 'none' as const }),
+}));
+vi.mock('./agent-tools/coordination/federation-scope', async original => ({
+  ...(await original<typeof import('./agent-tools/coordination/federation-scope')>()), resolveWorkspaceHiveScope: async () => ({ kind: 'none' as const }),
 }));
 const { admitParkRecoveryInTransaction, checkParkRecoveryInTransaction,
   ParkRecoveryAdmissionUnchanged, parkRecoveryCertificate,
@@ -45,12 +58,8 @@ async function qualify(tx: postgres.TransactionSql, payload = { ready: true, usa
     fired_payload=${JSON.stringify(payload)}::text::jsonb WHERE id=${declarationId}`;
 }
 beforeAll(async () => {
-  db = await createFreshPgDb('automatic-park-admission');
+  db = await createPublicParkTestDb('automatic-park-admission');
   h.sql = db.sql;
-  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
-  await db.sql.unsafe(CARRY_NOTES_DDL);
-  await db.sql.unsafe(readFileSync(new URL('../../../libs/papercusp/libs/db/sql/741-work-items-condition-key-singleton.sql', import.meta.url), 'utf8'));
-  await applyEventSubstrateMigrationsForTest(db.sql, { label: 'durable-park-recovery.integration.test.ts' });
 }, 90_000);
 afterAll(async () => { await db?.cleanup(); });
 beforeEach(async () => {
@@ -94,6 +103,93 @@ function protectedItem(row: Awaited<ReturnType<typeof snapshot>>) {
   delete copy.payload.claim_hold_release.recovery;
   return copy;
 }
+
+async function restartController(mode: 'crash' | 'recover', cut: string, successor = '') {
+  const child = spawn(process.execPath, ['--import', 'tsx',
+    fileURLToPath(new URL('../test/_park-recovery-child.ts', import.meta.url))], {
+    cwd: fileURLToPath(new URL('../', import.meta.url)), stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, NODE_OPTIONS: '', PARK_RESTART_DSN: db.url, PARK_RESTART_ITEM: ID,
+      PARK_RESTART_HARNESS: HARNESS, PARK_RESTART_MODE: mode, PARK_RESTART_CUT: cut,
+      PARK_RESTART_SUCCESSOR: successor },
+  });
+  let output = '';
+  child.stdout.on('data', chunk => { output += String(chunk); });
+  child.stderr.on('data', chunk => { output += String(chunk); });
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, 30_000);
+  try {
+    const result = await new Promise<{ code: number | null; signal: string | null }>((resolve, reject) => {
+      child.once('error', reject);
+      child.once('close', (code, signal) => resolve({ code, signal }));
+    });
+    expect(timedOut, output).toBe(false);
+    if (mode === 'crash') {
+      expect(result.signal, output).toBe('SIGKILL');
+      expect(output).toContain('PARK_RESTART_CUT ' + cut);
+      return null;
+    }
+    expect(result.code, output).toBe(0);
+    const line = output.split('\n').find(row => row.startsWith('PARK_RESTART_RESULT '));
+    expect(line, output).toBeTruthy();
+    return JSON.parse(line!.slice('PARK_RESTART_RESULT '.length));
+  } finally { clearTimeout(timer); }
+}
+
+describe('PARK-RECOVERY causal unchanged-call silent-prerequisite restart', () => {
+  it.each(['before-commit', 'after-commit', 'after-enqueue'])(
+    'the same outcome oracle rejects missing admission and survives actual controller death %s', async cut => {
+      const { default: release } = await import('./agent-tools/work_items/release');
+      const args = release.args.parse({ id: ID, harness: HARNESS, claimHold: true,
+        claimHoldRelease: { condition: input.releaseContract.condition, trigger: EVENT, owner: OWNER } });
+      const context = { isSuperuser: true, uiClientId: OWNER, workspaceId: 'default', role: 'su',
+        signal: new AbortController().signal, log() {}, progress() {}, metadata() {} } as never;
+      const call = async () => {
+        const result = await release.handler(args, context) as { data: { results: Array<{ ok: boolean }> } };
+        expect(result.data.results[0], JSON.stringify(result)).toMatchObject({ ok: true });
+      };
+      await call();
+      const admitted = (await snapshot()).payload.claim_hold_release.recovery as ParkRecoveryAdmission;
+      const protectedBefore = protectedItem(await snapshot());
+      const [timer] = await db.sql`SELECT * FROM harness_shared.event_awaits WHERE id=${admitted.awaitId}`;
+      // Deliberate missing-admission mutation: same public call/obligation,
+      // unchanged producer silence and protected state, only the mechanism absent.
+      await db.sql`DELETE FROM harness_shared.event_awaits WHERE id=${admitted.awaitId}`;
+      await db.sql`UPDATE harness_shared.work_items SET payload=payload #- '{claim_hold_release,recovery}' WHERE feature_id=${ID}`;
+      const boundedOutcome = (outcome: NonNullable<Awaited<ReturnType<typeof restartController>>>, owner: string) => {
+        expect(outcome.producerFires).toBe(0);
+        expect(outcome.admission.receipt.id).toBe(admitted.receipt.id);
+        expect(outcome.actions).toHaveLength(1);
+        expect(outcome.actions[0].taken_by).toBe(owner);
+        expect(outcome.deliveries).toHaveLength(1);
+        expect(outcome.deliveries[0].subscriber_id).toBe(owner);
+        expect(outcome.beforeSources).toEqual(outcome.afterSources);
+      };
+      const missing = await restartController('recover', cut);
+      expect(missing).toMatchObject({ admission: null, actions: [], deliveries: [], producerFires: 0 });
+      expect(() => boundedOutcome(missing, OWNER)).toThrow();
+      expect(protectedItem(await snapshot())).toEqual(protectedBefore);
+      // Restore precisely the admission created by the identical unchanged
+      // call, then replay that call rather than constructing another receipt.
+      await db.sql`INSERT INTO harness_shared.event_awaits OVERRIDING SYSTEM VALUE
+        SELECT * FROM jsonb_populate_record(NULL::harness_shared.event_awaits, ${JSON.stringify(timer)}::text::jsonb)`;
+      await db.sql`UPDATE harness_shared.work_items SET payload=jsonb_set(payload,
+        '{claim_hold_release,recovery}', ${JSON.stringify(admitted)}::text::jsonb) WHERE feature_id=${ID}`;
+      await call();
+      await restartController('crash', cut);
+      const recovered = await restartController('recover', cut);
+      boundedOutcome(recovered, OWNER);
+      const replayed = await restartController('recover', cut);
+      boundedOutcome(replayed, OWNER);
+      expect(replayed.actions[0].feature_id).toBe(recovered.actions[0].feature_id);
+      expect(replayed.deliveries[0].id).toBe(recovered.deliveries[0].id);
+      expect(replayed.pid).not.toBe(recovered.pid);
+      const successor = 'su-restarted-successor';
+      const succeeded = await restartController('recover', cut, successor);
+      boundedOutcome(succeeded, successor);
+      expect(succeeded.actions[0].feature_id).toBe(recovered.actions[0].feature_id);
+      expect(protectedItem(await snapshot())).toEqual(protectedBefore);
+    }, 180_000);
+});
 
 describe('serialized progress and timeout recovery (PARK-PROGRESS / PARK-RECOVERY)', () => {
   it('checks fresh checkpoint bodies before expiry, consumes once, and preserves custody/safety', async () => {

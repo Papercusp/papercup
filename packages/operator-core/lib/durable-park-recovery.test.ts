@@ -1,7 +1,57 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { TransactionSql } from 'postgres';
 import { AUTOMATIC_PARK_RECOVERY_POLICY, createParkRecoveryReceipt, expireParkRecovery,
   parkRecoveryCertificate, renewParkRecovery, validateParkRecoveryPolicy,
-  selectParkRecoveryOwner, type ParkProgressEvidence, type ParkRecoveryPolicy } from './durable-park-recovery';
+  selectParkRecoveryOwner, assertParkRecoveryPendingInTransaction,
+  type ParkProgressEvidence, type ParkRecoveryPolicy } from './durable-park-recovery';
+
+const conditionReader = vi.hoisted(() => ({ inspect: vi.fn() }));
+vi.mock('./events/await/store', () => ({ inspectEventKey: conditionReader.inspect }));
+const completeInputs = { ready: true, usable: true, qualified: true, version: 2,
+  source: 'current-source', retainedSource: 'current-source' };
+const currentCondition = (payload: Record<string, unknown> | null) => ({
+  announcements: [{ supersededAt: null, firedAt: payload ? new Date().toISOString() : null,
+    firedReason: payload ? 'event' : null, firedPayload: payload,
+    expectedCondition: { kind: 'predicate', predicate: Object.fromEntries(
+      Object.entries(completeInputs).map(([key, value]) => [key, { eq: value }])) } }], fireLatch: null,
+});
+beforeEach(() => { conditionReader.inspect.mockReset(); });
+
+describe('PARK-ADMISSION / PARK-READINESS separate locked current-condition evaluation', () => {
+  it.each(['qualification', 'admission'] as const)('observes the %s winner after the initial probe', async winner => {
+    let snapshot = currentCondition(null);
+    conditionReader.inspect.mockImplementation(async () => snapshot);
+    // The public pre-probe saw pending. The producer may change it while the
+    // transaction is waiting for its advisory lock; only the later read counts.
+    expect((await conditionReader.inspect()).announcements[0].firedAt).toBeNull();
+    let resume!: () => void;
+    const lock = new Promise<void>(resolve => { resume = resolve; });
+    const tx = vi.fn(() => lock) as unknown as TransactionSql;
+    const decision = assertParkRecoveryPendingInTransaction(tx, 'fixture:all-qualified');
+    const outcome = decision.then(() => 'pending', error => error.disposition);
+    expect(conditionReader.inspect).toHaveBeenCalledTimes(1);
+    if (winner === 'qualification') snapshot = currentCondition(completeInputs);
+    resume();
+    expect(await outcome).toBe(winner === 'qualification' ? 'already-satisfied' : 'pending');
+    expect(conditionReader.inspect).toHaveBeenCalledTimes(2);
+    expect(tx).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['subset completion', { ready: true }],
+    ['failed qualification', { ...completeInputs, qualified: false }],
+    ['unusable retained inputs', { ...completeInputs, usable: false }],
+    ['stale condition version', { ...completeInputs, version: 1 }],
+    ['incoherent source', { ...completeInputs, retainedSource: 'old-source' }],
+  ])('does not promote %s and accepts the otherwise-identical complete control', async (_name, payload) => {
+    const tx = vi.fn(async () => []) as unknown as TransactionSql;
+    conditionReader.inspect.mockResolvedValue(currentCondition(payload));
+    await expect(assertParkRecoveryPendingInTransaction(tx, 'fixture:all-qualified')).resolves.toBeUndefined();
+    conditionReader.inspect.mockResolvedValue(currentCondition(completeInputs));
+    await expect(assertParkRecoveryPendingInTransaction(tx, 'fixture:all-qualified'))
+      .rejects.toMatchObject({ disposition: 'already-satisfied' });
+  });
+});
 
 const MINUTE = 60_000;
 const START = 1_000_000;

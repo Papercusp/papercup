@@ -10580,10 +10580,18 @@ export async function releaseWorkItem(
   // after this read; this preflight does not replace that CAS.
   if (!opts.blockerDecision && opts.expectedAssignee !== undefined && wi.assignee && wi.assignee !== opts.expectedAssignee) return null;
   let blockerMutation: BlockerDecisionMutation | undefined;
+  const refuseBlockerRelease = async (checked: { nextAction: string }): Promise<never> => {
+    if (opts.durablePark) {
+      const { assertParkRecoveryPendingInTransaction } = await import('./durable-park-recovery');
+      await boundedOrgTxn(tx => assertParkRecoveryPendingInTransaction(tx,
+        opts.durablePark!.releaseContract.trigger), { phase: 'work_items:release:qualification-winner' });
+    }
+    throw Object.assign(new Error(checked.nextAction), checked);
+  };
   if (opts.blockerEvidenceContext && !opts.blockerDecision) {
     const checked = await preflightBlockerDecision(wi, undefined, opts.blockerEvidenceContext,
       { effect: { release: true }, enteringDeferral: opts.enteringBlockerDeferral });
-    if (!checked.ok) throw Object.assign(new Error(checked.nextAction), checked);
+    if (!checked.ok) await refuseBlockerRelease(checked);
   }
   if (opts.blockerDecision) {
     const patch = opts.blockerDecision.payloadPatch ?? {};
@@ -10596,7 +10604,7 @@ export async function releaseWorkItem(
           ownerId: opts.releasingOwnerId ?? '', sessionId: opts.blockerDecision.sessionId,
           workItemId: id, custodianId: wi.assignee,
         }, { effect });
-    if (!prepared.ok) throw Object.assign(new Error(prepared.nextAction), prepared);
+    if (!prepared.ok) return refuseBlockerRelease(prepared);
     if ('ordinary' in prepared) throw new BlockerDecisionMutationConflict();
     opts.onBlockerDecision?.({ record: prepared.record, replayed: prepared.replayed });
     if (prepared.replayed) return wi;

@@ -2,7 +2,7 @@
  * These decisions run under the admission row lock; none grants custody, clears
  * a safety hold, or establishes that a release condition has been satisfied. */
 import { createHash } from 'node:crypto';
-import type { TransactionSql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import type { DurableParkReleaseContract } from './work-items-durable-park-audit';
 import type { ProducerHealthCertificate } from './events/await/verified-wait';
 import type { SessionState } from './agent-tools/coordination/presence-wakeability';
@@ -199,6 +199,23 @@ export class ParkRecoveryAdmissionUnchanged extends Error {
  * takes the same event-key -> item order, so admission must never invert it. */
 export async function lockParkRecoveryCondition(tx: TransactionSql, trigger: string): Promise<void> {
   await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'event-announce:' + trigger}, 0))`;
+}
+
+/** A blocker preflight can observe qualification after the public admission
+ * probe. Resolve that winner under the same producer lock before returning a
+ * stale deferral refusal. This performs no park, claim or decision writes. */
+export async function assertParkRecoveryPendingInTransaction(tx: Sql | TransactionSql, trigger: string): Promise<void> {
+  await lockParkRecoveryCondition(tx as TransactionSql, trigger);
+  const [{ inspectEventKey }, { readEventConditionReachability }] = await Promise.all([
+    import('./events/await/store'), import('./external-condition-reachability'),
+  ]);
+  const snapshot = await inspectEventKey(trigger, tx as TransactionSql);
+  const condition = await readEventConditionReachability(trigger, {
+    requireSpecificCondition: true, inspect: async () => snapshot,
+  });
+  if (condition.authoritative && condition.basis === 'fired' && !condition.uncertifiedReason) {
+    throw new ParkRecoveryAdmissionUnchanged('already-satisfied');
+  }
 }
 
 /** Run within the caller's release transaction. Share the producer's declaration
