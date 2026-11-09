@@ -584,6 +584,42 @@ describe('task lifecycle handlers', () => {
     }
   });
 
+  it('arms the existing scope runner to retain detached output and exit without the operator callback', async () => {
+    const reportDir = await mkdtemp('/tmp/testing-run-store-detached-exit-');
+    let wrappedEnv: NodeJS.ProcessEnv | undefined;
+    taskManagerMocks.begin.mockReturnValueOnce({
+      taskId: 'task-detached-exit', confined: true, scopeUnit: 'pc-task-detached-exit.scope', enrolled: true,
+      registrationReady: null, releaseEnvironmentTransport: vi.fn(),
+      wrap: vi.fn((binary: string, argv: string[], env: NodeJS.ProcessEnv) => {
+        wrappedEnv = env;
+        return { binary, argv };
+      }),
+    });
+    try {
+      const snap = store.startRun(req({
+        cwd: '/repo', requestedFiles: ['lib/one.test.ts'], testRunSource: 'local',
+        env: { PAPERCUSP_SYSTEMD_RUNNER_OUTPUT_PATH: '/caller-forged.log', FIXTURE_API_KEY: 'fixture-secret' },
+        detachedReportArtifacts: [{
+          reportPath: join(reportDir, 'report.json'), root: '/repo', worktreeBefore: null,
+          scope: { harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
+        }],
+      }));
+      const spec = taskManagerMocks.begin.mock.calls[0][0];
+      const artifact = spec.detail.detachedReportArtifacts.artifacts[0];
+      expect(spec.logPath).toBe(artifact.stdoutPath);
+      expect(wrappedEnv?.PAPERCUSP_SYSTEMD_RUNNER_OUTPUT_PATH).toBe(artifact.stdoutPath);
+      const redactions = JSON.parse(Buffer.from(wrappedEnv!.PAPERCUSP_SYSTEMD_RUNNER_REDACTIONS!, 'base64').toString());
+      expect(redactions.values).toContain('fixture-secret');
+      expect(spawnMock).toHaveBeenCalledWith('npx', ['vitest', 'run'], expect.objectContaining({
+        detached: true, stdio: ['ignore', 'ignore', 'ignore'],
+      }));
+      expect(store.getRun(snap.runId)?.status).toBe('running');
+      lastChild._emitClose(0);
+    } finally {
+      await rm(reportDir, { recursive: true, force: true });
+    }
+  });
+
   it('finishes once on child error even when the child subsequently closes', () => {
     const snap = store.startRun(req());
     const enrolment = taskManagerMocks.begin.mock.results[0]?.value;

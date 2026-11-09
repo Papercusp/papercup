@@ -39,7 +39,8 @@ import {
   captureConfigurationSnapshot,
   type ConfigurationSnapshot,
 } from '@papercusp/test-config/configuration-snapshot';
-import { redactSensitiveText, redactSensitiveValue } from './sensitive-text';
+import { isSensitiveValueKey, redactSensitiveText, redactSensitiveValue, SELF_IDENTIFYING_SECRET_PATTERN } from './sensitive-text';
+import { SYSTEMD_RUNNER_OUTPUT_PATH_ENV, SYSTEMD_RUNNER_REDACTIONS_ENV } from './systemd-scope-env-runner.mjs';
 import { isVitestAssertionFailure } from '@papercusp/test-config/vitest-failure-classification';
 import { resolveGitContext } from './testing-branch-resolve';
 import type { TestRunSource } from './testing-run-source';
@@ -1812,6 +1813,22 @@ function prepareRun(
   // run from starting.
   const enrolment = beginSyncEnrolment(taskSpec);
   if (enrolment.enrolled) snapshot.taskId = enrolment.taskId;
+  // The scope's existing env runner survives loss of the operator's child
+  // callback. Arm its durable sink so task-manager reconciliation can recover
+  // the actual outer exit from JOB END, independently of Vitest case counts.
+  // Caller/ancestor runner settings must never redirect this run's receipt.
+  delete childEnv[SYSTEMD_RUNNER_OUTPUT_PATH_ENV];
+  delete childEnv[SYSTEMD_RUNNER_REDACTIONS_ENV];
+  if (detachedOutputPaths && enrolment.enrolled && enrolment.confined) {
+    taskSpec.logPath = detachedOutputPaths.stdoutPath;
+    childEnv[SYSTEMD_RUNNER_OUTPUT_PATH_ENV] = detachedOutputPaths.stdoutPath;
+    childEnv[SYSTEMD_RUNNER_REDACTIONS_ENV] = Buffer.from(JSON.stringify({
+      values: Object.entries(childEnv)
+        .filter(([key, value]) => isSensitiveValueKey(key) && typeof value === 'string' && value.length > 0)
+        .map(([, value]) => value),
+      patterns: [SELF_IDENTIFYING_SECRET_PATTERN],
+    }), 'utf8').toString('base64');
+  }
   // Reuse the verifier's managed-task ownership seam. Never inherit a parent or
   // caller-supplied id: terminal cleanup must identify this exact test scope.
   childEnv.PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID = enrolment.enrolled ? enrolment.taskId : '';
@@ -2123,8 +2140,9 @@ function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot
   let proc: ChildProcess;
   let stdoutFd: number | undefined;
   let stderrFd: number | undefined;
+  const runnerOwnsOutput = Boolean(detachedOutputPaths && enrolment.enrolled && enrolment.confined);
   try {
-    if (detachedOutputPaths) {
+    if (detachedOutputPaths && !runnerOwnsOutput) {
       stdoutFd = openSync(detachedOutputPaths.stdoutPath, 'a', 0o600);
       stderrFd = openSync(detachedOutputPaths.stderrPath, 'a', 0o600);
     }
@@ -2135,9 +2153,9 @@ function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot
         // a staging restart closes those pipes while the systemd scope survives,
         // which can terminate the router before Vitest flushes its JSON report.
         // Ordinary runs retain the historical pipes for live output.
-        stdio: detachedOutputPaths
-          ? ['ignore', stdoutFd!, stderrFd!]
-          : ['ignore', 'pipe', 'pipe'],
+        stdio: runnerOwnsOutput ? ['ignore', 'ignore', 'ignore']
+          : detachedOutputPaths ? ['ignore', stdoutFd!, stderrFd!]
+            : ['ignore', 'pipe', 'pipe'],
         // Detached runs are process-group leaders. This is required both for
         // admin cancellation and for timeout recovery launched by testing:run:
         // the router may own a nested Vitest process tree.
