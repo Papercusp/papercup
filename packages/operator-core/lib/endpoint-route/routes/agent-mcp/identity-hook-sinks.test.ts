@@ -14,6 +14,10 @@ import { capturePgDiagnosticContext, recordPgResult } from '@papercusp/db-org/ac
 import * as acquireDiagnostics from '@papercusp/db-org/acquire-registry';
 import { withNamedQueryDiagnosticContext } from '../../../agent-tools/db-diagnostic-correlation-wiring';
 const planExecutionGuard = vi.hoisted(() => vi.fn());
+const compactMemory = vi.hoisted(() => ({ brief: vi.fn(), reprime: vi.fn(), receipt: vi.fn() }));
+vi.mock('../../../carry-brief', () => ({ buildCarryBrief: compactMemory.brief }));
+vi.mock('../../../memory/compact-reprime', () => ({ buildCompactReprimeBlock: compactMemory.reprime }));
+vi.mock('../../../memory/session-epoch-ledger', () => ({ withMemoryEmissionReceipt: compactMemory.receipt }));
 const priorityOrgPgMock = vi.hoisted(() => vi.fn(async (run: () => Promise<unknown>) => run()));
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
@@ -84,6 +88,10 @@ const NEVER_EMIT_MARKER = 'never-emit-me';
 const call = (command: string) => ({ tool: 'Bash', input: { command }, client: 'claude' });
 
 beforeEach(() => {
+  compactMemory.brief.mockReset().mockResolvedValue({ heldItems: [{ id: 'WI-compact', title: 'approval', harness: 'papercusp' }],
+    fleet: null, awaits: [], facts: [] });
+  compactMemory.reprime.mockReset().mockResolvedValue('MEMORY REPRIME');
+  compactMemory.receipt.mockReset().mockImplementation(async (_sql, _owner, _proof, run) => run());
   priorityOrgPgMock.mockClear();
   planExecutionGuard.mockReset().mockResolvedValue(null);
   evaluateHookContextSinkMock.mockReset().mockResolvedValue({ text: '', result: null });
@@ -755,5 +763,47 @@ describe('POST /agent-mcp/stop-context and /agent-mcp/compaction-context', () =>
 
     turnsExistMock.mockResolvedValue(true);
     expect((await post('/agent-mcp/compaction-context', { owner: 'o', workspace: 'w', source: 'startup' })).text).toBe('RESEED');
+  });
+
+  it('Codex compact re-prime appends memory inside the existing receipt scope', async () => {
+    evaluateHookContextSinkMock.mockResolvedValue({ text: 'IDENTITY', result: null });
+    const proofs = [{ token: 'prior', fragments: [] }];
+    const out = await post('/agent-mcp/compaction-context', { owner: 'o', workspace: 'w', source: 'compact',
+      client: 'codex', memoryReceiptMode: true, confirmedMemoryDeliveries: proofs });
+    expect(out.text).toBe('IDENTITY\n\nMEMORY REPRIME');
+    expect(compactMemory.reprime).toHaveBeenCalledWith({ ownerId: 'o', workspaceId: 'w',
+      heldItems: [{ id: 'WI-compact', title: 'approval', harness: 'papercusp' }], fleetSlug: null, awaits: [], facts: [] });
+    expect(compactMemory.receipt.mock.calls[0]?.slice(1, 3)).toEqual(['o', proofs]);
+  });
+
+  it.each([
+    { client: 'claude', source: 'compact', memoryReceiptMode: true },
+    { client: 'codex', source: 'resume', memoryReceiptMode: true },
+    { client: 'codex', source: 'startup', memoryReceiptMode: true },
+    { client: 'codex', source: 'compact', memoryReceiptMode: false },
+  ])('Codex compact re-prime preserves the separate epoch owner and due check: %j', async input => {
+    await post('/agent-mcp/compaction-context', { owner: 'o', workspace: 'w', ...input });
+    expect(compactMemory.reprime).not.toHaveBeenCalled();
+    expect(compactMemory.receipt).not.toHaveBeenCalled();
+  });
+
+  it('Codex compact re-prime bounds a stalled carry read and preserves identity text', async () => {
+    // Preload lazy seams before advancing the virtual hook deadline.
+    await Promise.all([import('../../../carry-brief'), import('../../../memory/compact-reprime'),
+      import('../../../memory/session-epoch-ledger'), import('../../../bounded-timeout')]);
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let release!: (value: unknown) => void;
+    compactMemory.brief.mockImplementation(() => new Promise(resolve => { release = resolve; }));
+    evaluateHookContextSinkMock.mockResolvedValue({ text: 'IDENTITY', result: null });
+    try {
+      const response = post('/agent-mcp/compaction-context', { owner: 'o', workspace: 'w', source: 'compact',
+        client: 'codex', memoryReceiptMode: true });
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(await response).toEqual({ ok: true, text: 'IDENTITY' });
+      release({ heldItems: [], fleet: null, awaits: [], facts: [] });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(compactMemory.reprime).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); warn.mockRestore(); }
   });
 });
