@@ -88,7 +88,7 @@ describe('context reliability R-1: artifact-validator', () => {
       expect(validateDeliveryMatrix(bad).errors).toContain(`${deliveryMatrixCellKey(c)}:uninstrumented-sink`);
     }
     for (const c of m.cells.filter(c => c.client === 'omp' &&
-      ['initialize', 'orient', 'claim', 'create', 'compact-reprime'].includes(c.sink))) {
+      ['initialize', 'compact-reprime'].includes(c.sink))) {
       expect(deliveryTerminalOracle(c)).toBe('NONE');
     }
     expect(deliveryTerminalOracle({ client: 'codex', sink: 'compact-reprime', source: 'memory', fault: 'retry' })).toBe('NONE');
@@ -98,6 +98,7 @@ describe('context reliability R-1: artifact-validator', () => {
     const endpoints = [
       ...(['codex', 'claude'] as const).flatMap(client =>
         (['initialize', 'orient', 'claim', 'create'] as const).map(sink => ({ client, sink }))),
+      ...(['orient', 'claim', 'create'] as const).map(sink => ({ client: 'omp' as const, sink })),
       { client: 'claude' as const, sink: 'compact-reprime' as const },
     ];
     for (const endpoint of endpoints) {

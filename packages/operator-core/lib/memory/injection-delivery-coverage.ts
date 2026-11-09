@@ -342,10 +342,13 @@ export function deliveryTerminalOracle(cell: DeliveryMatrixCoordinate): Delivery
   if (!DELIVERY_MATRIX_CLIENTS.includes(cell.client as typeof DELIVERY_MATRIX_CLIENTS[number])) return 'NONE';
   if (cell.sink === 'turn-start' || cell.sink === 'mid-turn') return 'complete-stdout';
   // ptool's stdio adapter retains the exact initialize/tool response before
-  // the installed Codex/Claude client consumes it. OMP uses a different,
-  // in-process adapter and cannot inherit this instrument's authority.
+  // the installed Codex/Claude client consumes it.
   if ((cell.client === 'codex' || cell.client === 'claude') &&
       ['initialize', 'orient', 'claim', 'create'].includes(cell.sink)) return 'complete-stdout';
+  // The managed OMP host separately retains final tool_execution_end stdout
+  // after native result hooks. Its in-process MCP callback alone is not proof,
+  // and this boundary does not observe initialize's mounted instructions.
+  if (cell.client === 'omp' && ['orient', 'claim', 'create'].includes(cell.sink)) return 'complete-stdout';
   // The generated Claude SessionStart recovery hook has the same immutable
   // stdout receipt boundary. Other compact hosts remain uninstrumented.
   return cell.client === 'claude' && cell.sink === 'compact-reprime' ? 'complete-stdout' : 'NONE';
