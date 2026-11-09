@@ -55,7 +55,8 @@ export async function measureLifecycle(url: string, token: string, policy: Capab
     '--extension', extension, '--model', 'surface-fixture/proof', '--thinking', 'off',
     '--auto-approve', '--session-dir', sessions];
   const selection = ['--tools', nativeTools.join(',')];
-  const observations = [];
+  const observations: { surface: string; version: string; names: string[]; hasNativeExecution: boolean;
+    nativeRefused: boolean; managedCalls: number; managedRefusal: boolean; managedPath: string }[] = [];
   let transcript: string | undefined;
   try {
     const surfaces = viaInvoke ? ['invoke'] as const
