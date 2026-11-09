@@ -16,6 +16,8 @@ import { superuserTokenPath } from '../superuser-token';
 import { workspacesRoot, readRegistry } from '../workspace-registry';
 import { scratchRoot } from '../scratch-uri';
 import { googleOAuthClientPath } from '../oauth/providers';
+import { oauthStateKeyFilePath } from '../oauth/state';
+import { fleetClaudeTokenPath } from '@papercusp/orchestrator/fleet-claude-token';
 import { parseUnitEnvironment } from '../provisioner/unit-drift';
 import ts from 'typescript';
 import { identityDir } from '../identity/keychain';
@@ -1206,6 +1208,8 @@ export function secretCensusProducers() {
     { path: dbEncryptionKeyFilePath(), producer: 'db-encryption' },
     { path: superuserTokenPath(), producer: 'superuser-token' },
     { path: googleOAuthClientPath(), producer: 'google-oauth-desktop-client' },
+    { path: oauthStateKeyFilePath(), producer: 'oauth-state-signing-key' },
+    { path: fleetClaudeTokenPath(), producer: 'fleet-claude-token' },
   ];
   const roots: CensusRoot[] = [];
   const declarations: CensusDeclaration[] = [];
