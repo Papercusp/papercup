@@ -242,12 +242,18 @@ describe('independent PARK-READINESS and PARK-SAFETY protected outcomes', () => 
     expect(await actions()).toHaveLength(1);
   });
 
-  it('recovery notification and successor election preserve an active peer claim, actual file-lock lease and acceptance', async () => {
-    await withPeerLock(async readLock => {
+  it.each([
+    ['active peer claim alone', true, false],
+    ['actual peer file-lock alone', false, true],
+    ['active peer claim and actual file-lock together', true, true],
+  ] as const)('recovery notification and successor election preserve %s and acceptance', async (_case, activeClaim, activeLock) => {
+    const exercise = async (readLock: () => Promise<unknown>) => {
       const admitted = await db.sql.begin(tx => releaseAndAdmit(tx));
-      await db.sql`UPDATE harness_shared.work_items SET taken_by='su-protected-peer', status='wip',
-        taken_at=clock_timestamp(), expires_at=clock_timestamp()+interval '1 hour',
-        payload=payload || ${JSON.stringify({ readiness: { version: 2, source: 'current-source',
+      if (activeClaim) await db.sql`UPDATE harness_shared.work_items
+        SET taken_by='su-protected-peer', status='wip', taken_at=clock_timestamp(),
+          expires_at=clock_timestamp()+interval '1 hour' WHERE feature_id=${ID}`;
+      await db.sql`UPDATE harness_shared.work_items
+        SET payload=payload || ${JSON.stringify({ readiness: { version: 2, source: 'current-source',
           retainedInputs: { usable: false, qualified: false } },
           acceptance: ['qualification-failed', 'usability-failed', 'source-coherence', 'full-suite'] })}::text::jsonb
         WHERE feature_id=${ID}`;
@@ -257,10 +263,13 @@ describe('independent PARK-READINESS and PARK-SAFETY protected outcomes', () => 
         return { row, claim, locks: await readLock() };
       };
       const before = await readProtected();
+      expect(before.row.taken_by).toBe(activeClaim ? 'su-protected-peer' : null);
+      expect(before.locks).toHaveLength(activeLock ? 1 : 0);
       const safetyOracle = (value: typeof before) => expect(value).toEqual(before);
-      // Independent sensitivity control changes only the protected lock lease.
+      // Vary one protected value independently of the recovery implementation.
       const altered = structuredClone(before);
-      (altered.locks as Array<{ owner: string }>)[0].owner = 'su-successor';
+      if (activeLock) (altered.locks as Array<{ owner: string }>)[0].owner = 'su-successor';
+      else altered.row.taken_by = 'su-successor';
       expect(() => safetyOracle(altered)).toThrow();
       const recovered = (await check(admitted, admitted.receipt.deadlineMs)).admission!;
       const certificate = parkRecoveryCertificate(recovered.receipt);
@@ -280,7 +289,9 @@ describe('independent PARK-READINESS and PARK-SAFETY protected outcomes', () => 
       expect(route).toMatchObject({ disposition: 'target', ownerId: 'su-successor' });
       safetyOracle(await readProtected());
       expect((await actions())[0].taken_by).toBe('su-successor');
-    });
+    };
+    if (activeLock) await withPeerLock(exercise);
+    else await exercise(async () => []);
   });
 });
 
