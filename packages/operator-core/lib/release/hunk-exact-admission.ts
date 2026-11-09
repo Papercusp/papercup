@@ -40,6 +40,7 @@ import { join } from 'node:path';
 import {
   ADMISSION_GIT_DATE,
   ADMISSION_GIT_IDENTITY,
+  admissionSubmoduleRepository,
   findGitlinkAncestor,
   normalizeAdmissionPath,
   realAdmissionGit,
@@ -514,10 +515,12 @@ export function buildCommittedPatchSource(input: {
   integrationRef: string;
   paths: readonly string[];
   reason: string;
+  /** Ordered arrays and multi-source admissions do not support child replay. */
+  allowSubmodule?: boolean;
   git?: AdmissionGitRunner;
 }): CommittedPatchSuccess | HunkExactRefusal {
   const git = input.git ?? realAdmissionGit;
-  const run = (args: string[], env?: NodeJS.ProcessEnv, stdin?: string) =>
+  const run = (args: readonly string[], env?: NodeJS.ProcessEnv, stdin?: string) =>
     git(args, { cwd: input.root, env: { ...process.env, GIT_LITERAL_PATHSPECS: '1', ...env }, input: stdin });
   const refuse = (code: HunkExactRefusalCode, detail: string): HunkExactRefusal =>
     ({ ok: false, code, detail, exits: [] });
@@ -529,6 +532,68 @@ export function buildCommittedPatchSource(input: {
   if (!SHA_RE.test(input.patchCommit) || input.reason.trim().length < 8) {
     return refuse('invalid-patch-source', 'patchCommit requires a full immutable SHA and an explicit review reason (at least 8 characters)');
   }
+  // Resolve the parent integration tree ONCE. Child ancestry is against its pinned
+  // child, never the child's mutable branch or a later parent integration tip.
+  const integration = run(['rev-parse', '--verify', `${input.integrationRef}^{commit}`]);
+  if (integration.status !== 0 || !SHA_RE.test(integration.stdout.trim())) return failed('pin integration commit', integration);
+  const integrationCommit = integration.stdout.trim();
+  const head = run(['rev-parse', '--verify', `${input.repairHead}^{commit}`]);
+  if (head.status !== 0 || !SHA_RE.test(head.stdout.trim())) return failed('resolve repair head', head);
+  const repairHead = head.stdout.trim();
+  const links = wanted.map((path) => ({ path,
+    head: findGitlinkAncestor(run, repairHead, path),
+    integration: findGitlinkAncestor(run, integrationCommit, path),
+  }));
+  for (const link of links) {
+    if (!link.head.ok) return failed(link.head.step, link.head.result);
+    if (!link.integration.ok) return failed(link.integration.step, link.integration.result);
+  }
+  if (links.some((link) => link.head.ok && link.head.entry || link.integration.ok && link.integration.entry)) {
+    if (input.allowSubmodule === false) return refuse('invalid-patch-source', 'Child replay requires one patchCommit, without patchCommits, multi-source or nested child replay');
+    const first = links[0]!;
+    const frozen = first.head.ok ? first.head.entry : null;
+    const pinned = first.integration.ok ? first.integration.entry : null;
+    if (!frozen?.sha || !pinned?.sha || links.some((link) =>
+      !link.head.ok || !link.integration.ok || link.head.entry?.path !== frozen.path || link.integration.entry?.path !== frozen.path)) {
+      return refuse('invalid-paths', 'Name inner paths in exactly one child present at repairHead and the pinned integration commit; mixed parent/child and multiple children are unsupported');
+    }
+    const repo = admissionSubmoduleRepository(input.root, frozen.path, [frozen.sha, pinned.sha, input.patchCommit], git);
+    if (!repo) return refuse('invalid-patch-source', 'The canonical child object store must hold the frozen pin, integration pin and selected patch commit');
+    const innerPaths = wanted.map((path) => path.slice(frozen.path.length + 1));
+    const replay = buildCommittedPatchSource({ ...input, root: repo, repairHead: frozen.sha,
+      integrationRef: pinned.sha, paths: innerPaths, allowSubmodule: false, git });
+    if (!replay.ok) return replay;
+    const patch: CommittedPatchSuccess['patch'] = { ...replay.patch, child: {
+      gitlink: frozen.path, repository: repo, paths: innerPaths,
+      integrationCommit, integrationPin: pinned.sha, repairPin: frozen.sha,
+    } };
+    // The existing inner-path admission bridge consumes this parent source. It
+    // re-proves the child paths, runs preflights, pins the FINAL child and CASes
+    // the parent ref. This builder publishes no ref in either repository.
+    const scratch = mkdtempSync(join(tmpdir(), 'papercusp-child-patch-'));
+    const env = { GIT_INDEX_FILE: join(scratch, 'index') };
+    try {
+      const read = run(['read-tree', repairHead], env);
+      if (read.status !== 0) return failed('read parent tree', read);
+      const stage = run(['update-index', '--add', '--replace', '--cacheinfo', `160000,${replay.sourceCommit},${frozen.path}`], env);
+      if (stage.status !== 0) return failed('stage child patch pin', stage);
+      const proof = run(['diff', '--cached', '--name-only', '-z', repairHead, '--'], env);
+      if (proof.status !== 0) return failed('prove parent patch paths', proof);
+      if (proof.stdout !== `${frozen.path}\0`) return refuse('invalid-paths', 'The synthetic parent source must change exactly the selected child gitlink');
+      const treeResult = run(['write-tree'], env);
+      const tree = treeResult.stdout.trim();
+      if (treeResult.status !== 0 || !SHA_RE.test(tree)) return failed('write parent patch tree', treeResult);
+      const commit = run(['commit-tree', tree, '-p', repairHead, '-m',
+        `Committed child patch source\n\npatch: ${JSON.stringify(patch)}\nreason: ${input.reason}\n`,
+      ], { ...env, GIT_AUTHOR_NAME: ADMISSION_GIT_IDENTITY.name, GIT_AUTHOR_EMAIL: ADMISSION_GIT_IDENTITY.email,
+        GIT_AUTHOR_DATE: ADMISSION_GIT_DATE, GIT_COMMITTER_NAME: ADMISSION_GIT_IDENTITY.name,
+        GIT_COMMITTER_EMAIL: ADMISSION_GIT_IDENTITY.email, GIT_COMMITTER_DATE: ADMISSION_GIT_DATE });
+      if (commit.status !== 0 || !SHA_RE.test(commit.stdout.trim())) return failed('commit parent patch source', commit);
+      return { ok: true, sourceCommit: commit.stdout.trim(), tree, patch };
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  }
   const source = run(['rev-list', '--parents', '-n', '1', input.patchCommit, '--']);
   if (source.status !== 0) return failed('resolve patch commit', source);
   const parents = source.stdout.trim().split(/\s+/);
@@ -536,12 +601,9 @@ export function buildCommittedPatchSource(input: {
     return refuse('invalid-patch-source', 'The patch source must be a single-parent commit, never a root or merge commit');
   }
   const parent = parents[1]!;
-  const ancestor = run(['merge-base', '--is-ancestor', input.patchCommit, input.integrationRef]);
+  const ancestor = run(['merge-base', '--is-ancestor', input.patchCommit, integrationCommit]);
   if (ancestor.status === 1) return refuse('invalid-patch-source', 'The patch commit is not an ancestor of the integration branch');
   if (ancestor.status !== 0) return failed('prove integration ancestry', ancestor);
-  const head = run(['rev-parse', '--verify', `${input.repairHead}^{commit}`]);
-  if (head.status !== 0 || !SHA_RE.test(head.stdout.trim())) return failed('resolve repair head', head);
-  const repairHead = head.stdout.trim();
   // Literal paths only: never expand a directory, wildcard, symlink or gitlink into a
   // wider patch. Text additions/deletions are supported; git apply rejects conflicts.
   for (const ref of [parent, input.patchCommit, repairHead]) {

@@ -6,11 +6,15 @@
  * on staging never enters the judged lineage — and every refusal names its explicit exit.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { ADMISSION_GIT_DATE, admitPathsOntoRepairHead, realAdmissionGit } from './repair-head-admission';
+import { ADMISSION_GIT_DATE, admitPathsOntoRepairHead, frozenLineageRef, realAdmissionGit, repairAdmissionSubmoduleRef } from './repair-head-admission';
+import { importCompletenessPreflight } from './admission-import-completeness';
+import { markFrozenRepairAdmitted, createFrozenCandidateRepairQueue, parseFrozenCandidateRepairQueue } from './frozen-candidate-repair-queue';
+import { buildMultiSourceAdmissionSource } from './multi-source-admission';
 import type { AdmissionGitRunner } from './repair-head-admission';
 import {
   attributeUnledgeredPaths,
@@ -203,6 +207,201 @@ describe('committed patch recovery without fabricated hook attribution', () => {
     expect(buildCommittedPatchSource({ root, repairHead: candidate, patchCommit, paths: ['lib/a.ts'], integrationRef: 'staging', reason: 'reviewed bounded fix', git: sabotage }))
       .toMatchObject({ ok: false, code: 'invalid-paths' });
     expect(committed).toBe(false);
+  });
+});
+
+describe('committed child patch recovery through the existing admission bridge', () => {
+  const link = 'libs/nested';
+  const original = 'export const a = 1;\n' + Array.from({ length: 14 }, (_, i) => `// separator ${i}\n`).join('') + 'export const b = 2;\n';
+  function fixture() {
+    const { root } = repo();
+    const child = join(root, link);
+    mkdirSync(child, { recursive: true });
+    git(child, ['init', '-q', '-b', 'staging']);
+    const pin = sweep(child, { 'src/fix.ts': original, 'src/other.ts': 'export const other = 1;\n' }, 'frozen child');
+    const parentPin = (pin: string) => {
+      git(root, ['update-index', '--add', '--cacheinfo', `160000,${pin},${link}`]);
+      git(root, ['commit', '-qm', 'pin child']);
+      return git(root, ['rev-parse', 'HEAD']);
+    };
+    const candidate = parentPin(pin);
+    const build = (patchCommit: string, paths = ['src/fix.ts'], extra: Partial<Parameters<typeof buildCommittedPatchSource>[0]> = {}) =>
+      buildCommittedPatchSource({ root, repairHead: candidate, patchCommit, paths: paths.map((p) => `${link}/${p}`),
+        integrationRef: 'staging', reason: 'reviewed exact child repair', ...extra });
+    const pinAt = (commit: string) => git(root, ['rev-parse', `${commit}:${link}`]);
+    return { root, child, pin, candidate, parentPin, build, pinAt };
+  }
+  const snapshot = (root: string) => ({
+    index: createHash('sha256').update(readFileSync(git(root, ['rev-parse', '--path-format=absolute', '--git-path', 'index']))).digest('hex'),
+    branch: git(root, ['symbolic-ref', 'HEAD']), head: git(root, ['rev-parse', 'HEAD']),
+    status: git(root, ['status', '--porcelain']), diff: git(root, ['diff', '--binary']),
+  });
+
+  it('excludes earlier/later foreign same-file and other-file changes, round-trips child provenance and pins only the final admitted child', () => {
+    const f = fixture();
+    const foreign = original.replace('b = 2', 'b = 20');
+    const parent = sweep(f.child, { 'src/fix.ts': foreign, 'src/other.ts': 'earlier foreign\n' }, 'earlier peer');
+    const delta = sweep(f.child, { 'src/fix.ts': foreign.replace('a = 1', 'a = 10'), 'src/other.ts': 'same commit foreign\n' }, 'selected repair');
+    const tip = sweep(f.child, { 'src/fix.ts': foreign.replace('a = 1', 'a = 100'), 'src/other.ts': 'later foreign\n' }, 'later peer');
+    const integration = f.parentPin(tip);
+    write(f.root, 'lib/a.ts', 'parent work in progress\n');
+    write(f.child, 'src/fix.ts', 'child work in progress\n');
+    git(f.root, ['update-index', '--chmod=+x', 'lib/b.ts']);
+    git(f.child, ['update-index', '--chmod=+x', 'src/other.ts']);
+    const before = [snapshot(f.root), snapshot(f.child)];
+    const built = f.build(delta);
+    if (!built.ok) throw new Error(built.detail);
+    expect(f.build(delta)).toEqual(built);
+    expect(built.patch).toEqual({ commit: delta, parent, sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      child: { gitlink: link, repository: f.child, paths: ['src/fix.ts'], integrationCommit: integration, integrationPin: tip, repairPin: f.pin } });
+    expect(git(f.root, ['diff-tree', '-r', '--name-only', '--no-commit-id', f.candidate, built.sourceCommit])).toBe(link);
+    const sourcePin = f.pinAt(built.sourceCommit);
+    expect(show(f.child, sourcePin, 'src/fix.ts')).toBe(original.replace('a = 1', 'a = 10'));
+    expect(show(f.child, sourcePin, 'src/other.ts')).toBe('export const other = 1;\n');
+    const input = { root: f.root, candidate: f.candidate, repairHead: f.candidate,
+      source: { ref: built.sourceCommit }, paths: [`${link}/src/fix.ts`], actor: 'me', nowMs: T0,
+      preflight: importCompletenessPreflight({ root: f.root, probeRef: integration }) };
+    const preview = admitPathsOntoRepairHead({ ...input, dryRun: true });
+    if (!preview.ok) throw new Error(preview.detail);
+    expect(git(f.child, ['for-each-ref', '--format=%(refname)', 'refs/papercusp/repair-admission/'])).toBe('');
+    const admitted = admitPathsOntoRepairHead(input);
+    if (!admitted.ok) throw new Error(admitted.detail);
+    expect(admitted.commit).toBe(preview.commit);
+    const finalPin = f.pinAt(admitted.commit);
+    expect(git(f.child, ['rev-parse', repairAdmissionSubmoduleRef(finalPin)])).toBe(finalPin);
+    expect(git(f.child, ['rev-parse', `${finalPin}^`])).toBe(f.pin);
+    expect(show(f.child, finalPin, 'src/fix.ts')).toBe(original.replace('a = 1', 'a = 10'));
+    expect(show(f.child, finalPin, 'src/other.ts')).toBe('export const other = 1;\n');
+    const queue = markFrozenRepairAdmitted(createFrozenCandidateRepairQueue({ candidate: f.candidate, base: f.candidate,
+      failingTests: ['src/fix.test.ts'], nowMs: T0 }), { ...admitted.entry, mode: 'committed-patch', patch: built.patch });
+    const readback = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(queue)));
+    expect(readback?.admissions?.[0].patch).toEqual(built.patch);
+    expect(readback?.admissions?.[0].source.sha).toBe(built.sourceCommit);
+    expect(built.patch.commit).not.toBe(built.sourceCommit);
+    expect([snapshot(f.root), snapshot(f.child)]).toEqual(before);
+  });
+
+  it('reads immutable parent integration once and proves ancestry against its child pin, even if the parent branch moves', () => {
+    const f = fixture();
+    const delta = sweep(f.child, { 'src/fix.ts': original.replace('a = 1', 'a = 10') }, 'repair');
+    const integration = f.parentPin(delta);
+    let reads = 0;
+    const moving: AdmissionGitRunner = (argv, opts) => {
+      const result = realAdmissionGit(argv, opts);
+      if (opts.cwd === f.root && argv[0] === 'rev-parse' && argv.includes('staging^{commit}')) {
+        reads++;
+        git(f.root, ['update-ref', 'refs/heads/staging', f.candidate]);
+      }
+      return result;
+    };
+    const built = f.build(delta, undefined, { git: moving });
+    expect(built).toMatchObject({ ok: true, patch: { child: { integrationCommit: integration, integrationPin: delta } } });
+    expect(reads).toBe(1);
+    // A newer child branch alone cannot authorize a delta absent from the parent pin.
+    expect(f.build(delta)).toMatchObject({ ok: false, code: 'invalid-patch-source' });
+  });
+
+  it.each(['missing', 'conflicting'])('refuses %s prerequisites rather than carrying the source blob', (kind) => {
+    const f = fixture();
+    const path = kind === 'missing' ? 'src/new.ts' : 'src/fix.ts';
+    sweep(f.child, { [path]: 'prerequisite\n' }, 'foreign prerequisite');
+    const delta = sweep(f.child, { [path]: 'selected repair\n' }, 'repair');
+    f.parentPin(delta);
+    expect(f.build(delta, [path])).toMatchObject({ ok: false, code: 'patch-conflict' });
+    expect(git(f.root, ['for-each-ref', '--format=%(refname)', 'refs/papercusp/'])).toBe('');
+  });
+
+  it('supports literal additions, deletions and executable modes without wildcard expansion', () => {
+    const f = fixture();
+    rmSync(join(f.child, 'src/other.ts'));
+    write(f.child, 'src/[x].sh', '#!/bin/sh\necho repaired\n');
+    write(f.child, 'src/x.sh', 'foreign\n');
+    chmodSync(join(f.child, 'src/[x].sh'), 0o755);
+    git(f.child, ['add', '-A']);
+    git(f.child, ['commit', '-qm', 'delete and executable addition']);
+    const delta = git(f.child, ['rev-parse', 'HEAD']);
+    f.parentPin(delta);
+    const built = f.build(delta, ['src/[x].sh', 'src/other.ts']);
+    if (!built.ok) throw new Error(built.detail);
+    const pin = f.pinAt(built.sourceCommit);
+    expect(git(f.child, ['ls-tree', '-r', pin])).toContain('100755 blob');
+    expect(git(f.child, ['ls-tree', '-r', '--name-only', pin])).not.toContain('src/x.sh');
+    expect(git(f.child, ['ls-tree', '-r', '--name-only', pin])).not.toContain('src/other.ts');
+    expect(show(f.child, pin, 'src/[x].sh')).toContain('echo repaired');
+    expect(f.build(delta, ['src'])).toMatchObject({ ok: false, code: 'not-a-blob' });
+  });
+
+  it.each(['symlink', 'gitlink'])('refuses a selected child %s', (kind) => {
+    const f = fixture();
+    if (kind === 'symlink') {
+      symlinkSync('fix.ts', join(f.child, 'src/unsafe'));
+      git(f.child, ['add', '-A']);
+    } else git(f.child, ['update-index', '--add', '--cacheinfo', `160000,${f.pin},src/unsafe`]);
+    git(f.child, ['commit', '-qm', 'unsupported source']);
+    const delta = git(f.child, ['rev-parse', 'HEAD']);
+    f.parentPin(delta);
+    expect(f.build(delta, ['src/unsafe'])).toMatchObject({ ok: false, code: 'not-a-blob' });
+  });
+
+  it('refuses root/merge/missing/non-integration child objects and mixed, multi-child, array and multi-source replay', () => {
+    const f = fixture();
+    const delta = sweep(f.child, { 'src/fix.ts': original.replace('a = 1', 'a = 10') }, 'repair');
+    f.parentPin(delta);
+    const tree = git(f.child, ['rev-parse', `${delta}^{tree}`]);
+    const other = git(f.child, ['commit-tree', tree, '-p', f.pin, '-m', 'not integrated']);
+    const merge = git(f.child, ['commit-tree', tree, '-p', delta, '-p', other, '-m', 'merge']);
+    for (const patch of [f.pin, other, merge, 'f'.repeat(40)]) expect(f.build(patch).ok, patch).toBe(false);
+    expect(f.build(delta, undefined, { paths: [`${link}/src/fix.ts`, 'lib/a.ts'] })).toMatchObject({ ok: false, code: 'invalid-paths' });
+    expect(f.build(delta, undefined, { allowSubmodule: false })).toMatchObject({ ok: false, code: 'invalid-patch-source' });
+    expect(buildMultiSourceAdmissionSource({ root: f.root, repairHead: f.candidate, integrationRef: 'staging', reason: 'reviewed bounded sources',
+      sources: [{ index: 0, kind: 'committed-patch', paths: [`${link}/src/fix.ts`], commits: [delta] }] }))
+      .toMatchObject({ ok: false, code: 'invalid-patch-source' });
+    // Another gitlink in both trees cannot be combined with the selected child.
+    git(f.root, ['update-index', '--add', '--cacheinfo', `160000,${f.pin},libs/second`]);
+    git(f.root, ['commit', '-qm', 'second child']);
+    const two = git(f.root, ['rev-parse', 'HEAD']);
+    expect(f.build(delta, undefined, { repairHead: two, paths: [`${link}/src/fix.ts`, 'libs/second/src/fix.ts'] }))
+      .toMatchObject({ ok: false, code: 'invalid-paths' });
+  });
+
+  it('uses the canonical child store from a linked serving root whose clone lacks the selected objects', () => {
+    const f = fixture();
+    const serving = mkdtempSync(join(tmpdir(), 'child-patch-serving-'));
+    TEMP.push(serving);
+    rmSync(serving, { recursive: true });
+    git(f.root, ['worktree', 'add', '-q', '--detach', serving, f.candidate]);
+    rmSync(join(serving, link), { recursive: true, force: true });
+    execFileSync('git', ['clone', '-q', join(f.root, link), join(serving, link)], { env: GIT_ENV, timeout: 30_000 });
+    const delta = sweep(f.child, { 'src/fix.ts': original.replace('a = 1', 'a = 10') }, 'repair');
+    const integration = f.parentPin(delta);
+    expect(realAdmissionGit(['cat-file', '-e', `${delta}^{commit}`], { cwd: join(serving, link) }).status).not.toBe(0);
+    const built = f.build(delta, undefined, { root: serving, integrationRef: integration });
+    if (!built.ok) throw new Error(built.detail);
+    expect(built.patch.child?.repository).toBe(f.child);
+    const admitted = admitPathsOntoRepairHead({ root: serving, candidate: f.candidate, repairHead: f.candidate,
+      source: { ref: built.sourceCommit }, paths: [`${link}/src/fix.ts`], actor: 'me', nowMs: T0,
+      preflight: importCompletenessPreflight({ root: serving, probeRef: integration }) });
+    if (!admitted.ok) throw new Error(admitted.detail);
+    const finalPin = f.pinAt(admitted.commit);
+    expect(git(f.child, ['rev-parse', repairAdmissionSubmoduleRef(finalPin)])).toBe(finalPin);
+    expect(realAdmissionGit(['cat-file', '-e', `${finalPin}^{commit}`], { cwd: join(serving, link) }).status).not.toBe(0);
+  });
+
+  it('refuses a missing child import and a moved parent lineage before publishing or pinning a child', () => {
+    const f = fixture();
+    const delta = sweep(f.child, { 'src/fix.ts': "import { sibling } from './sibling';\nexport { sibling };\n", 'src/sibling.ts': 'export const sibling = 1;\n' }, 'repair with dependency');
+    const integration = f.parentPin(delta);
+    const built = f.build(delta);
+    if (!built.ok) throw new Error(built.detail);
+    const input = { root: f.root, candidate: f.candidate, repairHead: f.candidate, source: { ref: built.sourceCommit },
+      paths: [`${link}/src/fix.ts`], actor: 'me', nowMs: T0 };
+    expect(admitPathsOntoRepairHead({ ...input, preflight: importCompletenessPreflight({ root: f.root, probeRef: integration }) }))
+      .toMatchObject({ ok: false, code: 'admission-incomplete', missing: [expect.objectContaining({ wanted: `${link}/src/sibling.ts` })] });
+    expect(git(f.root, ['for-each-ref', '--format=%(refname)', 'refs/papercusp/'])).toBe('');
+    git(f.root, ['update-ref', frozenLineageRef(f.candidate), integration]);
+    expect(admitPathsOntoRepairHead(input)).toMatchObject({ ok: false, code: 'lineage-ref-moved' });
+    expect(git(f.root, ['rev-parse', frozenLineageRef(f.candidate)])).toBe(integration);
+    expect(git(f.child, ['for-each-ref', '--format=%(refname)', 'refs/papercusp/repair-admission/'])).toBe('');
   });
 });
 

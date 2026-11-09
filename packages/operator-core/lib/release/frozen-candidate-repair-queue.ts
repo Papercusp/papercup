@@ -933,7 +933,14 @@ export interface FrozenRepairAdmission {
     radius?: FrozenRepairAdmissionRadiusSummary;
   };
   /** Explicit reviewed commit delta; provenance is NOT hook or agent authorship. */
-  patch?: { commit: string; parent: string; sha256: string };
+  patch?: { commit: string; parent: string; sha256: string; child?: {
+    gitlink: string;
+    repository: string;
+    paths: string[];
+    integrationCommit: string;
+    integrationPin: string;
+    repairPin: string;
+  } };
   /** Ordered reviewed deltas replayed before the single admission; patch is the final member. */
   patches?: Array<{ commit: string; parent: string; sha256: string }>;
   /** multi-source (R-2): every source applied, in order; each patch source carries its own patches. */
@@ -1179,13 +1186,23 @@ function parseAdmissions(raw: unknown, legacyRadius = false): FrozenRepairAdmiss
     }
     const foreignAgents = strings(e.foreignAgents);
     const patch = e.patch as Record<string, unknown> | null | undefined;
+    const child = patch?.child as Record<string, unknown> | null | undefined;
+    const normalPath = (v: unknown): v is string => typeof v === 'string' && v.length > 0 &&
+      !v.startsWith('/') && !v.includes('\\') && !v.includes('\0') && v.split('/').every((part) => part !== '' && part !== '.' && part !== '..');
+    const validChild = child && typeof child === 'object' && !Array.isArray(child) &&
+      normalPath(child.gitlink) && nonBlank(child.repository) &&
+      Array.isArray(child.paths) && child.paths.length > 0 && child.paths.every(normalPath) &&
+      new Set(child.paths).size === child.paths.length &&
+      child.paths.length === e.paths.length && child.paths.every((path) => (e.paths as string[]).includes(`${child.gitlink}/${path}`)) &&
+      [child.integrationCommit, child.integrationPin, child.repairPin].every((sha) => typeof sha === 'string' && /^[0-9a-f]{40,64}$/.test(sha));
     const validPatch = e.mode === 'committed-patch' && patch &&
+      (patch.child === undefined || (validChild && e.patches === undefined)) &&
       typeof patch.commit === 'string' && /^[0-9a-f]{40,64}$/.test(patch.commit) &&
       typeof patch.parent === 'string' && /^[0-9a-f]{40,64}$/.test(patch.parent) &&
       typeof patch.sha256 === 'string' && /^[0-9a-f]{64}$/.test(patch.sha256);
     const patches = e.patches;
     const validPatches = validPatch && Array.isArray(patches) && patches.length >= 2 && patches.length <= 20 &&
-      patches.every((p) => p && typeof p === 'object' &&
+      patches.every((p) => p && typeof p === 'object' && p.child === undefined &&
         typeof p.commit === 'string' && /^[0-9a-f]{40,64}$/.test(p.commit) &&
         typeof p.parent === 'string' && /^[0-9a-f]{40,64}$/.test(p.parent) &&
         typeof p.sha256 === 'string' && /^[0-9a-f]{64}$/.test(p.sha256)) &&
@@ -1211,7 +1228,10 @@ function parseAdmissions(raw: unknown, legacyRadius = false): FrozenRepairAdmiss
       ...(nonBlank(e.reason) ? { reason: e.reason as string } : {}),
       ...(e.mode === 'hunk-exact' || e.mode === 'whole-blob' || e.mode === 'committed-patch' ? { mode: e.mode } : {}),
       ...(appliedSources ? { mode: 'multi-source' as const, sources: appliedSources } : {}),
-      ...(validPatch ? { patch: { commit: patch.commit as string, parent: patch.parent as string, sha256: patch.sha256 as string } } : {}),
+      ...(validPatch ? { patch: { commit: patch.commit as string, parent: patch.parent as string, sha256: patch.sha256 as string,
+        ...(validChild ? { child: { gitlink: child.gitlink as string, repository: child.repository as string,
+          paths: child.paths as string[], integrationCommit: child.integrationCommit as string,
+          integrationPin: child.integrationPin as string, repairPin: child.repairPin as string } } : {}) } } : {}),
       ...(validPatches ? { patches: patches.map((p) => ({ commit: p.commit, parent: p.parent, sha256: p.sha256 })) } : {}),
       ...(hunksValid ? { hunks } : {}),
       ...(Array.isArray(e.ledgerRowIds) && e.ledgerRowIds.every((id) => Number.isSafeInteger(id) && id > 0)

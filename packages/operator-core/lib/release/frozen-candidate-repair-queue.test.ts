@@ -314,6 +314,25 @@ describe('frozen-candidate repair queue', () => {
     }
   });
 
+  it('preserves exact child repository and integration provenance through repeated queue readback; malformed child proof is never relabeled as a parent patch', () => {
+    const child = { gitlink: 'libs/nested', repository: '/canonical/libs/nested', paths: ['src/fix.ts'],
+      integrationCommit: C2, integrationPin: C1, repairPin: C };
+    const patch = { commit: C1, parent: C, sha256: 'e'.repeat(64), child };
+    const admission = { atMs: T0 + 1, actor: 'su-test', source: { ref: C2, sha: C2 }, fromRepairHead: C,
+      toRepairHead: C2, paths: ['libs/nested/src/fix.ts'], unchanged: [], blobs: {}, mode: 'committed-patch' as const, patch };
+    const queue = markFrozenRepairAdmitted(fresh(), admission);
+    const parsed = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(queue)));
+    expect(parsed?.admissions?.[0].patch).toEqual(patch);
+    expect(parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(parsed)))?.admissions?.[0].patch).toEqual(patch);
+    for (const bad of [null, {}, { ...child, integrationCommit: 'staging' }, { ...child, paths: [] },
+      { ...child, paths: ['../escape'] }, { ...child, paths: ['src/foreign.ts'] }, { ...child, repository: '' }]) {
+      const read = parseFrozenCandidateRepairQueue({ ...queue, admissions: [{ ...admission, patch: { ...patch, child: bad } }] });
+      expect(read?.admissions?.[0]).not.toHaveProperty('patch');
+    }
+    expect(parseFrozenCandidateRepairQueue({ ...queue, admissions: [{ ...admission, patches: [patch] }] })?.admissions?.[0])
+      .not.toHaveProperty('patch');
+  });
+
   it("carries a newer build's admission keys through parse and persist (WI-6554700010009930)", () => {
     const patch = { commit: C1, parent: C, sha256: 'f'.repeat(64) };
     const admission = {

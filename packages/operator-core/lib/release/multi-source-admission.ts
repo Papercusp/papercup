@@ -261,6 +261,7 @@ export function buildMultiSourceAdmissionSource(input: {
           root: input.root,
           repairHead: head,
           patchCommit,
+          allowSubmodule: false,
           integrationRef: input.integrationRef,
           paths: source.paths,
           reason: input.reason,

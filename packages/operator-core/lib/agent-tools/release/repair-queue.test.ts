@@ -3393,6 +3393,7 @@ describe('release:repair-queue', () => {
       expect(mocks.committedPatch.mock.calls.map(([input]) => [input.patchCommit, input.repairHead])).toEqual([
         [patch.commit, queue.repairHead], [second.commit, ALT_HEAD],
       ]);
+      expect(mocks.committedPatch.mock.calls.every(([input]) => input.allowSubmodule === false)).toBe(true);
       expect(mocks.admissionGit).toHaveBeenCalledWith(
         ['merge-base', '--is-ancestor', patch.commit, second.commit], expect.objectContaining({ cwd: '/repo' }),
       );
@@ -3650,6 +3651,22 @@ describe('release:repair-queue', () => {
       expect(mocks.write).not.toHaveBeenCalled();
     });
 
+    it.each([false, true])('child patch provenance survives preview and queue/audit persistence, confirm=%s', async (confirm) => {
+      const childPatch = { ...patch, child: { gitlink: 'libs/nested', repository: '/repo/libs/nested', paths: ['src/fix.ts'],
+        integrationCommit: ALT_HEAD, integrationPin: patch.commit, repairPin: patch.parent } };
+      const paths = ['libs/nested/src/fix.ts'];
+      mocks.committedPatch.mockReturnValue({ ok: true, sourceCommit: HX_SOURCE, tree: 'a'.repeat(40), patch: childPatch });
+      mocks.admit.mockReturnValue(admissionOf(confirm));
+      const result = body(await tool.handler({ ...patchArgs, paths, confirm } as never, ctx));
+      expect(result).toMatchObject({ ok: true, mode: 'committed-patch', patch: childPatch, source: { ref: HX_SOURCE } });
+      expect(mocks.committedPatch).toHaveBeenCalledWith(expect.objectContaining({ allowSubmodule: true, paths }));
+      expect(mocks.admit).toHaveBeenCalledWith(expect.objectContaining({ source: { ref: HX_SOURCE }, preflight: expect.any(Function) }));
+      if (confirm) {
+        expect((mocks.write.mock.calls[0]![1] as Written).admissions[0]).toMatchObject({ patch: childPatch });
+        expect(JSON.parse(mocks.audit.mock.calls[0]![1][5])).toMatchObject({ patch: childPatch });
+      } else expect(mocks.write).not.toHaveBeenCalled();
+    });
+
     it('committed patch refusal and stale queue never publish or write', async () => {
       mocks.committedPatch.mockReturnValue({
         ok: false,
@@ -3670,8 +3687,9 @@ describe('release:repair-queue', () => {
       expect(mocks.write).not.toHaveBeenCalled();
     });
 
-    it('committed patch keeps import preflight refusals and retracts publication on failed queue CAS', async () => {
-      mocks.committedPatch.mockReturnValue({ ok: true, sourceCommit: HX_SOURCE, tree: 'a'.repeat(40), patch });
+    it.each([patch, { ...patch, child: { gitlink: 'libs/nested', repository: '/repo/libs/nested', paths: ['src/fix.ts'],
+      integrationCommit: ALT_HEAD, integrationPin: patch.commit, repairPin: patch.parent } }])('committed patch keeps import preflight refusals and queue CAS safeguards (%j)', async (selectedPatch) => {
+      mocks.committedPatch.mockReturnValue({ ok: true, sourceCommit: HX_SOURCE, tree: 'a'.repeat(40), patch: selectedPatch });
       mocks.admit.mockReturnValueOnce({ ok: false, code: 'admission-incomplete', detail: 'missing sibling' });
       expect(body(await tool.handler({ ...patchArgs, confirm: true } as never, ctx))).toMatchObject({
         ok: false,

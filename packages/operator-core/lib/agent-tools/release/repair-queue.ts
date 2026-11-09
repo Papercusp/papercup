@@ -1854,6 +1854,7 @@ export default defineTool({
               root,
               repairHead: replayHead,
               patchCommit,
+              allowSubmodule: args.patchCommits === undefined,
               integrationRef: branch,
               paths,
               reason: effectiveReason!,
