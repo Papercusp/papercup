@@ -6,10 +6,86 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { describe, expect, test, vi } from 'vitest';
-import { captureWorkbenchSessionEvidence, installWorkbenchPsTrace, preserveWorkbenchSessionLog, runWorkbenchCommand, waitForWorkbenchSessionEnd, workbenchSessionList, workbenchSessionSockets } from './workbench-command';
+import { captureWorkbenchSessionEvidence, installWorkbenchPsTrace, preserveWorkbenchSessionLog, runWorkbenchCommand, submitWorkbenchVendorPrompt, waitForWorkbenchSessionEnd, workbenchSessionList, workbenchSessionSockets, workbenchVendorComposerReady } from './workbench-command';
 import type { captureProcessSnapshot } from './process-snapshot';
 
 describe('PUI workbench control commands', () => {
+  test('requires the current ready composer instead of a historical vendor banner', () => {
+    expect(workbenchVendorComposerReady('OpenAI Codex\nmodel: gpt-6\nConversation interrupted')).toBe(false);
+    expect(workbenchVendorComposerReady('› \n Ready · GPT-6.1-Sol xhigh · Context 95% left')).toBe(true);
+    expect(workbenchVendorComposerReady('│ sidebar ││›       ││ sidebar │\n│ Ready · GPT-6.1-Sol xhigh │')).toBe(true);
+    expect(workbenchVendorComposerReady('› old prompt\n Ready · GPT-6.1-Sol xhigh')).toBe(false);
+  });
+
+  test('waits for paste acknowledgement before submitting a distinct terminal event', async () => {
+    let display = '';
+    let pasted = '';
+    const writes: string[] = [];
+    const phases: string[] = [];
+    const waitFor = vi.fn(async (check: () => boolean) => {
+      // The terminal drains the paste only when the observer yields to it.
+      if (pasted) { display = '› ' + pasted; pasted = ''; }
+      expect(check()).toBe(true);
+    });
+    await submitWorkbenchVendorPrompt({
+      write: text => {
+        writes.push(text);
+        if (text.startsWith('\x1b[200~') && text.endsWith('\x1b[201~')) pasted = text.slice(6, -6);
+        else if (text === '\r' && display.includes('wb_probe')) display += '\nWorking (esc to interrupt)';
+        else throw new Error('Enter was delivered before paste acknowledgement');
+      }, screen: () => display, waitFor, record: phase => { phases.push(phase); },
+    }, 'Uppercase wb_probe', 'wb_probe', 'WB_PROBE');
+    expect(writes).toEqual(['\x1b[200~Uppercase wb_probe\x1b[201~', '\r']);
+    expect(phases).toEqual(['input-acknowledged', 'submitted']);
+  });
+
+  test('held input is not accepted as a submitted turn or a vendor response', async () => {
+    let display = '';
+    const phases: string[] = [];
+    await expect(submitWorkbenchVendorPrompt({
+      write: text => { if (text.startsWith('\x1b[200~')) display = '› Uppercase wb_probe'; },
+      screen: () => display,
+      waitFor: async (check, label) => { if (!check()) throw new Error(label); },
+      record: phase => { phases.push(phase); },
+    }, 'Uppercase wb_probe', 'wb_probe', 'WB_PROBE')).rejects.toThrow('vendor did not acknowledge a submitted turn');
+    expect(phases).toEqual(['input-acknowledged']);
+  });
+
+  test('historical progress above a newly held composer does not acknowledge submission', async () => {
+    for (const hint of ['esc to interrupt', 'Escape to cancel']) {
+      let display = `Earlier turn: Working (${hint})`;
+      const phases: string[] = [];
+      await expect(submitWorkbenchVendorPrompt({
+        write: text => {
+          if (text.startsWith('\x1b[200~')) display += '\n› Uppercase wb_probe';
+        },
+        screen: () => display,
+        waitFor: async (check, label) => { if (!check()) throw new Error(label); },
+        record: phase => { phases.push(phase); },
+      }, 'Uppercase wb_probe', 'wb_probe', 'WB_PROBE')).rejects.toThrow('vendor did not acknowledge a submitted turn');
+      expect(phases).toEqual(['input-acknowledged']);
+    }
+  });
+
+  test('a distinct immediate answer acknowledges submission without a progress frame', async () => {
+    let display = '';
+    const phases: string[] = [];
+    await submitWorkbenchVendorPrompt({
+      write: text => { display = text === '\r' ? '• WB_PROBE' : '› Uppercase wb_probe'; },
+      screen: () => display,
+      waitFor: async (check, label) => { if (!check()) throw new Error(label); },
+      record: phase => { phases.push(phase); },
+    }, 'Uppercase wb_probe', 'wb_probe', 'WB_PROBE');
+    expect(phases).toEqual(['input-acknowledged', 'submitted']);
+  });
+
+  test('rejects terminal control data without writing to the fixture', async () => {
+    const write = vi.fn();
+    await expect(submitWorkbenchVendorPrompt({ write, screen: () => '', waitFor: vi.fn(), record: vi.fn() },
+      'Uppercase wb_probe\r', 'wb_probe', 'WB_PROBE')).rejects.toThrow('plain prompt data');
+    expect(write).not.toHaveBeenCalled();
+  });
+
   test.skipIf(process.platform !== 'linux')('traces native ps timing while preserving its streams, status and quoted paths', async () => {
     const root = mkdtempSync(path.join(tmpdir(), "pui ps's trace-"));
     try {

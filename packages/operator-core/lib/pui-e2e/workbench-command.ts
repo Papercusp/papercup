@@ -5,6 +5,39 @@ import * as path from 'node:path';
 import { pollUntil } from './poll-until';
 import { captureProcessSnapshot } from './process-snapshot';
 
+/** A banner in scrollback does not establish that the current composer is ready. */
+export function workbenchVendorComposerReady(screen: string) {
+  return /\bReady\s*·\s*GPT-/i.test(screen)
+    && screen.split('\n').some(line => /(?:^|[│┃])\s*[›>]\s*(?:[│┃]|$)/.test(line));
+}
+
+/** Keep paste data and the submit key in separate terminal events. */
+export async function submitWorkbenchVendorPrompt({ write, screen, waitFor, record }: {
+  write: (text: string) => void;
+  screen: () => string;
+  waitFor: (check: () => boolean, label: string, timeoutMs: number) => Promise<void>;
+  record: (phase: string) => void;
+}, prompt: string, marker: string, response: string) {
+  if (!marker || !response || prompt.includes(response) || /[\x00-\x1f\x7f]/.test(prompt)) {
+    throw new Error('Vendor probe requires plain prompt data and a distinct response');
+  }
+  write('\x1b[200~' + prompt + '\x1b[201~');
+  await waitFor(() => screen().includes(marker), 'vendor composer did not acknowledge pasted input', 15_000);
+  record('input-acknowledged');
+  write('\r');
+  await waitFor(() => {
+    const current = screen();
+    const markerAt = current.lastIndexOf(marker);
+    // A resumed transcript can retain an older turn's progress indicator.
+    // Only progress after this prompt acknowledges Enter; the unique answer
+    // remains sufficient when a fast reply skips the visible progress frame.
+    return current.includes(response) || (markerAt >= 0
+      && /\besc(?:ape)? to (?:interrupt|cancel)\b/i.test(current.slice(markerAt + marker.length)));
+  },
+    'vendor did not acknowledge a submitted turn', 15_000);
+  record('submitted');
+}
+
 /** The fixture serves the operator itself, so control commands must yield to HTTP/PG. */
 export function runWorkbenchCommand(program: string, args: string[], {
   env,
