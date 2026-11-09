@@ -465,7 +465,7 @@ export function createBgVerifierRuntimeCustody(options: Parameters<typeof create
                         }[];
                     };
                 }[];
-                stderrReceipt: import("@papercusp/operator-core/lib/memory/bench/measurement-manifest").NativeLoaderCaptureReceipt;
+                stderrReceipt: import("../packages/operator-core/lib/memory/bench/measurement-manifest.ts").NativeLoaderCaptureReceipt;
                 completeBeforeInferenceClosureVerified: true;
                 scope: string;
                 processId: number;
@@ -1468,15 +1468,42 @@ export function verifyBgVerifierBuildOutputSet(output: ReturnType<typeof qualify
  * The maintained artifact writer qualifies the original main entry in place.
  * @param {{ output: ReturnType<typeof qualifyBgVerifierBuildOutputSet> } &
  *   Parameters<typeof qualifyBgVerifierBuildOutputSet>[0]} args
+ * @returns {Promise<{ schemaVersion: string, outputSetSha256: string,
+ *   directory: ReturnType<typeof readBgDirectoryIdentity>,
+ *   artifact: Awaited<ReturnType<typeof qualifyBgVerifierOutput>>,
+ *   controls: ReturnType<typeof readBgIndependentOutputIdentity>[],
+ *   files: { temporary: string, final: string, identity: ReturnType<typeof readBgIndependentOutputIdentity> }[] }>}
  */
 export function qualifyBgVerifierLogicalOutputSet(args: {
     output: ReturnType<typeof qualifyBgVerifierBuildOutputSet>;
-} & Parameters<typeof qualifyBgVerifierBuildOutputSet>[0]): any;
+} & Parameters<typeof qualifyBgVerifierBuildOutputSet>[0]): Promise<{
+    schemaVersion: string;
+    outputSetSha256: string;
+    directory: ReturnType<typeof readBgDirectoryIdentity>;
+    artifact: Awaited<ReturnType<typeof qualifyBgVerifierOutput>>;
+    controls: ReturnType<typeof readBgIndependentOutputIdentity>[];
+    files: {
+        temporary: string;
+        final: string;
+        identity: ReturnType<typeof readBgIndependentOutputIdentity>;
+    }[];
+}>;
 /** Recheck retained logical outputs without regenerating a manifest or receipt.
  * @param {Awaited<ReturnType<typeof qualifyBgVerifierLogicalOutputSet>>} logical
  * @param {Parameters<typeof qualifyBgVerifierLogicalOutputSet>[0]} args
  */
-export function verifyBgVerifierLogicalOutputSet(logical: Awaited<ReturnType<typeof qualifyBgVerifierLogicalOutputSet>>, { output, binding, receipts }: Parameters<typeof qualifyBgVerifierLogicalOutputSet>[0]): any;
+export function verifyBgVerifierLogicalOutputSet(logical: Awaited<ReturnType<typeof qualifyBgVerifierLogicalOutputSet>>, { output, binding, receipts }: Parameters<typeof qualifyBgVerifierLogicalOutputSet>[0]): {
+    schemaVersion: string;
+    outputSetSha256: string;
+    directory: ReturnType<typeof readBgDirectoryIdentity>;
+    artifact: Awaited<ReturnType<typeof qualifyBgVerifierOutput>>;
+    controls: ReturnType<typeof readBgIndependentOutputIdentity>[];
+    files: {
+        temporary: string;
+        final: string;
+        identity: ReturnType<typeof readBgIndependentOutputIdentity>;
+    }[];
+};
 /** Publish one COMPLETE receipt at the pre-nominated bank leaf. Linking a fully
  * written private file is atomic and refuses an existing destination, including
  * dangling links. Keep artifact paths physical: moving this directory would
@@ -1499,7 +1526,18 @@ export function publishBgVerifierLogicalOutputSet(args: {
         ctimeNs: string;
     };
     schemaVersion: string;
-    logical: any;
+    logical: {
+        schemaVersion: string;
+        outputSetSha256: string;
+        directory: ReturnType<typeof readBgDirectoryIdentity>;
+        artifact: Awaited<ReturnType<typeof qualifyBgVerifierOutput>>;
+        controls: ReturnType<typeof readBgIndependentOutputIdentity>[];
+        files: {
+            temporary: string;
+            final: string;
+            identity: ReturnType<typeof readBgIndependentOutputIdentity>;
+        }[];
+    };
     binding: {
         schemaVersion: string;
         transaction: {
@@ -1927,7 +1965,18 @@ export function verifyBgVerifierPublication(publication: ReturnType<typeof publi
         ctimeNs: string;
     };
     schemaVersion: string;
-    logical: any;
+    logical: {
+        schemaVersion: string;
+        outputSetSha256: string;
+        directory: ReturnType<typeof readBgDirectoryIdentity>;
+        artifact: Awaited<ReturnType<typeof qualifyBgVerifierOutput>>;
+        controls: ReturnType<typeof readBgIndependentOutputIdentity>[];
+        files: {
+            temporary: string;
+            final: string;
+            identity: ReturnType<typeof readBgIndependentOutputIdentity>;
+        }[];
+    };
     binding: {
         schemaVersion: string;
         transaction: {
@@ -2367,7 +2416,18 @@ export function runBgVerifierBuildRecipe(args: Parameters<typeof beginBgVerifier
         ctimeNs: string;
     };
     schemaVersion: string;
-    logical: any;
+    logical: {
+        schemaVersion: string;
+        outputSetSha256: string;
+        directory: ReturnType<typeof readBgDirectoryIdentity>;
+        artifact: Awaited<ReturnType<typeof qualifyBgVerifierOutput>>;
+        controls: ReturnType<typeof readBgIndependentOutputIdentity>[];
+        files: {
+            temporary: string;
+            final: string;
+            identity: ReturnType<typeof readBgIndependentOutputIdentity>;
+        }[];
+    };
     binding: {
         schemaVersion: string;
         transaction: {
@@ -3166,7 +3226,7 @@ export function qualifyBgVerifierRuntimeSources({ output, record, invocation, ex
                     }[];
                 };
             }[];
-            stderrReceipt: import("@papercusp/operator-core/lib/memory/bench/measurement-manifest").NativeLoaderCaptureReceipt;
+            stderrReceipt: import("../packages/operator-core/lib/memory/bench/measurement-manifest.ts").NativeLoaderCaptureReceipt;
             completeBeforeInferenceClosureVerified: true;
             scope: string;
             processId: number;
@@ -4066,8 +4126,25 @@ export type Gate = (dir: string, opts: {
 export type Log = (message: string) => void;
 import { verifierResourceInventory } from '@papercusp/operator-core/lib/verifier-source';
 import { bindRuntimeProcessTree } from '../packages/operator-core/lib/memory/bench/runtime-file-opens.mjs';
+/** @param {string} path @returns {BgDirectoryIdentity} */
+declare function readBgDirectoryIdentity(path: string): BgDirectoryIdentity;
+/** Outputs must retain the actual compiler-created file, even if replacement
+ * bytes happen to hash identically. Keep link and inode custody on the same FD
+ * used for hashing; the final path must still name that independent file.
+ * @param {string} path
+ */
+declare function readBgIndependentOutputIdentity(path: string): {
+    path: string;
+    realpath: string;
+    sha256: string;
+    dev: string;
+    ino: string;
+    size: string;
+    mtimeNs: string;
+    ctimeNs: string;
+};
 import { bindRuntimeSourcePopulation } from '../packages/operator-core/lib/memory/bench/runtime-source-capture.mjs';
-import { bindNativeLoaderClosure } from '@papercusp/operator-core/lib/memory/bench/measurement-manifest';
+declare const bindNativeLoaderClosure: typeof import("../packages/operator-core/lib/memory/bench/measurement-manifest.ts").bindNativeLoaderClosure;
 import { runTreeRestrictedHoldPreflight } from './lib/restricted-hold-preflight.mjs';
 declare function main(argv: any): Promise<number>;
 /** Read one physical file without reopening between validation and hashing.
