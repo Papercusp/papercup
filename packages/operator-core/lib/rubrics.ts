@@ -5904,6 +5904,7 @@ async function amendAcceptanceBarRubric(
         idempotencyKey: '', methodOnly: true,
       };
 
+      const proofPartition = partitionAmendmentProof(snapshot.bars, changedBars);
       if (preview) {
         const changes = diffAcceptanceBarContractSnapshots(snapshot, candidate, 'amend').changes;
         const open = changedBars.length
@@ -5982,7 +5983,6 @@ async function amendAcceptanceBarRubric(
                 };
           }
         }
-        const proofPartition = partitionAmendmentProof(snapshot.bars, changedBars);
         const { evaluateAmendmentReadinessDelta } = await import('./acceptance-bar-amendment-readiness');
         const readinessDelta = evaluateAmendmentReadinessDelta(snapshot, candidate);
         const finalVersions = await tx<Array<{ harness_slug: string; plan_slug: string; version: number | string }>>`
@@ -6137,7 +6137,18 @@ async function amendAcceptanceBarRubric(
         ...mappingDelta.map((entry) =>
           `Mapping delta: ${entry.barKey} ${entry.prior.planItemIds.join(', ')} (${entry.prior.evidencePlane}) → ` +
             `${entry.next.planItemIds.join(', ')} (${entry.next.evidencePlane})`),
-        'Prior evidence, grades, vetting, author verdicts, and ship verdicts remain audit history and are revision-ineligible.',
+        ...(changedBars.length === 0 && mappingDelta.length === 0
+          ? ['No BAR meaning changed. Existing proof, grades and vetting retain their meaning epoch.']
+          : [
+              changedBars.length
+                ? `BAR meaning changed for ${changedBars.join(', ')}.`
+                : 'BAR meanings are unchanged; discharge mappings changed.',
+              `Proof invalidated: ${proofPartition.invalidatedProofRefs.join(', ') || 'none'}.`,
+              `Proof carried unchanged: ${proofPartition.carriedProofRefs.join(', ') || 'none'}.`,
+              ...(mappingDelta.length ? ['Bind proof for added projections.'] : []),
+              'Refresh vetting and independent grading for the new rubric revision.',
+            ]),
+        'Check current ship eligibility before shipment.',
         ...(requirementsRerender.rerendered.length
           ? [`Requirements re-rendered from the amended criterion: ${requirementsRerender.rerendered.join(', ')}`]
           : []),

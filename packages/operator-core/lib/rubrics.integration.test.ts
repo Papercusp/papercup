@@ -20,6 +20,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import type { OrgTestDb } from '../test/_org-test-db';
+import type { AcceptanceBarAmendmentPreview } from './rubrics';
 import { runWithWorkspace } from './workspace-als';
 import { activeWorkspaceId } from './workspace-registry';
 import { OrgTxnTimeoutError } from './pg-bounded-txn';
@@ -5230,8 +5231,10 @@ describe('template_data persistence boundary — the set-template-data door', ()
     });
   });
 
-  it('keeps an isolated method-only amendment approval-free', async () => {
-    const seeded = await seedBarContract('method-only-no-approval-subject', { authorMethods: true });
+  it('keeps a method-only explicit amendment approval-free and preserves proof eligibility in its history', async () => {
+    // Explicit Requirements must be re-rendered, so this reaches the Decision writer.
+    // An implicit requirement takes the single-plan fast path without a new Decision.
+    const seeded = await explicitAmendmentSubject('method-only-no-approval-subject');
     const before = (await rubrics.getRubric(seeded.rubricSlug))!;
     const amendment = {
       rubricId: seeded.rubricSlug,
@@ -5247,6 +5250,10 @@ describe('template_data persistence boundary — the set-template-data door', ()
     const after = await rubrics.amendRubric(amendment);
     expect(after!.criteria[0]!.method).toBe(amendment.requirement.verification.method);
     expect(after!.barSetHash).toBe(before.barSetHash);
+    const notice = (await subjectContent(seeded.subject)).split('\n### ').at(-1)!;
+    expect(notice).toContain('No BAR meaning changed. Existing proof, grades and vetting retain their meaning epoch.');
+    expect(notice).not.toContain('Prior evidence, grades, vetting, author verdicts, and ship verdicts remain audit history and are revision-ineligible.');
+    expect(notice).toContain('Check current ship eligibility before shipment.');
   });
 
   it('amends unified proof depth with approval, preserves BAR identity for methods, and retains projection history', async () => {
@@ -5274,6 +5281,11 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect(changed.criteria[0]!.barKey).toBe(before.criteria[0]!.barKey);
     expect(changed.criteria[0]!.barHash).not.toBe(before.criteria[0]!.barHash);
     expect(changed.criteria[1]).toEqual(before.criteria[1]);
+    const notice = (await subjectContent(seeded.subject)).split('\n### ').at(-1)!;
+    expect(notice).toContain(`BAR meaning changed for ${proofDepthPreview!.changedBars.join(', ')}.`);
+    expect(notice).toContain(`Proof invalidated: ${proofDepthPreview!.invalidatedProofRefs.join(', ') || 'none'}.`);
+    expect(notice).toContain(`Proof carried unchanged: ${proofDepthPreview!.carriedProofRefs.join(', ') || 'none'}.`);
+    expect(notice).toContain('Refresh vetting and independent grading for the new rubric revision.');
 
     const method = {
       method: 'Run the integration fixture and compare every output record.',
@@ -5887,12 +5899,19 @@ describe('template_data persistence boundary — the set-template-data door', ()
     const original = await subjectSource(subject);
     const dropped = original.replace('- **P-002** `done` second outcome', '- **P-002** `dropped` second outcome');
     expect(dropped).not.toBe(original);
-    await db.adminSql`UPDATE harness_shared.harness_plans
-       SET content = ${dropped}, content_hash = ${hashPlanContent(dropped)}
-     WHERE workspace_id = ${workspaceId} AND harness_slug = 'papercusp' AND plan_slug = ${subject}`;
-    await db.adminSql`UPDATE harness_shared.plan_items SET status = 'dropped'
-     WHERE workspace_id = ${workspaceId} AND harness_slug = 'papercusp'
-       AND plan_slug = ${subject} AND item_id = 'P-002'`;
+    // Model an already-dropped historical line in every stored representation.
+    // The amendment must repair its mapping, not perform a lifecycle transition.
+    await db.adminSql.begin(async (tx) => {
+      await tx`UPDATE harness_shared.harness_plans
+         SET content = ${dropped}, content_hash = ${hashPlanContent(dropped)}
+       WHERE workspace_id = ${workspaceId} AND harness_slug = 'papercusp' AND plan_slug = ${subject}`;
+      await tx`UPDATE harness_shared.plan_items SET status = 'dropped'
+       WHERE workspace_id = ${workspaceId} AND harness_slug = 'papercusp'
+         AND plan_slug = ${subject} AND item_id = 'P-002'`;
+      await tx`UPDATE harness_shared.work_items SET status = 'dropped'
+       WHERE workspace_id = ${workspaceId} AND harness_slug = 'papercusp'
+         AND plan_slug = ${subject} AND plan_line_id = 'P-002'`;
+    });
     const before = (await rubrics.getRubric(seeded.rubricSlug))!;
     expect(before.criteria.map((criterion) => criterion.barKey)).toEqual(['R-1', 'R-2']);
     return { ...seeded, before, sourceBefore: dropped };
@@ -6483,14 +6502,22 @@ describe('template_data persistence boundary — the set-template-data door', ()
     next: { planItemIds: next, evidencePlane: 'tree' as const },
   });
 
-  async function postReceipt(subject: string, receipt: unknown, author = 'outside-reviewer') {
+  async function postReceipt(
+    preview: AcceptanceBarAmendmentPreview,
+    receipt: AcceptanceBarAmendmentPreview['approval'],
+    author = 'outside-reviewer',
+  ) {
+    // Keep the source custody valid while varying only the receipt's mapping delta.
+    const { acceptanceBarReviewPostBody } = await import('./acceptance-bar-amendment');
+    const body = `verified-complete-source sha256:${receipt.reviewSourceHash}\n${acceptanceBarReviewPostBody(receipt, preview.reviewSource)}`;
+    const subject = preview.approval.subjectPlan;
     const workspaceId = activeWorkspaceId();
     const thread = `approval-${subject}`;
     await db.adminSql`INSERT INTO harness_shared.coord_threads (workspace_id,thread_id,parent_kind,parent_ref)
       VALUES (${workspaceId},${thread},'plan',${subject}) ON CONFLICT DO NOTHING`;
     const [post] = await db.adminSql`INSERT INTO harness_shared.coord_thread_posts
       (workspace_id,thread_id,author_id,body) VALUES
-      (${workspaceId},${thread},${author},${JSON.stringify(receipt)}) RETURNING id`;
+      (${workspaceId},${thread},${author},${body}) RETURNING id`;
     return `thread-post:${post.id}`;
   }
 
@@ -6549,6 +6576,12 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect(source).toContain('- **P-002** `dropped` second outcome');
     expect(source).toContain('Mapping delta: R-2 P-002 (tree) → P-001 (tree)');
     expect(source).toContain(`Approval-Ref: `);
+    const notice = source.split('\n### ').at(-1)!;
+    expect(notice).toContain('BAR meanings are unchanged; discharge mappings changed.');
+    expect(notice).toContain(`Proof invalidated: ${preview.invalidatedProofRefs.join(', ') || 'none'}.`);
+    expect(notice).toContain(`Proof carried unchanged: ${preview.carriedProofRefs.join(', ') || 'none'}.`);
+    expect(notice).toContain('Refresh vetting and independent grading for the new rubric revision.');
+    expect(notice).not.toContain('existing proof, grades and vetting retain their meaning epoch');
 
     // The pair moved: the dropped item's projection is superseded and the new pair is bound to R-2.
     const clauses = await subjectClauses(subject);
@@ -6574,17 +6607,18 @@ describe('template_data persistence boundary — the set-template-data door', ()
     // Another map: R-2 onto P-001 AND the dropped P-002. Its own preview is a valid review object.
     const otherMap = { ...amendment, barMappingDelta: [moveR2(['P-001', 'P-002'])] };
     await expect(rubrics.amendRubric({ ...amendment, approvalRef: await postApproval(otherMap) }))
-      .rejects.toThrow(/acceptance_bar_approval_(patch|source|mapping)_mismatched/);
+      .rejects.toThrow(/acceptance_bar_(?:approval_(?:patch|source|mapping)|review_source)_mismatched/);
 
     // The isolating case: same BARs, same hashes, same proposed source, only the delta missing.
     // Pre-fix nothing bound the map, so this receipt would have authorized the move.
-    const { mappingDelta: _delta, ...withoutDelta } = (await rubrics.previewAcceptanceBarAmendment(amendment))!.approval;
-    await expect(rubrics.amendRubric({ ...amendment, approvalRef: await postReceipt(subject, withoutDelta) }))
+    const preview = (await rubrics.previewAcceptanceBarAmendment(amendment))!;
+    const { mappingDelta: _delta, ...withoutDelta } = preview.approval;
+    await expect(rubrics.amendRubric({ ...amendment, approvalRef: await postReceipt(preview, withoutDelta) }))
       .rejects.toThrow('acceptance_bar_approval_mapping_mismatched');
     // And a receipt that reviewed a different prior for the same row.
-    const correct = (await rubrics.previewAcceptanceBarAmendment(amendment))!.approval;
+    const correct = preview.approval;
     const forged = { ...correct, mappingDelta: [moveR2(['P-001'], ['P-001'])] };
-    await expect(rubrics.amendRubric({ ...amendment, approvalRef: await postReceipt(subject, forged) }))
+    await expect(rubrics.amendRubric({ ...amendment, approvalRef: await postReceipt(preview, forged) }))
       .rejects.toThrow('acceptance_bar_approval_mapping_mismatched');
 
     expect((await rubrics.getRubric(rubricSlug))!.revision).toBe(before.revision);
@@ -6608,7 +6642,8 @@ describe('template_data persistence boundary — the set-template-data door', ()
     const approvalRef = await postApproval(reviewed);
 
     const different = { ...reviewed, barMappingDelta: [moveR2(['P-001', 'P-002'])], approvalRef };
-    await expect(rubrics.amendRubric(different)).rejects.toThrow(/acceptance_bar_approval_(patch|source|mapping)_mismatched/);
+    await expect(rubrics.amendRubric(different))
+      .rejects.toThrow(/acceptance_bar_(?:approval_(?:patch|source|mapping)|review_source)_mismatched/);
     expect((await rubrics.getRubric(rubricSlug))!.revision).toBe(before.revision);
     expect(await subjectSource(subject)).toBe(sourceBefore);
     expect(await subjectClauses(subject)).toEqual(clausesBefore);
