@@ -310,7 +310,7 @@ describe('text-artifacts (drizzle, PG)', () => {
       pending: ['a.ts', 'b.ts'].map(path => ({ path, commit, blobOid: file.blobOid, bytes: bytes.length, reason: 'source-byte-budget' })),
       closureAccepted: false, populationComplete: false };
     const shard = prepareSecuritySourceShard(progress, ['a.ts'], { sources: [file], repositories: progress.repositories, unresolved: [],
-      selection: { paths: ['a.ts'], maxBytes: 1000, maxFiles: 1, bytesRead: bytes.length, filesRead: 1, populationComplete: false } });
+      selection: { paths: ['a.ts'], maxBytes: 1000, maxFiles: 1, maxInputBytes: 1000, bytesRead: bytes.length, filesRead: 1, populationComplete: false } });
     const saved = await saveSecuritySourceShard('web', progress, shard);
     const archive = JSON.parse((await loadImmutableTextArtifact('web', saved.archive.sha256))!);
     expect(JSON.parse(gunzipSync(Buffer.from(archive.data, 'base64')).toString())).toEqual(shard.discovery);

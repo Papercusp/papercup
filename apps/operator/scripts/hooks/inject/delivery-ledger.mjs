@@ -95,7 +95,8 @@ function emittedMemoryFragments(payload, client, offers, format, token, owner) {
     else if (client === 'claude' || client === 'codex') {
       const output = JSON.parse(payload);
       const expected = client === 'codex' ? 'PostToolUse' : 'PostToolBatch';
-      if (!['UserPromptSubmit', expected].includes(output?.hookSpecificOutput?.hookEventName)) return [];
+      if (!['UserPromptSubmit', expected, ...(client === 'claude' ? ['SessionStart'] : [])]
+        .includes(output?.hookSpecificOutput?.hookEventName)) return [];
       context = output.hookSpecificOutput.additionalContext;
     }
   } catch { return []; }
@@ -246,11 +247,11 @@ export function ledgerDir(env = process.env) {
  * Open the ledger for one session, or null when it cannot be written.
  * @param {string | null | undefined} owner  PAPERCUSP_SID
  * @param {NodeJS.ProcessEnv} [env]
- * @param {'turn-start' | 'mid-turn' | 'mcp'} [port]
+ * @param {'turn-start' | 'mid-turn' | 'mcp' | 'compact'} [port]
  * @returns {DeliveryLedger | null}
  */
 export function openDeliveryLedger(owner, env = process.env, port = 'turn-start') {
-  if (typeof owner !== 'string' || !owner || !['turn-start', 'mid-turn', 'mcp'].includes(port)) return null;
+  if (typeof owner !== 'string' || !owner || !['turn-start', 'mid-turn', 'mcp', 'compact'].includes(port)) return null;
   const dir = ledgerDir(env);
   try {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -290,7 +291,7 @@ export function openDeliveryLedger(owner, env = process.env, port = 'turn-start'
       // Read immutable receipts rather than only the last-writer token pointer:
       // overlapping hooks can finish and return their proofs in either order.
       try {
-        const files = ['turn-start', 'mid-turn', 'mcp'].map(port =>
+        const files = ['turn-start', 'mid-turn', 'mcp', 'compact'].map(port =>
           join(dir, `${key}${port === 'turn-start' ? '' : `.${port}`}.emissions`)).flatMap(directory => {
           try { return readdirSync(directory).filter(name => /^[a-f0-9]{64}\.json$/.test(name))
             .map(name => ({ name, directory, mtime: statSync(join(directory, name)).mtimeMs })); }

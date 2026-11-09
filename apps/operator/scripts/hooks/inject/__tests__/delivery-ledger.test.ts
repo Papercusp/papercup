@@ -25,6 +25,34 @@ const home = () => ({ PAPERCUSP_HOME: mkdtempSync(path.join(tmpdir(), 'ledger-un
 type CodeIntelState = { turn: string; chars: number; subjects: string[] };
 
 describe('delivery ledger', () => {
+  it('shares exact compact SessionStart receipts with later ports without replacing their tokens', () => {
+    const env = home(), owner = 'su-compact';
+    const start = openDeliveryLedger(owner, env);
+    start.offer('orientation-token');
+    expect(start.commit()).toBe(true);
+    const rendered = '- memory: retain this condition\n  only after approval ☃';
+    const offer = { kind: 'memory', id: 'compact-memory', epoch: 8, port: 'compact', rendered,
+      bodySha256: createHash('sha256').update(rendered).digest('hex'), bodyBytes: Buffer.byteLength(rendered) };
+    const compact = openDeliveryLedger(owner, env, 'compact');
+    expect(compact).not.toBeNull();
+    const payload = (text: string, event = 'SessionStart') => JSON.stringify({ hookSpecificOutput: {
+      hookEventName: event, additionalContext: text,
+    } });
+    compact.offer('compact-token', { payload: payload(rendered), client: 'claude', memoryFragmentOffers: [offer] });
+    expect(start.confirmedMemoryDeliveries()).toEqual([]);
+    expect(compact.commit()).toBe(true);
+    const { rendered: _text, ...manifest } = offer;
+    expect(start.confirmedMemoryDeliveries()).toEqual([{ token: 'compact-token', fragments: [manifest] }]);
+    for (const [token, text, event] of [['partial', rendered.slice(0, -3), 'SessionStart'],
+      ['wrong-event', rendered, 'PreToolUse']]) {
+      compact.offer(token, { payload: payload(text, event), client: 'claude', memoryFragmentOffers: [offer] });
+      expect(compact.commit()).toBe(true);
+    }
+    expect(start.confirmedMemoryDeliveries()).toEqual([{ token: 'compact-token', fragments: [manifest] }]);
+    expect(start.confirmed()).toBe('orientation-token');
+    expect(openDeliveryLedger('su-other', env).confirmedMemoryDeliveries()).toEqual([]);
+  });
+
   it.each(['codex', 'claude', 'omp'])('joins exact %s MCP output, preserving hook tokens and rejecting metadata-only bodies', client => {
     const env = home(), owner = 'su-mcp';
     const start = openDeliveryLedger(owner, env);

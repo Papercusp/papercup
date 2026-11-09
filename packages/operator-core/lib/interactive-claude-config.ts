@@ -248,7 +248,7 @@ export const RECOVER_HOOK_SOURCE = `#!/usr/bin/env node
 import { readFileSync, writeFileSync, existsSync, appendFileSync, statSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { homedir } from 'node:os';
 
 const dir = dirname(fileURLToPath(import.meta.url));
@@ -487,6 +487,7 @@ function reportSelfRelaunchNativeId(ownerId, nativeId) {
 
 // P-004: fetch the session's carry brief (P-003 renderCarryBriefText) from the
 // local operator. Fail-soft: null on any failure — the static anchor still lands.
+let compactReceipt = null;
 async function fetchCarryBrief(intent) {
   const owner = process.env.PAPERCUSP_SID || intent.sid;
   if (!owner) return null;
@@ -494,11 +495,21 @@ async function fetchCarryBrief(intent) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), 4500);
   try {
-    const res = await fetch(base + '/api/agent-mcp/session-recovery-brief?owner=' + encodeURIComponent(owner), { signal: ctl.signal });
+    let ledger = null;
+    try {
+      const { openDeliveryLedger } = await import(pathToFileURL(join(HOST_PAPERCUSP_HOME, 'hooks', 'inject', 'delivery-ledger.mjs')).href);
+      ledger = openDeliveryLedger(owner, process.env, 'compact');
+    } catch { /* no writable ledger: recall remains replayable */ }
+    const res = await fetch(base + '/api/agent-mcp/session-recovery-brief?owner=' + encodeURIComponent(owner)
+      + (ledger ? '&memoryReceiptMode=1' : ''), { signal: ctl.signal });
     if (!res.ok) return null;
     const body = await res.json();
-    const text = body && typeof body.text === 'string' ? body.text.trim() : '';
-    return text || null;
+    const text = body && typeof body.text === 'string' ? body.text : '';
+    const offer = body?._meta?.['papercusp/memoryEmission'];
+    if (ledger && offer?.owner === owner && typeof offer.token === 'string' && Array.isArray(offer.fragments)) {
+      compactReceipt = { ledger, token: offer.token, fragments: offer.fragments };
+    }
+    return text.trim() ? text : null;
   } catch {
     return null;
   } finally {
@@ -740,12 +751,28 @@ try {
     try { await bumpContextEpoch(intent, source); } catch {}
   }
   if (parts.length) {
-    process.stdout.write(JSON.stringify({
+    const payload = JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'SessionStart',
         additionalContext: parts.join('\\n\\n'),
       },
-    }));
+    });
+    compactReceipt?.ledger.offer(compactReceipt.token, { payload, client: 'claude',
+      nativeSessionId: input.session_id || null, memoryFragmentOffers: compactReceipt.fragments });
+    // A successful write call may leave queued pipe bytes. Only completion
+    // without an error can publish an immutable stdout receipt.
+    const emitted = await new Promise(resolve => {
+      let settled = false;
+      const finish = ok => {
+        if (settled) return;
+        settled = true;
+        resolve(ok);
+      };
+      process.stdout.once('error', () => finish(false));
+      try { process.stdout.write(payload, error => finish(!error)); }
+      catch { finish(false); }
+    });
+    if (emitted) compactReceipt?.ledger.commit();
   }
   process.exit(0);
 } catch {

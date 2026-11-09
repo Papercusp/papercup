@@ -21,7 +21,7 @@
  *   - a rule's lifecycle switches turn reactions off.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Sql } from 'postgres';
+import type { JSONValue, Sql } from 'postgres';
 import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -430,7 +430,7 @@ describe('admission lifecycle (P-003)', () => {
       expect(await correlateAdmissionStandingPr(sql, input)).toEqual({ linked: [id], failed: [] });
       expect(await correlateAdmissionStandingPr(sql, input)).toEqual({ linked: [], failed: [] });
       expect(await resolveAdmissionStandingPrPaths(sql, input)).toEqual({ ok: true, paths: ['bug.txt'], workItemIds: [id] });
-      const linkedPayload = (await item(id)).payload as Record<string, unknown>;
+      const linkedPayload = (await item(id)).payload as Record<string, JSONValue>;
       const completionEvidence = linkedPayload._completionEvidence as Record<string, unknown>;
       const linkedManifest = completionEvidence.settlementManifest as Record<string, unknown>;
       await sql`UPDATE harness_shared.work_items SET payload = ${sql.json({

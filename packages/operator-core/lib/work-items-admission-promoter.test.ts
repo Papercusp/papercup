@@ -831,7 +831,7 @@ describe('admission endpoint protection — terminal twins', () => {
     });
 
     it('allows an own-node remote echo through the overdue admission review gate', () => {
-      const current = { ...reviewSnapshot(), origin: 'remote', ownNode: true };
+      const current = { ...reviewSnapshot(), origin: 'remote', ownNode: true as const };
       expect(admissionEndpointBlock(current, now)).toBeNull();
     });
   });

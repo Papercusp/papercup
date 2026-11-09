@@ -11,10 +11,10 @@ export function ledgerDir(env?: NodeJS.ProcessEnv): string;
  * Open the ledger for one session, or null when it cannot be written.
  * @param {string | null | undefined} owner  PAPERCUSP_SID
  * @param {NodeJS.ProcessEnv} [env]
- * @param {'turn-start' | 'mid-turn' | 'mcp'} [port]
+ * @param {'turn-start' | 'mid-turn' | 'mcp' | 'compact'} [port]
  * @returns {DeliveryLedger | null}
  */
-export function openDeliveryLedger(owner: string | null | undefined, env?: NodeJS.ProcessEnv, port?: "turn-start" | "mid-turn" | "mcp"): DeliveryLedger | null;
+export function openDeliveryLedger(owner: string | null | undefined, env?: NodeJS.ProcessEnv, port?: "turn-start" | "mid-turn" | "mcp" | "compact"): DeliveryLedger | null;
 /** Extend the existing delivery ledger for optional code-intelligence emission.
  * A generation-scoped exclusive directory serializes fresh hook processes. On
  * contention or an IO error, suppress only optional advice. A crashed writer's

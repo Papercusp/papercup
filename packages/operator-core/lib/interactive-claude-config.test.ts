@@ -19,6 +19,7 @@ import {
   mkdtempSync,
   readFileSync,
   readlinkSync,
+  readdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -26,6 +27,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile, execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import ts from 'typescript';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -864,6 +866,58 @@ describe('P-004: SessionStart[source=compact] continuity anchor', () => {
       expect(hits[0]).toContain('/api/agent-mcp/session-recovery-brief?owner=su-cmp1');
     } finally {
       await new Promise((r) => server.close(r));
+    }
+  });
+
+  it.each(['complete', 'clipped', 'foreign'])('records compact stdout proof only for whole recipient-bound fragments: %s', async mode => {
+    const sid = 'su-compact-output';
+    const configDir = await seedWithPlaybook(sid);
+    const pcHome = join(home, 'compact-ledger');
+    const installed = join(pcHome, 'hooks', 'inject');
+    mkdirSync(installed, { recursive: true });
+    writeFileSync(join(installed, 'delivery-ledger.mjs'), readFileSync(
+      new URL('../../../apps/operator/scripts/hooks/inject/delivery-ledger.mjs', import.meta.url),
+    ));
+    const rendered = '- memory: ' + 'retain the full condition ☃ '.repeat(10_000) + '\n  approval required';
+    const sha = (text: string) => createHash('sha256').update(text).digest('hex');
+    const offer = { kind: 'memory', id: 'compact-memory', epoch: 12, port: 'compact', rendered,
+      bodySha256: sha(rendered), bodyBytes: Buffer.byteLength(rendered) };
+    const hits: string[] = [];
+    const server = createServer((req, res) => {
+      hits.push(req.url ?? '');
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ ok: true, text: mode === 'clipped' ? rendered.slice(0, -3) : rendered,
+        _meta: { 'papercusp/memoryEmission': { owner: mode === 'foreign' ? 'su-other' : sid,
+          token: 'compact-proof', fragments: [offer] } } }));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const stdout = await runHookAsync(configDir, INTACT_CHAIN, '{"session_id":"native-compact","source":"compact"}', {
+        PAPERCUSP_HOME: pcHome,
+        PAPERCUSP_OPERATOR_URL: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+      });
+      const output = JSON.parse(stdout);
+      expect(output.hookSpecificOutput.additionalContext.endsWith(
+        mode === 'clipped' ? rendered.slice(0, -3) : rendered,
+      )).toBe(true);
+      expect(hits[0]).toContain('memoryReceiptMode=1');
+      expect(stdout).not.toContain('papercusp/memoryEmission');
+      const receiptDir = join(pcHome, 'state', 'turn-start-delivery', `${sid}.compact.emissions`);
+      if (mode === 'foreign') {
+        expect(existsSync(receiptDir)).toBe(false);
+      } else {
+        const names = readdirSync(receiptDir);
+        expect(names).toEqual([sha('compact-proof') + '.json']);
+        const raw = readFileSync(join(receiptDir, names[0]), 'utf8');
+        const receipt = JSON.parse(raw);
+        expect(receipt).toMatchObject({ stage: 'stdout-emitted', owner: sid, payloadSha256: sha(stdout),
+          payloadBytes: Buffer.byteLength(stdout), client: 'claude', nativeSessionId: 'native-compact' });
+        const { rendered: _text, ...manifest } = offer;
+        expect(receipt.memoryFragments).toEqual(mode === 'complete' ? [manifest] : []);
+        expect(raw).not.toContain('retain the full condition');
+      }
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()));
     }
   });
 

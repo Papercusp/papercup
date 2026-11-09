@@ -59,6 +59,7 @@ import {
 } from "node:path";
 import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
 import { consumeKickoffPromptFile, KICKOFF_PROMPT_FILE_ENV } from "@papercusp/operator-core/lib/agent-kickoff/prompt-transport.mjs";
+import { getServingHostIdentity } from "@papercusp/operator-core/lib/serving-host-identity";
 import { launchWithHostedAgentSlot } from "@papercusp/operator-core/lib/workspace-host/hosted-agent-admission-client";
 
 /** Keep the packaged adapter relocatable while preserving source-checkout development. */
@@ -2943,6 +2944,7 @@ export function tagKickoffProvenance(
         origin: kickoffOrigin,
         sha256,
         ts: nowMs,
+        issuer: { ...getServingHostIdentity() },
         ...(kickoffOrigin === "loop-fire" ? { ttlMs: LOOP_FIRE_PROVENANCE_TTL_MS } : {}),
         ...(identity ? { loopFire: identity } : {}),
       }) + "\n",

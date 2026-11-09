@@ -24,7 +24,7 @@ const recoveryBrief = defineTool({
     const owner = (q.get('owner') ?? '').trim();
     if (!owner) return Response.json({ ok: false, error: 'owner required' }, { status: 400 });
     const workspace = (q.get('workspace') ?? '').trim() || undefined;
-    try {
+    const buildResponse = async () => {
       const { buildCarryBrief, renderCarryBriefText } = await import('../../../carry-brief');
       const brief = await buildCarryBrief(owner, { workspaceId: workspace });
       const text = renderCarryBriefText(brief);
@@ -59,10 +59,22 @@ const recoveryBrief = defineTool({
         memoryBlock = null;
       }
 
-      return Response.json({
-        ok: true,
-        text: memoryBlock ? `${text}\n\n${memoryBlock}` : text,
-      });
+      return { content: [{ type: 'text' as const, text: memoryBlock ? `${text}\n\n${memoryBlock}` : text }] };
+    };
+    try {
+      // Opt in only when the recovery hook has a writable native delivery
+      // ledger. The existing scope excludes late deadline losers and offers
+      // only whole fragments in the final carry text. Later hook requests
+      // confirm stdout through the same shared ledger as every other port.
+      const response = q.get('memoryReceiptMode') === '1'
+        ? await (async () => {
+          const { getOrgPg } = await import('@papercusp/db-org');
+          const { withMemoryEmissionReceipt } = await import('../../../memory/session-epoch-ledger');
+          return withMemoryEmissionReceipt(getOrgPg().sql, owner, undefined, buildResponse);
+        })()
+        : await buildResponse();
+      return Response.json({ ok: true, text: response.content[0].text,
+        ...('_meta' in response ? { _meta: response._meta } : {}) });
     } catch {
       return Response.json({ ok: true, text: '' });
     }
