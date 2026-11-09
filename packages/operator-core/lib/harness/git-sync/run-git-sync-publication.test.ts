@@ -84,7 +84,12 @@ describe('metadata publication population', () => {
       // Command-name registries classify argv; they do not execute a writer.
       const commandRegistry = node.parent !== undefined && ts.isNewExpression(node.parent) && ts.isIdentifier(node.parent.expression) &&
         node.parent.expression.text === 'Set';
-      if (ts.isArrayLiteralExpression(node) && !commandRegistry) {
+      // A closed Zod enum may contain a Git verb (e.g. origin authority
+      // ['branch', 'default-head']); it declares data rather than dispatching Git.
+      const schemaRegistry = node.parent !== undefined && ts.isCallExpression(node.parent) &&
+        ts.isPropertyAccessExpression(node.parent.expression) && node.parent.expression.name.text === 'enum' &&
+        ts.isIdentifier(node.parent.expression.expression) && node.parent.expression.expression.text === 'z';
+      if (ts.isArrayLiteralExpression(node) && !commandRegistry && !schemaRegistry) {
         const argv = node.elements.filter(ts.isStringLiteral).map(value => value.text);
         const verb = argv.find(value => verbs.has(value));
         // Path resets update an index only. symbolic-ref --quiet is a read.

@@ -2144,6 +2144,10 @@ export type GitSyncOutcome = {
     publication: 'committed' | 'already-published';
     remoteEgressConfirmed: false;
     routineMetadataRecorded?: boolean;
+    paths?: string[];
+    sourceFingerprint?: GitSyncGeneratedLockSource['fingerprint'];
+    originCapture?: GitSyncMetadataOriginProof;
+    originProofs?: GitSyncMetadataOriginProof[];
   };
   /** Per-publication proof retained by the commit checkpoint, including on replay. */
   localCommits?: GitSyncRootCommit[];
@@ -5697,6 +5701,28 @@ const metadataLibrarySelection = z.object({
 }).strict();
 export type GitSyncPublishedLibrarySelection = z.infer<typeof metadataLibrarySelection>;
 
+const metadataLibrarySelections = z.array(metadataLibrarySelection).max(2).refine(rows => {
+  const paths = rows.map(row => row.path);
+  return new Set(paths).size === paths.length && paths.every((path, i) => path === [...paths].sort()[i]);
+}, 'generated-lock-library-order');
+
+/** One closed ingress contract for the public route, action and selected-tree resolver. */
+export const gitSyncMetadataRepairRequestSchema = z.object({
+  base: metadataOid,
+  expectedPendingLockSha256: metadataSha.nullable(),
+  requestId: z.string().min(1).max(200),
+  generation: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  publishedLibrarySelections: metadataLibrarySelections.optional(),
+}).strict();
+
+export function snapshotGitSyncMetadataRepairRequest(request: unknown) {
+  const parsed = gitSyncMetadataRepairRequestSchema.parse(request);
+  const { publishedLibrarySelections, ...identity } = parsed;
+  return Object.freeze({ ...identity, ...(publishedLibrarySelections === undefined ? {} : {
+    publishedLibrarySelections: Object.freeze(publishedLibrarySelections.map(row => Object.freeze(row))),
+  }) });
+}
+
 export interface GitSyncMetadataSelectedLibrary extends GitSyncPublishedLibrarySelection {
   selectedTree: string;
   selectedType: 'commit';
@@ -5732,11 +5758,11 @@ const generatedSourceSchema = z.object({ kind: z.literal('generated-lock'),
     inputs: z.array(metadataRawInput) }).strict() }).strict();
 export type GitSyncGeneratedLockSource = z.infer<typeof generatedSourceSchema>;
 
-function metadataSelectionRequest(f: z.infer<typeof metadataJointFingerprint>) {
+export function metadataSelectionRequest(f: z.infer<typeof metadataJointFingerprint>) {
   return f.publishedLibrarySelections.map(({ path, expectedBasePin, selectedCommit }) => ({ path, expectedBasePin, selectedCommit }));
 }
 
-function metadataCandidatePaths(f: GitSyncGeneratedLockSource['fingerprint']) {
+export function metadataCandidatePaths(f: GitSyncGeneratedLockSource['fingerprint']) {
   return [f.output.path, ...(f.schemaVersion === 2 ? f.publishedLibrarySelections
     .filter(row => row.expectedBasePin !== row.selectedCommit).map(row => row.path) : [])].sort();
 }
@@ -5855,9 +5881,10 @@ async function observeMetadataEgress(runGit: RunGit, repo: string, args: string[
     if (ancestry.code === 1) continue;
     if (ancestry.code !== 0) throw new Error('generated-lock-egress-history-unavailable');
     const recovered = await readGitSyncCandidate(runGit, repo, { requestId: candidate.requestId,
-      generation: candidate.generation, base: candidate.base, paths: candidate.paths,
-      contentSource: candidate.contentSource, ...(candidate.dependencies ? { dependencies: candidate.dependencies } : {}) });
-    if (!recovered.ok || recovered.ref !== ref) throw new Error('generated-lock-egress-custody-invalid');
+      generation: candidate.generation, paths: candidate.paths });
+    if (!recovered.ok || recovered.ref !== ref || canonicalJson(recovered.candidate) !== canonicalJson(candidate)) {
+      throw new Error('generated-lock-egress-custody-invalid');
+    }
     const pinTree = await runGit(['rev-parse', '--verify', `${publication.stdout.trim()}^{tree}`], repo);
     const parents = await runGit(['rev-list', '--parents', '-n', '1', publication.stdout.trim()], repo);
     if (pinTree.code !== 0 || pinTree.stdout.trim() !== recovered.candidate.tree || parents.code !== 0 ||
@@ -5888,11 +5915,10 @@ export async function prepareGitSyncMetadataSelectionTree(runGit: RunGit, repo: 
   if (Object.keys(request).sort().join(',') !== 'base,publishedLibrarySelections' ||
       !metadataOid.safeParse(request.base).success || !Array.isArray(request.publishedLibrarySelections) ||
       request.publishedLibrarySelections.length > 2) throw new Error('generated-lock-library-request');
-  const selections = request.publishedLibrarySelections.map(row => metadataLibrarySelection.parse(row));
+  const parsed = metadataLibrarySelections.safeParse(request.publishedLibrarySelections);
+  if (!parsed.success) throw new Error('generated-lock-library-order');
+  const selections = parsed.data;
   const paths = selections.map(row => row.path);
-  if (new Set(paths).size !== paths.length || canonicalJson(paths) !== canonicalJson([...paths].sort())) {
-    throw new Error('generated-lock-library-order');
-  }
   const git: RunGit = (args, cwd, options) => runGit(['--no-replace-objects', ...args], cwd, {
     ...options, env: { ...options?.env, GIT_OPTIONAL_LOCKS: '0', GIT_LITERAL_PATHSPECS: '1' },
   });

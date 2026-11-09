@@ -18,6 +18,7 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { projectDirForSlug } from '../../operator-notes';
 import { fireGitSyncNow, type GitSyncFireOutcome } from '../../harness/git-sync/git-sync-action';
+import { gitSyncMetadataRepairRequestSchema, snapshotGitSyncMetadataRepairRequest } from '../../harness/git-sync/run-git-sync';
 import {
   GIT_SYNC_LOCK_RETRY_EVENT,
   isSystemGitSyncHolder,
@@ -305,13 +306,8 @@ export default defineTool({
       .boolean()
       .optional()
       .describe('Preview the selected checkout without firing git-sync, committing, or pushing.'),
-    repairMetadata: z.object({
-      base: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/),
-      expectedPendingLockSha256: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
-      requestId: z.string().min(1).max(200),
-      generation: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-    }).strict().optional().describe(
-      'Resolve selected parent metadata privately and publish through existing custody. Pending lock null means observed absence. Mutation requires an explicit exact background target; no caller-supplied path or bytes are accepted.',
+    repairMetadata: gitSyncMetadataRepairRequestSchema.optional().describe(
+      'Resolve selected parent metadata privately and publish through existing custody. Optional publishedLibrarySelections is a sorted, unique closed library vector (at most two); absent retains root-only v1, explicit [] selects v2. Pending lock null means observed absence. Mutation requires an explicit exact background target; no caller-supplied path or bytes are accepted.',
     ),
     reason: softText(LIMITS.SHORT_TITLE)
       .optional()
@@ -330,7 +326,7 @@ export default defineTool({
     // does not have to learn this tool's internal routine vocabulary.
     const slug = args.installSlug ?? args.harness ?? operatorHomeHarnessSlug();
     const workspaceId = activeWorkspaceId();
-    const repairMetadata = args.repairMetadata ? Object.freeze({ ...args.repairMetadata }) : undefined;
+    const repairMetadata = args.repairMetadata ? snapshotGitSyncMetadataRepairRequest(args.repairMetadata) : undefined;
 
     if (repairMetadata && !args.dryRun && !args.target) return { content: [{ type: 'text', text: JSON.stringify({
       ok: false, fired: false, status: 'refused', reason: 'metadata-repair-target-required',

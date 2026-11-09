@@ -10,6 +10,7 @@ import { captureGitSyncCandidate, readGitSyncCandidate, publishGitSyncCandidate,
   SOURCE_CUSTODY_REF_PREFIX, type RunGit, type GitSyncGeneratedLockTreeRequest } from './run-git-sync';
 import { createGitSyncLeaseFence } from './git-sync-lease-fence';
 import { runWithGitSyncPerInstallLease } from './git-sync-action';
+import { checkFrozenEditCohortEvidence, describeEditCohort } from '../../edit-attribution';
 import * as gitlinkOrigins from './submodule-forks';
 import { startDedicatedNativePg } from '@papercusp/test-config/pg';
 import { getOrgPg, _resetForTests as resetOrgPg } from '@papercusp/db-org';
@@ -312,7 +313,8 @@ describe('P003 selected library input tree', () => {
         assertHeld: () => { if (lost) throw new Error('owning writer expired'); } } } : {}) });
     // Every refusal leaves even the first remote ref absent, with no transport.
     for (const changed of ['tip', 'authority', 'stale', 'unavailable', 'writer', 'lost-writer'] as const) {
-      control = ['writer', 'lost-writer'].includes(changed) ? undefined : changed as typeof control;
+      control = changed === 'tip' || changed === 'authority' || changed === 'stale' || changed === 'unavailable'
+        ? changed : undefined;
       loseAfterObservation = changed === 'lost-writer';
       const result = await push(changed !== 'writer');
       expect(result.status, changed).toBe('error');
@@ -1229,6 +1231,113 @@ describe('lifecycle P003 common writer', () => {
 });
 
 describe('lifecycle P003 refusal boundaries', () => {
+  it('refuses wrong complete-candidate evidence before publication and publishes the matching candidate', async () => {
+    const f = fixture();
+    writeFileSync(join(f.repo, 'a.txt'), 'A1 checked\n');
+    const request = { requestId: 'complete-evidence', generation: 1, base: f.git('rev-parse', 'HEAD'), paths: ['a.txt'] };
+    const capture = await captureGitSyncCandidate(f.runGit, f.repo, request);
+    if (!capture.ok) throw new Error(capture.error);
+    const context = { configurationIdentity: 'config-A', environmentIdentity: 'environment-A', requiredChecks: ['focused'] };
+    const captures = { [request.requestId]: { version: 1, kind: 'edit-generation', pending: true, capture } };
+    const frozen = describeEditCohort(captures, context);
+    const checks = [{ check: 'focused', identity: frozen.identity, environmentIdentity: context.environmentIdentity,
+      passed: true, runId: 'actual-fixture-check' }];
+    laterState(f, 'split');
+    const before = candidateState(f);
+    for (const changed of ['generation', 'base', 'dependency', 'configuration', 'environment'] as const) {
+      const wrong = structuredClone(captures);
+      const candidate = wrong[request.requestId].capture.candidate;
+      if (changed === 'generation') candidate.generation++;
+      if (changed === 'base') candidate.base = 'f'.repeat(40);
+      if (changed === 'dependency') candidate.dependencies = [{ requestId: 'other', generation: 1,
+        paths: ['a.txt'], tree: 'e'.repeat(40) }];
+      const callbacks = vi.fn(async () => {
+        const verdict = checkFrozenEditCohortEvidence({ frozen, captures: wrong, ...context,
+          ...(changed === 'configuration' ? { configurationIdentity: 'config-B' } : {}),
+          ...(changed === 'environment' ? { environmentIdentity: 'environment-B' } : {}),
+          publicationIntent: true, dependencies: [], checks });
+        return verdict.ok ? { ok: true as const } : { ok: false as const, error: verdict.reason };
+      });
+      expect(await publishGitSyncCandidate(f.runGit, f.repo, request, { assertHeld: () => {}, beforePublish: callbacks }))
+        .toMatchObject({ status: 'error', error: 'cohort-changed' });
+      expect(callbacks).toHaveBeenCalledOnce();
+      expect(candidateState(f)).toEqual(before);
+      expect(f.git('for-each-ref', '--format=%(refname)', SOURCE_CUSTODY_REF_PREFIX)).not.toContain('-publication');
+    }
+    expect(await publishGitSyncCandidate(f.runGit, f.repo, request, {
+      assertHeld: () => {}, beforePublish: async candidate => {
+        expect(candidate).toEqual(capture.candidate);
+        const verdict = checkFrozenEditCohortEvidence({ frozen, captures, ...context,
+          publicationIntent: true, dependencies: [], checks });
+        return verdict.ok ? { ok: true } : { ok: false, error: verdict.reason };
+      },
+    })).toMatchObject({ status: 'committed', tree: capture.candidate.tree });
+    expect(f.git('show', 'HEAD:a.txt')).toBe('A1 checked');
+    const { head: _head, ...expectedCallerState } = before;
+    expect(unpublishedState(f)).toEqual(expectedCallerState);
+  });
+
+  it('refuses publication of an unfinished ancestor while unrelated ready work commits', async () => {
+    const f = fixture(), unrelated = fixture();
+    const base = f.git('rev-parse', 'HEAD');
+    writeFileSync(join(f.repo, 'a.txt'), 'A1 unfinished\n');
+    const ancestorRequest = { requestId: 'ancestor', generation: 1, base, paths: ['a.txt'] };
+    const ancestor = await captureGitSyncCandidate(f.runGit, f.repo, ancestorRequest);
+    if (!ancestor.ok) throw new Error(ancestor.error);
+    writeFileSync(join(f.repo, 'a.txt'), 'B1 successor\n');
+    const dependency = { requestId: 'ancestor', generation: 1, paths: ['a.txt'], tree: ancestor.candidate.tree };
+    const request = { requestId: 'successor', generation: 1, base, paths: ['a.txt'], dependencies: [dependency] };
+    const capture = await captureGitSyncCandidate(f.runGit, f.repo, request);
+    if (!capture.ok) throw new Error(capture.error);
+    const context = { configurationIdentity: 'config', environmentIdentity: 'environment', requiredChecks: ['focused'] };
+    const captures = { successor: { version: 1, kind: 'edit-generation', pending: true, capture } };
+    const frozen = describeEditCohort(captures, context);
+    const before = candidateState(f);
+    const checked = (dependencies: Parameters<typeof checkFrozenEditCohortEvidence>[0]['dependencies']) => {
+      const verdict = checkFrozenEditCohortEvidence({ frozen, captures, ...context, publicationIntent: true, dependencies,
+        checks: [{ check: 'focused', identity: frozen.identity, environmentIdentity: context.environmentIdentity,
+          passed: true, runId: 'actual-fixture-check' }] });
+      return verdict.ok ? { ok: true as const } : { ok: false as const, error: verdict.reason };
+    };
+    for (const dependencies of [[], [{ ...dependency, repository: capture.candidate.repository, tree: 'f'.repeat(40) }]]) {
+      expect(await publishGitSyncCandidate(f.runGit, f.repo, request, {
+        assertHeld: () => {}, beforePublish: async () => checked(dependencies),
+      })).toMatchObject({ status: 'error', error: 'cohort-ancestor-unfinished' });
+      expect(candidateState(f)).toEqual(before);
+    }
+    // This control covers independent repository progress. Same-repository
+    // selection/rebase remains the later P007 selector's acceptance obligation.
+    writeFileSync(join(unrelated.repo, 'b.txt'), 'independent ready\n');
+    const ready = { requestId: 'independent', generation: 1, base: unrelated.git('rev-parse', 'HEAD'), paths: ['b.txt'] };
+    expect(await captureGitSyncCandidate(unrelated.runGit, unrelated.repo, ready)).toMatchObject({ ok: true });
+    expect(await publishGitSyncCandidate(unrelated.runGit, unrelated.repo, ready, {
+      assertHeld: () => {}, beforePublish: async () => ({ ok: true }),
+    })).toMatchObject({ status: 'committed' });
+    expect(unrelated.git('show', 'HEAD:b.txt')).toBe('independent ready');
+    expect(candidateState(f)).toEqual(before);
+    expect(await publishGitSyncCandidate(f.runGit, f.repo, ancestorRequest, {
+      assertHeld: () => {}, beforePublish: async () => ({ ok: true }),
+    })).toMatchObject({ status: 'committed', tree: ancestor.candidate.tree });
+    const next = { ...request, generation: 2, base: f.git('rev-parse', 'HEAD') };
+    const recaptured = await captureGitSyncCandidate(f.runGit, f.repo, next);
+    if (!recaptured.ok) throw new Error(recaptured.error);
+    const nextCaptures = { successor: { version: 1, kind: 'edit-generation', pending: true, capture: recaptured } };
+    const nextFrozen = describeEditCohort(nextCaptures, context);
+    expect(nextFrozen.identity).not.toBe(frozen.identity);
+    expect(await publishGitSyncCandidate(f.runGit, f.repo, next, {
+      assertHeld: () => {}, beforePublish: async () => {
+        const verdict = checkFrozenEditCohortEvidence({ frozen: nextFrozen, captures: nextCaptures, ...context,
+          publicationIntent: true, dependencies: [{ ...dependency, repository: capture.candidate.repository }],
+          checks: [{ check: 'focused', identity: nextFrozen.identity, environmentIdentity: context.environmentIdentity,
+            passed: true, runId: 'revalidated-fixture-check' }] });
+        return verdict.ok ? { ok: true } : { ok: false, error: verdict.reason };
+      },
+    })).toMatchObject({ status: 'committed', tree: recaptured.candidate.tree });
+    expect(f.git('show', 'HEAD:a.txt')).toBe('B1 successor');
+    const { head: _head, ...expectedCallerState } = before;
+    expect(unpublishedState(f)).toEqual(expectedCallerState);
+  });
+
   it.each(['before-checks', 'after-checks'] as const)('stops on lease loss %s before any further Git command', async point => {
     const f = fixture();
     writeFileSync(join(f.repo, 'a.txt'), 'A1\n');

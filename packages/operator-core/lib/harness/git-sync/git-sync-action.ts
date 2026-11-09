@@ -265,10 +265,14 @@ import {
   runGitSync,
   readGitSyncCandidate,
   prepareGitSyncMetadataRepair,
+  snapshotGitSyncMetadataRepairRequest,
+  metadataCandidatePaths,
+  metadataSelectionRequest,
   captureGitSyncCandidate,
   publishGitSyncCandidate,
   type GitSyncCandidateRequest,
   type GitSyncWriterAuthority,
+  type GitSyncPublishedLibrarySelection,
   runGitBounded,
   type GitSyncYieldError,
   DEFAULT_MAX_BLOB_BYTES,
@@ -8886,7 +8890,7 @@ export async function fireGitSyncNow(
       'git-sync on-demand fire refused on request-only host: route the mutation to the background-worker host',
     );
   }
-  if (repairMetadata) return fireGitSyncMetadataRepair(installSlug, workspaceId, repoPath, { ...repairMetadata });
+  if (repairMetadata) return fireGitSyncMetadataRepair(installSlug, workspaceId, repoPath, repairMetadata);
   const { sql } = getOrgPg();
   const rows = (await sql`
     SELECT trigger_config FROM harness_shared.routines
@@ -8901,6 +8905,7 @@ export interface GitSyncMetadataRepairRequest {
   expectedPendingLockSha256: string | null;
   requestId: string;
   generation: number;
+  publishedLibrarySelections?: readonly GitSyncPublishedLibrarySelection[];
 }
 
 /** The on-demand repair stays within the existing action, custody and lease.
@@ -8914,13 +8919,10 @@ async function fireGitSyncMetadataRepair(slug: string, workspaceId: string, repo
     errors: [{ scope: 'superproject', message }], pushed: [], merged: [] });
   const runGit: RunGit = (args, cwd, options) => runGitBounded(args, cwd, gitTimeoutMsFor(args), options);
   let outcome: GitSyncOutcome;
+  // Invalid ingress cannot start runtime selection, custody, or a receipt write.
+  try { repair = snapshotGitSyncMetadataRepairRequest(repair); }
+  catch { return failed('generated-lock-request'); }
   try {
-    if (Object.keys(repair).sort().join(',') !== 'base,expectedPendingLockSha256,generation,requestId' ||
-        !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(repair.base) || !repair.requestId || repair.requestId.length > 200 ||
-        !Number.isSafeInteger(repair.generation) || repair.generation < 1 ||
-        (repair.expectedPendingLockSha256 !== null && !/^[a-f0-9]{64}$/.test(repair.expectedPendingLockSha256))) {
-      throw new Error('generated-lock-request');
-    }
     const runtime = await gitSyncRuntimeGate(slug, workspaceId, repoPath);
     if (!runtime.gate.eligible) return { status: 'skipped', reason: runtime.gate.reason ?? 'runtime-ineligible' };
     const repo = repoPath ?? runtime.entry?.path;
@@ -8930,8 +8932,13 @@ async function fireGitSyncMetadataRepair(slug: string, workspaceId: string, repo
     let request: GitSyncCandidateRequest;
     if (prior.ok) {
       const { candidate } = prior;
-      if (!candidate.contentSource || candidate.base !== repair.base || candidate.paths.length !== 1 ||
-          candidate.paths[0] !== candidate.contentSource.fingerprint.output.path) {
+      const fingerprint = candidate.contentSource?.fingerprint;
+      const joint = repair.publishedLibrarySelections !== undefined;
+      if (!fingerprint || candidate.base !== repair.base ||
+          fingerprint.schemaVersion !== (joint ? 2 : 1) ||
+          JSON.stringify(candidate.paths) !== JSON.stringify(metadataCandidatePaths(fingerprint)) ||
+          (joint && fingerprint.schemaVersion === 2 &&
+            JSON.stringify(metadataSelectionRequest(fingerprint)) !== JSON.stringify(repair.publishedLibrarySelections))) {
         throw new Error('generated-lock-request-conflict');
       }
       request = { requestId: repair.requestId, generation: repair.generation, base: candidate.base,
@@ -8940,10 +8947,11 @@ async function fireGitSyncMetadataRepair(slug: string, workspaceId: string, repo
       if (prior.error !== 'candidate-not-captured') throw new Error(prior.error);
       // npm resolution owns only private materialization and runs outside the writer lease.
       const source = await prepareGitSyncMetadataRepair(runGit, repo,
-        { requestId: repair.requestId, generation: repair.generation, base: repair.base },
+        { requestId: repair.requestId, generation: repair.generation, base: repair.base,
+          ...(repair.publishedLibrarySelections === undefined ? {} : { publishedLibrarySelections: repair.publishedLibrarySelections }) },
         { expectedPendingLockSha256: repair.expectedPendingLockSha256 });
       request = { requestId: repair.requestId, generation: repair.generation, base: repair.base,
-        paths: [source.fingerprint.output.path], contentSource: source };
+        paths: metadataCandidatePaths(source.fingerprint), contentSource: source };
     }
     const source = request.contentSource!;
     if (source.custody.inputs.find(row => row.path === source.fingerprint.output.path)?.sha256 !==
@@ -8958,12 +8966,12 @@ async function fireGitSyncMetadataRepair(slug: string, workspaceId: string, repo
         throw new Error(publication.status === 'error' ? publication.error :
           publication.status === 'cas-refused' ? publication.detail : 'generated-lock-empty-publication');
       }
-      return { publication, ref: captured.ref };
+      return { publication, ref: captured.ref, originCapture: captured.candidate.originCapture };
     });
     if (leased.state === 'skipped') return { status: 'skipped', reason: leased.reason,
       ...(leased.blockedOn ? { blockedOn: leased.blockedOn } : {}), ...(leased.holders ? { holders: leased.holders } : {}) };
     if (leased.state === 'lease-lost') throw new Error('generated-lock-lease-lost: ' + leased.detail);
-    const { publication, ref } = leased.value;
+    const { publication, ref, originCapture } = leased.value;
     const newlyCommitted = publication.status === 'committed';
     publicationProof = {
       committedCount: newlyCommitted ? 1 : 0,
@@ -8971,7 +8979,9 @@ async function fireGitSyncMetadataRepair(slug: string, workspaceId: string, repo
         localCommitShas: [publication.commit] } : {}),
       metadataRepair: { requestId: repair.requestId, generation: repair.generation, base: repair.base,
         custodyRef: ref, tree: publication.tree, commit: publication.commit, publication: publication.status,
-        remoteEgressConfirmed: false },
+        remoteEgressConfirmed: false, paths: [...request.paths], sourceFingerprint: source.fingerprint,
+        ...(originCapture ? { originCapture } : {}),
+        ...(publication.originProofs ? { originProofs: publication.originProofs } : {}) },
     };
     // Retained ancestry replay may occur after later commits. The publication
     // receipt names that earlier commit; headSha always measures current HEAD.

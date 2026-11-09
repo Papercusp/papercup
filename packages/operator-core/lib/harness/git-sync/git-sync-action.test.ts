@@ -392,7 +392,12 @@ const readCandidateMock = vi.fn<(...args: unknown[]) => Promise<unknown>>();
 const prepareMetadataMock = vi.fn<(...args: unknown[]) => Promise<unknown>>();
 const captureCandidateMock = vi.fn<(...args: unknown[]) => Promise<unknown>>();
 const publishCandidateMock = vi.fn<(...args: unknown[]) => Promise<unknown>>();
-vi.mock('./run-git-sync', () => ({
+vi.mock('./run-git-sync', async importOriginal => {
+  const actual = await importOriginal<typeof import('./run-git-sync')>();
+  return {
+  snapshotGitSyncMetadataRepairRequest: actual.snapshotGitSyncMetadataRepairRequest,
+  metadataCandidatePaths: actual.metadataCandidatePaths,
+  metadataSelectionRequest: actual.metadataSelectionRequest,
   readGitSyncCandidate: (...args: unknown[]) => readCandidateMock(...args),
   prepareGitSyncMetadataRepair: (...args: unknown[]) => prepareMetadataMock(...args),
   captureGitSyncCandidate: (...args: unknown[]) => captureCandidateMock(...args),
@@ -413,7 +418,7 @@ vi.mock('./run-git-sync', () => ({
   gitTimeoutMsFor: () => 30_000,
   DEFAULT_MAX_BLOB_BYTES: 95 * 1024 * 1024,
   DEFAULT_MAX_COMMIT_TOTAL_BYTES: 250 * 1024 * 1024,
-}));
+}; });
 
 type CompletionSettlementScope = {
   installSlug: string;
@@ -1358,7 +1363,7 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
 
   const repairMetadata = { base: 'a'.repeat(40), expectedPendingLockSha256: 'b'.repeat(64),
     requestId: 'selected-parent-repair', generation: 1 };
-  const repairSource = { kind: 'generated-lock', fingerprint: { output: { path: 'package-lock.json' } },
+  const repairSource = { kind: 'generated-lock', fingerprint: { schemaVersion: 1, output: { path: 'package-lock.json' } },
     custody: { inputs: [{ path: 'package-lock.json', sha256: repairMetadata.expectedPendingLockSha256 }] } };
   const repairPublication = { status: 'committed', commit: 'c'.repeat(40), tree: 'd'.repeat(40) };
 
@@ -1370,7 +1375,7 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     captureCandidateMock.mockImplementation(async (...args) => {
       expect([...heldResourcesByOwner.values()].flat()).toContain('git-sync:papercup');
       (args[3] as { assertHeld(): void }).assertHeld();
-      return { ok: true, ref: 'refs/papercusp/source-custody/test' };
+      return { ok: true, ref: 'refs/papercusp/source-custody/test', candidate: {} };
     });
     publishCandidateMock.mockImplementation(async (...args) => {
       const options = args[3] as { assertHeld(): void; beforePublish(): Promise<unknown> };
@@ -1392,7 +1397,7 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
   it('metadata repair reuses retained custody after publication without resolving npm again', async () => {
     readCandidateMock.mockResolvedValue({ ok: true, candidate: { base: repairMetadata.base,
       paths: ['package-lock.json'], contentSource: repairSource } });
-    captureCandidateMock.mockResolvedValue({ ok: true, ref: 'refs/papercusp/source-custody/test' });
+    captureCandidateMock.mockResolvedValue({ ok: true, ref: 'refs/papercusp/source-custody/test', candidate: {} });
     publishCandidateMock.mockResolvedValue({ ...repairPublication, status: 'already-published' });
     expect(await fireGitSyncNow(ctx.installSlug, ctx.workspaceId, repoDir, repairMetadata))
       .toMatchObject({ status: 'synced', committedCount: 0, pushed: [], headSha: 'd'.repeat(40),
@@ -1404,7 +1409,7 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
 
   it('metadata repair preserves publication proof when terminal routine persistence fails', async () => {
     prepareMetadataMock.mockResolvedValue(repairSource);
-    captureCandidateMock.mockResolvedValue({ ok: true, ref: 'refs/papercusp/source-custody/test' });
+    captureCandidateMock.mockResolvedValue({ ok: true, ref: 'refs/papercusp/source-custody/test', candidate: {} });
     publishCandidateMock.mockResolvedValue(repairPublication);
     // The first write records fire_started_at; fail only the outcome write.
     rejectUnsafeAtCall = unsafeCallCount + 2;
@@ -1419,7 +1424,7 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
 
   it('metadata repair preserves publication proof when the current HEAD cannot be measured', async () => {
     prepareMetadataMock.mockResolvedValue(repairSource);
-    captureCandidateMock.mockResolvedValue({ ok: true, ref: 'refs/papercusp/source-custody/test' });
+    captureCandidateMock.mockResolvedValue({ ok: true, ref: 'refs/papercusp/source-custody/test', candidate: {} });
     publishCandidateMock.mockResolvedValue(repairPublication);
     runGitBoundedMock.mockResolvedValue({ code: 1, stdout: '', stderr: 'unreadable HEAD' });
     const outcome = await fireGitSyncNow(ctx.installSlug, ctx.workspaceId, repoDir, repairMetadata);
@@ -1434,7 +1439,7 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
   it.each(['resolution', 'pending', 'capture', 'publication'] as const)(
     'metadata repair refuses %s failure without falling through to ordinary git-sync', async phase => {
       prepareMetadataMock.mockResolvedValue(repairSource);
-      captureCandidateMock.mockResolvedValue({ ok: true, ref: 'refs/papercusp/source-custody/test' });
+      captureCandidateMock.mockResolvedValue({ ok: true, ref: 'refs/papercusp/source-custody/test', candidate: {} });
       publishCandidateMock.mockResolvedValue(repairPublication);
       if (phase === 'resolution') prepareMetadataMock.mockRejectedValue(new Error('resolution refused'));
       if (phase === 'pending') prepareMetadataMock.mockResolvedValue({ ...repairSource,
@@ -1447,6 +1452,96 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
       expect(heldResourcesByOwner.size).toBe(0);
       if (phase !== 'publication') expect(publishCandidateMock).not.toHaveBeenCalled();
     });
+
+  const selectedLibraries = () => [
+    { path: 'libs/generic/resumable-download' as const, expectedBasePin: '1'.repeat(40), selectedCommit: '2'.repeat(40) },
+    { path: 'libs/papercusp' as const, expectedBasePin: '3'.repeat(40), selectedCommit: '3'.repeat(40) },
+  ];
+  const jointRepairSource = (selections = selectedLibraries()) => ({ ...repairSource,
+    fingerprint: { ...repairSource.fingerprint, schemaVersion: 2, selectedInputTree: 'f'.repeat(40),
+      publishedLibrarySelections: selections } });
+
+  it.each([false, true])('metadata repair forwards a frozen joint vector (empty=%s) and preserves phase evidence', async empty => {
+    const selections = empty ? [] : selectedLibraries();
+    const expectedSelections = structuredClone(selections);
+    const source = jointRepairSource(expectedSelections);
+    const originCapture = { phase: 'capture', generation: 1, observations: [{ path: expectedSelections[0]?.path }] };
+    const originProofs = [{ phase: 'pre-cas', generation: 1, commit: repairPublication.commit }];
+    prepareMetadataMock.mockImplementation(async (_git, _repo, request) => {
+      expect(heldResourcesByOwner.size).toBe(0);
+      expect(request).toMatchObject({ publishedLibrarySelections: expectedSelections });
+      expect(Object.isFrozen((request as { publishedLibrarySelections: unknown[] }).publishedLibrarySelections)).toBe(true);
+      return source;
+    });
+    captureCandidateMock.mockResolvedValue({ ok: true, ref: 'refs/papercusp/source-custody/test',
+      candidate: { originCapture } });
+    publishCandidateMock.mockResolvedValue({ ...repairPublication, originProofs });
+    const repair = { ...repairMetadata, publishedLibrarySelections: selections };
+    const pending = fireGitSyncNow(ctx.installSlug, ctx.workspaceId, repoDir, repair);
+    if (selections.length) selections[0]!.selectedCommit = '9'.repeat(40);
+    selections.reverse();
+    const paths = empty ? ['package-lock.json'] : ['libs/generic/resumable-download', 'package-lock.json'];
+    expect(await pending).toMatchObject({ status: 'synced', pushed: [], metadataRepair: {
+      paths, sourceFingerprint: source.fingerprint, originCapture, originProofs, remoteEgressConfirmed: false,
+    } });
+    expect(captureCandidateMock.mock.calls[0]?.[2]).toMatchObject({ paths, contentSource: source });
+    expect(publishCandidateMock.mock.calls[0]?.[2]).toMatchObject({ paths, contentSource: source });
+    expect(runGitSyncMock).not.toHaveBeenCalled();
+    expect(heldResourcesByOwner.size).toBe(0);
+  });
+
+  it.each(['joint', 'empty'] as const)('metadata repair replays the exact retained %s vector without npm', async kind => {
+    const selections = kind === 'empty' ? [] : selectedLibraries();
+    const source = jointRepairSource(selections);
+    const paths = kind === 'empty' ? ['package-lock.json'] : ['libs/generic/resumable-download', 'package-lock.json'];
+    readCandidateMock.mockResolvedValue({ ok: true, candidate: { base: repairMetadata.base, paths, contentSource: source } });
+    captureCandidateMock.mockResolvedValue({ ok: true, ref: 'refs/papercusp/source-custody/test', candidate: {} });
+    publishCandidateMock.mockResolvedValue({ ...repairPublication, status: 'already-published' });
+    expect(await fireGitSyncNow(ctx.installSlug, ctx.workspaceId, repoDir,
+      { ...repairMetadata, publishedLibrarySelections: selections }))
+      .toMatchObject({ status: 'synced', metadataRepair: { paths, sourceFingerprint: source.fingerprint,
+        publication: 'already-published', remoteEgressConfirmed: false } });
+    expect(prepareMetadataMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['missing-vector', 'unexpected-vector', 'old-pin', 'selected-commit', 'subset', 'paths', 'version'] as const)(
+    'metadata repair rejects retained custody request conflict: %s', async conflict => {
+      const selections = selectedLibraries();
+      let source = jointRepairSource();
+      let paths = ['libs/generic/resumable-download', 'package-lock.json'];
+      let request: Parameters<typeof fireGitSyncNow>[3] = { ...repairMetadata, publishedLibrarySelections: selections };
+      if (conflict === 'missing-vector') request = repairMetadata;
+      if (conflict === 'unexpected-vector') source = repairSource as typeof source;
+      if (conflict === 'old-pin') selections[0]!.expectedBasePin = '8'.repeat(40);
+      if (conflict === 'selected-commit') selections[0]!.selectedCommit = '9'.repeat(40);
+      if (conflict === 'subset') selections.pop();
+      if (conflict === 'paths') paths = ['package-lock.json'];
+      if (conflict === 'version') source = { ...source, fingerprint: { ...source.fingerprint, schemaVersion: 99 } };
+      readCandidateMock.mockResolvedValue({ ok: true, candidate: { base: repairMetadata.base, paths, contentSource: source } });
+      expect(await fireGitSyncNow(ctx.installSlug, ctx.workspaceId, repoDir, request))
+        .toMatchObject({ status: 'error', errors: [{ message: 'generated-lock-request-conflict' }] });
+      expect(prepareMetadataMock).not.toHaveBeenCalled();
+      expect(captureCandidateMock).not.toHaveBeenCalled();
+      expect(publishCandidateMock).not.toHaveBeenCalled();
+      expect(runGitSyncMock).not.toHaveBeenCalled();
+    });
+
+  it('metadata repair rejects malformed vectors before runtime, custody or routine writes', async () => {
+    const selections = selectedLibraries();
+    const invalid = [null, [...selections].reverse(), [selections[0], selections[0]],
+      [selections[0], selections[1], selections[0]], [{ ...selections[0], path: 'apps/other' }],
+      [{ ...selections[0], bytes: 'untrusted' }], [{ ...selections[0], selectedCommit: 'HEAD' }]];
+    for (const publishedLibrarySelections of invalid) {
+      expect(await fireGitSyncNow(ctx.installSlug, ctx.workspaceId, repoDir,
+        { ...repairMetadata, publishedLibrarySelections } as never))
+        .toMatchObject({ status: 'error', errors: [{ message: 'generated-lock-request' }] });
+    }
+    expect(unsafeCalls).toHaveLength(0);
+    expect(readCandidateMock).not.toHaveBeenCalled();
+    expect(prepareMetadataMock).not.toHaveBeenCalled();
+    expect(captureCandidateMock).not.toHaveBeenCalled();
+    expect(publishCandidateMock).not.toHaveBeenCalled();
+  });
 
   it.each([errorOutcome, conflictOutcome])(
     'EI-255862: notifies a proven root local commit despite aggregate $status',

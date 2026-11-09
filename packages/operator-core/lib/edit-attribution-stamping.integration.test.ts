@@ -257,6 +257,7 @@ describe('edit stamping from the editor held set', () => {
     writeFileSync(join(repo, 'b.txt'), Buffer.from([0, 255, 128, 1]));
     const index = readFileSync(join(repo, '.git/index'));
     const captures: Array<Awaited<ReturnType<typeof preserveEditGeneration>>> = [];
+    let originalMilestone: FrozenEditCohort | undefined;
     const saved = locksHost();
     configureLocks({ ...saved, beforeFileLocksRelease: async input => {
       expect(input.coordinationDomain).toBe(repo);
@@ -270,6 +271,7 @@ describe('edit stamping from the editor held set', () => {
           return receipt;
         },
       });
+      if (assigned) originalMilestone = await freeze();
     } });
     try {
       if (route === 'release') await inWorkspaceTxn(repo, AGENT, tx => store.tryRelease(tx, {
@@ -283,6 +285,20 @@ describe('edit stamping from the editor held set', () => {
       expect((await store.readWaiterStatus(store.getTxPool(), waiter.ticket_id)).status).toBe('granted');
       expect(captures).toHaveLength(1);
       const capture = captures[0].capture as { ref: string; candidate: { requestId: string } };
+      if (assigned) {
+        // Real release/expiry and a successor grant do not finish the work or
+        // lose the complete milestone when its editing session goes away.
+        h.presence = null;
+        await h.db!.sql`UPDATE harness_shared.work_items SET taken_by = NULL
+          WHERE workspace_id = ${WS} AND feature_id = 'WI-A'`;
+        const resumed = await lifecycle();
+        expect(resumed.frozen).toEqual(originalMilestone);
+        expect(await freeze()).toEqual(originalMilestone);
+        expect(originalMilestone!.members).toHaveLength(1);
+        expect(originalMilestone!.members[0].candidate.paths).toEqual(['a.txt', 'b.txt']);
+        expect(checkFrozenEditCohortEvidence({ ...evidence(resumed.frozen, resumed.captures), publicationIntent: false }))
+          .toEqual({ ok: false, reason: 'cohort-unfinished' });
+      }
       const ledger = await h.db!.sql`SELECT file, agent_id, session_id, work_item_id, dispatch_call_id
         FROM harness_shared.edit_attribution_ledger WHERE repo_root = ${repo} ORDER BY file`;
       expect(ledger).toEqual(['a.txt', 'b.txt'].map(file => ({ file, agent_id: AGENT, session_id: AGENT,
@@ -296,6 +312,30 @@ describe('edit stamping from the editor held set', () => {
       expect(binary.stdout).toEqual(Buffer.from([0, 255, 128, 1]));
       expect(readFileSync(join(repo, '.git/index'))).toEqual(index);
       expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('B1 working\n');
+      if (assigned) {
+        await h.db!.sql`UPDATE harness_shared.work_items SET taken_by = 'successor'
+          WHERE workspace_id = ${WS} AND feature_id = 'WI-A'`;
+        const successor = { repoRoot: repo, files: ['a.txt', 'b.txt'], agentId: 'successor', workspaceId: WS,
+          goalRef: 'WI-A', sessionId: 'fresh-successor-session', dispatchCallId: 'successor-session-edit' };
+        const receipt = await preserveEditGeneration({ ...successor, operationState: 'granted' }, runGit);
+        await recordEditAttribution({ ...successor, captureReceipt: receipt }, { strict: true });
+        const resumed = await lifecycle();
+        expect(checkFrozenEditCohortEvidence(evidence(originalMilestone!, resumed.captures)))
+          .toEqual({ ok: false, reason: 'cohort-changed' });
+        const nextMilestone = await freeze();
+        expect(nextMilestone.identity).not.toBe(originalMilestone!.identity);
+        expect(nextMilestone.members.map(member => member.operationId).sort())
+          .toEqual([capture.candidate.requestId, successor.dispatchCallId].sort());
+        expect(checkFrozenEditCohortEvidence({ ...evidence(nextMilestone, resumed.captures),
+          checks: evidence(originalMilestone!, resumed.captures).checks }))
+          .toEqual({ ok: false, reason: 'cohort-check-missing-or-stale' });
+        const sessions = await h.db!.sql`SELECT DISTINCT session_id FROM harness_shared.edit_attribution_ledger
+          WHERE repo_root = ${repo} ORDER BY session_id`;
+        expect(sessions.map(row => row.session_id).sort()).toEqual([AGENT, 'fresh-successor-session'].sort());
+        expect(git('rev-list', '--count', 'HEAD')).toBe('1');
+        expect(readFileSync(join(repo, '.git/index'))).toEqual(index);
+        expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('B1 working\n');
+      }
     } finally {
       configureLocks(saved);
       await store.getTxPool()`DELETE FROM agent_file_locks WHERE coordination_domain = ${repo}`;

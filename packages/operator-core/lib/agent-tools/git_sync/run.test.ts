@@ -49,6 +49,10 @@ afterEach(() => {
 describe('git-sync:run', () => {
   const repairMetadata = { base: 'a'.repeat(40), expectedPendingLockSha256: 'b'.repeat(64),
     requestId: 'selected-parent-repair', generation: 1 };
+  const selectedLibraries = () => [
+    { path: 'libs/generic/resumable-download' as const, expectedBasePin: '1'.repeat(40), selectedCommit: '2'.repeat(40) },
+    { path: 'libs/papercusp' as const, expectedBasePin: '3'.repeat(40), selectedCommit: '4'.repeat(40) },
+  ];
 
   it('keeps metadata repair inputs closed and requires an observed pending-lock identity', async () => {
     const { default: tool } = await import('./run');
@@ -70,6 +74,50 @@ describe('git-sync:run', () => {
     expect(parse(await tool.handler({ repairMetadata }, MAKE_CTX()) as never))
       .toMatchObject({ ok: false, fired: false, reason: 'metadata-repair-target-required' });
     expect(fireSpy).not.toHaveBeenCalled();
+  });
+
+  it('admits only the closed sorted unique published-library vector, including explicit empty v2', async () => {
+    const { default: tool } = await import('./run');
+    const selections = selectedLibraries();
+    for (const publishedLibrarySelections of [[], selections, [selections[1]]]) {
+      expect(tool.args.safeParse({ repairMetadata: { ...repairMetadata, publishedLibrarySelections } }).success).toBe(true);
+    }
+    for (const publishedLibrarySelections of [null, [...selections].reverse(), [selections[0], selections[0]],
+      [...selections, selections[0]], [{ ...selections[0], path: 'apps/other' }],
+      [{ ...selections[0], selectedCommit: 'HEAD' }], [{ ...selections[0], expectedBasePin: 'origin/main' }],
+      [{ ...selections[0], origin: { tip: 'f'.repeat(40) } }]]) {
+      expect(tool.args.safeParse({ repairMetadata: { ...repairMetadata, publishedLibrarySelections } }).success).toBe(false);
+    }
+  });
+
+  it.each([false, true])('detaches nested public selections before the first await (empty=%s)', async empty => {
+    let resolveRepo!: (value: null) => void;
+    const repo = new Promise<null>(resolve => { resolveRepo = resolve; });
+    const fireSpy = vi.fn(async (..._args: unknown[]) => undefined);
+    vi.doMock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercusp' }));
+    vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
+    vi.doMock('../../operator-notes', () => ({ projectDirForSlug: async () => repo }));
+    vi.doMock('../../harness/git-sync/git-sync-action', () => ({ fireGitSyncNow: fireSpy }));
+    vi.doMock('../../serving-build', () => ({ getServingBuild: () => 'staging', sameMcpExecutionTarget:
+      (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b) }));
+    vi.doMock('../../serving-host-identity', () => ({ getServingHostIdentity: () => ({ buildSha: 'c'.repeat(40) }) }));
+    vi.doMock('../../module-repo-root', () => ({ moduleRepoRoot: () => '/selected' }));
+    const { default: tool } = await import('./run');
+    const selections = empty ? [] : selectedLibraries();
+    const expected = structuredClone(selections);
+    const repair = { ...repairMetadata, publishedLibrarySelections: selections };
+    const pending = tool.handler({ repairMetadata: repair,
+      target: { environment: 'staging', buildSha: 'c'.repeat(40), installRoot: '/selected' } }, MAKE_CTX());
+    if (selections.length) selections[0]!.selectedCommit = '9'.repeat(40);
+    selections.reverse();
+    resolveRepo(null);
+    await pending;
+    expect(fireSpy).toHaveBeenCalledExactlyOnceWith('papercusp', 'default', null,
+      { ...repairMetadata, publishedLibrarySelections: expected });
+    const forwarded = fireSpy.mock.calls[0]![3] as typeof repair;
+    expect(Object.isFrozen(forwarded)).toBe(true);
+    expect(Object.isFrozen(forwarded.publishedLibrarySelections)).toBe(true);
+    for (const row of forwarded.publishedLibrarySelections) expect(Object.isFrozen(row)).toBe(true);
   });
 
   it('forwards the frozen typed repair exactly once to the existing action on the exact worker', async () => {
