@@ -589,21 +589,49 @@ async function reclaim(
     [{ locked }] = await conn<{ locked: boolean }[]>`SELECT pg_try_advisory_lock(hashtext(${RECLAIM_LOCK})) AS locked`;
     if (!locked) {
       report.pendingReclaims.unshift(qualified);
-    } else if (!(backupLocked = await tryAcquireBackupRendezvous(conn))) {
-      // Keep the target queued without issuing REINDEX while the host dump owns
-      // the snapshot rendezvous; otherwise PostgreSQL queues ordinary writes
-      // behind this waiting concurrent DDL.
-      report.pendingReclaims.unshift(qualified);
     } else {
-      await conn`SET statement_timeout = 0`;
-      await conn.unsafe(`SET lock_timeout = '${CONCURRENT_DDL_LOCK_TIMEOUT}'`);
-      // A REINDEX CONCURRENTLY that died leaves an INVALID <name>_ccnew. Only maintenance
-      // rebuilds these indexes and it holds the lock, so one that exists now is a leftover.
-      await conn`DROP INDEX CONCURRENTLY IF EXISTS ${conn(`harness_shared.${target.name}_ccnew`)}`;
-      await conn`REINDEX INDEX CONCURRENTLY ${conn(qualified)}`;
-      const [{ bytes }] = await conn<{ bytes: string }[]>`SELECT pg_relation_size(${qualified}::regclass) AS bytes`;
-      report.reclaimed = { index: qualified, beforeBytes: target.bytes, afterBytes: Number(bytes), ratio: target.ratio };
-      resetBm25Availability();
+      // Defer before the backup rendezvous if the base relation is vacuuming.
+      // A vacuum can still race after this preflight, so bound the transient drop.
+      const [activeVacuum] = await conn<{ pid: number }[]>`
+        SELECT v.pid
+          FROM pg_index i
+          JOIN pg_class index_class ON index_class.oid = i.indexrelid
+          JOIN pg_namespace index_ns ON index_ns.oid = index_class.relnamespace
+          JOIN pg_stat_progress_vacuum v ON v.relid = i.indrelid
+         WHERE index_ns.nspname = 'harness_shared'
+           AND index_class.relname = ${target.name}
+         ORDER BY v.pid
+         LIMIT 1`;
+      if (activeVacuum?.pid != null) {
+        report.pendingReclaims.unshift(qualified);
+      } else if (!(backupLocked = await tryAcquireBackupRendezvous(conn))) {
+        // Keep the target queued while the host dump owns its snapshot rendezvous.
+        report.pendingReclaims.unshift(qualified);
+      } else {
+        await conn`SET statement_timeout = 0`;
+        await conn.unsafe(`SET lock_timeout = '${RETRYABLE_INDEX_DROP_LOCK_TIMEOUT}'`);
+        let dropDeferred = false;
+        try {
+          await conn`DROP INDEX CONCURRENTLY IF EXISTS ${conn(`harness_shared.${target.name}_ccnew`)}`;
+        } catch (err) {
+          const sqlState = typeof err === 'object' && err !== null && 'code' in err
+            ? (err as { code?: unknown }).code
+            : undefined;
+          if (sqlState === '55P03') {
+            report.pendingReclaims.unshift(qualified);
+            dropDeferred = true;
+          } else {
+            throw err;
+          }
+        }
+        if (!dropDeferred) {
+          await conn.unsafe(`SET lock_timeout = '${CONCURRENT_DDL_LOCK_TIMEOUT}'`);
+          await conn`REINDEX INDEX CONCURRENTLY ${conn(qualified)}`;
+          const [{ bytes }] = await conn<{ bytes: string }[]>`SELECT pg_relation_size(${qualified}::regclass) AS bytes`;
+          report.reclaimed = { index: qualified, beforeBytes: target.bytes, afterBytes: Number(bytes), ratio: target.ratio };
+          resetBm25Availability();
+        }
+      }
     }
   } catch (err) {
     report.errors.push(`reclaim ${qualified}: ${message(err)}`);

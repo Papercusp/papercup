@@ -346,6 +346,118 @@ describe('orphan rebuild cleanup', () => {
   });
 });
 
+describe('bloated-index reclaim vacuum admission', () => {
+  const render = (strings: TemplateStringsArray, values: unknown[]) =>
+    strings.reduce((text, part, i) => text + part + (i < values.length ? String(values[i]) : ''), '');
+
+  function fixture(options: { vacuumPid?: number; dropSqlState?: string; afterBytes?: number } = {}) {
+    const connectionStatements: string[] = [];
+    const conn = Object.assign(
+      vi.fn((strings: TemplateStringsArray | string, ...values: unknown[]) => {
+        const query = typeof strings === 'string' ? strings : render(strings, values);
+        connectionStatements.push(query);
+        if (query.includes('pg_try_advisory_lock')) return [{ locked: true }];
+        if (query.includes('pg_stat_progress_vacuum')) {
+          return options.vacuumPid === undefined ? [] : [{ pid: options.vacuumPid }];
+        }
+        if (query.includes('DROP INDEX CONCURRENTLY') && options.dropSqlState) {
+          throw Object.assign(new Error('canceling statement due to lock timeout'), { code: options.dropSqlState });
+        }
+        if (query.includes('pg_relation_size')) return [{ bytes: String(options.afterBytes ?? 50_000_000) }];
+        return [];
+      }),
+      {
+        unsafe: vi.fn(async (query: string) => {
+          connectionStatements.push(query);
+          return [];
+        }),
+        release: vi.fn(),
+      },
+    );
+    const sql = Object.assign(
+      vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        const query = render(strings, values);
+        if (query.includes('bm25_ensure_indexes')) {
+          return [{ corpus_index: 'work_items_bm25', outcome: 'present' }];
+        }
+        if (query.includes('to_regprocedure')) return [{ defined: false }];
+        if (query.includes('pg_relation_size(c.oid)')) {
+          return [{ name: 'work_items_bm25', bytes: '100000000' }];
+        }
+        if (query.includes('bm25_summarize_index')) {
+          return [{ summary: 'Total: 1 segment, 100 pages (0.8MB), 100 terms, 100 docs (alive=100, dead=0)' }];
+        }
+        if (query.includes("a.amname = 'bm25'")) return [{ name: 'work_items_bm25' }];
+        if (query.includes('bm25_needs_compaction')) return [{ needs: false }];
+        return [];
+      }),
+      { reserve: vi.fn().mockResolvedValue(conn) },
+    );
+    return { sql, conn, connectionStatements };
+  }
+
+  it('defers an actively vacuumed base relation before taking the backup rendezvous', async () => {
+    const { sql, conn, connectionStatements } = fixture({ vacuumPid: 3647428 });
+
+    const report = await runBm25Maintenance(sql as never, {
+      maxCompactionSteps: 0,
+      maxBloatRatio: 1,
+      reclaimMinBytes: 1,
+    });
+
+    expect(report.pendingReclaims).toContain('harness_shared.work_items_bm25');
+    expect(report.errors).toEqual([]);
+    expect(connectionStatements.some(query => query.includes('pg_stat_progress_vacuum'))).toBe(true);
+    expect(connectionStatements.filter(query => query.includes('pg_try_advisory_lock'))).toHaveLength(1);
+    expect(connectionStatements.some(query => query.includes('DROP INDEX CONCURRENTLY'))).toBe(false);
+    expect(connectionStatements.some(query => query.includes('REINDEX INDEX CONCURRENTLY'))).toBe(false);
+    expect(conn.release).toHaveBeenCalledOnce();
+  });
+
+  it('defers the reclaim when the transient _ccnew drop races with a lock timeout', async () => {
+    const { sql, conn, connectionStatements } = fixture({ dropSqlState: '55P03' });
+
+    const report = await runBm25Maintenance(sql as never, {
+      maxCompactionSteps: 0,
+      maxBloatRatio: 1,
+      reclaimMinBytes: 1,
+    });
+
+    const shortTimeout = connectionStatements.indexOf("SET lock_timeout = '15s'");
+    const drop = connectionStatements.findIndex(query => query.includes('DROP INDEX CONCURRENTLY'));
+    expect(shortTimeout).toBeGreaterThanOrEqual(0);
+    expect(shortTimeout).toBeLessThan(drop);
+    expect(report.pendingReclaims).toContain('harness_shared.work_items_bm25');
+    expect(report.errors).toEqual([]);
+    expect(connectionStatements.some(query => query === "SET lock_timeout = '4h'")).toBe(false);
+    expect(connectionStatements.some(query => query.includes('REINDEX INDEX CONCURRENTLY'))).toBe(false);
+    expect(conn.release).toHaveBeenCalledOnce();
+  });
+
+  it('restores the four-hour lock timeout after _ccnew cleanup and before REINDEX', async () => {
+    const { sql, connectionStatements } = fixture({ afterBytes: 40_000_000 });
+
+    const report = await runBm25Maintenance(sql as never, {
+      maxCompactionSteps: 0,
+      maxBloatRatio: 1,
+      reclaimMinBytes: 1,
+    });
+
+    const shortTimeout = connectionStatements.indexOf("SET lock_timeout = '15s'");
+    const drop = connectionStatements.findIndex(query => query.includes('DROP INDEX CONCURRENTLY'));
+    const longTimeout = connectionStatements.indexOf("SET lock_timeout = '4h'");
+    const reindex = connectionStatements.findIndex(query => query.includes('REINDEX INDEX CONCURRENTLY'));
+    expect(shortTimeout).toBeGreaterThanOrEqual(0);
+    expect(shortTimeout).toBeLessThan(drop);
+    expect(drop).toBeLessThan(longTimeout);
+    expect(longTimeout).toBeLessThan(reindex);
+    expect(report.reclaimed?.index).toBe('harness_shared.work_items_bm25');
+    expect(report.reclaimed?.afterBytes).toBe(40_000_000);
+    expect(report.pendingReclaims).toEqual([]);
+    expect(report.errors).toEqual([]);
+  });
+});
+
 // Verbatim output of bm25_summarize_index on pg_textsearch 1.5.1 (scratch probe, 2026-10-11).
 const SUMMARY_WITH_DEAD = `Index: t_bm25
 
