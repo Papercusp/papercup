@@ -1,0 +1,1143 @@
+{
+  "plan": "automatic-parked-delivery-recovery-2026-11-09",
+  "workItemId": "WI-6554700010046972",
+  "status": "prepared-only; no current-source or acceptance verdict",
+  "use": "After the existing source qualification and normal B688 handback, run the maintained committed unit, integration and mutation routes. Replace historical run references with their new clean ledger receipts. Bind through plans:bind-spec-evidence using fromTestRun, fixturePaths, and details.adequacy. Group membership below is a candidate mapping whose titles must still exist and pass in that exact run. Do not bind the historical dirty receipts as current proof.",
+  "preconditions": [
+    "Existing source owner WI-6554700010046610 supplies a qualified coherent source tuple. No competing metadata repair or source publisher.",
+    "F700 retains B688 normal Restart/apps custody. Follow WI-6554700010045707; await the promised successful handback. Do not force, bypass, or release it from this lane.",
+    "Use maintained lint:as-committed with an explicit durable test sink resolved through the existing PG resolver. Do not print connection strings.",
+    "Each new test receipt must be clean, current, pass with zero skips, and cover the selected exact passing case titles. A matching declared source hash does not override worktreeDirty.",
+    "Re-run all five mutation controls at the qualified source and retain same-invocation baseline, copy-baseline, caught mutant, source witnesses and descriptor lineage.",
+    "Certify all nine clauses, run canonical completion audit and ship/independent acceptance, then publish/read back the report and close the existing WI/EI/plan. This recipe does not waive any gate."
+  ],
+  "observedGroups": {
+    "unit": {
+      "testPath": "packages/operator-core/lib/durable-park-recovery.test.ts",
+      "historicalRunId": 23782525,
+      "historicalStatus": "pass",
+      "historicalWorktreeDirty": true,
+      "testCases": [
+        "PARK-ADMISSION / PARK-READINESS separate locked current-condition evaluation > observes the qualification winner after the initial probe",
+        "PARK-ADMISSION / PARK-READINESS separate locked current-condition evaluation > observes the admission winner after the initial probe",
+        "PARK-ADMISSION / PARK-READINESS separate locked current-condition evaluation > does not promote subset completion and accepts the otherwise-identical complete control",
+        "PARK-ADMISSION / PARK-READINESS separate locked current-condition evaluation > does not promote failed qualification and accepts the otherwise-identical complete control",
+        "PARK-ADMISSION / PARK-READINESS separate locked current-condition evaluation > does not promote unusable retained inputs and accepts the otherwise-identical complete control",
+        "PARK-ADMISSION / PARK-READINESS separate locked current-condition evaluation > does not promote stale condition version and accepts the otherwise-identical complete control",
+        "PARK-ADMISSION / PARK-READINESS separate locked current-condition evaluation > does not promote incoherent source and accepts the otherwise-identical complete control",
+        "accountable recovery-action election (PARK-RECOVERY / PARK-SAFETY) > the same safety oracle detects a stolen lease and passes actual recovery-action election",
+        "accountable recovery-action election (PARK-RECOVERY / PARK-SAFETY) > prefers the current live custodian, retains a live successor and excludes dead/unknown targets",
+        "automatic park recovery policy prerequisite (PARK-PROGRESS) > persists server-owned 30m / two 30m extensions / absolute 90m policy and scoped identity",
+        "automatic park recovery policy prerequisite (PARK-PROGRESS) > preserves the canonical empty physical harness for operator-scoped obligations",
+        "automatic park recovery policy prerequisite (PARK-PROGRESS) > rejects heartbeat without changing the admission",
+        "automatic park recovery policy prerequisite (PARK-PROGRESS) > rejects same producer, different obligation without changing the admission",
+        "automatic park recovery policy prerequisite (PARK-PROGRESS) > rejects pre-admission without changing the admission",
+        "automatic park recovery policy prerequisite (PARK-PROGRESS) > rejects at admission without changing the admission",
+        "automatic park recovery policy prerequisite (PARK-PROGRESS) > rejects future timestamp without changing the admission",
+        "automatic park recovery policy prerequisite (PARK-PROGRESS) > rejects replayed revision without changing the admission",
+        "automatic park recovery policy prerequisite (PARK-PROGRESS) > rejects regressing revision without changing the admission",
+        "automatic park recovery policy prerequisite (PARK-PROGRESS) > rejects non-numeric revision without changing the admission",
+        "automatic park recovery policy prerequisite (PARK-PROGRESS) > rejects missing evidence without changing the admission",
+        "automatic park recovery policy prerequisite (PARK-PROGRESS) > accepts fresh durable checkpoint evidence for the exact obligation or dependency",
+        "automatic park recovery policy prerequisite (PARK-PROGRESS) > accepts fresh durable task evidence for the exact obligation or dependency",
+        "automatic park recovery policy prerequisite (PARK-PROGRESS) > accepts fresh durable test evidence for the exact obligation or dependency",
+        "automatic park recovery policy prerequisite (PARK-PROGRESS) > accepts fresh durable artifact evidence for the exact obligation or dependency",
+        "automatic park recovery policy prerequisite (PARK-PROGRESS) > accepts fresh durable publication evidence for the exact obligation or dependency",
+        "automatic park recovery policy prerequisite (PARK-PROGRESS) > consumes each revision once and rejects replay or nonmonotonic time",
+        "automatic park recovery policy prerequisite (PARK-PROGRESS) > allows exactly two extensions then expires even if useful work continues",
+        "automatic park recovery policy prerequisite (PARK-PROGRESS) > gives expiry inclusive precedence at current deadline %+dms",
+        "automatic park recovery policy prerequisite (PARK-PROGRESS) > caps a permitted extension at the absolute boundary and never consumes a third or replay count",
+        "automatic park recovery policy prerequisite (PARK-PROGRESS) > retains the same terminal decision and identity across serialized replay",
+        "automatic park recovery policy prerequisite (PARK-PROGRESS) > refuses invalid persisted policy interval NaN",
+        "automatic park recovery policy prerequisite (PARK-PROGRESS) > refuses invalid persisted policy interval Infinity",
+        "automatic park recovery policy prerequisite (PARK-PROGRESS) > refuses invalid persisted policy interval 0",
+        "automatic park recovery policy prerequisite (PARK-PROGRESS) > refuses invalid persisted policy interval -1",
+        "automatic park recovery policy prerequisite (PARK-PROGRESS) > refuses invalid persisted policy interval 0.5",
+        "automatic park recovery policy prerequisite (PARK-PROGRESS) > rejects unbounded counts, impossible intervals, timestamps and incomplete identities"
+      ],
+      "fixturePaths": [
+        "packages/operator-core/lib/durable-park-recovery.test.ts"
+      ],
+      "fixtureScopeNote": "Inline receipt, policy, condition and protected-state fixtures live in the named test."
+    },
+    "pg": {
+      "testPath": "packages/operator-core/lib/durable-park-recovery.integration.test.ts",
+      "historicalRunId": 23782585,
+      "historicalStatus": "pass",
+      "historicalWorktreeDirty": true,
+      "testCases": [
+        "PARK-RECOVERY causal unchanged-call silent-prerequisite restart > the same outcome oracle rejects missing admission and survives actual controller death before-commit",
+        "PARK-RECOVERY causal unchanged-call silent-prerequisite restart > the same outcome oracle rejects missing admission and survives actual controller death after-commit",
+        "PARK-RECOVERY causal unchanged-call silent-prerequisite restart > the same outcome oracle rejects missing admission and survives actual controller death after-enqueue",
+        "independent PARK-READINESS and PARK-SAFETY protected outcomes > subset completion cannot qualify; only the separate complete current evaluation retires recovery",
+        "independent PARK-READINESS and PARK-SAFETY protected outcomes > failed qualification cannot qualify; only the separate complete current evaluation retires recovery",
+        "independent PARK-READINESS and PARK-SAFETY protected outcomes > unusable retained inputs cannot qualify; only the separate complete current evaluation retires recovery",
+        "independent PARK-READINESS and PARK-SAFETY protected outcomes > stale condition version cannot qualify; only the separate complete current evaluation retires recovery",
+        "independent PARK-READINESS and PARK-SAFETY protected outcomes > incoherent retained source cannot qualify; only the separate complete current evaluation retires recovery",
+        "independent PARK-READINESS and PARK-SAFETY protected outcomes > recovery notification and successor election preserve active peer claim alone and acceptance",
+        "independent PARK-READINESS and PARK-SAFETY protected outcomes > recovery notification and successor election preserve actual peer file-lock alone and acceptance",
+        "independent PARK-READINESS and PARK-SAFETY protected outcomes > recovery notification and successor election preserve active peer claim and actual file-lock together and acceptance",
+        "serialized progress and timeout recovery (PARK-PROGRESS / PARK-RECOVERY) > consumes new linked successful task outcomes, never liveness or unrelated outcomes",
+        "serialized progress and timeout recovery (PARK-PROGRESS / PARK-RECOVERY) > consumes new linked successful test-run outcomes, never liveness or unrelated outcomes",
+        "serialized progress and timeout recovery (PARK-PROGRESS / PARK-RECOVERY) > checks fresh checkpoint bodies before expiry, consumes once, and preserves custody/safety",
+        "serialized progress and timeout recovery (PARK-PROGRESS / PARK-RECOVERY) > ignores baseline, unrelated work, unchanged-body touches and regressing evidence",
+        "serialized progress and timeout recovery (PARK-PROGRESS / PARK-RECOVERY) > expiry at deadline+0 freezes renewal and replay keeps one action",
+        "serialized progress and timeout recovery (PARK-PROGRESS / PARK-RECOVERY) > expiry at deadline+1 freezes renewal and replay keeps one action",
+        "serialized progress and timeout recovery (PARK-PROGRESS / PARK-RECOVERY) > caps the final accepted extension at absolute age and rejects the next evidence",
+        "serialized progress and timeout recovery (PARK-PROGRESS / PARK-RECOVERY) > serializes the forced renewal-first lock order",
+        "serialized progress and timeout recovery (PARK-PROGRESS / PARK-RECOVERY) > serializes the forced timeout-first lock order",
+        "serialized progress and timeout recovery (PARK-PROGRESS / PARK-RECOVERY) > retires only after a separate complete current-condition evaluation",
+        "serialized progress and timeout recovery (PARK-PROGRESS / PARK-RECOVERY) > rolls expiry, action and certificate back together before commit, then replays once",
+        "serialized progress and timeout recovery (PARK-PROGRESS / PARK-RECOVERY) > claims only automatic checks early and leaves the original expires_ts unchanged",
+        "same-identity recovery delivery and successor election > recovers a crash after action commit / before enqueue and replays one delivery",
+        "same-identity recovery delivery and successor election > races concurrent successor election and reopens the same delivery after owner death",
+        "same-identity recovery delivery and successor election > does not elect an unknown, recorded or dead session as an actionable recovery owner",
+        "same-identity recovery delivery and successor election > routes to the parking custodian independently of the producer named in the condition",
+        "automatic recovery atomic admission prerequisite (PARK-ADMISSION) > commits exactly one bounded receipt/await with its park and preserves manual sibling waits",
+        "automatic recovery atomic admission prerequisite (PARK-ADMISSION) > rolls custody, park, receipt and await back together: after park before await",
+        "automatic recovery atomic admission prerequisite (PARK-ADMISSION) > rolls custody, park, receipt and await back together: after await before commit",
+        "automatic recovery atomic admission prerequisite (PARK-ADMISSION) > rolls a retry back to the same committed receipt without extending its clock",
+        "automatic recovery atomic admission prerequisite (PARK-ADMISSION) > takes the complete already-qualified path with no artifacts and unchanged custody",
+        "automatic recovery atomic admission prerequisite (PARK-ADMISSION) > does not treat subset or unusable inputs as complete qualification",
+        "automatic recovery atomic admission prerequisite (PARK-ADMISSION) > reads producer state through the caller transaction rather than a second snapshot"
+      ],
+      "fixturePaths": [
+        "packages/operator-core/lib/durable-park-recovery.integration.test.ts",
+        "packages/operator-core/test/_public-park-pg.ts",
+        "packages/operator-core/test/_pg-helpers.ts",
+        "packages/operator-core/test/_park-recovery-child.ts"
+      ],
+      "fixtureGlobs": [
+        "libs/papercusp/libs/db/sql/*.sql"
+      ],
+      "fixtureScopeNote": "Inline fixtures, shared PostgreSQL setup, actual child-controller bytes where applicable, and the production SQL corpus. fromTestRun adds direct test-infrastructure imports; retain those."
+    },
+    "public": {
+      "testPath": "packages/operator-core/lib/agent-tools/work_items/blocker-resolution-boundaries.integration.test.ts",
+      "historicalRunId": 23781765,
+      "historicalStatus": "pass",
+      "historicalWorktreeDirty": true,
+      "testCases": [
+        "PARK-ADMISSION unchanged public call census > 'bug' blocker=false: serializes 'qualification' first after the public condition probe",
+        "PARK-ADMISSION unchanged public call census > 'bug' blocker=false: serializes 'admission' first after the public condition probe",
+        "PARK-ADMISSION unchanged public call census > 'bug' blocker=true: serializes 'qualification' first after the public condition probe",
+        "PARK-ADMISSION unchanged public call census > 'bug' blocker=true: serializes 'admission' first after the public condition probe",
+        "PARK-ADMISSION unchanged public call census > 'feature' blocker=false: serializes 'qualification' first after the public condition probe",
+        "PARK-ADMISSION unchanged public call census > 'feature' blocker=false: serializes 'admission' first after the public condition probe",
+        "PARK-ADMISSION unchanged public call census > 'feature' blocker=true: serializes 'qualification' first after the public condition probe",
+        "PARK-ADMISSION unchanged public call census > 'feature' blocker=true: serializes 'admission' first after the public condition probe",
+        "PARK-ADMISSION unchanged public call census > 'bug' blocker=false 'single': complete condition has no artifacts; unsatisfied commits exactly once",
+        "PARK-ADMISSION unchanged public call census > 'bug' blocker=false 'ids-default': complete condition has no artifacts; unsatisfied commits exactly once",
+        "PARK-ADMISSION unchanged public call census > 'bug' blocker=false 'items-default': complete condition has no artifacts; unsatisfied commits exactly once",
+        "PARK-ADMISSION unchanged public call census > 'bug' blocker=false 'items-override': complete condition has no artifacts; unsatisfied commits exactly once",
+        "PARK-ADMISSION unchanged public call census > 'bug' blocker=true 'single': complete condition has no artifacts; unsatisfied commits exactly once",
+        "PARK-ADMISSION unchanged public call census > 'bug' blocker=true 'ids-default': complete condition has no artifacts; unsatisfied commits exactly once",
+        "PARK-ADMISSION unchanged public call census > 'bug' blocker=true 'items-default': complete condition has no artifacts; unsatisfied commits exactly once",
+        "PARK-ADMISSION unchanged public call census > 'bug' blocker=true 'items-override': complete condition has no artifacts; unsatisfied commits exactly once",
+        "PARK-ADMISSION unchanged public call census > 'feature' blocker=false 'single': complete condition has no artifacts; unsatisfied commits exactly once",
+        "PARK-ADMISSION unchanged public call census > 'feature' blocker=false 'ids-default': complete condition has no artifacts; unsatisfied commits exactly once",
+        "PARK-ADMISSION unchanged public call census > 'feature' blocker=false 'items-default': complete condition has no artifacts; unsatisfied commits exactly once",
+        "PARK-ADMISSION unchanged public call census > 'feature' blocker=false 'items-override': complete condition has no artifacts; unsatisfied commits exactly once",
+        "PARK-ADMISSION unchanged public call census > 'feature' blocker=true 'single': complete condition has no artifacts; unsatisfied commits exactly once",
+        "PARK-ADMISSION unchanged public call census > 'feature' blocker=true 'ids-default': complete condition has no artifacts; unsatisfied commits exactly once",
+        "PARK-ADMISSION unchanged public call census > 'feature' blocker=true 'items-default': complete condition has no artifacts; unsatisfied commits exactly once",
+        "PARK-ADMISSION unchanged public call census > 'feature' blocker=true 'items-override': complete condition has no artifacts; unsatisfied commits exactly once",
+        "PARK-ADMISSION unchanged public call census > 'bug' blocker=false: rollback at 'insert' leaves claim, checkpoint and condition actionable",
+        "PARK-ADMISSION unchanged public call census > 'bug' blocker=false: rollback at 'commit' leaves claim, checkpoint and condition actionable",
+        "PARK-ADMISSION unchanged public call census > 'bug' blocker=true: rollback at 'insert' leaves claim, checkpoint and condition actionable",
+        "PARK-ADMISSION unchanged public call census > 'bug' blocker=true: rollback at 'commit' leaves claim, checkpoint and condition actionable",
+        "PARK-ADMISSION unchanged public call census > 'feature' blocker=false: rollback at 'insert' leaves claim, checkpoint and condition actionable",
+        "PARK-ADMISSION unchanged public call census > 'feature' blocker=false: rollback at 'commit' leaves claim, checkpoint and condition actionable",
+        "PARK-ADMISSION unchanged public call census > 'feature' blocker=true: rollback at 'insert' leaves claim, checkpoint and condition actionable",
+        "PARK-ADMISSION unchanged public call census > 'feature' blocker=true: rollback at 'commit' leaves claim, checkpoint and condition actionable",
+        "public blocker resolution boundaries > ordinary public release executes the real writer without clearing an unmeasured runtime condition",
+        "public blocker resolution boundaries > real release writer refuses a hidden payload mutation behind the public effect: {\"payloadPatch\":{\"keep\":\"rewritten\"}}",
+        "public blocker resolution boundaries > real release writer refuses a hidden payload mutation behind the public effect: {\"unset\":[\"keep\"]}",
+        "public blocker resolution boundaries > refuses public runtime defer mutation {\"force\":true}",
+        "public blocker resolution boundaries > refuses public runtime defer mutation {\"claimHold\":false}",
+        "public blocker resolution boundaries > refuses public runtime defer mutation {\"claimHold\":true,\"claimHoldRelease\":{\"condition\":\"Wait\",\"trigger\":\"fixture:dependency-repaired\"}}",
+        "public blocker resolution boundaries > refuses public runtime defer mutation {\"claimHoldRelease\":{\"condition\":\"Wait\",\"trigger\":\"fixture:dependency-repaired\"}}",
+        "public blocker resolution boundaries > resumes after its completed task dependency leaves the unresolved set",
+        "public blocker resolution boundaries > resumes after its completed feature dependency leaves the unresolved set",
+        "public blocker resolution boundaries > refuses an unrelated completed witness when the original dependency has settled",
+        "public blocker resolution boundaries > does not let a completed dependency witness clear a second pending dependency",
+        "public blocker resolution boundaries > guards all public deferral boundaries before mutation",
+        "public blocker resolution boundaries > preserves work state and claim on refusal",
+        "public blocker resolution boundaries > persists one decision across blocker boundaries",
+        "public blocker resolution boundaries > admits the first event blocker through the atomic lifecycle preflight for task",
+        "public blocker resolution boundaries > admits the first event blocker through the atomic lifecycle preflight for feature",
+        "public blocker resolution boundaries > admits a first product-decision park after its caller ref becomes a consult ref for bug",
+        "public blocker resolution boundaries > admits a first product-decision park after its caller ref becomes a consult ref for feature",
+        "public blocker resolution boundaries > safe repair clears the blocker and retains custody",
+        "public blocker resolution boundaries > resumes only after measured dependency clearance",
+        "public blocker resolution boundaries > preserves custody when a fired event does not match its declared condition",
+        "public blocker resolution boundaries > honors peer human and external custody",
+        "public blocker resolution boundaries > mutates only the scoped canonical plan-line row over legacy execution children",
+        "public blocker resolution boundaries > terminal canonical plan-line identity prevents legacy child mutation",
+        "public blocker resolution boundaries > partial lane ungate preserves independent blockers state holds and dispatch custody",
+        "public blocker resolution boundaries > rolls back decision history when lifecycle mutation fails for issue payloads",
+        "public blocker resolution boundaries > rolls back lifecycle custody when decision CAS loses for issue payloads",
+        "public blocker resolution boundaries > rolls back decision history when lifecycle mutation fails for feature payloads",
+        "public blocker resolution boundaries > rolls back lifecycle custody when decision CAS loses for feature payloads"
+      ],
+      "fixturePaths": [
+        "packages/operator-core/lib/agent-tools/work_items/blocker-resolution-boundaries.integration.test.ts",
+        "packages/operator-core/test/_public-park-pg.ts",
+        "packages/operator-core/test/_pg-helpers.ts"
+      ],
+      "fixtureGlobs": [
+        "libs/papercusp/libs/db/sql/*.sql"
+      ],
+      "fixtureScopeNote": "Inline fixtures, shared PostgreSQL setup, actual child-controller bytes where applicable, and the production SQL corpus. fromTestRun adds direct test-infrastructure imports; retain those."
+    }
+  },
+  "clauses": [
+    {
+      "specId": "AUTO-BAR-R-1-P-001",
+      "specRevision": 4,
+      "specFingerprint": "2deef93a12f4b76cd44b8e187cb793cd2005fca18aa632b426627bede2b99dfb",
+      "requiredTestLayers": [
+        "integration",
+        "unit"
+      ],
+      "aggregateOf": [
+        "PARK-ADMISSION"
+      ],
+      "aggregateNote": "Bind its own unit and integration receipts; conjunctive sub-oracles remain separate. R-1 also needs the public census. R-4 needs the real process/store restart negative/fixed pair."
+    },
+    {
+      "specId": "AUTO-BAR-R-2-P-001",
+      "specRevision": 4,
+      "specFingerprint": "048cfb99c997f304534f2200ba94c91eccf5de6e73ef7354c76a81d2f8c0ea34",
+      "requiredTestLayers": [
+        "integration",
+        "unit"
+      ],
+      "aggregateOf": [
+        "PARK-PROGRESS",
+        "PARK-RECOVERY"
+      ],
+      "aggregateNote": "Bind its own unit and integration receipts; conjunctive sub-oracles remain separate. R-1 also needs the public census. R-4 needs the real process/store restart negative/fixed pair."
+    },
+    {
+      "specId": "AUTO-BAR-R-3-P-001",
+      "specRevision": 4,
+      "specFingerprint": "0940f05d6d7a0b6562281bf3ee1f108503f0360f809ecbbde8d1ec070451ca24",
+      "requiredTestLayers": [
+        "integration",
+        "unit"
+      ],
+      "aggregateOf": [
+        "PARK-READINESS",
+        "PARK-SAFETY"
+      ],
+      "aggregateNote": "Bind its own unit and integration receipts; conjunctive sub-oracles remain separate. R-1 also needs the public census. R-4 needs the real process/store restart negative/fixed pair."
+    },
+    {
+      "specId": "AUTO-BAR-R-4-P-001",
+      "specRevision": 3,
+      "specFingerprint": "64766bb653d38ead82208e1dbc5aa1d016f73b4ffadd9786409d324391b6b1a4",
+      "requiredTestLayers": [
+        "integration",
+        "unit"
+      ],
+      "aggregateOf": [
+        "PARK-ADMISSION",
+        "PARK-RECOVERY"
+      ],
+      "aggregateNote": "Bind its own unit and integration receipts; conjunctive sub-oracles remain separate. R-1 also needs the public census. R-4 needs the real process/store restart negative/fixed pair."
+    },
+    {
+      "specId": "PARK-ADMISSION",
+      "specRevision": 3,
+      "specFingerprint": "b812476ae1a42b86d5edf665aae598b861d968e051165d20a0acf707045eaa4a",
+      "requiredTestLayers": [
+        "integration",
+        "unit"
+      ],
+      "scenarioTestCases": {
+        "already-satisfied": [
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=false 'single': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=false 'ids-default': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=false 'items-default': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=false 'items-override': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=true 'single': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=true 'ids-default': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=true 'items-default': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=true 'items-override': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=false 'single': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=false 'ids-default': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=false 'items-default': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=false 'items-override': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=true 'single': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=true 'ids-default': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=true 'items-default': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=true 'items-override': complete condition has no artifacts; unsatisfied commits exactly once"
+          }
+        ],
+        "already-satisfied-no-recovery-artifacts": [
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=false 'single': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=false 'ids-default': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=false 'items-default': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=false 'items-override': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=true 'single': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=true 'ids-default': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=true 'items-default': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=true 'items-override': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=false 'single': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=false 'ids-default': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=false 'items-default': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=false 'items-override': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=true 'single': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=true 'ids-default': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=true 'items-default': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=true 'items-override': complete condition has no artifacts; unsatisfied commits exactly once"
+          }
+        ],
+        "batch-defaults": [
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=false 'ids-default': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=false 'items-default': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=true 'ids-default': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=true 'items-default': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=false 'ids-default': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=false 'items-default': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=true 'ids-default': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=true 'items-default': complete condition has no artifacts; unsatisfied commits exactly once"
+          }
+        ],
+        "failure-after-await-before-commit": [
+          {
+            "group": "pg",
+            "caseTitle": "automatic recovery atomic admission prerequisite (PARK-ADMISSION) > rolls custody, park, receipt and await back together: after await before commit"
+          }
+        ],
+        "failure-after-park-before-await": [
+          {
+            "group": "pg",
+            "caseTitle": "automatic recovery atomic admission prerequisite (PARK-ADMISSION) > rolls custody, park, receipt and await back together: after park before await"
+          }
+        ],
+        "legacy-feature-blocker": [
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=true 'single': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=true 'ids-default': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=true 'items-default': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=true 'items-override': complete condition has no artifacts; unsatisfied commits exactly once"
+          }
+        ],
+        "legacy-feature-ordinary": [
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=false 'single': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=false 'ids-default': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=false 'items-default': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=false 'items-override': complete condition has no artifacts; unsatisfied commits exactly once"
+          }
+        ],
+        "legacy-issue-blocker": [
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=true 'single': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=true 'ids-default': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=true 'items-default': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=true 'items-override': complete condition has no artifacts; unsatisfied commits exactly once"
+          }
+        ],
+        "legacy-issue-ordinary": [
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=false 'single': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=false 'ids-default': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=false 'items-default': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=false 'items-override': complete condition has no artifacts; unsatisfied commits exactly once"
+          }
+        ],
+        "missing-admission-negative-control": [
+          {
+            "group": "pg",
+            "caseTitle": "PARK-RECOVERY causal unchanged-call silent-prerequisite restart > the same outcome oracle rejects missing admission and survives actual controller death before-commit"
+          },
+          {
+            "group": "pg",
+            "caseTitle": "PARK-RECOVERY causal unchanged-call silent-prerequisite restart > the same outcome oracle rejects missing admission and survives actual controller death after-commit"
+          },
+          {
+            "group": "pg",
+            "caseTitle": "PARK-RECOVERY causal unchanged-call silent-prerequisite restart > the same outcome oracle rejects missing admission and survives actual controller death after-enqueue"
+          }
+        ],
+        "no-producer": [
+          {
+            "group": "pg",
+            "caseTitle": "PARK-RECOVERY causal unchanged-call silent-prerequisite restart > the same outcome oracle rejects missing admission and survives actual controller death before-commit"
+          },
+          {
+            "group": "pg",
+            "caseTitle": "PARK-RECOVERY causal unchanged-call silent-prerequisite restart > the same outcome oracle rejects missing admission and survives actual controller death after-commit"
+          },
+          {
+            "group": "pg",
+            "caseTitle": "PARK-RECOVERY causal unchanged-call silent-prerequisite restart > the same outcome oracle rejects missing admission and survives actual controller death after-enqueue"
+          }
+        ],
+        "per-item-overrides": [
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=false 'items-override': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=true 'items-override': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=false 'items-override': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=true 'items-override': complete condition has no artifacts; unsatisfied commits exactly once"
+          }
+        ],
+        "retry-one-receipt": [
+          {
+            "group": "pg",
+            "caseTitle": "automatic recovery atomic admission prerequisite (PARK-ADMISSION) > rolls a retry back to the same committed receipt without extending its clock"
+          }
+        ],
+        "rollback-preserves-custody": [
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=false: rollback at 'insert' leaves claim, checkpoint and condition actionable"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=false: rollback at 'commit' leaves claim, checkpoint and condition actionable"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=true: rollback at 'insert' leaves claim, checkpoint and condition actionable"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=true: rollback at 'commit' leaves claim, checkpoint and condition actionable"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=false: rollback at 'insert' leaves claim, checkpoint and condition actionable"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=false: rollback at 'commit' leaves claim, checkpoint and condition actionable"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=true: rollback at 'insert' leaves claim, checkpoint and condition actionable"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=true: rollback at 'commit' leaves claim, checkpoint and condition actionable"
+          }
+        ],
+        "single-item": [
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=false 'single': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=true 'single': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=false 'single': complete condition has no artifacts; unsatisfied commits exactly once"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=true 'single': complete condition has no artifacts; unsatisfied commits exactly once"
+          }
+        ]
+      }
+    },
+    {
+      "specId": "PARK-PROGRESS",
+      "specRevision": 2,
+      "specFingerprint": "37b41d10f120dface7d23b817cbf1e1ca54ada954c035f9f1cbd57f59e8d4b3c",
+      "requiredTestLayers": [
+        "integration",
+        "unit"
+      ],
+      "scenarioTestCases": {
+        "absolute-deadline-exact": [
+          {
+            "group": "unit",
+            "caseTitle": "automatic park recovery policy prerequisite (PARK-PROGRESS) > caps a permitted extension at the absolute boundary and never consumes a third or replay count"
+          }
+        ],
+        "absolute-deadline-plus-one": [
+          {
+            "group": "unit",
+            "caseTitle": "automatic park recovery policy prerequisite (PARK-PROGRESS) > caps a permitted extension at the absolute boundary and never consumes a third or replay count"
+          }
+        ],
+        "irrelevant-heartbeat": [
+          {
+            "group": "unit",
+            "caseTitle": "automatic park recovery policy prerequisite (PARK-PROGRESS) > rejects heartbeat without changing the admission"
+          }
+        ],
+        "last-permitted-renewal": [
+          {
+            "group": "unit",
+            "caseTitle": "automatic park recovery policy prerequisite (PARK-PROGRESS) > allows exactly two extensions then expires even if useful work continues"
+          },
+          {
+            "group": "pg",
+            "caseTitle": "serialized progress and timeout recovery (PARK-PROGRESS / PARK-RECOVERY) > caps the final accepted extension at absolute age and rejects the next evidence"
+          }
+        ],
+        "non-monotonic-checkpoint": [
+          {
+            "group": "unit",
+            "caseTitle": "automatic park recovery policy prerequisite (PARK-PROGRESS) > rejects regressing revision without changing the admission"
+          }
+        ],
+        "old-before-admission": [
+          {
+            "group": "unit",
+            "caseTitle": "automatic park recovery policy prerequisite (PARK-PROGRESS) > rejects pre-admission without changing the admission"
+          }
+        ],
+        "relevant-progress": [
+          {
+            "group": "unit",
+            "caseTitle": "automatic park recovery policy prerequisite (PARK-PROGRESS) > accepts fresh durable checkpoint evidence for the exact obligation or dependency"
+          },
+          {
+            "group": "unit",
+            "caseTitle": "automatic park recovery policy prerequisite (PARK-PROGRESS) > accepts fresh durable task evidence for the exact obligation or dependency"
+          },
+          {
+            "group": "unit",
+            "caseTitle": "automatic park recovery policy prerequisite (PARK-PROGRESS) > accepts fresh durable test evidence for the exact obligation or dependency"
+          },
+          {
+            "group": "unit",
+            "caseTitle": "automatic park recovery policy prerequisite (PARK-PROGRESS) > accepts fresh durable artifact evidence for the exact obligation or dependency"
+          },
+          {
+            "group": "unit",
+            "caseTitle": "automatic park recovery policy prerequisite (PARK-PROGRESS) > accepts fresh durable publication evidence for the exact obligation or dependency"
+          },
+          {
+            "group": "pg",
+            "caseTitle": "serialized progress and timeout recovery (PARK-PROGRESS / PARK-RECOVERY) > consumes new linked successful task outcomes, never liveness or unrelated outcomes"
+          },
+          {
+            "group": "pg",
+            "caseTitle": "serialized progress and timeout recovery (PARK-PROGRESS / PARK-RECOVERY) > consumes new linked successful test-run outcomes, never liveness or unrelated outcomes"
+          },
+          {
+            "group": "pg",
+            "caseTitle": "serialized progress and timeout recovery (PARK-PROGRESS / PARK-RECOVERY) > checks fresh checkpoint bodies before expiry, consumes once, and preserves custody/safety"
+          }
+        ],
+        "renewal-limit-plus-one": [
+          {
+            "group": "unit",
+            "caseTitle": "automatic park recovery policy prerequisite (PARK-PROGRESS) > allows exactly two extensions then expires even if useful work continues"
+          },
+          {
+            "group": "pg",
+            "caseTitle": "serialized progress and timeout recovery (PARK-PROGRESS / PARK-RECOVERY) > caps the final accepted extension at absolute age and rejects the next evidence"
+          }
+        ],
+        "replayed-evidence": [
+          {
+            "group": "unit",
+            "caseTitle": "automatic park recovery policy prerequisite (PARK-PROGRESS) > consumes each revision once and rejects replay or nonmonotonic time"
+          }
+        ],
+        "same-producer-different-task": [
+          {
+            "group": "unit",
+            "caseTitle": "automatic park recovery policy prerequisite (PARK-PROGRESS) > rejects same producer, different obligation without changing the admission"
+          }
+        ]
+      }
+    },
+    {
+      "specId": "PARK-READINESS",
+      "specRevision": 3,
+      "specFingerprint": "f1bf3d79e8d4180749678b0d944906d4329641f9101a45db68ef7b59cc76b690",
+      "requiredTestLayers": [
+        "integration",
+        "unit"
+      ],
+      "scenarioTestCases": {
+        "already-satisfied": [
+          {
+            "group": "unit",
+            "caseTitle": "PARK-ADMISSION / PARK-READINESS separate locked current-condition evaluation > observes the qualification winner after the initial probe"
+          },
+          {
+            "group": "pg",
+            "caseTitle": "automatic recovery atomic admission prerequisite (PARK-ADMISSION) > takes the complete already-qualified path with no artifacts and unchanged custody"
+          }
+        ],
+        "concurrent-condition-input-change": [
+          {
+            "group": "unit",
+            "caseTitle": "PARK-ADMISSION / PARK-READINESS separate locked current-condition evaluation > observes the qualification winner after the initial probe"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=false: serializes 'qualification' first after the public condition probe"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'bug' blocker=true: serializes 'qualification' first after the public condition probe"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=false: serializes 'qualification' first after the public condition probe"
+          },
+          {
+            "group": "public",
+            "caseTitle": "PARK-ADMISSION unchanged public call census > 'feature' blocker=true: serializes 'qualification' first after the public condition probe"
+          }
+        ],
+        "failed-qualification": [
+          {
+            "group": "unit",
+            "caseTitle": "PARK-ADMISSION / PARK-READINESS separate locked current-condition evaluation > does not promote failed qualification and accepts the otherwise-identical complete control"
+          },
+          {
+            "group": "pg",
+            "caseTitle": "independent PARK-READINESS and PARK-SAFETY protected outcomes > failed qualification cannot qualify; only the separate complete current evaluation retires recovery"
+          }
+        ],
+        "stale-condition-version": [
+          {
+            "group": "unit",
+            "caseTitle": "PARK-ADMISSION / PARK-READINESS separate locked current-condition evaluation > does not promote stale condition version and accepts the otherwise-identical complete control"
+          },
+          {
+            "group": "pg",
+            "caseTitle": "independent PARK-READINESS and PARK-SAFETY protected outcomes > stale condition version cannot qualify; only the separate complete current evaluation retires recovery"
+          }
+        ],
+        "subset-complete": [
+          {
+            "group": "unit",
+            "caseTitle": "PARK-ADMISSION / PARK-READINESS separate locked current-condition evaluation > does not promote subset completion and accepts the otherwise-identical complete control"
+          },
+          {
+            "group": "pg",
+            "caseTitle": "independent PARK-READINESS and PARK-SAFETY protected outcomes > subset completion cannot qualify; only the separate complete current evaluation retires recovery"
+          }
+        ],
+        "timeout-is-not-qualification": [
+          {
+            "group": "pg",
+            "caseTitle": "serialized progress and timeout recovery (PARK-PROGRESS / PARK-RECOVERY) > retires only after a separate complete current-condition evaluation"
+          }
+        ],
+        "unusable-retained-inputs": [
+          {
+            "group": "unit",
+            "caseTitle": "PARK-ADMISSION / PARK-READINESS separate locked current-condition evaluation > does not promote unusable retained inputs and accepts the otherwise-identical complete control"
+          },
+          {
+            "group": "pg",
+            "caseTitle": "independent PARK-READINESS and PARK-SAFETY protected outcomes > unusable retained inputs cannot qualify; only the separate complete current evaluation retires recovery"
+          }
+        ]
+      }
+    },
+    {
+      "specId": "PARK-RECOVERY",
+      "specRevision": 3,
+      "specFingerprint": "7d504585863ce5ce19e077f10b80112dde7a9c35b9641cb6089a24a690bd6b61",
+      "requiredTestLayers": [
+        "integration",
+        "unit"
+      ],
+      "scenarioTestCases": {
+        "concurrent-sweeps": [
+          {
+            "group": "pg",
+            "caseTitle": "same-identity recovery delivery and successor election > races concurrent successor election and reopens the same delivery after owner death"
+          }
+        ],
+        "correct-current-custodian": [
+          {
+            "group": "pg",
+            "caseTitle": "same-identity recovery delivery and successor election > routes to the parking custodian independently of the producer named in the condition"
+          }
+        ],
+        "crash-after-enqueue-before-delivered": [
+          {
+            "group": "pg",
+            "caseTitle": "PARK-RECOVERY causal unchanged-call silent-prerequisite restart > the same outcome oracle rejects missing admission and survives actual controller death after-enqueue"
+          }
+        ],
+        "delivery-owner-compaction": [
+          {
+            "group": "pg",
+            "caseTitle": "same-identity recovery delivery and successor election > races concurrent successor election and reopens the same delivery after owner death"
+          }
+        ],
+        "delivery-owner-death": [
+          {
+            "group": "pg",
+            "caseTitle": "same-identity recovery delivery and successor election > races concurrent successor election and reopens the same delivery after owner death"
+          }
+        ],
+        "duplicate-timeout": [
+          {
+            "group": "pg",
+            "caseTitle": "serialized progress and timeout recovery (PARK-PROGRESS / PARK-RECOVERY) > expiry at deadline+0 freezes renewal and replay keeps one action"
+          },
+          {
+            "group": "pg",
+            "caseTitle": "serialized progress and timeout recovery (PARK-PROGRESS / PARK-RECOVERY) > expiry at deadline+1 freezes renewal and replay keeps one action"
+          }
+        ],
+        "no-completion-event": [
+          {
+            "group": "pg",
+            "caseTitle": "PARK-RECOVERY causal unchanged-call silent-prerequisite restart > the same outcome oracle rejects missing admission and survives actual controller death before-commit"
+          },
+          {
+            "group": "pg",
+            "caseTitle": "PARK-RECOVERY causal unchanged-call silent-prerequisite restart > the same outcome oracle rejects missing admission and survives actual controller death after-commit"
+          },
+          {
+            "group": "pg",
+            "caseTitle": "PARK-RECOVERY causal unchanged-call silent-prerequisite restart > the same outcome oracle rejects missing admission and survives actual controller death after-enqueue"
+          }
+        ],
+        "one-durable-successor": [
+          {
+            "group": "pg",
+            "caseTitle": "same-identity recovery delivery and successor election > races concurrent successor election and reopens the same delivery after owner death"
+          }
+        ],
+        "producer-death": [
+          {
+            "group": "pg",
+            "caseTitle": "same-identity recovery delivery and successor election > routes to the parking custodian independently of the producer named in the condition"
+          }
+        ],
+        "replay-after-owner-death": [
+          {
+            "group": "pg",
+            "caseTitle": "same-identity recovery delivery and successor election > races concurrent successor election and reopens the same delivery after owner death"
+          },
+          {
+            "group": "pg",
+            "caseTitle": "PARK-RECOVERY causal unchanged-call silent-prerequisite restart > the same outcome oracle rejects missing admission and survives actual controller death before-commit"
+          },
+          {
+            "group": "pg",
+            "caseTitle": "PARK-RECOVERY causal unchanged-call silent-prerequisite restart > the same outcome oracle rejects missing admission and survives actual controller death after-commit"
+          },
+          {
+            "group": "pg",
+            "caseTitle": "PARK-RECOVERY causal unchanged-call silent-prerequisite restart > the same outcome oracle rejects missing admission and survives actual controller death after-enqueue"
+          }
+        ],
+        "restart-after-commit-before-wake": [
+          {
+            "group": "pg",
+            "caseTitle": "PARK-RECOVERY causal unchanged-call silent-prerequisite restart > the same outcome oracle rejects missing admission and survives actual controller death after-commit"
+          }
+        ],
+        "restart-before-commit": [
+          {
+            "group": "pg",
+            "caseTitle": "PARK-RECOVERY causal unchanged-call silent-prerequisite restart > the same outcome oracle rejects missing admission and survives actual controller death before-commit"
+          }
+        ],
+        "silent-prerequisite": [
+          {
+            "group": "pg",
+            "caseTitle": "PARK-RECOVERY causal unchanged-call silent-prerequisite restart > the same outcome oracle rejects missing admission and survives actual controller death before-commit"
+          },
+          {
+            "group": "pg",
+            "caseTitle": "PARK-RECOVERY causal unchanged-call silent-prerequisite restart > the same outcome oracle rejects missing admission and survives actual controller death after-commit"
+          },
+          {
+            "group": "pg",
+            "caseTitle": "PARK-RECOVERY causal unchanged-call silent-prerequisite restart > the same outcome oracle rejects missing admission and survives actual controller death after-enqueue"
+          }
+        ]
+      }
+    },
+    {
+      "specId": "PARK-SAFETY",
+      "specRevision": 3,
+      "specFingerprint": "5752854d223b5fc1181b5a8fef46796a2b58a5308e29c678e273dac65b22e4d9",
+      "requiredTestLayers": [
+        "integration",
+        "unit"
+      ],
+      "scenarioTestCases": {
+        "active-peer-claim": [
+          {
+            "group": "pg",
+            "caseTitle": "independent PARK-READINESS and PARK-SAFETY protected outcomes > recovery notification and successor election preserve active peer claim alone and acceptance"
+          },
+          {
+            "group": "pg",
+            "caseTitle": "independent PARK-READINESS and PARK-SAFETY protected outcomes > recovery notification and successor election preserve active peer claim and actual file-lock together and acceptance"
+          }
+        ],
+        "active-peer-locks": [
+          {
+            "group": "pg",
+            "caseTitle": "independent PARK-READINESS and PARK-SAFETY protected outcomes > recovery notification and successor election preserve actual peer file-lock alone and acceptance"
+          },
+          {
+            "group": "pg",
+            "caseTitle": "independent PARK-READINESS and PARK-SAFETY protected outcomes > recovery notification and successor election preserve active peer claim and actual file-lock together and acceptance"
+          }
+        ],
+        "all-acceptance-obligations-preserved": [
+          {
+            "group": "pg",
+            "caseTitle": "independent PARK-READINESS and PARK-SAFETY protected outcomes > recovery notification and successor election preserve active peer claim alone and acceptance"
+          },
+          {
+            "group": "pg",
+            "caseTitle": "independent PARK-READINESS and PARK-SAFETY protected outcomes > recovery notification and successor election preserve actual peer file-lock alone and acceptance"
+          },
+          {
+            "group": "pg",
+            "caseTitle": "independent PARK-READINESS and PARK-SAFETY protected outcomes > recovery notification and successor election preserve active peer claim and actual file-lock together and acceptance"
+          }
+        ],
+        "failed-acceptance-check-not-bypassed": [
+          {
+            "group": "pg",
+            "caseTitle": "independent PARK-READINESS and PARK-SAFETY protected outcomes > recovery notification and successor election preserve active peer claim alone and acceptance"
+          },
+          {
+            "group": "pg",
+            "caseTitle": "independent PARK-READINESS and PARK-SAFETY protected outcomes > recovery notification and successor election preserve actual peer file-lock alone and acceptance"
+          },
+          {
+            "group": "pg",
+            "caseTitle": "independent PARK-READINESS and PARK-SAFETY protected outcomes > recovery notification and successor election preserve active peer claim and actual file-lock together and acceptance"
+          }
+        ],
+        "lock-owner-token-expiry-preserved": [
+          {
+            "group": "pg",
+            "caseTitle": "independent PARK-READINESS and PARK-SAFETY protected outcomes > recovery notification and successor election preserve actual peer file-lock alone and acceptance"
+          },
+          {
+            "group": "pg",
+            "caseTitle": "independent PARK-READINESS and PARK-SAFETY protected outcomes > recovery notification and successor election preserve active peer claim and actual file-lock together and acceptance"
+          }
+        ],
+        "peer-custody-preserved": [
+          {
+            "group": "pg",
+            "caseTitle": "independent PARK-READINESS and PARK-SAFETY protected outcomes > recovery notification and successor election preserve active peer claim alone and acceptance"
+          },
+          {
+            "group": "pg",
+            "caseTitle": "independent PARK-READINESS and PARK-SAFETY protected outcomes > recovery notification and successor election preserve actual peer file-lock alone and acceptance"
+          },
+          {
+            "group": "pg",
+            "caseTitle": "independent PARK-READINESS and PARK-SAFETY protected outcomes > recovery notification and successor election preserve active peer claim and actual file-lock together and acceptance"
+          }
+        ],
+        "safety-hold-identity-state-preserved": [
+          {
+            "group": "pg",
+            "caseTitle": "independent PARK-READINESS and PARK-SAFETY protected outcomes > recovery notification and successor election preserve active peer claim alone and acceptance"
+          },
+          {
+            "group": "pg",
+            "caseTitle": "independent PARK-READINESS and PARK-SAFETY protected outcomes > recovery notification and successor election preserve actual peer file-lock alone and acceptance"
+          },
+          {
+            "group": "pg",
+            "caseTitle": "independent PARK-READINESS and PARK-SAFETY protected outcomes > recovery notification and successor election preserve active peer claim and actual file-lock together and acceptance"
+          }
+        ],
+        "wake-is-not-qualification-or-completion": [
+          {
+            "group": "pg",
+            "caseTitle": "independent PARK-READINESS and PARK-SAFETY protected outcomes > recovery notification and successor election preserve active peer claim alone and acceptance"
+          },
+          {
+            "group": "pg",
+            "caseTitle": "independent PARK-READINESS and PARK-SAFETY protected outcomes > recovery notification and successor election preserve actual peer file-lock alone and acceptance"
+          },
+          {
+            "group": "pg",
+            "caseTitle": "independent PARK-READINESS and PARK-SAFETY protected outcomes > recovery notification and successor election preserve active peer claim and actual file-lock together and acceptance"
+          }
+        ]
+      }
+    }
+  ],
+  "calibration": [
+    {
+      "group": "unit",
+      "caseTitles": [
+        "PARK-ADMISSION / PARK-READINESS separate locked current-condition evaluation > does not promote subset completion and accepts the otherwise-identical complete control",
+        "PARK-ADMISSION / PARK-READINESS separate locked current-condition evaluation > does not promote failed qualification and accepts the otherwise-identical complete control",
+        "PARK-ADMISSION / PARK-READINESS separate locked current-condition evaluation > does not promote unusable retained inputs and accepts the otherwise-identical complete control",
+        "PARK-ADMISSION / PARK-READINESS separate locked current-condition evaluation > does not promote stale condition version and accepts the otherwise-identical complete control",
+        "PARK-ADMISSION / PARK-READINESS separate locked current-condition evaluation > does not promote incoherent source and accepts the otherwise-identical complete control"
+      ],
+      "variedInput": "Incomplete, failed, unusable, stale or incoherent input versus otherwise-identical complete current input.",
+      "oracle": "Literal complete predicate; pending versus already-satisfied result, independently of renewal/recovery output."
+    },
+    {
+      "group": "unit",
+      "caseTitles": [
+        "automatic park recovery policy prerequisite (PARK-PROGRESS) > rejects heartbeat without changing the admission",
+        "automatic park recovery policy prerequisite (PARK-PROGRESS) > accepts fresh durable checkpoint evidence for the exact obligation or dependency",
+        "automatic park recovery policy prerequisite (PARK-PROGRESS) > accepts fresh durable task evidence for the exact obligation or dependency",
+        "automatic park recovery policy prerequisite (PARK-PROGRESS) > accepts fresh durable test evidence for the exact obligation or dependency",
+        "automatic park recovery policy prerequisite (PARK-PROGRESS) > accepts fresh durable artifact evidence for the exact obligation or dependency",
+        "automatic park recovery policy prerequisite (PARK-PROGRESS) > accepts fresh durable publication evidence for the exact obligation or dependency"
+      ],
+      "variedInput": "Evidence kind/subject/sequence/time only; original admission fixed.",
+      "oracle": "Literal deadline, extension count and unchanged receipt expectations."
+    },
+    {
+      "group": "pg",
+      "caseTitles": [
+        "PARK-RECOVERY causal unchanged-call silent-prerequisite restart > the same outcome oracle rejects missing admission and survives actual controller death before-commit",
+        "PARK-RECOVERY causal unchanged-call silent-prerequisite restart > the same outcome oracle rejects missing admission and survives actual controller death after-commit",
+        "PARK-RECOVERY causal unchanged-call silent-prerequisite restart > the same outcome oracle rejects missing admission and survives actual controller death after-enqueue"
+      ],
+      "variedInput": "Remove only the saved admission and await, then restore that exact public-call admission; keep the obligation and silent prerequisite.",
+      "oracle": "The same boundedOutcome rejects the no-admission control and accepts one stable action/delivery after actual SIGKILL/reopen at each cut, with zero producer fires and unchanged protected state."
+    },
+    {
+      "group": "pg",
+      "caseTitles": [
+        "independent PARK-READINESS and PARK-SAFETY protected outcomes > recovery notification and successor election preserve active peer claim alone and acceptance",
+        "independent PARK-READINESS and PARK-SAFETY protected outcomes > recovery notification and successor election preserve actual peer file-lock alone and acceptance",
+        "independent PARK-READINESS and PARK-SAFETY protected outcomes > recovery notification and successor election preserve active peer claim and actual file-lock together and acceptance"
+      ],
+      "variedInput": "Actual recovery notification/election versus independently altered claim/lock snapshot; claim-only, lock-only and combined fixtures.",
+      "oracle": "Deep equality of protected item and canonical lease fields; deliberate stolen owner must fail the same oracle before actual recovery preserves it."
+    },
+    {
+      "group": "public",
+      "caseTitles": [
+        "PARK-ADMISSION unchanged public call census > 'bug' blocker=false 'single': complete condition has no artifacts; unsatisfied commits exactly once",
+        "PARK-ADMISSION unchanged public call census > 'bug' blocker=false 'ids-default': complete condition has no artifacts; unsatisfied commits exactly once",
+        "PARK-ADMISSION unchanged public call census > 'bug' blocker=false 'items-default': complete condition has no artifacts; unsatisfied commits exactly once",
+        "PARK-ADMISSION unchanged public call census > 'bug' blocker=false 'items-override': complete condition has no artifacts; unsatisfied commits exactly once",
+        "PARK-ADMISSION unchanged public call census > 'bug' blocker=true 'single': complete condition has no artifacts; unsatisfied commits exactly once",
+        "PARK-ADMISSION unchanged public call census > 'bug' blocker=true 'ids-default': complete condition has no artifacts; unsatisfied commits exactly once",
+        "PARK-ADMISSION unchanged public call census > 'bug' blocker=true 'items-default': complete condition has no artifacts; unsatisfied commits exactly once",
+        "PARK-ADMISSION unchanged public call census > 'bug' blocker=true 'items-override': complete condition has no artifacts; unsatisfied commits exactly once",
+        "PARK-ADMISSION unchanged public call census > 'feature' blocker=false 'single': complete condition has no artifacts; unsatisfied commits exactly once",
+        "PARK-ADMISSION unchanged public call census > 'feature' blocker=false 'ids-default': complete condition has no artifacts; unsatisfied commits exactly once",
+        "PARK-ADMISSION unchanged public call census > 'feature' blocker=false 'items-default': complete condition has no artifacts; unsatisfied commits exactly once",
+        "PARK-ADMISSION unchanged public call census > 'feature' blocker=false 'items-override': complete condition has no artifacts; unsatisfied commits exactly once",
+        "PARK-ADMISSION unchanged public call census > 'feature' blocker=true 'single': complete condition has no artifacts; unsatisfied commits exactly once",
+        "PARK-ADMISSION unchanged public call census > 'feature' blocker=true 'ids-default': complete condition has no artifacts; unsatisfied commits exactly once",
+        "PARK-ADMISSION unchanged public call census > 'feature' blocker=true 'items-default': complete condition has no artifacts; unsatisfied commits exactly once",
+        "PARK-ADMISSION unchanged public call census > 'feature' blocker=true 'items-override': complete condition has no artifacts; unsatisfied commits exactly once"
+      ],
+      "variedInput": "Complete condition satisfied versus unsatisfied; exact unchanged issue/feature, ordinary/blocker and single/batch/override calls.",
+      "oracle": "Independent canonical rows, timer/action census and custody snapshots; zero artifacts versus exactly one bounded admission per item."
+    }
+  ],
+  "bindingInstructions": {
+    "tool": "plans:bind-spec-evidence",
+    "scope": {
+      "harness": "papercusp",
+      "slug": "automatic-parked-delivery-recovery-2026-11-09"
+    },
+    "row": {
+      "workItemId": "WI-6554700010046972",
+      "specId": "COPY EXACT CLAUSE ID",
+      "specRevision": "COPY CURRENT REVISION",
+      "fromTestRun": "NEW CLEAN LEDGER ID; never the historical ID",
+      "fixturePaths": "COPY GROUP PATHS; preserve auto-derived infrastructure",
+      "details": {
+        "adequacy": {
+          "fixtureCalibrated": true,
+          "fixtureFree": false,
+          "falsifiable": true,
+          "testLayer": "unit or integration",
+          "oracleIndependent": true,
+          "pathReachable": true,
+          "testCases": "EXACT PASSING TITLES selected for this group",
+          "scenarioIds": "ONLY mapped scenario ids represented in this run",
+          "scenarioTestCases": "SCENARIO -> EXACT PASSING TITLES in this run; expand group references above",
+          "causalPairIds": "ONLY scenario ids whose inspected negative/positive oracle is present"
+        }
+      }
+    },
+    "note": "The booleans are judgments supported by the calibration descriptions and actual new run. Reassess them if bytes/cases change. The binder derives collected/skipped/executed/outcome and source/test hashes; do not manufacture them. Keep source inference and auto-derived fixture support; no source omission to evade a hold."
+  }
+}
