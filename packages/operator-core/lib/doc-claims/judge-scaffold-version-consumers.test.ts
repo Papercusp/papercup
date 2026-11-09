@@ -22,7 +22,9 @@
  * That is D-012's method (make membership decidable, then check it) applied to the
  * consumers instead of to the prompt's inputs.
  */
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, relative, resolve, sep } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -137,8 +139,8 @@ function judgeModuleBindings(source: string): string[] {
   return bindings;
 }
 
-const toRepoPath = (absolute: string): string =>
-  relative(REPO_ROOT, absolute).split(sep).join('/');
+const toRepoPath = (absolute: string, root = REPO_ROOT): string =>
+  relative(root, absolute).split(sep).join('/');
 
 /**
  * THIS FILE MUST EXCLUDE ITSELF, and it is not a formality — the first run failed on
@@ -152,13 +154,13 @@ const toRepoPath = (absolute: string): string =>
 const SELF = toRepoPath(__filename);
 
 /** Every file that imports `judgeRun` by name, repo-relative and POSIX-separated. */
-function findJudgeRunImporters(): string[] {
+function findJudgeRunImporters(root = REPO_ROOT): string[] {
   const files: string[] = [];
-  for (const root of SCAN_ROOTS) walk(resolve(REPO_ROOT, root), files);
+  for (const scanRoot of SCAN_ROOTS) walk(resolve(root, scanRoot), files);
 
   const found: string[] = [];
   for (const file of files) {
-    const repoPath = toRepoPath(file);
+    const repoPath = toRepoPath(file, root);
     if (repoPath === SELF) continue;
     const source = readFileSync(file, 'utf8');
     // Cheap reject before the regex: most of the tree never mentions it.
@@ -170,6 +172,23 @@ function findJudgeRunImporters(): string[] {
 
 describe('D-013: judgeRun consumers fold in the prompt-scaffold identity', () => {
   const importers = findJudgeRunImporters();
+
+  it('ignores verification copies while retaining new consumers before git-sync', () => {
+    const root = mkdtempSync(join(tmpdir(), 'judge-consumer-census-'));
+    try {
+      execFileSync('git', ['init', '--quiet'], { cwd: root });
+      writeFileSync(join(root, '.gitignore'), 'apps/operator/dist-verify/\n');
+      const live = 'apps/operator/lib/new-consumer.ts';
+      const copied = 'apps/operator/dist-verify/candidate/lib/new-consumer.ts';
+      for (const path of [live, copied]) {
+        mkdirSync(join(root, path, '..'), { recursive: true });
+        writeFileSync(join(root, path), "import { judgeRun } from '@papercusp/testing-shell/llm';");
+      }
+      expect(findJudgeRunImporters(root)).toEqual([live]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 
   it('the consumer population matches the pinned classification', () => {
     // The load-bearing assertion. An unpinned importer is not necessarily a defect —

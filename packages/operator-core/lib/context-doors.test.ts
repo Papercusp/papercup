@@ -11,6 +11,8 @@ import {
   DOOR_SPLIT,
   MAX_TURN_CAP_TOKENS,
   MAX_TURN_FLOOR_TOKENS,
+  packContextCandidates,
+  type ContextCandidate,
 } from './context-doors';
 
 describe('computeMaxTurn (min(15K, max(8K, window/26)))', () => {
@@ -127,5 +129,53 @@ describe('capInjectionText (P-006 leg (b) — the pure door split)', () => {
     const r = capInjectionText('x'.repeat(2_000), 100);
     expect(r.kept.length).toBe(400);
     expect(r.kept + r.overflow).toBe('x'.repeat(2_000));
+  });
+});
+
+describe('final context byte packing', () => {
+  const unit = (sourceRef: string, text: string, cls: ContextCandidate['class'] = 'ambient', required = false): ContextCandidate =>
+    ({ sourceRef, text, revision: 'r1', class: cls, required });
+
+  it.each([0, 1, 255, 4096, 6000, 24000, computeTurnDoors(204_800).injections * 4])(
+    'reserves complete required units under byte budget %i, including multibyte framing', budgetBytes => {
+      const candidates = [unit('storm', '🌪'.repeat(10_000)), unit('owner', 'Avi: preserve this duty', 'owner', true),
+        unit('ctrl', '⟦CTRL⟧', 'control', true), unit('fix', '修正: keep the full correction', 'correction', true),
+        unit('short', 'évidence', 'memory')];
+      const result = packContextCandidates({ attemptId: 'boundary', budgetBytes, candidates,
+        framing: { prefix: '始\n', suffix: '\n終', separator: '\n—\n' } });
+      expect(Buffer.byteLength(result.text)).toBeLessThanOrEqual(budgetBytes);
+      expect(result.receipt.contextBytes).toBe(Buffer.byteLength(result.text));
+      expect(result.receipt.candidates).toHaveLength(candidates.length);
+      if (result.receipt.status === 'mandatory-overflow') {
+        expect(result.text).toBe('');
+        expect(result.selectedIndexes).toEqual([]);
+      } else {
+        for (const row of candidates.filter(row => row.required)) expect(result.text).toContain(row.text);
+        expect(result.selectedIndexes.slice(0, 3)).toEqual([2, 1, 3]);
+      }
+      expect(result.receipt.tokenEstimate).toEqual({ kind: 'token-proxy-v1', value: Math.ceil(Buffer.byteLength(result.text) / 4), billedTokens: 'UNKNOWN' });
+    });
+
+  it('charges separators and suffix exactly, skips oversized optional units without slicing, and retains every identity', () => {
+    const candidates = [unit('control', 'é', 'control', true), unit('large', 'never slice me'), unit('small', '字')];
+    const full = packContextCandidates({ attemptId: 'exact', budgetBytes: 10, candidates,
+      framing: { prefix: '[', separator: '—', suffix: ']' } });
+    expect(full.text).toBe('[é—字]');
+    expect(full.receipt.contextBytes).toBe(10);
+    expect(full.receipt.candidates.map(row => row.reason)).toEqual(['selected', 'budget', 'selected']);
+    expect(packContextCandidates({ attemptId: 'one-less', budgetBytes: 9, candidates,
+      framing: { prefix: '[', separator: '—', suffix: ']' } }).text).toBe('[é]');
+  });
+
+  it('zero and one byte budgets keep mandatory overflow solely in the out-of-band receipt', () => {
+    for (const budgetBytes of [0, 1]) {
+      const result = packContextCandidates({ attemptId: `attempt-${budgetBytes}`, budgetBytes,
+        candidates: [unit('empty', ''), unit('control', '⟦CTRL⟧', 'control', true), unit('ambient', 'a')] });
+      expect(result.text).toBe('');
+      expect(result.receipt.status).toBe('mandatory-overflow');
+      expect(result.receipt.candidates.map(row => row.reason)).toEqual(['empty', 'mandatory-overflow', 'mandatory-overflow']);
+      expect(result.receipt.candidates[1]).toMatchObject({ sourceRef: 'control', revision: 'r1', class: 'control', required: true,
+        fragmentSha256: expect.stringMatching(/^[a-f0-9]{64}$/), bytes: 10 });
+    }
   });
 });

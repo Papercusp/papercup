@@ -16,7 +16,9 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
@@ -315,7 +317,7 @@ describe('machine-surface catalogue — ONE HOME (recurrence guard)', () => {
   const isSourceFile = (name: string): boolean =>
     /\.tsx?$/.test(name) && !/\.(?:test|spec)\.tsx?$/.test(name);
 
-  function sourceFilesUnder(rel: string): string[] {
+  function sourceFilesUnder(rel: string, root = ROOT): string[] {
     const out: string[] = [];
     const walk = (dir: string) => {
       let entries: string[];
@@ -339,7 +341,7 @@ describe('machine-surface catalogue — ONE HOME (recurrence guard)', () => {
         else if (isSourceFile(name)) out.push(full);
       }
     };
-    walk(join(ROOT, rel));
+    walk(join(root, rel));
     return out;
   }
 
@@ -348,6 +350,23 @@ describe('machine-surface catalogue — ONE HOME (recurrence guard)', () => {
     expect(isSourceFile('adv-conversations-sessions.spec.ts')).toBe(false);
     expect(isSourceFile('machine-surface-catalogue.ts')).toBe(true);
     expect(isSourceFile('route.tsx')).toBe(true);
+  });
+
+  it('ignores verification copies while retaining new source before git-sync', () => {
+    const root = mkdtempSync(join(tmpdir(), 'machine-census-'));
+    try {
+      execFileSync('git', ['init', '--quiet'], { cwd: root });
+      writeFileSync(join(root, '.gitignore'), 'apps/operator/dist-verify/\n');
+      const live = 'apps/operator/lib/new-source.ts';
+      const copied = 'apps/operator/dist-verify/candidate/lib/new-source.ts';
+      for (const path of [live, copied]) {
+        mkdirSync(join(root, path, '..'), { recursive: true });
+        writeFileSync(join(root, path), 'export const marker = "Request interrupted by user";');
+      }
+      expect(sourceFilesUnder('apps/operator', root)).toEqual([join(root, live)]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   /**

@@ -28,6 +28,8 @@
  * un-configured); keep every knob here, exported, so that module wires one place.
  */
 
+import { createHash } from 'node:crypto';
+
 /** The output-door floor sum: below ~208K windows every model gets exactly this hop budget. */
 export const MAX_TURN_FLOOR_TOKENS = 8_000;
 /** Cap: above ~390K windows the hop budget stops growing (context is rent — a bigger
@@ -152,4 +154,85 @@ export function capInjectionText(text: string, doorTokens: number): { kept: stri
   const lastBreak = Math.max(window.lastIndexOf('\n'), window.lastIndexOf(' '));
   const cut = lastBreak > budgetChars * 0.8 ? lastBreak : budgetChars;
   return { kept: text.slice(0, cut), overflow: text.slice(cut) };
+}
+
+/** One complete rendered unit. Authority is assigned by the producing sink,
+ * never inferred from recalled prose. A required unit is an all-or-nothing
+ * reservation; optional units cannot displace it. */
+export interface ContextCandidate {
+  sourceRef: string;
+  revision: string;
+  class: 'control' | 'owner' | 'correction' | 'policy' | 'loop' | 'orientation' |
+    'package' | 'memory' | 'corpus' | 'granted' | 'code' | 'failure' | 'ambient';
+  required: boolean;
+  text: string;
+}
+
+export interface ContextCandidateReceipt extends Omit<ContextCandidate, 'text'> {
+  index: number;
+  fragmentSha256: string;
+  bytes: number;
+  reason: 'selected' | 'empty' | 'budget' | 'mandatory-overflow';
+}
+
+export interface ContextPackingReceipt {
+  schemaVersion: 'context-packing-v1';
+  attemptId: string;
+  budgetBytes: number;
+  contextBytes: number;
+  status: 'packed' | 'mandatory-overflow';
+  tokenEstimate: { kind: 'token-proxy-v1'; value: number; billedTokens: 'UNKNOWN' };
+  candidates: ContextCandidateReceipt[];
+}
+
+const CONTEXT_CLASS_ORDER: Record<ContextCandidate['class'], number> = {
+  control: 0, owner: 1, correction: 2, policy: 3, loop: 4, orientation: 5,
+  failure: 6, memory: 7, corpus: 8, code: 9, granted: 10, package: 11, ambient: 12,
+};
+
+/** The budget is UTF-8 bytes of the final model-context body, including its
+ * framing. No receipt or overflow pointer is appended to that channel. Persist
+ * `receipt` out of band before emitting/staging the selected units. This is
+ * preparation only: a selected row is never evidence of delivery. */
+export function packContextCandidates(input: {
+  attemptId: string;
+  budgetBytes: number;
+  candidates: readonly ContextCandidate[];
+  framing?: { prefix?: string; separator?: string; suffix?: string };
+}): { text: string; selectedIndexes: number[]; receipt: ContextPackingReceipt } {
+  if (!input.attemptId || !Number.isSafeInteger(input.budgetBytes) || input.budgetBytes < 0) {
+    throw new Error('Context packing requires an attempt ID and a nonnegative integer byte budget');
+  }
+  const rows = input.candidates.map((candidate, index): ContextCandidateReceipt => ({
+    sourceRef: candidate.sourceRef, revision: candidate.revision, class: candidate.class,
+    required: candidate.required, index,
+    fragmentSha256: createHash('sha256').update(candidate.text, 'utf8').digest('hex'),
+    bytes: Buffer.byteLength(candidate.text, 'utf8'), reason: candidate.text ? 'budget' : 'empty',
+  }));
+  const ordered = rows.filter(row => row.bytes > 0).sort((a, b) =>
+    Number(b.required) - Number(a.required) || CONTEXT_CLASS_ORDER[a.class] - CONTEXT_CLASS_ORDER[b.class] || a.index - b.index);
+  const { prefix = '', separator = '\n\n', suffix = '' } = input.framing ?? {};
+  const render = (selected: readonly number[]) => selected.length
+    ? prefix + selected.map(index => input.candidates[index].text).join(separator) + suffix : '';
+  const selected = ordered.filter(row => row.required).map(row => row.index);
+  const mandatoryOverflow = Buffer.byteLength(render(selected), 'utf8') > input.budgetBytes;
+  if (mandatoryOverflow) {
+    selected.length = 0;
+    for (const row of ordered) row.reason = 'mandatory-overflow';
+  } else {
+    for (const row of ordered) {
+      if (row.required) continue;
+      if (Buffer.byteLength(render([...selected, row.index]), 'utf8') <= input.budgetBytes) selected.push(row.index);
+    }
+    for (const index of selected) rows[index].reason = 'selected';
+  }
+  const text = render(selected);
+  const contextBytes = Buffer.byteLength(text, 'utf8');
+  return { text, selectedIndexes: selected, receipt: {
+    schemaVersion: 'context-packing-v1', attemptId: input.attemptId,
+    budgetBytes: input.budgetBytes, contextBytes,
+    status: mandatoryOverflow ? 'mandatory-overflow' : 'packed',
+    tokenEstimate: { kind: 'token-proxy-v1', value: Math.ceil(contextBytes / 4), billedTokens: 'UNKNOWN' },
+    candidates: rows,
+  } };
 }
