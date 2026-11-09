@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { cp, link, mkdir, mkdtemp, readFile, readlink, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -20,6 +21,33 @@ async function fixture() {
 }
 
 describe('offload symlink target integrity', () => {
+  it('refuses tracked source before relocation and through an existing offload symlink', async () => {
+    const f = await fixture();
+    const repo = join(f.root, 'original');
+    execFileSync('git', ['init', '--quiet', repo]);
+    const file = join(f.source, 'source.ts');
+    await writeFile(file, 'export const value = 1;');
+    const object = execFileSync('git', ['-C', repo, 'hash-object', '-w', '--', file], { encoding: 'utf8' }).trim();
+    execFileSync('git', ['-C', repo, 'update-index', '--add', '--cacheinfo', '100644', object, 'node_modules/source.ts']);
+    await expect(captureOffloadLinks(f.source)).rejects.toThrow('Git-tracked source');
+    await rename(f.source, f.destination);
+    await symlink(f.destination, f.source);
+    expect(execFileSync('git', ['-C', repo, 'diff-files', '--name-only'], { encoding: 'utf8' }))
+      .toContain('node_modules/source.ts');
+    expect(await readFile(join(f.source, 'source.ts'), 'utf8')).toContain('value = 1');
+    await expect(captureOffloadLinks(f.source)).rejects.toThrow('Git-tracked source');
+  });
+
+  it('allows untracked generated directories in a repository and refuses nested repositories', async () => {
+    const f = await fixture();
+    execFileSync('git', ['init', '--quiet', join(f.root, 'original')]);
+    await writeFile(join(f.source, 'generated'), 'payload');
+    expect((await captureOffloadLinks(f.source)).entriesVisited).toBe(1);
+    execFileSync('git', ['init', '--quiet', join(f.source, 'nested')]);
+    await expect(captureOffloadLinks(f.source)).rejects.toThrow('Git source tree');
+    await expect(captureOffloadLinks(join(f.root, 'original'))).rejects.toThrow('Git source tree');
+  });
+
   it.each(['packet', 'nested/packet'])('refuses %s whose native consumer rejects redirected ancestors', async relativePacket => {
     const f = await fixture();
     const packet = join(f.source, relativePacket);
