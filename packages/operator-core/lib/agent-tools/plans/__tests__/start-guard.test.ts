@@ -16,6 +16,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseScratchReference } from '../../../scratch-reference';
 import { configurePlanAdmissionPolicySource } from '../plan-admission-gate';
+import * as activationReadiness from '../get-activation-readiness';
+import { PLANS_START_DIAGNOSTIC_TIMEOUT_MS } from '../start';
 import {
   projectAcceptanceBarContractSnapshot,
   readAcceptanceBarContractSnapshot,
@@ -635,7 +637,7 @@ describe('plans:start commit-time readiness', () => {
         satisfied: false, applicable: true, mode: 'enforced', planSlug: 'mock', specSetHash: 'changed',
         code: 'spec_quality_scorecard_missing', wouldBlock: ['current-policy-scorecard-missing'],
       };
-      return preflight as Awaited<ReturnType<typeof evaluatePlanSpecQualityGate>>;
+      return preflight as unknown as Awaited<ReturnType<typeof evaluatePlanSpecQualityGate>>;
     });
     const result = await run({ slug: 'mock', consulted: true });
     expect(result.data.results[0], JSON.stringify(result.data.results[0])).toMatchObject({ ok: false, error: 'spec_quality_scorecard_missing' });
@@ -665,6 +667,89 @@ describe('plans:start commit-time readiness', () => {
     const result = await run({ slug: 'mock', consulted: true });
     expect(result.data.results[0], JSON.stringify(result.data.results[0])).toMatchObject({ ok: false, error: 'plan_start_revalidation_unavailable' });
     expect(promotePlanItemsMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('plans:start bounded refusal diagnostics', () => {
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    expect(console.warn).toHaveBeenCalledTimes(1);
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('[bounded-timeout] plans:start refusal diagnostics exceeded'));
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it('returns the primary terminal refusal when diagnostic setup never settles', async () => {
+    H.state.frontmatterStatus = 'shipped';
+    vi.useFakeTimers();
+    const setup = vi.spyOn(activationReadiness, 'createPlanActivationReadinessRequest')
+      .mockImplementation(() => new Promise(() => {}));
+    const pending = run({ slug: 'mock' });
+    await vi.waitFor(() => expect(setup).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(PLANS_START_DIAGNOSTIC_TIMEOUT_MS);
+    const result = (await pending).data.results[0];
+    expect(result).toMatchObject({ ok: false, error: 'plan_terminal', status: 'shipped',
+      activationReadiness: { ready: false, freshness: 'unknown', counts: { total: 14, returned: 14, omitted: 0 } } });
+    expect(setup.mock.calls[0][0].signal?.aborted).toBe(true);
+    expect(promotePlanItemsMock).not.toHaveBeenCalled();
+    expectNoOpStatusWrite();
+  });
+
+  it('shares the optional deadline across bulk refusals and skips later diagnostic setup', async () => {
+    H.state.frontmatterStatus = 'shipped';
+    vi.useFakeTimers();
+    const setup = vi.spyOn(activationReadiness, 'createPlanActivationReadinessRequest')
+      .mockImplementation(() => new Promise(() => {}));
+    const pending = run({ slugs: ['first', 'second', 'third'] });
+    await vi.waitFor(() => expect(setup).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(PLANS_START_DIAGNOSTIC_TIMEOUT_MS);
+    const result = await pending;
+    expect(result.data.counts).toEqual({ ok: 0, failed: 3 });
+    expect(result.data.results.map(row => [row.slug, row.error])).toEqual([
+      ['first', 'plan_terminal'], ['second', 'plan_terminal'], ['third', 'plan_terminal'],
+    ]);
+    expect(setup).toHaveBeenCalledTimes(1);
+    expect(promotePlanItemsMock).not.toHaveBeenCalled();
+  });
+
+  it('does not collect when diagnostic setup resolves after its deadline', async () => {
+    H.state.frontmatterStatus = 'shipped';
+    vi.useFakeTimers();
+    type Request = Awaited<ReturnType<typeof activationReadiness.createPlanActivationReadinessRequest>>;
+    let finish!: (value: Request) => void;
+    const setup = vi.spyOn(activationReadiness, 'createPlanActivationReadinessRequest')
+      .mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    const pending = run({ slug: 'mock' });
+    await vi.waitFor(() => expect(setup).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(PLANS_START_DIAGNOSTIC_TIMEOUT_MS);
+    expect((await pending).data.results[0]).toMatchObject({ ok: false, error: 'plan_terminal' });
+    const collect = vi.fn();
+    finish({ collect } as unknown as Request);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(collect).not.toHaveBeenCalled();
+  });
+
+  it('preserves partial promotion evidence when diagnostic collection never settles', async () => {
+    vi.useFakeTimers();
+    const collect = vi.fn(() => new Promise<never>(() => {}));
+    vi.spyOn(activationReadiness, 'createPlanActivationReadinessRequest').mockResolvedValue({
+      quality: async () => H.state.specQuality, collect,
+      recordQuality: vi.fn(), recordCritique: vi.fn(), recordConsult: vi.fn(),
+    } as unknown as Awaited<ReturnType<typeof activationReadiness.createPlanActivationReadinessRequest>>);
+    admissionMocks.preflight.mockResolvedValueOnce({ ready: false, status: 'refused',
+      reason: 'promotion-lag', message: 'Actionable plan items lack a promoted row: P-002.' });
+    const pending = run({ slug: 'live-plan', consulted: true });
+    await vi.waitFor(() => expect(collect).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(PLANS_START_DIAGNOSTIC_TIMEOUT_MS);
+    expect((await pending).data.results[0]).toMatchObject({ ok: false, error: 'admission_refused',
+      promotion: { promoted: 0, skipped: 0, flagOff: false },
+      admission: { ready: false, reason: 'promotion-lag' }, activationReadiness: { ready: false, freshness: 'unknown' } });
+    expect((collect.mock.calls[0] as unknown as [AbortSignal])[0].aborted).toBe(true);
+    expect(promotePlanItemsMock).toHaveBeenCalledTimes(1);
+    expect(claimSpecMocks.setClaimSpec).not.toHaveBeenCalled();
+    expectNoOpStatusWrite();
   });
 });
 
@@ -715,7 +800,7 @@ describe('plans:start terminal guard', () => {
     });
     // The appended diagnostic may read independent gates after the primary
     // dependency refusal. It cannot execute the start or write application rows.
-    expect(result.data.results[0].activationReadiness.advisory).toBe(true);
+    expect((result.data.results[0].activationReadiness as { advisory: boolean }).advisory).toBe(true);
     expect(H.state.txCalls.filter(call => /\b(?:INSERT|UPDATE|DELETE)\b/.test(call.strings.join('')))).toEqual([]);
     expect(promotePlanItemsMock).not.toHaveBeenCalled();
   });
@@ -1077,7 +1162,8 @@ describe('plans:start — the retired op_status axis (P-047)', () => {
     expect(res.data.results[0].message).toContain(
       'Item promotion is blocked by the acceptance BAR contract: acceptance BAR contract is not ready for start',
     );
-    expect(res.data.results[0].promotion.acceptanceBarLifecycle.sourceDiagnostics.map((item: { source: string }) => item.source))
+    expect((res.data.results[0].promotion as { acceptanceBarLifecycle: { sourceDiagnostics: Array<{ source: string }> } })
+      .acceptanceBarLifecycle.sourceDiagnostics.map((item: { source: string }) => item.source))
       .toEqual(['plan', 'rubric']);
     expect(res.data.results[0].message).toContain('SOURCE DIAGNOSTICS: plan');
     expect(res.data.results[0].message).toContain('rubric [bar_snapshot_source_unavailable]: rubric read failed');

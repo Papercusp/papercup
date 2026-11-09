@@ -32,7 +32,7 @@ vi.mock('../../build-info', () => ({ getBuildInfo: () => ({ sha: 'abc1234', vers
 
 import { ACTIVATION_STAGE_IDS, activationDeclarationReadiness, activationConformanceReadiness, collectActivationReadiness,
   previewPlanStartConsult, unavailableActivationReadiness, matchingActivationConsult,
-  type ActivationReadinessBasis, type ActivationReadinessReaders } from './get-activation-readiness';
+  type ActivationReadinessBasis, type ActivationReadinessReaders, type ActivationStageObservation } from './get-activation-readiness';
 
 const params = {
   workspaceId: 'workspace-a',
@@ -161,6 +161,19 @@ describe('previewPlanStartConsult', () => {
     } });
     expect(result.productShaping?.reviewerBrief.instructions[0]).toContain('BEFORE');
   });
+
+  it('does not route consult advice when embedder setup resolves after cancellation', async () => {
+    let finish!: (value: null) => void;
+    M.buildQueryEmbedderResolved.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    const controller = new AbortController();
+    const pending = previewPlanStartConsult(params, controller.signal);
+    await vi.waitFor(() => expect(M.buildQueryEmbedderResolved).toHaveBeenCalled());
+    controller.abort(new Error('diagnostic deadline'));
+    finish(null);
+    expect(await pending).toMatchObject({ outcome: 'unavailable' });
+    expect(M.planStartConsult).not.toHaveBeenCalled();
+    expect(M.routeConsult).not.toHaveBeenCalled();
+  });
 });
 
 // plan-reuse-and-library-declarations-2026-10-20 R-3.
@@ -204,6 +217,52 @@ describe('collectActivationReadiness', () => {
       stages: Object.fromEntries(ACTIVATION_STAGE_IDS.map(id => [id,
         vi.fn().mockResolvedValue({ status: 'pass', codes: [`${id}_ready`], nextAction: 'Continue canonical start.' })])) };
   }
+
+  it.each(['resolve', 'reject'] as const)('stops all stage reads after a late initial basis %s', async outcome => {
+    const r = readers();
+    let resolve!: (value: ActivationReadinessBasis) => void;
+    let reject!: (error: Error) => void;
+    r.readBasis = vi.fn(() => new Promise<ActivationReadinessBasis>((yes, no) => { resolve = yes; reject = no; }));
+    const controller = new AbortController();
+    const pending = collectActivationReadiness(r, controller.signal);
+    const stopped = expect(pending).rejects.toThrow('diagnostic deadline');
+    controller.abort(new Error('diagnostic deadline'));
+    if (outcome === 'resolve') resolve(basis); else reject(new Error('late basis failure'));
+    await stopped;
+    for (const read of Object.values(r.stages)) expect(read).not.toHaveBeenCalled();
+    expect(r.readBasis).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['resolve', 'reject'] as const)('does not advance to later stages or consult after a late stage %s', async outcome => {
+    const r = readers();
+    let resolve!: (value: { status: 'pass'; codes: string[]; nextAction: string }) => void;
+    let reject!: (error: Error) => void;
+    r.stages['source-discovery'] = vi.fn(() => new Promise<ActivationStageObservation>((yes, no) => { resolve = yes; reject = no; }));
+    const controller = new AbortController();
+    const pending = collectActivationReadiness(r, controller.signal);
+    const stopped = expect(pending).rejects.toThrow('diagnostic deadline');
+    await vi.waitFor(() => expect(r.stages['source-discovery']).toHaveBeenCalled());
+    controller.abort(new Error('diagnostic deadline'));
+    if (outcome === 'resolve') resolve({ status: 'pass', codes: ['ready'], nextAction: 'Continue.' });
+    else reject(new Error('late stage failure'));
+    await stopped;
+    for (const id of ACTIVATION_STAGE_IDS.slice(1)) expect(r.stages[id]).not.toHaveBeenCalled();
+    expect(r.readBasis).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a late final basis instead of reporting a current diagnostic after cancellation', async () => {
+    const r = readers();
+    let finish!: (value: ActivationReadinessBasis) => void;
+    vi.mocked(r.readBasis).mockImplementationOnce(async () => basis)
+      .mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const controller = new AbortController();
+    const pending = collectActivationReadiness(r, controller.signal);
+    const stopped = expect(pending).rejects.toThrow('diagnostic deadline');
+    await vi.waitFor(() => expect(r.readBasis).toHaveBeenCalledTimes(2));
+    controller.abort(new Error('diagnostic deadline'));
+    finish(basis);
+    await stopped;
+  });
   it('exposes unenforced requirements even when every other activation stage passes', async () => {
     const content = '## Requirements\n\n' + ['R-1', 'R-2'].map(key =>
       `**${key} — Preserve executable acceptance.**\n\`\`\`requirement\n${JSON.stringify({

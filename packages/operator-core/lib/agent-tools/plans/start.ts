@@ -1,6 +1,7 @@
 import { getBuildInfo } from '../../build-info';
 import { recordExpertiseRoutingInvocation } from '../../endpoint-route/telemetry';
 import { CONSULT_DEFAULT_POLICY } from '../../consult/selection-policies';
+import { withBoundedTimeout } from '../../bounded-timeout';
 
 /**
  * plans:start — approve a plan and promote its items into work_items.
@@ -85,6 +86,8 @@ const stringTolerantBool = z.preprocess((v) => (v === 'true' ? true : v === 'fal
 // flat MCP deadline so a legitimate long saga returns its structured outcome
 // instead of an ambiguous timeout (EI-22583060887975914).
 export const PLANS_START_TIMEOUT_SEC = 120;
+/** Optional refusal detail shares one deadline across the entire bulk call. */
+export const PLANS_START_DIAGNOSTIC_TIMEOUT_MS = 2_000;
 
 import { createPlanActivationReadinessRequest, unavailableActivationReadiness,
   type PlanActivationConsultReceipt } from './get-activation-readiness';
@@ -205,14 +208,15 @@ export default defineTool({
     // un-collapsed ctx slug.
     const { workspaceId: startWorkspaceId, harnessSlug } = await resolvePlanWriteScope(sctx);
     const slugs = mergeIds(args.slug, args.slugs);
+    let diagnosticDeadline: number | undefined;
     const env = await runBulk(
       slugs,
       async (slug) => {
         let readinessRequest: Promise<Awaited<ReturnType<typeof createPlanActivationReadinessRequest>>> | undefined;
         let activationConsult: PlanActivationConsultReceipt | undefined;
-        const diagnosticRequest = (planRead?: Awaited<ReturnType<typeof readPlanBySlug>>) =>
+        const diagnosticRequest = (planRead?: Awaited<ReturnType<typeof readPlanBySlug>>, signal?: AbortSignal) =>
           readinessRequest ??= createPlanActivationReadinessRequest({ workspaceId: startWorkspaceId, harnessSlug,
-            planSlug: slug, requesterId: readinessRequesterIdentity(ctx).ownerId, planRead });
+            planSlug: slug, requesterId: readinessRequesterIdentity(ctx).ownerId, planRead, signal });
         const attempt = async () => {
         const now = new Date().toISOString();
 
@@ -1137,11 +1141,19 @@ export default defineTool({
         if (result.ok !== false) return result;
         // Add information after the canonical outcome is known. Never replace
         // its primary refusal or its already committed partial-effect receipt.
-        try {
-          return { ...result, activationReadiness: await (await diagnosticRequest()).collect() };
-        } catch (error) {
-          return { ...result, activationReadiness: unavailableActivationReadiness(error) };
-        }
+        diagnosticDeadline ??= Date.now() + PLANS_START_DIAGNOSTIC_TIMEOUT_MS;
+        const remainingMs = diagnosticDeadline - Date.now();
+        const fallback = unavailableActivationReadiness(new Error('Plan-start refusal diagnostic deadline exceeded.'));
+        if (remainingMs <= 0) return { ...result, activationReadiness: fallback };
+        const diagnostic = await withBoundedTimeout(async signal => {
+          const request = await diagnosticRequest(undefined, signal);
+          signal.throwIfAborted();
+          return request.collect(signal);
+        }, { timeoutMs: remainingMs, signal: ctx.signal, fallback, label: 'plans:start refusal diagnostics' });
+        const activationReadiness = diagnostic.reason === 'error' ? unavailableActivationReadiness(diagnostic.error)
+          : diagnostic.reason === 'aborted' ? unavailableActivationReadiness(new Error('Plan-start refusal diagnostics cancelled.'))
+          : diagnostic.value;
+        return { ...result, activationReadiness };
       },
       { keyOf: (slug) => ({ slug }) },
     );

@@ -111,8 +111,8 @@ export interface ActivationReadinessDiagnostic {
 }
 export interface ActivationReadinessReaders {
   /** Re-read raw identities at the boundary; do not re-run expensive evaluators. */
-  readBasis(): Promise<ActivationReadinessBasis>;
-  stages: Partial<Record<ActivationStageId, () => Promise<ActivationStageObservation>>>;
+  readBasis(signal?: AbortSignal): Promise<ActivationReadinessBasis>;
+  stages: Partial<Record<ActivationStageId, (signal?: AbortSignal) => Promise<ActivationStageObservation>>>;
 }
 
 /** Preserve the complete stage population when adapter setup itself fails. */
@@ -165,16 +165,21 @@ function boundedStage(id: ActivationStageId, value: ActivationStageObservation):
  * edges delay a stage. Callers supply read capabilities, never repairs or launchers.
  * A missing read or changed basis is explicit; neither can manufacture a pass.
  */
-export async function collectActivationReadiness(readers: ActivationReadinessReaders): Promise<ActivationReadinessDiagnostic> {
+export async function collectActivationReadiness(readers: ActivationReadinessReaders,
+  signal?: AbortSignal): Promise<ActivationReadinessDiagnostic> {
+  signal?.throwIfAborted();
   let basis: ActivationReadinessBasis | null = null;
   let initialKey: string | null = null;
   try {
-    const initial = await readers.readBasis();
+    const initial = await readers.readBasis(signal);
+    signal?.throwIfAborted();
     initialKey = basisKey(initial);
     basis = { ...initial };
   } catch { /* The whole observation stays unknown without a measurable basis. */ }
+  signal?.throwIfAborted();
   const stages: ActivationStage[] = [];
   for (const id of ACTIVATION_STAGE_IDS) {
+    signal?.throwIfAborted();
     const dependencies = STAGE_DEPENDENCIES[id];
     const pending = dependencies.filter(dep => !settledStage(stages.find(stage => stage.id === dep)!.status));
     let observation: ActivationStageObservation;
@@ -184,7 +189,9 @@ export async function collectActivationReadiness(readers: ActivationReadinessRea
       try {
         const read = readers.stages[id];
         if (!read) throw new Error('stage reader unavailable');
-        stages.push(boundedStage(id, await read()));
+        const value = await read(signal);
+        signal?.throwIfAborted();
+        stages.push(boundedStage(id, value));
         continue;
       } catch (error) {
         observation = { status: 'unknown', codes: ['activation_stage_unavailable'],
@@ -193,11 +200,13 @@ export async function collectActivationReadiness(readers: ActivationReadinessRea
     }
     stages.push(boundedStage(id, observation));
   }
+  signal?.throwIfAborted();
   let freshness: ActivationReadinessDiagnostic['freshness'] = 'unknown';
   if (initialKey) {
-    try { freshness = basisKey(await readers.readBasis()) === initialKey ? 'current' : 'changed'; }
+    try { freshness = basisKey(await readers.readBasis(signal)) === initialKey ? 'current' : 'changed'; }
     catch { /* Failure is unknown, never a stable scope. */ }
   }
+  signal?.throwIfAborted();
   if (freshness !== 'current') {
     for (const stage of stages) {
       if (settledStage(stage.status)) {
@@ -217,7 +226,7 @@ export async function createPlanActivationReadinessRequest(params: Parameters<ty
     () => createPlanActivationReadinessRequestInWorkspace(params));
   return {
     quality: () => runWithWorkspaceIfConcrete(params.workspaceId, request.quality),
-    collect: () => runWithWorkspaceIfConcrete(params.workspaceId, request.collect),
+    collect: (signal?: AbortSignal) => runWithWorkspaceIfConcrete(params.workspaceId, () => request.collect(signal)),
     recordQuality: request.recordQuality,
     recordCritique: request.recordCritique,
     recordConsult: request.recordConsult,
@@ -235,7 +244,9 @@ async function createPlanActivationReadinessRequestInWorkspace(params: {
   /** An existing request's actual advice may be shared without recomputing it. */
   consult?: PlanActivationConsultPreview;
   consultReceipt?: PlanActivationConsultReceipt;
+  signal?: AbortSignal;
 }) {
+  params.signal?.throwIfAborted();
   const [{ createHash }, { withWorkspace }, source, audits, activation, inputs, anchors, scope,
     dependencies, lifecycle, quality, critique, admission, lane, work, compiler] = await Promise.all([
     import('node:crypto'), import('@papercusp/db-org'), import('./source'), import('../../plan-audits'),
@@ -245,9 +256,11 @@ async function createPlanActivationReadinessRequestInWorkspace(params: {
     import('./plan-start-critique-gate'), import('./plan-admission-gate'), import('./plan-admission-preflight'),
     import('../../work-items'), import('./spec-clause-compiler'),
   ]);
+  params.signal?.throwIfAborted();
   const opts = { workspaceId: params.workspaceId, harnessSlug: params.harnessSlug };
   const planScope = { ...opts, planSlug: params.planSlug };
   const { potHomeSlugForHarness } = await import('../../hive-federation');
+  params.signal?.throwIfAborted();
   const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
   let read: Awaited<ReturnType<typeof source.readPlanBySlug>> = params.planRead ?? null;
   let basisEstablished = false;
@@ -272,8 +285,10 @@ async function createPlanActivationReadinessRequestInWorkspace(params: {
     status: ok ? 'pass' : status, codes: codes.length ? [...new Set(codes)] : ['ready'], nextAction,
   });
   const readers: ActivationReadinessReaders = {
-    async readBasis() {
+    async readBasis(signal) {
+      signal?.throwIfAborted();
       const next = await source.readPlanBySlug(params.planSlug, opts);
+      signal?.throwIfAborted();
       if (!next) throw new Error('canonical plan unavailable');
       if (!basisEstablished && read && (read.row.version !== next.row.version || read.row.contentHash !== next.row.contentHash)) {
         throw new Error('plan changed since the request snapshot');
@@ -281,7 +296,9 @@ async function createPlanActivationReadinessRequestInWorkspace(params: {
       // Preserve the first snapshot for stage evaluations; later reads only fence it.
       read ??= next;
       const policyHarness = await potHomeSlugForHarness(params.workspaceId, params.harnessSlug);
+      signal?.throwIfAborted();
       const { listSpecClauses } = await import('./spec-clauses-store');
+      signal?.throwIfAborted();
       const [clauses, facts, discoveryNow] = await Promise.all([
         listSpecClauses(planScope),
         withWorkspace(params.workspaceId, async tx => {
@@ -313,6 +330,7 @@ async function createPlanActivationReadinessRequestInWorkspace(params: {
         audits.withCurrentDiscovery({ ...planScope, createdBy: params.requesterId },
           async (_tx, subject) => subject.discovery.requestKey),
       ]);
+      signal?.throwIfAborted();
       discovery ??= discoveryNow;
       const basis = { ...planScope, requesterId: params.requesterId, planRevision: next.row.version,
         planHash: next.row.contentHash, policyHash: hash([facts.policy, CONSULT_DEFAULT_POLICY]),
@@ -410,10 +428,12 @@ async function createPlanActivationReadinessRequestInWorkspace(params: {
           [structural.promotion.missingActionableItemIds.length ? 'waiting-for-promotion' : 'promotion_coverage_ready'],
           'Canonical plans:start promotes and rechecks the exact current lane; this preview grants no authority.', 'waiting');
       },
-      async consult() {
+      async consult(signal) {
+        signal?.throwIfAborted();
         consult ??= matchingActivationConsult(params.consultReceipt, adviceBasis);
         consult ??= await previewPlanStartConsult({ workspaceId: params.workspaceId, requesterId: params.requesterId,
-          planSlug: params.planSlug, planContent: current().row.content });
+          planSlug: params.planSlug, planContent: current().row.content }, signal);
+        signal?.throwIfAborted();
         return observation(consult.outcome !== 'unavailable', [consult.outcome],
           consult.outcome === 'unavailable' ? 'Restore consult advice; keep its availability distinct from start authority.'
             : 'Review the actual advice and give a truthful consulted/reason disposition at start.', 'unknown');
@@ -439,17 +459,17 @@ async function createPlanActivationReadinessRequestInWorkspace(params: {
       try { initialBasis ??= await readers.readBasis(); } catch { /* Diagnostic availability is never a new start gate. */ }
       return readQuality();
     },
-    async collect(): Promise<ActivationReadinessDiagnostic & {
+    async collect(signal: AbortSignal | undefined = params.signal): Promise<ActivationReadinessDiagnostic & {
       consult: PlanActivationConsultPreview; declarations?: ActivationDeclarationReadiness;
     }> {
       let first = true;
-      const result = await collectActivationReadiness({ ...readers, readBasis: async () => {
+      const result = await collectActivationReadiness({ ...readers, readBasis: async readSignal => {
         if (first) {
           first = false;
           if (initialBasis) return initialBasis;
         }
-        return readers.readBasis();
-      } });
+        return readers.readBasis(readSignal);
+      } }, signal);
       return { ...result, consult: consult ?? { outcome: 'unavailable', error: 'consult_preview_unavailable',
         message: 'Consult advice was not measured.' }, ...(declaration ? { declarations: declaration } : {}) };
     },
@@ -480,8 +500,9 @@ export async function previewPlanStartConsult(params: {
   requesterId: string;
   planSlug: string;
   planContent: string;
-}): Promise<PlanActivationConsultPreview> {
+}, signal?: AbortSignal): Promise<PlanActivationConsultPreview> {
   try {
+    signal?.throwIfAborted();
     const [
       { getOrgPg },
       { routeConsult },
@@ -497,15 +518,18 @@ export async function previewPlanStartConsult(params: {
       import('../coordination/liveness-oracle'),
       import('../../consult/plan-start-consult'),
     ]);
+    signal?.throwIfAborted();
     const resolved = await buildQueryEmbedderResolved();
+    signal?.throwIfAborted();
     const embeddingProfile = resolved
       ? resolveProseProfileSelection(resolved.mode, resolved.profile)
       : null;
     const outcome = await consult.planStartConsult(
       params,
       {
-        route: (routeParams) =>
-          routeConsult({ ...routeParams, telemetry: {
+        route: (routeParams) => {
+          signal?.throwIfAborted();
+          return routeConsult({ ...routeParams, telemetry: {
             caller: 'plans:activation-preview', policy: CONSULT_DEFAULT_POLICY, buildSha: getBuildInfo().sha,
           } }, {
             recordTelemetry: receipt => recordExpertiseRoutingInvocation(receipt, getOrgPg().sql),
@@ -514,16 +538,22 @@ export async function previewPlanStartConsult(params: {
             embeddingProfile,
             embeddingMode: embeddingProfile && resolved ? resolved.mode : null,
             getLiveness: async (ownerIds) => {
+              signal?.throwIfAborted();
               const verdicts = await resolveSessionStates(
                 ownerIds.map((ownerId) => ({ ownerId })),
                 { hydratePerId: true },
               );
               return Object.fromEntries([...verdicts.values()].map((v) => [v.ownerId, v.sessionState]));
             },
-          }),
-        getExcerpts: (refs) => consult.fetchTurnExcerpts(getOrgPg().sql, params.workspaceId, refs),
+          });
+        },
+        getExcerpts: (refs) => {
+          signal?.throwIfAborted();
+          return consult.fetchTurnExcerpts(getOrgPg().sql, params.workspaceId, refs);
+        },
       },
     );
+    signal?.throwIfAborted();
     return { ...outcome, productShaping: previewProductShaping(params.planContent) };
   } catch (error) {
     // A preview is advisory. Preserve the distinction between an honest empty
