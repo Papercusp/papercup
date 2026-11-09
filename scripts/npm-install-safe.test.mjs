@@ -218,6 +218,55 @@ test("metadata repair reconciles selected mirrors before npm without changing se
   assert.equal(JSON.parse(result.bytes).packages["packages/child"].dependencies, undefined);
 });
 
+for (const genericVersion of ["1.0.0", "2.0.0"]) {
+  test(`metadata repair resolves the declared local directory despite a hoisted workspace at ${genericVersion}`, async t => {
+    const root = mkdtempSync(join(tmpdir(), "metadata-local-producer-test-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const manifests = {
+      "": { name: "local-root", version: "1.0.0", private: true, workspaces: ["packages/*"] },
+      "packages/app": { name: "local-app", version: "1.0.0", dependencies: { kit: "file:./kit" } },
+      "packages/app/kit": { name: "kit", version: "1.0.0" },
+      "packages/generic": { name: "kit", version: genericVersion },
+    };
+    for (const [path, manifest] of Object.entries(manifests)) {
+      mkdirSync(join(root, path), { recursive: true });
+      writeFileSync(join(root, path, "package.json"), JSON.stringify(manifest));
+    }
+    // Model the observed producer input: both directory sources survive, but
+    // the app resolves the workspace's hoisted kit instead of its own file: kit.
+    const before = Buffer.from(JSON.stringify({ name: "local-root", version: "1.0.0", lockfileVersion: 3,
+      requires: true, packages: {
+        "": { name: "local-root", version: "1.0.0", workspaces: ["packages/*"] },
+        "packages/app": manifests["packages/app"],
+        "packages/app/kit": { ...manifests["packages/app/kit"], extraneous: true },
+        "packages/generic": manifests["packages/generic"],
+        "node_modules/local-app": { resolved: "packages/app", link: true },
+        "node_modules/kit": { resolved: "packages/generic", link: true },
+      } }));
+    writeFileSync(join(root, "package-lock.json"), before);
+    let exitCode;
+    const result = await resolveMetadataRepairLock({ repoRoot: root }, {
+      log: () => {},
+      spawnCommand: (command, args, options) => {
+        const child = spawn(command, args, { ...options, stdio: "ignore" });
+        child.once("exit", status => { exitCode = status; });
+        return child;
+      },
+    });
+    assert.equal(exitCode, 0);
+    const lock = JSON.parse(result.bytes);
+    assert.deepEqual(lock.packages["packages/app/node_modules/kit"], { resolved: "packages/app/kit", link: true });
+    assert.deepEqual(lock.packages["node_modules/kit"], { resolved: "packages/generic", link: true });
+    assert.equal(lock.packages["packages/app/kit"].version, "1.0.0");
+    assert.equal(lock.packages["packages/generic"].version, genericVersion);
+    assert.deepEqual(result.snapshot.get("package-lock.json"), before);
+    assert.deepEqual(readFileSync(join(root, "package-lock.json")), before);
+    for (const [path, manifest] of Object.entries(manifests))
+      assert.deepEqual(JSON.parse(readFileSync(join(root, path, "package.json"))), manifest);
+    assert.equal(result.receipt.cleanup.removed, true);
+  });
+}
+
 for (const mutation of ["local-target", "malformed", "oversized", "symlink"]) {
   test(`metadata repair retains bounded ${mutation} rejection evidence after real npm and cleanup`, async t => {
     const root = mkdtempSync(join(tmpdir(), "metadata-repair-failure-test-"));
