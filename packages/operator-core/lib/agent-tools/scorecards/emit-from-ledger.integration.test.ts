@@ -8,7 +8,10 @@
  * auto-rated instead of asked; (5) an executable criterion with no ledger result rates anything
  * but unknown.
  *
- * Real Postgres (testcontainer + the full migrated baseline) and the real emit path: the fixture
+ * Real Postgres (testcontainer + the full migrated baseline) and the registered MCP emit path:
+ * the original fixture inputs pass through projection, schema, handler and result shaping. This
+ * in-process dispatch bypasses authority gates for the isolated fixture; it is not a network test.
+ * The fixture
  * rubric is proposed through proposeRubric, its ledger rows are written by
  * recordRubricCheckResults into harness_shared.test_runs, scorecards:emit reads them back through
  * the production readLatestRubricCheckResults (getOrgPg points at the test database), and the
@@ -28,6 +31,7 @@
  *   - manual-judgement no check → never auto-rated; the emit asks for it by key.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/tooldef';
 import type postgres from 'postgres';
 
 const h = vi.hoisted(() => ({ sql: null as unknown }));
@@ -64,7 +68,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
 // A sql probe pins dev:pg_query's projected schema revision, which resolves only once the tool
 // is registered in this process.
 await import('../dev/pg_query');
-const { emitScorecard, scorecardEmitArgs, _closeScorecardEmitMutexForTests } = await import('./emit');
+const { _closeScorecardEmitMutexForTests } = await import('./emit');
 const { proposeRubric, getRubric } = await import('../../rubrics');
 const { createOrgTestDb } = await import('../../../test/_org-test-db');
 const { activeWorkspaceId } = await import('../../workspace-registry');
@@ -157,12 +161,38 @@ async function persistedObservation(issueId: string): Promise<Record<string, unk
   return found.payload.observation;
 }
 
-const emit = (args: Record<string, unknown>) =>
-  emitScorecard(scorecardEmitArgs.parse({ rubricRef: RUBRIC, fromLedger: true, ...args }), {
-    createdBy: OWNER,
-    ctxHarness: 'papercusp',
+async function emit(args: Record<string, unknown>) {
+  // Preserve the historical helper's effective input, including its two defaults.
+  // Let the registered projection parse it rather than invoking the emit helper directly.
+  const input = { rubricRef: RUBRIC, fromLedger: true, ...args };
+  const originalInput = structuredClone(input);
+  const projected = lookupByMcpName('scorecards:emit');
+  expect(projected).toBeTruthy();
+  const dispatched = await dispatchProjectedTool(projected!, 'scorecards:emit', input, {
+    log: vi.fn(),
+    metadata: vi.fn(),
+    signal: new AbortController().signal,
+    progress: vi.fn(),
+    emit: vi.fn(),
+    isSuperuser: true,
+    uiClientId: OWNER,
+    role: 'su',
+    harnessSlug: 'papercusp',
     workspaceId: activeWorkspaceId(),
-  }, { dispatchTool });
+    runId: 'emit-from-ledger-original-input-replay',
+    dispatchTool,
+    gateBypass: { role: true, capability: true, quota: true },
+    transport: 'mcp',
+    requestedFormat: 'json',
+    requestedStructured: true,
+    tx: {},
+  }, {});
+  expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+  expect(dispatched.result?.isError).not.toBe(true);
+  expect(input).toEqual(originalInput);
+  expect(dispatched.result?.structuredContent).toBeDefined();
+  return dispatched.result!.structuredContent as Awaited<ReturnType<typeof import('./emit').emitScorecard>>;
+}
 
 beforeAll(async () => {
   // Check authenticated fixture identity before allocating an isolated database.
@@ -278,6 +308,9 @@ describe('R-7 — scorecards:emit { fromLedger: true } rates executable criteria
 
   it('files a card rating every executable criterion from the ledger and the manual one from the grader', async () => {
     const rowsBefore = await ledgerRowCount();
+    const [{ n: cardsBefore }] = (await db.adminSql`
+      SELECT count(*)::int AS n FROM harness_shared.work_items WHERE payload->'observation'->>'rubricRef' = ${RUBRIC}
+    `) as unknown as Array<{ n: number }>;
     const result = await emit({
       ratings: { 'manual-judgement': MANUAL_RATING },
       // The poor cpu result is routed WITHOUT a hand-typed rating.
@@ -304,6 +337,10 @@ describe('R-7 — scorecards:emit { fromLedger: true } rates executable criteria
     // wrote no new ledger row that the rating did not see.
     expect(dispatched).toEqual([]);
     expect(await ledgerRowCount()).toBe(rowsBefore);
+    const [{ n: cardsAfter }] = (await db.adminSql`
+      SELECT count(*)::int AS n FROM harness_shared.work_items WHERE payload->'observation'->>'rubricRef' = ${RUBRIC}
+    `) as unknown as Array<{ n: number }>;
+    expect(cardsAfter).toBe(cardsBefore + 1);
 
     const issueId = 'issueId' in result ? result.issueId : undefined;
     expect(typeof issueId).toBe('string');
