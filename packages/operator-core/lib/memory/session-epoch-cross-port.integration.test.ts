@@ -46,7 +46,7 @@ vi.mock('./workspace-scope-recall', () => ({
 
 const { buildMemoryContextBlock, prepareMemoryContextBlock } = await import('./injection');
 const { bumpSessionEpoch, memoryFragmentOffer, stageMemoryEmission, confirmMemoryEmission } = await import('./session-epoch-ledger');
-const { configureReadCursorStore, InMemoryReadCursorStore, resetReadCursorStore } = await import('../agent-tools/coordination/read-cursors');
+const { resetReadCursorStore } = await import('../agent-tools/coordination/read-cursors');
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 
 const SID = `sid-cross-port-${Date.now()}`;
@@ -86,7 +86,9 @@ describe('cross-port session-epoch dedup (real PG — P-004a)', () => {
     setSessionConfinementResolver(() => null);
     db = await createOrgTestDb();
     h.sql = db.adminSql;
-    configureReadCursorStore(new InMemoryReadCursorStore());
+    // Exercise production JSONB staging and ACK promotion as well as the
+    // surfaced-table uniqueness constraint; an in-memory cursor masks both.
+    resetReadCursorStore();
     h.entries = [
       { id: randomUUID(), text: 'always pass argShape Z to the fixture step', scope: 'u-test', score: 0.9 },
       { id: randomUUID(), text: 'the promotion pipeline FFs main from staging', scope: 'u-test', score: 0.8 },
@@ -169,6 +171,18 @@ describe('cross-port session-epoch dedup (real PG — P-004a)', () => {
     const b = memoryFragmentOffer(kind, id, 3, 'mid-turn', '- exact complete body');
     await stageMemoryEmission(db.adminSql as never, sid, `race-${kind}-a`, [a]);
     await stageMemoryEmission(db.adminSql as never, sid, `race-${kind}-b`, [b]);
+    const staged = await db.adminSql<{ shape: string; token: string; fragments: unknown[] }[]>`
+      SELECT jsonb_typeof(pending) AS shape, pending ->> '__deliveryToken' AS token,
+             pending -> 'fragments' AS fragments
+        FROM harness_shared.coord_read_cursors
+       WHERE owner_id = ${sid} AND surface LIKE 'memory-emission:%'
+    `;
+    expect(staged).toHaveLength(2);
+    for (const row of staged) {
+      expect(row.shape).toBe('object');
+      expect(row.token).toMatch(new RegExp(`^race-${kind}-[ab]$`));
+      expect(row.fragments).toHaveLength(1);
+    }
     const manifest = ({ rendered: _text, ...row }: typeof a) => row;
     const committed = await Promise.all([
       confirmMemoryEmission(db.adminSql as never, sid, { token: `race-${kind}-a`, fragments: [manifest(a)] }),
