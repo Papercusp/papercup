@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { openDeliveryLedger } from '../delivery-ledger.mjs';
+import { ledgerDir, openDeliveryLedger } from '../delivery-ledger.mjs';
 
 const execFileAsync = promisify(execFile);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -136,10 +136,14 @@ describe('native stdout memory receipts', () => {
   for (const client of ['codex', 'claude', 'omp'] as const)
     for (const port of ['turn-start', 'mid-turn'] as const)
       for (const kind of ['memory', 'corpus'] as const)
-        it(`${client} ${port} ${kind}: broken stdout does not confirm; a complete retry does`, async () => {
+        for (const failure of ['broken', 'partial'] as const)
+        it(`${client} ${port} ${kind}: ${failure} stdout does not confirm; a complete retry does`, async ({ task }) => {
           const home = mkdtempSync(path.join(tmpdir(), 'inject-native-receipt-'));
-          const owner = `native-receipt-${client}-${port}-${kind}`;
-          const rendered = `- ${kind}: retain the complete snowman ☃ fragment`;
+          const owner = `native-receipt-${client}-${port}-${kind}-${failure}`;
+          // Exceed the OS pipe capacity so closing after the first chunk
+          // interrupts a pending write, rather than an already complete one.
+          const rendered = `- ${kind}: retain the complete snowman ☃ fragment` +
+            (failure === 'partial' ? 'x'.repeat(512 * 1024) : '');
           const fragment = { kind, id: kind === 'memory' ? '11111111-1111-1111-1111-111111111111' : 'WI-123',
             epoch: 3, port, rendered, bodyBytes: Buffer.byteLength(rendered),
             bodySha256: createHash('sha256').update(rendered).digest('hex') };
@@ -159,10 +163,15 @@ describe('native stdout memory receipts', () => {
             : client === 'codex' ? 'PostToolUse' : client === 'claude' ? 'PostToolBatch' : 'turn_end';
           const args = [`--client=${client}`, `--event=${nativeEvent}`];
           try {
-            // Close the actual consumer before the child can write. This is an
-            // OS pipe failure, not a mocked ledger.commit or dispatch return.
+            // Break the actual consumer before writing or after the first
+            // bytes. Neither case mocks ledger.commit or dispatch's return.
             const closed = spawn(process.execPath, [copiedCli, ...args], { env, stdio: ['pipe', 'pipe', 'pipe'] });
-            closed.stdout.destroy();
+            let partialBytes = 0;
+            if (failure === 'broken') closed.stdout.destroy();
+            else closed.stdout.once('data', (chunk: Buffer) => {
+              partialBytes += chunk.length;
+              closed.stdout.destroy();
+            });
             closed.stderr.resume();
             const terminal = new Promise<number | null>((resolve, reject) => {
               closed.once('error', reject);
@@ -170,6 +179,10 @@ describe('native stdout memory receipts', () => {
             });
             closed.stdin.end(JSON.stringify(event));
             await terminal;
+            if (failure === 'partial') {
+              expect(partialBytes).toBeGreaterThan(0);
+              expect(partialBytes).toBeLessThan(fragment.bodyBytes);
+            }
             expect(op.received).toHaveLength(1);
             expect(openDeliveryLedger(owner, env, port)?.confirmedMemoryDeliveries()).toEqual([]);
             expect(op.received[0]!.body.confirmedMemoryDeliveries).toEqual([]);
@@ -180,6 +193,14 @@ describe('native stdout memory receipts', () => {
             const { rendered: _text, ...manifest } = fragment;
             const proof = [{ token: opts.deliveryToken, fragments: [manifest] }];
             expect(openDeliveryLedger(owner, env, port)?.confirmedMemoryDeliveries()).toEqual(proof);
+            const namespace = port === 'turn-start' ? owner : `${owner}.${port}`;
+            const receipt = JSON.parse(readFileSync(path.join(ledgerDir(env), `${namespace}.emissions`,
+              `${createHash('sha256').update(opts.deliveryToken).digest('hex')}.json`), 'utf8'));
+            const payload = retry.stdout; // Receipt covers the complete framed stdout.
+            expect(retry.stdout.endsWith('\n')).toBe(true);
+            expect(receipt).toMatchObject({ stage: 'stdout-emitted', owner, token: opts.deliveryToken, client,
+              payloadSha256: createHash('sha256').update(payload).digest('hex'),
+              payloadBytes: Buffer.byteLength(payload), memoryFragments: [manifest] });
             expect(op.received[1]!.body.confirmedMemoryDeliveries).toEqual([]);
 
             // A subsequent real request, not an arrival-only guess, echoes
@@ -187,6 +208,13 @@ describe('native stdout memory receipts', () => {
             await runCli(args, JSON.stringify(event), env);
             expect(op.received[2]!.body.confirmedMemoryDeliveries).toEqual(proof);
             expect(openDeliveryLedger(owner, env, port)?.confirmedMemoryDeliveries()).toEqual(proof);
+            Object.assign(task.meta, { nativeDispatcherReceipt: {
+              client, port, source: kind, failure, partialBytes,
+              fragment: manifest, failedOutputReceipts: 0, completeRetryReceipts: 1,
+              confirmationEcho: proof, terminalReceipt: receipt,
+              evidencePlane: 'real dispatcher subprocess and isolated local receipt store',
+              productionBackend: 'UNKNOWN', installedClientConsumption: 'UNKNOWN',
+            } });
           } finally {
             rmSync(home, { recursive: true, force: true });
           }
