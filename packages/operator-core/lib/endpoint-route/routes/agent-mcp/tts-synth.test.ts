@@ -374,6 +374,35 @@ describe('synthesize() — upstream failure classification', () => {
     if (!r.ok) expect(r.error).toContain('unreachable');
   });
 
+  const bodyCases = [
+    ['kokoro', 'mp3'], ['elevenlabs', 'mp3'], ['elevenlabs', 'wav'],
+    ['openai', 'mp3'], ['cartesia', 'mp3'],
+  ] as const;
+
+  it.each(bodyCases)('%s/%s classifies a body timeout after successful headers', async (engine, container) => {
+    const response = new Response('unfinished audio');
+    vi.spyOn(response, 'arrayBuffer').mockRejectedValue(new DOMException('body deadline exceeded', 'TimeoutError'));
+    const fetch = vi.fn(async () => response);
+    vi.stubGlobal('fetch', fetch);
+
+    await expect(synthesize(engine, 'hello', undefined, PREFS, { container }))
+      .resolves.toMatchObject({ ok: false, status: 502, error: expect.stringContaining('body deadline exceeded') });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(bodyCases)('%s/%s preserves cancellation while consuming the audio body', async (engine, container) => {
+    const controller = new AbortController();
+    const response = new Response('unfinished audio');
+    vi.spyOn(response, 'arrayBuffer').mockImplementation(async () => {
+      controller.abort();
+      throw new DOMException('body cancelled', 'AbortError');
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => response));
+
+    await expect(synthesize(engine, 'hello', undefined, PREFS, { container, signal: controller.signal }))
+      .resolves.toEqual({ ok: false, error: 'speech cancelled', status: 499 });
+  });
+
   it("the EL container:'wav' branch classifies through the same guard (no bespoke copy)", async () => {
     respond(401);
     expect(

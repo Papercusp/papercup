@@ -8,11 +8,19 @@ export type SourceSite = {
     calleeCoverage: string | null; node: import('typescript').Node;
 };
 export type SourceUnit = { path: string; sha256: string; ast: import('typescript').SourceFile;
-    sites: SourceSite[]; span: (node: import('typescript').Node) => Record<string, number> };
+    includesDefinitions: boolean; sites: SourceSite[]; span: (node: import('typescript').Node) => Record<string, number> };
 /** Definition sites are syntactic inventory candidates, not runtime or closure evidence. */
 export function censusSites(path: string, text: string, options?: { includeDefinitions?: boolean }): SourceUnit;
 export function changedSites(before: SourceUnit, after: SourceUnit): {
     addedOrChanged: SourceSite[]; removedOrChanged: SourceSite[] };
+/** Syntax equality is not flow coverage, requiredness or runtime acceptance. */
+export function compareSourcePopulation(expectedPaths: string[], before: SourceUnit[], after: SourceUnit[]): {
+    comparison: 'incomplete' | 'different' | 'identical'; checked: string[];
+    gaps: Array<{ side: 'expected' | 'before' | 'after'; path?: string; reason: string }>;
+    differences: Array<{ path: string; beforeSha256: string; afterSha256: string;
+        addedOrChanged: ReturnType<typeof siteEvidence>[]; removedOrChanged: ReturnType<typeof siteEvidence>[] }>;
+    receipt: false; fullClosureQualified: false; executionAdmitted: false;
+};
 export function selectSourcePath(unit: SourceUnit, options: { functionName: string; containerName?: string; branchValues?: Record<string, boolean> }): {
     selected: SourceSite[]; excluded: Array<{ site: SourceSite; reason: string; proof: unknown }> };
 export function boundedFrontier(edges: Array<{ path?: string; [key: string]: unknown }>, options?: {

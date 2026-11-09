@@ -136,7 +136,7 @@ export function censusSites(path, text, { includeDefinitions = false } = {}) {
       ? bindings.get(site.expression) ?? null : null;
     site.calleeCoverage = site.kind === 'call' ? 'UNKNOWN' : null;
   }
-  return { path, sha256: hash(text), ast, sites, span };
+  return { path, sha256: hash(text), includesDefinitions: includeDefinitions, ast, sites, span };
 }
 
 export function changedSites(before, after) {
@@ -144,6 +144,55 @@ export function changedSites(before, after) {
   const current = new Set(after.sites.map(site => site.fingerprint));
   return { addedOrChanged: after.sites.filter(site => !old.has(site.fingerprint)),
     removedOrChanged: before.sites.filter(site => !current.has(site.fingerprint)) };
+}
+
+/** Compare a declared file population without dropping missing or ambiguous rows.
+ * This is a syntax comparison only. Even identical populations say nothing about
+ * exhaustive flow coverage, requiredness, oracle independence or executed inputs.
+ */
+export function compareSourcePopulation(expectedPaths, before, after) {
+  const gaps = [], checked = [], differences = [], expected = new Set();
+  if (!expectedPaths.length) gaps.push({ side: 'expected', reason: 'empty-population' });
+  for (const path of expectedPaths) {
+    if (!canonicalInput(path)) gaps.push({ side: 'expected', path, reason: 'invalid-path' });
+    else if (expected.has(path)) gaps.push({ side: 'expected', path, reason: 'duplicate-path' });
+    else expected.add(path);
+  }
+  const index = (units, side) => {
+    const rows = new Map();
+    for (const unit of units) {
+      const path = unit.path;
+      if (!canonicalInput(path)) { gaps.push({ side, path, reason: 'invalid-path' }); continue; }
+      if (!expected.has(path)) gaps.push({ side, path, reason: 'unexpected-path' });
+      if (rows.has(path)) {
+        gaps.push({ side, path, reason: 'duplicate-path' });
+        rows.set(path, null); // Never select one of two conflicting snapshots.
+      } else rows.set(path, unit);
+    }
+    for (const path of expected) {
+      if (!rows.has(path)) gaps.push({ side, path, reason: 'missing-path' });
+      const unit = rows.get(path);
+      if (unit && unit.includesDefinitions !== true) gaps.push({ side, path, reason: 'definitions-omitted' });
+    }
+    return rows;
+  };
+  const old = index(before, 'before'), current = index(after, 'after');
+  for (const path of expected) {
+    const a = old.get(path), b = current.get(path);
+    if (!a || !b || a.includesDefinitions !== true || b.includesDefinitions !== true) continue;
+    checked.push(path);
+    const delta = changedSites(a, b);
+    const changed = delta.addedOrChanged.length > 0 || delta.removedOrChanged.length > 0;
+    // A changed byte outside the collected sites is still unresolved source,
+    // rather than an empty, apparently identical comparison.
+    if (a.sha256 !== b.sha256 && !changed) gaps.push({ side: 'after', path, reason: 'unclassified-source-change' });
+    if (changed || a.sha256 !== b.sha256) differences.push({ path,
+      beforeSha256: a.sha256, afterSha256: b.sha256,
+      addedOrChanged: delta.addedOrChanged.map(siteEvidence),
+      removedOrChanged: delta.removedOrChanged.map(siteEvidence) });
+  }
+  return { comparison: gaps.length ? 'incomplete' : differences.length ? 'different' : 'identical',
+    checked, gaps, differences, receipt: false, fullClosureQualified: false, executionAdmitted: false };
 }
 
 const terminal = node => ts.isReturnStatement(node) || ts.isThrowStatement(node)

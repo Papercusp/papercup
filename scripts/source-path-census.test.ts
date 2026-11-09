@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { boundedFrontier, censusSites, changedSites, createPreparationLedger, openPreparationLedger, preparationDisposition,
+import { boundedFrontier, censusSites, changedSites, compareSourcePopulation, createPreparationLedger, openPreparationLedger, preparationDisposition,
   selectSourcePath, verifyPreparationCitation } from './lib/source-path-census.mjs';
 
 describe('source-only call-site preparation', () => {
@@ -102,6 +102,87 @@ describe('source-only call-site preparation', () => {
     expect(result.additions).toEqual(['prior', 'shared']);
     expect(result.refusedEdge?.path).toBe('next');
     expect(result.complete).toBe(false);
+  });
+});
+
+describe('declared source population comparison (syntax only)', () => {
+  const unit = (path: string, text = 'export interface Input { id: string }') =>
+    censusSites(path, text, { includeDefinitions: true });
+  const paths = ['input.ts', 'adapter.ts'];
+  const before = paths.map(path => unit(path));
+
+  it('checks each declared file independent of array order without claiming runtime acceptance', () => {
+    const result = compareSourcePopulation(paths, before, [...before].reverse());
+    expect(result).toEqual({ comparison: 'identical', checked: paths, gaps: [], differences: [],
+      receipt: false, fullClosureQualified: false, executionAdmitted: false });
+    expect(JSON.parse(JSON.stringify(result))).toEqual(result);
+  });
+
+  it.each(['before', 'after'] as const)('keeps a missing %s file incomplete instead of comparing the intersection', side => {
+    const result = compareSourcePopulation(paths, side === 'before' ? before.slice(1) : before,
+      side === 'after' ? before.slice(1) : before);
+    expect(result.comparison).toBe('incomplete');
+    expect(result.checked).toEqual(['adapter.ts']);
+    expect(result.gaps).toEqual([{ side, path: 'input.ts', reason: 'missing-path' }]);
+  });
+
+  it.each(['before', 'after'] as const)('retains an undeclared %s source as a coverage gap', side => {
+    const extra = [...before, unit('extra.ts')];
+    const result = compareSourcePopulation(paths, side === 'before' ? extra : before, side === 'after' ? extra : before);
+    expect(result.comparison).toBe('incomplete');
+    expect(result.gaps).toEqual([{ side, path: 'extra.ts', reason: 'unexpected-path' }]);
+  });
+
+  it.each(['before', 'after'] as const)('does not choose among duplicate %s source snapshots', side => {
+    const duplicate = [...before, unit('input.ts', 'export interface Input { mandatoryForm: string }')];
+    const result = compareSourcePopulation(paths, side === 'before' ? duplicate : before,
+      side === 'after' ? duplicate : before);
+    expect(result.comparison).toBe('incomplete');
+    expect(result.checked).toEqual(['adapter.ts']);
+    expect(result.gaps).toEqual([{ side, path: 'input.ts', reason: 'duplicate-path' }]);
+  });
+
+  it('refuses an empty or duplicated declared population', () => {
+    expect(compareSourcePopulation([], [], []).gaps).toEqual([{ side: 'expected', reason: 'empty-population' }]);
+    expect(compareSourcePopulation(['input.ts', 'input.ts'], [before[0]], [before[0]]).gaps)
+      .toEqual([{ side: 'expected', path: 'input.ts', reason: 'duplicate-path' }]);
+  });
+
+  it.each(['before', 'after'] as const)('does not treat a calls-only %s census as complete definition coverage', side => {
+    const callsOnly = [censusSites('input.ts', 'export interface Input { id: string }'), before[1]];
+    const result = compareSourcePopulation(paths, side === 'before' ? callsOnly : before,
+      side === 'after' ? callsOnly : before);
+    expect(result.comparison).toBe('incomplete');
+    expect(result.gaps).toEqual([{ side, path: 'input.ts', reason: 'definitions-omitted' }]);
+  });
+
+  it.each(['mandatoryForm', 'mandatoryReport', 'relevanceLabel', 'checkpointSection', 'copiedReceipt'])(
+    'retains a new %s field against the unchanged frozen source', field => {
+      const changed = unit('input.ts', `export interface Input { id: string; ${field}: string }`);
+      const result = compareSourcePopulation(paths, before, [changed, before[1]]);
+      expect(result.comparison).toBe('different');
+      expect(result.differences[0].addedOrChanged.some(site => site.source.includes(field))).toBe(true);
+      expect(result.differences[0].removedOrChanged.length).toBeGreaterThan(0);
+      expect(before[0].sha256).toBe(unit('input.ts').sha256);
+      expect(() => JSON.stringify(result)).not.toThrow();
+    });
+
+  it('retains a duplicate call with no new input field', () => {
+    const a = unit('input.ts', 'function handler(input) { return normalWrite(input); }');
+    const b = unit('input.ts', 'function handler(input) { normalWrite(input); return normalWrite(input); }');
+    const result = compareSourcePopulation(['input.ts'], [a], [b]);
+    expect(result.comparison).toBe('different');
+    expect(result.differences[0].addedOrChanged.filter(site => site.expression === 'normalWrite')).toHaveLength(1);
+  });
+
+  it('retains removed definitions and source changes outside collected syntax', () => {
+    const removed = compareSourcePopulation(['input.ts'], [before[0]], [unit('input.ts', '')]);
+    expect(removed.comparison).toBe('different');
+    expect(removed.differences[0].removedOrChanged.some(site => site.expression === 'InterfaceDeclaration')).toBe(true);
+    const comment = compareSourcePopulation(['input.ts'], [before[0]],
+      [unit('input.ts', '// changed source bytes\nexport interface Input { id: string }')]);
+    expect(comment.comparison).toBe('incomplete');
+    expect(comment.gaps).toEqual([{ side: 'after', path: 'input.ts', reason: 'unclassified-source-change' }]);
   });
 });
 
