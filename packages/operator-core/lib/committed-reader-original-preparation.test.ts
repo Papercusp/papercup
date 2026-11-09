@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,7 +11,9 @@ const sourcePreview = vi.hoisted(() => ({ prepareVerifierSource: vi.fn(), prepar
 vi.mock('../../../scripts/source-preview.mjs', () => sourcePreview);
 
 import { produceCommittedReaderOriginalPreparation, qualifyCommittedReaderOriginalPreparation,
-  withCommittedReaderOriginalPreparation } from '../test/private-http-workspace-preflight';
+  withCommittedReaderOriginalPreparation, observeCommittedReaderWorkerEnvironment,
+  retainCommittedReaderWorkerEnvironment } from '../test/private-http-workspace-preflight';
+import { readProcessIdentity } from './process-identity';
 import type { CommittedReaderCallerContract } from '../test/private-http-workspace-preflight';
 import type { CommittedReaderObservationCohort, CommittedReaderObservationIdentity,
   CommittedReaderPreparationHandoff } from '../test/isolated-integration-proof';
@@ -19,6 +23,112 @@ const roots: string[] = [];
 const testPath = 'packages/operator-core/lib/agent-tools/plans/committed-tree-reader-http.integration.test.ts';
 const helperPaths = ['packages/operator-core/test/staging-first-http-fixture.ts', 'apps/operator/bin/bundle-host.sh'];
 const configPaths = ['package.json', 'packages/operator-core/vitest.integration.config.ts'];
+
+describe('original API worker exec environment observation', () => {
+  const withOriginalWorker = async (check: (identity: CommittedReaderObservationIdentity) => void) => {
+    // Vitest can set its run group after exec. Observe a real child with an
+    // explicit exec-time value, then join only after its readiness message.
+    const child = spawn(process.execPath, ['-e',
+      'process.send("ready"); setTimeout(() => process.exit(0), 10000)'], {
+      env: { ...process.env, NODE_OPTIONS: '', PAPERCUSP_TEST_RUN_GROUP: 'original-api-env-control' },
+      stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+    });
+    const ended = once(child, 'exit');
+    try {
+      await once(child, 'message');
+      check({ sourceCommit: 'a'.repeat(40), runId: 'original-api-env-control',
+        process: { pid: child.pid!, identity: readProcessIdentity(child.pid!)! } });
+    } finally {
+      child.kill('SIGTERM');
+      await ended;
+    }
+  };
+
+  it('hashes the live selected process exec bytes rather than caller or later process.env values', async () => {
+    const key = 'PAPERCUSP_TEST_RUN_GROUP';
+    vi.stubEnv(key, 'later-caller-value');
+    try {
+      await withOriginalWorker(expected => {
+        expect(observeCommittedReaderWorkerEnvironment(expected, [key])).toEqual({ ...expected,
+          value: { [key]: digest('original-api-env-control') } });
+      });
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it.each(['kernel', 'run', 'source'] as const)('refuses a mismatched %s identity', async part => withOriginalWorker(expected => {
+    if (part === 'kernel') expected.process.identity += '-other-lifetime';
+    if (part === 'run') expected.runId += '-other-run';
+    if (part === 'source') expected.sourceCommit = 'caller-selection';
+    expect(() => observeCommittedReaderWorkerEnvironment(expected, ['PAPERCUSP_TEST_RUN_GROUP']))
+      .toThrow(/identity changed|another run|source selection/);
+  }));
+
+  it.for([[], ['PAPERCUSP_TEST_RUN_GROUP', 'PAPERCUSP_TEST_RUN_GROUP'], ['BAD=KEY'],
+    ['COMMITTED_READER_MISSING_ORIGINAL_INPUT']])('refuses missing or ambiguous key population %j',
+  async keys => withOriginalWorker(expected => {
+    expect(() => observeCommittedReaderWorkerEnvironment(expected, keys)).toThrow(/keys required|input missing/);
+  }));
+
+  it('joins the unchanged original receipt only to its own observed terminal worker', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'reader-environment-terminal-')); roots.push(root);
+    let retained!: ReturnType<typeof retainCommittedReaderWorkerEnvironment>;
+    let worker!: CommittedReaderObservationIdentity;
+    await withOriginalWorker(expected => {
+      worker = expected;
+      retained = retainCommittedReaderWorkerEnvironment(expected, ['PAPERCUSP_TEST_RUN_GROUP'], join(root, 'env.json'));
+      expect(() => retained.terminal({ pid: expected.process.pid, exitCode: null, signalCode: null }))
+        .toThrow(/terminal outcome missing/);
+      expect(() => retained.terminal({ pid: expected.process.pid, exitCode: 0, signalCode: null }))
+        .toThrow(/still alive/);
+    });
+    const terminal = { pid: worker.process.pid, exitCode: null, signalCode: 'SIGTERM' as const };
+    expect(retained.terminal(terminal)).toMatchObject({ ...worker, signalCode: 'SIGTERM',
+      observationReceipt: { sha256: digest(readFileSync(join(root, 'env.json'))) } });
+    expect(() => retained.terminal({ ...terminal, pid: terminal.pid + 1 })).toThrow(/worker differs/);
+    writeFileSync(join(root, 'env.json'), '{}');
+    expect(() => retained.terminal(terminal)).toThrow(/receipt changed/);
+  });
+
+  it('pins terminal identity independently of mutable caller and returned observation objects', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'reader-environment-identity-')); roots.push(root);
+    let retained!: ReturnType<typeof retainCommittedReaderWorkerEnvironment>;
+    let original!: CommittedReaderObservationIdentity;
+    await withOriginalWorker(expected => {
+      original = structuredClone(expected);
+      retained = retainCommittedReaderWorkerEnvironment(expected, ['PAPERCUSP_TEST_RUN_GROUP'], join(root, 'env.json'));
+      for (const mutable of [expected, retained.observation]) {
+        mutable.sourceCommit = 'b'.repeat(40);
+        mutable.runId = 'substituted-run';
+        mutable.process.pid += 1;
+        mutable.process.identity = 'substituted-process';
+      }
+      expect(() => retained.terminal({ pid: original.process.pid, exitCode: 0, signalCode: null }))
+        .toThrow(/still alive/);
+    });
+    const terminal = { pid: original.process.pid, exitCode: null, signalCode: 'SIGTERM' as const };
+    const receipt = retained.terminal(terminal);
+    expect(receipt).toMatchObject(original);
+    receipt.process.pid += 1;
+    receipt.process.identity = 'substituted-result';
+    expect(retained.terminal(terminal)).toMatchObject(original);
+  });
+
+  it('refuses absent, malformed or contradictory outcomes after the original worker exits', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'reader-environment-outcome-')); roots.push(root);
+    let retained!: ReturnType<typeof retainCommittedReaderWorkerEnvironment>;
+    let worker!: CommittedReaderObservationIdentity;
+    await withOriginalWorker(expected => {
+      worker = expected;
+      retained = retainCommittedReaderWorkerEnvironment(expected, ['PAPERCUSP_TEST_RUN_GROUP'], join(root, 'env.json'));
+    });
+    for (const outcome of [{}, { exitCode: null, signalCode: null },
+      { exitCode: NaN, signalCode: null }, { exitCode: -1, signalCode: null },
+      { exitCode: 256, signalCode: null }, { exitCode: 0, signalCode: 'SIGTERM' },
+      { exitCode: null, signalCode: '' }, { exitCode: null, signalCode: 'SIGNONSENSE' }])
+      expect(() => retained.terminal({ pid: worker.process.pid, ...outcome } as
+        Parameters<typeof retained.terminal>[0])).toThrow(/terminal outcome missing or invalid/);
+  });
+});
 
 function fixtureSource(root: string, sourceCommit: string) {
   const paths = [testPath, ...helperPaths, ...configPaths, 'src/main.ts'];

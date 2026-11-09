@@ -4,7 +4,7 @@ import { execFileSync, spawn, spawnSync, type ChildProcess, type SpawnOptions, t
 import { createHash } from 'node:crypto';
 import { closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { createRequire, isBuiltin } from 'node:module';
-import { tmpdir } from 'node:os';
+import { constants as osConstants, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { Plugin } from 'esbuild';
@@ -931,6 +931,70 @@ export async function produceCommittedReaderOriginalPreparation(o: {
   return qualifyCommittedReaderCallerContract({ ...o, original: o.original });
 }
 
+/** Observe the original exec environment while the selected worker is alive.
+ * /proc/environ describes exec-time bytes, not subsequent process.env changes.
+ * This closes only that input leg; it cannot qualify invoked configuration,
+ * loaded code, schema, or a complete API cohort. The independently selected
+ * commit must still be joined to the same worker's source observations. */
+export function observeCommittedReaderWorkerEnvironment(expected: CommittedReaderObservationIdentity,
+  keys: readonly string[]): CommittedReaderObservationCohort['observations']['environment'] {
+  const identity = structuredClone(expected);
+  assert.match(identity.sourceCommit, /^[a-f0-9]{40}$/, 'Exact original source selection is required');
+  assert.ok(identity.runId && Number.isSafeInteger(identity.process?.pid) && identity.process.pid > 0
+    && identity.process.identity, 'Original run/process identity is required');
+  assert.ok(keys.length && new Set(keys).size === keys.length
+    && keys.every(key => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key)), 'Explicit unique environment keys required');
+  const sameProcess = () => assert.equal(readProcessIdentity(identity.process.pid), identity.process.identity,
+    'Original worker kernel identity changed or ended');
+  sameProcess();
+  const bytes = readFileSync(`/proc/${identity.process.pid}/environ`);
+  const environment = new Map<string, Buffer>();
+  let start = 0;
+  for (let end = 0; end < bytes.length; end++) {
+    if (bytes[end] !== 0) continue;
+    const entry = bytes.subarray(start, end); start = end + 1;
+    const equals = entry.indexOf(61);
+    assert.ok(equals > 0, 'Malformed original exec environment');
+    const key = entry.subarray(0, equals).toString('utf8');
+    assert.ok(!environment.has(key), 'Ambiguous duplicate original environment key');
+    environment.set(key, entry.subarray(equals + 1));
+  }
+  assert.equal(start, bytes.length, 'Unterminated original exec environment');
+  assert.equal(environment.get('PAPERCUSP_TEST_RUN_GROUP')?.toString('utf8'), identity.runId,
+    'Original worker environment belongs to another run');
+  const value = Object.fromEntries([...keys].sort().map(key => {
+    const original = environment.get(key);
+    assert.ok(original, `Original worker environment input missing: ${key}`);
+    return [key, digestBytes(original)];
+  }));
+  sameProcess();
+  return { ...identity, value };
+}
+
+/** Retain this narrow observation independently, then require its original bytes
+ * and the same worker's observed exit before returning a terminal join. */
+export function retainCommittedReaderWorkerEnvironment(expected: CommittedReaderObservationIdentity,
+  keys: readonly string[], receiptPath: string) {
+  const identity = structuredClone(expected);
+  const observation = observeCommittedReaderWorkerEnvironment(identity, keys);
+  const bytes = Buffer.from(JSON.stringify(observation));
+  writeFileSync(receiptPath, bytes, { flag: 'wx', mode: 0o600 });
+  const recheck = () => assert.deepEqual(readFileSync(receiptPath), bytes,
+    'Original worker environment receipt changed');
+  return { observation, recheck, terminal: (host: Pick<ChildProcess, 'pid' | 'exitCode' | 'signalCode'>) => {
+    recheck();
+    assert.equal(host.pid, identity.process.pid, 'Terminal worker differs from original observation');
+    assert.ok((Number.isSafeInteger(host.exitCode) && host.exitCode !== null
+      && host.exitCode >= 0 && host.exitCode <= 255 && host.signalCode === null)
+      || (host.exitCode === null && typeof host.signalCode === 'string'
+        && Object.hasOwn(osConstants.signals, host.signalCode)), 'Original worker terminal outcome missing or invalid');
+    assert.notEqual(readProcessIdentity(identity.process.pid), identity.process.identity,
+      'Original worker still alive at terminal join');
+    return { ...structuredClone(identity), observationReceipt: { path: receiptPath, sha256: digestBytes(bytes) },
+      exitCode: host.exitCode, signalCode: host.signalCode };
+  } };
+}
+
 /** The digested input receipt stays separate from the producer's output claims. */
 function retainedProducedInputs(closure: CommittedReaderClosure, bundle: string) {
   const input = closure.inputReceipt;
@@ -1486,7 +1550,8 @@ export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string,
       for (const step of steps) {
         if (step.event === 'start') activeSteps.push(step);
         else if (step.event === 'end') {
-          const index = activeSteps.findLastIndex(open => open.pid === step.pid && open.step === step.step);
+          let index = activeSteps.length - 1;
+          while (index >= 0 && (activeSteps[index].pid !== step.pid || activeSteps[index].step !== step.step)) index--;
           if (index < 0) continue;
           const [open] = activeSteps.splice(index, 1);
           durationsMs.push({ step: step.step, elapsedMs: Math.round((step.at - open.at) * 1000), status: step.status });

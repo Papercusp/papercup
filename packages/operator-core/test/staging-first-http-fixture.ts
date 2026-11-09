@@ -10,7 +10,7 @@ import { readPgBackendCensus } from './_pg-backend-census';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../lib/harness-registry';
 import { readProcessIdentity } from '../lib/process-identity';
 import { resolvePlanScope } from '../lib/agent-tools/plans/source';
-import { buildPrivateOperatorApiBundle, privateBundleRuntimeEnv, privateNativeDockerHost, waitForPrivateOperator, stopPrivateOperatorHost, qualifyCommittedReaderSource, observeCommittedReaderLoadedSources, resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle } from './private-http-workspace-preflight';
+import { buildPrivateOperatorApiBundle, privateBundleRuntimeEnv, privateNativeDockerHost, waitForPrivateOperator, stopPrivateOperatorHost, qualifyCommittedReaderSource, observeCommittedReaderLoadedSources, retainCommittedReaderWorkerEnvironment, resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle } from './private-http-workspace-preflight';
 import { captureIsolatedWorker, codexManagedToolsNativeProofOptions, isolatedWorkerOptions, isolatedWorkerFailureDetail, isolatedWorkerReceipt, retainIsolatedWorkerProgress } from './isolated-integration-proof';
 import { measurePrivateUnrelatedCheckpointScenario } from './private-unrelated-write-http-scenario';
 
@@ -18,6 +18,7 @@ let host: ChildProcess | undefined;
 let hostIdentity: ReturnType<typeof readProcessIdentity>;
 let disposeScenario: (() => Promise<void>) | undefined;
 let retainLoadedSources: (() => void) | undefined;
+let retainHostEnvironment: (() => void) | undefined;
 const socketOrigins = new Map<number, string>();
 const originalConnect = Socket.prototype.connect;
 // Evidence only: trace the native worker's real PG clients, including clients
@@ -39,6 +40,9 @@ async function stopHost(afterExit?: () => Promise<void>) {
   if (!host) { await afterExit?.(); return; }
   await stopPrivateOperatorHost(host, afterExit);
   assert.notEqual(readProcessIdentity(host.pid!), hostIdentity, 'private host survived cleanup');
+  const retainEnvironment = retainHostEnvironment;
+  retainHostEnvironment = undefined;
+  retainEnvironment?.();
   retainLoadedSources?.();
   retainLoadedSources = undefined;
 }
@@ -273,9 +277,20 @@ async function main() {
   assert.ok(hostIdentity, 'private host kernel identity required');
   if (loadedSourceOptions) {
     const selected = loadedSourceOptions;
+    // Keys and expected hashes come from the independently pinned preparation;
+    // values come from this actual host's exec environment, never hostEnv.
+    qualifySource!();
+    const preparation = JSON.parse(readFileSync(selected.receiptPath, 'utf8'));
+    const original = retainCommittedReaderWorkerEnvironment({ sourceCommit: selected.selectedCommit,
+      runId: e.PAPERCUSP_TEST_RUN_GROUP!, process: { pid: host.pid!, identity: hostIdentity } },
+    Object.keys(preparation.environment), join(evidenceDir, 'committed-reader-host-environment.json'));
+    assert.deepEqual(original.observation.value, preparation.environment,
+      'Actual API worker exec environment differs from pinned preparation');
+    retainHostEnvironment = () => writeFileSync(join(evidenceDir, 'committed-reader-host-environment-terminal.json'),
+      JSON.stringify(original.terminal(host!)), { flag: 'wx', mode: 0o600 });
     retainLoadedSources = () => {
       const observation = observeCommittedReaderLoadedSources({ ...selected, traceOut,
-        pid: host!.pid!, startedAtMs: hostStartedAtMs, finishedAtMs: Date.now() });
+        pid: host!.pid!, kernelProcessIdentity: hostIdentity!, startedAtMs: hostStartedAtMs, finishedAtMs: Date.now() });
       writeFileSync(join(evidenceDir, 'committed-reader-loaded-source.json'), JSON.stringify(observation), { mode: 0o600 });
     };
   }
