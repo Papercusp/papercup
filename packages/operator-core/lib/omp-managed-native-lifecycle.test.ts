@@ -20,9 +20,25 @@ function fixture(getActiveTools: () => string[]) {
   return { ready: hooks.get('before_agent_start')!, provider, write };
 }
 
-afterEach(() => { vi.useRealTimers(); });
+afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); });
 
 describe('installed OMP fixture MCP readiness', () => {
+  it('records actual extension, registration and inference stages in the owned startup receipt', async () => {
+    vi.stubEnv('OMP_PROOF_PHASE_FILE', '/owned/startup.ndjson');
+    const { ready, provider, write } = fixture(() => ['mcp__papercusp_tools_invoke']);
+    await ready();
+    const context = { tools: [{ name: 'mcp__papercusp_tools_invoke' }], messages: [] };
+    for (let turn = 0; turn < 4; turn++) await provider.streamSimple({}, context).result();
+    const phases = write.mock.calls.filter(call => call[0] === '/owned/startup.ndjson');
+    expect(phases.map(call => JSON.parse(call[1]).name)).toEqual([
+      'extension-entry', 'before-agent-start', 'mcp-ready',
+      'inference-turn', 'inference-turn', 'inference-turn', 'inference-turn', 'proof-complete',
+    ]);
+    expect(phases.every(call => call[2]?.flag === 'a' && call[1].endsWith('\n'))).toBe(true);
+    expect(JSON.parse(phases[2]![1])).toMatchObject({ dispatcher: 'mcp__papercusp_tools_invoke',
+      names: ['mcp__papercusp_tools_invoke'], elapsedMs: expect.any(Number) });
+  });
+
   it('waits for actual active MCP registration before the first inference', async () => {
     vi.useFakeTimers();
     let names = ['read'];

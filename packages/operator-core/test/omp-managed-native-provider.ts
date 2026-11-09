@@ -2,6 +2,11 @@
 export const ompLifecycleProvider = `
 import { writeFileSync } from 'node:fs';
 export default function(pi) {
+  const phase = (name, detail = {}) => {
+    if (process.env.OMP_PROOF_PHASE_FILE) writeFileSync(process.env.OMP_PROOF_PHASE_FILE,
+      JSON.stringify({ name, at: Date.now(), ...detail }) + '\\n', { flag: 'a' });
+  };
+  phase('extension-entry');
   let turn = 0;
   let control = 0;
   let readiness;
@@ -10,15 +15,19 @@ export default function(pi) {
   // turn; a guessed name or a fixed inference delay cannot prove readiness.
   pi.on('before_agent_start', async () => {
     const startedAt = Date.now();
+    phase('before-agent-start');
     for (;;) {
       const names = pi.getActiveTools();
       const dispatcher = names.find(name => /mcp.*tools_invoke$/.test(name));
       if (dispatcher) {
         readiness = { names, dispatcher, elapsedMs: Date.now() - startedAt };
+        phase('mcp-ready', readiness);
         return;
       }
-      if (Date.now() - startedAt >= 10000)
+      if (Date.now() - startedAt >= 10000) {
+        phase('mcp-readiness-timeout', { names });
         throw new Error('OMP managed MCP registration did not become active: ' + JSON.stringify(names));
+      }
       await new Promise(resolve => setTimeout(resolve, 25));
     }
   });
@@ -28,6 +37,7 @@ export default function(pi) {
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 1024 }],
     streamSimple(model, context) {
       if (++turn > 6) throw new Error('Unexpected inference turn');
+      phase('inference-turn', { turn });
       const surface = process.env.OMP_PROOF_SURFACE;
       const names = (context.tools ?? []).map(tool => tool.name);
       const reply = id => context.messages.find(row => row.role === 'toolResult' && row.toolCallId === id);
@@ -71,10 +81,13 @@ export default function(pi) {
       const tool = Boolean(call);
       const content = tool ? [call]
         : [{ type: 'text', text: 'OMP lifecycle proof complete.' }];
-      if (!tool) writeFileSync(process.env.OMP_PROOF_RESULT, JSON.stringify({
-        names, messages: context.messages, dispatcher, devicePath, readiness, turns: turn,
-        replies: context.messages.filter(row => row.role === 'toolResult' &&
-          [surface + '_native', surface + '_managed', surface + '_refusal'].includes(row.toolCallId)) }));
+      if (!tool) {
+        writeFileSync(process.env.OMP_PROOF_RESULT, JSON.stringify({
+          names, messages: context.messages, dispatcher, devicePath, readiness, turns: turn,
+          replies: context.messages.filter(row => row.role === 'toolResult' &&
+            [surface + '_native', surface + '_managed', surface + '_refusal'].includes(row.toolCallId)) }));
+        phase('proof-complete');
+      }
       const message = { role: 'assistant', content, api: model.api, provider: model.provider, model: model.id,
         usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
