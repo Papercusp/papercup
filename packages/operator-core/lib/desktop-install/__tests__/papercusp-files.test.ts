@@ -1218,6 +1218,32 @@ describe('renderSuPlaybook project-guide splice (psu-isolation P-001 / D-002)', 
     expect(r.text).not.toContain('Should NOT appear');
     expect(r.projectGuideSource).toBe('');
   });
+
+  it.each(['claude', 'codex'] as const)('resolves the repo guide from the operator root for a blueprint %s persona', async agent => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pcusp-blueprint-guide-'));
+    const operatorRoot = path.join(root, 'apps', 'operator');
+    const baseSource = path.join(root, 'libs', 'papercusp', 'packages', 'harness', 'blueprints', 'base', 'prompts', 'su.md');
+    const guidePath = path.join(root, 'CLAUDE.md');
+    const guideText = '# Blueprint repo guide\nBLUEPRINT_REPO_GUIDE_SENTINEL\n';
+    const cwd = vi.spyOn(process, 'cwd').mockReturnValue(operatorRoot);
+    try {
+      await fs.mkdir(operatorRoot, { recursive: true });
+      await fs.mkdir(path.dirname(baseSource), { recursive: true });
+      await fs.writeFile(baseSource, `# Blueprint SU\n\n${GUIDE_MARKER}\n`);
+      await fs.writeFile(guidePath, guideText);
+      const composeProjectGuide = vi.fn(async resolved => ({
+        text: resolved.text, truncated: false, addressed: null,
+      }));
+      const render = await renderSuPlaybook({ agent, operatorAppRoot: operatorRoot, baseSource, composeProjectGuide });
+      expect(render.projectGuideSource).toBe(guidePath);
+      expect(composeProjectGuide).toHaveBeenCalledWith({ text: guideText, source: guidePath });
+      expect(render.text).toContain('BLUEPRINT_REPO_GUIDE_SENTINEL');
+      expect(render.text).not.toContain(GUIDE_MARKER);
+    } finally {
+      cwd.mockRestore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 /**

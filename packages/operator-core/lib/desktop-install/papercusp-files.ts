@@ -611,14 +611,17 @@ export function renderProjectGuideSection(guideText: string): string {
 
 /**
  * Candidate project-guide (`CLAUDE.md`) paths for the ENGINEER profile — the
- * working repo's own guide, resolved relative to the resolved base playbook
- * (which lives at `<repo>/apps/operator/prompts/`) and `process.cwd()`. The
+ * working repo's own guide, anchored to the operator app when available. The
+ * blueprint base does not live under apps/operator/prompts, and the operator
+ * process can run outside the repo root. Legacy base-relative and cwd paths
+ * remain fallbacks. The
  * power profile passes an explicit `projectGuideSource` (the managed repo's
  * guide) instead of relying on this. First existing wins; none → no guide.
  */
-function projectGuideCandidates(baseSource: string): string[] {
+function projectGuideCandidates(baseSource: string, operatorAppRoot?: string): string[] {
   const promptsDir = path.dirname(baseSource);
   return [
+    ...(operatorAppRoot ? [path.resolve(operatorAppRoot, '..', '..', 'CLAUDE.md')] : []),
     path.resolve(promptsDir, '..', '..', '..', 'CLAUDE.md'), // <repo>/apps/operator/prompts → <repo>
     path.resolve(promptsDir, '..', 'CLAUDE.md'), // <sidecar>/prompts → <sidecar>
     path.join(process.cwd(), 'CLAUDE.md'),
@@ -635,9 +638,10 @@ function projectGuideCandidates(baseSource: string): string[] {
 async function resolveProjectGuideText(
   baseSource: string,
   explicitSource: string | undefined,
+  operatorAppRoot?: string,
 ): Promise<{ text: string; source: string }> {
   const source =
-    explicitSource !== undefined ? explicitSource : ((await firstExisting(projectGuideCandidates(baseSource))) ?? '');
+    explicitSource !== undefined ? explicitSource : ((await firstExisting(projectGuideCandidates(baseSource, operatorAppRoot))) ?? '');
   if (!source) return { text: '', source: '' };
   try {
     return { text: await fs.readFile(source, 'utf8'), source };
@@ -4651,7 +4655,7 @@ export async function renderSuPlaybook(input: RenderSuPlaybookInput): Promise<Re
   let projectGuideSource = '';
   let projectGuideAddressed: RenderedSuPlaybook['projectGuideAddressed'] = null;
   if (withNotes.includes(PROJECT_GUIDE_MARKER)) {
-    const guide = await resolveProjectGuideText(baseSource, input.projectGuideSource);
+    const guide = await resolveProjectGuideText(baseSource, input.projectGuideSource, operatorAppRoot);
     projectGuideSource = guide.source;
     // P-022: the per-audience seam — the default guide is what every reader gets; the
     // composer (when supplied, and only when a guide resolved) appends the parts addressed
