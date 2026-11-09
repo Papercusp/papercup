@@ -132,6 +132,21 @@ describe('maintained run deadlines and retained artifacts', () => {
       nativeCustody: { byteCustody: 'complete', nativeProof: 'unqualified' },
     });
   });
+  it('keeps cleanup and the original result when custody exhausts the owning task deadline', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'run-artifacts-expired-')); roots.push(root);
+    const packet = new TestRunArtifactPacket('expired-custody', root,
+      testRunDeadline(1000, { now: Date.now() - 2000 }), join(root, 'retained'));
+    packet.bindNativeIdentity('custody-workspace', 'papercusp');
+    packet.childState = 'closed';
+    await packet.finish({ result: { ok: false, error: 'timeout' }, cleanup: { complete: true } });
+    expect(JSON.parse(readFileSync(packet.paths.manifest, 'utf8'))).toMatchObject({
+      childState: 'closed', result: { ok: false, error: 'timeout' }, cleanup: { complete: true },
+      nativeCustody: { byteCustody: 'unavailable', nativeProof: 'unqualified', acceptance: 'unmeasured',
+        error: expect.stringContaining('native proof sync deadline') },
+    });
+    const locator = JSON.parse(readFileSync(join(packet.paths.nativeProof, 'pending-locator.json'), 'utf8'));
+    expect(locator.identity.runId).toBe('expired-custody');
+  });
   it('holds an explicit cleanup reserve behind one absolute child cutoff', () => {
     expect(testRunDeadline(45_000, { now: 1000, cleanupReserveMs: 10_000 })).toEqual({
       startedAtMs: 1000, taskDeadlineAtMs: 46_000, childCutoffAtMs: 36_000, cleanupReserveMs: 10_000,

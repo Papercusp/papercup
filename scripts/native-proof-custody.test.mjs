@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -124,7 +124,7 @@ test('reseals the original retained packet without reading retired producers or 
   }), /custody identity or expected population mismatch/);
 });
 
-test('bounds interrupted retained-packet sync and identifies the pending operation', async t => {
+for (const mode of ['fresh', 'retained']) test(`bounds interrupted ${mode}-packet sync and identifies the pending operation`, async t => {
   const probe = await open(join(directory, 'objects', saved.locator.manifest.ref));
   const prototype = Object.getPrototypeOf(probe);
   await probe.close();
@@ -132,7 +132,9 @@ test('bounds interrupted retained-packet sync and identifies the pending operati
   const blocked = new Promise(resolve => { release = resolve; });
   t.mock.method(prototype, 'sync', () => blocked);
   const progress = [];
-  const pending = retainNativeProofPacketAsync(directory, { ...contract, retainedLocator: saved.locator,
+  const target = mode === 'fresh' ? join(root, 'deadline-fresh') : directory;
+  const pending = retainNativeProofPacketAsync(target, { ...contract,
+    ...(mode === 'retained' ? { retainedLocator: saved.locator } : {}),
     deadlineAtMs: Date.now() + 30, onProgress: record => progress.push(record) });
   try {
     const outcome = await Promise.race([
@@ -144,6 +146,13 @@ test('bounds interrupted retained-packet sync and identifies the pending operati
     assert.equal(outcome.error.phase, 'object');
     assert.match(outcome.error.path, /\/objects\//);
     assert.equal(progress.some(record => record.phase === 'sync-complete'), false);
+    if (mode === 'fresh') {
+      const locator = JSON.parse(readFileSync(join(target, 'pending-locator.json'), 'utf8'));
+      assert.deepEqual(locator.identity, contract.identity);
+      // Missing retired producers stay missing; an interrupted sync preserves
+      // the exact partial inventory rather than inventing a complete packet.
+      assert.equal(verifyNativeProofPacket(target, locator, contract).status, 'partial');
+    }
   } finally {
     release();
     await pending.catch(() => {});
