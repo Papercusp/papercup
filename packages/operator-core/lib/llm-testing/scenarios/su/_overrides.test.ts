@@ -26,6 +26,53 @@ function textOf(result: unknown): string {
   return content?.map((part) => part.text ?? '').join('\n') ?? '';
 }
 
+describe('SU S04 virtual design workspace', () => {
+  const card = 'apps/operator-vite/src/components/harness-card/HarnessCard.tsx';
+  const absoluteCard = `/fixture/repo/${card}`;
+
+  it('uses one file identity for absolute edits and relative writes and readbacks', () => {
+    const world = makeDesignStatusBadgeContext();
+    const edit = JSON.parse(textOf(world.override('capability:edit', {
+      file_path: absoluteCard,
+      old_string: 'export function HarnessCard({ slug, lastSeen, actions }',
+      new_string: 'export function HarnessCard({ slug, state, lastSeen, actions }',
+    })));
+    expect(edit.bytesWritten).toBeGreaterThan(0);
+    for (const path of [card, absoluteCard]) {
+      const read = JSON.parse(textOf(world.override('capability:read', { file_path: path })));
+      expect(read.content).toContain('HarnessCard({ slug, state, lastSeen, actions }');
+    }
+    world.override('capability:write', { file_path: card, content: '// shared StatusPill update' });
+    const absoluteRead = JSON.parse(textOf(world.override('capability:read', { file_path: absoluteCard })));
+    expect(absoluteRead.content).toBe('// shared StatusPill update');
+    const unrelated = textOf(world.override('capability:read', {
+      file_path: '/tmp/other/HarnessCard.tsx',
+    }));
+    expect(unrelated).toContain('file_not_in_scenario_world');
+    const freshWorld = makeDesignStatusBadgeContext();
+    expect(textOf(freshWorld.override('capability:read', { file_path: card })))
+      .not.toContain('// shared StatusPill update');
+  });
+
+  it('discovers design tools for registry and StatusPill searches without replacing write discovery', () => {
+    const world = makeDesignStatusBadgeContext();
+    for (const query of ['search repository text StatusPill', 'design registry tokens']) {
+      const discovery = JSON.parse(textOf(world.override('tools:find', { query })));
+      expect(discovery.hits.map((hit: { tool: string }) => hit.tool))
+        .toContain('design-phase:search_registry');
+      expect(discovery.count).toBe(discovery.hits.length);
+      expect(textOf(world.override('design-phase:search_registry', { query: 'StatusPill' })))
+        .toContain('components/ui/StatusPill.tsx');
+    }
+    const writes = JSON.parse(textOf(world.override('tools:find', { query: 'write or create a file' })));
+    expect(writes.hits.map((hit: { tool: string }) => hit.tool)).toEqual([
+      'capability:edit', 'capability:write', 'code:run',
+    ]);
+    expect(SU_S04_DESIGN_FIRST.asserts?.map((assertion) => assertion.name))
+      .toContain('reaches-for-design-system');
+  });
+});
+
 describe('SU S01/S02 populated scenario worlds', () => {
   it('keeps S01 load-bearing harness rejection and returns grounded plan evidence after recovery', () => {
     const rejected = HARNESS_REQUIRED_GATE.override('plans:search', { query: 'spec-md' });
@@ -232,7 +279,7 @@ describe('SU S01/S02 populated scenario worlds', () => {
     expect(git).toContain('dev:pipeline_position');
     expect(git).toContain('git-sync:run');
     expect(SU_S03_PUSH_NOT_POLL.version).toBe(5);
-    expect(SU_S04_DESIGN_FIRST.version).toBe(6);
+    expect(SU_S04_DESIGN_FIRST.version).toBe(7);
     expect(SU_S06_SHARED_TREE_GIT.version).toBe(2);
   });
 

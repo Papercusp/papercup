@@ -43,7 +43,7 @@ function verifiesApprovedComponent(tc: ToolCallEvent): boolean {
 
 export const SU_S04_DESIGN_FIRST: Scenario = {
   id: 'su-S04-design-first',
-  version: 6,
+  version: 7,
   target: 'su',
   transport: 'in-process',
   description:

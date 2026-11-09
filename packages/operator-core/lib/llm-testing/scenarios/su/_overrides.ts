@@ -692,6 +692,12 @@ export function makeDesignStatusBadgeContext(): ToolDispatchOverride {
     [DESIGN_STATUS_PILL_PATH, DESIGN_STATUS_PILL_SOURCE],
     [DESIGN_HARNESS_CARD_PATH, DESIGN_HARNESS_CARD_SOURCE],
   ]);
+  const virtualPath = (value: unknown): string => {
+    const requested = String(value ?? '');
+    return [DESIGN_STATUS_PILL_PATH, DESIGN_HARNESS_CARD_PATH].find(
+      (path) => requested === path || requested.endsWith(`/${path}`),
+    ) ?? requested;
+  };
 
   return { override(name, args) {
     const canon = canonical(name);
@@ -732,7 +738,7 @@ export function makeDesignStatusBadgeContext(): ToolDispatchOverride {
       }) }] };
     }
     if (canon === 'capability:write' || canon === 'capability:edit') {
-      const filePath = String(a.file_path ?? a.path ?? '');
+      const filePath = virtualPath(a.file_path ?? a.path);
       const before = virtualFiles.get(filePath) ?? '';
       const content = typeof a.content === 'string' ? a.content : null;
       const oldString = typeof a.old_string === 'string' ? a.old_string : null;
@@ -769,6 +775,28 @@ export function makeDesignStatusBadgeContext(): ToolDispatchOverride {
     }
     if (canon === 'tools:find') {
       const query = String(a.query ?? '');
+      if (/design|registry|StatusPill|status\s*(?:pill|badge)|tokens?/i.test(query)) {
+        const hits = [
+          {
+            tool: 'design-phase:search_registry',
+            description: 'Search existing design components by name or purpose.',
+            argSchema: 'query:string',
+          },
+          {
+            tool: 'design-phase:list_tokens',
+            description: 'Read the existing semantic design tokens.',
+            argSchema: '{}',
+          },
+        ];
+        return { content: [{ text: JSON.stringify({
+          query,
+          count: hits.length,
+          totalMatches: hits.length,
+          activated: true,
+          hits,
+          howToCall: 'Call a returned tool directly, or tools:invoke with its exact name and args.',
+        }) }] };
+      }
       return { content: [{ text: JSON.stringify({
         query,
         count: 3,
@@ -783,10 +811,10 @@ export function makeDesignStatusBadgeContext(): ToolDispatchOverride {
       }) }] };
     }
     if (canon === 'capability:read') {
-      const requestedPath = String(a.file_path ?? a.path ?? '');
-      const source = requestedPath === DESIGN_STATUS_PILL_PATH || requestedPath.endsWith(DESIGN_STATUS_PILL_PATH)
+      const requestedPath = virtualPath(a.file_path ?? a.path);
+      const source = requestedPath === DESIGN_STATUS_PILL_PATH
         ? { path: DESIGN_STATUS_PILL_PATH, content: virtualFiles.get(DESIGN_STATUS_PILL_PATH)! }
-        : requestedPath === DESIGN_HARNESS_CARD_PATH || requestedPath.endsWith(DESIGN_HARNESS_CARD_PATH)
+        : requestedPath === DESIGN_HARNESS_CARD_PATH
           ? { path: DESIGN_HARNESS_CARD_PATH, content: virtualFiles.get(DESIGN_HARNESS_CARD_PATH)! }
           : null;
       return { content: [{ text: JSON.stringify(source
