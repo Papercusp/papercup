@@ -295,6 +295,13 @@ describe('unit census executable exit contract', () => {
       const restoredPeer = join(directory, 'registry', 'fixture', '.restored', 'snapshot', 'clone', '.papercusp', 'harness', 'hyperbee');
       mkdirSync(join(restoredPeer, 'db'), { recursive: true });
       writeFileSync(join(restoredPeer, 'CORESTORE'), 'device/platform=linux\ndevice/inode=789\ndevice/created=123\n');
+      const nestedPeer = join(directory, 'registry', 'fixture', '.papercusp', 'harness', 'retained-app', 'hyperbee');
+      mkdirSync(join(nestedPeer, 'db'), { recursive: true });
+      writeFileSync(join(nestedPeer, 'CORESTORE'), 'device/platform=linux\ndevice/inode=456\ndevice/created=789\n');
+      writeFileSync(join(nestedPeer, 'db', 'persistent-log'), 'preserved state');
+      const unprovenPeer = join(directory, 'registry', 'fixture', '.papercusp', 'harness', 'unproven-app', 'hyperbee');
+      mkdirSync(join(unprovenPeer, 'db'), { recursive: true });
+      writeFileSync(join(unprovenPeer, 'db', 'unknown-log'), 'unproven');
       const app = join(directory, 'registry', 'fixture', '.papercusp', 'apps-copy', 'portal');
       mkdirSync(join(app, 'scripts'), { recursive: true });
       mkdirSync(join(app, '.next-build-123-456-abcd'));
@@ -333,9 +340,13 @@ describe('unit census executable exit contract', () => {
       const report = JSON.parse(result.stdout);
       expect(report.wholeInstallVerified).toBe(false);
       expect(report.scope).toBe('implemented-writer-filesystem-roots-only');
-      expect(report.representedPeers).toHaveLength(2);
+      expect(report.representedPeers).toHaveLength(3);
       expect(report.representedPeers.some((entry: { name: string }) => entry.name === 'registry/fixture/.papercusp/harness/hyperbee')).toBe(true);
       expect(report.representedPeers.some((entry: { name: string }) => entry.name.includes('/.restored/snapshot/clone/'))).toBe(true);
+      expect(report.representedPeers.some((entry: { name: string }) => entry.name === 'registry/fixture/.papercusp/harness/retained-app/hyperbee')).toBe(true);
+      expect(report.residue.some((entry: { name: string }) => entry.name === 'registry/fixture/.papercusp/harness/retained-app')).toBe(true);
+      expect(report.residue.some((entry: { name: string }) => entry.name === 'registry/fixture/.papercusp/harness/unproven-app')).toBe(true);
+      expect(report.representedPeers.some((entry: { name: string }) => entry.name.includes('/unproven-app/'))).toBe(false);
       expect(report.representedPeers[0].disposition).toBe('preserve-state-subtree');
       expect(report.representedReleases[0].disposition).toBe('preserve-state-subtree');
       expect(report.representedSubtrees.some((entry: { name: string }) => entry.name === 'checkpoint-history')).toBe(true);

@@ -390,6 +390,15 @@ for (const [rootIndex, root] of producers.roots.entries()) {
         declarations.push(await gitStorageDeclaration(root, appName, true));
         continue;
       }
+      // Retained app copies can contain the same producer-owned stores as the
+      // direct harness layout. Require the device marker at the exact path;
+      // the enclosing copy remains residue unless independently accounted for.
+      for (const store of ['hyperbee', 'hyperbee-scoped']) {
+        const name = `${appName}/${store}`;
+        try { await lstat(join(root.path, name, 'CORESTORE')); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+        declarations.push(await peerStorageDeclaration(root, name));
+      }
       let buildProducer;
       try { buildProducer = await readFile(join(root.path, appName, 'scripts', 'build-standalone.mjs'), 'utf8'); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
