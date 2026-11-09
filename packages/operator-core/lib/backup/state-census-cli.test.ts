@@ -34,6 +34,45 @@ const fixtureHome = vi.hoisted(() => {
 afterAll(() => { vi.unstubAllEnvs(); rmSync(fixtureHome, { recursive: true, force: true }); });
 
 describe('unit census executable exit contract', () => {
+  it('enforces an explicit root census budget across filesystem and catalog entries without hiding residue', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'bounded-root-census-'));
+    try {
+      writeFileSync(join(directory, 'owned'), 'fixture');
+      writeFileSync(join(directory, 'unknown'), 'residue');
+      const inputs = { scope: 'bounded-fixture', roots: [{ id: 'fixture', path: directory }],
+        declarations: [{ kind: 'path' as const, root: 'fixture', name: 'owned', producer: 'fixture', classification: 'state' as const }],
+        catalogEntries: [{ kind: 'database' as const, root: 'cluster', name: 'unknown-database' }] };
+      await expect(runRootCensus({ inputs, maxEntries: 1 })).rejects.toThrow('Census entry bound exceeded: 1; root=fixture');
+      await expect(runRootCensus({ inputs, args: ['--max-entries', '2'] })).rejects.toThrow('Census entry bound exceeded: 2');
+      const report = await runRootCensus({ inputs, args: ['--max-entries=3'] });
+      expect(report.inventory).toHaveLength(3);
+      expect(report.residue.map(entry => entry.name).sort()).toEqual(['unknown', 'unknown-database']);
+      expect(report.ok).toBe(false);
+      expect(report.wholeInstallVerified).toBe(false);
+      expect(await runRootCensus({ inputs, maxEntries: 3 })).toEqual(report);
+      expect(await runRootCensus({ inputs })).toEqual(report);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it('rejects invalid or ambiguous entry budgets before discovery or snapshot side effects', async () => {
+    const installed = vi.spyOn(censusProducers, 'installedRootCensusProducers').mockImplementation(() => { throw new Error('discovery started'); });
+    const snapshot = vi.fn();
+    try {
+      for (const value of ['', '0', '-1', '1.5', '1e3', '9007199254740992', '--host-catalogs']) {
+        await expect(runRootCensus({ args: ['--max-entries', value], onDiscoverySnapshot: snapshot }))
+          .rejects.toThrow('Invalid census entry bound');
+      }
+      await expect(runRootCensus({ args: ['--max-entries'] })).rejects.toThrow('Invalid census entry bound');
+      for (const maxEntries of [0, -1, 1.5, Infinity, NaN, Number.MAX_SAFE_INTEGER + 1]) {
+        await expect(runRootCensus({ maxEntries, onDiscoverySnapshot: snapshot })).rejects.toThrow('Invalid census entry bound');
+      }
+      await expect(runRootCensus({ args: ['--max-entries=3', '--max-entries', '4'] })).rejects.toThrow('only once');
+      await expect(runRootCensus({ maxEntries: 3, args: ['--max-entries=3'] })).rejects.toThrow('only once');
+      expect(installed).not.toHaveBeenCalled();
+      expect(snapshot).not.toHaveBeenCalled();
+    } finally { installed.mockRestore(); }
+  });
+
   it('retains complete collection inputs and replays them without discovery or host catalog reads', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'collection-only-census-'));
     const installed = vi.spyOn(censusProducers, 'installedRootCensusProducers').mockImplementation(() => { throw new Error('discovery must not run'); });

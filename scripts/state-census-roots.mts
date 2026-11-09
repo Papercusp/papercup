@@ -179,6 +179,8 @@ export async function readMigrationCensusColumns(sql: ReturnType<typeof postgres
 
 type RootCensusOptions = {
   args?: string[];
+  /** Explicit inventory budget; the collector's fail-closed default still applies. */
+  maxEntries?: number;
   /** Exact completed discovery input; collection-only replay performs no discovery. */
   inputs?: { scope: string; roots: CensusRoot[]; declarations: CensusDeclaration[]; catalogEntries: CensusEntry[] };
   checkpointLogDir?: string;
@@ -594,6 +596,21 @@ return {
 
 /** Canonical executable: discovery and collection retain the same drift contract. */
 export async function runRootCensus(options: RootCensusOptions = {}) {
+  const bounds: string[] = [];
+  const args = options.args ?? [];
+  for (let index = 0; index < args.length; index++) {
+    if (args[index] === '--max-entries') bounds.push(args[++index] ?? '');
+    else if (args[index].startsWith('--max-entries=')) bounds.push(args[index].slice('--max-entries='.length));
+  }
+  if (bounds.length > 1 || (bounds.length && options.maxEntries !== undefined)) {
+    throw new Error('Specify the census entry bound only once');
+  }
+  if (bounds.length && !/^[1-9][0-9]*$/.test(bounds[0])) throw new Error('Invalid census entry bound');
+  const maxEntries = bounds.length ? Number(bounds[0]) : options.maxEntries;
+  // Reject an unusable budget before expensive discovery or snapshot callbacks.
+  if (maxEntries !== undefined && (!Number.isSafeInteger(maxEntries) || maxEntries < 1)) {
+    throw new Error('Invalid census entry bound');
+  }
   const inputs = options.inputs ?? await discoverRootCensusInputs(options);
   // Earlier snapshots intentionally precede storage-marker/schema discovery.
   // This final, awaited snapshot is the complete input for collection replay.
@@ -601,7 +618,7 @@ export async function runRootCensus(options: RootCensusOptions = {}) {
     declarations: inputs.declarations, catalogEntries: inputs.catalogEntries });
   options.onStage?.('collect-state-census');
   const census = await collectStateCensus({ roots: inputs.roots, declarations: inputs.declarations,
-    representUnknownSubtrees: true, readCatalogs: async () => inputs.catalogEntries, onProgress: options.onCollectionProgress });
+    maxEntries, representUnknownSubtrees: true, readCatalogs: async () => inputs.catalogEntries, onProgress: options.onCollectionProgress });
   options.onStage?.('complete');
   return { scope: inputs.scope, wholeInstallVerified: false, roots: inputs.roots, ...census };
 }
