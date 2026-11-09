@@ -2913,8 +2913,13 @@ export function runTestProcess(
           }
           return new Promise((resolve) => {
             const outputCapture = createBoundedRouterOutputCapture();
+            let settled = false;
             const recordProcessPhase = (stage: string, detail: Record<string, unknown> = {}): void => {
-              if (!env.PAPERCUSP_TEST_ARTIFACT_DIR) return;
+              // A child can close before managedSpawn finishes its ledger
+              // handoff. The caller may already have sealed this phase file;
+              // late launch diagnostics must not mutate retained producer bytes.
+              // Pending children have a separate late-close packet edition.
+              if (settled || !env.PAPERCUSP_TEST_ARTIFACT_DIR) return;
               try {
                 appendFileSync(join(env.PAPERCUSP_TEST_ARTIFACT_DIR, 'phases.jsonl'), JSON.stringify({
                   kind: 'testing-run-phase', runId: runGroup, stage: `process-${stage}`, atMs: Date.now(), ...detail,
@@ -2930,7 +2935,6 @@ export function runTestProcess(
             let timedOut = false;
             let aborted = false;
             let spawnError: string | undefined;
-            let settled = false;
             let resolveChildClosed!: () => void;
             const childClosed = new Promise<void>((resolve) => {
               resolveChildClosed = resolve;

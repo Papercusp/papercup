@@ -249,7 +249,8 @@ describe('managedSpawn ledger registration recovery', () => {
       attempts: 3,
     });
     expect(M.markSpawned).toHaveBeenCalledWith(taskId, expect.objectContaining({ scopeUnit: scopeUnitForTask(taskId) }));
-    expect(M.closeTask).toHaveBeenCalledWith(taskId, expect.objectContaining({ state: 'exited', exitCode: 0 }));
+    expect(M.closeTask).toHaveBeenCalledWith(taskId, expect.objectContaining({ state: 'exited', exitCode: 0 }),
+      undefined, expect.objectContaining({ onTerminalPersisted: expect.any(Function) }));
     await expect(result.waitForCompletion()).resolves.toEqual({ status: 'recorded' });
   });
 

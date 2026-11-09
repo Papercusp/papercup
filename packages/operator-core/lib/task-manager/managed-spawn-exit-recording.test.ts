@@ -36,6 +36,7 @@ const L = vi.hoisted(() => ({
   terminal: [] as unknown[],
   markDelay: undefined as (() => Promise<void>) | undefined,
   closeDelay: undefined as (() => Promise<void>) | undefined,
+  eventDelay: undefined as (() => Promise<void>) | undefined,
   closeResult: true,
   getTask: vi.fn(async (..._args: unknown[]) => null as Pick<TaskRow, 'taskId' | 'state' | 'endedAt' | 'scopeUnit'> | null),
   enabled: true,
@@ -67,6 +68,8 @@ vi.mock('./store', () => ({
     await L.closeDelay?.();
     L.closed.push({ taskId, state: v.state, exitCode: v.exitCode ?? null, exitReason: v.exitReason });
     L.terminal.push((v as { terminalProvenance?: unknown }).terminalProvenance ?? null);
+    if (L.closeResult) effects?.onTerminalPersisted?.();
+    await L.eventDelay?.();
     return L.closeResult;
   },
   getTask: (...args: unknown[]) => L.getTask(...args),
@@ -169,6 +172,7 @@ describe('confined task exit recording (WI-37509)', () => {
     L.terminal.length = 0;
     L.markDelay = undefined;
     L.closeDelay = undefined;
+    L.eventDelay = undefined;
     L.closeResult = true;
     L.getTask.mockReset().mockResolvedValue(null);
     L.enabled = true;
@@ -217,6 +221,34 @@ describe('confined task exit recording (WI-37509)', () => {
     release();
     await expect(completion).resolves.toEqual({ status: 'recorded' });
     expect(L.closed).toMatchObject([{ taskId: result.taskId, exitCode: 0 }]);
+  });
+
+  it('acknowledges durable terminal persistence while event delivery is still pending', async () => {
+    const { emitter, child } = makeChild();
+    let release!: () => void;
+    let eventDelivered = false;
+    L.eventDelay = async () => {
+      await new Promise<void>((resolve) => { release = resolve; });
+      eventDelivered = true;
+    };
+    const result = await managedSpawn('true', [], SIDECAR_SPEC, {
+      confine: false, spawnFn: (() => child) as unknown as typeof nodeSpawn,
+    });
+    emitter.emit('exit', 0, null);
+    let finished = false;
+    const completion = result.waitForCompletion().then((outcome) => { finished = true; return outcome; });
+    try {
+      await flush();
+      expect(L.closed).toMatchObject([{ taskId: result.taskId, exitCode: 0 }]);
+      expect(eventDelivered).toBe(false);
+      expect(finished).toBe(true);
+      await expect(completion).resolves.toEqual({ status: 'recorded' });
+    } finally {
+      release();
+      await completion;
+    }
+    await flush();
+    expect(eventDelivered).toBe(true);
   });
 
   it('separates scope handoff from delayed terminal persistence in the existing tracer', async () => {

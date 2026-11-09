@@ -149,6 +149,7 @@ it.each(['close', 'spawn-error'] as const)('retains real child %s and original o
   });
   const controller = new AbortController();
   let outcome: Awaited<ReturnType<typeof runTestProcess>> | undefined;
+  let phasesAtSettlement: string | undefined;
   const result = runTestProcess(process.execPath, ['-e', source], [], root, root, {
     PAPERCUSP_TEST_ARTIFACT_DIR: root, PAPERCUSP_TEST_RUN_GROUP: 'real-handoff',
     PAPERCUSP_MUTATION_PROBE_ADMISSION_ROOT: join(root, 'probe-admission'),
@@ -171,9 +172,14 @@ it.each(['close', 'spawn-error'] as const)('retains real child %s and original o
       expect(await readFile(stdoutPath!)).toHaveLength(0);
       expect(await readFile(stderrPath!)).toHaveLength(0);
     }
-    const phases = (await readFile(join(root, 'phases.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
-    expect(phases).toContainEqual(expect.objectContaining({ stage: 'process-child-close', taskId: 'realhandofftask' }));
-    if (event === 'spawn-error') expect(phases).toContainEqual(expect.objectContaining({ stage: 'process-child-error' }));
+    phasesAtSettlement = await readFile(join(root, 'phases.jsonl'), 'utf8');
+    const phases = phasesAtSettlement.trim().split('\n').map(line => JSON.parse(line));
+    expect(phases).toContainEqual(expect.objectContaining({
+      stage: event === 'spawn-error' ? 'process-child-error' : 'process-child-close', taskId: 'realhandofftask',
+    }));
+    // A spawn error settles before close. Its later close notification must not
+    // append to the producer bytes that the caller can already have retained.
+    if (event === 'spawn-error') expect(phases.some(phase => phase.stage === 'process-child-close')).toBe(false);
     expect(phases.some(phase => phase.stage === 'process-launch-handoff')).toBe(false);
   } finally {
     controller.abort();
@@ -184,6 +190,7 @@ it.each(['close', 'spawn-error'] as const)('retains real child %s and original o
   }
   expect(handedOff).toBe(true);
   expect(childClosed).toBe(true);
+  expect(await readFile(join(root, 'phases.jsonl'), 'utf8')).toBe(phasesAtSettlement);
 });
 
 it('waits for Task Manager settlement after the foreground child closes on timeout', async () => {
@@ -409,6 +416,7 @@ it.each(['close', 'error', 'blocked'] as const)('settles a %s child before hando
     options?.onSpawn?.(child, 'earlyclosetask');
     forked();
     await ledger;
+    options?.stage?.('ledger-recorded');
     return { child, taskId: 'earlyclosetask', scopeUnit: 'pc-earlyclosetask.scope', confined: true,
       waitForCompletion: async () => ({ status: 'recorded' }) };
   });
@@ -417,6 +425,7 @@ it.each(['close', 'error', 'blocked'] as const)('settles a %s child before hando
   const result = runTestProcess(process.execPath, [], [], process.cwd(), process.cwd(), {
     PAPERCUSP_TEST_ARTIFACT_DIR: outputDir, PAPERCUSP_TEST_RUN_GROUP: 'early-close',
   }, 60_000, controller.signal).then(value => { outcome = value; });
+  let phasesAtSettlement: string | undefined;
   try {
     await spawned;
     if (event === 'close') child.emit('close', 7, null);
@@ -429,7 +438,8 @@ it.each(['close', 'error', 'blocked'] as const)('settles a %s child before hando
     }
     if (event === 'close') expect(outcome?.code).toBe(7);
     if (event === 'error') expect(outcome?.spawnError).toBe('fork failed before handoff');
-    const phases = (await readFile(join(outputDir, 'phases.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line).stage);
+    phasesAtSettlement = await readFile(join(outputDir, 'phases.jsonl'), 'utf8');
+    const phases = phasesAtSettlement.trim().split('\n').map(line => JSON.parse(line).stage);
     expect(phases).toContain('process-spawn-fork');
     expect(phases).toContain('process-child-spawned');
     expect(phases).not.toContain('process-launch-handoff');
@@ -440,6 +450,9 @@ it.each(['close', 'error', 'blocked'] as const)('settles a %s child before hando
     await result;
     await new Promise(resolve => setImmediate(resolve));
   }
+  // Custody may already have retained these bytes while the ledger handoff is
+  // still pending. Late launch diagnostics must not mutate that producer file.
+  expect(await readFile(join(outputDir, 'phases.jsonl'), 'utf8')).toBe(phasesAtSettlement);
   // Only a still-live cancelled launch needs termination when its handle arrives.
   expect(mocks.killScope).toHaveBeenCalledTimes(event === 'blocked' ? 1 : 0);
 });

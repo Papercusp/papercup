@@ -736,7 +736,16 @@ function wireExit(
       const registered = await persistClose(async () => {
         stage?.('completion-close');
         const input = terminal ? { ...outcome, terminalProvenance: terminal } : outcome;
-        recorded = await (stage ? closeTask(taskId, input, undefined, { stage }) : closeTask(taskId, input));
+        recorded = await closeTask(taskId, input, undefined, {
+          stage,
+          onTerminalPersisted: () => {
+            // The terminal UPDATE also persists the event outbox latch. Callers
+            // need that durable receipt; slow event delivery can finish here or
+            // be recovered by the reconciler after a short-lived caller exits.
+            recorded = true;
+            resolveCompletion({ status: 'recorded' });
+          },
+        });
         if (!recorded) {
           // Scoped teardown or the reconciler may have persisted the terminal
           // row first. A lost idempotent UPDATE is not a persistence failure;
