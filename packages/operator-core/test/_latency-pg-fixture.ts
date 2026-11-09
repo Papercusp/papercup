@@ -2,6 +2,78 @@
 import { createOrgTestDb, type OrgTestDb } from './_org-test-db';
 import { latencyDataFixtures, latencyFixtureDigest } from './_latency-acceptance';
 
+export interface LatencyTimelineSnapshot {
+  window: { owner: string; since: string; until: string };
+  turns: Array<{ row: Record<string, unknown> }>;
+  tools: Array<{ row: Record<string, unknown> }>;
+  coord: Array<{ row: Record<string, unknown> }>;
+}
+
+/** Replay stored inputs, never a timeline projection or an expected answer.
+ * All original columns (including generated values) must round-trip exactly.
+ * Only workspace_id is rehomed; legacy default-workspace turns stay default.
+ * The transaction rolls back on schema, generated-value or identity drift. */
+export async function seedLatencyTimelineSnapshot(db: OrgTestDb, input: {
+  snapshot: LatencyTimelineSnapshot; expectedSha256: string; workspaceId: string;
+}) {
+  const { snapshot, workspaceId } = input;
+  if (!workspaceId.trim() || workspaceId === 'default'
+    || latencyFixtureDigest(snapshot) !== input.expectedSha256
+    || !snapshot.window.owner.trim()
+    || !(Date.parse(snapshot.window.until) > Date.parse(snapshot.window.since))) {
+    throw new Error('LATENCY-M1 invalid frozen timeline input or fingerprint');
+  }
+  const sql = db.adminSql;
+  const [identity] = await sql`SELECT current_database() AS name`;
+  if (identity?.name !== db.dbName || !db.dbName.startsWith('org_')) {
+    throw new Error('LATENCY-M1 refuses a database outside its owned org test fixture');
+  }
+  return sql.begin(async tx => {
+    await tx`SET LOCAL TIME ZONE 'UTC'`;
+    const receipts = [];
+    for (const [key, table] of [['turns', 'session_turns'], ['tools', 'tool_invocations'],
+      ['coord', 'coord_event_log']] as const) {
+      const rows = snapshot[key].map(({ row }) => ({ ...row,
+        workspace_id: key === 'turns' && row.workspace_id === 'default' ? 'default' : workspaceId }));
+      if (!rows.length) { receipts.push({ table, count: 0 }); continue; }
+      if (rows.length > 10_000) throw new Error('LATENCY-M1 timeline source exceeds its frozen bound');
+      const columns = Object.keys(rows[0]!).sort();
+      const schema = await tx<{ column_name: string; is_generated: string; generation_expression: string | null }[]>`
+        SELECT column_name, is_generated, generation_expression FROM information_schema.columns
+        WHERE table_schema = 'harness_shared' AND table_name = ${table} ORDER BY column_name`;
+      if (latencyFixtureDigest(columns) !== latencyFixtureDigest(schema.map(row => row.column_name))
+        || rows.some(row => latencyFixtureDigest(Object.keys(row).sort()) !== latencyFixtureDigest(columns))) {
+        throw new Error(`LATENCY-M1 frozen ${table} schema differs; no columns may be dropped or invented`);
+      }
+      // Names come only from the three literal tables and validated PG columns.
+      const writable = schema.filter(row => row.is_generated === 'NEVER').map(row => row.column_name);
+      const quote = (name: string) => '"' + name.replaceAll('"', '""') + '"';
+      const names = writable.map(quote).join(', ');
+      const target = `harness_shared.${quote(table)}`;
+      const stored = await tx.unsafe<{ row: Record<string, unknown> }[]>(
+        `INSERT INTO ${target} AS seeded (${names}) OVERRIDING SYSTEM VALUE
+         SELECT ${names} FROM jsonb_populate_recordset(NULL::${target}, $1::text::jsonb)
+         RETURNING to_jsonb(seeded) AS row`, [JSON.stringify(rows)]);
+      if (stored.length !== rows.length || stored.some((row, i) =>
+        latencyFixtureDigest(row.row) !== latencyFixtureDigest(rows[i]))) {
+        const differences = stored.flatMap(({ row }, index) => columns.filter(column =>
+          latencyFixtureDigest(row[column]) !== latencyFixtureDigest(rows[index]?.[column]))
+          .map(column => ({ index, column,
+            expectedSha256: latencyFixtureDigest(rows[index]?.[column]),
+            actualSha256: latencyFixtureDigest(row[column]) })));
+        throw new Error(`LATENCY-M1 frozen ${table} readback differs, including generated columns: ${JSON.stringify(differences)}`);
+      }
+      receipts.push({ table, count: rows.length, columns,
+        generated: schema.filter(row => row.is_generated !== 'NEVER'),
+        schemaSha256: latencyFixtureDigest(schema), sourceSha256: latencyFixtureDigest(snapshot[key]),
+        privateRowsSha256: latencyFixtureDigest(stored), allFieldsExact: true });
+    }
+    return { phase: 'preparation-only', actualTaskAttempts: 0, database: db.dbName, workspaceId,
+      window: snapshot.window, sourceSha256: input.expectedSha256,
+      transformation: 'workspace_id only; legacy default-workspace turns unchanged', tables: receipts };
+  });
+}
+
 export async function createLatencyPgFixture() {
   const db = await createOrgTestDb();
   try {

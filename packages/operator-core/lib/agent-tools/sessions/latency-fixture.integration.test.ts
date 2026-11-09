@@ -1,8 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
-import { createLatencyPgFixture } from '../../../test/_latency-pg-fixture';
+import { createLatencyPgFixture, seedLatencyTimelineSnapshot,
+  type LatencyTimelineSnapshot } from '../../../test/_latency-pg-fixture';
 import { latencyFixtureDigest, latencyRetrievalFixtures, observeLatencyRetrievalSchedule } from '../../../test/_latency-acceptance';
 import { interactiveEmbedAcquireBudgetMs } from '../search/embedder';
 
@@ -38,6 +40,83 @@ describe('LATENCY-M1 private migrated fixture preparation', () => {
     conditionScope.workspace = '';
     if (fx) expect(await fx.cleanup()).toBe('dropped');
   }, 60_000);
+
+  it('replays stored timeline columns exactly and rolls back generated-value or schema drift', async () => {
+    const { db, fixture } = fx!;
+    const owner = 'su-latency-seed-control';
+    const window = { owner, since: '2026-11-06T00:00:00.000Z', until: '2026-11-06T00:01:00.000Z' };
+    const snapshot: LatencyTimelineSnapshot = await db.adminSql.begin(async tx => {
+      await tx`SET LOCAL TIME ZONE 'UTC'`;
+      const [turn] = await tx<{ row: Record<string, unknown> }[]>`INSERT INTO harness_shared.session_turns AS s
+      (workspace_id, source_kind, session_id, turn_idx, ts, owner, speaker, text, ingested_at)
+      VALUES ('default', 'codex', ${owner}, 1, ${window.since}, ${owner}, 'assistant',
+        'Original é🧪 timeline input', ${window.since}) RETURNING to_jsonb(s) AS row`;
+      const [call] = await tx<{ row: Record<string, unknown> }[]>`INSERT INTO harness_shared.tool_invocations AS t
+      (workspace_id, harness_slug, plugin_name, tool_name, role, spawn_id, window_key, status,
+        coord_owner_id, invoked_at, duration_ms, metadata_json)
+      VALUES ('source-workspace', 'papercusp', 'test', 'coord:inbox', 'worker', ${owner}, ${owner},
+        'ok', ${owner}, ${window.since}, 7, '{"original":[1,null,"é🧪"]}'::jsonb)
+      RETURNING to_jsonb(t) AS row`;
+      const [message] = await tx<{ row: Record<string, unknown> }[]>`INSERT INTO harness_shared.coord_event_log AS c
+      (workspace_id, surface, writer_key, msg_id, body, ts)
+      VALUES ('source-workspace', 'messages', ${owner}, 'latency-seed-message',
+        ${JSON.stringify({ from: owner, summary: 'Original source' })}::text::jsonb, ${window.since})
+      RETURNING to_jsonb(c) AS row`;
+      return { window, turns: [turn!], tools: [call!], coord: [message!] };
+    });
+    await db.adminSql`DELETE FROM harness_shared.session_turns WHERE owner = ${owner}`;
+    await db.adminSql`DELETE FROM harness_shared.tool_invocations WHERE coord_owner_id = ${owner}`;
+    await db.adminSql`DELETE FROM harness_shared.coord_event_log WHERE msg_id = 'latency-seed-message'`;
+    const seed = (value: LatencyTimelineSnapshot, expectedSha256 = latencyFixtureDigest(value)) =>
+      seedLatencyTimelineSnapshot(db, { snapshot: value, expectedSha256, workspaceId: fixture.workspace });
+    await expect(seed(snapshot, '0'.repeat(64))).rejects.toThrow(/fingerprint/);
+    const unknownColumn = structuredClone(snapshot);
+    unknownColumn.tools[0]!.row.unknown_original_column = 'must not disappear';
+    await expect(seed(unknownColumn)).rejects.toThrow(/schema differs/);
+    expect(await db.adminSql`SELECT 1 FROM harness_shared.session_turns WHERE owner = ${owner}`).toHaveLength(0);
+    const generated = structuredClone(snapshot);
+    generated.turns[0]!.row.text_tsv = 'wrong generated value';
+    await expect(seed(generated)).rejects.toThrow(/readback differs/);
+    expect(await db.adminSql`SELECT 1 FROM harness_shared.session_turns WHERE owner = ${owner}`).toHaveLength(0);
+    await expect(seedLatencyTimelineSnapshot({ ...db, dbName: 'not-owned' }, {
+      snapshot, expectedSha256: latencyFixtureDigest(snapshot), workspaceId: fixture.workspace,
+    })).rejects.toThrow(/owned org test fixture/);
+    const receipt = await seed(snapshot);
+    expect(receipt.tables.map(row => row.count)).toEqual([1, 1, 1]);
+    expect(snapshot.turns[0]!.row.workspace_id).toBe('default');
+    expect(snapshot.tools[0]!.row.workspace_id).toBe('source-workspace');
+    expect((await db.adminSql`SELECT workspace_id FROM harness_shared.session_turns WHERE owner = ${owner}`)[0]!.workspace_id).toBe('default');
+    expect((await db.adminSql`SELECT workspace_id FROM harness_shared.tool_invocations WHERE coord_owner_id = ${owner}`)[0]!.workspace_id).toBe(fixture.workspace);
+  });
+
+  // CI always runs the synthetic schema/round-trip controls above. An explicit
+  // evidence run also replays the separately retained original corpus; no live
+  // database or network fetch can replace these pinned input files.
+  const sourceRoot = process.env.PAPERCUSP_LATENCY_TIMELINE_SOURCE_DIR;
+  if (sourceRoot) it('replays the exact canonical W1/W2/W3 stored inputs in the private database', async () => {
+    const { db, fixture } = fx!;
+    const manifest = JSON.parse(readFileSync(join(sourceRoot, 'timeline-source-inputs-20261109-r1--manifest.json'), 'utf8'));
+    expect(manifest.windows.map((row: { id: string }) => row.id)).toEqual(['W1', 'W2', 'W3']);
+    const receipts = [];
+    for (const input of manifest.windows) {
+      const bytes = readFileSync(join(sourceRoot, `timeline-source-inputs-20261109-r1--${input.id}.json`));
+      expect(bytes.length).toBe(input.bytes);
+      expect(createHash('sha256').update(bytes).digest('hex')).toBe(input.sha256);
+      const snapshot: LatencyTimelineSnapshot = JSON.parse(bytes.toString('utf8'));
+      expect(snapshot.window).toEqual({ owner: input.owner, since: input.since, until: input.until });
+      expect(Object.fromEntries(['turns', 'tools', 'coord'].map(key =>
+        [key, snapshot[key as 'turns'].length]))).toEqual(input.sourceRows);
+      receipts.push(await seedLatencyTimelineSnapshot(db, { snapshot,
+        expectedSha256: latencyFixtureDigest(snapshot), workspaceId: fixture.workspace }));
+    }
+    const receipt = { phase: 'preparation-only', actualTaskAttempts: 0, receipts };
+    const artifactDir = process.env.PAPERCUSP_TEST_ARTIFACT_DIR;
+    if (artifactDir) {
+      mkdirSync(artifactDir, { recursive: true });
+      writeFileSync(join(artifactDir, 'latency-original-timeline-seed.json'), JSON.stringify(receipt), { flag: 'wx' });
+    }
+    console.info('LATENCY_ORIGINAL_TIMELINE_SEED ' + JSON.stringify(receipt));
+  }, 90_000);
 
   it('round-trips every frozen work-item field, including scope and adjacent-marker controls', async () => {
     const { db, fixture } = fx!;
