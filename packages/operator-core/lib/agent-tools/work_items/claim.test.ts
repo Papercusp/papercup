@@ -575,7 +575,32 @@ describe('work_items:claim handler (keyed-array)', () => {
         record: { spec: { specId: 'fleet-bugs', revision: 4 } },
       },
     };
-    const b = await body({ id: 'WI-out', assignee: 'bee-7' });
+    const input = { id: 'WI-out', assignee: 'bee-7' };
+    const originalInput = structuredClone(input);
+    expect(tool.args.parse(input)).toEqual(input);
+    const projected = lookupByMcpName('work_items:claim');
+    expect(projected).toBeTruthy();
+    const dispatched = await dispatchProjectedTool(projected!, 'work_items:claim', input, {
+      uiClientId: 'me',
+      workspaceId: 'ws-1',
+      harnessSlug: 'papercusp',
+      log: vi.fn(),
+      signal: new AbortController().signal,
+      progress: vi.fn(),
+      emit: vi.fn(),
+      metadata: vi.fn(),
+      runId: 'claim-fleet-refusal-original-input-replay',
+      role: 'su',
+      gateBypass: { role: true, capability: true, quota: true },
+      transport: 'mcp',
+      requestedFormat: 'json',
+      requestedStructured: true,
+    } as never, {});
+    expect(dispatched.ok).toBe(true);
+    expect(input).toEqual(originalInput);
+    const b = dispatched.result?.structuredContent as Out['data'] | undefined;
+    expect(b).toBeDefined();
+    expect(b).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 } });
     expect(b.results[0]).toMatchObject({ ok: false, id: 'WI-out', error: 'fleet_scope_violation' });
     expect(claimM).not.toHaveBeenCalled();
     expect(fleetAdmission.notify).toHaveBeenCalledOnce();
