@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { channel } from 'node:diagnostics_channel';
 import http from 'node:http';
+import { Socket } from 'node:net';
+import { UndiciInstrumentation } from '@opentelemetry/instrumentation-undici';
+import type { DiagnosticsChannel } from 'undici';
 
 describe('owned-loop cost observation boundaries', () => {
   const fixture = () => {
@@ -270,15 +273,58 @@ import {
 
 describe('bounded upstream HTTP write observations', () => {
   const target = 'http://127.0.0.1:12345/private-path?secret=PRIVATE_QUERY';
-  const request = () => ({ origin: 'http://127.0.0.1:12345', path: '/private-path?secret=PRIVATE_QUERY', method: 'POST' });
-  const emit = (phase: 'create' | 'bodySent' | 'error' | 'sendHeaders', outgoing: object) =>
-    channel(`undici:${phase === 'sendHeaders' ? 'client' : 'request'}:${phase}`).publish({ request: outgoing,
-      headers: 'PRIVATE_HEADER', error: new Error('PRIVATE_ERROR') });
+  const request = (): DiagnosticsChannel.RequestCreateMessage['request'] => ({
+    origin: 'http://127.0.0.1:12345', path: '/private-path?secret=PRIVATE_QUERY', method: 'POST',
+    headers: 'PRIVATE_HEADER: value\r\n', completed: false,
+  });
+  const emit = (phase: 'create' | 'bodySent' | 'error' | 'sendHeaders', outgoing: ReturnType<typeof request>) => {
+    // These channels are process-global: every subscriber receives the fixture,
+    // including OpenTelemetry, which reads the socket on sendHeaders.
+    if (phase === 'sendHeaders') {
+      const socket = new Socket();
+      try {
+        channel('undici:client:sendHeaders').publish({ request: outgoing, headers: 'PRIVATE_HEADER: value\r\n',
+          socket } satisfies DiagnosticsChannel.ClientSendHeadersMessage);
+      } finally { socket.destroy(); }
+    } else if (phase === 'error') {
+      channel('undici:request:error').publish({ request: outgoing,
+        error: new Error('PRIVATE_ERROR') } satisfies DiagnosticsChannel.RequestErrorMessage);
+    } else {
+      channel(`undici:request:${phase}`).publish({ request: outgoing } satisfies DiagnosticsChannel.RequestCreateMessage);
+    }
+  };
   const fixture = () => {
     const telemetry = new GatewayRequestTelemetry();
     const span = telemetry.begin({ ownerId: 'su-writes', provider: 'codex', protocol: 'openai-responses', transport: 'bearer-http' });
     return { telemetry, span };
   };
+
+  it('keeps synthetic diagnostic events compatible with an active OpenTelemetry subscriber', async () => {
+    const observed: object[] = [];
+    const instrumentation = new UndiciInstrumentation({ requestHook: (_span, outgoing) => observed.push(outgoing) });
+    const { telemetry, span } = fixture(), outgoing = request();
+    try {
+      await span.observeUpstreamFetch(target, 'POST', 'account', async () => {
+        emit('create', outgoing);
+        emit('sendHeaders', outgoing);
+        emit('bodySent', outgoing);
+        emit('error', outgoing);
+        // diagnostics_channel rethrows subscriber errors on the next tick.
+        await new Promise<void>(resolve => setImmediate(resolve));
+      });
+      expect(observed).toEqual([outgoing]);
+      span.finish('ok', 200);
+      const call = telemetry.snapshotForOwner('su-writes').recent[0].upstreamWrites.calls[0];
+      expect(call.matchedRequests).toBe(1);
+      expect(call.events.map(event => event.phase)).toEqual([
+        'created', 'headers-write-start', 'body-write-complete', 'error',
+      ]);
+      expect(JSON.stringify(call)).not.toMatch(/PRIVATE_|127\.0\.0\.1/);
+    } finally {
+      instrumentation.disable();
+      span.finish('gateway-error', 500);
+    }
+  });
 
   it('observes real global-fetch socket writes without storing the target, request body or credentials', async () => {
     const { telemetry, span } = fixture();

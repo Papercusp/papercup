@@ -1606,6 +1606,8 @@ async function createOneWorkItemCore(
  * verdict. Only the calibrated HARD band within the same explicit parent scope qualifies,
  * never the advisory soft band. Cross-scope candidates remain available to the resolver;
  * similarity alone cannot collapse separately declared work (EI-26922584654907839).
+ * Review tasks additionally require the same stored conversation and review kind:
+ * consult-expiry's condition identity is per conversation, not similar request wording.
  * Skipped when the filer passed force (asserted distinct work) or the severity is critical
  * (novelty must never hide behind a false match). Exported for the real-PG lifecycle test.
  */
@@ -1633,6 +1635,9 @@ export async function stampCreateTimeDuplicate(input: {
   // Parent scope is read from BOTH stored rows, not the embedding result: two independent
   // acceptance children can have almost identical titles while their declared parents differ.
   // Keep those candidates advisory rather than writing a blocking automatic verdict.
+  // EI-28235400327670286: unparented review tasks can also name different immutable
+  // subjects. Compare the stored review identity, ignoring mutable responder metadata;
+  // missing/malformed identities cannot establish equivalence with another review.
   const openHere = new Set(
     (
       await sql<{ feature_id: string }[]>`
@@ -1643,7 +1648,20 @@ export async function stampCreateTimeDuplicate(input: {
          WHERE candidate.workspace_id = ${input.workspaceId}
            AND candidate.feature_id = ANY(${screened.map((c) => c.id)}::text[])
            AND NOT (candidate.status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
-           AND NULLIF(btrim(candidate.parent_id), '') IS NOT DISTINCT FROM NULLIF(btrim(filing.parent_id), '')`
+           AND NULLIF(btrim(candidate.parent_id), '') IS NOT DISTINCT FROM NULLIF(btrim(filing.parent_id), '')
+           AND (
+             (candidate.payload->'reviewConsult' IS NULL AND filing.payload->'reviewConsult' IS NULL)
+             OR (
+               jsonb_typeof(candidate.payload#>'{reviewConsult,conversationId}') = 'string'
+               AND jsonb_typeof(filing.payload#>'{reviewConsult,conversationId}') = 'string'
+               AND jsonb_typeof(candidate.payload#>'{reviewConsult,kind}') = 'string'
+               AND jsonb_typeof(filing.payload#>'{reviewConsult,kind}') = 'string'
+               AND NULLIF(btrim(candidate.payload#>>'{reviewConsult,conversationId}'), '') IS NOT NULL
+               AND NULLIF(btrim(candidate.payload#>>'{reviewConsult,kind}'), '') IS NOT NULL
+               AND candidate.payload#>>'{reviewConsult,conversationId}' = filing.payload#>>'{reviewConsult,conversationId}'
+               AND candidate.payload#>>'{reviewConsult,kind}' = filing.payload#>>'{reviewConsult,kind}'
+             )
+           )`
     ).map((r) => r.feature_id),
   );
   const hard = screened.filter((c) => openHere.has(c.id));

@@ -205,6 +205,69 @@ describe('work_items:create stamps the typed duplicate-of verdict at filing time
     expect(await occurrencesOn(closed.workItem.id)).toEqual([]);
   });
 
+  it('keeps distinct review conversations independent despite the incident HARD-band score', async () => {
+    const canonical = await file('Review needed (rubric-vetting) — cell identity acceptance rubric', {
+      kind: 'task',
+      payload: { reviewConsult: { conversationId: 'conv-cell-identity', kind: 'rubric-vetting', requesterId: 'author-cell' } },
+    });
+    screen.next = { hard: [hardMatch(canonical.workItem.id, 0.9338001012802124)], soft: [] };
+    const independent = await file('Review needed (rubric-vetting) — lifecycle acceptance rubric', {
+      kind: 'task',
+      payload: { reviewConsult: { conversationId: 'conv-lifecycle', kind: 'rubric-vetting', requesterId: 'author-lifecycle' } },
+    });
+
+    expect(independent.duplicateOf).toBeUndefined();
+    expect((await verdict(independent.workItem.id))?.duplicate_of).toBeNull();
+    expect(await occurrencesOn(canonical.workItem.id)).toEqual([]);
+    const edges = await sql`
+      SELECT rel FROM harness_shared.coord_links
+       WHERE src_ref = ${independent.workItem.id} AND rel = 'duplicates'`;
+    expect(edges).toHaveLength(0);
+    const [saved] = await sql<{ candidates: unknown }[]>`
+      SELECT payload->'dedupCandidates' AS candidates FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND feature_id = ${independent.workItem.id}`;
+    expect(saved?.candidates).toEqual([
+      { id: canonical.workItem.id, method: 'semantic-hard', similarity: 0.9338001012802124 },
+    ]);
+  });
+
+  it('selects a same-conversation review over a higher-scoring different subject and ignores responder metadata', async () => {
+    const canonical = await file('Review needed — lifecycle acceptance', {
+      kind: 'task',
+      payload: { reviewConsult: { conversationId: 'conv-lifecycle', kind: 'rubric-vetting', requesterId: 'author', silentResponderId: 'old-reviewer' } },
+    });
+    const unrelated = await file('Review needed — identity acceptance', {
+      kind: 'task',
+      payload: { reviewConsult: { conversationId: 'conv-identity', kind: 'rubric-vetting' } },
+    });
+    screen.next = { hard: [hardMatch(unrelated.workItem.id, 0.99), hardMatch(canonical.workItem.id, 0.95)], soft: [] };
+    const repeat = await file('Review needed — repeated lifecycle acceptance', {
+      kind: 'task',
+      payload: { reviewConsult: { conversationId: 'conv-lifecycle', kind: 'rubric-vetting', requesterId: 'author', silentResponderId: 'new-reviewer' } },
+    });
+    expect(repeat.duplicateOf).toEqual({ id: canonical.workItem.id, confidence: 0.95 });
+    expect((await verdict(repeat.workItem.id))?.duplicate_source).toBe('create-match');
+    expect(await occurrencesOn(canonical.workItem.id)).toEqual([
+      { kind: 'duplicate', duplicate_row: repeat.workItem.id, source_tool: 'work_items:create' },
+    ]);
+    expect(await occurrencesOn(unrelated.workItem.id)).toEqual([]);
+  });
+
+  it.each([
+    { name: 'review versus ordinary work', canonicalReview: { conversationId: 'conv-review', kind: 'rubric-vetting' }, filingReview: undefined },
+    { name: 'ordinary work versus review', canonicalReview: undefined, filingReview: { conversationId: 'conv-review', kind: 'rubric-vetting' } },
+    { name: 'different review kinds', canonicalReview: { conversationId: 'conv-review', kind: 'rubric-vetting' }, filingReview: { conversationId: 'conv-review', kind: 'acceptance-grading' } },
+    { name: 'missing conversation on both reviews', canonicalReview: { kind: 'rubric-vetting' }, filingReview: { kind: 'rubric-vetting' } },
+    { name: 'blank conversation on both reviews', canonicalReview: { conversationId: ' ', kind: 'rubric-vetting' }, filingReview: { conversationId: ' ', kind: 'rubric-vetting' } },
+  ])('does not infer review equivalence for $name', async ({ canonicalReview, filingReview }) => {
+    const canonical = await file('Independent review work', { kind: 'task', payload: canonicalReview ? { reviewConsult: canonicalReview } : {} });
+    screen.next = { hard: [hardMatch(canonical.workItem.id, 0.97)], soft: [] };
+    const independent = await file('Repeated review wording', { kind: 'task', payload: filingReview ? { reviewConsult: filingReview } : {} });
+    expect(independent.duplicateOf).toBeUndefined();
+    expect((await verdict(independent.workItem.id))?.duplicate_of).toBeNull();
+    expect(await occurrencesOn(canonical.workItem.id)).toEqual([]);
+  });
+
   it('keeps independent work under different explicit parents distinct despite a HARD-band match', async () => {
     const installed = await file('P536 installed composition', { kind: 'change' });
     const helper = await file('P537 maintained helper', { kind: 'change' });
