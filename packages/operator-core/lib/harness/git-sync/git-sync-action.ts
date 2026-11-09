@@ -268,6 +268,7 @@ import {
   captureGitSyncCandidate,
   publishGitSyncCandidate,
   type GitSyncCandidateRequest,
+  type GitSyncWriterAuthority,
   runGitBounded,
   type GitSyncYieldError,
   DEFAULT_MAX_BLOB_BYTES,
@@ -1440,6 +1441,8 @@ export type GitSyncPerInstallLeaseResult<T> =
 export interface GitSyncPerInstallLease {
   /** Throws {@link GitSyncLeaseLostError} once the lease is refused or unconfirmed. */
   assertHeld(): void;
+  /** Identity from the acquired resource row, never a caller-invented token. */
+  readonly writer: GitSyncWriterAuthority;
 }
 
 export interface GitSyncPerInstallLeaseOptions {
@@ -1519,7 +1522,10 @@ export async function runWithGitSyncPerInstallLease<T>(
     if (signal?.aborted) {
       throw signal.reason instanceof Error ? signal.reason : new Error('git-sync per-install lease operation aborted');
     }
-    return { state: 'ran', value: await operation({ assertHeld: () => fence.assertHeld() }) };
+    const held = acquired.find(row => row.resource === gitSyncResourceName(slug) && row.mode === 'exclusive');
+    if (!held) throw new Error('git-sync per-install writer identity unavailable');
+    const writer = Object.freeze({ coordinationDomain, resource: held.resource, owner, lockId: held.lockId });
+    return { state: 'ran', value: await operation({ assertHeld: () => fence.assertHeld(), writer }) };
   } catch (e) {
     // Only THIS fence's loss is converted; any other error keeps propagating.
     const lost = fence.lost;
@@ -4464,6 +4470,11 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     // 'acquired' (locked) or 'error' (unlocked best-effort) → run.
     outcome = await guarded('run-git-sync', () =>
       runGitSync(slug, {
+        ...(leaseFence && acquired.some(row => row.resource === gitSyncResourceName(slug) && row.mode === 'exclusive') ? {
+          writerFence: { assertHeld: () => { leaseFence!.assertHeld(); liveness.assertActive(); },
+            writer: Object.freeze({ coordinationDomain: cd, resource: gitSyncResourceName(slug), owner: lockOwner,
+              lockId: acquired.find(row => row.resource === gitSyncResourceName(slug) && row.mode === 'exclusive')!.lockId }) },
+        } : {}),
         repoPath,
         config: cfg,
         onRootCommit: ({ sha, committedAtMs }) => {
@@ -8941,7 +8952,7 @@ async function fireGitSyncMetadataRepair(slug: string, workspaceId: string, repo
       const captured = await captureGitSyncCandidate(runGit, repo, request, lease);
       if (!captured.ok) throw new Error(captured.error);
       const publication = await publishGitSyncCandidate(runGit, repo, request, {
-        assertHeld: lease.assertHeld, beforePublish: async () => { lease.assertHeld(); return { ok: true }; },
+        ...lease, beforePublish: async () => { lease.assertHeld(); return { ok: true }; },
       });
       if (publication.status !== 'committed' && publication.status !== 'already-published') {
         throw new Error(publication.status === 'error' ? publication.error :

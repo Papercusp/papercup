@@ -2130,6 +2130,8 @@ export interface GitSyncRootCommit {
 }
 
 export type GitSyncOutcome = {
+  /** Fresh owning-phase evidence for the exact immutable remote transport attempts. */
+  metadataOriginProofs?: GitSyncMetadataOriginProof[];
   /** Selected metadata publication is distinct from the current checkout HEAD
    * and from remote egress. Preserve it even if outcome recording fails. */
   metadataRepair?: {
@@ -2308,6 +2310,8 @@ export class GitSyncYieldError extends Error {
 }
 
 export interface RunGitSyncOpts {
+  /** Actual acquired per-install writer, required for joint metadata egress. */
+  writerFence?: { writer: GitSyncWriterAuthority; assertHeld(): void };
   /**
    * Override the repo path (manual-fire pin + tests); else resolve via
    * `projectDirForSlug(slug)`. An explicit null is authoritative: the caller
@@ -5608,7 +5612,7 @@ export interface GitSyncCandidateRequest {
 
 /** Version two of the existing custody manifest roots an entire candidate tree. */
 export interface GitSyncCandidateCapture {
-  version: 2 | 3;
+  version: 2 | 3 | 4;
   kind: 'candidate';
   repository: string;
   requestId: string;
@@ -5619,6 +5623,15 @@ export interface GitSyncCandidateCapture {
   tree: string;
   dependencies?: GitSyncCandidateDependency[];
   contentSource?: GitSyncGeneratedLockSource;
+  /** Immutable capture observation; preparation is never a writer proof. */
+  originCapture?: GitSyncMetadataOriginProof;
+}
+
+export interface GitSyncWriterAuthority {
+  coordinationDomain: string;
+  resource: string;
+  owner: string;
+  lockId: string;
 }
 
 const metadataSha = z.string().regex(/^[a-f0-9]{64}$/);
@@ -5697,6 +5710,16 @@ const metadataOriginObservation = z.object({ schemaVersion: z.literal(1), policy
   observationId: z.string().uuid(), observedAt: z.string().datetime(), url: z.string().min(1),
   authority: z.object({ kind: z.enum(['branch', 'default-head']), ref: z.string().startsWith('refs/heads/') }).strict(),
   tip: metadataOid }).strict();
+const metadataWriterAuthority = z.object({ coordinationDomain: z.string().min(1),
+  resource: z.string().startsWith('git-sync:'), owner: z.string().min(1), lockId: z.string().min(1) }).strict();
+const metadataOriginProof = z.object({ schemaVersion: z.literal(1), phase: z.enum(['capture', 'pre-cas', 'egress']),
+  startedAt: z.string().datetime(), completedAt: z.string().datetime(), writer: metadataWriterAuthority,
+  requestId: z.string().min(1), generation: z.number().int().positive(), baseCommit: metadataOid,
+  selectedInputTree: metadataOid, tree: metadataOid, commit: metadataOid.nullable(),
+  remote: z.string().min(1).nullable(), fullRef: z.string().startsWith('refs/heads/').nullable(),
+  observations: z.array(z.object({ path: metadataPath, observation: metadataOriginObservation, tipTree: metadataOid }).strict()).min(1).max(2),
+}).strict();
+export type GitSyncMetadataOriginProof = z.infer<typeof metadataOriginProof>;
 const metadataPublishedLibrary = metadataLibrarySelection.extend({ selectedTree: metadataOid,
   selectedType: z.literal('commit'), treeType: z.literal('tree'), gitmodulesBlob: metadataOid,
   mapping: z.object({ name: z.string().min(1), path: metadataPath, url: z.string().min(1), branch: z.string().nullable() }).strict(),
@@ -5716,6 +5739,142 @@ function metadataSelectionRequest(f: z.infer<typeof metadataJointFingerprint>) {
 function metadataCandidatePaths(f: GitSyncGeneratedLockSource['fingerprint']) {
   return [f.output.path, ...(f.schemaVersion === 2 ? f.publishedLibrarySelections
     .filter(row => row.expectedBasePin !== row.selectedCommit).map(row => row.path) : [])].sort();
+}
+
+function validateMetadataCaptureProof(source: GitSyncGeneratedLockSource, tree: string, value: unknown) {
+  const f = source.fingerprint;
+  if (f.schemaVersion !== 2 || !f.publishedLibrarySelections.length) {
+    if (value !== undefined) throw new Error('generated-lock-origin-unexpected-proof');
+    return;
+  }
+  const proof = metadataOriginProof.parse(value);
+  if (proof.phase !== 'capture' || proof.requestId !== f.requestId || proof.generation !== f.generation ||
+      proof.baseCommit !== f.baseCommit || proof.selectedInputTree !== f.selectedInputTree || proof.tree !== tree ||
+      proof.commit !== null || proof.remote !== null || proof.fullRef !== null ||
+      proof.observations.length !== f.publishedLibrarySelections.length ||
+      Date.parse(proof.completedAt) < Date.parse(proof.startedAt)) throw new Error('generated-lock-origin-capture-binding');
+  const ids = new Set(f.publishedLibrarySelections.map(row => row.origin.observationId));
+  for (const [i, row] of f.publishedLibrarySelections.entries()) {
+    const observed = proof.observations[i]!;
+    const origin = observed.observation;
+    if (observed.path !== row.path || origin.url !== row.authorizedUrl || origin.tip !== row.origin.tip ||
+        canonicalJson(origin.authority) !== canonicalJson(row.origin.authority) || ids.has(origin.observationId) ||
+        Date.parse(origin.observedAt) < Date.parse(proof.startedAt) || Date.parse(origin.observedAt) > Date.parse(proof.completedAt)) {
+      throw new Error('generated-lock-origin-capture-binding');
+    }
+    ids.add(origin.observationId);
+  }
+}
+
+/** A new direct read within the actual owning phase, with no child fetch/ref write. */
+async function observeMetadataWriterPhase(runGit: RunGit, repo: string, source: GitSyncGeneratedLockSource,
+  tree: string, phase: 'capture' | 'pre-cas' | 'egress', fence: { writer?: GitSyncWriterAuthority; assertHeld?: () => void },
+  capture?: GitSyncMetadataOriginProof, commit: string | null = null,
+  egress?: { captureTree: string; remote: string; fullRef: string; priorIds: Set<string> }): Promise<GitSyncMetadataOriginProof | undefined> {
+  const f = source.fingerprint;
+  if (f.schemaVersion !== 2 || !f.publishedLibrarySelections.length) return;
+  if (!fence.writer || !fence.assertHeld) throw new Error('generated-lock-origin-writer-required');
+  const writer = metadataWriterAuthority.parse(structuredClone(fence.writer));
+  const assertHeld = () => {
+    fence.assertHeld!();
+    if (canonicalJson(fence.writer) !== canonicalJson(writer)) throw new Error('generated-lock-origin-writer-moved');
+  };
+  assertHeld();
+  const startedAt = new Date().toISOString();
+  if (phase !== 'capture') validateMetadataCaptureProof(source, egress?.captureTree ?? tree, capture);
+  if (phase === 'egress') {
+    if (!egress || !commit) throw new Error('generated-lock-origin-egress-binding');
+    // An unrelated later commit is allowed. Its complete selected metadata and
+    // config population must still equal the retained repair, including absences.
+    await withMetadataMaterialization(runGit, repo, tree, async materialized => {
+      const current = await metadataSelectedIdentity(runGit, repo, f.baseCommit, materialized, tree);
+      const expected = f.selectedInputs.map(row => row.path === f.output.path
+        ? { ...row, kind: 'blob', mode: '100644', oid: f.output.blobOid, sha256: f.output.sha256 } : row);
+      if (canonicalJson(current.selectedInputs) !== canonicalJson(expected) ||
+          canonicalJson(current.configs) !== canonicalJson(f.projectConfig.map(row => row.path))) {
+        throw new Error('generated-lock-origin-egress-selected-inputs');
+      }
+    });
+    await workspaceLockTreeValidator()(runGit, repo, tree);
+  }
+  // Reconstruct eligibility independently of the preparation and retained proof.
+  const selected = await prepareGitSyncMetadataSelectionTree(runGit, repo,
+    { base: f.baseCommit, publishedLibrarySelections: metadataSelectionRequest(f) });
+  if (selected.selectedInputTree !== f.selectedInputTree || selected.baseTree !== f.baseTree ||
+      canonicalJson(selected.publishedLibrarySelections) !==
+        canonicalJson(f.publishedLibrarySelections.map(({ origin: _origin, ...row }) => row))) {
+    throw new Error('generated-lock-origin-selected-vector');
+  }
+  const ids = new Set([...f.publishedLibrarySelections.map(row => row.origin.observationId),
+    ...(capture?.observations.map(row => row.observation.observationId) ?? []), ...(egress?.priorIds ?? [])]);
+  const observations: GitSyncMetadataOriginProof['observations'] = [];
+  for (const row of f.publishedLibrarySelections) {
+    assertHeld();
+    const branch = row.mapping.branch;
+    const observation = metadataOriginObservation.parse(await observeGitlinkOrigin({ url: row.authorizedUrl,
+      ...(branch === null ? {} : { fullRef: branch.startsWith('refs/heads/') ? branch : `refs/heads/${branch}` }) }));
+    assertHeld();
+    const baseline = capture?.observations.find(observed => observed.path === row.path)?.observation ?? row.origin;
+    if (observation.url !== row.authorizedUrl || observation.tip !== baseline.tip ||
+        canonicalJson(observation.authority) !== canonicalJson(baseline.authority) || ids.has(observation.observationId) ||
+        Date.parse(observation.observedAt) < Date.parse(startedAt) || Date.parse(observation.observedAt) > Date.now()) {
+      throw new Error('generated-lock-origin-moved-or-stale');
+    }
+    ids.add(observation.observationId);
+    const containment = await inspectObservedGitlinkContainment({ runGit, repoDir: join(repo, row.path),
+      selectedCommit: row.selectedCommit, observation });
+    if (!containment.contained || containment.selectedTree !== row.selectedTree) throw new Error('generated-lock-origin-containment');
+    observations.push({ path: row.path, observation, tipTree: containment.tipTree });
+  }
+  assertHeld();
+  return metadataOriginProof.parse({ schemaVersion: 1, phase, startedAt, completedAt: new Date().toISOString(), writer,
+    requestId: f.requestId, generation: f.generation, baseCommit: f.baseCommit, selectedInputTree: f.selectedInputTree,
+    tree, commit, remote: egress?.remote ?? null, fullRef: egress?.fullRef ?? null, observations });
+}
+
+/** Recover the existing custody/publication pin; a local CAS never grants egress. */
+async function observeMetadataEgress(runGit: RunGit, repo: string, args: string[],
+  fence: RunGitSyncOpts['writerFence'], priorIds: Set<string>): Promise<GitSyncMetadataOriginProof[]> {
+  const refs = await runGit(['for-each-ref', '--format=%(refname)', SOURCE_CUSTODY_REF_PREFIX], repo);
+  if (refs.code !== 0) throw new Error('generated-lock-egress-custody-unavailable');
+  const proofs: GitSyncMetadataOriginProof[] = [];
+  for (const ref of refs.stdout.split('\n').filter(ref => ref && !ref.endsWith('-publication'))) {
+    const manifest = await runGit(['show', `${ref}:manifest.json`], repo);
+    if (manifest.code !== 0) throw new Error('generated-lock-egress-custody-unavailable');
+    const candidate: GitSyncCandidateCapture = JSON.parse(manifest.stdout);
+    if (candidate.contentSource?.fingerprint.schemaVersion !== 2 ||
+        !candidate.contentSource.fingerprint.publishedLibrarySelections.length) continue;
+    const publication = await runGit(['rev-parse', '--verify', '--quiet', ref + '-publication'], repo);
+    if (publication.code === 1) continue;
+    const pushArgs = args.slice(args.indexOf('push') + 1);
+    const match = /^(?<commit>[a-f0-9]{40}|[a-f0-9]{64}):(?<fullRef>refs\/heads\/.+)$/.exec(pushArgs[1] ?? '');
+    if (publication.code !== 0 || !metadataOid.safeParse(publication.stdout.trim()).success ||
+        pushArgs.length !== 2 || !pushArgs[0] || !match?.groups) throw new Error('generated-lock-egress-publication-unavailable');
+    const { commit, fullRef } = match.groups as { commit: string; fullRef: string };
+    const ancestry = await runGit(['merge-base', '--is-ancestor', publication.stdout.trim(), commit], repo);
+    if (ancestry.code === 1) continue;
+    if (ancestry.code !== 0) throw new Error('generated-lock-egress-history-unavailable');
+    const recovered = await readGitSyncCandidate(runGit, repo, { requestId: candidate.requestId,
+      generation: candidate.generation, base: candidate.base, paths: candidate.paths,
+      contentSource: candidate.contentSource, ...(candidate.dependencies ? { dependencies: candidate.dependencies } : {}) });
+    if (!recovered.ok || recovered.ref !== ref) throw new Error('generated-lock-egress-custody-invalid');
+    const pinTree = await runGit(['rev-parse', '--verify', `${publication.stdout.trim()}^{tree}`], repo);
+    const parents = await runGit(['rev-list', '--parents', '-n', '1', publication.stdout.trim()], repo);
+    if (pinTree.code !== 0 || pinTree.stdout.trim() !== recovered.candidate.tree || parents.code !== 0 ||
+        parents.stdout.trim() !== [publication.stdout.trim(), ...(candidate.base ? [candidate.base] : [])].join(' ')) {
+      throw new Error('generated-lock-egress-publication-pin-mismatch');
+    }
+    const tree = await runGit(['rev-parse', '--verify', `${commit}^{tree}`], repo);
+    if (tree.code !== 0 || !metadataOid.safeParse(tree.stdout.trim()).success) throw new Error('generated-lock-egress-tree-unavailable');
+    const proof = await observeMetadataWriterPhase(runGit, repo, recovered.candidate.contentSource!, tree.stdout.trim(),
+      'egress', fence ?? {}, recovered.candidate.originCapture, commit,
+      { captureTree: recovered.candidate.tree, remote: pushArgs[0], fullRef, priorIds });
+    if (proof) {
+      proof.observations.forEach(row => priorIds.add(row.observation.observationId));
+      proofs.push(proof);
+    }
+  }
+  return proofs;
 }
 
 /**
@@ -6029,10 +6188,6 @@ async function validateGeneratedSource(runGit: RunGit, repo: string, request: Gi
       { base: f.baseCommit, publishedLibrarySelections: metadataSelectionRequest(f) });
     if (selection.baseTree !== f.baseTree || selection.selectedInputTree !== f.selectedInputTree ||
         !same(selection.publishedLibrarySelections, f.publishedLibrarySelections.map(({ origin: _origin, ...row }) => row))) fail('library-vector');
-    // The public route remains root-only until writer-bound capture, pre-CAS
-    // and every-egress origin proofs are wired. Preparation alone grants no
-    // custody/publication authority for a joint request.
-    if (f.publishedLibrarySelections.length) fail('joint-phase-unbound');
   }
   await withMetadataMaterialization(runGit, repo, inputTree ?? f.baseCommit, async materialized => {
     const selected = await metadataSelectedIdentity(runGit, repo, f.baseCommit, materialized, inputTree);
@@ -6247,7 +6402,7 @@ export async function captureGitSyncCandidate(
   runGit: RunGit,
   repoPath: string,
   request: GitSyncCandidateRequest,
-  options: { existingOnly?: boolean; assertHeld?: () => void } = {},
+  options: { existingOnly?: boolean; assertHeld?: () => void; writer?: GitSyncWriterAuthority } = {},
 ): Promise<GitSyncCandidateCaptureResult> {
   // Copy before the first await: caller-owned descriptors/bytes cannot mutate
   // the acknowledged generation while Git is resolving its immutable objects.
@@ -6294,7 +6449,8 @@ export async function captureGitSyncCandidate(
     const identity = { repository, requestId: request.requestId, generation: request.generation };
     const ref = SOURCE_CUSTODY_REF_PREFIX + createHash('sha256').update(canonicalJson(identity)).digest('hex');
     if (source) await validateGeneratedSource(sharedGit, repoPath, request, source, false);
-    const input = { version: source ? 3 as const : 2 as const, kind: 'candidate' as const, ...identity, base: request.base, paths,
+    const joint = source?.fingerprint.schemaVersion === 2 && source.fingerprint.publishedLibrarySelections.length > 0;
+    const input = { version: joint ? 4 as const : source ? 3 as const : 2 as const, kind: 'candidate' as const, ...identity, base: request.base, paths,
       ...(source ? { contentSource: source } : {}),
       ...(dependencies?.length ? { dependencies } : {}) };
     const readCapture = async (): Promise<GitSyncCandidateCaptureResult> => {
@@ -6303,12 +6459,14 @@ export async function captureGitSyncCandidate(
       let candidate: GitSyncCandidateCapture;
       try { candidate = JSON.parse(metadata.stdout); } catch { return custodyRefused('candidate-manifest'); }
       if (!candidate || !oidPattern.test(candidate.tree) || !oidPattern.test(candidate.baseTree) ||
-          canonicalJson(candidate) !== canonicalJson({ ...input, baseTree: candidate.baseTree, tree: candidate.tree })) {
+          canonicalJson(candidate) !== canonicalJson({ ...input, baseTree: candidate.baseTree, tree: candidate.tree,
+            ...(joint ? { originCapture: candidate.originCapture } : {}) })) {
         return custodyRefused('candidate-input-mismatch');
       }
       // v3 is a canonical closed document. This also refuses duplicate JSON
       // keys that JSON.parse alone would silently overwrite during recovery.
       if (source && metadata.stdout !== canonicalJson(candidate) + '\n') return custodyRefused('candidate-manifest-canonical');
+      if (source) validateMetadataCaptureProof(source, candidate.tree, candidate.originCapture);
       const contents = await sharedGit(['ls-tree', '-z', ref], repoPath);
       const rows = contents.stdout.split('\0').filter(Boolean);
       if (contents.code !== 0 || rows.length !== 2 ||
@@ -6374,11 +6532,12 @@ export async function captureGitSyncCandidate(
     const privateGit = opened.site.bindIndex(indexFile);
     try {
       const retain = async (baseTree: string, tree: string): Promise<GitSyncCandidateCaptureResult> => {
-        const candidate: GitSyncCandidateCapture = { ...input, baseTree, tree };
         // A rejected graph must not become this generation's durable custody.
         // Readback repeats the proof after retention; it cannot be the first
         // graph check, since a refused readback would leave a poisoned ref.
         if (source) await validateGeneratedTree(sharedGit, repoPath, tree, source);
+        const originCapture = source ? await observeMetadataWriterPhase(sharedGit, repoPath, source, tree, 'capture', options) : undefined;
+        const candidate: GitSyncCandidateCapture = { ...input, baseTree, tree, ...(originCapture ? { originCapture } : {}) };
         await writeFile(manifestFile, canonicalJson(candidate) + '\n', { mode: 0o600, flag: 'wx' });
         const metadata = await sharedGit(['hash-object', '-w', '--no-filters', '--', manifestFile], repoPath);
         if (metadata.code !== 0 || !oidPattern.test(metadata.stdout.trim())) return custodyRefused('candidate-manifest-write');
@@ -6445,7 +6604,7 @@ export async function captureGitSyncCandidate(
 }
 
 export type GitSyncCandidatePublicationResult =
-  | { status: 'committed' | 'already-published'; commit: string; tree: string }
+  | { status: 'committed' | 'already-published'; commit: string; tree: string; originProofs?: GitSyncMetadataOriginProof[] }
   | { status: 'nothing' }
   | { status: 'cas-refused'; detail: string }
   | { status: 'error'; error: string };
@@ -6463,11 +6622,14 @@ export async function publishGitSyncCandidate(
   request: GitSyncCandidateRequest,
   options: {
     assertHeld: () => void;
+    writer?: GitSyncWriterAuthority;
     beforePublish: (candidate: GitSyncCandidateCapture) => Promise<{ ok: true } | { ok: false; error: string }>;
   },
 ): Promise<GitSyncCandidatePublicationResult> {
   // Freeze the caller descriptor across the asynchronous validation/publication.
   request = structuredClone(request);
+  let publicationCandidate: GitSyncCandidateCapture | undefined;
+  const originProofs: GitSyncMetadataOriginProof[] = [];
   const fencedGit: RunGit = async (args, cwd, opts) => {
     options.assertHeld();
     if (request.contentSource && args[0] === 'update-ref' && args.includes('HEAD')) {
@@ -6475,6 +6637,18 @@ export async function publishGitSyncCandidate(
       // raw predicates and authority again at the actual dispatch boundary.
       const { bytes: _bytes, ...source } = request.contentSource;
       await validateGeneratedSource(runGit, repoPath, request, generatedSourceSchema.parse(source), true);
+      if (publicationCandidate?.contentSource) {
+        const commit = args[args.indexOf('HEAD') + 1]!;
+        const tree = await runGit(['rev-parse', '--verify', `${commit}^{tree}`], repoPath);
+        if (tree.code !== 0 || tree.stdout.trim() !== publicationCandidate.tree) throw new Error('generated-lock-origin-cas-tree');
+        const proof = await observeMetadataWriterPhase(runGit, repoPath, publicationCandidate.contentSource,
+          publicationCandidate.tree, 'pre-cas', options, publicationCandidate.originCapture, commit);
+        if (proof) {
+          const seen = new Set(originProofs.flatMap(prior => prior.observations.map(row => row.observation.observationId)));
+          if (proof.observations.some(row => seen.has(row.observation.observationId))) throw new Error('generated-lock-origin-reused-phase');
+          originProofs.push(proof);
+        }
+      }
       options.assertHeld();
     }
     return runGit(args, cwd, { ...opts,
@@ -6486,6 +6660,7 @@ export async function publishGitSyncCandidate(
     const captured = await captureGitSyncCandidate(fencedGit, repoPath, request, { existingOnly: true, assertHeld: options.assertHeld });
     if (!captured.ok) return { status: 'error', error: captured.error };
     const { candidate, ref } = captured;
+    publicationCandidate = candidate;
     const commitRef = ref + '-publication';
     const pinned = await fencedGit(['rev-parse', '--verify', '--quiet', commitRef], repoPath);
     if (pinned.code !== 0 && pinned.code !== 1) return { status: 'error', error: 'candidate-publication-pin-read' };
@@ -6514,7 +6689,7 @@ export async function publishGitSyncCandidate(
     const privateGit = opened.site.bindIndex(indexFile);
     const seeded = await privateGit(['read-tree', candidate.tree], repoPath);
     if (seeded.code !== 0) return { status: 'error', error: 'candidate-publication-tree-read' };
-    return await publishPrivateIndexCommit(fencedGit, privateGit, repoPath, {
+    const publication = await publishPrivateIndexCommit(fencedGit, privateGit, repoPath, {
       base: candidate.base, baseTree: candidate.baseTree, materializedCommit,
       label: 'candidate publication', reflogMessage: 'git-sync: frozen candidate',
       messageArgs: async () => ['-m', 'sync: publish frozen candidate', '-m', `Papercusp-Candidate: ${ref}`],
@@ -6527,6 +6702,7 @@ export async function publishGitSyncCandidate(
         return { ok: true };
       },
     });
+    return publication.status === 'committed' && originProofs.length ? { ...publication, originProofs } : publication;
   } catch (error) {
     return { status: 'error', error: error instanceof Error && error.message.startsWith('generated-lock-')
       ? error.message : 'candidate-publication-interrupted' };
@@ -9379,14 +9555,17 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   // WI-6554700010018198: collected here rather than threaded through every return
   // branch, so no outcome path can drop it.
   const attribution: AttributionTally[] = [];
-  const out = await runGitSyncPass(slug, opts, (t) => attribution.push(t));
-  return attribution.length > 0 ? { ...out, attribution } : out;
+  const metadataOriginProofs: GitSyncMetadataOriginProof[] = [];
+  const out = await runGitSyncPass(slug, opts, (t) => attribution.push(t), proof => metadataOriginProofs.push(proof));
+  return { ...out, ...(attribution.length ? { attribution } : {}),
+    ...(metadataOriginProofs.length ? { metadataOriginProofs } : {}) };
 }
 
 async function runGitSyncPass(
   slug: string,
   opts: RunGitSyncOpts,
   emitAttribution: (t: AttributionTally) => void,
+  emitMetadataOriginProof: (proof: GitSyncMetadataOriginProof) => void,
 ): Promise<GitSyncOutcome> {
   /**
    * An action-level stall guard can abort the owning fire while a git child is
@@ -9417,6 +9596,7 @@ async function runGitSyncPass(
         env: gitOptions?.env,
         diagnosticTags: gitOptions?.diagnosticTags,
       }));
+  const originObservationIds = new Set<string>();
   const runGit: RunGit = async (args, cwd, gitOptions) => {
     throwIfAborted();
     reportProgress();
@@ -9432,6 +9612,18 @@ async function runGitSyncPass(
         };
       }
       throwIfAborted();
+    }
+    if (gitSubcommand(args) === 'push') {
+      try {
+        const proofs = await observeMetadataEgress(baseRunGit, cwd, args, opts.writerFence, originObservationIds);
+        throwIfAborted();
+        // Retain attempt evidence separately from confirmed remote publication.
+        proofs.forEach(emitMetadataOriginProof);
+        if (proofs.length) opts.writerFence!.assertHeld();
+      } catch (error) {
+        throwIfAborted();
+        return { code: 1, stdout: '', stderr: `git-sync publication refused: ${error instanceof Error ? error.message : String(error)}` };
+      }
     }
     const startedAt = performance.now();
     try {

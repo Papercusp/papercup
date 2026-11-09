@@ -1,12 +1,12 @@
 /** Real-Git capture and frozen-publication contracts in the maintained integration router. */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { captureGitSyncCandidate, readGitSyncCandidate, publishGitSyncCandidate, prepareGeneratedGitSyncCandidateTree, prepareGitSyncMetadataRepair,
-  prepareGitSyncMetadataSelectionTree,
+  prepareGitSyncMetadataSelectionTree, runGitSync, type GitSyncStepRunner,
   SOURCE_CUSTODY_REF_PREFIX, type RunGit, type GitSyncGeneratedLockTreeRequest } from './run-git-sync';
 import { createGitSyncLeaseFence } from './git-sync-lease-fence';
 import { runWithGitSyncPerInstallLease } from './git-sync-action';
@@ -180,17 +180,21 @@ describe('P003 selected library input tree', () => {
     expect(f.git('for-each-ref', '--format=%(refname)', SOURCE_CUSTODY_REF_PREFIX)).toBe('');
   });
 
-  it('resolves v2 from the actual selected library trees and refuses custody until writer phases are bound', async () => {
+  it('resolves v2 from actual selected library trees and binds new capture and CAS observations to the writer', async () => {
     const f = selectedFixture();
     const before = candidateState(f);
     const refs = members.map(row => f.git('-C', row.path, 'for-each-ref', '--format=%(refname):%(objectname)'));
     // The observer's isolated real-network policy has its own real bare-origin
     // suite. This case checks binding/materialization, with no GitHub traffic.
+    let control: 'tip' | 'authority' | 'stale' | 'unavailable' | undefined;
     const observer = vi.spyOn(gitlinkOrigins, 'observeGitlinkOrigin').mockImplementation(async input => {
+      if (control === 'unavailable') throw new Error('direct origin unavailable');
       const row = f.selected[members.findIndex(member => member.url === input.url)]!;
       return { schemaVersion: 1, policy: 'isolated-git-origin-v1',
-        observationId: 'd2366ffc-a597-44fc-9832-5a12bb849fdd', observedAt: new Date().toISOString(), url: input.url,
-        authority: { kind: 'default-head', ref: 'refs/heads/main' }, tip: row.selectedCommit };
+        observationId: control === 'stale' ? 'd2366ffc-a597-44fc-9832-5a12bb849fdd' : randomUUID(),
+        observedAt: control === 'stale' ? '2020-01-01T00:00:00.000Z' : new Date().toISOString(), url: input.url,
+        authority: { kind: 'default-head', ref: control === 'authority' ? 'refs/heads/changed' : 'refs/heads/main' },
+        tip: control === 'tip' ? row.expectedBasePin : row.selectedCommit };
     });
     const source = await prepareGitSyncMetadataRepair(f.runGit, f.repo,
       { requestId: 'selected-v2', generation: 2, base: f.base, publishedLibrarySelections: f.selected }, { log: () => {} });
@@ -224,14 +228,143 @@ describe('P003 selected library input tree', () => {
     expect(f.git('diff-tree', '--no-commit-id', '--name-only', '-r', f.base, prepared.tree))
       .toBe([...members.map(row => row.path), 'package-lock.json'].join('\n'));
     for (const [i, row] of members.entries()) expect(f.git('rev-parse', `${prepared.tree}:${row.path}`)).toBe(f.selected[i]!.selectedCommit);
-    expect(await captureGitSyncCandidate(f.runGit, f.repo, { requestId: 'selected-v2', generation: 2,
-      base: f.base, paths: [...members.map(row => row.path), 'package-lock.json'], contentSource: source }, pilotChecks))
-      .toMatchObject({ ok: false, error: expect.stringContaining('joint-phase-unbound') });
+    const request = { requestId: 'selected-v2', generation: 2,
+      base: f.base, paths: [...members.map(row => row.path), 'package-lock.json'], contentSource: source };
+    expect(await captureGitSyncCandidate(f.runGit, f.repo, request, pilotChecks))
+      .toMatchObject({ ok: false, error: expect.stringContaining('origin-writer-required') });
     expect(candidateState(f)).toEqual(before);
     expect(members.map(row => f.git('-C', row.path, 'for-each-ref', '--format=%(refname):%(objectname)'))).toEqual(refs);
     expect(f.git('for-each-ref', '--format=%(refname)', SOURCE_CUSTODY_REF_PREFIX)).toBe('');
     expect(readdirSync(join(f.repo, '.git')).filter(name => name.startsWith('papercusp-'))).toEqual([]);
-  }, 90_000);
+    const writer = { coordinationDomain: 'fixture-workspace', resource: 'git-sync:fixture',
+      owner: 'fixture-held-owner', lockId: 'fixture-acquired-lock' };
+    const fence = { ...pilotChecks, writer, assertHeld: vi.fn() };
+    const captured = await captureGitSyncCandidate(f.runGit, f.repo, request, fence);
+    if (!captured.ok) throw new Error(captured.error);
+    expect(captured.candidate).toMatchObject({ version: 4, tree: prepared.tree,
+      originCapture: { phase: 'capture', writer, requestId: request.requestId, generation: 2,
+        baseCommit: f.base, selectedInputTree: identity.selectedInputTree, tree: prepared.tree,
+        commit: null, remote: null, fullRef: null } });
+    const captureProof = captured.candidate.originCapture!;
+    expect(captureProof.observations.map(row => row.path)).toEqual(members.map(row => row.path));
+    expect(captureProof.observations.map(row => row.observation.tip)).toEqual(f.selected.map(row => row.selectedCommit));
+    expect(observer).toHaveBeenCalledTimes(4);
+    expect(await readGitSyncCandidate(f.runGit, f.repo, request)).toEqual(captured);
+    expect(observer).toHaveBeenCalledTimes(4); // replay reads the immutable capture, not a replacement baseline
+    for (const changed of ['tip', 'authority', 'stale', 'unavailable'] as const) {
+      control = changed;
+      expect(await publishGitSyncCandidate(f.runGit, f.repo, request, fence)).toMatchObject({ status: 'error' });
+      expect(candidateState(f)).toEqual(before);
+    }
+    control = undefined;
+    const published = await publishGitSyncCandidate(f.runGit, f.repo, request, fence);
+    if (published.status !== 'committed') throw new Error(JSON.stringify(published));
+    expect(published).toMatchObject({ tree: prepared.tree, originProofs: [{ phase: 'pre-cas', writer,
+      requestId: request.requestId, generation: 2, commit: published.commit, tree: prepared.tree }] });
+    const ids = [...identity.publishedLibrarySelections.map(row => row.origin.observationId),
+      ...captureProof.observations.map(row => row.observation.observationId),
+      ...published.originProofs![0]!.observations.map(row => row.observation.observationId)];
+    expect(new Set(ids).size).toBe(6);
+    expect(f.git('rev-parse', 'HEAD')).toBe(published.commit);
+    expect(unpublishedState(f)).toEqual((({ head: _head, ...state }) => state)(before));
+    expect(members.map(row => f.git('-C', row.path, 'for-each-ref', '--format=%(refname):%(objectname)'))).toEqual(refs);
+    expect(await publishGitSyncCandidate(f.runGit, f.repo, request, fence))
+      .toMatchObject({ status: 'already-published', commit: published.commit, tree: prepared.tree });
+    // Exercise the actual per-push dispatch for a pre-existing repair HEAD.
+    // Replay only the commit phase: pending work/index/child refs must stay intact.
+    const remote = mkdtempSync(join(tmpdir(), 'joint-egress-'));
+    roots.push(remote);
+    f.git('init', '--bare', remote);
+    f.git('remote', 'add', 'origin', remote);
+    const step: GitSyncStepRunner = async <T>(name: string, operation: () => Promise<T>): Promise<T> =>
+      name === 'git-sync:pointer-bump'
+        ? { committedLocal: false, dirtyPathCount: 0, committedCount: 0, oversized: [], contentErrors: [], skippedPaths: [] } as T
+        : operation();
+    let lost = false;
+    let loseAfterObservation = false;
+    let retry: 'non-ff' | 'https' | undefined;
+    let reusedId: string | undefined;
+    const originalObserver = observer.getMockImplementation()!;
+    observer.mockImplementation(async input => {
+      const result = await originalObserver(input);
+      if (loseAfterObservation) lost = true;
+      if (reusedId) result.observationId = reusedId;
+      return result;
+    });
+    const transports: string[][] = [];
+    const egressWriter = { ...writer, lockId: 'new-tick-acquired-lock' };
+    const runGit: RunGit = async (args, cwd, options) => {
+      if (args.includes('push')) {
+        transports.push([...args]);
+        expect(lost).toBe(false);
+        if (retry) {
+          const failure = retry === 'non-ff' ? '! [rejected] main -> main (non-fast-forward)'
+            : 'git@github.com: Permission denied (publickey).';
+          retry = undefined;
+          return { code: 1, stdout: '', stderr: failure };
+        }
+      }
+      return f.runGit(args, cwd, options);
+    };
+    const push = (withWriter = true) => runGitSync('test', { repoPath: f.repo, runGit, submodulePaths: [], step,
+      config: { push: true, pushSubmoduleOrigins: false, branch: 'main' }, contentDetectors: [], deletionGuard: false,
+      diffSubjects: false, log: () => {}, ...(withWriter ? { writerFence: { writer: egressWriter,
+        assertHeld: () => { if (lost) throw new Error('owning writer expired'); } } } : {}) });
+    // Every refusal leaves even the first remote ref absent, with no transport.
+    for (const changed of ['tip', 'authority', 'stale', 'unavailable', 'writer', 'lost-writer'] as const) {
+      control = ['writer', 'lost-writer'].includes(changed) ? undefined : changed as typeof control;
+      loseAfterObservation = changed === 'lost-writer';
+      const result = await push(changed !== 'writer');
+      expect(result.status, changed).toBe('error');
+      expect(transports, changed).toEqual([]);
+      expect(f.git('--git-dir', remote, 'for-each-ref', '--format=%(refname)', 'refs/heads')).toBe('');
+      lost = false; loseAfterObservation = false;
+    }
+    control = undefined;
+    const firstPush = await push();
+    expect(firstPush.status).toBe('synced');
+    expect(firstPush.metadataOriginProofs).toMatchObject([{ phase: 'egress', writer: egressWriter,
+      requestId: request.requestId, generation: 2, commit: published.commit, tree: prepared.tree,
+      remote: 'origin', fullRef: 'refs/heads/main' }]);
+    expect(f.git('--git-dir', remote, 'rev-parse', 'refs/heads/main')).toBe(published.commit);
+    expect(transports).toEqual([['push', 'origin', `${published.commit}:refs/heads/main`]]);
+    const firstProof = firstPush.metadataOriginProofs![0]!;
+    expect(new Set([...ids, ...firstProof.observations.map(row => row.observation.observationId)]).size).toBe(8);
+    // A later unrelated HEAD is transported as an exact OID. Each retry gets its
+    // own direct observation, including the process-local HTTPS fallback.
+    for (const failure of ['non-ff', 'https'] as const) {
+      const head = f.git('commit-tree', prepared.tree, '-p', f.git('rev-parse', 'HEAD'), '-m', 'later ancestry');
+      f.git('update-ref', 'HEAD', head);
+      retry = failure; transports.length = 0;
+      const result = await push();
+      expect(result.status).toBe('synced');
+      expect(transports).toHaveLength(2);
+      expect(transports.map(args => args.at(-1))).toEqual([`${head}:refs/heads/main`, `${head}:refs/heads/main`]);
+      expect(result.metadataOriginProofs).toHaveLength(2);
+      expect(result.metadataOriginProofs!.map(proof => [proof.commit, proof.tree, proof.fullRef]))
+        .toEqual([[head, prepared.tree, 'refs/heads/main'], [head, prepared.tree, 'refs/heads/main']]);
+      expect(new Set(result.metadataOriginProofs!.flatMap(proof => proof.observations.map(row => row.observation.observationId))).size).toBe(4);
+      expect(f.git('--git-dir', remote, 'rev-parse', 'refs/heads/main')).toBe(head);
+    }
+    // Reused observations on another attempt, and mutations of metadata at a
+    // later HEAD, fail before transport even when the original repair is ancestor.
+    reusedId = captureProof.observations[0]!.observation.observationId;
+    const remoteHead = f.git('rev-parse', 'HEAD');
+    const later = f.git('commit-tree', prepared.tree, '-p', remoteHead, '-m', 'pending ancestry');
+    f.git('update-ref', 'HEAD', later); transports.length = 0;
+    expect((await push()).status).toBe('error');
+    expect(transports).toEqual([]);
+    reusedId = undefined;
+    // Use the original base tree as a coherent but wrong selected vector.
+    const changed = f.git('commit-tree', identity.baseTree, '-p', later, '-m', 'changed selected inputs');
+    f.git('update-ref', 'HEAD', changed);
+    expect((await push()).status).toBe('error');
+    expect(transports).toEqual([]);
+    expect(f.git('--git-dir', remote, 'rev-parse', 'refs/heads/main')).toBe(remoteHead);
+    expect(unpublishedState(f)).toEqual((({ head: _head, ...state }) => state)(before));
+    expect(members.map(row => f.git('-C', row.path, 'for-each-ref', '--format=%(refname):%(objectname)'))).toEqual(refs);
+    expect(readdirSync(join(f.repo, '.git')).filter(name => name.startsWith('papercusp-'))).toEqual([]);
+  }, 300_000);
 
   it.each(['uncontained', 'unavailable'])('refuses %s origin preparation before launching the resolver', async control => {
     const f = selectedFixture();

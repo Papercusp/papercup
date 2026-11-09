@@ -2707,6 +2707,21 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     expect(releasedResources()).toEqual(['git-sync:papercup']);
   });
 
+  it('binds metadata writer authority to the actual acquired per-install resource and owner', async () => {
+    const result = await runWithGitSyncPerInstallLease('papercup', 'ws-42', async lease => {
+      lease.assertHeld();
+      return lease.writer;
+    });
+    const acquire = tryAcquireResourceMock.mock.calls.map(([, value]) => value as { resource: string; owner: string })
+      .find(value => value.resource === 'git-sync:papercup')!;
+    expect(result).toMatchObject({ state: 'ran', value: {
+      coordinationDomain: 'ws-42', resource: acquire.resource, owner: acquire.owner, lockId: expect.any(String),
+    } });
+    if (result.state !== 'ran') throw new Error('writer lease did not run');
+    expect(result.value.lockId).not.toBe('');
+    expect(releasedResources()).toEqual(['git-sync:papercup']);
+  });
+
   // WI-10006972: the per-install lease is fenced like the per-slug fire's
   // (WI-10006724). Its only operation is the hive-git bootstrap leg, which seeds
   // namespace refs; a leg that lost its lease must not start another write.
