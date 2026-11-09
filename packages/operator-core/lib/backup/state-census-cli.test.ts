@@ -33,6 +33,49 @@ const fixtureHome = vi.hoisted(() => {
 afterAll(() => { vi.unstubAllEnvs(); rmSync(fixtureHome, { recursive: true, force: true }); });
 
 describe('unit census executable exit contract', () => {
+  it('retains completed writer inputs when credential discovery fails', async () => {
+    mkdirSync(join(fixtureHome, 'registry'), { recursive: true });
+    const saved: { phase: string; roots: unknown[]; declarations: unknown[]; catalogEntries: unknown[] }[] = [];
+    const credentials = vi.spyOn(censusProducers, 'accountCredentialCensusProducer')
+      .mockRejectedValue(new Error('credential source unavailable'));
+    try {
+      await expect(discoverRootCensusInputs({
+        checkpointLogDir: join(fixtureHome, 'checkpoint-history'),
+        onDiscoverySnapshot: snapshot => { saved.push(snapshot); },
+      })).rejects.toThrow('credential source unavailable');
+      expect(saved.map(snapshot => snapshot.phase)).toEqual(['before-account-credentials']);
+      expect(saved[0].roots.length).toBeGreaterThan(0);
+      expect(saved[0].declarations.length).toBeGreaterThan(0);
+      expect(saved[0].catalogEntries).toEqual([]);
+      expect(saved[0]).not.toHaveProperty('ok');
+      expect(saved[0]).not.toHaveProperty('wholeInstallVerified');
+    } finally {
+      credentials.mockRestore();
+      rmSync(join(fixtureHome, 'registry'), { recursive: true, force: true });
+    }
+  });
+  it('retains independent producer inputs before a later filesystem discovery failure', async () => {
+    mkdirSync(join(fixtureHome, 'registry'), { recursive: true });
+    let saved: Parameters<NonNullable<NonNullable<Parameters<typeof discoverRootCensusInputs>[0]>['onDiscoverySnapshot']>>[0] | undefined;
+    try {
+      await expect(discoverRootCensusInputs({
+        checkpointLogDir: join(fixtureHome, 'checkpoint-history'),
+        onDiscoverySnapshot: async snapshot => {
+          saved = JSON.parse(JSON.stringify(snapshot));
+          // A consumer cannot mutate the ongoing discovery by retaining inputs.
+          snapshot.roots.length = 0;
+          snapshot.declarations.length = 0;
+        },
+        onStage: stage => { if (stage === 'filesystem-storage-markers') throw new Error('filesystem unavailable'); },
+      })).rejects.toThrow('filesystem unavailable');
+      expect(saved?.phase).toBe('before-filesystem');
+      expect(saved?.roots.length).toBeGreaterThan(0);
+      expect(saved?.declarations.length).toBeGreaterThan(0);
+      expect(saved?.catalogEntries).toEqual([]);
+      expect(saved).not.toHaveProperty('ok');
+      expect(saved).not.toHaveProperty('wholeInstallVerified');
+    } finally { rmSync(join(fixtureHome, 'registry'), { recursive: true, force: true }); }
+  });
   it('merges receipt-backed Stripe declarations while preserving an unproven sibling as residue', async () => {
     const directory = join(fixtureHome, '.config', 'papercusp');
     // The root composition scans the workspace registry even with no entries.

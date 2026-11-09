@@ -9,7 +9,7 @@ import { defaultClonesDir } from '../packages/operator-core/lib/harness/clone-gi
 import postgres from 'postgres';
 import { getHarnessAdminUrl } from '../packages/operator-core/lib/embedded-pg-discovery';
 import { physicalDatabaseCensusEntries, integrationBaselineCensusDeclarations, templateDatabaseCensusDeclarations, unitCensusEntries, installedUnitCensusDeclarations } from '../packages/operator-core/lib/backup/state-census-producers';
-import type { CensusEntry } from '../packages/backup/src/state-census';
+import type { CensusEntry, CensusRoot, CensusDeclaration } from '../packages/backup/src/state-census';
 import { configuredOperatorDatabaseCensusDeclarations, unitDatabaseCensusDeclarations, affectedTestCacheCensusProducer } from '../packages/operator-core/lib/backup/state-census-producers';
 import { migrationProducerTables, migrationDatabaseCensusDeclarations, registeredProjectMigrationSources, canonicalSqlMigrationCensusSources, type MigrationCensusSource } from '../packages/operator-core/lib/backup/state-census-producers';
 import { accountCredentialCensusProducer, runtimeSidefileCensusProducer, cliSetupHomeCensusProducer, templateStoreCensusProducer, planTemplateStoreCensusProducer } from '../packages/operator-core/lib/backup/state-census-producers';
@@ -18,7 +18,7 @@ import { historicalGitBlobIdentityResolver, workspaceTemplateStoreCensusProducer
 import { fileURLToPath } from 'node:url';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { reapArchiveCensusProducer, maintenanceDatabaseCensusDeclarations } from '../packages/operator-core/lib/backup/state-census-producers';
-import { historicalHostedProfileCensusProducer, historicalPlaywrightStateCensusProducer, historicalStripeConfigCensusProducer, recoverHistoricalCensusWriterEvidence, type HostedProfileWriterEvidence, type IndexedCensusWriterEvidence, type PlaywrightStateWriterEvidence } from '../packages/operator-core/lib/backup/state-census-producers';
+import { historicalHostedProfileCensusProducer, historicalPlaywrightStateCensusProducer, historicalStripeConfigCensusProducer, readHistoricalCensusWriterCandidates, recoverHistoricalCensusWriterEvidence, type HostedProfileWriterEvidence, type PlaywrightStateWriterEvidence } from '../packages/operator-core/lib/backup/state-census-producers';
 import { papercuspRoot, papercuspRootForWorkspace } from '../packages/operator-core/lib/papercusp-root';
 import { checkpointLogDirFromEnv } from '../packages/operator-core/lib/release/checkpoint-log-dir';
 
@@ -69,6 +69,10 @@ type RootCensusOptions = {
   hostedProfileEvidence?: HostedProfileWriterEvidence[];
   historicalWriterEvidence?: PlaywrightStateWriterEvidence[];
   onStage?: (stage: string) => void;
+  // Retain completed inputs before host credential/catalog reads and filesystem
+  // discovery. These are intermediate snapshots, never collection verdicts.
+  onDiscoverySnapshot?: (snapshot: { phase: 'before-account-credentials' | 'before-filesystem'; roots: CensusRoot[];
+    declarations: CensusDeclaration[]; catalogEntries: CensusEntry[] }) => void | Promise<void>;
 };
 
 /** Discover serializable producer inputs; this alone is never a census verdict.
@@ -91,18 +95,7 @@ if (args.includes('--host-catalogs') && options.hostedProfileEvidence === undefi
   try {
     // Bound the writer dialect, not its filenames. A new destination is derived
     // from the retained command AST and must still pass installed-content proof.
-    const indexedEvidence = await sql<IndexedCensusWriterEvidence[]>`
-      SELECT 'session-part:' || writer.source_kind || ':' || writer.session_id || ':' || writer.part_idx AS ref,
-        writer.session_id AS "sessionId", writer.text AS "toolInput", writer.ts::text AS "startedAt", receipt.ts::text AS "finishedAt"
-      FROM harness_shared.session_turn_parts writer
-      JOIN harness_shared.session_turn_parts receipt USING (workspace_id, source_kind, session_id)
-      WHERE writer.workspace_id = 'default' AND writer.source_kind = 'codex' AND writer.part_kind = 'tool_use'
-        AND (writer.text LIKE '%writeFileSync(destination,encrypt(%'
-          OR (writer.text LIKE '%chromium%' AND writer.text LIKE '%statePath%')
-          OR writer.text LIKE '%securewrite(%')
-        AND receipt.part_idx = writer.part_idx + 1 AND receipt.part_kind = 'tool_result'
-      LIMIT 101
-    `;
+    const indexedEvidence = await readHistoricalCensusWriterCandidates(sql);
     const recovered = await recoverHistoricalCensusWriterEvidence(indexedEvidence);
     // Full index entries remain usable if their archive was never retained;
     // truncated entries still fail the whole-program validator. Browser state
@@ -149,16 +142,20 @@ const workspaceTemplateStores = await workspaceTemplateStoreCensusProducer(undef
 stage('plan-template-store');
 const planTemplateStore = await planTemplateStoreCensusProducer();
 const hostCatalogs = args.includes('--host-catalogs');
-stage('account-credentials');
-const credentials = await accountCredentialCensusProducer(hostCatalogs
-  ? await readWorkspaceCensusAccounts(readRegistry().workspaces) : []);
 const checkpointLogDir = options.checkpointLogDir ?? checkpointLogDirFromEnv();
-const producers = mergeNestedCensusRoots({ roots: [...installed.roots, ...affectedCache.roots, ...credentials.roots, ...sidefiles.roots, ...setupHomes.roots, ...templateStore.roots, ...workspaceTemplateStores.roots, ...planTemplateStore.roots,
-  { id: 'checkpoint-logs-parent', path: dirname(checkpointLogDir) }], declarations: [...installed.declarations, ...affectedCache.declarations, ...credentials.declarations, ...sidefiles.declarations, ...setupHomes.declarations, ...templateStore.declarations, ...workspaceTemplateStores.declarations, ...planTemplateStore.declarations, {
+const completedProducers = mergeNestedCensusRoots({ roots: [...installed.roots, ...affectedCache.roots, ...sidefiles.roots, ...setupHomes.roots, ...templateStore.roots, ...workspaceTemplateStores.roots, ...planTemplateStore.roots,
+  { id: 'checkpoint-logs-parent', path: dirname(checkpointLogDir) }], declarations: [...installed.declarations, ...affectedCache.declarations, ...sidefiles.declarations, ...setupHomes.declarations, ...templateStore.declarations, ...workspaceTemplateStores.declarations, ...planTemplateStore.declarations, {
   kind: 'path', root: 'checkpoint-logs-parent', name: basename(checkpointLogDir), classification: 'state',
   producer: 'green-checkpoint-log-writer', descendants: true,
   retainedSubtree: { evidenceRef: 'release-config:checkpointLogDir' },
 }] });
+await options.onDiscoverySnapshot?.({ phase: 'before-account-credentials',
+  ...structuredClone({ ...completedProducers, catalogEntries: [] }) });
+stage('account-credentials');
+const credentials = await accountCredentialCensusProducer(hostCatalogs
+  ? await readWorkspaceCensusAccounts(readRegistry().workspaces) : []);
+const producers = mergeNestedCensusRoots({ roots: [...completedProducers.roots, ...credentials.roots],
+  declarations: [...completedProducers.declarations, ...credentials.declarations] });
 const withReapArchive = mergeNestedCensusRoots({ roots: [...producers.roots, ...reapArchive.roots], declarations: [...producers.declarations, ...reapArchive.declarations] });
 producers.roots = withReapArchive.roots;
 producers.declarations = withReapArchive.declarations;
@@ -211,6 +208,8 @@ if (args.includes('--restore-events') || hostCatalogs) {
     }
   } finally { await sql.end(); }
 }
+await options.onDiscoverySnapshot?.({ phase: 'before-filesystem',
+  ...structuredClone({ roots: producers.roots, declarations, catalogEntries }) });
 stage('filesystem-storage-markers');
 for (const [rootIndex, root] of producers.roots.entries()) {
   stage(`filesystem-root-${rootIndex}:postgres-markers`);
