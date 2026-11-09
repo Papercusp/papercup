@@ -1,4 +1,4 @@
-import { renderContextSourceUnit } from './temporal-render';
+import { parseContextSourceVersion, renderContextSourceUnit, type ContextSourceVersion } from './temporal-render';
 
 /**
  * corpus-recall — the PURE selection core for the second retrieval leg
@@ -112,6 +112,8 @@ export interface CorpusLine {
   score: number;
   /** A provenance-only pointer cannot commit the source's operative delivery. */
   operative?: boolean;
+  /** Canonical full-source identity from the registered reader, never an excerpt hash. */
+  sourceVersion?: ContextSourceVersion;
 }
 
 export type CorpusDropReason =
@@ -833,7 +835,9 @@ export function selectCorpusLines(input: SelectCorpusInput): SelectCorpusResult 
       continue;
     }
     spent += line.length;
-    lines.push({ line, handle, score: hit.score, operative: unit.operative });
+    const sourceVersion = parseContextSourceVersion(hit.meta?.contextSourceVersion, ref);
+    lines.push({ line, handle, score: hit.score, operative: unit.operative,
+      ...(sourceVersion ? { sourceVersion } : {}) });
   }
 
   return { lines, dropped };

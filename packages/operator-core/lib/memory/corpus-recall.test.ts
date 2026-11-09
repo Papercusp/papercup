@@ -6,6 +6,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { contextSourceVersion } from './temporal-render';
 import {
   CORPUS_BLOCK_HEADING,
   CORPUS_MAX_ITEMS,
@@ -44,6 +45,30 @@ const wi = (over: Partial<CorpusHit> = {}): CorpusHit => ({
 });
 
 const QUERY = 'why did the http2 transport change on the sse endpoint';
+
+describe('canonical corpus source identity', () => {
+  it('retains the full-source fingerprint independently of the matched unit and rejects a wrong source reference', () => {
+    const fullText = 'http2 transport requires approval.\nUnmatched condition outside the passage.';
+    const input = { namespace: 'corpus:plan:ws', ref: 'plan:papercusp:repair', fullText,
+      revision: null, updatedAt: null,
+      validity: { status: 'current' as const, validAt: null, invalidAt: null, supersededBy: null } };
+    const version = contextSourceVersion(input);
+    const hit: CorpusHit = { source: 'plan', sourceId: 'papercusp:repair',
+      excerpt: 'http2 transport requires approval.', score: .03,
+      meta: { contextUnit: fullText, contextSourceVersion: JSON.stringify(version) } };
+    const select = (value: CorpusHit) => selectCorpusLines({ hits: [value], queryText: QUERY, budgetChars: 2000 }).lines[0];
+    expect(select(hit).sourceVersion).toEqual(version);
+    const corrected = contextSourceVersion({ ...input, fullText: fullText + ' Only after independent review.' });
+    const next = select({ ...hit, meta: { ...hit.meta, contextSourceVersion: JSON.stringify(corrected) } });
+    expect(next.line).toBe(select(hit).line);
+    expect(next.sourceVersion?.fingerprint).not.toBe(version.fingerprint);
+    expect(select({ ...hit, sourceId: 'papercusp:other' }).sourceVersion).toBeUndefined();
+    const pointer = select({ ...hit, meta: { contextSourceVersion: JSON.stringify(version) } });
+    expect(pointer.operative).toBe(false);
+    expect(pointer.sourceVersion).toEqual(version);
+    expect(pointer.line).not.toContain('fullTextSha256');
+  });
+});
 
 describe('task relevance of optional context (paperwork P-019)', () => {
   it('drops administrative-only overlap beside a specific provider-control query', () => {

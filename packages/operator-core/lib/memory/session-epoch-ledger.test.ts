@@ -19,6 +19,9 @@ import {
 } from './session-epoch-ledger';
 import { configureReadCursorStore, InMemoryReadCursorStore, resetReadCursorStore } from '../agent-tools/coordination/read-cursors';
 import type { SqlTag } from './bump-last-surfaced';
+import { contextSourceVersion } from './temporal-render';
+import { alreadySurfacedRefs, stampSurfacedRefsResult, _resetCorpusLedgerLatchForTests } from './corpus-surfaced-ledger';
+import { stampSurfacedResult } from './session-epoch-ledger';
 
 const UUID_A = '11111111-1111-1111-1111-111111111111';
 const UUID_B = '22222222-2222-2222-2222-222222222222';
@@ -29,6 +32,54 @@ describe('exact memory emission receipts', () => {
   const offer = (id = UUID_A, epoch = 3, kind: 'memory' | 'corpus' = 'memory') =>
     memoryFragmentOffer(kind, id, epoch, 'turn-start', `- ${id}: complete snowman ☃`);
   const manifest = ({ rendered: _text, ...row }: ReturnType<typeof offer>) => row;
+
+  it('binds identical emitted bytes to the exact canonical revision without accepting an older native receipt', async () => {
+    const { sql, calls } = makeSql();
+    const source = contextSourceVersion({ namespace: 'memory', ref: UUID_A,
+      fullText: 'same passage\nOnly after approval.', revision: 'r1', updatedAt: null,
+      validity: { status: 'current', validAt: null, invalidAt: null, supersededBy: null },
+      passage: { startByte: 0, endByte: 12 } });
+    const revised = contextSourceVersion({ namespace: 'memory', ref: UUID_A,
+      fullText: 'same passage\nOnly after independent approval.', revision: 'r2', updatedAt: null,
+      validity: source.validity, passage: { startByte: 0, endByte: 12 } });
+    const first = memoryFragmentOffer('memory', UUID_A, 3, 'turn-start', 'same passage', source);
+    const second = memoryFragmentOffer('memory', UUID_A, 3, 'turn-start', first.rendered, revised);
+    expect(first.bodySha256).toBe(second.bodySha256);
+    expect(first.sourceFingerprint).not.toBe(second.sourceFingerprint);
+    source.validity.status = 'retracted';
+    expect(first.sourceVersion?.validity.status).toBe('current');
+    await stageMemoryEmission(sql, 'owner', 'version-token', [second]);
+    const { rendered: _text, sourceVersion: _source, ...native } = second;
+    const inserts = () => calls.filter(c => c.text.includes('INSERT INTO harness_shared.memory_session_surfaced'));
+    const { sourceFingerprint: _fingerprint, ...legacy } = native;
+    for (const fragments of [[legacy], [{ ...native, sourceFingerprint: first.sourceFingerprint }],
+      [{ ...native, sourceFingerprint: 'invalid' }]]) {
+      expect(await confirmMemoryEmission(sql, 'owner', { token: 'version-token', fragments })).toBe(0);
+    }
+    expect(inserts()).toHaveLength(0);
+    expect(await confirmMemoryEmission(sql, 'owner', { token: 'version-token', fragments: [native] })).toBe(1);
+    expect(inserts()).toHaveLength(1);
+  });
+
+  it('keeps distinct source versions in one response and rejects mismatched source references', async () => {
+    const { sql } = makeSql();
+    const source = contextSourceVersion({ namespace: 'memory', ref: UUID_A, fullText: 'complete source',
+      revision: 'r1', updatedAt: null,
+      validity: { status: 'current', validAt: null, invalidAt: null, supersededBy: null } });
+    const row = memoryFragmentOffer('memory', UUID_A, 3, 'orient', 'same emitted body', source);
+    const revised = contextSourceVersion({ namespace: 'memory', ref: UUID_A, fullText: 'complete revised source',
+      revision: 'r2', updatedAt: null, validity: source.validity });
+    const next = memoryFragmentOffer('memory', UUID_A, 3, 'orient', row.rendered, revised);
+    const result = await withMemoryEmissionReceipt(sql, 'owner', [], async () => {
+      collectMemoryEmission('owner', [row, next, { ...row, sourceFingerprint: 'invalid' },
+        { ...row, sourceVersion: undefined }, { ...row, sourceFingerprint: undefined },
+        { ...row, sourceVersion: { ...source, ref: UUID_B } }]);
+      return { instructions: row.rendered };
+    });
+    expect(result._meta?.['papercusp/memoryEmission']).toMatchObject({ fragments: [row, next] });
+    expect(() => memoryFragmentOffer('memory', UUID_B, 3, 'orient', row.rendered, source))
+      .toThrow('source identity');
+  });
 
   it('stages only complete model-visible fragments and confirms them before the next recall', async () => {
     const { sql, calls } = makeSql();
@@ -154,6 +205,35 @@ function makeSql(opts?: {
 
 beforeEach(() => {
   _resetSessionEpochLedgerForTests();
+  _resetCorpusLedgerLatchForTests();
+});
+
+describe.each(['memory', 'corpus'] as const)('version-aware %s ledger', kind => {
+  const id = kind === 'memory' ? UUID_A : 'doc:fixture';
+  const read = (sql: SqlTag, versions: ReadonlyMap<string, string>) => kind === 'memory'
+    ? alreadySurfacedIds(sql, 'owner', 3, [id], versions) : alreadySurfacedRefs(sql, 'owner', 3, [id], versions);
+  it('requires the current exact source fingerprint instead of accepting stable-id, unknown or stale rows', async () => {
+    for (const stored of [undefined, null, 'invalid', 'a'.repeat(64), 'b'.repeat(64)]) {
+      const { sql } = makeSql({ rows: [{ id, ref: id, source_fingerprint: stored }] });
+      expect(await read(sql, new Map([[id, 'b'.repeat(64)]])))
+        .toEqual(new Set(stored === 'b'.repeat(64) ? [id] : []));
+      expect(await read(sql, new Map())).toEqual(new Set());
+    }
+  });
+  it('writes a fingerprint only from a versioned confirmation and keeps legacy writes insert-only', async () => {
+    const { sql, calls } = makeSql();
+    const stamp = kind === 'memory' ? stampSurfacedResult : stampSurfacedRefsResult;
+    expect((await stamp(sql, 'owner', 3, [id], 'claim', 'b'.repeat(64))).ok).toBe(true);
+    expect(calls[0]?.text).toContain('IS DISTINCT FROM EXCLUDED.source_fingerprint');
+    expect(calls[0]?.values).toContain('b'.repeat(64));
+    calls.length = 0;
+    expect((await stamp(sql, 'owner', 3, [id], 'legacy')).ok).toBe(true);
+    expect(calls[0]?.text).toContain('DO NOTHING');
+    expect(calls[0]?.text).not.toContain('DO UPDATE');
+    calls.length = 0;
+    expect(await stamp(sql, 'owner', 3, [id], 'claim', 'invalid')).toEqual({ ok: false, inserted: 0 });
+    expect(calls).toEqual([]);
+  });
 });
 
 describe('currentSessionEpoch', () => {

@@ -1,12 +1,45 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { contextSourceVersion, normalizeContextSourceText, renderContextSourceUnit } from './temporal-render';
+import { contextSourceVersion, memoryEntrySourceVersion, normalizeContextSourceText, parseContextSourceVersion, renderContextSourceUnit } from './temporal-render';
 
 const current = { status: 'current' as const, validAt: null, invalidAt: null, supersededBy: null };
 const source = { namespace: 'memory', ref: 'memory-1', fullText: 'Approve cafe\u0301.\r\nOnly after review.\r',
   revision: null, updatedAt: null, validity: current };
 
 describe('canonical context source versions', () => {
+  it('preserves canonical reader metadata through the bounded search carrier and rejects altered or misaddressed versions', () => {
+    const version = contextSourceVersion(source);
+    expect(parseContextSourceVersion(JSON.stringify(version), source.ref)).toEqual(version);
+    expect(parseContextSourceVersion(JSON.stringify(version), 'another-source')).toBeNull();
+    for (const patch of [{ fingerprint: 'a'.repeat(64) }, { fullTextBytes: 1 },
+      { revision: 'changed' }, { namespace: 'another-namespace' },
+      { validity: { ...current, status: 'retracted' } },
+      { passage: { ...version.passage, endByte: version.fullTextBytes + 1 } },
+      { updatedAt: 'not-a-date' }]) {
+      expect(parseContextSourceVersion(JSON.stringify({ ...version, ...patch }), source.ref)).toBeNull();
+    }
+    for (const wire of [undefined, null, '{}', 'null', '{', 'x'.repeat(4097)])
+      expect(parseContextSourceVersion(wire, source.ref)).toBeNull();
+  });
+
+  it('binds full memory bodies and reader validity while retaining unknown metadata and refusing malformed timestamps', () => {
+    const entry = { id: 'memory-1', scope: 'harness:fixture', text: 'only after approval' };
+    const unknown = memoryEntrySourceVersion(entry)!;
+    expect(unknown).toMatchObject({ namespace: 'memory:harness:fixture', ref: entry.id,
+      revision: null, updatedAt: null, validity: { status: 'unknown', invalidAt: null } });
+    const metadata = { revision: 'r2', updated_at: '2026-11-09T10:00:00-05:00',
+      validity: { status: 'superseded', valid_at: '2026-11-08T00:00:00Z',
+        invalid_at: '2026-11-09T15:00:00Z', superseded_by: 'memory-2' } };
+    const closed = memoryEntrySourceVersion({ ...entry, metadata })!;
+    expect(closed).toMatchObject({ revision: 'r2', updatedAt: '2026-11-09T15:00:00.000Z',
+      validity: { status: 'superseded', invalidAt: '2026-11-09T15:00:00.000Z', supersededBy: 'memory-2' } });
+    expect(closed.fingerprint).not.toBe(unknown.fingerprint);
+    expect(memoryEntrySourceVersion({ ...entry, text: entry.text + ' and review' })?.fingerprint).not.toBe(unknown.fingerprint);
+    expect(memoryEntrySourceVersion({ ...entry, scope: 'other' })?.fingerprint).not.toBe(unknown.fingerprint);
+    expect(memoryEntrySourceVersion({ ...entry, metadata: { updated_at: 'bad-clock' } })).toBeNull();
+    expect(memoryEntrySourceVersion({ ...entry, metadata: { validity: { invalid_at: {} } } })).toBeNull();
+  });
+
   it('normalizes NFC and newlines without losing whitespace or the final condition', () => {
     const canonical = 'Approve café.\nOnly after review.\n';
     expect(normalizeContextSourceText(source.fullText)).toBe(canonical);

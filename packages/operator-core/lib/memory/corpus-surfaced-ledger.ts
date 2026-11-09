@@ -50,12 +50,23 @@ export async function alreadySurfacedRefs(
   sessionId: string,
   epoch: number,
   refs: readonly string[],
+  sourceFingerprints?: ReadonlyMap<string, string>,
 ): Promise<Set<string>> {
   const empty = new Set<string>();
   if (!sessionId || relationMissing || refs.length === 0) return empty;
   const wanted = refs.filter((r) => typeof r === 'string' && r.length > 0);
   if (wanted.length === 0) return empty;
   try {
+    if (sourceFingerprints) {
+      const rows = await sql<{ ref: string; source_fingerprint: string | null }[]>`
+        SELECT ref, source_fingerprint FROM harness_shared.corpus_session_surfaced
+        WHERE session_id = ${sessionId} AND epoch = ${epoch}
+          AND ref = ANY(${wanted as string[]}::text[])
+      `;
+      return new Set(rows.filter(row => typeof row.source_fingerprint === 'string' &&
+        /^[a-f0-9]{64}$/.test(row.source_fingerprint) &&
+        row.source_fingerprint === sourceFingerprints.get(row.ref)).map(row => row.ref));
+    }
     const rows = (await sql<{ ref: string }[]>`
       SELECT ref FROM harness_shared.corpus_session_surfaced
        WHERE session_id = ${sessionId}
@@ -87,12 +98,22 @@ export async function stampSurfacedRefs(
 /** DB uniqueness decides which competing receipt commits this reference. */
 export async function stampSurfacedRefsResult(
   sql: SqlTag, sessionId: string, epoch: number, refs: readonly string[], port: string,
+  sourceFingerprint?: string,
 ): Promise<{ ok: boolean; inserted: number }> {
   if (!sessionId || relationMissing) return { ok: false, inserted: 0 };
+  if (sourceFingerprint !== undefined && !/^[a-f0-9]{64}$/.test(sourceFingerprint)) return { ok: false, inserted: 0 };
   const wanted = [...new Set(refs.filter((r) => typeof r === 'string' && r.length > 0))];
   if (wanted.length === 0) return { ok: true, inserted: 0 };
   try {
-    const rows = await sql<unknown[]>`
+    const rows = sourceFingerprint !== undefined ? await sql<unknown[]>`
+      INSERT INTO harness_shared.corpus_session_surfaced (session_id, epoch, ref, port, source_fingerprint)
+      SELECT ${sessionId}, ${epoch}, r, ${port}, ${sourceFingerprint}
+        FROM unnest(${wanted as string[]}::text[]) AS r
+      ON CONFLICT (session_id, epoch, ref) DO UPDATE
+        SET source_fingerprint = EXCLUDED.source_fingerprint, port = EXCLUDED.port, surfaced_at = now()
+        WHERE corpus_session_surfaced.source_fingerprint IS DISTINCT FROM EXCLUDED.source_fingerprint
+      RETURNING ref
+    ` : await sql<unknown[]>`
       INSERT INTO harness_shared.corpus_session_surfaced (session_id, epoch, ref, port)
       SELECT ${sessionId}, ${epoch}, r, ${port}
         FROM unnest(${wanted as string[]}::text[]) AS r

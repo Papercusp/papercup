@@ -37,6 +37,39 @@ export interface ContextSourceVersion {
   fingerprint: string;
 }
 
+function sourceVersionFingerprint(version: Omit<ContextSourceVersion, 'fingerprint'>): string {
+  return createHash('sha256').update(JSON.stringify([version.schemaVersion, version.normalizer,
+    version.namespace, version.ref, version.revision, version.updatedAt, version.validity.status,
+    version.validity.validAt, version.validity.invalidAt, version.validity.supersededBy,
+    version.fullTextSha256, version.fullTextBytes, version.passage.startByte,
+    version.passage.endByte, version.passage.sha256])).digest('hex');
+}
+
+/** Read the content-free metadata carried by the registered search adapters.
+ * Malformed, altered or misaddressed metadata must permit replay. */
+export function parseContextSourceVersion(wire: unknown, ref: string): ContextSourceVersion | null {
+  if (typeof wire !== 'string' || wire.length > 4_096) return null;
+  try {
+    const version: ContextSourceVersion = JSON.parse(wire);
+    const nullableText = (value: unknown) => value === null || typeof value === 'string';
+    const instant = (value: unknown) => value === null ||
+      (typeof value === 'string' && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value);
+    const hash = (value: unknown) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+    if (!version || version.schemaVersion !== 'context-source-version-v1' ||
+        version.normalizer !== CONTEXT_TEXT_NORMALIZER || typeof version.namespace !== 'string' || !version.namespace ||
+        version.ref !== ref || !nullableText(version.revision) || !instant(version.updatedAt) ||
+        !version.validity || !['current', 'superseded', 'retracted', 'expired', 'unknown'].includes(version.validity.status) ||
+        !instant(version.validity.validAt) || !instant(version.validity.invalidAt) ||
+        !nullableText(version.validity.supersededBy) || !hash(version.fullTextSha256) ||
+        !Number.isSafeInteger(version.fullTextBytes) || version.fullTextBytes < 0 || !version.passage ||
+        !Number.isSafeInteger(version.passage.startByte) || !Number.isSafeInteger(version.passage.endByte) ||
+        version.passage.startByte < 0 || version.passage.endByte < version.passage.startByte ||
+        version.passage.endByte > version.fullTextBytes || !hash(version.passage.sha256) ||
+        !hash(version.fingerprint) || sourceVersionFingerprint(version) !== version.fingerprint) return null;
+    return version;
+  } catch { return null; }
+}
+
 /** The caller must possess the canonical full source. A search excerpt or
  * contextUnit alone cannot establish this identity. Validity is explicit
  * reader metadata, never inferred from recalled text or a missing field. */
@@ -72,14 +105,36 @@ export function contextSourceVersion(input: {
   const updatedAt = instant(input.updatedAt);
   const fullTextSha256 = sha256(bytes);
   const passage = { startByte, endByte, sha256: sha256(bytes.subarray(startByte, endByte)) };
-  // Fixed field order is the wire contract; input object key order is irrelevant.
-  const fingerprint = sha256(JSON.stringify(['context-source-version-v1', CONTEXT_TEXT_NORMALIZER,
-    input.namespace, input.ref, input.revision, updatedAt, validity.status, validity.validAt,
-    validity.invalidAt, validity.supersededBy, fullTextSha256, bytes.length,
-    passage.startByte, passage.endByte, passage.sha256]));
-  return { schemaVersion: 'context-source-version-v1', normalizer: CONTEXT_TEXT_NORMALIZER,
+  const version: Omit<ContextSourceVersion, 'fingerprint'> = {
+    schemaVersion: 'context-source-version-v1', normalizer: CONTEXT_TEXT_NORMALIZER,
     namespace: input.namespace, ref: input.ref, revision: input.revision, updatedAt, validity,
-    fullTextSha256, fullTextBytes: bytes.length, passage, fingerprint };
+    fullTextSha256, fullTextBytes: bytes.length, passage };
+  return { ...version, fingerprint: sourceVersionFingerprint(version) };
+}
+
+/** MemoryBackend.text is the full stored body. Missing reader metadata stays
+ * unknown; malformed metadata permits replay instead of suppressing a source. */
+export function memoryEntrySourceVersion(entry: {
+  id: string; scope: string; text: string; metadata?: Record<string, unknown>;
+}): ContextSourceVersion | null {
+  try {
+    const metadata = entry.metadata ?? {};
+    const raw = metadata.validity;
+    const validity = raw && typeof raw === 'object' && !Array.isArray(raw)
+      ? raw as Record<string, unknown> : {};
+    const status = ['current', 'superseded', 'retracted', 'expired'].includes(String(validity.status))
+      ? validity.status as ContextSourceVersion['validity']['status'] : 'unknown';
+    const timestamp = (value: unknown): string | null => {
+      if (value == null) return null;
+      if (typeof value === 'string' || typeof value === 'number' || value instanceof Date) return new Date(value).toISOString();
+      throw new Error('Invalid source timestamp');
+    };
+    return contextSourceVersion({ namespace: `memory:${entry.scope}`, ref: entry.id, fullText: entry.text,
+      revision: typeof metadata.revision === 'string' ? metadata.revision : null,
+      updatedAt: timestamp(metadata.updated_at ?? metadata.updatedAt),
+      validity: { status, validAt: timestamp(validity.valid_at), invalidAt: timestamp(validity.invalid_at),
+        supersededBy: typeof validity.superseded_by === 'string' ? validity.superseded_by : null } });
+  } catch { return null; }
 }
 
 /** Source content is quoted evidence. A size limit may replace a whole unit

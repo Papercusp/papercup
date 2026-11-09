@@ -28,20 +28,33 @@
 import type { SqlTag } from './bump-last-surfaced';
 import { createHash, randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import type { ContextSourceVersion } from './temporal-render';
 
 /** Private host metadata; no recalled plaintext is persisted in a receipt. */
 export type MemoryFragmentManifest = {
   kind: 'memory' | 'corpus'; id: string; epoch: number; port: string;
   bodySha256: string; bodyBytes: number;
+  /** Canonical source identity, independent of the emitted/redacted bytes. */
+  sourceFingerprint?: string;
 };
-export type MemoryFragmentOffer = MemoryFragmentManifest & { rendered: string };
+export type MemoryFragmentOffer = MemoryFragmentManifest & {
+  rendered: string;
+  /** Host-side metadata retained in the staged receipt, never recalled prose. */
+  sourceVersion?: ContextSourceVersion;
+};
 export type PreparedMemoryBlock = { text: string; fragments: MemoryFragmentOffer[] };
 export type MemoryEmissionConfirmation = { token: string; fragments: MemoryFragmentManifest[] };
 
 export function memoryFragmentOffer(
   kind: MemoryFragmentManifest['kind'], id: string, epoch: number, port: string, rendered: string,
+  sourceVersion?: ContextSourceVersion,
 ): MemoryFragmentOffer {
+  if (sourceVersion && (sourceVersion.ref !== id || !/^[a-f0-9]{64}$/.test(sourceVersion.fingerprint))) {
+    throw new Error('Memory fragment source identity does not match its reference');
+  }
   return { kind, id, epoch, port, rendered,
+    ...(sourceVersion ? { sourceFingerprint: sourceVersion.fingerprint,
+      sourceVersion: { ...sourceVersion, validity: { ...sourceVersion.validity }, passage: { ...sourceVersion.passage } } } : {}),
     bodySha256: createHash('sha256').update(rendered).digest('hex'), bodyBytes: Buffer.byteLength(rendered) };
 }
 
@@ -52,11 +65,16 @@ function validFragment(row: MemoryFragmentManifest): boolean {
   return !!row && (row.kind === 'memory' || row.kind === 'corpus') && typeof row.id === 'string' &&
     row.id.length > 0 && row.id.length <= 1000 && Number.isSafeInteger(row.epoch) && row.epoch >= 0 &&
     typeof row.port === 'string' && row.port.length > 0 && row.port.length <= 100 &&
-    /^[a-f0-9]{64}$/.test(row.bodySha256) && Number.isSafeInteger(row.bodyBytes) && row.bodyBytes > 0;
+    /^[a-f0-9]{64}$/.test(row.bodySha256) && Number.isSafeInteger(row.bodyBytes) && row.bodyBytes > 0 &&
+    (row.sourceFingerprint === undefined || (typeof row.sourceFingerprint === 'string' && /^[a-f0-9]{64}$/.test(row.sourceFingerprint)));
+}
+function validOffer(row: MemoryFragmentOffer): boolean {
+  return validFragment(row) && (row.sourceFingerprint === undefined ? row.sourceVersion === undefined :
+    !!row.sourceVersion && row.sourceVersion.ref === row.id && row.sourceVersion.fingerprint === row.sourceFingerprint);
 }
 const sameFragment = (a: MemoryFragmentManifest, b: MemoryFragmentManifest) =>
   a.kind === b.kind && a.id === b.id && a.epoch === b.epoch && a.port === b.port &&
-  a.bodySha256 === b.bodySha256 && a.bodyBytes === b.bodyBytes;
+  a.bodySha256 === b.bodySha256 && a.bodyBytes === b.bodyBytes && a.sourceFingerprint === b.sourceFingerprint;
 
 // Extend the existing ledger rather than adding a parallel delivery service.
 // Native tool dispatch can invoke recall through several nested helpers. Scope
@@ -75,7 +93,7 @@ export function collectMemoryEmission(ownerId: string | undefined, fragments: re
   if (!scope?.active || scope.ownerId !== ownerId) return;
   for (const row of fragments) {
     if (scope.fragments.length >= 128) break;
-    if (validFragment(row) && !scope.fragments.some(other => sameFragment(row, other))) scope.fragments.push(row);
+    if (validOffer(row) && !scope.fragments.some(other => sameFragment(row, other))) scope.fragments.push(row);
   }
 }
 
@@ -129,7 +147,7 @@ export async function stageMemoryEmission(
   sql: SqlTag, ownerId: string, token: string, offers: readonly MemoryFragmentOffer[],
 ): Promise<void> {
   if (!emissionToken(token) || offers.length > 128) throw new Error('Invalid memory emission offer');
-  const fragments = offers.filter(validFragment).map(({ rendered: _text, ...manifest }) => manifest);
+  const fragments = offers.filter(validOffer).map(({ rendered: _text, ...manifest }) => manifest);
   if (!fragments.length) return;
   const { stage } = await import('../agent-tools/coordination/read-cursors');
   await stage(ownerId, EMISSION_SURFACE_PREFIX + token,
@@ -172,8 +190,8 @@ export async function confirmMemoryEmission(
   let inserted = 0;
   for (const row of delivered) {
     const stamped = row.kind === 'memory'
-      ? await stampSurfacedResult(sql, ownerId, row.epoch, [row.id], row.port)
-      : await stampSurfacedRefsResult(sql, ownerId, row.epoch, [row.id], row.port);
+      ? await stampSurfacedResult(sql, ownerId, row.epoch, [row.id], row.port, row.sourceFingerprint)
+      : await stampSurfacedRefsResult(sql, ownerId, row.epoch, [row.id], row.port, row.sourceFingerprint);
     succeeded = stamped.ok && succeeded;
     inserted += stamped.inserted;
   }
@@ -267,12 +285,24 @@ export async function alreadySurfacedIds(
   sessionId: string,
   epoch: number,
   memoryIds: readonly string[],
+  sourceFingerprints?: ReadonlyMap<string, string>,
 ): Promise<Set<string>> {
   const empty = new Set<string>();
   if (!sessionId || relationMissing || memoryIds.length === 0) return empty;
   const ids = memoryIds.filter((id) => typeof id === 'string' && UUID_SHAPE.test(id));
   if (ids.length === 0) return empty;
   try {
+    if (sourceFingerprints) {
+      const rows = await sql<{ id: string; source_fingerprint: string | null }[]>`
+        SELECT memory_id::text AS id, source_fingerprint
+        FROM harness_shared.memory_session_surfaced
+        WHERE session_id = ${sessionId} AND epoch = ${epoch}
+          AND memory_id = ANY(${ids}::uuid[])
+      `;
+      return new Set(rows.filter(row => typeof row.source_fingerprint === 'string' &&
+        /^[a-f0-9]{64}$/.test(row.source_fingerprint) &&
+        row.source_fingerprint === sourceFingerprints.get(row.id)).map(row => row.id));
+    }
     const rows = (await sql<{ id: string }[]>`
       SELECT memory_id::text AS id
       FROM harness_shared.memory_session_surfaced
@@ -301,15 +331,29 @@ export async function stampSurfaced(
   return (await stampSurfacedResult(sql, sessionId, epoch, memoryIds, port)).ok;
 }
 
-/** Preserve the boolean writer API while exposing the DB's atomic insert count
- * to receipt confirmation. An ON CONFLICT no-op is not a second commit. */
+/** Expose the DB's atomic insert/revision-change count to confirmation.
+ * Same-version receipts are no-ops. A delayed old receipt can permit replay of
+ * a newer source, but its fingerprint cannot suppress that newer source. */
 export async function stampSurfacedResult(
   sql: SqlTag, sessionId: string, epoch: number, memoryIds: readonly string[], port: string,
+  sourceFingerprint?: string,
 ): Promise<{ ok: boolean; inserted: number }> {
   if (!sessionId || relationMissing) return { ok: false, inserted: 0 };
-  const ids = memoryIds.filter((id) => typeof id === 'string' && UUID_SHAPE.test(id));
+  if (sourceFingerprint !== undefined && !/^[a-f0-9]{64}$/.test(sourceFingerprint)) return { ok: false, inserted: 0 };
+  const ids = [...new Set(memoryIds.filter((id) => typeof id === 'string' && UUID_SHAPE.test(id)))];
   if (ids.length === 0) return { ok: true, inserted: 0 };
   try {
+    if (sourceFingerprint !== undefined) {
+      const rows = await sql<unknown[]>`
+        INSERT INTO harness_shared.memory_session_surfaced (session_id, epoch, memory_id, port, source_fingerprint)
+        SELECT ${sessionId}, ${epoch}, unnest(${ids}::uuid[]), ${port}, ${sourceFingerprint}
+        ON CONFLICT (session_id, epoch, memory_id) DO UPDATE
+          SET source_fingerprint = EXCLUDED.source_fingerprint, port = EXCLUDED.port, surfaced_at = now()
+          WHERE memory_session_surfaced.source_fingerprint IS DISTINCT FROM EXCLUDED.source_fingerprint
+        RETURNING memory_id
+      `;
+      return { ok: true, inserted: rows.length };
+    }
     const rows = await sql<unknown[]>`
       INSERT INTO harness_shared.memory_session_surfaced (session_id, epoch, memory_id, port)
       SELECT ${sessionId}, ${epoch}, unnest(${ids}::uuid[]), ${port}

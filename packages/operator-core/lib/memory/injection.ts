@@ -55,7 +55,7 @@ import {
 import { lexicalQueryText, retrievalQueryText, toRecallQuery, type RecallQueryInput } from './recall-query';
 import { memoryTierOf } from './two-tier';
 import { jevFunnelEntry, jevMemoryBudgetMs, runJevMemoryGate } from './jev-memory-gate';
-import { annotateSupersededMemory, renderContextSourceUnit } from './temporal-render';
+import { annotateSupersededMemory, renderContextSourceUnit, memoryEntrySourceVersion } from './temporal-render';
 import { systemDistinctId } from '../flag-distinct-id';
 import {
   MEMORY_INJECT_TIMEOUT_MS,
@@ -933,11 +933,14 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
         try {
           const { sql } = getOrgPg();
           const { alreadySurfacedRefs } = await import('./corpus-surfaced-ledger');
+          const versions = new Map(lines.flatMap(line => line.sourceVersion
+            ? [[line.handle.ref, line.sourceVersion.fingerprint] as const] : []));
           const seen = await deadline.run(() => alreadySurfacedRefs(
             sql,
             sessionId,
             epoch,
             lines.map((l) => l.handle.ref),
+            versions,
           ), 'corpus dedup');
           if (seen.size > 0) {
             const before = lines.length;
@@ -963,7 +966,7 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
         lines: lines.map((l) => l.line),
         refs: lines.map((l) => l.handle.ref),
         fragments: sessionId ? lines.filter(l => l.operative !== false).map(l => memoryFragmentOffer('corpus', l.handle.ref, epoch,
-          input.session?.port ?? 'injection', l.line)) : [],
+          input.session?.port ?? 'injection', l.line, l.sourceVersion)) : [],
         embedderAvailable: res.embedderAvailable,
         candidateCount: res.candidateCount,
         gate,
@@ -1636,7 +1639,15 @@ async function buildBlockInner(
             if (input.session?.sessionId) {
               const session = input.session;
               sessionEpoch = session.epoch ?? (await deadline.run(() => currentSessionEpoch(sql, session.sessionId), 'memory epoch'));
-              suppressed = await deadline.run(() => alreadySurfacedIds(sql, session.sessionId, sessionEpoch!, candidateIds), 'memory dedup');
+              const versions = new Map<string, string>();
+              const ambiguous = new Set<string>();
+              for (const entry of [...userResults, ...harnessHits.map(({ hit }) => hit), ...hiveHits.map(({ hit }) => hit)]) {
+                const version = memoryEntrySourceVersion(entry);
+                if (!version || (versions.has(entry.id) && versions.get(entry.id) !== version.fingerprint)) ambiguous.add(entry.id);
+                else versions.set(entry.id, version.fingerprint);
+              }
+              for (const id of ambiguous) versions.delete(id);
+              suppressed = await deadline.run(() => alreadySurfacedIds(sql, session.sessionId, sessionEpoch!, candidateIds, versions), 'memory dedup');
             } else {
               suppressed = await deadline.run(() => recentlySurfacedIds(sql, candidateIds, reinjectWindowMs()), 'memory dedup');
             }
@@ -1854,7 +1865,8 @@ async function buildBlockInner(
       }
       admittedEntries.push(entry);
       if (operative && input.session?.sessionId && sessionEpoch !== null && typeof entry.id === 'string') {
-        fragments?.push(memoryFragmentOffer('memory', entry.id, sessionEpoch, input.session.port ?? 'injection', redactSensitiveText(line)));
+        fragments?.push(memoryFragmentOffer('memory', entry.id, sessionEpoch, input.session.port ?? 'injection',
+          redactSensitiveText(line), memoryEntrySourceVersion(entry) ?? undefined));
       }
     }
     // P-002: the delivered end of the funnel. `admitted` counts CONTENT lines, so

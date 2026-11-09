@@ -6,7 +6,7 @@ import * as recallStaleness from './recall-staleness';
 import * as flagServer from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { resetOperatorCacheForTests } from '../cache/instance';
-import { renderContextSourceUnit } from './temporal-render';
+import { contextSourceVersion, renderContextSourceUnit } from './temporal-render';
 import { getOrgPg } from '@papercusp/db-org';
 import { stageMemoryEmission, confirmMemoryEmission } from './session-epoch-ledger';
 import { configureReadCursorStore, InMemoryReadCursorStore, resetReadCursorStore } from '../agent-tools/coordination/read-cursors';
@@ -1806,6 +1806,27 @@ describe('buildMemoryContextBlock', () => {
     expect(scopes).toEqual([['harness:papercup']]);
   });
 
+  it('delivers a same-epoch correction under the same memory id and suppresses only its confirmed canonical version', async () => {
+    const id = '11111111-1111-4111-8111-111111111111';
+    const input = { userId: 'u1', workspaceId: 'ws', harnessSlugs: [], potSlugs: [],
+      queryContext: 'zephyrrepair approval', budgetChars: 1800,
+      session: { sessionId: 'su-source-correction', epoch: 3, port: 'turn-start' } };
+    useBackend(mockBackend([{ id, text: 'zephyrrepair requires approval before execution' }]));
+    const first = await prepareMemoryContextBlock(input);
+    const firstFragment = first!.fragments.find(row => row.kind === 'memory')!;
+    expect(firstFragment.sourceVersion?.fullTextSha256).toEqual(expect.stringMatching(/^[a-f0-9]{64}$/));
+    sqlMockState.rows = [{ id, source_fingerprint: firstFragment.sourceFingerprint }];
+    const unchanged = await prepareMemoryContextBlock(input);
+    expect(unchanged?.fragments ?? []).toEqual([]);
+    useBackend(mockBackend([{ id, text: 'zephyrrepair requires independent approval before execution' }]));
+    const corrected = await prepareMemoryContextBlock(input);
+    const correctedFragment = corrected!.fragments.find(row => row.kind === 'memory')!;
+    expect(corrected?.text).toContain('independent approval');
+    expect(correctedFragment.sourceFingerprint).not.toBe(firstFragment.sourceFingerprint);
+    sqlMockState.rows = [{ id, source_fingerprint: correctedFragment.sourceFingerprint }];
+    expect((await prepareMemoryContextBlock(input))?.fragments ?? []).toEqual([]);
+  });
+
   it('dedups a memory surfaced within the watermark window (D-006)', async () => {
     const stale = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
     const fresh = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
@@ -2662,9 +2683,41 @@ describe('records the corpus admission funnel on the same recall row (P-009)', (
 
   it('counts cross-moment corpus dedup separately from pure selection drops', async () => {
     corpusIoResult = oneLine();
-    sqlMockState.rows = [{ ref: 'work-item:WI-6512', epoch: 0 }];
+    const sourceVersion = contextSourceVersion({ namespace: 'corpus:work_item:ws', ref: 'work-item:WI-6512',
+      fullText: 'canonical body', revision: null, updatedAt: null,
+      validity: { status: 'unknown', validAt: null, invalidAt: null, supersededBy: null } });
+    corpusIoResult.lines[0].sourceVersion = sourceVersion;
+    sqlMockState.rows = [{ ref: 'work-item:WI-6512', epoch: 0, source_fingerprint: sourceVersion.fingerprint }];
     const corpus = await run(true);
     expect(corpus).toMatchObject({ selected: 1, admitted: 0, sessionDedup: 1 });
+  });
+
+  it('replays corpus sources with missing or stale canonical identities and offers the current version to the native receipt seam', async () => {
+    useBackend(mockBackend([]));
+    const ref = 'plan:papercusp:repair';
+    const body = 'http2 transport requires approval';
+    const input = { namespace: 'corpus:plan:ws', ref, fullText: body, revision: 'r1', updatedAt: null,
+      validity: { status: 'current' as const, validAt: null, invalidAt: null, supersededBy: null } };
+    const first = contextSourceVersion(input);
+    const corrected = contextSourceVersion({ ...input, fullText: body + ' and independent review', revision: 'r2' });
+    const line = { line: `- [plan] source-evidence ${JSON.stringify(body)}`, score: 1, operative: true,
+      handle: { kind: 'plan' as const, ref, query: ['http2'], resolve: 'plans:get' } };
+    const recall = { userId: 'u1', workspaceId: 'ws', queryContext: 'http2 transport approval',
+      session: { sessionId: 'su-corpus-version', epoch: 2, port: 'mid-turn' } };
+    for (const persisted of [{ ref }, { ref, source_fingerprint: first.fingerprint }]) {
+      sqlMockState.rows = [persisted];
+      corpusIoResult = oneLine({ lines: [{ ...line, sourceVersion: corrected }] });
+      const result = await prepareMemoryContextBlock(recall);
+      expect(result?.text).toContain(body);
+      expect(result?.fragments.filter(fragment => fragment.kind === 'corpus')).toMatchObject([
+        { id: ref, sourceFingerprint: corrected.fingerprint, sourceVersion: corrected },
+      ]);
+    }
+    sqlMockState.rows = [{ ref, source_fingerprint: corrected.fingerprint }];
+    corpusIoResult = oneLine({ lines: [{ ...line, sourceVersion: corrected }] });
+    expect((await prepareMemoryContextBlock(recall))?.fragments ?? []).toEqual([]);
+    corpusIoResult = oneLine({ lines: [line] });
+    expect((await prepareMemoryContextBlock(recall))?.text).toContain(body);
   });
 
   it('records null when the corpus leg did not return a typed result', async () => {
