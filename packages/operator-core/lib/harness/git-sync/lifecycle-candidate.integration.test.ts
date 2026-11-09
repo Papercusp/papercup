@@ -418,12 +418,17 @@ describe('P003 generated custody', () => {
       // workspace population so the unrelated-graph guard stays meaningful.
       const lock = JSON.parse(readFileSync(join(f.repo, 'package-lock.json'), 'utf8'));
       lock.packages[''] = manifest;
-      writeFileSync(join(f.repo, 'package-lock.json'), JSON.stringify(lock));
       const archiveRoot = mkdtempSync(join(tmpdir(), 'git-sync-archive-')); roots.push(archiveRoot);
       mkdirSync(join(archiveRoot, 'package'));
       writeFileSync(join(archiveRoot, 'package/package.json'), '{"name":"archive-pin","version":"1.0.0"}');
       const tar = spawnSync('tar', ['-czf', join(f.repo, 'archive.tgz'), '-C', archiveRoot, 'package'], { timeout: 30_000 });
       expect(tar.status).toBe(0);
+      // Archive custody is the subject here; adding an unrelated dependency
+      // during repair must still be refused. Seed its independently known
+      // locked identity from the actual fixture bytes before selecting BASE.
+      lock.packages['node_modules/archive-pin'] = { version: '1.0.0', resolved: 'file:archive.tgz',
+        integrity: 'sha512-' + createHash('sha512').update(readFileSync(join(f.repo, 'archive.tgz'))).digest('base64') };
+      writeFileSync(join(f.repo, 'package-lock.json'), JSON.stringify(lock));
     });
     const expected = ['.gitmodules', '.npmrc', 'archive.tgz', 'npm-shrinkwrap.json', 'package-lock.json', 'package.json',
       'packages/one/.npmrc', 'packages/one/package.json', 'target/.npmrc', 'target/package.json',
