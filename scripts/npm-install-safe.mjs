@@ -1873,6 +1873,9 @@ export function assertMetadataRepairGraph({ repoRoot, beforeLockBytes, lockPath 
     .map(path => [dirname(path) === "." ? "" : dirname(path), JSON.parse(readFileSync(join(repoRoot, path), "utf8"))]));
   const lookup = (population, from, name) => {
     for (let cursor = from; ; cursor = dirname(cursor) === "." ? "" : dirname(cursor)) {
+      // Match npm/Node ancestor resolution: node_modules itself is never a
+      // resolution base (node_modules/node_modules is not an ancestor lookup).
+      if (basename(cursor) === "node_modules") continue;
       const path = (cursor ? cursor + "/" : "") + "node_modules/" + name;
       if (population[path]) {
         const entry = population[path];
@@ -1968,15 +1971,30 @@ export function assertMetadataRepairGraph({ repoRoot, beforeLockBytes, lockPath 
     const common = ["--package-lock-only", "--json", "--long", "--all", "--ignore-scripts", "--no-audit", "--no-fund",
       "--userconfig=" + userconfig, "--globalconfig=" + globalconfig, "--cache=" + join(privateRoot, "cache")];
     const affected = manifests.has("apps/slack-asana-bug-drill") ? "apps/slack-asana-bug-drill" : null;
-    const reads = affected ? [["--workspace=" + affected]] : [[]];
+    const reads = [{ cwd: repoRoot, selectors: affected ? ["--workspace=" + affected] : [] }];
     for (const { dir } of nextRoots) {
       const next = lookup(packages, dir, "next");
-      reads.push(["next", ...Object.keys(edges(next.entry)).filter(name => name.startsWith("@next/")),
-        ...(dir ? ["--workspace=" + dir] : ["--workspaces=false"])]);
+      let cwd = repoRoot;
+      if (!dir) {
+        // npm's workspace-aware root can report the child's Next graph. Read
+        // the retained root independently, using the exact lock bytes in an
+        // owned manifest-only view with workspace discovery disabled. This is
+        // a reader view only; it never becomes resolver or publication output.
+        const view = createManifestOnlyTree(repoRoot, layout.inputPaths, privateRoot);
+        const manifest = { ...manifests.get("") };
+        const rootLock = structuredClone(lock);
+        delete manifest.workspaces;
+        delete rootLock.packages[""].workspaces;
+        writeFileSync(join(view.scratchRoot, "package.json"), JSON.stringify(manifest));
+        writeFileSync(join(view.scratchRoot, lockPath), JSON.stringify(rootLock));
+        cwd = view.scratchRoot;
+      }
+      reads.push({ cwd, selectors: ["next", ...Object.keys(edges(next.entry)).filter(name => name.startsWith("@next/")),
+        ...(dir ? ["--workspace=" + dir] : ["--workspaces=false"])] });
     }
-    for (const selectors of reads) {
+    for (const { cwd, selectors } of reads) {
       const result = spawnSyncCommand(process.execPath, [npmCli, "ls", ...common, ...selectors], {
-        cwd: repoRoot, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30_000, maxBuffer: 16 * 1024 * 1024,
+        cwd, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30_000, maxBuffer: 16 * 1024 * 1024,
       });
       if (result.error || result.signal || result.status !== 0) {
         refuse("npm-ls:" + (result.error?.message ?? result.status) + ":" + String(result.stderr ?? "").slice(0, 1500));
@@ -2091,6 +2109,36 @@ export async function resolveMetadataRepairLock({ repoRoot }, {
     cleanup: { removed: false } };
   try {
     const input = createManifestOnlyTree(repositoryRealpath, inputPaths, attemptRoot);
+    const lockPath = input.snapshot.get("npm-shrinkwrap.json") !== null ? "npm-shrinkwrap.json" : "package-lock.json";
+    // Keep selected input evidence unchanged. Only the owned resolver copy's
+    // mirrors are derived from selected manifests, before npm reads its graph.
+    const privateSnapshot = new Map(input.snapshot);
+    const selectedLock = input.snapshot.get(lockPath);
+    if (selectedLock !== null) {
+      const lock = JSON.parse(selectedLock);
+      if (!lock.packages || typeof lock.packages !== "object" || Array.isArray(lock.packages)) {
+        throw new Error("metadata-repair-output-graph");
+      }
+      for (const path of layout.inputPaths.filter(path => basename(path) === "package.json")) {
+        const selected = input.snapshot.get(path);
+        if (selected === null) continue;
+        const manifest = JSON.parse(selected);
+        const dir = dirname(path) === "." ? "" : dirname(path);
+        const mirror = lock.packages[dir] ??= Object.fromEntries(["name", "version"]
+          .filter(key => Object.hasOwn(manifest, key)).map(key => [key, manifest[key]]));
+        if (mirror.link || typeof mirror !== "object" || Array.isArray(mirror)) {
+          throw new Error("metadata-repair-manifest-mirror");
+        }
+        for (const field of LOCK_MANIFEST_DEPENDENCY_FIELDS) {
+          const value = normalizedRecord(manifest[field]);
+          if (Object.keys(value).length) mirror[field] = value;
+          else delete mirror[field];
+        }
+      }
+      const bytes = Buffer.from(JSON.stringify(lock, null, 2) + "\n");
+      writeFileSync(join(input.scratchRoot, lockPath), bytes);
+      privateSnapshot.set(lockPath, bytes);
+    }
     const home = join(attemptRoot, "home");
     const temporary = join(attemptRoot, "tmp");
     const cache = join(attemptRoot, "cache");
@@ -2157,7 +2205,7 @@ export async function resolveMetadataRepairLock({ repoRoot }, {
           JSON.stringify(manifestOnlyResolutionLayout(input.scratchRoot)) !== JSON.stringify(layout) ||
           receipt.selectedInputs.some(({ path, mode }) =>
             !matchesSnapshot(repositoryRealpath, path, input.snapshot.get(path), mode) ||
-            !matchesSnapshot(input.scratchRoot, path, input.snapshot.get(path), privateModes.get(path))) ||
+            !matchesSnapshot(input.scratchRoot, path, privateSnapshot.get(path), privateModes.get(path))) ||
           projectConfig.some(({ path, sha256 }) => {
             const bytes = input.snapshot.get(path);
             return (bytes === null ? null : digest(bytes)) !== sha256;
@@ -2178,7 +2226,6 @@ export async function resolveMetadataRepairLock({ repoRoot }, {
     const status = await runNpmWithHeartbeat({ phase: "metadata-repair-resolve", args: argv,
       cwd: input.scratchRoot, env, spawnCommand: launch, log });
     if (status !== 0) throw new Error("metadata-repair-resolution-failed");
-    const lockPath = input.snapshot.get("npm-shrinkwrap.json") !== null ? "npm-shrinkwrap.json" : "package-lock.json";
     // npm may rewrite mirror metadata in the lock; it may not change a source
     // manifest, config, local target or archive to make the graph look valid.
     for (const [path, bytes] of input.snapshot) {

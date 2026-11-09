@@ -115,7 +115,9 @@ function repairGraphFixture(t) {
   const run = (mutate = value => value, status = 0, baseline = beforeLockBytes) => assertMetadataRepairGraph({
     repoRoot: root, beforeLockBytes: baseline, lockPath: "package-lock.json",
   }, { spawnSyncCommand: (command, args, options) => {
-    calls.push({ command, args, options });
+    calls.push({ command, args, options,
+      manifest: JSON.parse(readFileSync(join(options.cwd, "package.json"))),
+      lock: JSON.parse(readFileSync(join(options.cwd, "package-lock.json"))) });
     return { status, stdout: JSON.stringify(mutate(structuredClone(graph))) };
   } });
   return { root, app, target, generic, lock, graph, write, run, calls, beforeLockBytes };
@@ -133,16 +135,86 @@ test("metadata graph reads the full affected closure and preserves the parent/ch
     assert.ok(args.includes("--all"));
     assert.ok(args.includes("--package-lock-only"));
     assert.ok(!args.some(arg => arg.startsWith("--depth")));
-    assert.equal(options.cwd, f.root);
     assert.equal(Object.hasOwn(options.env, "NODE_OPTIONS"), false);
     assert.notEqual(args.find(arg => arg.startsWith("--userconfig="))?.split("=")[1],
       args.find(arg => arg.startsWith("--globalconfig="))?.split("=")[1]);
   }
+  assert.equal(f.calls[0].options.cwd, f.root);
+  const rootRead = f.calls.find(({ args }) => args.includes("--workspaces=false"));
+  assert.notEqual(rootRead.options.cwd, f.root);
+  assert.equal(rootRead.manifest.workspaces, undefined);
+  assert.equal(rootRead.lock.packages[""].workspaces, undefined);
+  assert.equal(rootRead.lock.packages["node_modules/next"].version, "16.4.1");
+  assert.equal(rootRead.lock.packages[f.app + "/node_modules/next"].version, "16.4.0");
+  assert.equal(existsSync(rootRead.options.cwd), false);
   assert.deepEqual(f.lock.packages[f.app + "/node_modules/template-kit"], { resolved: f.target, link: true });
   assert.equal(f.lock.packages["node_modules/next"].version, "16.4.1");
   assert.equal(f.lock.packages[f.app + "/node_modules/next"].version, "16.4.0");
   assert.equal(existsSync(dirname(f.calls[0].options.env.HOME)), true);
   assert.equal(existsSync(f.calls[0].options.env.HOME), false);
+});
+
+test("metadata graph uses npm ancestor resolution past node_modules", t => {
+  const f = repairGraphFixture(t);
+  f.lock.packages["node_modules/node_modules/@next/env"] = { version: "9.9.9" };
+  const baseline = Buffer.from(JSON.stringify(f.lock));
+  f.write();
+  f.run(value => value, 0, baseline);
+  f.lock.packages["node_modules/@next/env"].version = "9.9.9";
+  f.write();
+  assert.throws(() => f.run(value => value, 0, baseline), /next-edge/);
+});
+
+test("metadata graph independently reads real root and child Next lock graphs", t => {
+  const f = repairGraphFixture(t);
+  // These lock-only reads need no registry fetch or installed package tree.
+  delete f.lock.packages["node_modules/unrelated"];
+  const baseline = Buffer.from(JSON.stringify(f.lock));
+  f.write();
+  const observed = [];
+  assertMetadataRepairGraph({ repoRoot: f.root, beforeLockBytes: baseline, lockPath: "package-lock.json" }, {
+    spawnSyncCommand: (command, args, options) => {
+      const result = spawnSync(command, args, options);
+      if (args.includes("next")) observed.push({ root: args.includes("--workspaces=false"),
+        graph: JSON.parse(result.stdout) });
+      return result;
+    },
+  });
+  const root = observed.find(row => row.root).graph;
+  assert.equal(root.dependencies.next.version, "16.4.1");
+  assert.equal(root.dependencies.next.dependencies["@next/env"].version, "16.4.1");
+  const child = observed.find(row => !row.root).graph.dependencies.drill;
+  assert.equal(child.dependencies.next.version, "16.4.0");
+  assert.equal(child.dependencies.next.dependencies["@next/env"].version, "16.4.0");
+  assert.equal(existsSync(join(f.root, "node_modules")), false);
+});
+
+test("metadata repair reconciles selected mirrors before npm without changing selected input evidence", async t => {
+  const root = mkdtempSync(join(tmpdir(), "metadata-mirror-test-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const manifest = { name: "mirror-root", version: "1.0.0", private: true, workspaces: ["packages/*"] };
+  const child = { name: "mirror-child", version: "1.0.0" };
+  mkdirSync(join(root, "packages/child"), { recursive: true });
+  writeFileSync(join(root, "package.json"), JSON.stringify(manifest));
+  writeFileSync(join(root, "packages/child/package.json"), JSON.stringify(child));
+  const before = Buffer.from(JSON.stringify({ name: manifest.name, version: manifest.version, requires: true, lockfileVersion: 3,
+    packages: { "": { name: manifest.name, version: manifest.version, workspaces: manifest.workspaces },
+      "packages/child": { ...child, dependencies: { stale: "1.0.0" } },
+      "node_modules/mirror-child": { resolved: "packages/child", link: true } } }));
+  writeFileSync(join(root, "package-lock.json"), before);
+  let launched = false;
+  const result = await resolveMetadataRepairLock({ repoRoot: root }, { log: () => {}, spawnCommand: (command, args, options) => {
+    launched = true;
+    const lock = JSON.parse(readFileSync(join(options.cwd, "package-lock.json")));
+    assert.equal(lock.packages["packages/child"].dependencies, undefined);
+    assert.deepEqual(readFileSync(join(root, "package-lock.json")), before);
+    return spawn(command, args, { ...options, stdio: "ignore" });
+  } });
+  assert.equal(launched, true);
+  assert.deepEqual(result.snapshot.get("package-lock.json"), before);
+  assert.deepEqual(readFileSync(join(root, "package-lock.json")), before);
+  assert.equal(result.receipt.cleanup.removed, true);
+  assert.equal(JSON.parse(result.bytes).packages["packages/child"].dependencies, undefined);
 });
 
 for (const field of ["invalid", "extraneous", "problems"]) {
