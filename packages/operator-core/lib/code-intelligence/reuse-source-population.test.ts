@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { collectReuseSourcePopulation, createReuseCallColumns, decodeReuseCallColumns,
   serializeReuseCallColumns, summarizeReuseCallColumns } from './reuse-source-population';
+import { eligibleHistoryPath } from './history-path';
 import { collectReuseSourcePopulationOffthread } from './reuse-measurement';
 
 const repo = resolve(__dirname, '../../../..');
@@ -194,6 +195,83 @@ describe('finite code-intelligence worker source collection', () => {
       { path: 'one.md', lines: [1] }, { path: 'two.md', lines: [1] },
     ]);
     expect(result.calls).toEqual([expect.objectContaining({ from: 'a.ts', to: 'a.ts', resolved: true })]);
+  });
+
+  it('uses pinned nested submodule objects and excludes generated artifact binaries', async () => {
+    expect(eligibleHistoryPath('.papercusp/artifacts/output.png')).toBe(false);
+    expect(eligibleHistoryPath('.papercusp/project.json')).toBe(true);
+
+    const root = join(dir, 'gitlink-superproject');
+    const module = join(dir, 'gitlink-module');
+    const nested = join(dir, 'gitlink-nested');
+    for (const path of [root, module, nested]) execFileSync('git', ['init', '-q', path]);
+    const git = (cwd: string, date: string, ...args: string[]) => execFileSync('git', ['-C', cwd,
+      '-c', 'core.hooksPath=/dev/null', ...args], { encoding: 'utf8', env: {
+      ...process.env, GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.invalid',
+      GIT_COMMITTER_NAME: 'Fixture', GIT_COMMITTER_EMAIL: 'fixture@example.invalid',
+      GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date,
+    } });
+    const baseDate = '2026-10-01T00:00:00Z', endDate = '2026-10-01T01:00:00Z';
+
+    writeFileSync(join(nested, 'nested.ts'), 'export function nested() {}\n');
+    git(nested, baseDate, 'add', '.');
+    git(nested, baseDate, 'commit', '-qm', 'nested base');
+    const nestedBase = git(nested, baseDate, 'rev-parse', 'HEAD').trim();
+    writeFileSync(join(nested, 'nested.ts'), 'export function nested() {}\nnested();\n');
+    git(nested, endDate, 'add', '.');
+    git(nested, endDate, 'commit', '-qm', 'nested end');
+    const nestedEnd = git(nested, endDate, 'rev-parse', 'HEAD').trim();
+
+    writeFileSync(join(module, 'parent.ts'), 'export const parent = 1;\n');
+    git(module, baseDate, '-c', 'protocol.file.allow=always', 'submodule', 'add', nested, 'nested');
+    git(module, baseDate, '-C', 'nested', 'checkout', nestedBase);
+    git(module, baseDate, 'add', '.');
+    git(module, baseDate, 'commit', '-qm', 'module base');
+    const moduleBase = git(module, baseDate, 'rev-parse', 'HEAD').trim();
+    writeFileSync(join(module, 'parent.ts'), 'export const parent = 1;\nexport const added = 2;\n');
+    git(module, endDate, '-C', 'nested', 'checkout', nestedEnd);
+    git(module, endDate, 'add', 'parent.ts', 'nested');
+    git(module, endDate, 'commit', '-qm', 'module end');
+    const moduleEnd = git(module, endDate, 'rev-parse', 'HEAD').trim();
+
+    git(root, baseDate, '-c', 'protocol.file.allow=always', 'submodule', 'add', module, 'libs/module');
+    git(root, baseDate, '-C', 'libs/module', 'checkout', moduleBase);
+    git(root, baseDate, '-c', 'protocol.file.allow=always', '-C', 'libs/module',
+      'submodule', 'update', '--init', 'nested');
+    git(root, baseDate, 'add', '.');
+    git(root, baseDate, 'commit', '-qm', 'superproject base');
+
+    git(root, endDate, '-C', 'libs/module', 'checkout', moduleEnd);
+    git(root, endDate, '-c', 'protocol.file.allow=always', '-C', 'libs/module',
+      'submodule', 'update', '--init', 'nested');
+    mkdirSync(join(root, '.papercusp/artifacts'), { recursive: true });
+    writeFileSync(join(root, '.papercusp/artifacts/output.png'), Buffer.from([0, 1, 2, 255]));
+    git(root, endDate, 'add', 'libs/module', '.papercusp/artifacts/output.png');
+    git(root, endDate, 'commit', '-qm', 'superproject end');
+
+    writeFileSync(join(root, 'libs/module/parent.ts'), 'export const checkoutOnly = true;\n');
+    writeFileSync(join(root, 'libs/module/nested/nested.ts'), 'checkoutOnly();\n');
+    const result = await collectReuseSourcePopulation(root, '2026-10-01T00:30:00Z', '2026-10-01T01:30:00Z', dir);
+    expect(result).toMatchObject({ addedNonGeneratedLines: 2, duplicateAddedLines: 0,
+      lineCensusComplete: true, callCensusComplete: true });
+    expect(result.method.sourcePopulation).toEqual(['libs/module/nested/nested.ts', 'libs/module/parent.ts']);
+    expect(result.method.addedLinePopulation).toEqual([
+      { path: 'libs/module/nested/nested.ts', lines: [2] },
+      { path: 'libs/module/parent.ts', lines: [2] },
+    ]);
+    expect(result.calls).toEqual([expect.objectContaining({
+      from: 'libs/module/nested/nested.ts', to: 'libs/module/nested/nested.ts', resolved: true,
+    })]);
+    expect(result.method).not.toHaveProperty('binaryChangedPaths');
+    expect(result.sourceRefs).toEqual(expect.arrayContaining(['git:' + moduleEnd, 'git:' + nestedEnd]));
+
+    rmSync(join(root, 'libs/module/nested'), { recursive: true, force: true });
+    const incomplete = await collectReuseSourcePopulation(root, '2026-10-01T00:30:00Z', '2026-10-01T01:30:00Z', dir);
+    expect(incomplete.method.sourcePopulationCensus.complete).toBe(false);
+    expect(incomplete.callCensusComplete).toBe(false);
+    expect(incomplete.method.sourcePopulationCensus.unresolved).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: 'libs/module/nested', reason: 'submodule-object-unavailable' }),
+    ]));
   });
 
   it('pipelines immutable capture and parsing with diff collection, preserving serial resolution and ordered identities', async () => {

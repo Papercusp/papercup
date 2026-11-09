@@ -9,7 +9,7 @@ import { Worker } from 'node:worker_threads';
 import { getHeapStatistics } from 'node:v8';
 import { CloneIndex } from './clone-index';
 import { buildSymbolSnapshot, isSymbolSnapshotSourcePath, parseSymbolSnapshot, relativeSymbolModule } from '../../../../scripts/lib/code-intel-symbol-snapshot.mjs';
-import { eligibleHistoryPath } from './history-path';
+import { eligibleHistoryPath, safeHistoryPath } from './history-path';
 import type { ReuseMetricPopulation } from './reuse-measurement';
 
 const time = (value: string): number => {
@@ -353,24 +353,68 @@ export async function collectReuseSourcePopulation(root: string, start: string, 
   parserWorkerPath?: string) {
   if (time(start) >= time(end)) throw new Error('Valid half-open source window required');
   onProgress?.('source-tree');
-  const gitBytes = (args: string[], input?: string) => new Promise<Buffer>((resolve, reject) => {
-    const child = execFile('git', ['--literal-pathspecs', '-C', root, ...args], { encoding: 'buffer', timeout: 30_000,
+  const gitBytes = (args: string[], input?: string, gitRoot = root) => new Promise<Buffer>((resolve, reject) => {
+    const child = execFile('git', ['--literal-pathspecs', '-C', gitRoot, ...args], { encoding: 'buffer', timeout: 30_000,
       maxBuffer: 64 * 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } },
     (error, stdout) => error ? reject(error) : resolve(stdout));
     child.stdin?.end(input);
   });
-  const git = async (args: string[], input?: string) => (await gitBytes(args, input)).toString('utf8');
+  const git = async (args: string[], input?: string, gitRoot = root) => (await gitBytes(args, input, gitRoot)).toString('utf8');
   const commitAt = async (at: string) => (await git(['rev-list', '--first-parent', '-1', `--before=${new Date(time(at) - 1).toISOString()}`, 'HEAD'])).trim();
   const [base, commit] = await Promise.all([commitAt(start), commitAt(end)]);
   if (!base || !commit || await git(['rev-parse', '--is-shallow-repository']).then(x => x.trim()) !== 'false')
     throw new Error('Complete source-window ancestry unavailable');
-  const tree = (await git(['ls-tree', '-rlz', '--full-tree', commit])).split('\0').filter(Boolean).map(line => {
-    const tab = line.indexOf('\t'), [mode, kind, blob, size] = line.slice(0, tab).trim().split(/\s+/);
-    return { mode, kind, blob, size: Number(size), path: line.slice(tab + 1) };
-  });
-    const selected = tree.filter(s => s.kind === 'blob' && /^(100644|100755)$/.test(s.mode!)
-      && eligibleHistoryPath(s.path) && /\.[cm]?[jt]sx?$/.test(s.path));
-  if (selected.length > 25_000) throw new Error('Source population exceeds bounded collector');
+  type TreeEntry = { mode: string; kind: string; blob: string; size: number; path: string; repoRoot: string; repoPath: string };
+  type GitlinkPin = { oid: string; repoRoot: string; available: boolean };
+  const unresolvedSource: Array<{ path: string; oid: string; reason: string }> = [];
+  let unresolvedSourceCount = 0, gitlinkCount = 0, resolvedGitlinkCount = 0;
+  const markUnknown = (path: string, oid: string, reason: string) => {
+    unresolvedSourceCount++;
+    if (unresolvedSource.length < 100) unresolvedSource.push({ path, oid, reason });
+  };
+  const walkTree = async (gitRoot: string, oid: string, prefix: string, pins: Map<string, GitlinkPin>,
+    includeBlobs: boolean, depth = 0, ancestors: Set<string> = new Set()): Promise<TreeEntry[]> => {
+    const visit = [gitRoot, oid, prefix].join('\0');
+    if (ancestors.has(visit)) { markUnknown(prefix || '.', oid, 'gitlink-cycle'); return []; }
+    const nextAncestors = new Set(ancestors).add(visit);
+    const rows = (await git(['ls-tree', '-rlz', '--full-tree', oid], undefined, gitRoot)).split('\0').filter(Boolean);
+    const entries: TreeEntry[] = [];
+    for (const row of rows) {
+      const tab = row.indexOf('\t');
+      if (tab < 0) throw new Error('Incomplete Git tree identity population');
+      const [mode, kind, blob, rawSize] = row.slice(0, tab).trim().split(/\s+/);
+      const repoPath = row.slice(tab + 1);
+      if (!mode || !kind || !blob || !repoPath) throw new Error('Incomplete Git tree identity population');
+      const path = prefix ? prefix + '/' + repoPath : repoPath;
+      if (kind === 'commit') {
+        gitlinkCount++;
+        const pin = { oid: blob, repoRoot: join(root, path), available: false };
+        pins.set(path, pin);
+        if (gitlinkCount > 512) { markUnknown(path, blob, 'gitlink-count-bound'); continue; }
+        if (!safeHistoryPath(path)) { markUnknown(path, blob, 'unsafe-gitlink-path'); continue; }
+        if (depth >= 12) { markUnknown(path, blob, 'gitlink-depth-bound'); continue; }
+        try {
+          entries.push(...await walkTree(pin.repoRoot, blob, path, pins, includeBlobs, depth + 1, nextAncestors));
+          pin.available = true;
+          resolvedGitlinkCount++;
+        } catch {
+          markUnknown(path, blob, 'submodule-object-unavailable');
+        }
+      } else if (kind === 'blob' && includeBlobs) {
+        entries.push({ mode, kind, blob, size: Number(rawSize), path, repoRoot: gitRoot, repoPath });
+      }
+    }
+    return entries;
+  };
+  const basePins = new Map<string, GitlinkPin>(), endPins = new Map<string, GitlinkPin>();
+  const sourceRefs = new Set(['git:' + base, 'git:' + commit]);
+  await walkTree(root, base, '', basePins, false);
+  const tree = await walkTree(root, commit, '', endPins, true);
+  for (const pin of [...basePins.values(), ...endPins.values()]) sourceRefs.add('git:' + pin.oid);
+  const sourceEntries = tree.filter(s => s.kind === 'blob' && /^(100644|100755)$/.test(s.mode)
+    && eligibleHistoryPath(s.path) && /\.[cm]?[jt]sx?$/.test(s.path)).sort((a, b) => a.path.localeCompare(b.path));
+  if (sourceEntries.length > 30_000) markUnknown('*', commit, 'source-file-count-bound');
+  const selected = sourceEntries.slice(0, 30_000);
   // Reuse the existing per-file parser bounds. A cumulative byte ceiling made
   // an otherwise supported repository permanently unmeasurable. Immutable
   // blobs spill to this invocation's private directory and are read one at a
@@ -399,16 +443,17 @@ export async function collectReuseSourcePopulation(root: string, start: string, 
     // otherwise spend the finite worker budget repeatedly starting Git. The
     // byte cap still bounds each reply when individual source files are large.
     for (let i = 0; i < selected.length;) {
+      const gitRoot = selected[i]!.repoRoot;
       const batch: typeof selected = [];
       let bytes = 0;
-      while (i < selected.length && batch.length < 4096) {
+      while (i < selected.length && selected[i]!.repoRoot === gitRoot && batch.length < 4096) {
         const entry = selected[i]!;
         if (!Number.isSafeInteger(entry.size) || entry.size < 0 || entry.size > 2_000_000)
           throw new Error('Incomplete bounded Git blob population');
         if (batch.length && bytes + entry.size > 32 * 1024 * 1024) break;
         batch.push(entry); bytes += entry.size; i++;
       }
-      const out = await gitBytes(['cat-file', '--batch'], batch.map(s => s.blob).join('\n') + '\n');
+      const out = await gitBytes(['cat-file', '--batch'], batch.map(s => s.blob).join('\n') + '\n', gitRoot);
       let offset = 0;
       for (const entry of batch) {
         const endHeader = out.indexOf(10, offset), [blob, kind, rawSize] = out.subarray(offset, endHeader).toString().split(' '), size = Number(rawSize);
@@ -446,30 +491,58 @@ export async function collectReuseSourcePopulation(root: string, start: string, 
         limits => onProgress?.('source-calls', limits), { sizes: sourceSizes, ready }) };
     })().catch(error => ({ error: error instanceof Error ? error : new Error(String(error)) }));
     onProgress?.('source-diff');
-    const rawChanges = (await git(['diff', '--raw', '-z', '--no-abbrev', '--no-renames', base, commit])).split('\0');
-    const changes = new Map<string, string>();
-    const oldBlobs = new Map<string, string>();
-    for (let i = 0; i < rawChanges.length - 1; i += 2) {
-      const status = /^:(\d{6}) \d{6} ([0-9a-f]{40}) [0-9a-f]{40} ([A-Z])$/.exec(rawChanges[i]!);
-      const path = rawChanges[i + 1]!;
-      if (!status || !path) throw new Error('Incomplete Git diff identity population');
-      if (eligibleHistoryPath(path)) {
-        changes.set(path, status[3]!);
-        if (/^100(?:644|755)$/.test(status[1]!)) oldBlobs.set(path, status[2]!);
+    type ChangeEntry = { path: string; repoPath: string; repoRoot: string; status: string; from: string; to: string };
+    type ChangeGroup = { repoRoot: string; from: string; to: string; items: ChangeEntry[] };
+    const changes = new Map<string, ChangeEntry>();
+    const oldBlobs = new Map<string, { blob: string; repoRoot: string }>();
+    const addDiff = async (gitRoot: string, from: string, to: string, prefix = '') => {
+      const rawChanges = (await git(['diff', '--raw', '-z', '--no-abbrev', '--no-renames', from, to], undefined, gitRoot)).split('\0');
+      for (let i = 0; i < rawChanges.length - 1; i += 2) {
+        const status = /^:(\d{6}) (\d{6}) ([0-9a-f]{40}) ([0-9a-f]{40}) ([A-Z])$/.exec(rawChanges[i]!);
+        const repoPath = rawChanges[i + 1]!;
+        if (!status || !repoPath) throw new Error('Incomplete Git diff identity population');
+        const path = prefix ? prefix + '/' + repoPath : repoPath;
+        if (status[1] === '160000' || status[2] === '160000') continue;
+        if (eligibleHistoryPath(path)) {
+          changes.set(path, { path, repoPath, repoRoot: gitRoot, status: status[5]!, from, to });
+          if (/^100(?:644|755)$/.test(status[1]!)) oldBlobs.set(path, { blob: status[3]!, repoRoot: gitRoot });
+        }
       }
+    };
+    await addDiff(root, base, commit);
+    for (const path of [...new Set([...basePins.keys(), ...endPins.keys()])].sort()) {
+      const before = basePins.get(path), after = endPins.get(path);
+      if (!before || !after) {
+        markUnknown(path, (before ?? after)!.oid, before ? 'submodule-removed' : 'submodule-added');
+        continue;
+      }
+      if (!before.available || !after.available || before.oid === after.oid) continue;
+      try {
+        await git(['cat-file', '-e', before.oid + '^{commit}'], undefined, after.repoRoot);
+      } catch {
+        markUnknown(path, before.oid, 'base-submodule-object-unavailable');
+        continue;
+      }
+      await addDiff(after.repoRoot, before.oid, after.oid, path);
     }
-    const paths = [...changes.keys()];
+    const paths = [...changes.keys()].sort();
     const blobSizes = new Map<string, number>();
-    const oldIds = [...new Set(oldBlobs.values())];
-    if (oldIds.length) {
-      const sizes = (await git(['cat-file', '--batch-check'], oldIds.join('\n') + '\n')).trim().split('\n');
+    const oldByRepo = new Map<string, Set<string>>();
+    for (const value of oldBlobs.values()) {
+      const ids = oldByRepo.get(value.repoRoot) ?? new Set<string>();
+      ids.add(value.blob);
+      oldByRepo.set(value.repoRoot, ids);
+    }
+    for (const [gitRoot, idSet] of oldByRepo) {
+      const oldIds = [...idSet];
+      const sizes = (await git(['cat-file', '--batch-check'], oldIds.join('\n') + '\n', gitRoot)).trim().split('\n');
       for (const line of sizes) {
         const [blob, kind, rawSize] = line.split(' '), size = Number(rawSize);
         if (kind !== 'blob' || !Number.isSafeInteger(size) || size < 0)
           throw new Error('Incomplete Git diff blob sizes');
-        blobSizes.set(blob!, size);
+        blobSizes.set(gitRoot + '\0' + blob, size);
       }
-      if (blobSizes.size !== oldIds.length || oldIds.some(blob => !blobSizes.has(blob)))
+      if (oldIds.some(blob => !blobSizes.has(gitRoot + '\0' + blob)))
         throw new Error('Incomplete Git diff blob sizes');
     }
     const newSizes = new Map(tree.filter(entry => entry.kind === 'blob').map(entry => [entry.path, entry.size]));
@@ -478,13 +551,15 @@ export async function collectReuseSourcePopulation(root: string, start: string, 
     // NUL-delimited raw identities and their patches are emitted in the same
     // order. Never decode a path from a quoted patch heading. Bound each batch
     // and split only on output overflow, preserving the existing per-path cap.
-    const readDiffs = async (batch: string[], expected: Map<string, number>): Promise<void> => {
+    const readDiffs = async (group: ChangeGroup, batch: ChangeEntry[], expected: Map<string, number>): Promise<void> => {
       if (!batch.length) return;
+      const repoPaths = batch.map(entry => entry.repoPath);
+      const fullPaths = new Map(batch.map(entry => [entry.repoPath, entry.path]));
       let result: { identities: string[]; hunks: number[][] };
       try {
         result = await new Promise((resolve, reject) => {
-          const child = spawn('git', ['--literal-pathspecs', '-C', root, 'diff', '--no-ext-diff', '--no-textconv',
-            '--no-renames', '--unified=0', '--raw', '-z', '--patch', base, commit, '--', ...batch],
+          const child = spawn('git', ['--literal-pathspecs', '-C', group.repoRoot, 'diff', '--no-ext-diff', '--no-textconv',
+            '--no-renames', '--unified=0', '--raw', '-z', '--patch', group.from, group.to, '--', ...repoPaths],
           { env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' }, stdio: ['ignore', 'pipe', 'ignore'] });
           const empty: Buffer = Buffer.alloc(0);
           let failure: Error | null = null, bytes = 0, prefix: Buffer | null = empty, line = empty, patch = -1, skipped = false;
@@ -517,7 +592,7 @@ export async function collectReuseSourcePopulation(root: string, start: string, 
                 const raw = prefix.subarray(0, boundary).toString().split('\0');
                 identities = raw.filter((_, index) => index % 2 === 1);
                 if (raw.length !== batch.length * 2 || new Set(identities).size !== batch.length
-                  || identities.some(path => !batch.includes(path))) throw new Error('Incomplete Git diff identity population');
+                  || identities.some(path => !repoPaths.includes(path))) throw new Error('Incomplete Git diff identity population');
                 data = prefix.subarray(boundary + 2); prefix = null;
               }
               // Only a bounded line prefix is needed to recognize a patch or
@@ -550,66 +625,81 @@ export async function collectReuseSourcePopulation(root: string, start: string, 
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' || batch.length < 2) throw error;
         const middle = Math.floor(batch.length / 2);
-        await readDiffs(batch.slice(0, middle), expected); await readDiffs(batch.slice(middle), expected); return;
+        await readDiffs(group, batch.slice(0, middle), expected); await readDiffs(group, batch.slice(middle), expected); return;
       }
       const { identities, hunks } = result;
       for (let i = 0; i < identities.length; i++) {
-        const path = identities[i]!, lines = hunks[i]!;
-        if (lines.length !== expected.get(path)) throw new Error('Incomplete Git added-line population');
+        const repoPath = identities[i]!, path = fullPaths.get(repoPath)!, lines = hunks[i]!;
+        if (lines.length !== expected.get(repoPath)) throw new Error('Incomplete Git added-line population');
         if (lines.length) addedLines[path] = lines;
       }
     };
-    const readChanges = async (batch: string[]): Promise<void> => {
+    const readChanges = async (group: ChangeGroup): Promise<void> => {
+      const batch = group.items;
+      const byRepoPath = new Map(batch.map(entry => [entry.repoPath, entry]));
       // New files have one exact contiguous added-line population. Numstat
       // supplies its size (and binary unknowns) without transferring gigabytes
       // of report bodies merely to discard everything except hunk headers.
       const stats = (await git(['diff', '--no-ext-diff', '--no-textconv', '--no-renames',
-        '--unified=0', '--no-patch', '--numstat', '-z', base, commit, '--', ...batch])).split('\0').filter(Boolean);
+        '--unified=0', '--no-patch', '--numstat', '-z', group.from, group.to, '--',
+        ...batch.map(entry => entry.repoPath)], undefined, group.repoRoot)).split('\0').filter(Boolean);
       const seen = new Set<string>(), modified = new Map<string, number>();
       for (const stat of stats) {
         const first = stat.indexOf('\t'), second = stat.indexOf('\t', first + 1);
-        const path = stat.slice(second + 1), added = stat.slice(0, first), removed = stat.slice(first + 1, second);
-        if (first < 0 || second < 0 || seen.has(path))
+        const repoPath = stat.slice(second + 1), added = stat.slice(0, first), removed = stat.slice(first + 1, second);
+        const entry = byRepoPath.get(repoPath);
+        if (first < 0 || second < 0 || seen.has(repoPath) || !entry)
           throw new Error('Incomplete Git diff identity population');
-        if (!batch.includes(path)) throw new Error('Incomplete Git diff identity population');
-        seen.add(path);
-        if (added === '-' && removed === '-') { binaryChangedPaths.push(path); continue; }
+        seen.add(repoPath);
+        if (added === '-' && removed === '-') { binaryChangedPaths.push(entry.path); continue; }
         const count = Number(added);
         if (!/^\d+$/.test(added) || !/^\d+$/.test(removed) || !Number.isSafeInteger(count))
           throw new Error('Incomplete Git added-line population');
         if (!count) continue;
-        if (changes.get(path) === 'A') addedLines[path] = Array.from({ length: count }, (_, i) => i + 1);
-        else modified.set(path, count);
+        if (entry.status === 'A') addedLines[entry.path] = Array.from({ length: count }, (_, i) => i + 1);
+        else modified.set(repoPath, count);
       }
       if (seen.size !== batch.length) throw new Error('Incomplete Git diff identity population');
       // Large modified report bodies repeatedly overflowed path-count-only
       // batches, paying for the same diff again at each recursive split. Size
       // batches with immutable old/new blobs; the actual output bound and its
       // split fallback still protect against patch-heading/line-prefix growth.
-      const chunks: string[][] = [];
-      let chunk: string[] = [], bytes = 0;
-      for (const path of modified.keys()) {
-        const estimate = (blobSizes.get(oldBlobs.get(path)!) ?? 0) + (newSizes.get(path) ?? 0) + 4096;
+      const chunks: ChangeEntry[][] = [];
+      let chunk: ChangeEntry[] = [], bytes = 0;
+      for (const repoPath of modified.keys()) {
+        const entry = byRepoPath.get(repoPath)!;
+        const old = oldBlobs.get(entry.path);
+        const estimate = (old ? blobSizes.get(old.repoRoot + '\0' + old.blob) ?? 0 : 0)
+          + (newSizes.get(entry.path) ?? 0) + 4096;
         if (chunk.length && (chunk.length >= 128 || bytes + estimate > 32 * 1024 * 1024)) {
           chunks.push(chunk); chunk = []; bytes = 0;
         }
-        chunk.push(path); bytes += estimate;
+        chunk.push(entry); bytes += estimate;
       }
       if (chunk.length) chunks.push(chunk);
-      for (const chunk of chunks) await readDiffs(chunk, modified);
+      for (const chunk of chunks) await readDiffs(group, chunk, modified);
     };
     // Preserve the exact eligible path set while avoiding both repeated tree
     // traversals for tiny chunks and diffing excluded large generated files.
-    const chunks: string[][] = [];
-    let batch: string[] = [], pathBytes = 0;
-    for (const path of paths) {
-      const bytes = Buffer.byteLength(path) + 1;
-      if (batch.length && (batch.length >= 4096 || pathBytes + bytes > 256 * 1024)) {
-        chunks.push(batch); batch = []; pathBytes = 0;
-      }
-      batch.push(path); pathBytes += bytes;
+    const grouped = new Map<string, ChangeGroup>();
+    for (const change of changes.values()) {
+      const key = JSON.stringify([change.repoRoot, change.from, change.to]);
+      const group = grouped.get(key) ?? { repoRoot: change.repoRoot, from: change.from, to: change.to, items: [] };
+      group.items.push(change);
+      grouped.set(key, group);
     }
-    if (batch.length) chunks.push(batch);
+    const chunks: ChangeGroup[] = [];
+    for (const group of grouped.values()) {
+      let batch: ChangeEntry[] = [], pathBytes = 0;
+      for (const entry of group.items) {
+        const bytes = Buffer.byteLength(entry.repoPath) + 1;
+        if (batch.length && (batch.length >= 4096 || pathBytes + bytes > 256 * 1024)) {
+          chunks.push({ ...group, items: batch }); batch = []; pathBytes = 0;
+        }
+        batch.push(entry); pathBytes += bytes;
+      }
+      if (batch.length) chunks.push({ ...group, items: batch });
+    }
     let nextChunk = 0;
     const diffs = await Promise.allSettled(Array.from({ length: Math.min(4, chunks.length) }, async () => {
       while (nextChunk < chunks.length) await readChanges(chunks[nextChunk++]!);
@@ -625,14 +715,18 @@ export async function collectReuseSourcePopulation(root: string, start: string, 
     const parsedSymbols = parsedResult.parsed;
     const population = buildReuseSourcePopulation({ sourcePaths: [...sourceFiles.keys()],
       readSource: path => readFileSync(sourceFiles.get(path)!, 'utf8'),
-      addedLines: orderedAddedLines, complete: !tree.some(s => s.kind === 'commit'), binaryChangedPaths, onProgress, callCensusSink, parsedSymbols });
+      addedLines: orderedAddedLines, complete: unresolvedSourceCount === 0,
+      binaryChangedPaths, onProgress, callCensusSink, parsedSymbols });
     return { ...population,
       addedNonGeneratedLines: binaryChangedPaths.length ? null : population.addedNonGeneratedLines,
       duplicateAddedLines: binaryChangedPaths.length ? null : population.duplicateAddedLines,
       lineCensusComplete: population.lineCensusComplete && binaryChangedPaths.length === 0,
       method: { ...population.method,
+        sourcePopulationCensus: { complete: unresolvedSourceCount === 0, gitlinks: {
+          total: gitlinkCount, resolved: resolvedGitlinkCount },
+        unresolved: unresolvedSource, unresolvedOmitted: unresolvedSourceCount - unresolvedSource.length },
         ...(binaryChangedPaths.length ? { binaryChangedPaths: binaryChangedPaths.sort() } : {}) },
-      sourceRefs: [`git:${base}`, `git:${commit}`], base, commit };
+      sourceRefs: [...sourceRefs].sort(), base, commit };
   } finally {
     await capturePending;
     await parsePending;
