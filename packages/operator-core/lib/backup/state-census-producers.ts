@@ -1,4 +1,4 @@
-import { papercuspPath } from '@papercusp/host-platform/home';
+import { papercuspHome, papercuspPath } from '@papercusp/host-platform/home';
 import { dirname, basename, relative, resolve, sep, join, isAbsolute, win32 } from 'node:path';
 import type { CensusDeclaration, CensusRoot, CensusEntry } from '@papercusp/backup';
 import { collectStateCensus, assertStateCensusComplete } from '@papercusp/backup';
@@ -28,6 +28,8 @@ import { REAP_TAIL_MAX_BYTES, verifyReapTailReceipt } from '../task-manager/reap
 import { resolveSqlDir } from '../migration-drift';
 import { stripCommentsAndStrings, stripSqlCommentsAndStrings } from '../../../../scripts/lib/strip-comments-and-strings.mjs';
 import { resolveFsMutexLockRoot } from '../../../../scripts/lib/fs-mutex.mjs';
+import { closureDigestManifestPath } from '../../../../scripts/lib/passing-task-verdict-cache.mjs';
+import { PARTIAL_TASK_CHECKPOINT_SCHEMA } from '../../../../scripts/lib/partial-task-resume.mjs';
 
 /** Compose independent writers without traversing the same physical root twice. */
 export function installedRootCensusProducers() {
@@ -369,24 +371,66 @@ export async function planTemplateStoreCensusProducer(path = papercuspRoot()) {
 }
 
 /** Exact hook pacing and template gym writers; siblings require separate provenance. */
-export async function runtimeSidefileCensusProducer(home = homedir()) {
+export async function runtimeSidefileCensusProducer(home = homedir(), environment: NodeJS.ProcessEnv = process.env) {
   const root: CensusRoot = { id: 'runtime-sidefiles', path: join(home, '.papercusp') };
   const roots = [root];
   const declarations: CensusDeclaration[] = [];
   const pacingFile = 'google-vertex-gemini-3.1-pro-preview.json';
-  for (const [directory, producer, files] of [
-    ['provider-pacing', 'omp-vertex-request-start', [pacingFile, `${pacingFile}.lock`]],
-    ['template-gym', 'template-gym-runner', ['last-run.json', 'runs.jsonl']],
+  for (const [directory, producer, files, classification] of [
+    ['provider-pacing', 'omp-vertex-request-start', [pacingFile, `${pacingFile}.lock`], 'state'],
+    ['template-gym', 'template-gym-runner', ['last-run.json', 'runs.jsonl'], 'state'],
+    ['cache', 'tui-shared-query-cache', ['plans-list-standard-v1.json'], 'cache'],
+    ['cache/bundle-free-refs', 'bundle-free-reference-analysis', [], 'cache'],
   ] as const) {
     let entries;
-    try { entries = await readdir(join(root.path, directory), { withFileTypes: true }); }
+    try {
+      if (!(await lstat(join(root.path, directory))).isDirectory()) continue;
+      // A symlinked cache container cannot establish ownership of its target.
+      if (directory.startsWith('cache/') && !(await lstat(join(root.path, 'cache'))).isDirectory()) continue;
+      entries = await readdir(join(root.path, directory), { withFileTypes: true });
+    }
     catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
-    declarations.push({ kind: 'path', root: root.id, name: directory, classification: 'state', producer });
+    declarations.push({ kind: 'path', root: root.id, name: directory, classification, producer });
     for (const entry of entries) {
       const atomic = directory === 'provider-pacing' && entry.name.startsWith(`${pacingFile}.tmp-`) &&
         /^[0-9]+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(entry.name.slice(`${pacingFile}.tmp-`.length));
-      if (entry.isFile() && ((files as readonly string[]).includes(entry.name) || atomic)) {
-        declarations.push({ kind: 'path', root: root.id, name: `${directory}/${entry.name}`, classification: 'state', producer });
+      const queryTemporary = directory === 'cache' && /^\.plans-list-standard-v1\.[0-9]+\.tmp$/.test(entry.name);
+      const bundle = directory === 'cache/bundle-free-refs' && /^[0-9a-f]{64}\.json(?:\.[0-9]+\.tmp)?$/.test(entry.name);
+      if (entry.isFile() && ((files as readonly string[]).includes(entry.name) || atomic || queryTemporary || bundle)) {
+        declarations.push({ kind: 'path', root: root.id, name: `${directory}/${entry.name}`, classification, producer });
+      }
+    }
+  }
+  // These writers use host-home resolution, not the active-workspace registry.
+  // Include the ordinary home as well as the configured home: a relocation
+  // does not remove older cache files from the whole-install inventory.
+  // The embedding worker uses ||, while the co-change host helper trims the
+  // pin; preserve both writer contracts rather than substituting papercuspRoot.
+  const ordinaryHome = join(home, '.papercusp');
+  const cacheHomes = new Set([ordinaryHome, papercuspHome(environment, home), environment.PAPERCUSP_HOME || ordinaryHome]);
+  for (const cacheHome of cacheHomes) {
+    try {
+      if (!(await lstat(cacheHome)).isDirectory() || !(await lstat(join(cacheHome, 'cache'))).isDirectory()) continue;
+    } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+    let cacheRoot = roots.find(entry => entry.path === cacheHome);
+    if (!cacheRoot) { cacheRoot = { id: `runtime-cache-home-${roots.length}`, path: cacheHome }; roots.push(cacheRoot); }
+    for (const [name, producer] of [
+      ['cochange-index', 'warm-cochange-snapshot'],
+      ['transformers', 'local-embedder-worker-cache'],
+    ] as const) {
+      const directory = join(cacheHome, 'cache', name);
+      try { if (!(await lstat(directory)).isDirectory()) continue; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+      declarations.push({ kind: 'path', root: cacheRoot.id, name: 'cache', classification: 'cache', producer });
+      declarations.push({ kind: 'path', root: cacheRoot.id, name: `cache/${name}`, classification: 'cache', producer,
+        ...(name === 'transformers' ? { descendants: true, prune: true } : {}) });
+      if (name === 'cochange-index') {
+        for (const entry of await readdir(directory, { withFileTypes: true })) {
+          if (entry.isFile() && /^[0-9a-f]{16}\.json(?:\.[0-9]+\.tmp)?$/.test(entry.name)) {
+            declarations.push({ kind: 'path', root: cacheRoot.id, name: `cache/${name}/${entry.name}`,
+              classification: 'cache', producer });
+          }
+        }
       }
     }
   }
@@ -445,8 +489,8 @@ export function scratchCensusProducer() {
 }
 
 /** Same relocated compile-analysis cache used by strip-comments-and-strings. */
-export function stripRangeCacheCensusProducer() {
-  const path = process.env.PAPERCUSP_STRIP_CACHE_DIR || papercuspPath('cache', 'strip-ranges');
+export function stripRangeCacheCensusProducer(home = homedir()) {
+  const path = process.env.PAPERCUSP_STRIP_CACHE_DIR || join(home, '.papercusp', 'cache', 'strip-ranges');
   return { roots: [{ id: 'strip-range-cache-parent', path: dirname(path) }], declarations: [{
     kind: 'path' as const, root: 'strip-range-cache-parent', name: basename(path),
     classification: 'cache' as const, producer: 'strip-comments-and-strings', descendants: true, prune: true,
@@ -459,18 +503,38 @@ export async function affectedTestCacheCensusProducer(home = homedir()) {
   const paths = [{ path: process.env.AFFECTED_TASK_HISTORY_PATH ?? join(directory, 'papercusp-affected-task-durations-v1.json'), producer: 'affected-tests-duration-history' }];
   if (process.env.AFFECTED_TASK_VERDICT_CACHE_PATH) {
     paths.push({ path: process.env.AFFECTED_TASK_VERDICT_CACHE_PATH, producer: 'affected-tests-passing-verdict' });
+    paths.push({ path: closureDigestManifestPath(process.env.AFFECTED_TASK_VERDICT_CACHE_PATH), producer: 'affected-tests-closure-manifest' });
   }
-  let entries;
-  try { entries = await readdir(directory, { withFileTypes: true }); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-  for (const entry of entries ?? []) {
-    if (entry.isFile() && /^papercusp-affected-passing-verdicts-v2-(?:committed-)?[0-9a-f]{16}\.json$/.test(entry.name)) {
-      paths.push({ path: join(directory, entry.name), producer: 'affected-tests-passing-verdict' });
+  const closureSuffix = closureDigestManifestPath('');
+  const verdictName = /^papercusp-affected-passing-verdicts-v2-(?:committed-)?[0-9a-f]{16}\.json$/;
+  const partialName = new RegExp(`^papercusp-affected-partial-v${PARTIAL_TASK_CHECKPOINT_SCHEMA}-[0-9a-f]{24}\\.json$`);
+  const partialDirectory = process.env.AFFECTED_PARTIAL_RESUME_CACHE_DIR || directory;
+  for (const cacheDirectory of new Set([directory, partialDirectory].map(path => resolve(path)))) {
+    // A relocated writer directory is not authority to follow a symlink or own
+    // all of its contents. Enumerate only exact regular writer files.
+    try { if (!(await lstat(cacheDirectory)).isDirectory()) continue; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+    for (const entry of await readdir(cacheDirectory, { withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      const closure = entry.name.endsWith(closureSuffix);
+      const verdict = closure ? entry.name.slice(0, -closureSuffix.length) : entry.name;
+      if (cacheDirectory === resolve(directory) && verdictName.test(verdict)) {
+        paths.push({ path: join(cacheDirectory, entry.name),
+          producer: closure ? 'affected-tests-closure-manifest' : 'affected-tests-passing-verdict' });
+      } else if (partialName.test(entry.name)) {
+        paths.push({ path: join(cacheDirectory, entry.name), producer: 'affected-tests-partial-checkpoint' });
+      }
     }
   }
   const roots: CensusRoot[] = [];
   const declarations: CensusDeclaration[] = [];
+  const seen = new Set<string>();
   for (const entry of paths) {
+    const path = resolve(entry.path);
+    if (seen.has(path)) continue;
+    seen.add(path);
+    try { if (!(await lstat(entry.path)).isFile()) continue; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
     const directory = dirname(resolve(entry.path));
     let root = roots.find(root => root.path === directory);
     if (!root) { root = { id: `affected-test-cache-${roots.length}`, path: directory }; roots.push(root); }
@@ -1188,10 +1252,10 @@ export async function templateDatabaseCensusDeclarations(sql: Sql, clusterIdenti
 let execFileAsyncMemo: typeof execFile.__promisify__ | null = null;
 const execFileAsync = ((...args: unknown[]) =>
   Reflect.apply((execFileAsyncMemo ??= promisify(execFile)), undefined, args)) as typeof execFile.__promisify__;
-/** Read literal migration arrays without importing or executing application code. */
-export function migrationProducerTables(source: string): string[] {
+/** Read complete literal migration arrays without executing application code. */
+function literalMigrationStatements(source: string): string[] {
   const file = ts.createSourceFile('migrations.ts', source, ts.ScriptTarget.Latest, true);
-  const tables = new Set<string>();
+  const statements: string[] = [];
   for (const statement of file.statements) {
     if (!ts.isVariableStatement(statement) || !statement.modifiers?.some(modifier => modifier.kind === ts.SyntaxKind.ExportKeyword)) continue;
     for (const declaration of statement.declarationList.declarations) {
@@ -1199,14 +1263,55 @@ export function migrationProducerTables(source: string): string[] {
       while (initializer && (ts.isAsExpression(initializer) || ts.isSatisfiesExpression(initializer) || ts.isParenthesizedExpression(initializer))) initializer = initializer.expression;
       if (!ts.isIdentifier(declaration.name) || !declaration.name.text.endsWith('_MIGRATIONS') ||
         !initializer || !ts.isArrayLiteralExpression(initializer)) continue;
-      for (const element of initializer.elements) {
-        if (!ts.isStringLiteral(element) && !ts.isNoSubstitutionTemplateLiteral(element)) continue;
-        const match = element.text.match(/^\s*CREATE TABLE(?: IF NOT EXISTS)? ([a-z_][a-z0-9_]*)\s*\(/i);
-        if (match) tables.add(`public.${match[1].toLowerCase()}`);
-      }
+      if (initializer.elements.some(element => !ts.isStringLiteral(element) && !ts.isNoSubstitutionTemplateLiteral(element))) continue;
+      statements.push(...initializer.elements.map(element => (element as ts.StringLiteralLike).text));
     }
   }
-  return [...tables];
+  return statements;
+}
+
+export function migrationProducerTables(source: string): string[] {
+  return [...new Set(literalMigrationStatements(source).flatMap(statement => {
+    const match = statement.match(/^\s*CREATE TABLE(?: IF NOT EXISTS)? ([a-z_][a-z0-9_]*)\s*\(/i);
+    return match ? [`public.${match[1].toLowerCase()}`] : [];
+  }))];
+}
+
+/** Bound history to this registered repository and this exact regular-file path.
+ * Historical schemas require columns/types, never an arbitrary table overlap.
+ */
+async function historicalProjectMigrationSources(repository: string, producer: string): Promise<MigrationCensusSource[]> {
+  const options = { timeout: 5000, maxBuffer: 4 * 1024 * 1024 };
+  let root: string;
+  try { root = (await execFileAsync('git', ['-C', repository, 'rev-parse', '--show-toplevel'], options)).stdout.trim(); }
+  catch (error) {
+    if ((error as { code?: number | string }).code === 128) return [];
+    throw error;
+  }
+  if (resolve(root) !== resolve(repository)) return [];
+  const name = 'packages/data/src/migrations.ts';
+  const { stdout } = await execFileAsync('git', ['-C', repository, 'log', '--all', '--max-count=128',
+    '--format=', '--raw', '--no-abbrev', '--no-renames', '-z', '--', name], options);
+  const fields = stdout.split('\0');
+  const blobs = new Set<string>();
+  for (let index = 0; index + 1 < fields.length; index += 2) {
+    const match = /^:\d{6} 100(?:644|755) [0-9a-f]+ ([0-9a-f]+) [AMT]$/.exec(fields[index].trim());
+    if (match && fields[index + 1] === name) blobs.add(match[1]);
+  }
+  const sources: MigrationCensusSource[] = [];
+  const schemas = new Set<string>();
+  for (const blob of blobs) {
+    const size = Number((await execFileAsync('git', ['-C', repository, 'cat-file', '-s', blob], options)).stdout.trim());
+    if (!Number.isSafeInteger(size) || size <= 0 || size > 1_048_576) continue;
+    const text = (await execFileAsync('git', ['-C', repository, 'cat-file', 'blob', blob], options)).stdout;
+    // Functions, prose and ALTER statements cannot introduce CREATE evidence.
+    const sql = literalMigrationStatements(text).filter(statement => /^\s*CREATE\s+TABLE\b/i.test(statement)).join(';\n');
+    const source = sqlMigrationCensusSource(sql, `${producer}:git-blob:${blob}:${name}`);
+    if (!source) continue;
+    const identity = JSON.stringify([source.tables, source.columns]);
+    if (!schemas.has(identity)) { schemas.add(identity); sources.push(source); }
+  }
+  return sources;
 }
 
 /** Read literal app migrations from canonical registered project paths without executing source. */
@@ -1240,6 +1345,7 @@ export async function registeredProjectMigrationSources(projects: readonly { slu
     if (literalMigrations) {
       const tables = migrationProducerTables(literalMigrations);
       if (tables.length >= 2) sources.push({ producer: `app-migrations:registry:${project.slug}:${project.path}`, tables });
+      sources.push(...await historicalProjectMigrationSources(project.path, `app-migrations:registry:${project.slug}:${project.path}`));
     }
     const config = await boundedSource(join(project.path, 'drizzle.config.ts'));
     const output = config && literalDrizzleOutput(config);
@@ -1352,7 +1458,7 @@ export function sqlMigrationCensusSource(source: string, producer: string): Migr
     const tableColumns: typeof columns = [];
     for (const part of parts) {
       if (/^(PRIMARY|FOREIGN|UNIQUE|CHECK|CONSTRAINT)\b/i.test(part)) continue;
-      const column = part.match(new RegExp(`^(${identifier})\\s+(text|integer|bigint|jsonb|boolean|timestamptz|timestamp(?:\\s+(?:with|without)\\s+time\\s+zone)?|double\\s+precision)\\b`, 'i'));
+      const column = part.match(new RegExp(`^(${identifier})\\s+(text|integer|bigint|jsonb|boolean|tsvector|timestamptz|timestamp(?:\\s+(?:with|without)\\s+time\\s+zone)?|double\\s+precision)\\b`, 'i'));
       if (!column) {
         const custom = part.match(new RegExp(`^(${identifier})\\s+(${identifier})(?:\\s*\\.\\s*(${identifier}))?(?=\\s|$)`, 'i'));
         if (!custom) return null;
@@ -1577,13 +1683,23 @@ export async function unitCensusDeclarations(
 }
 
 /** Service-manager source directories, shared by unit and whole-host diagnostics. */
-export async function installedUnitCensusDeclarations(scope: 'user' | 'system'): Promise<CensusDeclaration[]> {
+export async function installedUnitCensusDeclarations(
+  scope: 'user' | 'system',
+  readUnitPaths: (scope: 'user' | 'system') => Promise<readonly string[]> = async scope => {
+    const { stdout } = await execFileAsync('systemd-analyze', [`--${scope}`, 'unit-paths'], { encoding: 'utf8' });
+    return stdout.split('\n').map(path => path.trim()).filter(Boolean);
+  },
+): Promise<CensusDeclaration[]> {
   if (process.platform !== 'linux') throw new Error('Systemd census requires Linux');
-  const runtime = scope === 'system' ? '/run/systemd' : `/run/user/${process.getuid!()}/systemd`;
-  const sources = scope === 'system'
-    ? ['/usr/lib/systemd/system', '/etc/systemd/system', '/run/systemd/system']
-    : [join(homedir(), '.config/systemd/user'), '/usr/lib/systemd/user', '/etc/systemd/user'];
-  sources.push(...['generator', 'generator.early', 'generator.late', 'transient'].map(name => join(runtime, name)));
+  const runtime = scope === 'system' ? '/run/systemd'
+    : join(process.env.XDG_RUNTIME_DIR ?? `/run/user/${process.getuid!()}`, 'systemd');
+  // Use systemd's load-path resolver: fixed directory lists miss runtime user
+  // units, XDG data roots and control directories. Names in the live unit
+  // catalog still cannot establish ownership without an actual definition.
+  const sources = [...new Set(await readUnitPaths(scope))];
+  if (!sources.length || sources.some(source => !isAbsolute(source))) {
+    throw new Error('Invalid systemd unit source paths');
+  }
   const declarations: CensusDeclaration[] = [];
   for (const source of sources) {
     try { await lstat(source); }

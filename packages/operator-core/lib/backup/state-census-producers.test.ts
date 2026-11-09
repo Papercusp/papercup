@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { closureDigestManifestPath } from '../../../../scripts/lib/passing-task-verdict-cache.mjs';
+import { partialTaskCheckpointPath } from '../../../../scripts/lib/partial-task-resume.mjs';
 vi.mock('../db-encryption', () => ({ dbEncryptionKeyFilePath: () => '/mounted/secrets/db-key' }));
 vi.mock('../superuser-token', () => ({ superuserTokenPath: () => '/scoped/home/superuser-token' }));
 vi.mock('../workspace-registry', () => ({
@@ -13,7 +15,7 @@ vi.mock('../papercusp-root', () => ({ papercuspRoot: () => '/relocated/workspace
 // Loading the census must succeed when the interactive login runtime is absent.
 // Its optional lookup can fail closed without losing independent state writers.
 vi.mock('../deployment/account-link-cli', () => { throw new Error('interactive login runtime unavailable'); });
-import { databaseCensusEntries, physicalDatabaseCensusEntries, integrationBaselineCensusDeclarations, secretCensusProducers, unitCensusEntries, unitCensusDeclarations, verifyHostStateCensus, workspaceRegistryCensusProducer, scratchCensusProducer, installedRootCensusProducers, mergeNestedCensusRoots, postgresStorageDeclaration, gitStorageDeclaration } from './state-census-producers';
+import { databaseCensusEntries, physicalDatabaseCensusEntries, integrationBaselineCensusDeclarations, secretCensusProducers, unitCensusEntries, unitCensusDeclarations, installedUnitCensusDeclarations, verifyHostStateCensus, workspaceRegistryCensusProducer, scratchCensusProducer, installedRootCensusProducers, mergeNestedCensusRoots, postgresStorageDeclaration, gitStorageDeclaration } from './state-census-producers';
 import { mkdtemp, writeFile, rm, symlink, readFile, mkdir, chmod, utimes, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -661,7 +663,7 @@ describe('secret census producer adapters', () => {
       await writeFile(join(home, '.papercusp', 'template-gym', 'last-run.json'), '{}');
       await symlink(join(home, '.papercusp', 'template-gym', 'last-run.json'), join(home, '.papercusp', 'template-gym', 'runs.jsonl'));
       vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(home, '.papercusp', 'fs-mutex-locks'));
-      const result = await runtimeSidefileCensusProducer(home);
+      const result = await runtimeSidefileCensusProducer(home, {});
       expect(result.declarations.map(entry => entry.name).sort()).toEqual(['provider-pacing', ...[pacing, `${pacing}.lock`, temporary].map(file => `provider-pacing/${file}`), 'template-gym', 'template-gym/last-run.json'].sort());
       expect(result.declarations.every(entry => entry.classification === 'state' && !entry.descendants && !entry.prune)).toBe(true);
       const hook = await readFile(new URL('../../../../apps/operator/scripts/hooks/omp/coord-hook.ts', import.meta.url), 'utf8');
@@ -680,13 +682,115 @@ describe('secret census producer adapters', () => {
       await writeFile(join(mutex, 'live.lock', 'owner.json'), 'live owner fixture');
       await writeFile(join(home, 'runtime', 'foreign'), 'unproven fixture');
       vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', mutex);
-      const result = await runtimeSidefileCensusProducer(home);
+      const result = await runtimeSidefileCensusProducer(home, {});
       const report = await collectStateCensus({ ...result, readCatalogs: async () => [] });
       expect(report.inventory.find(entry => entry.name === 'relocated-locks')).toMatchObject({ classification: 'cache',
         producers: ['filesystem-mutex-runtime'] });
       expect(report.inventory.some(entry => entry.name.startsWith('relocated-locks/'))).toBe(false);
       expect(report.residue.map(entry => entry.name)).toContain('foreign');
       expect(await readFile(join(mutex, 'live.lock', 'owner.json'), 'utf8')).toBe('live owner fixture');
+    } finally { vi.unstubAllEnvs(); await rm(home, { recursive: true, force: true }); }
+  });
+  it('censuses exact bundle and TUI cache writers while preserving unknown contents and symlinks', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'runtime-cache-census-'));
+    const cache = join(home, '.papercusp', 'cache');
+    const bundle = join(cache, 'bundle-free-refs');
+    try {
+      vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(home, 'absent-mutex'));
+      await mkdir(bundle, { recursive: true });
+      const digest = 'a'.repeat(64);
+      const known = [`${digest}.json`, `${digest}.json.123.tmp`];
+      for (const name of [...known, 'unknown.json', `${digest.toUpperCase()}.json`, `${digest}.json.bad.tmp`]) {
+        await writeFile(join(bundle, name), '{}');
+      }
+      await symlink(join(bundle, known[0]), join(bundle, `${'b'.repeat(64)}.json`));
+      await mkdir(join(bundle, `${'c'.repeat(64)}.json`));
+      await writeFile(join(cache, 'plans-list-standard-v1.json'), '{}');
+      await writeFile(join(cache, '.plans-list-standard-v1.123.tmp'), '{}');
+      await writeFile(join(cache, 'unknown.json'), '{}');
+      await symlink(join(cache, 'unknown.json'), join(cache, '.plans-list-standard-v1.456.tmp'));
+      const result = await runtimeSidefileCensusProducer(home, {});
+      expect(result.declarations.map(entry => entry.name).sort()).toEqual([
+        'cache', 'cache/plans-list-standard-v1.json', 'cache/.plans-list-standard-v1.123.tmp',
+        'cache/bundle-free-refs', ...known.map(name => `cache/bundle-free-refs/${name}`),
+      ].sort());
+      expect(result.declarations.every(entry => entry.classification === 'cache' && !entry.descendants && !entry.prune)).toBe(true);
+      const census = await collectStateCensus({ ...result, readCatalogs: async () => [] });
+      expect(census.residue.map(entry => entry.name)).toEqual(expect.arrayContaining([
+        'cache/unknown.json', 'cache/.plans-list-standard-v1.456.tmp',
+        'cache/bundle-free-refs/unknown.json', `cache/bundle-free-refs/${'b'.repeat(64)}.json`,
+        `cache/bundle-free-refs/${'c'.repeat(64)}.json`,
+      ]));
+      // A recognized directory name never licenses following a directory link.
+      await rename(bundle, join(home, 'bundle-target'));
+      await symlink(join(home, 'bundle-target'), bundle);
+      expect((await runtimeSidefileCensusProducer(home, {})).declarations.some(entry => entry.name.startsWith('cache/bundle-free-refs'))).toBe(false);
+      await rename(cache, join(home, 'cache-target'));
+      await symlink(join(home, 'cache-target'), cache);
+      expect((await runtimeSidefileCensusProducer(home, {})).declarations).toEqual([]);
+      const writer = await readFile(new URL('../../../../scripts/check-bundle-free-refs.mjs', import.meta.url), 'utf8');
+      expect(writer).toContain("join(homedir(), '.papercusp', 'cache', 'bundle-free-refs')");
+      expect(writer).toContain('`${file}.${process.pid}.tmp`');
+      const queryWriter = await readFile(new URL('../../../../apps/tui/src/shared_cache.rs', import.meta.url), 'utf8');
+      expect(queryWriter).toContain('h.join(".papercusp").join("cache")');
+      expect(queryWriter).toContain('format!(".{key}.{}.tmp", std::process::id())');
+      expect(await readFile(new URL('../../../../apps/tui/src/client.rs', import.meta.url), 'utf8')).toContain('"plans-list-standard-v1"');
+    } finally { vi.unstubAllEnvs(); await rm(home, { recursive: true, force: true }); }
+  });
+  it('uses actual default and relocated co-change/model cache writers without following links or owning neighbors', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'host-cache-census-'));
+    const ordinary = join(home, '.papercusp');
+    const relocated = join(home, 'configured-home');
+    try {
+      vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(home, 'absent-mutex'));
+      for (const base of [ordinary, relocated]) {
+        const snapshots = join(base, 'cache', 'cochange-index');
+        await mkdir(snapshots, { recursive: true });
+        for (const name of ['0123456789abcdef.json', '0123456789abcdef.json.123.tmp',
+          '0123456789abcdef.json.bad.tmp', 'ABCDEF0123456789.json', 'unknown.json']) await writeFile(join(snapshots, name), '{}');
+        await symlink(join(snapshots, 'unknown.json'), join(snapshots, '1111111111111111.json'));
+        await mkdir(join(snapshots, '2222222222222222.json'));
+        await mkdir(join(base, 'cache', 'transformers', 'Xenova', 'model'), { recursive: true });
+        await writeFile(join(base, 'cache', 'transformers', 'Xenova', 'model', 'config.json'), '{}');
+        await writeFile(join(base, 'cache', 'foreign'), 'unowned');
+      }
+      const defaults = await runtimeSidefileCensusProducer(home, {});
+      expect(defaults.roots.every(root => root.path !== relocated)).toBe(true);
+      expect(defaults.roots[0].path).toBe(ordinary);
+      const result = await runtimeSidefileCensusProducer(home, { PAPERCUSP_HOME: relocated });
+      expect(result.roots.map(root => root.path)).toContain(relocated);
+      const census = await collectStateCensus({ ...result, readCatalogs: async () => [] });
+      for (const base of [ordinary, relocated]) {
+        const root = result.roots.find(root => root.path === base)!;
+        const names = result.declarations.filter(entry => entry.root === root.id).map(entry => entry.name);
+        expect(names).toEqual(expect.arrayContaining(['cache/cochange-index/0123456789abcdef.json',
+          'cache/cochange-index/0123456789abcdef.json.123.tmp', 'cache/transformers']));
+        const residue = census.residue.filter(entry => entry.root === root.id).map(entry => entry.name);
+        expect(residue).toEqual(expect.arrayContaining(['cache/foreign', 'cache/cochange-index/unknown.json',
+          'cache/cochange-index/0123456789abcdef.json.bad.tmp', 'cache/cochange-index/ABCDEF0123456789.json',
+          'cache/cochange-index/1111111111111111.json', 'cache/cochange-index/2222222222222222.json']));
+        expect(census.inventory.find(entry => entry.root === root.id && entry.name === 'cache/transformers'))
+          .toMatchObject({ classification: 'cache', producers: ['local-embedder-worker-cache'] });
+        expect(census.inventory.some(entry => entry.name.endsWith('/config.json'))).toBe(false);
+      }
+      await rename(join(relocated, 'cache', 'transformers'), join(home, 'model-target'));
+      await symlink(join(home, 'model-target'), join(relocated, 'cache', 'transformers'));
+      await rename(join(relocated, 'cache', 'cochange-index'), join(home, 'snapshot-target'));
+      await symlink(join(home, 'snapshot-target'), join(relocated, 'cache', 'cochange-index'));
+      const linked = await runtimeSidefileCensusProducer(home, { PAPERCUSP_HOME: relocated });
+      expect(linked.declarations.filter(entry => linked.roots.find(root => root.id === entry.root)?.path === relocated)).toEqual([]);
+      await rename(join(relocated, 'cache'), join(home, 'cache-target'));
+      await symlink(join(home, 'cache-target'), join(relocated, 'cache'));
+      expect((await runtimeSidefileCensusProducer(home, { PAPERCUSP_HOME: relocated })).roots.some(root => root.path === relocated)).toBe(false);
+      const hostWriter = await readFile(new URL('../code-intelligence/warm-cochange-index.ts', import.meta.url), 'utf8');
+      expect(hostWriter).toContain("from '@papercusp/host-platform/home'");
+      expect(hostWriter).toContain("papercuspPath('cache', 'cochange-index')");
+      expect(hostWriter).toContain(".digest('hex').slice(0, 16)");
+      expect(await readFile(new URL('../code-intelligence/warm-cochange-index.worker.ts', import.meta.url), 'utf8'))
+        .toContain('`${snapshotPath}.${process.pid}.tmp`');
+      const modelWriter = await readFile(new URL('../../../../libs/generic/memory/src/local-embedder-worker.script.mjs', import.meta.url), 'utf8');
+      expect(modelWriter).toContain("process.env.PAPERCUSP_HOME || join(homedir(), '.papercusp')");
+      expect(modelWriter).toContain("join(papercuspHome, 'cache', 'transformers')");
     } finally { vi.unstubAllEnvs(); await rm(home, { recursive: true, force: true }); }
   });
   it('inventories referenced auth and atomic refresh files without importing unrelated CLI state', async () => {
@@ -730,19 +834,83 @@ describe('secret census producer adapters', () => {
       const committed = 'papercusp-affected-passing-verdicts-v2-committed-fedcba9876543210.json';
       await writeFile(join(directory, ordinary), '{}');
       await writeFile(join(directory, committed), '{}');
+      for (const name of [ordinary, committed]) await writeFile(closureDigestManifestPath(join(directory, name)), '{}');
+      const orphanSidecar = closureDigestManifestPath('papercusp-affected-passing-verdicts-v2-1111111111111111.json');
+      await writeFile(join(directory, orphanSidecar), '{}');
       await writeFile(join(directory, 'unknown.json'), '{}');
+      await writeFile(closureDigestManifestPath(join(directory, 'unknown.json')), '{}');
       await symlink(join(directory, 'unknown.json'), join(directory, 'papercusp-affected-passing-verdicts-v2-aaaaaaaaaaaaaaaa.json'));
+      await symlink(join(directory, 'unknown.json'), closureDigestManifestPath(join(directory, 'papercusp-affected-passing-verdicts-v2-bbbbbbbbbbbbbbbb.json')));
       vi.stubEnv('AFFECTED_TASK_HISTORY_PATH', join(home, 'history', 'custom.json'));
       vi.stubEnv('AFFECTED_TASK_VERDICT_CACHE_PATH', join(home, 'verdict', 'custom.json'));
+      vi.stubEnv('AFFECTED_PARTIAL_RESUME_CACHE_DIR', '');
+      await mkdir(join(home, 'history'));
+      await writeFile(join(home, 'history', 'custom.json'), '{}');
+      await mkdir(join(home, 'verdict'));
+      await writeFile(join(home, 'verdict', 'custom.json'), '{}');
+      await writeFile(closureDigestManifestPath(join(home, 'verdict', 'custom.json')), '{}');
       const result = await affectedTestCacheCensusProducer(home);
-      expect(result.declarations.map(entry => entry.name).sort()).toEqual(['custom.json', 'custom.json', ordinary, committed].sort());
+      expect(result.declarations.map(entry => entry.name).sort()).toEqual(['custom.json', 'custom.json',
+        closureDigestManifestPath('custom.json'), ordinary, committed,
+        closureDigestManifestPath(ordinary), closureDigestManifestPath(committed), orphanSidecar].sort());
       expect(result.declarations.every(entry => entry.classification === 'cache' && !entry.descendants && !entry.prune)).toBe(true);
+      expect(result.declarations.filter(entry => entry.producer === 'affected-tests-closure-manifest')).toHaveLength(4);
       expect(result.roots.map(root => root.path)).toContain(join(home, 'history'));
+      const census = await collectStateCensus({ ...result, readCatalogs: async () => [] });
+      expect(census.inventory.find(entry => entry.name === 'custom.json.closure-manifest.json')?.classification).toBe('cache');
+      expect(census.residue.map(entry => entry.name)).toEqual(expect.arrayContaining(['unknown.json', 'unknown.json.closure-manifest.json']));
       const writer = await readFile(new URL('../../../../scripts/affected-tests.mjs', import.meta.url), 'utf8');
       expect(writer).toContain('papercusp-affected-task-durations-v1.json');
       expect(writer).toContain('papercusp-affected-passing-verdicts-v2-${TASK_VERDICT_CACHE_ROOT_SCOPE}.json');
       const committedWriter = await readFile(new URL('../../../../scripts/lint-as-committed.mjs', import.meta.url), 'utf8');
       expect(committedWriter).toContain('papercusp-affected-passing-verdicts-v2-committed-${scope}.json');
+    } finally { vi.unstubAllEnvs(); await rm(home, { recursive: true, force: true }); }
+  });
+  it.each([false, true])('censuses exact partial checkpoints with relocated=%s and preserves unrelated files', async (relocated) => {
+    const home = await mkdtemp(join(tmpdir(), 'affected-partial-census-'));
+    try {
+      const directory = join(home, '.papercusp', 'cache');
+      const partialDirectory = relocated ? join(home, 'partial') : directory;
+      vi.stubEnv('AFFECTED_PARTIAL_RESUME_CACHE_DIR', relocated ? partialDirectory : '');
+      vi.stubEnv('AFFECTED_TASK_HISTORY_PATH', join(directory, 'papercusp-affected-task-durations-v1.json'));
+      vi.stubEnv('AFFECTED_TASK_VERDICT_CACHE_PATH', '');
+      await mkdir(directory, { recursive: true });
+      await mkdir(partialDirectory, { recursive: true });
+      const checkpoint = partialTaskCheckpointPath(partialDirectory, '/repo', 'operator-core :: test');
+      const unrelated = ['unknown.json', 'papercusp-affected-partial-v999-0123456789abcdef01234567.json',
+        'papercusp-affected-partial-v1-not-a-scope.json'];
+      await writeFile(checkpoint, '{}');
+      for (const name of unrelated) await writeFile(join(partialDirectory, name), '{}');
+      const linked = partialTaskCheckpointPath(partialDirectory, '/repo', 'linked');
+      await symlink(checkpoint, linked);
+      const result = await affectedTestCacheCensusProducer(home);
+      expect(result.declarations.filter(entry => entry.producer === 'affected-tests-partial-checkpoint'))
+        .toEqual([{ kind: 'path', root: expect.any(String), name: checkpoint.split('/').at(-1),
+          classification: 'cache', producer: 'affected-tests-partial-checkpoint' }]);
+      const census = await collectStateCensus({ ...result, readCatalogs: async () => [] });
+      expect(census.inventory.find(entry => entry.name === checkpoint.split('/').at(-1))?.classification).toBe('cache');
+      expect(census.residue.map(entry => entry.name)).toEqual(expect.arrayContaining([...unrelated, linked.split('/').at(-1)]));
+      expect(result.declarations.every(entry => !entry.descendants && !entry.prune)).toBe(true);
+    } finally { vi.unstubAllEnvs(); await rm(home, { recursive: true, force: true }); }
+  });
+  it('leaves explicit cache symlinks and symlinked partial directories unclassified', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'affected-linked-cache-census-'));
+    try {
+      const target = join(home, 'target.json');
+      const verdict = join(home, 'verdict.json');
+      await writeFile(target, '{}');
+      await symlink(target, verdict);
+      await symlink(target, closureDigestManifestPath(verdict));
+      const partialDirectory = join(home, 'partial-target');
+      await mkdir(partialDirectory);
+      await writeFile(partialTaskCheckpointPath(partialDirectory, '/repo', 'test'), '{}');
+      const linkedDirectory = join(home, 'linked-partial');
+      await symlink(partialDirectory, linkedDirectory);
+      vi.stubEnv('AFFECTED_TASK_HISTORY_PATH', target);
+      vi.stubEnv('AFFECTED_TASK_VERDICT_CACHE_PATH', verdict);
+      vi.stubEnv('AFFECTED_PARTIAL_RESUME_CACHE_DIR', linkedDirectory);
+      const result = await affectedTestCacheCensusProducer(home);
+      expect(result.declarations.map(entry => entry.producer)).toEqual(['affected-tests-duration-history']);
     } finally { vi.unstubAllEnvs(); await rm(home, { recursive: true, force: true }); }
   });
   it('retains runtime writer directories under the relocated active workspace without pruning credentials or diagnostics', async () => {
@@ -869,6 +1037,41 @@ describe('secret census producer adapters', () => {
       expect(migrationDatabaseCensusDeclarations({ kind: 'database', root: 'postgres-cluster:123', name: 'calendar_app' }, result[0].tables, result)[0])
         .toMatchObject({ classification: 'state', producer: result[0].producer });
     } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+  it('proves an older migration schema after an earlier table insertion from exact-path Git history', async () => {
+    const app = await mkdtemp(join(tmpdir(), 'historical-migration-census-'));
+    try {
+      const git = (...args: string[]) => execFileSync('git', ['-C', app, ...args]);
+      const name = 'packages/data/src/migrations.ts';
+      await mkdir(join(app, 'packages/data/src'), { recursive: true });
+      const old = 'export const APP_MIGRATIONS = [`CREATE TABLE calls (id text, search_document tsvector)`, `CREATE TABLE segments (id text)`];';
+      await writeFile(join(app, name), old);
+      await writeFile(join(app, 'unrelated.ts'), 'export const APP_MIGRATIONS = [`CREATE TABLE impostor (id text)`, `CREATE TABLE unrelated (id text)`];');
+      git('init', '-q');
+      git('add', '.');
+      git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'old');
+      const blob = git('rev-parse', `HEAD:${name}`).toString().trim();
+      await writeFile(join(app, name), old.replace('`, `CREATE TABLE segments', '`, `CREATE TABLE preparations (id text)`, `CREATE TABLE segments'));
+      git('add', '.');
+      git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'insert earlier table');
+      const sources = await registeredProjectMigrationSources([{ slug: 'app', path: app }]);
+      const entry = { kind: 'database' as const, root: 'postgres-cluster:123', name: 'arbitrary' };
+      const tables = ['public.calls', 'public.segments'];
+      const columns = [{ table: tables[0], name: 'id', type: 'text' },
+        { table: tables[0], name: 'search_document', type: 'tsvector' },
+        { table: tables[1], name: 'id', type: 'text' }];
+      expect(migrationDatabaseCensusDeclarations(entry, tables, [sources[0]], columns)).toEqual([]);
+      expect(migrationDatabaseCensusDeclarations(entry, tables, sources, columns)).toEqual([
+        { ...entry, classification: 'state', producer: `app-migrations:registry:app:${app}:git-blob:${blob}:${name}` },
+      ]);
+      expect(migrationDatabaseCensusDeclarations(entry, tables, sources, columns.slice(1))).toEqual([]);
+      expect(migrationDatabaseCensusDeclarations(entry, ['public.impostor', 'public.unrelated'], sources, columns)).toEqual([]);
+      // A linked current source cannot confer access to any historical schema.
+      await rm(join(app, name));
+      await symlink(join(app, 'unrelated.ts'), join(app, name));
+      expect(await registeredProjectMigrationSources([{ slug: 'linked', path: app }])).toEqual([]);
+      expect(migrationProducerTables('export const APP_MIGRATIONS = [`CREATE TABLE a (id text)`, ...extra, `CREATE TABLE b (id text)`]')).toEqual([]);
+    } finally { await rm(app, { recursive: true, force: true }); }
   });
   it('discovers literal Drizzle SQL from registered and installed-unit roots without executing config', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'drizzle-census-'));
@@ -1002,6 +1205,11 @@ describe('secret census producer adapters', () => {
     try {
       expect(stripRangeCacheCensusProducer()).toMatchObject({ roots: [{ path: '/fixture/analysis' }],
         declarations: [{ name: 'cache', classification: 'cache', prune: true }] });
+      vi.stubEnv('PAPERCUSP_STRIP_CACHE_DIR', '');
+      expect(stripRangeCacheCensusProducer('/fixture/home')).toMatchObject({
+        roots: [{ path: '/fixture/home/.papercusp/cache' }],
+        declarations: [{ name: 'strip-ranges', classification: 'cache', prune: true }],
+      });
     } finally { vi.unstubAllEnvs(); }
   });
   it('retains only completed direct restore clones and refuses active or symlinked targets', async () => {
@@ -1144,6 +1352,37 @@ describe('secret census producer adapters', () => {
       expect(declarations[0].producer).toBe(`unit-definition:${path}`);
       expect((await unitCensusDeclarations(path, 'user', 'dev-only'))[0].classification).toBe('dev-only');
     } finally { await rm(path, { recursive: true, force: true }); }
+  });
+  it.skipIf(process.platform !== 'linux')('discovers runtime and relocated unit definitions through systemd load paths', async () => {
+    const runtime = await mkdtemp(join(tmpdir(), 'unit-load-paths-'));
+    const user = join(runtime, 'systemd', 'user');
+    const transient = join(runtime, 'systemd', 'transient');
+    const data = join(runtime, 'relocated-data', 'systemd', 'user');
+    vi.stubEnv('XDG_RUNTIME_DIR', runtime);
+    try {
+      for (const source of [user, transient, data]) await mkdir(source, { recursive: true });
+      await writeFile(join(user, 'runtime.service'), '[Service]\nExecStart=/bin/true\n');
+      await symlink('/dev/null', join(user, 'masked.service'));
+      await writeFile(join(transient, 'task.service'), '[Service]\nExecStart=/bin/true\n');
+      await writeFile(join(data, 'relocated.timer'), '[Timer]\nOnBootSec=1\n');
+      const readPaths = vi.fn(async () => [user, transient, data, user, join(runtime, 'missing')]);
+      const declarations = await installedUnitCensusDeclarations('user', readPaths);
+      expect(readPaths).toHaveBeenCalledWith('user');
+      expect(declarations.map(row => row.name).sort()).toEqual([
+        'masked.service', 'relocated.timer', 'runtime.service', 'task.service',
+      ]);
+      expect(declarations.find(row => row.name === 'runtime.service')).toMatchObject({
+        root: 'systemd-user', classification: 'config', producer: `unit-definition:${user}`,
+      });
+      expect(declarations.find(row => row.name === 'task.service')?.classification).toBe('dev-only');
+      await expect(installedUnitCensusDeclarations('user', async () => [])).rejects.toThrow('Invalid systemd unit source paths');
+      await expect(installedUnitCensusDeclarations('user', async () => ['relative'])).rejects.toThrow('Invalid systemd unit source paths');
+      await expect(installedUnitCensusDeclarations('user', async () => { throw new Error('resolver unavailable'); }))
+        .rejects.toThrow('resolver unavailable');
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(runtime, { recursive: true, force: true });
+    }
   });
   it('uses the registry writer root without blanket-classifying sibling workspaces', () => {
     const producer = workspaceRegistryCensusProducer();
