@@ -61,9 +61,9 @@ function gate() {
 }
 
 describe('metadata publication population', () => {
-  it('requires a disposition for every private publisher caller and parent ref writer', () => {
-    const path = new URL('./run-git-sync.ts', import.meta.url);
-    const source = ts.createSourceFile(path.pathname, readFileSync(path, 'utf8'), ts.ScriptTarget.Latest, true);
+  const productionSource = () => readFileSync(new URL('./run-git-sync.ts', import.meta.url), 'utf8');
+  function assertPublicationPopulation(text: string) {
+    const source = ts.createSourceFile('run-git-sync.ts', text, ts.ScriptTarget.Latest, true);
     const owners = (node: ts.Node): string => {
       for (let p = node.parent; p; p = p.parent) {
         if (ts.isFunctionDeclaration(p) && p.name) return p.name.text;
@@ -128,6 +128,27 @@ describe('metadata publication population', () => {
       pushSelectedHead: 'P003 immutable remote publication: first/ordinary refusal, retry revalidation and HEAD-race controls',
     };
     for (const writer of writers) expect(dispositions[writer.split(':')[0]!], writer).toBeTruthy();
+  }
+
+  it('requires a disposition for every private publisher caller and parent ref writer', () => {
+    assertPublicationPopulation(productionSource());
+  });
+
+  it.each([
+    ['private publisher caller', 'function uncoveredPrivateCaller() { publishPrivateIndexCommit(); }'],
+    ['local parent ref writer', "function uncoveredLocalWriter() { runGit(['update-ref', 'HEAD', next, base], repo); }"],
+    ['remote publisher caller', 'function uncoveredRemoteCaller() { pushSelectedHead(); }'],
+  ])('detects an added uncovered %s without editing production source', (_route, addition) => {
+    const source = productionSource();
+    expect(() => assertPublicationPopulation(source)).not.toThrow();
+    // Mutate only the parsed input. The identical census must reject a new
+    // publication route until its population and disposition are maintained.
+    expect(() => assertPublicationPopulation(source + '\n' + addition)).toThrow();
+  });
+
+  it('keeps data-only Git verb registries outside the writer population', () => {
+    const registries = "\nconst verbs = new Set(['update-ref', 'push']); const choice = z.enum(['branch', 'default-head']);";
+    assertPublicationPopulation(productionSource() + registries);
   });
 });
 
