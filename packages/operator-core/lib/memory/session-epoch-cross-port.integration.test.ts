@@ -411,8 +411,8 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
   for (const client of ['codex', 'claude'] as const)
     for (const source of ['memory', 'corpus'] as const)
       for (const port of ['initialize', 'orient', 'claim', 'create'] as const)
-        for (const fault of ['duplicate-commit', 'partial-stdout'] as const)
-        it(`context reliability R-1: production launch ${client} ${source} ${port} ${fault === 'partial-stdout' ? 'partial-stdout ' : ''}receipt join`, async ({ task }) => {
+        for (const fault of ['duplicate-commit', 'partial-stdout', 'abandon-expiry', 'retry'] as const)
+        it(`context reliability R-1: production launch ${client} ${source} ${port} ${fault === 'duplicate-commit' ? '' : fault + ' '}receipt join`, async ({ task }) => {
           const owner = `su-launch-${randomUUID()}`;
           const text = 'Apply zephyrrepair recovery.\nOnly after explicit final approval ☃.';
           const savedEntries = h.entries;
@@ -434,9 +434,9 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
           let diagnosticsPath = '', failure: string | undefined;
           const echoedConfirmations: Array<{ token?: string }> = [];
           try {
-            const capture = await captureNativeMcp(client, [{ name: 'receipt_canary', description: 'Local launch receipt observation.' }],
+            const runNative = (partial: boolean) => captureNativeMcp(client, [{ name: 'receipt_canary', description: 'Local launch receipt observation.' }],
               text, [], { stdioReceipt: source, stdioPort: port, stdioOwner: owner,
-                ...(fault === 'partial-stdout' ? { stdioFault: fault } : {}),
+                ...(partial ? { stdioFault: 'partial-stdout' as const } : {}),
                 onDiagnostics: path => { diagnosticsPath = path; Object.assign(task.meta, { nativeMcpDiagnostics: path }); },
                 mcpResult: async (method, result, request) => {
                   const metadata = (request.params as { _meta?: Record<string, unknown> } | undefined)?._meta;
@@ -452,19 +452,70 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
                     const { _meta: _fixtureOffer, ...base } = result;
                     // Force a multi-write native response without changing the
                     // production fragment or manufacturing a receipt for it.
-                    const payload = rendered + (fault === 'partial-stdout' ? '\n' + 'x'.repeat(512 * 1024) + ' FINAL_CONDITION' : '');
+                    const payload = rendered + (partial ? '\n' + 'x'.repeat(512 * 1024) + ' FINAL_CONDITION' : '');
                     return port === 'initialize' ? { ...base, instructions: payload }
                       : { ...base, content: [{ type: 'text', text: JSON.stringify({ [port]: payload }) }] };
-                  }).then(response => {
+                  }).then(async response => {
                     const offer = response._meta?.['papercusp/memoryEmission'] as typeof offered;
-                    if (offer) offered = offer;
+                    if (offer) {
+                      offered = offer;
+                      // This observer runs inside the actual native request,
+                      // before the fixture can write its HTTP response or the
+                      // production stdio adapter can emit a single byte.
+                      const { rendered: _text, ...fragment } = offer.fragments[0]!;
+                      const pending = await db.adminSql<{ fragments: unknown[]; committed: unknown }[]>`
+                        SELECT pending -> 'fragments' AS fragments, committed
+                        FROM harness_shared.coord_read_cursors
+                        WHERE owner_id = ${owner} AND surface = ${'memory-emission:' + offer.token}`;
+                      expect(pending).toEqual([{ fragments: [fragment], committed: null }]);
+                      expect(await surfaced()).toEqual([]);
+                      if (fault === 'duplicate-commit') {
+                        expect(await buildLaunchMemoryBlock({ ...input, session: { sessionId: owner, port: 'mid-turn' } }))
+                          .toContain('Only after explicit final approval ☃.');
+                        const prepared: DeliveryMatrixCell = { client, sink: port, source, fault: 'prepare',
+                          selector: task.name, evidenceRefs: [`vitest:${task.name}#nativePreparation`],
+                          terminalOracle: 'complete-stdout', state: 'prepared', verdict: 'passed', suppressionWrites: 0,
+                          attempt: { id: owner, recipient: owner, workspace: 'isolated-org-fixture', epoch: 0,
+                            token: offer.token, fragment: fragment as NonNullable<DeliveryMatrixCell['attempt']>['fragment'] } };
+                        joinedCells.set(deliveryMatrixCellKey(prepared), prepared);
+                        Object.assign(task.meta, { nativePreparation: { cell: prepared, pending,
+                          boundary: 'native request prepared; HTTP and stdout response not yet written', suppressionWrites: 0 } });
+                      }
+                      if (fault === 'abandon-expiry') {
+                        await db.adminSql`UPDATE harness_shared.coord_read_cursors
+                          SET pending = jsonb_set(pending, '{expiresAt}', '1'::jsonb)
+                          WHERE owner_id = ${owner} AND surface = ${'memory-emission:' + offer.token}`;
+                        const expired = await db.adminSql<{ expiresAt: number }[]>`
+                          SELECT (pending ->> 'expiresAt')::bigint AS "expiresAt"
+                          FROM harness_shared.coord_read_cursors
+                          WHERE owner_id = ${owner} AND surface = ${'memory-emission:' + offer.token}`;
+                        expect(Number(expired[0]?.expiresAt)).toBe(1);
+                        Object.assign(task.meta, { nativeExpiredPreparation: { token: offer.token, expired, pending } });
+                      }
+                    }
                     return response;
                   });
                 } }).catch(error => {
-                  if (fault !== 'partial-stdout') throw error;
+                  if (!partial) throw error;
                   failure = String(error);
                   return null;
                 });
+            if (fault === 'retry') {
+              await runNative(true);
+              const diagnostics = JSON.parse(readFileSync(diagnosticsPath, 'utf8'));
+              expect(diagnostics.pipeProbe).toMatchObject({ cut: true, closed: true, forwardedBytes: 1024,
+                targetMethod: port === 'initialize' ? 'initialize' : 'tools/call' });
+              expect(diagnostics.pipeProbe.consumedBytes).toBeGreaterThanOrEqual(1024);
+              expect(diagnostics.stdoutDelivery).toEqual({ adapter: 'ptool-stdio', owner, confirmations: [] });
+              expect(offered?.fragments).toHaveLength(1);
+              expect(await surfaced()).toEqual([]);
+              expect(echoedConfirmations).toEqual([]);
+              expect(await buildLaunchMemoryBlock({ ...input, session: { sessionId: owner, port: 'mid-turn' } }))
+                .toContain('Only after explicit final approval ☃.');
+              Object.assign(task.meta, { nativeFailedRetry: { diagnosticsPath, diagnostics, offered,
+                suppressionWrites: 0, eligibleBeforeRetry: true } });
+            }
+            const capture = await runNative(fault === 'partial-stdout');
             if (fault === 'partial-stdout') Object.assign(task.meta, { nativePartialFailure: failure });
             expect(offered?.owner).toBe(owner);
             expect(offered?.fragments).toHaveLength(1);
@@ -525,6 +576,26 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
               memoryFragments: [fragment] });
             expect(receipt.payloadSha256).toMatch(/^[a-f0-9]{64}$/);
             expect(receipt.payloadBytes).toBeGreaterThanOrEqual(Number(fragment.bodyBytes));
+            if (fault === 'abandon-expiry') {
+              expect(await surfaced()).toEqual([]);
+              expect(await confirmMemoryEmission(db.adminSql as never, owner, proof as never)).toBe(0);
+              expect(await db.adminSql`SELECT surface FROM harness_shared.coord_read_cursors
+                WHERE owner_id = ${owner} AND surface = ${'memory-emission:' + offered!.token}`).toHaveLength(0);
+              expect(await buildLaunchMemoryBlock({ ...input, session: { sessionId: owner, port: 'mid-turn' } }))
+                .toContain('Only after explicit final approval ☃.');
+              expect(await surfaced()).toEqual([]);
+              const cell: DeliveryMatrixCell = { client, sink: port, source, fault,
+                selector: task.name, evidenceRefs: [`vitest:${task.name}#nativeExpiredPreparation`],
+                terminalOracle: 'complete-stdout', state: 'abandoned', verdict: 'passed', suppressionWrites: 0,
+                attempt: { id: owner, recipient: owner, workspace: 'isolated-org-fixture', epoch: 0,
+                  token: offered!.token, fragment: fragment as NonNullable<DeliveryMatrixCell['attempt']>['fragment'] } };
+              joinedCells.set(deliveryMatrixCellKey(cell), cell);
+              Object.assign(task.meta, { deliveryMatrixCell: cell, nativeExpiredReceipt: receipt,
+                productionLaunchReceiptJoin: { client, source, port, offered, receipt: proof,
+                  cursorStore: 'postgresql', surfacedStore: 'postgresql', backendConfirmation: 'expired native receipt rejected',
+                  endpointHandler: 'UNKNOWN', deployedRuntime: 'UNKNOWN' } });
+              return;
+            }
             // Receipt replay below is explicit: this is not evidence that a
             // live endpoint received a later native request after tool exit.
             const beforeReplay = await surfaced();
@@ -534,7 +605,7 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
             expect(await surfaced()).toEqual([{ port, epoch: 0 }]);
             expect(await confirmMemoryEmission(db.adminSql as never, owner, proof as never)).toBe(0);
             const matrixFragment = fragment as NonNullable<DeliveryMatrixCell['attempt']>['fragment'];
-            const cell: DeliveryMatrixCell = { client, sink: port, source, fault: 'duplicate-commit',
+            const cell: DeliveryMatrixCell = { client, sink: port, source, fault,
               selector: task.name, evidenceRefs: [`vitest:${task.name}#nativeStdoutReceipt`],
               terminalOracle: 'complete-stdout', state: 'emitted', verdict: 'passed', suppressionWrites: 1,
               attempt: { id: owner, recipient: owner, workspace: 'isolated-org-fixture', epoch: 0,
@@ -827,7 +898,7 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
       terminalOracle: deliveryTerminalOracle(coordinate), state: 'UNKNOWN' as const,
       verdict: 'UNKNOWN' as const, suppressionWrites: 0,
     });
-    expect(joinedCells.size).toBe(132);
+    expect(joinedCells.size).toBe(180);
     expect(cells).toHaveLength(432);
     // Structural fixture identity only; acceptance binds separately retained
     // plan/rubric/spec/runtime identities and independent evidence later.
@@ -837,7 +908,7 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
         runtimeGeneration: 'isolated-postgresql-dispatcher-fixture' }, cells };
     const result = validateDeliveryMatrix(manifest);
     expect(result).toMatchObject({ closed: true, valid: true, acceptanceReady: false, errors: [] });
-    expect(result.unknown).toHaveLength(300);
+    expect(result.unknown).toHaveLength(252);
     Object.assign(task.meta, { deliveryMatrixCensus: { manifest, result,
       identityKind: 'structural fixture only; independent acceptance and shipment not asserted' } });
   });
