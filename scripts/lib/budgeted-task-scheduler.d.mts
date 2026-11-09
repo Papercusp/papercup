@@ -110,7 +110,8 @@ export function createNativeArtifactPersister(evidenceRoot: string): {
 export function retainReporterEvaluatorArtifacts(payload: unknown, out: string,
   persist: (bytes: Buffer, suffix: string) => NativeArtifactPin):
   NonNullable<ReturnType<typeof writeBudgetedTaskNativeExecutionReceipt>['observation']['processTrace']['reporter']['evaluatorArtifacts']>;
-export function readNativeProcessTraceArtifacts(out: string, startedAtMs?: number, finishedAtMs?: number): {
+export function readNativeProcessTraceArtifacts(out: string, startedAtMs?: number, finishedAtMs?: number,
+  options?: { terminations?: Array<{ pid: number; kernelProcessIdentity: string; code: number | null; signal: string | null }> }): {
   sourceRoot: string;
   rows: Array<{ row: Record<string, any>; bytes: Buffer }>;
   population: { artifactLimit: number; artifactsVisited: number; eventByteLimit: number;
