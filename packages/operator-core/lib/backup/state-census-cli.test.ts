@@ -266,7 +266,7 @@ describe('unit census executable exit contract', () => {
         writeFileSync(join(home, 'foreign-source.ts'), 'unrelated sibling');
       }
       const result = await readWorkspaceSetupHomes([{ id: 'active' }, { id: 'inactive' }, { id: 'inactive' }],
-        workspace => join(parent, workspace), active);
+        workspace => join(parent, workspace), active, parent);
       expect(result.roots.map(root => root.path)).toEqual([active, inactive]);
       expect(result.roots.some(root => root.path === unregistered)).toBe(false);
       const census = await collectStateCensus({ ...result, readCatalogs: async () => [] });
@@ -330,11 +330,54 @@ describe('unit census executable exit contract', () => {
       mkdirSync(active);
       mkdirSync(foreign);
       writeFileSync(join(foreign, 'env-switcher-prefs.json'), '{"disabled":["staging"]}');
-      expect((await readWorkspaceSetupHomes([], resolveRoot, active)).roots.map(root => root.path)).toEqual([active]);
+      expect((await readWorkspaceSetupHomes([], resolveRoot, active, parent)).roots.map(root => root.path)).toEqual([active]);
       symlinkSync(foreign, legacy);
-      const result = await readWorkspaceSetupHomes([], resolveRoot, active);
+      const result = await readWorkspaceSetupHomes([], resolveRoot, active, parent);
       expect(result.roots.map(root => root.path)).toEqual([active]);
       expect(result.declarations.some(entry => entry.name === 'env-switcher-prefs.json' && entry.root !== result.roots[0].id)).toBe(false);
+    } finally { rmSync(parent, { recursive: true, force: true }); }
+  });
+
+  it('preserves the legacy host runtime home while leaving unrelated files and linked fallbacks unclassified', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'legacy-host-runtime-census-'));
+    const hostHome = join(parent, 'host');
+    const legacy = join(hostHome, '.papercusp');
+    const active = join(parent, 'active');
+    const foreign = join(parent, 'foreign');
+    const resolveRoot = (workspace: string) => join(parent, 'registry', workspace, '.papercusp');
+    try {
+      mkdirSync(active, { recursive: true });
+      for (const directory of [legacy, foreign]) {
+        mkdirSync(join(directory, 'crash-reports'), { recursive: true });
+        writeFileSync(join(directory, 'crash-reports', 'report.json'), 'retained diagnostic');
+        mkdirSync(join(directory, 'snapshot-fold-checkpoints'), { recursive: true });
+        writeFileSync(join(directory, 'snapshot-fold-checkpoints', 'checkpoint.json'), 'retained checkpoint');
+        mkdirSync(join(directory, 'deploy-credentials', '.codex-setup-account-1234abcd'), { recursive: true });
+        writeFileSync(join(directory, 'deploy-credentials', '.codex-setup-account-1234abcd', 'auth.json'), 'opaque');
+        writeFileSync(join(directory, 'deploy-credentials', 'unproven.json'), 'unproven credential');
+        writeFileSync(join(directory, 'foreign-source.ts'), 'unrelated sibling');
+        setEnvEnabled('staging', false, { filePath: join(directory, 'env-switcher-prefs.json') });
+      }
+      const result = await readWorkspaceSetupHomes([], resolveRoot, active, hostHome);
+      expect(result.roots.map(root => root.path)).toEqual([active, legacy]);
+      const legacyId = result.roots[1].id;
+      const census = await collectStateCensus({ ...result, readCatalogs: async () => [] });
+      expect(census.inventory.find(entry => entry.root === legacyId && entry.name === 'crash-reports/report.json'))
+        .toMatchObject({ classification: 'state', producers: ['fatal-diagnostics'] });
+      expect(census.inventory.find(entry => entry.root === legacyId && entry.name === 'snapshot-fold-checkpoints/checkpoint.json'))
+        .toMatchObject({ classification: 'state', producers: ['hyperbee-own-compaction'] });
+      expect(census.inventory.find(entry => entry.root === legacyId && entry.name.endsWith('/auth.json')))
+        .toMatchObject({ classification: 'secret' });
+      expect(census.inventory.find(entry => entry.root === legacyId && entry.name === 'env-switcher-prefs.json'))
+        .toMatchObject({ classification: 'config', producers: ['env-switcher-prefs'] });
+      expect(census.residue.map(entry => entry.name).sort()).toEqual(['deploy-credentials/unproven.json', 'foreign-source.ts']);
+      expect(census.ok).toBe(false);
+      const alreadyActive = await readWorkspaceSetupHomes([], resolveRoot, legacy, hostHome);
+      expect(alreadyActive.roots.map(root => root.path)).toEqual([legacy]);
+      rmSync(legacy, { recursive: true });
+      symlinkSync(foreign, legacy);
+      expect((await readWorkspaceSetupHomes([], resolveRoot, active, hostHome)).roots.map(root => root.path))
+        .toEqual([active]);
     } finally { rmSync(parent, { recursive: true, force: true }); }
   });
 
@@ -350,7 +393,7 @@ describe('unit census executable exit contract', () => {
         for (const name of unknown) writeFileSync(join(home, name), 'unproven sibling');
       }
       const result = await readWorkspaceSetupHomes([{ id: 'inactive' }, { id: 'inactive' }],
-        workspace => join(parent, workspace), active);
+        workspace => join(parent, workspace), active, parent);
       expect(result.roots.map(root => root.path)).toEqual([active, inactive]);
       const census = await collectStateCensus({ ...result, readCatalogs: async () => [] });
       for (const root of result.roots) {

@@ -4,6 +4,7 @@ import { collectStateCensus, backupCacheCensusDeclarations } from '../packages/b
 import { installedRootCensusProducers, postgresStorageDeclaration, gitStorageDeclaration, peerStorageDeclaration, portalReleaseStorageDeclaration, restoredCloneCensusDeclarations, mergeNestedCensusRoots, virtualenvCacheDeclaration } from '../packages/operator-core/lib/backup/state-census-producers';
 import { readdir, lstat, readFile, open } from 'node:fs/promises';
 import { constants } from 'node:fs';
+import { homedir } from 'node:os';
 import { join, relative, dirname, basename, sep, isAbsolute } from 'node:path';
 import { workspacesRoot, readRegistry, DEFAULT_WORKSPACE_ID } from '../packages/operator-core/lib/workspace-registry';
 import { defaultClonesDir } from '../packages/operator-core/lib/harness/clone-github';
@@ -129,13 +130,14 @@ export async function readWorkspaceSetupHomes(
   workspaces: readonly { id: string }[],
   resolveRoot: (workspace: string) => string = papercuspRootForWorkspace,
   activeRoot = papercuspRoot(),
+  hostHome = homedir(),
 ) {
   const paths = [...new Set([activeRoot, ...workspaces.map(workspace => resolveRoot(workspace.id))])];
-  // papercuspRoot() and isKnownWorkspace() explicitly retain this pre-registry
-  // fallback. Its absence from registry.json does not retire the writer home.
-  // Do not infer any other unregistered home, or follow a linked default root.
-  const legacyRoot = resolveRoot(DEFAULT_WORKSPACE_ID);
-  if (!paths.includes(legacyRoot)) {
+  // papercuspRoot() retains both pre-registry fallbacks. Selecting a workspace
+  // does not remove state previously written in the default or host home.
+  // These exact writer roots do not authorize arbitrary unregistered siblings.
+  for (const legacyRoot of [resolveRoot(DEFAULT_WORKSPACE_ID), join(hostHome, '.papercusp')]) {
+    if (paths.includes(legacyRoot)) continue;
     try { if ((await lstat(legacyRoot)).isDirectory()) paths.push(legacyRoot); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   }
