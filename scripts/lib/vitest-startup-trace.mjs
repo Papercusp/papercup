@@ -8,6 +8,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import workerThreads, { threadId, isMainThread, getEnvironmentData, setEnvironmentData } from 'node:worker_threads';
 import { channel } from 'node:diagnostics_channel';
+import { getCallSites, types as utilTypes } from 'node:util';
 import { captureConfigurationSnapshot, observeConfigurationReads } from '../../libs/test-config/src/configuration-snapshot.ts';
 import { readProcessIdentity } from './process-identity.mjs';
 import { nativeSourceRetentionLimits, validateSourcePins, observeEngineScriptExecution }
@@ -18,6 +19,76 @@ import { observeProcessTermination } from '../../libs/test-config/src/process-te
 export { nativeSourceRetentionLimits };
 const sourcePinsEnv = 'PC_NATIVE_LOADER_SOURCE_PINS';
 const loaderCensusEnv = 'PC_NATIVE_LOADER_CENSUS';
+const workerThreadIdGetter = Object.getOwnPropertyDescriptor(workerThreads.Worker.prototype, 'threadId')?.get;
+const urlHrefGetter = Object.getOwnPropertyDescriptor(URL.prototype, 'href')?.get;
+const observerUrl = import.meta.url;
+
+// Retain a bounded fingerprint, never argument values (which may include env
+// secrets). Inspect data descriptors only: proxies/accessors/opaque native
+// objects stay UNKNOWN rather than executing application code for evidence.
+function constructionArguments(args) {
+  const hash = createHash('sha256'), seen = new Map();
+  let bytes = 0, nodes = 0;
+  const token = value => {
+    const size = Buffer.byteLength(value);
+    bytes += size;
+    if (bytes > 65536) throw new Error('argument-byte-bound');
+    hash.update(String(size) + ':').update(value);
+  };
+  const visit = (value, depth = 0) => {
+    if (++nodes > 1024 || depth > 32) throw new Error('argument-structure-bound');
+    const kind = typeof value;
+    if (value === null) { token('null'); return; }
+    if (['undefined', 'boolean', 'number', 'bigint', 'string'].includes(kind)) {
+      token(kind);
+      token(kind === 'number' && Object.is(value, -0) ? '-0' : String(value));
+      return;
+    }
+    if (kind !== 'object' || utilTypes.isProxy(value)) throw new Error('opaque-argument');
+    if (seen.has(value)) { token('ref:' + seen.get(value)); return; }
+    seen.set(value, seen.size);
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype === URL.prototype && urlHrefGetter) {
+      if (Reflect.ownKeys(value).length) throw new Error('opaque-argument');
+      token('url'); token(Reflect.apply(urlHrefGetter, value, [])); return;
+    }
+    if (prototype !== Object.prototype && prototype !== null && prototype !== Array.prototype)
+      throw new Error('opaque-argument');
+    token(prototype === null ? 'null-object' : Array.isArray(value) ? 'array' : 'object');
+    const descriptors = Object.getOwnPropertyDescriptors(value), keys = Reflect.ownKeys(descriptors);
+    if (keys.length > 1024) throw new Error('argument-structure-bound');
+    for (const key of keys) {
+      if (typeof key !== 'string' || !Object.hasOwn(descriptors[key], 'value'))
+        throw new Error('opaque-argument');
+      token(key);
+      // Flags bind the original own-property shape as well as its values.
+      token(JSON.stringify(['enumerable', 'writable', 'configurable'].map(flag => descriptors[key][flag])));
+      visit(descriptors[key].value, depth + 1);
+    }
+    token('end');
+  };
+  try {
+    visit(args);
+    return { status: 'complete', sha256: hash.digest('hex'), byteLength: bytes, nodes };
+  } catch {
+    return { status: 'unknown', reason: 'opaque-or-over-bound-arguments' };
+  }
+}
+
+function constructionSource(args) {
+  let stack = [];
+  try {
+    // Native call sites bypass Error.prepareStackTrace and application getters.
+    // Engine scriptId + coordinates join to separately retained engine bytes;
+    // these locations alone are NOT a loaded-source or non-entry proof.
+    stack = getCallSites(16, { sourceMap: false }).filter(site => site.scriptName !== observerUrl)
+      .map(({ scriptId, scriptName, lineNumber, columnNumber }) =>
+        ({ scriptId, scriptName, lineNumber, columnNumber }));
+    if (stack.some(site => site.scriptName.length > 2048)) stack = [];
+  } catch { /* Unsupported call-site capture is explicit UNKNOWN below. */ }
+  return { schemaVersion: 'cooperative-construction-v1', arguments: constructionArguments(args),
+    source: { status: stack.length ? 'observed' : 'unknown', stack } };
+}
 // An explicitly enrolled census uses the same OUT artifacts and authenticated
 // reader. Its count/byte budget fits within that reader's existing bounds.
 /** @typedef {{ epoch: string, maxIsolates: number, closeTimeoutMs: number }} CooperativeEnrollment */
@@ -116,19 +187,24 @@ export function createCooperativeWorkerCensus(options, io) {
     construct(target, args, newTarget) {
       Atomics.add(cells, 1, 1);
       const id = Atomics.add(cells, 2, 1), bounded = id < maxIsolates;
+      const constructionId = `${epoch}:${admission}:${id}`;
       if (Atomics.load(cells, 0) !== 0) fault('late-construction');
       if (!bounded) fault('admission-bound');
       if (bounded) {
         Atomics.store(cells, slot(id), 1); Atomics.store(cells, slot(id) + 3, admission);
-        publish('cooperative-reserve', { childAdmission: id });
+        publish('cooperative-reserve', { childAdmission: id, constructionId, construction: constructionSource(args) });
       }
       try {
-        return withAdmission({ epoch, maxIsolates, closeTimeoutMs, buffer, admission: id },
+        const worker = withAdmission({ epoch, maxIsolates, closeTimeoutMs, buffer, admission: id },
           () => Reflect.construct(target, args, newTarget));
+        let childThreadId = null;
+        try { childThreadId = Reflect.apply(workerThreadIdGetter, worker, []); } catch {}
+        publish('cooperative-constructed', { childAdmission: id, constructionId, childThreadId });
+        return worker;
       } catch (error) {
         if (bounded && Atomics.compareExchange(cells, slot(id), 1, 3) !== 1)
           fault('constructor-threw-after-admission');
-        publish('cooperative-abort', { childAdmission: id });
+        publish('cooperative-abort', { childAdmission: id, constructionId });
         throw error; // Never inspect or replace the native thrown value.
       } finally { Atomics.sub(cells, 1, 1); wake(); }
     },
