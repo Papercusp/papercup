@@ -40,6 +40,9 @@ import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
+import type { CheckpointQualificationTransaction, QualificationBlocker } from '../../release/checkpoint-qualification-transaction';
+import type { OperatorArtifactIdentity } from '../../release/operator-artifact';
 import { resolveOperatorAppRootFromModuleDir } from '../../operator-app-root';
 import { claimWatchdogFire, recentWatchdogFires, scopedFireReason } from '../../pot/watchdog';
 import { RESTART_TARGET_UNITS } from '../../agent-tools/dev/restart-target-units';
@@ -920,6 +923,64 @@ export interface ExecutorStalenessVerdict {
   /** Why the actuator is restarting: the 2h uptime path (default) or the gate-code
    *  fast path. Recorded in the dev:restart reason so the ledger tells them apart. */
   trigger?: 'uptime' | 'gate-code';
+}
+
+type ExecutorRecoveryAttemptFence = Pick<CheckpointQualificationTransaction, 'attemptId' | 'candidate' | 'repairHead'>;
+
+export type ExecutorRecoveryEvidenceComparison =
+  | { status: 'blocked'; reason: string }
+  | {
+      status: 'matched';
+      /** The original record, never a successor or a persisted transition. */
+      attempt: CheckpointQualificationTransaction;
+      resolvedBlockerCode: 'executor-build-identity-unavailable';
+      remainingBlockers: readonly QualificationBlocker[];
+    };
+
+/** Source-preparation comparison only; deliberately not connected to the sweep
+ * or restart actuator. A match cannot authorize activation or launch a suite.
+ * The future integration must first verifyBgVerifierPublication against retained
+ * original binding/output/compiler evidence, qualify the runtime cohort, and
+ * measure the loaded artifact with the inherited original parent expectation.
+ * This compares those measurements without replacing either verifier. Any
+ * eventual blocker update must recheck this attempt fence inside the existing
+ * qualification CAS; it must not begin a replacement attempt.
+ */
+export function compareExecutorRecoveryEvidence(input: {
+  attempt: CheckpointQualificationTransaction | null;
+  expectedAttempt: ExecutorRecoveryAttemptFence;
+  selectedArtifact: OperatorArtifactIdentity | null;
+  loadedArtifact: OperatorArtifactIdentity | null;
+}): ExecutorRecoveryEvidenceComparison {
+  const { attempt, expectedAttempt, selectedArtifact, loadedArtifact } = input;
+  const blocked = (reason: string): ExecutorRecoveryEvidenceComparison => ({ status: 'blocked', reason });
+  if (!attempt) return blocked('qualification-attempt-unavailable');
+  if (attempt.attemptId !== expectedAttempt.attemptId || attempt.candidate !== expectedAttempt.candidate ||
+    attempt.repairHead !== expectedAttempt.repairHead) return blocked('qualification-attempt-changed');
+  if (attempt.phase === 'terminal' || ['green', 'red', 'code-inconclusive'].includes(attempt.outcome.kind)) {
+    return blocked('qualification-attempt-terminal');
+  }
+  if (attempt.currentPhysicalRunner !== null) return blocked('qualification-runner-present');
+  if (!attempt.blockers.some(blocker => blocker.code === 'executor-build-identity-unavailable')) {
+    return blocked('executor-blocker-absent');
+  }
+  if (selectedArtifact?.status !== 'measured') return blocked('selected-artifact-unavailable');
+  if (loadedArtifact?.status !== 'measured') return blocked('loaded-artifact-unavailable');
+  // The source SHA alone (or a changed PID / loadedNewCode boolean) cannot bind
+  // the exact built bytes, manifest, source population and original physical path.
+  if (loadedArtifact.sourceSha !== selectedArtifact.sourceSha ||
+    loadedArtifact.bundleSha256 !== selectedArtifact.bundleSha256 ||
+    loadedArtifact.manifestSha256 !== selectedArtifact.manifestSha256 ||
+    loadedArtifact.evidenceRef !== selectedArtifact.evidenceRef ||
+    !isDeepStrictEqual(loadedArtifact.sourceBlobs, selectedArtifact.sourceBlobs)) {
+    return blocked('loaded-artifact-mismatch');
+  }
+  return {
+    status: 'matched',
+    attempt,
+    resolvedBlockerCode: 'executor-build-identity-unavailable',
+    remainingBlockers: attempt.blockers.filter(blocker => blocker.code !== 'executor-build-identity-unavailable'),
+  };
 }
 
 /** How many file names a page prints before collapsing the rest into a count.

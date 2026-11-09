@@ -25,6 +25,7 @@ import {
   noYieldGitSyncPassOwners,
   parsePtoolResultBody,
   staleExecutorRetryBackoffMs,
+  compareExecutorRecoveryEvidence,
   defaultPtoolScriptPath,
   evaluateGateCodeFastPath,
   gateCodeFastPathMinUptimeSec,
@@ -54,6 +55,8 @@ import {
   type RoutineCodeDrift,
 } from '../../dbos/process-boot-identity';
 import type { GateCollisionProbe } from '../../release/gate-collision-guard';
+import type { CheckpointQualificationTransaction } from '../../release/checkpoint-qualification-transaction';
+import type { OperatorArtifactIdentity } from '../../release/operator-artifact';
 
 // Keep this pure watchdog suite out of the live disk-retention mutex. The
 // restart-gate tests below inject grant and timeout behavior explicitly.
@@ -63,6 +66,106 @@ vi.mock('../../storage/retention-census-walk', () => ({
 
 const TWO_H = 2 * 3_600_000;
 const BOOT = 1_000_000;
+
+describe('executor recovery evidence preparation — no runtime authority', () => {
+  const fence = { attemptId: 'original-attempt', candidate: 'a'.repeat(40), repairHead: 'b'.repeat(40) };
+  const attempt = (): CheckpointQualificationTransaction => ({
+    schemaVersion: 1, ...fence, createdAtMs: 10, updatedAtMs: 20,
+    requiredAncestorSha: 'c'.repeat(40), candidatePolicy: { kind: 'quiet-cut', declaredPaths: ['src/gate.ts'] },
+    runId: 'original-run', phase: 'waiting', outcome: { kind: 'pre-suite-no-verdict', reason: 'eligibility-wait' },
+    blockers: [
+      { code: 'executor-build-identity-unavailable', clearEvents: ['executor:qualified'], observedAtMs: 20 },
+      { code: 'source-custody-unavailable', clearEvents: ['source:qualified'], observedAtMs: 19 },
+    ],
+    waitGeneration: 3, currentPhysicalRunner: null, consumedPhysicalRuns: [],
+    evidenceRefs: ['original-parent-receipt'], previousAttemptId: null,
+  });
+  // Independently authored synthetic measurements. They are comparison fixtures,
+  // not a publication receipt, original-parent proof, or runtime cohort acceptance.
+  const selected = (): Extract<OperatorArtifactIdentity, { status: 'measured' }> => ({
+    status: 'measured', sourceSha: 'd'.repeat(40), bundleSha256: 'e'.repeat(64), manifestSha256: 'f'.repeat(64),
+    sourceBlobs: { 'src/host.ts': '1'.repeat(40), 'src/worker.ts': '2'.repeat(40) },
+    evidenceRef: '/qualified-original-stage/hono-host.mjs.artifact.json',
+  });
+  const loaded = (): Extract<OperatorArtifactIdentity, { status: 'measured' }> => ({
+    status: 'measured', sourceSha: 'd'.repeat(40), bundleSha256: 'e'.repeat(64), manifestSha256: 'f'.repeat(64),
+    sourceBlobs: { 'src/worker.ts': '2'.repeat(40), 'src/host.ts': '1'.repeat(40) },
+    evidenceRef: '/qualified-original-stage/hono-host.mjs.artifact.json',
+  });
+  const compare = (current = attempt(), artifact: OperatorArtifactIdentity | null = loaded()) =>
+    compareExecutorRecoveryEvidence({ attempt: current, expectedAttempt: fence,
+      selectedArtifact: selected(), loadedArtifact: artifact });
+
+  it('matches exact evidence while retaining the original nonterminal attempt and unrelated blocker', () => {
+    const current = attempt(), before = structuredClone(current);
+    const result = compare(current);
+    expect(result.status).toBe('matched');
+    if (result.status !== 'matched') throw Error('expected comparison match');
+    expect(result.attempt).toBe(current);
+    expect(result.resolvedBlockerCode).toBe('executor-build-identity-unavailable');
+    expect(result.remainingBlockers).toEqual([before.blockers[1]]);
+    expect(current).toEqual(before); // no mutation, readiness change, new attempt or runner
+    expect(compare(current)).toEqual(result); // repeat triggers cannot accumulate work
+  });
+
+  it.each(['sourceSha', 'bundleSha256', 'manifestSha256', 'evidenceRef'] as const)(
+    'rejects changed %s despite every other field matching', key => {
+      const artifact = loaded();
+      artifact[key] = key === 'evidenceRef' ? '/renamed-stage/artifact.json' : '0'.repeat(artifact[key].length);
+      expect(compare(attempt(), artifact)).toEqual({ status: 'blocked', reason: 'loaded-artifact-mismatch' });
+    },
+  );
+
+  it.each(['changed', 'missing', 'extra'] as const)('rejects %s source population', change => {
+    const artifact = loaded();
+    if (change === 'changed') artifact.sourceBlobs['src/host.ts'] = '0'.repeat(40);
+    if (change === 'missing') delete artifact.sourceBlobs['src/worker.ts'];
+    if (change === 'extra') artifact.sourceBlobs['src/extra.ts'] = '3'.repeat(40);
+    expect(compare(attempt(), artifact)).toEqual({ status: 'blocked', reason: 'loaded-artifact-mismatch' });
+  });
+
+  it.each([null, { status: 'unknown', reason: 'no-loaded-artifact' }] as const)(
+    'keeps unavailable loaded evidence blocked: %j', artifact => {
+      expect(compare(attempt(), artifact)).toEqual({ status: 'blocked', reason: 'loaded-artifact-unavailable' });
+    },
+  );
+
+  it('keeps unknown selected evidence blocked even with a measured loaded artifact', () => {
+    expect(compareExecutorRecoveryEvidence({ attempt: attempt(), expectedAttempt: fence,
+      selectedArtifact: { status: 'unknown', reason: 'original-publication-unavailable' }, loadedArtifact: loaded() }))
+      .toEqual({ status: 'blocked', reason: 'selected-artifact-unavailable' });
+  });
+
+  it.each(['attemptId', 'candidate', 'repairHead'] as const)('refuses a moved %s fence', key => {
+    const current = attempt(); current[key] = 'replacement';
+    expect(compare(current)).toEqual({ status: 'blocked', reason: 'qualification-attempt-changed' });
+  });
+
+  it('does not manufacture an attempt when none exists', () => {
+    expect(compareExecutorRecoveryEvidence({ attempt: null, expectedAttempt: fence,
+      selectedArtifact: selected(), loadedArtifact: loaded() }))
+      .toEqual({ status: 'blocked', reason: 'qualification-attempt-unavailable' });
+  });
+
+  it.each(['green', 'red', 'code-inconclusive'] as const)('does not reopen a %s verdict', kind => {
+    const current = attempt(); current.outcome = { kind, reason: 'saved-verdict' };
+    expect(compare(current)).toEqual({ status: 'blocked', reason: 'qualification-attempt-terminal' });
+  });
+
+  it('does not disturb an existing physical runner', () => {
+    const current = attempt(); current.currentPhysicalRunner = {
+      id: 'incumbent', candidate: fence.candidate, reservedAtMs: 10, evidenceRefs: ['incumbent-proof'],
+    };
+    const before = structuredClone(current);
+    expect(compare(current)).toEqual({ status: 'blocked', reason: 'qualification-runner-present' });
+    expect(current).toEqual(before);
+  });
+
+  it('does not treat a source-custody blocker as the executor blocker', () => {
+    const current = attempt(); current.blockers.shift();
+    expect(compare(current)).toEqual({ status: 'blocked', reason: 'executor-blocker-absent' });
+  });
+});
 
 describe('process boot identity — import timing cannot reset executor age', () => {
   it('derives boot time from process.uptime(), not from the lazy watchdog module load', () => {
