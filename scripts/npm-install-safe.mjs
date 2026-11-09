@@ -1998,6 +1998,7 @@ export function assertMetadataRepairGraph({ repoRoot, beforeLockBytes, lockPath 
   };
   const edges = entry => Object.assign({}, ...LOCK_MANIFEST_DEPENDENCY_FIELDS.map(field => entry?.[field] ?? {}));
   const localPaths = new Set();
+  const localRoots = [];
   const nextRoots = [];
   for (const [dir, manifest] of manifests) {
     const mirror = packages[dir];
@@ -2034,14 +2035,24 @@ export function assertMetadataRepairGraph({ repoRoot, beforeLockBytes, lockPath 
       }
       localPaths.add(found.path);
       localPaths.add(target);
+      localRoots.push({ dir, name, target });
     }
   }
-  // npm may rewrite mirrors and the affected Next closure, not unrelated
-  // registry entries. Compute the union of the old/new closure so deletions are
-  // bounded too. This is a census over lock edges, not a second resolver.
+  // npm may rewrite mirrors and the affected Next/local-target closures, not
+  // unrelated registry entries. Traverse each population independently: OLD
+  // edges bound deletions and NEW edges bound additions, including relocated
+  // and scoped dev dependencies of a selected manifest-relative target.
+  // This is a census over lock edges, not a second resolver or a directory grant.
   const permitted = new Set(localPaths);
   const addClosure = population => {
     const queue = nextRoots.flatMap(({ dir, name }) => [lookup(population, dir, name)]).filter(Boolean);
+    for (const { dir, name, target } of localRoots) {
+      const link = lookup(population, dir, name);
+      // The old link may be the wrong same-name workspace. Its link entry can
+      // be corrected, but only the selected target's graph grants descendants.
+      if (link) permitted.add(link.path);
+      if (population[target]) queue.push({ path: target, target, entry: population[target] });
+    }
     const seen = new Set();
     while (queue.length) {
       const node = queue.shift();

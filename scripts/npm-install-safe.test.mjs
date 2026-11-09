@@ -170,6 +170,79 @@ test("metadata graph uses npm ancestor resolution past node_modules", t => {
   assert.throws(() => f.run(value => value, 0, baseline), /next-edge/);
 });
 
+function localDescendantGraphFixture(t) {
+  const f = repairGraphFixture(t);
+  const manifest = { ...f.lock.packages[f.target], devDependencies: { "@types/node": "^22.0.0" } };
+  writeFileSync(join(f.root, f.target, "package.json"), JSON.stringify(manifest));
+  f.lock.packages[f.target] = manifest;
+  const types = f.target + "/node_modules/@types/node";
+  const leaf = f.target + "/node_modules/undici-types";
+  const baseline = Buffer.from(JSON.stringify(f.lock));
+  f.lock.packages[types] = { version: "22.20.5", dev: true, dependencies: { "undici-types": "~6.21.0" } };
+  f.lock.packages[leaf] = { version: "6.21.0", dev: true };
+  f.write();
+  return { ...f, types, leaf, baseline };
+}
+
+test("metadata graph admits newly selected local-target dev and transitive descendants", t => {
+  const f = localDescendantGraphFixture(t);
+  f.run(value => value, 0, f.baseline);
+  assert.deepEqual(f.lock.packages["node_modules/unrelated"], JSON.parse(f.baseline).packages["node_modules/unrelated"]);
+});
+
+test("metadata graph bounds deletions and additions by both OLD and NEW local-target graphs", t => {
+  const f = localDescendantGraphFixture(t);
+  const before = structuredClone(f.lock);
+  before.packages[f.leaf].dependencies = { "old-leaf": "1.0.0" };
+  const oldLeaf = f.target + "/node_modules/old-leaf";
+  before.packages[oldLeaf] = { version: "1.0.0" };
+  f.lock.packages[f.leaf].dependencies = { "new-leaf": "1.0.0" };
+  f.lock.packages[f.target + "/node_modules/new-leaf"] = { version: "1.0.0" };
+  f.write();
+  f.run(value => value, 0, Buffer.from(JSON.stringify(before)));
+});
+
+test("metadata graph follows local-target descendants across a nested-to-hoisted relocation", t => {
+  const f = localDescendantGraphFixture(t);
+  const before = Buffer.from(JSON.stringify(f.lock));
+  f.lock.packages["node_modules/@types/node"] = f.lock.packages[f.types];
+  f.lock.packages["node_modules/undici-types"] = f.lock.packages[f.leaf];
+  delete f.lock.packages[f.types];
+  delete f.lock.packages[f.leaf];
+  f.write();
+  f.run(value => value, 0, before);
+});
+
+for (const mutation of ["add", "change", "delete"]) {
+  test(`metadata graph refuses unrelated ${mutation} beside selected local-target descendants`, t => {
+    const f = localDescendantGraphFixture(t);
+    const unrelated = f.target + "/node_modules/unrelated-neighbor";
+    const before = structuredClone(f.lock);
+    if (mutation !== "add") before.packages[unrelated] = { version: "1.0.0", integrity: "sha512-fixed" };
+    if (mutation !== "delete") f.lock.packages[unrelated] = { version: "2.0.0", integrity: "sha512-changed" };
+    f.write();
+    assert.throws(() => f.run(value => value, 0, Buffer.from(JSON.stringify(before))), /unrelated-lock-entry/);
+    assert.equal(f.calls.length, 0);
+  });
+}
+
+test("metadata graph validates selected local-target descendants with the real npm oracle", t => {
+  const f = localDescendantGraphFixture(t);
+  delete f.lock.packages["node_modules/unrelated"];
+  const before = JSON.parse(f.baseline);
+  delete before.packages["node_modules/unrelated"];
+  const baseline = Buffer.from(JSON.stringify(before));
+  f.write();
+  const run = () => assertMetadataRepairGraph({ repoRoot: f.root, beforeLockBytes: baseline, lockPath: "package-lock.json" });
+  run();
+  delete f.lock.packages[f.leaf];
+  f.write();
+  assert.throws(run, /metadata-repair-graph-npm-/);
+  f.lock.packages[f.leaf] = { version: "7.0.0", dev: true };
+  f.write();
+  assert.throws(run, /metadata-repair-graph-npm-/);
+});
+
 test("metadata graph independently reads real root and child Next lock graphs", t => {
   const f = repairGraphFixture(t);
   // These lock-only reads need no registry fetch or installed package tree.
