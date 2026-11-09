@@ -12,15 +12,12 @@ import { physicalDatabaseCensusEntries, integrationBaselineCensusDeclarations, t
 import type { CensusEntry } from '../packages/backup/src/state-census';
 import { configuredOperatorDatabaseCensusDeclarations, unitDatabaseCensusDeclarations, affectedTestCacheCensusProducer } from '../packages/operator-core/lib/backup/state-census-producers';
 import { migrationProducerTables, migrationDatabaseCensusDeclarations, registeredProjectMigrationSources, canonicalSqlMigrationCensusSources, type MigrationCensusSource } from '../packages/operator-core/lib/backup/state-census-producers';
-import { loadHarnessRegistry } from '../packages/operator-core/lib/harness-registry';
 import { accountCredentialCensusProducer, runtimeSidefileCensusProducer, cliSetupHomeCensusProducer, templateStoreCensusProducer, planTemplateStoreCensusProducer } from '../packages/operator-core/lib/backup/state-census-producers';
-import { loadAccountPool } from '../packages/operator-core/lib/deployment/account-pool-store';
 import { buildExpected } from './templates-mirror-sync.mjs';
 import { historicalGitBlobIdentityResolver, workspaceTemplateStoreCensusProducer } from '../packages/operator-core/lib/backup/state-census-producers';
 import { fileURLToPath } from 'node:url';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { reapArchiveCensusProducer, maintenanceDatabaseCensusDeclarations } from '../packages/operator-core/lib/backup/state-census-producers';
-import { listTasks } from '../packages/operator-core/lib/task-manager/store';
 import { historicalHostedProfileCensusProducer, historicalPlaywrightStateCensusProducer, historicalStripeConfigCensusProducer, recoverHistoricalCensusWriterEvidence, type HostedProfileWriterEvidence, type IndexedCensusWriterEvidence, type PlaywrightStateWriterEvidence } from '../packages/operator-core/lib/backup/state-census-producers';
 import { papercuspRoot, papercuspRootForWorkspace } from '../packages/operator-core/lib/papercusp-root';
 import { checkpointLogDirFromEnv } from '../packages/operator-core/lib/release/checkpoint-log-dir';
@@ -45,7 +42,8 @@ export async function readWorkspaceSetupHomes(
 /** Credential ownership is workspace-scoped; the active pool is not a host census. */
 export async function readWorkspaceCensusAccounts(
   workspaces: readonly { id: string }[],
-  readPool: (workspace: string) => Promise<{ accounts: { credentialRef: string }[] }> = loadAccountPool,
+  readPool: (workspace: string) => Promise<{ accounts: { credentialRef: string }[] }> = async workspace =>
+    (await import('../packages/operator-core/lib/deployment/account-pool-store')).loadAccountPool(workspace),
 ) {
   const pools = await Promise.all([...new Set(workspaces.map(workspace => workspace.id))]
     .map(workspace => readPool(workspace)));
@@ -107,6 +105,7 @@ installed.declarations = combinedHosted.declarations;
 // than the cap. Missing/GCed rows remain residue, never inferred from filenames.
 const reapArchive = await reapArchiveCensusProducer(undefined, [], args.includes('--host-catalogs')
   ? async taskIds => {
+    const { listTasks } = await import('../packages/operator-core/lib/task-manager/store');
     const retained: string[] = [];
     for (const workspace of readRegistry().workspaces) {
       retained.push(...(await listTasks({ workspaceId: workspace.id, includeEnded: true, taskIds, limit: 2000 })).map(task => task.taskId));
@@ -139,6 +138,7 @@ const declarations = [...producers.declarations,
 const catalogEntries: CensusEntry[] = [];
 const migrationSources: MigrationCensusSource[] = [];
 if (hostCatalogs) {
+  const { loadHarnessRegistry } = await import('../packages/operator-core/lib/harness-registry');
   migrationSources.push(...await canonicalSqlMigrationCensusSources());
   for (const workspace of readRegistry().workspaces) {
     const registry = await loadHarnessRegistry(workspace.id, { fresh: true });
