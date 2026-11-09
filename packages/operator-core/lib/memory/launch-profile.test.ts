@@ -10,14 +10,19 @@ import {
   MAX_LAUNCH_QUERIES,
 } from './launch-profile';
 import { initializeQueryForHarness } from './mcp-prelude';
-import { buildMemoryContextBlock } from './injection';
+import { buildMemoryContextBlock, prepareMemoryContextBlock } from './injection';
 
 vi.mock('./injection', () => ({
   buildMemoryContextBlock: vi.fn(),
+  prepareMemoryContextBlock: vi.fn(),
 }));
 
 beforeEach(() => {
   vi.mocked(buildMemoryContextBlock).mockReset();
+  vi.mocked(prepareMemoryContextBlock).mockReset().mockImplementation(async input => {
+    const text = await buildMemoryContextBlock(input);
+    return text ? { text, fragments: [] } : null;
+  });
 });
 
 describe('resolveLaunchProfile — the specificity ladder', () => {
@@ -110,6 +115,54 @@ describe('resolveLaunchProfile — the specificity ladder', () => {
 describe('buildLaunchMemoryBlock — multi-query merge', () => {
   const ID_A = '11111111-1111-1111-1111-111111111111';
   const ID_B = '22222222-2222-2222-2222-222222222222';
+
+  it('preserves complete multiline conditions and corpus provenance across queries', async () => {
+    const first = `- [ref] (id=${ID_A}) deploy only when green\n  approval remains required\n\n  except during an approved rollback`;
+    const corpus = '- [work-item WI-42] source-evidence "Use staging only after approval"';
+    vi.mocked(buildMemoryContextBlock)
+      .mockResolvedValueOnce(`## H\n\n${first}\n\n### Related context (matched excerpts)\n\n${corpus}`)
+      .mockResolvedValueOnce(`## H\n\n${first}\n\n### Related context (matched excerpts)\n\n${corpus}`);
+    const out = await buildLaunchMemoryBlock({
+      profile: { rung: 'post-compaction', queries: ['q1', 'q2'], harnessSlugs: [], deterministicSections: [] },
+      workspaceId: 'w1', heading: 'H',
+    });
+    expect(out).toBe(`## H\n\n${first}\n\n### Related context (matched excerpts)\n\n${corpus}`);
+    expect(prepareMemoryContextBlock).toHaveBeenCalledTimes(2);
+  });
+
+  it('retains a degraded-only preparation and its warning before corpus evidence', async () => {
+    const warning = '⚠ Corpus evidence is lexical only; semantic coverage is unknown.';
+    const unit = '- [work-item WI-43] source-pointer {"omitted":true}';
+    vi.mocked(buildMemoryContextBlock)
+      .mockResolvedValueOnce('⚠ Memory retrieval was DEGRADED this turn (memory leg: timed-out)')
+      .mockResolvedValueOnce(`## Related context (matched excerpts)\n\n${warning}\n\n${unit}`);
+    const out = await buildLaunchMemoryBlock({
+      profile: { rung: 'plan', queries: ['q1', 'q2'], harnessSlugs: [], deterministicSections: [] }, workspaceId: 'w1', heading: 'H',
+    });
+    expect(out).toBe(`## H\n\n⚠ Memory retrieval was DEGRADED this turn (memory leg: timed-out)\n\n### Related context (matched excerpts)\n\n${warning}\n\n${unit}`);
+  });
+
+  it('keeps distinct operative conditions even when the source id is unchanged', async () => {
+    const common = 'deployment policy '.repeat(30);
+    const a = `- [ref] (id=${ID_A}) source-evidence ${JSON.stringify(common + 'approval is required')}`;
+    const b = `- [ref] (id=${ID_A}) source-evidence ${JSON.stringify(common + 'approval is not required')}`;
+    vi.mocked(buildMemoryContextBlock).mockResolvedValueOnce(`## H\n\n${a}`).mockResolvedValueOnce(`## H\n\n${b}`);
+    const out = await buildLaunchMemoryBlock({
+      profile: { rung: 'plan', queries: ['q1', 'q2'], harnessSlugs: [], deterministicSections: [] }, workspaceId: 'w1', heading: 'H',
+    });
+    expect(out).toBe(`## H\n\n${a}\n${b}`);
+  });
+
+  it('keeps main recall separate when corpus-only evidence arrived first', async () => {
+    const corpus = '- [doc runbook] source-evidence "A quoted (id=11111111-1111-1111-1111-111111111111) is not memory framing"';
+    const memory = `- [ref] (id=${ID_A}) source-evidence "Follow the full runbook"`;
+    vi.mocked(buildMemoryContextBlock)
+      .mockResolvedValueOnce(`## Related context (matched excerpts)\n\n${corpus}`)
+      .mockResolvedValueOnce(`## H\n\n${memory}`);
+    expect(await buildLaunchMemoryBlock({
+      profile: { rung: 'plan', queries: ['q1', 'q2'], harnessSlugs: [], deterministicSections: [] }, workspaceId: 'w1', heading: 'H',
+    })).toBe(`## H\n\n${memory}\n\n### Related context (matched excerpts)\n\n${corpus}`);
+  });
 
   it('merges queries under one heading and dedups by memory id', async () => {
     vi.mocked(buildMemoryContextBlock)

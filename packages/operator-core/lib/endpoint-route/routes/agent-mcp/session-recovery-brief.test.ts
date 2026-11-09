@@ -20,7 +20,7 @@ const a = memoryFragmentOffer('memory', '11111111-1111-1111-1111-111111111111', 
 const b = memoryFragmentOffer('corpus', 'WI-42', 9, 'compact', '- condition\n  approval is mandatory');
 const get = async (receiptMode = true) => (await endpoints[0].handler(new Request(
   `http://localhost/agent-mcp/session-recovery-brief?owner=${owner}${receiptMode ? '&memoryReceiptMode=1' : ''}`,
-))).json();
+), { principal: null, input: undefined, params: {}, log: () => {}, signal: new AbortController().signal })).json();
 const inserts = () => sql.mock.calls.filter(([chunks]) => chunks.join('?').includes('INSERT INTO harness_shared.memory_session_surfaced'));
 
 beforeEach(() => {

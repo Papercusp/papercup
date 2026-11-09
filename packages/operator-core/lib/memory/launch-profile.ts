@@ -34,8 +34,8 @@
  * for free and the epoch reset (P-002) re-primes the pool.
  */
 
-import { buildMemoryContextBlock, type MemoryInjectionInput } from './injection';
-import { collapseNearDuplicates } from './recall-admission';
+import { prepareMemoryContextBlock, type MemoryInjectionInput } from './injection';
+import type { PreparedMemoryBlock } from './session-epoch-ledger';
 import { initializeQueryForHarness } from './mcp-prelude';
 
 export type LaunchRung =
@@ -201,14 +201,13 @@ export interface LaunchMemoryBlockInput {
   telemetrySurface?: string;
 }
 
-/** Matches the `(id=<uuid>)` suffix injection.ts renders per line. */
-const LINE_ID_RE = /\(id=([0-9a-f-]{20,})\)/i;
+/** Only the memory framing may supply the id, never quoted source content. */
+const LINE_ID_RE = /^- \[[^\]\n]*\]\s+\(id=([0-9a-f-]{20,})\)/i;
 
 /**
  * The memory TEXT of a rendered recall line — strips the "- [scope] (id=uuid) " framing so the
- * P-008 near-duplicate collapse compares CONTENT, not the differing id/scope. (`buildLaunchMemoryBlock`
- * already dedups by id + exact line; this catches the same fact stored under DIFFERENT ids across
- * separate queries, whose lines differ only in the id suffix.)
+ * merge compares equal CONTENT, not the differing id/scope. This catches the same fact stored
+ * under different ids without collapsing a changed condition as a fuzzy near-duplicate.
  */
 function lineMemoryText(line: string): string {
   const m = LINE_ID_RE.exec(line);
@@ -216,13 +215,41 @@ function lineMemoryText(line: string): string {
   return line.replace(/^-\s*/, '').replace(/^\[[^\]]*\]\s*/, '').trim();
 }
 
+/** Injection quotes source payloads, so top-level headings and bullets are
+ * transport framing. Keep every continuation with its unit and every notice
+ * with its section; selecting individual lines can lose operative conditions. */
+function recallUnits(text: string, heading: string): Array<{ section: string; text: string }> {
+  const units: Array<{ section: string; text: string }> = [];
+  let section = '';
+  let current: string[] = [];
+  const flush = () => {
+    const text = current.join('\n').trimEnd();
+    if (text.trim()) units.push({ section, text });
+    current = [];
+  };
+  for (const line of text.split('\n')) {
+    const title = /^#{2,3} (.+)$/.exec(line)?.[1];
+    if (title) {
+      flush();
+      section = title === heading ? '' : title;
+    } else if (line.startsWith('- ')) {
+      flush();
+      current.push(line);
+    } else if (current.length || line.trim()) {
+      current.push(line);
+    }
+  }
+  flush();
+  return units;
+}
+
 /**
  * Run the profile's targeted queries through the ONE admission pipeline
  * (floors · muted packs · tombstones · epoch/watermark dedup · budget) and
- * merge the results under a single heading, deduping lines across queries by
- * memory id (the P-002 stamp is fire-and-forget, so back-to-back queries
- * within one call can't rely on it alone). Sequential on purpose — each
- * query's stamps get their chance to suppress the next query's repeats.
+ * merge whole units under a single heading. Preparation never stamps delivery;
+ * the final receipt checks which exact fragments survived composition. Only
+ * equal content is redundant here: a shared id or near-match is insufficient
+ * when one condition or source revision changes between queries.
  *
  * Returns null when no query produced anything (or the profile has none).
  */
@@ -230,15 +257,14 @@ export async function buildLaunchMemoryBlock(
   input: LaunchMemoryBlockInput,
 ): Promise<string | null> {
   const heading = input.heading ?? 'Session memory (relevant entries)';
-  const seenIds = new Set<string>();
-  const seenLines = new Set<string>();
-  const merged: string[] = [];
+  const sections = new Map<string, string[]>();
+  const seen = new Set<string>();
 
   for (const query of input.profile.queries.slice(0, MAX_LAUNCH_QUERIES)) {
     if (!query.trim()) continue;
-    let block: string | null = null;
+    let block: PreparedMemoryBlock | null = null;
     try {
-      block = await buildMemoryContextBlock({
+      block = await prepareMemoryContextBlock({
         userId: input.userId ?? null,
         workspaceId: input.workspaceId,
         harnessSlugs: input.profile.harnessSlugs,
@@ -254,25 +280,23 @@ export async function buildLaunchMemoryBlock(
       block = null; // best-effort per query; the others still run
     }
     if (!block) continue;
-    for (const line of block.split('\n')) {
-      if (!line.startsWith('- ')) continue; // drop per-block headings
-      const id = LINE_ID_RE.exec(line)?.[1];
-      if (id) {
-        if (seenIds.has(id)) continue;
-        seenIds.add(id);
-      } else if (seenLines.has(line)) {
-        continue;
-      }
-      seenLines.add(line);
-      merged.push(line);
+    for (const unit of recallUnits(block.text, heading)) {
+      const key = JSON.stringify([unit.section, LINE_ID_RE.test(unit.text) ? lineMemoryText(unit.text) : unit.text]);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const rows = sections.get(unit.section) ?? [];
+      rows.push(unit.text);
+      sections.set(unit.section, rows);
     }
   }
 
-  if (merged.length === 0) return null;
-  // P-008 (WI-4538): collapse near-duplicate lines that slipped past the id/exact-line dedup
-  // above — the SAME fact stored under different ids renders as different lines (only the
-  // (id=…) suffix differs), so both survive and spend the budget twice on one fact. Compare on
-  // the memory TEXT, keeping the first (highest-ranked) copy.
-  const { kept: dedupedLines } = collapseNearDuplicates(merged, lineMemoryText);
-  return `## ${heading}\n\n${dedupedLines.join('\n')}`;
+  if (sections.size === 0) return null;
+  // Main recall remains outside corpus provenance even when a corpus-only
+  // first query settled before a later query produced memory.
+  const ordered = [...sections].sort(([a], [b]) => a === '' ? -1 : b === '' ? 1 : 0);
+  const rendered = ordered.map(([section, rows]) => {
+    const body = rows.map((row, i) => (i === 0 ? '' : row.startsWith('- ') && rows[i - 1].startsWith('- ') ? '\n' : '\n\n') + row).join('');
+    return section ? `### ${section}\n\n${body}` : body;
+  });
+  return `## ${heading}\n\n${rendered.join('\n\n')}`;
 }
