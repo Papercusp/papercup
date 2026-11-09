@@ -630,7 +630,7 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
         }, 60_000);
 
   for (const source of ['memory', 'corpus'] as const)
-    for (const output of ['complete', 'closed', 'partial'] as const)
+    for (const output of ['complete', 'closed', 'partial', 'lost-response', 'deadline', 'retry', 'abandon-expiry', 'overlapping-ports'] as const)
       it(`context reliability R-1: production compact ${source} ${output} endpoint hook PostgreSQL join`, async ({ task }) => {
         const owner = `su-compact-${randomUUID()}`;
         const home = mkdtempSync(join(tmpdir(), 'compact-pg-'));
@@ -647,18 +647,74 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
           hits: [{ source: 'plan', sourceId: `compact:${owner}`, excerpt: text, meta: { contextUnit: text }, score: 0.95 }] });
         h.corpus = source === 'corpus' ? { ...selected, block: renderCorpusBlock(selected.lines), outcome: 'ok',
           embedderAvailable: true, candidateCount: 1, legs: null, retrievalDepth: 1, rerank: 'nothing-to-reorder' } : null;
-        h.compactPadding = output === 'complete' ? '' : 'x'.repeat(512 * 1024);
+        h.compactPadding = ['closed', 'partial', 'retry'].includes(output) ? 'x'.repeat(512 * 1024) : '';
+        const profile = resolveLaunchProfile({ claimedItemTitles: ['zephyrrepair approval'] });
+        const launchInput = { profile, workspaceId: 'ws-test', userId: 'u-test',
+          session: { sessionId: owner, port: 'turn-start' } };
         const surfaced = () => source === 'memory'
           ? db.adminSql<{ port: string; epoch: number }[]>`SELECT port, epoch FROM harness_shared.memory_session_surfaced WHERE session_id = ${owner}`
           : db.adminSql<{ port: string; epoch: number }[]>`SELECT port, epoch FROM harness_shared.corpus_session_surfaced WHERE session_id = ${owner}`;
         const responses: Array<Record<string, any>> = [];
         const errors: string[] = [];
+        const transport: Array<{ fault: string; elapsedMs: number; ended: boolean }> = [];
+        const pendingFor = (token: string) => db.adminSql<{ fragments: unknown[] }[]>`
+          SELECT pending -> 'fragments' AS fragments FROM harness_shared.coord_read_cursors
+          WHERE owner_id = ${owner} AND surface = ${'memory-emission:' + token} AND pending IS NOT NULL`;
+        let releaseCompactPrepared!: () => void, releaseOverlap!: () => void;
+        const compactPrepared = new Promise<void>(resolve => { releaseCompactPrepared = resolve; });
+        const overlapReady = new Promise<void>(resolve => { releaseOverlap = resolve; });
+        let overlapPrepared = 0;
+        const otherOffers: Array<Record<string, any>> = [];
         const server = createServer((req, res) => {
           void (async () => {
+            if (req.url?.includes('turn-start-memory')) {
+              const chunks: Buffer[] = [];
+              for await (const chunk of req) chunks.push(Buffer.from(chunk));
+              const request = JSON.parse(Buffer.concat(chunks).toString());
+              expect(request.owner).toBe(owner);
+              expect(request.confirmedMemoryDeliveries ?? []).toEqual([]);
+              const response = await withMemoryEmissionReceipt(db.adminSql as never, owner, undefined, async () => ({
+                content: [{ type: 'text' as const, text: await buildLaunchMemoryBlock(launchInput) ?? '' }],
+              }));
+              const offer = response._meta?.['papercusp/memoryEmission'] as
+                { owner: string; token: string; fragments: Array<Record<string, unknown>> } | undefined;
+              expect(offer).toMatchObject({ owner, fragments: [expect.objectContaining({ kind: source, epoch: 1, port: 'turn-start' })] });
+              otherOffers.push(offer!);
+              if (++overlapPrepared === 2) releaseOverlap();
+              await overlapReady;
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({ text: response.content[0].text, deliveryToken: offer!.token, memoryFragmentOffers: offer!.fragments }));
+              return;
+            }
             expect(req.url).toContain('memoryReceiptMode=1');
             const response = await recoveryEndpoints[0].handler(new Request(`http://localhost${req.url}`),
               { principal: null, input: undefined, params: {}, log: () => {}, signal: new AbortController().signal });
             const body = await response.json(); responses.push(body);
+            const offer = body._meta?.['papercusp/memoryEmission'];
+            if (output === 'complete') {
+              const { rendered: _rendered, ...fragment } = offer.fragments[0];
+              const pending = await pendingFor(offer.token);
+              expect(pending).toEqual([{ fragments: [fragment] }]);
+              expect(await surfaced()).toEqual([]);
+              const cell: DeliveryMatrixCell = { client: 'claude', sink: 'compact-reprime', source, fault: 'prepare',
+                selector: task.name, evidenceRefs: [`vitest:${task.name}#compactPreparation`],
+                terminalOracle: 'complete-stdout', state: 'prepared', verdict: 'passed', suppressionWrites: 0,
+                attempt: { id: owner, recipient: owner, workspace: 'isolated-org-fixture', epoch: fragment.epoch,
+                  token: offer.token, fragment } };
+              joinedCells.set(deliveryMatrixCellKey(cell), cell);
+              Object.assign(task.meta, { compactPreparation: { cell, pending, boundary: 'prepared before HTTP response or hook stdout' } });
+            }
+            if (output === 'overlapping-ports') {
+              if (++overlapPrepared === 2) releaseOverlap();
+              releaseCompactPrepared();
+              await overlapReady;
+            }
+            if (output === 'lost-response' || output === 'deadline') {
+              const startedAt = Date.now();
+              res.once('close', () => transport.push({ fault: output, elapsedMs: Date.now() - startedAt, ended: res.writableEnded }));
+              if (output === 'lost-response') req.socket.destroy();
+              return; // deadline: the generated hook's real 4.5s abort closes this response
+            }
             res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(body));
           })().catch(error => { errors.push(String(error)); res.destroy(); });
         });
@@ -668,14 +724,14 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
         const env = { PATH: process.env.PATH, LANG: process.env.LANG ?? 'C.UTF-8', HOME: home,
           PAPERCUSP_HOME: home, PAPERCUSP_SID: owner, PAPERCUSP_OPERATOR_URL: `http://127.0.0.1:${address.port}`,
           PSU_RECOVER_TEST_CHAIN: JSON.stringify([['sh', '-c', 'hook'], ['claude', '--system-prompt-file', '/fixture/playbook']]) };
-        const run = async () => {
+        const run = async (pipe: 'complete' | 'closed' | 'partial' = 'complete') => {
           const child = spawn(process.execPath, [join(home, RECOVER_HOOK)], { env, cwd: home, stdio: ['pipe', 'pipe', 'pipe'] });
           const stdout: Buffer[] = [], stderr: Buffer[] = [];
           let consumedBytes = 0;
-          if (output === 'closed') child.stdout.destroy();
+          if (pipe === 'closed') child.stdout.destroy();
           else child.stdout.on('data', (chunk: Buffer) => {
             consumedBytes += chunk.length;
-            if (output === 'partial') child.stdout.destroy(); else stdout.push(chunk);
+            if (pipe === 'partial') child.stdout.destroy(); else stdout.push(chunk);
           });
           child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
           const timer = setTimeout(() => child.kill('SIGKILL'), 15_000);
@@ -688,54 +744,97 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
           } finally { clearTimeout(timer); }
         };
         try {
-          const result = await run();
-          Object.assign(task.meta, { compactNativeTerminal: result, compactEndpointErrors: errors });
+          if (output === 'retry') {
+            const failed = await run('partial');
+            expect(failed.signal, failed.stderr).toBeNull(); expect(failed.code, failed.stderr).toBe(0);
+            expect(failed.consumedBytes).toBeGreaterThan(0);
+            expect(failed.consumedBytes).toBeLessThan(Buffer.byteLength(responses[0].text));
+            expect(openDeliveryLedger(owner, env, 'compact')!.confirmedMemoryDeliveries()).toEqual([]);
+            expect(await surfaced()).toEqual([]);
+            expect(await buildLaunchMemoryBlock(launchInput)).toContain('Only after explicit final approval ☃.');
+            const offer = responses[0]._meta['papercusp/memoryEmission'];
+            const { rendered: _rendered, ...fragment } = offer.fragments[0];
+            expect(await pendingFor(offer.token)).toEqual([{ fragments: [fragment] }]);
+            Object.assign(task.meta, { compactFailedRetry: { failed, offer, pending: await pendingFor(offer.token), suppressionWrites: 0 } });
+            h.compactPadding = '';
+          }
+          const [result, other] = output === 'overlapping-ports'
+            ? await Promise.all([run(), (async () => {
+              await compactPrepared;
+              return runReceiptDispatcher(dispatcherRoot, 'claude', 'turn-start', env);
+            })()])
+            : [await run(output === 'closed' || output === 'partial' ? output : 'complete'), undefined];
+          Object.assign(task.meta, { compactNativeTerminal: result, compactEndpointErrors: errors, compactTransport: transport });
           expect(result.signal, result.stderr).toBeNull(); expect(result.code, result.stderr).toBe(0);
-          expect(errors).toEqual([]); expect(responses).toHaveLength(1);
-          const offer = responses[0]._meta?.['papercusp/memoryEmission'];
-          expect(offer).toMatchObject({ owner, fragments: [expect.objectContaining({ kind: source, epoch: 1, port: 'compact' })] });
-          expect(responses[0].text).toContain('Only after explicit final approval ☃.');
+          expect(errors).toEqual([]); expect(responses).toHaveLength(output === 'retry' ? 2 : 1);
+          const body = responses.at(-1)!;
+          const offer = body._meta?.['papercusp/memoryEmission'];
+          const epoch = output === 'retry' ? 2 : 1;
+          expect(offer).toMatchObject({ owner, fragments: [expect.objectContaining({ kind: source, epoch, port: 'compact' })] });
+          expect(body.text).toContain('Only after explicit final approval ☃.');
           expect(await surfaced()).toEqual([]);
           const proofs = openDeliveryLedger(owner, env, 'compact')!.confirmedMemoryDeliveries();
-          if (output !== 'complete') {
+          const emitted = output === 'complete' || output === 'retry' || output === 'overlapping-ports';
+          if (!emitted && output !== 'abandon-expiry') {
             expect(proofs).toEqual([]);
             if (output === 'partial') {
               expect(result.consumedBytes).toBeGreaterThan(0);
-              expect(result.consumedBytes).toBeLessThan(Buffer.byteLength(responses[0].text));
+              expect(result.consumedBytes).toBeLessThan(Buffer.byteLength(body.text));
             }
-            const profile = resolveLaunchProfile({ claimedItemTitles: ['zephyrrepair approval'] });
-            expect(await buildLaunchMemoryBlock({ profile, workspaceId: 'ws-test', userId: 'u-test',
-              session: { sessionId: owner, port: 'turn-start' } })).toContain('Only after explicit final approval ☃.');
+            if (output === 'lost-response' || output === 'deadline') {
+              expect(result.stdout).not.toContain('Only after explicit final approval ☃.');
+              expect(transport).toEqual([expect.objectContaining({ fault: output, ended: false })]);
+              if (output === 'deadline') expect(transport[0].elapsedMs).toBeGreaterThan(4000);
+            }
+            const { rendered: _rendered, ...fragment } = offer.fragments[0];
+            expect(await pendingFor(offer.token)).toEqual([{ fragments: [fragment] }]);
+            expect(await buildLaunchMemoryBlock(launchInput)).toContain('Only after explicit final approval ☃.');
           } else {
             const { rendered, ...fragment } = offer.fragments[0];
             expect(result.stdout).not.toContain('papercusp/memoryEmission');
             expect(JSON.parse(result.stdout).hookSpecificOutput.additionalContext).toContain(rendered);
-            expect(proofs).toEqual([{ token: offer.token, fragments: [fragment] }]);
+            const compactProof = { token: offer.token, fragments: [fragment] };
+            if (other) {
+              expect(overlapPrepared).toBe(2); expect(otherOffers).toHaveLength(1);
+              expect(other.signal, other.stderr).toBeNull(); expect(other.code, other.stderr).toBe(0);
+              expect(other.stdout).toContain('Only after explicit final approval ☃.');
+              expect(proofs).toHaveLength(2);
+              const { rendered: _otherRendered, ...otherFragment } = otherOffers[0].fragments[0];
+              expect(proofs).toEqual(expect.arrayContaining([compactProof, { token: otherOffers[0].token, fragments: [otherFragment] }]));
+              Object.assign(task.meta, { compactOverlap: { other, otherOffers, proofs, preparedBeforeEitherOutput: overlapPrepared } });
+            } else expect(proofs).toEqual([compactProof]);
             const receiptPath = join(ledgerDir(env), `${owner}.compact.emissions`, createHash('sha256').update(offer.token).digest('hex') + '.json');
             const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
             expect(receipt).toMatchObject({ owner, payloadSha256: createHash('sha256').update(result.stdout).digest('hex'),
               payloadBytes: Buffer.byteLength(result.stdout), stage: 'stdout-emitted' });
-            await withMemoryEmissionReceipt(db.adminSql as never, owner, proofs, async () => ({ content: [] }));
-            expect(await surfaced()).toEqual([{ port: 'compact', epoch: 1 }]);
+            if (output === 'abandon-expiry') {
+              await db.adminSql`UPDATE harness_shared.coord_read_cursors SET pending = jsonb_set(pending, '{expiresAt}', '1'::jsonb)
+                WHERE owner_id = ${owner} AND surface = ${'memory-emission:' + offer.token}`;
+              expect(await pendingFor(offer.token)).toEqual([{ fragments: [fragment] }]);
+            }
+            await withMemoryEmissionReceipt(db.adminSql as never, owner, [compactProof], async () => ({ content: [] }));
+            if (other) await withMemoryEmissionReceipt(db.adminSql as never, owner, proofs, async () => ({ content: [] }));
+            expect(await surfaced()).toEqual(output === 'abandon-expiry' ? [] : [{ port: 'compact', epoch }]);
             expect(await confirmMemoryEmission(db.adminSql as never, owner, { token: offer.token, fragments: [fragment] })).toBe(0);
-            const profile = resolveLaunchProfile({ claimedItemTitles: ['zephyrrepair approval'] });
-            expect(await buildLaunchMemoryBlock({ profile, workspaceId: 'ws-test', userId: 'u-test',
-              session: { sessionId: owner, port: 'turn-start' } })).toBeNull();
+            expect(await pendingFor(offer.token)).toEqual([]);
+            const eligible = await buildLaunchMemoryBlock(launchInput);
+            if (output === 'abandon-expiry') expect(eligible).toContain('Only after explicit final approval ☃.');
+            else expect(eligible).toBeNull();
             Object.assign(task.meta, { compactImmutableReceipt: receipt });
           }
           if (output !== 'closed') {
             const { rendered: _fragmentText, ...fragment } = offer.fragments[0];
             const sink = 'compact-reprime' as const;
             const cell: DeliveryMatrixCell = { client: 'claude', sink, source,
-              fault: output === 'complete' ? 'duplicate-commit' : 'partial-stdout',
+              fault: output === 'complete' ? 'duplicate-commit' : output === 'partial' ? 'partial-stdout' : output,
               selector: task.name, evidenceRefs: [`vitest:${task.name}#compactEndpointJoin`],
-              terminalOracle: 'complete-stdout', state: output === 'complete' ? 'emitted' : 'partial',
-              verdict: 'passed', suppressionWrites: output === 'complete' ? 1 : 0,
-              attempt: { id: owner, recipient: owner, workspace: 'isolated-org-fixture', epoch: 1,
+              terminalOracle: 'complete-stdout', state: emitted ? 'emitted' : output === 'partial' ? 'partial' : output === 'abandon-expiry' ? 'abandoned' : 'prepared',
+              verdict: 'passed', suppressionWrites: emitted ? 1 : 0,
+              attempt: { id: owner, recipient: owner, workspace: 'isolated-org-fixture', epoch,
                 token: offer.token, fragment },
-              ...(output === 'complete' ? { proof: { event: 'complete-stdout' as const, adapter: 'claude-session-start',
+              ...(emitted ? { proof: { event: 'complete-stdout' as const, adapter: 'claude-session-start',
                 receiptRef: `vitest:${task.name}#compactImmutableReceipt`, attemptId: owner, recipient: owner,
-                workspace: 'isolated-org-fixture', epoch: 1, token: offer.token, client: 'claude', sink,
+                workspace: 'isolated-org-fixture', epoch, token: offer.token, client: 'claude', sink,
                 payloadSha256: createHash('sha256').update(result.stdout).digest('hex'),
                 payloadBytes: Buffer.byteLength(result.stdout), fragment } } : {}) };
             joinedCells.set(deliveryMatrixCellKey(cell), cell);
@@ -898,7 +997,7 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
       terminalOracle: deliveryTerminalOracle(coordinate), state: 'UNKNOWN' as const,
       verdict: 'UNKNOWN' as const, suppressionWrites: 0,
     });
-    expect(joinedCells.size).toBe(180);
+    expect(joinedCells.size).toBe(192);
     expect(cells).toHaveLength(432);
     // Structural fixture identity only; acceptance binds separately retained
     // plan/rubric/spec/runtime identities and independent evidence later.
@@ -908,7 +1007,7 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
         runtimeGeneration: 'isolated-postgresql-dispatcher-fixture' }, cells };
     const result = validateDeliveryMatrix(manifest);
     expect(result).toMatchObject({ closed: true, valid: true, acceptanceReady: false, errors: [] });
-    expect(result.unknown).toHaveLength(252);
+    expect(result.unknown).toHaveLength(240);
     Object.assign(task.meta, { deliveryMatrixCensus: { manifest, result,
       identityKind: 'structural fixture only; independent acceptance and shipment not asserted' } });
   });
