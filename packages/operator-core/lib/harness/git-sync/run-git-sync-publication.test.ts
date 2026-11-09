@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import ts from 'typescript';
-import { GitSyncYieldError, runGitSync, type GitSyncRootCommit, type GitSyncStepRunner, type RunGit, type RunGitSyncOpts } from './run-git-sync';
+import { bridgeContainedCommitIntoCurrentBranch, GitSyncYieldError, runGitSync, type GitSyncRootCommit, type GitSyncStepRunner, type RunGit, type RunGitSyncOpts } from './run-git-sync';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -73,12 +73,18 @@ describe('metadata publication population', () => {
       return '<root>';
     };
     const callers: string[] = [];
+    const remoteCallers: string[] = [];
     const writers: string[] = [];
-    const verbs = new Set(['update-ref', 'switch', 'checkout', 'reset', 'rebase', 'merge', 'commit', 'commit-tree', 'symbolic-ref', 'branch']);
+    const verbs = new Set(['update-ref', 'switch', 'checkout', 'reset', 'rebase', 'merge', 'commit', 'commit-tree', 'symbolic-ref', 'branch', 'push']);
     const visit = (node: ts.Node) => {
       if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'publishPrivateIndexCommit')
         callers.push(owners(node));
-      if (ts.isArrayLiteralExpression(node)) {
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'pushSelectedHead')
+        remoteCallers.push(owners(node));
+      // Command-name registries classify argv; they do not execute a writer.
+      const commandRegistry = node.parent !== undefined && ts.isNewExpression(node.parent) && ts.isIdentifier(node.parent.expression) &&
+        node.parent.expression.text === 'Set';
+      if (ts.isArrayLiteralExpression(node) && !commandRegistry) {
         const argv = node.elements.filter(ts.isStringLiteral).map(value => value.text);
         const verb = argv.find(value => verbs.has(value));
         // Path resets update an index only. symbolic-ref --quiet is a read.
@@ -89,6 +95,7 @@ describe('metadata publication population', () => {
     };
     visit(source);
     expect(callers.sort()).toEqual(['commitAttributedGroupsPass', 'commitOneRepoWithScratch', 'commitPriorityPaths', 'publishGitSyncCandidate']);
+    expect(remoteCallers.sort()).toEqual(['firstPublishToEmptyRemote', 'reconcileAndPushOneRepo', 'reconcileAndPushOneRepo']);
     // This is a closed source census, not proof that ingress/recovery routes are
     // accepted. Those writers remain explicit in the plan's final population.
     expect(writers.sort()).toEqual([
@@ -102,18 +109,320 @@ describe('metadata publication population', () => {
       'preserveVanishedStagedSourcesPass:update-ref',
       'bridgeContainedCommitIntoCurrentBranch:merge --no-edit -s ours', 'bridgeContainedCommitIntoCurrentBranch:merge --abort',
       'reconcileAndPushOneRepo:merge --no-edit', 'reconcileAndPushOneRepo:merge --abort', 'reconcileAndPushOneRepo:merge --abort',
+      'pushSelectedHead:push',
     ].sort());
     const dispositions: Record<string, string> = {
       publishPrivateIndexCommit: 'P001 private publication: exact initial/final tree and CAS probes',
       captureGitSyncCandidate: 'non-publication: source custody ref',
       publishGitSyncCandidate: 'non-publication: retained candidate commit ref; HEAD uses private publisher',
       preserveVanishedStagedSourcesPass: 'non-publication: vanished-source custody ref',
-      ensureBranchAttachedForCommit: 'P003 pending: same-tree attachment and concurrent-ref refusal',
-      transplantInstallerSeedSnapshot: 'P003 pending: approved seed/source transform and recovery ref',
-      bridgeContainedCommitIntoCurrentBranch: 'P003 pending: same-tree ancestry bridge and mismatch refusal',
-      reconcileAndPushOneRepo: 'P003 pending: approved merge tree/parents and conflict abort',
+      ensureBranchAttachedForCommit: 'P003 branch attachment preserves the selected tree: existing/new/racing branch controls',
+      transplantInstallerSeedSnapshot: 'P003 seed transplant binds approved source and retains recovery: adopt/replay/abort/qualification controls',
+      bridgeContainedCommitIntoCurrentBranch: 'P003 contained ancestry bridge preserves the selected tree: entry parity and mismatch controls',
+      reconcileAndPushOneRepo: 'P003 remote merge binds the selected tree and parents: initial/retry/conflict controls',
+      pushSelectedHead: 'P003 immutable remote publication: first/ordinary refusal, retry revalidation and HEAD-race controls',
     };
     for (const writer of writers) expect(dispositions[writer.split(':')[0]!], writer).toBeTruthy();
+  });
+});
+
+describe('immutable remote metadata publication', () => {
+  function remoteFixture(seeded: boolean) {
+    const f = fixture();
+    const remote = mkdtempSync(join(tmpdir(), 'git-sync-publication-remote-'));
+    roots.push(remote);
+    f.git('init', '--bare', remote);
+    f.git('remote', 'add', 'origin', remote);
+    if (seeded) f.git('push', 'origin', 'HEAD:refs/heads/main');
+    return { ...f, remote, opts: { ...f.opts, config: { ...f.opts.config, push: true, branch: 'main' } } };
+  }
+
+  function changeLock(f: ReturnType<typeof fixture>) {
+    writeFileSync(join(f.repo, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3,
+      packages: { '': { dependencies: { next: '2.0.0' } } } }));
+    f.git('add', 'package-lock.json');
+    f.git('commit', '-m', 'incoherent existing snapshot');
+    return f.git('rev-parse', 'HEAD');
+  }
+
+  it.each(['existing', 'new', 'racing'] as const)('P003 branch attachment preserves the selected tree (%s)', async mode => {
+    const f = remoteFixture(true);
+    const base = f.git('rev-parse', 'HEAD');
+    const baseTree = f.git('rev-parse', 'HEAD^{tree}');
+    f.git('switch', '--detach', base);
+    writeFileSync(join(f.repo, 'a.txt'), 'detached committed work\n');
+    f.git('add', 'a.txt');
+    f.git('commit', '-m', 'detached descendant');
+    const detached = f.git('rev-parse', 'HEAD');
+    const selectedTree = f.git('rev-parse', 'HEAD^{tree}');
+    const peer = f.git('commit-tree', baseTree, '-p', base, '-m', 'concurrent branch owner');
+    if (mode === 'new') f.git('branch', '-D', 'main');
+    writeFileSync(join(f.repo, 'b.txt'), 'pending work triggers attachment\n');
+    const attachments: string[][] = [];
+    let raced = false;
+    const runGit: RunGit = async (args, cwd, options) => {
+      if (args[0] === 'update-ref' && args[1] === 'refs/heads/main') {
+        expect(args.slice(1)).toEqual(['refs/heads/main', detached, base]);
+        if (mode === 'racing') { f.git('update-ref', 'refs/heads/main', peer, base); raced = true; }
+      }
+      if (args[0] !== 'switch') return f.runGit(args, cwd, options);
+      const before = f.git('rev-parse', 'HEAD^{tree}');
+      const result = await f.runGit(args, cwd, options);
+      attachments.push([before, f.git('rev-parse', 'HEAD^{tree}')]);
+      return result;
+    };
+    const result = await runGitSync('test', { ...f.opts, runGit, config: { ...f.opts.config, push: false } });
+    expect(f.git('--git-dir', f.remote, 'rev-parse', 'refs/heads/main')).toBe(base);
+    if (mode === 'racing') {
+      expect(raced).toBe(true);
+      expect(result.status).toBe('error');
+      expect(attachments).toEqual([]);
+      expect(f.git('rev-parse', 'refs/heads/main')).toBe(peer);
+      expect(f.git('rev-parse', 'HEAD')).toBe(detached);
+      expect(f.git('branch', '--show-current')).toBe('');
+      expect(readFileSync(join(f.repo, 'b.txt'), 'utf8')).toBe('pending work triggers attachment\n');
+    } else {
+      expect(result.status).toBe('synced');
+      expect(attachments).toEqual([[selectedTree, selectedTree]]);
+      expect(f.git('branch', '--show-current')).toBe('main');
+      expect(f.git('show', 'HEAD:a.txt')).toBe('detached committed work');
+      expect(f.git('show', 'HEAD:b.txt')).toBe('pending work triggers attachment');
+    }
+  });
+
+  it.each(['adopt', 'replay', 'conflict', 'unretained', 'unapproved'] as const)(
+    'P003 seed transplant binds approved source and retains recovery (%s)', async mode => {
+      const f = remoteFixture(true);
+      const base = f.git('rev-parse', 'HEAD');
+      const baseTree = f.git('rev-parse', 'HEAD^{tree}');
+      writeFileSync(join(f.repo, 'b.txt'), 'approved upstream bytes\n');
+      f.git('add', 'b.txt');
+      f.git('commit', '-m', 'upstream source');
+      const upstream = f.git('rev-parse', 'HEAD');
+      f.git('push', 'origin', `${upstream}:refs/heads/main`);
+      const localPath = mode === 'conflict' ? 'b.txt' : 'a.txt';
+      const replay = mode === 'replay' || mode === 'conflict';
+      // Independent expected output is assembled before the synthetic history,
+      // without calling the production transplant or its validation helpers.
+      if (replay) {
+        writeFileSync(join(f.repo, localPath), 'retained post-restore bytes\n');
+        f.git('add', localPath);
+      }
+      const expectedTree = f.git('write-tree');
+      f.git('reset', '--hard', upstream);
+      const seed = f.git('commit-tree', baseTree, '-m', mode === 'unapproved' ? 'ordinary unrelated root' : 'papercusp seed snapshot HEAD');
+      f.git('reset', '--hard', seed);
+      if (mode !== 'unretained') f.git('update-ref', 'refs/remotes/origin/papercusp-seed-snapshot-fixture', seed);
+      if (replay) {
+        writeFileSync(join(f.repo, localPath), 'retained post-restore bytes\n');
+        f.git('add', localPath);
+        f.git('commit', '-m', 'post-restore work');
+      }
+      const original = f.git('rev-parse', 'HEAD');
+      const originalTree = f.git('rev-parse', 'HEAD^{tree}');
+      const result = await runGitSync('test', f.opts);
+      const recovery = f.git('for-each-ref', '--format=%(refname)', 'refs/papercusp/seed-recovery/');
+      if (mode === 'unretained' || mode === 'unapproved') {
+        expect(result.status).toBe('error');
+        expect(recovery).toBe('');
+        expect(f.git('rev-parse', 'HEAD')).toBe(original);
+        expect(f.git('--git-dir', f.remote, 'rev-parse', 'refs/heads/main')).toBe(upstream);
+      } else {
+        expect(recovery).toBe(`refs/papercusp/seed-recovery/${original}`);
+        expect(f.git('rev-parse', recovery)).toBe(original);
+        expect(f.git('rev-parse', `${recovery}^{tree}`)).toBe(originalTree);
+        if (mode === 'conflict') {
+          expect(result.status).toBe('error');
+          expect(f.git('rev-parse', 'HEAD')).toBe(original);
+          expect(f.git('rev-parse', 'HEAD^{tree}')).toBe(originalTree);
+          expect(f.git('--git-dir', f.remote, 'rev-parse', 'refs/heads/main')).toBe(upstream);
+        } else {
+          expect(result.status).toBe('synced');
+          expect(f.git('rev-parse', 'HEAD^{tree}')).toBe(expectedTree);
+          f.git('merge-base', '--is-ancestor', upstream, 'HEAD');
+          expect(f.git('--git-dir', f.remote, 'rev-parse', 'refs/heads/main')).toBe(f.git('rev-parse', 'HEAD'));
+          if (mode === 'adopt') expect(f.git('rev-parse', 'HEAD')).toBe(upstream);
+          else expect(f.git('show', '-s', '--format=%P', 'HEAD')).toBe(upstream);
+        }
+      }
+      expect(f.git('status', '--porcelain')).toBe('');
+    },
+  );
+
+  it.each(['represented', 'blob', 'mode', 'deletion'] as const)(
+    'P003 contained ancestry bridge preserves the selected tree (%s)', async mode => {
+      const f = fixture();
+      const base = f.git('rev-parse', 'HEAD');
+      writeFileSync(join(f.repo, 'a.txt'), 'source content\n');
+      f.git('add', 'a.txt');
+      f.git('commit', '-m', 'source lineage');
+      const source = f.git('rev-parse', 'HEAD');
+      f.git('branch', 'source', source);
+      f.git('reset', '--hard', base);
+      writeFileSync(join(f.repo, 'a.txt'), mode === 'blob' ? 'different local content\n' : 'source content\n');
+      f.git('add', 'a.txt');
+      if (mode === 'mode') f.git('update-index', '--chmod=+x', 'a.txt');
+      if (mode === 'deletion') f.git('rm', '-f', 'a.txt');
+      writeFileSync(join(f.repo, 'b.txt'), 'independent local work\n');
+      f.git('add', 'b.txt');
+      f.git('commit', '-m', 'independent local lineage');
+      f.git('reset', '--hard', 'HEAD');
+      const before = f.git('rev-parse', 'HEAD');
+      const beforeTree = f.git('rev-parse', 'HEAD^{tree}');
+      const result = await bridgeContainedCommitIntoCurrentBranch(f.runGit, f.repo, 'source', { log: () => {} });
+      expect(f.git('rev-parse', 'HEAD^{tree}')).toBe(beforeTree);
+      if (mode === 'represented') {
+        expect(result.status).toBe('bridged');
+        expect(f.git('show', '-s', '--format=%P', 'HEAD').split(' ')).toEqual([before, source]);
+        f.git('merge-base', '--is-ancestor', source, 'HEAD');
+      } else {
+        expect(result.status).toBe('declined');
+        expect(f.git('rev-parse', 'HEAD')).toBe(before);
+      }
+      expect(f.git('status', '--porcelain')).toBe('');
+      expect(f.git('rev-parse', 'source')).toBe(source);
+    },
+  );
+
+  it.each([false, true])('P003 contained ancestry bridge checks exact gitlink parity (represented=%s)', async represented => {
+    const f = fixture();
+    const child = fixture();
+    const childBase = child.git('rev-parse', 'HEAD');
+    f.git('-c', 'protocol.file.allow=always', 'submodule', 'add', child.repo, 'libs/child');
+    f.git('commit', '-am', 'selected child baseline');
+    const base = f.git('rev-parse', 'HEAD');
+    writeFileSync(join(child.repo, 'a.txt'), 'advanced child object\n');
+    child.git('commit', '-am', 'advanced child');
+    const childNext = child.git('rev-parse', 'HEAD');
+    f.git('-C', 'libs/child', 'fetch', 'origin', 'main');
+    f.git('-C', 'libs/child', 'checkout', childNext);
+    f.git('commit', '-am', 'source child pin');
+    const source = f.git('rev-parse', 'HEAD');
+    f.git('branch', 'source', source);
+    f.git('reset', '--hard', base);
+    f.git('-C', 'libs/child', 'checkout', represented ? childNext : childBase);
+    writeFileSync(join(f.repo, 'b.txt'), 'independent parent work\n');
+    f.git('add', '-A');
+    f.git('commit', '-m', 'local child selection');
+    const before = f.git('rev-parse', 'HEAD');
+    const tree = f.git('rev-parse', 'HEAD^{tree}');
+    const childHead = f.git('-C', 'libs/child', 'rev-parse', 'HEAD');
+    const childRefs = f.git('-C', 'libs/child', 'show-ref');
+    const result = await bridgeContainedCommitIntoCurrentBranch(f.runGit, f.repo, 'source', { log: () => {} });
+    expect(result.status).toBe(represented ? 'bridged' : 'declined');
+    expect(f.git('rev-parse', 'HEAD^{tree}')).toBe(tree);
+    if (represented) expect(f.git('show', '-s', '--format=%P', 'HEAD').split(' ')).toEqual([before, source]);
+    else expect(f.git('rev-parse', 'HEAD')).toBe(before);
+    expect(f.git('-C', 'libs/child', 'rev-parse', 'HEAD')).toBe(childHead);
+    expect(f.git('-C', 'libs/child', 'show-ref')).toBe(childRefs);
+    expect(f.git('status', '--porcelain')).toBe('');
+  });
+
+  it.each([false, true])('P003 remote merge binds the selected tree and parents (conflict=%s)', async conflict => {
+    const f = remoteFixture(true);
+    const base = f.git('rev-parse', 'HEAD');
+    writeFileSync(join(f.repo, conflict ? 'a.txt' : 'b.txt'), 'approved remote work\n');
+    f.git('add', '-A');
+    f.git('commit', '-m', 'remote lineage');
+    const remote = f.git('rev-parse', 'HEAD');
+    f.git('push', 'origin', `${remote}:refs/heads/main`);
+    writeFileSync(join(f.repo, 'a.txt'), 'approved local work\n');
+    f.git('add', 'a.txt');
+    const expectedTree = f.git('write-tree');
+    f.git('reset', '--hard', base);
+    writeFileSync(join(f.repo, 'a.txt'), 'approved local work\n');
+    f.git('add', 'a.txt');
+    f.git('commit', '-m', 'local lineage');
+    const local = f.git('rev-parse', 'HEAD');
+    const localTree = f.git('rev-parse', 'HEAD^{tree}');
+    const result = await runGitSync('test', f.opts);
+    if (conflict) {
+      expect(result.status).toBe('conflict');
+      expect(f.git('rev-parse', 'HEAD')).toBe(local);
+      expect(f.git('rev-parse', 'HEAD^{tree}')).toBe(localTree);
+      expect(f.git('--git-dir', f.remote, 'rev-parse', 'refs/heads/main')).toBe(remote);
+    } else {
+      expect(result.status).toBe('synced');
+      expect(f.git('rev-parse', 'HEAD^{tree}')).toBe(expectedTree);
+      expect(f.git('show', '-s', '--format=%P', 'HEAD').split(' ')).toEqual([local, remote]);
+      expect(f.git('--git-dir', f.remote, 'rev-parse', 'refs/heads/main')).toBe(f.git('rev-parse', 'HEAD'));
+    }
+    expect(f.git('status', '--porcelain')).toBe('');
+  });
+
+  it.each([false, true])('refuses incoherent existing HEAD without moving the remote (seeded=%s)', async (seeded) => {
+    const f = remoteFixture(seeded);
+    const remoteBefore = seeded ? f.git('--git-dir', f.remote, 'rev-parse', 'refs/heads/main') : null;
+    const invalid = changeLock(f);
+    const beforePush = vi.fn(async () => {});
+    const result = await runGitSync('test', { ...f.opts, beforePush });
+    expect(result.status).toBe('error');
+    if (result.status === 'error') expect(result.errors.map(e => e.message).join('\n')).toContain('WORKSPACE_LOCK_DRIFT');
+    expect(beforePush).not.toHaveBeenCalled();
+    expect(f.git('rev-parse', 'HEAD')).toBe(invalid);
+    expect(f.git('status', '--porcelain')).toBe('');
+    if (seeded) expect(f.git('--git-dir', f.remote, 'rev-parse', 'refs/heads/main')).toBe(remoteBefore);
+    else expect(f.git('--git-dir', f.remote, 'for-each-ref', '--format=%(refname)', 'refs/heads')).toBe('');
+  });
+
+  it('transports only the validated OID when HEAD moves at the final authority boundary', async () => {
+    const f = remoteFixture(false);
+    const expected = f.git('rev-parse', 'HEAD');
+    const expectedTree = f.git('rev-parse', 'HEAD^{tree}');
+    const invalid = changeLock(f);
+    f.git('reset', '--hard', expected);
+    const beforePush = vi.fn(async (args: readonly string[], cwd: string) => {
+      expect(cwd).toBe(f.repo);
+      expect(args).toEqual(['push', 'origin', `${expected}:refs/heads/main`]);
+      f.git('update-ref', 'HEAD', invalid, expected);
+    });
+    const result = await runGitSync('test', { ...f.opts, beforePush });
+    expect(result.status).toBe('synced');
+    expect(beforePush).toHaveBeenCalledOnce();
+    expect(f.git('rev-parse', 'HEAD')).toBe(invalid);
+    expect(f.git('--git-dir', f.remote, 'rev-parse', 'refs/heads/main')).toBe(expected);
+    expect(f.git('--git-dir', f.remote, 'rev-parse', 'refs/heads/main^{tree}')).toBe(expectedTree);
+  });
+
+  it.each([false, true])('revalidates the exact retry merge before egress (incoherent peer=%s)', async (incoherent) => {
+    const f = remoteFixture(true);
+    const base = f.git('rev-parse', 'HEAD');
+    let peer: string;
+    if (incoherent) peer = changeLock(f);
+    else {
+      writeFileSync(join(f.repo, 'b.txt'), 'peer change\n');
+      f.git('add', 'b.txt');
+      f.git('commit', '-m', 'peer change');
+      peer = f.git('rev-parse', 'HEAD');
+    }
+    f.git('reset', '--hard', base);
+    writeFileSync(join(f.repo, 'a.txt'), 'local change\n');
+    f.git('add', 'a.txt');
+    f.git('commit', '-m', 'local change');
+    const local = f.git('rev-parse', 'HEAD');
+    const sent: string[] = [];
+    const beforePush = async (args: readonly string[]) => {
+      const refspec = args.at(-1)!;
+      expect(refspec).toMatch(/^[a-f0-9]{40,64}:refs\/heads\/main$/);
+      sent.push(refspec.split(':')[0]!);
+      if (sent.length === 1) f.git('push', 'origin', `${peer}:refs/heads/main`);
+    };
+    const result = await runGitSync('test', { ...f.opts, beforePush });
+    expect(sent[0]).toBe(local);
+    const merged = f.git('rev-parse', 'HEAD');
+    expect(merged).not.toBe(local);
+    expect(f.git('show', '-s', '--format=%P', merged).split(' ')).toEqual([local, peer]);
+    if (incoherent) {
+      expect(result.status).toBe('error');
+      if (result.status === 'error') expect(result.errors.map(e => e.message).join('\n')).toContain('WORKSPACE_LOCK_DRIFT');
+      expect(sent).toEqual([local]);
+      expect(f.git('--git-dir', f.remote, 'rev-parse', 'refs/heads/main')).toBe(peer);
+    } else {
+      expect(result.status).toBe('synced');
+      expect(sent).toEqual([local, merged]);
+      expect(f.git('--git-dir', f.remote, 'rev-parse', 'refs/heads/main')).toBe(merged);
+      expect(f.git('--git-dir', f.remote, 'rev-parse', 'refs/heads/main^{tree}')).toBe(f.git('rev-parse', `${merged}^{tree}`));
+    }
   });
 });
 

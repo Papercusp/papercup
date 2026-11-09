@@ -8281,6 +8281,35 @@ async function deepenShallowUntilMergeBase(
  * the remote has any head, or cannot be listed, so the caller keeps its fail-loud
  * missing-branch path for a mistyped branch on a populated remote.
  */
+/** Validate immutable content once per transport attempt. The authority hook in
+ * runGit still runs at the child boundary; moving HEAD there cannot substitute
+ * different content for the commit and full destination ref validated here. */
+async function pushSelectedHead(
+  runGit: RunGit,
+  repoPath: string,
+  remote: string,
+  branch: string,
+  log: ReconcileRepoOpts['log'],
+): Promise<Awaited<ReturnType<RunGit>>> {
+  try {
+    const commit = await runGit(['rev-parse', '--verify', 'HEAD^{commit}'], repoPath);
+    if (commit.code !== 0 || !/^[a-f0-9]{40,64}$/.test(commit.stdout.trim())) {
+      throw new Error(`cannot resolve publication commit: ${commit.stderr || commit.stdout}`);
+    }
+    const expectedCommit = commit.stdout.trim();
+    const tree = await runGit(['rev-parse', '--verify', `${expectedCommit}^{tree}`], repoPath);
+    if (tree.code !== 0 || !/^[a-f0-9]{40,64}$/.test(tree.stdout.trim())) {
+      throw new Error(`cannot resolve publication tree: ${tree.stderr || tree.stdout}`);
+    }
+    await workspaceLockTreeValidator()(runGit, repoPath, tree.stdout.trim());
+    return await runNetworkGitWithGitHubHttpsFallback(
+      runGit, ['push', remote, `${expectedCommit}:refs/heads/${branch}`], repoPath, log,
+    );
+  } catch (error) {
+    return { code: 1, stdout: '', stderr: `git-sync publication refused: ${error instanceof Error ? error.message : String(error)}` };
+  }
+}
+
 async function firstPublishToEmptyRemote(
   runGit: RunGit,
   repoPath: string,
@@ -8291,12 +8320,7 @@ async function firstPublishToEmptyRemote(
   const heads = await runNetworkGitWithGitHubHttpsFallback(runGit, ['ls-remote', '--heads', remote], repoPath, log);
   if (heads.code !== 0 || heads.stdout.trim() !== '') return null;
   log(`[git-sync] ${repoPath}: ${remote} has no branches; publishing HEAD as the first commit of '${branch}'`);
-  const push = await runNetworkGitWithGitHubHttpsFallback(
-    runGit,
-    ['push', remote, `HEAD:refs/heads/${branch}`],
-    repoPath,
-    log,
-  );
+  const push = await pushSelectedHead(runGit, repoPath, remote, branch, log);
   if (push.code !== 0) {
     return {
       status: 'error',
@@ -8567,12 +8591,7 @@ async function reconcileAndPushOneRepo(
     const aheadText = ahead.stdout.trim();
     const aheadCount = ahead.code === 0 && /^\d+$/.test(aheadText) ? Number.parseInt(aheadText, 10) : null;
     if (aheadCount !== 0) {
-      let push = await runNetworkGitWithGitHubHttpsFallback(
-        runGit,
-        ['push', remote, `HEAD:${branch}`],
-        repoPath,
-        o.log,
-      );
+      let push = await pushSelectedHead(runGit, repoPath, remote, branch, o.log);
       if (push.code !== 0 && rejectedNonFastForward(push)) {
         // A peer pushed between our fetch and push — re-fetch + re-merge once.
         await runNetworkGitWithGitHubHttpsFallback(runGit, fetchArgs, repoPath, o.log);
@@ -8600,7 +8619,7 @@ async function reconcileAndPushOneRepo(
         // subsequent push error. A retry conflict/error returns above without proof.
         mergeCompleted = true;
         mergedNew = mergedNew || !/Already up to date/i.test(m2.stdout);
-        push = await runNetworkGitWithGitHubHttpsFallback(runGit, ['push', remote, `HEAD:${branch}`], repoPath, o.log);
+        push = await pushSelectedHead(runGit, repoPath, remote, branch, o.log);
       }
       if (push.code !== 0) {
         return {

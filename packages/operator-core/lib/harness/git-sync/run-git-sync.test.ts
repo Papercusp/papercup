@@ -3119,22 +3119,14 @@ describe('runGitSync (real git, no submodule)', () => {
     const rewrite = 'url.https://github.com/.insteadOf=git@github.com:';
     const calls: string[][] = [];
     const failedOnce = new Set<string>();
-    const realRunGit: RunGit = async (args, cwd) => {
-      const result = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
-      return {
-        code: result.status ?? -1,
-        stdout: String(result.stdout ?? ''),
-        stderr: String(result.stderr ?? ''),
-      };
-    };
-    const runGit: RunGit = async (args, cwd) => {
+    const runGit: RunGit = async (args, cwd, options) => {
       calls.push([...args]);
       const command = args[0];
       if ((command === 'fetch' || command === 'push') && !failedOnce.has(command)) {
         failedOnce.add(command);
         return { code: 128, stdout: '', stderr: 'git@github.com: Permission denied (publickey).\n' };
       }
-      return realRunGit(args, cwd);
+      return directRunGit(args, cwd, options);
     };
 
     const beforePush = vi.fn(async (args: readonly string[]) => {
@@ -3142,14 +3134,17 @@ describe('runGitSync (real git, no submodule)', () => {
     });
     const out = await runGitSync('test', { repoPath: repo, runGit, config: cfg, beforePush });
 
+    if (out.status === 'error' && beforePush.mock.calls.length === 0) {
+      throw new Error(`HTTPS fallback stopped before transport: ${JSON.stringify(out.errors)}`);
+    }
     expect(beforePush.mock.calls.map(([args]) => args)).toEqual([
-      ['push', 'origin', 'HEAD:main'],
-      ['-c', rewrite, 'push', 'origin', 'HEAD:main'],
+      ['push', 'origin', `${git(repo, 'rev-parse', 'HEAD')}:refs/heads/main`],
+      ['-c', rewrite, 'push', 'origin', `${git(repo, 'rev-parse', 'HEAD')}:refs/heads/main`],
     ]);
     expect(failedOnce).toEqual(new Set(['fetch', 'push']));
     expect(calls.filter((args) => args[0] === '-c' && args[1] === rewrite)).toEqual([
       ['-c', rewrite, 'fetch', 'origin', '+refs/heads/main:refs/remotes/origin/main'],
-      ...(!revoked ? [['-c', rewrite, 'push', 'origin', 'HEAD:main']] : []),
+      ...(!revoked ? [['-c', rewrite, 'push', 'origin', `${git(repo, 'rev-parse', 'HEAD')}:refs/heads/main`]] : []),
     ]);
     if (revoked) {
       expect(out.status).toBe('error');
@@ -3168,15 +3163,7 @@ describe('runGitSync (real git, no submodule)', () => {
     const rewrite = 'url.https://github.com/.insteadOf=git@github.com-git-graph:';
     const calls: string[][] = [];
     const failedOnce = new Set<string>();
-    const realRunGit: RunGit = async (args, cwd) => {
-      const result = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
-      return {
-        code: result.status ?? -1,
-        stdout: String(result.stdout ?? ''),
-        stderr: String(result.stderr ?? ''),
-      };
-    };
-    const runGit: RunGit = async (args, cwd) => {
+    const runGit: RunGit = async (args, cwd, options) => {
       calls.push([...args]);
       const command = args[0];
       if (command === 'remote' && args[1] === 'get-url') {
@@ -3190,7 +3177,7 @@ describe('runGitSync (real git, no submodule)', () => {
           stderr: 'ssh: Could not resolve hostname github.com-git-graph: Name or service not known\n',
         };
       }
-      return realRunGit(args, cwd);
+      return directRunGit(args, cwd, options);
     };
 
     const out = await runGitSync('test', { repoPath: repo, runGit, config: cfg });
@@ -3200,7 +3187,7 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(failedOnce).toEqual(new Set(['fetch', 'push']));
     expect(calls.filter((args) => args[0] === '-c' && args[1] === rewrite)).toEqual([
       ['-c', rewrite, 'fetch', 'origin', '+refs/heads/main:refs/remotes/origin/main'],
-      ['-c', rewrite, 'push', 'origin', 'HEAD:main'],
+      ['-c', rewrite, 'push', 'origin', `${git(repo, 'rev-parse', 'HEAD')}:refs/heads/main`],
     ]);
     expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).toContain('ssh-alias-fallback.txt');
   });
@@ -3210,15 +3197,7 @@ describe('runGitSync (real git, no submodule)', () => {
     const rewrite = 'url.https://github.com/.insteadOf=git@github.com:';
     const calls: string[][] = [];
     let rejectedPush = false;
-    const realRunGit: RunGit = async (args, cwd) => {
-      const result = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
-      return {
-        code: result.status ?? -1,
-        stdout: String(result.stdout ?? ''),
-        stderr: String(result.stderr ?? ''),
-      };
-    };
-    const runGit: RunGit = async (args, cwd) => {
+    const runGit: RunGit = async (args, cwd, options) => {
       calls.push([...args]);
       if (args[0] === 'remote' && args[1] === 'get-url') {
         return { code: 0, stdout: 'git@github.com:Papercusp/papercup.git\n', stderr: '' };
@@ -3227,7 +3206,7 @@ describe('runGitSync (real git, no submodule)', () => {
         rejectedPush = true;
         return { code: 1, stdout: '', stderr: 'remote: You must verify your email address.\n' };
       }
-      return realRunGit(args, cwd);
+      return directRunGit(args, cwd, options);
     };
 
     const out = await runGitSync('test', { repoPath: repo, runGit, config: cfg });
@@ -3236,7 +3215,7 @@ describe('runGitSync (real git, no submodule)', () => {
     if (out.status === 'synced') expect(out.pushed).toContain('superproject');
     expect(calls).toContainEqual(['remote', 'get-url', 'origin']);
     expect(calls.filter((args) => args[0] === '-c' && args[1] === rewrite)).toEqual([
-      ['-c', rewrite, 'push', 'origin', 'HEAD:main'],
+      ['-c', rewrite, 'push', 'origin', `${git(repo, 'rev-parse', 'HEAD')}:refs/heads/main`],
     ]);
     expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).toContain(
       'email-verification-fallback.txt',
@@ -3246,20 +3225,12 @@ describe('runGitSync (real git, no submodule)', () => {
   it('EI-20378687739683215: does not rewrite a non-GitHub email-verification rejection', async () => {
     writeFileSync(join(repo, 'no-email-fallback.txt'), 'retain the original error\n');
     const calls: string[][] = [];
-    const realRunGit: RunGit = async (args, cwd) => {
-      const result = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
-      return {
-        code: result.status ?? -1,
-        stdout: String(result.stdout ?? ''),
-        stderr: String(result.stderr ?? ''),
-      };
-    };
-    const runGit: RunGit = async (args, cwd) => {
+    const runGit: RunGit = async (args, cwd, options) => {
       calls.push([...args]);
       if (args[0] === 'push') {
         return { code: 1, stdout: '', stderr: 'remote: You must verify your email address.\n' };
       }
-      return realRunGit(args, cwd);
+      return directRunGit(args, cwd, options);
     };
 
     const out = await runGitSync('test', { repoPath: repo, runGit, config: cfg });
@@ -3272,20 +3243,12 @@ describe('runGitSync (real git, no submodule)', () => {
   it('EI-20349517520985072: does not rewrite unrelated SSH publickey failures', async () => {
     writeFileSync(join(repo, 'no-fallback.txt'), 'keep the original failure\n');
     const calls: string[][] = [];
-    const realRunGit: RunGit = async (args, cwd) => {
-      const result = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
-      return {
-        code: result.status ?? -1,
-        stdout: String(result.stdout ?? ''),
-        stderr: String(result.stderr ?? ''),
-      };
-    };
-    const runGit: RunGit = async (args, cwd) => {
+    const runGit: RunGit = async (args, cwd, options) => {
       calls.push([...args]);
       if (args[0] === 'fetch') {
         return { code: 128, stdout: '', stderr: 'git@gitlab.com: Permission denied (publickey).\n' };
       }
-      return realRunGit(args, cwd);
+      return directRunGit(args, cwd, options);
     };
 
     const out = await runGitSync('test', { repoPath: repo, runGit, config: cfg });
@@ -5762,7 +5725,7 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
       config: { push: false, pushSubmoduleOrigins: true }, beforePush,
     });
 
-    expect(beforePush).toHaveBeenCalledWith(['push', 'origin', 'HEAD:main'], subRepo);
+    expect(beforePush).toHaveBeenCalledWith(['push', 'origin', `${git(subRepo, 'rev-parse', 'HEAD')}:refs/heads/main`], subRepo);
     expect(git(subRepo, 'rev-parse', 'HEAD')).not.toBe(remoteBefore);
     expect(git(subRepo, 'status', '--porcelain')).toBe('');
     if (signer === 'owner') {
@@ -5783,12 +5746,12 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
     const beforePush = vi.fn(async () => {
       if (beforePush.mock.calls.length > 1) throw new Error('owner key no longer available');
     });
-    const runGit: RunGit = async (args, cwd) => {
+    const runGit: RunGit = async (args, cwd, options) => {
       if (args[0] === 'push') {
         pushes++;
         return { code: 1, stdout: '', stderr: '! [rejected] main -> main (non-fast-forward)' };
       }
-      return directRunGit(args, cwd);
+      return directRunGit(args, cwd, options);
     };
     writeFileSync(join(subRepo, 'retry-fenced.txt'), 'preserved\n');
     const out = await runGitSync('test', {
