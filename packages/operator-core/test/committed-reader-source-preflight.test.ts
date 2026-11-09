@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -12,6 +13,8 @@ import { preparePrivateOperatorApiBundle, produceCommittedReaderPrivateApiBundle
   resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle, preparePrivateWorkerSources,
   observeCommittedReaderLoadedSources, privateBundleRuntimeEnv,
   assertCooperativeComparisonBoundary,
+  observeCooperativeHostTermination,
+  observeCooperativeLoadedProvenance,
   type CommittedReaderClosure, type CommittedReaderPreparationInputs } from './private-http-workspace-preflight';
 
 const digest = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex');
@@ -69,6 +72,88 @@ describe('cooperative observer comparison controls', () => {
     f.observed.intervals[1].parentAnchorRef = 'd'.repeat(64); f.observed.intervals.pop();
     expect(() => assertCooperativeComparisonBoundary(f)).toThrow('Missing or duplicate observer boundary receipt');
   });
+});
+
+describe('cooperative parent native timing', () => {
+  const epoch = '22222222-2222-4222-8222-222222222222';
+  async function run(control: 'valid' | 'epoch' | 'run' | 'no-request' | 'other-signal') {
+    const dir = mkdtempSync(join(tmpdir(), 'cooperative-parent-clock-')); temporary.push(dir);
+    const traceOut = join(dir, 'sources.json'), worker = join(dir, 'worker.mjs');
+    const observerPath = resolve(import.meta.dirname, '../../../scripts/lib/vitest-startup-trace.mjs');
+    const observerBytes = readFileSync(observerPath), executableBytes = readFileSync(process.execPath);
+    const observerPin = { path: observerPath, sha256: digest(observerBytes), byteLength: observerBytes.length };
+    writeFileSync(worker, `import { parentPort } from 'node:worker_threads';
+      parentPort.postMessage('ready'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000);
+      setInterval(() => {}, 1000);`);
+    const env = privateBundleRuntimeEnv({ ...process.env, NODE_OPTIONS: '', PAPERCUSP_TEST_STARTUP_TRACE: '0',
+      PAPERCUSP_TEST_RUN_GROUP: 'cooperative-parent-test' },
+      { traceOut, pinnedSources: [observerPin], loaderCensus: { batches: 128, bytes: 16 * 1024 ** 2,
+        cooperative: { epoch, maxIsolates: 8, closeTimeoutMs: 3000 } } });
+    const observer = observeCooperativeHostTermination({ traceOut,
+      epoch: control === 'epoch' ? '33333333-3333-4333-8333-333333333333' : epoch,
+      runGroupId: control === 'run' ? 'other-run' : 'cooperative-parent-test' });
+    const code = control === 'no-request' ? `process.kill(process.pid, 'SIGKILL')` :
+      `import { Worker } from 'node:worker_threads'; import { once } from 'node:events';
+       const worker = new Worker(${JSON.stringify(worker)}, { execArgv: [] });
+       await once(worker, 'message'); console.log('original-business-result');
+       process.kill(process.pid, '${control === 'other-signal' ? 'SIGTERM' : 'SIGKILL'}');`;
+    const host = spawn(process.execPath, ['--input-type=module', '-e', code], {
+      env: control === 'no-request' ? { ...env, NODE_OPTIONS: '' } : env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stderr = '';
+    host.stderr!.on('data', chunk => { stderr += chunk; });
+    const closed = once(host, 'close');
+    observer.attach(host); observer.markTaskEndpoint('entry', 'original-request-dispatch');
+    host.stdout!.once('data', () => observer.markTaskEndpoint('result', 'original-business-result'));
+    try {
+      await closed;
+      const receipt = observer.snapshot();
+      expect(stderr).not.toContain('Error');
+      const expected = { executable: { sha256: digest(executableBytes), byteLength: executableBytes.length },
+        configuration: captureConfigurationSnapshot(env), observers: [observerPin] };
+      const loaded = control === 'valid' ? observeCooperativeLoadedProvenance({ traceOut, parent: receipt, expected }) : null;
+      if (control === 'valid') {
+        for (const role of ['executable', 'configuration', 'observers'] as const) {
+          const changed = structuredClone(expected);
+          if (role === 'executable') changed.executable.sha256 = 'a'.repeat(64);
+          if (role === 'configuration') changed.configuration = captureConfigurationSnapshot({ ...env, NODE_OPTIONS: 'different' });
+          if (role === 'observers') changed.observers[0].sha256 = 'b'.repeat(64);
+          expect(observeCooperativeLoadedProvenance({ traceOut, parent: receipt, expected: changed }).status).toBe('unknown');
+        }
+      }
+      return { ...receipt, loaded };
+    } finally {
+      observer.stop();
+      if (host.exitCode === null && host.signalCode === null) { host.kill('SIGKILL'); await closed; }
+    }
+  }
+  it('joins an actual live request identity to native K on the unchanged parent task clock', async () => {
+    const receipt = await run('valid');
+    expect(receipt).toMatchObject({ status: 'bound', gaps: [], clock: 'same-parent-process-hrtime',
+      instrumented: true, fullRuntimeQualification: 'unknown',
+      K: { code: null, signal: 'SIGKILL' }, task: { observerDeductionNs: '0',
+        entry: { id: 'original-request-dispatch' }, result: { id: 'original-business-result' } } });
+    expect(BigInt(receipt.requestToKObservedNs!)).toBeGreaterThan(0n);
+    expect(BigInt(receipt.K!.atNs)).toBeGreaterThanOrEqual(BigInt(receipt.request!.atNs));
+    expect(receipt.request!.kernelProcessIdentity).toBe(receipt.pinned!.kernelProcessIdentity);
+    expect(receipt.request!.sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(receipt.task!.elapsedNs).toBe((BigInt(receipt.task!.result.atNs) - BigInt(receipt.task!.entry.atNs)).toString());
+    expect(receipt.loaded).toMatchObject({ status: 'bound', gaps: [], fullRuntimeQualification: 'unknown' });
+    expect(receipt.loaded!.isolates).toHaveLength(2);
+  }, 20_000);
+  it.each(['epoch', 'run'] as const)('rejects a real native K joined to the wrong %s', async control => {
+    expect(await run(control)).toMatchObject({ status: 'unknown',
+      gaps: expect.arrayContaining(['parent-native-close-identity-mismatch']) });
+  }, 20_000);
+  it('does not reconstruct a missing parent-observed request from a SIGKILL result', async () => {
+    expect(await run('no-request')).toMatchObject({ status: 'unknown', request: null,
+      gaps: expect.arrayContaining(['parent-native-close-evidence-missing']) });
+  }, 20_000);
+  it('uses the actual kernel result and rejects another signal', async () => {
+    expect(await run('other-signal')).toMatchObject({ status: 'unknown',
+      K: { code: null, signal: 'SIGTERM' }, gaps: expect.arrayContaining(['parent-K-not-SIGKILL']) });
+  }, 20_000);
 });
 
 function fixture() {

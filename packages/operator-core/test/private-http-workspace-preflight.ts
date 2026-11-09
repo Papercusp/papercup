@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync, type ChildProcess, type SpawnOptions, type SpawnSyncOptions } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, statSync, watch, writeFileSync } from 'node:fs';
 import { createRequire, isBuiltin } from 'node:module';
 import { constants as osConstants, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -37,6 +37,202 @@ import { RESTRICTED_HOLD_PREFLIGHT_TIMEOUT_MS } from '../../../scripts/lib/restr
 
 type CooperativeLoadedPins = { observer: string; runtime: string; configuration: string };
 type CooperativeTaskEndpoint = { id: string; atMs: number };
+
+/** Arm BEFORE spawn, attach to that exact ChildProcess immediately afterwards.
+ * OUT publication is atomic; watch notifications are only hints. Authenticate
+ * the bytes and independently read the live kernel identity when the request
+ * arrives. A notification processed after death cannot prove request-before-K.
+ * K here is the parent's kernel-backed child `exit` observation, not a child
+ * timestamp, kill request, stdio close, or successful kill() return value.
+ * No task endpoint is inferred and no observer cost is deducted.
+ */
+export function observeCooperativeHostTermination(o: {
+  traceOut: string; epoch: string; runGroupId: string | null;
+}) {
+  assert.ok(isAbsolute(o.traceOut), 'Absolute fresh OUT required');
+  assert.match(o.epoch, /^[a-f0-9-]{36}$/);
+  const directory = o.traceOut + '.native-processes';
+  assert.ok(!existsSync(o.traceOut) && !existsSync(directory), 'Fresh OUT required');
+  const setupStartNs = process.hrtime.bigint().toString();
+  mkdirSync(directory, { recursive: false });
+  const gaps = new Set<string>(), seen = new Set<string>();
+  type Stamp = { atNs: string; kernelProcessIdentity: string | null };
+  type Endpoint = { id: string; atNs: string };
+  let host: ChildProcess | null = null, attached = false, stopped = false, bytesRead = 0;
+  let pinned: Stamp | null = null, entry: Record<string, any> | null = null;
+  let executable: { sha256: string; byteLength: number; kernelProcessIdentity: string } | null = null;
+  let request: (Stamp & { row: Record<string, any>; sha256: string }) | null = null;
+  let terminal: { atNs: string; code: number | null; signal: NodeJS.Signals | null } | null = null;
+  let closedAtNs: string | null = null;
+  const endpoints: Partial<Record<'entry' | 'result', Endpoint>> = {};
+  const receive = (_event: string, name: string | null) => {
+    const atNs = process.hrtime.bigint().toString();
+    if (!name || !/^[a-f0-9]{64}\.json$/.test(name) || seen.has(name)) return;
+    seen.add(name);
+    if (seen.size > 8192) { gaps.add('parent-out-population-limit'); return; }
+    try {
+      const path = join(directory, name), size = lstatSync(path).size;
+      assert.ok(size <= 128 * 1024 && bytesRead + size <= 256 * 1024 ** 2, 'parent OUT byte bound');
+      const bytes = readNativeArtifactBytes(path, size, 128 * 1024);
+      bytesRead += bytes.length;
+      const sha256 = digestBytes(bytes);
+      assert.equal(name, sha256 + '.json', 'parent OUT authentication failed');
+      const row = JSON.parse(bytes.toString('utf8'));
+      if (!host || row.pid !== host.pid || row.threadId !== 0) return;
+      if (row.event === 'node-entry') {
+        if (entry) gaps.add('duplicate-parent-host-entry');
+        entry = row;
+      }
+      if (row.event === 'node-self-kill-request') {
+        if (request) gaps.add('duplicate-parent-close-request');
+        // `atNs` is captured before parsing/verification; a live identity read
+        // afterwards brackets that work before K, including its entire cost.
+        request = { atNs, row, sha256, kernelProcessIdentity: readProcessIdentity(host.pid!) };
+        if (terminal) gaps.add('parent-request-not-observed-before-K');
+      }
+    } catch { gaps.add('parent-out-read-unavailable'); }
+  };
+  const watcher = watch(directory, { persistent: false }, receive);
+  watcher.on('error', () => gaps.add('parent-out-watch-unavailable'));
+  const setupEndNs = process.hrtime.bigint().toString();
+  const onSpawn = () => {
+    if (host?.pid && !pinned) {
+      pinned = { atNs: process.hrtime.bigint().toString(), kernelProcessIdentity: readProcessIdentity(host.pid) };
+      try {
+        assert.equal(process.platform, 'linux', 'Native executable inode observation requires Linux');
+        const path = `/proc/${host.pid}/exe`;
+        assert.ok(statSync(path).size <= 256 * 1024 ** 2, 'Native executable byte bound');
+        // /proc/<pid>/exe addresses the mapped executable inode even after a
+        // pathname replacement. Disk process.execPath is not loaded evidence.
+        const bytes = readFileSync(path), identity = readProcessIdentity(host.pid);
+        assert.ok(identity && identity === pinned.kernelProcessIdentity, 'Native executable identity changed');
+        executable = { sha256: digestBytes(bytes), byteLength: bytes.length, kernelProcessIdentity: identity };
+      } catch { gaps.add('parent-native-executable-unavailable'); }
+    }
+  };
+  const onError = () => { gaps.add('parent-host-spawn-error'); };
+  const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+    terminal = { atNs: process.hrtime.bigint().toString(), code, signal };
+  };
+  const onClose = () => { closedAtNs = process.hrtime.bigint().toString(); };
+  return {
+    attach(child: ChildProcess) {
+      assert.ok(!attached && !stopped, 'One exact native child required');
+      attached = true; host = child;
+      if (child.exitCode !== null || child.signalCode !== null) gaps.add('parent-attached-after-exit');
+      onSpawn();
+      child.once('spawn', onSpawn); child.once('error', onError);
+      child.once('exit', onExit); child.once('close', onClose);
+    },
+    markTaskEndpoint(kind: 'entry' | 'result', id: string) {
+      assert.ok(id && !endpoints[kind] && host && !terminal && !stopped, 'Original live task endpoint required');
+      endpoints[kind] = { id, atNs: process.hrtime.bigint().toString() };
+    },
+    snapshot() {
+      const failures = new Set(gaps);
+      if (!entry || !pinned?.kernelProcessIdentity || !request?.kernelProcessIdentity || !terminal)
+        failures.add('parent-native-close-evidence-missing');
+      if (entry && (entry.runGroupId !== o.runGroupId || entry.loaderCensus?.cooperative?.epoch !== o.epoch ||
+          entry.kernelProcessIdentity !== pinned?.kernelProcessIdentity ||
+          entry.kernelProcessIdentity !== request?.kernelProcessIdentity ||
+          request?.row.kernelProcessIdentity !== entry.kernelProcessIdentity ||
+          request?.row.processIdentity !== entry.processIdentity || request?.row.runGroupId !== o.runGroupId ||
+          request?.row.termination?.pid !== host?.pid || request?.row.termination?.signal !== 'SIGKILL' ||
+          request?.row.termination?.phase !== 'self-kill-request' ||
+          typeof request?.row.termination?.requestId !== 'string')) failures.add('parent-native-close-identity-mismatch');
+      if (terminal && (terminal.code !== null || terminal.signal !== 'SIGKILL')) failures.add('parent-K-not-SIGKILL');
+      if (pinned && request && terminal && !(BigInt(pinned.atNs) <= BigInt(request.atNs) &&
+          BigInt(request.atNs) <= BigInt(terminal.atNs))) failures.add('parent-native-close-clock-order');
+      const task = endpoints.entry && endpoints.result && BigInt(endpoints.entry.atNs) <= BigInt(endpoints.result.atNs)
+        ? { entry: { ...endpoints.entry }, result: { ...endpoints.result },
+          elapsedNs: (BigInt(endpoints.result.atNs) - BigInt(endpoints.entry.atNs)).toString(), observerDeductionNs: '0' }
+        : null;
+      return { schemaVersion: 'cooperative-parent-native-close-v1', scope: 'parent-observed-native-close',
+        status: failures.size ? 'unknown' : 'bound', epoch: o.epoch, runGroupId: o.runGroupId,
+        pid: host?.pid ?? null, pinned: structuredClone(pinned), executable: structuredClone(executable),
+        request: structuredClone(request),
+        K: structuredClone(terminal), closedAtNs, setup: { startNs: setupStartNs, endNs: setupEndNs },
+        task, requestToKObservedNs: request && terminal && BigInt(terminal.atNs) >= BigInt(request.atNs)
+          ? (BigInt(terminal.atNs) - BigInt(request.atNs)).toString() : null,
+        clock: 'same-parent-process-hrtime', instrumented: true, gaps: [...failures],
+        fullRuntimeQualification: 'unknown' };
+    },
+    stop() {
+      stopped = true; watcher.close();
+      host?.removeListener('spawn', onSpawn); host?.removeListener('error', onError);
+      host?.removeListener('exit', onExit); host?.removeListener('close', onClose);
+    },
+  };
+}
+
+/** Join actual V8 observer text, the parent's mapped Node inode and each
+ * isolate's accepted configuration snapshot. Requested settings and current
+ * disk source cannot fill a missing observation. This binds only these three
+ * provenance legs; complete source eligibility/closure remains separate.
+ */
+export function observeCooperativeLoadedProvenance(o: {
+  traceOut: string; parent: ReturnType<ReturnType<typeof observeCooperativeHostTermination>['snapshot']>;
+  expected: { executable: { sha256: string; byteLength: number }; configuration: ConfigurationSnapshot;
+    observers: Array<{ path: string; sha256: string; byteLength: number }> };
+}) {
+  const gaps: string[] = [], isolates: Array<{ threadId: number; processIdentity: string;
+    configuration: string; observer: Array<{ path: string; sha256: string; scriptId: string }> }> = [];
+  try {
+    assert.equal(o.parent.status, 'bound', 'Independent parent native K required');
+    assert.ok(o.parent.executable && o.parent.pinned?.kernelProcessIdentity === o.parent.executable.kernelProcessIdentity,
+      'Mapped native executable identity missing');
+    assert.deepEqual({ sha256: o.parent.executable.sha256, byteLength: o.parent.executable.byteLength },
+      o.expected.executable, 'Actually loaded native executable differs');
+    assert.ok(readConfigurationSnapshot(o.expected.configuration), 'Independent configuration snapshot required');
+    assert.ok(o.expected.observers.length > 0 && o.expected.observers.length <= nativeSourceRetentionLimits.pins &&
+      new Set(o.expected.observers.map(pin => pin.path)).size === o.expected.observers.length,
+    'Explicit bounded observer source population required');
+    const trace = readNativeProcessTraceArtifacts(o.traceOut, 0, Number.MAX_SAFE_INTEGER, { terminations: [{
+      pid: o.parent.pid!, kernelProcessIdentity: o.parent.pinned!.kernelProcessIdentity!,
+      code: o.parent.K!.code, signal: o.parent.K!.signal }] });
+    assert.ok(trace.population.complete, 'Authenticated cooperative protocol incomplete');
+    const entries = trace.rows.map(({ row }) => row).filter(row => row.event === 'node-entry' && row.pid === o.parent.pid);
+    assert.ok(entries.length > 0 && entries.length <= 256, 'Actual isolate entries missing or limited');
+    for (const entry of entries) {
+      assert.equal(entry.kernelProcessIdentity, o.parent.pinned!.kernelProcessIdentity, 'Loaded provenance kernel mismatch');
+      assert.equal(entry.runGroupId, o.parent.runGroupId, 'Loaded provenance run mismatch');
+      assert.equal(entry.loaderCensus?.cooperative?.epoch, o.parent.epoch, 'Loaded provenance epoch mismatch');
+      const configuration = readConfigurationSnapshot(entry.configuration);
+      assert.ok(configuration, 'Actual isolate configuration unavailable');
+      assert.equal(configuration.fingerprint, o.expected.configuration.fingerprint, 'Actually accepted configuration differs');
+      const snapshots = trace.rows.map(({ row }) => row).filter(row => row.event === 'engine-script-execution' &&
+        row.processIdentity === entry.processIdentity && row.kernelProcessIdentity === entry.kernelProcessIdentity &&
+        row.threadId === entry.threadId && row.runGroupId === entry.runGroupId);
+      assert.equal(snapshots.length, 1, 'One actual isolate engine snapshot required');
+      const engine = snapshots[0].observation;
+      assert.ok(engine?.schemaVersion === 'node-engine-script-observations-v1' &&
+        engine.basis === 'v8-script-id-source-and-best-effort-coverage' &&
+        engine.scope === 'observed-independently-pinned-engine-scripts' &&
+        engine.sourceEncoding === 'utf8-of-engine-source-text' && engine.offsetUnits === 'utf16-code-units' &&
+        Array.isArray(engine.reasons) && engine.reasons.length === 0 && Array.isArray(engine.scripts),
+      'Actual observer engine evidence unavailable or limited');
+      const observer = o.expected.observers.map(pin => {
+        assert.ok(isAbsolute(pin.path) && /^[a-f0-9]{64}$/.test(pin.sha256) && Number.isSafeInteger(pin.byteLength) &&
+          pin.byteLength > 0, 'Independent observer source pin invalid');
+        const matches = engine.scripts.filter((script: any) => script.url === pathToFileURL(pin.path).href);
+        assert.equal(matches.length, 1, 'Actually loaded observer script missing or duplicated');
+        const script = matches[0];
+        assert.deepEqual(script.independentPin, pin, 'Observer independent pin changed');
+        assert.equal(script.sourceTextSha256, pin.sha256, 'Actually loaded observer bytes differ');
+        assert.ok(script.execution === 'observed' && script.coverageRangesComplete === true &&
+          typeof script.scriptId === 'string' && Array.isArray(script.coverageRanges) &&
+          script.coverageRanges.some((range: any) => range.count > 0 && range.startOffset >= 0 &&
+            range.endOffset > range.startOffset && range.endOffset <= script.sourceTextLength),
+        'Observer engine execution unobserved');
+        return { path: pin.path, sha256: script.sourceTextSha256 as string, scriptId: script.scriptId as string };
+      });
+      isolates.push({ threadId: entry.threadId, processIdentity: entry.processIdentity,
+        configuration: configuration.fingerprint, observer });
+    }
+  } catch (error) { gaps.push((error as Error).message.split('\n')[0]); }
+  return { scope: 'loaded-observer-native-executable-configuration', status: gaps.length ? 'unknown' : 'bound',
+    epoch: o.parent.epoch, pid: o.parent.pid, isolates, gaps, fullRuntimeQualification: 'unknown' };
+}
 
 /** Arithmetic/comparability guard over independently obtained parent receipts.
  * This does not manufacture loaded-code, source-eligibility, clock-anchor or
@@ -633,7 +829,8 @@ export function privateMcpSourceSha(root: string, env: NodeJS.ProcessEnv = proce
  * unrelated preloads and all resource limits. */
 export function privateBundleRuntimeEnv(env: NodeJS.ProcessEnv,
   observation?: { traceOut: string; pinnedSources?: Array<{ path: string; sha256: string; byteLength: number }>;
-    loaderCensus?: { events: number; bytes: number } | { batches: number; bytes: number } }): NodeJS.ProcessEnv {
+    loaderCensus?: { events: number; bytes: number } | { batches: number; bytes: number;
+      cooperative?: { epoch: string; maxIsolates: number; closeTimeoutMs: number } } }): NodeJS.ProcessEnv {
   const tokens = (env.NODE_OPTIONS ?? '').match(/(?:[^\s"']+|"(?:\\.|[^"\\])*"|'[^']*')+/g) ?? [];
   const value = (token: string) => token.replace(/"((?:\\.|[^"\\])*)"|'([^']*)'/g,
     (_, double: string | undefined, single: string | undefined) => double?.replace(/\\(["\\])/g, '$1') ?? single!);
