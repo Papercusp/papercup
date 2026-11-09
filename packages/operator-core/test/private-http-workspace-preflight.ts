@@ -1267,7 +1267,9 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
     resolutions: {
       scope: 'native-node-resolver-returned-edges', status: 'unknown' as 'bound' | 'unknown',
       edges: [] as Array<{ resolveId: number; specifier: string; parentURL: string | null;
-        conditions: string[]; url: string; format: string | null }>, gaps: [] as string[],
+        conditions: string[]; url: string; format: string | null }>,
+      failures: [] as Array<{ resolveId: number; specifier: string; parentURL: string | null;
+        conditions: string[]; errorCode: string | null; receiptSha256: string }>, gaps: [] as string[],
     },
     limits: { loads: 128, resolves: 128, loaderCensus: null as { events: number; bytes: number } | { batches: number; bytes: number } | null,
       ...nativeSourceRetentionLimits },
@@ -1550,11 +1552,18 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
     try {
       assert.ok(result.exitObserved, 'host resolver terminal observation missing');
       assert.ok(!own.some(({ row }) => ['trace-limit', 'trace-event-too-large',
-        'module-resolve-limit', 'module-resolve-error', 'module-census-invalid'].includes(row.event)), 'host resolver capture incomplete');
+        'module-resolve-limit', 'module-census-invalid'].includes(row.event)), 'host resolver capture incomplete');
       const attempts = own.filter(({ row }) => row.event === 'module-resolve-start');
-      const returns = own.filter(({ row }) => row.event === 'module-resolve-return');
+      // Optional dependency probing can throw and then successfully fall back.
+      // A failed resolution is a terminal outcome, never a returned dependency
+      // edge. Bind every outcome to its own attempt rather than compare totals.
+      const outcomes = new Map<number, (typeof own)[number]>();
+      for (const receipt of own) {
+        if (!['module-resolve-return', 'module-resolve-error'].includes(receipt.row.event)) continue;
+        assert.ok(!outcomes.has(receipt.row.resolveId), 'host resolver outcome duplicated');
+        outcomes.set(receipt.row.resolveId, receipt);
+      }
       assert.ok(attempts.length > 0 && attempts.length <= result.limits.resolves, 'host resolver observations missing or limited');
-      assert.equal(returns.length, attempts.length, 'pending host resolver calls');
       const seen = new Set<number>();
       for (const { row } of attempts) {
         assert.ok(Number.isSafeInteger(row.resolveId) && row.resolveId > 0 && row.resolveId <= result.limits.resolves &&
@@ -1564,12 +1573,22 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
           row.scope === 'node-sync-resolve-hook' && row.threadId === entry.row.threadId,
         'host resolver attempt invalid or isolate differs');
         seen.add(row.resolveId);
-        const matched = returns.filter(({ row: returned }) => returned.resolveId === row.resolveId);
-        assert.equal(matched.length, 1, 'host resolver return missing or duplicated');
-        const returned = matched[0].row;
+        const matched = outcomes.get(row.resolveId);
+        assert.ok(matched, 'host resolver outcome missing');
+        outcomes.delete(row.resolveId);
+        const returned = matched.row;
         for (const key of ['specifier', 'parentURL', 'conditions', 'scope', 'threadId'])
           assert.deepEqual(returned[key], row[key], 'host resolver edge identity differs');
-        assert.ok(returned.atMs >= row.atMs && typeof returned.url === 'string' &&
+        assert.ok(returned.atMs >= row.atMs, 'host resolver outcome predates attempt');
+        if (returned.event === 'module-resolve-error') {
+          assert.ok(returned.errorCode === null || typeof returned.errorCode === 'string',
+            'host resolver error invalid');
+          result.resolutions.failures.push({ resolveId: row.resolveId, specifier: row.specifier,
+            parentURL: row.parentURL, conditions: [...row.conditions], errorCode: returned.errorCode,
+            receiptSha256: digestBytes(matched.bytes) });
+          continue;
+        }
+        assert.ok(typeof returned.url === 'string' &&
           (returned.format === null || typeof returned.format === 'string'), 'host resolver return invalid');
         const url = new URL(returned.url);
         assert.ok(url.protocol === 'node:' || url.protocol === 'file:' && !url.search && !url.hash,
@@ -1587,6 +1606,7 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
         result.resolutions.edges.push({ resolveId: row.resolveId, specifier: row.specifier,
           parentURL: row.parentURL, conditions: [...row.conditions], url: returned.url, format: returned.format });
       }
+      assert.equal(outcomes.size, 0, 'host resolver outcome has no attempt');
       assert.ok(!gaps.length, 'host loader evidence incomplete');
       result.resolutions.status = 'bound';
     } catch (error) { result.resolutions.gaps.push((error as Error).message.split('\n')[0]); }

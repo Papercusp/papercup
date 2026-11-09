@@ -250,6 +250,51 @@ describe('committed reader loader-return source binding', () => {
     expect(() => qualifyCommittedReaderSource({ ...f.options, preparationOnly: true })).toThrow();
   });
 
+  function resolverFailureFixture() {
+    return loadedFixture(`try { await import('missing-reader-optional-dependency'); }
+      catch (error) { if (error.code !== 'ERR_MODULE_NOT_FOUND') throw error; }
+      const { default: value } = await import('example'); console.log(value);`);
+  }
+
+  it('accounts for caught resolver errors without inventing successful dependency edges', () => {
+    const f = resolverFailureFixture(), observed = f.observe();
+    const failure = f.rows.find(({ row }) => row.event === 'module-resolve-error')!;
+    expect(f.nativeOutput.trim()).toBe('1');
+    expect(observed.resolutions).toMatchObject({ status: 'bound', gaps: [], failures: [{
+      resolveId: failure.row.resolveId, specifier: 'missing-reader-optional-dependency',
+      errorCode: 'ERR_MODULE_NOT_FOUND', receiptSha256: failure.name.slice(0, 64),
+    }] });
+    expect(observed.resolutions.edges.some(edge => edge.specifier === 'missing-reader-optional-dependency')).toBe(false);
+    expect(observed.resolutions.edges.some(edge => edge.specifier === 'example')).toBe(true);
+    expect(observed.resolutions.edges.length + observed.resolutions.failures.length)
+      .toBe(f.rows.filter(({ row }) => row.event === 'module-resolve-start').length);
+    expect(observed.pending).toContain('complete-runtime-closure');
+  });
+
+  it.each(['missing', 'orphan', 'identity', 'isolate', 'timestamp', 'code', 'balanced-duplicate'] as const)(
+    'keeps %s resolver error evidence unknown', mode => {
+      const f = resolverFailureFixture();
+      const failed = f.rows.find(({ row }) => row.event === 'module-resolve-error')!;
+      if (mode === 'missing') rmSync(join(f.traceRoot, failed.name));
+      else if (mode === 'balanced-duplicate') {
+        const success = f.rows.find(({ row }) => row.event === 'module-resolve-return')!;
+        rmSync(join(f.traceRoot, success.name));
+        const duplicate = JSON.stringify({ ...failed.row, atMs: failed.row.atMs + 1 });
+        writeFileSync(join(f.traceRoot, digest(duplicate) + '.json'), duplicate);
+      } else f.replace('module-resolve-error', row => {
+        if (mode === 'orphan') row.resolveId += 10_000;
+        if (mode === 'identity') row.specifier += '-changed';
+        if (mode === 'isolate') row.threadId++;
+        if (mode === 'timestamp') {
+          const start = f.rows.find(({ row: start }) => start.event === 'module-resolve-start'
+            && start.resolveId === row.resolveId)!;
+          row.atMs = start.row.atMs - 1;
+        }
+        if (mode === 'code') row.errorCode = 42;
+      });
+      expect(f.observe().resolutions).toMatchObject({ status: 'unknown', gaps: [expect.any(String)] });
+    });
+
   it.each(['missing-return', 'unloaded', 'dependency-bytes', 'identity'] as const)(
     'refuses %s build-only resolver evidence without a planned resolution map', mode => {
       const f = loadedFixture('import value from "example"; console.log(value);', true, true);
