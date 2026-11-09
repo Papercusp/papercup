@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { canonicalJson } from './reproducibility/canonical-json';
 import { resolveDb, type DbScope } from './reproducibility/db';
 import { readBenchmarkContextSources, type BenchmarkContextInput } from './reproducibility/context';
+import { toolInvocationOwnerPredicate } from '../agent-tools/sessions/automatic-tool-names';
 
 export const BENCH_PRIVATE_FIXTURE_TOOL = 'benchmark:read-private-fixture';
 const id = z.string().trim().min(1).max(200);
@@ -15,6 +16,11 @@ const siblings = card.extend({ rubricRef: id, subjectRef: id,
 const plan = z.object({ harness: id, slug: id,
   revision: z.union([z.number().int().safe().positive(), digest]),
   specAsOf: z.string().datetime({ offset: true }) }).strict();
+const timeline = z.object({
+  owner: z.string().regex(/^su-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/),
+  since: z.string().datetime({ offset: true }), until: z.string().datetime({ offset: true }),
+}).strict().refine(value => Date.parse(value.until) > Date.parse(value.since),
+  'Private timeline requires an increasing frozen window.');
 const cases = <T extends z.ZodTypeAny>(schema: T) => z.object({ A: schema, B: schema }).strict();
 const sourcePin = z.object({ sha256: digest, bytes: z.number().int().positive().max(16 * 1024 * 1024) }).strict();
 const verification = z.object({ inputs: cases(sourcePin), promptSha256: digest, oracleSha256: digest }).strict();
@@ -22,8 +28,11 @@ export const benchFixtureAllocationSchema = z.object({
   'LATENCY-M1:T01': cases(card),
   'LATENCY-M1:T02': cases(siblings),
   'LATENCY-M1:T03': cases(plan),
+  'LATENCY-M1:T04': cases(timeline).optional(),
+  'LATENCY-M1:T05': cases(timeline).optional(),
   verification: z.object({ 'LATENCY-M1:T01': verification.optional(),
-    'LATENCY-M1:T02': verification.optional(), 'LATENCY-M1:T03': verification.optional() }).strict().optional(),
+    'LATENCY-M1:T02': verification.optional(), 'LATENCY-M1:T03': verification.optional(),
+    'LATENCY-M1:T04': verification.optional(), 'LATENCY-M1:T05': verification.optional() }).strict().optional(),
 }).strict();
 export type BenchFixtureAllocation = z.infer<typeof benchFixtureAllocationSchema>;
 const bindingSchema = z.object({ workspaceId: id, runId: id, preregHash: digest,
@@ -35,6 +44,8 @@ export const benchFixtureBoundarySchema = z.discriminatedUnion('taskId', [
   bindingSchema.extend({ taskId: z.literal('LATENCY-M1:T01'), fixtureSha256: digest, cases: cases(card) }).strict(),
   bindingSchema.extend({ taskId: z.literal('LATENCY-M1:T02'), fixtureSha256: digest, cases: cases(siblings) }).strict(),
   bindingSchema.extend({ taskId: z.literal('LATENCY-M1:T03'), fixtureSha256: digest, cases: cases(plan) }).strict(),
+  bindingSchema.extend({ taskId: z.literal('LATENCY-M1:T04'), fixtureSha256: digest, cases: cases(timeline) }).strict(),
+  bindingSchema.extend({ taskId: z.literal('LATENCY-M1:T05'), fixtureSha256: digest, cases: cases(timeline) }).strict(),
 ]);
 export type BenchFixtureReadBoundary = z.infer<typeof benchFixtureBoundarySchema>;
 export const validBenchFixtureReadBoundary = (value: unknown): value is BenchFixtureReadBoundary =>
@@ -51,8 +62,9 @@ export function freezeBenchFixtureReadBoundary(input: {
   const allocation = benchFixtureAllocationSchema.parse(input.allocation);
   if (benchFixtureAllocationSha256(allocation) !== input.expectedSha256)
     throw new Error('Private benchmark fixture allocation differs from its frozen arm.');
-  if (!['LATENCY-M1:T01', 'LATENCY-M1:T02', 'LATENCY-M1:T03'].includes(input.taskId)) return undefined;
-  const taskId = input.taskId as 'LATENCY-M1:T01' | 'LATENCY-M1:T02' | 'LATENCY-M1:T03';
+  if (!['LATENCY-M1:T01', 'LATENCY-M1:T02', 'LATENCY-M1:T03', 'LATENCY-M1:T04', 'LATENCY-M1:T05'].includes(input.taskId)) return undefined;
+  const taskId = input.taskId as BenchFixtureReadBoundary['taskId'];
+  if (!allocation[taskId]) throw new Error('Private benchmark task has no frozen source allocation.');
   return benchFixtureBoundarySchema.parse({ ...input.binding, taskId: input.taskId,
     fixtureSha256: input.expectedSha256, cases: allocation[taskId],
     ...(allocation.verification?.[taskId] ? { sourcePins: allocation.verification[taskId]!.inputs } : {}) });
@@ -82,6 +94,28 @@ export async function readBenchFixtureSourceSnapshot(boundary: BenchFixtureReadB
   which: 'A' | 'B', scope: DbScope): Promise<unknown> {
   const { sql, ws } = resolveDb(scope);
   if (ws !== boundary.workspaceId) throw new Error('Private fixture source workspace differs.');
+  if (boundary.taskId === 'LATENCY-M1:T04' || boundary.taskId === 'LATENCY-M1:T05') {
+    const source = boundary.cases[which];
+    // Pin the reader's complete source population, including automatic calls,
+    // trusted spawn aliases and legacy default-workspace turns. These are raw
+    // stored inputs, not the reader's projection or the independent oracle.
+    const turns = await sql`SELECT to_jsonb(s) AS row FROM harness_shared.session_turns s
+      WHERE (workspace_id = ${ws} OR workspace_id = 'default') AND owner = ${source.owner}
+        AND COALESCE(ts, ingested_at) >= ${source.since}::timestamptz
+        AND COALESCE(ts, ingested_at) < ${source.until}::timestamptz
+      ORDER BY workspace_id, source_kind, session_id, turn_idx LIMIT 10001`;
+    const tools = await sql`SELECT to_jsonb(t) AS row FROM harness_shared.tool_invocations t
+      WHERE ${toolInvocationOwnerPredicate(sql, source.owner)}
+        AND invoked_at >= ${source.since}::timestamptz AND invoked_at < ${source.until}::timestamptz
+      ORDER BY id LIMIT 10001`;
+    const coord = await sql`SELECT to_jsonb(c) AS row FROM harness_shared.coord_event_log c
+      WHERE surface = 'messages' AND body->>'from' = ${source.owner}
+        AND ts >= ${source.since}::timestamptz AND ts < ${source.until}::timestamptz
+      ORDER BY ts, writer_key, msg_id LIMIT 10001`;
+    if ([turns, tools, coord].some(rows => rows.length > 10000) || !turns.length && !tools.length && !coord.length)
+      throw new Error('Private fixture timeline source is missing or oversized.');
+    return { window: source, turns, tools, coord };
+  }
   if (boundary.taskId === 'LATENCY-M1:T01' || boundary.taskId === 'LATENCY-M1:T02') {
     const source = boundary.cases[which];
     if (!source.comparisonTime) throw new Error('Private fixture source requires its frozen comparison clock.');
@@ -137,6 +171,7 @@ export async function readBenchFixtureSourceSnapshot(boundary: BenchFixtureReadB
       throw new Error('Private fixture sibling source is incomplete or oversized.');
     return { card, siblings: rows.map(row => ({ ...row, created_at: new Date(row.created_at).toISOString() })), ...dependencies };
   }
+  if (boundary.taskId !== 'LATENCY-M1:T03') throw new Error('Private fixture source task is undeclared.');
   const source = boundary.cases[which];
   const rows = await sql`SELECT id, seq, content_hash, content_snapshot, created_at
     FROM harness_shared.plan_revisions WHERE workspace_id = ${ws} AND harness_slug = ${source.harness}
@@ -250,9 +285,10 @@ export const benchFixtureReadArgs = z.discriminatedUnion('operation', [
     createdAt: z.string().datetime({ offset: true }), issueId: id }).strict().optional() }).strict(),
   common.extend({ operation: z.literal('plan') }).strict(),
   common.extend({ operation: z.literal('specs') }).strict(),
+  common.extend({ operation: z.literal('timeline'), cursor: z.string().min(1).max(512).optional() }).strict(),
 ]);
 export type BenchFixtureReadArgs = z.infer<typeof benchFixtureReadArgs>;
-export type BenchFixtureProductCall = { tool: 'scorecards:get' | 'scorecards:list' | 'plans:get' | 'plans:get-specs';
+export type BenchFixtureProductCall = { tool: 'scorecards:get' | 'scorecards:list' | 'plans:get' | 'plans:get-specs' | 'sessions:timeline';
   args: Record<string, unknown> };
 
 /** Lossless result continuations live on the SAME operational lease. Only the
@@ -350,6 +386,10 @@ export function benchFixtureProductCall(boundary: BenchFixtureReadBoundary, rawA
       harness: source.harness, slug: source.slug, revision: source.revision, mode: 'full', includeEnrichments: false } };
     if (args.operation === 'specs') return { tool: 'plans:get-specs', args: {
       harness: source.harness, slug: source.slug, asOf: source.specAsOf } };
+  }
+  if (args.operation === 'timeline' && (pinned.taskId === 'LATENCY-M1:T04' || pinned.taskId === 'LATENCY-M1:T05')) {
+    return { tool: 'sessions:timeline', args: { ...pinned.cases[args.case], limit: 300,
+      include_auto: true, group_repeated: false, ...(args.cursor ? { cursor: args.cursor } : {}) } };
   }
   throw new Error('Private fixture operation is not declared for this benchmark task.');
 }

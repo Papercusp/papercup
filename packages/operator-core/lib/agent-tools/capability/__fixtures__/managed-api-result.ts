@@ -1,5 +1,22 @@
 import assert from 'node:assert/strict';
 
+/** Bounded probes of the excluded local authorization surface, not an inventory
+ * of every possible spelling or evidence that an installed client journey ran. */
+export const excludedRecoveryTools = ['capability:offline_recovery', 'capability:local_recovery',
+  'capability:recovery'] as const;
+
+export function assertManagedRecoveryRefusal(name: string, result: {
+  isError?: boolean;
+  content?: unknown;
+}, before: string, after: string): void {
+  assert.equal(result.isError, true, 'Excluded recovery request must be explicitly refused');
+  const content = Array.isArray(result.content) ? result.content : [];
+  assert.ok(content.some(part => part?.type === 'text' && typeof part.text === 'string'
+    && part.text.startsWith(`unknown_tool: no tool named "${name}".`)),
+  'Refusal must identify the requested absent route, not an auth, build or transport failure');
+  assert.equal(after, before, 'Excluded recovery request changed its effect control');
+}
+
 /** Preserve the actual MCP reply when a private acceptance call is refused. */
 export function assertManagedToolSuccess(name: string, result: {
   isError?: boolean;

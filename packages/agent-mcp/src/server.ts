@@ -831,6 +831,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<void> 
     );
     return {
       content: serialized.content,
+      ...(serialized.isError !== undefined ? { isError: serialized.isError } : {}),
       ...(Object.keys(serialized._meta).length > 0 ? { _meta: serialized._meta } : {}),
       ...(serialized.structuredContent !== undefined ? { structuredContent: serialized.structuredContent } : {}),
     };

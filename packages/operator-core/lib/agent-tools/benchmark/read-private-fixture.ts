@@ -1,6 +1,7 @@
 /** The existing native bench host's assignment-bound read bridge. */
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { InvalidInputError, type ToolResponse } from '@papercusp/tooldef';
+import { withWorkspace } from '@papercusp/db-org';
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
 import { getDoorConstantsSync } from '../../context-doors-config';
 import { resolveAgentIdentity } from '../coordination/identity';
@@ -50,9 +51,13 @@ export default defineTool({
       // No dynamic tool name, execution/replay option, source scope or SQL is accepted.
       const tool = call.tool === 'scorecards:get' ? (await import('../scorecards/get')).default :
         call.tool === 'scorecards:list' ? (await import('../scorecards/list')).default :
-          call.tool === 'plans:get' ? (await import('../plans/get')).default : (await import('../plans/get-specs')).default;
+          call.tool === 'plans:get' ? (await import('../plans/get')).default :
+            call.tool === 'plans:get-specs' ? (await import('../plans/get-specs')).default : (await import('../sessions/timeline')).default;
       const parsed = tool.args.parse(call.args);
-      const result = await (tool.handler as (args: unknown, ctx: PapercuspUnifiedToolContext) => Promise<ToolResponse>)(parsed, ctx);
+      const read = (context: PapercuspUnifiedToolContext) =>
+        (tool.handler as (args: unknown, ctx: PapercuspUnifiedToolContext) => Promise<ToolResponse>)(parsed, context);
+      const result = call.tool === 'sessions:timeline'
+        ? await withWorkspace(workspaceId, tx => read({ ...ctx, tx })) : await read(ctx);
       await requireBenchFixtureSourcePins(boundary, { workspaceId });
       await requireBenchFixtureReadLease(boundary, { workspaceId });
       const data = benchFixtureReadContinuations(result.data, call, args);

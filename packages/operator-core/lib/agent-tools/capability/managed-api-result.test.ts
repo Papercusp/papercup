@@ -1,5 +1,25 @@
 import { describe, expect, it } from 'vitest';
-import { assertManagedToolSuccess, finishManagedApiTeardown } from './__fixtures__/managed-api-result';
+import { assertManagedRecoveryRefusal, assertManagedToolSuccess, finishManagedApiTeardown } from './__fixtures__/managed-api-result';
+
+describe('excluded recovery running-path detector', () => {
+  const name = 'capability:offline_recovery';
+  const refused = { isError: true, content: [{ type: 'text', text: `unknown_tool: no tool named "${name}". Use tools:find.` }] };
+
+  it('accepts only an explicit absent-route refusal with an unchanged effect control', () => {
+    expect(() => assertManagedRecoveryRefusal(name, refused, 'before', 'before')).not.toThrow();
+    expect(() => assertManagedRecoveryRefusal(name, refused, 'before', 'changed')).toThrow('effect control');
+  });
+
+  it('rejects a successful no-op and failures that did not measure the excluded route', () => {
+    expect(() => assertManagedRecoveryRefusal(name, { ...refused, isError: false }, 'before', 'before'))
+      .toThrow('explicitly refused');
+    for (const text of ['invalid_bearer', 'build_mismatch', 'tool_error: connection refused',
+      'unknown_tool: no tool named "different:route".']) {
+      expect(() => assertManagedRecoveryRefusal(name, { isError: true, content: [{ type: 'text', text }] }, 'before', 'before'))
+        .toThrow('requested absent route');
+    }
+  });
+});
 
 describe('managed HTTP acceptance failure evidence', () => {
   it('keeps a plain-text refusal when no JSON body exists', () => {

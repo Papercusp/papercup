@@ -13,7 +13,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 
 const FAKE_TX = { __fakeTx: true } as const;
@@ -27,11 +27,12 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 
 vi.mock('./auth', () => ({ resolveBearer: vi.fn() }));
 
-// Mock the tooldef surface server.ts imports. dispatch only uses lookup +
-// standardValidate + formatIssues; the rest are imported for other (untested)
-// functions and just need to exist so the module loads.
-vi.mock('@papercusp/tooldef', () => ({
+// Keep the real response serializer for the stdio boundary; isolate dispatch's
+// catalog, validation, and authorization inputs.
+vi.mock('@papercusp/tooldef', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/tooldef')>()),
   lookup: vi.fn(),
+  lookupByMcpName: vi.fn(() => undefined),
   standardValidate: vi.fn(),
   formatIssues: (issues: unknown) => `issues:${JSON.stringify(issues)}`,
   getCatalog: vi.fn(() => []),
@@ -88,6 +89,24 @@ afterEach(() => {
 });
 
 describe('MCP capability discovery and prompts', () => {
+  it.each([true, false, undefined])('stdio preserves canonical response isError=%s', async (isError) => {
+    vi.stubEnv('TEST_MCP_BEARER', 'b');
+    const data = { message: 'fixture' };
+    vi.mocked(lookup).mockReturnValue(makeTool({
+      handler: async () => ({ data, ...(isError === undefined ? {} : { isError }) }),
+    }));
+    const registration = vi.spyOn(Server.prototype, 'setRequestHandler');
+    await startServer({ stdio: false, bearerEnv: 'TEST_MCP_BEARER' });
+    const call = registration.mock.calls.find(([schema]) => schema === CallToolRequestSchema)![1];
+    const result = await call({ method: 'tools/call', params: {
+      name: 'test:echo', arguments: {}, _meta: { format: 'json', structured: true },
+    } } as never, {} as never);
+    expect(result).toMatchObject({ structuredContent: data });
+    if (isError === undefined) expect(result).not.toHaveProperty('isError');
+    else expect(result.isError).toBe(isError);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
   it.each([
     { label: 'explicit grant', capabilities: ['test:read'], allowedTools: undefined, visible: true },
     { label: 'wildcard grant', capabilities: ['*'], allowedTools: undefined, visible: true },
