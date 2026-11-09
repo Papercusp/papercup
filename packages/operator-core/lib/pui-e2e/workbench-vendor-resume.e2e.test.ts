@@ -5,7 +5,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { spawn as ptySpawn, type IPty } from '@lydell/node-pty';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, hostname, tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { assertPuiBinaryUnchanged, ensurePuiBinary, resolvePuiWorkbenchZellij, snapshotCurrentPuiBinary } from './pui-binary';
@@ -94,6 +94,12 @@ describe.skipIf(!configuredFixture)('canonical Workbench vendor resume in a priv
   }, 900_000);
 
   afterAll(async () => {
+    // Cleanup redraws the terminal and removes the generated layout. Preserve
+    // both even when the actual vendor never reaches its composer.
+    const preCleanupScreen = screen();
+    activeScreen ||= preCleanupScreen;
+    const layoutPath = session && env && path.join(env.HOME, '.papercusp', `${session}.kdl`);
+    if (layoutPath && existsSync(layoutPath)) generatedLayout = readFileSync(layoutPath, 'utf8');
     try {
       if (session && artifact?.zellij) {
         await runWorkbenchCommand(artifact.zellij.binary, ['kill-session', session], { env, timeoutMs: 5_000 });
@@ -111,7 +117,7 @@ describe.skipIf(!configuredFixture)('canonical Workbench vendor resume in a priv
           fixture, operator, operatorIdentity, rosterSelection,
           binary: { source: artifact.source, sha256: artifact.sha256 }, zellij: artifact.zellij,
           marker, response, prompt, session, exitCode, completed, activeScreen,
-          screen: screen(), generatedLayout,
+          screen: screen(), preCleanupScreen, generatedLayout,
         }, null, 2));
       }
       if (artifact) {
@@ -136,6 +142,7 @@ describe.skipIf(!configuredFixture)('canonical Workbench vendor resume in a priv
     for (const title of ['Orders', 'Activity', 'Turns', 'Fleet']) expect(screen()).toContain(title);
     generatedLayout = readFileSync(path.join(env.HOME, '.papercusp', `${session}.kdl`), 'utf8');
     expect(generatedLayout).toContain('psu');
+    expect(generatedLayout).toContain('"--no-picker"');
     expect(generatedLayout).toContain(String(fixture.id));
     expect(screen()).not.toContain(response);
     terminal.write(prompt + '\r');
