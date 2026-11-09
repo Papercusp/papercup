@@ -549,8 +549,32 @@ describe('blocker decisions at the completion boundary', () => {
     const { row, receipt } = historicalRow();
     getWorkItem.mockResolvedValue(row);
     blockerPreflight.read.mockRejectedValue(new Error('live evidence unavailable'));
-    expect(await oneRaw(request)).toMatchObject({ ok: true, replayed: true, blockerDecision: receipt,
+    // Replay the unchanged ordinary input through the actual MCP projection,
+    // including schema parsing and response shaping, before checking side effects.
+    const originalInput = structuredClone(request);
+    const projected = lookupByMcpName('work_items:complete');
+    expect(projected).toBeTruthy();
+    const dispatched = await dispatchProjectedTool(projected!, 'work_items:complete', request, {
+      ...ctxFields,
+      log: vi.fn(),
+      signal: new AbortController().signal,
+      progress: vi.fn(),
+      emit: vi.fn(),
+      metadata: vi.fn(),
+      harnessSlug: 'papercusp',
+      runId: 'complete-original-receipt-replay',
+      role: 'su',
+      gateBypass: { role: true, capability: true, quota: true },
+      transport: 'mcp',
+      requestedFormat: 'json',
+      requestedStructured: true,
+    } as never, {});
+    expect(dispatched.ok).toBe(true);
+    const data = dispatched.result?.structuredContent as { results?: Array<Record<string, unknown>> } | undefined;
+    expect(data?.results).toHaveLength(1);
+    expect(data!.results![0]).toMatchObject({ ok: true, replayed: true, blockerDecision: receipt,
       workItem: { state: 'done', assignee: 'su-successor' } });
+    expect(request).toEqual(originalInput);
     expect(blockerPreflight.read).not.toHaveBeenCalled();
     expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
     expect(attachCompletionEvidenceToSettledItem).not.toHaveBeenCalled();
