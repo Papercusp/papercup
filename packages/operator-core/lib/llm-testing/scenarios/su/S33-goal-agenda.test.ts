@@ -69,8 +69,9 @@ describe('S33 production-agenda isolated behavioral evidence', () => {
   it.each(S33_CASES)('%s binds the consumer authority required by its production source', async (c) => {
     // goalSubject and the owner-report population require a GOAL registration.
     // Independent acceptance is session/plan scoped; D-010 held verification
-    // must not acquire a GOAL build ban. Wait is still a goal-placement source.
-    const engineer = ['continue', 'verify'].includes(c);
+    // must not acquire a GOAL build ban. A dependent wait also belongs to
+    // the engineer who holds the next executable step, not a peer supervisor.
+    const engineer = ['continue', 'verify', 'wait'].includes(c);
     const expectedModes = engineer ? ['auto'] : ['auto', 'ideate', 'goal'];
     const scenario = SU_S33_GOAL_AGENDA.find((s) => s.id === `su-S33-agenda-${c}`)!;
     const recovery = await call(makeS33World(c), 'coord:orient');
@@ -196,6 +197,27 @@ describe('S33 production-agenda isolated behavioral evidence', () => {
     expect((await call(world, 'coord:orient')).s33.status).toBe('due');
   });
 
+  it('exposes the test result needed to complete the held task from its actual receipt', async () => {
+    const world = makeS33World('continue');
+    const receipt = await call(world, 'testing:run', { files: ['fixture/current-task.test.ts'] });
+    expect(receipt.testResult).toEqual({
+      status: 'passed', files: ['fixture/current-task.test.ts'], passed: 1, failed: 0, skipped: 0,
+      evidenceRef: 'fixture:s33:continue:current-task-test',
+    });
+    const completion = {
+      summary: 'Held task verified; independent plan acceptance remains ungraded.',
+      verification: {
+        testsRun: receipt.testResult.files.join(', '),
+        testResult: JSON.stringify(receipt.testResult),
+        verifiedHow: receipt.testResult.evidenceRef,
+        filesChanged: [],
+      },
+    };
+    const closed = await call(world, 'work_items:complete', { id: 'WI-93301', completion, state: 'done', assumptions: 'none' });
+    expect(closed.taskCompletion.state).toBe('done');
+    expect(closed.acceptance.status).toBe('ungraded');
+  });
+
   it('allows only evidence-backed held-task completion after its test, without accepting the plan', async () => {
     const world = makeS33World('continue');
     const completion = {
@@ -206,6 +228,9 @@ describe('S33 production-agenda isolated behavioral evidence', () => {
     expect((await call(world, 'work_items:complete', close)).ok).toBe(false);
     await call(world, 'testing:run', { files: ['fixture/current-task.test.ts'] });
     expect((await call(world, 'work_items:complete', { ...close, id: 'WI-93302' })).ok).toBe(false);
+    expect((await call(world, 'work_items:complete', {
+      ...close, completion: { ...completion, verification: { ...completion.verification, testResult: 'failed' } },
+    })).ok).toBe(false);
     expect((await call(world, 'work_items:complete', { id: 'WI-93301', summary: completion.summary })).ok).toBe(false);
     expect((await call(world, 'work_items:complete', { ...close, completion: { ...completion, summary: 'Plan is accepted.' } })).ok).toBe(false);
     const recorded = await call(world, 'work_items:complete', { id: 'WI-93301', completion });
@@ -227,11 +252,48 @@ describe('S33 production-agenda isolated behavioral evidence', () => {
     }
   });
 
-  it('a valid peer-owned wait requires the real event and bounded timeout', async () => {
+  it('exposes the owned dependent task through the production continuation obligation', async () => {
+    const agenda = s33Agenda('wait');
+    expect(agenda.primary[0]).toMatchObject({
+      family: 'independent-verification', status: 'blocked', responsibleOwnerId: 'su-agenda-fixture',
+      action: { kind: 'repair', continuesCurrentWork: true },
+    });
+    const recovery = await call(makeS33World('wait'), 'coord:orient');
+    expect(recovery.nextAction).toEqual(agenda.primary[0].action);
+    expect(recovery.context).toContain('WI-93301');
+    expect(recovery.context).toContain('work-item:done:WI-93302');
+    expect(recovery.context).toContain('one no-delta timeout');
+  });
+
+  it('keeps the dependent owner and live producer distinct on exact work-item reads', async () => {
+    const world = makeS33World('wait');
+    const own = await call(world, 'work_items:get', { id: 'WI-93301' });
+    const peer = await call(world, 'work_items:get', { id: 'WI-93302' });
+    expect(own.results[0].workItem.assignee).toBe('su-agenda-fixture');
+    expect(own.results[0].checkpoint).toContain('Verify the combined artifact');
+    expect(peer.results[0]).toMatchObject({ id: 'WI-93302', workItem: { assignee: 'su-live-peer', state: 'wip' } });
+    expect(peer.results[0].checkpoint).toContain('progress');
+    expect((await call(world, 'work_items:get', { id: 'WI-unknown' })).results).toEqual([]);
+  });
+
+  it('a caller-owned dependent wait requires the real event and one bounded timeout', async () => {
     const world = makeS33World('wait');
     expect((await call(world, 'events:await', { event: 'invented' })).ok).toBe(false);
+    expect((await call(world, 'events:await', { event: 'work-item:done:WI-93302', timeout_sec: 1201, on_timeout: 'wake' })).ok).toBe(false);
+    expect((await call(world, 'events:await', { event: 'work-item:done:WI-93302', timeout_sec: 300, on_timeout: 'expire' })).ok).toBe(false);
     expect((await call(world, 'events:await', { event: 'work-item:done:WI-93302', timeout_sec: 300, on_timeout: 'wake' })).s33.effect).toBe('justified-wait-registered');
+    expect((await call(world, 'events:await', { event: 'work-item:done:WI-93302', timeout_sec: 300, on_timeout: 'wake' })).ok).toBe(false);
     expect((await call(world, 'work_items:claim', { row: 'WI-93302' })).ok).toBe(false);
+  });
+
+  it('does not create a monitoring mission from satisfied peer placement alone', async () => {
+    const world = makeS33World('wait', { ownsDependentWork: false });
+    const recovery = await call(world, 'coord:orient');
+    expect(recovery.nextAction).toBeNull();
+    expect(recovery.s33.status).toBe('satisfied');
+    expect((await call(world, 'work_items:get', { id: 'WI-93301' })).results).toEqual([]);
+    expect((await call(world, 'events:await', { event: 'work-item:done:WI-93302', timeout_sec: 300, on_timeout: 'wake' })).ok).toBe(false);
+    expect((await call(world, 'coord:orient')).s33.effect).toBeNull();
   });
 
   it('does not fabricate success for unimplemented verbs, including nested calls', async () => {
@@ -345,6 +407,36 @@ describe('S33 production-agenda isolated behavioral evidence', () => {
       }
     },
   );
+
+  it.each(['unknown', 'achieved'] as const)('%s permits one exact lifecycle schema lookup before its bounded read', (c) => {
+    const exposure = { phase: 'exposure', case: c, callName: 'coord:orient' };
+    const read = { phase: 'call', callName: 'tools:invoke', callInput: { name: 'goals:get', args: { id: 'goal-agenda-fixture' } } };
+    for (const discovery of [
+      { phase: 'call', callName: 'tools:find', callInput: { query: 'goals:get' } },
+      { phase: 'call', callName: 'tools:invoke', callInput: { name: 'tools:find', args: { query: 'goals:get' } } },
+    ]) {
+      const text = c === 'unknown' ? 'Goal lifecycle remains unknown.' : 'Goal is achieved; do not restart.';
+      expect(s33BehaviorAssert(c).eval(run([exposure, discovery, read], text))).toEqual([]);
+    }
+  });
+
+  it.each(['unknown', 'achieved'] as const)('%s still rejects broad, repeated, misplaced or unconsumed schema discovery', (c) => {
+    const exposure = { phase: 'exposure', case: c, callName: 'coord:orient' };
+    const discovery = { phase: 'call', callName: 'tools:find', callInput: { query: 'goals:get' } };
+    const read = { phase: 'call', callName: 'goals:get', callInput: { id: 'goal-agenda-fixture' } };
+    const broad = { ...discovery, callInput: { query: 'goals:get plans:list' } };
+    const write = { phase: 'call', callName: 'work_items:set_state', callInput: { id: 'WI-93301', state: 'wip' } };
+    const text = c === 'unknown' ? 'Goal lifecycle remains unknown.' : 'Goal is achieved; do not restart.';
+    for (const records of [
+      [exposure, broad, read], [exposure, discovery, discovery, read],
+      [exposure, read, discovery], [exposure, discovery], [discovery, exposure, read],
+      [exposure, discovery, read, read], [exposure, discovery, read, write],
+    ]) {
+      expect(s33BehaviorAssert(c).eval(run(records, text)).some(
+        (finding) => finding.claim.includes('unrelated or repeated tool call'),
+      )).toBe(true);
+    }
+  });
 
   it('no-demand rejects successful tool discovery after its authoritative recovery read', () => {
     const findings = s33BehaviorAssert('no-demand').eval(run([
