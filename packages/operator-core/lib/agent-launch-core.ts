@@ -1381,6 +1381,33 @@ export interface AgentLaunchClaim {
   priorLaunchedBy: string | null;
 }
 
+/** Read a retained receipt without reserving, renewing, pruning or releasing a
+ * launch. Source recovery must retrieve a completed call before resolving an
+ * owner whose live/native binding may have changed since that call. */
+export async function readAgentLaunchClaim(opts: {
+  workspaceId: string;
+  idempotencyKey: string | null | undefined;
+  now?: number;
+}): Promise<AgentLaunchClaim | null> {
+  const key = opts.idempotencyKey?.trim();
+  if (!key) return null;
+  const { sql } = getOrgPg();
+  const [prior] = await sql<
+    Array<{ summary: Record<string, unknown>; launched_at: number; launched_by: string | null }>
+  >`
+    SELECT summary, launched_at, launched_by
+      FROM harness_shared.agent_launch_idempotency
+     WHERE workspace_id = ${opts.workspaceId} AND idempotency_key = ${key}
+       AND launched_at >= ${(opts.now ?? Date.now()) - LAUNCH_CLAIM_TTL_MS}
+  `;
+  return prior ? {
+    won: false,
+    priorSummary: prior.summary,
+    priorLaunchedAt: Number(prior.launched_at),
+    priorLaunchedBy: prior.launched_by,
+  } : null;
+}
+
 /**
  * Idempotency guard for agent launches (P-014, migration 586). A launch opens
  * REAL windows/processes, so a re-fired tool call (a client retry after a

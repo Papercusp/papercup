@@ -16,6 +16,7 @@ import {
   MEMBER_BASELINE_RULES,
   buildAgentLaunchCommand,
   claimAgentLaunch,
+  readAgentLaunchClaim,
   recordAgentLaunchResult,
   releaseAgentLaunchClaim,
   composeMemberLaunchContext,
@@ -179,6 +180,37 @@ describe('recordAgentLaunchResult durable completion evidence', () => {
     const [release, ...releaseValues] = launchCoreSql.mock.calls[1] ?? [];
     expect(String(release?.join(' '))).toContain("summary ->> 'claimToken' =");
     expect(releaseValues).toContain('claim-token-1');
+  });
+});
+
+describe('readAgentLaunchClaim', () => {
+  it('does not access or reserve the ledger without a key', async () => {
+    expect(await readAgentLaunchClaim({ workspaceId: 'ws-test', idempotencyKey: '  ' })).toBeNull();
+    expect(launchCoreSql).not.toHaveBeenCalled();
+  });
+
+  it('retrieves a scoped retained receipt with one read and no lease mutation', async () => {
+    const summary = { requestKind: 'capability:launch-agent', launchState: 'completed', opened: 1, failed: 0 };
+    launchCoreSql.mockResolvedValueOnce([{ summary, launched_at: 123, launched_by: 'su-original' }]);
+    const now = 1_800_000_000_000;
+    expect(await readAgentLaunchClaim({ workspaceId: 'ws-target', idempotencyKey: ' retry ', now })).toEqual({
+      won: false, priorSummary: summary, priorLaunchedAt: 123, priorLaunchedBy: 'su-original',
+    });
+    expect(launchCoreSql).toHaveBeenCalledOnce();
+    const [query, ...values] = launchCoreSql.mock.calls[0]!;
+    expect(query.join(' ')).toMatch(/^\s*SELECT /);
+    expect(query.join(' ')).toContain('WHERE workspace_id =');
+    expect(query.join(' ')).toContain('AND idempotency_key =');
+    expect(query.join(' ')).toContain('AND launched_at >=');
+    expect(values).toEqual(['ws-target', 'retry', now - 7 * 24 * 60 * 60 * 1000]);
+  });
+
+  it('returns no receipt for an absent or expired key and surfaces an unreadable ledger', async () => {
+    launchCoreSql.mockResolvedValueOnce([]);
+    expect(await readAgentLaunchClaim({ workspaceId: 'ws-test', idempotencyKey: 'absent' })).toBeNull();
+    launchCoreSql.mockRejectedValueOnce(new Error('ledger unavailable'));
+    await expect(readAgentLaunchClaim({ workspaceId: 'ws-test', idempotencyKey: 'unreadable' }))
+      .rejects.toThrow('ledger unavailable');
   });
 });
 
