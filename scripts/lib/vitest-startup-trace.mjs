@@ -17,15 +17,34 @@ import { observeProcessTermination } from '../../libs/test-config/src/process-te
 
 export { nativeSourceRetentionLimits };
 const sourcePinsEnv = 'PC_NATIVE_LOADER_SOURCE_PINS';
+const loaderCensusEnv = 'PC_NATIVE_LOADER_CENSUS';
+// An explicitly enrolled census uses the same OUT artifacts and authenticated
+// reader. Its count/byte budget fits within that reader's existing bounds.
+/** @param {unknown} value @returns {{ events: number, bytes: number }} */
+export function validateNativeLoaderCensus(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) ||
+      Object.keys(value).some(key => !['events', 'bytes'].includes(key)) ||
+      !Number.isSafeInteger(value.events) || value.events < 2 || value.events > 8192 ||
+      !Number.isSafeInteger(value.bytes) || value.bytes < 1024 || value.bytes > 16 * 1024 ** 2)
+    throw new Error('Invalid bounded native loader census');
+  return { events: value.events, bytes: value.bytes };
+}
 /** Reuse the OUT channel and this preload without enabling stderr diagnostics.
  * @param {NodeJS.ProcessEnv} [env]
- * @param {{ enabled?: boolean, pinnedSources?: Array<{ path: string, sha256: string, byteLength: number }> }} [options]
- * Source-owned prediction and independent artifact pins before launch. Generic limits stay unchanged.
+ * @param {{ enabled?: boolean, pinnedSources?: Array<{ path: string, sha256: string, byteLength: number }>, loaderCensus?: { events: number, bytes: number } }} [options]
+ * Source-owned prediction and independent artifact pins before launch. The
+ * default diagnostic limits stay unchanged; an enrolled census declares its
+ * own finite event/byte budget and reports exhaustion instead of completeness.
  */
 export function nativeProcessTraceEnv(env = process.env, options = {}) {
   const traced = candidateNativeProcessTraceEnv(env, options);
-  if (traced === env || options.pinnedSources === undefined) return traced;
-  return { ...traced, [sourcePinsEnv]: JSON.stringify(validateSourcePins(options.pinnedSources)) };
+  if (traced === env) return traced;
+  return { ...traced,
+    ...(options.pinnedSources === undefined ? {} :
+      { [sourcePinsEnv]: JSON.stringify(validateSourcePins(options.pinnedSources)) }),
+    ...(options.loaderCensus === undefined ? {} :
+      { [loaderCensusEnv]: JSON.stringify(validateNativeLoaderCensus(options.loaderCensus)) }),
+  };
 }
 
 // These are observations, not a shell parser or a complete execution census.
@@ -64,16 +83,38 @@ function installNativeProcessTrace(out) {
   // loader traffic cannot hide a later spawn/close. Each exhausted portion
   // has its own marker; module gaps cannot establish complete imports.
   const remaining = { module: 384, general: 128 };
+  let loaderCensus = null, invalidLoaderCensus = false;
+  try {
+    const encoded = process.env[loaderCensusEnv];
+    if (encoded !== undefined) {
+      if (encoded.length > 256) throw new Error('loader census enrollment too large');
+      loaderCensus = validateNativeLoaderCensus(JSON.parse(encoded));
+    }
+  } catch { invalidLoaderCensus = true; }
+  const censusUsage = { events: 0, bytes: 0, stopped: false };
   const emit = (event, fields = {}, terminal = false) => {
     const observationScope = event.startsWith('module-') ? 'module' : 'general';
-    if (!terminal && remaining[observationScope]-- < 0) return;
+    const censusEvent = !terminal && observationScope === 'module' && loaderCensus;
+    if (censusEvent ? censusUsage.stopped : !terminal && remaining[observationScope]-- < 0) return;
     try {
       let row = { schemaVersion: 1, kind: 'native-node-process-event', event,
         processIdentity: identity, kernelProcessIdentity,
         pid: process.pid, ppid: process.ppid, atMs: Date.now(), ...fields, threadId, runGroupId };
-      if (!terminal && remaining[observationScope] === -1)
+      if (!censusEvent && !terminal && remaining[observationScope] === -1)
         row = { ...row, event: 'trace-limit', observationScope };
       let bytes = Buffer.from(JSON.stringify(row));
+      if (censusEvent) {
+        if (censusUsage.events >= loaderCensus.events || bytes.length > loaderCensus.bytes - censusUsage.bytes) {
+          censusUsage.stopped = true;
+          row = { ...row, event: 'trace-limit', observationScope,
+            reason: censusUsage.events >= loaderCensus.events ? 'loader-census-events' : 'loader-census-bytes',
+            limits: loaderCensus, retained: { events: censusUsage.events, bytes: censusUsage.bytes } };
+          bytes = Buffer.from(JSON.stringify(row));
+        } else {
+          censusUsage.events++;
+          censusUsage.bytes += bytes.length;
+        }
+      }
       if (event === 'engine-script-execution' && bytes.length > 128 * 1024 &&
           row.observation && bytes.length <= nativeSourceRetentionLimits.processBytes) {
         const observationBytes = Buffer.from(JSON.stringify(row.observation));
@@ -100,6 +141,7 @@ function installNativeProcessTrace(out) {
           !readFileSync(path).equals(bytes)) return;
     } catch { /* Observation failures never change the native command. */ }
   };
+  if (invalidLoaderCensus) emit('module-census-invalid', {}, true);
   // Record inputs accepted by each process's Writable API, without adding data
   // listeners, changing its stdio, or replacing callbacks/return/error values.
   // Direct fd/native writes and inherited child output remain outside this scope.
@@ -229,7 +271,7 @@ function installNativeProcessTrace(out) {
     emit('node-entry', { executable: process.execPath, argv: process.argv.slice(),
       execArgv: process.execArgv.slice(), cwd: process.cwd(), lifecycle: lifecycle(process.env),
       nodeOptions: loaderIdentity(process.env.NODE_OPTIONS), reporterOut: process.env.PC_EXECUTED_SOURCE_MAP_OUT ?? null,
-      runGroupId,
+      runGroupId, loaderCensus,
       // Reuse the ledger's hashed configuration-input contract. This is the
       // original process at entry, not resolved config or later mutations.
       configuration: captureConfigurationSnapshot(process.env) });
@@ -512,10 +554,10 @@ function installNativeProcessTrace(out) {
     registerHooks({ resolve(specifier, context, nextResolve) {
       // Observe the resolver's return directly. A build graph, lockfile or
       // later require.resolve call cannot supply this worker's actual edge.
-      if (resolveSequence >= 128) {
+      if (loaderCensus ? censusUsage.stopped : resolveSequence >= 128) {
         // Each limit marker is emitted once, even when the shared event budget
         // ran out first. Missing population must remain explicit in the receipt.
-        if (resolveSequence++ === 128) emit('module-resolve-limit', { limit: 128 }, true);
+        if (!loaderCensus && resolveSequence++ === 128) emit('module-resolve-limit', { limit: 128 }, true);
         return nextResolve(specifier, context);
       }
       const resolveId = ++resolveSequence;
@@ -536,8 +578,8 @@ function installNativeProcessTrace(out) {
       const enrolled = sourcePins.some(pin => pathToFileURL(pin.path).href === url) &&
         !observedPinnedLoads.has(url);
       if (enrolled) observedPinnedLoads.add(url);
-      if (!enrolled && loadSequence >= 128) {
-        if (loadSequence++ === 128) emit('module-load-limit', { limit: 128 }, true);
+      if (!enrolled && (loaderCensus ? censusUsage.stopped : loadSequence >= 128)) {
+        if (!loaderCensus && loadSequence++ === 128) emit('module-load-limit', { limit: 128 }, true);
         return nextLoad(url, context);
       }
       if (!enrolled) loadSequence++;

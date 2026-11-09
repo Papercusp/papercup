@@ -30,7 +30,7 @@ import { findUnsatisfiedDeclaredDepRanges } from '../../../scripts/check-declare
 // @ts-ignore -- share the unit-test process boundary with other standalone runtimes.
 import { isolatedRuntimeEnv } from '../../../scripts/lib/isolation-child-env.mjs';
 import { hashNativeArtifactBytes, readNativeArtifactBytes, readNativeProcessTraceArtifacts } from '../../../scripts/lib/budgeted-task-scheduler.mjs';
-import { nativeProcessTraceEnv, nativeSourceRetentionLimits } from '../../../scripts/lib/vitest-startup-trace.mjs';
+import { nativeProcessTraceEnv, nativeSourceRetentionLimits, validateNativeLoaderCensus } from '../../../scripts/lib/vitest-startup-trace.mjs';
 // @ts-ignore -- share the router's evidence contract before direct bundle preparation too.
 import { assertPrivateIntegrationEvidence as assertPrivatePreparationEvidence } from '../../../scripts/test-files.mjs';
 import { RESTRICTED_HOLD_PREFLIGHT_TIMEOUT_MS } from '../../../scripts/lib/restricted-hold-preflight.mjs';
@@ -561,7 +561,8 @@ export function privateMcpSourceSha(root: string, env: NodeJS.ProcessEnv = proce
  * startup tracer into their confined native descendants. Keep source guards,
  * unrelated preloads and all resource limits. */
 export function privateBundleRuntimeEnv(env: NodeJS.ProcessEnv,
-  observation?: { traceOut: string; pinnedSources?: Array<{ path: string; sha256: string; byteLength: number }> }): NodeJS.ProcessEnv {
+  observation?: { traceOut: string; pinnedSources?: Array<{ path: string; sha256: string; byteLength: number }>;
+    loaderCensus?: { events: number; bytes: number } }): NodeJS.ProcessEnv {
   const tokens = (env.NODE_OPTIONS ?? '').match(/(?:[^\s"']+|"(?:\\.|[^"\\])*"|'[^']*')+/g) ?? [];
   const value = (token: string) => token.replace(/"((?:\\.|[^"\\])*)"|'([^']*)'/g,
     (_, double: string | undefined, single: string | undefined) => double?.replace(/\\(["\\])/g, '$1') ?? single!);
@@ -586,7 +587,7 @@ export function privateBundleRuntimeEnv(env: NodeJS.ProcessEnv,
   // Select the maintained passive preload only after removing inherited test
   // transformers and trace preloads. Its evidence remains loader-return only.
   return nativeProcessTraceEnv({ ...runtime, PC_EXECUTED_SOURCE_MAP_OUT: observation.traceOut },
-    { pinnedSources: observation.pinnedSources ?? [] });
+    { pinnedSources: observation.pinnedSources ?? [], loaderCensus: observation.loaderCensus });
 }
 
 /** Retain readiness evidence even when the host exits, is signaled, or fails
@@ -1211,6 +1212,7 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
   traceOut: string; pid: number; startedAtMs: number; finishedAtMs: number;
   kernelProcessIdentity?: string; runId?: string; buildObservationOnly?: boolean;
   configuration?: ConfigurationSnapshot;
+  loaderCensus?: { events: number; bytes: number };
 }) {
   const closureBytes = readFileSync(o.receiptPath), sourceBytes = readFileSync(o.sourceReceiptPath);
   const preparation = (o.buildObservationOnly ? qualifyObservedPrivateApiBuild : qualifyCommittedReaderSource)({ ...o,
@@ -1265,7 +1267,8 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
       edges: [] as Array<{ resolveId: number; specifier: string; parentURL: string | null;
         conditions: string[]; url: string; format: string | null }>, gaps: [] as string[],
     },
-    limits: { loads: 128, ...nativeSourceRetentionLimits },
+    limits: { loads: 128, resolves: 128, loaderCensus: null as { events: number; bytes: number } | null,
+      ...nativeSourceRetentionLimits },
     sources, gaps, pending: [...(o.buildObservationOnly ? ['preparation-qualification', 'build-imports', 'observed-imports'] : []),
       'module-evaluation', 'runtime-config', 'private-pg', 'sidecars',
       'descendant-imports', 'complete-runtime-closure'],
@@ -1300,6 +1303,16 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
     assert.equal(entry.row.argv?.[1], o.bundle, 'host trace bundle argv differs');
     assert.equal(entry.row.reporterOut, o.traceOut, 'host trace channel differs');
     assert.ok(own.every(({ row }) => row.atMs >= entry.row.atMs), 'host event predates entry');
+    if (entry.row.loaderCensus != null || o.loaderCensus !== undefined) {
+      const expected = validateNativeLoaderCensus(o.loaderCensus);
+      assert.deepEqual(validateNativeLoaderCensus(entry.row.loaderCensus), expected,
+        'host loader census differs from independent enrollment');
+      assert.ok(o.configuration && readConfigurationSnapshot(entry.row.configuration)?.fingerprint === o.configuration.fingerprint,
+        'host loader census configuration not independently bound');
+      result.limits.loaderCensus = expected;
+      result.limits.loads = expected.events + result.limits.pins;
+      result.limits.resolves = expected.events;
+    }
     result.processIdentity = identity;
     result.kernelProcessIdentity = kernelIdentity;
     result.entrySha256 = digestBytes(entry.bytes);
@@ -1485,7 +1498,7 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
     const pinnedPaths = new Set<string>();
     for (const { row } of own) {
       if (['trace-limit', 'trace-event-too-large', 'module-load-limit', 'module-load-unavailable',
-        'module-load-error', 'module-source-pins-invalid'].includes(row.event)) gaps.push(row.event);
+        'module-load-error', 'module-source-pins-invalid', 'module-census-invalid'].includes(row.event)) gaps.push(row.event);
       if (row.event !== 'module-load-start') continue;
       assert.ok(Number.isSafeInteger(row.loadId) && row.loadId > 0 && row.loadId <= result.limits.loads
         && !starts.has(row.loadId) && typeof row.url === 'string', 'invalid or duplicate load start');
@@ -1531,14 +1544,14 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
     try {
       assert.ok(result.exitObserved, 'host resolver terminal observation missing');
       assert.ok(!own.some(({ row }) => ['trace-limit', 'trace-event-too-large',
-        'module-resolve-limit', 'module-resolve-error'].includes(row.event)), 'host resolver capture incomplete');
+        'module-resolve-limit', 'module-resolve-error', 'module-census-invalid'].includes(row.event)), 'host resolver capture incomplete');
       const attempts = own.filter(({ row }) => row.event === 'module-resolve-start');
       const returns = own.filter(({ row }) => row.event === 'module-resolve-return');
-      assert.ok(attempts.length > 0 && attempts.length <= 128, 'host resolver observations missing or limited');
+      assert.ok(attempts.length > 0 && attempts.length <= result.limits.resolves, 'host resolver observations missing or limited');
       assert.equal(returns.length, attempts.length, 'pending host resolver calls');
       const seen = new Set<number>();
       for (const { row } of attempts) {
-        assert.ok(Number.isSafeInteger(row.resolveId) && row.resolveId > 0 && row.resolveId <= 128 &&
+        assert.ok(Number.isSafeInteger(row.resolveId) && row.resolveId > 0 && row.resolveId <= result.limits.resolves &&
           !seen.has(row.resolveId) && typeof row.specifier === 'string' && row.specifier.length > 0 &&
           (row.parentURL === null || typeof row.parentURL === 'string') &&
           Array.isArray(row.conditions) && row.conditions.every((value: unknown) => typeof value === 'string') &&

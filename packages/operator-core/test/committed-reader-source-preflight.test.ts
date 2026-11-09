@@ -97,7 +97,7 @@ function observedBuildFixture(extraScript = '') {
 }
 
 function loadedFixture(source?: string, admit = true, buildObservationOnly = false, duplicatePreload = false,
-  schema?: Record<string, string>) {
+  schema?: Record<string, string>, loaderCensus?: { events: number; bytes: number }) {
   let f: ReturnType<typeof fixture>;
   if (buildObservationOnly) {
     const observed = observedBuildFixture(source === undefined ? '' : 'cp host-source.mjs "$2"\n');
@@ -121,7 +121,7 @@ function loadedFixture(source?: string, admit = true, buildObservationOnly = fal
   const environment = privateBundleRuntimeEnv({ ...process.env, NODE_OPTIONS: '', NODE_PATH: '',
     PAPERCUSP_TEST_RUN_GROUP: 'reader-host-observed-run',
     PAPERCUSP_TEST_CONFIGURATION_SECRET: 'private-entry-value' }, {
-    traceOut, pinnedSources: admit ? [{ path: f.bundle, sha256: f.closure.sha256,
+    traceOut, loaderCensus, pinnedSources: admit ? [{ path: f.bundle, sha256: f.closure.sha256,
       byteLength: readFileSync(f.bundle).length }] : [],
   });
   // privateBundleRuntimeEnv already installs the tracer through NODE_OPTIONS.
@@ -135,7 +135,7 @@ function loadedFixture(source?: string, admit = true, buildObservationOnly = fal
   expect(child.status, child.stderr).toBe(0);
   const options = { ...f.options, traceOut, pid: child.pid, startedAtMs, finishedAtMs: Date.now(),
     runId: environment.PAPERCUSP_TEST_RUN_GROUP,
-    configuration: captureConfigurationSnapshot(environment),
+    configuration: captureConfigurationSnapshot(environment), loaderCensus,
     ...(buildObservationOnly ? { preparationOnly: true as const, buildObservationOnly,
       receiptPath: join(f.dir, 'prepare/operator-api-preflight.json') } : {}) };
   if (admit && !duplicatePreload) {
@@ -170,6 +170,18 @@ function loadedFixture(source?: string, admit = true, buildObservationOnly = fal
 }
 
 describe('committed reader loader-return source binding', () => {
+  it('binds the independently enrolled loader census and refuses altered or missing enrollment', () => {
+    const loaderCensus = { events: 2048, bytes: 2 * 1024 ** 2 };
+    const f = loadedFixture(undefined, true, false, false, undefined, loaderCensus);
+    expect(f.observe()).toMatchObject({ status: 'bound', limits: { loaderCensus, resolves: 2048, loads: 2052 },
+      resolutions: { status: 'bound', gaps: [] } });
+    expect(observeCommittedReaderLoadedSources({ ...f.options, loaderCensus: undefined }))
+      .toMatchObject({ status: 'unknown', gaps: [expect.stringContaining('Invalid bounded native loader census')] });
+    f.replace('node-entry', row => { row.loaderCensus.events++; });
+    expect(f.observe()).toMatchObject({ status: 'unknown',
+      gaps: [expect.stringContaining('host loader census differs from independent enrollment')] });
+  });
+
   it('keeps a duplicate preload cache hit without original loader bytes unknown', () => {
     const baseline = loadedFixture();
     expect(baseline.observe().resolutions).toMatchObject({ status: 'bound', gaps: [] });

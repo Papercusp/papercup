@@ -811,6 +811,72 @@ describe('focused runner startup tracing', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
+  it.each(['complete', 'events', 'bytes', 'invalid'] as const)(
+    'enrolled loader census retains its declared population or explicit %s gap', async mode => {
+      const dir = mkdtempSync(join(tmpdir(), 'native-loader-census-'));
+      const out = join(dir, 'sources.json');
+      const preload = new URL('../../../../scripts/lib/vitest-startup-trace.mjs?loader-census', import.meta.url).href;
+      const modules = Array.from({ length: 180 }, (_, index) => {
+        const path = join(dir, `module-${index}.mjs`);
+        writeFileSync(path, `export const value = ${index};`);
+        return pathToFileURL(path).href;
+      });
+      const census = { events: mode === 'events' ? 8 : 2048, bytes: mode === 'bytes' ? 1024 : 2 * 1024 ** 2 };
+      const env = { ...process.env, NODE_OPTIONS: '', PC_EXECUTED_SOURCE_MAP_OUT: '',
+        PAPERCUSP_TEST_STARTUP_TRACE: '0', PC_NATIVE_LOADER_SOURCE_PINS: '[]',
+        PC_NATIVE_LOADER_CENSUS: mode === 'invalid' ? '{"events":-1,"bytes":1024}' : JSON.stringify(census) };
+      try {
+        const source = `process.env.PC_EXECUTED_SOURCE_MAP_OUT = ${JSON.stringify(out)};
+          await import(${JSON.stringify(preload)});
+          let sum = 0;
+          for (const url of ${JSON.stringify(modules)}) sum += (await import(url)).value;
+          process.stdout.write(String(sum));`;
+        const result = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', source], {
+          env, timeout: 15_000,
+        });
+        expect(result.stdout).toBe('16110');
+        expect(result.stderr).toBe('');
+        const trace = readNativeProcessTraceArtifacts(out);
+        expect(trace.population.complete).toBe(true);
+        const rows = trace.rows.map(({ row }: any) => row);
+        expect(rows.find((row: any) => row.event === 'node-exit')).toMatchObject({ code: 0 });
+        if (mode === 'invalid') {
+          expect(rows.filter((row: any) => row.event === 'module-census-invalid')).toHaveLength(1);
+          expect(rows.find((row: any) => row.event === 'node-entry').loaderCensus).toBeNull();
+        } else if (mode === 'complete') {
+          expect(rows.find((row: any) => row.event === 'node-entry').loaderCensus).toEqual(census);
+          expect(rows.filter((row: any) => ['trace-limit', 'module-load-limit', 'module-resolve-limit'].includes(row.event)))
+            .toEqual([]);
+          for (const url of modules) {
+            const loads = rows.filter((row: any) => row.event === 'module-load-return' && row.url === url);
+            expect(loads).toHaveLength(1);
+            const pin = loads[0].source;
+            expect(readFileSync(join(`${out}.native-processes`, pin.ref)).toString())
+              .toBe(readFileSync(fileURLToPath(url), 'utf8'));
+            expect(rows.filter((row: any) => row.event === 'module-resolve-return' && row.url === url)).toHaveLength(1);
+          }
+        } else {
+          const limits = rows.filter((row: any) => row.event === 'trace-limit' && row.observationScope === 'module');
+          expect(limits).toHaveLength(1);
+          expect(limits[0]).toMatchObject({ reason: `loader-census-${mode}`, limits: census });
+          expect(limits[0].retained.events).toBeLessThanOrEqual(census.events);
+          expect(limits[0].retained.bytes).toBeLessThanOrEqual(census.bytes);
+          expect(rows.filter((row: any) => row.event === 'module-load-return').length).toBeLessThan(modules.length);
+        }
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
+
+  it('rejects an unbounded loader census before launch', () => {
+    for (const loaderCensus of [{ events: 8193, bytes: 1024 }, { events: 2, bytes: 16 * 1024 ** 2 + 1 },
+      { events: 1, bytes: 1024 }, { events: 2, bytes: 1023 }]) {
+      expect(() => nativeProcessTraceEnv({ PC_EXECUTED_SOURCE_MAP_OUT: '/tmp/unused-census.json' }, { loaderCensus }))
+        .toThrow('Invalid bounded native loader census');
+    }
+    const loaderCensus = { events: 8192, bytes: 16 * 1024 ** 2 };
+    const env = nativeProcessTraceEnv({ PC_EXECUTED_SOURCE_MAP_OUT: '/tmp/unused-census.json' }, { loaderCensus });
+    expect(JSON.parse(env.PC_NATIVE_LOADER_CENSUS!)).toEqual(loaderCensus);
+  });
+
   it('bounds load evidence while allowing the complete module population to execute', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'native-module-bound-'));
     const out = join(dir, 'sources.json');
