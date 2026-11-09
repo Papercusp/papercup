@@ -11,6 +11,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   symlinkSync,
   utimesSync,
@@ -38,6 +39,7 @@ import {
   repoLockName,
   RESOLUTION_STALE_ATTEMPTS_DEFAULT,
   resolutionStaleAttempts,
+  resolveMetadataRepairLock,
   runCommandUnderInstallMutex,
   runNpmWithHeartbeat,
   USAGE,
@@ -67,6 +69,103 @@ const NPM_FIXTURE_CONFIG_RESET = Object.fromEntries(
     ["NPM_CONFIG_" + name.toUpperCase(), undefined],
   ]),
 );
+
+test("metadata repair resolution owns an empty per-attempt cache and excludes ambient launch inputs", async (t) => {
+  const ambient = { NODE_OPTIONS: "--invalid-repair-loader", NODE_EXTRA_CA_CERTS: "/absent/repair-ca.pem",
+    HTTPS_PROXY: "http://invalid-repair-proxy", NPM_CONFIG_REGISTRY: "https://invalid-repair-registry/" };
+  const saved = Object.fromEntries(Object.keys(ambient).map(key => [key, process.env[key]]));
+  Object.assign(process.env, ambient);
+  t.after(() => { for (const [key, value] of Object.entries(saved)) {
+    if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  } });
+  const root = mkdtempSync(join(tmpdir(), "metadata-repair-profile-test-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(join(root, "package.json"), JSON.stringify({ name: "repair-profile", version: "1.0.0", private: true, workspaces: ["packages/*"] }));
+  mkdirSync(join(root, "packages/one"), { recursive: true });
+  writeFileSync(join(root, "packages/one/package.json"), JSON.stringify({ name: "repair-one", version: "1.0.0" }));
+  writeFileSync(join(root, ".npmrc"), "registry=https://registry.npmjs.org/\nlegacy-peer-deps=false\n");
+  const before = readFileSync(join(root, "package.json"));
+  const calls = [];
+  const spawnCommand = (command, args, options) => {
+    assert.equal(command, process.execPath);
+    assert.deepEqual(Object.keys(options.env).sort(), ["HOME", "LANG", "PATH", "TMPDIR", "TZ"]);
+    assert.equal(options.env.LANG, "C.UTF-8");
+    assert.equal(options.env.TZ, "UTC");
+    const cache = args.find(arg => arg.startsWith("--cache=")).slice(8);
+    assert.deepEqual(readdirSync(cache), []);
+    assert.equal(readFileSync(args.find(arg => arg.startsWith("--userconfig=")).slice(13), "utf8"), "");
+    assert.equal(readFileSync(args.find(arg => arg.startsWith("--globalconfig=")).slice(15), "utf8"), "");
+    assert.ok(args.includes("--ignore-scripts"));
+    assert.ok(args.includes("--package-lock-only"));
+    assert.ok(args.includes("--workspaces"));
+    assert.ok(args.includes("--include-workspace-root"));
+    assert.ok(args.includes("--registry=https://registry.npmjs.org/"));
+    calls.push({ command, args: [...args], env: { ...options.env }, cwd: options.cwd, cache });
+    return spawn(command, args, { ...options, stdio: "ignore" });
+  };
+  const first = await resolveMetadataRepairLock({ repoRoot: root }, { spawnCommand, log: () => {} });
+  const second = await resolveMetadataRepairLock({ repoRoot: root }, { spawnCommand, log: () => {} });
+  assert.equal(calls.length, 2);
+  assert.notEqual(first.receipt.attemptId, second.receipt.attemptId);
+  assert.notEqual(calls[0].cache, calls[1].cache);
+  for (const result of [first, second]) {
+    assert.equal(result.receipt.cache.emptyBeforeLaunch, true);
+    assert.equal(result.receipt.cache.attemptId, result.receipt.attemptId);
+    assert.equal(result.receipt.cleanup.removed, true);
+    assert.equal(existsSync(result.receipt.attemptRoot), false);
+    assert.equal(result.receipt.output.path, "package-lock.json");
+    assert.equal(JSON.parse(result.bytes).packages["packages/one"].version, "1.0.0");
+    assert.ok(result.receipt.selectedInputs.some(row => row.path === "packages/one/.npmrc" && row.sha256 === null));
+  }
+  assert.deepEqual(readFileSync(join(root, "package.json")), before);
+  assert.equal(existsSync(join(root, "package-lock.json")), false);
+});
+
+for (const text of ["registry=https://example.invalid/", "//registry.npmjs.org/:_authToken=secret", "legacy-peer-deps=${VALUE}", "ignore-scripts=false", "strict-peer-deps=yes", "engine-strict=true\nengine-strict=false"]) {
+  test(`metadata repair refuses unsupported project config ${text.split("=")[0]}`, async (t) => {
+    const root = mkdtempSync(join(tmpdir(), "metadata-repair-config-test-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    writeFileSync(join(root, "package.json"), '{"name":"repair-config","version":"1.0.0"}');
+    writeFileSync(join(root, ".npmrc"), text);
+    let launched = false;
+    await assert.rejects(resolveMetadataRepairLock({ repoRoot: root }, { spawnCommand: () => { launched = true; }, log: () => {} }), /project-config-unsupported/);
+    assert.equal(launched, false);
+  });
+}
+
+for (const contamination of ["packument", "symlink", "removed", "replaced-empty"]) {
+  test(`metadata repair refuses ${contamination} cache at the actual launch boundary`, async (t) => {
+    const root = mkdtempSync(join(tmpdir(), "metadata-repair-cache-test-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    writeFileSync(join(root, "package.json"), '{"name":"repair-cache","version":"1.0.0"}');
+    let launched = false;
+    let attemptRoot;
+    await assert.rejects(resolveMetadataRepairLock({ repoRoot: root }, {
+      spawnCommand: () => { launched = true; },
+      log: line => {
+        // Disturb the actual owned cache between preparation and spawn. A
+        // preflight check far from the launch cannot catch this control.
+        const cwd = /\(cwd=(.*)\)$/.exec(line)?.[1];
+        if (!cwd) return;
+        attemptRoot = dirname(cwd);
+        const cache = join(attemptRoot, "cache");
+        if (contamination === "packument") writeFileSync(join(cache, "conflicting-packument"), '{"version":"wrong"}');
+        else if (contamination === "replaced-empty") {
+          renameSync(cache, cache + "-old");
+          mkdirSync(cache);
+        }
+        else {
+          rmSync(cache, { recursive: true });
+          if (contamination === "symlink") symlinkSync(root, cache);
+        }
+      },
+    }), contamination === "removed" ? /ENOENT/ : /launch-inputs-changed/);
+    assert.equal(launched, false);
+    assert.ok(attemptRoot);
+    assert.equal(existsSync(attemptRoot), false);
+    assert.equal(existsSync(join(root, "package.json")), true);
+  });
+}
 
 for (const forceRepair of [false, true]) {
   test(`nested standalone project stays isolated through real npm ${forceRepair ? "bounded repair" : "resolve and reify"}`, {

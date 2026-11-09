@@ -62,6 +62,7 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readlinkSync,
   realpathSync,
   readFileSync,
@@ -1825,8 +1826,8 @@ function fileBytesEqual(left, right) {
   return Buffer.isBuffer(left) && Buffer.isBuffer(right) && left.equals(right);
 }
 
-function createManifestOnlyTree(repoRoot, inputPaths) {
-  const scratchRoot = mkdtempSync(join(tmpdir(), "npm-install-safe-resolve-"));
+function createManifestOnlyTree(repoRoot, inputPaths, parent = tmpdir()) {
+  const scratchRoot = mkdtempSync(join(parent, "npm-install-safe-resolve-"));
   const snapshot = new Map();
   try {
     for (const path of inputPaths) {
@@ -1842,6 +1843,130 @@ function createManifestOnlyTree(repoRoot, inputPaths) {
   } catch (error) {
     rmSync(scratchRoot, { recursive: true, force: true });
     throw error;
+  }
+}
+
+/**
+ * Resolve repair bytes in the existing manifest-only layout. The caller supplies
+ * a selected-object materialization, never the shared checkout. This does not
+ * apply output or authorize publication: custody must bind this receipt to its
+ * selected Git inputs and recheck them under the existing writer fence.
+ */
+export async function resolveMetadataRepairLock({ repoRoot }, {
+  // The existing child-process seam lets the maintained suite observe the real
+  // launch, including refusal when its private cache was contaminated.
+  spawnCommand = spawn,
+  npmCli = realpathSync(join(dirname(process.execPath), "npm")),
+  log = (line) => console.error(line),
+} = {}) {
+  const repositoryRealpath = realpathSync(repoRoot);
+  const layout = manifestOnlyResolutionLayout(repositoryRealpath);
+  if (!layout.supported) throw new Error("metadata-repair-layout-unsupported");
+  const configs = [...new Set([".npmrc", ...layout.inputPaths
+    .filter(path => basename(path) === "package.json")
+    .map(path => join(dirname(path), ".npmrc"))])].sort();
+  const inputPaths = [...new Set([...layout.inputPaths, ...configs])].sort();
+  const digest = bytes => createHash("sha256").update(bytes).digest("hex");
+  const projectConfig = [];
+  for (const path of inputPaths) {
+    const absolute = join(repositoryRealpath, path);
+    // A manifest-only copy must not follow symlinks out of the selected tree.
+    for (let cursor = absolute; cursor !== repositoryRealpath; cursor = dirname(cursor)) {
+      try {
+        if (lstatSync(cursor).isSymbolicLink()) throw new Error("metadata-repair-symlink-input");
+      } catch (error) { if (error?.code !== "ENOENT") throw error; }
+    }
+    if (existsSync(absolute) && !lstatSync(absolute).isFile()) throw new Error("metadata-repair-input-type");
+    if (!configs.includes(path)) continue;
+    const bytes = existsSync(absolute) ? readFileSync(absolute) : null;
+    const values = {};
+    for (const line of bytes?.toString("utf8").split(/\r?\n/) ?? []) {
+      const text = line.trim();
+      if (!text || text.startsWith("#") || text.startsWith(";")) continue;
+      const match = /^(registry|legacy-peer-deps|strict-peer-deps|install-links|engine-strict)\s*=\s*(\S+)$/.exec(text);
+      if (!match || Object.hasOwn(values, match[1]) ||
+          (match[1] === "registry" ? match[2] !== "https://registry.npmjs.org/" : !["true", "false"].includes(match[2]))) {
+        throw new Error("metadata-repair-project-config-unsupported");
+      }
+      values[match[1]] = match[2];
+    }
+    projectConfig.push({ path, sha256: bytes === null ? null : digest(bytes), values });
+  }
+  const attemptId = randomUUID();
+  const attemptRoot = mkdtempSync(join(tmpdir(), "npm-metadata-repair-"));
+  const receipt = { schemaVersion: 1, attemptId, repositoryRealpath, attemptRoot,
+    cleanup: { removed: false } };
+  try {
+    const input = createManifestOnlyTree(repositoryRealpath, inputPaths, attemptRoot);
+    const home = join(attemptRoot, "home");
+    const temporary = join(attemptRoot, "tmp");
+    const cache = join(attemptRoot, "cache");
+    for (const path of [home, temporary, cache]) mkdirSync(path, { mode: 0o700 });
+    const ownedRoot = lstatSync(attemptRoot);
+    const ownedCache = lstatSync(cache);
+    const userconfig = join(attemptRoot, "user.npmrc");
+    const globalconfig = join(attemptRoot, "global.npmrc");
+    for (const path of [userconfig, globalconfig]) writeFileSync(path, "", { flag: "wx", mode: 0o600 });
+    const node = realpathSync(process.execPath);
+    const cli = realpathSync(npmCli);
+    const argv = [cli, "install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund",
+      "--workspaces", "--include-workspace-root", "--registry=https://registry.npmjs.org/",
+      "--userconfig=" + userconfig, "--globalconfig=" + globalconfig, "--cache=" + cache];
+    // Construct from nothing. In particular npm_config, proxy, TLS and loader
+    // settings from the calling shell are neither inherited nor serialized.
+    const env = { HOME: home, TMPDIR: temporary, PATH: dirname(node), LANG: "C.UTF-8", TZ: "UTC" };
+    receipt.command = { executable: node, executableSha256: digest(readFileSync(node)),
+      npmCli: cli, npmCliSha256: digest(readFileSync(cli)), argv: [...argv], cwd: input.scratchRoot,
+      runner: realpathSync(fileURLToPath(import.meta.url)), runnerSha256: digest(readFileSync(fileURLToPath(import.meta.url))) };
+    receipt.runtime = { node: process.version, npm: JSON.parse(readFileSync(join(dirname(cli), "../package.json"), "utf8")).version,
+      versions: { ...process.versions }, platform: process.platform, arch: process.arch };
+    receipt.projectConfig = projectConfig;
+    receipt.environment = { ...env };
+    receipt.selectedInputs = [...input.snapshot].map(([path, bytes]) => ({ path,
+      sha256: bytes === null ? null : digest(bytes),
+      mode: bytes === null ? null : lstatSync(join(repositoryRealpath, path)).mode & 0o777 }));
+    receipt.configFiles = [userconfig, globalconfig].map(path => ({ path, sha256: digest(readFileSync(path)) }));
+    // This wrapper executes at the actual spawn boundary of the maintained
+    // observable runner, after its logging/attribution preparation.
+    const launch = (_command, args, options) => {
+      log("NPM_INSTALL_SAFE metadata-repair launch prepared (cwd=" + input.scratchRoot + ")");
+      const rootStat = lstatSync(attemptRoot);
+      const cacheStat = lstatSync(cache);
+      if (args.length !== argv.length || args.some((arg, i) => arg !== argv[i]) ||
+          options.cwd !== input.scratchRoot || JSON.stringify(options.env) !== JSON.stringify(env) ||
+          !rootStat.isDirectory() || rootStat.isSymbolicLink() || rootStat.dev !== ownedRoot.dev || rootStat.ino !== ownedRoot.ino ||
+          realpathSync(attemptRoot) !== attemptRoot || !cacheStat.isDirectory() || cacheStat.dev !== ownedCache.dev ||
+          cacheStat.ino !== ownedCache.ino || cacheStat.isSymbolicLink() || readdirSync(cache).length !== 0) {
+        throw new Error("metadata-repair-launch-inputs-changed");
+      }
+      receipt.cache = { path: cache, attemptId, device: cacheStat.dev, inode: cacheStat.ino,
+        emptyBeforeLaunch: true, checkedAt: new Date().toISOString(),
+        launchSha256: digest(JSON.stringify({ node, argv, cwd: options.cwd, env })) };
+      return spawnCommand(node, args, options);
+    };
+    const status = await runNpmWithHeartbeat({ phase: "metadata-repair-resolve", args: argv,
+      cwd: input.scratchRoot, env, spawnCommand: launch, log });
+    if (status !== 0) throw new Error("metadata-repair-resolution-failed");
+    const lockPath = input.snapshot.get("npm-shrinkwrap.json") !== null ? "npm-shrinkwrap.json" : "package-lock.json";
+    // npm may rewrite mirror metadata in the lock; it may not change a source
+    // manifest, config, local target or archive to make the graph look valid.
+    for (const [path, bytes] of input.snapshot) {
+      if (path === lockPath) continue;
+      const output = join(input.scratchRoot, path);
+      const actual = existsSync(output) ? readFileSync(output) : null;
+      if (!fileBytesEqual(bytes, actual)) throw new Error("metadata-repair-resolver-changed-input");
+    }
+    const output = join(input.scratchRoot, lockPath);
+    if (!lstatSync(output).isFile() || lstatSync(output).isSymbolicLink()) throw new Error("metadata-repair-output-type");
+    const bytes = readFileSync(output);
+    receipt.output = { path: lockPath, sha256: digest(bytes), mode: lstatSync(output).mode & 0o777 };
+    return { bytes, snapshot: input.snapshot, receipt };
+  } finally {
+    // Only this attempt's exclusively-created root is owned here. A failure is
+    // surfaced, never converted into a successful cleanup receipt.
+    rmSync(attemptRoot, { recursive: true, force: true });
+    receipt.cleanup.removed = !existsSync(attemptRoot);
+    if (!receipt.cleanup.removed) throw new Error("metadata-repair-cleanup-incomplete");
   }
 }
 
