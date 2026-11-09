@@ -171,6 +171,38 @@ describe('unit census executable exit contract', () => {
       rmSync(join(fixtureHome, 'registry'), { recursive: true, force: true });
     }
   });
+  it('composes installed environment secrets before credential discovery without needing a database catalogue', async () => {
+    const registry = join(fixtureHome, 'registry');
+    const state = join(fixtureHome, '.papercusp');
+    const units = join(fixtureHome, 'units');
+    mkdirSync(registry, { recursive: true }); mkdirSync(state, { recursive: true }); mkdirSync(units);
+    writeFileSync(join(state, 'referenced.env'), 'opaque private bytes', { mode: 0o000 });
+    writeFileSync(join(state, 'unreferenced.env'), 'opaque private bytes', { mode: 0o000 });
+    writeFileSync(join(units, 'fixture.service'), '[Service]\nEnvironmentFile=%h/.papercusp/referenced.env\n');
+    const installed = vi.spyOn(censusProducers, 'installedUnitCensusDeclarations').mockImplementation(scope =>
+      scope === 'user' ? censusProducers.unitCensusDeclarations(units, scope) : Promise.resolve([]));
+    const credentials = vi.spyOn(censusProducers, 'accountCredentialCensusProducer').mockRejectedValue(new Error('stop before databases'));
+    let snapshot: Parameters<NonNullable<NonNullable<Parameters<typeof discoverRootCensusInputs>[0]>['onDiscoverySnapshot']>>[0] | undefined;
+    try {
+      await expect(discoverRootCensusInputs({ args: ['--host-catalogs'], historicalWriterEvidence: [], hostedProfileEvidence: [],
+        checkpointLogDir: join(fixtureHome, 'checkpoint-history'),
+        onDiscoverySnapshot: value => { snapshot = value; },
+      })).rejects.toThrow('stop before databases');
+      expect(installed).toHaveBeenCalledWith('user'); expect(installed).toHaveBeenCalledWith('system');
+      expect(snapshot?.phase).toBe('before-account-credentials');
+      const declaration = snapshot?.declarations.find(entry => entry.producer === 'unit-environment-file:systemd-user:fixture.service');
+      expect(declaration).toMatchObject({ kind: 'path', classification: 'secret' });
+      const root = snapshot!.roots.find(candidate => candidate.id === declaration!.root)!;
+      expect(join(root.path, declaration!.name)).toBe(join(state, 'referenced.env'));
+      const census = await collectStateCensus({ roots: [root], declarations: [declaration!], readCatalogs: async () => [] });
+      expect(census.inventory.find(entry => entry.name === declaration!.name)?.classification).toBe('secret');
+      expect(census.residue.some(entry => join(root.path, entry.name) === join(state, 'unreferenced.env'))).toBe(true);
+    } finally {
+      installed.mockRestore(); credentials.mockRestore();
+      rmSync(registry, { recursive: true, force: true }); rmSync(units, { recursive: true, force: true });
+      rmSync(join(state, 'referenced.env')); rmSync(join(state, 'unreferenced.env'));
+    }
+  });
   it('retains independent producer inputs before a later filesystem discovery failure', async () => {
     mkdirSync(join(fixtureHome, 'registry'), { recursive: true });
     let saved: Parameters<NonNullable<NonNullable<Parameters<typeof discoverRootCensusInputs>[0]>['onDiscoverySnapshot']>>[0] | undefined;

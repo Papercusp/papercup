@@ -1771,6 +1771,97 @@ export function configuredOperatorDatabaseCensusDeclarations(clusterIdentity: st
     { kind: 'database', root: clusterIdentity, name: 'papercusp_su', classification: 'state', producer: 'su-lock-store' }];
 }
 
+/** Exact installed EnvironmentFile references supply secret-path ownership.
+ * Read unit definitions and file metadata only; never open credential files or
+ * follow their targets. Unsupported syntax supplies no ownership evidence.
+ */
+export async function unitEnvironmentFileCensusDeclarations(
+  units: readonly CensusDeclaration[], roots: readonly CensusRoot[], home = homedir(),
+): Promise<CensusDeclaration[]> {
+  const declarations: CensusDeclaration[] = [];
+  const seen = new Set<string>();
+  for (const unit of units) {
+    if (unit.kind !== 'unit' || !['systemd-user', 'systemd-system'].includes(unit.root) ||
+      !unit.name.endsWith('.service') || /[/\\]/.test(unit.name) || !unit.producer.startsWith('unit-definition:')) continue;
+    const identity = `${unit.root}:${unit.name}`;
+    // installedUnitCensusDeclarations preserves systemd load-path precedence.
+    // A masked/alias higher-priority definition must not expose a shadow unit.
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    const directory = unit.producer.slice('unit-definition:'.length);
+    if (!isAbsolute(directory)) continue;
+    // systemctl link installs a same-name symlink to an external definition.
+    // Resolve only that definition, preserving the installed identity; aliases
+    // (different target name), masks and redirected source directories provide
+    // no evidence. boundedSource opens the canonical regular file with NOFOLLOW.
+    let definition = join(directory, unit.name);
+    try {
+      if (await realpath(directory) !== resolve(directory)) continue;
+      definition = await realpath(definition);
+      if (basename(definition) !== unit.name) continue;
+    } catch (error) {
+      if (['ENOENT', 'ENOTDIR', 'ELOOP', 'EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException).code ?? '')) continue;
+      throw error;
+    }
+    const text = await boundedSource(definition, 65_536);
+    if (text === null) continue;
+    let section = '';
+    let continued = false;
+    const files: string[] = [];
+    for (const raw of text.split('\n')) {
+      const line = raw.trim();
+      if (!line || /^[#;]/.test(line)) continue;
+      const precedingContinuation = continued;
+      continued = line.endsWith('\\');
+      // Do not reinterpret a continuation fragment as a fresh directive.
+      if (precedingContinuation || continued) continue;
+      const heading = /^\[([^\]]+)\]$/.exec(line);
+      if (heading) { section = heading[1]; continue; }
+      const match = section === 'Service' && /^EnvironmentFile\s*=\s*(.*)$/.exec(line);
+      if (!match) continue;
+      let value = match[1].trim();
+      if (/^["']/.test(value)) {
+        const quote = value[0];
+        if (value.length < 2 || !value.endsWith(quote) || value.slice(1, -1).includes(quote)) continue;
+        value = value.slice(1, -1);
+      } else if (/\s|["']/.test(value)) continue;
+      // systemd's empty assignment discards every earlier file reference.
+      if (!value) { files.length = 0; continue; }
+      value = value.replace(/^-/, '');
+      if (!isAbsolute(value) && !value.startsWith('%h/')) continue;
+      if (/[\\\x00-\x1f*?\[\]]/.test(value) || value.split('/').includes('..')) continue;
+      let unsupported = false;
+      value = value.replace(/%([\s\S])|%$/g, (_token, specifier: string | undefined) => {
+        if (specifier === '%') return '%';
+        // %h belongs to the service manager, not the service's User= setting.
+        if (specifier === 'h' && unit.root === 'systemd-user') return home;
+        unsupported = true;
+        return '';
+      });
+      if (!unsupported && isAbsolute(value)) files.push(value);
+    }
+    for (const file of new Set(files)) {
+      const root = [...roots].sort((a, b) => b.path.length - a.path.length).find(root => {
+        const name = relative(root.path, file);
+        return name && name !== '..' && !name.startsWith(`..${sep}`) && !isAbsolute(name);
+      });
+      if (!root) continue;
+      try {
+        // O_NOFOLLOW on the leaf alone would still traverse linked parents.
+        if (await realpath(dirname(file)) !== dirname(file)) continue;
+        const stat = await lstat(file);
+        if (!stat.isFile() && !stat.isSymbolicLink()) continue;
+      } catch (error) {
+        if (['ENOENT', 'ENOTDIR', 'ELOOP'].includes((error as NodeJS.ErrnoException).code ?? '')) continue;
+        throw error;
+      }
+      declarations.push({ kind: 'path', root: root.id, name: relative(root.path, file),
+        classification: 'secret', producer: `unit-environment-file:${identity}` });
+    }
+  }
+  return declarations;
+}
+
 /** Resolve service database configuration, without emitting credentials.
  * Unsupported specifiers and externally hosted databases remain unclassified.
  */

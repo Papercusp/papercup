@@ -17,14 +17,14 @@ vi.mock('../papercusp-root', () => ({ papercuspRoot: () => '/relocated/workspace
 // Its optional lookup can fail closed without losing independent state writers.
 vi.mock('../deployment/account-link-cli', () => { throw new Error('interactive login runtime unavailable'); });
 import { databaseCensusEntries, physicalDatabaseCensusEntries, integrationBaselineCensusDeclarations, secretCensusProducers, unitCensusEntries, unitCensusDeclarations, installedUnitCensusDeclarations, verifyHostStateCensus, workspaceRegistryCensusProducer, scratchCensusProducer, installedRootCensusProducers, mergeNestedCensusRoots, postgresStorageDeclaration, gitStorageDeclaration } from './state-census-producers';
-import { mkdtemp, writeFile, rm, symlink, readFile, mkdir, chmod, utimes, rename, lstat } from 'node:fs/promises';
+import { mkdtemp, writeFile, rm, symlink, readFile, mkdir, chmod, utimes, rename, lstat, readlink } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { CensusDeclaration } from '@papercusp/backup';
 import { collectStateCensus } from '@papercusp/backup';
 import type { Sql } from 'postgres';
 import { templateDatabaseCensusDeclarations, maintenanceDatabaseCensusDeclarations } from './state-census-producers';
-import { hostedConfigurationCensusProducers, configuredOperatorDatabaseCensusDeclarations, unitDatabaseCensusDeclarations } from './state-census-producers';
+import { hostedConfigurationCensusProducers, configuredOperatorDatabaseCensusDeclarations, unitDatabaseCensusDeclarations, unitEnvironmentFileCensusDeclarations } from './state-census-producers';
 import { migrationProducerTables, migrationDatabaseCensusDeclarations, registeredProjectMigrationSources, sqlMigrationCensusSource, canonicalSqlMigrationCensusSources } from './state-census-producers';
 import { identityKeychainCensusProducer, anchorSecretCensusProducer, runtimeRetainedCensusProducer, accountCredentialCensusProducer, runtimeSidefileCensusProducer, cliSetupHomeCensusProducer, templateStoreCensusProducer } from './state-census-producers';
 import { peerStorageDeclaration, portalReleaseStorageDeclaration, restoredCloneCensusDeclarations, stripRangeCacheCensusProducer, virtualenvCacheDeclaration, affectedTestCacheCensusProducer } from './state-census-producers';
@@ -2150,6 +2150,76 @@ describe('secret census producer adapters', () => {
       await symlink(join(directory, 'external-config.ts'), config);
       expect(await registeredProjectMigrationSources([], units)).toEqual([]);
     } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+  it('derives only active exact service environment files without reading their values', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'unit-env-census-'));
+    try {
+      const root = { id: 'state', path: join(home, '.papercusp') };
+      await mkdir(root.path);
+      for (const name of ['reset.env', 'wrong-section.env', 'private value.env', 'percent%.env', 'unproven.env']) {
+        await writeFile(join(root.path, name), 'credential bytes are never parsed', { mode: 0o000 });
+      }
+      await writeFile(join(home, 'app.service'), `[Unit]\nEnvironmentFile=%h/.papercusp/wrong-section.env\n[Service]\nEnvironmentFile=%h/.papercusp/reset.env\nEnvironmentFile=\nEnvironmentFile="%h/.papercusp/private value.env"\nEnvironmentFile='%h/.papercusp/percent%%.env'\nEnvironmentFile=-%h/.papercusp/missing.env\nEnvironmentFile=%h/.papercusp/*.env\nEnvironmentFile=%h/.papercusp/%u.env\nEnvironmentFile=%h/.papercusp/unproven.env \\\nEnvironmentFile=%h/.papercusp/unproven.env\n`);
+      const units = await unitCensusDeclarations(home, 'user');
+      const declarations = await unitEnvironmentFileCensusDeclarations(units, [root], home);
+      expect(declarations.map(entry => entry.name)).toEqual(['private value.env', 'percent%.env']);
+      expect(declarations.every(entry => entry.classification === 'secret' && !entry.descendants)).toBe(true);
+      expect(JSON.stringify(declarations)).not.toContain('credential bytes');
+      const census = await collectStateCensus({ roots: [root], declarations, readCatalogs: async () => [] });
+      expect(census.residue.map(entry => entry.name).sort()).toEqual(['reset.env', 'unproven.env', 'wrong-section.env']);
+    } finally { await rm(home, { recursive: true, force: true }); }
+  });
+  it('retains exact environment links but excludes linked parents, directories and out-of-root paths', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'unit-env-links-'));
+    try {
+      const root = { id: 'state', path: join(home, 'state') };
+      const outside = join(home, 'outside');
+      await mkdir(root.path); await mkdir(outside);
+      await writeFile(join(outside, 'private.env'), 'must not be opened', { mode: 0o000 });
+      await symlink(join(outside, 'private.env'), join(root.path, 'mounted.env'));
+      await symlink(join(outside, 'missing.env'), join(root.path, 'dangling.env'));
+      await symlink(outside, join(root.path, 'linked-parent'));
+      await mkdir(join(root.path, 'directory.env'));
+      const paths = [join(root.path, 'mounted.env'), join(root.path, 'dangling.env'),
+        join(root.path, 'linked-parent', 'private.env'), join(root.path, 'directory.env'),
+        join(outside, 'private.env'), join(root.path, '..', 'outside', 'private.env'), root.path];
+      await writeFile(join(home, 'app.service'), `[Service]\n${paths.map(path => `EnvironmentFile=${path}`).join('\n')}\n`);
+      const units = await unitCensusDeclarations(home, 'user');
+      expect((await unitEnvironmentFileCensusDeclarations(units, [root], home)).map(entry => entry.name))
+        .toEqual(['mounted.env', 'dangling.env']);
+      expect(await readlink(join(root.path, 'mounted.env'))).toBe(join(outside, 'private.env'));
+      expect(await unitEnvironmentFileCensusDeclarations([{ ...units[0], producer: 'forged' }], [root], home)).toEqual([]);
+    } finally { await rm(home, { recursive: true, force: true }); }
+  });
+  it('accepts same-name installed links without following aliases, masks or shadow definitions', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'unit-env-shadow-'));
+    try {
+      const root = { id: 'home', path: home };
+      const shadow = join(home, 'shadow'); await mkdir(shadow);
+      await writeFile(join(home, 'private.env'), 'private');
+      const definition = '[Service]\nEnvironmentFile=%h/private.env\n';
+      await writeFile(join(shadow, 'app.service'), definition);
+      await symlink(join(shadow, 'app.service'), join(home, 'app.service'));
+      const units = [...await unitCensusDeclarations(home, 'user'), ...await unitCensusDeclarations(shadow, 'user')];
+      expect(await unitEnvironmentFileCensusDeclarations(units, [root], home)).toEqual([{
+        kind: 'path', root: 'home', name: 'private.env', classification: 'secret',
+        producer: 'unit-environment-file:systemd-user:app.service',
+      }]);
+      await symlink(join(shadow, 'app.service'), join(home, 'alias.service'));
+      await symlink('/dev/null', join(home, 'masked.service'));
+      await symlink(join(home, 'missing.service'), join(home, 'missing.service'));
+      await writeFile(join(shadow, 'masked.service'), definition);
+      await writeFile(join(shadow, 'missing.service'), definition);
+      const linked = [...await unitCensusDeclarations(home, 'user'), ...await unitCensusDeclarations(shadow, 'user')];
+      expect((await unitEnvironmentFileCensusDeclarations(linked, [root], home)).map(entry => entry.producer))
+        .toEqual(['unit-environment-file:systemd-user:app.service']);
+      await rm(join(home, 'app.service')); await writeFile(join(home, 'app.service'), definition);
+      expect(await unitEnvironmentFileCensusDeclarations(await unitCensusDeclarations(home, 'system'), [root], home)).toEqual([]);
+      const user = await unitCensusDeclarations(home, 'user');
+      expect((await unitEnvironmentFileCensusDeclarations(user, [root], home))[0]).toMatchObject({ name: 'private.env', classification: 'secret' });
+      await writeFile(join(home, 'app.service'), '[Service]\nEnvironmentFile=%h/private.env\nEnvironmentFile=""\n');
+      expect(await unitEnvironmentFileCensusDeclarations(user, [root], home)).toEqual([]);
+    } finally { await rm(home, { recursive: true, force: true }); }
   });
   it('joins local service database config with the measured catalogue and excludes remote endpoints', async () => {
     const path = await mkdtemp(join(tmpdir(), 'unit-db-census-'));

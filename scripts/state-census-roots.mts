@@ -12,7 +12,7 @@ import postgres from 'postgres';
 import { getHarnessAdminUrl } from '../packages/operator-core/lib/embedded-pg-discovery';
 import { physicalDatabaseCensusEntries, integrationBaselineCensusDeclarations, templateDatabaseCensusDeclarations, unitCensusEntries, installedUnitCensusDeclarations } from '../packages/operator-core/lib/backup/state-census-producers';
 import type { CensusEntry, CensusRoot, CensusDeclaration } from '../packages/backup/src/state-census';
-import { configuredOperatorDatabaseCensusDeclarations, unitDatabaseCensusDeclarations, affectedTestCacheCensusProducer } from '../packages/operator-core/lib/backup/state-census-producers';
+import { configuredOperatorDatabaseCensusDeclarations, unitDatabaseCensusDeclarations, unitEnvironmentFileCensusDeclarations, affectedTestCacheCensusProducer } from '../packages/operator-core/lib/backup/state-census-producers';
 import { migrationProducerTables, migrationDatabaseCensusDeclarations, registeredProjectMigrationSources, canonicalSqlMigrationCensusSources, type MigrationCensusSource } from '../packages/operator-core/lib/backup/state-census-producers';
 import { accountCredentialCensusProducer, runtimeSidefileCensusProducer, cliSetupHomeCensusProducer, runtimeRetainedCensusProducer, templateStoreCensusProducer, planTemplateStoreCensusProducer } from '../packages/operator-core/lib/backup/state-census-producers';
 import { buildExpected } from './templates-mirror-sync.mjs';
@@ -303,6 +303,14 @@ const completedProducers = mergeNestedCensusRoots({ roots: [...installed.roots, 
   producer: 'green-checkpoint-log-writer', descendants: true,
   retainedSubtree: { evidenceRef: 'release-config:checkpointLogDir' },
 }] });
+// File ownership does not depend on a reachable database catalogue. Preserve
+// these exact installed references in the existing pre-credential snapshot too.
+const unitDeclarations: CensusDeclaration[] = [];
+if (hostCatalogs) {
+  stage('installed-unit-environment');
+  for (const scope of ['user', 'system'] as const) unitDeclarations.push(...await installedUnitCensusDeclarations(scope));
+  completedProducers.declarations.push(...await unitEnvironmentFileCensusDeclarations(unitDeclarations, completedProducers.roots));
+}
 await options.onDiscoverySnapshot?.({ phase: 'before-account-credentials',
   ...structuredClone({ ...completedProducers, catalogEntries: [] }) });
 stage('account-credentials');
@@ -340,10 +348,8 @@ if (args.includes('--restore-events') || hostCatalogs) {
       if (databases.length) declarations.push(...await maintenanceDatabaseCensusDeclarations(sql, databases[0].root));
       if (databases.length) declarations.push(...await templateDatabaseCensusDeclarations(sql, databases[0].root));
       if (databases.length) declarations.push(...configuredOperatorDatabaseCensusDeclarations(databases[0].root, getHarnessAdminUrl()));
-      const unitDeclarations = [];
       for (const scope of ['user', 'system'] as const) {
         catalogEntries.push(...await unitCensusEntries(scope));
-        unitDeclarations.push(...await installedUnitCensusDeclarations(scope));
       }
       migrationSources.push(...await registeredProjectMigrationSources([], unitDeclarations));
       declarations.push(...unitDeclarations, ...await unitDatabaseCensusDeclarations(unitDeclarations, databases, getHarnessAdminUrl(), producers.roots.map(root => root.path)));
