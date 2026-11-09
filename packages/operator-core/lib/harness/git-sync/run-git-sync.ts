@@ -5962,7 +5962,11 @@ export async function prepareGitSyncMetadataSelectionTree(runGit: RunGit, repo: 
   const admitted: GitSyncMetadataSelectedLibrary[] = [];
   for (const selection of selections) {
     const object = objects.find(row => row.path === selection.path && row.owner === '');
-    if (!workspaces.has(selection.path) || object?.kind !== 'gitlink' || object.mode !== '160000' ||
+    // A selected library can own several workspace roots without being one
+    // itself (libs/papercusp/packages/cli, for example). Keep the closed path
+    // admission above and require a complete directory boundary for ownership.
+    const ownsWorkspace = [...workspaces].some(path => path === selection.path || path.startsWith(selection.path + '/'));
+    if (!ownsWorkspace || object?.kind !== 'gitlink' || object.mode !== '160000' ||
         object.oid !== selection.expectedBasePin) throw new Error('generated-lock-library-eligibility');
     const matches = [...mappings].filter(([, row]) => row.path.includes(selection.path));
     if (matches.length !== 1) throw new Error('generated-lock-library-mapping');
