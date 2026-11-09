@@ -104,15 +104,72 @@ text(await tools[tool.name]({}));` }
     + event('response.completed', { response }));
 }
 
+/** A real pipe consumer between the installed host and the unchanged ptool.
+ * Stop reading during the large receipt response, before Node can complete its
+ * stdout callback. Retain the request, consumed prefix and child close evidence;
+ * a killed host or an absent provider request alone cannot pass this probe. */
+function partialReceiptPipe(bridgeArgs: string[], port: string, probePath: string): string {
+  return String.raw`import { spawn } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
+const child = spawn(process.execPath, ${JSON.stringify(bridgeArgs)}, { env: process.env, stdio: ['pipe', 'pipe', 'pipe'] });
+const probe = { targetMethod: ${JSON.stringify(port === 'initialize' ? 'initialize' : 'tools/call')},
+  pid: child.pid, targetRequest: null, consumedBytes: 0, forwardedBytes: 0, prefix: '',
+  cut: false, closed: false, stderr: '', exitCode: null, signal: null };
+const save = () => writeFileSync(${JSON.stringify(probePath)}, JSON.stringify(probe), { mode: 0o600 });
+let input = '', cleanup;
+process.stdin.on('data', chunk => {
+  input += chunk.toString('utf8');
+  let newline;
+  while ((newline = input.indexOf('\n')) >= 0) {
+    const line = input.slice(0, newline); input = input.slice(newline + 1);
+    if (line.trim()) {
+      const request = JSON.parse(line);
+      if (request.method === probe.targetMethod) probe.targetRequest = request;
+    }
+  }
+  if (!child.stdin.destroyed) child.stdin.write(chunk);
+});
+process.stdin.on('end', () => child.stdin.end());
+child.stdin.on('error', () => {});
+process.stdout.on('error', () => child.kill('SIGKILL'));
+child.stderr.on('data', chunk => { probe.stderr = (probe.stderr + chunk).slice(-6000); });
+child.stdout.on('data', chunk => {
+  if (probe.targetRequest && !probe.cut) {
+    probe.consumedBytes = chunk.length;
+    const prefix = chunk.subarray(0, 1024);
+    probe.forwardedBytes = prefix.length;
+    probe.prefix = prefix.toString('utf8');
+    probe.cut = true;
+    process.stdout.write(prefix);
+    child.stdout.destroy();
+    child.stdin.end();
+    save();
+    // Cleanup is separate from the measured OS read-end close above.
+    cleanup = setTimeout(() => child.kill('SIGKILL'), 500);
+  } else if (!probe.cut) process.stdout.write(chunk);
+});
+for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => child.kill('SIGKILL'));
+child.on('error', error => { probe.stderr += String(error); save(); process.exitCode = 1; });
+child.on('close', (code, signal) => {
+  clearTimeout(cleanup);
+  probe.closed = true; probe.exitCode = code; probe.signal = signal;
+  save(); process.stdout.end();
+});
+save();`;
+}
+
 export async function captureNativeMcp(client: NativeExport['client'], tools: Descriptor[],
   instructions?: string, denied: string[] = [],
   options: { claudeDescriptionMode?: 'full' | 'default'; stdioReceipt?: 'memory' | 'corpus';
     stdioPort?: 'initialize' | 'orient' | 'claim' | 'create'; maxProviderExchanges?: number;
+    stdioFault?: 'absent-offer' | 'partial-stdout';
     onDiagnostics?: (path: string) => void } = {}): Promise<NativeExport> {
   // OMP's maintained adapter is in-process. A ptool subprocess would measure
   // a different route, so never turn its registration proof into stdout proof.
   if (options.stdioReceipt && (client === 'omp' || !instructions))
     throw new Error('Native stdout receipt profile requires Codex/Claude instructions');
+  if (options.stdioFault && !options.stdioReceipt)
+    throw new Error('Native stdout fault requires a receipt profile');
   const binary = wellKnownBackendBin(client === 'claude' ? 'claude-code' : client) ?? resolveOnPath(client);
   if (!binary) throw new Error(`Installed ${client} is required for native export evidence`);
   const maxProviderExchanges = options.maxProviderExchanges ?? 8;
@@ -121,13 +178,21 @@ export async function captureNativeMcp(client: NativeExport['client'], tools: De
   let clientVersion = 'UNKNOWN';
   const clientSettings: NativeExport['clientSettings'] = {};
   const home = mkdtempSync(join(tmpdir(), `${client}-mcp-wire-`));
+  // Version launchers can execute Node preloads before reaching the native
+  // binary. Give both probes the same private, allowlisted environment;
+  // inheriting Vitest loaders here defeats the client isolation below.
+  const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, LANG: process.env.LANG ?? 'C.UTF-8', HOME: home };
+  const versionProbe = { timeoutMs: 5000, elapsedMs: null as number | null,
+    environmentScope: 'private-client-home', inheritedNodeOptions: env.NODE_OPTIONS !== undefined };
   // This sibling survives private-home cleanup, including a failing exchange.
   const diagnosticsPath = `${home}.diagnostics.json`;
+  const pipeProbePath = `${home}.pipe.json`;
   const receiptOwner = `su-native-receipt-${client}`;
   const receiptPort = options.stdioPort ?? 'initialize';
   const receiptOffer = options.stdioReceipt ? { owner: receiptOwner, token: `native-${receiptPort}-${client}`,
     fragments: [memoryFragmentOffer(options.stdioReceipt, `native-${options.stdioReceipt}`, 3, receiptPort, instructions!)] } : null;
   const callReceipt = !!receiptOffer && receiptPort !== 'initialize';
+  const responseOffer = options.stdioFault === 'absent-offer' ? null : receiptOffer;
   const methods: string[] = [], captures: Record<string, unknown>[] = [];
   const mcpRequests: Record<string, unknown>[] = [];
   const providerRoutes: string[] = [];
@@ -151,8 +216,10 @@ export async function captureNativeMcp(client: NativeExport['client'], tools: De
         if (body.id === undefined) { res.writeHead(202); res.end(); return; }
         const result = method === 'initialize'
           ? { protocolVersion: '2025-03-26', capabilities: { tools: {} },
-            serverInfo: { name: 'offline-canary', version: '1' }, ...(instructions ? { instructions } : {}),
-            ...(receiptOffer && !callReceipt ? { _meta: { 'papercusp/memoryEmission': receiptOffer } } : {}) }
+            // Call-port canaries must first appear in the tool response;
+            // initialization would contaminate the partial-output oracle.
+            serverInfo: { name: 'offline-canary', version: '1' }, ...(instructions && !callReceipt ? { instructions } : {}),
+            ...(responseOffer && !callReceipt ? { _meta: { 'papercusp/memoryEmission': responseOffer } } : {}) }
           : method === 'tools/list' ? { tools: tools.map(tool => ({ ...tool,
             inputSchema: { type: 'object', properties: {} },
             // This canary only returns a fixed local observation. Leaving its
@@ -162,7 +229,7 @@ export async function captureNativeMcp(client: NativeExport['client'], tools: De
             ...(receiptOffer ? { _meta: { 'papercusp/servingGeneration': 'native-receipt-fixture-v1' } } : {}) })) }
             : method === 'tools/call' && callReceipt ? {
               content: [{ type: 'text', text: JSON.stringify({ [receiptPort]: instructions }) }],
-              _meta: { 'papercusp/memoryEmission': receiptOffer } } : {};
+              ...(responseOffer ? { _meta: { 'papercusp/memoryEmission': responseOffer } } : {}) } : {};
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ jsonrpc: '2.0', id: body.id, result })); return;
       }
@@ -190,12 +257,21 @@ export async function captureNativeMcp(client: NativeExport['client'], tools: De
   });
   const frameTypes: string[] = [];
   try {
-    clientVersion = execFileSync(binary, ['--version'], { encoding: 'utf8', timeout: 5000 }).trim();
+    const versionStarted = performance.now();
+    try {
+      clientVersion = execFileSync(binary, ['--version'], { encoding: 'utf8', timeout: versionProbe.timeoutMs,
+        env, cwd: home }).trim();
+    } finally { versionProbe.elapsedMs = performance.now() - versionStarted; }
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
     const baseURL = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
-    const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, LANG: process.env.LANG ?? 'C.UTF-8', HOME: home };
     const bridgeArgs = [fileURLToPath(new URL('../../../../../apps/operator/scripts/ptool.mjs', import.meta.url)),
       tools[0]!.name, '--stdio', '--transport', 'http', '--url', baseURL, '--token-file', join(home, 'mcp-token')];
+    let nativeBridgeArgs = bridgeArgs;
+    if (options.stdioFault === 'partial-stdout') {
+      const wrapper = join(home, 'partial-receipt-pipe.mjs');
+      writeFileSync(wrapper, partialReceiptPipe(bridgeArgs, receiptPort, pipeProbePath));
+      nativeBridgeArgs = [wrapper];
+    }
     if (receiptOffer) {
       writeFileSync(join(home, 'mcp-token'), 'offline-fixture-only', { mode: 0o600 });
       Object.assign(env, { PAPERCUSP_HOME: home, PAPERCUSP_OPERATOR_HOME: home,
@@ -211,7 +287,7 @@ export async function captureNativeMcp(client: NativeExport['client'], tools: De
       const gateway = codexGatewayConfigToml(null, { gateway: { baseURL, token: 'offline_capture_token_'.repeat(3) } });
       writeFileSync(join(home, 'config.toml'), ['model = "gpt-6.1-sol"', ...gateway.root, ...gateway.tables,
         '[mcp_servers.offline_canary]', ...(receiptOffer
-          ? [`command = ${JSON.stringify(process.execPath)}`, `args = ${JSON.stringify(bridgeArgs)}`,
+          ? [`command = ${JSON.stringify(process.execPath)}`, `args = ${JSON.stringify(nativeBridgeArgs)}`,
             // Codex filters the MCP child's inherited environment. These are
             // fixture identities and private paths, never account credentials.
             `env = { ${['PAPERCUSP_HOME', 'PAPERCUSP_OPERATOR_HOME', 'PAPERCUSP_SID',
@@ -226,7 +302,7 @@ export async function captureNativeMcp(client: NativeExport['client'], tools: De
     } else if (client === 'claude') {
       const path = join(home, 'mcp.json');
       writeFileSync(path, JSON.stringify({ mcpServers: { offline_canary: receiptOffer
-        ? { type: 'stdio', command: process.execPath, args: bridgeArgs }
+        ? { type: 'stdio', command: process.execPath, args: nativeBridgeArgs }
         : { type: 'http', url: `${baseURL}/mcp` } } }));
       const descriptionMode = options.claudeDescriptionMode ?? 'full';
       Object.assign(clientSettings, { toolSearch: 'disabled', descriptionMode });
@@ -370,8 +446,11 @@ export default async function(pi) {
     }
     server.closeAllConnections();
     if (server.listening) await new Promise<void>(resolve => server.close(() => resolve()));
-    writeFileSync(diagnosticsPath, JSON.stringify({ client, clientVersion, binary, clientSettings,
-      receiptKind: options.stdioReceipt ?? null, receiptPort, maxProviderExchanges,
+    writeFileSync(diagnosticsPath, JSON.stringify({ client, clientVersion, binary, clientSettings, versionProbe,
+      receiptKind: options.stdioReceipt ?? null, receiptPort, stdioFault: options.stdioFault ?? null, maxProviderExchanges,
+      stdoutDelivery: receiptOffer ? { adapter: 'ptool-stdio', owner: receiptOwner,
+        confirmations: openDeliveryLedger(receiptOwner, { PAPERCUSP_HOME: home }, 'mcp')?.confirmedMemoryDeliveries() ?? [] } : null,
+      pipeProbe: existsSync(pipeProbePath) ? JSON.parse(readFileSync(pipeProbePath, 'utf8')) : null,
       failure, invocation, exitCode: child?.exitCode ?? null, signal: child?.signalCode ?? null,
       methods, mcpRequests, providerRoutes, requests: captures, frameTypes, stdout, stderr,
       // Parent environment is measured here; the MCP child's inheritance must

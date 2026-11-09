@@ -2,7 +2,11 @@
  * Private homes and local refusal keep provider calls and credentials out of
  * this fixture. Native registration/request evidence does not prove shipment. */
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { expect, it } from 'vitest';
 import { mcpBootstrapInstructions, mcpToolsWithBootstrap } from '../endpoint-route/routes/transport/mcp-contract';
 import { lintInstructionText } from '../instruction-lint';
@@ -10,6 +14,7 @@ import { capabilityMapText } from '../agent-tools/tools/capability-map';
 import { DELIVERY_MATRIX_CLIENTS, bootstrapDescriptionForClient, validateBootstrapExportArtifact,
   type BootstrapExportArtifact, type BootstrapExportCell } from './injection-delivery-coverage';
 import { captureNativeMcp, frozenBootstrap, baselineHash, requestDescriptors, sha256 } from './fixtures/native-mcp-export';
+import { resolveOnPath, wellKnownBackendBin } from '../backend-bin-resolve.mjs';
 
 const sha = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
@@ -247,7 +252,10 @@ for (const client of ['codex', 'claude'] as const) for (const kind of ['memory',
     expect(initialize.params.clientInfo.name).toBe(`ptool-${client}`);
     expect(initialize.params._meta['papercusp/memoryReceipt']).toEqual({ version: 1, confirmations: [] });
     expect(capture.methods).toEqual(expect.arrayContaining(['initialize', 'tools/list']));
-    if (port !== 'initialize') expect(capture.methods).toContain('tools/call');
+    if (port !== 'initialize') {
+      expect(capture.methods).toContain('tools/call');
+      expect(JSON.stringify(diagnostic.requests[0])).not.toContain(JSON.stringify(instructions).slice(1, -1));
+    }
     // Two independent boundaries: the installed client's provider request
     // contains the body AND the maintained stdio adapter saved its exact hash.
     // Neither a prepared instruction nor a metadata-only offer suffices.
@@ -261,6 +269,78 @@ for (const client of ['codex', 'claude'] as const) for (const kind of ['memory',
       evidencePlane: 'installed-client-local-request', productionRuntime: 'UNKNOWN',
       scope: 'stdio adapter and installed client; fixture source/envelopes/recipient; no production port or deployment claim' } });
   }, 45_000);
+
+for (const client of ['codex', 'claude'] as const) for (const kind of ['memory', 'corpus'] as const)
+  for (const port of ['initialize', 'orient', 'claim', 'create'] as const)
+  for (const fault of ['absent-offer', 'partial-stdout'] as const)
+  it(`context reliability R-1: installed ${client} ${kind} ${port} ${fault}`, async ({ task }) => {
+    const canary = `Native ${kind} ${port} fault canary ☃`;
+    const instructions = fault === 'partial-stdout' ? canary + 'x'.repeat(512 * 1024) + ' FINAL_CONDITION' : canary;
+    let diagnosticsPath = '', failure: unknown;
+    try {
+      await captureNativeMcp(client, [{ name: 'receipt_canary', description: 'Local receipt observation.' }],
+        instructions, [], { stdioReceipt: kind, stdioPort: port, stdioFault: fault,
+          onDiagnostics: path => { diagnosticsPath = path; Object.assign(task.meta, { nativeMcpDiagnostics: path }); } });
+    } catch (error) { failure = String(error); }
+    const evidence = JSON.parse(readFileSync(diagnosticsPath, 'utf8'));
+    Object.assign(task.meta, { nativeMcpFault: { client, kind, port, fault, failure,
+      clientVersion: evidence.clientVersion, pipeProbe: evidence.pipeProbe, stdoutDelivery: evidence.stdoutDelivery,
+      evidencePlane: 'installed-client-local-request', productionBackend: 'UNKNOWN', productionRuntime: 'UNKNOWN' } });
+    expect(evidence.receiptKind).toBe(kind);
+    expect(evidence.receiptPort).toBe(port);
+    expect(evidence.stdioFault).toBe(fault);
+    expect(evidence.stdoutDelivery.confirmations).toEqual([]);
+    expect(evidence.mcpRequests.some((request: { method: string }) => request.method === 'initialize')).toBe(true);
+    if (port !== 'initialize') expect(JSON.stringify(evidence.requests[0])).not.toContain(canary);
+    if (fault === 'absent-offer') {
+      expect(failure).toBeUndefined();
+      const visible = port === 'initialize' ? instructions : JSON.stringify({ [port]: instructions });
+      expect(JSON.stringify(evidence.requests.at(-1))).toContain(JSON.stringify(visible).slice(1, -1));
+      expect(evidence.pipeProbe).toBeNull();
+    } else {
+      // The exact response was interrupted after a nonempty real OS read.
+      // A handshake failure without these measurements is not fault proof.
+      expect(evidence.pipeProbe).toMatchObject({ cut: true, closed: true,
+        targetMethod: port === 'initialize' ? 'initialize' : 'tools/call', forwardedBytes: 1024 });
+      expect(evidence.pipeProbe.targetRequest.method).toBe(evidence.pipeProbe.targetMethod);
+      expect(evidence.pipeProbe.consumedBytes).toBeGreaterThanOrEqual(1024);
+      expect(evidence.pipeProbe.consumedBytes).toBeLessThan(Buffer.byteLength(instructions));
+      expect(evidence.pipeProbe.prefix).toContain(canary);
+      expect(JSON.stringify(evidence.requests)).not.toContain('FINAL_CONDITION');
+    }
+  }, 45_000);
+
+it('context reliability native harness: isolates version and client from parent Node preloads', async ({ task }) => {
+  const root = mkdtempSync(join(tmpdir(), 'native-version-env-'));
+  const preload = join(root, 'parent-only.mjs');
+  const marker = join(root, 'preload-entered');
+  const prior = process.env.NODE_OPTIONS;
+  writeFileSync(preload, `import { writeFileSync } from 'node:fs';
+writeFileSync(${JSON.stringify(marker)}, 'entered');
+throw new Error('NATIVE_PARENT_PRELOAD_MUST_NOT_REACH_CLIENT');`);
+  let diagnosticsPath = '';
+  try {
+    process.env.NODE_OPTIONS = `--import=${JSON.stringify(pathToFileURL(preload).href)}`;
+    const binary = wellKnownBackendBin('codex') ?? resolveOnPath('codex');
+    expect(binary).toBeTruthy();
+    // Positive control: this installed launcher's Node entry really executes
+    // the inherited preload. A native binary which ignores it cannot pass.
+    expect(() => execFileSync(binary!, ['--version'], { timeout: 5000, stdio: 'pipe' }))
+      .toThrow('NATIVE_PARENT_PRELOAD_MUST_NOT_REACH_CLIENT');
+    expect(readFileSync(marker, 'utf8')).toBe('entered');
+    const capture = await captureNativeMcp('codex', [{ name: 'environment_canary', description: 'Local environment canary.' }],
+      undefined, [], { onDiagnostics: path => { diagnosticsPath = path; } });
+    expect(capture.clientVersion).toMatch(/codex/i);
+    expect(capture.methods).toContain('initialize');
+    expect(capture.descriptors.some(row => row.name.endsWith('environment_canary'))).toBe(true);
+    Object.assign(task.meta, { nativeVersionEnvironment: { diagnosticsPath,
+      inheritedPreloadControl: 'rejected-before-version', privateEnvironment: 'native-request-observed' } });
+  } finally {
+    if (prior === undefined) delete process.env.NODE_OPTIONS;
+    else process.env.NODE_OPTIONS = prior;
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 45_000);
 
 it('context reliability native harness: bounds exchanges and retains failed native requests', async ({ task }) => {
   let diagnosticsPath = '';
