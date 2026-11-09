@@ -465,6 +465,8 @@ export type AcceptanceGraderTerminalFailureCode =
   | 'startup_connection_stalled'
   | 'startup_first_turn_stalled'
   | 'inference_gateway_error'
+  /** A completed native turn explicitly failed HTTP authentication, independently of quota. */
+  | 'model_authentication_failed'
   /** The host observed a completed, non-retryable native error for this controlled mission. */
   | 'native_turn_failed'
   /**
@@ -882,7 +884,11 @@ export function classifyAcceptanceGraderTerminalFailure(
     }
     if (!quoted && !hasAcceptanceGraderFirstTurnProgress(after) &&
         !/^[ \t]*(?:●|❯[ \t]*\S|>[ \t]*\S)/mu.test(after)) {
-      return { code: 'native_turn_failed', evidence: nativeFailure[0].trim() };
+      return {
+        code: /\bcode=api_error_401\b/i.test(nativeFailure[0])
+          ? 'model_authentication_failed' : 'native_turn_failed',
+        evidence: nativeFailure[0].trim(),
+      };
     }
   }
   const legacyQuota = normalized.match(

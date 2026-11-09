@@ -2096,6 +2096,26 @@ describe('classifyAcceptanceGraderTerminalFailure', () => {
     })).toBeNull();
   });
 
+  it.each(['claude', 'codex'])('preserves explicit native authentication failure for %s with quotation and resumption guards', (agent) => {
+    const receipt = `[psu] native-turn-failed agent=${agent} code=api_error_401 retryable=false retryAfterMs=unknown`;
+    const options = { allowInferenceGatewayError: true };
+    expect(classifyAcceptanceGraderTerminalFailure(receipt)).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(receipt, options)).toEqual({
+      code: 'model_authentication_failed', evidence: receipt,
+    });
+    for (const quoted of [`The report quotes ${receipt}`, `> ${receipt}`, `\`\`\`text\n${receipt}\n\`\`\``]) {
+      expect(classifyAcceptanceGraderTerminalFailure(quoted, options)).toBeNull();
+    }
+    for (const progress of ['● I resumed the audit.', '• Called scorecards:get', '❯ retry the audit']) {
+      expect(classifyAcceptanceGraderTerminalFailure(`${receipt}\n${progress}`, options)).toBeNull();
+    }
+    expect(classifyAcceptanceGraderTerminalFailure(receipt.replace('retryable=false', 'retryable=true'), options)).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(receipt.replace('api_error_401', 'api_error_429'), options)?.code)
+      .toBe('model_quota_exhausted');
+    expect(classifyAcceptanceGraderTerminalFailure(receipt.replace('api_error_401', 'native_error'), options)?.code)
+      .toBe('native_turn_failed');
+  });
+
   it('classifies a local gateway shed as an admission failure and preserves its retry hint', () => {
     const receipt = '[psu] native-turn-failed agent=claude code=api_error_429 retryable=false retryAfterMs=60000';
     const raw = 'API Error: Request rejected (429) · inference-gateway: all accounts throttled; retry after 60s\n'
