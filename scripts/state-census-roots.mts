@@ -363,8 +363,14 @@ if (args.includes('--restore-events') || hostCatalogs) {
 await options.onDiscoverySnapshot?.({ phase: 'before-filesystem',
   ...structuredClone({ roots: producers.roots, declarations, catalogEntries }) });
 stage('filesystem-storage-markers');
-const recordPeerStorage = async (root: CensusRoot, name: string) => {
+const recordPeerStorage = async (root: CensusRoot, name: string, harnessContainer?: string) => {
   declarations.push(await peerStorageDeclaration(root, name));
+  // getHarnessStore creates .papercusp/<harness>/hyperbee recursively. Once
+  // that exact direct store proves its writer, its immediate container is
+  // writer-owned too. This owns only the directory entry: copied app parents
+  // and unrelated children still need independent evidence.
+  if (harnessContainer) declarations.push({ kind: 'path', root: root.id, name: harnessContainer,
+    classification: 'state', producer: 'harness-corestore-container' });
   const advisoryLock = await corestoreAdvisoryLockDeclaration(root, name);
   if (advisoryLock) declarations.push(advisoryLock);
 };
@@ -507,7 +513,7 @@ for (const [rootIndex, root] of producers.roots.entries()) {
         // normally so they remain visible residue instead of assuming ownership.
         try { await lstat(join(root.path, name, 'CORESTORE')); }
         catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
-        await recordPeerStorage(root, name);
+        await recordPeerStorage(root, name, pgName);
       }
     }
   }
