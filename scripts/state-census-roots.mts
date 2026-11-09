@@ -63,8 +63,20 @@ export async function readMigrationCensusColumns(sql: ReturnType<typeof postgres
   return rows;
 }
 
-/** Importing this entry performs no census or host-catalog reads. */
-export async function runRootCensus(options: { args?: string[]; checkpointLogDir?: string; hostedProfileEvidence?: HostedProfileWriterEvidence[]; historicalWriterEvidence?: PlaywrightStateWriterEvidence[]; onStage?: (stage: string) => void } = {}) {
+type RootCensusOptions = {
+  args?: string[];
+  checkpointLogDir?: string;
+  hostedProfileEvidence?: HostedProfileWriterEvidence[];
+  historicalWriterEvidence?: PlaywrightStateWriterEvidence[];
+  onStage?: (stage: string) => void;
+};
+
+/** Discover serializable producer inputs; this alone is never a census verdict.
+ * Separating the phases lets bounded diagnostics retain discovery and retry
+ * collection without rescanning archives, Git history and host catalogs.
+ * Importing this entry performs no census or host-catalog reads.
+ */
+export async function discoverRootCensusInputs(options: RootCensusOptions = {}) {
 const args = options.args ?? [];
 // Report stage names only: callers can time or retain progress without logging
 // credential contents, archived commands, or filesystem inventory.
@@ -377,17 +389,21 @@ if (hostCatalogs && migrationSources.length) {
     } finally { await sql.end(); }
   }
 }
-stage('collect-state-census');
-const census = await collectStateCensus({
-  ...producers, declarations, representUnknownSubtrees: true,
-  // This diagnostic intentionally does not certify catalogs.
-  readCatalogs: async () => catalogEntries,
-});
-stage('complete');
+stage('discovery-complete');
 return {
   scope: hostCatalogs ? 'implemented-writer-filesystem-roots-and-host-catalogs' : 'implemented-writer-filesystem-roots-only', wholeInstallVerified: false,
-  roots: producers.roots, ...census,
+  roots: producers.roots, declarations, catalogEntries,
 };
+}
+
+/** Canonical executable: discovery and collection retain the same drift contract. */
+export async function runRootCensus(options: RootCensusOptions = {}) {
+  const inputs = await discoverRootCensusInputs(options);
+  options.onStage?.('collect-state-census');
+  const census = await collectStateCensus({ roots: inputs.roots, declarations: inputs.declarations,
+    representUnknownSubtrees: true, readCatalogs: async () => inputs.catalogEntries });
+  options.onStage?.('complete');
+  return { scope: inputs.scope, wholeInstallVerified: false, roots: inputs.roots, ...census };
 }
 
 if (isCliEntry(import.meta.url)) {

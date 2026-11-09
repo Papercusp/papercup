@@ -24,8 +24,6 @@
  */
 import { spawn, type IPty } from '@lydell/node-pty';
 import { cp, readFile, writeFile, mkdir, chmod, rm } from 'node:fs/promises';
-import { accessSync, constants } from 'node:fs';
-import { homedir } from 'node:os';
 import { delimiter, dirname, isAbsolute } from 'node:path';
 import { randomUUID, randomBytes } from 'node:crypto';
 import { registerAccount, normalizeAccountProvider, type AccountProvider } from './account-pool';
@@ -34,8 +32,8 @@ import { papercuspPath } from '../papercusp-root';
 import { activeWorkspaceId } from '../workspace-registry';
 import { runWithWorkspace } from '../workspace-als';
 import { trackDetached } from '../detached-imports';
-import { resolveAgentBinarySync } from '../agent-bin-detect';
-import { WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN } from '@papercusp/deployment-driver';
+import { resolveCliBin } from './account-cli-bin';
+export { resolveCliBin } from './account-cli-bin';
 import { bindOwnerRpcResource, locateOwnerRpcResource, callOwnerProcess, registerOwnerRpcHandler } from '../cluster-owner-rpc';
 import {
   createStoredCliLink, readStoredCliLink, finishStoredCliLink, claimStoredCliLink,
@@ -81,62 +79,6 @@ function cliSpawnPath(bin: string): string {
   const required = [dirname(process.execPath)];
   if (isAbsolute(bin)) required.push(dirname(bin));
   return [...new Set([...required, ...inherited])].join(delimiter);
-}
-
-/**
- * Resolve the provider CLI to a runnable path. A pty spawn of a missing binary does NOT throw a
- * catchable ENOENT — the pty just exits instantly with no output, which used to surface as the
- * misleading "did not produce an authorize URL (is `claude` installed + on PATH?)" even though
- * the real fault was the OPERATOR's environment. Operator hosts routinely run with a stripped
- * PATH (a systemd unit whose env predates a daemon-reload — the 2026-07-03 staging-api incident —
- * or a bundled desktop sidecar whose PATH starts at its own bin dir), so resolve explicitly:
- * env override verbatim → each PATH entry → well-known install dirs.
- */
-export function resolveCliBin(
-  provider: AccountProvider,
-  env: NodeJS.ProcessEnv = process.env,
-  sharedResolver: (bin: string) => string | null = resolveAgentBinarySync,
-): string {
-  const name = provider === 'codex' ? 'codex' : 'claude';
-  const override = provider === 'codex' ? env.CODEX_BIN : env.CLAUDE_BIN;
-  if (override) return override; // explicit operator override — trust it verbatim
-  if (env.PAPERCUSP_DISTRIBUTION_PROFILE === 'vm-release') {
-    // The release's bin/claude and bin/codex launch psu sessions; they are not
-    // vendor login CLIs. Bootstrap publishes the credential-free vendor tools
-    // here for the customer identity and its readiness probes (D-423).
-    const vendor = `${WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN}/${name}`;
-    try {
-      accessSync(vendor, constants.X_OK);
-      return vendor;
-    } catch {
-      throw new Error(`the ${providerLabel(provider)} vendor login CLI is missing from the customer agent toolchain (${vendor}) — repair or upgrade the workspace host`);
-    }
-  }
-  const home = homedir();
-  const candidates = [
-    ...(env.PATH ?? '').split(':').filter(Boolean).map((d) => `${d}/${name}`),
-    `${home}/.local/bin/${name}`,
-    `${home}/.claude/local/${name}`,
-    `${home}/.bun/bin/${name}`,
-    `${home}/.npm-global/bin/${name}`,
-    `/usr/local/bin/${name}`,
-    `/home/linuxbrew/.linuxbrew/bin/${name}`,
-  ];
-  for (const c of candidates) {
-    try {
-      accessSync(c, constants.X_OK);
-      return c;
-    } catch {
-      /* not here — next candidate */
-    }
-  }
-  // The shared resolver owns Papercusp's canonical agent-binary locations, including
-  // ~/.papercusp/bin and the bin directory beside the Node executable running the operator.
-  // Account linking used to stop before this seam and fall back to the bare name, so a
-  // systemd operator with a stripped PATH could not launch a working, installed Codex CLI.
-  const shared = sharedResolver(name);
-  if (shared) return shared;
-  return name; // nothing found — let the pty try bare PATH lookup; the no-URL error will say so
 }
 
 function stripAnsi(s: string): string {

@@ -26,8 +26,8 @@ import { codexAuthPath } from '../inference-gateway/codex-oauth-proxy';
 import { readPlanTemplateDirForInstall } from '../cupboard/plan-template-store';
 import { REAP_TAIL_MAX_BYTES, verifyReapTailReceipt } from '../task-manager/reap-archive';
 import { resolveSqlDir } from '../migration-drift';
-import { resolveCliBin } from '../deployment/account-link-cli';
 import { stripCommentsAndStrings, stripSqlCommentsAndStrings } from '../../../../scripts/lib/strip-comments-and-strings.mjs';
+import { resolveFsMutexLockRoot } from '../../../../scripts/lib/fs-mutex.mjs';
 
 /** Compose independent writers without traversing the same physical root twice. */
 export function installedRootCensusProducers() {
@@ -80,6 +80,8 @@ export async function reapArchiveCensusProducer(home = homedir(), retainedTaskId
     if (Number.isNaN(date.valueOf()) || date.toISOString().slice(0, 10) !== entry.name) continue;
     add(`reap-archive/${entry.name}`);
     const tails = await readdir(join(archive, entry.name), { withFileTypes: true });
+    const receipts = new Set(tails.filter(tail => tail.isFile() && tail.name.endsWith('.tail.log.receipt.json'))
+      .map(tail => tail.name));
     const candidates = tails.filter(tail => tail.isFile() && tail.name.endsWith('.tail.log'))
       .map(tail => tail.name.slice(0, -'.tail.log'.length));
     if (lookupRetained) {
@@ -91,11 +93,15 @@ export async function reapArchiveCensusProducer(home = homedir(), retainedTaskId
     }
     for (const tail of tails) {
       if (!tail.isFile() || !tail.name.endsWith('.tail.log')) continue;
+      const taskId = tail.name.slice(0, -'.tail.log'.length);
+      const hasReceipt = receipts.has(`${tail.name}.receipt.json`);
+      // Without either identity source this is residue regardless of metadata.
+      // Do not open thousands of absent sidecars or stat unproven tails.
+      if (!hasReceipt && !identities.has(taskId)) continue;
       const name = `reap-archive/${entry.name}/${tail.name}`;
       const metadata = await lstat(join(root.path, name));
       if (!metadata.isFile() || metadata.size > REAP_TAIL_MAX_BYTES) continue;
-      const taskId = tail.name.slice(0, -'.tail.log'.length);
-      const receiptVerified = await verifyReapTailReceipt(join(root.path, name), taskId, entry.name);
+      const receiptVerified = hasReceipt && await verifyReapTailReceipt(join(root.path, name), taskId, entry.name);
       if (receiptVerified || identities.has(taskId)) add(name);
       if (receiptVerified) add(`${name}.receipt.json`);
     }
@@ -147,7 +153,10 @@ export async function cliSetupHomeCensusProducer(path = papercuspRoot(), codexCl
   // dependency without running a candidate helper or importing its launcher.
   let nativeCodex: string | null = null;
   try {
-    const cli = await realpath(codexCli === undefined ? resolveCliBin('codex') : codexCli ?? '');
+    // Share binary selection without loading interactive login's RPC/DB runtime.
+    const selectedCli = codexCli === undefined
+      ? (await import('../deployment/account-cli-bin')).resolveCliBin('codex') : codexCli;
+    const cli = await realpath(selectedCli ?? '');
     const handle = await open(cli, 'r');
     let header: Buffer;
     try { header = Buffer.alloc(4); await handle.read(header, 0, 4, 0); }
@@ -229,14 +238,15 @@ export function historicalGitBlobIdentityResolver(repository: string) {
     let history = histories.get(name);
     if (!history) {
       history = (async () => {
-        const { stdout } = await execFileAsync('git', ['-C', repository, 'log', '--all', '--format=%H', '--', name], { maxBuffer: 16 * 1024 * 1024 });
+        // Raw path-scoped changes contain the same regular-file blob identities
+        // in one Git read, instead of one subprocess for every revision.
+        const { stdout } = await execFileAsync('git', ['-C', repository, 'log', '--all', '--format=',
+          '--raw', '--no-abbrev', '--no-renames', '-z', '--', name], { maxBuffer: 16 * 1024 * 1024 });
         const blobs = new Set<string>();
-        for (const revision of stdout.trim().split('\n').filter(Boolean)) {
-          const tree = await execFileAsync('git', ['-C', repository, 'ls-tree', revision, '--', name]);
-          for (const line of tree.stdout.trim().split('\n')) {
-            const match = /^100(?:644|755) blob ([0-9a-f]+)\t(.+)$/.exec(line);
-            if (match && match[2] === name) blobs.add(match[1]);
-          }
+        const fields = stdout.split('\0');
+        for (let index = 0; index + 1 < fields.length; index += 2) {
+          const match = /^:\d{6} (100(?:644|755)) [0-9a-f]+ ([0-9a-f]+) [AMT]$/.exec(fields[index].trim());
+          if (match && fields[index + 1] === name) blobs.add(match[2]);
         }
         return blobs;
       })();
@@ -361,6 +371,7 @@ export async function planTemplateStoreCensusProducer(path = papercuspRoot()) {
 /** Exact hook pacing and template gym writers; siblings require separate provenance. */
 export async function runtimeSidefileCensusProducer(home = homedir()) {
   const root: CensusRoot = { id: 'runtime-sidefiles', path: join(home, '.papercusp') };
+  const roots = [root];
   const declarations: CensusDeclaration[] = [];
   const pacingFile = 'google-vertex-gemini-3.1-pro-preview.json';
   for (const [directory, producer, files] of [
@@ -379,7 +390,21 @@ export async function runtimeSidefileCensusProducer(home = homedir()) {
       }
     }
   }
-  return { roots: [root], declarations };
+  // Mutex leases are host-local process metadata, recreated by the primitive.
+  // Transporting them would copy stale ownership onto a different machine.
+  // Resolve the writer's real root (including relocation), never inspect or
+  // delete a live lease merely to establish this export classification.
+  const mutex = resolveFsMutexLockRoot(process.env, { homeDir: home });
+  let mutexExists = false;
+  try { mutexExists = (await lstat(mutex)).isDirectory(); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  if (mutexExists) {
+    let parent = roots.find(entry => entry.path === dirname(mutex));
+    if (!parent) { parent = { id: 'runtime-mutex-parent', path: dirname(mutex) }; roots.push(parent); }
+    declarations.push({ kind: 'path', root: parent.id, name: basename(mutex), classification: 'cache',
+      producer: 'filesystem-mutex-runtime', descendants: true, prune: true });
+  }
+  return { roots, declarations };
 }
 
 export function mergeNestedCensusRoots(input: { roots: CensusRoot[]; declarations: CensusDeclaration[] }) {

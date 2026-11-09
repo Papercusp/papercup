@@ -10,6 +10,9 @@ vi.mock('../oauth/providers', () => ({ googleOAuthClientPath: () => '/fixture/co
 vi.mock('../identity/keychain', () => ({ identityDir: () => '/fixture/sensitive/identity' }));
 vi.mock('../cupboard/ledger-anchor-eas', () => ({ anchorKeyFilePath: () => '/fixture/sensitive/anchor-key' }));
 vi.mock('../papercusp-root', () => ({ papercuspRoot: () => '/relocated/workspaces/registered-project/.papercusp' }));
+// Loading the census must succeed when the interactive login runtime is absent.
+// Its optional lookup can fail closed without losing independent state writers.
+vi.mock('../deployment/account-link-cli', () => { throw new Error('interactive login runtime unavailable'); });
 import { databaseCensusEntries, physicalDatabaseCensusEntries, integrationBaselineCensusDeclarations, secretCensusProducers, unitCensusEntries, unitCensusDeclarations, verifyHostStateCensus, workspaceRegistryCensusProducer, scratchCensusProducer, installedRootCensusProducers, mergeNestedCensusRoots, postgresStorageDeclaration, gitStorageDeclaration } from './state-census-producers';
 import { mkdtemp, writeFile, rm, symlink, readFile, mkdir, chmod, utimes, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -459,10 +462,16 @@ describe('secret census producer adapters', () => {
       await writeFile(join(root, 'source.ts'), 'new source');
       git('add', '.');
       git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'new');
+      // Deletion and a same-content link at another path do not confer ownership.
+      git('rm', '-q', 'source.ts');
+      await symlink('other.ts', join(root, 'source.ts'));
+      git('add', '.');
+      git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'link');
       const matches = historicalGitBlobIdentityResolver(root);
       expect(await matches(join(root, 'source.ts'), Buffer.from('old source'))).toBe(true);
       expect(await matches(join(root, 'source.ts'), Buffer.from('new source'))).toBe(true);
       expect(await matches(join(root, 'source.ts'), Buffer.from('other path only'))).toBe(false);
+      expect(await matches(join(root, 'source.ts'), Buffer.from('other.ts'))).toBe(false);
       expect(await matches(join(root, 'source.ts'), Buffer.from('drift'))).toBe(false);
       expect(await matches(join(root, 'missing.ts'), Buffer.from('old source'))).toBe(false);
       expect(await matches(join(root, '..', 'outside.ts'), Buffer.from('old source'))).toBe(false);
@@ -611,6 +620,10 @@ describe('secret census producer adapters', () => {
       expect(names).toContain(`${session}/apply_patch`);
       expect(names).toContain(`${session}/applypatch`);
       for (const name of ['codex-linux-sandbox', 'codex-execve-wrapper', 'foreign-helper']) expect(names).not.toContain(`${session}/${name}`);
+      // The interactive account-link module is mocked to throw in this suite.
+      // Default writer selection must still prove the native helpers.
+      vi.stubEnv('CODEX_BIN', native);
+      expect((await cliSetupHomeCensusProducer(root)).declarations.map(entry => entry.name)).toContain(`${session}/apply_patch`);
       expect((await cliSetupHomeCensusProducer(root, null)).declarations.map(entry => entry.name)).not.toContain(`${session}/apply_patch`);
       const packageRoot = join(root, 'npm-codex');
       await mkdir(join(packageRoot, 'bin'), { recursive: true });
@@ -636,7 +649,7 @@ describe('secret census producer adapters', () => {
       await symlink(native, join(vendor, process.platform === 'win32' ? 'codex.exe' : 'codex'));
       await rm(optionalNative);
       expect((await cliSetupHomeCensusProducer(root, launcher)).declarations.map(entry => entry.name)).not.toContain(`${session}/apply_patch`);
-    } finally { await rm(root, { recursive: true, force: true }); }
+    } finally { vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); }
   });
   it('retains exact pacing and gym sidefiles while leaving unknown siblings and links visible', async () => {
     const home = await mkdtemp(join(tmpdir(), 'sidefile-census-'));
@@ -647,6 +660,7 @@ describe('secret census producer adapters', () => {
       for (const file of [pacing, `${pacing}.lock`, temporary, `${pacing}.tmp-unknown`, 'unknown']) await writeFile(join(home, '.papercusp', 'provider-pacing', file), 'opaque');
       await writeFile(join(home, '.papercusp', 'template-gym', 'last-run.json'), '{}');
       await symlink(join(home, '.papercusp', 'template-gym', 'last-run.json'), join(home, '.papercusp', 'template-gym', 'runs.jsonl'));
+      vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(home, '.papercusp', 'fs-mutex-locks'));
       const result = await runtimeSidefileCensusProducer(home);
       expect(result.declarations.map(entry => entry.name).sort()).toEqual(['provider-pacing', ...[pacing, `${pacing}.lock`, temporary].map(file => `provider-pacing/${file}`), 'template-gym', 'template-gym/last-run.json'].sort());
       expect(result.declarations.every(entry => entry.classification === 'state' && !entry.descendants && !entry.prune)).toBe(true);
@@ -655,7 +669,25 @@ describe('secret census producer adapters', () => {
       expect(hook).toContain('`${statePath}.tmp-${process.pid}-${randomUUID()}`');
       const gym = await readFile(new URL('../harness/routines/template-gym-runner.ts', import.meta.url), 'utf8');
       for (const name of ['template-gym', 'last-run.json', 'runs.jsonl']) expect(gym).toContain(`'${name}'`);
-    } finally { await rm(home, { recursive: true, force: true }); }
+    } finally { vi.unstubAllEnvs(); await rm(home, { recursive: true, force: true }); }
+  });
+  it('excludes relocated host mutex ownership from transport while preserving unknown siblings and live bytes', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'mutex-census-'));
+    const mutex = join(home, 'runtime', 'relocated-locks');
+    try {
+      await mkdir(join(home, '.papercusp'), { recursive: true });
+      await mkdir(join(mutex, 'live.lock'), { recursive: true });
+      await writeFile(join(mutex, 'live.lock', 'owner.json'), 'live owner fixture');
+      await writeFile(join(home, 'runtime', 'foreign'), 'unproven fixture');
+      vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', mutex);
+      const result = await runtimeSidefileCensusProducer(home);
+      const report = await collectStateCensus({ ...result, readCatalogs: async () => [] });
+      expect(report.inventory.find(entry => entry.name === 'relocated-locks')).toMatchObject({ classification: 'cache',
+        producers: ['filesystem-mutex-runtime'] });
+      expect(report.inventory.some(entry => entry.name.startsWith('relocated-locks/'))).toBe(false);
+      expect(report.residue.map(entry => entry.name)).toContain('foreign');
+      expect(await readFile(join(mutex, 'live.lock', 'owner.json'), 'utf8')).toBe('live owner fixture');
+    } finally { vi.unstubAllEnvs(); await rm(home, { recursive: true, force: true }); }
   });
   it('inventories referenced auth and atomic refresh files without importing unrelated CLI state', async () => {
     const home = await mkdtemp(join(tmpdir(), 'account-census-'));

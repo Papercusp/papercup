@@ -4,9 +4,14 @@ import { tmpdir } from 'node:os';
 import { resolve, join, delimiter } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { runRootCensus, readMigrationCensusColumns, readWorkspaceCensusAccounts, readWorkspaceSetupHomes } from '../../../../scripts/state-census-roots.mts';
+import { runRootCensus, discoverRootCensusInputs, readMigrationCensusColumns, readWorkspaceCensusAccounts, readWorkspaceSetupHomes } from '../../../../scripts/state-census-roots.mts';
+import { collectStateCensus } from '../../../../packages/backup/src/state-census';
 import { archiveReapTail } from '../task-manager/reap-archive';
 import * as censusProducers from './state-census-producers';
+
+// Filesystem-only census must load without the live account/task runtime.
+vi.mock('../deployment/account-pool-store', () => { throw new Error('host account store unavailable'); });
+vi.mock('../task-manager/store', () => { throw new Error('host task store unavailable'); });
 
 // Some credential writers resolve their home at module load. Isolate before
 // collection, so the in-process census cannot enumerate the developer's home.
@@ -17,6 +22,7 @@ const fixtureHome = vi.hoisted(() => {
   for (const [key, value] of Object.entries({ HOME: directory, PAPERCUSP_HOME: directory,
     XDG_CONFIG_HOME: path.join(directory, '.config'), PAPERCUSP_WORKSPACES_ROOT: path.join(directory, 'registry'),
     PAPERCUSP_SCRATCH_ROOT: path.join(directory, 'spills'), PAPERCUSP_STRIP_CACHE_DIR: path.join(directory, 'analysis-cache'),
+    PAPERCUSP_FS_MUTEX_LOCK_DIR: path.join(directory, '.papercusp', 'fs-mutex-locks'),
     // Committed-test runners set these to shared host paths. Both census
     // executions must read fixture files, even when those variables are set.
     AFFECTED_TASK_HISTORY_PATH: path.join(directory, 'affected-cache', 'durations.json'),
@@ -33,6 +39,12 @@ describe('unit census executable exit contract', () => {
     const registry = join(fixtureHome, 'registry');
     mkdirSync(registry, { recursive: true });
     mkdirSync(directory, { recursive: true });
+    const spills = join(fixtureHome, 'spills');
+    mkdirSync(join(spills, 'cached-copy'), { recursive: true });
+    writeFileSync(join(spills, 'cached-copy', 'pyvenv.cfg'), 'not installed virtualenv metadata');
+    const mutex = join(fixtureHome, '.papercusp', 'fs-mutex-locks');
+    mkdirSync(join(mutex, 'runtime-lease'), { recursive: true });
+    writeFileSync(join(mutex, 'runtime-lease', 'pyvenv.cfg'), 'cached marker, never installed storage');
     const owned = join(directory, 'receipt-backed.json');
     const unknown = join(directory, 'unproven.json');
     writeFileSync(owned, 'private fixture', { mode: 0o600 });
@@ -46,15 +58,33 @@ describe('unit census executable exit contract', () => {
         name: 'receipt-backed.json', classification: 'secret', producer: 'historical-stripe-test-config:archive:fixture' }],
     });
     try {
+      const stages: string[] = [];
       const report = await runRootCensus({ checkpointLogDir: join(fixtureHome, 'checkpoint-history'),
-        historicalWriterEvidence: evidence });
+        historicalWriterEvidence: evidence, onStage: stage => stages.push(stage) });
       expect(producer).toHaveBeenCalledWith(evidence);
       expect(report.inventory.some(entry => entry.producers.includes('historical-stripe-test-config:archive:fixture') && entry.classification === 'secret')).toBe(true);
       expect(report.residue.some(entry => entry.name.endsWith('unproven.json'))).toBe(true);
+      expect(report.inventory.find(entry => entry.name === 'spills')?.classification).toBe('cache');
+      expect(report.inventory.some(entry => entry.name.startsWith('spills/'))).toBe(false);
+      expect(report.inventory.find(entry => entry.name === '.papercusp/fs-mutex-locks')?.classification).toBe('cache');
       expect(report.wholeInstallVerified).toBe(false);
+      expect(stages[0]).toBe('installed-roots');
+      expect(stages.at(-1)).toBe('complete');
+      expect(stages).toContain('collect-state-census');
+      expect(stages).not.toContain('host-catalogs');
+      const inputs = JSON.parse(JSON.stringify(await discoverRootCensusInputs({
+        checkpointLogDir: join(fixtureHome, 'checkpoint-history'), historicalWriterEvidence: evidence,
+      })));
+      expect(inputs).not.toHaveProperty('ok');
+      const staged = await collectStateCensus({ roots: inputs.roots, declarations: inputs.declarations,
+        readCatalogs: async () => inputs.catalogEntries, representUnknownSubtrees: true });
+      expect(staged.inventory).toEqual(report.inventory);
+      expect(staged.residue).toEqual(report.residue);
     } finally {
       producer.mockRestore(); rmSync(owned, { force: true }); rmSync(unknown, { force: true });
       rmSync(registry, { recursive: true, force: true });
+      rmSync(spills, { recursive: true, force: true });
+      rmSync(mutex, { recursive: true, force: true });
     }
   });
   it('scans inactive workspace setup homes without owning copied foreign files', async () => {
@@ -91,6 +121,8 @@ describe('unit census executable exit contract', () => {
       throw new Error('pool unavailable');
     })).rejects.toThrow('pool unavailable');
     expect(await readWorkspaceCensusAccounts([], readPool)).toEqual([]);
+    expect(await readWorkspaceCensusAccounts([])).toEqual([]);
+    await expect(readWorkspaceCensusAccounts([{ id: 'active' }])).rejects.toThrow();
   });
 
   it('limits schema reads to exact source tables and preserves the overflow guard', async () => {
@@ -158,6 +190,7 @@ describe('unit census executable exit contract', () => {
             PAPERCUSP_CHECKPOINT_LOG_DIR: join(directory, 'checkpoint-history'),
             PAPERCUSP_DB_ENCRYPTION_KEY_FILE: join(directory, 'db-key') },
         });
+      expect(result.error, result.stderr).toBeUndefined();
       expect(result.status, result.stderr).toBe(1);
       expect(result.stdout.trim(), result.stderr).not.toBe('');
       const report = JSON.parse(result.stdout);
