@@ -4633,20 +4633,37 @@ describe('P032 comparator against persisted spec and per-case evidence', () => {
 });
 
 describe('P032 native receipt qualification against original source and the real ingest frontier', () => {
-  it.each(['supported', 'wrong-version', 'wrong-native-session', 'wrong-source', 'wrong-result', 'wrong-arguments',
-    'incomplete-frontier', 'foreign-workspace', 'foreign-harness', 'foreign-observer', 'unknown-enrollment'] as const)
-  ('qualifies only the original enrolled native observation: %s', async fault => {
+  it.each((['codex', 'omp'] as const).flatMap(client => ['supported', 'wrong-version', 'wrong-native-session', 'wrong-source',
+    'wrong-result', 'wrong-arguments', 'incomplete-frontier', 'foreign-workspace', 'foreign-harness', 'foreign-observer',
+    'unknown-enrollment', 'missing-runtime-version'].map(fault => [client, fault] as const)))
+  ('qualifies only the original enrolled native observation: %s %s', async (client, fault) => {
     const { readManagedCapabilityNativeObservation } = await import('../../managed-capability-inventory-evidence');
     const session = '77777777-2222-3333-4444-555555555555', turn = 'p032-exact-turn';
     const nativeHome = await mkdtemp(path.join(tmpdir(), 'p032-native-proof-'));
-    const sourceDir = path.join(nativeHome, 'sessions', '2026', '11', '09');
+    const sourceDir = client === 'omp' ? path.join(nativeHome, 'sessions', 'private-cwd')
+      : path.join(nativeHome, 'sessions', '2026', '11', '09');
     await mkdir(sourceDir, { recursive: true });
-    const file = path.join(sourceDir, `rollout-2026-11-09T00-00-00-${session}.jsonl`);
+    const file = path.join(sourceDir, client === 'codex' ? `rollout-2026-11-09T00-00-00-${session}.jsonl` : `2026-11-09_${session}.jsonl`);
     const call = { name: 'mcp__papercusp_su__capability_read', arguments: '{"file_path":"private.txt"}',
-      output: '{"text":"original private bytes"}', isError: null,
+      output: '{"text":"original private bytes"}', isError: client === 'omp' ? false : null,
       calledAt: '2026-11-09T00:00:01.000Z', at: '2026-11-09T00:00:02.000Z' };
-    const transcript = [
-      { type: 'session_meta', payload: { id: session, cli_version: '0.163.0' } },
+    const version = client === 'codex' ? '0.163.0' : '18.0.3';
+    const transcript = (client === 'omp' ? [
+      { type: 'session', id: session, version: 3, timestamp: '2026-11-09T00:00:00Z' },
+      { type: 'custom', customType: 'papercusp-omp-runtime', id: 'runtime', parentId: null, timestamp: '2026-11-09T00:00:00Z',
+        data: { schemaVersion: 1, nativeSessionId: session, clientVersion: fault === 'missing-runtime-version' ? undefined : version,
+          measuredAt: '2026-11-09T00:00:00Z' } },
+      { type: 'message', id: 'prompt', parentId: 'runtime', timestamp: '2026-11-09T00:00:00Z',
+        message: { role: 'user', content: [{ type: 'text', text: 'Read the private file' }] } },
+      { type: 'message', id: 'call', parentId: 'prompt', timestamp: call.calledAt,
+        message: { role: 'assistant', stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'p032-exact-call',
+          name: call.name, arguments: JSON.parse(call.arguments) }] } },
+      { type: 'message', id: 'result', parentId: 'call', timestamp: call.at,
+        message: { role: 'toolResult', toolCallId: 'p032-exact-call', toolName: call.name, content: call.output, isError: false } },
+      { type: 'message', id: 'closed', parentId: 'result', timestamp: '2026-11-09T00:00:03Z',
+        message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Inspected original file' }] } },
+    ] : [
+      { type: 'session_meta', payload: { id: session, cli_version: fault === 'missing-runtime-version' ? undefined : version } },
       { type: 'event_msg', payload: { type: 'task_started', turn_id: turn } },
       { timestamp: call.calledAt, type: 'response_item', payload: { type: 'function_call',
         name: call.name, call_id: 'p032-exact-call', arguments: call.arguments } },
@@ -4656,7 +4673,7 @@ describe('P032 native receipt qualification against original source and the real
       { type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 100, output_tokens: 10 },
         last_token_usage: { input_tokens: 100, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 10 } } } },
       { type: 'event_msg', payload: { type: 'task_complete', turn_id: turn } },
-    ].map(row => JSON.stringify(row) + '\n').join('');
+    ]).map(row => JSON.stringify(row) + '\n').join('');
     try {
       await writeFile(file, transcript);
       await db.sql`CREATE TABLE IF NOT EXISTS harness_shared.interactive_usage_files (
@@ -4670,28 +4687,32 @@ describe('P032 native receipt qualification against original source and the real
         caseTitle: 'original case', occurrence: 0, outcome: 'pass' as const, observedAt: call.at,
         observerOwnerId: 'native-observer', sideEffects: [{ ref: 'private-file', observation: 'Original bytes retained' }],
         identity: { planSlug: 'native-cutover', specId: 'exact-atom', specRevision: 1, specFingerprint: 'spec-hash',
-          barHash: 'bar-hash', sourceFingerprint: 'source-hash', clientVersion: '0.163.0',
+          barHash: 'bar-hash', sourceFingerprint: 'source-hash', clientVersion: version,
           runtimeFingerprint: 'runtime-hash', environmentFingerprint: 'environment-hash' },
         native: { advSessionId: 42, nativeSessionId: session, nativeTurnId: turn,
-          sourceSha256: createHash('sha256').update(transcript).digest('hex'), callRecordIndex: 2, resultRecordIndex: 3 }, call,
+          ...(client === 'omp' ? { nativeMessageId: 'closed', messageRecordIndex: 5, callContentIndex: 0 } : {}),
+          sourceSha256: createHash('sha256').update(transcript).digest('hex'), callRecordIndex: client === 'omp' ? 3 : 2,
+          resultRecordIndex: client === 'omp' ? 4 : 3 }, call,
       };
       if (fault === 'wrong-version') observation.identity.clientVersion = 'unobserved-version';
       if (fault === 'wrong-native-session') observation.native.nativeSessionId = 'foreign-native';
       if (fault === 'wrong-source') observation.native.sourceSha256 = '0'.repeat(64);
       if (fault === 'wrong-result') observation.call = { ...call, output: 'invented pass' };
       if (fault === 'wrong-arguments') observation.call = { ...call, arguments: '{"file_path":"other.txt"}' };
-      const enrollment = { id: 42, workspaceId: WORKSPACE, harnessSlug: HARNESS, agent: 'codex',
+      const enrollment = { id: 42, workspaceId: WORKSPACE, harnessSlug: HARNESS, agent: client,
         coordOwnerId: 'native-observer', sessionId: session, startedAt: '2026-11-09T00:00:00Z', endedAt: null };
       if (fault === 'foreign-workspace') enrollment.workspaceId = OTHER_WORKSPACE;
       if (fault === 'foreign-harness') enrollment.harnessSlug = 'another';
       if (fault === 'foreign-observer') enrollment.coordOwnerId = 'another';
       const result = await readManagedCapabilityNativeObservation({ workspaceId: WORKSPACE, harnessSlug: HARNESS },
-        observation, 'codex', {
+        observation, client, {
           // Only host enrollment/home allocation are substituted. The native
           // source parser, filesystem proof and SQL ingest frontier are real.
           session: async () => fault === 'unknown-enrollment' ? null : enrollment as never,
-          handle: () => ({ backend: 'codex', source: 'adv_sessions', ownerId: 'native-observer',
-            codexHome: nativeHome, rolloutId: session, exactResumeSupported: true, missingReason: null }),
+          handle: () => client === 'omp' ? { backend: 'omp', source: 'adv_sessions', ownerId: 'native-observer',
+            agentHome: nativeHome, ompThreadId: session, exactResumeSupported: true, missingReason: null }
+            : { backend: 'codex', source: 'adv_sessions', ownerId: 'native-observer',
+              codexHome: nativeHome, rolloutId: session, exactResumeSupported: true, missingReason: null },
         });
       expect(result).toBe(fault === 'supported');
     } finally {

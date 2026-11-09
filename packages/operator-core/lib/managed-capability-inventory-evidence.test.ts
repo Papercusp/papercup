@@ -191,6 +191,22 @@ describe('manual qualification requires measured artifacts and exact native exec
   it('rejects legacy generic receipt shapes rather than treating tags as manual provenance', () => {
     expect(managedCapabilityManualReceiptSchema.safeParse({ live: true, runId: 'a-runtime' }).success).toBe(false);
   });
+
+  it.each(['codex', 'omp'] as const)('does not count unused native ordinal fields as distinct %s execution', async client => {
+    const f = fixture();
+    const positive = { ...f.control, client };
+    const refusal = { ...positive, ref: { ...positive.ref, bindingId: 23 }, role: 'refusal' as const };
+    const otherRow = { ...f.evidence, id: 23 };
+    const otherReceipt = { ...structuredClone(f.receipt), bindingId: 23, role: 'refusal' as const };
+    otherReceipt.native.resultContentIndex = 99; // Neither client reads this field.
+    if (client === 'codex') otherReceipt.native.callContentIndex = 99;
+    f.artifact.observations.push(otherReceipt);
+    const result = await qualifyManagedCapabilityNativeControls({ workspaceId: 'workspace', harnessSlug: 'papercusp' },
+      [f.evidence, f.artifactRow, otherRow], [positive, refusal], {
+        artifacts: async () => new Map([[22, f.read]]), native: f.native,
+      });
+    expect(result.map(c => c.live)).toEqual([false, false]);
+  });
 });
 
 describe('historical inventory baseline uses literal committed declarations', () => {

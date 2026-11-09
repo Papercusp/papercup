@@ -72,6 +72,35 @@ describe('source-bound closed OMP tool results', () => {
     if (fault === 'early-closure') rows[5].timestamp = '2026-11-09T00:00:01Z';
     if (fault === 'invalid-time') rows[4].timestamp = 'unmeasured';
     if (fault === 'second-header') rows.push({ ...rows[0] });
+    if (fault?.startsWith('runtime-') && fault !== 'runtime-missing') {
+      const runtime: any = { type: 'custom', id: 'runtime', parentId: null, timestamp: '2026-11-09T00:00:00Z',
+        customType: 'papercusp-omp-runtime', data: { schemaVersion: 1, nativeSessionId: session,
+          clientVersion: '18.0.3', measuredAt: '2026-11-09T00:00:00Z' } };
+      rows[1].parentId = runtime.id;
+      if (fault === 'runtime-foreign-session') runtime.data.nativeSessionId = 'foreign';
+      if (fault === 'runtime-format-version') runtime.data.clientVersion = 3;
+      if (fault === 'runtime-wrong-version') runtime.data.clientVersion = '17.0.0';
+      if (fault === 'runtime-schema') runtime.data.schemaVersion = 2;
+      if (fault === 'runtime-unmeasured') delete runtime.data.measuredAt;
+      if (fault === 'runtime-late') runtime.timestamp = runtime.data.measuredAt = '2026-11-09T00:00:02Z';
+      if (fault === 'runtime-backdated') runtime.data.measuredAt = '2026-11-08T23:59:59Z';
+      if (fault === 'runtime-reversed') runtime.data.measuredAt = '2026-11-09T00:00:01Z';
+      if (fault === 'runtime-other-branch') rows[1].parentId = null;
+      if (fault === 'runtime-mid-response') Object.assign(rows[3], { customType: runtime.customType, data: runtime.data });
+      rows.splice(1, 0, runtime);
+      if (fault === 'runtime-resumed') {
+        rows.splice(1, 0, { ...runtime, id: 'prior-runtime', data: { ...runtime.data, clientVersion: '17.3.5' } });
+        runtime.parentId = 'prior-runtime';
+      }
+    }
+    if (fault?.startsWith('runtime-title')) {
+      const title = { type: 'title', v: 1, title: 'Native π', updatedAt: '2026-11-09T00:00:00Z', pad: '' };
+      title.pad = ' '.repeat(256 - Buffer.byteLength(JSON.stringify(title) + '\n'));
+      if (fault === 'runtime-title-malformed') title.v = 2;
+      if (fault === 'runtime-title-short') title.pad = '';
+      rows.unshift(title);
+      if (fault === 'runtime-title-duplicate') rows.splice(1, 0, title);
+    }
     let transcript = rows.map(row => JSON.stringify(row) + '\n').join('');
     if (fault === 'partial-source') transcript = transcript.slice(0, -1);
     if (fault === 'invalid-json') transcript += '{\n';
@@ -88,8 +117,22 @@ describe('source-bound closed OMP tool results', () => {
         parser_state: { initialized: fault !== 'uninitialized', ...(fault === 'bootstrap' ? { bootstrapOffset: 0 } : {}) } }];
     }) as unknown as Sql;
     return { home, file, transcript, calls, sql, binding: { workspaceId: 'private-omp-workspace', nativeSessionId: session,
-      agentHome: home, nativeMessageId: 'closed', messageRecordIndex: 5, callRecordIndex: 2, callContentIndex: 0, resultRecordIndex: 4 } };
+      agentHome: home, nativeMessageId: 'closed', messageRecordIndex: rows.findIndex(r => r.id === 'closed'),
+      callRecordIndex: rows.findIndex(r => r.id === 'call'), callContentIndex: 0, resultRecordIndex: rows.findIndex(r => r.id === 'result') } };
   }
+  it.each(['runtime-supported', 'runtime-resumed', 'runtime-title', 'runtime-title-malformed', 'runtime-title-short',
+    'runtime-title-duplicate', 'runtime-missing', 'runtime-foreign-session', 'runtime-format-version',
+    'runtime-wrong-version', 'runtime-schema', 'runtime-unmeasured', 'runtime-late', 'runtime-backdated',
+    'runtime-reversed', 'runtime-other-branch', 'runtime-mid-response'])
+  ('requires the current executable measurement on the exact call ancestry: %s', async fault => {
+    const f = await fixture(fault);
+    try {
+      const result = await readClosedOmpMessageToolResult(f.sql, { ...f.binding, clientVersion: '18.0.3' });
+      if (['runtime-supported', 'runtime-resumed', 'runtime-title'].includes(fault)) expect(result).toMatchObject({ callId: 'exact-call',
+        callRecordIndex: f.binding.callRecordIndex, resultRecordIndex: f.binding.resultRecordIndex });
+      else expect(result).toBeNull();
+    } finally { await fs.rm(f.home, { recursive: true, force: true }); }
+  });
   it.each(['original', 'error-result', 'string-result'])('retains exact %s native output and arguments through metadata ancestry', async mode => {
     const f = await fixture(mode);
     try {

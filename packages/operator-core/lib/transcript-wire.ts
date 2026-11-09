@@ -40,6 +40,24 @@
  * (Was `partPayloadText` in session-ingest.ts, which now re-exports this so
  * there is exactly one implementation.)
  */
+/** Current OMP session-manager writes a 256-byte title slot before its header;
+ * legacy files start directly at the header. Keep PHYSICAL record indices for
+ * native evidence rather than stripping the title and shifting call ordinals.
+ * Source: OMP session/session-title-slot.ts and SessionManager.#fileBody. */
+export function ompSessionHeaderIndex(lines: readonly string[]): 0 | 1 | null {
+  try {
+    const first = JSON.parse(lines[0] ?? '');
+    if (first?.type === 'session') return 0;
+    if (first?.type !== 'title' || first.v !== 1 || typeof first.title !== 'string' ||
+        typeof first.updatedAt !== 'string' || !Number.isFinite(Date.parse(first.updatedAt)) ||
+        typeof first.pad !== 'string' || !/^ *$/.test(first.pad) ||
+        first.source !== undefined && first.source !== 'auto' && first.source !== 'user' ||
+        new TextEncoder().encode(lines[0] + '\n').length !== 256 ||
+        JSON.parse(lines[1] ?? '')?.type !== 'session') return null;
+    return 1;
+  } catch { return null; }
+}
+
 export function blockPayloadText(v: unknown): string {
   if (typeof v === 'string') return v;
   if (v == null) return '';

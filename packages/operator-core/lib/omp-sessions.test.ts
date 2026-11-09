@@ -28,6 +28,17 @@ describe('omp-sessions', () => {
     rmSync(fakeHome, { recursive: true, force: true });
   });
 
+  it.each(['valid', 'wrong-format', 'wrong-width', 'duplicate'] as const)('discovers the current fixed title/header format: %s', async fault => {
+    const title = { type: 'title', v: 1, title: 'Native π', updatedAt: '2026-11-09T00:00:00Z', pad: '' };
+    title.pad = ' '.repeat(256 - Buffer.byteLength(JSON.stringify(title) + '\n'));
+    if (fault === 'wrong-format') title.v = 2;
+    if (fault === 'wrong-width') title.pad = '';
+    writeSession('-private', '2026-11-09_native.jsonl', [title, ...(fault === 'duplicate' ? [title] : []),
+      { type: 'session', version: 3, id: 'native', timestamp: '2026-11-09T00:00:00Z', cwd: '/private' }]);
+    const { listOmpSessions } = await import('./omp-sessions');
+    expect(listOmpSessions({ limit: 10 }).map(row => row.id)).toEqual(fault === 'valid' ? ['native'] : []);
+  });
+
   it('lists sessions and filters by query', async () => {
     writeSession('-tmp', '2026-05-24T18-38-57-367Z_a.jsonl', [
       { type: 'session', version: 3, id: 'a', timestamp: '2026-05-24T18:38:57.367Z', cwd: '/tmp', title: 'Agent Compaction Handoff Prompt' },

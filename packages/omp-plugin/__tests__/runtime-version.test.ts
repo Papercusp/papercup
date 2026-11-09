@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { describe, expect, it } from 'vitest';
 import { resolveOnPath, wellKnownBackendBin } from '../../operator-core/lib/backend-bin-resolve.mjs';
+import { ompSessionHeaderIndex } from '../../operator-core/lib/transcript-wire';
 
 describe('installed OMP startup version metadata', () => {
   it.each(['measured', 'header-only'] as const)('retains %s native provenance before the first prompt', async mode => {
@@ -53,9 +54,12 @@ describe('installed OMP startup version metadata', () => {
       });
       const proof = JSON.parse(readFileSync(resultFile, 'utf8'));
       expect(proof.measured).toBe(mode === 'measured');
-      const records = readFileSync(proof.file, 'utf8').trimEnd().split('\n').map(line => JSON.parse(line));
-      expect(records[0]).toMatchObject({ type: 'session', id: proof.id });
-      expect(typeof records[0].version).toBe('number');
+      const lines = readFileSync(proof.file, 'utf8').trimEnd().split('\n');
+      const records = lines.map(line => JSON.parse(line));
+      const headerIndex = ompSessionHeaderIndex(lines);
+      expect(headerIndex, JSON.stringify(records.slice(0, 2))).not.toBeNull();
+      expect(records[headerIndex!]).toMatchObject({ type: 'session', id: proof.id });
+      expect(typeof records[headerIndex!].version).toBe('number');
       expect(records.some(row => row.type === 'message')).toBe(false);
       const stamps = records.filter(row => row.type === 'custom' && row.customType === 'papercusp-omp-runtime');
       expect(stamps).toHaveLength(mode === 'measured' ? 1 : 0);

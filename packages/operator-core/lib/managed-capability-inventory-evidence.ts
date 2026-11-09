@@ -176,10 +176,12 @@ export async function readManagedCapabilityNativeObservation(input: { workspaceI
     if (!session || session.workspaceId !== input.workspaceId || session.harnessSlug !== input.harnessSlug ||
         session.agent !== client || session.coordOwnerId !== observation.observerOwnerId) return false;
     const handle = (deps.handle ?? nativeSessionHandleForAdvSession)(session), native = observation.native;
+    if (!handle || handle.backend !== client) return false;
     const scope = { workspaceId: input.workspaceId, nativeSessionId: native.nativeSessionId,
       callRecordIndex: native.callRecordIndex, resultRecordIndex: native.resultRecordIndex };
     let pair: Awaited<ReturnType<typeof readers.readClosedCodexTurnToolResult>> |
-      Awaited<ReturnType<typeof readers.readClosedClaudeMessageToolResult>> = null;
+      Awaited<ReturnType<typeof readers.readClosedClaudeMessageToolResult>> |
+      Awaited<ReturnType<typeof readers.readClosedOmpMessageToolResult>> = null;
     if (handle?.backend === 'codex' && handle.rolloutId === native.nativeSessionId && native.nativeTurnId) {
       pair = await readers.readClosedCodexTurnToolResult(getOrgPg().sql, { ...scope,
         codexHome: handle.codexHome, nativeTurnId: native.nativeTurnId });
@@ -190,6 +192,12 @@ export async function readManagedCapabilityNativeObservation(input: { workspaceI
         claudeConfigDir: handle.configDir, nativeMessageId: native.nativeMessageId,
         messageRecordIndex: native.messageRecordIndex, sourceSha256: native.sourceSha256,
         callContentIndex: native.callContentIndex, resultContentIndex: native.resultContentIndex });
+    } else if (handle?.backend === 'omp' && handle.ompThreadId === native.nativeSessionId && handle.agentHome &&
+        native.nativeMessageId && native.messageRecordIndex !== undefined && native.callContentIndex !== undefined) {
+      pair = await readers.readClosedOmpMessageToolResult(getOrgPg().sql, { ...scope,
+        agentHome: handle.agentHome, nativeMessageId: native.nativeMessageId,
+        messageRecordIndex: native.messageRecordIndex, callContentIndex: native.callContentIndex,
+        clientVersion: observation.identity.clientVersion });
     }
     if (!pair || !Number.isFinite(Date.parse(session.startedAt)) ||
         session.endedAt && !Number.isFinite(Date.parse(session.endedAt)) || pair.sourceSha256 !== native.sourceSha256 ||
@@ -200,6 +208,7 @@ export async function readManagedCapabilityNativeObservation(input: { workspaceI
     // Bracket version extraction with the canonical reader's content digest.
     const bytes = await readFile(pair.file);
     if (bytes.length > 16 * 1024 * 1024 || createHash('sha256').update(bytes).digest('hex') !== pair.sourceSha256) return false;
+    if (client === 'omp') return true; // Exact startup version already checked by the canonical OMP reader.
     const records = bytes.toString('utf8').trimEnd().split('\n').map(line => JSON.parse(line));
     const versions = client === 'codex' ? records.filter(r => r.type === 'session_meta' && r.payload?.id === native.nativeSessionId)
       .map(r => r.payload.cli_version) : records.filter(r => r.sessionId === native.nativeSessionId).map(r => r.version).filter(Boolean);
@@ -246,7 +255,8 @@ export async function qualifyManagedCapabilityNativeControls(input: { workspaceI
     const live = await (deps.native ?? readManagedCapabilityNativeObservation)(input, receipt, control.client);
     if (live) nativeKeys.set(index, JSON.stringify([control.client, receipt.native.nativeSessionId,
       receipt.native.callRecordIndex, receipt.native.resultRecordIndex,
-      receipt.native.callContentIndex ?? null, receipt.native.resultContentIndex ?? null]));
+      control.client === 'codex' ? null : receipt.native.callContentIndex ?? null,
+      control.client === 'claude' ? receipt.native.resultContentIndex ?? null : null]));
     return { ...control, live };
   }));
   const counts = new Map<string, number>();

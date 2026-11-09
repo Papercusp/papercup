@@ -25,6 +25,7 @@ import { basename, join, resolve } from 'node:path';
 import { getOrgPg, generated } from '@papercusp/db-org';
 import { eq } from 'drizzle-orm';
 import { loadHarnessRegistry } from './harness-registry';
+import { ompSessionHeaderIndex } from './transcript-wire';
 
 // Lazy (same pattern as sessionsRoot() below): this module must stay side-effect-free at
 // import time — it's transitively reachable from the coordination message-send path
@@ -206,15 +207,16 @@ function clampLimit(value: number | undefined, fallback: number, max: number): n
 
 function readHeader(filePath: string): SessionHeader | null {
   try {
-    // Read just the first 4KB — the session header is the first line.
+    // The bounded prefix contains a legacy header or the fixed title + header.
     const fd = openSync(filePath, 'r');
     const buf = Buffer.alloc(4096);
     try {
       const n = readSync(fd, buf, 0, 4096, 0);
       const text = buf.slice(0, n).toString('utf8');
-      const newline = text.indexOf('\n');
-      const line = newline === -1 ? text : text.slice(0, newline);
-      const parsed = JSON.parse(line) as SessionHeader;
+      const lines = text.split('\n');
+      const headerIndex = ompSessionHeaderIndex(lines);
+      if (headerIndex === null) return null;
+      const parsed = JSON.parse(lines[headerIndex]!) as SessionHeader;
       if (parsed.type !== 'session' || !parsed.id) return null;
       return parsed;
     } finally {

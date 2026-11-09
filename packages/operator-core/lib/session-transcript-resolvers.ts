@@ -26,7 +26,7 @@ import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-d
 import type { Sql } from 'postgres';
 import type { IdentityTurnUsageBinding, IdentityTurnBilledCost } from './cupboard/shadow-metering-reader';
 import type { ClosedCodexSessionPopulation, ClosedClaudeSessionPopulation } from './interactive-usage/ingest-adapters';
-import { codexToolCallArgsRaw } from './transcript-wire';
+import { codexToolCallArgsRaw, ompSessionHeaderIndex } from './transcript-wire';
 
 class CodexSourceProofError extends Error {
   constructor(readonly code: Exclude<IdentityTurnBilledCost, { ok: true }>['code'], detail: string) { super(detail); }
@@ -477,17 +477,20 @@ export async function readClosedCodexTurnToolResult(sql: Sql, input: {
 
 type OmpEvidenceRecord = {
   type?: unknown; id?: unknown; parentId?: unknown; timestamp?: unknown; version?: unknown;
+  customType?: unknown; data?: { schemaVersion?: unknown; nativeSessionId?: unknown; clientVersion?: unknown; measuredAt?: unknown };
   message?: { role?: unknown; stopReason?: unknown; content?: unknown; toolCallId?: unknown; toolName?: unknown; isError?: unknown };
 };
 
 /** Exact OMP call/result ancestry ending in one closed native response. The
  * enrolled caller supplies the home; no shared-home fallback or authored path
- * is accepted. This proves original execution, not the CLI's installed version
- * (the session header's numeric version is only its transcript format). */
+ * is accepted. Version qualification additionally needs the startup hook's
+ * measurement of its own executable on this call's native ancestry. The
+ * session header's numeric version is only its transcript format. */
 export async function readClosedOmpMessageToolResult(sql: Sql, input: {
   readonly workspaceId: string; readonly nativeSessionId: string; readonly agentHome: string;
   readonly nativeMessageId: string; readonly messageRecordIndex: number;
   readonly callRecordIndex: number; readonly callContentIndex: number; readonly resultRecordIndex: number;
+  readonly clientVersion?: string;
 }): Promise<{ file: string; sourceSha256: string; nativeSessionId: string; nativeMessageId: string;
   messageRecordIndex: number; callRecordIndex: number; callContentIndex: number; resultRecordIndex: number;
   callId: string; name: string; arguments: string; output: string | unknown[]; isError: boolean;
@@ -503,19 +506,22 @@ export async function readClosedOmpMessageToolResult(sql: Sql, input: {
     if (!file) return null;
     const source = await readCompleteNativeSource(binding.agentHome, 'sessions', file);
     if (!source.transcript.endsWith('\n')) return null;
-    const records: OmpEvidenceRecord[] = source.transcript.slice(0, -1).split('\n').map(line => JSON.parse(line));
+    const lines = source.transcript.slice(0, -1).split('\n');
+    const records: OmpEvidenceRecord[] = lines.map(line => JSON.parse(line));
     if (records.some(row => !row || typeof row !== 'object' || Array.isArray(row))) return null;
-    const header = records[0];
+    const headerIndex = ompSessionHeaderIndex(lines);
+    if (headerIndex === null) return null;
+    const header = records[headerIndex];
     if (header?.type !== 'session' || header.id !== binding.nativeSessionId ||
       !Number.isSafeInteger(header.version) || (header.version as number) < 1 ||
-      records.slice(1).some(row => row.type === 'session')) return null;
+      records.slice(headerIndex + 1).some(row => row.type === 'session' || row.type === 'title')) return null;
     const [frontier] = await sql<{ byte_offset: string; parser_state: { initialized?: boolean; bootstrapOffset?: number } }[]>`
       SELECT byte_offset::text, parser_state FROM harness_shared.interactive_usage_files
       WHERE workspace_id = ${binding.workspaceId} AND file_path = ${source.file}`;
     if (!frontier || frontier.parser_state?.initialized !== true || frontier.parser_state.bootstrapOffset !== undefined ||
       Number(frontier.byte_offset) !== Buffer.byteLength(source.transcript) || !await source.unchanged()) return null;
     const ordinals = new Map<string, number>();
-    for (let index = 1; index < records.length; index++) {
+    for (let index = headerIndex + 1; index < records.length; index++) {
       const record = records[index]!;
       if (typeof record.id !== 'string' || !record.id.trim() || ordinals.has(record.id) ||
         record.parentId !== null && (typeof record.parentId !== 'string' || !ordinals.has(record.parentId))) return null;
@@ -550,6 +556,27 @@ export async function readClosedOmpMessageToolResult(sql: Sql, input: {
       !ancestry.includes(binding.callRecordIndex) || !ancestry.includes(binding.resultRecordIndex) ||
       ancestry.some(index => index !== binding.messageRecordIndex && records[index]?.message?.role === 'assistant' &&
         records[index]?.message?.stopReason !== 'toolUse')) return null;
+    if (binding.clientVersion !== undefined) {
+      // The nearest startup on THIS branch owns the call. Older installed
+      // versions and physical neighbors cannot qualify a resumed incarnation.
+      let versionCursor: number | undefined = binding.callRecordIndex;
+      let runtime: OmpEvidenceRecord | undefined;
+      while (versionCursor !== undefined) {
+        const row: OmpEvidenceRecord = records[versionCursor]!;
+        if (row.type === 'custom' && row.customType === 'papercusp-omp-runtime') { runtime = row; break; }
+        versionCursor = typeof row.parentId === 'string' ? ordinals.get(row.parentId) : undefined;
+      }
+      const measuredAt = typeof runtime?.data?.measuredAt === 'string' ? Date.parse(runtime.data.measuredAt) : NaN;
+      const recordedAt = typeof runtime?.timestamp === 'string' ? Date.parse(runtime.timestamp) : NaN;
+      const headerAt = typeof header.timestamp === 'string' ? Date.parse(header.timestamp) : NaN;
+      if (runtime?.data?.schemaVersion !== 1 || runtime.data.nativeSessionId !== binding.nativeSessionId ||
+          typeof runtime.data.clientVersion !== 'string' ||
+          !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(runtime.data.clientVersion) ||
+          runtime.data.clientVersion !== binding.clientVersion || ![measuredAt, recordedAt, headerAt].every(Number.isFinite) ||
+          headerAt > measuredAt || measuredAt > recordedAt || recordedAt > Date.parse(String(call.timestamp)) ||
+          ancestry.some(index => index > binding.callRecordIndex && records[index]?.type === 'custom' &&
+            records[index]?.customType === 'papercusp-omp-runtime')) return null;
+    }
     const calls = records.flatMap(row => row.type === 'message' && row.message?.role === 'assistant' &&
       Array.isArray(row.message.content) ? row.message.content.filter(part => part?.type === 'toolCall' && part.id === request.id) : []);
     const results = records.filter(row => row.type === 'message' && row.message?.role === 'toolResult' && row.message.toolCallId === request.id);
