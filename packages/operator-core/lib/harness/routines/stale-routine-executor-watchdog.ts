@@ -569,7 +569,7 @@ export async function restartStaleBgHostExecutor(
   // A real attempt that did not restart (refused, failed, unverified) backs off
   // instead of re-running every tick; success/coalesce arm the longer cooldown inside.
   // Consecutive drain refusals double the wait (WI-6554700010009238).
-  if (result.attempted && !result.restarted && !result.coalesced) {
+  if (result.attempted && !result.restarted && (!result.coalesced || !result.verified)) {
     const drainRefused = result.code === 'git_sync_barrier_drain_timeout';
     staleExecutorConsecutiveDrainRefusals = drainRefused ? staleExecutorConsecutiveDrainRefusals + 1 : 0;
     // P-037: behind a pass that would not yield, wait for that pass, not the clock.
@@ -683,14 +683,13 @@ async function attemptStaleBgHostExecutorRestart(
       ((pid: unknown) => waitForStaleExecutorRestartGeneration(pid, { run }));
     if (result.error && body?.ok !== false) {
       // dev:restart can restart this bg-host before ptool receives the HTTP
-      // response. If no explicit answer arrived, a changed MainPID is the
-      // durable receipt that the self-restart succeeded; an unchanged or
-      // unreadable generation keeps the ordinary ptool_failed classification.
+      // response. A changed MainPID proves a process transition, not which
+      // bundle loaded. Without the restart tool's code-load receipt, leave
+      // qualification blocked even when the replacement generation is visible.
       const generation =
         body?.ok !== true && beforePid !== null ? await verify(beforePid).catch(() => null) : null;
       if (generation?.verified) {
-        staleExecutorRestartCooldownUntilMs = nowMs + STALE_EXECUTOR_RESTART_COOLDOWN_MS;
-        return { attempted: true, restarted: true, coalesced: false, verified: true, code: 'restarted' };
+        return { ...skipped('restart_build_unverified'), attempted: true, error: result.error };
       }
       return { ...skipped('ptool_failed'), attempted: true, error: result.error };
     }
@@ -704,6 +703,9 @@ async function attemptStaleBgHostExecutorRestart(
     }
     const coalesced = body.coalesced === true;
     if (coalesced) {
+      if (body.verified !== true || body.loadedNewCode !== true) {
+        return { ...skipped('restart_build_unverified'), attempted: true, coalesced: true };
+      }
       staleExecutorRestartCooldownUntilMs = nowMs + STALE_EXECUTOR_RESTART_COOLDOWN_MS;
       return { attempted: true, restarted: false, coalesced: true, verified: body.verified === true, code: 'coalesced' };
     }
@@ -711,6 +713,9 @@ async function attemptStaleBgHostExecutorRestart(
     const generation = await verify(body.restartedFromPid ?? beforePid);
     if (!generation.verified) {
       return { attempted: true, restarted: false, coalesced: false, verified: false, code: 'restart_unverified' };
+    }
+    if (body.loadedNewCode !== true) {
+      return { ...skipped('restart_build_unverified'), attempted: true };
     }
     staleExecutorRestartCooldownUntilMs = nowMs + STALE_EXECUTOR_RESTART_COOLDOWN_MS;
     return { attempted: true, restarted: true, coalesced: false, verified: true, code: 'restarted' };
@@ -901,6 +906,9 @@ export interface ExecutorStalenessInput {
 
 export interface ExecutorStalenessVerdict {
   stale: boolean;
+  /** Unknown identity is actionable, but is not evidence of code drift or
+   * permission to restart from the same unqualified inputs. */
+  identityBlocker?: 'executor-build-identity-unavailable' | 'current-source-identity-unavailable';
   reason: string;
   ageMs: number;
   /** Echoed through so the pager/broadcast can rank by DRIFT, not just uptime.
@@ -974,9 +982,8 @@ export function routineDriftSentence(drift: RoutineCodeDrift | null | undefined)
  * PURE: is this process a stale routine executor right now?
  *
  * Deliberately conservative in every ambiguous direction — a false alert here
- * pages a human for nothing, but a false SILENCE is the exact bug this exists
- * to close, so the asymmetry is: fail toward not-stale whenever the inputs are
- * incomplete, and only alert on a positively-confirmed commit divergence.
+ * pages a human for nothing. Missing identity is a separate blocker, never a
+ * healthy verdict or a fabricated commit divergence authorizing a restart.
  */
 export function evaluateExecutorStaleness(input: ExecutorStalenessInput): ExecutorStalenessVerdict {
   const ageMs = Math.max(0, input.now - input.bootTimeMs);
@@ -986,17 +993,21 @@ export function evaluateExecutorStaleness(input: ExecutorStalenessInput): Execut
   if (input.thresholdMs <= 0) {
     return { stale: false, reason: 'kill switch (thresholdMs <= 0)', ageMs };
   }
+  const commit = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i;
+  if (!input.bootCommit || !commit.test(input.bootCommit) || !input.currentCommit || !commit.test(input.currentCommit)) {
+    const loadedUnavailable = !input.bootCommit || !commit.test(input.bootCommit);
+    return {
+      stale: false,
+      identityBlocker: loadedUnavailable ? 'executor-build-identity-unavailable' : 'current-source-identity-unavailable',
+      reason: `${loadedUnavailable ? 'loaded executor' : 'current tree'} commit unresolvable or unqualified; ` +
+        'keep recovery blocked until qualified source and loaded-artifact identity are available',
+      ageMs,
+    };
+  }
   if (ageMs < input.thresholdMs) {
     return {
       stale: false,
       reason: `process uptime ${Math.round(ageMs / 60_000)}m is under the ${Math.round(input.thresholdMs / 60_000)}m threshold`,
-      ageMs,
-    };
-  }
-  if (!input.bootCommit || !input.currentCommit) {
-    return {
-      stale: false,
-      reason: 'boot or current tree commit unresolvable (no git checkout, or a read failed) — skipping, fail-safe',
       ageMs,
     };
   }
@@ -1052,6 +1063,7 @@ export interface StaleExecutorEscalation {
   kind: string;
   harness_slug: string;
   identity: string;
+  identityBlocker?: ExecutorStalenessVerdict['identityBlocker'];
   ageHours: number;
   commitsBehind: number | null;
   /** WHICH routine code is wrong, not just how much — the field that lets a reader
@@ -1143,6 +1155,7 @@ async function raiseExecutorStalenessAlarm(opts: {
       kind: phase,
       harness_slug: installSlug,
       identity,
+      ...(verdict.identityBlocker ? { identityBlocker: verdict.identityBlocker } : {}),
       ageHours,
       commitsBehind: verdict.commitsBehind ?? null,
       routineDrift: verdict.routineDrift ?? null,
@@ -1151,7 +1164,9 @@ async function raiseExecutorStalenessAlarm(opts: {
       // has scrolled away — so the remediation has to travel WITH it, not only on the
       // broadcast that announced it.
       unit: alarmContext.unit,
-      restartLever: alarmContext.restartLever,
+      restartLever: verdict.identityBlocker
+        ? `Obtain qualified immutable source/artifact evidence before activation with ${alarmContext.restartLever}`
+        : alarmContext.restartLever,
       restartSafety: alarmContext.restartSafety,
     };
 
@@ -1178,7 +1193,9 @@ async function raiseExecutorStalenessAlarm(opts: {
       const { notifyAttention } = await import('../../attention-notify');
       await notifyAttention({
         kind: 'intervention',
-        title: `Stale routine executor (${alarmContext.identityLabel}) is running code older than the checkout`,
+        title: verdict.identityBlocker
+          ? `Routine executor (${alarmContext.identityLabel}) has unavailable qualification identity`
+          : `Stale routine executor (${alarmContext.identityLabel}) is running code older than the checkout`,
         body: verdict.reason,
         importance: 'urgent',
         workspaceId,
@@ -1189,7 +1206,7 @@ async function raiseExecutorStalenessAlarm(opts: {
           routineDrift: verdict.routineDrift ?? null,
           identity,
           unit: alarmContext.unit,
-          restartLever: alarmContext.restartLever,
+          restartLever: rowFacts.restartLever,
           restartSafety: alarmContext.restartSafety,
         },
       });
@@ -1200,7 +1217,9 @@ async function raiseExecutorStalenessAlarm(opts: {
     const { broadcastSevereEvent } = await import('../../severe-event-broadcast');
     await broadcastSevereEvent({
       summary:
-        `stale routine executor ${alarmContext.identityLabel} has run ${ageHours}h${driftSuffix(verdict)} with code from ` +
+        verdict.identityBlocker
+        ? `Routine executor ${alarmContext.identityLabel} remains blocked: ${verdict.reason}.`
+        : `stale routine executor ${alarmContext.identityLabel} has run ${ageHours}h${driftSuffix(verdict)} with code from ` +
         `its boot while PAPERCUSP_DBOS_ROUTINES=1 and the checkout has moved` +
         // The headline is the line most readers act (or fail to act) on, so the
         // functional drift belongs HERE and not only in the body: a magnitude alone
@@ -1210,7 +1229,7 @@ async function raiseExecutorStalenessAlarm(opts: {
         `are not loaded by this process; restart ${alarmContext.unit} with ${alarmContext.restartLever} to pick up current code.`,
       body:
         `${verdict.reason}\n\nThe worker identity is not necessarily the systemd MainPID. Do NOT kill or duplicate a worker PID ` +
-        `to "fix" this; restart ${alarmContext.unit} with ${alarmContext.restartLever}, or stop carrying ` +
+        `to "fix" this; ${rowFacts.restartLever}, or stop carrying ` +
         `PAPERCUSP_DBOS_ROUTINES=1 on that service if it no longer needs to run routines.` +
         (alarmContext.restartSafety ? `\n\n${alarmContext.restartSafety}` : ''),
       category: 'severe-event',
@@ -1266,7 +1285,7 @@ async function clearExecutorStalenessAlarm(opts: { installSlug: string; identity
 // ── the sweep ───────────────────────────────────────────────────────────────
 
 export interface StaleExecutorSweepResult {
-  outcome: 'alerted' | 'skipped' | 'healthy' | 'gate-code-restart' | 'error';
+  outcome: 'alerted' | 'blocked' | 'skipped' | 'healthy' | 'gate-code-restart' | 'error';
   verdict?: ExecutorStalenessVerdict;
   reason: string;
   paged?: boolean;
@@ -1433,7 +1452,7 @@ export async function staleRoutineExecutorSweep(opts: {
       return result;
     };
 
-    if (!verdict.stale) {
+    if (!verdict.stale && !verdict.identityBlocker) {
       const clearAlarm = deps.clearExecutorStalenessAlarm ?? clearExecutorStalenessAlarm;
       // A young or unmeasurable process is not a confirmed recovery. Keep an
       // existing alarm until the actual loaded commit matches current source.
@@ -1454,17 +1473,20 @@ export async function staleRoutineExecutorSweep(opts: {
       return { outcome: 'healthy', verdict, reason: verdict.reason, recovered, ...(gateCode ? { gateCode } : {}) };
     }
 
-    const restart = await runRestart(verdict);
+    // An unmeasured loaded pin cannot authorize the drift actuator. Persist the
+    // existing identity-scoped repair episode instead of bouncing dirty inputs.
+    const restart = verdict.identityBlocker ? undefined : await runRestart(verdict);
 
     const windowHours = Math.max(1, Math.round(thresholdSec / 3_600));
     const recentFires = deps.recentWatchdogFires ?? recentWatchdogFires;
     const alreadyFiredRecently =
       (await recentFires(workspaceId, installSlug, windowHours, 'stale-routine-executor', identity)) > 0;
     if (alreadyFiredRecently) {
-      return { outcome: 'skipped', verdict, reason: 'debounced', restart };
+      return { outcome: verdict.identityBlocker ? 'blocked' : 'skipped', verdict,
+        reason: verdict.identityBlocker ? verdict.reason : 'debounced', restart };
     }
 
-    const reason = scopedFireReason(`stale routine executor: ${verdict.reason}`, identity, 'stale-routine-executor');
+    const reason = scopedFireReason(`stale routine executor (${identity}): ${verdict.reason}`, identity, 'stale-routine-executor');
     const claimFire = deps.claimWatchdogFire ?? claimWatchdogFire;
     const claimed = await claimFire({
       workspaceId,
@@ -1476,13 +1498,14 @@ export async function staleRoutineExecutorSweep(opts: {
       scopeKey: identity,
     });
     if (!claimed) {
-      return { outcome: 'skipped', verdict, reason: 'debounced (raced or backed off)', restart };
+      return { outcome: verdict.identityBlocker ? 'blocked' : 'skipped', verdict,
+        reason: verdict.identityBlocker ? verdict.reason : 'debounced (raced or backed off)', restart };
     }
 
     const raiseAlarm = deps.raiseExecutorStalenessAlarm ?? raiseExecutorStalenessAlarm;
     const paged = await raiseAlarm({ workspaceId, installSlug, identity, verdict, now });
     console.warn(`[stale-routine-executor] ALERT (${identity}): ${reason}`);
-    return { outcome: 'alerted', verdict, reason, paged, restart };
+    return { outcome: verdict.identityBlocker ? 'blocked' : 'alerted', verdict, reason, paged, restart };
   } catch (e) {
     return { outcome: 'error', reason: e instanceof Error ? e.message : String(e) };
   }

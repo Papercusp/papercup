@@ -4,8 +4,8 @@
  * release-deploy-staleness-watchdog.ts's already-tested shape byte-for-byte and
  * is exercised indirectly via those siblings; this file is the DISCRIMINATION
  * bar for the actual judgment call: healthy-not-enabled, healthy-under-uptime,
- * healthy-unresolvable (fail-safe), healthy-unchanged-commit, and the one true
- * stale case.
+ * blocked-unresolvable, healthy-unchanged-commit, and confirmed drift, including
+ * the guarded restart's process-versus-loaded-code discrimination.
  */
 import { existsSync } from 'node:fs';
 import path from 'node:path';
@@ -148,7 +148,7 @@ describe('evaluateExecutorStaleness — the pure decider', () => {
     expect(v.reason).toContain('under the');
   });
 
-  it('fails SAFE (not stale) when either commit is unresolvable — never alert on an unreadable git state', () => {
+  it('keeps either unresolvable identity blocked without inventing code drift', () => {
     const v1 = evaluateExecutorStaleness({
       routinesEnabled: true,
       bootCommit: null,
@@ -158,6 +158,7 @@ describe('evaluateExecutorStaleness — the pure decider', () => {
       thresholdMs: TWO_H,
     });
     expect(v1.stale).toBe(false);
+    expect(v1.identityBlocker).toBe('executor-build-identity-unavailable');
     expect(v1.reason).toContain('unresolvable');
 
     const v2 = evaluateExecutorStaleness({
@@ -169,8 +170,17 @@ describe('evaluateExecutorStaleness — the pure decider', () => {
       thresholdMs: TWO_H,
     });
     expect(v2.stale).toBe(false);
+    expect(v2.identityBlocker).toBe('current-source-identity-unavailable');
     expect(v2.reason).toContain('unresolvable');
   });
+
+  it.each([null, '', 'HEAD', 'a'.repeat(40) + '+dirty'])(
+    'blocks invalid loaded identity %s even before the age floor or when both pins are equal', bootCommit => {
+      const v = evaluateExecutorStaleness({ routinesEnabled: true, bootCommit, currentCommit: bootCommit,
+        bootTimeMs: BOOT, now: BOOT + 1, thresholdMs: TWO_H });
+      expect(v).toMatchObject({ stale: false, identityBlocker: 'executor-build-identity-unavailable' });
+    },
+  );
 
   it('healthy past the threshold when the boot commit still matches tree HEAD — nothing has moved', () => {
     const sha = 'c'.repeat(40);
@@ -378,7 +388,7 @@ describe('stale bg-host remediation — guarded, injectable, and generation-veri
     expect(result).toMatchObject({ attempted: true, restarted: false, code: 'gate_collision' });
   });
 
-  it('recognizes a self-restart after ptool disconnects when the bg-host MainPID changes (EI-27134307706925262)', async () => {
+  it('does not qualify PID-only recovery after ptool disconnects and the bg-host MainPID changes', async () => {
     let systemctlReads = 0;
     const result = await restartStaleBgHostExecutor('port-3271', staleVerdict(), {
       now: () => 9_000_000_000_000,
@@ -398,12 +408,12 @@ describe('stale bg-host remediation — guarded, injectable, and generation-veri
 
     expect(result).toMatchObject({
       attempted: true,
-      restarted: true,
+      restarted: false,
       coalesced: false,
-      verified: true,
-      code: 'restarted',
+      verified: false,
+      code: 'restart_build_unverified',
     });
-    expect(result).not.toHaveProperty('error');
+    expect(result.error).toContain('Command failed');
     expect(systemctlReads).toBe(2);
   });
 
@@ -433,7 +443,7 @@ describe('stale bg-host remediation — guarded, injectable, and generation-veri
     const run = async (command: string, args: string[], options: { stdin: string; timeout: number }) => {
       calls.push({ command, args, stdin: options.stdin, timeout: options.timeout });
       if (command === 'systemctl') return { stdout: '101\n' };
-      return { stdout: JSON.stringify({ ok: true, restarted: true, restartedFromPid: 101 }) };
+      return { stdout: JSON.stringify({ ok: true, restarted: true, restartedFromPid: 101, loadedNewCode: true }) };
     };
 
     const result = await restartStaleBgHostExecutor('port-3271', staleVerdict(), {
@@ -483,6 +493,31 @@ describe('stale bg-host remediation — guarded, injectable, and generation-veri
     nowMs += STALE_EXECUTOR_RESTART_COOLDOWN_MS + 1;
   });
 
+  it.each([undefined, null, false])('keeps a replacement generation unqualified when loadedNewCode is %s', async loadedNewCode => {
+    const result = await restartStaleBgHostExecutor('port-3271', staleVerdict(), {
+      now: () => 9_000_000_000_000,
+      ptoolScript: '/tmp/ptool.mjs',
+      run: async command => command === 'systemctl' ? { stdout: '101\n' }
+        : { stdout: JSON.stringify({ ok: true, restarted: true, restartedFromPid: 101, loadedNewCode }) },
+      verifyGeneration: async () => ({ verified: true, beforePid: 101, observedPid: 202, code: 'generation_changed' }),
+    });
+    expect(result).toMatchObject({ attempted: true, restarted: false, verified: false, code: 'restart_build_unverified' });
+  });
+
+  it('does not turn a coalesced PID receipt with unknown loaded code into verified recovery', async () => {
+    const now = () => 9_000_000_000_000;
+    const run = vi.fn(async (command: string) => command === 'systemctl' ? { stdout: '101\n' }
+      : { stdout: JSON.stringify({ ok: true, coalesced: true, verified: true }) });
+    const deps = { now, run, ptoolScript: '/tmp/ptool.mjs' };
+    await expect(restartStaleBgHostExecutor('port-3271', staleVerdict(), deps)).resolves.toMatchObject({
+      coalesced: true, verified: false, code: 'restart_build_unverified',
+    });
+    await expect(restartStaleBgHostExecutor('port-3271', staleVerdict(), deps)).resolves.toMatchObject({
+      attempted: false, code: 'restart_cooldown',
+    });
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
   it('defers the stale restart when retention cannot reach its safe checkpoint within the bound', async () => {
     let nowMs = 2_000_000_000;
     let retentionGateCalls = 0;
@@ -490,7 +525,7 @@ describe('stale bg-host remediation — guarded, injectable, and generation-veri
     const run = async (command: string) => {
       if (command === 'systemctl') return { stdout: '101\\n' };
       ptoolCalls += 1;
-      return { stdout: JSON.stringify({ ok: true, restarted: true, restartedFromPid: 101 }) };
+      return { stdout: JSON.stringify({ ok: true, restarted: true, restartedFromPid: 101, loadedNewCode: true }) };
     };
     const result = await restartStaleBgHostExecutor('port-3271', staleVerdict(), {
       now: () => nowMs,
@@ -636,7 +671,7 @@ describe('stale bg-host remediation — guarded, injectable, and generation-veri
     expect(ptoolCalls).toBe(3);
 
     // A successful restart resets the count: the next refusal waits the base 3 min again.
-    answer = { ok: true, restarted: true, restartedFromPid: 101 };
+    answer = { ok: true, restarted: true, restartedFromPid: 101, loadedNewCode: true };
     await expect(attempt()).resolves.toMatchObject({ restarted: true, code: 'restarted' });
     nowMs += STALE_EXECUTOR_RESTART_COOLDOWN_MS;
     answer = { ok: false, reason: 'git_sync_barrier_drain_timeout' };
@@ -716,7 +751,7 @@ describe('stale bg-host remediation — guarded, injectable, and generation-veri
       ptoolCalls += 1;
       return answer === 'refuse'
         ? refusalOnStderr([{ owner: NO_YIELD_OWNER, owner_label: 'git-sync:papercusp', mode: 'shared', status: 'held' }])
-        : { stdout: JSON.stringify({ ok: true, restarted: true, restartedFromPid: 101 }) };
+        : { stdout: JSON.stringify({ ok: true, restarted: true, restartedFromPid: 101, loadedNewCode: true }) };
     };
     const deps = {
       now: () => nowMs,
@@ -1544,12 +1579,48 @@ describe('staleRoutineExecutorSweep — gate-code fast path on a young bg-host',
 
   it.each(['boot', 'current'] as const)('does not announce recovery when the %s identity is unknown', async missing => {
     const clearAlarm = vi.fn(async () => true);
-    const result = await sweep({
-      ...(missing === 'boot' ? { bootCommit: null } : { currentCommit: null }),
-      clearExecutorStalenessAlarm: clearAlarm,
-    });
-    expect(result.recovered).toBe(false);
-    expect(clearAlarm).not.toHaveBeenCalled();
+    const restart = vi.fn();
+    const raiseAlarm = vi.fn(async () => true);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const result = await sweep({
+        ...(missing === 'boot' ? { bootCommit: null } : { currentCommit: null }),
+        clearExecutorStalenessAlarm: clearAlarm,
+        recentWatchdogFires: async () => 0,
+        claimWatchdogFire: async () => true,
+        raiseExecutorStalenessAlarm: raiseAlarm,
+        restart,
+      });
+      expect(result.outcome).toBe('blocked');
+      expect(result.verdict?.identityBlocker).toBeDefined();
+      expect(clearAlarm).not.toHaveBeenCalled();
+      expect(restart).not.toHaveBeenCalled();
+      expect(raiseAlarm).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalledOnce();
+      expect(String(warn.mock.calls[0]?.[0])).toContain('ALERT (port-3271)');
+    } finally { warn.mockRestore(); }
+  });
+
+  it('coalesces an unavailable identity into one repair episode without repeated restart or suite work', async () => {
+    let claimed = false;
+    const restart = vi.fn();
+    const clearAlarm = vi.fn(async () => true);
+    const raiseAlarm = vi.fn(async () => true);
+    const claimFire = vi.fn(async () => { claimed = true; return true; });
+    const deps = { bootCommit: null, restart, clearExecutorStalenessAlarm: clearAlarm,
+      recentWatchdogFires: async () => claimed ? 1 : 0,
+      claimWatchdogFire: claimFire, raiseExecutorStalenessAlarm: raiseAlarm };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      expect((await sweep(deps)).outcome).toBe('blocked');
+      expect((await sweep(deps)).outcome).toBe('blocked');
+      expect(claimFire).toHaveBeenCalledOnce();
+      expect(raiseAlarm).toHaveBeenCalledOnce();
+      expect(restart).not.toHaveBeenCalled();
+      expect(clearAlarm).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledOnce();
+      expect(String(warn.mock.calls[0]?.[0])).toContain('ALERT (port-3271)');
+    } finally { warn.mockRestore(); }
   });
 
   it('clears the previous alarm when the loaded commit matches current source', async () => {
