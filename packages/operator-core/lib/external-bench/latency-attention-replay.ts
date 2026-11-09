@@ -8,7 +8,8 @@ import { resolveDb, type DbScope } from './reproducibility/db';
 import { benchFixtureBoundarySchema, benchFixtureProductCall, benchFixtureResultSnapshot,
   requireBenchFixtureReadLease, requireBenchFixtureSourcePins, type BenchFixtureReadBoundary } from './private-fixture-reads';
 import { observeLatencyAttentionCache } from './latency-attention-observer';
-import { getOperatorCache, installOperatorCache } from '../cache/instance';
+import { getOperatorCache, installOperatorCache, cacheLayerEnabled } from '../cache/instance';
+import { l2TierEnabled } from '../cache/l2-tier';
 import { snapshotCachedReadStats } from '../cache/cached-read';
 import { coordSql } from '../agent-tools/coordination/log';
 import { ADMIN_COORD_UI_OWNER } from '../agent-tools/coordination/identity';
@@ -75,6 +76,7 @@ async function replay(rawBoundary: BenchFixtureReadBoundary,
   const original = getOperatorCache(), observer = observeLatencyAttentionCache(original, snapshotCachedReadStats);
   const notifications: Array<{ atMs: number; payload: string }> = [];
   const phases: Array<Record<string, unknown>> = [], reads: Array<Record<string, unknown>> = [];
+  const normalizedContents: Record<string, unknown> = {};
   let listener: Awaited<ReturnType<typeof sql.listen>> | undefined;
   const setStatus = async (status: 'complete' | 'failed', error?: unknown) => {
     await sql`UPDATE harness_shared.bench_runs SET config = jsonb_set(config,
@@ -115,8 +117,14 @@ async function replay(rawBoundary: BenchFixtureReadBoundary,
       const completedAtMs = performance.now(); // Drain is explicitly outside handler time.
       if (!('data' in response)) throw new Error('Private attention handler returned no structured data.');
       const data = response.data as { groups: Parameters<typeof deriveAttentionRefs>[0] };
+      // Preserve each complete JSON value once. Every sampled handler return
+      // still has its own clock/key/ref; repeated content consumes no extra
+      // multi-MB checkpoint budget. No source rows or fields are filtered.
+      const normalized = JSON.parse(JSON.stringify(data)), normalizedContentsSha256 = digest(normalized);
+      normalizedContents[normalizedContentsSha256] ??= normalized;
       const entry = { label, workspaceId, startedAtMs, completedAtMs, durationMs: completedAtMs - startedAtMs,
-        normalizedContents: JSON.parse(JSON.stringify(data)), ids: deriveAttentionRefs(data.groups).map(row => row.id).sort() };
+        normalizedContentsSha256, ids: deriveAttentionRefs(data.groups).map(row => row.id).sort(),
+        effectiveCacheConfiguration: { cacheLayerEnabled: cacheLayerEnabled(), l2TierEnabled: l2TierEnabled() } };
       reads.push(entry);
       await observer.drain();
       return entry;
@@ -158,13 +166,20 @@ async function replay(rawBoundary: BenchFixtureReadBoundary,
       acknowledgmentEncoding: { input: input.acknowledgment, storedEnvelope: acknowledgment,
         readerPrincipal: ADMIN_COORD_UI_OWNER, matchesReaderPrincipal: input.acknowledgment.acker === ADMIN_COORD_UI_OWNER },
       cache: observation, relevantAtMs, acknowledgmentAtMs,
+      normalizationEncoding: 'normalizedContentsSha256 references complete JSON values in normalizedContents',
       limitations: ['Host apparatus evidence; native/provider/runtime qualification and task acceptance are separate.',
         'Full normalized output retains static registry sources and observed-versus-reference differences.'] };
     await requireBenchFixtureSourcePins(boundary, scope);
+    const view = (workspaceId: string) => {
+      const selected = reads.filter(row => row.workspaceId === workspaceId);
+      return { ...common, viewWorkspaceId: workspaceId, reads: selected,
+        normalizedContents: Object.fromEntries([...new Set(selected.map(row => row.normalizedContentsSha256 as string))]
+          .map(key => [key, normalizedContents[key]])) };
+    };
     const A = await benchFixtureResultSnapshot(boundary, call('A'), scope,
-      JSON.stringify({ ...common, viewWorkspaceId: input.workspace, reads: reads.filter(row => row.workspaceId === input.workspace) }));
+      JSON.stringify(view(input.workspace)));
     const B = await benchFixtureResultSnapshot(boundary, call('B'), scope,
-      JSON.stringify({ ...common, viewWorkspaceId: input.otherWorkspace, reads: reads.filter(row => row.workspaceId === input.otherWorkspace) }));
+      JSON.stringify(view(input.otherWorkspace)));
     await requireBenchFixtureReadLease(boundary, scope);
     await setStatus('complete');
     return { A, B };

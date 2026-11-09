@@ -81,6 +81,8 @@ describe('T06 host-private cache observation', () => {
     await expect(cachedRead({ workspaceId: 'ws' }, options, () => { throw Error('source failed'); })).rejects.toThrow('source failed');
     expect(observation.snapshot()).toMatchObject({ issues: [], factories: [
       { sourceBuilds: 1 }, { sourceBuilds: 1, error: 'Error: source failed' }], finalCounters: { buildErrors: 1 } });
+    expect(observation.snapshot().sourceBuildsByKeyGeneration).toEqual([
+      { workspaceId: 'ws', key: 'plans:attention|one', generation: { coord_event_log: 0 }, sourceBuilds: 2 }]);
   });
   it('withholds per-key attribution on overlapping effective factories, preserving both results', async () => {
     const observation = observeLatencyAttentionCache(createCache(), snapshotCachedReadStats);

@@ -131,12 +131,21 @@ export function observeLatencyAttentionCache(target: Cache,
           total + (row.before && row.after ? row.after[key] - row.before[key] : 0), 0)))
         allIssues.push('source-counter-census-mismatch');
       const attributable = allIssues.length === 0;
+      const sourceBuildsByKeyGeneration: Array<{ workspaceId: string; key: string;
+        generation: Record<string, number>; sourceBuilds: number }> = [];
+      if (attributable) for (const row of factories) {
+        const generation = Object.fromEntries(Object.entries(row.generation).sort(([a], [b]) => a.localeCompare(b)));
+        const prior = sourceBuildsByKeyGeneration.find(value => value.workspaceId === row.workspaceId &&
+          value.key === row.key && JSON.stringify(value.generation) === JSON.stringify(generation));
+        if (prior) prior.sourceBuilds += row.sourceBuilds!;
+        else sourceBuildsByKeyGeneration.push({ workspaceId: row.workspaceId, key: row.key,
+          generation, sourceBuilds: row.sourceBuilds! });
+      }
       return structuredClone({
         scope: 'exclusive private host; every plans:attention cache read must use this facade',
         attribution: attributable ? 'exclusive-counter-windows' : 'unavailable', issues: allIssues,
         lookups, factories: factories.map(row => ({ ...row, sourceBuilds: attributable ? row.sourceBuilds : null })),
-        sourceBuildsByKeyGeneration: attributable ? factories.map(row => ({ workspaceId: row.workspaceId,
-          key: row.key, generation: row.generation, sourceBuilds: row.sourceBuilds })) : null,
+        sourceBuildsByKeyGeneration: attributable ? sourceBuildsByKeyGeneration : null,
         initialCounters: initial, finalCounters: current,
       });
     },
