@@ -15,15 +15,36 @@ const custodyTest = 'packages/operator-core/lib/dbos/dbos-executor-reaper-queue-
 const terminalTest = 'packages/operator-core/lib/release/checkpoint-qualification-terminal-outcomes.integration.test.ts';
 const reaperSource = 'packages/operator-core/lib/dbos/dbos-executor-reaper.ts';
 const transactionSource = 'packages/operator-core/lib/release/checkpoint-qualification-transaction.ts';
-const options = isolatedTestFileWorkerOptions(process.env, 1);
+const options = isolatedTestFileWorkerOptions(process.env, 3);
 const selectors = ['qualification custody survives generic DBOS reaping',
   'durable-before-ack', 'after-ack: terminal replay', 'delivered-before-receipt'];
+const healthTest = 'packages/operator-core/lib/release/watchdog-health.integration.test.ts';
+const processTest = 'packages/operator-core/lib/release/checkpoint-qualification-process.integration.test.ts';
+const stalledTest = 'packages/operator-core/lib/release/checkpoint-qualification-stalled-process.integration.test.ts';
+const healthSource = 'packages/operator-core/lib/release/watchdog-health.ts';
+const observerSource = 'packages/operator-core/lib/release/lost-gate-run-alarm.ts';
 
-it('retains qualification custody and reconciles terminal effects in the observed private background runtime', async context => {
+const runtimeCases = [
+  { title: 'retains qualification custody and reconciles terminal effects in the observed private background runtime',
+    managedTasks: false, selectors,
+    checks: [[custodyTest, reaperSource, 15], [terminalTest, transactionSource, 5]] as const },
+  { title: 'observes blocked controllers, observer recovery and exact process custody in the private background runtime',
+    managedTasks: true,
+    selectors: ['recordWatchdogPassOutcome \\(real PG\\)', 'qualification real process bounds',
+      'qualification independent stalled-process bounds'],
+    checks: [[healthTest, healthSource, 13], [processTest, transactionSource, 7],
+      [stalledTest, observerSource, 5]] as const },
+] as const;
+
+// Register literal titles: parameter formatting truncates long object values and
+// would change the existing canonical selector as well as the new case's name.
+for (const { title, managedTasks, selectors: selected, checks } of runtimeCases) {
+it(title, async context => {
   let environmentObserved = false;
   let environmentError: unknown;
   const runId = await recordIsolatedIntegrationProof({ root, filePath,
-    sourcePaths: [custodyTest, terminalTest, reaperSource, transactionSource,
+    sourcePaths: [...checks.flatMap(([testFile, sourceFile]) => [testFile, sourceFile]),
+      observerSource, healthSource,
       'packages/operator-core/lib/release/checkpoint-qualification-terminal-events.ts',
       'packages/operator-core/lib/release/gate-action-receipt.ts',
       'packages/operator-core/lib/events/reaction-dedup.ts',
@@ -34,8 +55,9 @@ it('retains qualification custody and reconciles terminal effects in the observe
     execute: async (observe, evidenceDir) => {
       const receipts = join(evidenceDir, 'test-receipts.ndjson');
       const child = spawn(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
-        '--isolated-runtime', '--', process.execPath, join(root, 'scripts/test-files.mjs'),
-        custodyTest, terminalTest, '--', '-t', selectors.join('|')], {
+        '--isolated-runtime', ...(managedTasks ? ['--managed-tasks'] : []),
+        '--', process.execPath, join(root, 'scripts/test-files.mjs'),
+        ...checks.map(([testFile]) => testFile), '--', '-t', selected.join('|')], {
         cwd: root, detached: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
         env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1',
           PAPERCUSP_TEST_RUN_GROUP: randomUUID(),
@@ -59,6 +81,7 @@ it('retains qualification custody and reconciles terminal effects in the observe
           expect(env.HOME).not.toBe(process.env.HOME);
           expect(env.PAPERCUSP_HOME).toBe(join(env.HOME!, '.papercusp'));
           expect(env.PAPERCUSP_BACKGROUND_WORKERS).toBe('1');
+          if (managedTasks) expect(env.DBUS_SESSION_BUS_ADDRESS).toContain(env.XDG_RUNTIME_DIR);
           expect(new URL(env.HARNESS_ADMIN_DATABASE_URL!).port).toBe(String(message.pgPort));
           expect(env.PAPERCUSP_WORKSPACE_ID).toMatch(/^test-runtime-/);
           environmentObserved = true;
@@ -72,8 +95,7 @@ it('retains qualification custody and reconciles terminal effects in the observe
         expect(environmentObserved).toBe(true);
         const maps = JSON.parse(readFileSync(join(evidenceDir, 'executed-source-map.json'), 'utf8')).rows;
         const rows = readFileSync(receipts, 'utf8').trim().split('\n').map(line => JSON.parse(line));
-        for (const [testFile, sourceFile, passed] of [[custodyTest, reaperSource, 15],
-          [terminalTest, transactionSource, 5]] as const) {
+        for (const [testFile, sourceFile, passed] of checks) {
           const evidence = maps.find((row: { testFile: string }) => row.testFile === testFile)?.sourceEvidence;
           expect(evidence?.status, testFile).toBe('stable');
           expect(evidence.sources.find((source: { path: string }) => source.path === sourceFile), testFile)
@@ -91,3 +113,4 @@ it('retains qualification custody and reconciles terminal effects in the observe
   // The shared helper verifies original child identity, private state and teardown.
   Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
 }, options.testTimeoutMs);
+}
