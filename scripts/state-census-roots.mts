@@ -2,7 +2,8 @@
 /** Partial writer-root diagnostic, explicitly not a whole-install ship verdict. */
 import { collectStateCensus, backupCacheCensusDeclarations } from '../packages/backup/src/state-census';
 import { installedRootCensusProducers, postgresStorageDeclaration, gitStorageDeclaration, peerStorageDeclaration, portalReleaseStorageDeclaration, restoredCloneCensusDeclarations, mergeNestedCensusRoots, virtualenvCacheDeclaration } from '../packages/operator-core/lib/backup/state-census-producers';
-import { readdir, lstat, readFile } from 'node:fs/promises';
+import { readdir, lstat, readFile, open } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { join, relative, dirname, basename, sep, isAbsolute } from 'node:path';
 import { workspacesRoot, readRegistry } from '../packages/operator-core/lib/workspace-registry';
 import { defaultClonesDir } from '../packages/operator-core/lib/harness/clone-github';
@@ -172,6 +173,51 @@ type RootCensusOptions = {
     declarations: CensusDeclaration[]; catalogEntries: CensusEntry[] }) => void | Promise<void>;
 };
 
+/** Admit only the advisory record written beside an independently proven store.
+ * Never acquire, open or repair Corestore, or mutate a live owner's lock.
+ */
+async function corestoreAdvisoryLockDeclaration(root: CensusRoot, store: string): Promise<CensusDeclaration | undefined> {
+  const name = `${store}.single-instance.lock`;
+  const path = join(root.path, name);
+  try {
+    if (!(await lstat(path)).isFile()) return;
+    const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    let content: string;
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile() || stat.size === 0 || stat.size > 4096) return;
+      // A concurrent writer can grow the file after stat. Bound the read itself
+      // too, with one extra byte to distinguish a complete record from a prefix.
+      const bytes = Buffer.alloc(4097);
+      let length = 0;
+      while (length < bytes.length) {
+        const { bytesRead } = await handle.read(bytes, length, bytes.length - length, length);
+        if (!bytesRead) break;
+        length += bytesRead;
+      }
+      if (length > 4096) return;
+      content = bytes.subarray(0, length).toString('utf8');
+    } finally { await handle.close(); }
+    let record: unknown;
+    try { record = JSON.parse(content); } catch { return; }
+    if (!record || typeof record !== 'object' || Array.isArray(record)) return;
+    const fields = record as Record<string, unknown>;
+    if (Object.keys(fields).some(key => !['pid', 'token', 'startedAt', 'processIdentity'].includes(key))
+      || typeof fields.pid !== 'number' || !Number.isSafeInteger(fields.pid) || fields.pid <= 0
+      || typeof fields.token !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(fields.token)
+      || typeof fields.startedAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(fields.startedAt)
+      || !Number.isFinite(Date.parse(fields.startedAt)) || new Date(fields.startedAt).toISOString() !== fields.startedAt
+      || ('processIdentity' in fields && fields.processIdentity !== null
+        && (typeof fields.processIdentity !== 'string' || !fields.processIdentity.length
+          || fields.processIdentity.length > 1024 || /[\u0000-\u001f\u007f]/.test(fields.processIdentity)))) return;
+    return { kind: 'path', root: root.id, name, classification: 'cache', producer: 'corestore-single-instance-lock' };
+  } catch (error) {
+    // Missing/replaced locks and symlinks have no producer proof; all other
+    // unreadable evidence must still fail discovery rather than hide a fault.
+    if (!['ENOENT', 'ELOOP'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+  }
+}
+
 /** Discover serializable producer inputs; this alone is never a census verdict.
  * Separating the phases lets bounded diagnostics retain discovery and retry
  * collection without rescanning archives, Git history and host catalogs.
@@ -302,6 +348,11 @@ if (args.includes('--restore-events') || hostCatalogs) {
 await options.onDiscoverySnapshot?.({ phase: 'before-filesystem',
   ...structuredClone({ roots: producers.roots, declarations, catalogEntries }) });
 stage('filesystem-storage-markers');
+const recordPeerStorage = async (root: CensusRoot, name: string) => {
+  declarations.push(await peerStorageDeclaration(root, name));
+  const advisoryLock = await corestoreAdvisoryLockDeclaration(root, name);
+  if (advisoryLock) declarations.push(advisoryLock);
+};
 for (const [rootIndex, root] of producers.roots.entries()) {
   stage(`filesystem-root-${rootIndex}:postgres-markers`);
   const topLevel = await readdir(root.path, { withFileTypes: true });
@@ -397,7 +448,7 @@ for (const [rootIndex, root] of producers.roots.entries()) {
         const name = `${appName}/${store}`;
         try { await lstat(join(root.path, name, 'CORESTORE')); }
         catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
-        declarations.push(await peerStorageDeclaration(root, name));
+        await recordPeerStorage(root, name);
       }
       let buildProducer;
       try { buildProducer = await readFile(join(root.path, appName, 'scripts', 'build-standalone.mjs'), 'utf8'); }
@@ -441,7 +492,7 @@ for (const [rootIndex, root] of producers.roots.entries()) {
         // normally so they remain visible residue instead of assuming ownership.
         try { await lstat(join(root.path, name, 'CORESTORE')); }
         catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
-        declarations.push(await peerStorageDeclaration(root, name));
+        await recordPeerStorage(root, name);
       }
     }
   }

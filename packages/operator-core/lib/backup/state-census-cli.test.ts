@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, readFileSync, symlinkSync, lstatSync, readlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, join, delimiter } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -302,6 +302,43 @@ describe('unit census executable exit contract', () => {
       const unprovenPeer = join(directory, 'registry', 'fixture', '.papercusp', 'harness', 'unproven-app', 'hyperbee');
       mkdirSync(join(unprovenPeer, 'db'), { recursive: true });
       writeFileSync(join(unprovenPeer, 'db', 'unknown-log'), 'unproven');
+      const lock = { pid: process.pid, token: '2f8f5ba0-d4ba-4c88-8884-2f2a7969683a',
+        startedAt: '2026-11-09T00:00:00.000Z' };
+      const lockSuffix = '.single-instance.lock';
+      const acceptedLocks = new Map([
+        [`${peer}${lockSuffix}`, JSON.stringify({ ...lock, processIdentity: 'linux:fixture-start' })],
+        [`${nestedPeer}${lockSuffix}`, JSON.stringify({ ...lock, processIdentity: null })],
+        [`${restoredPeer}${lockSuffix}`, JSON.stringify(lock)],
+      ]);
+      for (const [path, content] of acceptedLocks) writeFileSync(path, content);
+      const lockInodes = [...acceptedLocks.keys()].map(path => lstatSync(path).ino);
+      const rejectedContents = new Map([
+        ['empty', ''], ['malformed', '{'], ['array', '[]'], ['null', 'null'],
+        ['oversized', JSON.stringify(lock).padEnd(4097, ' ')],
+        ...Object.entries({ 'string-pid': { pid: '123' }, 'zero-pid': { pid: 0 },
+          'negative-pid': { pid: -1 }, 'fractional-pid': { pid: 1.5 },
+          'unsafe-pid': { pid: Number.MAX_SAFE_INTEGER + 1 }, 'missing-token': { token: undefined },
+          'invalid-token': { token: 'unproven' }, 'invalid-date': { startedAt: '2026-02-30T00:00:00.000Z' },
+          'missing-date': { startedAt: undefined }, 'non-iso-date': { startedAt: '2026-11-09' },
+          'numeric-identity': { processIdentity: 1 }, 'empty-identity': { processIdentity: '' },
+          'oversized-identity': { processIdentity: 'x'.repeat(1025) },
+          'control-identity': { processIdentity: 'linux:\n' }, 'extra-field': { unknown: true },
+        }).map(([name, fields]) => [name, JSON.stringify({ ...lock, ...fields })] as [string, string]),
+      ]);
+      const rejectedLocks: string[] = [`${unprovenPeer}${lockSuffix}`];
+      writeFileSync(rejectedLocks[0], JSON.stringify(lock));
+      for (const kind of [...rejectedContents.keys(), 'symlink', 'directory',
+        ...(process.platform === 'linux' ? ['fifo'] : [])]) {
+        const store = join(directory, 'registry', 'fixture', '.papercusp', `lock-case-${kind}`, 'hyperbee');
+        mkdirSync(join(store, 'db'), { recursive: true });
+        writeFileSync(join(store, 'CORESTORE'), 'device/platform=linux\ndevice/inode=123\ndevice/created=456\n');
+        const path = `${store}${lockSuffix}`;
+        rejectedLocks.push(path);
+        if (kind === 'symlink') symlinkSync(`${peer}${lockSuffix}`, path);
+        else if (kind === 'directory') mkdirSync(path);
+        else if (kind === 'fifo') expect(spawnSync('mkfifo', [path]).status).toBe(0);
+        else writeFileSync(path, rejectedContents.get(kind)!);
+      }
       const app = join(directory, 'registry', 'fixture', '.papercusp', 'apps-copy', 'portal');
       mkdirSync(join(app, 'scripts'), { recursive: true });
       mkdirSync(join(app, '.next-build-123-456-abcd'));
@@ -340,7 +377,17 @@ describe('unit census executable exit contract', () => {
       const report = JSON.parse(result.stdout);
       expect(report.wholeInstallVerified).toBe(false);
       expect(report.scope).toBe('implemented-writer-filesystem-roots-only');
-      expect(report.representedPeers).toHaveLength(3);
+      expect(report.representedPeers).toHaveLength(3 + rejectedLocks.length - 1);
+      for (const path of acceptedLocks.keys()) {
+        const name = path.slice(directory.length + 1).split('\\').join('/');
+        expect(report.inventory.find((entry: { name: string }) => entry.name === name))
+          .toMatchObject({ classification: 'cache', producers: ['corestore-single-instance-lock'] });
+        expect(report.residue.some((entry: { name: string }) => entry.name === name)).toBe(false);
+      }
+      for (const path of rejectedLocks) {
+        const name = path.slice(directory.length + 1).split('\\').join('/');
+        expect(report.residue.some((entry: { name: string }) => entry.name === name), name).toBe(true);
+      }
       expect(report.representedPeers.some((entry: { name: string }) => entry.name === 'registry/fixture/.papercusp/harness/hyperbee')).toBe(true);
       expect(report.representedPeers.some((entry: { name: string }) => entry.name.includes('/.restored/snapshot/clone/'))).toBe(true);
       expect(report.representedPeers.some((entry: { name: string }) => entry.name === 'registry/fixture/.papercusp/harness/retained-app/hyperbee')).toBe(true);
@@ -370,6 +417,12 @@ describe('unit census executable exit contract', () => {
       expect(inProcess.scope).toBe(report.scope);
       expect(inProcess.residue.map(entry => `${entry.kind}:${entry.root}:${entry.name}`).sort())
         .toEqual(report.residue.map((entry: { kind: string; root: string; name: string }) => `${entry.kind}:${entry.root}:${entry.name}`).sort());
+      for (const [path, content] of acceptedLocks) expect(readFileSync(path, 'utf8')).toBe(content);
+      expect([...acceptedLocks.keys()].map(path => lstatSync(path).ino)).toEqual(lockInodes);
+      expect(readlinkSync(rejectedLocks.find(path => path.includes('lock-case-symlink'))!)).toBe(`${peer}${lockSuffix}`);
+      for (const [kind, content] of rejectedContents) {
+        expect(readFileSync(rejectedLocks.find(path => path.includes(`lock-case-${kind}/`))!, 'utf8')).toBe(content);
+      }
     } finally { rmSync(directory, { recursive: true, force: true }); }
   });
   it('includes receipt-backed reaper tails in the root census and leaves unproven tails as residue', async () => {
