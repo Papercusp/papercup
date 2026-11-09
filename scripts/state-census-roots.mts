@@ -179,13 +179,16 @@ export async function readMigrationCensusColumns(sql: ReturnType<typeof postgres
 
 type RootCensusOptions = {
   args?: string[];
+  /** Exact completed discovery input; collection-only replay performs no discovery. */
+  inputs?: { scope: string; roots: CensusRoot[]; declarations: CensusDeclaration[]; catalogEntries: CensusEntry[] };
   checkpointLogDir?: string;
   hostedProfileEvidence?: HostedProfileWriterEvidence[];
   historicalWriterEvidence?: PlaywrightStateWriterEvidence[];
   onStage?: (stage: string) => void;
+  onCollectionProgress?: Parameters<typeof collectStateCensus>[0]['onProgress'];
   // Retain completed inputs before host credential/catalog reads and filesystem
   // discovery. These are intermediate snapshots, never collection verdicts.
-  onDiscoverySnapshot?: (snapshot: { phase: 'before-account-credentials' | 'before-filesystem'; roots: CensusRoot[];
+  onDiscoverySnapshot?: (snapshot: { phase: 'before-account-credentials' | 'before-filesystem' | 'before-collection'; scope?: string; roots: CensusRoot[];
     declarations: CensusDeclaration[]; catalogEntries: CensusEntry[] }) => void | Promise<void>;
 };
 
@@ -591,10 +594,14 @@ return {
 
 /** Canonical executable: discovery and collection retain the same drift contract. */
 export async function runRootCensus(options: RootCensusOptions = {}) {
-  const inputs = await discoverRootCensusInputs(options);
+  const inputs = options.inputs ?? await discoverRootCensusInputs(options);
+  // Earlier snapshots intentionally precede storage-marker/schema discovery.
+  // This final, awaited snapshot is the complete input for collection replay.
+  await options.onDiscoverySnapshot?.({ phase: 'before-collection', scope: inputs.scope, roots: inputs.roots,
+    declarations: inputs.declarations, catalogEntries: inputs.catalogEntries });
   options.onStage?.('collect-state-census');
   const census = await collectStateCensus({ roots: inputs.roots, declarations: inputs.declarations,
-    representUnknownSubtrees: true, readCatalogs: async () => inputs.catalogEntries });
+    representUnknownSubtrees: true, readCatalogs: async () => inputs.catalogEntries, onProgress: options.onCollectionProgress });
   options.onStage?.('complete');
   return { scope: inputs.scope, wholeInstallVerified: false, roots: inputs.roots, ...census };
 }
