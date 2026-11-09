@@ -1,6 +1,6 @@
 /** The existing native bench host's assignment-bound read bridge. */
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
-import { InvalidInputError, type ToolResponse } from '@papercusp/tooldef';
+import { InvalidInputError, type ToolResponse, type ToolResult } from '@papercusp/tooldef';
 import { withWorkspace } from '@papercusp/db-org';
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
 import { getDoorConstantsSync } from '../../context-doors-config';
@@ -55,13 +55,22 @@ export default defineTool({
             call.tool === 'plans:get-specs' ? (await import('../plans/get-specs')).default : (await import('../sessions/timeline')).default;
       const parsed = tool.args.parse(call.args);
       const read = (context: PapercuspUnifiedToolContext) =>
-        (tool.handler as (args: unknown, ctx: PapercuspUnifiedToolContext) => Promise<ToolResponse>)(parsed, context);
+        (tool.handler as (args: unknown, ctx: PapercuspUnifiedToolContext) => Promise<ToolResponse | ToolResult>)(parsed, context);
       const result = call.tool === 'sessions:timeline'
-        ? await withWorkspace(workspaceId, tx => read({ ...ctx, tx })) : await read(ctx);
+        // Match the real crossWorkspace timeline dispatcher's admin handle.
+        // Read authority remains the exact host-pinned owner and time window.
+        ? await withWorkspace(workspaceId, tx => read({ ...ctx, tx }), { bypassRlsForAdmin: true }) : await read(ctx);
       await requireBenchFixtureSourcePins(boundary, { workspaceId });
       await requireBenchFixtureReadLease(boundary, { workspaceId });
-      const data = benchFixtureReadContinuations(result.data, call, args);
-      if (benchFixtureResultFits(data, budgetBytes)) return { ...result, data };
+      let response: ToolResponse;
+      if ('data' in result) response = result;
+      else if (call.tool === 'sessions:timeline' && result.content.length === 1 && result.content[0]!.type === 'text') {
+        const { timelineResultSchema } = await import('../sessions/timeline');
+        response = { data: timelineResultSchema.parse(JSON.parse(result.content[0]!.text)),
+          ...(result.isError ? { isError: true } : {}) };
+      } else throw new InvalidInputError('Private fixture reader returned an unsupported result envelope.');
+      const data = benchFixtureReadContinuations(response.data, call, args);
+      if (benchFixtureResultFits(data, budgetBytes)) return { ...response, data };
       const snapshot = await benchFixtureResultSnapshot(boundary, call, { workspaceId }, JSON.stringify(data));
       await requireBenchFixtureSourcePins(boundary, { workspaceId });
       await requireBenchFixtureReadLease(boundary, { workspaceId });
