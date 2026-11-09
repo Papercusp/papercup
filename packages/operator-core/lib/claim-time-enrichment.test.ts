@@ -144,6 +144,45 @@ vi.mock('./stale-path-hints-claim-port', () => ({
 }));
 
 import { buildClaimTimeEnrichment } from './claim-time-enrichment';
+import type { BoundedPriorAttemptBrief } from './prior-attempt-context';
+import type { ClaimTimePlanDecision } from './plan-decisions-claim-port';
+
+it('matches the complete paperwork authority history and omission manifest in claim enrichment', async () => {
+  const [decisionsPort, historyPort] = await Promise.all([
+    import('./plan-decisions-claim-port'), import('./prior-attempt-context'),
+  ]);
+  // Frozen upstream values test delivery, independently of either upstream selector.
+  const decisions: ClaimTimePlanDecision[] = [
+    { id: 'D-008', title: 'Current authority', snippet: 'P-018 preserves the selected route.', provenance: { kind: 'unrecorded' } },
+    { id: 'D-009', title: 'Retraction', snippet: 'Old proof is invalid; retain test-run:42.', provenance: { kind: 'unrecorded' } },
+  ];
+  const history: BoundedPriorAttemptBrief = {
+    schemaVersion: 'prior-attempt-brief-v1', fingerprint: 'frozen-history-input',
+    authority: [{ rawRef: 'plan#D-009', authority: 'retraction', scope: 'same-spec', text: 'Old proof is invalid; retain test-run:42.' }],
+    attempts: [], residue: [{ rawRef: 'WI-2#checkpoint', items: ['Native delivery remains.'] }],
+    rawRefs: ['plan#D-009'], protectedRefs: { authority: [{ authority: 'retraction', rawRef: 'plan#D-009' }], residue: ['WI-2#checkpoint'] },
+    omission: { omittedRecords: 1, omittedByAuthority: { comment: 1 }, omittedRefs: [{ rawRef: 'WI-2#comment:1', authority: 'comment', scope: 'self', reason: 'budget' }], omittedRefsTruncated: false, sourceCount: 2, deduplicatedCount: 0, truncated: true },
+    estimatedTokens: 250, serializedChars: 1000,
+  };
+  vi.mocked(decisionsPort.getClaimTimePlanDecisions).mockResolvedValueOnce({
+    planSlug: 'task-plan', decisions, totalDecisions: 3, totalLocalDecisions: 3,
+    totalAffectedDecisions: 0, affectedDecisions: 0, authorityReadFailed: false,
+    omittedDecisionRefs: ['task-plan#D-001'],
+  });
+  vi.mocked(decisionsPort.renderPlanDecisionsNote).mockReturnValueOnce('Omitted: task-plan#D-001; recover with plans:get.');
+  vi.mocked(historyPort.getClaimTimePriorAttemptBrief).mockResolvedValueOnce(structuredClone(history));
+  const result = await buildClaimTimeEnrichment({ planSlug: 'task-plan', planItemId: 'P-018' });
+  const actual = { decisions: result.planDecisions, note: result.planDecisionsNote, history: result.priorAttemptBrief };
+  const check = (candidate: typeof actual) => expect(candidate).toEqual({ decisions, note: 'Omitted: task-plan#D-001; recover with plans:get.', history });
+  check(actual);
+  expect(result.enrichmentDelivery.delivered).toEqual(expect.arrayContaining(['planDecisions', 'priorAttemptBrief']));
+  expect(historyPort.getClaimTimePriorAttemptBrief).toHaveBeenLastCalledWith({ planSlug: 'task-plan', planItemId: 'P-018', workItemId: null, harness: null });
+  const missing = structuredClone(actual); missing.history = undefined;
+  const extra = structuredClone(actual); extra.decisions = [...decisions, { id: 'D-999', title: 'Unrelated', snippet: 'Other task.', provenance: { kind: 'unrecorded' } }];
+  const clipped = structuredClone(actual); clipped.history = { ...history, authority: [{ ...history.authority[0], text: 'Old proof' }] };
+  const reordered = structuredClone(actual); reordered.decisions = [...decisions].reverse();
+  for (const mutant of [missing, extra, clipped, reordered]) expect(() => check(mutant)).toThrow();
+});
 
 it('passes direct plan-item scope into governing-decision delivery before a work-item exists', async () => {
   const ports = await import('./plan-decisions-claim-port');
