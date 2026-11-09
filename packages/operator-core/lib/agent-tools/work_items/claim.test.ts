@@ -209,7 +209,34 @@ const forceAuditM = vi.mocked(recordForceTransitionAudit);
 const tool = (await import('./claim')).default;
 
 type Out = { data: any };
-const body = async (args: unknown, ctx: unknown = {}) => ((await tool.handler(args as never, ctx as never)) as Out).data;
+const body = async (args: unknown, ctx: unknown = {}) => {
+  const originalInput = structuredClone(args);
+  expect(tool.args.parse(args)).toEqual(args);
+  const projected = lookupByMcpName('work_items:claim');
+  expect(projected).toBeTruthy();
+  const dispatched = await dispatchProjectedTool(projected!, 'work_items:claim', args, {
+    uiClientId: 'me',
+    workspaceId: 'ws-1',
+    harnessSlug: 'papercusp',
+    log: vi.fn(),
+    signal: new AbortController().signal,
+    progress: vi.fn(),
+    emit: vi.fn(),
+    metadata: vi.fn(),
+    runId: 'claim-remaining-original-input-replay',
+    role: 'su',
+    gateBypass: { role: true, capability: true, quota: true },
+    ...ctx as Record<string, unknown>,
+    transport: 'mcp',
+    requestedFormat: 'json',
+    requestedStructured: true,
+  } as never, {});
+  expect(dispatched.ok).toBe(true);
+  expect(args).toEqual(originalInput);
+  const result = dispatched.result?.structuredContent as Out['data'] | undefined;
+  expect(result).toBeDefined();
+  return result;
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -380,7 +407,10 @@ describe('work_items:claim idempotent-completion opt-in (EI-21593186656422114)',
 describe('work_items:claim handler (keyed-array)', () => {
   it.each([false, true])('returns canonical blocker guidance on claim with checkpoint hint=%s', async (hasHint) => {
     if (hasHint) checkpointHint.get.mockResolvedValue({ checkpoint: 'Prior holder context', checkpointAgeMs: 1000 });
-    getM.mockResolvedValue(issueItem({ state: 'blocked', payload: {} }));
+    // Guidance reads the committed row; both reads must identify this request.
+    const blockedItem = issueItem({ id: 'WI-1', state: 'blocked', payload: {} });
+    getM.mockResolvedValue(blockedItem);
+    claimM.mockResolvedValue(blockedItem);
     const b = await body({ id: 'WI-1' });
     expect(b.results[0]).toMatchObject({ ok: true, blockerResolution: {
       status: 'unproven', nudge: expect.stringContaining('Investigate'),
