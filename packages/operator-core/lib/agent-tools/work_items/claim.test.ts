@@ -392,10 +392,14 @@ describe('work_items:claim handler (keyed-array)', () => {
   });
 
   it('claims one inline for the caller and returns the workItem', async () => {
-    const b = await body({ id: 'WI-1' });
+    const input = { id: 'WI-1' };
+    const args = tool.args.parse(input);
+    expect(args).toEqual(input);
+    const b = await body(args);
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1', workItem: { id: 'WI-1', assignee: 'me' } });
     expect(claimM).toHaveBeenCalledWith('WI-1', 'me', { harness: undefined, fromHolder: identity.ownerId });
+    expect(claimM).toHaveBeenCalledTimes(1);
   });
 
   it('reclaims a signed judge alias with the exact stored bare holder as its CAS predecessor', async () => {

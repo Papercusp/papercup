@@ -56,7 +56,10 @@ beforeEach(() => {
 
 describe('plan_items:convert handler (bulk keyed-array)', () => {
   it('converts one inline (n=1) and flattens the convert payload onto results[0]', async () => {
-    const b = await body({ plan: 'p1', item: 'P-001' });
+    const input = { plan: 'p1', item: 'P-001' };
+    const args = tool.args.parse(input);
+    expect(args).toEqual(input);
+    const b = await body(args);
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     expect(b.results[0]).toMatchObject({
       ok: true,
@@ -66,13 +69,20 @@ describe('plan_items:convert handler (bulk keyed-array)', () => {
       workItem: { id: 'WI-1', kind: 'task' },
     });
     expect(convM).toHaveBeenCalledWith(expect.objectContaining({ planSlug: 'p1', itemId: 'P-001', owner: 'sess-A' }));
+    expect(convM).toHaveBeenCalledTimes(1);
   });
 
   it('converts MANY in the same plan via itemIds:[…]', async () => {
     convM.mockImplementation(async (opts) => converted(opts.itemId, `WI-${opts.itemId}`));
-    const b = await body({ plan: 'p1', itemIds: ['P-001', 'P-002'] });
+    const input = { plan: 'p1', itemIds: ['P-001', 'P-002'] };
+    const args = tool.args.parse(input);
+    expect(args).toEqual(input);
+    const b = await body(args);
     expect(b.counts).toEqual({ ok: 2, failed: 0 });
     expect(b.results.map((r: { item: string }) => r.item)).toEqual(['P-001', 'P-002']);
+    expect(convM).toHaveBeenCalledTimes(2);
+    expect(convM.mock.calls.map(([options]) => ({ plan: options.planSlug, item: options.itemId, owner: options.owner })))
+      .toEqual([{ plan: 'p1', item: 'P-001', owner: 'sess-A' }, { plan: 'p1', item: 'P-002', owner: 'sess-A' }]);
   });
 
   it('one converted + one refused: partial failure — only the refused item fails', async () => {
