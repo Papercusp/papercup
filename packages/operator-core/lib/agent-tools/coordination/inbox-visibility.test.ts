@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { changedSystemNoticeDelivery, coalesceRepeatedBroadcasts, relevantSystemNoticeDelivery, prioritizedInboxWindow } from './inbox-visibility';
+import { changedSystemNoticeDelivery, coalesceRepeatedBroadcasts, relevantSystemNoticeDelivery, prioritizedInboxWindow,
+  systemNoticeIdentity, systemNoticeReplayState, systemNoticeReplayDue, systemNoticeReplayCandidates } from './inbox-visibility';
 import { renderSevereEventEmitter } from '../../severe-event-emitter';
 import { sectionsToText } from './message-fields';
 import { chunkOverCapMessage } from './tools/send-chunking';
@@ -14,6 +15,43 @@ describe('changed system notice delivery', () => {
     body: 'Context 200000 tokens', ...over,
   });
 
+  it('retains exact notice references until stdout proof, then wakes at the original reminder boundary', () => {
+    const row = alarm();
+    const identity = systemNoticeIdentity(row)!;
+    const now = 10000;
+    const cadence = 5000;
+    const pending = systemNoticeReplayState([row], {}, now, cadence);
+    expect(pending.candidates).toEqual([{ msgId: 'alarm', ...identity,
+      fingerprint: systemNoticeIdentity(row, cadence)!.fingerprint }]);
+    expect(systemNoticeReplayDue(pending, now)).toBe(true);
+    expect(JSON.stringify(pending)).not.toContain(row.body);
+    const proof = { [identity.key]: { fingerprint: systemNoticeIdentity(row, cadence)!.fingerprint, emittedAt: now } };
+    const confirmed = systemNoticeReplayState([row], proof, now + 1, cadence);
+    expect(confirmed.nextCheckAt).toBe(now + cadence);
+    expect(systemNoticeReplayDue(confirmed, now + cadence - 1)).toBe(false);
+    expect(systemNoticeReplayDue(confirmed, now + cadence)).toBe(true);
+    // Repeated selections cannot restart the proven timer.
+    expect(systemNoticeReplayState([row], proof, now + cadence - 1, cadence).nextCheckAt).toBe(now + cadence);
+    expect(systemNoticeReplayState([row], proof, now + cadence, cadence).nextCheckAt).toBe(0);
+  });
+
+  it('keeps only the latest source row per episode and retires resolved alarms', () => {
+    const newer = alarm({ msg_id: 'new', ts: '2026-10-13T00:01:00Z', state_version: 2 });
+    const selected = systemNoticeReplayState([newer, alarm()], {}, 10000);
+    expect(selected.candidates).toEqual([{ msgId: 'new', ...systemNoticeIdentity(newer)! }]);
+    expect(systemNoticeReplayState([{ ...newer, resolved: true }], {}, 10000).candidates).toEqual([]);
+    expect(systemNoticeReplayState([alarm({ category: 'severe-event-resolved' })], {}, 10000).candidates).toEqual([]);
+    expect(systemNoticeReplayCandidates({ version: 1, candidates: [{ msgId: 'forged' }] })).toEqual([]);
+  });
+
+  it('marks bounded reference overflow for timestamp replay instead of claiming those rows delivered', () => {
+    const rows = Array.from({ length: 257 }, (_, n) => alarm({ msg_id: `row-${n}`, condition_key: `condition:${n}` }));
+    const replay = systemNoticeReplayState(rows, {}, 10000);
+    expect(replay.candidates).toHaveLength(256);
+    expect(replay.overflow).toBe(true);
+    expect(systemNoticeReplayDue(replay, 10000)).toBe(true);
+  });
+
   it('suppresses unchanged notices across separate reads, preserving peers and directed alerts', () => {
     const first = changedSystemNoticeDelivery([alarm()], {});
     const rows = [alarm({ msg_id: 'later', ts: '2026-10-13T00:01:00Z' }),
@@ -22,6 +60,28 @@ describe('changed system notice delivery', () => {
     expect(first.entries).toHaveLength(1);
     expect(next.entries).toEqual(rows.slice(1));
     expect(next.suppressed).toBe(1);
+  });
+
+  it('uses only proven emission time and the exact configured cadence for reminders', () => {
+    const row = alarm();
+    const cadence = 30 * 60_000;
+    const identity = systemNoticeIdentity(row, cadence)!;
+    const emittedAt = 1_000_000;
+    const proven = { [identity.key]: { fingerprint: identity.fingerprint, emittedAt } };
+    const read = (now: number, previous: unknown = proven, reminderMs = cadence) =>
+      changedSystemNoticeDelivery([row], previous, 8, { now, reminderMs });
+    expect(read(emittedAt + cadence - 1).entries).toEqual([]);
+    expect(read(emittedAt + cadence).entries).toEqual([row]);
+    // Repeated preparations/arrival ACKs cannot move the proven reminder time.
+    const attempted = read(emittedAt + cadence);
+    expect(read(emittedAt + cadence + 1, attempted.state).entries).toEqual([row]);
+    expect(read(emittedAt + cadence + 1).entries).toEqual([row]);
+    expect(read(emittedAt - 1).entries).toEqual([row]);
+    expect(read(emittedAt + 1, proven, cadence * 2).entries).toEqual([row]);
+    const legacy = changedSystemNoticeDelivery([row], {}).state;
+    expect(read(emittedAt + 1, legacy).entries).toEqual([row]);
+    expect(changedSystemNoticeDelivery([alarm({ state_version: 'new' })], proven, 8,
+      { now: emittedAt + 1, reminderMs: cadence }).entries).toHaveLength(1);
   });
 
   it('delivers changed body, resolution and recurrence of the same condition', () => {

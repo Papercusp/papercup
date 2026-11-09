@@ -31,6 +31,7 @@
 import {
   selectPushes,
   makePush,
+  AMBIENT_PUSH_WINDOW_MS,
   type PushObject,
   type PushSessionClass,
 } from './ambient-push';
@@ -51,7 +52,7 @@ import { ambientCursorEnabled } from './session-cursor-io';
  *  against the per-class budget and suppress a repeat of the same handle. A
  *  deliberate baked default (no runtime self-tuning — carry D-001); belongs on
  *  the carry P-023 config surface when the live matchers wire up. */
-export const AMBIENT_PUSH_WINDOW_MS = 30 * 60 * 1000;
+export { AMBIENT_PUSH_WINDOW_MS } from './ambient-push';
 
 /** Cap how many queued candidates one delivery pass considers (selection then
  *  bounds it further by the class budget). */

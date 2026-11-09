@@ -3893,6 +3893,31 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       expect(foldFactsMock).toHaveBeenCalledWith(expect.anything(), { audiences: [] });
     });
 
+    it('passes explicit task identities to standing-fact selection without interpreting goal prose', async () => {
+      const { call } = fakeCall({ ...CORE, ...FLEET_CTX });
+      await composeOrient({ harness: 'h', currentFiles: ['lib/a.ts'], declared_goal_refs: ['WI-202', 'goal-example'] }, call, 'me');
+      expect(foldFactsMock).toHaveBeenCalledWith(
+        [
+          { scope: 'workspace' }, { scope: 'owner', scopeRef: 'me' }, { scope: 'harness', scopeRef: 'h' },
+          { scope: 'work_item', scopeRef: 'WI-202' },
+        ],
+        { audiences: ['fleet:backend'], taskContext: { files: ['lib/a.ts'], workItemRefs: ['WI-202'] } },
+      );
+    });
+
+    it.each(['WI-202 current task', { id: 'WI-202', title: 'current task' }])(
+      'uses the current self assignment when task arguments are omitted: %j', async (doing) => {
+        const { call } = fakeCall({ ...CORE, 'fleet:assignments': () => ({ ok: true, agents: [
+          { isSelf: false, doing: 'WI-999 peer task' }, { isSelf: true, doing },
+        ] }) });
+        await composeOrient({}, call, 'me');
+        expect(foldFactsMock).toHaveBeenCalledWith(
+          [{ scope: 'workspace' }, { scope: 'owner', scopeRef: 'me' }, { scope: 'work_item', scopeRef: 'WI-202' }],
+          { audiences: [], taskContext: { files: [], workItemRefs: ['WI-202'] } },
+        );
+      },
+    );
+
     it('an UNVERIFIED typed sourceRef renders LOUDLY in src (never silently dropped)', async () => {
       foldFactsMock.mockResolvedValue([
         {

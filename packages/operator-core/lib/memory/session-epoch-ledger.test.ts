@@ -16,6 +16,7 @@ import {
   memoryFragmentOffer, stageMemoryEmission, confirmMemoryEmission,
   MEMORY_EMISSION_TTL_MS,
   collectMemoryEmission, collectsMemoryEmission, withMemoryEmissionReceipt,
+  provenSystemNoticeEmissions,
 } from './session-epoch-ledger';
 import { configureReadCursorStore, InMemoryReadCursorStore, resetReadCursorStore } from '../agent-tools/coordination/read-cursors';
 import type { SqlTag } from './bump-last-surfaced';
@@ -32,6 +33,46 @@ describe('exact memory emission receipts', () => {
   const offer = (id = UUID_A, epoch = 3, kind: 'memory' | 'corpus' = 'memory') =>
     memoryFragmentOffer(kind, id, epoch, 'turn-start', `- ${id}: complete snowman ☃`);
   const manifest = ({ rendered: _text, ...row }: ReturnType<typeof offer>) => row;
+
+  it('requires an exact notice stdout proof and records its emission time rather than confirmation time', async () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000);
+    try {
+      const { sql, calls } = makeSql({ impl: async text => text.includes('RETURNING surface') ? [{ surface: 'notice' }] : [] });
+      const row = { ...memoryFragmentOffer('notice', 'a'.repeat(64), 3, 'coord-inbox', '- syste condition'),
+        sourceFingerprint: 'b'.repeat(64) };
+      const { rendered: _text, ...fragment } = row;
+      await stageMemoryEmission(sql, 'owner', 'notice-token', [row]);
+      clock.mockReturnValue(2_000);
+      for (const emittedAt of [undefined, 999, 2_001, NaN]) {
+        expect(await confirmMemoryEmission(sql, 'owner', { token: 'notice-token', fragments: [fragment], emittedAt })).toBe(0);
+      }
+      expect(await confirmMemoryEmission(sql, 'other-owner', { token: 'notice-token', fragments: [fragment], emittedAt: 1_500 })).toBe(0);
+      expect(await confirmMemoryEmission(sql, 'owner', { token: 'notice-token',
+        fragments: [{ ...fragment, bodyBytes: fragment.bodyBytes - 1 }], emittedAt: 1_500 })).toBe(0);
+      const writes = () => calls.filter(call => call.text.includes('RETURNING surface'));
+      expect(writes()).toHaveLength(0);
+      expect(await confirmMemoryEmission(sql, 'owner', { token: 'notice-token', fragments: [fragment], emittedAt: 1_500 })).toBe(1);
+      expect(writes()).toHaveLength(1);
+      expect(writes()[0]!.values).toContain(JSON.stringify({ fingerprint: row.sourceFingerprint, emittedAt: 1_500 }));
+      expect(writes()[0]!.text).toContain("committed->>'emittedAt'");
+      expect(writes()[0]!.text).toContain('< ?'); // delayed older proofs cannot overwrite a newer floor
+      expect(await confirmMemoryEmission(sql, 'owner', { token: 'notice-token', fragments: [fragment], emittedAt: 1_500 })).toBe(0);
+    } finally { clock.mockRestore(); }
+  });
+
+  it('reads notice proof only within the requested recipient, epoch and episode keys', async () => {
+    const key = 'a'.repeat(64), fingerprint = 'b'.repeat(64);
+    const { sql, calls } = makeSql({ rows: [
+      { surface: `notice-emitted:3:${key}`, committed: { fingerprint, emittedAt: 1_500 } },
+      { surface: `notice-emitted:4:${key}`, committed: { fingerprint, emittedAt: 1_600 } },
+      { surface: 'notice-emitted:3:bad', committed: { fingerprint: 'invalid', emittedAt: 2_000 } },
+    ] });
+    expect(await provenSystemNoticeEmissions(sql, 'reader', 3, [key, key, 'bad'])).toEqual({
+      [key]: { fingerprint, emittedAt: 1_500 },
+    });
+    expect(calls[0]!.values).toContain('reader');
+    expect(calls[0]!.values).toContainEqual([`notice-emitted:3:${key}`]);
+  });
 
   it('binds identical emitted bytes to the exact canonical revision without accepting an older native receipt', async () => {
     const { sql, calls } = makeSql();

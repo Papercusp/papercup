@@ -40,6 +40,9 @@
  *  prone). */
 export type MatcherKind = 'collision' | 'dead-end' | 'topic-sub' | 'insight';
 
+/** Existing ambient novelty/reminder window; shared by native notice receipts. */
+export const AMBIENT_PUSH_WINDOW_MS = 30 * 60 * 1000;
+
 /** Push severity — the gate that decides whether a weak-model drone ever sees
  *  it (D-004). collision = the strongest signal; insight = the most optional. */
 export type PushSeverity = 'critical' | 'warning' | 'info';

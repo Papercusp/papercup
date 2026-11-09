@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { asSevereEventEmitter, renderSevereEventEmitter } from '../../severe-event-emitter';
+import { AMBIENT_PUSH_WINDOW_MS } from '../../ambient-push';
 
 /**
  * inbox-visibility.ts — the PURE "is this entry visible in a default coord:inbox
@@ -211,10 +212,37 @@ export function relevantSystemNoticeDelivery<T extends Record<string, unknown>>(
 /** Remember only compact fingerprints on the existing two-phase inbox cursor.
  * Public inbox VIEW reads do not use this filter. Directed/mixed deliveries and
  * peer broadcasts always pass through. Losing state re-delivers, never skips. */
+export function systemNoticeIdentity(entry: Record<string, unknown>, reminderMs = AMBIENT_PUSH_WINDOW_MS):
+  { key: string; fingerprint: string } | null {
+  if (!isSystemNotice(entry)) return null;
+  const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  const normalize = (value: unknown): unknown =>
+    typeof value === 'string' ? value.replace(VOLATILE_TIMESTAMP_RE, '<ts>') : value;
+  const emitter = asSevereEventEmitter(entry['emitter']);
+  let body = entry['body'];
+  if (emitter && typeof body === 'string') {
+    const trailer = renderSevereEventEmitter(emitter);
+    if (body.endsWith(trailer)) body = body.slice(0, -trailer.length);
+  }
+  const condition = entry['condition_key'];
+  const episode = noticeEpisode(entry);
+  const key = digest([entry['from'], episode[1], episode[2],
+    typeof condition === 'string' && condition
+      ? condition : [entry['event_key'], entry['kind'], entry['category'], normalize(entry['summary'])]]);
+  const sectionText = body === undefined && Array.isArray(entry['sections'])
+    ? entry['sections'].map(section => section && typeof section === 'object'
+      ? normalize((section as Record<string, unknown>)['text']) : null) : null;
+  return { key, fingerprint: digest([entry['kind'], entry['category'], normalize(entry['summary']),
+    normalize(body), sectionText, episode, entry['resolved'] === true, emitter?.pid, emitter?.startedAt,
+    // A changed cadence invalidates the old suppression contract.
+    reminderMs]) };
+}
+
 export function changedSystemNoticeDelivery<T extends Record<string, unknown>>(
   entries: readonly T[],
   previous: unknown,
   shownLimit = entries.length,
+  proof?: { now: number; reminderMs: number },
 ): { entries: T[]; state: Record<string, string>; suppressed: number } {
   const state: Record<string, string> = {};
   if (previous && typeof previous === 'object' && !Array.isArray(previous)) {
@@ -224,7 +252,6 @@ export function changedSystemNoticeDelivery<T extends Record<string, unknown>>(
       }
     }
   }
-  const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
   const kept: T[] = [];
   const pending = new Map<T, { key: string; fingerprint: string }>();
   for (const entry of entries) {
@@ -233,25 +260,13 @@ export function changedSystemNoticeDelivery<T extends Record<string, unknown>>(
       kept.push(entry);
       continue;
     }
-    const normalize = (value: unknown): unknown =>
-      typeof value === 'string' ? value.replace(VOLATILE_TIMESTAMP_RE, '<ts>') : value;
-    const emitter = asSevereEventEmitter(entry['emitter']);
-    let body = entry['body'];
-    if (emitter && typeof body === 'string') {
-      const trailer = renderSevereEventEmitter(emitter);
-      if (body.endsWith(trailer)) body = body.slice(0, -trailer.length);
-    }
-    const condition = entry['condition_key'];
-    const episode = noticeEpisode(entry);
-    const key = digest([entry['from'], episode[1], episode[2],
-      typeof condition === 'string' && condition
-        ? condition : [entry['event_key'], entry['kind'], entry['category'], normalize(entry['summary'])]]);
-    const sectionText = body === undefined && Array.isArray(entry['sections'])
-      ? entry['sections'].map((section) => section && typeof section === 'object'
-        ? normalize((section as Record<string, unknown>)['text']) : null) : null;
-    const fingerprint = digest([entry['kind'], entry['category'], normalize(entry['summary']),
-      normalize(body), sectionText, episode, entry['resolved'] === true, emitter?.pid, emitter?.startedAt]);
-    if (state[key] !== fingerprint) kept.push(entry);
+    const { key, fingerprint } = systemNoticeIdentity(entry, proof?.reminderMs)!;
+    const provenRecent = proof && systemNoticeRecentlyEmitted({ key, fingerprint },
+      (previous && typeof previous === 'object' ? previous : {}) as Record<string, { fingerprint: string; emittedAt: number }>,
+      proof.now, proof.reminderMs);
+    // Native callers supply proof mode: legacy arrival/selection fingerprints
+    // cannot suppress a notice or restart its reminder clock.
+    if (proof ? !provenRecent : state[key] !== fingerprint) kept.push(entry);
     pending.set(entry, { key, fingerprint });
   }
   // Native injection renders the newest bounded rows. Never remember a notice
@@ -269,6 +284,73 @@ export function changedSystemNoticeDelivery<T extends Record<string, unknown>>(
   const keys = Object.keys(state);
   for (const key of keys.slice(0, Math.max(0, keys.length - 256))) delete state[key];
   return { entries: kept, state, suppressed: entries.length - kept.length };
+}
+
+/** Selection state on the existing inbox cursor, never an emission receipt.
+ * Keep IDs so timestamp advancement cannot strand a notice omitted downstream.
+ * Full envelopes remain in the message log; only proven stdout sets the clock. */
+export interface SystemNoticeReplay {
+  version: 1;
+  candidates: Array<{ msgId: string; key: string; fingerprint: string }>;
+  nextCheckAt: number;
+  overflow: boolean;
+}
+
+export function systemNoticeReplayCandidates(value: unknown): SystemNoticeReplay['candidates'] {
+  if (!value || typeof value !== 'object' || !('version' in value) || value.version !== 1 ||
+      !('candidates' in value) || !Array.isArray(value.candidates)) return [];
+  return value.candidates.slice(0, 256).filter((row): row is SystemNoticeReplay['candidates'][number] =>
+    !!row && typeof row === 'object' && typeof row.msgId === 'string' && row.msgId.length > 0 &&
+    row.msgId.length <= 200 && typeof row.key === 'string' && /^[a-f0-9]{64}$/.test(row.key) &&
+    typeof row.fingerprint === 'string' && /^[a-f0-9]{64}$/.test(row.fingerprint));
+}
+
+export function systemNoticeReplayDue(value: unknown, now: number): boolean {
+  if (!value || typeof value !== 'object') return false;
+  if ('overflow' in value && value.overflow === true) return true;
+  if (!systemNoticeReplayCandidates(value).length) return false;
+  const next = 'nextCheckAt' in value ? value.nextCheckAt : null;
+  return typeof next !== 'number' || !Number.isSafeInteger(next) || next < 0 || now >= next;
+}
+
+export function systemNoticeRecentlyEmitted(
+  identity: { key: string; fingerprint: string },
+  proofs: Record<string, { fingerprint: string; emittedAt: number }>,
+  now: number,
+  reminderMs = AMBIENT_PUSH_WINDOW_MS,
+): boolean {
+  const receipt = proofs[identity.key];
+  return Number.isSafeInteger(now) && Number.isSafeInteger(reminderMs) && reminderMs > 0 &&
+    receipt?.fingerprint === identity.fingerprint && Number.isSafeInteger(receipt.emittedAt) &&
+    receipt.emittedAt >= 0 && receipt.emittedAt <= now && now - receipt.emittedAt < reminderMs;
+}
+
+export function systemNoticeReplayState(
+  entries: readonly Record<string, unknown>[],
+  proofs: Record<string, { fingerprint: string; emittedAt: number }>,
+  now: number,
+  reminderMs = AMBIENT_PUSH_WINDOW_MS,
+): SystemNoticeReplay {
+  const byEpisode = new Map<string, SystemNoticeReplay['candidates'][number]>();
+  // Oldest first so the latest source row replaces a retained episode. Do not
+  // retain resolved episodes as future alarms; their transition is still shown.
+  for (const entry of [...entries].sort((a, b) => String(a['ts']).localeCompare(String(b['ts'])))) {
+    const identity = systemNoticeIdentity(entry, reminderMs);
+    const msgId = entry['msg_id'];
+    if (!identity || typeof msgId !== 'string' || !msgId || msgId.length > 200) continue;
+    if (entry['resolved'] === true || entry['resolves_condition'] || entry['resolves_conditions'] ||
+        entry['category'] === 'severe-event-resolved') {
+      byEpisode.delete(identity.key);
+      continue;
+    }
+    byEpisode.set(identity.key, { msgId, ...identity });
+  }
+  const candidates = [...byEpisode.values()].slice(0, 256);
+  const overflow = byEpisode.size > candidates.length;
+  const dueTimes = candidates.map(candidate => systemNoticeRecentlyEmitted(candidate, proofs, now, reminderMs)
+    ? proofs[candidate.key]!.emittedAt + reminderMs : 0);
+  return { version: 1, candidates, overflow,
+    nextCheckAt: overflow ? 0 : dueTimes.length ? Math.min(...dueTimes) : 0 };
 }
 
 export function coalesceRepeatedBroadcasts<T extends Record<string, unknown>>(

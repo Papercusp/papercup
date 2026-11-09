@@ -32,7 +32,7 @@ import { parseContextSourceVersion, type ContextSourceVersion } from './temporal
 
 /** Private host metadata; no recalled plaintext is persisted in a receipt. */
 export type MemoryFragmentManifest = {
-  kind: 'memory' | 'corpus'; id: string; epoch: number; port: string;
+  kind: 'memory' | 'corpus' | 'notice'; id: string; epoch: number; port: string;
   bodySha256: string; bodyBytes: number;
   /** Canonical source identity, independent of the emitted/redacted bytes. */
   sourceFingerprint?: string;
@@ -45,7 +45,7 @@ export type MemoryFragmentOffer = MemoryFragmentManifest & {
   revalidateSource?: (signal: AbortSignal) => Promise<ContextSourceVersion | null>;
 };
 export type PreparedMemoryBlock = { text: string; fragments: MemoryFragmentOffer[] };
-export type MemoryEmissionConfirmation = { token: string; fragments: MemoryFragmentManifest[] };
+export type MemoryEmissionConfirmation = { token: string; fragments: MemoryFragmentManifest[]; emittedAt?: number };
 
 /** Host-only compare-and-swap state, never supplied by a native receipt. */
 type StagedMemoryFragment = MemoryFragmentManifest & {
@@ -72,13 +72,15 @@ const EMISSION_SURFACE_PREFIX = 'memory-emission:';
 export const MEMORY_EMISSION_TTL_MS = 24 * 60 * 60 * 1000;
 const emissionToken = (token: unknown): token is string => typeof token === 'string' && /^[A-Za-z0-9:_-]{1,200}$/.test(token);
 function validFragment(row: MemoryFragmentManifest): boolean {
-  return !!row && (row.kind === 'memory' || row.kind === 'corpus') && typeof row.id === 'string' &&
+  return !!row && (row.kind === 'memory' || row.kind === 'corpus' || row.kind === 'notice') && typeof row.id === 'string' &&
     row.id.length > 0 && row.id.length <= 1000 && Number.isSafeInteger(row.epoch) && row.epoch >= 0 &&
     typeof row.port === 'string' && row.port.length > 0 && row.port.length <= 100 &&
     /^[a-f0-9]{64}$/.test(row.bodySha256) && Number.isSafeInteger(row.bodyBytes) && row.bodyBytes > 0 &&
-    (row.sourceFingerprint === undefined || (typeof row.sourceFingerprint === 'string' && /^[a-f0-9]{64}$/.test(row.sourceFingerprint)));
+    (row.sourceFingerprint === undefined || (typeof row.sourceFingerprint === 'string' && /^[a-f0-9]{64}$/.test(row.sourceFingerprint))) &&
+    (row.kind !== 'notice' || (/^[a-f0-9]{64}$/.test(row.id) && row.sourceFingerprint !== undefined));
 }
 function validOffer(row: MemoryFragmentOffer): boolean {
+  if (row?.kind === 'notice') return validFragment(row) && row.sourceVersion === undefined && row.revalidateSource === undefined;
   const source = row?.sourceVersion ? parseContextSourceVersion(JSON.stringify(row.sourceVersion), row.id) : null;
   return validFragment(row) && (row.sourceFingerprint === undefined ? row.sourceVersion === undefined :
     !!source && source.fingerprint === row.sourceFingerprint);
@@ -163,7 +165,9 @@ export async function stageMemoryEmission(
   const fragments: StagedMemoryFragment[] = selectedOffers.map(row => ({ kind: row.kind, id: row.id, epoch: row.epoch, port: row.port,
     bodySha256: row.bodySha256, bodyBytes: row.bodyBytes,
     ...(row.sourceFingerprint ? { sourceFingerprint: row.sourceFingerprint,
-      sourceVersion: parseContextSourceVersion(JSON.stringify(row.sourceVersion), row.id)! } : {}) }));
+      ...(row.kind === 'notice' ? {} : {
+        sourceVersion: parseContextSourceVersion(JSON.stringify(row.sourceVersion), row.id)!
+      }) } : {}) }));
   if (!fragments.length) return;
   // Capture the confirmed baseline while PREPARING the token. Reading it at
   // confirmation would let a delayed old receipt overwrite a newer proof.
@@ -212,13 +216,14 @@ export async function stageMemoryEmission(
   }
   const { stage } = await import('../agent-tools/coordination/read-cursors');
   await stage(ownerId, EMISSION_SURFACE_PREFIX + token,
-    { schemaVersion: 2, expiresAt: Date.now() + MEMORY_EMISSION_TTL_MS, fragments }, { deliveryToken: token });
+    { schemaVersion: 2, preparedAt: Date.now(), expiresAt: Date.now() + MEMORY_EMISSION_TTL_MS, fragments }, { deliveryToken: token });
   // Age-based cleanup reuses the existing cursor table and owning call, with
   // no scheduler. Expired proofs cost a replay, never a false suppression.
   try {
     const { coordScopeWorkspace } = await import('../agent-tools/coordination/log');
     await sql`DELETE FROM harness_shared.coord_read_cursors
-      WHERE workspace_id = ${coordScopeWorkspace()} AND owner_id = ${ownerId} AND surface LIKE 'memory-emission:%'
+      WHERE workspace_id = ${coordScopeWorkspace()} AND owner_id = ${ownerId}
+        AND (surface LIKE 'memory-emission:%' OR surface LIKE 'notice-emitted:%')
         AND updated_at < now() - interval '1 day'`;
   } catch { /* optional retention cannot turn a prepared block into delivery */ }
 }
@@ -244,7 +249,7 @@ export async function confirmMemoryEmission(
     return 0;
   }
   const delivered = (candidate.fragments as StagedMemoryFragment[]).filter(row => validFragment(row) &&
-    (row.sourceFingerprint === undefined || row.previousSourceFingerprint === null ||
+    (row.kind === 'notice' || row.sourceFingerprint === undefined || row.previousSourceFingerprint === null ||
       (typeof row.previousSourceFingerprint === 'string' && /^[a-f0-9]{64}$/.test(row.previousSourceFingerprint))) &&
     proof.fragments.some(actual => validFragment(actual) && sameFragment(row, actual)));
   if (!delivered.length) return 0;
@@ -252,6 +257,26 @@ export async function confirmMemoryEmission(
   let succeeded = true;
   let inserted = 0;
   for (const row of delivered) {
+    if (row.kind === 'notice') {
+      // The client copies this time from its immutable stdout receipt. A
+      // server preparation, arrival ACK or later retry supplies no clock.
+      const at = proof.emittedAt;
+      if (typeof at !== 'number' || !Number.isSafeInteger(at) || typeof candidate.preparedAt !== 'number' ||
+          at < candidate.preparedAt || at > Date.now()) { succeeded = false; continue; }
+      const { coordScopeWorkspace } = await import('../agent-tools/coordination/log');
+      const surface = noticeEmissionSurface(row.epoch, row.id);
+      const state = JSON.stringify({ fingerprint: row.sourceFingerprint, emittedAt: at });
+      const updated = await sql<{ surface: string }[]>`
+        INSERT INTO harness_shared.coord_read_cursors
+          (workspace_id, owner_id, surface, committed, pending, pending_at, updated_at)
+        VALUES (${coordScopeWorkspace()}, ${ownerId}, ${surface}, ${state}::jsonb, NULL, now(), now())
+        ON CONFLICT (workspace_id, owner_id, surface) DO UPDATE
+          SET committed = EXCLUDED.committed, updated_at = now()
+          WHERE COALESCE((harness_shared.coord_read_cursors.committed->>'emittedAt')::bigint, -1) < ${at}
+        RETURNING surface`;
+      inserted += updated.length;
+      continue;
+    }
     const stamped = row.kind === 'memory'
       ? await stampSurfacedResult(sql, ownerId, row.epoch, [row.id], row.port, row.sourceFingerprint, row.sourceVersion,
         row.previousSourceFingerprint)
@@ -262,6 +287,33 @@ export async function confirmMemoryEmission(
   }
   if (succeeded) await clearReadCursor(ownerId, surface);
   return succeeded ? inserted : 0;
+}
+
+const noticeEmissionSurface = (epoch: number, key: string) => `notice-emitted:${epoch}:${key}`;
+
+/** Reuse the receipt cursor store and its workspace/recipient boundary. Only
+ * confirmMemoryEmission writes these floors, after an exact native proof. */
+export async function provenSystemNoticeEmissions(
+  sql: SqlTag, ownerId: string, epoch: number, keys: readonly string[],
+): Promise<Record<string, { fingerprint: string; emittedAt: number }>> {
+  const wanted = [...new Set(keys.filter(key => /^[a-f0-9]{64}$/.test(key)))].slice(0, 256);
+  if (!wanted.length || !Number.isSafeInteger(epoch) || epoch < 0) return {};
+  const { coordScopeWorkspace } = await import('../agent-tools/coordination/log');
+  const surfaces = wanted.map(key => noticeEmissionSurface(epoch, key));
+  const rows = await sql<{ surface: string; committed: { fingerprint?: unknown; emittedAt?: unknown } | null }[]>`
+    SELECT surface, committed FROM harness_shared.coord_read_cursors
+    WHERE workspace_id = ${coordScopeWorkspace()} AND owner_id = ${ownerId}
+      AND surface = ANY(${surfaces}::text[])`;
+  const result: Record<string, { fingerprint: string; emittedAt: number }> = {};
+  for (const row of rows) {
+    const key = wanted[surfaces.indexOf(row.surface)];
+    const state = row.committed;
+    if (key && typeof state?.fingerprint === 'string' && /^[a-f0-9]{64}$/.test(state.fingerprint) &&
+        typeof state.emittedAt === 'number' && Number.isSafeInteger(state.emittedAt) && state.emittedAt >= 0) {
+      result[key] = { fingerprint: state.fingerprint, emittedAt: state.emittedAt };
+    }
+  }
+  return result;
 }
 
 let relationMissing = false;

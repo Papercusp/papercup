@@ -2817,6 +2817,12 @@ export interface FactSelector {
   scopeRef?: string | null;
 }
 
+/** Explicit current task identities; prose is never interpreted as authority. */
+export interface FactTaskContext {
+  workItemRefs?: readonly string[];
+  files?: readonly string[];
+}
+
 /**
  * The FOLD read — live (unexpired, unretracted) facts for a set of selectors,
  * newest-updated first, bounded per selector. This is what brief/dossier/orient
@@ -3369,6 +3375,10 @@ export async function foldFactsWithCensus(
     /** Keep only facts that declare a `file:` anchor on ANY of these repo-relative
      *  paths (applied IN SQL, before the LIMIT). Used by {@link foldCodeNotesForPaths}. */
     dependsOnFiles?: readonly string[];
+    /** Rank ordinary facts for this task before bounding them. Never-drop slots
+     * and durable conventions do not compete for ordinary slots. Omitted keeps
+     * the explicit recency read used by existing list/currency callers. */
+    taskContext?: FactTaskContext;
   } = {},
   inject?: Sql,
 ): Promise<{ facts: AgentFact[]; census: FactFoldCensus[] }> {
@@ -3391,10 +3401,37 @@ export async function foldFactsWithCensus(
   ];
   const out: AgentFact[] = [];
   const census: FactFoldCensus[] = [];
+  const task = opts.taskContext;
+  const taskRefs = [...new Set((task?.workItemRefs ?? [])
+    .map((ref) => ref.trim()).filter((ref) => /^(?:WI|EI|F)-\d+$/.test(ref)))];
+  const taskSources = taskRefs.map((ref) => `wi:${ref}`);
+  const taskFiles = [...new Set((task?.files ?? []).map((path) => path.trim()).filter(Boolean)
+    .map((path) => `${FACT_FILE_ANCHOR_PREFIX}${path}`))];
+  // The validity/audience predicate stays below, BEFORE both ranking and census.
+  // Protection changes admission, never the authority or liveness of a fact.
+  const protectedFact = task
+    ? sql`(key LIKE ANY(${NEVER_DROP_KEY_PREFIXES.map((prefix) => `${prefix}%`)})
+           OR (coalesce(kind = 'convention', false) AND measurement->'subjectVolatile' IS DISTINCT FROM 'true'::jsonb))`
+    : sql`false`;
+  const relevance = task
+    ? sql`(CASE WHEN scope = 'work_item' AND scope_ref = ANY(${taskRefs}) THEN 1 ELSE 0 END
+           + CASE WHEN source_ref = ANY(${taskSources}) THEN 1 ELSE 0 END
+           + CASE WHEN jsonb_typeof(depends_on) = 'array' THEN
+               CASE WHEN EXISTS (SELECT 1 FROM jsonb_array_elements(depends_on) d
+                                 WHERE d->>'cell' = ANY(${taskFiles})) THEN 1 ELSE 0 END
+             ELSE 0 END)`
+    : sql`0`;
+  const order = task
+    ? sql`fold_relevance DESC,
+          CASE WHEN source_provenance->'verified' = 'true'::jsonb THEN 1 ELSE 0 END DESC,
+          CASE confidence WHEN 'verified' THEN 3 WHEN 'provisional' THEN 2 WHEN 'suspected' THEN 0 ELSE 1 END DESC,
+          updated_at DESC, id DESC`
+    : sql`updated_at DESC, id DESC`;
   for (const sel of selectors) {
     const ref = sel.scope === 'workspace' ? '' : (sel.scopeRef ?? '').trim();
     if (sel.scope !== 'workspace' && !ref) continue; // an unset optional dimension folds nothing
     const rows = await sql<(AgentFactRow & { fold_total: string })[]>`
+      WITH eligible AS (
       SELECT id, scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
              -- P-002: settled_by rides the FOLD specifically. An undecidable whose exit
              -- is stored but never surfaced cannot stop re-derivation — the reader would
@@ -3409,7 +3446,8 @@ export async function foldFactsWithCensus(
              -- count and it costs no second statement. Without it the fold cannot
              -- tell a reader that 483 of 495 facts were dropped, and "### Standing
              -- facts" reads as the corpus rather than the newest 12 of it.
-             count(*) OVER () AS fold_total
+             count(*) OVER () AS fold_total,
+             ${protectedFact} AS fold_protected, ${relevance} AS fold_relevance
         FROM harness_shared.agent_facts
        WHERE ${liveFactPredicate(sql, ws, sel.scope, ref, keyPrefixes, audiences, opts.includeCodeNotes)}
          AND ${
@@ -3420,8 +3458,13 @@ export async function foldFactsWithCensus(
                         ELSE false END`
              : sql`TRUE`
          }
-       ORDER BY updated_at DESC
-       LIMIT ${limit}`;
+      ), ranked AS (
+        SELECT *, row_number() OVER (PARTITION BY fold_protected ORDER BY ${order}) AS fold_rank
+          FROM eligible
+      )
+      SELECT * FROM ranked
+       WHERE ${task ? sql`fold_protected OR fold_rank <= ${limit}` : sql`fold_rank <= ${limit}`}
+       ORDER BY fold_protected DESC, ${order}`;
     out.push(...rows.map(rowToFact));
     // No rows ⇒ no window row to read ⇒ the population is genuinely 0, which is
     // the one reading a caller IS entitled to treat as a census.
@@ -3449,6 +3492,8 @@ export async function foldFacts(
     includeCodeNotes?: boolean;
     /** See {@link foldFactsWithCensus}. */
     dependsOnFiles?: readonly string[];
+    /** See {@link foldFactsWithCensus}. */
+    taskContext?: FactTaskContext;
   } = {},
   inject?: Sql,
 ): Promise<AgentFact[]> {

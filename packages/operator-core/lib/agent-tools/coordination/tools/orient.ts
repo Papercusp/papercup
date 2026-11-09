@@ -1928,10 +1928,23 @@ export async function composeOrient(
         listFactEvictionDisclosures,
         FACTS_FOLD_LIMIT,
       } = await import('../../../agent-facts/store');
+      // Reuse the already-read, self-marked assignment. Trimmed assignments
+      // render `doing` as "<id> <title>"; full assignments retain its object.
+      // Never infer a task from a peer row, free-form intent, or goal prose.
+      const factSelf = (me as { agents?: Array<{ isSelf?: boolean; doing?: unknown }> } | undefined)
+        ?.agents?.find((agent) => agent.isSelf === true);
+      const doing = factSelf?.doing;
+      const doingId = typeof doing === 'string'
+        ? /^(?:WI|EI|F)-\d+(?=\s|$)/.exec(doing)?.[0]
+        : doing && typeof doing === 'object' && 'id' in doing && typeof doing.id === 'string'
+          ? doing.id : undefined;
+      const taskRefs = [...new Set((args.declared_goal_refs ?? (doingId ? [doingId] : []))
+        .filter((ref) => /^(?:WI|EI|F)-\d+$/.test(ref)))];
       const selectors = [
         { scope: 'workspace' as const },
         ...(ownerId ? [{ scope: 'owner' as const, scopeRef: ownerId }] : []),
         ...(args.harness ? [{ scope: 'harness' as const, scopeRef: args.harness }] : []),
+        ...taskRefs.map((ref) => ({ scope: 'work_item' as const, scopeRef: ref })),
       ];
       // P-007: filter by the RECIPIENT's audience — an audience-scoped fact
       // (audienceScope 'fleet:<slug>') folds only for that fleet's members;
@@ -1943,8 +1956,13 @@ export async function composeOrient(
       // own bound via `factsNarrowed` and needs no census.
       let factsCensus: Awaited<ReturnType<typeof foldFactsWithCensus>>['census'] = [];
       let facts: Awaited<ReturnType<typeof foldNeverDropFacts>>;
+      const taskContext = args.currentFiles?.length || taskRefs.length
+        ? { files: args.currentFiles ?? [], workItemRefs: taskRefs }
+        : undefined;
       if (factsFold === 'full') {
-        const folded = await foldFactsWithCensus(selectors, foldOpts);
+        const folded = await foldFactsWithCensus(selectors, {
+          ...foldOpts, ...(taskContext ? { taskContext } : {}),
+        });
         facts = folded.facts;
         factsCensus = folded.census;
       } else {
@@ -1982,7 +2000,10 @@ export async function composeOrient(
             total: c.total,
           })),
           reason:
-            'The facts fold returns the most-recently-updated facts per scope, capped per selector — these scopes hold more than were returned, so `facts` is a SAMPLE, not a census. A fact you expected and do not see may simply not be among the newest; its absence here is not evidence it was never asserted. Read a scope in full with facts:list { scope, scopeRef }, which reports its own total.',
+            (taskContext
+              ? 'The facts fold ranks ordinary facts by declared task/file scope and provenance before applying the per-selector ordinary limit; live never-drop facts and durable conventions are retained separately. '
+              : 'The facts fold returns the most-recently-updated facts per scope, capped per selector. ') +
+            'These scopes hold more than were returned, so `facts` is a SAMPLE, not a census. Absence here is not evidence a fact was never asserted. Read a scope in full with facts:list { scope, scopeRef }, which reports its own total.',
         };
       }
       // P-002 / D-001: withhold queen-loop steering facts (pauseNewWork/maxBees) from

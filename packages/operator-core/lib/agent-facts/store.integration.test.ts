@@ -371,6 +371,69 @@ describe('wall lapse exact recovery reader', () => {
 // in store.test.ts only proves the text renders once a census says `truncated`, and
 // would stay green if the window function reported the post-LIMIT count (always ==
 // shown ⇒ truncated always false ⇒ the disclosure never fires and nothing fails).
+describe('context reliability R-8: task-ranked standing facts', () => {
+  const scopeRef = 'su-task-ranked';
+  const selectors = [{ scope: 'owner' as const, scopeRef }];
+  const base = { scope: 'owner' as const, scopeRef, workspaceId: WS, createdBy: 'su-int', ttlSec: 3600 };
+  const opts = { workspaceId: WS, limitPerSelector: 1 };
+  const anchor = (path: string): FactDependency => ({
+    cell: `file:${path}`, observedAt: new Date().toISOString(), digest: 'a'.repeat(64),
+  });
+
+  it('selects an older relevant fact before the limit and switches with the task', async () => {
+    await assertFact({ ...base, key: 'task-a', body: 'A', dependsOn: [anchor('lib/a.ts')] }, db.sql);
+    await assertFact({ ...base, key: 'task-b', body: 'B', sourceRef: 'wi:WI-202' }, db.sql);
+    await assertFact({ ...base, key: 'noise', body: 'new unrelated snapshot' }, db.sql);
+    const a = await foldFactsWithCensus(selectors, { ...opts, taskContext: { files: ['lib/a.ts'] } }, db.sql);
+    expect(a.facts.map((fact) => fact.key)).toEqual(['task-a']);
+    expect(a.census).toEqual([{ scope: 'owner', scopeRef, shown: 1, total: 3, truncated: true }]);
+    const b = await foldFacts(selectors, { ...opts, taskContext: { workItemRefs: ['WI-202'] } }, db.sql);
+    expect(b.map((fact) => fact.key)).toEqual(['task-b']);
+    // The explicit currency read retains its historical recency semantics.
+    expect((await foldFacts(selectors, opts, db.sql)).map((fact) => fact.key)).toEqual(['noise']);
+  });
+
+  it('retains every live protected fact outside the ordinary limit, including a proven convention', async () => {
+    for (const key of ['dead-end:old', 'wall:review-due', 'guard-rail:old']) {
+      await assertFact({ ...base, key, body: key }, db.sql);
+    }
+    await assertFact({ ...base, key: 'durable', body: 'Use the established seam', kind: 'convention', sourceRef: 'wi:WI-303' }, db.sql);
+    await assertFact({ ...base, key: 'relevant', body: 'current task', sourceRef: 'wi:WI-202' }, db.sql);
+    await assertFact({ ...base, key: 'noise', body: 'newer unrelated' }, db.sql);
+    await db.sql`UPDATE harness_shared.agent_facts SET expires_at = now() - interval '1 minute'
+      WHERE workspace_id = ${WS} AND scope_ref = ${scopeRef} AND key = 'wall:review-due'`;
+    const folded = await foldFactsWithCensus(selectors, { ...opts, taskContext: { workItemRefs: ['WI-202'] } }, db.sql);
+    expect(folded.facts.map((fact) => fact.key).sort()).toEqual([
+      'dead-end:old', 'durable', 'guard-rail:old', 'relevant', 'wall:review-due',
+    ]);
+    expect(folded.census[0]).toMatchObject({ shown: 5, total: 6, truncated: true });
+    // A source item's lifecycle is not used as a proxy for convention validity.
+    expect(folded.facts.find((fact) => fact.key === 'durable')?.sourceRef).toBe('wi:WI-303');
+  });
+
+  it('applies expiry, audience, scope and current-version eligibility before protected admission', async () => {
+    await assertFact({ ...base, key: 'expired', body: 'obsolete', kind: 'convention' }, db.sql);
+    await assertFact({ ...base, key: 'foreign-audience', body: 'private', kind: 'convention', audienceScope: 'fleet:other' }, db.sql);
+    await assertFact({ ...base, scopeRef: 'su-other', key: 'foreign-scope', body: 'private', kind: 'convention' }, db.sql);
+    await assertFact({ ...base, key: 'corrected', body: 'old' }, db.sql);
+    await assertFact({ ...base, key: 'corrected', body: 'current' }, db.sql);
+    await db.sql`UPDATE harness_shared.agent_facts SET expires_at = now() - interval '1 minute'
+      WHERE workspace_id = ${WS} AND scope_ref = ${scopeRef} AND key = 'expired'`;
+    const folded = await foldFactsWithCensus(selectors, { ...opts, taskContext: {} }, db.sql);
+    expect(folded.facts.map((fact) => fact.body)).toEqual(['current']);
+    expect(folded.census[0]).toMatchObject({ shown: 1, total: 1, truncated: false });
+  });
+
+  it('uses verified provenance ahead of recency only among equally relevant ordinary facts', async () => {
+    await assertFact({ ...base, key: 'grounded', body: 'known origin', sourceRef: 'wi:WI-202',
+      sourceProvenance: { kind: 'work-item', verified: true, verifiedAt: new Date().toISOString() } }, db.sql);
+    await assertFact({ ...base, key: 'unresolved', body: 'new unknown origin', sourceRef: 'wi:WI-202',
+      sourceProvenance: { kind: 'work-item', verified: false, verifiedAt: new Date().toISOString() } }, db.sql);
+    const facts = await foldFacts(selectors, { ...opts, taskContext: { workItemRefs: ['WI-202'] } }, db.sql);
+    expect(facts.map((fact) => fact.key)).toEqual(['grounded']);
+  });
+});
+
 describe('P-004 / D-006: the fold reports the population it is a slice OF', () => {
   const SCOPE_REF = 'su-census';
 

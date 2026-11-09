@@ -238,7 +238,7 @@ export function turnStartContextCandidates(parts: {
     }))),
     ...optionalRecallContextCandidates(unit('turn-start:memory', 'memory', false, parts.memory, parts.memoryFragments?.map(row => ({
       sourceRef: `${row.kind}:${row.id}`, revision: `epoch:${row.epoch}:sha256:${row.bodySha256}`,
-      class: row.kind, rendered: row.rendered,
+      class: row.kind === 'notice' ? 'ambient' : row.kind, rendered: row.rendered,
     })))),
     unit('turn-start:granted-sources', 'granted', false, parts.personal),
     unit('turn-start:packages', 'package', false, parts.packages ?? '')];
