@@ -142,11 +142,10 @@ function loadedFixture(source?: string, admit = true, buildObservationOnly = fal
     // Mutated negative controls must start from independently bound evidence.
     const baseline = observeCommittedReaderLoadedSources(options);
     expect(baseline).toMatchObject({ status: 'bound', gaps: [] });
-    // A build-only receipt deliberately lacks the planned external resolution
-    // contract. Keep that narrower proof unknown; resolver controls use the
-    // complete fixture and must establish their bound baseline first.
-    if (buildObservationOnly) expect(baseline.resolutions.status).toBe('unknown');
-    else expect(baseline.resolutions).toMatchObject({ status: 'bound', gaps: [] });
+    // Build-only receipts have no planned external-resolution contract. Their
+    // actual returned edges are tested separately against retained source and
+    // dependency bytes, without qualifying preparation or import closure.
+    if (!buildObservationOnly) expect(baseline.resolutions).toMatchObject({ status: 'bound', gaps: [] });
   }
   const rows = readdirSync(traceRoot).filter(name => name.endsWith('.json'))
     .map(name => ({ name, row: JSON.parse(readFileSync(join(traceRoot, name), 'utf8')) }));
@@ -193,6 +192,37 @@ describe('committed reader loader-return source binding', () => {
     expect(result.pending).toContain('runtime-config');
     expect(result.pending).toContain('complete-runtime-closure');
   });
+
+  it('binds build-only resolver observations to retained dependency bytes without qualifying imports', () => {
+    const f = loadedFixture('import value from "example"; console.log(value);', true, true);
+    const result = f.observe();
+    expect(result.resolutions).toMatchObject({ status: 'bound', gaps: [] });
+    expect(result.resolutions.edges).toContainEqual(expect.objectContaining({ specifier: 'example',
+      parentURL: pathToFileURL(f.bundle).href,
+      url: pathToFileURL(join(f.root, 'node_modules/example/index.js')).href }));
+    expect(result.pending).toEqual(expect.arrayContaining([
+      'preparation-qualification', 'build-imports', 'observed-imports', 'complete-runtime-closure']));
+    expect(() => qualifyCommittedReaderSource({ ...f.options, preparationOnly: true })).toThrow();
+  });
+
+  it.each(['missing-return', 'unloaded', 'dependency-bytes', 'identity'] as const)(
+    'refuses %s build-only resolver evidence without a planned resolution map', mode => {
+      const f = loadedFixture('import value from "example"; console.log(value);', true, true);
+      expect(f.observe().resolutions).toMatchObject({ status: 'bound', gaps: [] });
+      const returned = f.rows.find(({ row }) => row.event === 'module-resolve-return'
+        && row.specifier === 'example')!;
+      if (mode === 'missing-return') rmSync(join(f.traceRoot, returned.name));
+      else if (mode === 'dependency-bytes') writeFileSync(join(f.root, 'node_modules/example/index.js'), 'module.exports = 2');
+      else {
+        rmSync(join(f.traceRoot, returned.name));
+        if (mode === 'unloaded') returned.row.url = pathToFileURL(join(f.root, 'helper.ts')).href;
+        if (mode === 'identity') returned.row.specifier = 'other-package';
+        const bytes = JSON.stringify(returned.row);
+        writeFileSync(join(f.traceRoot, digest(bytes) + '.json'), bytes);
+      }
+      if (mode === 'dependency-bytes') expect(() => f.observe()).toThrow(/dependency census changed/);
+      else expect(f.observe().resolutions.status).toBe('unknown');
+    });
 
   it.each(['missing', 'pending', 'duplicate', 'identity', 'isolate', 'opaque', 'unloaded', 'limit',
     'terminal', 'external-pin'] as const)('keeps %s resolver evidence unknown', mode => {
