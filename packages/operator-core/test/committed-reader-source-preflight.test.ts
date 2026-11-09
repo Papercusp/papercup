@@ -132,8 +132,13 @@ function loadedFixture(source?: string, admit = true, buildObservationOnly = fal
       receiptPath: join(f.dir, 'prepare/operator-api-preflight.json') } : {}) };
   if (admit && !duplicatePreload) {
     // Mutated negative controls must start from independently bound evidence.
-    expect(observeCommittedReaderLoadedSources(options)).toMatchObject({ status: 'bound',
-      resolutions: { status: 'bound', gaps: [] } });
+    const baseline = observeCommittedReaderLoadedSources(options);
+    expect(baseline).toMatchObject({ status: 'bound', gaps: [] });
+    // A build-only receipt deliberately lacks the planned external resolution
+    // contract. Keep that narrower proof unknown; resolver controls use the
+    // complete fixture and must establish their bound baseline first.
+    if (buildObservationOnly) expect(baseline.resolutions.status).toBe('unknown');
+    else expect(baseline.resolutions).toMatchObject({ status: 'bound', gaps: [] });
   }
   const rows = readdirSync(traceRoot).filter(name => name.endsWith('.json'))
     .map(name => ({ name, row: JSON.parse(readFileSync(join(traceRoot, name), 'utf8')) }));
