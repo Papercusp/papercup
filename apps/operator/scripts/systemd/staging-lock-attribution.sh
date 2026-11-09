@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Attempt-correlated diagnostics for the staging API and sync flock, plus
 # proof-bound reuse of a complete immutable generation at API startup.
-# Collection failures never change readiness; failed reuse checks retain the
-# ordinary shared-lock rebuild path.
+# Collection failures never change readiness. Published generations must retain
+# their qualified bytes; only ordinary checkouts use the shared-lock builder.
 
 staging_lock_log() {
   printf '%s\n' "[staging-lock-attribution] $*" >&2
@@ -131,9 +131,8 @@ staging_lock_api_pre_held() {
 # the actual systemd working directory, not the movable staging.current alias.
 # Keep the existing install mutex around the source/dist proof read. Generation
 # pruning already retains every root referenced by a process's physical cwd.
-staging_lock_reuse_complete_generation() {
-  local bundle="$1" operator_root repo_root generation_root source_sha ready_sha
-  [[ "${PAPERCUSP_BUNDLE_REUSE_FRESH:-0}" == 1 ]] || return 1
+staging_lock_immutable_generation_root() {
+  local operator_root repo_root generation_root
   operator_root="$(pwd -P)" || return 1
   [[ "$operator_root" == */apps/operator ]] || return 1
   repo_root="$(cd "$operator_root/../.." && pwd -P)" || return 1
@@ -141,6 +140,15 @@ staging_lock_reuse_complete_generation() {
   [[ "$(basename "$repo_root")" == checkout &&
      "$(basename "$generation_root")" == .candidate-* &&
      "$(basename "$(dirname "$generation_root")")" == papercusp-staging.generations ]] || return 1
+  printf '%s' "$repo_root"
+}
+
+staging_lock_reuse_complete_generation() {
+  local bundle="$1" operator_root repo_root generation_root source_sha ready_sha
+  [[ "${PAPERCUSP_BUNDLE_REUSE_FRESH:-0}" == 1 ]] || return 1
+  repo_root="$(staging_lock_immutable_generation_root)" || return 1
+  operator_root="$repo_root/apps/operator"
+  generation_root="$(dirname "$repo_root")"
   [[ "$(realpath -e "$bundle" 2>/dev/null)" == "$operator_root/bin/bundle-host.sh" ]] || return 1
   source_sha="$(git -C "$repo_root" rev-parse --verify HEAD 2>/dev/null)" || return 1
   [[ "$source_sha" =~ ^[[:xdigit:]]{40}$ || "$source_sha" =~ ^[[:xdigit:]]{64}$ ]] || return 1
@@ -164,12 +172,18 @@ staging_lock_api_pre() {
   PAPERCUSP_STAGING_LOCK_PATH="$lock_path"
   export PAPERCUSP_STAGING_LOCK_PATH
   staging_lock_log "event=start surface=start-pre attempt_id=$attempt_id state=wait_start lock_path=$lock_path lock_mode=shared wait_start_ms=$wait_start readiness_policy=Type-notify"
-  # Custom bundle arguments still use the locked builder; the proof below is
-  # specifically for the unit's default entry and output paths.
-  if [[ $# == 0 ]] && staging_lock_reuse_complete_generation "$bundle"; then
+  # A failed proof is not permission to rebuild a published generation in place.
+  # Its original manifest would describe different bytes, and the availability
+  # builder can succeed with a dirty, unattributable source identity. Custom
+  # arguments cannot qualify the unit's default entry/output proof either.
+  if staging_lock_immutable_generation_root >/dev/null; then
     unit_fields="$(staging_lock_unit_fields papercup-staging-api.service)"
-    staging_lock_log "event=end surface=start-pre attempt_id=$attempt_id state=complete lock_path=$lock_path lock_mode=shared lock_scope=immutable_generation wait_start_ms=$wait_start wait_elapsed_ms=$(staging_lock_elapsed_ms "$wait_start" "$(staging_lock_now_ms)") acquisition_outcome=not_required bundle_outcome=proof_reused readiness_phase=before-execstart $unit_fields"
-    return 0
+    if [[ $# == 0 ]] && staging_lock_reuse_complete_generation "$bundle"; then
+      staging_lock_log "event=end surface=start-pre attempt_id=$attempt_id state=complete lock_path=$lock_path lock_mode=shared lock_scope=immutable_generation wait_start_ms=$wait_start wait_elapsed_ms=$(staging_lock_elapsed_ms "$wait_start" "$(staging_lock_now_ms)") acquisition_outcome=not_required bundle_outcome=proof_reused readiness_phase=before-execstart $unit_fields"
+      return 0
+    fi
+    staging_lock_log "event=end surface=start-pre attempt_id=$attempt_id state=refused lock_path=$lock_path lock_mode=shared lock_scope=immutable_generation wait_start_ms=$wait_start wait_elapsed_ms=$(staging_lock_elapsed_ms "$wait_start" "$(staging_lock_now_ms)") acquisition_outcome=not_required bundle_outcome=proof_refused bundle_exit_status=78 readiness_phase=before-execstart remediation=publish_qualified_generation $unit_fields"
+    return 78
   fi
   (
     local sample=0 stop=0 sample_ms elapsed holder

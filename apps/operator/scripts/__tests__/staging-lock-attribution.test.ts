@@ -180,6 +180,25 @@ describe("staging lock attribution", () => {
       expect(result.stderr).toContain("NPM_INSTALL_SAFE guarding reader");
       expect(result.stderr).toContain("lock_scope=immutable_generation");
       expect(existsSync(fixture.rebuilt)).toBe(false);
+
+      // Reproduce source drift after publication using the real proof reader.
+      // A restart must preserve the published bundle and its original receipt.
+      const entry = join(fixture.operator, "dist-host/hono-host.mjs");
+      const proof = join(fixture.operator, "dist-host/.bundle-fresh.json");
+      const originalBundle = readFileSync(entry);
+      const originalProof = readFileSync(proof);
+      writeFileSync(join(fixture.operator, "bin/hono-host.ts"), "export const ready = false;\n");
+      const refused = spawnSync("/usr/bin/bash", [HELPER, "api-pre", join(dir, "sync.lock"), fixture.bundle], {
+        cwd: fixture.operator,
+        env: { ...process.env, PAPERCUSP_BUNDLE_REUSE_FRESH: "1", PAPERCUSP_INSTALL_MUTEX_HELD: "0" },
+        encoding: "utf8", timeout: SPAWN_TIMEOUT_MS,
+      });
+      expect(refused.status, refused.stderr).toBe(78);
+      expect(refused.stderr).toContain("tracked source tree is dirty");
+      expect(refused.stderr).toContain("bundle_outcome=proof_refused");
+      expect(existsSync(fixture.rebuilt)).toBe(false);
+      expect(readFileSync(entry)).toEqual(originalBundle);
+      expect(readFileSync(proof)).toEqual(originalProof);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
@@ -237,23 +256,31 @@ describe("staging lock attribution", () => {
     }
   });
 
-  it.each(["missing readiness", "different source", "rejected proof"])(
-    "keeps the locked rebuild when a generation has %s", (reason) => {
-      const dir = makeTempDir("staging-generation-fallback-");
+  it.each(["missing readiness", "different source", "rejected proof", "stale bundle", "reuse disabled", "custom arguments", "different bundle"])(
+    "preserves an immutable generation and refuses startup for %s", (reason) => {
+      const dir = makeTempDir("staging-generation-refusal-");
       try {
         const fixture = completeGenerationFixture(dir);
         if (reason === "missing readiness") rmSync(join(fixture.generation, ".ready"));
         if (reason === "different source") writeFileSync(join(fixture.generation, ".ready"), "b".repeat(40));
         if (reason === "rejected proof") rmSync(fixture.proofValid);
-        const result = spawnSync("/usr/bin/bash", [HELPER, "api-pre", join(dir, "sync.lock"), fixture.bundle], {
+        if (reason === "stale bundle") writeFileSync(join(fixture.operator, "dist-host/.bundle-stale.json"), "{}\n");
+        const bundle = reason === "different bundle" ? join(dir, "other-bundle.sh") : fixture.bundle;
+        if (reason === "different bundle") writeFileSync(bundle, readFileSync(fixture.bundle), { mode: 0o700 });
+        const args = [HELPER, "api-pre", join(dir, "sync.lock"), bundle];
+        if (reason === "custom arguments") args.push("bin/other-host.ts");
+        const result = spawnSync("/usr/bin/bash", args, {
           cwd: fixture.operator,
-          env: { ...process.env, PATH: fixture.binDir + ":" + process.env.PATH, PAPERCUSP_BUNDLE_REUSE_FRESH: "1" },
+          env: { ...process.env, PATH: fixture.binDir + ":" + process.env.PATH, PAPERCUSP_BUNDLE_REUSE_FRESH: reason === "reuse disabled" ? "0" : "1" },
           encoding: "utf8", timeout: SPAWN_TIMEOUT_MS,
         });
-        expect(result.status).toBe(0);
-        expect(existsSync(fixture.rebuilt)).toBe(true);
-        expect(result.stderr).toContain("acquisition_outcome=acquired");
-        expect(result.stderr).not.toContain("lock_scope=immutable_generation");
+        expect(result.status, result.stderr).toBe(78);
+        expect(existsSync(fixture.rebuilt)).toBe(false);
+        expect(records(result.stderr).at(-1)).toMatchObject({
+          state: "refused", lock_scope: "immutable_generation",
+          acquisition_outcome: "not_required", bundle_outcome: "proof_refused",
+          bundle_exit_status: "78", remediation: "publish_qualified_generation",
+        });
       } finally { rmSync(dir, { recursive: true, force: true }); }
     });
 
