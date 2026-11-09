@@ -422,10 +422,35 @@ export async function planTemplateStoreCensusProducer(path = papercuspRoot()) {
 }
 
 /** Exact runtime sidefile writers; siblings require separate provenance. */
-export async function runtimeSidefileCensusProducer(home = homedir(), environment: NodeJS.ProcessEnv = process.env) {
+export async function runtimeSidefileCensusProducer(home = homedir(), environment: NodeJS.ProcessEnv = process.env,
+  workingDirectories: readonly string[] = []) {
   const root: CensusRoot = { id: 'runtime-sidefiles', path: join(home, '.papercusp') };
   const roots = [root];
   const declarations: CensusDeclaration[] = [];
+  // Before console-spawn moved sentinels into scratch, its interactive shell
+  // used `touch .papercup-console-active.$$` in the launch cwd (2b9578d44c^).
+  // These empty process leases are regenerated on the destination. Do not
+  // infer ownership of nonempty files, linked directories or neighboring data.
+  for (const directory of new Set([root.path, papercuspHome(environment, home), ...workingDirectories])) {
+    try { if (!(await lstat(directory)).isDirectory()) continue; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const match = /^\.papercup-console-active\.([1-9][0-9]{0,9})$/.exec(entry.name);
+      if (!entry.isFile() || !match || Number(match[1]) > 2147483647) continue;
+      let handle;
+      try {
+        handle = await open(join(directory, entry.name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        const metadata = await handle.stat();
+        if (!metadata.isFile() || metadata.size !== 0) continue;
+        let consoleRoot = roots.find(candidate => candidate.path === directory);
+        if (!consoleRoot) { consoleRoot = { id: `runtime-console-${roots.length}`, path: directory }; roots.push(consoleRoot); }
+        declarations.push({ kind: 'path', root: consoleRoot.id, name: entry.name,
+          classification: 'cache', producer: 'console-spawn-legacy-sentinel' });
+      } catch (error) {
+        if (!['ENOENT', 'ELOOP'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+      } finally { await handle?.close(); }
+    }
+  }
   const pacingFile = 'google-vertex-gemini-3.1-pro-preview.json';
   for (const [directory, producer, files, classification] of [
     ['provider-pacing', 'omp-vertex-request-start', [pacingFile, `${pacingFile}.lock`], 'state'],

@@ -858,6 +858,42 @@ describe('secret census producer adapters', () => {
       expect(await readFile(new URL('../../../../apps/tui/src/client.rs', import.meta.url), 'utf8')).toContain('"plans-list-standard-v1"');
     } finally { vi.unstubAllEnvs(); await rm(home, { recursive: true, force: true }); }
   });
+  it('classifies empty legacy console leases only at explicit writer roots and preserves foreign residue', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'console-sentinel-census-'));
+    const ordinary = join(home, '.papercusp');
+    const relocated = join(home, 'relocated');
+    const workspace = join(home, 'workspace', '.papercusp');
+    const linked = join(home, 'linked');
+    const marker = '.papercup-console-active.123';
+    try {
+      for (const directory of [ordinary, relocated, workspace]) {
+        await mkdir(directory, { recursive: true });
+        await writeFile(join(directory, marker), '');
+      }
+      const foreign = ['.papercup-console-active.0', '.papercup-console-active.01',
+        '.papercup-console-active.2147483648', '.papercup-console-active.$',
+        '.papercup-console-active.124', '.papercup-console-active.125', 'owner-data'];
+      for (const name of foreign) await writeFile(join(workspace, name), name.endsWith('.124') ? 'retained data' : '');
+      await rm(join(workspace, '.papercup-console-active.125'));
+      await symlink(join(ordinary, marker), join(workspace, '.papercup-console-active.125'));
+      await mkdir(join(workspace, 'nested'));
+      await writeFile(join(workspace, 'nested', marker), '');
+      await mkdir(join(workspace, '.papercup-console-active.126'));
+      await symlink(workspace, linked);
+      const result = await runtimeSidefileCensusProducer(home, { PAPERCUSP_HOME: relocated }, [workspace, workspace, linked]);
+      const sentinels = result.declarations.filter(entry => entry.producer === 'console-spawn-legacy-sentinel');
+      expect(sentinels).toHaveLength(3);
+      expect(sentinels.every(entry => entry.name === marker && entry.classification === 'cache'
+        && !entry.descendants && !entry.prune)).toBe(true);
+      expect(result.roots.map(root => root.path).sort()).toEqual([ordinary, relocated, workspace].sort());
+      const census = await collectStateCensus({ ...result, readCatalogs: async () => [] });
+      const workspaceRoot = result.roots.find(root => root.path === workspace)!.id;
+      expect(census.inventory.find(entry => entry.root === workspaceRoot && entry.name === marker)?.classification).toBe('cache');
+      expect(census.residue.filter(entry => entry.root === workspaceRoot).map(entry => entry.name).sort())
+        .toEqual([...foreign, 'nested', `nested/${marker}`, '.papercup-console-active.126'].sort());
+      expect((await runtimeSidefileCensusProducer(home, {})).roots.map(root => root.path)).toEqual([ordinary]);
+    } finally { await rm(home, { recursive: true, force: true }); }
+  });
   it('censuses hook session records at default and relocated paths without owning foreign files or links', async () => {
     const home = await mkdtemp(join(tmpdir(), 'session-record-census-'));
     const ordinary = join(home, '.papercusp');
