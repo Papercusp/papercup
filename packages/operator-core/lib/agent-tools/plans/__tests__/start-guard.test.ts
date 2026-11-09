@@ -1106,7 +1106,26 @@ describe('plans:start — the retired op_status axis (P-047)', () => {
       message: 'Actionable plan items lack a promoted row: P-002.',
     });
 
-    const res = await run({ slug: 'live-plan-2026-06-02' });
+    const input = { harness: 'papercup', slug: 'live-plan-2026-06-02' };
+    const originalInput = structuredClone(input);
+    const projected = lookupByMcpName('plans:start');
+    expect(projected).toBeTruthy();
+    const dispatched = await dispatchProjectedTool(projected!, 'plans:start', input, {
+      ...(MAKE_CTX() as unknown as Record<string, unknown>),
+      uiClientId: 'start-refusal-original-input-replay',
+      runId: 'start-refusal-original-input-replay',
+      emit: vi.fn(),
+      gateBypass: { role: true, capability: true, quota: true },
+      transport: 'mcp',
+      requestedFormat: 'json',
+      requestedStructured: true,
+    } as never, {});
+    expect(dispatched.ok).toBe(true);
+    expect(input).toEqual(originalInput);
+    const res = { data: dispatched.result?.structuredContent as {
+      counts: { ok: number; failed: number };
+      results: Array<Record<string, unknown>>;
+    } };
 
     expect(res.data.counts).toEqual({ ok: 0, failed: 1 });
     expect(res.data.results[0]).toMatchObject({
@@ -1117,10 +1136,19 @@ describe('plans:start — the retired op_status axis (P-047)', () => {
       promotion: { promoted: 0, skipped: 0, flagOff: false },
       admission: { ready: false, reason: 'promotion-lag' },
       activationReadiness: { schemaVersion: 1, advisory: true, ready: false,
-        counts: { total: 13, returned: 13, omitted: 0 } },
+        counts: { total: 14, returned: 14, omitted: 0 } },
     });
+    // The advisory now includes conformance. Guard its exact population so a
+    // missing or duplicated stage cannot pass by merely matching the count.
+    expect((res.data.results[0].activationReadiness as { stages: Array<{ id: string }> })
+      .stages.map(stage => stage.id)).toEqual([
+      'source-discovery', 'declarations', 'conformance', 'inputs', 'anchors', 'dependencies',
+      'bar-contract', 'spec-quality', 'quality-audit', 'contract-critique',
+      'admission', 'lane', 'promotion', 'consult',
+    ]);
     expect(res.data.results[0].message).toContain('Actionable plan items lack a promoted row: P-002.');
     expect(promotePlanItemsMock).toHaveBeenCalledTimes(1);
+    expect(claimSpecMocks.setClaimSpec).not.toHaveBeenCalled();
     expectNoOpStatusWrite();
   });
 
