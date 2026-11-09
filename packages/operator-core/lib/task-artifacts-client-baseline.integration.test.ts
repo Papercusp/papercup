@@ -15,7 +15,7 @@ import { runVerifierDependencyCommand } from '../../../scripts/source-preview.mj
 // @ts-ignore -- same immutable dependency preflight used by committed verifiers.
 import { assertCommittedWorkspaceLockMatches } from '../../../scripts/lint-as-committed.mjs';
 import { assertBaselineRepairInputs, assertFrozenBaselineSources, baselineProductBoundary,
-  repairedBaselineEdition } from '../test/task-artifacts-baseline-repair';
+  baselineRepairFailureArtifacts, repairedBaselineEdition } from '../test/task-artifacts-baseline-repair';
 
 const root = resolve(import.meta.dirname, '../../..');
 const sourceSha = '729986dd35171f1e0cb11bd1505295917f2d946f';
@@ -47,6 +47,7 @@ it('retains real MCP and ptool text requests for the source-frozen dependency-re
         'phases/prepare/dependency-prediction.log', 'phases/prepare/dependency-install.log',
         'phases/prepare/original-coherence-refusal.json', 'phases/prepare/dependency-repair.log',
         'phases/prepare/dependency-repair-inputs.json', 'phases/prepare/dependency-repair-receipt.json',
+        ...baselineRepairFailureArtifacts,
         'phases/prepare/dependency-lock-original.json', 'phases/prepare/dependency-lock-repaired.json',
         'phases/prepare/dependency-repair-delta.json', 'phases/prepare/dependency-edition.json',
         'phases/prepare/dependency-edition-after-build.json',

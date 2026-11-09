@@ -135,6 +135,41 @@ function installNativeProcessTrace(out) {
     } catch { return [role, { scope, captureComplete: false, artifactUnavailable: true }]; }
   }));
   const runGroupId = process.env.PAPERCUSP_TEST_RUN_GROUP ?? null;
+  let migrationSequence = 0, migrationBytes = 0;
+  channel('papercusp:migration-transaction').subscribe(message => {
+    try {
+      if (!message || !['planned', 'returned', 'failed'].includes(message.phase)
+        || typeof message.attemptId !== 'string' || !/^[a-f0-9-]{36}$/.test(message.attemptId)
+        || typeof message.file !== 'string' || message.file.length > 512 || !message.file.endsWith('.sql')
+        || typeof message.migrationPath !== 'string' || !isAbsolute(message.migrationPath)
+        || message.migrationPath.length > 4096
+        || !Number.isSafeInteger(message.chunkIndex) || message.chunkIndex < 0
+        || !Number.isSafeInteger(message.chunkCount) || message.chunkCount <= message.chunkIndex
+        || message.chunkCount > 256 || !Number.isSafeInteger(message.attempt) || message.attempt < 1
+        || message.attempt > 256 || message.isFinalChunk !== (message.chunkIndex === message.chunkCount - 1))
+        throw new Error('invalid migration observation');
+      const retain = value => {
+        if (typeof value !== 'string') throw new Error('missing migration bytes');
+        const bytes = Buffer.from(value);
+        if (!bytes.length || bytes.length > 8 * 1024 * 1024
+          || migrationBytes + bytes.length > 64 * 1024 * 1024) throw new Error('migration byte limit');
+        migrationBytes += bytes.length;
+        const sha256 = createHash('sha256').update(bytes).digest('hex');
+        const ref = `${sha256}.source`, path = join(root, ref);
+        publish(path, bytes);
+        if (!lstatSync(path).isFile() || lstatSync(path).isSymbolicLink() || !readFileSync(path).equals(bytes))
+          throw new Error('redirected or changed migration artifact');
+        return { ref, sha256, byteLength: bytes.length };
+      };
+      const rawSource = retain(message.rawSource), query = retain(message.query);
+      if (rawSource.sha256 !== message.rawSourceSha256) throw new Error('migration raw source digest differs');
+      emit('migration-transaction', { runGroupId, scope: 'migration-client-unsafe-query',
+        sequence: ++migrationSequence, phase: message.phase, attemptId: message.attemptId,
+        file: message.file, migrationPath: message.migrationPath,
+        chunkIndex: message.chunkIndex, chunkCount: message.chunkCount, attempt: message.attempt,
+        isFinalChunk: message.isFinalChunk, rawSource, query });
+    } catch { emit('migration-transaction-unavailable', { runGroupId }); }
+  });
   // Extend the existing per-process trace rather than creating a second
   // evidence writer. Only catalogue bytes returned in this process are hashed;
   // endpoint scans and the parent's schema prediction never enter this channel.

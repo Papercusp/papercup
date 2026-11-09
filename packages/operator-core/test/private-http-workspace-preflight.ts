@@ -1195,6 +1195,15 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
       querySha256: null as string | null, receiptSha256: null as string | null,
       gaps: ['host entry not validated'],
     },
+    appliedSql: {
+      scope: 'migration-client-unsafe-query', status: 'unknown' as 'observed' | 'unknown',
+      attempts: [] as Array<{ attemptId: string; file: string; migrationPath: string;
+        chunkIndex: number; chunkCount: number; attempt: number; outcome: 'returned' | 'failed';
+        rawSource: { ref: string; sha256: string; byteLength: number };
+        query: { ref: string; sha256: string; byteLength: number };
+        plannedReceiptSha256: string; terminalReceiptSha256: string }>,
+      gaps: ['host entry not validated'],
+    },
     resolutions: {
       scope: 'native-node-resolver-returned-edges', status: 'unknown' as 'bound' | 'unknown',
       edges: [] as Array<{ resolveId: number; specifier: string; parentURL: string | null;
@@ -1328,6 +1337,83 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
     for (const file of closure.dependencyFiles)
       if (file.kind === 'file') pin(join(o.root, 'node_modules', file.path), file.sha256);
     for (const artifact of closure.artifacts) pin(artifact.path, artifact.sha256);
+    // Bind the actual SQL call boundary, including failed retries. A catalogue
+    // or migration ledger alone cannot supply these original query bytes.
+    result.appliedSql.gaps.length = 0;
+    try {
+      assert.ok(result.runId, 'independent host run identity required for SQL');
+      const exits = own.filter(({ row }) => row.event === 'node-exit');
+      assert.ok(exits.length === 1 && exits[0].row.exitListenersComplete === true && exits[0].row.code === 0,
+        'host SQL terminal observation missing or incomplete');
+      assert.ok(!own.some(({ row }) => ['trace-limit', 'trace-event-too-large',
+        'migration-transaction-unavailable'].includes(row.event)), 'host SQL capture incomplete');
+      const receipts = own.filter(({ row }) => row.event === 'migration-transaction')
+        .sort((a, b) => a.row.sequence - b.row.sequence);
+      assert.ok(receipts.length > 0 && receipts.length <= 512, 'host SQL receipts missing or limited');
+      const planned = new Map<string, typeof receipts[number]>(), ended = new Set<string>();
+      const files = new Map<string, { sha256: string; chunks: number; nextChunk: number; nextAttempt: number }>();
+      let sequence = 0, bytesRead = 0;
+      for (const receipt of receipts) {
+        const row = receipt.row;
+        assert.equal(row.sequence, ++sequence, 'host SQL sequence missing or duplicated');
+        assert.equal(row.runGroupId, result.runId, 'host SQL receipt belongs to another run');
+        assert.ok(row.threadId === entry.row.threadId && row.atMs <= exits[0].row.atMs,
+          'host SQL receipt isolate or terminal order differs');
+        assert.equal(row.scope, result.appliedSql.scope, 'host SQL scope differs');
+        assert.ok(typeof row.attemptId === 'string' && /^[a-f0-9-]{36}$/.test(row.attemptId)
+          && ['planned', 'returned', 'failed'].includes(row.phase)
+          && typeof row.file === 'string' && row.file.endsWith('.sql')
+          && typeof row.migrationPath === 'string' && isAbsolute(row.migrationPath)
+          && basename(row.migrationPath) === row.file
+          && Number.isSafeInteger(row.chunkIndex) && row.chunkIndex >= 0
+          && Number.isSafeInteger(row.chunkCount) && row.chunkCount > row.chunkIndex && row.chunkCount <= 256
+          && Number.isSafeInteger(row.attempt) && row.attempt >= 1 && row.attempt <= 256
+          && row.isFinalChunk === (row.chunkIndex === row.chunkCount - 1), 'host SQL attempt identity invalid');
+        for (const artifact of [row.rawSource, row.query]) {
+          assert.ok(artifact && /^[a-f0-9]{64}$/.test(artifact.sha256)
+            && artifact.ref === `${artifact.sha256}.source` && Number.isSafeInteger(artifact.byteLength)
+            && artifact.byteLength > 0 && artifact.byteLength <= 8 * 1024 * 1024,
+            'host SQL artifact missing or limited');
+          assert.ok(bytesRead + artifact.byteLength <= 64 * 1024 * 1024, 'host SQL total byte limit');
+          const bytes = readNativeArtifactBytes(join(trace.sourceRoot, artifact.ref), artifact.byteLength,
+            8 * 1024 * 1024);
+          bytesRead += bytes.length;
+          assert.equal(digestBytes(bytes), artifact.sha256, 'retained host SQL digest differs');
+        }
+        assert.equal(pins.get(resolve(row.migrationPath)), row.rawSource.sha256,
+          'host SQL raw source lacks matching independent pin');
+        if (row.phase === 'planned') {
+          assert.ok(!planned.has(row.attemptId), 'duplicate host SQL planned attempt');
+          const state = files.get(row.migrationPath) ?? { sha256: row.rawSource.sha256,
+            chunks: row.chunkCount, nextChunk: 0, nextAttempt: 1 };
+          assert.ok(state.sha256 === row.rawSource.sha256 && state.chunks === row.chunkCount
+            && state.nextChunk === row.chunkIndex && state.nextAttempt === row.attempt,
+            'host SQL chunk or retry sequence incomplete');
+          assert.ok([...planned.keys()].every(id => ended.has(id)), 'overlapping host SQL attempts');
+          files.set(row.migrationPath, state);
+          planned.set(row.attemptId, receipt);
+        } else {
+          const start = planned.get(row.attemptId);
+          assert.ok(start && !ended.has(row.attemptId) && start.row.atMs <= row.atMs,
+            'unmatched or duplicate host SQL terminal attempt');
+          for (const key of ['file', 'migrationPath', 'chunkIndex', 'chunkCount', 'attempt',
+            'isFinalChunk', 'rawSource', 'query'])
+            assert.deepEqual(row[key], start.row[key], 'host SQL planned and terminal inputs differ');
+          ended.add(row.attemptId);
+          const state = files.get(row.migrationPath)!;
+          if (row.phase === 'returned') { state.nextChunk++; state.nextAttempt = 1; }
+          else state.nextAttempt++;
+          result.appliedSql.attempts.push({ attemptId: row.attemptId, file: row.file,
+            migrationPath: row.migrationPath, chunkIndex: row.chunkIndex, chunkCount: row.chunkCount,
+            attempt: row.attempt, outcome: row.phase, rawSource: row.rawSource, query: row.query,
+            plannedReceiptSha256: digestBytes(start.bytes), terminalReceiptSha256: digestBytes(receipt.bytes) });
+        }
+      }
+      assert.equal(ended.size, planned.size, 'host SQL planned attempt has no terminal receipt');
+      assert.ok([...files.values()].every(state => state.nextChunk === state.chunks),
+        'host SQL migration has failed or missing chunks');
+      result.appliedSql.status = 'observed';
+    } catch (error) { result.appliedSql.gaps.push((error as Error).message.split('\n')[0]); }
     const starts = new Map<number, { url: string; atMs: number }>(), returned = new Set<number>();
     let bytesRead = 0, pinnedBytesRead = 0;
     const pinnedPaths = new Set<string>();

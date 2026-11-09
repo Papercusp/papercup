@@ -10,6 +10,10 @@ import { isDeepStrictEqual } from 'node:util';
 import { metadataRepairInputLayout, resolveMetadataRepairLock } from '../../../scripts/npm-install-safe.mjs';
 
 export const repairedBaselineEdition = 'source-frozen-dependency-repaired-v1';
+export const baselineRepairFailureArtifacts = [
+  'phases/prepare/dependency-lock-rejected.json',
+  'phases/prepare/dependency-repair-failure.json',
+] as const;
 const digest = (bytes: string | Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 export type FrozenSource = { path: string; sha256: string; content: string };
 

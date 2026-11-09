@@ -298,6 +298,101 @@ describe('committed reader loader-return source binding', () => {
       configurationInputs: { status: 'matched' } });
   });
 
+  function loadedSqlFixture(change = '') {
+    return loadedFixture(`import { channel } from 'node:diagnostics_channel';
+      const observation = channel('papercusp:migration-transaction');
+      const message = { attemptId: '11111111-1111-4111-8111-111111111111',
+        file: 'asset.sql', migrationPath: new URL('./asset.sql', import.meta.url).pathname,
+        rawSource: 'asset.sql', rawSourceSha256: '${digest('asset.sql')}',
+        query: 'BEGIN; SELECT 1; COMMIT;', chunkIndex: 0, chunkCount: 1, attempt: 1, isFinalChunk: true };
+      // Source pin is the independently archived asset, not the publication.
+      message.migrationPath = new URL('../source/asset.sql', import.meta.url).pathname;
+      ${change || "observation.publish({ ...message, phase: 'planned' }); observation.publish({ ...message, phase: 'returned' });"}`);
+  }
+
+  it('retains the actual planned and returned SQL bytes with independent raw-source pins', () => {
+    const f = loadedSqlFixture(), observed = f.observe();
+    expect(observed.appliedSql).toMatchObject({ status: 'observed', gaps: [], attempts: [{
+      outcome: 'returned', rawSource: { sha256: digest('asset.sql') },
+      query: { sha256: digest('BEGIN; SELECT 1; COMMIT;') } }] });
+    const attempt = observed.appliedSql.attempts[0];
+    expect(readFileSync(join(f.traceRoot, attempt.query.ref), 'utf8')).toBe('BEGIN; SELECT 1; COMMIT;');
+    expect(observed.pending).toContain('private-pg');
+  });
+
+  it('retains a failed attempt followed by a successful retry without treating failure as application', () => {
+    const f = loadedSqlFixture(`observation.publish({ ...message, phase: 'planned' });
+      observation.publish({ ...message, phase: 'failed' });
+      message.attemptId = '22222222-2222-4222-8222-222222222222'; message.attempt = 2;
+      observation.publish({ ...message, phase: 'planned' }); observation.publish({ ...message, phase: 'returned' });`);
+    expect(f.observe().appliedSql).toMatchObject({ status: 'observed', gaps: [],
+      attempts: [{ outcome: 'failed', attempt: 1 }, { outcome: 'returned', attempt: 2 }] });
+  });
+
+  it('requires every transaction chunk to return before accepting the SQL observation', () => {
+    const f = loadedSqlFixture(`message.chunkCount = 2; message.isFinalChunk = false;
+      observation.publish({ ...message, phase: 'planned' }); observation.publish({ ...message, phase: 'returned' });
+      message.chunkIndex = 1; message.isFinalChunk = true;
+      message.attemptId = '22222222-2222-4222-8222-222222222222'; message.query = 'BEGIN; SELECT 2; COMMIT;';
+      observation.publish({ ...message, phase: 'planned' }); observation.publish({ ...message, phase: 'returned' });`);
+    expect(f.observe().appliedSql).toMatchObject({ status: 'observed', gaps: [],
+      attempts: [{ chunkIndex: 0, outcome: 'returned' }, { chunkIndex: 1, outcome: 'returned' }] });
+  });
+
+  it('refuses valid retained SQL bytes whose original source differs from the independent pin', () => {
+    expect(loadedSqlFixture().observe().appliedSql.status).toBe('observed');
+    const f = loadedSqlFixture(`message.rawSource = 'changed'; message.rawSourceSha256 = '${digest('changed')}';
+      observation.publish({ ...message, phase: 'planned' }); observation.publish({ ...message, phase: 'returned' });`);
+    expect(f.observe().appliedSql).toMatchObject({ status: 'unknown',
+      gaps: ['host SQL raw source lacks matching independent pin'] });
+  });
+
+  it.each(['missing', 'duplicate', 'unterminated', 'nonzero', 'run', 'process', 'kernel', 'isolate', 'late',
+    'sequence', 'scope', 'pin', 'query', 'limited', 'bytes'] as const)(
+    'keeps %s SQL evidence unknown', control => {
+      const f = loadedSqlFixture();
+      expect(f.observe().appliedSql.status).toBe('observed');
+      const terminal = f.rows.find(({ row }) => row.event === 'migration-transaction' && row.phase === 'returned')!;
+      const mutate = (fn: (row: any) => void) => {
+        rmSync(join(f.traceRoot, terminal.name)); fn(terminal.row);
+        const bytes = JSON.stringify(terminal.row); writeFileSync(join(f.traceRoot, digest(bytes) + '.json'), bytes);
+      };
+      if (control === 'missing') rmSync(join(f.traceRoot, terminal.name));
+      else if (control === 'duplicate') {
+        const bytes = JSON.stringify({ ...terminal.row, duplicate: true });
+        writeFileSync(join(f.traceRoot, digest(bytes) + '.json'), bytes);
+      } else if (control === 'unterminated') f.replace('node-exit', row => { row.exitListenersComplete = false; });
+      else if (control === 'nonzero') f.replace('node-exit', row => { row.code = 1; });
+      else if (control === 'bytes') writeFileSync(join(f.traceRoot, terminal.row.query.ref), 'changed');
+      else mutate(row => {
+        if (control === 'run') row.runGroupId = 'other-run';
+        else if (control === 'process') row.processIdentity = 'other-process';
+        else if (control === 'kernel') row.kernelProcessIdentity = 'other-kernel';
+        else if (control === 'isolate') row.threadId++;
+        else if (control === 'late') row.atMs = f.options.finishedAtMs + 1;
+        else if (control === 'sequence') row.sequence++;
+        else if (control === 'scope') row.scope = 'parent-planned-query';
+        else if (control === 'pin') row.rawSource.sha256 = digest('other');
+        else if (control === 'query') row.query = row.rawSource;
+        else row.query.byteLength = 8 * 1024 * 1024 + 1;
+      });
+      expect(f.observe().appliedSql).toMatchObject({ status: 'unknown', gaps: [expect.any(String)] });
+      expect(f.observe().pending).toContain('private-pg');
+    });
+
+  it.each([
+    "observation.publish({ ...message, phase: 'planned' });",
+    "observation.publish({ ...message, phase: 'returned' });",
+    "observation.publish({ ...message, phase: 'planned' }); observation.publish({ ...message, phase: 'failed' });",
+    "message.chunkCount = 2; message.isFinalChunk = false; observation.publish({ ...message, phase: 'planned' }); observation.publish({ ...message, phase: 'returned' });",
+    "message.attempt = 2; observation.publish({ ...message, phase: 'planned' }); observation.publish({ ...message, phase: 'returned' });",
+    "message.rawSource = 'changed'; message.rawSourceSha256 = 'x'; observation.publish({ ...message, phase: 'planned' });",
+    "message.query = 'x'.repeat(8 * 1024 * 1024 + 1); observation.publish({ ...message, phase: 'planned' });",
+  ])('refuses incomplete or invalid SQL publication %s', change => {
+    expect(loadedSqlFixture().observe().appliedSql.status).toBe('observed');
+    expect(loadedSqlFixture(change).observe().appliedSql).toMatchObject({ status: 'unknown', gaps: [expect.any(String)] });
+  });
+
   function loadedSchemaFixture(messageChange = '') {
     const column = { table_schema: 'harness_shared', table_name: 'tool_invocations', column_name: 'args_json',
       data_type: 'jsonb', udt_name: 'jsonb', is_nullable: 'NO', column_default: 'private-schema-default', ordinal_position: 1 };

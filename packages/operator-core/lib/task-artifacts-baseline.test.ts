@@ -4,10 +4,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { runHarness } from '@papercusp/verification-harness';
 import { findBoxIdentityPaths, findIdentityLiterals, resolveIdentityLiterals } from '../../../scripts/lib/identity-leak-patterns.mjs';
 import { assertBaselineRepairInputs, assertFrozenBaselineSources, baselineLockDelta,
-  baselineProductBoundary, retainBaselineRepairFailure } from '../test/task-artifacts-baseline-repair';
+  baselineProductBoundary, baselineRepairFailureArtifacts,
+  retainBaselineRepairFailure } from '../test/task-artifacts-baseline-repair';
 
 // Original source bytes captured before product edits, independent of candidate
 // imports. Runtime paths stay in the immutable PG capture, outside release source.
@@ -74,6 +76,53 @@ describe('managed artifact pre-feature baseline custody', () => {
 });
 
 describe('separately qualified baseline dependency repair custody', () => {
+  it.each([true, false])('keeps failure diagnostics in the real retained packet after cleanup (candidate bytes: %s)', async hasBytes => {
+    const root = mkdtempSync(join(tmpdir(), 'artifact-baseline-packet-'));
+    vi.stubEnv('VH_EVIDENCE_ROOT_BASE', join(root, 'canonical'));
+    vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(root, 'mutex'));
+    vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', join(root, 'pins'));
+    try {
+      const bytes = hasBytes ? Buffer.from('{"rejected":true}') : null;
+      const receipt = { cleanup: { removed: true } };
+      const candidate = { path: 'package-lock.json', bytes, sha256: bytes && sha256(bytes),
+        size: bytes?.length ?? null, omission: hasBytes ? null : 'absent' };
+      const result = await runHarness({
+        contract: { name: 'task-artifacts-repair-failure', phases: [
+          { id: 'prepare' }, { id: 'execute', dependsOn: ['prepare'] }, { id: 'teardown' },
+        ] }, evidenceRoot: join(root, 'runs'), retainedArtifacts: baselineRepairFailureArtifacts,
+        guardRails: [], runPhase: async phase => {
+          if (phase.phase === 'prepare') {
+            retainBaselineRepairFailure(phase.evidenceDir, Object.assign(new Error('rejected'), {
+              metadataRepairFailure: { schemaVersion: 1, stage: 'validate-graph', candidate,
+                resolution: { exitCode: 0 }, receipt },
+            }));
+            return { ok: false, reasonCode: 'metadata-repair-graph-local-target' };
+          }
+          expect(phase.phase).toBe('teardown');
+          return { ok: true };
+        },
+      });
+      expect(result.verdict).toBe('fail');
+      expect(result.firstFailure?.reasonCode).toBe('metadata-repair-graph-local-target');
+      // Exercise finalization's actual retained copy, after disposable evidence
+      // is gone, using the same selectors as the full client baseline.
+      rmSync(result.evidenceDir, { recursive: true, force: true });
+      const retained = join(root, 'runs', 'retained', result.runId);
+      const manifest = JSON.parse(readFileSync(join(retained, 'retained-artifacts.json'), 'utf8'));
+      expect(manifest.selectors).toEqual(baselineRepairFailureArtifacts);
+      const evidencePath = baselineRepairFailureArtifacts[1];
+      const evidenceBytes = readFileSync(join(retained, evidencePath));
+      expect(JSON.parse(evidenceBytes.toString())).toMatchObject({ stage: 'validate-graph', receipt,
+        candidate: { omission: candidate.omission,
+          evidenceFile: hasBytes ? 'dependency-lock-rejected.json' : null } });
+      expect(manifest.artifacts).toContainEqual(expect.objectContaining({ path: evidencePath,
+        sha256: sha256(evidenceBytes), bytes: evidenceBytes.length }));
+      if (bytes) expect(readFileSync(join(retained, baselineRepairFailureArtifacts[0]))).toEqual(bytes);
+      else expect(() => readFileSync(join(retained, baselineRepairFailureArtifacts[0]))).toThrow();
+      expect(() => readFileSync(join(retained, 'phases/prepare/dependency-edition.json'))).toThrow();
+    } finally { vi.unstubAllEnvs(); rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('retains rejected bytes and cleanup receipt without treating them as a repaired edition', () => {
     const root = mkdtempSync(join(tmpdir(), 'artifact-baseline-rejection-'));
     try {
