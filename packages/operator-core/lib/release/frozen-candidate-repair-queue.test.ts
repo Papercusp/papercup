@@ -62,7 +62,7 @@ function fresh(): FrozenCandidateRepairQueue {
 }
 
 describe('frozen-candidate repair queue', () => {
-  it.each([1, 2, 3, 4, 5, FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION] as const)('upgrades schema %i without losing managed pre-check identity or measurement', schemaVersion => {
+  it.each([1, 2, 3, 4, 5, 6, FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION] as const)('upgrades schema %i without losing managed pre-check identity or measurement', schemaVersion => {
     const pending: FrozenCandidateRepairQueue = {
       ...fresh(),
       schemaVersion,
@@ -90,8 +90,8 @@ describe('frozen-candidate repair queue', () => {
       },
     };
     const parsed = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(pending)));
-    // Schema-5 readers reject schema 6 instead of truncating known attribution/admission arrays.
-    expect(parsed?.schemaVersion).toBe(6);
+    // Older readers reject the current version instead of truncating its evidence.
+    expect(parsed?.schemaVersion).toBe(FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION);
     expect(parsed?.admissionPrecheck).toEqual(pending.admissionPrecheck);
     const measurement = { schemaVersion: 1 as const, identity: 'a'.repeat(64), results: [
       { path: 'lib/a.test.ts', status: 'fail' as const, exitCode: 1, durationMs: 12, detail: 'native assertion failed' },
@@ -2041,6 +2041,115 @@ describe('P-013 / D-007 — convergence rounds + the owner-visible off switch', 
     expect(reread!.shrinkPerRound[1]).toEqual({ round: 2, failingCount: cap, delta: null, atLeast: true });
     // A wrong type still rejects the whole blob rather than being coerced.
     expect(parseFrozenRepairConvergence({ ...stored, truncatedByLimit: 'yes' })).toBeNull();
+  });
+
+  it('lossless canonical evidence: persists 75 to 60 complete failures and measures the exact shrink', () => {
+    const failures = Array.from({ length: 75 }, (_, i) => `lib/lossless-${i}.test.ts`);
+    const input = { candidate: C, base: BASE, failingTests: failures, nowMs: T0,
+      failureFrontierCompleteness: 'complete' as const };
+    const first = createFrozenCandidateRepairQueue(input);
+    expect(first.failingTests).toEqual(failures);
+    expect(first.signature.map(entry => entry.id)).toEqual(failures);
+    const red = markFrozenRepairVerificationRed({ ...first, phase: 'ready-to-verify', attempts: 1,
+      fixerSpawnId: 'lossless-fixer' }, { repairHead: C, failingTests: failures.slice(0, 60),
+      nowMs: T0 + 1_000, ...{ failureFrontierCompleteness: 'complete' as const } });
+    const reread = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(red)));
+    expect(reread?.failingTests).toEqual(failures.slice(0, 60));
+    expect(reread?.selectiveCoverageBlocked).not.toBe(true);
+    expect(reread?.convergenceRounds?.map(round => round.failingTests)).toEqual([failures, failures.slice(0, 60)]);
+    const summary = summarizeFrozenRepairConvergence(reread!, T0 + 2_000);
+    expect(summary).toMatchObject({ failingFirst: 75, failingNow: 60, shrinkTotal: 15,
+      converging: true, truncatedByLimit: false });
+    expect(summary.shrinkPerRound).toEqual([
+      { round: 1, failingCount: 75, delta: null }, { round: 2, failingCount: 60, delta: -15 },
+    ]);
+  });
+
+  it('lossless canonical evidence: preserves long distinct identities, recipes and case details', () => {
+    const prefix = `lib/${'dir/'.repeat(140)}`;
+    const ids = [`${prefix}first.test.ts`, `${prefix}second.test.ts`];
+    const cases = [`${'case '.repeat(110)}first`, `${'case '.repeat(110)}second`];
+    const queue = createFrozenCandidateRepairQueue({ candidate: C, base: BASE, failingTests: ids,
+      casesByFile: { [ids[0]!]: cases }, nowMs: T0 });
+    const reread = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(queue)));
+    expect(reread?.failingTests).toEqual(ids);
+    expect(reread?.signature.map(entry => entry.recipe)).toEqual(ids.map(id => `npm run test:file -- ${id}`));
+    expect(reread?.signature[0]?.cases).toEqual(cases);
+  });
+
+  it('lossless canonical evidence: legacy capped history stays uncertain through a fresh smaller red and rewrite', () => {
+    const ids = atCap('legacy');
+    const legacy = { ...createFrozenCandidateRepairQueue({ candidate: C, base: BASE,
+      failingTests: ids, nowMs: T0 }), schemaVersion: 6 } as Record<string, unknown>;
+    delete legacy.failureFrontierCompleteness;
+    legacy.convergenceRounds = (legacy.convergenceRounds as Record<string, unknown>[]).map(round => {
+      const copy = { ...round };
+      delete copy.failureFrontierCompleteness;
+      return copy;
+    });
+    const parsed = parseFrozenCandidateRepairQueue(legacy)!;
+    expect(parsed.selectiveCoverageBlocked).toBe(true);
+    const next = markFrozenRepairVerificationRed({ ...parsed, phase: 'ready-to-verify', attempts: 1,
+      fixerSpawnId: 'legacy-fixer' }, { repairHead: C, failingTests: ids.slice(0, 40), nowMs: T0 + 1_000 });
+    const reread = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(next)))!;
+    expect(reread.selectiveCoverageBlocked).toBe(true);
+    const summary = summarizeFrozenRepairConvergence(reread, T0 + 2_000);
+    expect(summary.shrinkTotal).toBeNull();
+    expect(summary.shrinkPerRound[0]).toEqual({ round: 1, failingCount: 50, delta: null, atLeast: true });
+  });
+
+  it('lossless canonical evidence: a legacy capped frontier stays a floor after one leg is retired', () => {
+    const ids = ['lint:tsc', ...atCap('legacy-leg').slice(0, 49)];
+    const legacy = { ...createFrozenCandidateRepairQueue({ candidate: C, base: BASE,
+      failingTests: ids, nowMs: T0 }), schemaVersion: 6, repairHead: C1,
+      failureFrontierCompleteness: 'complete' } as Record<string, unknown>;
+    // No round history was stored by these old writers. An unsupported provenance key
+    // on schema6 must not certify their capped population, even after a rewrite.
+    delete legacy.convergenceRounds;
+    const parsed = parseFrozenCandidateRepairQueue(legacy)!;
+    const next = recordFrozenRepairLegMeasurement(parsed, {
+      measurements: [{ id: 'lint:tsc', status: 'pass' }], head: C1, nowMs: T0 + 1_000,
+    });
+    const reread = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(next)))!;
+    expect(reread.failingTests).toEqual(ids.slice(1));
+    expect(reread.selectiveCoverageBlocked).toBe(true);
+    expect(summarizeFrozenRepairConvergence(reread, T0 + 2_000).truncatedByLimit).toBe(true);
+  });
+
+  it('lossless canonical evidence: an unknown large measurement cannot establish an exact trend', () => {
+    const ids = Array.from({ length: 75 }, (_, i) => `lib/unknown-${i}.test.ts`);
+    const queue = createFrozenCandidateRepairQueue({ candidate: C, base: BASE, failingTests: ids,
+      failureFrontierCompleteness: 'unknown', nowMs: T0 });
+    const next = markFrozenRepairVerificationRed({ ...queue, phase: 'ready-to-verify', attempts: 1,
+      fixerSpawnId: 'unknown-fixer' }, { repairHead: C, failingTests: ids.slice(0, 60),
+      failureFrontierCompleteness: 'unknown', nowMs: T0 + 1_000 });
+    expect(next.failingTests).toHaveLength(60);
+    expect(summarizeFrozenRepairConvergence(next, T0 + 2_000)).toMatchObject({
+      converging: null, shrinkTotal: null, truncatedByLimit: true,
+    });
+  });
+
+  it('lossless canonical evidence: legacy floor50 versus complete60 has unknown direction', () => {
+    const queue: FrozenCandidateRepairQueue = { ...fresh(),
+      failingTests: Array.from({ length: 60 }, (_, i) => `lib/mixed-${i}.test.ts`),
+      failureFrontierCompleteness: 'complete', convergenceRounds: [
+        { round: 1, head: C, failingCount: 50, atMs: T0 },
+        { round: 2, head: C1, failingCount: 60, failureFrontierCompleteness: 'complete', atMs: T0 + 1_000 },
+      ] };
+    const summary = summarizeFrozenRepairConvergence(queue, T0 + 2_000);
+    expect(summary.converging).toBeNull();
+    expect(summary.shrinkTotal).toBeNull();
+    expect(summary.shrinkPerRound[1]).toEqual({ round: 2, failingCount: 60, delta: null });
+  });
+
+  it('lossless canonical evidence: malformed raw details cannot crash parsing or certify completeness', () => {
+    const original = fresh();
+    const malformed = { ...original, failureFrontierCompleteness: 'complete',
+      signature: original.signature.map(entry => ({ ...entry, cases: 42 })) };
+    const parsed = parseFrozenCandidateRepairQueue(malformed);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.failingTests).toEqual(original.failingTests);
+    expect(parsed?.selectiveCoverageBlocked).toBe(true);
   });
 
   it('off switch: ON (the deployed default) opens a cycle on a first real red', () => {

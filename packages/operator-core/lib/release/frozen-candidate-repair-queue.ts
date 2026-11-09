@@ -33,12 +33,13 @@ import type { AdmissionRadius, FixPrecheckFileResult, FixPrecheckVerdict } from 
 import { roundMeasurementFromKinds, type FrozenRepairRoundMeasurement } from './round-one-measurement';
 
 /**
- * Schema 6 fences complete attribution and unjudged admissions from older writers
+ * Schema 7 fences lossless failure frontiers and their completeness provenance from
+ * older capped writers. Schema 6 fences complete attribution and unjudged admissions from older writers
  * that truncate these known arrays. Schema 5 fenced managed pre-check identity.
- * Schemas 1–5 still parse and upgrade on read; pre-signature rows derive their
+ * Schemas 1–6 still parse and upgrade on read; pre-signature rows derive their
  * typed signature from `failingTests` as before.
  */
-export const FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION = 6 as const;
+export const FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION = 7 as const;
 export const FROZEN_REPAIR_STAGING_MISMATCH_SIGNATURE = 'repair-staging-mismatch';
 
 /**
@@ -223,7 +224,12 @@ export function classifyRepairSignature(
 /** The judge's contribution to a red: the fresh measurement, in either form, plus WHICH
  * kinds that measurement covered. Absent `measuredKinds` means "every kind" — a full
  * replacement, which is right for a full gate that measured suite AND post-suite. */
+export type RepairFailureFrontierCompleteness = 'complete' | 'incomplete' | 'unknown';
+
 export interface RepairSignatureRedInput {
+  /** Positive provenance from a producer that retained the entire measured population.
+   * Absent callers keep the legacy uncertainty rules; a schema bump alone is no proof. */
+  failureFrontierCompleteness?: RepairFailureFrontierCompleteness;
   /** Legacy flat form; classified with `signatureContext`. */
   failingTests?: readonly string[];
   /** Typed form from a judge that already knows the kinds (verifyRepairHead). Wins on id. */
@@ -245,17 +251,13 @@ export interface RepairSignatureRedInput {
   excludedFromCount?: readonly string[];
 }
 
-function boundedSignature(entries: readonly RepairSignatureEntry[]): RepairSignatureEntry[] {
-  // P-017 / D-005: case names and error keys are NOT count-capped (a failing set is recorded
-  // whole); each string is length-bounded like the id it belongs to.
-  const boundStrings = (values: readonly string[] | undefined) =>
-    values?.map((value) => value.slice(0, MAX_PERSISTED_FAILURE_CHARS));
-  return entries.slice(0, MAX_PERSISTED_FAILURES).map((entry) => ({
+function copySignature(entries: readonly RepairSignatureEntry[]): RepairSignatureEntry[] {
+  // This is authoritative evidence. Presentation may sample it; persistence must not
+  // merge distinct identities or clip the recipes/details needed to reproduce them.
+  return entries.map((entry) => ({
     ...entry,
-    id: entry.id.slice(0, MAX_PERSISTED_FAILURE_CHARS),
-    recipe: entry.recipe.slice(0, MAX_PERSISTED_FAILURE_CHARS),
-    ...(entry.cases ? { cases: boundStrings(entry.cases) } : {}),
-    ...(entry.errors ? { errors: boundStrings(entry.errors) } : {}),
+    ...(entry.cases ? { cases: [...entry.cases] } : {}),
+    ...(entry.errors ? { errors: [...entry.errors] } : {}),
   }));
 }
 
@@ -313,7 +315,7 @@ export function nextRepairSignature(
     if (measured.has(entry.kind)) continue;
     next.push(entry);
   }
-  const signature = boundedSignature(next);
+  const signature = copySignature(next);
   return { signature, failingTests: signature.map((entry) => entry.id) };
 }
 
@@ -362,7 +364,7 @@ function parseRepairSignature(
     admittedRound: fallback.round,
     measuredHead: fallback.head,
   }));
-  const signature = boundedSignature([...parsed, ...derived]);
+  const signature = copySignature([...parsed, ...derived]);
   return { signature, failingTests: signature.map((entry) => entry.id) };
 }
 
@@ -452,8 +454,8 @@ export const FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS = 15 * 60 * 1_000;
 export const FROZEN_REPAIR_CONVERGENCE_HOLD_MS = 4 * 60 * 60 * 1_000;
 
 const MAX_PERSISTED_FAILURES = 50;
-/** P-016: a round count AT this cap means "at least the cap" — the like-for-like trajectory
- *  skips it (see `likeForLikeTrajectory`). */
+/** Historical bound, retained ONLY to interpret evidence from capped/unknown writers.
+ * New complete measurements may exceed it; it is not a current persistence budget. */
 export const FROZEN_REPAIR_PERSISTED_FAILURE_CAP = MAX_PERSISTED_FAILURES;
 const MAX_PERSISTED_FAILURE_CHARS = 500;
 
@@ -617,7 +619,7 @@ export function parseGeneratedRepairOperation(value: unknown): FrozenGeneratedRe
 
 export interface FrozenCandidateRepairQueue {
   /** Every version the parser accepts; a parsed row is always re-stamped with the current one. */
-  schemaVersion: 1 | 2 | 3 | 4 | 5 | typeof FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION;
+  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | typeof FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION;
   phase: FrozenCandidateRepairPhase;
   /** The fixed C persisted before its first suite. Never moves for this queue entry. */
   candidate: string;
@@ -699,6 +701,9 @@ export interface FrozenCandidateRepairQueue {
    * consumer that correlates by id. Written together with `signature`; never diverges.
    */
   failingTests: string[];
+  /** Completeness of this current frontier, separately from historical cycle coverage.
+   * Missing legacy provenance never becomes complete merely by parsing/rewriting. */
+  failureFrontierCompleteness?: RepairFailureFrontierCompleteness;
   /**
    * P-006 / D-004: the TYPED failure signature — every red leg the judging run measured,
    * with its kind and the recipe that re-measures it. See the module docblock at
@@ -979,8 +984,10 @@ export function parseFrozenRepairSelectiveCoverage(
 
 function losslessFailureFrontier(input: {
   failingTests?: readonly string[];
-  signature?: readonly { id: string; recipe?: string }[];
+  signature?: readonly { id: string; recipe?: string; cases?: readonly string[]; errors?: readonly string[] }[];
+  failureFrontierCompleteness?: RepairFailureFrontierCompleteness;
 }): boolean {
+  if (input.failureFrontierCompleteness !== undefined) return input.failureFrontierCompleteness === 'complete';
   // Equality may be the result of an older writer's cap; never infer "exactly 50"
   // from a list whose writer keeps at most 50.
   return (input.failingTests?.length ?? 0) < MAX_PERSISTED_FAILURES &&
@@ -988,7 +995,28 @@ function losslessFailureFrontier(input: {
     (input.failingTests ?? []).every((id) => id.length < MAX_PERSISTED_FAILURE_CHARS) &&
     (input.signature ?? []).every((entry) =>
       entry.id.length < MAX_PERSISTED_FAILURE_CHARS &&
-      (entry.recipe?.length ?? 0) < MAX_PERSISTED_FAILURE_CHARS);
+      (entry.recipe?.length ?? 0) < MAX_PERSISTED_FAILURE_CHARS &&
+      [...(entry.cases ?? []), ...(entry.errors ?? [])].every(value => value.length < MAX_PERSISTED_FAILURE_CHARS));
+}
+
+function parseFailureFrontierCompleteness(value: unknown): RepairFailureFrontierCompleteness | undefined {
+  if (value === undefined) return undefined;
+  return value === 'complete' || value === 'incomplete' ? value : 'unknown';
+}
+
+/** A full fresh measurement can establish today's count, but cannot repair lost history.
+ * Partial measurements also need complete provenance for the entries they carry forward. */
+function nextFailureFrontierMetadata(
+  prior: FrozenCandidateRepairQueue | undefined,
+  input: RepairSignatureRedInput,
+  failingTests: readonly string[],
+): Pick<FrozenCandidateRepairQueue, 'failureFrontierCompleteness'> {
+  const full = input.measuredKinds === undefined || REPAIR_SIGNATURE_KINDS.every(kind => input.measuredKinds!.includes(kind));
+  const complete = losslessFailureFrontier(input) && (full || !prior || losslessFailureFrontier(prior));
+  const completeness = complete ? 'complete' : input.failureFrontierCompleteness === 'incomplete' ? 'incomplete' : 'unknown';
+  if (input.failureFrontierCompleteness === undefined && prior?.failureFrontierCompleteness === undefined &&
+      complete && failingTests.length < MAX_PERSISTED_FAILURES) return {};
+  return { failureFrontierCompleteness: completeness };
 }
 
 /** The compatibility parser may repair legacy data, but a proof cannot inherit that
@@ -1003,6 +1031,8 @@ function completeRawRepairSignature(value: unknown, failingTests: readonly strin
         !(REPAIR_SIGNATURE_KINDS as readonly string[]).includes(entry.kind) ||
         !Number.isInteger(entry.admittedRound) || entry.admittedRound < 1 ||
         !nonBlank(entry.measuredHead) || seen.has(entry.id) ||
+        (entry.cases !== undefined && (!Array.isArray(entry.cases) || !entry.cases.every(nonBlank))) ||
+        (entry.errors !== undefined && (!Array.isArray(entry.errors) || !entry.errors.every(nonBlank))) ||
         (entry.workspace !== undefined && !nonBlank(entry.workspace))) return false;
     seen.add(entry.id);
   }
@@ -1269,6 +1299,8 @@ export interface FrozenRepairConvergenceRound {
   head: string;
   /** Size of the failing set observed at this round. */
   failingCount: number;
+  /** Measurement-time provenance, never inferred from a later schema or rewrite. */
+  failureFrontierCompleteness?: RepairFailureFrontierCompleteness;
   /** Exact bounded signature at this round. Legacy/malformed history gains no invented list. */
   failingTests?: string[];
   atMs: number;
@@ -2400,14 +2432,11 @@ function assertLimits(limits: FrozenRepairQueueLimits): void {
   }
 }
 
-function boundedFailures(values: readonly string[]): string[] {
-  return values
-    .filter(nonBlank)
-    .slice(0, MAX_PERSISTED_FAILURES)
-    .map((value) => value.slice(0, MAX_PERSISTED_FAILURE_CHARS));
+function normalizedFailures(values: readonly string[]): string[] {
+  return values.filter(nonBlank);
 }
 
-function parseConvergenceRounds(value: unknown): FrozenRepairConvergenceRound[] {
+function parseConvergenceRounds(value: unknown, acceptsCompleteness: boolean): FrozenRepairConvergenceRound[] {
   if (!Array.isArray(value)) return [];
   const rounds: FrozenRepairConvergenceRound[] = [];
   for (const entry of value) {
@@ -2423,19 +2452,21 @@ function parseConvergenceRounds(value: unknown): FrozenRepairConvergenceRound[] 
     // Read even invalid lists so trackEntryReads cannot carry rejected evidence back in.
     const rawFailures = row.failingTests;
     const failingTests = Array.isArray(rawFailures) && rawFailures.length === row.failingCount &&
-      rawFailures.length <= MAX_PERSISTED_FAILURES &&
-      rawFailures.every((id) => nonBlank(id) && id.length <= MAX_PERSISTED_FAILURE_CHARS) &&
+      rawFailures.every((id) => nonBlank(id)) &&
       new Set(rawFailures).size === rawFailures.length
       ? [...rawFailures] as string[] : undefined;
     const rawExcluded = row.excludedFromCount;
     const excludedFromCount = Array.isArray(rawExcluded) && rawExcluded.length > 0 &&
-      rawExcluded.length <= MAX_PERSISTED_FAILURES &&
-      rawExcluded.every((id) => nonBlank(id) && id.length <= MAX_PERSISTED_FAILURE_CHARS)
+      rawExcluded.every((id) => nonBlank(id))
       ? [...new Set(rawExcluded as string[])] : undefined;
+    // Consume even invalid provenance so trackEntryReads cannot revive it as a future key.
+    const rawCompleteness = row.failureFrontierCompleteness;
+    const completeness = acceptsCompleteness ? parseFailureFrontierCompleteness(rawCompleteness) : undefined;
     const parsed: FrozenRepairConvergenceRound = {
       round: row.round as number,
       head: row.head as string,
       failingCount: row.failingCount as number,
+      ...(completeness !== undefined ? { failureFrontierCompleteness: completeness } : {}),
       ...(failingTests ? { failingTests } : {}),
       atMs: row.atMs as number,
       ...(executed ? { executed } : {}),
@@ -2472,6 +2503,7 @@ function appendConvergenceRound(
   input: {
     head: string;
     failingTests: readonly string[];
+    failureFrontierCompleteness?: RepairFailureFrontierCompleteness;
     nowMs: number;
     executed?: FrozenRepairRoundExecution;
     /** P-007 (#D-040): this round's newly red entries, attributed to its window admissions. */
@@ -2486,14 +2518,16 @@ function appendConvergenceRound(
   const highest = existing.reduce((max, entry) => (entry.round > max ? entry.round : max), 0);
   const executed = normalizeRoundExecution(input.executed);
   const attributions = input.attributions ?? [];
-  const failingTests = boundedFailures(input.failingTests);
-  const excludedFromCount = boundedFailures([...new Set(input.excludedFromCount ?? [])]);
+  const failingTests = normalizedFailures(input.failingTests);
+  const excludedFromCount = normalizedFailures([...new Set(input.excludedFromCount ?? [])]);
   return capConvergenceRounds([
     ...existing,
     {
       round: highest + 1,
       head: input.head,
       failingCount: failingTests.length,
+      ...(input.failureFrontierCompleteness !== undefined
+        ? { failureFrontierCompleteness: input.failureFrontierCompleteness } : {}),
       failingTests,
       atMs: input.nowMs,
       ...(executed ? { executed } : {}),
@@ -2553,8 +2587,9 @@ export function createFrozenCandidateQueue(
     openedAtMs: input.nowMs,
     updatedAtMs: input.nowMs,
     fixerSpawnId: null,
-    failingTests: boundedFailures(failingTests),
+    failingTests: normalizedFailures(failingTests),
     signature,
+    ...nextFailureFrontierMetadata(undefined, input, failingTests),
   };
 }
 
@@ -2564,6 +2599,7 @@ export function createFrozenCandidateRepairQueue(
   input: Parameters<typeof createFrozenCandidateQueue>[0],
 ): FrozenCandidateRepairQueue {
   return markFrozenCandidateVerificationRed(createFrozenCandidateQueue(input), {
+    failureFrontierCompleteness: input.failureFrontierCompleteness,
     failingTests: input.failingTests,
     signature: input.signature,
     measuredKinds: input.measuredKinds,
@@ -2596,6 +2632,7 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
     row.schemaVersion !== 3 &&
     row.schemaVersion !== 4 &&
     row.schemaVersion !== 5 &&
+    row.schemaVersion !== 6 &&
     row.schemaVersion !== FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION
   )
     return null;
@@ -2639,7 +2676,7 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
   // P-001 / D-010: a verification phase is reached EITHER by a dispatched fixer (attempts ≥ 1
   // and a spawn id) OR by an admission through the one door — an admitted fix from any agent
   // needs no fixer bookkeeping. A legacy row with no admissions keeps the old invariant exactly.
-  const convergenceRounds = parseConvergenceRounds(row.convergenceRounds);
+  const convergenceRounds = parseConvergenceRounds(row.convergenceRounds, (row.schemaVersion as number) >= 7);
   const admissions = retainRoundAdmissions(
     parseAdmissions(row.admissions, (row.schemaVersion as number) < 6),
     convergenceRounds,
@@ -2668,11 +2705,22 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
    * the strictly smaller failure, and it is visible (rounds read as absent).
    */
   const rawSignature = row.signature;
+  const declaredCompleteness = (row.schemaVersion as number) >= 7
+    ? parseFailureFrontierCompleteness(row.failureFrontierCompleteness) : undefined;
   const rawSignatureComplete = completeRawRepairSignature(rawSignature, row.failingTests as string[]);
+  const malformedSignature = row.signature !== undefined && !rawSignatureComplete;
+  const legacyFrontierUncertain = malformedSignature || !losslessFailureFrontier({
+    failingTests: row.failingTests as string[], signature: rawSignatureComplete ? rawSignature : undefined,
+  });
+  // Persist the uncertainty during upgrade: retiring one measured leg can take a
+  // legacy capped population below50 without recovering the identities it already lost.
+  const failureFrontierCompleteness = declaredCompleteness === 'complete' && malformedSignature
+    ? 'unknown' : declaredCompleteness ?? (legacyFrontierUncertain ? 'unknown' : undefined);
   const selectiveCoverageBlocked = row.selectiveCoverageBlocked === true ||
     (row.signature !== undefined && !rawSignatureComplete) ||
     (row.selectiveCoverage !== undefined && !rawSignatureComplete) ||
     !losslessFailureFrontier({
+      failureFrontierCompleteness,
       failingTests: row.failingTests as string[],
       signature: rawSignatureComplete ? rawSignature : undefined,
     });
@@ -2749,8 +2797,9 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
     ...(retestRequested ? { retestRequested } : {}),
     ...(unmeasuredRetestHead !== undefined ? { unmeasuredRetestHead } : {}),
     ...(manifest ? { manifest } : {}),
-    failingTests: boundedFailures(typed.failingTests),
+    failingTests: normalizedFailures(typed.failingTests),
     signature: typed.signature,
+    ...(failureFrontierCompleteness !== undefined ? { failureFrontierCompleteness } : {}),
   };
 }
 
@@ -3317,6 +3366,7 @@ export function markFrozenCandidateVerificationRed(
     head: measuredHead,
     round,
   });
+  const frontierMetadata = nextFailureFrontierMetadata(queue, input, failingTests);
   return {
     ...queue,
     phase: admittedHeadOwesVerification ? 'ready-to-verify' : 'awaiting-fixer',
@@ -3326,13 +3376,15 @@ export function markFrozenCandidateVerificationRed(
     convergenceRounds: appendConvergenceRound(queue, {
       head: measuredHead,
       failingTests,
+      ...frontierMetadata,
       nowMs: input.nowMs,
       executed: input.executed,
       ...(input.measuredKinds ? { measuredKinds: input.measuredKinds } : {}),
       excludedFromCount: input.excludedFromCount,
     }),
-    failingTests: boundedFailures(failingTests),
+    failingTests: normalizedFailures(failingTests),
     signature,
+    ...frontierMetadata,
   };
 }
 
@@ -3835,12 +3887,13 @@ export function markFrozenRepairVerificationRed(
     round,
   });
   const coverage = parseFrozenRepairSelectiveCoverage(input.selectiveCoverage, queue.candidate);
+  const frontierMetadata = nextFailureFrontierMetadata(queue, input, failingTests);
   if (input.selectiveCoverage && (!coverage || coverage.head !== input.repairHead)) {
     throw new Error('selective coverage must describe the exact measured repair head');
   }
   const selectiveCoverageBlocked = queue.selectiveCoverageBlocked === true ||
     !losslessFailureFrontier(queue) || !losslessFailureFrontier(input) ||
-    !losslessFailureFrontier({ failingTests, signature });
+    !losslessFailureFrontier({ failingTests, signature, ...frontierMetadata });
   const usableCoverage = !selectiveCoverageBlocked && selectFrozenRepairAdmissionPaths(queue).coverageComplete
     ? coverage : undefined;
   const legs = verificationLegMeasurements(queue, input, signature, input.repairHead, round);
@@ -3854,14 +3907,16 @@ export function markFrozenRepairVerificationRed(
     convergenceRounds: appendConvergenceRound(queue, {
       head: input.repairHead,
       failingTests,
+      ...frontierMetadata,
       nowMs: input.nowMs,
       executed: input.executed,
       ...(input.measuredKinds ? { measuredKinds: input.measuredKinds } : {}),
       attributions: attributeRoundReds(queue, signature, input.repairHead),
       excludedFromCount: input.excludedFromCount,
     }),
-    failingTests: boundedFailures(failingTests),
+    failingTests: normalizedFailures(failingTests),
     signature,
+    ...frontierMetadata,
     ...(legs.length > 0 ? { legs } : {}),
     selectiveCoverage: selectiveCoverageBlocked ? undefined : usableCoverage ?? queue.selectiveCoverage,
     ...(selectiveCoverageBlocked ? { selectiveCoverageBlocked: true as const } : {}),
@@ -3909,9 +3964,10 @@ export function recordFrozenRepairSupersededRed(
     head: input.measuredHead,
     round,
   });
+  const frontierMetadata = nextFailureFrontierMetadata(queue, input, failingTests);
   const selectiveCoverageBlocked = queue.selectiveCoverageBlocked === true ||
     !losslessFailureFrontier(queue) || !losslessFailureFrontier(input) ||
-    !losslessFailureFrontier({ failingTests, signature });
+    !losslessFailureFrontier({ failingTests, signature, ...frontierMetadata });
   const legs = verificationLegMeasurements(queue, input, signature, input.measuredHead, round);
   return {
     ...queue,
@@ -3919,14 +3975,16 @@ export function recordFrozenRepairSupersededRed(
     convergenceRounds: appendConvergenceRound(queue, {
       head: input.measuredHead,
       failingTests,
+      ...frontierMetadata,
       nowMs: input.nowMs,
       executed: input.executed,
       ...(input.measuredKinds ? { measuredKinds: input.measuredKinds } : {}),
       attributions: attributeRoundReds(queue, signature, input.measuredHead),
       excludedFromCount: input.excludedFromCount,
     }),
-    failingTests: boundedFailures(failingTests),
+    failingTests: normalizedFailures(failingTests),
     signature,
+    ...frontierMetadata,
     ...(legs.length > 0 ? { legs } : {}),
     ...(selectiveCoverageBlocked
       ? { selectiveCoverage: undefined, selectiveCoverageBlocked: true as const } : {}),
@@ -3976,7 +4034,7 @@ export function recordFrozenRepairLegMeasurement(
     legs,
     updatedAtMs: input.nowMs,
     ...(retained
-      ? { signature: retained, failingTests: boundedFailures(retained.map((entry) => entry.id)) }
+      ? { signature: retained, failingTests: normalizedFailures(retained.map((entry) => entry.id)) }
       : {}),
   };
 }
@@ -4149,35 +4207,39 @@ export function summarizeFrozenRepairConvergence(
 ): FrozenRepairConvergenceSummary {
   const rounds = queue.convergenceRounds ?? [];
   const cap = MAX_PERSISTED_FAILURES;
-  // WI-6554700010029491: every persisted failing set is cut to `cap`, so a count AT the cap is a
-  // floor ("at least cap"), never a total. Comparing two floors measures nothing; reading them
-  // as equal reported "50, 50, 50 — not converging" for a cycle whose real size was unknown.
-  const capped = (count: number): boolean => count >= cap;
-  /** Direction of a step: known decrease, known non-decrease, or unknowable (both capped). */
-  const direction = (prev: number, next: number): 'down' | 'not-down' | 'unknown' => {
-    if (capped(prev) && capped(next)) return 'unknown';
-    if (capped(prev)) return 'down'; // >= cap -> below cap
-    if (capped(next)) return 'not-down'; // below cap -> >= cap
+  // A new complete measurement can exceed the historical cap. An unmarked legacy
+  // count at that bound remains a floor, including after a new writer rewrites it.
+  const lowerBound = (count: number, completeness?: RepairFailureFrontierCompleteness): boolean =>
+    completeness !== undefined ? completeness !== 'complete' : count >= cap;
+  const direction = (prev: number, prevLower: boolean, next: number, nextLower: boolean): 'down' | 'not-down' | 'unknown' => {
+    if (prevLower && nextLower) return 'unknown';
+    if (prevLower) return next < prev ? 'down' : 'unknown';
+    if (nextLower) return next >= prev ? 'not-down' : 'unknown';
     return next < prev ? 'down' : 'not-down';
   };
   const failingNow = queue.failingTests.length;
-  const failingFirst = rounds.length > 0 ? (rounds[0] as FrozenRepairConvergenceRound).failingCount : null;
+  const first = rounds[0];
+  const failingFirst = first?.failingCount ?? null;
+  const firstLower = first ? lowerBound(first.failingCount, first.failureFrontierCompleteness) : true;
+  const nowLower = lowerBound(failingNow, queue.failureFrontierCompleteness);
   const steps: ('down' | 'not-down' | 'unknown')[] = [];
   const shrinkPerRound = rounds.map((entry, index) => {
-    const prev = index === 0 ? null : (rounds[index - 1] as FrozenRepairConvergenceRound).failingCount;
-    if (prev !== null) steps.push(direction(prev, entry.failingCount));
-    const exact = prev !== null && !capped(prev) && !capped(entry.failingCount);
+    const prev = index === 0 ? undefined : rounds[index - 1];
+    const currentLower = lowerBound(entry.failingCount, entry.failureFrontierCompleteness);
+    const prevLower = prev ? lowerBound(prev.failingCount, prev.failureFrontierCompleteness) : true;
+    if (prev) steps.push(direction(prev.failingCount, prevLower, entry.failingCount, currentLower));
+    const exact = prev !== undefined && !prevLower && !currentLower;
     return {
       round: entry.round,
       failingCount: entry.failingCount,
-      delta: exact ? entry.failingCount - (prev as number) : null,
-      ...(capped(entry.failingCount) ? { atLeast: true as const } : {}),
+      delta: exact ? entry.failingCount - prev.failingCount : null,
+      ...(currentLower ? { atLeast: true as const } : {}),
     };
   });
-  const shrinkTotal = failingFirst === null || capped(failingFirst) || capped(failingNow)
+  const shrinkTotal = failingFirst === null || firstLower || nowLower
     ? null
     : failingFirst - failingNow;
-  const overall = failingFirst === null ? 'unknown' : direction(failingFirst, failingNow);
+  const overall = failingFirst === null ? 'unknown' : direction(failingFirst, firstLower, failingNow, nowLower);
   let converging: boolean | null;
   if (rounds.length < 2) converging = null;
   else if (steps.includes('not-down') || overall === 'not-down') converging = false;
@@ -4194,7 +4256,7 @@ export function summarizeFrozenRepairConvergence(
     shrinkPerRound,
     converging,
     saturationCap: cap,
-    truncatedByLimit: capped(failingNow) || rounds.some((entry) => capped(entry.failingCount)),
+    truncatedByLimit: nowLower || rounds.some((entry) => lowerBound(entry.failingCount, entry.failureFrontierCompleteness)),
   };
 }
 
