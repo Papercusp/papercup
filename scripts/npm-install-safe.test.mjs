@@ -267,6 +267,78 @@ for (const genericVersion of ["1.0.0", "2.0.0"]) {
   });
 }
 
+for (const { label, field, kit, genericVersion } of [
+  { label: "scoped-dev", field: "devDependencies", kit: "@papercusp/template-kit", genericVersion: "0.1.0" },
+  { label: "scoped-prod", field: "dependencies", kit: "@papercusp/template-kit", genericVersion: "0.1.0" },
+  { label: "unscoped-dev", field: "devDependencies", kit: "template-kit", genericVersion: "0.1.0" },
+  { label: "scoped-dev-different-version", field: "devDependencies", kit: "@papercusp/template-kit", genericVersion: "0.2.0" },
+]) {
+test(`metadata repair resolves scoped devDependency kits across explicit library workspaces (${label})`, async t => {
+  const root = mkdtempSync(join(tmpdir(), "metadata-scoped-dev-producer-test-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const appPath = "apps/slack-asana-bug-drill";
+  const genericPath = "libs/generic/template-kit";
+  const manifests = {
+    "": { name: "scoped-dev-root", version: "1.0.0", private: true,
+      workspaces: ["apps/*", genericPath, "libs/test-config"] },
+    [appPath]: { name: "@bug-drill/fixture", version: "0.1.0", [field]: { [kit]: "file:./template-kit" } },
+    [appPath + "/template-kit"]: { name: kit, version: "0.1.0" },
+    [genericPath]: { name: kit, version: genericVersion, devDependencies: { "@papercusp/test-config": "*" } },
+    "libs/test-config": { name: "@papercusp/test-config", version: "0.1.0" },
+  };
+  for (const [path, manifest] of Object.entries(manifests)) {
+    mkdirSync(join(root, path), { recursive: true });
+    writeFileSync(join(root, path, "package.json"), JSON.stringify(manifest));
+  }
+  // Preserve the measured scope, field, versions, paths and differing kit
+  // graphs. The two earlier unscoped production-dependency controls pass;
+  // this is a further distinguishing input, not an asserted root cause.
+  const before = Buffer.from(JSON.stringify({ name: "scoped-dev-root", version: "1.0.0", lockfileVersion: 3,
+    requires: true, packages: {
+      "": { name: "scoped-dev-root", version: "1.0.0", workspaces: manifests[""].workspaces },
+      [appPath]: manifests[appPath],
+      [appPath + "/template-kit"]: { ...manifests[appPath + "/template-kit"], extraneous: true },
+      [genericPath]: manifests[genericPath],
+      "libs/test-config": manifests["libs/test-config"],
+      "node_modules/@bug-drill/fixture": { resolved: appPath, link: true },
+      ["node_modules/" + kit]: { resolved: genericPath, link: true },
+      "node_modules/@papercusp/test-config": { resolved: "libs/test-config", link: true },
+    } }));
+  writeFileSync(join(root, "package-lock.json"), before);
+  let exitCode;
+  let produced;
+  const result = await resolveMetadataRepairLock({ repoRoot: root }, {
+    log: () => {}, spawnCommand: (command, args, options) => {
+      const child = spawn(command, args, { ...options, stdio: "ignore" });
+      child.once("exit", status => {
+        exitCode = status;
+        if (status === 0) produced = JSON.parse(readFileSync(join(options.cwd, "package-lock.json")));
+      });
+      return child;
+    },
+  }).catch(error => {
+    t.diagnostic(JSON.stringify({ label, exitCode,
+      local: produced?.packages[appPath + "/node_modules/" + kit] ?? null,
+      hoisted: produced?.packages["node_modules/" + kit] ?? null,
+      target: produced?.packages[appPath + "/template-kit"] ?? null }));
+    throw error;
+  });
+  assert.equal(exitCode, 0);
+  const lock = JSON.parse(result.bytes);
+  assert.deepEqual(lock.packages[appPath + "/node_modules/" + kit], { resolved: appPath + "/template-kit", link: true });
+  assert.deepEqual(lock.packages["node_modules/" + kit], { resolved: genericPath, link: true });
+  assert.equal(lock.packages[appPath + "/template-kit"].version, "0.1.0");
+  assert.equal(lock.packages[genericPath].version, genericVersion);
+  assert.deepEqual(lock.packages[genericPath].devDependencies, manifests[genericPath].devDependencies);
+  assert.deepEqual(result.snapshot.get("package-lock.json"), before);
+  assert.deepEqual(readFileSync(join(root, "package-lock.json")), before);
+  for (const [path, manifest] of Object.entries(manifests))
+    assert.deepEqual(JSON.parse(readFileSync(join(root, path, "package.json"))), manifest);
+  assert.equal(existsSync(join(root, "node_modules")), false);
+  assert.equal(result.receipt.cleanup.removed, true);
+});
+}
+
 for (const mutation of ["local-target", "malformed", "oversized", "symlink"]) {
   test(`metadata repair retains bounded ${mutation} rejection evidence after real npm and cleanup`, async t => {
     const root = mkdtempSync(join(tmpdir(), "metadata-repair-failure-test-"));
