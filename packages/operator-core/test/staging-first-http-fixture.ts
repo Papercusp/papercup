@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, wr
 import { dirname, join, resolve } from 'node:path';
 import { Socket } from 'node:net';
 import { getOrgPg, getOrgPgApp, getOrgPgListener, _resetForTests } from '@papercusp/db-org';
+import { captureConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
 import { readPgBackendCensus } from './_pg-backend-census';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../lib/harness-registry';
 import { readProcessIdentity } from '../lib/process-identity';
@@ -265,6 +266,15 @@ async function main() {
   // Use the maintained installed shim's explicit launcher override; its
   // default release checkout cannot certify this current-build candidate.
   hostEnv.PAPERCUSP_PSU_LAUNCHER = join(root, 'apps/operator/scripts/psu-launcher.mjs');
+  // Retain the independent launch constraint before any API worker effect.
+  // The trace supplies the actual entry observation; these parent inputs alone
+  // do not establish resolved runtime configuration or a complete cohort.
+  const hostConfiguration = loadedSourceOptions ? captureConfigurationSnapshot(hostEnv) : undefined;
+  const hostConfigurationBytes = hostConfiguration ? Buffer.from(JSON.stringify(hostConfiguration)) : undefined;
+  const hostConfigurationPath = join(evidenceDir, 'committed-reader-host-config-inputs.json');
+  if (hostConfigurationBytes) writeFileSync(hostConfigurationPath, hostConfigurationBytes, { flag: 'wx', mode: 0o600 });
+  const hostRunId = loadedSourceOptions ? hostEnv.PAPERCUSP_TEST_RUN_GROUP : undefined;
+  if (loadedSourceOptions) assert.ok(hostRunId, 'independent API worker run identity required before spawn');
   const hostStartedAtMs = Date.now();
   host = blueprintRoute
     ? spawn('bwrap', ['--die-with-parent', '--ro-bind', '/', '/', '--bind', privateRoot, privateRoot,
@@ -289,8 +299,13 @@ async function main() {
     retainHostEnvironment = () => writeFileSync(join(evidenceDir, 'committed-reader-host-environment-terminal.json'),
       JSON.stringify(original.terminal(host!)), { flag: 'wx', mode: 0o600 });
     retainLoadedSources = () => {
+      const recheckConfiguration = () => assert.deepEqual(readFileSync(hostConfigurationPath), hostConfigurationBytes,
+        'Original API launch configuration receipt changed');
+      recheckConfiguration();
       const observation = observeCommittedReaderLoadedSources({ ...selected, traceOut,
-        pid: host!.pid!, kernelProcessIdentity: hostIdentity!, startedAtMs: hostStartedAtMs, finishedAtMs: Date.now() });
+        pid: host!.pid!, kernelProcessIdentity: hostIdentity!, runId: hostRunId,
+        configuration: hostConfiguration, startedAtMs: hostStartedAtMs, finishedAtMs: Date.now() });
+      recheckConfiguration();
       writeFileSync(join(evidenceDir, 'committed-reader-loaded-source.json'), JSON.stringify(observation), { mode: 0o600 });
     };
   }

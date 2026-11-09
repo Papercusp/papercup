@@ -270,7 +270,7 @@ function installNativeProcessTrace(out) {
   // including async hooks on Node's loader thread. Persist the attempt before
   // delegation so a killed/stuck child still names its last file boundary.
   // These are load observations, never claims that a module was evaluated.
-  let loadSequence = 0;
+  let loadSequence = 0, resolveSequence = 0;
   const sourceByteLimit = nativeSourceRetentionLimits.sourceBytes;
   const sourceTotalByteLimit = nativeSourceRetentionLimits.processBytes;
   let sourceBytesHashed = 0, pinnedBytesHashed = 0;
@@ -382,7 +382,27 @@ function installNativeProcessTrace(out) {
     }
   };
   try {
-    registerHooks({ load(url, context, nextLoad) {
+    registerHooks({ resolve(specifier, context, nextResolve) {
+      // Observe the resolver's return directly. A build graph, lockfile or
+      // later require.resolve call cannot supply this worker's actual edge.
+      if (resolveSequence >= 128) {
+        if (resolveSequence++ === 128) emit('module-resolve-limit', { limit: 128 });
+        return nextResolve(specifier, context);
+      }
+      const resolveId = ++resolveSequence;
+      const fields = { resolveId, specifier, parentURL: context.parentURL ?? null,
+        conditions: [...context.conditions], scope: 'node-sync-resolve-hook' };
+      emit('module-resolve-start', fields);
+      try {
+        const result = nextResolve(specifier, context);
+        emit('module-resolve-return', { ...fields, url: result.url, format: result.format ?? null });
+        return result;
+      } catch (error) {
+        emit('module-resolve-error', { ...fields,
+          errorCode: typeof error?.code === 'string' ? error.code : null });
+        throw error;
+      }
+    }, load(url, context, nextLoad) {
       if (!url.startsWith('file:')) return nextLoad(url, context);
       if (loadSequence >= 128) {
         if (loadSequence++ === 128) emit('module-load-limit', { limit: 128 });

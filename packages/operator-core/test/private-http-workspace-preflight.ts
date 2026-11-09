@@ -1087,7 +1087,7 @@ export function qualifyCommittedReaderSource(o: CommittedReaderSourceOptions) {
  */
 export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOptions & {
   traceOut: string; pid: number; startedAtMs: number; finishedAtMs: number;
-  kernelProcessIdentity?: string; buildObservationOnly?: boolean;
+  kernelProcessIdentity?: string; runId?: string; buildObservationOnly?: boolean;
   configuration?: ConfigurationSnapshot;
 }) {
   const closureBytes = readFileSync(o.receiptPath), sourceBytes = readFileSync(o.sourceReceiptPath);
@@ -1101,7 +1101,7 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
     status: 'unknown' as 'bound' | 'unknown', sourceCommit: preparation.sourceCommit,
     preparationSha256: digestBytes(closureBytes),
     sourceReceiptSha256: digestBytes(sourceBytes),
-    traceOut: o.traceOut, pid: o.pid, processIdentity: null as string | null,
+    traceOut: o.traceOut, pid: o.pid, runId: null as string | null, processIdentity: null as string | null,
     kernelProcessIdentity: null as string | null,
     startedAtMs: o.startedAtMs, finishedAtMs: o.finishedAtMs,
     population: null as ReturnType<typeof readNativeProcessTraceArtifacts>['population'] | null,
@@ -1118,6 +1118,11 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
       expectedFingerprint: o.configuration?.fingerprint ?? null,
       gaps: ['host entry not validated'],
     },
+    resolutions: {
+      scope: 'native-node-resolver-returned-edges', status: 'unknown' as 'bound' | 'unknown',
+      edges: [] as Array<{ resolveId: number; specifier: string; parentURL: string | null;
+        conditions: string[]; url: string; format: string | null }>, gaps: [] as string[],
+    },
     limits: { loads: 128, ...nativeSourceRetentionLimits },
     sources, gaps, pending: [...(o.buildObservationOnly ? ['preparation-qualification', 'build-imports', 'observed-imports'] : []),
       'module-evaluation', 'runtime-config', 'private-pg', 'sidecars',
@@ -1133,6 +1138,11 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
     const entries = own.filter(({ row }) => row.event === 'node-entry');
     assert.equal(entries.length, 1, 'one host entry required');
     const entry = entries[0];
+    if (o.runId !== undefined) {
+      assert.ok(o.runId.length > 0, 'independent host run identity required');
+      assert.equal(entry.row.runGroupId, o.runId, 'host entry belongs to another run');
+      result.runId = o.runId;
+    }
     const identity = entry.row.processIdentity;
     assert.ok(identity && own.every(({ row }) => row.processIdentity === identity), 'mixed host trace identities');
     const kernelIdentity = entry.row.kernelProcessIdentity;
@@ -1219,6 +1229,48 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
     if (!starts.size) gaps.push('host loader observations missing');
     if (starts.size !== returned.size) gaps.push('pending loader calls');
     if (!sources.some(source => source.url === pathToFileURL(o.bundle).href)) gaps.push('loaded bundle unbound');
+    // Resolver edges have their own verdict: no claim about module evaluation,
+    // dependency-generation custody or descendants follows from these returns.
+    try {
+      assert.ok(result.exitObserved, 'host resolver terminal observation missing');
+      assert.ok(!own.some(({ row }) => ['trace-limit', 'trace-event-too-large',
+        'module-resolve-limit', 'module-resolve-error'].includes(row.event)), 'host resolver capture incomplete');
+      const attempts = own.filter(({ row }) => row.event === 'module-resolve-start');
+      const returns = own.filter(({ row }) => row.event === 'module-resolve-return');
+      assert.ok(attempts.length > 0 && attempts.length <= 128, 'host resolver observations missing or limited');
+      assert.equal(returns.length, attempts.length, 'pending host resolver calls');
+      const seen = new Set<number>();
+      for (const { row } of attempts) {
+        assert.ok(Number.isSafeInteger(row.resolveId) && row.resolveId > 0 && row.resolveId <= 128 &&
+          !seen.has(row.resolveId) && typeof row.specifier === 'string' && row.specifier.length > 0 &&
+          (row.parentURL === null || typeof row.parentURL === 'string') &&
+          Array.isArray(row.conditions) && row.conditions.every((value: unknown) => typeof value === 'string') &&
+          row.scope === 'node-sync-resolve-hook' && row.threadId === entry.row.threadId,
+        'host resolver attempt invalid or isolate differs');
+        seen.add(row.resolveId);
+        const matched = returns.filter(({ row: returned }) => returned.resolveId === row.resolveId);
+        assert.equal(matched.length, 1, 'host resolver return missing or duplicated');
+        const returned = matched[0].row;
+        for (const key of ['specifier', 'parentURL', 'conditions', 'scope', 'threadId'])
+          assert.deepEqual(returned[key], row[key], 'host resolver edge identity differs');
+        assert.ok(returned.atMs >= row.atMs && typeof returned.url === 'string' &&
+          (returned.format === null || typeof returned.format === 'string'), 'host resolver return invalid');
+        const url = new URL(returned.url);
+        assert.ok(url.protocol === 'node:' || url.protocol === 'file:' && !url.search && !url.hash,
+          'host resolver URL opaque');
+        if (url.protocol === 'file:') {
+          const loaded = sources.filter(source => source.url === returned.url);
+          assert.ok(loaded.length > 0, 'host resolved file lacks independently pinned loader bytes');
+          if (Object.hasOwn(closure.externalResolutions, row.specifier))
+            assert.equal(fileURLToPath(url), resolve(o.root, closure.externalResolutions[row.specifier]),
+              'host external resolution differs from independent pin');
+        }
+        result.resolutions.edges.push({ resolveId: row.resolveId, specifier: row.specifier,
+          parentURL: row.parentURL, conditions: [...row.conditions], url: returned.url, format: returned.format });
+      }
+      assert.ok(!gaps.length, 'host loader evidence incomplete');
+      result.resolutions.status = 'bound';
+    } catch (error) { result.resolutions.gaps.push((error as Error).message.split('\n')[0]); }
     // Positive outer execution is narrower than module/import closure. Consume
     // the engine's script-id/source/range tuple only inside this process-bound
     // channel; a loader return or source-map association cannot substitute.

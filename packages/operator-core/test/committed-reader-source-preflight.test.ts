@@ -111,6 +111,7 @@ function loadedFixture(source?: string, admit = true, buildObservationOnly = fal
   const traceRoot = traceOut + '.native-processes';
   const startedAtMs = Date.now();
   const environment = privateBundleRuntimeEnv({ ...process.env, NODE_OPTIONS: '', NODE_PATH: '',
+    PAPERCUSP_TEST_RUN_GROUP: 'reader-host-observed-run',
     PAPERCUSP_TEST_CONFIGURATION_SECRET: 'private-entry-value' }, {
     traceOut, pinnedSources: admit ? [{ path: f.bundle, sha256: f.closure.sha256,
       byteLength: readFileSync(f.bundle).length }] : [],
@@ -123,6 +124,7 @@ function loadedFixture(source?: string, admit = true, buildObservationOnly = fal
   expect(child.error).toBeUndefined();
   expect(child.status, child.stderr).toBe(0);
   const options = { ...f.options, traceOut, pid: child.pid, startedAtMs, finishedAtMs: Date.now(),
+    runId: environment.PAPERCUSP_TEST_RUN_GROUP,
     configuration: captureConfigurationSnapshot(environment),
     ...(buildObservationOnly ? { preparationOnly: true as const, buildObservationOnly,
       receiptPath: join(f.dir, 'prepare/operator-api-preflight.json') } : {}) };
@@ -149,6 +151,47 @@ function loadedFixture(source?: string, admit = true, buildObservationOnly = fal
 }
 
 describe('committed reader loader-return source binding', () => {
+  it('binds actual native external resolver returns to independently pinned loaded bytes', () => {
+    const f = loadedFixture('import value from "example"; console.log(value);');
+    const result = f.observe();
+    expect(result.resolutions).toMatchObject({ status: 'bound', gaps: [] });
+    expect(result.resolutions.edges).toContainEqual(expect.objectContaining({ specifier: 'example',
+      parentURL: pathToFileURL(f.bundle).href,
+      url: pathToFileURL(join(f.root, 'node_modules/example/index.js')).href }));
+    expect(result.pending).toContain('runtime-config');
+    expect(result.pending).toContain('complete-runtime-closure');
+  });
+
+  it.each(['missing', 'pending', 'duplicate', 'identity', 'isolate', 'opaque', 'unloaded', 'limit',
+    'terminal', 'external-pin'] as const)('keeps %s resolver evidence unknown', mode => {
+    const f = loadedFixture('import value from "example"; console.log(value);');
+    if (mode === 'missing' || mode === 'pending') {
+      for (const item of f.rows) if (item.row.event === 'module-resolve-return' ||
+          mode === 'missing' && item.row.event === 'module-resolve-start') rmSync(join(f.traceRoot, item.name));
+    } else if (mode === 'terminal') {
+      f.replace('node-exit', row => { row.exitListenersComplete = false; });
+    } else if (mode === 'external-pin') {
+      f.closure.externalResolutions.example = 'helper.ts'; f.save();
+    } else {
+      f.replace('module-resolve-return', row => {
+        if (mode === 'duplicate') row.resolveId = 128;
+        if (mode === 'identity') row.specifier += '-changed';
+        if (mode === 'isolate') row.threadId = 99;
+        if (mode === 'opaque') row.url = 'data:text/javascript,export default 1';
+        if (mode === 'unloaded') row.url = pathToFileURL(join(f.root, 'helper.ts')).href;
+        if (mode === 'limit') row.event = 'module-resolve-limit';
+      });
+    }
+    // The independent closure validator may reject a changed planned external
+    // before observation; neither route admits a substituted resolution.
+    if (mode === 'external-pin') expect(() => f.observe()).toThrow(/resolution|external|mismatch/i);
+    else {
+      const result = f.observe();
+      expect(result.resolutions.status).toBe('unknown');
+      expect(result.resolutions.gaps.length).toBeGreaterThan(0);
+    }
+  });
+
   it('binds native pinned engine outer execution while an uncalled function stays unobserved', () => {
     const f = loadedFixture('export function uncalled() { return 4; } export const host = "🌱";');
     const observed = f.observe();
@@ -222,6 +265,27 @@ describe('committed reader loader-return source binding', () => {
     expect(observed.pending).toContain('runtime-config');
     expect(JSON.stringify(f.rows)).not.toContain('private-entry-value');
   });
+
+  it('joins the actual loader entry to the independently selected run', () => {
+    const f = loadedFixture();
+    expect(f.observe()).toMatchObject({ status: 'bound', runId: 'reader-host-observed-run',
+      configurationInputs: { status: 'matched' } });
+  });
+
+  it.each(['missing', 'different', 'empty-selection'] as const)(
+    'refuses a %s run identity instead of stitching another entry', control => {
+      const f = loadedFixture();
+      if (control === 'empty-selection') f.options.runId = '';
+      else f.replace('node-entry', row => {
+        if (control === 'missing') delete row.runGroupId;
+        else row.runGroupId = 'another-api-run';
+      });
+      const observed = f.observe();
+      expect(observed).toMatchObject({ status: 'unknown', runId: null });
+      expect(observed.gaps).toEqual(expect.arrayContaining([expect.stringContaining('run')]));
+      expect(observed.pending).toContain('runtime-config');
+      expect(observed.pending).toContain('private-pg');
+    });
 
   it('keeps a differing prelaunch configuration unknown without confusing it with source binding', () => {
     const f = loadedFixture();
