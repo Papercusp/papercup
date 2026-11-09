@@ -8,14 +8,15 @@ import { scorecardEvidenceFingerprint } from '../../scorecards';
 import { applyPayloadTier } from '@papercusp/tooldef';
 import { applyResultDoor } from '../../result-door';
 
-const reads = vi.hoisted(() => ({ plan: vi.fn(), clauses: vi.fn(), snapshot: vi.fn(), rubrics: vi.fn(), discovery: vi.fn() }));
+const reads = vi.hoisted(() => ({ plan: vi.fn(), clauses: vi.fn(), snapshot: vi.fn(), rubrics: vi.fn(), rubricRevision: vi.fn(), discovery: vi.fn() }));
 vi.mock('../../plan-audits', async original => ({ ...await original<typeof import('../../plan-audits')>(),
   withCurrentDiscovery: reads.discovery }));
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: () => ({ ownerId: 'su-replay-test' }) }));
 vi.mock('./source', async (original) => ({ ...await original<typeof import('./source')>(), readPlanBySlug: reads.plan }));
 vi.mock('./revisions', async (original) => ({ ...await original<typeof import('./revisions')>(), getPlanRevisionSnapshot: reads.snapshot }));
 vi.mock('./spec-clauses-store', async (original) => ({ ...await original<typeof import('./spec-clauses-store')>(), listSpecClauses: reads.clauses }));
-vi.mock('../../rubrics', async (original) => ({ ...await original<typeof import('../../rubrics')>(), getAcceptanceRubricsForPlan: reads.rubrics }));
+vi.mock('../../rubrics', async (original) => ({ ...await original<typeof import('../../rubrics')>(),
+  getAcceptanceRubricsForPlan: reads.rubrics, getRubric: reads.rubricRevision }));
 vi.mock('./_ctx-opts', async (original) => ({ ...await original<typeof import('./_ctx-opts')>(),
   ctxToPlanSourceOpts: async () => ({}), resolveEffectiveHarnessSlug: () => 'papercusp' }));
 vi.mock('../_harness-scope', async (original) => ({ ...await original<typeof import('../_harness-scope')>(), harnessScopedCtx: (_h: unknown, ctx: unknown) => ctx }));
@@ -59,6 +60,37 @@ beforeEach(() => {
 });
 
 describe('immutable spec-quality replay (WI-10007284)', () => {
+  it('pins live BAR scope evaluation to an immutable rubric revision and replays it after the scope changes', async () => {
+    const rubric = { rubricId: 'acceptance-quality-plan', revision: 8, criteriaHash: 'c'.repeat(64),
+      kind: 'acceptance', subjectPlan: 'quality-plan', subjectHarnessSlug: 'papercusp', classRef: 'plan-class-feature-ship',
+      criteria: [{ key: 'r-17', barKey: 'R-17', requiredScope: ['P-001'] }] };
+    const projection = { ...newClause, specId: 'AUTO-BAR-R-17-P-001', sourceValId: null,
+      sourceBar: { rubricSlug: rubric.rubricId, rubricRevision: 4, barKey: 'R-17',
+        barHash: 'd'.repeat(64), barSetHash: 'e'.repeat(64), evidencePlane: 'tree' } };
+    reads.plan.mockResolvedValue({ row: { items: [{ id: 'P-001' }], template: null,
+      templateData: null, inputSchema: null, contentHash: oldHash }, parsed: { items: [] } });
+    reads.clauses.mockResolvedValue([newClause, projection]);
+    reads.rubrics.mockResolvedValue([rubric]);
+    const live = await call({ slug: 'quality-plan', harness: 'papercusp' });
+    expect(live.replaySnapshot.acceptanceRubric).toEqual({ rubricId: rubric.rubricId, revision: 8, criteriaHash: rubric.criteriaHash });
+    reads.rubrics.mockResolvedValue([{ ...rubric, revision: 9, criteriaHash: 'f'.repeat(64),
+      criteria: [{ key: 'r-17', barKey: 'R-17', requiredScope: ['P-002'] }] }]);
+    reads.rubricRevision.mockResolvedValue(rubric);
+    const replay = await call({ slug: 'quality-plan', harness: 'papercusp', classRef: 'plan-class-feature-ship',
+      expectedSpecSetHash: live.specSetHash, replaySnapshot: live.replaySnapshot });
+    expect(reads.rubricRevision).toHaveBeenCalledWith(rubric.rubricId, 8);
+    expect(replay.ratings).toEqual(live.ratings);
+  });
+
+  it('refuses a missing pinned rubric instead of substituting the live scope', async () => {
+    reads.rubricRevision.mockResolvedValue(null);
+    const result = await call({ ...replayArgs, replaySnapshot: { ...replaySnapshot,
+      acceptanceRubric: { rubricId: 'acceptance-quality-plan', revision: 8, criteriaHash: 'c'.repeat(64) } } });
+    expect(result).toMatchObject({ ok: false, error: 'acceptance_rubric_snapshot_unavailable' });
+    expect(result).not.toHaveProperty('scorecardDraft');
+    expect(reads.rubrics).not.toHaveBeenCalled();
+  });
+
   it.each([null, '', ' \t '].flatMap(sha => ['full', 'summary'].flatMap(detail =>
     ['fresh', 'replay'].map(route => ({ sha, detail, route })))))(
     'refuses an unpinned live evaluator before reads ($route, $detail, SHA=$sha)', async ({ sha, detail, route }) => {

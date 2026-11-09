@@ -35,12 +35,77 @@ export type SpecQualityRating = 'pass' | 'fail' | 'unknown' | 'waived' | 'not-ap
 export interface SpecQualityReplaySnapshot {
   planContentHash: string;
   clausesAsOf: string;
+  acceptanceRubric?: { rubricId: string; revision: number; criteriaHash: string };
 }
 
 export interface SpecQualityRatingEntry {
   rating: SpecQualityRating;
   evidence: string;
   suggestion?: string;
+}
+
+export interface SpecQualityCanonicalBarScope {
+  rubricSlug: string;
+  barKey: string;
+  /** null preserves legacy scopes that describe a population rather than plan items. */
+  planItemIds: readonly string[] | null;
+}
+
+export interface SpecQualityBarScopeMismatch {
+  kind: 'extra' | 'missing' | 'duplicate';
+  rubricSlug: string;
+  barKey: string;
+  planItemId: string;
+  projectionSpecIds: string[];
+}
+
+/** Reuse the canonical rubric read; scope strings are not inferred from case titles or prose. */
+export function specQualityCanonicalBarScopes(rubrics: readonly {
+  rubricId?: string;
+  criteria?: readonly { key: string; barKey?: string; requiredScope?: readonly string[]; role?: string }[];
+}[]): SpecQualityCanonicalBarScope[] {
+  return rubrics.flatMap(rubric => !rubric.rubricId ? [] : (rubric.criteria ?? []).map(criterion => {
+    const items = [...new Set((criterion.requiredScope ?? []).filter(scope => /^P-\d{3,}$/.test(scope)))].sort();
+    return { rubricSlug: rubric.rubricId!, barKey: criterion.barKey ?? criterion.key,
+      planItemIds: criterion.role === 'disclosure' ? [] : items.length ? items : null };
+  }));
+}
+
+function sourceBarScopeMismatches(
+  clauses: readonly SpecClauseRevision[], scopes: readonly SpecQualityCanonicalBarScope[] | undefined,
+  planItemIds: readonly string[],
+): SpecQualityBarScopeMismatch[] {
+  if (!scopes?.length) return [];
+  const key = (rubric: string, bar: string) => JSON.stringify([rubric, bar]);
+  const byBar = new Map(scopes.map(scope => [key(scope.rubricSlug, scope.barKey), scope]));
+  const projections = new Map<string, SpecClauseRevision[]>();
+  const mismatches: SpecQualityBarScopeMismatch[] = [];
+  for (const clause of clauses) {
+    const pin = clause.sourceBar;
+    if (!pin) continue;
+    const scope = byBar.get(key(pin.rubricSlug, pin.barKey));
+    if (scope?.planItemIds === null) continue;
+    const edge = JSON.stringify([pin.rubricSlug, pin.barKey, clause.planItemId]);
+    const matches = projections.get(edge) ?? [];
+    matches.push(clause);
+    projections.set(edge, matches);
+    if (!scope || !scope.planItemIds?.includes(clause.planItemId)) mismatches.push({
+      kind: 'extra', rubricSlug: pin.rubricSlug, barKey: pin.barKey,
+      planItemId: clause.planItemId, projectionSpecIds: [clause.specId],
+    });
+  }
+  for (const scope of scopes) {
+    for (const item of scope.planItemIds ?? []) {
+      // Deliberately dropped items no longer owe a live contribution.
+      if (!planItemIds.includes(item)) continue;
+      const matches = projections.get(JSON.stringify([scope.rubricSlug, scope.barKey, item])) ?? [];
+      if (matches.length === 1) continue;
+      mismatches.push({ kind: matches.length ? 'duplicate' : 'missing', rubricSlug: scope.rubricSlug,
+        barKey: scope.barKey, planItemId: item, projectionSpecIds: matches.map(clause => clause.specId).sort() });
+    }
+  }
+  return mismatches.sort((a, b) => a.rubricSlug.localeCompare(b.rubricSlug) ||
+    a.barKey.localeCompare(b.barKey) || a.planItemId.localeCompare(b.planItemId) || a.kind.localeCompare(b.kind));
 }
 
 export interface PlanSpecQualityResult {
@@ -55,6 +120,7 @@ export interface PlanSpecQualityResult {
   details: {
     uncoveredPlanItemIds: string[];
     invalidExemptionSpecIds: string[];
+    sourceBarScopeMismatches: SpecQualityBarScopeMismatch[];
     exemptionCensus: {
       specSetHash: string;
       currentClauseCount: number;
@@ -680,6 +746,7 @@ export function evaluatePlanSpecQuality(input: {
   classRef: PlanClassRubricRef;
   expectedSpecSetHash?: string;
   replaySnapshot?: SpecQualityReplaySnapshot;
+  canonicalBarScopes?: readonly SpecQualityCanonicalBarScope[];
 }): PlanSpecQualityResult {
   const planItemIds = [...new Set(input.planItemIds)].sort();
   const currentSet = input.clauses
@@ -838,10 +905,18 @@ export function evaluatePlanSpecQuality(input: {
     behavioralClauses: behavioral,
     validExemptions,
   });
+  const barScopeMismatches = sourceBarScopeMismatches(behavioral, input.canonicalBarScopes, planItemIds);
   const projectionEvidence = behavioral.some((clause) => clause.sourceBar)
     ? ` ${behavioral.filter((clause) => clause.sourceBar).length} sourceBar-pinned projection(s) are excluded as copies of canonical acceptance BARs; added or meaning-changed BAR projections are checked on rubric writes, while unchanged legacy BARs are not re-certified here.`
     : '';
-  ratings['item-contract-coverage'] = uncoveredPlanItemIds.length
+  ratings['item-contract-coverage'] = barScopeMismatches.length
+    ? fail(
+        'Canonical acceptance BAR item-scope mismatch(es): ' + barScopeMismatches.map(entry =>
+          `${entry.kind} ${entry.barKey}/${entry.planItemId} (${entry.projectionSpecIds.join(', ') || 'no active projection'})`,
+        ).join('; ') + '.',
+        'Reconcile active BAR projections with the canonical rubric requiredScope through the reviewed amendment path; keep retired history and regenerate the exact spec-quality card.',
+      )
+    : uncoveredPlanItemIds.length
     ? fail(
         `Plan item(s) lack an active clause or valid explicit exemption: ${uncoveredPlanItemIds.join(', ')}.`,
         'Add at least one active behavioral clause per item, or an explicit non-automated exemption with justification and provenance.',
@@ -1150,6 +1225,7 @@ export function evaluatePlanSpecQuality(input: {
     details: {
       uncoveredPlanItemIds,
       invalidExemptionSpecIds,
+      sourceBarScopeMismatches: barScopeMismatches,
       exemptionCensus,
       draftSpecIds,
       atomicityClauseDiagnostics,

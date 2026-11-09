@@ -12,6 +12,7 @@ import { getAcceptanceRubricsForPlan } from '../../rubrics';
 import { listSpecClauses } from './spec-clauses-store';
 import {
   evaluatePlanSpecQuality,
+  specQualityCanonicalBarScopes,
   specQualityEvidenceWithoutReplay,
   SPEC_QUALITY_RUBRIC_REF,
   type PlanSpecQualityResult,
@@ -367,6 +368,7 @@ export async function evaluatePlanSpecQualityGate(
     planItems: input.planItems,
     clauses,
     classRef: classResolution.classRef,
+    canonicalBarScopes: specQualityCanonicalBarScopes(acceptanceRubrics),
   });
   const candidates = [
     {

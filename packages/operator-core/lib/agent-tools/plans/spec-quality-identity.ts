@@ -7,6 +7,16 @@ export const specQualityEvaluatorBuildSchema = z.object({
   version: z.string().trim().min(1),
 }).strict();
 
+export const specQualityReplaySnapshotSchema = z.object({
+  planContentHash: z.string().regex(/^[a-f0-9]{64}$/),
+  clausesAsOf: z.string().datetime({ offset: true }),
+  acceptanceRubric: z.object({
+    rubricId: z.string().min(1),
+    revision: z.number().int().positive(),
+    criteriaHash: z.string().regex(/^[a-f0-9]{64}$/),
+  }).strict().optional(),
+}).strict();
+
 export const specQualityReplayArgsSchema = z.object({
   harness: z.string().min(1),
   slug: z.string().min(1),
@@ -14,10 +24,7 @@ export const specQualityReplayArgsSchema = z.object({
   expectedSpecSetHash: z.string().regex(/^[a-f0-9]{64}$/),
   specSetHashVersion: z.number().int().positive(),
   evaluatorBuild: specQualityEvaluatorBuildSchema,
-  replaySnapshot: z.object({
-    planContentHash: z.string().regex(/^[a-f0-9]{64}$/),
-    clausesAsOf: z.string().datetime({ offset: true }),
-  }).strict(),
+  replaySnapshot: specQualityReplaySnapshotSchema,
 }).strict();
 
 export const specQualityRerunRecipeSchema = z.object({

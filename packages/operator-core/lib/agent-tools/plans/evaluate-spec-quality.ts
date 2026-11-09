@@ -5,11 +5,12 @@ import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { ctxToPlanSourceOpts, resolveEffectiveHarnessSlug } from './_ctx-opts';
 import { readPlanBySlug } from './source';
 import { listSpecClauses } from './spec-clauses-store';
-import { evaluatePlanSpecQuality, specQualityPlanItemIds } from './spec-quality';
+import { evaluatePlanSpecQuality, specQualityCanonicalBarScopes, specQualityPlanItemIds,
+  type SpecQualityCanonicalBarScope } from './spec-quality';
 import { PLAN_CLASS_RUBRIC_REFS } from './spec-test-adequacy';
 import { evaluatePlanStartReadiness } from './plan-input-validation';
 import { resolvePersistedClassRef } from './plan-spec-quality-gate';
-import { getAcceptanceRubricsForPlan } from '../../rubrics';
+import { getAcceptanceRubricsForPlan, getRubric } from '../../rubrics';
 import { getPlanRevisionSnapshot } from './revisions';
 import { parsePlan } from './parser';
 import { withCurrentDiscovery } from '../../plan-audits';
@@ -17,7 +18,7 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { getBuildInfo } from '../../build-info';
 import { SPEC_SET_HASH_VERSION } from './spec-clause-compiler';
-import { specQualityEvaluatorBuildSchema, specQualityIdentityRefusal } from './spec-quality-identity';
+import { specQualityEvaluatorBuildSchema, specQualityIdentityRefusal, specQualityReplaySnapshotSchema } from './spec-quality-identity';
 import { scorecardEvidenceFingerprint } from '../../scorecards';
 
 const argsSchema = z.object({
@@ -34,10 +35,7 @@ const argsSchema = z.object({
   classRef: z.enum(PLAN_CLASS_RUBRIC_REFS).optional().describe(
     'Optional assertion against the authoritative persisted acceptance-rubric class. Omit to derive it; a mismatch is refused, never used as an override.',
   ),
-  replaySnapshot: z.object({
-    planContentHash: z.string().regex(/^[a-f0-9]{64}$/),
-    clausesAsOf: z.string().datetime({ offset: true }),
-  }).strict().optional().describe('Historical audit only: replay the saved plan body and latest immutable clause revisions at this cutoff. Requires classRef and expectedSpecSetHash; never substitutes for the live activation gate.'),
+  replaySnapshot: specQualityReplaySnapshotSchema.optional().describe('Historical audit only: replay the saved plan body, clause cutoff and optional exact acceptance-rubric revision. Requires classRef and expectedSpecSetHash; never substitutes for the live activation gate.'),
 }).refine((args) => !args.replaySnapshot || Boolean(args.classRef && args.expectedSpecSetHash), {
   message: 'replaySnapshot requires classRef and expectedSpecSetHash', path: ['replaySnapshot'],
 });
@@ -121,10 +119,11 @@ export default defineTool({
     } });
     if (Date.parse(cutoff) > Date.now()) return snapshotFailure('spec_snapshot_future', 'A future cutoff cannot identify a completed snapshot.');
     const finish = (clauses: Awaited<ReturnType<typeof listSpecClauses>>, planItems: ReturnType<typeof parsePlan>['items'],
-      classRef: typeof PLAN_CLASS_RUBRIC_REFS[number], replaySnapshot: NonNullable<typeof args.replaySnapshot>) => {
+      classRef: typeof PLAN_CLASS_RUBRIC_REFS[number], replaySnapshot: NonNullable<typeof args.replaySnapshot>,
+      canonicalBarScopes?: readonly SpecQualityCanonicalBarScope[]) => {
       const evaluation = evaluatePlanSpecQuality({
         planSlug: args.slug, harnessSlug, planItems, planItemIds: specQualityPlanItemIds(planItems),
-        clauses, classRef, expectedSpecSetHash: args.expectedSpecSetHash, replaySnapshot,
+        clauses, classRef, expectedSpecSetHash: args.expectedSpecSetHash, replaySnapshot, canonicalBarScopes,
       });
       if (args.expectedSpecSetHash && args.expectedSpecSetHash !== evaluation.specSetHash) {
         return { data: {
@@ -157,7 +156,18 @@ export default defineTool({
           return snapshotFailure('plan_snapshot_unavailable', 'The exact immutable plan body is missing or its bytes do not match the recorded hash. No live fallback.');
         }
         if (!clauses.length) return snapshotFailure('spec_snapshot_unavailable', 'No clause revisions exist at the recorded cutoff.');
-        return finish(clauses, parsePlan(snapshot.contentSnapshot).items, args.classRef!, args.replaySnapshot);
+        const pin = args.replaySnapshot.acceptanceRubric;
+        let canonicalBarScopes: readonly SpecQualityCanonicalBarScope[] | undefined;
+        if (pin) {
+          const rubric = await getRubric(pin.rubricId, pin.revision);
+          if (!rubric || rubric.rubricId !== pin.rubricId || rubric.revision !== pin.revision ||
+              rubric.criteriaHash !== pin.criteriaHash || rubric.kind !== 'acceptance' ||
+              rubric.subjectPlan !== args.slug || (rubric.subjectHarnessSlug && rubric.subjectHarnessSlug !== harnessSlug)) {
+            return snapshotFailure('acceptance_rubric_snapshot_unavailable', 'The exact acceptance-rubric revision or criteria hash is unavailable. No live rubric fallback.');
+          }
+          canonicalBarScopes = specQualityCanonicalBarScopes([rubric]);
+        }
+        return finish(clauses, parsePlan(snapshot.contentSnapshot).items, args.classRef!, args.replaySnapshot, canonicalBarScopes);
       } catch (error) {
         return snapshotFailure('spec_snapshot_read_unavailable', error instanceof Error ? error.message : String(error));
       }
@@ -238,11 +248,16 @@ export default defineTool({
       }
       const clausesAsOf = new Date(latest + 1).toISOString();
       const reconstructed = await listSpecClauses({ harnessSlug, planSlug: args.slug, asOf: clausesAsOf });
+      const rubric = rubricRead.status === 'fulfilled' ? rubricRead.value[0] : undefined;
+      const acceptanceRubric = rubric?.revision && /^[a-f0-9]{64}$/.test(rubric.criteriaHash ?? '')
+        ? { rubricId: rubric.rubricId, revision: rubric.revision, criteriaHash: rubric.criteriaHash! } : undefined;
       const historical = finish(reconstructed, parsePlan(snapshot.contentSnapshot).items, classResolution.classRef,
-        { planContentHash: snapshot.contentSnapshotHash, clausesAsOf });
+        { planContentHash: snapshot.contentSnapshotHash, clausesAsOf, ...(acceptanceRubric ? { acceptanceRubric } : {}) },
+        rubricRead.status === 'fulfilled' ? specQualityCanonicalBarScopes(rubricRead.value) : undefined);
       const live = evaluatePlanSpecQuality({ planSlug: args.slug, harnessSlug,
         planItemIds: specQualityPlanItemIds(parsePlan(snapshot.contentSnapshot).items),
-        planItems: parsePlan(snapshot.contentSnapshot).items, clauses: clauseRead.value, classRef: classResolution.classRef });
+        planItems: parsePlan(snapshot.contentSnapshot).items, clauses: clauseRead.value, classRef: classResolution.classRef,
+        canonicalBarScopes: rubricRead.status === 'fulfilled' ? specQualityCanonicalBarScopes(rubricRead.value) : undefined });
       if (!('specSetHash' in historical.data) || historical.data.specSetHash !== live.specSetHash) {
         if (args.expectedSpecSetHash && args.expectedSpecSetHash !== live.specSetHash) return historical;
         return snapshotFailure('spec_snapshot_changed', 'Historical reconstruction differs from the observed clause set. Retry after concurrent writes settle.');

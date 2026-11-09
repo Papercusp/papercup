@@ -170,6 +170,28 @@ function withIdentityEvidence(card: ScorecardRow, evidence: string): ScorecardRo
 }
 
 describe('evaluatePlanSpecQualityGate', () => {
+  it('blocks an off-scope BAR projection before accepting a previously passing card', async () => {
+    const pin = { rubricSlug: 'quality-plan-acceptance', rubricRevision: 4, barKey: 'R-17',
+      barHash: 'a'.repeat(64), barSetHash: 'b'.repeat(64), evidencePlane: 'tree' as const };
+    const clauses = [clause(),
+      clause({ specId: 'SPEC-002', sourceValId: 'VAL-002', planItemId: 'P-002',
+        behavior: 'POST /events returns 400 for an invalid request' }),
+      ...['P-001', 'P-002'].map(item => clause({ specId: `AUTO-BAR-R-17-${item}`,
+        sourceValId: null, planItemId: item, sourceBar: { ...pin } })),
+    ];
+    const listCards = vi.fn(async () => []);
+    const result = await evaluatePlanSpecQualityGate({ harnessSlug: 'papercusp', planSlug: 'quality-plan',
+      planItemIds: ['P-001', 'P-002'] }, gateDeps({ listClauses: vi.fn(async () => clauses), listCards,
+      listAcceptanceRubrics: vi.fn(async () => [{ rubricId: pin.rubricSlug,
+        classRef: 'plan-class-feature-ship', criteria: [{ key: 'r-17', barKey: 'R-17', requiredScope: ['P-002'] }] }]),
+    }));
+    expect(result.satisfied).toBe(false);
+    expect(result.wouldBlock).toContain('item-contract-coverage');
+    expect(result.code).toBe('spec_quality_failed');
+    expect(result.candidates?.[0].verdict).toBe('fail');
+    expect(listCards).not.toHaveBeenCalled();
+  });
+
   it('blocks activation when a runtime BAR is projected onto an exempt prerequisite instead of its dependent implementation', async () => {
     const sourceBar = {
       barKey: 'R-1',

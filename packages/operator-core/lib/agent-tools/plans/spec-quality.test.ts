@@ -2,11 +2,69 @@ import { describe, expect, it } from 'vitest';
 import { RECORDED_TEST_LAYERS } from '@papercusp/test-config/execution-details';
 import type { SpecClauseRevision } from './spec-clauses-store';
 import { specBehaviorNonAtomicReason } from './spec-clause-compiler';
-import { evaluatePlanSpecQuality, specQualityPlanItemIds } from './spec-quality';
+import { evaluatePlanSpecQuality, specQualityCanonicalBarScopes, specQualityPlanItemIds } from './spec-quality';
 import { deriveIndexFromContent } from './derive-index';
 import { parsePlan } from './parser';
 import evaluateSpecQualityTool from './evaluate-spec-quality';
 import startPlanTool from './start';
+
+describe('canonical BAR item-scope conformance', () => {
+  it('reads explicit item scopes while preserving opaque legacy scopes and disclosure roles', () => {
+    expect(specQualityCanonicalBarScopes([{ rubricId: 'acceptance-quality-plan', criteria: [
+      { key: 'r-1', barKey: 'R-1', requiredScope: ['P-002', 'tree', 'P-001', 'P-002'] },
+      { key: 'r-2', barKey: 'R-2', requiredScope: ['tree', 'tenant-population'] },
+      { key: 'r-3', barKey: 'R-3', requiredScope: ['P-001'], role: 'disclosure' },
+    ] }])).toEqual([
+      { rubricSlug: 'acceptance-quality-plan', barKey: 'R-1', planItemIds: ['P-001', 'P-002'] },
+      { rubricSlug: 'acceptance-quality-plan', barKey: 'R-2', planItemIds: null },
+      { rubricSlug: 'acceptance-quality-plan', barKey: 'R-3', planItemIds: [] },
+    ]);
+  });
+
+  const pin = { rubricSlug: 'quality-plan-acceptance', barKey: 'R-17',
+    barHash: 'a'.repeat(64), barSetHash: 'b'.repeat(64), rubricRevision: 4, evidencePlane: 'tree' as const };
+  const projection = (item: string, over: Partial<SpecClauseRevision> = {}) => clause({
+    specId: `AUTO-BAR-R-17-${item}`, sourceValId: null, planItemId: item,
+    sourceBar: { ...pin }, ...over,
+  });
+  const evaluate = (projections: SpecClauseRevision[]) => evaluatePlanSpecQuality(Object.assign({
+    planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-005', 'P-007', 'P-012', 'P-013'],
+    classRef: 'plan-class-feature-ship' as const,
+    clauses: [
+      ...['P-005', 'P-007', 'P-012', 'P-013'].map((item, index) => clause({
+        specId: `SPEC-${item}`, planItemId: item, sourceValId: `VAL-${item}`,
+        behavior: `POST /events/${index} returns 202 for a valid request`,
+      })),
+      ...projections,
+    ],
+  }, { canonicalBarScopes: [{ rubricSlug: pin.rubricSlug, barKey: pin.barKey, planItemIds: ['P-012', 'P-013'] }] }));
+
+  it('accepts the exact current scope while retaining unchanged older BAR pins', () => {
+    expect(evaluate([projection('P-012'), projection('P-013')]).verdict).toBe('pass');
+  });
+
+  it('rejects active projections outside the current rubric scope even when every item has a contract', () => {
+    const result = evaluate(['P-005', 'P-007', 'P-012', 'P-013'].map(item => projection(item)));
+    expect(result.ratings['item-contract-coverage'].rating).toBe('fail');
+    expect(result.ratings['item-contract-coverage'].evidence).toContain('AUTO-BAR-R-17-P-005');
+    expect(result.ratings['item-contract-coverage'].evidence).toContain('AUTO-BAR-R-17-P-007');
+  });
+
+  it('rejects a missing scoped projection rather than treating an independent item contract as its replacement', () => {
+    const result = evaluate([projection('P-012')]);
+    expect(result.ratings['item-contract-coverage'].rating).toBe('fail');
+    expect(result.ratings['item-contract-coverage'].evidence).toContain('P-013');
+  });
+
+  it('rejects competing active projections for the same canonical BAR/item edge', () => {
+    const result = evaluate([projection('P-012'), projection('P-012', { specId: 'COMPETING-PROJECTION' }), projection('P-013')]);
+    expect(result.ratings['item-contract-coverage'].rating).toBe('fail');
+  });
+
+  it('preserves an explicitly retired off-scope projection as history', () => {
+    expect(evaluate([projection('P-012'), projection('P-013'), projection('P-005', { lifecycleStatus: 'superseded' })]).verdict).toBe('pass');
+  });
+});
 
 function clause(over: Partial<SpecClauseRevision> = {}): SpecClauseRevision {
   return {
