@@ -18,6 +18,7 @@
 import type { Capability, ServiceDef, ToolDefinition } from '@papercusp/plugin-sdk';
 import type { Principal } from '@papercusp/agent-mcp';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { pinModuleState } from '@papercusp/module-singleton';
 
 export class MissingCapabilityError extends Error {
   constructor(public pluginName: string, public capability: Capability | string) {
@@ -90,15 +91,21 @@ interface InvocationAuthority {
   parents: readonly InvocationAuthority[];
 }
 
-// Only a host-created context has an entry here. JSON, spreads, and claimed
-// principal/bypass fields in handler input cannot manufacture that entry.
-const invocationAuthorities = new WeakMap<CapabilityCheckContext, InvocationAuthority>();
 // The package is also imported by browser UI hosts, where node builtins are
 // externalized. Legacy capability checks can load there, but authenticated
 // invocation execution requires native async context and must never fall back.
-const invocationScope = typeof AsyncLocalStorage === 'function'
-  ? new AsyncLocalStorage<readonly InvocationAuthority[]>()
-  : null;
+const nativeAsyncContextAvailable = typeof AsyncLocalStorage === 'function';
+// Host dispatch and prebuilt services can load distinct module records. Both
+// must see the same ambient restrictions and recognize genuine host contexts;
+// JSON and spreads still cannot manufacture an entry in this private WeakMap.
+const invocationState = pinModuleState('@papercusp/plugin-loader.invocation-authority', () => ({
+  authorities: new WeakMap<CapabilityCheckContext, InvocationAuthority>(),
+  scope: null as AsyncLocalStorage<readonly InvocationAuthority[]> | null,
+}));
+if (nativeAsyncContextAvailable && !invocationState.scope) {
+  invocationState.scope = new AsyncLocalStorage<readonly InvocationAuthority[]>();
+}
+const invocationAuthorities = invocationState.authorities;
 
 /**
  * Extend the existing capability context with invocation-scoped restrictions.
@@ -108,7 +115,7 @@ const invocationScope = typeof AsyncLocalStorage === 'function'
  * hosts that have not yet adopted invocation dispatch.
  */
 export function createInvocationCapabilityContext(input: InvocationCapabilityInput): CapabilityCheckContext {
-  const ambient = invocationScope?.getStore() ?? [];
+  const ambient = invocationState.scope?.getStore() ?? [];
   const explicitParent = input.parent && invocationAuthorities.get(input.parent);
   const parents = [...new Set([...ambient, ...(explicitParent ? [explicitParent] : [])])];
   const principal = input.principal;
@@ -137,7 +144,8 @@ export function createInvocationCapabilityContext(input: InvocationCapabilityInp
     allowedTools: new Set(principal?.allowedTools ?? []),
     expiresAt: input.expiresAt,
     isActive: input.isActive,
-    valid: invocationScope !== null && Boolean(identity.id && identity.toolName && identity.principalSlug && identity.workspaceId)
+    valid: nativeAsyncContextAvailable && invocationState.scope !== null
+      && Boolean(identity.id && identity.toolName && identity.principalSlug && identity.workspaceId)
       && (principal?.trust === 'trusted' || principal?.trust === 'verified')
       && (!input.parent || Boolean(explicitParent))
       && parents.every(p => p.identity.workspaceId === identity.workspaceId
@@ -175,11 +183,12 @@ function invocationAllows(authority: InvocationAuthority, cap: string | undefine
 /** Host dispatch and checked services use this to preserve limits across awaits. */
 export function runWithInvocationCapabilities<T>(ctx: CapabilityCheckContext, effect: () => T): T {
   const authority = invocationAuthorities.get(ctx);
-  const scope = [...new Set([...(invocationScope?.getStore() ?? []), ...(authority ? [authority] : [])])];
-  if (!invocationScope || !authority || !scope.every(a => invocationAllows(a, undefined, authority.identity.toolName))) {
+  const scope = [...new Set([...(invocationState.scope?.getStore() ?? []), ...(authority ? [authority] : [])])];
+  if (!nativeAsyncContextAvailable || !invocationState.scope || !authority
+    || !scope.every(a => invocationAllows(a, undefined, authority.identity.toolName))) {
     throw new MissingCapabilityError(ctx.pluginName, 'invocation:authenticated');
   }
-  return invocationScope.run(scope, effect);
+  return invocationState.scope.run(scope, effect);
 }
 
 function runCapabilityEffect<T>(ctx: CapabilityCheckContext, effect: () => T): T {
@@ -207,8 +216,8 @@ export function hasCapability(ctx: CapabilityCheckContext, cap: Capability | str
   if (!capSetAllows(ctx.capabilities, target)) return false;
   if (ctx.granted !== undefined && !capSetAllows(ctx.granted, target)) return false;
   const authority = invocationAuthorities.get(ctx);
-  if (ctx.invocation !== undefined && !authority) return false;
-  const authorities = [...(invocationScope?.getStore() ?? []), ...(authority ? [authority] : [])];
+  if (ctx.invocation !== undefined && (!authority || !nativeAsyncContextAvailable)) return false;
+  const authorities = [...(invocationState.scope?.getStore() ?? []), ...(authority ? [authority] : [])];
   const toolName = authority?.identity.toolName ?? authorities[authorities.length - 1]?.identity.toolName;
   return authorities.every(a => invocationAllows(a, target, toolName!));
 }

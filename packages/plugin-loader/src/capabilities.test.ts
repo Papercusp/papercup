@@ -408,6 +408,54 @@ describe('host-owned invocation capability intersection', () => {
     }
   });
 
+  it.each(['caller', 'approval'] as const)(
+    'retains the %s restriction when a checked service loads another module record', async axis => {
+      vi.resetModules();
+      try {
+        const other = await import('./capabilities.ts');
+        assert.notEqual(other.wrapServiceWithCaps, wrapServiceWithCaps);
+        const hostInput = input();
+        if (axis === 'caller') hostInput.principal.capabilities = new Set(['tasks:read']);
+        else hostInput.approvals = ['tasks:read'];
+        const parent = createInvocationCapabilityContext(hostInput);
+        const dir = mkdtempSync(join(tmpdir(), 'invocation-module-copy-')); dirs.push(dir);
+        const path = join(dir, 'effect');
+        const service = other.wrapServiceWithCaps({ pluginName: 'legacy', capabilities: ['tasks:write'],
+          granted: ['tasks:write'] }, { perform: () => writeFileSync(path, 'authorized effect') },
+        { name: 'fixture', methods: { perform: { capability: 'tasks:write' } } });
+        service.perform();
+        assert.equal(readFileSync(path, 'utf8'), 'authorized effect'); rmSync(path);
+        let failure: unknown;
+        try {
+          await runWithInvocationCapabilities(parent, async () => {
+            await Promise.resolve(); service.perform();
+          });
+        } catch (error) { failure = error; }
+        assert.equal(existsSync(path), false, 'another module record must not lose the ambient restriction');
+        assert.ok(failure instanceof other.MissingCapabilityError);
+      } finally { vi.resetModules(); }
+    });
+
+  it('shares genuine host context across module records while refusing copied identities', async () => {
+    vi.resetModules();
+    try {
+      const other = await import('./capabilities.ts');
+      assert.notEqual(other.createInvocationCapabilityContext, createInvocationCapabilityContext);
+      const ctx = createInvocationCapabilityContext(input());
+      const dir = mkdtempSync(join(tmpdir(), 'invocation-module-context-')); dirs.push(dir);
+      const path = join(dir, 'effect');
+      const service = (context: CapabilityCheckContext) => other.wrapServiceWithCaps(context,
+        { perform: () => writeFileSync(path, 'authorized effect') },
+        { name: 'fixture', methods: { perform: { capability: 'tasks:write' } } });
+      service(ctx).perform();
+      assert.equal(readFileSync(path, 'utf8'), 'authorized effect'); rmSync(path);
+      for (const forged of [{ ...ctx }, JSON.parse(JSON.stringify(ctx))]) {
+        assert.throws(() => service(forged).perform(), other.MissingCapabilityError);
+        assert.equal(existsSync(path), false);
+      }
+    } finally { vi.resetModules(); }
+  });
+
   it('intersects the parent exact tool allowlist and isolates concurrent invocations', async () => {
     const hostInput = input();
     hostInput.principal = { ...hostInput.principal, allowedTools: new Set(['fixture:parent']) };
