@@ -30,7 +30,7 @@ import { findUnsatisfiedDeclaredDepRanges } from '../../../scripts/check-declare
 // @ts-ignore -- share the unit-test process boundary with other standalone runtimes.
 import { isolatedRuntimeEnv } from '../../../scripts/lib/isolation-child-env.mjs';
 import { hashNativeArtifactBytes, readNativeArtifactBytes, readNativeProcessTraceArtifacts } from '../../../scripts/lib/budgeted-task-scheduler.mjs';
-import { nativeProcessTraceEnv, nativeSourceRetentionLimits, validateNativeLoaderCensus } from '../../../scripts/lib/vitest-startup-trace.mjs';
+import { nativeProcessTraceEnv, nativeSourceRetentionLimits, validateNativeLoaderCensus, loaderIdentity } from '../../../scripts/lib/vitest-startup-trace.mjs';
 // @ts-ignore -- share the router's evidence contract before direct bundle preparation too.
 import { assertPrivateIntegrationEvidence as assertPrivatePreparationEvidence } from '../../../scripts/test-files.mjs';
 import { RESTRICTED_HOLD_PREFLIGHT_TIMEOUT_MS } from '../../../scripts/lib/restricted-hold-preflight.mjs';
@@ -173,6 +173,7 @@ export function observeCooperativeHostTermination(o: {
 export function observeCooperativeLoadedProvenance(o: {
   traceOut: string; parent: ReturnType<ReturnType<typeof observeCooperativeHostTermination>['snapshot']>;
   expected: { executable: { sha256: string; byteLength: number }; configuration: ConfigurationSnapshot;
+    nodeOptions: ReturnType<typeof loaderIdentity>;
     observers: Array<{ path: string; sha256: string; byteLength: number }> };
 }) {
   const gaps: string[] = [], isolates: Array<{ threadId: number; processIdentity: string;
@@ -200,6 +201,10 @@ export function observeCooperativeLoadedProvenance(o: {
       const configuration = readConfigurationSnapshot(entry.configuration);
       assert.ok(configuration, 'Actual isolate configuration unavailable');
       assert.equal(configuration.fingerprint, o.expected.configuration.fingerprint, 'Actually accepted configuration differs');
+      // The shared snapshot deliberately covers PAPERCUSP_*, PC_* and NODE_ENV;
+      // it does not include NODE_OPTIONS. Reuse the existing native-entry
+      // loader hash to bind that separate, actual startup input as well.
+      assert.deepEqual(entry.nodeOptions, o.expected.nodeOptions, 'Actually accepted NODE_OPTIONS differs');
       const snapshots = trace.rows.map(({ row }) => row).filter(row => row.event === 'engine-script-execution' &&
         row.processIdentity === entry.processIdentity && row.kernelProcessIdentity === entry.kernelProcessIdentity &&
         row.threadId === entry.threadId && row.runGroupId === entry.runGroupId);

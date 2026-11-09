@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { captureConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
 import { linuxProcessIdentityFromStat } from '../lib/process-identity';
 import { verifierSourceFiles } from '../lib/verifier-source';
+import { loaderIdentity } from '../../../scripts/lib/vitest-startup-trace.mjs';
 import { preparePrivateOperatorApiBundle, produceCommittedReaderPrivateApiBundle, qualifyCommittedReaderSource,
   resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle, preparePrivateWorkerSources,
   observeCommittedReaderLoadedSources, privateBundleRuntimeEnv,
@@ -111,15 +112,16 @@ describe('cooperative parent native timing', () => {
       const receipt = observer.snapshot();
       expect(stderr).not.toContain('Error');
       const expected = { executable: { sha256: digest(executableBytes), byteLength: executableBytes.length },
-        configuration: captureConfigurationSnapshot(env), observers: [observerPin] };
+        configuration: captureConfigurationSnapshot(env), nodeOptions: loaderIdentity(env.NODE_OPTIONS), observers: [observerPin] };
       const loaded = control === 'valid' ? observeCooperativeLoadedProvenance({ traceOut, parent: receipt, expected }) : null;
       if (control === 'valid') {
-        for (const role of ['executable', 'configuration', 'observers'] as const) {
+        for (const role of ['executable', 'configuration', 'nodeOptions', 'observers'] as const) {
           const changed = structuredClone(expected);
           if (role === 'executable') changed.executable.sha256 = 'a'.repeat(64);
-          if (role === 'configuration') changed.configuration = captureConfigurationSnapshot({ ...env, NODE_OPTIONS: 'different' });
+          if (role === 'configuration') changed.configuration = captureConfigurationSnapshot({ ...env, NODE_ENV: 'different' });
+          if (role === 'nodeOptions') changed.nodeOptions = loaderIdentity('different');
           if (role === 'observers') changed.observers[0].sha256 = 'b'.repeat(64);
-          expect(observeCooperativeLoadedProvenance({ traceOut, parent: receipt, expected: changed }).status).toBe('unknown');
+          expect(observeCooperativeLoadedProvenance({ traceOut, parent: receipt, expected: changed }).status, role).toBe('unknown');
         }
       }
       return { ...receipt, loaded };
