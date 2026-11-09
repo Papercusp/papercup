@@ -791,6 +791,115 @@ describe('secret census producer adapters', () => {
       expect(writer).toContain("return re.sub(r'[^A-Za-z0-9_.-]', '_', str(sid))[:120]");
     } finally { vi.unstubAllEnvs(); await rm(home, { recursive: true, force: true }); }
   });
+  it('retains backup-health writer histories and exact configured markers while exposing unknown files and links', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'backup-health-census-'));
+    const ordinary = join(home, '.papercusp', 'backup-health');
+    const override = join(home, 'health-override');
+    try {
+      vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(home, 'absent-mutex'));
+      const owned = ['db-disk-history', 'db-disk-history.tmp', 'backup-volume-history', 'backup-volume-history.tmp',
+        'db-disk-red-ei-filed', 'db-relation-bloat-ei-filed', 'backup-volume-red-ei-filed',
+        'workspace-dead-dump-tmp', 'consecutive-fails', 'stale-tmp', 'stale-pg-papercusp-state',
+        'missing-pg-restart', 'tmpdir-entries-red-tmp', 'tmpdir-entries-red-tmp-pcv'];
+      for (const directory of [ordinary, override]) {
+        await mkdir(directory, { recursive: true });
+        for (const name of [...owned, 'missing-pg-custom', 'stale--scratch-dump.sql', 'tmpdir-entries-red-scratch---',
+          'unknown.json', 'stale-pg-foreign', 'tmpdir-entries-red-foreign']) await writeFile(join(directory, name), 'baseline');
+        await mkdir(join(directory, 'copied-source'));
+        await writeFile(join(directory, 'copied-source', 'index.ts'), 'foreign');
+        await symlink(join(directory, 'db-disk-history'), join(directory, 'missing-pg-papercusp-state'));
+      }
+      const defaults = await runtimeSidefileCensusProducer(home, {});
+      expect(defaults.roots.some(root => root.path === override)).toBe(false);
+      expect(defaults.declarations.filter(entry => entry.producer === 'backup-health-probe').map(entry => entry.name).sort())
+        .toEqual(['backup-health', ...owned.map(name => `backup-health/${name}`)].sort());
+      const environment = { BACKUP_STATE_DIR: override, BACKUP_ARTIFACTS: 'pg/custom',
+        BACKUP_OPTIONAL_ARTIFACTS: '/scratch/dump.sql /unexpanded/*/dump.sql', BACKUP_TMPDIR_WATCH: '/scratch/é' };
+      const result = await runtimeSidefileCensusProducer(home, environment);
+      const census = await collectStateCensus({ ...result, readCatalogs: async () => [] });
+      const classified = census.inventory.filter(entry => entry.producers.includes('backup-health-probe'));
+      expect(classified.every(entry => entry.classification === 'state')).toBe(true);
+      expect(classified.map(entry => entry.name)).toEqual(expect.arrayContaining([
+        'backup-health/missing-pg-custom', 'backup-health/stale--scratch-dump.sql', 'backup-health/tmpdir-entries-red-scratch---',
+        'missing-pg-custom', 'stale--scratch-dump.sql', 'tmpdir-entries-red-scratch---',
+      ]));
+      expect(census.residue.map(entry => entry.name)).toEqual(expect.arrayContaining([
+        'backup-health/unknown.json', 'backup-health/stale-pg-foreign', 'backup-health/tmpdir-entries-red-foreign',
+        'backup-health/missing-pg-papercusp-state', 'backup-health/copied-source/index.ts',
+        'unknown.json', 'stale-pg-foreign', 'tmpdir-entries-red-foreign', 'copied-source/index.ts',
+      ]));
+      expect(result.declarations.filter(entry => entry.producer === 'backup-health-probe')
+        .every(entry => !entry.descendants && !entry.prune)).toBe(true);
+      expect(await readFile(join(ordinary, 'db-disk-history'), 'utf8')).toBe('baseline');
+      for (const [directory, target] of [[ordinary, join(home, 'ordinary-target')], [override, join(home, 'override-target')]]) {
+        await rename(directory, target);
+        await symlink(target, directory);
+      }
+      const linked = await runtimeSidefileCensusProducer(home, environment);
+      expect(linked.declarations.some(entry => entry.producer === 'backup-health-probe')).toBe(false);
+      expect(linked.roots.some(root => root.path === override)).toBe(false);
+      const writer = await readFile(new URL('../../../../apps/operator/scripts/papercup-backup-health-check.sh', import.meta.url), 'utf8');
+      expect(writer).toContain('STATE_DIR="${BACKUP_STATE_DIR:-$HOME/.papercusp/backup-health}"');
+      for (const name of owned.slice(0, 10).filter(name => !name.endsWith('.tmp'))) expect(writer).toContain(name);
+      expect(writer).toContain('"$hist.tmp"');
+      expect(writer).toContain("tr -c 'A-Za-z0-9' '-'");
+    } finally { vi.unstubAllEnvs(); await rm(home, { recursive: true, force: true }); }
+  });
+  it('keeps Kopia alert state independent of backup probe relocation and rejects unowned neighbors and links', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'kopia-health-census-'));
+    const ordinary = join(home, '.papercusp', 'backup-health');
+    const probe = join(home, 'probe');
+    const kopia = join(home, 'kopia');
+    try {
+      vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(home, 'absent-mutex'));
+      for (const directory of [ordinary, probe, kopia]) {
+        await mkdir(join(directory, 'copied-source'), { recursive: true });
+        await writeFile(join(directory, 'last-alert'), '1730000000\n');
+        await writeFile(join(directory, 'db-disk-history'), 'baseline');
+        await writeFile(join(directory, 'last-alert.tmp'), 'foreign');
+        await writeFile(join(directory, 'copied-source', 'index.ts'), 'foreign');
+      }
+      const environment = { BACKUP_STATE_DIR: probe, HEALTHCHECK_STATE_DIR: kopia,
+        PAPERCUSP_HOME: join(home, 'unrelated-home') };
+      const result = await runtimeSidefileCensusProducer(home, environment);
+      const census = await collectStateCensus({ ...result, readCatalogs: async () => [] });
+      expect(census.inventory.filter(entry => entry.producers.includes('kopia-healthcheck'))
+        .every(entry => entry.classification === 'state')).toBe(true);
+      expect(result.declarations.filter(entry => entry.producer === 'kopia-healthcheck').map(entry => entry.name).sort())
+        .toEqual(['backup-health', 'backup-health/last-alert', 'last-alert']);
+      const rootFor = (path: string) => result.roots.find(root => root.path === path)!.id;
+      expect(census.residue).toEqual(expect.arrayContaining([
+        expect.objectContaining({ root: rootFor(probe), name: 'last-alert' }),
+        expect.objectContaining({ root: rootFor(kopia), name: 'db-disk-history' }),
+        expect.objectContaining({ root: rootFor(kopia), name: 'last-alert.tmp' }),
+        expect.objectContaining({ root: rootFor(kopia), name: 'copied-source/index.ts' }),
+      ]));
+      expect(result.declarations.filter(entry => entry.producer === 'kopia-healthcheck')
+        .every(entry => !entry.descendants && !entry.prune)).toBe(true);
+      const shared = await runtimeSidefileCensusProducer(home, { BACKUP_STATE_DIR: kopia, HEALTHCHECK_STATE_DIR: kopia });
+      expect(shared.roots.filter(root => root.path === kopia)).toHaveLength(1);
+      const sharedCensus = await collectStateCensus({ ...shared, readCatalogs: async () => [] });
+      expect(sharedCensus.residue.some(entry => entry.root === shared.roots.find(root => root.path === kopia)!.id
+        && ['last-alert', 'db-disk-history'].includes(entry.name))).toBe(false);
+      expect(await readFile(join(kopia, 'last-alert'), 'utf8')).toBe('1730000000\n');
+      await rm(join(kopia, 'last-alert'));
+      await symlink(join(probe, 'last-alert'), join(kopia, 'last-alert'));
+      const linkedFile = await runtimeSidefileCensusProducer(home, environment);
+      expect(linkedFile.declarations.some(entry => entry.producer === 'kopia-healthcheck'
+        && entry.name === 'last-alert')).toBe(false);
+      for (const directory of [ordinary, kopia]) {
+        await rename(directory, `${directory}-target`);
+        await symlink(`${directory}-target`, directory);
+      }
+      const linkedDirectories = await runtimeSidefileCensusProducer(home, environment);
+      expect(linkedDirectories.declarations.some(entry => entry.producer === 'kopia-healthcheck')).toBe(false);
+      expect(linkedDirectories.roots.some(root => root.path === kopia)).toBe(false);
+      const writer = await readFile(new URL('../../../../apps/operator/scripts/systemd/kopia-healthcheck.sh', import.meta.url), 'utf8');
+      expect(writer).toContain('HEALTHCHECK_STATE_DIR="${HEALTHCHECK_STATE_DIR:-$HOME/.papercusp/backup-health}"');
+      expect(writer).toContain('local marker="$HEALTHCHECK_STATE_DIR/last-alert"');
+      expect(writer).toContain('echo "$now" > "$marker"');
+    } finally { vi.unstubAllEnvs(); await rm(home, { recursive: true, force: true }); }
+  });
   it('uses actual default and relocated co-change/model cache writers without following links or owning neighbors', async () => {
     const home = await mkdtemp(join(tmpdir(), 'host-cache-census-'));
     const ordinary = join(home, '.papercusp');

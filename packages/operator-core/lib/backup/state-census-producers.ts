@@ -371,7 +371,7 @@ export async function planTemplateStoreCensusProducer(path = papercuspRoot()) {
   return { roots: [root], declarations };
 }
 
-/** Exact hook pacing and template gym writers; siblings require separate provenance. */
+/** Exact runtime sidefile writers; siblings require separate provenance. */
 export async function runtimeSidefileCensusProducer(home = homedir(), environment: NodeJS.ProcessEnv = process.env) {
   const root: CensusRoot = { id: 'runtime-sidefiles', path: join(home, '.papercusp') };
   const roots = [root];
@@ -414,20 +414,55 @@ export async function runtimeSidefileCensusProducer(home = homedir(), environmen
   const ledgerDirectories = new Set([join(ordinaryHome, 'artifact-url-ledger'),
     join(papercuspHome(environment, home), 'artifact-url-ledger')]);
   if (environment.PAPERCUSP_ARTIFACT_LEDGER_DIR) ledgerDirectories.add(environment.PAPERCUSP_ARTIFACT_LEDGER_DIR);
-  const sessionDirectories = [
+  // papercup-backup-health-check.sh retains trend baselines and alert memory.
+  // Its shell override is independent of PAPERCUSP_HOME. Keep the ordinary
+  // directory in the inventory after relocation, without claiming arbitrary
+  // marker-looking files or recursively hiding unknown contents.
+  const backupHealthFiles = new Set([
+    'db-disk-history', 'db-disk-history.tmp', 'backup-volume-history', 'backup-volume-history.tmp',
+    'db-disk-red-ei-filed', 'db-relation-bloat-ei-filed', 'backup-volume-red-ei-filed',
+    'workspace-dead-dump-tmp', 'consecutive-fails', 'stale-tmp',
+  ]);
+  const artifacts = (environment.BACKUP_ARTIFACTS || 'pg/papercusp-state pg/papercusp-transcript pg/restart').split(/[ \t\n]+/);
+  // Explicit optional paths are usable evidence; unexpanded globs are not.
+  const optionalArtifacts = (environment.BACKUP_OPTIONAL_ARTIFACTS || '').split(/[ \t\n]+/);
+  for (const artifact of [...artifacts, ...optionalArtifacts]) {
+    if (!artifact || /[*?\[]/.test(artifact)) continue;
+    for (const prefix of ['missing', 'stale']) backupHealthFiles.add(`${prefix}-${artifact.replaceAll('/', '-')}`);
+  }
+  for (const directory of (environment.BACKUP_TMPDIR_WATCH || '/tmp:/tmp/pcv').split(':')) {
+    if (!directory) continue;
+    // `tr -c 'A-Za-z0-9' '-'` replaces bytes, including each UTF-8 byte.
+    const suffix = Array.from(Buffer.from(directory), byte =>
+      (byte >= 48 && byte <= 57) || (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122)
+        ? String.fromCharCode(byte) : '-').join('');
+    backupHealthFiles.add(`tmpdir-entries-red${suffix}`);
+  }
+  const backupHealthDirectories = new Set([join(ordinaryHome, 'backup-health')]);
+  if (environment.BACKUP_STATE_DIR) backupHealthDirectories.add(environment.BACKUP_STATE_DIR);
+  // Kopia shares the default directory, but has its own relocation contract
+  // and owns only the alert-delivery timestamp, not the probe's other markers.
+  const kopiaHealthDirectories = new Set([join(ordinaryHome, 'backup-health')]);
+  if (environment.HEALTHCHECK_STATE_DIR) kopiaHealthDirectories.add(environment.HEALTHCHECK_STATE_DIR);
+  const stateDirectories = [
     { path: join(ordinaryHome, 'advisory-seen'), producer: 'bash-resource-gate-advisory-seen',
       file: /^[A-Za-z0-9_.-]{1,120}$/ },
     ...[...ledgerDirectories].map(path => ({ path, producer: 'artifact-url-delivery-ledger',
       file: /^[A-Za-z0-9_.-]{1,120}\.ids$/ })),
+    ...[...backupHealthDirectories].map(path => ({ path, producer: 'backup-health-probe',
+      file: { test: (name: string) => backupHealthFiles.has(name) } })),
+    ...[...kopiaHealthDirectories].map(path => ({ path, producer: 'kopia-healthcheck',
+      file: { test: (name: string) => name === 'last-alert' } })),
   ];
-  for (const directory of sessionDirectories) {
+  for (const directory of stateDirectories) {
     try {
       if (!(await lstat(directory.path)).isDirectory()) continue;
       if (dirname(directory.path) === ordinaryHome && !(await lstat(ordinaryHome)).isDirectory()) continue;
     } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
     const local = dirname(directory.path) === ordinaryHome;
-    const sessionRoot = local ? root : { id: `runtime-session-records-${roots.length}`, path: directory.path };
-    if (!local) roots.push(sessionRoot);
+    const sessionRoot = local ? root : roots.find(candidate => candidate.path === directory.path)
+      ?? { id: `runtime-session-records-${roots.length}`, path: directory.path };
+    if (!local && !roots.includes(sessionRoot)) roots.push(sessionRoot);
     const prefix = local ? `${basename(directory.path)}/` : '';
     if (local) declarations.push({ kind: 'path', root: root.id, name: basename(directory.path),
       classification: 'state', producer: directory.producer });
