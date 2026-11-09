@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/tooldef';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -68,14 +69,26 @@ describe('set-plan-status handler independent ship guards (PVFR G1/G2)', () => {
     planRevisionHash: 'revision-current', policyVersion: 1,
   };
   async function run(over: Record<string, unknown> = {}, caller: Record<string, unknown> = {}) {
-    const res = await setPlanStatusTool.handler(setPlanStatusTool.args.parse({
+    const input = {
       harness: 'member', slug: 'plan-a', status: 'shipped', dryRun: true, ...over,
-    }), {
+    };
+    const originalInput = structuredClone(input);
+    expect(setPlanStatusTool.args.parse(input)).toEqual(input);
+    const projected = lookupByMcpName('plans:set-plan-status');
+    expect(projected).toBeTruthy();
+    const dispatched = await dispatchProjectedTool(projected!, 'plans:set-plan-status', input, {
       workspaceId: 'ws-test', harnessSlug: 'member', uiClientId: 'su-shipper',
       signal: new AbortController().signal, log: vi.fn(), progress: vi.fn(), metadata: vi.fn(),
+      emit: vi.fn(), runId: 'ship-status-original-input-replay', role: 'su',
+      gateBypass: { role: true, capability: true, quota: true },
+      transport: 'mcp', requestedFormat: 'json', requestedStructured: true,
       ...caller,
-    } as never);
-    return (res as { data: { results: Record<string, unknown>[] } }).data.results[0]!;
+    } as never, {});
+    expect(dispatched.ok).toBe(true);
+    expect(input).toEqual(originalInput);
+    const data = dispatched.result?.structuredContent as { results: Record<string, unknown>[] } | undefined;
+    expect(data).toBeDefined();
+    return data!.results[0]!;
   }
   function expectReadOnly() {
     for (const mock of [preflightMocks.write, preflightMocks.capture, preflightMocks.launch, preflightMocks.resolveGrader]) {
@@ -128,6 +141,9 @@ describe('set-plan-status handler independent ship guards (PVFR G1/G2)', () => {
       'acceptance_ungraded', 'plan_admission_refused', 'unexpected_status',
     ]);
     expect(result.message).toContain('2 more independent check(s)');
+    expect(preflightMocks.acceptance).toHaveBeenCalledTimes(1);
+    expect(preflightMocks.admission).toHaveBeenCalledTimes(1);
+    expect(preflightMocks.row).toHaveBeenCalledTimes(1);
     expectReadOnly();
   });
 
