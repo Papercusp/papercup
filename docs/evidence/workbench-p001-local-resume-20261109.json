@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Workbench exact local resume bypasses the psu location picker",
+  "workItem": "EI-28291360600020437",
+  "parentWorkItem": "WI-6554700010029572",
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "rootCause": "App::resume_spec_on_host emitted psu --resume <id> without --no-picker. The psu front controller opened its location picker before reaching the recorded vendor CLI.",
+  "fix": "Add --no-picker to the existing local resume argv and retain legacy/current exact-pane identity matching. Keep remote saved-connection routing unchanged.",
+  "unitVerification": {
+    "framework": "cargo",
+    "passed": 19,
+    "failed": 0,
+    "ignored": 0,
+    "ledgerRows": [23709571, 23709590],
+    "ledgerRowCount": 20,
+    "runGroup": "workbench-p001-local-resume-20261109-v2",
+    "logPath": "/tmp/wb-local-resume-cargo-20261109-v2.log",
+    "logSha256": "e4a87b5cf7bc67725b51674c0e7a97c9b1d2316c160e4a78986f309dd5eaa3c3",
+    "coverage": [
+      "exact local ended session and all supported vendor backends",
+      "legacy and --no-picker pane argv identity",
+      "conflicting, duplicate, stale and remote pane negative controls",
+      "saved remote connection and exact hostname preservation",
+      "native positive-ended-state and owner/session argument validation"
+    ]
+  },
+  "actualVendorProbe": {
+    "result": "picker bypass verified; complete vendor response journey failed separately",
+    "framework": "vitest-live-pty",
+    "runGroup": "workbench-p001-canonical-vendor-resume-20261109-v2",
+    "operator": "http://127.0.0.1:3170",
+    "fixture": {
+      "advSessionId": 58614,
+      "ownerId": "su-a9e4bad3-f1cf-4c9a-bb91-d98c516fe809",
+      "nativeSessionId": "01a1bf01-a724-7463-a529-eb4967cdaf11",
+      "backend": "codex"
+    },
+    "binarySha256": "bec22914ddc6f94bd3a6be4b47d958495064e10a03153fbb51052c25a71fb0c5",
+    "generatedCenterArgv": ["psu", "--resume", "58614", "--no-picker"],
+    "observations": [
+      "The real Codex composer opened in the centered terminal.",
+      "The retained KDL contains the exact recorded session and --no-picker.",
+      "The location picker did not intercept the resumed session.",
+      "The acceptance prompt remained in the composer without the distinct uppercase answer after 180 seconds.",
+      "Four sidebars displayed Agent roster unavailable: GET /api/adv/roster.",
+      "Cleanup exited zero; the complete journey did not pass."
+    ],
+    "receiptPath": "/tmp/wb-vendor-resume-20261109-v2/vendor-resume.json",
+    "receiptSha256": "257d98dfb46f3214565a83bff91e8890dc382574536c32f705a37ca461450378",
+    "logPath": "/tmp/wb-vendor-resume-20261109-v2.log",
+    "sourceCustody": "Current local build; test path uncommitted; childSubstituted=0. Subsequent harness changes are not claimed as exercised by this retained run."
+  },
+  "sourceSha256AtRecording": {
+    "apps/tui/src/app.rs": "7acab85ea482b25e3b4ca024481df6540af7cde747050d49d9ed6a270e4f47a2",
+    "apps/tui/src/workbench.rs": "567bdeedcac5fd4a78b539b69710a99c1de24e9af1e0be19a8219e412e6c0b95"
+  },
+  "ownedResidue": [
+    { "id": "EI-28292570677290125", "ownerId": "su-b3cf986b-9242-40e5-a625-83523ed857df", "scope": "Distinguish input submission from absent vendor response; mandatory harness audit before the next live journey." },
+    { "id": "EI-28292578898703832", "ownerId": "su-b3cf986b-9242-40e5-a625-83523ed857df", "scope": "Diagnose the actual sidebar roster route failure." }
+  ],
+  "scopeLimits": [
+    "This evidence closes only the local location-picker interception defect.",
+    "Full vendor response and sidebar acceptance remain open.",
+    "Native installed Ubuntu/macOS/Windows acceptance and final shipment remain unverified."
+  ]
+}
