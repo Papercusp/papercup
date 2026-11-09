@@ -11,6 +11,7 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/plan-items/convert.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/tooldef';
 
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'sess-A', ownerLabel: 'A' }),
@@ -39,6 +40,33 @@ type Out = { data: any };
 const body = async (args: Record<string, unknown>) =>
   (((await tool.handler(args as never, {} as never)) as Out).data);
 
+const mcpBody = async (input: Record<string, unknown>) => {
+  const originalInput = structuredClone(input);
+  const projected = lookupByMcpName('plan_items:convert');
+  expect(projected).toBeTruthy();
+  const dispatched = await dispatchProjectedTool(projected!, 'plan_items:convert', input, {
+    uiClientId: 'sess-A',
+    workspaceId: 'default',
+    harnessSlug: 'papercup',
+    log: vi.fn(),
+    signal: new AbortController().signal,
+    progress: vi.fn(),
+    emit: vi.fn(),
+    metadata: vi.fn(),
+    runId: 'convert-original-input-replay',
+    role: 'su',
+    gateBypass: { role: true, capability: true, quota: true },
+    transport: 'mcp',
+    requestedFormat: 'json',
+    requestedStructured: true,
+  } as never, {});
+  expect(dispatched.ok).toBe(true);
+  expect(input).toEqual(originalInput);
+  const data = dispatched.result?.structuredContent as Out['data'] | undefined;
+  expect(data).toBeDefined();
+  return data;
+};
+
 const converted = (item: string, wiId: string) =>
   ({
     status: 'converted',
@@ -59,7 +87,7 @@ describe('plan_items:convert handler (bulk keyed-array)', () => {
     const input = { plan: 'p1', item: 'P-001' };
     const args = tool.args.parse(input);
     expect(args).toEqual(input);
-    const b = await body(args);
+    const b = await mcpBody(input);
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     expect(b.results[0]).toMatchObject({
       ok: true,
@@ -77,7 +105,7 @@ describe('plan_items:convert handler (bulk keyed-array)', () => {
     const input = { plan: 'p1', itemIds: ['P-001', 'P-002'] };
     const args = tool.args.parse(input);
     expect(args).toEqual(input);
-    const b = await body(args);
+    const b = await mcpBody(input);
     expect(b.counts).toEqual({ ok: 2, failed: 0 });
     expect(b.results.map((r: { item: string }) => r.item)).toEqual(['P-001', 'P-002']);
     expect(convM).toHaveBeenCalledTimes(2);

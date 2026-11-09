@@ -5,6 +5,7 @@
  * classify) fails only that item and carries holder/hint; top-level ok stays true.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/tooldef';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -393,9 +394,31 @@ describe('work_items:claim handler (keyed-array)', () => {
 
   it('claims one inline for the caller and returns the workItem', async () => {
     const input = { id: 'WI-1' };
+    const originalInput = structuredClone(input);
     const args = tool.args.parse(input);
     expect(args).toEqual(input);
-    const b = await body(args);
+    const projected = lookupByMcpName('work_items:claim');
+    expect(projected).toBeTruthy();
+    const dispatched = await dispatchProjectedTool(projected!, 'work_items:claim', input, {
+      uiClientId: 'me',
+      workspaceId: 'ws-1',
+      harnessSlug: 'papercusp',
+      log: vi.fn(),
+      signal: new AbortController().signal,
+      progress: vi.fn(),
+      emit: vi.fn(),
+      metadata: vi.fn(),
+      runId: 'claim-original-input-replay',
+      role: 'su',
+      gateBypass: { role: true, capability: true, quota: true },
+      transport: 'mcp',
+      requestedFormat: 'json',
+      requestedStructured: true,
+    } as never, {});
+    expect(dispatched.ok).toBe(true);
+    expect(input).toEqual(originalInput);
+    const b = dispatched.result?.structuredContent as Out['data'] | undefined;
+    expect(b).toBeDefined();
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1', workItem: { id: 'WI-1', assignee: 'me' } });
     expect(claimM).toHaveBeenCalledWith('WI-1', 'me', { harness: undefined, fromHolder: identity.ownerId });
