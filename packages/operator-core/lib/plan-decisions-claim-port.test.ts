@@ -168,15 +168,15 @@ describe('getClaimTimePlanDecisions (agent-trap-guards-2026-07-26 P-003b)', () =
         { id: 'D-900', title: 'Current parent authority', snippet: restriction,
           sourcePlanSlug: 'parent-plan', ref: 'parent-plan#D-900', relation: 'affects',
           provenance: { kind: 'unrecorded' } },
-        { id: 'D-001', title: 'Early ruling 1', snippet: 'P-003 must preserve the selected route.',
+        { id: 'D-001', title: 'Early ruling 1', snippet: 'Date: 2026-07-26 P-003 must preserve the selected route.',
           provenance: { kind: 'unrecorded' } },
-        { id: 'D-007', title: 'Early ruling 7', snippet: 'Body of early ruling 7.', provenance: { kind: 'unrecorded' } },
-        { id: 'D-008', title: 'Early ruling 8', snippet: 'Body of early ruling 8.', provenance: { kind: 'unrecorded' } },
-        { id: 'D-009', title: 'Early ruling 9', snippet: 'Body of early ruling 9.', provenance: { kind: 'unrecorded' } },
-        { id: 'D-010', title: 'Early ruling 10', snippet: 'Body of early ruling 10.', provenance: { kind: 'unrecorded' } },
-        { id: 'D-011', title: 'Early ruling 11', snippet: 'Body of early ruling 11.', provenance: { kind: 'unrecorded' } },
         { id: 'D-012', title: 'Do not start P-003; it is deferred',
-          snippet: 'P-003 has no evidence behind it. Do not start that phase.', provenance: { kind: 'unrecorded' } },
+          snippet: 'Date: 2026-08-02 P-003 has no evidence behind it. Do not start that phase.', provenance: { kind: 'unrecorded' } },
+        { id: 'D-007', title: 'Early ruling 7', snippet: 'Date: 2026-07-26 Body of early ruling 7.', provenance: { kind: 'unrecorded' } },
+        { id: 'D-008', title: 'Early ruling 8', snippet: 'Date: 2026-07-26 Body of early ruling 8.', provenance: { kind: 'unrecorded' } },
+        { id: 'D-009', title: 'Early ruling 9', snippet: 'Date: 2026-07-26 Body of early ruling 9.', provenance: { kind: 'unrecorded' } },
+        { id: 'D-010', title: 'Early ruling 10', snippet: 'Date: 2026-07-26 Body of early ruling 10.', provenance: { kind: 'unrecorded' } },
+        { id: 'D-011', title: 'Early ruling 11', snippet: 'Date: 2026-07-26 Body of early ruling 11.', provenance: { kind: 'unrecorded' } },
       ],
       taskLinkedDecisions: 2,
       omittedDecisionRefs: ['busy-plan#D-002', 'busy-plan#D-003', 'busy-plan#D-004', 'busy-plan#D-005', 'busy-plan#D-006'],
@@ -198,11 +198,11 @@ describe('getClaimTimePlanDecisions (agent-trap-guards-2026-07-26 P-003b)', () =
       return { ref, body: decision?.body.trim() };
     });
     expect(recovered).toEqual([
-      { ref: 'busy-plan#D-002', body: 'Body of early ruling 2.' },
-      { ref: 'busy-plan#D-003', body: 'Body of early ruling 3.' },
-      { ref: 'busy-plan#D-004', body: 'Body of early ruling 4.' },
-      { ref: 'busy-plan#D-005', body: 'Body of early ruling 5.' },
-      { ref: 'busy-plan#D-006', body: 'Body of early ruling 6.' },
+      { ref: 'busy-plan#D-002', body: 'Date: 2026-07-26\nBody of early ruling 2.' },
+      { ref: 'busy-plan#D-003', body: 'Date: 2026-07-26\nBody of early ruling 3.' },
+      { ref: 'busy-plan#D-004', body: 'Date: 2026-07-26\nBody of early ruling 4.' },
+      { ref: 'busy-plan#D-005', body: 'Date: 2026-07-26\nBody of early ruling 5.' },
+      { ref: 'busy-plan#D-006', body: 'Date: 2026-07-26\nBody of early ruling 6.' },
     ]);
 
     const missing = structuredClone(actual)!;
