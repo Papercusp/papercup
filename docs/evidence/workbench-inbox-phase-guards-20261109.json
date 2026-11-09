@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Workbench Inbox run-control phase guards",
+  "framework": "operational",
+  "workItem": "EI-28286873969378803",
+  "command": [
+    "bash",
+    "scripts/pc-heavy.sh",
+    "/mnt/data/offload/workbench-swift-6.0.3/usr/bin/swift",
+    "test",
+    "--package-path",
+    "papercusp-desktop/src-tauri/macos-term-shim",
+    "--scratch-path",
+    "/tmp/wb-inbox-phase-swift-20261109",
+    "--filter",
+    "WorkbenchControlsTests"
+  ],
+  "startedAt": "2026-11-09T05:39:54.623Z",
+  "finishedAt": "2026-11-09T05:40:18.682270+00:00",
+  "exitCode": 0,
+  "summary": "Current-build proof: GNOME Inbox Node tests 8 pass; portable Swift WorkbenchControlsTests 22 pass; maintained PUI HTTP wire test 1 pass with 29 scenarios including 10 phase-control cases. Native Windows fixture updated but not executed. No installed-native or shipment claim.",
+  "assertions": [
+    {
+      "id": "gnome-inbox-phase-partition",
+      "passed": true,
+      "evidence": "GNOME Inbox run controls admit Resume only in review and Stop only while active; pending/running/review/failed/complete. Eight focused Inbox tests pass."
+    },
+    {
+      "id": "swift-control-phase-partition",
+      "passed": true,
+      "evidence": "WorkbenchControlsTests.testInboxRunControlsAdmitResumeOnlyInReviewAndStopOnlyWhileActive passed. Selected XCTest suite executed 22 tests with zero failures on Linux Swift 6.0.3."
+    },
+    {
+      "id": "pui-control-wire",
+      "passed": true,
+      "evidence": "client::tests::native_inbox_wire_freezes_start_and_resolves_before_recording_acceptance passed. All ten Resume/Stop phase cases check exact allowed POST payloads or reject any additional request after the saved-run read; existing 19 action cases retained."
+    },
+    {
+      "id": "gnome-negative-control",
+      "passed": true,
+      "evidence": "Before fix exit1: Missing expected exception: failed. Same maintained phase test passes after production guard change."
+    },
+    {
+      "id": "pui-negative-control",
+      "passed": true,
+      "evidence": "Before fix exit101: unexpected request after refusal or final receipt: resume-failed. After fix exit0 with no-unexpected-request oracle intact."
+    }
+  ],
+  "sourceHashes": {
+    "apps/tui/src/client.rs": "297fb3d8a474dfcfa25409bc2daeae96afda26d55cfa059a61fbef07f95aa938",
+    "papercusp-desktop/native/gnome/panel-model.mjs": "101c42dab2b251ad37a5deb3ace4331e31d40693fbeba2e17ba5ed87cda76002",
+    "papercusp-desktop/native/windows/WorkbenchModel.cs": "12d0e949536c49b9e301acb5177fdceed0a7cdedc97460928196483a05016d87",
+    "papercusp-desktop/src-tauri/macos-term-shim/Sources/WorkbenchCore/PanelModel.swift": "1df35f2b29ded01ad3b4761cd2a56cb320d296f72d3b98631131de94b5219d41",
+    "papercusp-desktop/test/native-workbench-gnome.test.mjs": "b03046227ab30e0b858683c9d29195c15bbe502abc56a6442dbf16148c2a49fd",
+    "papercusp-desktop/test/fixtures/native-workbench-windows-host.ps1": "4974dd3342163466367925ca209756b72a386482dd163932e74fe148528828b8",
+    "papercusp-desktop/src-tauri/macos-term-shim/Tests/WorkbenchCoreTests/WorkbenchControlsTests.swift": "2a5777a8fab92c1ec97d41b430253e13b4b18ff908180a3c0b1ee8040c369589"
+  },
+  "evidenceLogs": {
+    "/tmp/wb-inbox-phase-before-20261109.log": {
+      "sha256": "09aaf68bf12adce0185f688522b9302b64e8197de04e15af5999270c49fe930a",
+      "identityRedaction": "The absolute checkout root in this displayed stack trace is represented as <workspace>/. sha256 continues to identify the unmodified original log at the evidenceLogs key.",
+      "text": "✖ Inbox run controls admit Resume only in review and Stop only while active (5.149099ms)\nℹ tests 1\nℹ suites 0\nℹ pass 0\nℹ fail 1\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 403.550262\n\n✖ failing tests:\n\ntest at papercusp-desktop/test/native-workbench-gnome.test.mjs:554:1\n✖ Inbox run controls admit Resume only in review and Stop only while active (5.149099ms)\n  AssertionError [ERR_ASSERTION]: Missing expected exception: failed\n      at TestContext.<anonymous> (file://<workspace>/papercusp-desktop/test/native-workbench-gnome.test.mjs:560:21)\n      at Test.runInAsyncScope (node:async_hooks:226:14)\n      at Test.run (node:internal/test_runner/test:1201:25)\n      at Test.start (node:internal/test_runner/test:1096:17)\n      at startSubtestAfterBootstrap (node:internal/test_runner/harness:385:17) {\n    generatedMessage: false,\n    code: 'ERR_ASSERTION',\n    actual: undefined,\n    expected: /phase/,\n    operator: 'throws',\n    diff: 'simple'\n  }\n"
+    },
+    "/tmp/wb-inbox-phase-after-20261109.log": {
+      "sha256": "a7e65fb502bf7c65b3f3045daa9b2978d5f38ac52866249df997b786be0e1b5d",
+      "text": "✔ Inbox context refuses conflicting, partial and stale identities and clears hidden selections (4.276417ms)\n✔ Inbox named choices require source Resolve and preserve exact option identities (2.044533ms)\n✔ Inbox saved progress uses the persisted denominator and excludes owner-only work from Apply (0.661368ms)\n✔ Inbox run refresh preserves edits, rejects overlapping writes and recovers read failures (0.529794ms)\n✔ Inbox writes demand exact environment and terminal receipt and never repeat confirmed effects (0.69313ms)\n✔ Inbox connection changes retire old action receipts and isolate review state with identical IDs (0.831498ms)\n✔ Inbox run controls admit Resume only in review and Stop only while active (0.649916ms)\n✔ Inbox batch admission freezes only visible questions and resumes only retryable items (0.419011ms)\nℹ tests 8\nℹ suites 0\nℹ pass 8\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 375.191656\n"
+    },
+    "/tmp/wb-inbox-wire-before-20261109.log": {
+      "sha256": "a70bb4597157c2a141bbdad7b4728ed1509550b655aaf61a57a46ce6926f7518",
+      "text": "thread 'client::tests::native_inbox_wire_freezes_start_and_resolves_before_recording_acceptance' (3524875) panicked at src/client.rs:4747:17:\nunexpected request after refusal or final receipt: resume-failed\nthread 'client::tests::native_inbox_wire_freezes_start_and_resolves_before_recording_acceptance' (3524875) panicked at src/client.rs:4755:26:\ntest client::tests::native_inbox_wire_freezes_start_and_resolves_before_recording_acceptance ... FAILED\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1500 filtered out; finished in 5.68s\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s\nCARGO_RESULT status=failed\n[report-cargo-tests] parsed 1 test results; inserted 2/2 rows (framework=cargo) into harness_shared.test_runs.\nPC_HEAVY_ADMISSION status=completed reason=cleanup priority=10 psiFullAvg10=unavailable admittedCgroupMiB=0 admissionId=pc-heavy-3484458-1794202610358681205 retryHandle=psi-recovery:pc-heavy-3484458-1794202610358681205 freezeMeasurement=measured frozenTotalMs=0 frozenEpisodes=0 frozenOngoingMs=0\n"
+    },
+    "/tmp/wb-inbox-wire-after-20261109.log": {
+      "sha256": "f369bbafad01148260283ebd286bdd4675932fe5a35927a74f107c906e4ce239",
+      "text": "test client::tests::native_inbox_wire_freezes_start_and_resolves_before_recording_acceptance ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1500 filtered out; finished in 7.57s\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s\nCARGO_RESULT status=passed\n[report-cargo-tests] parsed 1 test results; inserted 2/2 rows (framework=cargo) into harness_shared.test_runs.\nPC_HEAVY_ADMISSION status=completed reason=cleanup priority=10 psiFullAvg10=unavailable admittedCgroupMiB=0 admissionId=pc-heavy-3558040-1794202717027040322 retryHandle=psi-recovery:pc-heavy-3558040-1794202717027040322 freezeMeasurement=measured frozenTotalMs=0 frozenEpisodes=0 frozenOngoingMs=0\n"
+    },
+    "/tmp/wb-inbox-phase-swift-20261109.log": {
+      "sha256": "d05dbe9acaa981217aa4624b99eb806a8ae087928c1ce19b54867ef9ffcbf159",
+      "text": "[pc-heavy] fingerprinting untracked Git source files\n[pc-heavy] slot acquired — starting real work\nBuilding for debugging...\n[0/13] Write sources\n[2/13] Write swift-version--6CD95BD597A0055B.txt\n[4/21] Emitting module WorkbenchCore\n[5/21] Compiling WorkbenchCore ResidentSettings.swift\n[6/21] Compiling WorkbenchCore NativeWorkRefs.swift\n[7/21] Compiling WorkbenchCore PuiBridge.swift\n[8/21] Compiling WorkbenchCore ResidentLifecycle.swift\n[9/21] Compiling WorkbenchCore NativeOrganizer.swift\n[10/21] Compiling WorkbenchCore PanelModel.swift\n[11/21] Compiling WorkbenchCore ChatState.swift\n[12/22] Wrapping AST for WorkbenchCore for debugging\n[14/28] Emitting module WorkbenchCoreTests\n[15/28] Compiling WorkbenchCoreTests WorkbenchControlsTests.swift\n[16/28] Compiling WorkbenchCoreTests WorkbenchCoreTests.swift\n[17/28] Compiling WorkbenchCoreTests WorkbenchChatTests.swift\n[18/28] Compiling WorkbenchCoreTests ResidentLifecycleTests.swift\n[19/28] Compiling WorkbenchCoreTests WorkbenchAgentTests.swift\n[20/29] /tmp/wb-inbox-phase-swift-20261109/x86_64-unknown-linux-gnu/debug/PapercuspTermShimPackageDiscoveredTests.derived/all-discovered-tests.swift\n[21/29] Write sources\n[22/29] Wrapping AST for WorkbenchCoreTests for debugging\n[24/32] Compiling PapercuspTermShimPackageDiscoveredTests all-discovered-tests.swift\n[25/32] Compiling PapercuspTermShimPackageDiscoveredTests WorkbenchCoreTests.swift\n[26/32] Emitting module PapercuspTermShimPackageDiscoveredTests\n[27/33] /tmp/wb-inbox-phase-swift-20261109/x86_64-unknown-linux-gnu/debug/PapercuspTermShimPackageTests.derived/runner.swift\n[28/33] Write sources\n[29/33] Wrapping AST for PapercuspTermShimPackageDiscoveredTests for debugging\n[31/35] Emitting module PapercuspTermShimPackageTests\n[32/35] Compiling PapercuspTermShimPackageTests runner.swift\n[33/36] Wrapping AST for PapercuspTermShimPackageTests for debugging\n[34/36] Write Objects.LinkFileList\n[35/36] Linking PapercuspTermShimPackageTests.xctest\nBuild complete! (13.83s)\nTest Suite 'Selected tests' started at 2026-11-09 00:40:18.151\nTest Suite 'WorkbenchControlsTests' started at 2026-11-09 00:40:18.166\nTest Case 'WorkbenchControlsTests.testAccountOldGenerationFailedWriteAndWrongEnvironmentCannotBecomeSuccess' started at 2026-11-09 00:40:18.166\nTest Case 'WorkbenchControlsTests.testAccountOldGenerationFailedWriteAndWrongEnvironmentCannotBecomeSuccess' passed (0.002 seconds)\nTest Case 'WorkbenchControlsTests.testAccountReadRejectsPartialSteeringAndAmbiguousIds' started at 2026-11-09 00:40:18.168\nTest Case 'WorkbenchControlsTests.testAccountReadRejectsPartialSteeringAndAmbiguousIds' passed (0.0 seconds)\nTest Case 'WorkbenchControlsTests.testAccountsKeepDistinctAxesAndOnlyApplyConfirmedCurrentResponse' started at 2026-11-09 00:40:18.168\nTest Case 'WorkbenchControlsTests.testAccountsKeepDistinctAxesAndOnlyApplyConfirmedCurrentResponse' passed (0.0 seconds)\nTest Case 'WorkbenchControlsTests.testBridgeAccountAndGoalControlsUseTypedStdinWithExactEnvironmentAndConfirmation' started at 2026-11-09 00:40:18.168\nTest Case 'WorkbenchControlsTests.testBridgeAccountAndGoalControlsUseTypedStdinWithExactEnvironmentAndConfirmation' passed (0.026 seconds)\nTest Case 'WorkbenchControlsTests.testEnvironmentKeysMatchPuiRendezvousAndRejectMissingIdentities' started at 2026-11-09 00:40:18.195\nTest Case 'WorkbenchControlsTests.testEnvironmentKeysMatchPuiRendezvousAndRejectMissingIdentities' passed (0.1 seconds)\nTest Case 'WorkbenchControlsTests.testGoalControlsUseCanonicalEffectiveStateAndUnknownDisablesActions' started at 2026-11-09 00:40:18.295\nTest Case 'WorkbenchControlsTests.testGoalControlsUseCanonicalEffectiveStateAndUnknownDisablesActions' passed (0.001 seconds)\nTest Case 'WorkbenchControlsTests.testGoalNoOptimisticStateAndDegradedReadbackStaysVisible' started at 2026-11-09 00:40:18.296\nTest Case 'WorkbenchControlsTests.testGoalNoOptimisticStateAndDegradedReadbackStaysVisible' passed (0.0 seconds)\nTest Case 'WorkbenchControlsTests.testGoalRequestSuccessWithoutConfirmedStateAndFailedWriteRemainUnresolved' started at 2026-11-09 00:40:18.297\nTest Case 'WorkbenchControlsTests.testGoalRequestSuccessWithoutConfirmedStateAndFailedWriteRemainUnresolved' passed (0.1 seconds)\nTest Case 'WorkbenchControlsTests.testInboxCanonicalGroupsDeduplicateAndFailClosedOnConflicts' started at 2026-11-09 00:40:18.397\nTest Case 'WorkbenchControlsTests.testInboxCanonicalGroupsDeduplicateAndFailClosedOnConflicts' passed (0.001 seconds)\nTest Case 'WorkbenchControlsTests.testInboxEscalationChoicesAndLinkedAnswerPreserveExactReferences' started at 2026-11-09 00:40:18.398\nTest Case 'WorkbenchControlsTests.testInboxEscalationChoicesAndLinkedAnswerPreserveExactReferences' passed (0.001 seconds)\nTest Case 'WorkbenchControlsTests.testInboxFilteredSelectionAndNestedEscapeRejectLateContext' started at 2026-11-09 00:40:18.398\nTest Case 'WorkbenchControlsTests.testInboxFilteredSelectionAndNestedEscapeRejectLateContext' passed (0.0 seconds)\nTest Case 'WorkbenchControlsTests.testInboxLiveRunRefreshRejectsLateReadsAndKeepsReviewEditsAcrossFailure' started at 2026-11-09 00:40:18.399\nTest Case 'WorkbenchControlsTests.testInboxLiveRunRefreshRejectsLateReadsAndKeepsReviewEditsAcrossFailure' passed (0.0 seconds)\nTest Case 'WorkbenchControlsTests.testInboxProgressUsesItemOutcomesAndPersistedPartialDeliveryTotal' started at 2026-11-09 00:40:18.399\nTest Case 'WorkbenchControlsTests.testInboxProgressUsesItemOutcomesAndPersistedPartialDeliveryTotal' passed (0.0 seconds)\nTest Case 'WorkbenchControlsTests.testInboxReviewUsesEditedAnswerAndExcludesTypedOwnerOnlyRecommendations' started at 2026-11-09 00:40:18.399\nTest Case 'WorkbenchControlsTests.testInboxReviewUsesEditedAnswerAndExcludesTypedOwnerOnlyRecommendations' passed (0.101 seconds)\nTest Case 'WorkbenchControlsTests.testInboxRunControlsAdmitResumeOnlyInReviewAndStopOnlyWhileActive' started at 2026-11-09 00:40:18.500\nTest Case 'WorkbenchControlsTests.testInboxRunControlsAdmitResumeOnlyInReviewAndStopOnlyWhileActive' passed (0.001 seconds)\nTest Case 'WorkbenchControlsTests.testInboxSameIdChangedReferenceInvalidatesSelectedContext' started at 2026-11-09 00:40:18.501\nTest Case 'WorkbenchControlsTests.testInboxSameIdChangedReferenceInvalidatesSelectedContext' passed (0.0 seconds)\nTest Case 'WorkbenchControlsTests.testInboxSavedRunRestoreDistinguishesIdleMissingAndWrongRun' started at 2026-11-09 00:40:18.501\nTest Case 'WorkbenchControlsTests.testInboxSavedRunRestoreDistinguishesIdleMissingAndWrongRun' passed (0.0 seconds)\nTest Case 'WorkbenchControlsTests.testInboxSelectionContextCannotCrossQuestionOrRefresh' started at 2026-11-09 00:40:18.502\nTest Case 'WorkbenchControlsTests.testInboxSelectionContextCannotCrossQuestionOrRefresh' passed (0.0 seconds)\nTest Case 'WorkbenchControlsTests.testInboxStartFreezesOnlyVisibleLiteralCoordinatesAndFilter' started at 2026-11-09 00:40:18.502\nTest Case 'WorkbenchControlsTests.testInboxStartFreezesOnlyVisibleLiteralCoordinatesAndFilter' passed (0.0 seconds)\nTest Case 'WorkbenchControlsTests.testInboxStopContinueAndManualAnswerRequireCurrentStateAndMatchingReceipts' started at 2026-11-09 00:40:18.502\nTest Case 'WorkbenchControlsTests.testInboxStopContinueAndManualAnswerRequireCurrentStateAndMatchingReceipts' passed (0.0 seconds)\nTest Case 'WorkbenchControlsTests.testNativeReaderUsesCanonicalProseAndGoalMeasurementUnitsWithoutChangingSteering' started at 2026-11-09 00:40:18.503\nTest Case 'WorkbenchControlsTests.testNativeReaderUsesCanonicalProseAndGoalMeasurementUnitsWithoutChangingSteering' passed (0.0 seconds)\nTest Case 'WorkbenchControlsTests.testPanelRefreshClearsStaleDetailButPreservesDraftAndCanonicalSelection' started at 2026-11-09 00:40:18.503\nTest Case 'WorkbenchControlsTests.testPanelRefreshClearsStaleDetailButPreservesDraftAndCanonicalSelection' passed (0.1 seconds)\nTest Suite 'WorkbenchControlsTests' passed at 2026-11-09 00:40:18.603\n\t Executed 22 tests, with 0 failures (0 unexpected) in 0.437 (0.437) seconds\nTest Suite 'Selected tests' passed at 2026-11-09 00:40:18.604\n\t Executed 22 tests, with 0 failures (0 unexpected) in 0.437 (0.437) seconds\n◇ Test run started.\n↳ Testing Library Version: 6.0.3 (18c42c19cac3faf)\n✔ Test run with 0 tests passed after 0.001 seconds.\nPC_HEAVY_ADMISSION status=completed reason=cleanup priority=10 psiFullAvg10=unavailable admittedCgroupMiB=0 admissionId=pc-heavy-3604648-1794202794623472826 retryHandle=psi-recovery:pc-heavy-3604648-1794202794623472826 freezeMeasurement=measured frozenTotalMs=0 frozenEpisodes=0 frozenOngoingMs=0\n"
+    }
+  },
+  "commands": {
+    "gnomeBefore": "node --test --test-name-pattern='Inbox run controls' papercusp-desktop/test/native-workbench-gnome.test.mjs",
+    "gnomeAfter": "node --test --test-name-pattern='Inbox' papercusp-desktop/test/native-workbench-gnome.test.mjs",
+    "wireBefore": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_TEST_RUN_GROUP_ID=workbench-inbox-phase-before-20261109 bash scripts/pc-heavy.sh node scripts/report-cargo-tests.mjs --manifest-path apps/tui/Cargo.toml -- native_inbox_wire_freezes_start_and_resolves_before_recording_acceptance --nocapture",
+    "wireAfter": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_TEST_RUN_GROUP_ID=workbench-inbox-phase-after-20261109 bash scripts/pc-heavy.sh node scripts/report-cargo-tests.mjs --manifest-path apps/tui/Cargo.toml -- native_inbox_wire_freezes_start_and_resolves_before_recording_acceptance --nocapture"
+  },
+  "rootCauseVerification": {
+    "hypothesis": "Native clients and PUI treated nonactive saved runs as resumable although the canonical resumeReviewRun transition permits only review. The maintained Windows fixture explicitly encoded complete as resumable.",
+    "alternativeHypothesis": "Only a server or environment failure prevents an otherwise correctly admitted Resume request.",
+    "distinguishingTest": "Run the maintained phase-partition Node and PUI HTTP wire tests against the saved failed phase before and after the source guard repair.",
+    "predictedObservations": {
+      "hypothesis": "Old source accepts failed in the local builder and performs a further wire request; repaired source refuses before confirmation or further transport.",
+      "alternativeHypothesis": "Old and new local builders both refuse or fail identically independent of guard changes."
+    },
+    "actualObservation": "Old GNOME guard failed the missing-exception assertion; old PUI produced an unexpected request for resume-failed. Repaired GNOME tests and PUI wire fixture pass.",
+    "testResult": "Confirmed for GNOME/PUI current-build and portable Swift post-fix controls. Native Windows execution pending.",
+    "testProcedure": "commands and evidenceLogs in this artifact",
+    "evidenceRefs": [
+      "/tmp/wb-inbox-phase-before-20261109.log",
+      "/tmp/wb-inbox-phase-after-20261109.log",
+      "/tmp/wb-inbox-wire-before-20261109.log",
+      "/tmp/wb-inbox-wire-after-20261109.log",
+      "/tmp/wb-inbox-phase-swift-20261109.log"
+    ]
+  },
+  "limitations": [
+    "Windows WPF/PowerShell maintained InboxModel phase regression was changed but not executed in this unit; no local native Windows toolchain and no VM mutation.",
+    "Swift proof is portable Foundation/XCTest on Linux, not macOS AppKit or installed-native acceptance.",
+    "No GNOME Shell live actor, canonical operator mutation, exact installed three-OS acceptance, independent review or execution-certificate proof.",
+    "Source hashes were captured after terminal commands; this artifact does not assert parent gitlink containment or exact installed-artifact custody."
+  ]
+}
