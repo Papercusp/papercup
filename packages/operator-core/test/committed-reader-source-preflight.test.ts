@@ -263,11 +263,12 @@ describe('committed reader loader-return source binding', () => {
     expect(observed.pending).toContain('module-evaluation');
   });
 
-  it('bounds pinned engine ranges without promoting partial coverage to full module closure', () => {
-    const f = loadedFixture(Array.from({ length: 180 }, (_, i) => `export function uncalled${i}() { return ${i}; }`).join('\n'));
+  it('binds complete attached engine ranges without promoting them to full module closure', () => {
+    const f = loadedFixture(Array.from({ length: 2000 }, (_, i) => `export function uncalled${i}() { return ${i}; }`).join('\n'));
     const observed = f.observe();
-    expect(observed.engineExecution).toMatchObject({ status: 'observed', coverageRangesComplete: false });
-    expect(observed.engineExecution.coverageRanges).toHaveLength(128);
+    expect(observed.engineExecution).toMatchObject({ status: 'observed', coverageRangesComplete: true });
+    expect(observed.engineExecution.coverageRanges.length).toBeGreaterThan(2000);
+    expect(observed.engineExecution.coverageRanges).toContainEqual(expect.objectContaining({ functionName: 'uncalled1999', count: 0 }));
     expect(observed.pending).toContain('module-evaluation');
   });
 
