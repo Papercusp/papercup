@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runDependencyGenerationRetention } from './dependency-generation-retention';
 import { resolveDependencyGenerationRoot } from './dependency-generation-prebuild';
@@ -166,6 +167,41 @@ describe('hourly dependency-generation retention discovery', () => {
     expect(new Set(lines)).toEqual(new Set(roots));
     expect(lines).toHaveLength(3);
     expect(resolveDependencyGenerationRoot(integration, {})).toBe(roots[1]);
+  });
+
+  it('skips markerless siblings before resolving them while retaining real and symlinked checkout pins', () => {
+    const actual = resolve(__dirname, '../../../../apps/operator/bin/release/dependency-generation.sh');
+    const store = join(fixture, 'store');
+    const identity = `v1-${'e'.repeat(64)}`;
+    mkdirSync(join(store, identity, 'tree'), { recursive: true });
+    writeFileSync(join(store, identity, '.papercusp-dependency-generation'),
+      `identity=${identity}\nsnapshot=fixture\ncreated=1\n`);
+    const consumers = [join(fixture, 'consumer'), join(fixture, 'outside', 'consumer')];
+    for (const consumer of consumers) {
+      mkdirSync(join(consumer, 'node_modules'), { recursive: true });
+      writeFileSync(join(consumer, 'node_modules/.papercusp-dependency-generation'), `identity=${identity}\n`);
+    }
+    symlinkSync(consumers[1]!, join(fixture, 'consumer-alias'), 'dir');
+    for (let i = 0; i < 50; i++) mkdirSync(join(fixture, `unrelated-${i}`));
+    const cdLog = join(fixture, 'resolved-directories');
+    const result = spawnSync('bash', ['-c', [
+      'source "$1"',
+      'cd() { printf "%s\\n" "$1" >> "$PAPERCUSP_RETENTION_CD_LOG"; builtin cd "$@"; }',
+      'dependency_generation_refresh_retention_state_locked "$2" "$3"',
+    ].join('\n'), '_', actual, store, integration], {
+      encoding: 'utf8', timeout: 10_000,
+      env: { ...process.env, PAPERCUSP_RETENTION_CD_LOG: cdLog },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    const resolved = readFileSync(cdLog, 'utf8').trim().split('\n');
+    expect(resolved.some(path => /\/unrelated-\d+$/.test(path))).toBe(false);
+    expect(resolved).toContain(join(fixture, 'consumer-alias'));
+    expect(resolved).toContain(consumers[0]);
+    const pins = readFileSync(join(store, '.pins',
+      // Pins use the existing canonical checkout key, never the alias spelling.
+      'checkout-' + createHash('sha256').update(consumers[1]!).digest('hex')), 'utf8');
+    expect(pins).toContain(`checkout=${consumers[1]}`);
+    expect(pins).toContain(`identity=${identity}`);
   });
 
   it('retired-store pruning keeps real pins, foreign leases, and the replacement store', () => {
