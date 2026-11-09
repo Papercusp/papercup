@@ -1555,7 +1555,9 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
           const loaded = sources.filter(source => source.url === returned.url);
           assert.ok(loaded.length > 0,
             `host resolved file lacks independently pinned loader bytes: ${returned.url}`);
-          if (Object.hasOwn(closure.externalResolutions, row.specifier))
+          // Build observations have no planned resolver map; their returned
+          // edges still require the independently pinned loader bytes above.
+          if (!o.buildObservationOnly && Object.hasOwn(closure.externalResolutions, row.specifier))
             assert.equal(fileURLToPath(url), resolve(o.root, closure.externalResolutions[row.specifier]),
               'host external resolution differs from independent pin');
         }

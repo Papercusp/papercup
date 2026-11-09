@@ -334,6 +334,27 @@ describe('committed reader loader-return source binding', () => {
       configurationInputs: { status: 'matched' } });
   });
 
+  it('retains the original run on every host event after the program changes its environment', () => {
+    const f = loadedFixture("process.env.PAPERCUSP_TEST_RUN_GROUP = 'changed-after-entry';");
+    expect(f.rows.length).toBeGreaterThan(0);
+    expect(f.rows.every(({ row }) => row.runGroupId === f.options.runId)).toBe(true);
+    expect(f.observe()).toMatchObject({ status: 'bound', gaps: [], runId: f.options.runId });
+  });
+
+  describe.each([false, true])('host event run custody (build observation: %s)', buildOnly => {
+    it.each(['module-load-start', 'module-load-return', 'module-resolve-start',
+      'module-resolve-return', 'engine-script-execution', 'node-exit'] as const)(
+      'refuses changed or missing run identity on %s', event => {
+        const f = loadedFixture(undefined, true, buildOnly);
+        expect(f.observe()).toMatchObject({ status: 'bound', gaps: [] });
+        f.replaceAll(row => { if (row.event === event) row.runGroupId = 'other-run'; });
+        expect(f.observe()).toMatchObject({ status: 'unknown',
+          gaps: [expect.stringContaining('run')], pending: expect.arrayContaining(['complete-runtime-closure']) });
+        f.replaceAll(row => { if (row.event === event) delete row.runGroupId; });
+        expect(f.observe()).toMatchObject({ status: 'unknown', gaps: [expect.stringContaining('run')] });
+      });
+  });
+
   function loadedSqlFixture(change = '') {
     return loadedFixture(`import { channel } from 'node:diagnostics_channel';
       const observation = channel('papercusp:migration-transaction');
