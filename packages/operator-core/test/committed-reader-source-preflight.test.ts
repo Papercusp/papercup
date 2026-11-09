@@ -342,6 +342,19 @@ describe('committed reader loader-return source binding', () => {
   });
 
   describe.each([false, true])('host event run custody (build observation: %s)', buildOnly => {
+    it('preserves an optional independent run pin while requiring a valid event run identity', () => {
+      const f = loadedFixture(undefined, true, buildOnly);
+      const observe = () => observeCommittedReaderLoadedSources({ ...f.options, runId: undefined });
+      expect(observe()).toMatchObject({ status: 'bound', gaps: [], runId: null });
+      f.replaceAll(row => { row.runGroupId = null; });
+      expect(observe()).toMatchObject({ status: 'bound', gaps: [], runId: null });
+      expect(f.observe()).toMatchObject({ status: 'unknown', gaps: [expect.stringContaining('run')] });
+      for (const invalid of [undefined, '', 42]) {
+        f.replaceAll(row => { row.runGroupId = invalid; });
+        expect(observe()).toMatchObject({ status: 'unknown', gaps: [expect.stringContaining('run')] });
+      }
+    });
+
     it.each(['module-load-start', 'module-load-return', 'module-resolve-start',
       'module-resolve-return', 'engine-script-execution', 'node-exit'] as const)(
       'refuses changed or missing run identity on %s', event => {

@@ -34,6 +34,7 @@ export function nativeProcessTraceEnv(env = process.env, options = {}) {
 // implementations remain gaps in the parent receipt. Never alter stdio/options.
 function installNativeProcessTrace(out) {
   const identity = randomUUID();
+  const runGroupId = process.env.PAPERCUSP_TEST_RUN_GROUP ?? null;
   // A trace channel has its own UUID (including worker threads). The kernel
   // identity independently pins the OS process; neither can stand in for the other.
   const kernelProcessIdentity = readProcessIdentity(process.pid);
@@ -69,14 +70,14 @@ function installNativeProcessTrace(out) {
     try {
       let row = { schemaVersion: 1, kind: 'native-node-process-event', event,
         processIdentity: identity, kernelProcessIdentity,
-        pid: process.pid, ppid: process.ppid, atMs: Date.now(), ...fields, threadId };
+        pid: process.pid, ppid: process.ppid, atMs: Date.now(), ...fields, threadId, runGroupId };
       if (!terminal && remaining[observationScope] === -1)
         row = { ...row, event: 'trace-limit', observationScope };
       let bytes = Buffer.from(JSON.stringify(row));
       if (bytes.length > 128 * 1024) {
         bytes = Buffer.from(JSON.stringify({ schemaVersion: 1, kind: row.kind,
           event: 'trace-event-too-large', processIdentity: identity, kernelProcessIdentity, pid: process.pid,
-          ppid: process.ppid, atMs: row.atMs, omittedEvent: event, threadId }));
+          ppid: process.ppid, atMs: row.atMs, omittedEvent: event, threadId, runGroupId }));
       }
       const sha256 = createHash('sha256').update(bytes).digest('hex');
       const path = join(root, `${sha256}.json`);
@@ -134,7 +135,6 @@ function installNativeProcessTrace(out) {
         observedByteLength: state.observedByteLength, captureComplete: state.captureComplete }];
     } catch { return [role, { scope, captureComplete: false, artifactUnavailable: true }]; }
   }));
-  const runGroupId = process.env.PAPERCUSP_TEST_RUN_GROUP ?? null;
   let migrationSequence = 0, migrationBytes = 0;
   channel('papercusp:migration-transaction').subscribe(message => {
     try {

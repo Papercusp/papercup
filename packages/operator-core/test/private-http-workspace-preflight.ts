@@ -1280,6 +1280,10 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
     const entries = own.filter(({ row }) => row.event === 'node-entry');
     assert.equal(entries.length, 1, 'one host entry required');
     const entry = entries[0];
+    const runGroupId = entry.row.runGroupId;
+    assert.ok(runGroupId === null || typeof runGroupId === 'string' && runGroupId.length > 0,
+      'host entry run identity missing or invalid');
+    assert.ok(own.every(({ row }) => row.runGroupId === runGroupId), 'mixed host run identities');
     if (o.runId !== undefined) {
       assert.ok(o.runId.length > 0, 'independent host run identity required');
       assert.equal(entry.row.runGroupId, o.runId, 'host entry belongs to another run');

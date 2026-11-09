@@ -819,11 +819,19 @@ describe('focused runner startup tracing', () => {
       writeFileSync(path, `export const value = ${index};`);
       return pathToFileURL(path).href;
     });
-    const env: NodeJS.ProcessEnv = { ...process.env, PAPERCUSP_TEST_STARTUP_TRACE: '0' };
+    const env: NodeJS.ProcessEnv = { ...process.env, PAPERCUSP_TEST_STARTUP_TRACE: '0',
+      PAPERCUSP_TEST_RUN_GROUP: 'trace-limit-original-run' };
     delete env.PC_EXECUTED_SOURCE_MAP_OUT;
     try {
       const source = `process.env.PC_EXECUTED_SOURCE_MAP_OUT = ${JSON.stringify(out)};
         await import(${JSON.stringify(preload)});
+        process.env.PAPERCUSP_TEST_RUN_GROUP = 'changed-after-entry';
+        const { spawnSync } = await import('node:child_process');
+        const child = spawnSync(process.execPath, ['-e', '', 'x'.repeat(70 * 1024), 'y'.repeat(70 * 1024)], {
+          env: { ...process.env, NODE_OPTIONS: '', PC_EXECUTED_SOURCE_MAP_OUT: '' },
+          encoding: 'utf8', timeout: 5000,
+        });
+        if (child.status !== 0) throw new Error(child.stderr || String(child.error));
         let sum = 0;
         for (const url of ${JSON.stringify(modules)}) sum += (await import(url)).value;
         const { channel } = await import('node:diagnostics_channel');
@@ -842,6 +850,10 @@ describe('focused runner startup tracing', () => {
       expect(rows.filter(row => row.event === 'module-load-limit')).toHaveLength(1);
       expect(rows.filter(row => row.event === 'trace-limit').map(row => row.observationScope).sort())
         .toEqual(['general', 'module']);
+      expect(rows.filter(row => row.event === 'trace-event-too-large')).toEqual([
+        expect.objectContaining({ omittedEvent: 'child-spawn-sync-start', runGroupId: 'trace-limit-original-run' }),
+      ]);
+      expect(rows.every(row => row.runGroupId === 'trace-limit-original-run')).toBe(true);
       expect(rows.filter(row => row.event.startsWith('module-') &&
         !['module-load-limit', 'module-resolve-limit'].includes(row.event)).length).toBeLessThanOrEqual(384);
       expect(rows.filter(row => row.event === 'api-worker-schema-unavailable').length).toBeLessThanOrEqual(128);
