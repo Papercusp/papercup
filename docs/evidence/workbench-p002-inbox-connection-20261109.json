@@ -1,0 +1,1128 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Workbench GNOME Inbox connection invalidation and valid transcription fixture",
+  "framework": "node",
+  "command": [
+    "env",
+    "PAPERCUSP_GNOME_JOURNEY=input",
+    "PAPERCUSP_NATIVE_EVIDENCE_DIR=/tmp/wb-inbox-environment-live-20261109",
+    "bash",
+    "scripts/pc-heavy.sh",
+    "node",
+    "--test",
+    "--test-name-pattern=private GNOME Shell renders actors",
+    "papercusp-desktop/test/native-workbench-gnome-live.test.mjs"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-11-09T03:37:21.233Z",
+  "finishedAt": "2026-11-09T03:37:29.548Z",
+  "summary": "Current-build private GNOME Shell input journey passed; fixture PUI, real virtual-seat keyboard and pointer. Connection changes retire pending Inbox action tokens, saved runs and connection-specific review state; late receipts are rejected. Owning GNOME unit suite: 56 pass, 0 fail, one existing physical-device skip. Does not establish canonical operator effects, physical audio devices, independent acceptance or installed Ubuntu/macOS/Windows shipment.",
+  "assertions": [
+    {
+      "id": "native-input-1",
+      "passed": true,
+      "evidence": "native shortcut acquisition"
+    },
+    {
+      "id": "native-input-2",
+      "passed": true,
+      "evidence": "native seat supports input injection"
+    },
+    {
+      "id": "native-input-3",
+      "passed": true,
+      "evidence": "native input methods exist"
+    },
+    {
+      "id": "native-input-4",
+      "passed": true,
+      "evidence": "desktop ready for normal shortcuts"
+    },
+    {
+      "id": "native-input-5",
+      "passed": true,
+      "evidence": "qualified plan reached native actor model"
+    },
+    {
+      "id": "native-input-6",
+      "passed": true,
+      "evidence": "Shell actor is attached"
+    },
+    {
+      "id": "native-input-7",
+      "passed": true,
+      "evidence": "native result controls rendered"
+    },
+    {
+      "id": "native-input-8",
+      "passed": true,
+      "evidence": "independent pinned panels coexist"
+    },
+    {
+      "id": "native-input-9",
+      "passed": true,
+      "evidence": "Goals requests only its canonical source"
+    },
+    {
+      "id": "native-input-10",
+      "passed": true,
+      "evidence": "panels and GTK helper create no application windows"
+    },
+    {
+      "id": "native-input-11",
+      "passed": true,
+      "evidence": "debounced canonical query renders current result"
+    },
+    {
+      "id": "native-input-12",
+      "passed": true,
+      "evidence": "exact report body in native detail"
+    },
+    {
+      "id": "native-input-13",
+      "passed": true,
+      "evidence": "first Escape dismisses detail only"
+    },
+    {
+      "id": "native-input-14",
+      "passed": true,
+      "evidence": "second Escape dismisses only its surface"
+    },
+    {
+      "id": "native-input-15",
+      "passed": true,
+      "evidence": "reopen retains query and exact selection"
+    },
+    {
+      "id": "native-input-16",
+      "passed": true,
+      "evidence": "outside dismissal preserves another pinned surface"
+    },
+    {
+      "id": "native-input-17",
+      "passed": true,
+      "evidence": "repeated shortcut toggles pinned surface"
+    },
+    {
+      "id": "native-input-18",
+      "passed": true,
+      "evidence": "Inbox canonical list reaches native actor"
+    },
+    {
+      "id": "native-input-19",
+      "passed": true,
+      "evidence": "Inbox persisted denominator reaches native status"
+    },
+    {
+      "id": "native-input-20",
+      "passed": true,
+      "evidence": "Inbox selected context preserves exact identity"
+    },
+    {
+      "id": "native-input-21",
+      "passed": true,
+      "evidence": "Inbox context read uses canonical id without action itemId"
+    },
+    {
+      "id": "native-input-22",
+      "passed": true,
+      "evidence": "Inbox confirmation freezes edited answer"
+    },
+    {
+      "id": "native-input-23",
+      "passed": true,
+      "evidence": "Inbox write uses helper native-inbox and verifies terminal receipt"
+    },
+    {
+      "id": "native-input-24",
+      "passed": true,
+      "evidence": "Inbox adds no application window"
+    },
+    {
+      "id": "native-input-25",
+      "passed": true,
+      "evidence": "Inbox dismissal removes native actors and run refresh"
+    },
+    {
+      "id": "native-input-26",
+      "passed": true,
+      "evidence": "seat shortcut opens panel"
+    },
+    {
+      "id": "native-input-27",
+      "passed": true,
+      "evidence": "seat typing reaches focused native search"
+    },
+    {
+      "id": "native-input-28",
+      "passed": true,
+      "evidence": "seat arrow navigates results"
+    },
+    {
+      "id": "native-input-29",
+      "passed": true,
+      "evidence": "seat Up restores exact report selection"
+    },
+    {
+      "id": "native-input-30",
+      "passed": true,
+      "evidence": "focused search consumes Enter through native activate signal"
+    },
+    {
+      "id": "native-input-31",
+      "passed": true,
+      "evidence": "seat Enter opens exact selected detail"
+    },
+    {
+      "id": "native-input-32",
+      "passed": true,
+      "evidence": "seat Escape dismisses detail before surface"
+    },
+    {
+      "id": "native-input-33",
+      "passed": true,
+      "evidence": "seat click pins native panel"
+    },
+    {
+      "id": "native-input-34",
+      "passed": true,
+      "evidence": "seat second shortcut preserves independent pin"
+    },
+    {
+      "id": "native-input-35",
+      "passed": true,
+      "evidence": "seat journey keeps native surfaces outside application windows"
+    },
+    {
+      "id": "native-input-36",
+      "passed": true,
+      "evidence": "seat outside click closes unpinned panel and preserves pin"
+    },
+    {
+      "id": "native-input-37",
+      "passed": true,
+      "evidence": "seat shortcut toggles pinned panel closed"
+    },
+    {
+      "id": "native-input-38",
+      "passed": true,
+      "evidence": "connection change dismisses panels and retires old data, detail and selection"
+    },
+    {
+      "id": "native-input-39",
+      "passed": true,
+      "evidence": "connection change selects the new helper backend and retires Inbox identity"
+    },
+    {
+      "id": "native-input-40",
+      "passed": true,
+      "evidence": "connection change clears pending Inbox actions and connection-scoped reviews"
+    },
+    {
+      "id": "native-input-41",
+      "passed": true,
+      "evidence": "late previous-connection action receipt cannot restore a saved Inbox run"
+    },
+    {
+      "id": "owning-gnome-suite",
+      "passed": true,
+      "evidence": "node --test test/native-workbench-gnome.test.mjs: 57 tests, 56 pass, zero fail, one existing physical-device skip; raw full log preserved in logs.unitAfter."
+    },
+    {
+      "id": "transcription-draft-lifecycle",
+      "passed": true,
+      "evidence": "Existing transcription test reaches empty-result rejection, applies valid transcript and preserves draft invalidation through edit/refresh/cancel/send/earlier after binding a UUID conversation and canonical audio. logs.voiceBefore and logs.voiceAfter preserve the distinguishing test."
+    }
+  ],
+  "workItems": [
+    "EI-28279010573629671",
+    "EI-28279249657484774"
+  ],
+  "sourceHashes": {
+    "papercusp-desktop/native/gnome/extension.js": "710f8fe1179ad67e71a7e7e35e0e8bed60f1018a259efa5ca1717b3196efd478",
+    "papercusp-desktop/native/gnome/panel-model.mjs": "706495d350b666b87b7f8143f2572e386ae38afa4b6775496d6dc4b581825c97",
+    "papercusp-desktop/test/native-workbench-gnome.test.mjs": "56d833474d59d96b3dab48b5f261a310bf7d0926802af68d7cf4550e54ec39b0",
+    "papercusp-desktop/test/native-workbench-gnome-live.test.mjs": "1011d8a22e4117a2977ad962dddc21316e7fb0e6ad660ff0a865baff57543ed9"
+  },
+  "native": {
+    "ok": true,
+    "error": null,
+    "phase": "connection change clears visible panel data",
+    "journey": "input",
+    "inputLog": [
+      {
+        "key": 65307,
+        "mode": 2
+      },
+      {
+        "key": 65513,
+        "mode": 1
+      },
+      {
+        "key": 65507,
+        "mode": 1
+      },
+      {
+        "key": 65507,
+        "mode": 1
+      },
+      {
+        "key": 97,
+        "mode": 1
+      },
+      {
+        "key": 97,
+        "mode": 1
+      },
+      {
+        "key": 110,
+        "mode": 1
+      },
+      {
+        "key": 110,
+        "mode": 1
+      },
+      {
+        "key": 101,
+        "mode": 1
+      },
+      {
+        "key": 101,
+        "mode": 1
+      },
+      {
+        "key": 101,
+        "mode": 1
+      },
+      {
+        "key": 101,
+        "mode": 1
+      },
+      {
+        "key": 100,
+        "mode": 1
+      },
+      {
+        "key": 100,
+        "mode": 1
+      },
+      {
+        "key": 108,
+        "mode": 1
+      },
+      {
+        "key": 108,
+        "mode": 1
+      },
+      {
+        "key": 101,
+        "mode": 1
+      },
+      {
+        "key": 101,
+        "mode": 1
+      },
+      {
+        "key": 65364,
+        "mode": 1
+      },
+      {
+        "key": 65364,
+        "mode": 1
+      },
+      {
+        "key": 65362,
+        "mode": 1
+      },
+      {
+        "key": 65362,
+        "mode": 1
+      },
+      {
+        "key": 65293,
+        "mode": 1
+      },
+      {
+        "key": 65293,
+        "mode": 1
+      },
+      {
+        "key": 65307,
+        "mode": 1
+      },
+      {
+        "key": 65307,
+        "mode": 1
+      },
+      {
+        "pointerTarget": "Pin",
+        "phase": "pin click",
+        "before": [
+          1125,
+          67,
+          70,
+          28
+        ],
+        "after": [
+          1125,
+          67,
+          70,
+          28
+        ],
+        "hit": true,
+        "stable": true,
+        "picked": "[0x595c5ca22bf0 StButton.button:hover (\"Pin\")]"
+      },
+      {
+        "button": 1,
+        "x": 1160,
+        "y": 81,
+        "source": "null",
+        "picked": "[0x595c5ca22bf0 StButton.button:hover (\"Pin\")]",
+        "inside": [
+          {
+            "surface": "quick-access",
+            "contains": true
+          }
+        ]
+      },
+      {
+        "key": 65505,
+        "mode": 1
+      },
+      {
+        "key": 65505,
+        "mode": 1
+      },
+      {
+        "button": 1,
+        "x": 5,
+        "y": 450,
+        "source": "null",
+        "picked": "[0x595c57812be0 MetaBackgroundActor]",
+        "inside": [
+          {
+            "surface": "quick-access",
+            "contains": false
+          },
+          {
+            "surface": "goals",
+            "contains": false
+          }
+        ]
+      },
+      {
+        "key": 65513,
+        "mode": 1
+      },
+      {
+        "key": 65513,
+        "mode": 1
+      }
+    ],
+    "actionMode": 1,
+    "overview": false,
+    "windows": [],
+    "states": [
+      {
+        "surface": "quick-access",
+        "visible": false,
+        "pinned": true,
+        "selection": null,
+        "detail": null
+      },
+      {
+        "surface": "goals",
+        "visible": false,
+        "pinned": false,
+        "selection": null,
+        "detail": null
+      },
+      {
+        "surface": "inbox",
+        "visible": false,
+        "pinned": false,
+        "selection": null,
+        "detail": null
+      },
+      {
+        "surface": "organizer",
+        "visible": false,
+        "pinned": false,
+        "selection": null,
+        "detail": null
+      },
+      {
+        "surface": "papercup",
+        "visible": false,
+        "pinned": false,
+        "selection": null,
+        "detail": null
+      },
+      {
+        "surface": "accounts",
+        "visible": false,
+        "pinned": false,
+        "selection": null,
+        "detail": null
+      }
+    ],
+    "assertions": [
+      "native shortcut acquisition",
+      "native seat supports input injection",
+      "native input methods exist",
+      "desktop ready for normal shortcuts",
+      "qualified plan reached native actor model",
+      "Shell actor is attached",
+      "native result controls rendered",
+      "independent pinned panels coexist",
+      "Goals requests only its canonical source",
+      "panels and GTK helper create no application windows",
+      "debounced canonical query renders current result",
+      "exact report body in native detail",
+      "first Escape dismisses detail only",
+      "second Escape dismisses only its surface",
+      "reopen retains query and exact selection",
+      "outside dismissal preserves another pinned surface",
+      "repeated shortcut toggles pinned surface",
+      "Inbox canonical list reaches native actor",
+      "Inbox persisted denominator reaches native status",
+      "Inbox selected context preserves exact identity",
+      "Inbox context read uses canonical id without action itemId",
+      "Inbox confirmation freezes edited answer",
+      "Inbox write uses helper native-inbox and verifies terminal receipt",
+      "Inbox adds no application window",
+      "Inbox dismissal removes native actors and run refresh",
+      "seat shortcut opens panel",
+      "seat typing reaches focused native search",
+      "seat arrow navigates results",
+      "seat Up restores exact report selection",
+      "focused search consumes Enter through native activate signal",
+      "seat Enter opens exact selected detail",
+      "seat Escape dismisses detail before surface",
+      "seat click pins native panel",
+      "seat second shortcut preserves independent pin",
+      "seat journey keeps native surfaces outside application windows",
+      "seat outside click closes unpinned panel and preserves pin",
+      "seat shortcut toggles pinned panel closed",
+      "connection change dismisses panels and retires old data, detail and selection",
+      "connection change selects the new helper backend and retires Inbox identity",
+      "connection change clears pending Inbox actions and connection-scoped reviews",
+      "late previous-connection action receipt cannot restore a saved Inbox run"
+    ],
+    "sourceCustody": {
+      "archiveSha256": "ec5fd2d31cf3497174558412822674a389eced6a60bdf45ac7fe598ef3b5dcae",
+      "journey": "input",
+      "files": {
+        "extension.js": "68bcf1dd375726d3c76a74fc631781fe787cde504def7e08f8edc10267f8eab5",
+        "workbench.js": "710f8fe1179ad67e71a7e7e35e0e8bed60f1018a259efa5ca1717b3196efd478",
+        "panel-model.mjs": "706495d350b666b87b7f8143f2572e386ae38afa4b6775496d6dc4b581825c97",
+        "bridge.js": "f0af6f85819867ea17c790d268b2c428af15d36e489d6c7134b5feeadeaf4eb2",
+        "helper.js": "5604d173a62ad88583c884b0689ee1afc04da7a64ea5f41771e1fcd209416709",
+        "audio.js": "3e3d4927292d31494313a74fcee3438b3eaf3afefdacb5f430ba4fcb1827f6ad",
+        "chat-content.js": "bc1cdc7aa8bd0422c2a3783bd05659660db49245906ec5c8dea7b8705afa8f8e",
+        "schemas/org.gnome.shell.extensions.papercusp-workbench.gschema.xml": "ac2f5d184f3e7f3156df421fd58139989c8990900eecc967ffb5f133d7e8b209"
+      },
+      "testSha256": "1011d8a22e4117a2977ad962dddc21316e7fb0e6ad660ff0a865baff57543ed9"
+    },
+    "plane": "private GNOME virtual seat; fixture PUI; current build"
+  },
+  "process": {
+    "evidence": {
+      "ok": true,
+      "error": null,
+      "phase": "connection change clears visible panel data",
+      "journey": "input",
+      "inputLog": [
+        {
+          "key": 65307,
+          "mode": 2
+        },
+        {
+          "key": 65513,
+          "mode": 1
+        },
+        {
+          "key": 65507,
+          "mode": 1
+        },
+        {
+          "key": 65507,
+          "mode": 1
+        },
+        {
+          "key": 97,
+          "mode": 1
+        },
+        {
+          "key": 97,
+          "mode": 1
+        },
+        {
+          "key": 110,
+          "mode": 1
+        },
+        {
+          "key": 110,
+          "mode": 1
+        },
+        {
+          "key": 101,
+          "mode": 1
+        },
+        {
+          "key": 101,
+          "mode": 1
+        },
+        {
+          "key": 101,
+          "mode": 1
+        },
+        {
+          "key": 101,
+          "mode": 1
+        },
+        {
+          "key": 100,
+          "mode": 1
+        },
+        {
+          "key": 100,
+          "mode": 1
+        },
+        {
+          "key": 108,
+          "mode": 1
+        },
+        {
+          "key": 108,
+          "mode": 1
+        },
+        {
+          "key": 101,
+          "mode": 1
+        },
+        {
+          "key": 101,
+          "mode": 1
+        },
+        {
+          "key": 65364,
+          "mode": 1
+        },
+        {
+          "key": 65364,
+          "mode": 1
+        },
+        {
+          "key": 65362,
+          "mode": 1
+        },
+        {
+          "key": 65362,
+          "mode": 1
+        },
+        {
+          "key": 65293,
+          "mode": 1
+        },
+        {
+          "key": 65293,
+          "mode": 1
+        },
+        {
+          "key": 65307,
+          "mode": 1
+        },
+        {
+          "key": 65307,
+          "mode": 1
+        },
+        {
+          "pointerTarget": "Pin",
+          "phase": "pin click",
+          "before": [
+            1125,
+            67,
+            70,
+            28
+          ],
+          "after": [
+            1125,
+            67,
+            70,
+            28
+          ],
+          "hit": true,
+          "stable": true,
+          "picked": "[0x595c5ca22bf0 StButton.button:hover (\"Pin\")]"
+        },
+        {
+          "button": 1,
+          "x": 1160,
+          "y": 81,
+          "source": "null",
+          "picked": "[0x595c5ca22bf0 StButton.button:hover (\"Pin\")]",
+          "inside": [
+            {
+              "surface": "quick-access",
+              "contains": true
+            }
+          ]
+        },
+        {
+          "key": 65505,
+          "mode": 1
+        },
+        {
+          "key": 65505,
+          "mode": 1
+        },
+        {
+          "button": 1,
+          "x": 5,
+          "y": 450,
+          "source": "null",
+          "picked": "[0x595c57812be0 MetaBackgroundActor]",
+          "inside": [
+            {
+              "surface": "quick-access",
+              "contains": false
+            },
+            {
+              "surface": "goals",
+              "contains": false
+            }
+          ]
+        },
+        {
+          "key": 65513,
+          "mode": 1
+        },
+        {
+          "key": 65513,
+          "mode": 1
+        }
+      ],
+      "actionMode": 1,
+      "overview": false,
+      "windows": [],
+      "states": [
+        {
+          "surface": "quick-access",
+          "visible": false,
+          "pinned": true,
+          "selection": null,
+          "detail": null
+        },
+        {
+          "surface": "goals",
+          "visible": false,
+          "pinned": false,
+          "selection": null,
+          "detail": null
+        },
+        {
+          "surface": "inbox",
+          "visible": false,
+          "pinned": false,
+          "selection": null,
+          "detail": null
+        },
+        {
+          "surface": "organizer",
+          "visible": false,
+          "pinned": false,
+          "selection": null,
+          "detail": null
+        },
+        {
+          "surface": "papercup",
+          "visible": false,
+          "pinned": false,
+          "selection": null,
+          "detail": null
+        },
+        {
+          "surface": "accounts",
+          "visible": false,
+          "pinned": false,
+          "selection": null,
+          "detail": null
+        }
+      ],
+      "assertions": [
+        "native shortcut acquisition",
+        "native seat supports input injection",
+        "native input methods exist",
+        "desktop ready for normal shortcuts",
+        "qualified plan reached native actor model",
+        "Shell actor is attached",
+        "native result controls rendered",
+        "independent pinned panels coexist",
+        "Goals requests only its canonical source",
+        "panels and GTK helper create no application windows",
+        "debounced canonical query renders current result",
+        "exact report body in native detail",
+        "first Escape dismisses detail only",
+        "second Escape dismisses only its surface",
+        "reopen retains query and exact selection",
+        "outside dismissal preserves another pinned surface",
+        "repeated shortcut toggles pinned surface",
+        "Inbox canonical list reaches native actor",
+        "Inbox persisted denominator reaches native status",
+        "Inbox selected context preserves exact identity",
+        "Inbox context read uses canonical id without action itemId",
+        "Inbox confirmation freezes edited answer",
+        "Inbox write uses helper native-inbox and verifies terminal receipt",
+        "Inbox adds no application window",
+        "Inbox dismissal removes native actors and run refresh",
+        "seat shortcut opens panel",
+        "seat typing reaches focused native search",
+        "seat arrow navigates results",
+        "seat Up restores exact report selection",
+        "focused search consumes Enter through native activate signal",
+        "seat Enter opens exact selected detail",
+        "seat Escape dismisses detail before surface",
+        "seat click pins native panel",
+        "seat second shortcut preserves independent pin",
+        "seat journey keeps native surfaces outside application windows",
+        "seat outside click closes unpinned panel and preserves pin",
+        "seat shortcut toggles pinned panel closed",
+        "connection change dismisses panels and retires old data, detail and selection",
+        "connection change selects the new helper backend and retires Inbox identity",
+        "connection change clears pending Inbox actions and connection-scoped reviews",
+        "late previous-connection action receipt cannot restore a saved Inbox run"
+      ]
+    },
+    "progress": {
+      "phase": "connection change clears visible panel data",
+      "journey": "input",
+      "elapsedMs": 5049.257,
+      "phases": [
+        {
+          "phase": "desktop startup",
+          "elapsedMs": 520.435
+        },
+        {
+          "phase": "controller",
+          "elapsedMs": 707.499
+        },
+        {
+          "phase": "inbox",
+          "elapsedMs": 1446.01
+        },
+        {
+          "phase": "shortcut",
+          "elapsedMs": 1939.955
+        },
+        {
+          "phase": "typing",
+          "elapsedMs": 2241.688
+        },
+        {
+          "phase": "navigation",
+          "elapsedMs": 3104.704
+        },
+        {
+          "phase": "detail escape",
+          "elapsedMs": 3465.525
+        },
+        {
+          "phase": "pin click",
+          "elapsedMs": 3602.083
+        },
+        {
+          "phase": "second shortcut",
+          "elapsedMs": 3769.417
+        },
+        {
+          "phase": "outside click",
+          "elapsedMs": 4210.333
+        },
+        {
+          "phase": "final toggle",
+          "elapsedMs": 4388.718
+        },
+        {
+          "phase": "connection change clears visible panel data",
+          "elapsedMs": 4689.297
+        }
+      ],
+      "assertions": [
+        "native shortcut acquisition",
+        "native seat supports input injection",
+        "native input methods exist",
+        "desktop ready for normal shortcuts",
+        "qualified plan reached native actor model",
+        "Shell actor is attached",
+        "native result controls rendered",
+        "independent pinned panels coexist",
+        "Goals requests only its canonical source",
+        "panels and GTK helper create no application windows",
+        "debounced canonical query renders current result",
+        "exact report body in native detail",
+        "first Escape dismisses detail only",
+        "second Escape dismisses only its surface",
+        "reopen retains query and exact selection",
+        "outside dismissal preserves another pinned surface",
+        "repeated shortcut toggles pinned surface",
+        "Inbox canonical list reaches native actor",
+        "Inbox persisted denominator reaches native status",
+        "Inbox selected context preserves exact identity",
+        "Inbox context read uses canonical id without action itemId",
+        "Inbox confirmation freezes edited answer",
+        "Inbox write uses helper native-inbox and verifies terminal receipt",
+        "Inbox adds no application window",
+        "Inbox dismissal removes native actors and run refresh",
+        "seat shortcut opens panel",
+        "seat typing reaches focused native search",
+        "seat arrow navigates results",
+        "seat Up restores exact report selection",
+        "focused search consumes Enter through native activate signal",
+        "seat Enter opens exact selected detail",
+        "seat Escape dismisses detail before surface",
+        "seat click pins native panel",
+        "seat second shortcut preserves independent pin",
+        "seat journey keeps native surfaces outside application windows",
+        "seat outside click closes unpinned panel and preserves pin",
+        "seat shortcut toggles pinned panel closed",
+        "connection change dismisses panels and retires old data, detail and selection",
+        "connection change selects the new helper backend and retires Inbox identity",
+        "connection change clears pending Inbox actions and connection-scoped reviews",
+        "late previous-connection action receipt cannot restore a saved Inbox run"
+      ],
+      "inputLog": [
+        {
+          "key": 65307,
+          "mode": 2
+        },
+        {
+          "key": 65513,
+          "mode": 1
+        },
+        {
+          "key": 65507,
+          "mode": 1
+        },
+        {
+          "key": 65507,
+          "mode": 1
+        },
+        {
+          "key": 97,
+          "mode": 1
+        },
+        {
+          "key": 97,
+          "mode": 1
+        },
+        {
+          "key": 110,
+          "mode": 1
+        },
+        {
+          "key": 110,
+          "mode": 1
+        },
+        {
+          "key": 101,
+          "mode": 1
+        },
+        {
+          "key": 101,
+          "mode": 1
+        },
+        {
+          "key": 101,
+          "mode": 1
+        },
+        {
+          "key": 101,
+          "mode": 1
+        },
+        {
+          "key": 100,
+          "mode": 1
+        },
+        {
+          "key": 100,
+          "mode": 1
+        },
+        {
+          "key": 108,
+          "mode": 1
+        },
+        {
+          "key": 108,
+          "mode": 1
+        },
+        {
+          "key": 101,
+          "mode": 1
+        },
+        {
+          "key": 101,
+          "mode": 1
+        },
+        {
+          "key": 65364,
+          "mode": 1
+        },
+        {
+          "key": 65364,
+          "mode": 1
+        },
+        {
+          "key": 65362,
+          "mode": 1
+        },
+        {
+          "key": 65362,
+          "mode": 1
+        },
+        {
+          "key": 65293,
+          "mode": 1
+        },
+        {
+          "key": 65293,
+          "mode": 1
+        },
+        {
+          "key": 65307,
+          "mode": 1
+        },
+        {
+          "key": 65307,
+          "mode": 1
+        },
+        {
+          "pointerTarget": "Pin",
+          "phase": "pin click",
+          "before": [
+            1125,
+            67,
+            70,
+            28
+          ],
+          "after": [
+            1125,
+            67,
+            70,
+            28
+          ],
+          "hit": true,
+          "stable": true,
+          "picked": "[0x595c5ca22bf0 StButton.button:hover (\"Pin\")]"
+        },
+        {
+          "button": 1,
+          "x": 1160,
+          "y": 81,
+          "source": "null",
+          "picked": "[0x595c5ca22bf0 StButton.button:hover (\"Pin\")]",
+          "inside": [
+            {
+              "surface": "quick-access",
+              "contains": true
+            }
+          ]
+        },
+        {
+          "key": 65505,
+          "mode": 1
+        },
+        {
+          "key": 65505,
+          "mode": 1
+        },
+        {
+          "button": 1,
+          "x": 5,
+          "y": 450,
+          "source": "null",
+          "picked": "[0x595c57812be0 MetaBackgroundActor]",
+          "inside": [
+            {
+              "surface": "quick-access",
+              "contains": false
+            },
+            {
+              "surface": "goals",
+              "contains": false
+            }
+          ]
+        },
+        {
+          "key": 65513,
+          "mode": 1
+        },
+        {
+          "key": 65513,
+          "mode": 1
+        }
+      ],
+      "diagnostics": null
+    },
+    "sourceCustody": {
+      "archiveSha256": "ec5fd2d31cf3497174558412822674a389eced6a60bdf45ac7fe598ef3b5dcae",
+      "journey": "input",
+      "files": {
+        "extension.js": "68bcf1dd375726d3c76a74fc631781fe787cde504def7e08f8edc10267f8eab5",
+        "workbench.js": "710f8fe1179ad67e71a7e7e35e0e8bed60f1018a259efa5ca1717b3196efd478",
+        "panel-model.mjs": "706495d350b666b87b7f8143f2572e386ae38afa4b6775496d6dc4b581825c97",
+        "bridge.js": "f0af6f85819867ea17c790d268b2c428af15d36e489d6c7134b5feeadeaf4eb2",
+        "helper.js": "5604d173a62ad88583c884b0689ee1afc04da7a64ea5f41771e1fcd209416709",
+        "audio.js": "3e3d4927292d31494313a74fcee3438b3eaf3afefdacb5f430ba4fcb1827f6ad",
+        "chat-content.js": "bc1cdc7aa8bd0422c2a3783bd05659660db49245906ec5c8dea7b8705afa8f8e",
+        "schemas/org.gnome.shell.extensions.papercusp-workbench.gschema.xml": "ac2f5d184f3e7f3156df421fd58139989c8990900eecc967ffb5f133d7e8b209"
+      },
+      "testSha256": "1011d8a22e4117a2977ad962dddc21316e7fb0e6ad660ff0a865baff57543ed9"
+    },
+    "status": 0,
+    "signal": null,
+    "error": null,
+    "stdout": "portal is not running: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name org.freedesktop.portal.IBus was not provided by any .service files\n",
+    "stderr": "libmutter-Message: 22:37:21.428: Running GNOME Shell (using mutter 46.2) as a Wayland display server\nlibmutter-Message: 22:37:21.800: Made thread 'KMS thread' realtime scheduled\nlibmutter-Message: 22:37:21.872: Added device '/dev/dri/card1' (nvidia-drm) using no mode setting.\nlibmutter-Message: 22:37:21.878: Created gbm renderer for '/dev/dri/card1'\nlibmutter-Message: 22:37:21.879: Boot VGA GPU /dev/dri/card1 selected as primary\n** Message: 22:37:21.880: Obtained a high priority EGL context\n** Message: 22:37:21.889: Obtained a high priority EGL context\nlibmutter-Message: 22:37:21.920: Added virtual monitor Meta-0\n\n(gnome-shell:3988420): dbind-WARNING **: 22:37:21.934: AT-SPI: Error retrieving accessibility bus address: org.freedesktop.DBus.Error.ServiceUnknown: The name org.a11y.Bus was not provided by any .service files\nlibmutter-Message: 22:37:21.938: Using Wayland display name 'workbench-test'\nWindow manager warning: Failed to set environment variable WAYLAND_DISPLAY for gnome-session: GDBus.Error:org.freedesktop.DBus.Error.NameHasNoOwner: Name \"org.gnome.SessionManager\" does not exist\nGNOME Shell-Message: 22:37:22.740: Unset XDG_SESSION_ID, getCurrentSessionProxy() called outside a user session. Asking logind directly.\nGNOME Shell-Message: 22:37:22.741: Will monitor session 13\n\n** (gnome-shell:3988420): WARNING **: 22:37:23.102: Could not issue 'GetUnit' systemd call\n\n(gnome-shell:3988420): Gjs-WARNING **: 22:37:23.138: Gio.UnixInputStream has been moved to a separate platform-specific library. Please update your code to use GioUnix.InputStream instead.\n0 inhibit() [\"resource:///org/gnome/shell/misc/loginManager.js\":209:8]\n1 InterpretGeneratorResume() [\"self-hosted\":1461:33]\n2 AsyncFunctionNext() [\"self-hosted\":852:26]\n3 anonymous() [\"resource:///org/gnome/shell/ui/init.js\":21:19]\n\n\n(gnome-shell:3988420): GNOME Shell-CRITICAL **: 22:37:23.164: Gio.DBusError: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name org.gnome.Shell.CalendarServer was not provided by any .service files\n\nStack trace:\n  asyncCallback@resource:///org/gnome/gjs/modules/core/overrides/Gio.js:114:23\n  @resource:///org/gnome/shell/ui/init.js:21:20\n  \n\n(gnome-shell:3988420): GNOME Shell-CRITICAL **: 22:37:23.164: Gio.DBusError: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name org.gnome.Shell.CalendarServer was not provided by any .service files\n\nStack trace:\n  asyncCallback@resource:///org/gnome/gjs/modules/core/overrides/Gio.js:114:23\n  @resource:///org/gnome/shell/ui/init.js:21:20\n  \ninvoking IsSupported() failed for remote volume monitor with dbus name org.gtk.vfs.UDisks2VolumeMonitor:: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name org.gtk.vfs.UDisks2VolumeMonitor was not provided by any .service files (g-dbus-error-quark, 2)\ninvoking IsSupported() failed for remote volume monitor with dbus name org.gtk.vfs.MTPVolumeMonitor:: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name org.gtk.vfs.MTPVolumeMonitor was not provided by any .service files (g-dbus-error-quark, 2)\ninvoking IsSupported() failed for remote volume monitor with dbus name org.gtk.vfs.GPhoto2VolumeMonitor:: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name org.gtk.vfs.GPhoto2VolumeMonitor was not provided by any .service files (g-dbus-error-quark, 2)\ninvoking IsSupported() failed for remote volume monitor with dbus name org.gtk.vfs.GoaVolumeMonitor:: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name org.gtk.vfs.GoaVolumeMonitor was not provided by any .service files (g-dbus-error-quark, 2)\ninvoking IsSupported() failed for remote volume monitor with dbus name org.gtk.vfs.AfcVolumeMonitor:: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name org.gtk.vfs.AfcVolumeMonitor was not provided by any .service files (g-dbus-error-quark, 2)\nGNOME Shell-Message: 22:37:23.196: Failed to register AuthenticationAgent\n/usr/share/ibus-table/engine/main.py:232: DeprecationWarning: Testing an element's truth value will raise an exception in future versions.  Use specific 'len(elem)' or 'elem is not None' test instead.\n  if element:\n** Message: 22:37:23.572: Failed to start camera monitor\nGNOME Shell-Message: 22:37:24.272: GNOME Shell started at Sun Nov 08 2026 22:37:22 GMT-0500 (Eastern Standard Time)\nGNOME Shell-Message: 22:37:24.276: Registering session with GDM\n\n(gnome-shell:3988420): Gjs-WARNING **: 22:37:25.054: Gio.UnixOutputStream has been moved to a separate platform-specific library. Please update your code to use GioUnix.OutputStream instead.\n0 _write/this._writes</<() [\"file:///tmp/workbench-shell-js8mdH/data/gnome-shell/extensions/workbench@papercusp.ai/bridge.js\":190:18]\n1 _write/this._writes<() [\"file:///tmp/workbench-shell-js8mdH/data/gnome-shell/extensions/workbench@papercusp.ai/bridge.js\":189:47]\n2 anonymous() [\"resource:///org/gnome/shell/ui/init.js\":21:19]\n\n\n(gnome-shell:3988420): Clutter-CRITICAL **: 22:37:25.915: clutter_input_focus_set_cursor_location: assertion 'clutter_input_focus_is_focused (focus)' failed\n\n(gnome-shell:3988420): Clutter-CRITICAL **: 22:37:25.915: clutter_input_focus_set_surrounding: assertion 'clutter_input_focus_is_focused (focus)' failed\n\n(gnome-shell:3988420): Clutter-CRITICAL **: 22:37:25.988: clutter_input_focus_set_cursor_location: assertion 'clutter_input_focus_is_focused (focus)' failed\n\n(gnome-shell:3988420): Clutter-CRITICAL **: 22:37:25.988: clutter_input_focus_set_surrounding: assertion 'clutter_input_focus_is_focused (focus)' failed\n\n(gnome-shell:3988420): Clutter-CRITICAL **: 22:37:25.989: clutter_input_focus_set_cursor_location: assertion 'clutter_input_focus_is_focused (focus)' failed\n\n(gnome-shell:3988420): Clutter-CRITICAL **: 22:37:25.989: clutter_input_focus_set_surrounding: assertion 'clutter_input_focus_is_focused (focus)' failed\n\n(gnome-shell:3988420): Clutter-CRITICAL **: 22:37:26.226: clutter_input_focus_set_cursor_location: assertion 'clutter_input_focus_is_focused (focus)' failed\n\n(gnome-shell:3988420): Clutter-CRITICAL **: 22:37:26.226: clutter_input_focus_set_surrounding: assertion 'clutter_input_focus_is_focused (focus)' failed\n** Message: 22:37:29.364: Shutting down GNOME Shell\nlibmutter-Message: 22:37:29.457: Removed virtual monitor Meta-0\n",
+    "startedAt": "2026-11-09T03:37:21.233Z",
+    "finishedAt": "2026-11-09T03:37:29.548Z",
+    "elapsedMs": 8310.532777999999,
+    "deadlineMs": 45000
+  },
+  "logNormalization": {
+    "rule": "Embedded log text replaces the absolute checkout prefix with <repo>; log sha256 values identify the unchanged original files at the recorded paths."
+  },
+  "logs": {
+    "inboxBefore": {
+      "path": "/tmp/wb-inbox-environment-before-20261109.log",
+      "sha256": "67c3296ebbca05abdc5ff3d570389c932c5822d2a75d969d1e9314e9eead594c",
+      "text": "✖ Inbox connection changes retire old action receipts and isolate review state with identical IDs (3.741247ms)\nℹ tests 1\nℹ suites 0\nℹ pass 0\nℹ fail 1\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 334.141459\n\n✖ failing tests:\n\ntest at test/native-workbench-gnome.test.mjs:527:1\n✖ Inbox connection changes retire old action receipts and isolate review state with identical IDs (3.741247ms)\n  AssertionError [ERR_ASSERTION]: Missing expected exception.\n      at TestContext.<anonymous> (file://<repo>/papercusp-desktop/test/native-workbench-gnome.test.mjs:537:16)\n      at Test.runInAsyncScope (node:async_hooks:226:14)\n      at Test.run (node:internal/test_runner/test:1201:25)\n      at Test.start (node:internal/test_runner/test:1096:17)\n      at startSubtestAfterBootstrap (node:internal/test_runner/harness:385:17) {\n    generatedMessage: false,\n    code: 'ERR_ASSERTION',\n    actual: undefined,\n    expected: /environment changed/,\n    operator: 'throws',\n    diff: 'simple'\n  }\n"
+    },
+    "voiceBefore": {
+      "path": "/tmp/wb-voice-fixture-before-20261109.log",
+      "sha256": "e778e4ff551ec1e09e27c9e4b22df32e0a5606f4520587199e37dadbc5508883",
+      "text": "✖ voice transcription requires the live operation and preserves drafts through edits, refresh and cancellation (3.023271ms)\nℹ tests 1\nℹ suites 0\nℹ pass 0\nℹ fail 1\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 273.413617\n\n✖ failing tests:\n\ntest at test/native-workbench-gnome.test.mjs:270:1\n✖ voice transcription requires the live operation and preserves drafts through edits, refresh and cancellation (3.023271ms)\n  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /usable/. Input:\n  \n  'Error: Select an exact voice conversation and request'\n  \n      at TestContext.<anonymous> (file://<repo>/papercusp-desktop/test/native-workbench-gnome.test.mjs:281:12)\n      at Test.runInAsyncScope (node:async_hooks:226:14)\n      at Test.run (node:internal/test_runner/test:1201:25)\n      at Test.start (node:internal/test_runner/test:1096:17)\n      at startSubtestAfterBootstrap (node:internal/test_runner/harness:385:17) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: Error: Select an exact voice conversation and request\n        at nativeVoiceRequest (file://<repo>/papercusp-desktop/native/gnome/panel-model.mjs:681:15)\n        at nativeVoiceResult (file://<repo>/papercusp-desktop/native/gnome/panel-model.mjs:700:5)\n        at ChatState.transcribed (file://<repo>/papercusp-desktop/native/gnome/panel-model.mjs:650:21)\n        at file://<repo>/papercusp-desktop/test/native-workbench-gnome.test.mjs:281:29\n        at getActual (node:assert:586:5)\n        at strict.throws (node:assert:734:24)\n        at TestContext.<anonymous> (file://<repo>/papercusp-desktop/test/native-workbench-gnome.test.mjs:281:12)\n        at Test.runInAsyncScope (node:async_hooks:226:14)\n        at Test.run (node:internal/test_runner/test:1201:25)\n        at Test.start (node:internal/test_runner/test:1096:17),\n    expected: /usable/,\n    operator: 'throws',\n    diff: 'simple'\n  }\n"
+    },
+    "voiceAfter": {
+      "path": "/tmp/wb-voice-fixture-after-20261109.log",
+      "sha256": "eab539e1e7e3ff743278f5c3cca61cc3a3887c5196a84453f060cd1a73b9e6bc",
+      "text": "✔ voice transcription requires the live operation and preserves drafts through edits, refresh and cancellation (4.54726ms)\nℹ tests 1\nℹ suites 0\nℹ pass 1\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 409.781298\n"
+    },
+    "unitAfter": {
+      "path": "/tmp/wb-gnome-unit-final-20261109.log",
+      "sha256": "c2354205111777265e85b5e36756cbaecf9330f076206c5f0838eb054ce8b300",
+      "text": "✔ native Accounts sends exact scoped controls without coupling or optimistically changing axes (3.448251ms)\n✔ native Accounts retains confirmed state on failed writes and ignores stale or foreign responses (0.359343ms)\n✔ native Accounts rejects partial or ambiguous pools and every mismatched environment identity (0.376556ms)\n✔ native Markdown uses styled native text, copyable literal code, GFM tables and inert HTML (13.077926ms)\n✔ native work links reuse exact popup grammar, omit unscoped refs and skip Markdown code and links (1.277323ms)\n✔ work link selection is conversation isolated and never changes send identity or the draft (1.27016ms)\n✔ canonical card snapshots replace one run, reject foreign identity and ignore stale generations (0.905156ms)\n✔ card choices, free text, dates and numeric steps validate before a native submission (1.132735ms)\n✔ a card remains pending until its exact environment and canonical response receipt arrive (0.678659ms)\n✔ failed card responses require reconciliation and cannot affect another conversation (0.384592ms)\n✔ expired and unsupported cards cannot submit; secure links stay on the selected origin (0.607622ms)\n✔ voice requests and receipts retain exact identity and reject malformed, empty and oversized results (13.865576ms)\n✔ indexed voice rejects malformed requests and foreign or incomplete chunk receipts (0.672567ms)\n✔ full native reading waits for each playback and stops on cancellation, changed totals or later failure (1.516886ms)\n✔ voice transcription requires the live operation and preserves drafts through edits, refresh and cancellation (0.99039ms)\n✔ voice playback cannot follow a changed conversation, draft or active reply (0.261866ms)\n✔ Papercup history rejects foreign, duplicate, unordered and incomplete pages without changing the transcript (0.678418ms)\n✔ Papercup drafts and late history are isolated by generation, environment and conversation (0.214874ms)\n✔ Papercup clears a draft only after the exact saved acknowledgement and refuses duplicate sends (0.651838ms)\n✔ Papercup progressively projects say text and enforces exact event replay and atomic sequence gaps (0.550672ms)\n✔ Papercup reconnect and cancellation require the saved reply identity and terminal canonical receipt (0.491548ms)\n✔ Papercup completion refuses mismatched persistence and environment while preserving its reply (0.25927ms)\n✔ Organizer uses qualified plans, fleet identities and canonical goal links (0.646417ms)\n✔ Organizer tiles exact terminals independently within each desktop and monitor (1.079953ms)\n✔ Organizer reports remote, stale and shared windows without moving them (0.586361ms)\n✔ Organizer refuses changed sessions and unverified placement receipts (0.51356ms)\n✔ Inbox context refuses conflicting, partial and stale identities and clears hidden selections (1.314826ms)\n✔ Inbox named choices require source Resolve and preserve exact option identities (0.325237ms)\n✔ Inbox saved progress uses the persisted denominator and excludes owner-only work from Apply (0.494373ms)\n✔ Inbox run refresh preserves edits, rejects overlapping writes and recovers read failures (0.334616ms)\n✔ Inbox writes demand exact environment and terminal receipt and never repeat confirmed effects (0.461661ms)\n✔ Inbox connection changes retire old action receipts and isolate review state with identical IDs (0.538228ms)\n✔ Inbox batch admission freezes only visible questions and resumes only retryable items (0.391215ms)\n✔ canonical ended session rows retain Agents results and exact launch identities (0.631929ms)\n✔ native agent selection distinguishes incarnations and retains an unregistered ended session (0.235374ms)\n✔ native agent activation revalidates exact owner, live incarnation and actual desktop host (0.447703ms)\n✔ native activation refuses a replaced session behind the same selected owner (0.327131ms)\n✔ native resume retains exact canonical launch and saved host, including an ownerless ended launch (0.319386ms)\n✔ native resume refuses changed, live, ambiguous, inaccessible and hostless selections (0.44078ms)\n✔ native focus rejects shared labels, PID guesses, missing windows and conflicting exact handles (0.333984ms)\n✔ native results expose later matches while retaining exact selection and source capacity (1.900606ms)\n✔ qualified identity survives identical titles, harnesses and literal search characters (0.254421ms)\n✔ each canonical source has reserved result capacity including Work on everything (0.807578ms)\n✔ server search follows the query and scoped refreshes never request unrelated sources (0.304447ms)\n✔ canonical aggregate rows distinguish a real empty portfolio from unavailable or malformed data (0.279298ms)\n✔ independent source failures preserve useful results and stale completions cannot overwrite a refresh (0.252166ms)\n✔ Escape closes detail first; toggle, outside focus, independent pins and drafts retain their context (0.138998ms)\n✔ keyboard selection retains canonical identity when a different source arrives first (0.226607ms)\n✔ shortcut replacement retains old runtime bindings on collision and releases only successful replacements (0.386556ms)\n✔ GSettings schema compiles strictly in private storage (31.66019ms)\n✔ actual GJS bridge sends exact stdin through an argv path and rejects failed or malformed reads (351.140658ms)\n﹣ production-default physical audio devices record and play without synthetic fallback (0.267516ms) # SKIP\n✔ GStreamer devices finalize mono PCM WAV, play, bound duration and clean up failed or cancelled operations (4125.182988ms)\n✔ resident audio helper delivers recording state, finalized WAV and playback through its GTK loop (1220.93839ms)\n✔ resident voice transport accepts bounded audio, isolates cancellation and reaps PUI before completion (585.867837ms)\n✔ actual GJS streaming bridge delivers incrementally, drains errors and reaps cancelled children (627.466879ms)\n✔ resident GTK helper isolates concurrent reads, streams, cancellation and callback refusal (899.968189ms)\nℹ tests 57\nℹ suites 0\nℹ pass 56\nℹ fail 0\nℹ cancelled 0\nℹ skipped 1\nℹ todo 0\nℹ duration_ms 8285.407162\n"
+    },
+    "native": {
+      "path": "/tmp/wb-inbox-environment-live-20261109.log",
+      "sha256": "e904d629a4fd718126dca067d8abc007091ed3f50e4f9be1ee039dbe50826e3a",
+      "text": "[pc-heavy] fingerprinting untracked Git source files\n[pc-heavy] slot acquired — starting real work\nPC_HEAVY_ADMISSION status=skipped reason=memory-not-scarce priority=10 psiFullAvg10=6 admittedCgroupMiB=5764 admissionId=pc-heavy-3981404-1794195440642894261 retryHandle=psi-recovery:pc-heavy-3981404-1794195440642894261 freezeMeasurement=measured frozenTotalMs=0 frozenEpisodes=0 frozenOngoingMs=0\nGNOME_NATIVE_PASS {\"ok\":true,\"error\":null,\"phase\":\"connection change clears visible panel data\",\"journey\":\"input\",\"inputLog\":[{\"key\":65307,\"mode\":2},{\"key\":65513,\"mode\":1},{\"key\":65507,\"mode\":1},{\"key\":65507,\"mode\":1},{\"key\":97,\"mode\":1},{\"key\":97,\"mode\":1},{\"key\":110,\"mode\":1},{\"key\":110,\"mode\":1},{\"key\":101,\"mode\":1},{\"key\":101,\"mode\":1},{\"key\":101,\"mode\":1},{\"key\":101,\"mode\":1},{\"key\":100,\"mode\":1},{\"key\":100,\"mode\":1},{\"key\":108,\"mode\":1},{\"key\":108,\"mode\":1},{\"key\":101,\"mode\":1},{\"key\":101,\"mode\":1},{\"key\":65364,\"mode\":1},{\"key\":65364,\"mode\":1},{\"key\":65362,\"mode\":1},{\"key\":65362,\"mode\":1},{\"key\":65293,\"mode\":1},{\"key\":65293,\"mode\":1},{\"key\":65307,\"mode\":1},{\"key\":65307,\"mode\":1},{\"pointerTarget\":\"Pin\",\"phase\":\"pin click\",\"before\":[1125,67,70,28],\"after\":[1125,67,70,28],\"hit\":true,\"stable\":true,\"picked\":\"[0x595c5ca22bf0 StButton.button:hover (\\\"Pin\\\")]\"},{\"button\":1,\"x\":1160,\"y\":81,\"source\":\"null\",\"picked\":\"[0x595c5ca22bf0 StButton.button:hover (\\\"Pin\\\")]\",\"inside\":[{\"surface\":\"quick-access\",\"contains\":true}]},{\"key\":65505,\"mode\":1},{\"key\":65505,\"mode\":1},{\"button\":1,\"x\":5,\"y\":450,\"source\":\"null\",\"picked\":\"[0x595c57812be0 MetaBackgroundActor]\",\"inside\":[{\"surface\":\"quick-access\",\"contains\":false},{\"surface\":\"goals\",\"contains\":false}]},{\"key\":65513,\"mode\":1},{\"key\":65513,\"mode\":1}],\"actionMode\":1,\"overview\":false,\"windows\":[],\"states\":[{\"surface\":\"quick-access\",\"visible\":false,\"pinned\":true,\"selection\":null,\"detail\":null},{\"surface\":\"goals\",\"visible\":false,\"pinned\":false,\"selection\":null,\"detail\":null},{\"surface\":\"inbox\",\"visible\":false,\"pinned\":false,\"selection\":null,\"detail\":null},{\"surface\":\"organizer\",\"visible\":false,\"pinned\":false,\"selection\":null,\"detail\":null},{\"surface\":\"papercup\",\"visible\":false,\"pinned\":false,\"selection\":null,\"detail\":null},{\"surface\":\"accounts\",\"visible\":false,\"pinned\":false,\"selection\":null,\"detail\":null}],\"assertions\":[\"native shortcut acquisition\",\"native seat supports input injection\",\"native input methods exist\",\"desktop ready for normal shortcuts\",\"qualified plan reached native actor model\",\"Shell actor is attached\",\"native result controls rendered\",\"independent pinned panels coexist\",\"Goals requests only its canonical source\",\"panels and GTK helper create no application windows\",\"debounced canonical query renders current result\",\"exact report body in native detail\",\"first Escape dismisses detail only\",\"second Escape dismisses only its surface\",\"reopen retains query and exact selection\",\"outside dismissal preserves another pinned surface\",\"repeated shortcut toggles pinned surface\",\"Inbox canonical list reaches native actor\",\"Inbox persisted denominator reaches native status\",\"Inbox selected context preserves exact identity\",\"Inbox context read uses canonical id without action itemId\",\"Inbox confirmation freezes edited answer\",\"Inbox write uses helper native-inbox and verifies terminal receipt\",\"Inbox adds no application window\",\"Inbox dismissal removes native actors and run refresh\",\"seat shortcut opens panel\",\"seat typing reaches focused native search\",\"seat arrow navigates results\",\"seat Up restores exact report selection\",\"focused search consumes Enter through native activate signal\",\"seat Enter opens exact selected detail\",\"seat Escape dismisses detail before surface\",\"seat click pins native panel\",\"seat second shortcut preserves independent pin\",\"seat journey keeps native surfaces outside application windows\",\"seat outside click closes unpinned panel and preserves pin\",\"seat shortcut toggles pinned panel closed\",\"connection change dismisses panels and retires old data, detail and selection\",\"connection change selects the new helper backend and retires Inbox identity\",\"connection change clears pending Inbox actions and connection-scoped reviews\",\"late previous-connection action receipt cannot restore a saved Inbox run\"],\"sourceCustody\":{\"archiveSha256\":\"ec5fd2d31cf3497174558412822674a389eced6a60bdf45ac7fe598ef3b5dcae\",\"journey\":\"input\",\"files\":{\"extension.js\":\"68bcf1dd375726d3c76a74fc631781fe787cde504def7e08f8edc10267f8eab5\",\"workbench.js\":\"710f8fe1179ad67e71a7e7e35e0e8bed60f1018a259efa5ca1717b3196efd478\",\"panel-model.mjs\":\"706495d350b666b87b7f8143f2572e386ae38afa4b6775496d6dc4b581825c97\",\"bridge.js\":\"f0af6f85819867ea17c790d268b2c428af15d36e489d6c7134b5feeadeaf4eb2\",\"helper.js\":\"5604d173a62ad88583c884b0689ee1afc04da7a64ea5f41771e1fcd209416709\",\"audio.js\":\"3e3d4927292d31494313a74fcee3438b3eaf3afefdacb5f430ba4fcb1827f6ad\",\"chat-content.js\":\"bc1cdc7aa8bd0422c2a3783bd05659660db49245906ec5c8dea7b8705afa8f8e\",\"schemas/org.gnome.shell.extensions.papercusp-workbench.gschema.xml\":\"ac2f5d184f3e7f3156df421fd58139989c8990900eecc967ffb5f133d7e8b209\"},\"testSha256\":\"1011d8a22e4117a2977ad962dddc21316e7fb0e6ad660ff0a865baff57543ed9\"}}\n✔ private GNOME Shell renders actors and handles real seat keyboard, pointer and nested dismissal [input] (8677.88993ms)\nℹ tests 1\nℹ suites 0\nℹ pass 1\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 8791.991266\nPC_HEAVY_ADMISSION status=completed reason=cleanup priority=10 psiFullAvg10=unavailable admittedCgroupMiB=0 admissionId=pc-heavy-3981404-1794195440642894261 retryHandle=psi-recovery:pc-heavy-3981404-1794195440642894261 freezeMeasurement=measured frozenTotalMs=0 frozenEpisodes=0 frozenOngoingMs=0\n"
+    }
+  },
+  "rootCauseVerification": {
+    "inbox": "InboxState.begin previously invalidated reads only. Same pending action remained current across _configure connection changes. Existing begin({resetEnvironment:true}) now increments actionGeneration and clears pending plus environment-bound review state; ordinary begin still preserves drafts. Unit failed before, passes after; real Shell settings callback rejects late previous-connection receipt.",
+    "fixture": "The request fixture originated with a human-readable conversation and no audio, violating nativeVoiceRequest admission before reaching the behavior asserted. Bind the existing ChatState fixture and request to one valid UUID with canonical base64 audio. Production validators unchanged."
+  }
+}
