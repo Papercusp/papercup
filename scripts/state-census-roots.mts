@@ -268,7 +268,8 @@ const reapArchive = await reapArchiveCensusProducer(undefined, [], args.includes
 stage('affected-test-cache');
 const affectedCache = await affectedTestCacheCensusProducer();
 stage('runtime-sidefiles');
-const sidefiles = await runtimeSidefileCensusProducer();
+const sidefiles = await runtimeSidefileCensusProducer(undefined, undefined,
+  [papercuspRoot(), ...readRegistry().workspaces.map(workspace => papercuspRootForWorkspace(workspace.id))]);
 stage('workspace-setup-homes');
 const setupHomes = await readWorkspaceSetupHomes(readRegistry().workspaces);
 stage('template-mirror');
