@@ -1140,6 +1140,42 @@ describe('secret census producer adapters', () => {
     } finally { await rm(home, { recursive: true, force: true }); }
   });
 
+  it('retains discovery in explicit workspace runtime homes without following links or claiming copied working directories', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'workspace-discovery-census-'));
+    const active = join(home, 'active');
+    const inactive = join(home, 'inactive');
+    const copied = join(home, 'project');
+    const linked = join(home, 'linked');
+    const records = {
+      'operator.json': { httpUrl: 'http://127.0.0.1:3170', port: 3170, token: 'fixture-bearer', pid: 123,
+        startedAt: 1730000000000, version: '0.1.0' },
+      'operator-port.json': { port: 3170, updatedAt: 1730000000000 },
+      'endpoint-ipc.3170.json': {},
+      'endpoint-ipc.json.2f8f5ba0-d4ba-4c88-8884-2f2a7969683a.tmp': {},
+    };
+    try {
+      for (const directory of [join(home, '.papercusp'), active, inactive, copied]) {
+        await mkdir(directory);
+        for (const [name, record] of Object.entries(records)) await writeFile(join(directory, name), JSON.stringify(record));
+        await writeFile(join(directory, 'operator.json.bak'), '{}');
+        await writeFile(join(directory, 'endpoint-ipc.65536.json'), '{}');
+      }
+      await symlink(copied, linked);
+      const result = await runtimeSidefileCensusProducer(home, { PAPERCUSP_HOME: active }, [copied],
+        [active, inactive, inactive, linked]);
+      for (const directory of [active, inactive]) {
+        const root = result.roots.find(entry => entry.path === directory)!;
+        const entries = result.declarations.filter(entry => entry.root === root.id);
+        expect(entries.map(entry => entry.name).sort()).toEqual(Object.keys(records).sort());
+        expect(entries.find(entry => entry.name === 'operator.json')).toMatchObject({ classification: 'secret' });
+        expect(entries.find(entry => entry.name === 'operator-port.json')).toMatchObject({ classification: 'config' });
+        expect(entries.filter(entry => entry.name.startsWith('endpoint-ipc')).every(entry => entry.classification === 'cache')).toBe(true);
+      }
+      expect(result.roots.some(entry => entry.path === linked || entry.path === copied)).toBe(false);
+      expect(await readFile(join(inactive, 'operator.json'), 'utf8')).toBe(JSON.stringify(records['operator.json']));
+    } finally { await rm(home, { recursive: true, force: true }); }
+  });
+
   it('retains validated operator discovery credentials and port memory across host-home relocation', async () => {
     const home = await mkdtemp(join(tmpdir(), 'operator-discovery-census-'));
     const ordinary = join(home, '.papercusp');

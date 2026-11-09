@@ -300,11 +300,19 @@ describe('unit census executable exit contract', () => {
         writeFileSync(join(directory, 'foreign-source.ts'), 'unrelated sibling');
       }
       writeFileSync(join(legacy, '.papercup-console-active.124'), 'retained data');
+      for (const directory of [legacy, foreign]) {
+        writeFileSync(join(directory, 'endpoint-ipc.3170.json'), '{}');
+        writeFileSync(join(directory, 'operator-port.json'), JSON.stringify({ port: 3170, updatedAt: 1730000000000 }));
+      }
       const report = await runRootCensus({ checkpointLogDir: join(fixtureHome, 'checkpoint-history') });
       expect(report.inventory.find(entry => entry.name.endsWith(`default/.papercusp/${marker}`)))
         .toMatchObject({ classification: 'cache', producers: ['console-spawn-legacy-sentinel'] });
       expect(report.inventory.find(entry => entry.name.endsWith('default/.papercusp/crash-reports/report.json')))
         .toMatchObject({ classification: 'state', producers: ['fatal-diagnostics'] });
+      expect(report.inventory.find(entry => entry.name.endsWith('default/.papercusp/endpoint-ipc.3170.json')))
+        .toMatchObject({ classification: 'cache', producers: ['endpoint-ipc-discovery'] });
+      expect(report.inventory.find(entry => entry.name.endsWith('default/.papercusp/operator-port.json')))
+        .toMatchObject({ classification: 'config', producers: ['operator-server-discovery'] });
       expect(report.residue.some(entry => entry.name.endsWith('default/.papercusp/foreign-source.ts'))).toBe(true);
       expect(report.residue.some(entry => entry.name.endsWith('default/.papercusp/.papercup-console-active.124'))).toBe(true);
       expect(report.inventory.filter(entry => entry.name.includes('unregistered') && entry.classification)).toEqual([]);

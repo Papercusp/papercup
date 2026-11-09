@@ -283,7 +283,7 @@ stage('workspace-setup-homes');
 const setupHomes = await readWorkspaceSetupHomes(readRegistry().workspaces);
 stage('runtime-sidefiles');
 const sidefiles = await runtimeSidefileCensusProducer(undefined, undefined,
-  setupHomes.roots.map(root => root.path));
+  setupHomes.roots.map(root => root.path), setupHomes.roots.map(root => root.path));
 stage('template-mirror');
 const templateExpected = (await buildExpected()).expected;
 const historicalTemplateIdentity = historicalGitBlobIdentityResolver(fileURLToPath(new URL('..', import.meta.url)));

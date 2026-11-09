@@ -500,7 +500,7 @@ export async function planTemplateStoreCensusProducer(path = papercuspRoot()) {
 
 /** Exact runtime sidefile writers; siblings require separate provenance. */
 export async function runtimeSidefileCensusProducer(home = homedir(), environment: NodeJS.ProcessEnv = process.env,
-  workingDirectories: readonly string[] = []) {
+  workingDirectories: readonly string[] = [], runtimeHomes: readonly string[] = []) {
   const root: CensusRoot = { id: 'runtime-sidefiles', path: join(home, '.papercusp') };
   const roots = [root];
   const declarations: CensusDeclaration[] = [];
@@ -602,10 +602,14 @@ export async function runtimeSidefileCensusProducer(home = homedir(), environmen
   // The embedding worker uses ||, while the co-change host helper trims the
   // pin; preserve both writer contracts rather than substituting papercuspRoot.
   const ordinaryHome = join(home, '.papercusp');
+  // Console/spawn selects PAPERCUSP_HOME for a particular workspace. Retain
+  // discovery left in registered or legacy homes after switching workspaces;
+  // arbitrary launch working directories are not runtime-home evidence.
+  const discoveryHomes = new Set([ordinaryHome, papercuspHome(environment, home), ...runtimeHomes]);
   // serve.ts and embedded-postgres-server write these exact host-home files.
   // Discovery includes bearer/DSN credentials, even though its process address
   // will need regeneration after transfer. Never downgrade it to disposable cache.
-  for (const directory of new Set([ordinaryHome, papercuspHome(environment, home)])) {
+  for (const directory of discoveryHomes) {
     try {
       if (!(await lstat(directory)).isDirectory() || await realpath(directory) !== resolve(directory)) continue;
     } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
@@ -668,8 +672,10 @@ export async function runtimeSidefileCensusProducer(home = homedir(), environmen
   // endpoint-ipc-discovery uses host-platform/home, including its override;
   // these advertisements and interrupted atomic writes describe live processes
   // and must be regenerated on the destination rather than transported.
-  for (const directory of new Set([ordinaryHome, papercuspHome(environment, home)])) {
-    try { if (!(await lstat(directory)).isDirectory()) continue; }
+  for (const directory of discoveryHomes) {
+    try {
+      if (!(await lstat(directory)).isDirectory() || await realpath(directory) !== resolve(directory)) continue;
+    }
     catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
     let endpointRoot = roots.find(candidate => candidate.path === directory);
     for (const entry of await readdir(directory, { withFileTypes: true })) {
