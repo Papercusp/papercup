@@ -2400,6 +2400,7 @@ export async function resolveMetadataRepairLock({ repoRoot }, {
     resolution = { exitCode: status };
     if (status !== 0) throw new Error("metadata-repair-resolution-failed");
     stage = "validate-inputs";
+    log("NPM_INSTALL_SAFE phase=metadata-repair stage=" + stage);
     // npm may rewrite mirror metadata in the lock; it may not change a source
     // manifest, config, local target or archive to make the graph look valid.
     for (const [path, bytes] of input.snapshot) {
@@ -2409,13 +2410,16 @@ export async function resolveMetadataRepairLock({ repoRoot }, {
       if (!fileBytesEqual(bytes, actual)) throw new Error("metadata-repair-resolver-changed-input");
     }
     stage = "validate-output";
+    log("NPM_INSTALL_SAFE phase=metadata-repair stage=" + stage);
     const output = join(input.scratchRoot, lockPath);
     if (!lstatSync(output).isFile() || lstatSync(output).isSymbolicLink()) throw new Error("metadata-repair-output-type");
     const bytes = readFileSync(output);
     const packages = JSON.parse(bytes).packages;
     if (!packages || typeof packages !== "object" || Array.isArray(packages)) throw new Error("metadata-repair-output-graph");
     stage = "validate-graph";
+    log("NPM_INSTALL_SAFE phase=metadata-repair stage=" + stage);
     assertMetadataRepairGraph({ repoRoot: input.scratchRoot, beforeLockBytes: input.snapshot.get(lockPath), lockPath }, { npmCli: cli });
+    log("NPM_INSTALL_SAFE phase=metadata-repair stage=graph-complete");
     receipt.output = { path: lockPath, sha256: digest(bytes), mode: lstatSync(output).mode & 0o777,
       registry: Object.entries(packages).sort(([a], [b]) => a.localeCompare(b)).map(([path, entry]) => ({
         path, resolved: entry.resolved ?? null, integrity: entry.integrity ?? null,
@@ -2431,6 +2435,7 @@ export async function resolveMetadataRepairLock({ repoRoot }, {
       rmSync(attemptRoot, { recursive: true, force: true });
       receipt.cleanup.removed = !existsSync(attemptRoot);
       if (!receipt.cleanup.removed) throw new Error("metadata-repair-cleanup-incomplete");
+      log("NPM_INSTALL_SAFE phase=metadata-repair stage=cleanup-complete");
     } catch (error) {
       receipt.cleanup.errorCode = error?.code ?? "metadata-repair-cleanup-incomplete";
       // Preserve the original refusal and record cleanup failure alongside it.

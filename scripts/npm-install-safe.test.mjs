@@ -281,7 +281,11 @@ test("metadata repair reconciles selected mirrors before npm without changing se
       "node_modules/mirror-child": { resolved: "packages/child", link: true } } }));
   writeFileSync(join(root, "package-lock.json"), before);
   let launched = false;
-  const result = await resolveMetadataRepairLock({ repoRoot: root }, { log: () => {}, spawnCommand: (command, args, options) => {
+  const stages = [];
+  const result = await resolveMetadataRepairLock({ repoRoot: root }, { log: line => {
+    const match = /^NPM_INSTALL_SAFE phase=metadata-repair stage=(.+)$/.exec(line);
+    if (match) stages.push(match[1]);
+  }, spawnCommand: (command, args, options) => {
     launched = true;
     const lock = JSON.parse(readFileSync(join(options.cwd, "package-lock.json")));
     assert.equal(lock.packages["packages/child"].dependencies, undefined);
@@ -293,6 +297,7 @@ test("metadata repair reconciles selected mirrors before npm without changing se
   assert.deepEqual(readFileSync(join(root, "package-lock.json")), before);
   assert.equal(result.receipt.cleanup.removed, true);
   assert.equal(JSON.parse(result.bytes).packages["packages/child"].dependencies, undefined);
+  assert.deepEqual(stages, ["validate-inputs", "validate-output", "validate-graph", "graph-complete", "cleanup-complete"]);
 });
 
 for (const genericVersion of ["1.0.0", "2.0.0"]) {
