@@ -704,15 +704,18 @@ function replayRuntimeMappings(lines, processId, pageSizeBytes, execEntries = []
   };
   // These narrow operations commute only on disjoint, page-rounded extents.
   // Returned allocation addresses are observations; hints are not reservations.
-  // Keep file mappings, fixed replacement, permission changes, remaps and task
-  // lifecycle changes as barriers rather than guessing their concurrent effects.
+  // Keep file mappings, fixed replacement, failed or unsupported permission
+  // changes, remaps and task lifecycle changes as barriers.
   const independentRange = row => {
     if (!page || !tasks.has(row.tid)) return null;
-    const call = /^(mmap|munmap)\((.*)\)\s+=\s+(0x[0-9a-f]+|0)$/i.exec(row.call);
+    const call = /^(mmap|munmap|mprotect)\((.*)\)\s+=\s+(0x[0-9a-f]+|0)$/i.exec(row.call);
     if (!call) return null;
     const [, operation, args, result] = call, fields = args.split(', ').map(field => field.trim());
     if (operation === 'munmap')
       return fields.length === 2 && result === '0' ? range(fields[0], fields[1]) : null;
+    if (operation === 'mprotect')
+      return fields.length === 3 && result === '0' && permissions(fields[2])
+        ? range(fields[0], fields[1]) : null;
     const flags = (fields[3] ?? '').split('|');
     return fields.length === 6 && /^0x[0-9a-f]+$/i.test(result)
       && (fields[0] === 'NULL' || number(fields[0]) !== null)
