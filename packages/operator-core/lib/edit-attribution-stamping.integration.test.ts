@@ -10,8 +10,9 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import type { RunGit } from './harness/git-sync/run-git-sync';
+import { publishGitSyncCandidate, type RunGit } from './harness/git-sync/run-git-sync';
 import type { FrozenEditCohort } from './edit-attribution';
+import postgres from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 
@@ -116,8 +117,8 @@ describe('edit stamping from the editor held set', () => {
       goalRef: 'WI-A', dispatchCallId: id, captureReceipt: member(id, path, dependencies) }, { strict: true });
   }
   const freeze = () => freezeEditCohort({ workspaceId: WS, harnessSlug: 'papercusp', workItemId: 'WI-A', ...context });
-  async function lifecycle() {
-    return (await cohort() as { gitSyncLifecycle: { captures: Record<string, unknown>; frozen: FrozenEditCohort } }).gitSyncLifecycle;
+  async function lifecycle(sql = h.db!.sql) {
+    return (await cohort(sql) as { gitSyncLifecycle: { captures: Record<string, unknown>; frozen: FrozenEditCohort } }).gitSyncLifecycle;
   }
   function evidence(frozen: FrozenEditCohort, captures: Record<string, unknown>) {
     return { frozen, captures, ...context, publicationIntent: true, dependencies: [],
@@ -220,7 +221,13 @@ describe('edit stamping from the editor held set', () => {
   it.each([
     { route: 'release', assigned: true }, { route: 'expiry', assigned: true },
     { route: 'release', assigned: false }, { route: 'expiry', assigned: false },
-  ])('preserves real multi-file Git custody and PG attribution before $route handoff (assigned=$assigned)', async ({ route, assigned }) => {
+  ])('preserves real multi-file Git custody and PG attribution before $route handoff (assigned=$assigned)',
+    ({ route, assigned }) => verifyHandoff(route, assigned));
+
+  it('retains and publishes a coherent multi-file milestone after real hold expiry and session restart',
+    () => verifyHandoff('expiry', true, true));
+
+  async function verifyHandoff(route: string, assigned: boolean, publishMilestone = false) {
     const store = await import('./agent-tools/locks/su-lock-store');
     const { inWorkspaceTxn } = await import('./agent-tools/locks/in-workspace-txn');
     const { configureLocks, locksHost } = await import('@papercusp/locks');
@@ -315,6 +322,34 @@ describe('edit stamping from the editor held set', () => {
       if (assigned) {
         await h.db!.sql`UPDATE harness_shared.work_items SET taken_by = 'successor'
           WHERE workspace_id = ${WS} AND feature_id = 'WI-A'`;
+        if (publishMilestone) {
+          // A new database session reloads the durable subject, independently
+          // of the vanished editor and its in-memory capture receipt.
+          const freshReader = postgres(h.db!.url, { max: 1, prepare: false });
+          try {
+            const resumed = await lifecycle(freshReader);
+            expect(resumed.frozen).toEqual(originalMilestone);
+            const member = resumed.frozen.members[0].candidate;
+            const request = { requestId: member.requestId, generation: member.generation,
+              base: member.base, paths: member.paths };
+            expect(await publishGitSyncCandidate(runGit, repo, request, {
+              assertHeld: () => {}, beforePublish: async candidate => {
+                expect(candidate).toEqual(member);
+                const current = await lifecycle(freshReader);
+                const verdict = checkFrozenEditCohortEvidence(evidence(current.frozen, current.captures));
+                return verdict.ok ? { ok: true } : { ok: false, error: verdict.reason };
+              },
+            })).toMatchObject({ status: 'committed', tree: member.tree });
+            expect(git('show', 'HEAD:a.txt')).toBe('A1 working');
+            const committedBinary = spawnSync('git', ['show', 'HEAD:b.txt'], { cwd: repo });
+            expect(committedBinary.status).toBe(0);
+            expect(committedBinary.stdout).toEqual(Buffer.from([0, 255, 128, 1]));
+            expect(git('rev-list', '--count', 'HEAD')).toBe('2');
+            expect(readFileSync(join(repo, '.git/index'))).toEqual(index);
+            expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('B1 working\n');
+          } finally { await freshReader.end(); }
+          return;
+        }
         const successor = { repoRoot: repo, files: ['a.txt', 'b.txt'], agentId: 'successor', workspaceId: WS,
           goalRef: 'WI-A', sessionId: 'fresh-successor-session', dispatchCallId: 'successor-session-edit' };
         const receipt = await preserveEditGeneration({ ...successor, operationState: 'granted' }, runGit);
@@ -341,7 +376,7 @@ describe('edit stamping from the editor held set', () => {
       await store.getTxPool()`DELETE FROM agent_file_locks WHERE coordination_domain = ${repo}`;
       await store.getTxPool()`DELETE FROM agent_lock_waiters WHERE coordination_domain = ${repo}`;
     }
-  });
+  }
 
   const receipt = (path: string) => ({ version: 1, kind: 'edit-generation', pending: true,
     capture: { candidate: { repository: '/fixture/.git', paths: [path], base: 'a'.repeat(40), tree: 'b'.repeat(40) } } });
@@ -349,8 +384,8 @@ describe('edit stamping from the editor held set', () => {
     await recordEditAttribution({ repoRoot: root, files: [path], agentId: AGENT, workspaceId: WS,
       goalRef: 'WI-A', sessionId, dispatchCallId: id, captureReceipt: receipt(path) }, { strict: true });
   }
-  async function cohort() {
-    const rows = await h.db!.sql<Array<{ payload: Record<string, unknown> }>>`
+  async function cohort(sql = h.db!.sql) {
+    const rows = await sql<Array<{ payload: Record<string, unknown> }>>`
       SELECT payload FROM harness_shared.work_items WHERE feature_id = 'WI-A' AND workspace_id = ${WS}`;
     return rows[0].payload;
   }
