@@ -2,6 +2,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { readHistoricalCensusWriterCandidates, recoverHistoricalCensusWriterEvidence } from './state-census-producers';
+import postgres from 'postgres';
+import { readRetainedReapTaskIds } from '../../../../scripts/state-census-roots.mts';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 
 describe('historical census writer index and canonical archive boundary', () => {
   let db: FreshPgDb;
@@ -15,9 +18,36 @@ describe('historical census writer index and canonical archive boundary', () => 
       workspace_id text, source_kind text, session_id text, part_idx integer,
       part_kind text, text text, ts timestamptz,
       PRIMARY KEY (workspace_id, source_kind, session_id, part_idx))`;
+    await db.sql`CREATE TABLE harness_shared.event_key_fires (
+      workspace_id text, event_key text, last_fired_by text, last_payload jsonb, fire_count bigint,
+      PRIMARY KEY (workspace_id, event_key))`;
   });
-  beforeEach(async () => { await db.sql`TRUNCATE harness_shared.session_turn_parts`; });
+  beforeEach(async () => { await db.sql`TRUNCATE harness_shared.session_turn_parts, harness_shared.event_key_fires`; });
   afterAll(async () => { await db?.cleanup(); });
+
+  it('reads exact terminal latches as the first query on a fresh PostgreSQL connection', async () => {
+    for (const [taskId, source, workspace, state] of [
+      ['gc-archive', 'task-manager', DEFAULT_COORD_WORKSPACE, 'ended_unobserved'],
+      ['other-source', 'another-writer', DEFAULT_COORD_WORKSPACE, 'stranded'],
+      ['other-workspace', 'task-manager', 'foreign-workspace', 'stranded'],
+      ['still-running', 'task-manager', DEFAULT_COORD_WORKSPACE, 'running'],
+    ]) {
+      await db.sql`INSERT INTO harness_shared.event_key_fires VALUES
+        (${workspace}, ${`task:terminal:${taskId}`}, ${source}, ${db.sql.json({ taskId, state })}, 1)`;
+    }
+    await db.sql`INSERT INTO harness_shared.event_key_fires
+      SELECT ${DEFAULT_COORD_WORKSPACE}, 'task:terminal:unrequested-' || n, 'task-manager',
+             jsonb_build_object('taskId', 'unrequested-' || n, 'state', 'stranded'), 1
+        FROM generate_series(1, 1001) n`;
+    // The first query has no driver array-OID cache. Explicit text[] inference
+    // must work without a warmup query or production task/event tables.
+    const cold = postgres(db.url, { max: 1 });
+    try {
+      expect(await readRetainedReapTaskIds(
+        ['gc-archive', 'other-source', 'other-workspace', 'still-running', 'missing'], [], { terminalSql: cold },
+      )).toEqual(['gc-archive']);
+    } finally { await cold.end(); }
+  });
 
   it('keeps nonadjacent and missing results as candidates while archive call ids reject absent or ambiguous receipts', async () => {
     const sessions = ['interleaved', 'missing', 'ambiguous', 'adjacent'];
