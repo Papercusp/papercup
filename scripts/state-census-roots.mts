@@ -5,7 +5,7 @@ import { installedRootCensusProducers, postgresStorageDeclaration, gitStorageDec
 import { readdir, lstat, readFile, open } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { join, relative, dirname, basename, sep, isAbsolute } from 'node:path';
-import { workspacesRoot, readRegistry } from '../packages/operator-core/lib/workspace-registry';
+import { workspacesRoot, readRegistry, DEFAULT_WORKSPACE_ID } from '../packages/operator-core/lib/workspace-registry';
 import { defaultClonesDir } from '../packages/operator-core/lib/harness/clone-github';
 import postgres from 'postgres';
 import { getHarnessAdminUrl } from '../packages/operator-core/lib/embedded-pg-discovery';
@@ -24,6 +24,7 @@ import { papercuspRoot, papercuspRootForWorkspace } from '../packages/operator-c
 import { checkpointLogDirFromEnv } from '../packages/operator-core/lib/release/checkpoint-log-dir';
 import { taskTerminalEventKey } from '../packages/operator-core/lib/task-manager/task-terminal-events';
 import { TERMINAL_TASK_STATES } from '../packages/operator-core/lib/task-manager/types';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 
 /** Recover exact reaper identities even after terminal task-ledger retention.
  * A terminal latch proves writer identity, not tail contents or a successful task.
@@ -53,7 +54,11 @@ export async function readRetainedReapTaskIds(
     return listTasks({ workspaceId, includeEnded: true, taskIds: ids, limit: 2000 });
   });
   const retained = new Set<string>();
-  for (const workspaceId of new Set(workspaces.map(workspace => workspace.id))) {
+  // Both the task writer's pre-registry fallback and the coordination log's
+  // pre-workspace partition remain evidence sources after registry removal.
+  // sendMessage persists through coordLog, not identity.workspaceId.
+  const taskWorkspaceIds = [...new Set([...workspaces.map(workspace => workspace.id), DEFAULT_WORKSPACE_ID])];
+  for (const workspaceId of taskWorkspaceIds) {
     for (const task of await readTasks(workspaceId, [...requested])) {
       if (requested.has(task.taskId)) retained.add(task.taskId);
     }
@@ -63,7 +68,6 @@ export async function readRetainedReapTaskIds(
   const readTerminalLatches = readers.readTerminalLatches ?? (async keys => {
     // Same global event namespace and columns as getKeyFireLatch; read the
     // requested keys together rather than opening one query per archived tail.
-    const { DEFAULT_COORD_WORKSPACE } = await import('@papercusp/coordination/event-log');
     const sql = readers.terminalSql ?? postgres(getHarnessAdminUrl(), { max: 1, connect_timeout: 5 });
     try {
       return await sql<{ eventKey: string; lastFiredBy: string | null; lastPayload: unknown; fireCount: number | string }[]>`
@@ -88,8 +92,8 @@ export async function readRetainedReapTaskIds(
       && typeof state === 'string' && terminalStates.has(state)) retained.add(taskId);
   }
   const unproven = [...requested].filter(id => !retained.has(id));
-  const workspaceIds = [...new Set(workspaces.map(workspace => workspace.id))];
-  if (!unproven.length || !workspaceIds.length) return [...retained];
+  const workspaceIds = [...new Set([...taskWorkspaceIds, DEFAULT_COORD_WORKSPACE])];
+  if (!unproven.length) return [...retained];
   // Older archives predate terminal latches. The reaper's canonical broadcasts
   // preserve exact task identities after ledger GC, independently of filenames.
   // A failed stop can also have an archived tail; this proves identity only.
@@ -120,13 +124,21 @@ export async function readRetainedReapTaskIds(
   return [...retained];
 }
 
-/** Reuse setup and runtime writers across active and registered workspace homes. */
+/** Reuse setup and runtime writers across active, registered and legacy homes. */
 export async function readWorkspaceSetupHomes(
   workspaces: readonly { id: string }[],
   resolveRoot: (workspace: string) => string = papercuspRootForWorkspace,
   activeRoot = papercuspRoot(),
 ) {
   const paths = [...new Set([activeRoot, ...workspaces.map(workspace => resolveRoot(workspace.id))])];
+  // papercuspRoot() and isKnownWorkspace() explicitly retain this pre-registry
+  // fallback. Its absence from registry.json does not retire the writer home.
+  // Do not infer any other unregistered home, or follow a linked default root.
+  const legacyRoot = resolveRoot(DEFAULT_WORKSPACE_ID);
+  if (!paths.includes(legacyRoot)) {
+    try { if ((await lstat(legacyRoot)).isDirectory()) paths.push(legacyRoot); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  }
   const producers = await Promise.all(paths.map(async (path, index) => {
     const setup = await cliSetupHomeCensusProducer(path);
     const retained = runtimeRetainedCensusProducer(path);
@@ -267,11 +279,11 @@ const reapArchive = await reapArchiveCensusProducer(undefined, [], args.includes
   ? taskIds => readRetainedReapTaskIds(taskIds, readRegistry().workspaces) : undefined);
 stage('affected-test-cache');
 const affectedCache = await affectedTestCacheCensusProducer();
-stage('runtime-sidefiles');
-const sidefiles = await runtimeSidefileCensusProducer(undefined, undefined,
-  [papercuspRoot(), ...readRegistry().workspaces.map(workspace => papercuspRootForWorkspace(workspace.id))]);
 stage('workspace-setup-homes');
 const setupHomes = await readWorkspaceSetupHomes(readRegistry().workspaces);
+stage('runtime-sidefiles');
+const sidefiles = await runtimeSidefileCensusProducer(undefined, undefined,
+  setupHomes.roots.map(root => root.path));
 stage('template-mirror');
 const templateExpected = (await buildExpected()).expected;
 const historicalTemplateIdentity = historicalGitBlobIdentityResolver(fileURLToPath(new URL('..', import.meta.url)));
