@@ -791,6 +791,91 @@ describe('secret census producer adapters', () => {
       expect(writer).toContain("return re.sub(r'[^A-Za-z0-9_.-]', '_', str(sid))[:120]");
     } finally { vi.unstubAllEnvs(); await rm(home, { recursive: true, force: true }); }
   });
+  it('excludes exact endpoint advertisements across host relocation while exposing hostile neighbors', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'endpoint-census-'));
+    const ordinary = join(home, '.papercusp');
+    const relocated = join(home, 'isolated-host');
+    const uuid = '12345678-1234-4123-8123-123456789abc';
+    const names = ['endpoint-ipc.json', 'endpoint-ipc.3170.json', `endpoint-ipc.3170.json.${uuid}.tmp`];
+    const unknown = ['endpoint-ipc.65536.json', 'endpoint-ipc.0.json', 'endpoint-ipc.foo.json',
+      'endpoint-ipc.json.backup', 'endpoint-ipc.json.invalid.tmp', 'unproven.json'];
+    try {
+      for (const directory of [ordinary, relocated]) {
+        await mkdir(directory);
+        for (const name of [...names, ...unknown]) await writeFile(join(directory, name), 'process advertisement fixture');
+        await symlink(join(directory, names[0]), join(directory, 'endpoint-ipc.3070.json'));
+        await mkdir(join(directory, 'endpoint-ipc.4000.json'));
+      }
+      const result = await runtimeSidefileCensusProducer(home, { PAPERCUSP_HOME: relocated });
+      const owned = result.declarations.filter(entry => entry.producer === 'endpoint-ipc-discovery');
+      expect(owned).toHaveLength(6);
+      expect(owned.every(entry => names.includes(entry.name) && entry.classification === 'cache' && !entry.descendants)).toBe(true);
+      const census = await collectStateCensus({ ...result, readCatalogs: async () => [] });
+      expect(census.inventory.filter(entry => entry.classification === 'cache')).toHaveLength(6);
+      for (const name of [...unknown, 'endpoint-ipc.3070.json', 'endpoint-ipc.4000.json']) {
+        expect(census.residue.filter(entry => entry.name === name)).toHaveLength(2);
+      }
+      await rename(relocated, `${relocated}-target`);
+      await symlink(`${relocated}-target`, relocated);
+      expect((await runtimeSidefileCensusProducer(home, { PAPERCUSP_HOME: relocated })).declarations
+        .filter(entry => entry.producer === 'endpoint-ipc-discovery')).toHaveLength(3);
+      const writer = await readFile(new URL('../endpoint-ipc-discovery.ts', import.meta.url), 'utf8');
+      for (const source of ['return papercuspHome()', "const REL_FILE = 'endpoint-ipc.json'",
+        '`endpoint-ipc.${port}.json`', '`${path}.${randomUUID()}.tmp`']) expect(writer).toContain(source);
+    } finally { await rm(home, { recursive: true, force: true }); }
+  });
+
+  it('classifies desktop process markers and durable target using their actual homes and display payloads', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'desktop-census-'));
+    const real = join(home, 'real-user');
+    const channel = join(real, '.papercusp-nightly');
+    const override = join(home, 'host-override');
+    const ordinary = join(real, '.papercusp');
+    const channelState = join(channel, '.papercusp');
+    const report = (display: string) => JSON.stringify({ version: '0.0.1', pid: 42, startedAtMs: 123,
+      display, role: 'gui', isDev: false });
+    try {
+      for (const directory of [ordinary, channelState, override]) await mkdir(directory, { recursive: true });
+      for (const directory of [ordinary, channelState]) {
+        await writeFile(join(directory, 'desktop-app-version.json'), report(''));
+        await writeFile(join(directory, 'desktop-app-version-110_0.json'), report(':110.0'));
+        await writeFile(join(directory, 'desktop-app-version-foreign.json'), report(':other'));
+        await writeFile(join(directory, 'desktop-app-version-invalid.json'), '{}');
+        await writeFile(join(directory, 'desktop-build-target.json'), '{"name":"staging","port":3170}');
+        await writeFile(join(directory, 'desktop-build-target.json.bak'), 'unknown');
+        await symlink(join(directory, 'desktop-app-version.json'), join(directory, 'desktop-app-version-link.json'));
+      }
+      // PAPERCUSP_HOME does not relocate either Rust desktop writer.
+      await writeFile(join(override, 'desktop-build-target.json'), 'unknown');
+      await writeFile(join(override, 'desktop-app-version.json'), report(''));
+      const result = await runtimeSidefileCensusProducer(channel, { HOME: real, PAPERCUSP_HOME: override });
+      const reports = result.declarations.filter(entry => entry.producer === 'desktop-app-version-report');
+      expect(reports).toHaveLength(4);
+      expect(reports.every(entry => entry.classification === 'cache' && !entry.descendants)).toBe(true);
+      const targets = result.declarations.filter(entry => entry.producer === 'desktop-env-switch-target');
+      expect(targets).toHaveLength(1);
+      expect(result.roots.find(root => root.id === targets[0].root)?.path).toBe(ordinary);
+      expect(targets[0].classification).toBe('config');
+      const census = await collectStateCensus({ ...result, readCatalogs: async () => [] });
+      for (const name of ['desktop-app-version-foreign.json', 'desktop-app-version-invalid.json',
+        'desktop-app-version-link.json', 'desktop-build-target.json.bak']) expect(census.residue.some(entry => entry.name === name)).toBe(true);
+      const fallback = await runtimeSidefileCensusProducer(channel, { USERPROFILE: real, PAPERCUSP_HOME: override });
+      expect(fallback.declarations.filter(entry => entry.producer === 'desktop-app-version-report')).toHaveLength(4);
+      expect(fallback.declarations.filter(entry => entry.producer === 'desktop-env-switch-target')).toHaveLength(0);
+      const desktop = await readFile(new URL('../../../../papercusp-desktop/src-tauri/src/main.rs', import.meta.url), 'utf8');
+      expect(desktop).toContain('let ver_path = workspaces::shared_sidecar_home()');
+      expect(desktop).toContain('disp.replace(\':\', "").replace(\'.\', "_")');
+      const workspaces = await readFile(new URL('../../../../papercusp-desktop/src-tauri/src/workspaces.rs', import.meta.url), 'utf8');
+      expect(workspaces).toContain('home_for(real_home(), data_home_dir_name())');
+      expect(workspaces).toContain('real.join(data_home_dir_name)');
+      expect(workspaces).toContain('std::env::var("HOME")');
+      expect(workspaces).toContain('std::env::var("USERPROFILE")');
+      const target = await readFile(new URL('../../../../papercusp-desktop/src-tauri/src/env_switch.rs', import.meta.url), 'utf8');
+      expect(target).toContain('let home = std::env::var_os("HOME")?');
+      expect(target).toContain('.join(".papercusp/desktop-build-target.json")');
+    } finally { await rm(home, { recursive: true, force: true }); }
+  });
+
   it('retains host gateway logs and one rotation across relocation without trusting workspace names or links', async () => {
     const home = await mkdtemp(join(tmpdir(), 'gateway-log-census-'));
     const ordinary = join(home, '.papercusp');

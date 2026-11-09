@@ -411,6 +411,59 @@ export async function runtimeSidefileCensusProducer(home = homedir(), environmen
   // The embedding worker uses ||, while the co-change host helper trims the
   // pin; preserve both writer contracts rather than substituting papercuspRoot.
   const ordinaryHome = join(home, '.papercusp');
+  // endpoint-ipc-discovery uses host-platform/home, including its override;
+  // these advertisements and interrupted atomic writes describe live processes
+  // and must be regenerated on the destination rather than transported.
+  for (const directory of new Set([ordinaryHome, papercuspHome(environment, home)])) {
+    try { if (!(await lstat(directory)).isDirectory()) continue; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+    let endpointRoot = roots.find(candidate => candidate.path === directory);
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const match = /^endpoint-ipc(?:\.(\d{1,5}))?\.json(?:\.[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.tmp)?$/.exec(entry.name);
+      if (!entry.isFile() || !match || (match[1] && (Number(match[1]) < 1 || Number(match[1]) > 65535))) continue;
+      // An existing directory alone is not provenance for another census root.
+      if (!endpointRoot) { endpointRoot = { id: `runtime-endpoint-${roots.length}`, path: directory }; roots.push(endpointRoot); }
+      declarations.push({ kind: 'path', root: endpointRoot.id, name: entry.name,
+        classification: 'cache', producer: 'endpoint-ipc-discovery' });
+    }
+  }
+  // The desktop version reporter writes under shared_sidecar_home(), not
+  // PAPERCUSP_HOME or the workspace registry. `home` is the sidecar's actual
+  // HOME (including a baked channel subhome); also retain the GUI's real home.
+  // Do not guess other channel homes from arbitrary directory names or env stamps.
+  const desktopHome = environment.HOME ?? environment.USERPROFILE;
+  for (const directory of new Set([ordinaryHome, ...(desktopHome === undefined ? [] : [resolve(desktopHome, '.papercusp')])])) {
+    try { if (!(await lstat(directory)).isDirectory()) continue; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+    let desktopRoot = roots.find(candidate => candidate.path === directory);
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      if (environment.HOME !== undefined && directory === resolve(environment.HOME, '.papercusp') && entry.name === 'desktop-build-target.json') {
+        if (!desktopRoot) { desktopRoot = { id: `runtime-desktop-${roots.length}`, path: directory }; roots.push(desktopRoot); }
+        declarations.push({ kind: 'path', root: desktopRoot.id, name: entry.name,
+          classification: 'config', producer: 'desktop-env-switch-target' });
+      }
+      if (!/^desktop-app-version(?:-[^/\\:.\0]+)?\.json$/.test(entry.name)) continue;
+      let handle;
+      try {
+        handle = await open(join(directory, entry.name), constants.O_RDONLY | constants.O_NOFOLLOW);
+        const metadata = await handle.stat();
+        if (!metadata.isFile() || metadata.size > 64 * 1024) continue;
+        const report = JSON.parse(await handle.readFile('utf8'));
+        if (!report || typeof report.display !== 'string' || typeof report.version !== 'string' ||
+          !Number.isSafeInteger(report.pid) || report.pid < 1 || !Number.isFinite(report.startedAtMs) ||
+          typeof report.role !== 'string' || typeof report.isDev !== 'boolean') continue;
+        const expected = report.display === '' ? 'desktop-app-version.json' :
+          `desktop-app-version-${report.display.replaceAll(':', '').replaceAll('.', '_')}.json`;
+        if (entry.name !== expected) continue;
+        if (!desktopRoot) { desktopRoot = { id: `runtime-desktop-${roots.length}`, path: directory }; roots.push(desktopRoot); }
+        declarations.push({ kind: 'path', root: desktopRoot.id, name: entry.name,
+          classification: 'cache', producer: 'desktop-app-version-report' });
+      } catch (error) {
+        if (!(error instanceof SyntaxError) && !['ENOENT', 'ELOOP'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+      } finally { await handle?.close(); }
+    }
+  }
   // sidecar-main resolves through host-platform/home, not the workspace
   // registry. Preserve the old default after relocation, the configured home,
   // and an explicit log override. Its writer retains exactly one rotation.
