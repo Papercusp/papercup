@@ -224,7 +224,7 @@ export function verifyDepsExtracted({ repoRoot, npmArgs, runNpm, probeSpecifiers
 /** Restore the root's committed patches after reify, while the install writer is held. */
 export function restoreInstalledPatchPostimages({ repoRoot, env }?: {
     env?: NodeJS.ProcessEnv | undefined;
-}): Promise<1 | 0>;
+}): Promise<0 | 1>;
 export function repoLockName(repoRoot?: string): string;
 /**
  * Hold a shared host-wide cache lease while a package manager may read/write
@@ -355,6 +355,57 @@ export function assertPatchPostimageGitSource({ repoRoot, npmArgs, env }: {
     repoRoot: any;
     npmArgs: any;
     env?: NodeJS.ProcessEnv | undefined;
+}): void;
+/** The same closed population is used by resolution and selected-object custody. */
+export function metadataRepairInputLayout(repoRoot: any): {
+    layout: {
+        supported: boolean;
+        reason: string;
+        inputPaths?: undefined;
+        outputPaths?: undefined;
+    } | {
+        supported: boolean;
+        inputPaths: string[];
+        outputPaths: string[];
+        reason?: undefined;
+    };
+    configs: string[];
+    inputPaths: any[];
+};
+export function metadataRepairRuntimeIdentity(): {
+    node: string;
+    versions: {
+        [key: string]: string | undefined;
+        http_parser: string;
+        node: string;
+        v8: string;
+        ares: string;
+        uv: string;
+        zlib: string;
+        modules: string;
+        openssl: string;
+    };
+    platform: NodeJS.Platform;
+    arch: NodeJS.Architecture;
+    resolution: {
+        os: NodeJS.Platform;
+        cpu: NodeJS.Architecture;
+        libc: {
+            family: string;
+            version: any;
+        };
+    };
+};
+/** Read the affected virtual graph, never the installed tree. The same guard is
+ * used on resolver output and immutable retained candidates. npm owns graph
+ * interpretation; the comparisons below only bound the permitted repair. */
+export function assertMetadataRepairGraph({ repoRoot, beforeLockBytes, lockPath }: {
+    repoRoot: any;
+    beforeLockBytes: any;
+    lockPath: any;
+}, { npmCli, spawnSyncCommand, }?: {
+    npmCli?: string | undefined;
+    spawnSyncCommand?: typeof spawnSync | undefined;
 }): void;
 /**
  * Resolve repair bytes in the existing manifest-only layout. The caller supplies
