@@ -166,7 +166,23 @@ async function nativeCodexCli(selectedCli: string | null) {
         const os = process.platform === 'linux' ? 'unknown-linux-musl' : process.platform === 'darwin' ? 'apple-darwin' : process.platform === 'win32' ? 'pc-windows-msvc' : null;
         if (cpu && os) {
           let vendor = join(packageRoot, 'vendor');
-          try { vendor = join(dirname(createRequire(cli).resolve(`@openai/codex-${process.platform}-${process.arch}/package.json`)), 'vendor'); }
+          try {
+            const packageName = `@openai/codex-${process.platform}-${process.arch}`;
+            const packageJson = createRequire(cli).resolve(`${packageName}/package.json`);
+            // Node caches resolution paths; existence and identity must still
+            // be checked after an optional package is removed or replaced.
+            const optional = JSON.parse(await readFile(packageJson, 'utf8'));
+            // npm aliases retain the published package's name. Bind that
+            // identity to the owning CLI's exact dependency and target rather
+            // than trusting either the alias directory or package name alone.
+            const aliased = optional.name === '@openai/codex'
+              && typeof optional.version === 'string' && optional.version.length > 0
+              && manifest.optionalDependencies?.[packageName] === `npm:@openai/codex@${optional.version}`
+              && Array.isArray(optional.os) && optional.os.length === 1 && optional.os[0] === process.platform
+              && Array.isArray(optional.cpu) && optional.cpu.length === 1 && optional.cpu[0] === process.arch;
+            if (optional.name !== packageName && !aliased) return null;
+            vendor = join(dirname(packageJson), 'vendor');
+          }
           catch (error) { if ((error as NodeJS.ErrnoException).code !== 'MODULE_NOT_FOUND') throw error; }
           nativeCodex = await realpath(join(vendor, `${cpu}-${os}`, 'bin', process.platform === 'win32' ? 'codex.exe' : 'codex'));
         }
@@ -197,12 +213,21 @@ export async function cliSetupHomeCensusProducer(path = papercuspRoot(), codexCl
     if (target === nativeCodex) return true;
     if (codexCli !== undefined) return false;
     if (!installedTargets.has(target)) {
-      const boundary = `${sep}node_modules${sep}@openai${sep}codex${sep}`;
-      const offset = target.indexOf(boundary);
-      const launcher = offset < 0 ? null : join(target.slice(0, offset + boundary.length - 1), 'bin', 'codex.js');
+      const boundaries = [
+        `${sep}node_modules${sep}@openai${sep}codex${sep}`,
+        `${sep}node_modules${sep}@openai${sep}codex-${process.platform}-${process.arch}${sep}`,
+      ];
       // The package manifest and its actual optional/bundled native resolution
-      // must agree with the target. A package-looking path alone proves nothing.
-      installedTargets.set(target, launcher !== null && await nativeCodexCli(launcher) === target);
+      // must agree with the target, including npm's sibling (hoisted) optional
+      // package layout. A package-looking path alone proves nothing.
+      let proven = false;
+      for (const boundary of boundaries) {
+        const offset = target.indexOf(boundary);
+        if (offset < 0) continue;
+        const launcher = join(target.slice(0, offset), 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
+        if (await nativeCodexCli(launcher) === target) { proven = true; break; }
+      }
+      installedTargets.set(target, proven);
     }
     return installedTargets.get(target)!;
   }

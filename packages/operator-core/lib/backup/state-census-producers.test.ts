@@ -688,6 +688,92 @@ describe('secret census producer adapters', () => {
       expect(await names()).not.toContain(`${session}/apply_patch`);
     } finally { vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); }
   });
+  it('proves hoisted optional Codex helpers through their owning CLI package', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'arg0-hoisted-install-'));
+    try {
+      const session = 'deploy-credentials/.codex-setup-acme-1234abcd/tmp/arg0/codex-arg0ABC123';
+      await mkdir(join(root, session), { recursive: true });
+      const selected = join(root, 'selected-codex');
+      await writeFile(selected, Buffer.from([0x7f, 0x45, 0x4c, 0x46]));
+      vi.stubEnv('CODEX_BIN', selected);
+      const scope = join(root, 'older-install', 'node_modules', '@openai');
+      const packageRoot = join(scope, 'codex');
+      await mkdir(join(packageRoot, 'bin'), { recursive: true });
+      const manifest = { name: '@openai/codex', bin: { codex: 'bin/codex.js' } };
+      await writeFile(join(packageRoot, 'package.json'), JSON.stringify(manifest));
+      await writeFile(join(packageRoot, 'bin', 'codex.js'), '#!/usr/bin/env node\nthrow new Error("must never execute");');
+      const cpu = process.arch === 'x64' ? 'x86_64' : 'aarch64';
+      const os = process.platform === 'linux' ? 'unknown-linux-musl' : process.platform === 'darwin' ? 'apple-darwin' : 'pc-windows-msvc';
+      const optionalRoot = join(scope, `codex-${process.platform}-${process.arch}`);
+      const vendor = join(optionalRoot, 'vendor', `${cpu}-${os}`, 'bin');
+      await mkdir(vendor, { recursive: true });
+      await writeFile(join(optionalRoot, 'package.json'), JSON.stringify({ name: `@openai/codex-${process.platform}-${process.arch}` }));
+      const native = join(vendor, process.platform === 'win32' ? 'codex.exe' : 'codex');
+      await writeFile(native, Buffer.from([0x7f, 0x45, 0x4c, 0x46]));
+      await symlink(native, join(root, session, 'apply_patch'));
+      const names = async (cli?: string | null) => (await cliSetupHomeCensusProducer(root, cli)).declarations.map(entry => entry.name);
+      expect(await names()).toContain(`${session}/apply_patch`);
+      expect(await names(selected)).not.toContain(`${session}/apply_patch`);
+      expect(await names(null)).not.toContain(`${session}/apply_patch`);
+      await writeFile(join(packageRoot, 'package.json'), JSON.stringify({ ...manifest, name: 'foreign' }));
+      expect(await names()).not.toContain(`${session}/apply_patch`);
+      await writeFile(join(packageRoot, 'package.json'), JSON.stringify(manifest));
+      await rm(join(optionalRoot, 'package.json'));
+      expect(await names()).not.toContain(`${session}/apply_patch`);
+    } finally { vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); }
+  });
+  it.each(['nested', 'hoisted'])('proves npm-aliased optional Codex helpers (%s)', async layout => {
+    const root = await mkdtemp(join(tmpdir(), 'arg0-aliased-install-'));
+    try {
+      const session = 'deploy-credentials/.codex-setup-acme-1234abcd/tmp/arg0/codex-arg0ABC123';
+      await mkdir(join(root, session), { recursive: true });
+      const selected = join(root, 'selected-codex');
+      await writeFile(selected, Buffer.from([0x7f, 0x45, 0x4c, 0x46]));
+      vi.stubEnv('CODEX_BIN', selected);
+      const scope = join(root, 'older-install', 'node_modules', '@openai');
+      const packageRoot = join(scope, 'codex');
+      await mkdir(join(packageRoot, 'bin'), { recursive: true });
+      const packageName = `@openai/codex-${process.platform}-${process.arch}`;
+      const nativeVersion = `0.163.0-${process.platform}-${process.arch}`;
+      // Published platform packages retain the main package name and are
+      // installed under an npm alias named by the owning CLI's manifest.
+      const manifest = { name: '@openai/codex', version: '0.163.0', bin: { codex: 'bin/codex.js' },
+        optionalDependencies: { [packageName]: `npm:@openai/codex@${nativeVersion}` } };
+      await writeFile(join(packageRoot, 'package.json'), JSON.stringify(manifest));
+      await writeFile(join(packageRoot, 'bin', 'codex.js'), '#!/usr/bin/env node\nthrow new Error("must never execute");');
+      const optionalRoot = layout === 'nested'
+        ? join(packageRoot, 'node_modules', '@openai', `codex-${process.platform}-${process.arch}`)
+        : join(scope, `codex-${process.platform}-${process.arch}`);
+      const cpu = process.arch === 'x64' ? 'x86_64' : 'aarch64';
+      const os = process.platform === 'linux' ? 'unknown-linux-musl' : process.platform === 'darwin' ? 'apple-darwin' : 'pc-windows-msvc';
+      const vendor = join(optionalRoot, 'vendor', `${cpu}-${os}`, 'bin');
+      await mkdir(vendor, { recursive: true });
+      const optionalManifest = { name: '@openai/codex', version: nativeVersion, os: [process.platform], cpu: [process.arch] };
+      const optionalJson = join(optionalRoot, 'package.json');
+      await writeFile(optionalJson, JSON.stringify(optionalManifest));
+      const native = join(vendor, process.platform === 'win32' ? 'codex.exe' : 'codex');
+      await writeFile(native, Buffer.from([0x7f, 0x45, 0x4c, 0x46]));
+      await symlink(native, join(root, session, 'apply_patch'));
+      const names = async (cli?: string | null) => (await cliSetupHomeCensusProducer(root, cli)).declarations.map(entry => entry.name);
+      expect(await names()).toContain(`${session}/apply_patch`);
+      expect(await names(selected)).not.toContain(`${session}/apply_patch`);
+      expect(await names(null)).not.toContain(`${session}/apply_patch`);
+      for (const changed of [
+        { name: 'foreign' }, { version: '0.162.0-linux-x64' }, { os: ['foreign'] }, { cpu: ['foreign'] },
+      ]) {
+        await writeFile(optionalJson, JSON.stringify({ ...optionalManifest, ...changed }));
+        expect(await names()).not.toContain(`${session}/apply_patch`);
+      }
+      await writeFile(optionalJson, JSON.stringify(optionalManifest));
+      for (const optionalDependencies of [{}, { [packageName]: 'npm:foreign@0.163.0' }, { [packageName]: 'npm:@openai/codex@0.162.0-linux-x64' }]) {
+        await writeFile(join(packageRoot, 'package.json'), JSON.stringify({ ...manifest, optionalDependencies }));
+        expect(await names()).not.toContain(`${session}/apply_patch`);
+      }
+      await writeFile(join(packageRoot, 'package.json'), JSON.stringify(manifest));
+      await rm(optionalJson);
+      expect(await names()).not.toContain(`${session}/apply_patch`);
+    } finally { vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); }
+  });
   it('retains exact pacing and gym sidefiles while leaving unknown siblings and links visible', async () => {
     const home = await mkdtemp(join(tmpdir(), 'sidefile-census-'));
     try {
