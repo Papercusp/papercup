@@ -224,7 +224,7 @@ export function verifyDepsExtracted({ repoRoot, npmArgs, runNpm, probeSpecifiers
 /** Restore the root's committed patches after reify, while the install writer is held. */
 export function restoreInstalledPatchPostimages({ repoRoot, env }?: {
     env?: NodeJS.ProcessEnv | undefined;
-}): Promise<0 | 1>;
+}): Promise<1 | 0>;
 export function repoLockName(repoRoot?: string): string;
 /**
  * Hold a shared host-wide cache lease while a package manager may read/write
@@ -395,6 +395,22 @@ export function metadataRepairRuntimeIdentity(): {
             version: any;
         };
     };
+};
+/** Bind the library actually resolved from the selected npm, not this repo. */
+export function metadataRepairArboristIdentity(npmCli: any): {
+    nodePath: string;
+    nodeSha256: string;
+    packagePath: string;
+    packageSha256: string;
+    version: any;
+    npmVersion: any;
+    policy: string;
+    bootstrapSha256: string;
+    files: {
+        role: any;
+        path: string;
+        sha256: string;
+    }[];
 };
 /** Read the affected virtual graph, never the installed tree. The same guard is
  * used on resolver output and immutable retained candidates. npm owns graph
@@ -581,6 +597,7 @@ export function main(argv?: string[]): Promise<any>;
 export { installMutexIsHeld } from "./lib/install-lock-name.mjs";
 /** Default wait for EXCLUSIVE use of the shared package cache before verify is skipped. */
 export const NPM_CACHE_VERIFY_WAIT_MS_DEFAULT: 30000;
+export const METADATA_REPAIR_NPM_BOOTSTRAP: string;
 /** Printed for `--help` / `-h`; never takes the install mutex. */
 export const USAGE: "Usage: npm run install:safe [-- <npm args>]   (defaults to plain `npm install`)\n       node scripts/npm-install-safe.mjs [--repo-root <path>] [--offline-safe] [--] [<npm args>]\n       node scripts/npm-install-safe.mjs [--repo-root <path>] --exec-under-lock [--] <command> [args...]\n       node scripts/npm-install-safe.mjs [--repo-root <path>] --exec-under-cache-lock [--] <command> [args...]\n\nSerializes npm installs in a shared checkout behind a repo-keyed mutex, then verifies every\ndeclared dependency landed on disk. Arguments that start with \"-\" get an implicit `install`\nprepended, so `-- --legacy-peer-deps` means `npm install --legacy-peer-deps`.\n--help / -h is recognised only as the first argument; use `install --help` for npm's own help.\nInstalls in roots declaring devDependencies include dev tools by default, even under\nNODE_ENV=production or inherited omit config. Use --omit=dev for an explicit production install.\n";
 export const RESOLUTION_STALE_ATTEMPTS_DEFAULT: 3;
