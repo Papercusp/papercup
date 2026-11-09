@@ -338,7 +338,8 @@ describe('P-001 complete queue comparison and same-snapshot recovery', () => {
       // handler shape, including a large secondary index requiring recovery.
       const { summary: _summary, ...burnDown } = source;
       const original = JSON.stringify(burnDown);
-      const result = applyResultDoor({ content: [{ type: 'text', text: original }] }, {
+      const input: DoorableResult = { content: [{ type: 'text', text: original }] };
+      const result = applyResultDoor(input, {
         ...route, workspaceId: 'burn-down-categories-test', runId: '11111111-2222-4333-8444-555555555555',
       });
       const body = JSON.parse((result.content.find((part) => part.type === 'text') as { text: string }).text);
