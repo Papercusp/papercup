@@ -81,6 +81,128 @@ describe('exact memory emission receipts', () => {
       .toThrow('source identity');
   });
 
+  it.each(['memory', 'corpus'] as const)('uses the host-staged %s baseline even if the native receipt supplies a replacement', async kind => {
+    let current = 'a'.repeat(64);
+    const { sql, calls } = makeSql({ impl: async text => text.includes('JOIN harness_shared.')
+      ? [{ id: UUID_A, epoch: 3, source_fingerprint: current }] : text.includes('RETURNING') ? [{ id: UUID_A }] : [] });
+    const source = contextSourceVersion({ namespace: kind, ref: UUID_A, fullText: 'complete revised source',
+      revision: 'r2', updatedAt: null,
+      validity: { status: 'current', validAt: null, invalidAt: null, supersededBy: null } });
+    const row = memoryFragmentOffer(kind, UUID_A, 3, 'turn-start', 'complete passage', source);
+    await stageMemoryEmission(sql, 'owner', 'baseline-token', [row]);
+    current = 'b'.repeat(64);
+    const { rendered: _text, sourceVersion: _source, ...native } = row;
+    await confirmMemoryEmission(sql, 'owner', { token: 'baseline-token',
+      fragments: [{ ...native, previousSourceFingerprint: current } as typeof native] });
+    const stamp = calls.find(call => call.text.includes(`INSERT INTO harness_shared.${kind}_session_surfaced`));
+    expect(stamp?.values).toContain('a'.repeat(64));
+    expect(stamp?.values).not.toContain(current);
+  });
+
+  it('does not prepare a versioned token when its confirmed baseline cannot be read', async () => {
+    const { sql } = makeSql({ impl: async text => {
+      if (text.includes('JOIN harness_shared.')) throw new Error('baseline unavailable');
+      return [];
+    } });
+    const source = contextSourceVersion({ namespace: 'memory', ref: UUID_A, fullText: 'source',
+      revision: null, updatedAt: null,
+      validity: { status: 'current', validAt: null, invalidAt: null, supersededBy: null } });
+    const row = memoryFragmentOffer('memory', UUID_A, 3, 'orient', 'source', source);
+    await expect(stageMemoryEmission(sql, 'owner', 'baseline-unavailable', [row])).rejects.toThrow('baseline unavailable');
+    expect(await confirmMemoryEmission(makeSql().sql, 'owner', {
+      token: 'baseline-unavailable', fragments: [manifest(row)] })).toBe(0);
+  });
+
+  it.each(['memory', 'corpus'] as const)('revalidates %s authority after baseline capture on every staging attempt', async kind => {
+    let baselineRead = false;
+    const { sql } = makeSql({ impl: async text => {
+      if (text.includes('JOIN harness_shared.')) baselineRead = true;
+      return text.includes('RETURNING') ? [{ id: UUID_A }] : [];
+    } });
+    const source = contextSourceVersion({ namespace: kind, ref: UUID_A, fullText: 'complete source',
+      revision: 'r1', updatedAt: null,
+      validity: { status: 'current', validAt: null, invalidAt: null, supersededBy: null } });
+    const changed = contextSourceVersion({ namespace: kind, ref: UUID_A, fullText: 'changed source',
+      revision: 'r2', updatedAt: null, validity: source.validity });
+    let current: typeof source | null = source;
+    const signals: AbortSignal[] = [];
+    const revalidate = vi.fn(async (signal: AbortSignal) => {
+      expect(baselineRead).toBe(true);
+      signals.push(signal);
+      return current;
+    });
+    const row = memoryFragmentOffer(kind, UUID_A, 3, 'orient', 'complete passage', source, revalidate);
+    await stageMemoryEmission(sql, 'owner', 'fresh-source', [row]);
+    expect(await confirmMemoryEmission(sql, 'owner', { token: 'fresh-source', fragments: [manifest(row)] })).toBe(1);
+    for (const [token, value] of [['changed-source', changed], ['denied-source', null]] as const) {
+      current = value;
+      await expect(stageMemoryEmission(sql, 'owner', token, [row])).rejects.toThrow('source changed or is unavailable');
+      expect(await confirmMemoryEmission(sql, 'owner', { token, fragments: [manifest(row)] })).toBe(0);
+    }
+    expect(revalidate).toHaveBeenCalledTimes(3);
+    expect(new Set(signals).size).toBe(3);
+  });
+
+  it('retains visible content without a suppressing receipt when its canonical reader fails', async () => {
+    const { sql, calls } = makeSql();
+    const source = contextSourceVersion({ namespace: 'memory', ref: UUID_A, fullText: 'complete source',
+      revision: null, updatedAt: null,
+      validity: { status: 'current', validAt: null, invalidAt: null, supersededBy: null } });
+    const row = memoryFragmentOffer('memory', UUID_A, 3, 'orient', 'complete source', source,
+      async () => { throw new Error('canonical reader failed'); });
+    const result = await withMemoryEmissionReceipt(sql, 'owner', [], async () => {
+      collectMemoryEmission('owner', [row]);
+      return { instructions: row.rendered };
+    });
+    expect(result.instructions).toBe(row.rendered);
+    expect(result._meta?.['papercusp/memoryEmission']).toBeUndefined();
+    expect(calls.some(call => call.text.includes('INSERT INTO harness_shared.memory_session_surfaced'))).toBe(false);
+  });
+
+  it('bounds a stalled canonical revalidation without issuing a receipt', async () => {
+    vi.useFakeTimers();
+    try {
+      const { sql } = makeSql();
+      let started!: () => void;
+      const readerStarted = new Promise<void>(resolve => { started = resolve; });
+      let readerSignal: AbortSignal | undefined;
+      const source = contextSourceVersion({ namespace: 'memory', ref: UUID_A, fullText: 'complete source',
+        revision: null, updatedAt: null,
+        validity: { status: 'current', validAt: null, invalidAt: null, supersededBy: null } });
+      const row = memoryFragmentOffer('memory', UUID_A, 3, 'orient', 'complete source', source, async signal => {
+        readerSignal = signal;
+        started();
+        return new Promise<null>(() => {});
+      });
+      const pending = withMemoryEmissionReceipt(sql, 'owner', [], async () => {
+        collectMemoryEmission('owner', [row]);
+        return { instructions: row.rendered };
+      });
+      await readerStarted;
+      await vi.advanceTimersByTimeAsync(1_501);
+      const result = await pending;
+      expect(result.instructions).toBe(row.rendered);
+      expect(result._meta?.['papercusp/memoryEmission']).toBeUndefined();
+      expect(readerSignal?.aborted).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('keeps canonical reader callbacks off the native receipt wire', async () => {
+    const { sql } = makeSql();
+    const source = contextSourceVersion({ namespace: 'memory', ref: UUID_A, fullText: 'complete source',
+      revision: null, updatedAt: null,
+      validity: { status: 'current', validAt: null, invalidAt: null, supersededBy: null } });
+    const row = memoryFragmentOffer('memory', UUID_A, 3, 'orient', 'complete source', source, async () => source);
+    const result = await withMemoryEmissionReceipt(sql, 'owner', [], async () => {
+      collectMemoryEmission('owner', [row]);
+      return { instructions: row.rendered };
+    });
+    const receipt = result._meta?.['papercusp/memoryEmission'] as { fragments: object[] };
+    expect(receipt.fragments).toHaveLength(1);
+    expect(receipt.fragments[0]).not.toHaveProperty('revalidateSource');
+    expect(receipt.fragments[0]).toHaveProperty('sourceFingerprint', source.fingerprint);
+  });
+
   it('stages only complete model-visible fragments and confirms them before the next recall', async () => {
     const { sql, calls } = makeSql();
     const a = offer(), clipped = offer(UUID_B);

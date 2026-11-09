@@ -137,9 +137,12 @@ export async function stampSurfacedRefsResult(
   sql: SqlTag, sessionId: string, epoch: number, refs: readonly string[], port: string,
   sourceFingerprint?: string,
   sourceVersion?: ContextSourceVersion,
+  previousSourceFingerprint?: string | null,
 ): Promise<{ ok: boolean; inserted: number }> {
   if (!sessionId || relationMissing) return { ok: false, inserted: 0 };
   if (sourceFingerprint !== undefined && !/^[a-f0-9]{64}$/.test(sourceFingerprint)) return { ok: false, inserted: 0 };
+  if (previousSourceFingerprint !== undefined && previousSourceFingerprint !== null &&
+      !/^[a-f0-9]{64}$/.test(previousSourceFingerprint)) return { ok: false, inserted: 0 };
   const wanted = [...new Set(refs.filter((r) => typeof r === 'string' && r.length > 0))];
   if (wanted.length === 0) return { ok: true, inserted: 0 };
   const version = sourceVersion && wanted.length === 1
@@ -153,8 +156,10 @@ export async function stampSurfacedRefsResult(
       ON CONFLICT (session_id, epoch, ref) DO UPDATE
         SET source_fingerprint = EXCLUDED.source_fingerprint, source_version = EXCLUDED.source_version,
           port = EXCLUDED.port, surfaced_at = now()
-        WHERE corpus_session_surfaced.source_fingerprint IS DISTINCT FROM EXCLUDED.source_fingerprint
-          OR (corpus_session_surfaced.source_version IS NULL AND EXCLUDED.source_version IS NOT NULL)
+        WHERE (corpus_session_surfaced.source_fingerprint IS DISTINCT FROM EXCLUDED.source_fingerprint
+          OR (corpus_session_surfaced.source_version IS NULL AND EXCLUDED.source_version IS NOT NULL))
+          AND (${previousSourceFingerprint !== undefined} = false OR
+            corpus_session_surfaced.source_fingerprint IS NOT DISTINCT FROM ${previousSourceFingerprint ?? null}::text)
       RETURNING ref
     ` : await sql<unknown[]>`
       INSERT INTO harness_shared.corpus_session_surfaced (session_id, epoch, ref, port)

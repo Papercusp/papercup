@@ -44,7 +44,7 @@ import { admittedByLeg, collapseNearDuplicates } from './recall-admission';
 import { assessCorpusCoverageGate, CORPUS_GATE_SOURCES, type CorpusGateDecision } from './corpus-coverage-gate';
 import { isMemoryWorkspaceScopedRecallOn, keepUserPoolHitForWorkspace } from './workspace-scope-recall';
 import { recentlySurfacedIds } from './bump-last-surfaced';
-import { alreadySurfacedIds, currentSessionEpoch, memoryFragmentOffer, collectsMemoryEmission, collectMemoryEmission, type MemoryFragmentOffer, type PreparedMemoryBlock } from './session-epoch-ledger';
+import { alreadySurfacedIds, currentSessionEpoch, memorySourcesDueForRevalidation, memoryFragmentOffer, collectsMemoryEmission, collectMemoryEmission, type MemoryFragmentOffer, type PreparedMemoryBlock } from './session-epoch-ledger';
 import { hiveScopeKey, potSlugFromScope, resolvePotSlugsForHarnesses } from './hive-scope';
 import {
   recallsMemoryPool,
@@ -1026,12 +1026,52 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
         });
       }
 
+      // Cached preparations must re-read authority for EACH receipt attempt.
+      // Share bounded reader batches only within that attempt's fresh signal.
+      const sourceReads = new WeakMap<AbortSignal, Promise<Map<string, ContextSourceVersion>>>();
+      const revalidateSource = (version: ContextSourceVersion) => async (signal: AbortSignal) => {
+        let read = sourceReads.get(signal);
+        if (!read) {
+          read = (async () => {
+            const { sessionAllowsAmbientContext } = await import('../capability-envelope/session-confinement-port');
+            if (!await sessionAllowsAmbientContext({ ownerId: sessionId ?? undefined, workspaceId: input.workspaceId })) {
+              return new Map<string, ContextSourceVersion>();
+            }
+            const { sql } = getOrgPg();
+            const { corpusSourceNamesFor } = await import('./corpus-recall-io');
+            const allowed = new Set<string>(corpusSourceNamesFor({ knowledgeSourcesAllowed: input.knowledgeSourcesAllowed,
+              corpora: input.identityRecall?.corpora }));
+            const fence = sessionId ? await getSessionBriefAmbientExcludedRefs(sessionId) : null;
+            if (fence && !fence.available) return new Map<string, ContextSourceVersion>();
+            const audience = { harnessSlugs: input.harnessSlugs, automatic: true, excludedRefs: fence?.refs ?? ambientExcludedRefs };
+            const { revalidateKnowledgeSourceVersions } = await import('../agent-tools/search/knowledge-sources');
+            const { revalidateReportSourceVersions } = await import('../agent-tools/search/report-source');
+            const previous = lines.flatMap(line => line.sourceVersion ? [line.sourceVersion] : []);
+            const current: ContextSourceVersion[] = [];
+            for (let offset = 0; offset < previous.length; offset += 8) {
+              signal.throwIfAborted();
+              const batch = previous.slice(offset, offset + 8);
+              current.push(...await revalidateKnowledgeSourceVersions({ sql, workspaceId: input.workspaceId,
+                previous: batch, audience, allowed, signal }));
+              if (allowed.has('report')) current.push(...await revalidateReportSourceVersions({ sql,
+                workspaceId: input.workspaceId, previous: batch, audience, signal,
+                viewer: input.reportViewer ?? { ownerId: sessionId,
+                  potSlug: input.harnessSlugs?.length === 1 ? input.harnessSlugs[0] : null } }));
+            }
+            signal.throwIfAborted();
+            return new Map(current.map(source => [source.ref, source]));
+          })();
+          sourceReads.set(signal, read);
+        }
+        return (await read).get(version.ref) ?? null;
+      };
       return {
         heading: CORPUS_BLOCK_HEADING,
         lines: lines.map((l) => l.line),
         refs: lines.map((l) => l.handle.ref),
         fragments: sessionId ? lines.filter(l => l.operative !== false).map(l => memoryFragmentOffer('corpus', l.handle.ref, epoch,
-          input.session?.port ?? 'injection', l.line, l.sourceVersion)) : [],
+          input.session?.port ?? 'injection', l.line, l.sourceVersion,
+          l.sourceVersion ? revalidateSource(l.sourceVersion) : undefined)) : [],
         embedderAvailable: res.embedderAvailable,
         candidateCount: res.candidateCount,
         gate,
@@ -1300,6 +1340,8 @@ async function buildBlockInner(
   let userResults: MemoryEntry[] = [];
   let harnessHits: Array<{ hit: MemoryEntry; slug: string }> = [];
   let hiveHits: Array<{ hit: MemoryEntry; slug: string }> = [];
+  let lifecycleEpoch: number | null = null;
+  const lifecycleChanges: Array<{ version: ContextSourceVersion; notice: string }> = [];
   // P-002 / migration 758: what each retrieval LEG did on this call. Stays null
   // when the backend has no legs to report (a single-leg store), which is a
   // shape statement rather than a missing measurement — see RecallStatsInput.legs.
@@ -1310,6 +1352,38 @@ async function buildBlockInner(
   const harnessScopes = recallsMemoryPool(input.identityRecall, 'harness')
     ? harnessSlugs.map((slug) => `harness:${slug}`) : [];
   const hiveScopes = recallsMemoryPool(input.identityRecall, 'hive') ? potSlugs.map(hiveScopeKey) : [];
+  type PackSettings = Map<string, Promise<import('../hive-settings-store').HiveSettingRecord | null>>;
+  // Ordinary hive packs use the same bounded canonical rows as organic memory.
+  // Their enable/disable authority is the existing hive setting, not a cached
+  // search hit or disabledPacksFor's best-effort fallback on a read failure.
+  const currentSourceEntry = async (entry: MemoryEntry, settings: PackSettings): Promise<MemoryEntry | null> => {
+    if (isIdentityPackageHit(entry)) return null; // Exact archived package reads remain unsupported here.
+    if (entry.metadata?.source !== 'pack') return entry;
+    const packId = entry.metadata.pack_id;
+    const slug = potSlugFromScope(entry.scope);
+    if (typeof packId !== 'string' || !packId.trim() || !slug || !hiveScopes.includes(entry.scope)) return null;
+    let read = settings.get(slug);
+    if (!read) {
+      read = (async () => {
+        const [{ getHiveSetting }, { DISABLED_PACKS_SETTING }] = await Promise.all([
+          import('../hive-settings-store'), import('../knowledge-packs/manage'),
+        ]);
+        return getHiveSetting(input.workspaceId, slug, DISABLED_PACKS_SETTING, getOrgPg().sql);
+      })();
+      settings.set(slug, read);
+    }
+    const setting = await read;
+    if (!setting) return entry;
+    if (!Array.isArray(setting.value) || setting.value.some(value => typeof value !== 'string')) {
+      throw new Error('Pack source visibility is unavailable');
+    }
+    if (!setting.value.includes(packId)) return entry;
+    const validity = entry.metadata.validity;
+    return { ...entry, metadata: { ...entry.metadata, validity: {
+      ...(validity && typeof validity === 'object' && !Array.isArray(validity) ? validity : {}),
+      status: 'retracted', invalid_at: new Date(setting.updatedAt).toISOString(), superseded_by: null,
+    } } };
+  };
   let statsSchedule: Promise<void> | null = null;
   const writeRecallStatsSnapshot = (
     entries: {
@@ -1478,6 +1552,49 @@ async function buildBlockInner(
       mark('stalenessMs', Date.now() - tStaleness);
     }
 
+    // Closed or corrected sources need not rank for today's query. Re-read
+    // only confirmed IDs under CURRENT pool grants, with the bounded backend
+    // listing seam. Never use the backend's unscoped get or infer a deletion
+    // from absence. Unsupported exact listing leaves the source unknown.
+    if (input.session?.sessionId && backend.listPage && scopes.length > 0) {
+      try {
+        const { sql } = getOrgPg();
+        lifecycleEpoch = input.session.epoch ?? await deadline.run(
+          () => currentSessionEpoch(sql, input.session!.sessionId), 'memory lifecycle epoch');
+        const due = await deadline.run(() => memorySourcesDueForRevalidation(sql,
+          input.session!.sessionId, lifecycleEpoch!, scopes, ranked.map(row => row.id)), 'memory lifecycle schedule');
+        if (due.length > 0) {
+          const { loadFeedbackSignals, isFeedbackSuppressed } = await import('./feedback-rerank');
+          const feedback = await deadline.run(() => loadFeedbackSignals(sql), 'memory lifecycle feedback');
+          const packSettings: PackSettings = new Map();
+          for (const scope of new Set(due.map(version => version.namespace.slice('memory:'.length)))) {
+            if (!scopes.includes(scope)) continue;
+            const previous = new Map(due.filter(version => version.namespace === `memory:${scope}`)
+              .map(version => [version.ref, version]));
+            const page = await deadline.run(() => backend.listPage!({ scope, ids: [...previous.keys()],
+              includeSuperseded: true, offset: 0, limit: 8 }), 'memory lifecycle sources');
+            const seen = new Set<string>();
+            for (const entry of page.entries.slice(0, 8)) {
+              if (entry.scope !== scope || !previous.has(entry.id) || seen.has(entry.id) ||
+                  (userScopes.includes(scope) && !keepUserPoolHitForWorkspace(entry, input.workspaceId)) ||
+                  isFeedbackSuppressed(entry, feedback)) continue;
+              seen.add(entry.id);
+              const sourceEntry = await deadline.run(() => currentSourceEntry(entry, packSettings), 'memory lifecycle pack settings');
+              if (!sourceEntry) continue;
+              // A replacement may be outside the current grants. Do not expose
+              // its ID merely because the authorized old row names it.
+              const validity = sourceEntry.metadata?.validity;
+              const safeEntry = validity && typeof validity === 'object' && !Array.isArray(validity)
+                ? { ...sourceEntry, metadata: { ...sourceEntry.metadata, validity: { ...validity, superseded_by: null } } } : sourceEntry;
+              const version = memoryEntrySourceVersion(safeEntry);
+              const notice = contextSourceChangeNotice(previous.get(entry.id), version);
+              if (version && notice) lifecycleChanges.push({ version, notice });
+            }
+          }
+        }
+      } catch { /* No authority/read proof: retain unknown and retry fairly. */ }
+    }
+
     // Partition the ONE ranked result by pool, by each entry's own scope. The
     // entries are shared by reference with `ranked`, so the filters below shrink
     // both views together and the relevance order is recoverable at render time.
@@ -1589,7 +1706,7 @@ async function buildBlockInner(
   };
 
   try {
-    if (userResults.length + harnessHits.length + hiveHits.length === 0) return rendered(null);
+    if (userResults.length + harnessHits.length + hiveHits.length === 0 && lifecycleChanges.length === 0) return rendered(null);
 
     // knowledge-packs P-009: a DISABLED pack's rows stay stored but stop being
     // recalled. One settings read per hive in scope (usually 1); best-effort —
@@ -1621,7 +1738,7 @@ async function buildBlockInner(
         mark('packMs', Date.now() - tPack);
       }
     }
-    if (userResults.length + harnessHits.length + hiveHits.length === 0) return rendered(null);
+    if (userResults.length + harnessHits.length + hiveHits.length === 0 && lifecycleChanges.length === 0) return rendered(null);
 
     // memory_feedback consumer (EI-366 / consume-edges P-031): the push path
     // DROPS anything the user deleted — tombstoned ids (the lexical projection
@@ -1678,7 +1795,7 @@ async function buildBlockInner(
         mark('workspaceMs', Date.now() - tWorkspace);
       }
     }
-    if (userResults.length + harnessHits.length + hiveHits.length === 0) return rendered(null);
+    if (userResults.length + harnessHits.length + hiveHits.length === 0 && lifecycleChanges.length === 0) return rendered(null);
 
     // D-006 — the pre-turn dedup: drop any memory surfaced within the recent
     // watermark window so a stable fact is delivered ONCE, not re-injected
@@ -1693,7 +1810,7 @@ async function buildBlockInner(
     // P-002: a warm session (input.session) dedups against its session-epoch
     // ledger; the chat path keeps the wall-clock watermark. Same best-effort
     // posture either way: a failed read = no filtering, never a broken inject.
-    let sessionEpoch: number | null = null;
+    let sessionEpoch: number | null = lifecycleEpoch;
     const previousSourceVersions = new Map<string, ContextSourceVersion>();
     {
       const tDedup = Date.now();
@@ -1704,7 +1821,7 @@ async function buildBlockInner(
             let suppressed: Set<string>;
             if (input.session?.sessionId) {
               const session = input.session;
-              sessionEpoch = session.epoch ?? (await deadline.run(() => currentSessionEpoch(sql, session.sessionId), 'memory epoch'));
+              sessionEpoch = sessionEpoch ?? session.epoch ?? (await deadline.run(() => currentSessionEpoch(sql, session.sessionId), 'memory epoch'));
               const versions = new Map<string, string>();
               const ambiguous = new Set<string>();
               for (const entry of [...userResults, ...harnessHits.map(({ hit }) => hit), ...hiveHits.map(({ hit }) => hit)]) {
@@ -1733,7 +1850,7 @@ async function buildBlockInner(
         mark('dedupMs', Date.now() - tDedup);
       }
     }
-    if (userResults.length + harnessHits.length + hiveHits.length === 0) return rendered(null);
+    if (userResults.length + harnessHits.length + hiveHits.length === 0 && lifecycleChanges.length === 0) return rendered(null);
 
     // Jev, the owner's opt-in filter (plan jev-decision-model-integration-2026-09-29;
     // the switch is jev-settings.ts, D-008; the operating point is D-013). Effective
@@ -1799,7 +1916,7 @@ async function buildBlockInner(
         mark('jevMs', Date.now() - tJev);
       }
     }
-    if (userResults.length + harnessHits.length + hiveHits.length === 0) return rendered(null);
+    if (userResults.length + harnessHits.length + hiveHits.length === 0 && lifecycleChanges.length === 0) return rendered(null);
 
     // Two-tier marker (self-learning-frontier P-022 / FB-08, D-006): with the
     // transfer harness armed, probationary entries are visibly marked — STILL
@@ -1856,6 +1973,47 @@ async function buildBlockInner(
       input.identityRecall,
     );
     const heading = input.heading ?? 'Operator memory (relevant entries)';
+    const sourceReads = new WeakMap<AbortSignal, Promise<Map<string, MemoryEntry>>>();
+    const revalidateSource = (version: ContextSourceVersion, lifecycle = false) => async (signal: AbortSignal) => {
+      let read = sourceReads.get(signal);
+      if (!read) {
+        read = (async () => {
+          const current = new Map<string, MemoryEntry>();
+          if (!backend.listPage || getMemoryBackend() !== backend) return current;
+          const { sessionAllowsAmbientContext } = await import('../capability-envelope/session-confinement-port');
+          if (!await sessionAllowsAmbientContext({ ownerId: input.session?.sessionId, workspaceId: input.workspaceId })) return current;
+          const allowedScopes = new Set([...userScopes, ...harnessScopes, ...hiveScopes]);
+          const selected = fragments?.filter(row => row.kind === 'memory' && row.sourceVersion) ?? [];
+          const { loadFeedbackSignals, isFeedbackSuppressed } = await import('./feedback-rerank');
+          const feedback = await loadFeedbackSignals(getOrgPg().sql);
+          const packSettings: PackSettings = new Map();
+          for (const scope of allowedScopes) {
+            const ids = [...new Set(selected.filter(row => row.sourceVersion!.namespace === `memory:${scope}`).map(row => row.id))];
+            for (let offset = 0; offset < ids.length; offset += 8) {
+              signal.throwIfAborted();
+              const batch = ids.slice(offset, offset + 8);
+              const page = await backend.listPage({ scope, ids: batch, includeSuperseded: true, offset: 0, limit: 8 });
+              for (const entry of page.entries.slice(0, 8)) {
+                if (entry.scope !== scope || !batch.includes(entry.id) ||
+                    (userScopes.includes(scope) && !keepUserPoolHitForWorkspace(entry, input.workspaceId)) ||
+                    isFeedbackSuppressed(entry, feedback)) continue;
+                const sourceEntry = await currentSourceEntry(entry, packSettings);
+                if (sourceEntry) current.set(`${scope}\u0000${entry.id}`, sourceEntry);
+              }
+            }
+          }
+          signal.throwIfAborted();
+          return current;
+        })();
+        sourceReads.set(signal, read);
+      }
+      const entry = (await read).get(`${version.namespace.slice('memory:'.length)}\u0000${version.ref}`);
+      if (!entry) return null;
+      const validity = entry.metadata?.validity;
+      const safeEntry = lifecycle && validity && typeof validity === 'object' && !Array.isArray(validity)
+        ? { ...entry, metadata: { ...entry.metadata, validity: { ...validity, superseded_by: null } } } : entry;
+      return memoryEntrySourceVersion(safeEntry);
+    };
     let spent = 0;
     const lines: string[] = [];
     const admit = (line: string): boolean => {
@@ -1866,6 +2024,12 @@ async function buildBlockInner(
       spent += line.length;
       return true;
     };
+    for (const { version, notice } of lifecycleChanges) {
+      const line = `- ${notice}`;
+      if (!admit(line)) continue;
+      if (input.session?.sessionId && sessionEpoch !== null) fragments?.push(memoryFragmentOffer('memory',
+        version.ref, sessionEpoch, input.session.port ?? 'injection', line, version, revalidateSource(version, true)));
+    }
     // Walk the ONE ranked result in relevance order, keeping only entries that
     // survived the filters above (identity, not id — the filters preserve object
     // references, and not every legacy row carries an id). Each pool keeps its own
@@ -1933,8 +2097,9 @@ async function buildBlockInner(
       }
       admittedEntries.push(entry);
       if (operative && input.session?.sessionId && sessionEpoch !== null && typeof entry.id === 'string') {
+        const version = memoryEntrySourceVersion(entry) ?? undefined;
         fragments?.push(memoryFragmentOffer('memory', entry.id, sessionEpoch, input.session.port ?? 'injection',
-          redactSensitiveText(line), memoryEntrySourceVersion(entry) ?? undefined));
+          redactSensitiveText(line), version, version ? revalidateSource(version) : undefined));
       }
     }
     // P-002: the delivered end of the funnel. `admitted` counts CONTENT lines, so

@@ -6,6 +6,10 @@ import { boundedSource, createDocSearchSource, createPlanSearchSource, revalidat
 import { runFullTextSearch } from '@papercusp/search';
 import { applyMigrationForTest } from '../../../test/_pg-helpers';
 import { existsSync } from 'node:fs';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import * as harnessRegistry from '../../harness-registry';
 import { splitDocSections,syncDocSourceSections } from '../../search/doc-embed-sync';
 import { runChunkSyncTick } from '../../search/chunks/tick';
 import { PLANS_CHUNK_SURFACE } from '../../search/chunks/registry';
@@ -130,6 +134,71 @@ describe('complete knowledge sections against canonical PostgreSQL', () => {
     } finally {
       await db.adminSql`UPDATE harness_shared.harness_plans SET content = ${original.content}
         WHERE workspace_id = ${workspaceId} AND harness_slug = 'pot-a' AND plan_slug = 'late-plan'`;
+    }
+  });
+
+  it('revalidates exact file authorities on the request workspace registry, withholding missing and revoked sources', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'context-file-source-'));
+    const slug = 'file-lifecycle';
+    const ref = `doc:harness:pot-a:${slug}`;
+    const file = join(root, 'docs', `${slug}.md`);
+    const before = '---\ntitle: File source\n---\nApply zephyrfilesource only after approval.';
+    const after = `${before}\nRetain the snapshot before proceeding.`;
+    const [registryRow] = await db.adminSql`SELECT payload FROM harness_shared.harness_registry
+      WHERE workspace_id = ${workspaceId}`;
+    // A reader using a process-default registry fails this actual source read.
+    const defaultRegistry = vi.spyOn(harnessRegistry, 'loadHarnessRegistry')
+      .mockRejectedValue(new Error('The current workspace registry must be supplied'));
+    try {
+      await mkdir(join(root, 'docs'));
+      await writeFile(file, before);
+      await db.adminSql`UPDATE harness_shared.harness_registry SET payload =
+        ${db.adminSql.json({ projects: [{ slug: 'pot-a', path: root }, { slug: 'pot-b' }] })}
+        WHERE workspace_id = ${workspaceId}`;
+      await db.adminSql`INSERT INTO harness_shared.doc_sections
+        (source_key,slug,anchor,title,url,content,page_sha,section_idx)
+        VALUES ('harness:pot-a',${slug},'','File source','/docs/file-lifecycle',
+          'Apply zephyrfilesource immediately.','stale-file-section',0)`;
+      const source = createDocSearchSource({ harnessSlugs: ['pot-a'], automatic: true });
+      const [hit] = await source.lexical({ ...params(), query: 'zephyrfilesource' });
+      expect(hit).toBeDefined();
+      expect(hit.row.meta?.contextUnit).toBe(before);
+      const first = parseContextSourceVersion(hit.row.meta?.contextSourceVersion, ref)!;
+      expect(first).toMatchObject({ namespace: `corpus:doc-file:${workspaceId}`, updatedAt: null });
+      const input = { sql: db.adminSql, workspaceId, previous: [first],
+        audience: { harnessSlugs: ['pot-a'] }, allowed: new Set(['doc']) };
+      expect(await revalidateKnowledgeSourceVersions(input)).toEqual([first]);
+      await writeFile(file, after);
+      const corrected = await revalidateKnowledgeSourceVersions(input);
+      expect(corrected).toHaveLength(1);
+      expect(corrected[0].fingerprint).not.toBe(first.fingerprint);
+      expect(corrected[0].fullTextSha256).toBe(contextSourceVersion({ namespace: first.namespace, ref,
+        fullText: after, revision: null, updatedAt: null, validity: first.validity }).fullTextSha256);
+      expect(JSON.stringify(corrected)).not.toContain('Retain the snapshot');
+      expect(await revalidateKnowledgeSourceVersions({ ...input, allowed: new Set() })).toEqual([]);
+      expect(await revalidateKnowledgeSourceVersions({ ...input, audience: { harnessSlugs: ['pot-b'] } })).toEqual([]);
+      expect(await revalidateKnowledgeSourceVersions({ ...input, audience: { excludedRefs: new Set([ref]) } })).toEqual([]);
+      expect(await revalidateKnowledgeSourceVersions({ ...input, workspaceId: otherWorkspace })).toEqual([]);
+      await db.adminSql`UPDATE harness_shared.harness_registry SET payload = ${db.adminSql.json({ projects: [] })}
+        WHERE workspace_id = ${workspaceId}`;
+      expect(await revalidateKnowledgeSourceVersions(input)).toEqual([]);
+      await db.adminSql`UPDATE harness_shared.harness_registry SET payload =
+        ${db.adminSql.json({ projects: [{ slug: 'pot-a', path: root }] })}
+        WHERE workspace_id = ${workspaceId}`;
+      // Authored authority cannot fall back to an existing stale file after
+      // its DB row disappears, even if its text/hash once matched that file.
+      const authored = contextSourceVersion({ namespace: `corpus:doc:${workspaceId}`, ref,
+        fullText: before, revision: null, updatedAt: null, validity: first.validity });
+      expect(await revalidateKnowledgeSourceVersions({ ...input, previous: [authored] })).toEqual([]);
+      await rm(file);
+      expect(await revalidateKnowledgeSourceVersions(input)).toEqual([]);
+      expect(defaultRegistry).not.toHaveBeenCalled();
+    } finally {
+      defaultRegistry.mockRestore();
+      await db.adminSql`UPDATE harness_shared.harness_registry SET payload = ${db.adminSql.json(registryRow.payload)}
+        WHERE workspace_id = ${workspaceId}`;
+      await db.adminSql`DELETE FROM harness_shared.doc_sections WHERE source_key = 'harness:pot-a' AND slug = ${slug}`;
+      await rm(root, { recursive: true, force: true });
     }
   });
 

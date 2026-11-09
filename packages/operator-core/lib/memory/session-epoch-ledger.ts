@@ -41,13 +41,22 @@ export type MemoryFragmentOffer = MemoryFragmentManifest & {
   rendered: string;
   /** Host-side metadata retained in the staged receipt, never recalled prose. */
   sourceVersion?: ContextSourceVersion;
+  /** Invocation-scoped canonical reader; never persisted in a receipt. */
+  revalidateSource?: (signal: AbortSignal) => Promise<ContextSourceVersion | null>;
 };
 export type PreparedMemoryBlock = { text: string; fragments: MemoryFragmentOffer[] };
 export type MemoryEmissionConfirmation = { token: string; fragments: MemoryFragmentManifest[] };
 
+/** Host-only compare-and-swap state, never supplied by a native receipt. */
+type StagedMemoryFragment = MemoryFragmentManifest & {
+  sourceVersion?: ContextSourceVersion;
+  previousSourceFingerprint?: string | null;
+};
+
 export function memoryFragmentOffer(
   kind: MemoryFragmentManifest['kind'], id: string, epoch: number, port: string, rendered: string,
   sourceVersion?: ContextSourceVersion,
+  revalidateSource?: MemoryFragmentOffer['revalidateSource'],
 ): MemoryFragmentOffer {
   const canonical = sourceVersion ? parseContextSourceVersion(JSON.stringify(sourceVersion), id) : null;
   if (sourceVersion && !canonical) {
@@ -55,6 +64,7 @@ export function memoryFragmentOffer(
   }
   return { kind, id, epoch, port, rendered,
     ...(canonical ? { sourceFingerprint: canonical.fingerprint, sourceVersion: canonical } : {}),
+    ...(canonical && revalidateSource ? { revalidateSource } : {}),
     bodySha256: createHash('sha256').update(rendered).digest('hex'), bodyBytes: Buffer.byteLength(rendered) };
 }
 
@@ -139,7 +149,8 @@ export async function withMemoryEmissionReceipt<T extends object>(
   try { await stageMemoryEmission(sql, ownerId, token, fragments); }
   catch { return result; }
   return { ...result, _meta: { ...response._meta,
-    'papercusp/memoryEmission': { owner: ownerId, token, fragments } } };
+    'papercusp/memoryEmission': { owner: ownerId, token,
+      fragments: fragments.map(({ revalidateSource: _reader, ...fragment }) => fragment) } } };
 }
 
 /** Extend coord_read_cursors, with one surface per token so competing ports
@@ -148,11 +159,57 @@ export async function stageMemoryEmission(
   sql: SqlTag, ownerId: string, token: string, offers: readonly MemoryFragmentOffer[],
 ): Promise<void> {
   if (!emissionToken(token) || offers.length > 128) throw new Error('Invalid memory emission offer');
-  const fragments = offers.filter(validOffer).map(row => ({ kind: row.kind, id: row.id, epoch: row.epoch, port: row.port,
+  const selectedOffers = offers.filter(validOffer);
+  const fragments: StagedMemoryFragment[] = selectedOffers.map(row => ({ kind: row.kind, id: row.id, epoch: row.epoch, port: row.port,
     bodySha256: row.bodySha256, bodyBytes: row.bodyBytes,
     ...(row.sourceFingerprint ? { sourceFingerprint: row.sourceFingerprint,
       sourceVersion: parseContextSourceVersion(JSON.stringify(row.sourceVersion), row.id)! } : {}) }));
   if (!fragments.length) return;
+  // Capture the confirmed baseline while PREPARING the token. Reading it at
+  // confirmation would let a delayed old receipt overwrite a newer proof.
+  // A failed read must abort preparation rather than invent an empty baseline.
+  for (const kind of ['memory', 'corpus'] as const) {
+    const selected = fragments.filter(row => row.kind === kind && row.sourceFingerprint !== undefined &&
+      (kind !== 'memory' || UUID_SHAPE.test(row.id)));
+    if (!selected.length) continue;
+    const epochs = selected.map(row => row.epoch), ids = selected.map(row => row.id);
+    type Baseline = { id: string; epoch: number; source_fingerprint: string | null };
+    const prior = kind === 'memory'
+      ? await sql<Baseline[]>`
+        SELECT s.memory_id::text AS id, s.epoch, s.source_fingerprint
+        FROM unnest(${epochs}::int[], ${ids}::uuid[]) AS wanted(epoch, id)
+        JOIN harness_shared.memory_session_surfaced s ON s.session_id = ${ownerId}
+          AND s.epoch = wanted.epoch AND s.memory_id = wanted.id`
+      : await sql<Baseline[]>`
+        SELECT s.ref AS id, s.epoch, s.source_fingerprint
+        FROM unnest(${epochs}::int[], ${ids}::text[]) AS wanted(epoch, id)
+        JOIN harness_shared.corpus_session_surfaced s ON s.session_id = ${ownerId}
+          AND s.epoch = wanted.epoch AND s.ref = wanted.id`;
+    const baselines = new Map(prior.map(row => [`${row.epoch}\u0000${row.id}`, row.source_fingerprint]));
+    for (const row of selected) {
+      const fingerprint = baselines.get(`${row.epoch}\u0000${row.id}`) ?? null;
+      if (fingerprint !== null && !/^[a-f0-9]{64}$/.test(fingerprint)) throw new Error('Invalid confirmed source baseline');
+      row.previousSourceFingerprint = fingerprint;
+    }
+  }
+  // Read authority AFTER capturing the baseline. Otherwise a slow old source
+  // read can be paired with a newer confirmed baseline and defeat the CAS.
+  // A new deadline belongs to this staging attempt, including cached offers;
+  // the original preparation's deadline may already have closed.
+  if (selectedOffers.some(row => row.revalidateSource)) {
+    const { createMemoryWorkDeadline } = await import('./op-deadline');
+    const deadline = createMemoryWorkDeadline(1_500);
+    try {
+      await deadline.run(() => Promise.all(selectedOffers.map(async row => {
+        if (!row.revalidateSource) return;
+        const current = await row.revalidateSource(deadline.signal);
+        const canonical = current && parseContextSourceVersion(JSON.stringify(current), row.id);
+        if (!canonical || canonical.fingerprint !== row.sourceFingerprint) {
+          throw new Error('Memory emission source changed or is unavailable');
+        }
+      })), 'receipt source revalidation');
+    } finally { deadline.close(); }
+  }
   const { stage } = await import('../agent-tools/coordination/read-cursors');
   await stage(ownerId, EMISSION_SURFACE_PREFIX + token,
     { schemaVersion: 2, expiresAt: Date.now() + MEMORY_EMISSION_TTL_MS, fragments }, { deliveryToken: token });
@@ -186,7 +243,9 @@ export async function confirmMemoryEmission(
     await clearReadCursor(ownerId, surface);
     return 0;
   }
-  const delivered = (candidate.fragments as Array<MemoryFragmentManifest & { sourceVersion?: ContextSourceVersion }>).filter(row => validFragment(row) &&
+  const delivered = (candidate.fragments as StagedMemoryFragment[]).filter(row => validFragment(row) &&
+    (row.sourceFingerprint === undefined || row.previousSourceFingerprint === null ||
+      (typeof row.previousSourceFingerprint === 'string' && /^[a-f0-9]{64}$/.test(row.previousSourceFingerprint))) &&
     proof.fragments.some(actual => validFragment(actual) && sameFragment(row, actual)));
   if (!delivered.length) return 0;
   const { stampSurfacedRefsResult } = await import('./corpus-surfaced-ledger');
@@ -194,8 +253,10 @@ export async function confirmMemoryEmission(
   let inserted = 0;
   for (const row of delivered) {
     const stamped = row.kind === 'memory'
-      ? await stampSurfacedResult(sql, ownerId, row.epoch, [row.id], row.port, row.sourceFingerprint, row.sourceVersion)
-      : await stampSurfacedRefsResult(sql, ownerId, row.epoch, [row.id], row.port, row.sourceFingerprint, row.sourceVersion);
+      ? await stampSurfacedResult(sql, ownerId, row.epoch, [row.id], row.port, row.sourceFingerprint, row.sourceVersion,
+        row.previousSourceFingerprint)
+      : await stampSurfacedRefsResult(sql, ownerId, row.epoch, [row.id], row.port, row.sourceFingerprint, row.sourceVersion,
+        row.previousSourceFingerprint);
     succeeded = stamped.ok && succeeded;
     inserted += stamped.inserted;
   }
@@ -378,9 +439,12 @@ export async function stampSurfacedResult(
   sql: SqlTag, sessionId: string, epoch: number, memoryIds: readonly string[], port: string,
   sourceFingerprint?: string,
   sourceVersion?: ContextSourceVersion,
+  previousSourceFingerprint?: string | null,
 ): Promise<{ ok: boolean; inserted: number }> {
   if (!sessionId || relationMissing) return { ok: false, inserted: 0 };
   if (sourceFingerprint !== undefined && !/^[a-f0-9]{64}$/.test(sourceFingerprint)) return { ok: false, inserted: 0 };
+  if (previousSourceFingerprint !== undefined && previousSourceFingerprint !== null &&
+      !/^[a-f0-9]{64}$/.test(previousSourceFingerprint)) return { ok: false, inserted: 0 };
   const ids = [...new Set(memoryIds.filter((id) => typeof id === 'string' && UUID_SHAPE.test(id)))];
   if (ids.length === 0) return { ok: true, inserted: 0 };
   // Native proofs carry only the fingerprint; source metadata comes from the
@@ -396,8 +460,10 @@ export async function stampSurfacedResult(
         ON CONFLICT (session_id, epoch, memory_id) DO UPDATE
           SET source_fingerprint = EXCLUDED.source_fingerprint, source_version = EXCLUDED.source_version,
             port = EXCLUDED.port, surfaced_at = now()
-          WHERE memory_session_surfaced.source_fingerprint IS DISTINCT FROM EXCLUDED.source_fingerprint
-            OR (memory_session_surfaced.source_version IS NULL AND EXCLUDED.source_version IS NOT NULL)
+          WHERE (memory_session_surfaced.source_fingerprint IS DISTINCT FROM EXCLUDED.source_fingerprint
+            OR (memory_session_surfaced.source_version IS NULL AND EXCLUDED.source_version IS NOT NULL))
+            AND (${previousSourceFingerprint !== undefined} = false OR
+              memory_session_surfaced.source_fingerprint IS NOT DISTINCT FROM ${previousSourceFingerprint ?? null}::text)
         RETURNING memory_id
       `;
       return { ok: true, inserted: rows.length };

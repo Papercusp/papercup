@@ -4,6 +4,9 @@ import * as corpusRecallIo from './corpus-recall-io';
 import * as knowledgeSources from '../agent-tools/search/knowledge-sources';
 import * as reportSources from '../agent-tools/search/report-source';
 import * as corpusLedger from './corpus-surfaced-ledger';
+import * as memoryLedger from './session-epoch-ledger';
+import * as hiveSettings from '../hive-settings-store';
+import * as packManagement from '../knowledge-packs/manage';
 import * as coverageGate from '../search/coverage-gate';
 import * as recallStaleness from './recall-staleness';
 import * as flagServer from '@papercusp/flags/server';
@@ -1832,6 +1835,177 @@ describe('buildMemoryContextBlock', () => {
     expect((await prepareMemoryContextBlock(input))?.fragments ?? []).toEqual([]);
   });
 
+  it('rechecks a prepared memory through its scoped canonical reader for each receipt attempt', async () => {
+    const id = '11111111-1111-4111-8111-111111111111';
+    const original = 'zephyrrepair requires approval before execution';
+    let current: string | null = original;
+    const backend = Object.assign(mockBackend([{ id, text: original }]), {
+      get: vi.fn(async () => { throw new Error('unscoped read forbidden'); }),
+      listPage: vi.fn(async (_options: unknown) => ({ total: current === null ? 0 : 1,
+        entries: current === null ? [] : [{ id, scope: 'u1', text: current }] })),
+    });
+    useBackend(backend);
+    const prepared = await prepareMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', harnessSlugs: [], potSlugs: [],
+      queryContext: 'zephyrrepair approval', budgetChars: 1800,
+      session: { sessionId: 'su-source-freshness', epoch: 3, port: 'turn-start' } });
+    const fragment = prepared!.fragments.find(row => row.kind === 'memory')!;
+    expect((await fragment.revalidateSource!(new AbortController().signal))?.fingerprint).toBe(fragment.sourceFingerprint);
+    current = 'zephyrrepair requires independent approval before execution';
+    expect((await fragment.revalidateSource!(new AbortController().signal))?.fingerprint).not.toBe(fragment.sourceFingerprint);
+    current = null;
+    expect(await fragment.revalidateSource!(new AbortController().signal)).toBeNull();
+    expect(backend.listPage).toHaveBeenCalledTimes(3);
+    expect(backend.listPage).toHaveBeenCalledWith({ scope: 'u1', ids: [id], includeSuperseded: true, offset: 0, limit: 8 });
+    expect(backend.get).not.toHaveBeenCalled();
+  });
+
+  it.each(['current', 'superseded', 'retracted', 'expired'] as const)(
+    'revalidates a confirmed memory absent from search with current scoped %s evidence', async status => {
+      const id = '11111111-1111-4111-8111-111111111111';
+      const before = contextSourceVersion({ namespace: 'memory:u1', ref: id, fullText: 'Earlier private guidance',
+        revision: 'r1', updatedAt: null,
+        validity: { status: 'current', validAt: null, invalidAt: null, supersededBy: null } });
+      const backend = Object.assign(mockBackend([]), {
+        get: vi.fn(async () => { throw new Error('unscoped read forbidden'); }),
+        listPage: vi.fn(async () => ({ total: 1, entries: [{ id, scope: 'u1', text: 'Changed private guidance',
+          metadata: { revision: 'r2', validity: { status, superseded_by: 'hidden-foreign-replacement' } } }] })),
+      });
+      const due = vi.spyOn(memoryLedger, 'memorySourcesDueForRevalidation').mockResolvedValue([before]);
+      useBackend(backend);
+      try {
+        const result = await prepareMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', harnessSlugs: [], potSlugs: [],
+          queryContext: 'an unrelated task', budgetChars: 1400,
+          session: { sessionId: 'su-memory-lifecycle', epoch: 2, port: 'mid-turn' } });
+        expect(result?.text).toContain(status === 'current' ? 'replace-earlier-version' : 'withdraw-earlier-version');
+        expect(result?.text?.match(/source-change /g)).toHaveLength(1);
+        expect(result?.text).not.toContain('private guidance');
+        expect(result?.text).not.toContain('hidden-foreign-replacement');
+        expect(result?.fragments).toMatchObject([{ kind: 'memory', id, epoch: 2,
+          sourceVersion: { validity: { status, supersededBy: null } } }]);
+        expect(backend.listPage).toHaveBeenCalledWith({ scope: 'u1', ids: [id],
+          includeSuperseded: true, limit: 8, offset: 0 });
+        expect(backend.get).not.toHaveBeenCalled();
+        expect(sqlMockState.statements.some(statement => /INSERT INTO harness_shared.memory_session_surfaced/.test(statement))).toBe(false);
+      } finally { due.mockRestore(); }
+    });
+
+  it('rechecks ordinary hive pack visibility once per receipt attempt and detects disable/re-enable', async () => {
+    const rows = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222']
+      .map((id, index) => ({ id, text: index === 0 ? 'zephyrrepair preserves a rollback snapshot'
+        : 'zephyrrepair validates independent approval', scope: 'hive:my-hive',
+        metadata: { source: 'pack', pack_id: 'repair-pack', validity: { status: 'current' } } }));
+    const backend = Object.assign(mockBackend(rows), {
+      listPage: vi.fn(async () => ({ total: rows.length, entries: rows })),
+    });
+    let disabled: string[] = [];
+    const visibility = vi.spyOn(hiveSettings, 'getHiveSetting').mockImplementation(async () => ({
+      workspaceId: 'ws', potHomeSlug: 'my-hive', settingKey: 'knowledge-packs:disabled',
+      value: disabled, createdAt: 0, updatedAt: 1_700_000_000_000,
+    }));
+    const renderVisibility = vi.spyOn(packManagement, 'disabledPacksFor').mockImplementation(async () => disabled);
+    useBackend(backend);
+    try {
+      const prepared = await prepareMemoryContextBlock({ userId: null, workspaceId: 'ws', harnessSlugs: [],
+        potSlugs: ['my-hive'], queryContext: 'zephyrrepair guidance', budgetChars: 1800,
+        session: { sessionId: 'su-pack-source-freshness', epoch: 3, port: 'turn-start' } });
+      const fragments = prepared!.fragments.filter(row => row.kind === 'memory');
+      expect(fragments).toHaveLength(2);
+      const firstAttempt = new AbortController().signal;
+      expect(await Promise.all(fragments.map(row => row.revalidateSource!(firstAttempt))))
+        .toEqual(fragments.map(row => row.sourceVersion));
+      expect(visibility).toHaveBeenCalledTimes(1);
+      disabled = ['repair-pack'];
+      const secondAttempt = new AbortController().signal;
+      const withdrawn = await Promise.all(fragments.map(row => row.revalidateSource!(secondAttempt)));
+      expect(withdrawn).toMatchObject(fragments.map(() => ({ validity: {
+        status: 'retracted', invalidAt: '2023-11-14T22:13:20.000Z', supersededBy: null,
+      } })));
+      expect(visibility).toHaveBeenCalledTimes(2);
+      expect(visibility.mock.calls.every(call => call[0] === 'ws' && call[1] === 'my-hive' &&
+        call[2] === 'knowledge-packs:disabled' && typeof call[3] === 'function')).toBe(true);
+      await expect(stageMemoryEmission(getOrgPg().sql, 'su-pack-source-freshness', 'disabled-pack-attempt', fragments))
+        .rejects.toThrow('Memory emission source changed or is unavailable');
+      expect(visibility).toHaveBeenCalledTimes(3);
+      disabled = [];
+      expect((await fragments[0].revalidateSource!(new AbortController().signal))?.fingerprint)
+        .toBe(fragments[0].sourceFingerprint);
+      expect(visibility).toHaveBeenCalledTimes(4);
+    } finally { visibility.mockRestore(); renderVisibility.mockRestore(); }
+  });
+
+  it.each(['disabled', 'enabled', 'read-error', 'malformed', 'identity-package', 'foreign-pool'])(
+    'revalidates a previously confirmed hive pack with strict %s authority', async scenario => {
+      const id = '11111111-1111-4111-8111-111111111111';
+      const before = contextSourceVersion({ namespace: 'memory:hive:my-hive', ref: id, fullText: 'Earlier pack guidance',
+        revision: null, updatedAt: null,
+        validity: { status: 'current', validAt: null, invalidAt: null, supersededBy: null } });
+      const backend = Object.assign(mockBackend([]), {
+        get: vi.fn(async () => { throw new Error('unscoped read forbidden'); }),
+        listPage: vi.fn(async () => ({ total: 1, entries: [{ id, text: 'Changed pack guidance',
+          scope: scenario === 'foreign-pool' ? 'hive:foreign' : 'hive:my-hive', metadata: {
+            source: 'pack', pack_id: 'repair-pack', validity: { status: 'current' },
+            ...(scenario === 'identity-package' ? { identity_package_resource: 'private-resource' } : {}),
+          } }] })),
+      });
+      const visibility = vi.spyOn(hiveSettings, 'getHiveSetting').mockImplementation(async () => {
+        if (scenario === 'read-error') throw new Error('setting read unavailable');
+        return { workspaceId: 'ws', potHomeSlug: 'my-hive', settingKey: 'knowledge-packs:disabled',
+          value: scenario === 'malformed' ? 'not a list' : scenario === 'disabled' ? ['repair-pack'] : [],
+          createdAt: 0, updatedAt: 1_700_000_000_000 };
+      });
+      const due = vi.spyOn(memoryLedger, 'memorySourcesDueForRevalidation').mockResolvedValue([before]);
+      useBackend(backend);
+      try {
+        const prepared = await prepareMemoryContextBlock({ userId: null, workspaceId: 'ws', harnessSlugs: [],
+          potSlugs: ['my-hive'], queryContext: 'unrelated task', budgetChars: 1400,
+          session: { sessionId: 'su-pack-lifecycle', epoch: 2, port: 'mid-turn' } });
+        if (scenario === 'disabled' || scenario === 'enabled') {
+          expect(prepared?.text).toContain(scenario === 'disabled' ? 'withdraw-earlier-version' : 'replace-earlier-version');
+          expect(prepared?.text).not.toContain('pack guidance');
+          expect(prepared?.fragments).toMatchObject([{ kind: 'memory', id,
+            sourceVersion: { validity: { status: scenario === 'disabled' ? 'retracted' : 'current' } } }]);
+        } else {
+          expect(prepared?.text ?? '').not.toContain('source-change');
+          expect(prepared?.fragments ?? []).toEqual([]);
+        }
+        expect(backend.get).not.toHaveBeenCalled();
+        if (scenario === 'identity-package' || scenario === 'foreign-pool') expect(visibility).not.toHaveBeenCalled();
+      } finally { visibility.mockRestore(); due.mockRestore(); }
+    });
+
+  it.each(['missing', 'foreign-pool', 'foreign-workspace', 'wrong-id', 'pack', 'read-error', 'no-current-pool', 'budget'])(
+    'keeps memory lifecycle unknown or withheld for %s without an unscoped fallback', async scenario => {
+      const id = '11111111-1111-4111-8111-111111111111';
+      const before = contextSourceVersion({ namespace: 'memory:u1', ref: id, fullText: 'Earlier private guidance',
+        revision: 'r1', updatedAt: null,
+        validity: { status: 'current', validAt: null, invalidAt: null, supersededBy: null } });
+      const backend = Object.assign(mockBackend([]), {
+        get: vi.fn(async () => { throw new Error('unscoped read forbidden'); }),
+        listPage: vi.fn(async () => {
+          if (scenario === 'read-error') throw new Error('unavailable');
+          return { total: 1, entries: scenario === 'missing' ? [] : [{
+            id: scenario === 'wrong-id' ? '22222222-2222-4222-8222-222222222222' : id,
+            scope: scenario === 'foreign-pool' ? 'foreign' : 'u1', text: 'Changed private guidance', kind: 'project',
+            metadata: { workspace_id: scenario === 'foreign-workspace' ? 'foreign' : 'ws',
+              ...(scenario === 'pack' ? { source: 'pack' } : {}), revision: 'r2' },
+          }] };
+        }),
+      });
+      const due = vi.spyOn(memoryLedger, 'memorySourcesDueForRevalidation').mockResolvedValue([before]);
+      useBackend(backend);
+      try {
+        const result = await prepareMemoryContextBlock({ userId: scenario === 'no-current-pool' ? null : 'u1',
+          workspaceId: 'ws', harnessSlugs: [], potSlugs: [], queryContext: 'an unrelated task',
+          budgetChars: scenario === 'budget' ? 20 : 1400,
+          session: { sessionId: 'su-memory-lifecycle', epoch: 2, port: 'mid-turn' } });
+        expect(result?.text ?? '').not.toContain('source-change');
+        expect(result?.text ?? '').not.toContain('private guidance');
+        expect(result?.fragments ?? []).toEqual([]);
+        expect(backend.get).not.toHaveBeenCalled();
+        if (scenario === 'no-current-pool') expect(backend.listPage).not.toHaveBeenCalled();
+      } finally { due.mockRestore(); }
+    });
+
   it('dedups a memory surfaced within the watermark window (D-006)', async () => {
     const stale = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
     const fresh = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
@@ -2196,9 +2370,12 @@ describe('corpus leg carries its own retrieval health (P-001)', () => {
   it('context reliability: only proven final fragments commit surfaced delivery', async () => {
     configureReadCursorStore(new InMemoryReadCursorStore());
     try {
-      useBackend(mockBackend([{
+      const row = {
         id: '11111111-1111-4111-8111-111111111111', text: 'retain verified delivery evidence ☃',
-      }]));
+      };
+      useBackend(Object.assign(mockBackend([row]), {
+        listPage: vi.fn(async () => ({ total: 1, entries: [{ ...row, scope: 'u1' }] })),
+      }));
       corpusIoResult = {
         block: null, dropped: [], embedderAvailable: true, candidateCount: 1,
         lines: [{ line: '- [doc fixture] cited delivery procedure', score: 1,
@@ -2731,6 +2908,33 @@ describe('records the corpus admission funnel on the same recall row (P-009)', (
     const withheld = await prepareMemoryContextBlock(recall);
     expect(withheld?.text ?? '').not.toContain(body);
     expect(withheld?.fragments ?? []).toEqual([]);
+  });
+
+  it('rechecks cached corpus offers against current authority and denial on each receipt attempt', async () => {
+    useBackend(mockBackend([]));
+    const ref = 'plan:papercusp:freshness';
+    const source = contextSourceVersion({ namespace: 'corpus:plan:ws', ref, fullText: 'http2 requires approval',
+      revision: 'r1', updatedAt: null,
+      validity: { status: 'current', validAt: null, invalidAt: null, supersededBy: null } });
+    const changed = contextSourceVersion({ namespace: source.namespace, ref, fullText: 'http2 requires independent approval',
+      revision: 'r2', updatedAt: null, validity: source.validity });
+    corpusIoResult = oneLine({ lines: [{ line: '- [plan] source-evidence "http2 requires approval"',
+      score: 1, operative: true, sourceVersion: source,
+      handle: { kind: 'plan', ref, query: ['http2'], resolve: 'plans:get' } }] });
+    const due = vi.spyOn(corpusLedger, 'corpusSourcesDueForRevalidation').mockResolvedValue([]);
+    const knowledge = vi.spyOn(knowledgeSources, 'revalidateKnowledgeSourceVersions').mockResolvedValue([source]);
+    const reports = vi.spyOn(reportSources, 'revalidateReportSourceVersions').mockResolvedValue([]);
+    try {
+      const prepared = await prepareMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'http2 approval',
+        session: { sessionId: 'su-corpus-freshness', epoch: 3, port: 'mid-turn' } });
+      const fragment = prepared!.fragments.find(row => row.kind === 'corpus')!;
+      expect((await fragment.revalidateSource!(new AbortController().signal))?.fingerprint).toBe(source.fingerprint);
+      knowledge.mockResolvedValue([changed]);
+      expect((await fragment.revalidateSource!(new AbortController().signal))?.fingerprint).toBe(changed.fingerprint);
+      knowledge.mockResolvedValue([]);
+      expect(await fragment.revalidateSource!(new AbortController().signal)).toBeNull();
+      expect(knowledge).toHaveBeenCalledTimes(3);
+    } finally { due.mockRestore(); knowledge.mockRestore(); reports.mockRestore(); }
   });
 
   it('offers content-free lifecycle notices for confirmed sources absent from ranked results and never stamps on read', async () => {

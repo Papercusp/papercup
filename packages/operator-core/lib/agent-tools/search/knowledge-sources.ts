@@ -9,6 +9,7 @@ import { boundedExactTopK, headlineTsQuery, lexicalLeg, mergeExactAndBm25 } from
 import { PROSE_EMBEDDING_SPACE } from '../../search/prose-vector-dims';
 import { lastMarkdownHeading, planWindowMidpoint } from '../plans/semantic-leg';
 import { contextSourceVersion, type ContextSourceVersion } from '../../memory/temporal-render';
+import type { HarnessRegistry } from '../../harness-registry';
 
 export interface KnowledgeAudience {
   harnessSlugs?: readonly string[];
@@ -47,7 +48,9 @@ export async function revalidateKnowledgeSourceVersions(input: {
         continue;
       }
       const doc = /^doc:(papercusp-engineering|harness:[^:]+):(.+)$/.exec(previous.ref);
-      if (!doc || !input.allowed.has('doc') || previous.namespace !== `corpus:doc:${input.workspaceId}`) continue;
+      const fileSource = previous.namespace === `corpus:doc-file:${input.workspaceId}`;
+      if (!doc || !input.allowed.has('doc') ||
+          (!fileSource && previous.namespace !== `corpus:doc:${input.workspaceId}`)) continue;
       const [, key, slug] = doc;
       if (slug.startsWith('plans/') || slug.startsWith('reference/plans-')) continue;
       const harness = key === 'papercusp-engineering' ? 'papercusp' : key.slice('harness:'.length);
@@ -62,6 +65,16 @@ export async function revalidateKnowledgeSourceVersions(input: {
         ORDER BY (d.retired_at IS NOT NULL) DESC, (d.content_mode = 'composed') DESC, d.doc_id`;
       // Retirement wins across aliases. Only authored bytes establish source identity.
       const row = rows[0];
+      if (fileSource) {
+        // A new database authority, a vanished file or revoked membership is
+        // unknown here. Never read a stale file projection after a DB deletion.
+        if (rows.length) continue;
+        const raw = await fileDocSource(sql, input.workspaceId, key, slug, input.signal);
+        if (raw !== null) versions.push(contextSourceVersion({ namespace: previous.namespace, ref: previous.ref,
+          fullText: raw, revision: null, updatedAt: null,
+          validity: { status: 'current', validAt: null, invalidAt: null, supersededBy: null } }));
+        continue;
+      }
       if (!row || row.content_mode !== 'authored' || typeof row.content !== 'string') continue;
       versions.push(contextSourceVersion({ namespace: previous.namespace, ref: previous.ref,
         fullText: row.content, revision: null,
@@ -71,6 +84,41 @@ export async function revalidateKnowledgeSourceVersions(input: {
     }
     return versions;
   }, { client: input.sql, signal: input.signal, readOnly: true, statementTimeoutMs: 1_500 });
+}
+
+/** File authority is distinct from authored PG rows and their projections.
+ * Share the canonical docs:get source adapter, but never its default workspace,
+ * process-global registry cache or project-docs environment override. */
+async function fileDocSource(sql: Sql, workspaceId: string, key: string, slug: string,
+  signal?: AbortSignal): Promise<string | null> {
+  try {
+    signal?.throwIfAborted();
+    let adapter: import('@papercusp/docs-engine').DocSource;
+    if (key === 'papercusp-engineering') {
+      const { engineeringAdapterForSlugs } = await import('../docs/_engineering-adapter');
+      // The caller already read canonical aliases on this connection.
+      adapter = engineeringAdapterForSlugs([slug], async () => new Map());
+    } else {
+      const [row] = await sql`SELECT payload FROM harness_shared.harness_registry
+        WHERE workspace_id = ${workspaceId}`;
+      if (!Array.isArray(row?.payload?.projects)) return null;
+      const registry: HarnessRegistry = { projects: row.payload.projects };
+      const harness = key.slice('harness:'.length);
+      if (!registry.projects.some(project => project.slug === harness && typeof project.path === 'string')) return null;
+      const { resolveAdapter } = await import('../docs/get');
+      const resolved = await resolveAdapter(harness, { slugs: [slug], registry });
+      if (resolved.error) return null;
+      adapter = resolved.adapter;
+    }
+    const page = await adapter.getPage(slug);
+    signal?.throwIfAborted();
+    const raw = page ? await adapter.getSource?.(page) ?? null : null;
+    signal?.throwIfAborted();
+    return raw;
+  } catch (error) {
+    signal?.throwIfAborted();
+    return null;
+  }
 }
 
 type SectionRow = {
@@ -317,31 +365,11 @@ export function createDocSearchSource(audience: KnowledgeAudience = {}): SearchS
       candidates.find(row => typeof row.content === 'string' && row.content.length > 0);
     let raw: string | null = record?.content_mode === 'authored' && typeof record.content === 'string'
       ? record.content : null;
-    if (!record) {
-      try {
-        // The SQL audience fence above authorizes this exact source key. Use
-        // getSource, preserving its distinction from rendered/preamble text.
-        // The canonical read already happened on p.sql. Never re-read through
-        // a process-default DB/workspace or a project-docs environment override.
-        if (key === 'papercusp-engineering') {
-          const { engineeringAdapterForSlugs } = await import('../docs/_engineering-adapter');
-          const adapter = engineeringAdapterForSlugs([slug], async () => new Map());
-          const page = await adapter.getPage(slug);
-          if (page) raw = await adapter.getSource?.(page) ?? null;
-        } else {
-          const { resolveAdapter } = await import('../docs/get');
-          const resolved = await resolveAdapter(harness, { slugs: [slug] });
-          if (!resolved.error) {
-            const page = await resolved.adapter.getPage(slug);
-            if (page) raw = await resolved.adapter.getSource?.(page) ?? null;
-          }
-        }
-      } catch { /* unavailable authority stays an unversioned pointer */ }
-    }
+    if (!candidates.length) raw = await fileDocSource(p.sql, p.workspaceId, key, slug, p.signal);
     return { source_id: `${key}:${slug}`, title: String(r.title), content,
       contextUnit: raw === null ? null : completeContextUnit(raw),
       contextSourceVersion: raw === null ? null : JSON.stringify(contextSourceVersion({
-        namespace: `corpus:doc:${p.workspaceId}`, ref: `doc:${key}:${slug}`, fullText: raw,
+        namespace: `corpus:${candidates.length ? 'doc' : 'doc-file'}:${p.workspaceId}`, ref: `doc:${key}:${slug}`, fullText: raw,
         revision: null, updatedAt: record?.updated_at == null ? null : new Date(record.updated_at).toISOString(),
         validity: { status: 'current', validAt: null, invalidAt: null, supersededBy: null },
       })),

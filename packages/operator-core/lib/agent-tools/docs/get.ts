@@ -8,7 +8,7 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { genericFsAdapter, getDocs, harnessFsAdapter, withPreamble, type DocSource } from '@papercusp/docs-engine';
-import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
+import { loadHarnessRegistry, resolveHarnessContentPath, type HarnessRegistry } from '../../harness-registry';
 import { resolveDocsRoot, resolveDocsSources } from '../../endpoint-route/routes/harness/project-docs';
 import { engineeringAdapter as engineeringBase, engineeringAdapterForSlugs } from './_engineering-adapter';
 import {
@@ -45,7 +45,9 @@ function wrapWithPreamble(base: DocSource): DocSource {
 
 export async function resolveAdapter(
   harnessSlug: string | undefined,
-  opts: { isSuperuser?: boolean; slugs?: readonly string[] } = {},
+  opts: { isSuperuser?: boolean; slugs?: readonly string[];
+    /** Internal readers may supply the registry read on their own workspace connection. */
+    registry?: HarnessRegistry } = {},
 ): Promise<{
   adapter: DocSource;
   surface: 'harness' | 'engineering' | 'project';
@@ -83,7 +85,7 @@ export async function resolveAdapter(
       },
     };
   }
-  const reg = await loadHarnessRegistry();
+  const reg = opts.registry ?? await loadHarnessRegistry();
   const project = reg.projects.find((p) => p.slug === harnessSlug);
   if (!project) {
     return {

@@ -182,15 +182,45 @@ describe('canonical source version PostgreSQL ledgers', () => {
     expect(await stamp(sql, owner, 3, [id], 'legacy')).toEqual({ ok: true, inserted: 0 });
     expect(await storedVersion()).toEqual(nextVersion);
     expect(await read(nextVersion.fingerprint)).toEqual(new Set([id]));
-    // A delayed old receipt cannot certify the newer source. Replay is safe.
-    expect(await confirmMemoryEmission(sql, owner, { token: 'late-first-version', fragments: [native(first)] })).toBe(1);
-    expect(await read(nextVersion.fingerprint)).toEqual(new Set());
+    // A delayed old receipt must preserve the newer revision's proof, even
+    // though its exact emitted passage is identical and its token is valid.
+    expect(await confirmMemoryEmission(sql, owner, { token: 'late-first-version', fragments: [native(first)] })).toBe(0);
+    expect(await storedVersion()).toEqual(nextVersion);
+    expect(await read(nextVersion.fingerprint)).toEqual(new Set([id]));
     await stageMemoryEmission(sql, owner, 'retry-next-version', [next]);
-    expect(await confirmMemoryEmission(sql, owner, { token: 'retry-next-version', fragments: [native(next)] })).toBe(1);
+    expect(await confirmMemoryEmission(sql, owner, { token: 'retry-next-version', fragments: [native(next)] })).toBe(0);
     await stageMemoryEmission(sql, owner, 'same-version', [next]);
     expect(await confirmMemoryEmission(sql, owner, { token: 'same-version', fragments: [native(next)] })).toBe(0);
     expect(await read(nextVersion.fingerprint)).toEqual(new Set([id]));
     expect(await read(nextVersion.fingerprint, 4)).toEqual(new Set());
+  });
+
+  it.each(['memory', 'corpus'] as const)('serializes competing %s revision receipts and permits a fresh retry after losing the baseline', async kind => {
+    const sql = db.adminSql as unknown as SqlTag;
+    const owner = `version-race:${randomUUID()}`, id = kind === 'memory' ? randomUUID() : `doc:${randomUUID()}`;
+    const version = (revision: string) => contextSourceVersion({ namespace: kind, ref: id,
+      fullText: `canonical ${revision}`, revision, updatedAt: null,
+      validity: { status: 'current', validAt: null, invalidAt: null, supersededBy: null } });
+    const older = version('older'), newer = version('newer');
+    const a = memoryFragmentOffer(kind, id, 2, 'initialize', 'same emitted passage', older);
+    const b = memoryFragmentOffer(kind, id, 2, 'turn-start', a.rendered, newer);
+    const native = ({ rendered: _body, sourceVersion: _source, ...manifest }: typeof a) => manifest;
+    const read = (fingerprint: string) => kind === 'memory'
+      ? alreadySurfacedIds(sql, owner, 2, [id], new Map([[id, fingerprint]]))
+      : alreadySurfacedRefs(sql, owner, 2, [id], new Map([[id, fingerprint]]));
+    await stageMemoryEmission(sql, owner, 'race-old', [a]);
+    await stageMemoryEmission(sql, owner, 'race-new', [b]);
+    // Both preparations saw no confirmed source. The first atomic stamp wins;
+    // the other token cannot replace a baseline it never observed.
+    expect(await confirmMemoryEmission(sql, owner, { token: 'race-old', fragments: [native(a)] })).toBe(1);
+    expect(await confirmMemoryEmission(sql, owner, { token: 'race-new', fragments: [native(b)] })).toBe(0);
+    expect(await read(older.fingerprint)).toEqual(new Set([id]));
+    expect(await read(newer.fingerprint)).toEqual(new Set());
+    await stageMemoryEmission(sql, owner, 'race-new-retry', [b]);
+    expect(await confirmMemoryEmission(sql, owner, { token: 'race-new-retry', fragments: [native(b)] })).toBe(1);
+    expect(await read(newer.fingerprint)).toEqual(new Set([id]));
+    expect(await confirmMemoryEmission(sql, owner, { token: 'race-old', fragments: [native(a)] })).toBe(0);
+    expect(await read(newer.fingerprint)).toEqual(new Set([id]));
   });
 
   it.each(['memory', 'corpus'] as const)('rejects mismatched %s source metadata before stamping', async kind => {
@@ -206,5 +236,26 @@ describe('canonical source version PostgreSQL ledgers', () => {
     const rows = kind === 'memory' ? await db.adminSql`SELECT memory_id FROM harness_shared.memory_session_surfaced WHERE session_id = ${owner}`
       : await db.adminSql`SELECT ref FROM harness_shared.corpus_session_surfaced WHERE session_id = ${owner}`;
     expect(rows).toHaveLength(0);
+  });
+
+  it.each(['memory', 'corpus'] as const)('accepts only one simultaneous %s confirmation for a shared baseline', async kind => {
+    const sql = db.adminSql as unknown as SqlTag;
+    const owner = `version-simultaneous:${randomUUID()}`, id = kind === 'memory' ? randomUUID() : `doc:${randomUUID()}`;
+    const versions = ['one', 'two'].map(revision => contextSourceVersion({ namespace: kind, ref: id,
+      fullText: `canonical ${revision}`, revision, updatedAt: null,
+      validity: { status: 'current', validAt: null, invalidAt: null, supersededBy: null } }));
+    const offers = versions.map(source => memoryFragmentOffer(kind, id, 2, 'turn-start', 'same emitted passage', source));
+    const proofs = offers.map(({ rendered: _body, sourceVersion: _source, ...fragment }, i) => ({
+      token: `simultaneous-${i}`, fragments: [fragment] }));
+    for (const [i, offer] of offers.entries()) await stageMemoryEmission(sql, owner, proofs[i]!.token, [offer]);
+    const confirmed = await Promise.all(proofs.map(proof => confirmMemoryEmission(sql, owner, proof)));
+    expect([...confirmed].sort()).toEqual([0, 1]);
+    const winner = confirmed.indexOf(1);
+    for (const [i, source] of versions.entries()) {
+      const fingerprints = new Map([[id, source.fingerprint]]);
+      const found = kind === 'memory' ? await alreadySurfacedIds(sql, owner, 2, [id], fingerprints)
+        : await alreadySurfacedRefs(sql, owner, 2, [id], fingerprints);
+      expect(found).toEqual(new Set(i === winner ? [id] : []));
+    }
   });
 });
