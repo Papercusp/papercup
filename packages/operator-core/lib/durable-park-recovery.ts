@@ -311,7 +311,7 @@ export async function readParkProgressInTransaction(tx: TransactionSql, input: {
   const rows = await tx<{ scope: string; note: string | null; body_ts: string | number | null }[]>`
     SELECT scope, note, body_ts FROM harness_shared.carry_notes
      WHERE workspace_id = ${input.workspaceId} AND scope = ANY(${scopes}::text[])`;
-  return rows.flatMap(row => {
+  const checkpoints: ParkProgressEvidence[] = rows.flatMap(row => {
     const atMs = Number(row.body_ts);
     const index = scopes.indexOf(row.scope);
     if (index < 0 || row.body_ts == null || !instant(atMs) || !row.note?.trim()) return [];
@@ -319,6 +319,24 @@ export async function readParkProgressInTransaction(tx: TransactionSql, input: {
       persistedAtMs: atMs,
       evidenceRef: `checkpoint:${row.scope}:${createHash('sha256').update(row.note).digest('hex')}` }];
   });
+  // Managed task completion is an independent outcome writer. closeTask fixes
+  // ended_at on the first terminal write; last_seen_at/updated_at are liveness
+  // clocks and must never renew a park. Reuse the existing work-item index and
+  // only successful, explicitly linked outcomes in this physical scope.
+  const outcomes = await tx<{ work_item_id: string; task_id: string; kind: 'task' | 'test';
+    ended_ms: string | number }[]>`
+    SELECT DISTINCT ON (work_item_id, CASE WHEN class='test-run' THEN 'test' ELSE 'task' END)
+      work_item_id, task_id, CASE WHEN class='test-run' THEN 'test' ELSE 'task' END AS kind,
+      floor(extract(epoch FROM ended_at)*1000)::bigint AS ended_ms
+    FROM harness_shared.task_ledger
+    WHERE workspace_id=${input.workspaceId} AND COALESCE(harness_slug, '')=${input.harness}
+      AND work_item_id=ANY(${refs}::text[]) AND state='exited' AND exit_code=0 AND ended_at IS NOT NULL
+    ORDER BY work_item_id, CASE WHEN class='test-run' THEN 'test' ELSE 'task' END, ended_at DESC, task_id DESC`;
+  return checkpoints.concat(outcomes.flatMap(row => {
+    const atMs = Number(row.ended_ms);
+    return instant(atMs) ? [{ kind: row.kind, subjectRef: row.work_item_id, sequence: atMs,
+      persistedAtMs: atMs, evidenceRef: `task-ledger:${row.task_id}:exited:0` }] : [];
+  }));
 }
 
 export type ParkRecoveryCheckResult = {

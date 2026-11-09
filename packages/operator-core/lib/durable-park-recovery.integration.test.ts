@@ -8,6 +8,8 @@ import { createPublicParkTestDb } from '../test/_public-park-pg';
 import type {} from '../test/_park-recovery-child';
 import type { ParkRecoveryAdmission } from './durable-park-recovery';
 import type { SessionState } from './agent-tools/coordination/presence-wakeability';
+import { ensureBootstrap, getTxPool, tryAcquire, tryRelease } from './agent-tools/locks/su-lock-store';
+import { inWorkspaceTxn } from './agent-tools/locks/in-workspace-txn';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async original => ({
@@ -65,7 +67,7 @@ afterAll(async () => { await db?.cleanup(); });
 beforeEach(async () => {
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.event_awaits,
     harness_shared.event_wake_deliveries, harness_shared.event_key_fires,
-    harness_shared.carry_notes RESTART IDENTITY CASCADE`;
+    harness_shared.carry_notes, harness_shared.task_ledger RESTART IDENTITY CASCADE`;
   await db.sql`INSERT INTO harness_shared.work_items
     (workspace_id, harness_slug, feature_id, title, item_kind, status, taken_by, taken_at, payload)
     VALUES ('default', ${HARNESS}, ${ID}, 'Deliver qualified inputs', 'feature', 'wip', ${OWNER}, now(),
@@ -102,6 +104,28 @@ function protectedItem(row: Awaited<ReturnType<typeof snapshot>>) {
   const copy = structuredClone(row);
   delete copy.payload.claim_hold_release.recovery;
   return copy;
+}
+
+async function withPeerLock(run: (read: () => Promise<unknown>) => Promise<void>) {
+  // The actual lock store uses a unique test-only domain, never a source path
+  // in this workspace. A lock token/expiry is independent of the item payload.
+  await ensureBootstrap();
+  const domain = `park-recovery-fixture-${crypto.randomUUID()}`;
+  const peer = 'su-protected-peer';
+  const held = await inWorkspaceTxn(domain, peer, tx => tryAcquire(tx, {
+    coordinationDomain: domain, owner: peer, ownerLabel: 'Protected fixture peer', paths: ['fixture/protected-input.ts'],
+    intent: 'PARK-SAFETY protected input', ttlSec: 600,
+  }));
+  expect(held.ok).toBe(true);
+  if (!held.ok) throw new Error('protected peer lock fixture failed');
+  const read = () => getTxPool()`SELECT path, owner, lock_id::text, acquired_ts::text, expires_ts::text
+    FROM agent_file_locks WHERE coordination_domain=${domain}`;
+  try { await run(read); }
+  finally {
+    await inWorkspaceTxn(domain, peer, tx => tryRelease(tx, {
+      coordinationDomain: domain, owner: peer, lockId: held.lock_id,
+    }));
+  }
 }
 
 async function restartController(mode: 'crash' | 'recover', cut: string, successor = '') {
@@ -191,7 +215,110 @@ describe('PARK-RECOVERY causal unchanged-call silent-prerequisite restart', () =
     }, 180_000);
 });
 
+describe('independent PARK-READINESS and PARK-SAFETY protected outcomes', () => {
+  const complete = { ready: true, usable: true, qualified: true, version: 2,
+    source: 'current-source', retainedSource: 'current-source' };
+  it.each([
+    ['subset completion', { ready: true }],
+    ['failed qualification', { ...complete, qualified: false }],
+    ['unusable retained inputs', { ...complete, usable: false }],
+    ['stale condition version', { ...complete, version: 1 }],
+    ['incoherent retained source', { ...complete, retainedSource: 'old-source' }],
+  ])('%s cannot qualify; only the separate complete current evaluation retires recovery', async (_case, payload) => {
+    await db.sql`UPDATE harness_shared.event_awaits SET expected_condition=${JSON.stringify({
+      kind: 'predicate', predicate: Object.fromEntries(Object.entries(complete).map(([key, value]) => [key, { eq: value }]))
+    })}::text::jsonb WHERE id=${declarationId}`;
+    const admitted = await db.sql.begin(tx => releaseAndAdmit(tx));
+    const before = protectedItem(await snapshot());
+    await db.sql.begin(tx => qualify(tx, payload as typeof complete));
+    const recovered = (await check(admitted, admitted.receipt.deadlineMs)).admission!;
+    expect(recovered.receipt.state).toBe('recovery');
+    expect(recovered.recoveryWorkItemId).toBeTruthy();
+    expect(protectedItem(await snapshot())).toEqual(before);
+    await db.sql.begin(tx => qualify(tx, complete));
+    expect((await check(recovered, admitted.receipt.deadlineMs)).disposition).toBe('retired');
+    expect((await persisted(recovered)).receipt.state).toBe('retired');
+    expect(protectedItem(await snapshot())).toEqual(before);
+    expect(await actions()).toHaveLength(1);
+  });
+
+  it('recovery notification and successor election preserve an active peer claim, actual file-lock lease and acceptance', async () => {
+    await withPeerLock(async readLock => {
+      const admitted = await db.sql.begin(tx => releaseAndAdmit(tx));
+      await db.sql`UPDATE harness_shared.work_items SET taken_by='su-protected-peer', status='wip',
+        taken_at=clock_timestamp(), expires_at=clock_timestamp()+interval '1 hour',
+        payload=payload || ${JSON.stringify({ readiness: { version: 2, source: 'current-source',
+          retainedInputs: { usable: false, qualified: false } },
+          acceptance: ['qualification-failed', 'usability-failed', 'source-coherence', 'full-suite'] })}::text::jsonb
+        WHERE feature_id=${ID}`;
+      const readProtected = async () => {
+        const row = protectedItem(await snapshot());
+        const [claim] = await db.sql`SELECT expires_at::text FROM harness_shared.work_items WHERE feature_id=${ID}`;
+        return { row, claim, locks: await readLock() };
+      };
+      const before = await readProtected();
+      const safetyOracle = (value: typeof before) => expect(value).toEqual(before);
+      // Independent sensitivity control changes only the protected lock lease.
+      const altered = structuredClone(before);
+      (altered.locks as Array<{ owner: string }>)[0].owner = 'su-successor';
+      expect(() => safetyOracle(altered)).toThrow();
+      const recovered = (await check(admitted, admitted.receipt.deadlineMs)).admission!;
+      const certificate = parkRecoveryCertificate(recovered.receipt);
+      const fired = await settleVerifiedAwaitTimeout({ id: admitted.awaitId, result: {
+        classification: 'stalled', nextAction: 'wake-owner-or-takeover', producer: certificate.producer,
+        owner: certificate.owner, checkedAtMs: admitted.receipt.deadlineMs,
+        verificationDeadlineMs: admitted.receipt.deadlineMs, lastProgressAtMs: null, lastFireAtMs: null,
+      } });
+      expect(fired).toBeTruthy();
+      await insertDeliveries({ awaits: [fired!] });
+      const [delivery] = await db.sql`SELECT id FROM harness_shared.event_wake_deliveries WHERE await_id=${admitted.awaitId}`;
+      const route = await db.sql.begin(tx => routeParkRecoveryDeliveryInTransaction(tx, {
+        awaitId: admitted.awaitId, deliveryId: Number(delivery.id),
+        owners: async () => ({ states: new Map([['su-protected-peer', 'ended' as const],
+          ['su-successor', 'parked' as const]]), successors: ['su-successor'] }),
+      }));
+      expect(route).toMatchObject({ disposition: 'target', ownerId: 'su-successor' });
+      safetyOracle(await readProtected());
+      expect((await actions())[0].taken_by).toBe('su-successor');
+    });
+  });
+});
+
 describe('serialized progress and timeout recovery (PARK-PROGRESS / PARK-RECOVERY)', () => {
+  it.each(['task', 'test-run'])('consumes new linked successful %s outcomes, never liveness or unrelated outcomes', async kind => {
+    const writeTask = async (taskId: string, at: number, scope = HARNESS, ref = ID, exitCode = 0) => {
+      await db.sql`INSERT INTO harness_shared.task_ledger
+        (task_id, workspace_id, harness_slug, root_task_id, class, title, launched_by,
+         work_item_id, state, exit_code, ended_at)
+        VALUES (${taskId}, 'default', ${scope}, ${taskId}, ${kind}, 'Fixture outcome', 'fixture',
+          ${ref}, 'exited', ${exitCode}, to_timestamp(${at}/1000.0))`;
+    };
+    await writeTask('baseline', Date.now()-10_000);
+    const admitted = await db.sql.begin(tx => releaseAndAdmit(tx));
+    const at = admitted.receipt.admittedAtMs+10;
+    await writeTask('other-harness', at, 'other');
+    await writeTask('other-item', at, HARNESS, 'WI-other');
+    await writeTask('failed-outcome', at, HARNESS, ID, 1);
+    await db.sql`UPDATE harness_shared.task_ledger SET last_seen_at=to_timestamp(${at}/1000.0),
+      updated_at=to_timestamp(${at}/1000.0) WHERE task_id='baseline'`;
+    expect((await check(admitted, at+1)).disposition).toBe('waiting');
+    await writeTask('new-success', at);
+    const renewed = (await check(admitted, at+1)).admission!;
+    expect(renewed.receipt.extensions).toBe(1);
+    expect(Object.values(renewed.receipt.progress)).toContainEqual(expect.objectContaining({
+      kind: kind === 'test-run' ? 'test' : 'task', subjectRef: ID,
+      evidenceRef: 'task-ledger:new-success:exited:0' }));
+    await db.sql`UPDATE harness_shared.task_ledger SET last_seen_at=clock_timestamp(), updated_at=clock_timestamp()`;
+    expect((await check(renewed, at+2)).disposition).toBe('waiting');
+    expect((await persisted(renewed)).receipt.extensions).toBe(1);
+    await writeTask('next-success', at+3);
+    const final = (await check(renewed, at+4)).admission!;
+    expect(final.receipt.extensions).toBe(2);
+    await writeTask('beyond-count', at+5);
+    expect((await check(final, at+6)).disposition).toBe('waiting');
+    expect((await persisted(final)).receipt.extensions).toBe(2);
+  });
+
   it('checks fresh checkpoint bodies before expiry, consumes once, and preserves custody/safety', async () => {
     const admitted = await db.sql.begin(tx => releaseAndAdmit(tx));
     const before = protectedItem(await snapshot());

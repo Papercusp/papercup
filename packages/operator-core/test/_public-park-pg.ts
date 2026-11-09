@@ -32,6 +32,8 @@ export async function createPublicParkTestDb(label: string) {
     label,
   });
   await applyDisclosureLedgerForTest(db.sql);
+  await applyMigrationsForTest(db.sql, ['696-task-ledger.sql',
+    '774-task-ledger-ended-unobserved-state.sql'], { label });
   for (const name of ['831-issue-occurrence-ledger.sql', '140-plan-item-assignments.sql']) {
     const ddl = readFileSync(fileURLToPath(schemaFile(name)), 'utf8')
       .split('\n').filter(line => !/^\s*\\/.test(line) && !/\bGRANT\b/.test(line) && !/^\s*(BEGIN|COMMIT);\s*$/.test(line)).join('\n');

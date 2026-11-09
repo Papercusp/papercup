@@ -3,6 +3,7 @@ import type { TransactionSql } from 'postgres';
 import { AUTOMATIC_PARK_RECOVERY_POLICY, createParkRecoveryReceipt, expireParkRecovery,
   parkRecoveryCertificate, renewParkRecovery, validateParkRecoveryPolicy,
   selectParkRecoveryOwner, assertParkRecoveryPendingInTransaction,
+  routeParkRecoveryDeliveryInTransaction,
   type ParkProgressEvidence, type ParkRecoveryPolicy } from './durable-park-recovery';
 
 const conditionReader = vi.hoisted(() => ({ inspect: vi.fn() }));
@@ -64,6 +65,43 @@ const admission = (policy?: ParkRecoveryPolicy) => createParkRecoveryReceipt({
 });
 
 describe('accountable recovery-action election (PARK-RECOVERY / PARK-SAFETY)', () => {
+  it('the same safety oracle detects a stolen lease and passes actual recovery-action election', async () => {
+    const receipt = { ...admission(), state: 'recovery' as const };
+    const recovery = { receipt, awaitId: 81, recoveryWorkItemId: 'WI-action' };
+    const protectedState = { taken_by: 'su-peer', status: 'wip', taken_at: 12, expires_at: 999,
+      locks: [{ owner: 'su-peer', token: 'exact-token', expires: 888 }],
+      payload: { _claimHold: true, claim_hold_release: { ...receipt.condition, recovery },
+        qualification: 'failed', safetyHold: { id: 'hold-1', state: 'on' },
+        acceptance: ['qualification', 'usability', 'source-coherence', 'full-suite'] } };
+    const before = structuredClone(protectedState);
+    const oracle = (value: typeof before) => expect(value).toEqual(before);
+    const stolen = structuredClone(before);
+    stolen.locks[0].owner = 'su-successor';
+    expect(() => oracle(stolen)).toThrow();
+    const writes: string[] = [];
+    const tx = vi.fn(async (parts: TemplateStringsArray, ...values: unknown[]) => {
+      const sql = parts.join('?').replace(/\s+/g, ' ');
+      if (sql.includes('SELECT producer_health')) return [{ producer_health: parkRecoveryCertificate(receipt) }];
+      if (sql.includes('SELECT payload, taken_by')) return [protectedState];
+      if (sql.includes('SELECT cancelled_at')) return [{ cancelled_at: null }];
+      if (sql.includes('SELECT taken_by, status, payload')) return [{ taken_by: null, status: 'todo', payload: {} }];
+      if (sql.includes('UPDATE')) {
+        writes.push(sql);
+        if (sql.includes('UPDATE harness_shared.work_items')) {
+          expect(values).toContain('WI-action');
+          expect(values).not.toContain(receipt.workItemId);
+        }
+      }
+      return [];
+    }) as unknown as TransactionSql;
+    const route = await routeParkRecoveryDeliveryInTransaction(tx, { awaitId: 81, deliveryId: 82,
+      owners: async () => ({ states: new Map([['su-peer', 'ended'], ['su-successor', 'parked']]),
+        successors: ['su-successor'] }) });
+    expect(route).toMatchObject({ disposition: 'target', ownerId: 'su-successor', actionId: 'WI-action' });
+    expect(writes).toHaveLength(2);
+    oracle(protectedState);
+  });
+
   it('prefers the current live custodian, retains a live successor and excludes dead/unknown targets', () => {
     const states = new Map([['custodian', 'live' as const], ['incumbent', 'parked' as const],
       ['dead', 'ended' as const], ['successor', 'live' as const], ['recorded', 'recorded' as const]]);
