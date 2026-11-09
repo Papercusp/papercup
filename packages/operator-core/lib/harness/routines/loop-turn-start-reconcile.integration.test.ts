@@ -445,35 +445,67 @@ describe('loop turn-start producer to reconciler, real Postgres', () => {
          AND summary = ${LOOP_TURN_START_MARKER}`;
     expect(stamps).toHaveLength(1);
 
-    const insertTurn = async (sessionId: string, prompt: string, promptAt: Date, assistantAt: Date) => sql`
+    const insertAssistant = async (sessionId: string, assistantAt: Date) => sql`
+      INSERT INTO harness_shared.session_turns
+        (workspace_id, source_kind, session_id, turn_idx, ts, owner, harness_slug,
+         speaker, text, turn_origin, turn_origin_verdict, turn_origin_classifier_version)
+      VALUES
+        (${WS}, 'codex', ${sessionId}, 1, ${assistantAt}, ${fixture.owner}, 'papercusp',
+         'assistant', 'loop continuation completed', NULL, 'not-user-turn', 1)
+    `;
+    const insertTurn = async (sessionId: string, prompt: string, promptAt: Date, assistantAt?: Date) => {
+      await sql`
       INSERT INTO harness_shared.session_turns
         (workspace_id, source_kind, session_id, turn_idx, ts, owner, harness_slug,
          speaker, text, turn_origin, turn_origin_verdict, turn_origin_classifier_version)
       VALUES
         (${WS}, 'codex', ${sessionId}, 0, ${promptAt}, ${fixture.owner}, 'papercusp',
-         'user', ${prompt}, 'loop-fire', 'agent-injected', 1),
-        (${WS}, 'codex', ${sessionId}, 1, ${assistantAt}, ${fixture.owner}, 'papercusp',
-         'assistant', 'loop continuation completed', NULL, 'not-user-turn', 1)
-    `;
+         'user', ${prompt}, 'loop-fire', 'agent-injected', 1)
+      `;
+      if (assistantAt) await insertAssistant(sessionId, assistantAt);
+    };
 
     const wrongPromptAt = new Date(stamps[0]!.created_at.getTime() + 1_000);
     await insertTurn(
       `session-${fixture.id}-wrong-nonce`, wrongNoncePrompt.taggedText,
       wrongPromptAt, new Date(wrongPromptAt.getTime() + 2_000),
     );
-    expect(await getLoopStatus(fixture.owner, { sql })).toMatchObject({
+    await sql`
+      INSERT INTO harness_shared.agent_activity
+        (workspace_id, owner_id, session_id, kind, summary, created_at)
+      VALUES (${WS}, ${fixture.owner}, ${`session-${fixture.id}-wrong-nonce`},
+              'tool', 'nonce regression activity', ${new Date(wrongPromptAt.getTime() + 500)})
+    `;
+    expect.soft(await getLoopStatus(fixture.owner, { sql })).toMatchObject({
       lastLoopTurnAt: null,
       lastSuppressedWakeLoopTurnAt: null,
       lastFailedFireLoopTurnCompletedAt: null,
+      turnsStalled: true,
     });
 
     const exactPromptAt = new Date(now - 30_000);
     const exactAssistantAt = new Date(now + 10_000);
     expect(stamps[0]!.created_at.getTime()).toBeGreaterThan(exactPromptAt.getTime());
+    await sql`
+      DELETE FROM harness_shared.session_turns
+       WHERE workspace_id = ${WS} AND owner = ${fixture.owner}
+         AND session_id = ${`session-${fixture.id}-wrong-nonce`}
+    `;
     await insertTurn(
       `session-${fixture.id}-exact-nonce`, exactPrompt.taggedText,
-      exactPromptAt, exactAssistantAt,
+      exactPromptAt,
     );
+    await sql`
+      INSERT INTO harness_shared.agent_activity
+        (workspace_id, owner_id, session_id, kind, summary, created_at)
+      VALUES (${WS}, ${fixture.owner}, ${`session-${fixture.id}-exact-nonce`},
+              'tool', 'nonce regression activity', ${new Date(stamps[0]!.created_at.getTime() + 500)})
+    `;
+    expect.soft(await getLoopStatus(fixture.owner, { sql })).toMatchObject({
+      lastLoopTurnAt: null,
+      turnsStalled: false,
+    });
+    await insertAssistant(`session-${fixture.id}-exact-nonce`, exactAssistantAt);
 
     const status = await getLoopStatus(fixture.owner, { sql });
     expect(status).toMatchObject({
