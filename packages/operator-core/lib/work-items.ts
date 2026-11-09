@@ -10580,7 +10580,7 @@ export async function releaseWorkItem(
     const effect = opts.blockerDecision.effect ?? { release: true, patch, unset };
     const prepared = opts.blockerEvidenceContext
       ? await preflightBlockerDecision(wi, opts.blockerDecision.input, opts.blockerEvidenceContext,
-          { effect, enteringDeferral: opts.enteringBlockerDeferral })
+          { effect, enteringDeferral: opts.enteringBlockerDeferral, releasePayload: { patch, unset } })
       : prepareBlockerDecision(wi.payload, opts.blockerDecision.input, {
           ownerId: opts.releasingOwnerId ?? '', sessionId: opts.blockerDecision.sessionId,
           workItemId: id, custodianId: wi.assignee,

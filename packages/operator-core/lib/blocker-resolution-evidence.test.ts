@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createBlockerEvidenceReader, preflightBlockerDecision } from './blocker-resolution-evidence';
 import { prepareBlockerDecision } from './blocker-resolution-decision';
 import { activeExternalBlockers } from './external-blockers';
@@ -81,6 +81,89 @@ describe('canonical blocker evidence readers', () => {
     expect((await read({ kind: 'source', ref: '/etc/passwd' })).status).toBe('absent');
     expect((await read({ kind: 'source', ref: '../../../../etc/passwd' })).status).toBe('absent');
     expect((await read({ kind: 'source', ref: 'package.json:99999999' })).status).toBe('absent');
+  });
+});
+
+describe('unmeasured runtime plain public release', () => {
+  const runtime = { kind: 'runtime' as const, ref: 'runtime:codex-execution-authority:9171' };
+  const remedy = { kind: 'source' as const, ref: 'source:package.json:1' };
+  const blocker = { ...runtime, status: 'active' as const, summary: 'Original native availability',
+    capability: 'live-dependency' as const, capabilitySource: 'explicit' as const,
+    createdBy: 'su-a', createdAt: '2026-11-07T00:00:00Z', updatedAt: '2026-11-07T00:00:00Z' };
+  const item = { id: 'WI-1', harness: 'harness-a', state: 'blocked', assignee: 'su-a', payload: { externalBlockers: [blocker] } };
+  const context = { ...ctx, sessionId: 'authenticated-session-a' };
+  const effect = { release: true, claimHold: null, claimHoldRelease: null, reason: 'Retain unknown', force: false };
+  const options = { effect, releasePayload: { patch: {}, unset: [] } };
+  const decision = () => ({ schemaVersion: 1 as const, idempotencyKey: 'legacy-runtime', disposition: 'defer' as const,
+    symptom: 'Original condition unmeasured', evidenceRefs: [runtime, remedy],
+    investigation: [{ action: 'Inspect canonical blocker', outcome: 'No recovery measurement', evidenceRefs: [runtime] }],
+    attempts: [{ action: 'Inspect safe remedy', outcome: 'Source confirms missing adapter', evidenceRefs: [remedy] }],
+    deferral: { reason: 'technical-limit' as const, responsibleParty: 'su-a', reasonEvidenceRefs: [runtime],
+      nextAction: 'Continue the owned diagnosis', recheckRef: { kind: 'work-item' as const, ref: 'harness-a#WI-2' } } });
+  beforeEach(() => {
+    mocks.deps.mockResolvedValue([]);
+    mocks.workspace.mockReturnValue('workspace-a');
+    mocks.item.mockResolvedValue({ id: 'WI-2', harness: 'harness-a', state: 'wip', assignee: 'su-a' });
+    mocks.runtime.mockResolvedValue({ status: 'unknown', detail: 'No canonical bound measurement' });
+  });
+  it('keeps a distinct host-only unmeasured variant and the exact original payload', async () => {
+    const before = structuredClone(item);
+    const measurement = await createBlockerEvidenceReader({ ...ctx, workItemId: item.id,
+      custodianId: item.assignee, blockers: [blocker] })(runtime);
+    expect(measurement).toMatchObject({ status: 'unmeasured-runtime', ref: runtime.ref });
+    expect(measurement).not.toHaveProperty('condition');
+    expect(measurement).not.toHaveProperty('reachable');
+    expect(await preflightBlockerDecision(item, decision(), context, options)).toMatchObject({ ok: true });
+    expect(item).toEqual(before);
+  });
+  it.each([
+    { ...effect, force: true }, { ...effect, claimHold: true }, { ...effect, claimHold: false },
+    { ...effect, claimHoldRelease: {} }, { ...effect, reason: 42 }, { ...effect, unknown: true },
+    { ...effect, patch: {} }, { ...effect, unset: [] },
+    { release: true, patch: {}, unset: [] }, { release: true },
+    { state: 'blocked' }, { state: 'done' }, { setBlocker: {} }, { link: {} }, { unlink: {} }, null,
+  ])('refuses every other lifecycle effect %j', async badEffect => {
+    expect(await preflightBlockerDecision(item, decision(), context, { ...options, effect: badEffect })).toMatchObject({ ok: false });
+  });
+  it.each([undefined, { patch: { changed: true }, unset: [] }, { patch: {}, unset: ['keep'] },
+    { patch: null, unset: [] }])('requires the actual empty writer mutation %j', async releasePayload => {
+    expect(await preflightBlockerDecision(item, decision(), context, { effect, releasePayload })).toMatchObject({ ok: false });
+  });
+  it('refuses terminal clearance, wrong custody and noncanonical runtime aliases', async () => {
+    expect(await preflightBlockerDecision(item, decision(), context, { ...options, requireResolution: true })).toMatchObject({ ok: false });
+    expect(await preflightBlockerDecision({ ...item, state: 'done' }, decision(), context, options)).toMatchObject({ ok: false });
+    expect(await preflightBlockerDecision({ ...item, assignee: 'su-b' }, decision(), context, options)).toMatchObject({ ok: false });
+    const other = decision();
+    other.evidenceRefs.push({ kind: 'runtime', ref: 'unrelated-native-alias' });
+    expect(await preflightBlockerDecision(item, other, context, options)).toMatchObject({ ok: false });
+    for (const rows of [[], [blocker, blocker], [{ ...blocker, runtimeConditionBinding: null }]]) {
+      expect(await preflightBlockerDecision({ ...item, payload: { externalBlockers: rows } }, decision(), context, options)).toMatchObject({ ok: false });
+    }
+    const { deferral: _unused, ...base } = decision();
+    expect(await preflightBlockerDecision(item, { ...base, disposition: 'self_resolve',
+      verification: { outcome: 'An unrelated source exists', evidenceRefs: [remedy] } }, context, options)).toMatchObject({ ok: false });
+  });
+  it('requires an attempted measured remedy and a separate owned pending recheck', async () => {
+    for (const attempts of [[], [{ action: 'Prose only', outcome: 'No measured remedy', evidenceRefs: [runtime] }]]) {
+      expect(await preflightBlockerDecision(item, { ...decision(), attempts }, context, options)).toMatchObject({ ok: false });
+    }
+    for (const row of [null, { id: 'WI-2', harness: 'harness-a', state: 'done', assignee: 'su-a' },
+      { id: 'WI-2', harness: 'harness-a', state: 'wip', assignee: null },
+      { id: 'WI-2', harness: 'harness-a', state: 'wip', assignee: 'su-b' }]) {
+      mocks.item.mockResolvedValue(row);
+      expect(await preflightBlockerDecision(item, decision(), context, options)).toMatchObject({ ok: false });
+    }
+    mocks.item.mockResolvedValue(item);
+    const input = decision(); input.deferral.recheckRef.ref = 'harness-a#WI-1';
+    expect(await preflightBlockerDecision(item, input, context, options)).toMatchObject({ ok: false });
+  });
+  it.each(['state', 'event', 'test', 'doc'] as const)('does not exempt unknown %s evidence alongside the runtime', async kind => {
+    mocks.cell.mockResolvedValue({ status: 'unknown' });
+    mocks.event.mockResolvedValue({ verdict: 'unknown', authoritative: false });
+    mocks.test.mockResolvedValue(null); mocks.doc.mockResolvedValue(null);
+    const input = decision();
+    expect(await preflightBlockerDecision(item, { ...input, evidenceRefs: [...input.evidenceRefs,
+      { kind, ref: kind === 'test' ? 'testing:runs:unknown:42' : 'unknown' }] }, context, options)).toMatchObject({ ok: false });
   });
 });
 

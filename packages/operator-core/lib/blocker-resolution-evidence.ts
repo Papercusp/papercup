@@ -34,6 +34,20 @@ function boundaryProblem(missing: string[]): BlockerDecisionProblem {
     nextAction: 'Investigate the canonical blocker, attempt a safe remedy, and provide blockerDecision with measured self-resolution or an accountable deferral. Keep custody while refused.' };
 }
 
+/** Only the public handler's complete ordinary release effect qualifies. Keep
+ * its reason intact for the audit and effect hash; explicit hold:false mutates
+ * a hold too. The separate writer payload must independently be empty. */
+function plainPublicRelease(effect: unknown, payload?: { patch: unknown; unset: readonly string[] }): boolean {
+  const plain = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' &&
+    (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
+  if (!plain(effect) || !payload || !plain(payload.patch) || Reflect.ownKeys(payload.patch).length ||
+      !Array.isArray(payload.unset) || payload.unset.length) return false;
+  const keys = ['release', 'claimHold', 'claimHoldRelease', 'reason', 'force'];
+  return Reflect.ownKeys(effect).length === keys.length && keys.every(key => Object.hasOwn(effect, key)) &&
+    effect.release === true && effect.claimHold === null && effect.claimHoldRelease === null && effect.force === false &&
+    (effect.reason === null || (typeof effect.reason === 'string' && effect.reason.length <= 500));
+}
+
 /** Shared agent-boundary preflight. The lifecycle writer supplies its exact effect
  * and canonical pre-write row, then fences that row in its existing transaction.
  * Ordinary handoffs need no decision. Once observed, an unresolved condition also
@@ -44,6 +58,9 @@ export async function preflightBlockerDecision(
   input: unknown,
   context: BlockerBoundaryContext,
   options: { effect: unknown; enteringDeferral?: boolean; requireResolution?: boolean;
+    /** Supplied only by the actual release writer, separately from its effect
+     * override, which can otherwise conceal payload/hold mutations. */
+    releasePayload?: { patch: unknown; unset: readonly string[] };
     /** Host-only: paired dropped plan-line/receipt/dependency admission. */
     allowAbsorption?: boolean;
     /** Host-validated proposed conditions, checked before their first write. */
@@ -113,17 +130,25 @@ export async function preflightBlockerDecision(
       if (blocker.kind === 'human' || blocker.kind === 'hold') obligationRefs.push({ kind: 'authority', ref: blocker.ref });
       else if (blocker.kind === 'runtime' && blocker.runtimeConditionBinding !== undefined) obligationRefs.push({ kind: 'runtime', ref: blocker.ref });
       else if (blocker.kind === 'runtime' && blocker.ref.startsWith('state:')) obligationRefs.push({ kind: 'state', ref: blocker.ref });
+      else if (blocker.kind === 'runtime') obligationRefs.push({ kind: 'runtime', ref: blocker.ref });
       else obligationRefs.push({ kind: 'event', ref: blocker.ref });
     }
     const prior = readBlockerResolution(item.payload);
     if (prior.status === 'recorded' && prior.current.decision.disposition === 'defer') {
       obligationRefs.push(prior.current.decision.deferral.recheckRef);
     }
+    const { ALL_TERMINAL_STATUSES } = await import('./work-item-blocking');
+    const unmeasuredRuntimeDeferral = !options.requireResolution && !options.allowAbsorption &&
+      !options.additionalBlockers?.length && !options.additionalDependencyRefs?.length &&
+      !ALL_TERMINAL_STATUSES.has(item.state) && item.assignee === context.ownerId && context.workspaceId && item.harness &&
+      plainPublicRelease(options.effect, options.releasePayload)
+      ? { workspaceId: context.workspaceId, harnessSlug: item.harness, workItemId: item.id, custodianId: context.ownerId }
+      : undefined;
     const readEvidence = createBlockerEvidenceReader({ ...context, harnessSlug: item.harness,
-      workItemId: item.id, blockers });
+      workItemId: item.id, custodianId: item.assignee, blockers });
     const checked = await validateBlockerDecisionEvidence(prepared.record.decision, {
       ownerId: context.ownerId, workItemId: item.id, obligationRefs, relatedConditionRefs,
-      allowAbsorption: options.allowAbsorption, readEvidence,
+      allowAbsorption: options.allowAbsorption, unmeasuredRuntimeDeferral, readEvidence,
     });
     return checked.ok ? prepared : checked;
   } catch {
@@ -139,6 +164,8 @@ export interface BlockerEvidenceContext extends CellReadEnv {
   workItemId: string;
   root: string | null;
   blockers: readonly ExternalBlockerRecord[];
+  /** Canonical pre-write subject custody, never request-supplied. */
+  custodianId?: string | null;
 }
 const absent = (detail: string): BlockerEvidenceMeasurement => ({ status: 'absent', detail });
 const unknown = (detail: string): BlockerEvidenceMeasurement => ({ status: 'unknown', detail });
@@ -178,7 +205,7 @@ export function createBlockerEvidenceReader(context: BlockerEvidenceContext) {
       if (presence && !presence.stale && presence.workspaceId === context.workspaceId) liveOwnerId = item.assignee;
     }
     return { status: 'available', condition: settled ? 'satisfied' : 'pending', reachable: true,
-      conditionIdentity: JSON.stringify(['work-item', context.workspaceId, harness, item.id]),
+      conditionIdentity: JSON.stringify(['work-item', context.workspaceId, harness, item.id]), canonicalWorkItemId: item.id,
       ...(item.assignee ? { responsibleParty: item.assignee } : {}), ...(liveOwnerId ? { liveOwnerId } : {}) };
   }
 
@@ -189,8 +216,16 @@ export function createBlockerEvidenceReader(context: BlockerEvidenceContext) {
         case 'runtime': {
           const blockers = context.blockers.filter(entry => entry.kind === 'runtime' && entry.ref === ref.ref && entry.status === 'active');
           if (blockers.length !== 1) return absent('exact canonical active runtime blocker is required');
-          const { readRuntimeBlockerCondition } = await import('./runtime-blocker-condition');
           const binding = blockers[0].runtimeConditionBinding;
+          if (binding === undefined && !ref.ref.startsWith('state:')) {
+            if (!context.workspaceId || !context.harnessSlug || !context.workItemId ||
+                context.custodianId !== context.ownerId || !context.ownerId) return unknown('canonical current runtime custodian and scope required');
+            return { status: 'unmeasured-runtime', ref: ref.ref,
+              scope: { workspaceId: context.workspaceId, harnessSlug: context.harnessSlug,
+                workItemId: context.workItemId, custodianId: context.ownerId },
+              detail: 'Original canonical runtime predicate has no measuring adapter; no recovery or pending verdict' };
+          }
+          const { readRuntimeBlockerCondition } = await import('./runtime-blocker-condition');
           const publication = binding !== null && typeof binding === 'object' &&
             'kind' in binding && binding.kind === 'git-file-publication';
           return await readRuntimeBlockerCondition(blockers[0], publication ? await repositoryRoot() : context.root);

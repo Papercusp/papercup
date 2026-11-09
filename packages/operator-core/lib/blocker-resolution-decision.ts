@@ -283,8 +283,17 @@ export function hasUnresolvedBlockerObligation(payload: unknown, state?: string)
  * measured predicate, not an inference from a reference's existence or prose.
  * subjectWorkItemId may only come from canonical provenance (e.g. a test run's
  * work-item binding); a caller mentioning an item in test output is not binding. */
+export interface UnmeasuredRuntimeScope {
+  workspaceId: string;
+  harnessSlug: string;
+  workItemId: string;
+  custodianId: string;
+}
 export type BlockerEvidenceMeasurement =
   | { status: 'absent' | 'unknown'; detail: string }
+  /** A stored condition with no measuring adapter is not a pending/available
+   * predicate. Only an accountable plain-release deferral may retain it. */
+  | { status: 'unmeasured-runtime'; ref: string; scope: UnmeasuredRuntimeScope; detail: string }
   | {
     status: 'available';
     condition?: 'satisfied' | 'pending';
@@ -293,6 +302,7 @@ export type BlockerEvidenceMeasurement =
     /** Host-resolved tenant/harness identity; aliases share a condition only
      * when their canonical readers return this exact identity. */
     conditionIdentity?: string;
+    canonicalWorkItemId?: string;
     responsibleParty?: string;
     liveOwnerId?: string;
     authorityDenied?: boolean;
@@ -317,6 +327,9 @@ export async function validateBlockerDecisionEvidence(
      * Each endpoint is measured below; these never replace required conditions. */
     relatedConditionRefs?: readonly BlockerEvidenceRef[];
     allowAbsorption?: boolean;
+    /** Host-only scope, admitted by the exact release effect and actual writer
+     * payload. Never inferred from a caller's evidence or disposition alone. */
+    unmeasuredRuntimeDeferral?: UnmeasuredRuntimeScope;
     readEvidence: (ref: BlockerEvidenceRef) => Promise<BlockerEvidenceMeasurement>;
   },
 ): Promise<{ ok: true } | BlockerDecisionProblem> {
@@ -346,13 +359,44 @@ export async function validateBlockerDecisionEvidence(
     }));
   }
   const missing: string[] = [];
+  const obligations = new Set(context.obligationRefs.map(evidenceKey));
+  const retainedRuntime = new Set<string>();
+  const scope = context.unmeasuredRuntimeDeferral;
   for (const [key, ref] of entries) {
     const value = measured.get(key)!;
+    if (value.status === 'unmeasured-runtime' && scope && ref.kind === 'runtime' &&
+        obligations.has(key) && value.ref === ref.ref && input.disposition === 'defer' &&
+        input.deferral.reason === 'technical-limit' && input.deferral.responsibleParty === context.ownerId &&
+        scope.custodianId === context.ownerId && scope.workItemId === context.workItemId &&
+        scope.workspaceId === value.scope.workspaceId && scope.harnessSlug === value.scope.harnessSlug &&
+        scope.workItemId === value.scope.workItemId && scope.custodianId === value.scope.custodianId) {
+      retainedRuntime.add(key);
+      continue;
+    }
     if (value.status !== 'available') missing.push(`${ref.kind}:${ref.ref}: ${value.status} (${value.detail})`);
   }
   if (missing.length) return refuse(missing);
+  if (retainedRuntime.size) {
+    // Keep this branch separate: casting the retained condition to available or
+    // pending would silently lend it recovery/authority semantics elsewhere.
+    if (input.disposition !== 'defer') return refuse(['accountable runtime deferral']);
+    const { reasonEvidenceRefs, recheckRef, responsibleParty } = input.deferral;
+    if (!reasonEvidenceRefs.some(ref => retainedRuntime.has(evidenceKey(ref)))) {
+      missing.push('reason evidence naming the exact canonical unmeasured runtime obligation');
+    }
+    if (!input.attempts.some(step => step.evidenceRefs.some(ref => measured.get(evidenceKey(ref))?.status === 'available'))) {
+      missing.push('attempted safe remedy with measured available supporting evidence');
+    }
+    const recheck = measured.get(evidenceKey(recheckRef));
+    if (recheckRef.kind !== 'work-item' || recheck?.status !== 'available' ||
+        recheck.reachable !== true || recheck.condition !== 'pending' ||
+        !recheck.canonicalWorkItemId || recheck.canonicalWorkItemId === context.workItemId ||
+        recheck.responsibleParty !== responsibleParty) {
+      missing.push('separate canonical reachable pending work-item recheck owned by the responsible custodian');
+    }
+    return missing.length ? refuse(missing) : { ok: true };
+  }
   const value = (ref: BlockerEvidenceRef) => measured.get(evidenceKey(ref)) as Extract<BlockerEvidenceMeasurement, { status: 'available' }>;
-  const obligations = new Set(context.obligationRefs.map(evidenceKey));
   const conditionIdentities = new Set(context.obligationRefs.map(ref => value(ref).conditionIdentity).filter(Boolean));
   const relevant = (ref: BlockerEvidenceRef) => obligations.has(evidenceKey(ref)) ||
     (Boolean(value(ref).conditionIdentity) && conditionIdentities.has(value(ref).conditionIdentity)) ||

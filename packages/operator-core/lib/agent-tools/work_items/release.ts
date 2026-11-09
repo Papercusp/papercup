@@ -1056,6 +1056,7 @@ export default defineTool({
             ok: true as const,
             id: it.id,
             workItem,
+            ...(blockerReceipt ? { blockerDecision: blockerReceipt.record } : {}),
             forced,
             ...delta,
             ...stranding,

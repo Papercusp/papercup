@@ -12,6 +12,19 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ExternalConditionReachability } from '../../external-condition-reachability';
 import { prepareBlockerDecision } from '../../blocker-resolution-decision';
+import { createBlockerEvidenceReader, preflightBlockerDecision } from '../../blocker-resolution-evidence';
+
+vi.mock('../../workspace-registry', async original => ({
+  ...(await original<typeof import('../../workspace-registry')>()),
+  activeWorkspaceId: () => 'ws-test', resolveConcreteWorkspaceId: () => 'ws-test',
+}));
+vi.mock('../../harness/docs/harness-repo', () => ({ resolveHarnessRepoRoot: async () => process.cwd() }));
+// The real work-item reader checks live presence for an assigned recheck. This
+// unit harness owns no PG; current canonical assignment suffices for technical
+// deferral, while live-peer evidence remains covered by the reader's own suite.
+vi.mock('../coordination/presence', async original => ({
+  ...(await original<typeof import('../coordination/presence')>()), getPresence: vi.fn(async () => null),
+}));
 
 const identity = vi.hoisted(() => ({ ownerId: 'me' }));
 vi.mock('../coordination/identity', () => ({
@@ -26,6 +39,7 @@ vi.mock('../../work-items', () => ({
     unset: hold ? ['claim_hold_recheck'] : ['_claimHold'],
   })),
   getWorkItem: vi.fn(),
+  readUnresolvedDepBlockers: vi.fn(async () => []),
   commentWorkItem: vi.fn(),
   isClaimHoldParked: vi.fn((payload: unknown) => {
     if (!payload || typeof payload !== 'object') return false;
@@ -191,6 +205,55 @@ beforeEach(() => {
 });
 
 describe('work_items:release handler (keyed-array)', () => {
+  it('forwards the actual ordinary public effect into real legacy-runtime defer preflight', async () => {
+    const runtime = { kind: 'runtime' as const, ref: 'runtime:codex-execution-authority:9171' };
+    const remedy = { kind: 'source' as const, ref: 'source:package.json:1' };
+    const input = { schemaVersion: 1, idempotencyKey: 'legacy-public-defer', disposition: 'defer',
+      symptom: 'Original native predicate remains unmeasured', evidenceRefs: [runtime, remedy],
+      investigation: [{ action: 'Inspect the original condition', outcome: 'Still unmeasured', evidenceRefs: [runtime] }],
+      attempts: [{ action: 'Inspect the maintained remedy source', outcome: 'No recovery measurement', evidenceRefs: [remedy] }],
+      deferral: { reason: 'technical-limit', responsibleParty: 'me', reasonEvidenceRefs: [runtime],
+        nextAction: 'Investigate the original predicate in the owned recheck', recheckRef: { kind: 'work-item', ref: 'h#WI-recheck' } } };
+    const subject = workItemFixture({ id: 'WI-legacy', assignee: 'me', state: 'blocked', payload: {
+      externalBlockers: [{ ...runtime, status: 'active', summary: 'Original native condition',
+        createdBy: 'me', createdAt: '2026-11-07T00:00:00Z', updatedAt: '2026-11-07T00:00:00Z',
+        reachability: { verdict: 'unknown', authoritative: false } }],
+    } });
+    const before = structuredClone(subject);
+    getM.mockImplementation(async id => id === subject.id ? subject
+      : workItemFixture({ id: 'WI-recheck', assignee: 'me', state: 'wip' }));
+    const recheck = await createBlockerEvidenceReader({ ownerId: 'me', workspaceId: 'ws-test', harnessSlug: 'h', role: 'su',
+      workItemId: subject.id, root: null, blockers: [] })({ kind: 'work-item', ref: 'h#WI-recheck' });
+    expect(recheck, JSON.stringify(recheck)).toMatchObject({ status: 'available', condition: 'pending',
+      canonicalWorkItemId: 'WI-recheck', responsibleParty: 'me' });
+    releaseM.mockImplementationOnce(async (_id, opts) => {
+      const checked = await preflightBlockerDecision(subject, opts!.blockerDecision!.input, opts!.blockerEvidenceContext!, {
+        effect: opts!.blockerDecision!.effect,
+        // Mirrors the production writer's actual values; the integration suite
+        // separately executes that writer so removing its forwarding fails.
+        releasePayload: { patch: opts!.blockerDecision!.payloadPatch ?? {}, unset: opts!.blockerDecision!.unset ?? [] },
+      } as Parameters<typeof preflightBlockerDecision>[3]);
+      if (!checked.ok) throw Object.assign(new Error(checked.nextAction), checked);
+      if ('ordinary' in checked) throw new Error('missing decision');
+      opts!.onBlockerDecision?.({ record: checked.record, replayed: false });
+      opts!.onPriorState?.({ assignee: subject.assignee, wasClaimed: true });
+      return { ...subject, assignee: null, payload: { ...(subject.payload as Record<string, unknown>), ...checked.patch } };
+    });
+    const result = await body(parse({ id: subject.id, harness: 'h', reason: 'Retain original unknown', blockerDecision: input }));
+    expect(result.results[0], JSON.stringify(result.results[0])).toMatchObject({ ok: true, released: true,
+      blockerDecision: { decision: { disposition: 'defer' } } });
+    expect(releaseM.mock.calls[0][1]?.blockerDecision?.effect).toEqual({ release: true, claimHold: null,
+      claimHoldRelease: null, reason: 'Retain original unknown', force: false });
+    expect(holdM).not.toHaveBeenCalled();
+    expect(subject).toEqual(before);
+  });
+
+  it.each(['patch', 'unset', 'state', 'setBlocker', 'link', 'unlink', 'unknown', 'releasePayload',
+    'unmeasuredRuntimeDeferral'])('rejects unknown public mutation/permission field %s', field => {
+    expect(() => parse({ id: 'WI-legacy', [field]: {} })).toThrow();
+    expect(() => parse({ items: [{ id: 'WI-legacy', [field]: {} }] })).toThrow();
+  });
+
   const decision = {
     schemaVersion: 1, idempotencyKey: 'public-release', disposition: 'self_resolve', symptom: 'Dependency unavailable',
     investigation: [{ action: 'Inspect dependency', outcome: 'Measured recovery',

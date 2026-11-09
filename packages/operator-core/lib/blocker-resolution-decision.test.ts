@@ -22,6 +22,33 @@ const defer = (): BlockerDecisionInput => ({
     reasonEvidenceRefs: [ref], recheckRef: { kind: 'event', ref: 'dependency:repaired:WI-2' } },
 });
 
+describe('host unmeasured runtime provenance', () => {
+  it('requires the exact canonical obligation and matching authenticated scope', async () => {
+    const runtime = { kind: 'runtime' as const, ref: 'legacy-native-condition' };
+    const remedy = { kind: 'source' as const, ref: 'package.json' };
+    const recheck = { kind: 'work-item' as const, ref: 'h#WI-2' };
+    const scope = { workspaceId: 'w', harnessSlug: 'h', workItemId: 'WI-1', custodianId: 'su-a' };
+    const measurement = { status: 'unmeasured-runtime' as const, ref: runtime.ref, scope, detail: 'Original predicate unmeasured' };
+    const input: BlockerDecisionInput = { schemaVersion: 1, idempotencyKey: 'unmeasured', disposition: 'defer',
+      symptom: 'Legacy runtime lacks an adapter', evidenceRefs: [runtime, remedy],
+      investigation: [{ action: 'Read canonical condition', outcome: 'Unmeasured', evidenceRefs: [runtime] }],
+      attempts: [{ action: 'Attempt safe inspection', outcome: 'No recovery verdict', evidenceRefs: [remedy] }],
+      deferral: { reason: 'technical-limit', responsibleParty: 'su-a', nextAction: 'Continue owned recheck',
+        reasonEvidenceRefs: [runtime], recheckRef: recheck } };
+    const readEvidence = async (evidence: { kind: string }) => evidence.kind === 'runtime' ? measurement
+      : evidence.kind === 'work-item' ? { status: 'available' as const, condition: 'pending' as const,
+        reachable: true, responsibleParty: 'su-a', canonicalWorkItemId: 'WI-2' } : { status: 'available' as const };
+    const context = { ownerId: 'su-a', workItemId: 'WI-1', obligationRefs: [runtime],
+      unmeasuredRuntimeDeferral: scope, readEvidence };
+    expect(await validateBlockerDecisionEvidence(input, context)).toEqual({ ok: true });
+    for (const badScope of [undefined, { ...scope, workspaceId: 'other' }, { ...scope, harnessSlug: 'other' },
+      { ...scope, workItemId: 'WI-other' }, { ...scope, custodianId: 'su-other' }]) {
+      expect(await validateBlockerDecisionEvidence(input, { ...context, unmeasuredRuntimeDeferral: badScope })).toMatchObject({ ok: false });
+    }
+    expect(await validateBlockerDecisionEvidence(input, { ...context, obligationRefs: [] })).toMatchObject({ ok: false });
+  });
+});
+
 describe('canonical blocker decision views', () => {
   it('distinguishes blocker-free, unproven and unreadable histories without inventing evidence', () => {
     expect(projectBlockerResolution({}, { id: 'WI-1', state: 'open' })).toBeUndefined();

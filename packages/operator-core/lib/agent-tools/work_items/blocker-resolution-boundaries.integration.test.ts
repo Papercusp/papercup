@@ -204,6 +204,64 @@ async function expectPairedMutationTransaction(id: string) {
 }
 
 describe('public blocker resolution boundaries', () => {
+  async function legacyRuntime() {
+    const id = await seed('feature', false);
+    const recheck = await seed('task', false);
+    const runtime = { kind: 'runtime' as const, ref: 'runtime:codex-execution-authority:9171' };
+    const witness = { kind: 'work-item' as const, ref: `${HARNESS}#${recheck}` };
+    const blockers = [{ ...runtime, status: 'active', summary: 'Original native availability remains unmeasured',
+      createdBy: OWNER, createdAt: '2026-11-07T00:00:00Z', updatedAt: '2026-11-07T00:00:00Z',
+      reachability: { verdict: 'unknown', authoritative: false, basis: 'unmeasured' } }];
+    await db.sql`UPDATE harness_shared.work_items SET status='blocked',
+      payload=payload || ${db.sql.json({ externalBlockers: blockers })}
+      WHERE workspace_id='default' AND harness_slug=${HARNESS} AND feature_id=${id}`;
+    const input: DeferralDecision = { schemaVersion: 1, idempotencyKey: `legacy-${id}`, disposition: 'defer',
+      symptom: 'The original runtime predicate cannot be measured', evidenceRefs: [runtime, witness],
+      investigation: [{ action: 'Read the original blocker and diagnostic record', outcome: 'No recovery verdict', evidenceRefs: [runtime, witness] }],
+      attempts: [{ action: 'Attempt the recorded safe diagnostic', outcome: 'The owned diagnostic retains the measurement gap', evidenceRefs: [witness] }],
+      deferral: { reason: 'technical-limit', responsibleParty: OWNER, reasonEvidenceRefs: [runtime],
+        nextAction: 'Continue diagnosis under the separate retained recheck', recheckRef: witness } };
+    return { id, input, blockers };
+  }
+
+  it('ordinary public release executes the real writer without clearing an unmeasured runtime condition', async () => {
+    const { id, input, blockers } = await legacyRuntime();
+    const args = release.args.parse({ id, harness: HARNESS, reason: 'Retain original unknown', blockerDecision: input });
+    expect(await call(release, args)).toMatchObject({ ok: true, blockerDecision: { decision: { disposition: 'defer' } } });
+    const item = await wi.getWorkItem(id, HARNESS);
+    expect(item).toMatchObject({ state: 'blocked', assignee: null, payload: { keep: 'original', _claimHold: true } });
+    expect((item!.payload as Record<string, unknown>).externalBlockers).toEqual(blockers);
+    expect(readBlockerResolution(item!.payload)).toMatchObject({ status: 'recorded', current: { decision: { disposition: 'defer' } } });
+    const after = await snapshot(id);
+    expect(await call(release, args)).toMatchObject({ ok: true, replayed: true });
+    expect(await snapshot(id)).toEqual(after);
+    expect(await call(release, { ...args, reason: 'Changed reason on same key' }))
+      .toMatchObject({ ok: false, code: 'blocker_decision_conflict' });
+    expect(await snapshot(id)).toEqual(after);
+  });
+
+  it.each([{ payloadPatch: { keep: 'rewritten' } }, { unset: ['keep'] }])(
+    'real release writer refuses a hidden payload mutation behind the public effect: %j', async mutation => {
+      const { id, input } = await legacyRuntime();
+      const before = await snapshot(id);
+      await expect(wi.releaseWorkItem(id, { harness: HARNESS, expectedAssignee: OWNER, releasingOwnerId: OWNER,
+        blockerEvidenceContext: { ownerId: OWNER, sessionId: OWNER, workspaceId: 'default', harnessSlug: HARNESS, role: 'su', root: null },
+        blockerDecision: { input, sessionId: OWNER, ...mutation,
+          effect: { release: true, claimHold: null, claimHoldRelease: null, reason: 'Retain original unknown', force: false } },
+      })).rejects.toMatchObject({ code: 'blocker_decision_evidence' });
+      expect(await snapshot(id)).toEqual(before);
+    });
+
+  it.each([{ force: true }, { claimHold: false },
+    { claimHold: true, claimHoldRelease: { condition: 'Wait', trigger: EVENT } },
+    { claimHoldRelease: { condition: 'Wait', trigger: EVENT } }])('refuses public runtime defer mutation %j', async mutation => {
+    const { id, input } = await legacyRuntime();
+    const before = await snapshot(id);
+    const args = release.args.parse({ id, harness: HARNESS, reason: 'Retain unknown', blockerDecision: input, ...mutation });
+    expect(await call(release, args)).toMatchObject({ ok: false });
+    expect(await snapshot(id)).toEqual(before);
+  });
+
   async function completedDependency(kind: 'task' | 'feature' = 'feature') {
     const id = await seed('feature', false);
     const dependency = await seed(kind, false);
