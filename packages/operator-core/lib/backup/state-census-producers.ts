@@ -23,6 +23,7 @@ import { anchorKeyFilePath } from '../cupboard/ledger-anchor-eas';
 import { papercuspRoot } from '../papercusp-root';
 import { parseCodexCliRef } from '../inference-gateway/codex-cli-bridge';
 import { codexAuthPath } from '../inference-gateway/codex-oauth-proxy';
+import { parseCredentialRef, parseApiKeySource } from '../inference-gateway/credential-store';
 import { readPlanTemplateDirForInstall } from '../cupboard/plan-template-store';
 import { REAP_TAIL_MAX_BYTES, verifyReapTailReceipt } from '../task-manager/reap-archive';
 import { resolveSqlDir } from '../migration-drift';
@@ -31,6 +32,84 @@ import { resolveFsMutexLockRoot } from '../../../../scripts/lib/fs-mutex.mjs';
 import { closureDigestManifestPath } from '../../../../scripts/lib/passing-task-verdict-cache.mjs';
 import { PARTIAL_TASK_CHECKPOINT_SCHEMA } from '../../../../scripts/lib/partial-task-resume.mjs';
 import { defaultTestRunArtifactBase } from '../agent-tools/testing/run-artifacts';
+import { readNativeArtifactBytes, verifyNativeProofPacket } from '../../../../scripts/lib/budgeted-task-scheduler.mjs';
+
+/** Inspect the router's retained packets, never arbitrary artifact siblings. */
+async function nativeRouterCensusDeclarations(home: string, root: string): Promise<CensusDeclaration[]> {
+  const declarations = new Map<string, CensusDeclaration>();
+  const base = join(home, 'test-artifacts');
+  const directory = async (path: string) => {
+    try { return (await lstat(path)).isDirectory() && await realpath(path) === resolve(path); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false; throw error; }
+  };
+  if (!await directory(base)) return [];
+  const add = (path: string) => {
+    const name = relative(home, path).split(sep).join('/');
+    if (!name || name === '..' || name.startsWith('../') || isAbsolute(name)) return;
+    declarations.set(name, { kind: 'path', root, name, classification: 'state', producer: 'test-file-native-router-custody' });
+  };
+  const json = async (path: string) => {
+    const stat = await lstat(path);
+    if (!stat.isFile() || (stat.mode & 0o777) !== 0o600 || stat.size > 8 * 1024 * 1024) throw new Error('unproven router metadata');
+    const bytes = readNativeArtifactBytes(path, stat.size, 8 * 1024 * 1024);
+    return { bytes, value: JSON.parse(bytes.toString('utf8')) };
+  };
+  // PAPERCUSP_TEST_ARTIFACT_DIR can select an immediate artifact container.
+  // Do not recurse through unrelated outputs or the already-retained testing-run.
+  const containers = [base];
+  for (const entry of await readdir(base, { withFileTypes: true })) {
+    if (entry.isDirectory() && entry.name !== 'testing-run' && !entry.name.startsWith('native-router-')) {
+      const path = join(base, entry.name);
+      if (await directory(path)) containers.push(path);
+    }
+  }
+  for (const container of containers) for (const entry of await readdir(container, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !/^native-router-[A-Za-z0-9]{6}$/.test(entry.name)) continue;
+    const packet = join(container, entry.name);
+    try {
+      const expected = await json(join(packet, 'expected.json'));
+      const locator = await json(join(packet, 'locator.json'));
+      const verified = verifyNativeProofPacket(packet, locator.value, expected.value);
+      // Custody is an ownership witness even for a partial capture. Its native
+      // proof and acceptance verdicts remain unqualified and unmeasured.
+      const manifest = verified.manifest;
+      if (!expected.value.expected.every((group: { id: string }) => /^group-[0-9]+(?:-detail-[0-9]+)?$/.test(group.id))) continue;
+      const pins = [locator.value.manifest, ...(manifest.segments ?? []).map((segment: { artifact: unknown }) => segment.artifact)];
+      const manifestObject = await json(join(packet, 'objects', locator.value.manifest.ref));
+      if (manifestObject.value.schemaVersion === 'native-proof-index-v1') {
+        pins.push(...manifestObject.value.parts.map((part: { artifact: unknown }) => part.artifact));
+      }
+      const originals: Array<{ path: string; artifact: { sha256: string; byteLength: number } }> = [];
+      for (const group of manifest.groups) {
+        for (const family of group.families) for (const captured of family.entries) {
+          if (captured.chunked) pins.push(...captured.chunked.parts.map((part: { artifact: unknown }) => part.artifact));
+          else pins.push(captured.artifact);
+        }
+        for (const auxiliary of group.auxiliary) if (auxiliary.artifact) {
+          pins.push(auxiliary.artifact);
+          if (['stdout', 'stderr', 'command-exit.json'].includes(auxiliary.role)
+            && auxiliary.path === join(packet, `${group.id}.${auxiliary.role}`)) {
+            originals.push({ path: auxiliary.path, artifact: auxiliary.artifact });
+          }
+        }
+      }
+      if (!(await json(join(packet, 'expected.json'))).bytes.equals(expected.bytes)
+        || !(await json(join(packet, 'locator.json'))).bytes.equals(locator.bytes)) continue;
+      add(base); add(container); add(packet); add(join(packet, 'objects'));
+      add(join(packet, 'expected.json')); add(join(packet, 'locator.json'));
+      for (const pin of pins) if (pin) add(join(packet, 'objects', pin.ref));
+      // Original child streams can change independently of retained custody.
+      // Only claim exact local originals still matching their retained bytes.
+      for (const original of originals) {
+        try {
+          const bytes = readNativeArtifactBytes(original.path, original.artifact.byteLength, 8 * 1024 * 1024);
+          if (createHash('sha256').update(bytes).digest('hex') === original.artifact.sha256) add(original.path);
+        } catch { /* Changed, linked or missing originals remain unresolved. */ }
+      }
+    } catch { /* An incomplete, redirected or corrupt packet proves no ownership. */ }
+  }
+  return [...declarations.values()];
+}
 
 /** Compose independent writers without traversing the same physical root twice. */
 export function installedRootCensusProducers() {
@@ -123,7 +202,20 @@ export async function accountCredentialCensusProducer(accounts: ReadonlyArray<{ 
   const declarations: CensusDeclaration[] = [];
   for (const account of accounts) {
     const home = parseCodexCliRef(account.credentialRef);
-    const path = home ? codexAuthPath(home) : /^(?:file|token):(.+)$/.exec(account.credentialRef)?.[1];
+    let path = home ? codexAuthPath(home) : undefined;
+    if (!home) {
+      // Use the same path expansion and source grammar as the credential reader.
+      // Unsupported references own no filesystem path; filesystem failures below
+      // must still surface instead of disappearing as malformed references.
+      try {
+        const ref = parseCredentialRef(account.credentialRef);
+        if (ref.kind === 'file' || ref.kind === 'token') path = ref.path;
+        else if (ref.kind === 'apikey') {
+          const source = parseApiKeySource(ref.path);
+          if (source.kind === 'file') path = source.path;
+        }
+      } catch { continue; }
+    }
     if (!path || !isAbsolute(path)) continue;
     const directory = dirname(path);
     let metadata;
@@ -607,6 +699,19 @@ export async function runtimeSidefileCensusProducer(home = homedir(), environmen
   // discovery left in registered or legacy homes after switching workspaces;
   // arbitrary launch working directories are not runtime-home evidence.
   const discoveryHomes = new Set([ordinaryHome, papercuspHome(environment, home), ...runtimeHomes]);
+  for (const directory of discoveryHomes) {
+    if (!(await lstat(directory).catch(error => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    }))?.isDirectory() || await realpath(directory) !== resolve(directory)) continue;
+    let evidenceRoot = roots.find(candidate => candidate.path === directory);
+    if (!evidenceRoot) { evidenceRoot = { id: `runtime-native-evidence-${roots.length}`, path: directory }; }
+    const native = await nativeRouterCensusDeclarations(directory, evidenceRoot.id);
+    if (native.length) {
+      if (!roots.includes(evidenceRoot)) roots.push(evidenceRoot);
+      declarations.push(...native);
+    }
+  }
   // Reuse the test runner's resolver for reports, executed inputs and native
   // proof. A path switch leaves earlier packets in known runtime homes.
   // Only the testing-run subtree is opaque retained state; siblings still

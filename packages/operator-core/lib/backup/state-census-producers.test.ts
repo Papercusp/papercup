@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { closureDigestManifestPath } from '../../../../scripts/lib/passing-task-verdict-cache.mjs';
 import { partialTaskCheckpointPath } from '../../../../scripts/lib/partial-task-resume.mjs';
+import { retainNativeProofPacket, type NativeCustodyGroup } from '../../../../scripts/lib/budgeted-task-scheduler.mjs';
 vi.mock('../db-encryption', () => ({ dbEncryptionKeyFilePath: () => '/mounted/secrets/db-key' }));
 vi.mock('../superuser-token', () => ({ superuserTokenPath: () => '/scoped/home/superuser-token' }));
 vi.mock('../workspace-registry', () => ({
@@ -1461,6 +1462,54 @@ describe('secret census producer adapters', () => {
       expect(modelWriter).toContain("join(papercuspHome, 'cache', 'transformers')");
     } finally { vi.unstubAllEnvs(); await rm(home, { recursive: true, force: true }); }
   });
+  it.each([
+    ['API key file', (home: string) => `apikey:file:${join(home, 'selected')}`],
+    ['API key home file', () => 'apikey:file:~/selected'],
+    ['absolute file', (home: string) => join(home, 'selected')],
+    ['home file', () => '~/selected'],
+    ['legacy file', (home: string) => `file:${join(home, 'selected')}`],
+    ['legacy home file', () => 'file:~/selected'],
+    ['legacy token', (home: string) => `token:${join(home, 'selected')}`],
+    ['legacy home token', () => 'token:~/selected'],
+  ])('inventories an exact %s reference once and leaves unrelated siblings as residue', async (_label, reference) => {
+    const home = await mkdtemp(join(tmpdir(), 'file-account-census-'));
+    try {
+      vi.stubEnv('HOME', home);
+      await writeFile(join(home, 'selected'), 'opaque credential; not a JSON bundle');
+      await writeFile(join(home, 'unrelated'), 'owner data');
+      const credentialRef = reference(home);
+      const result = await accountCredentialCensusProducer([{ credentialRef }, { credentialRef }]);
+      expect(result.roots).toHaveLength(1);
+      expect(result.roots[0]).toMatchObject({ path: home, fileNames: ['selected'] });
+      expect(result.declarations).toEqual([{
+        kind: 'path', root: result.roots[0].id, name: 'selected', classification: 'secret',
+        producer: 'account-pool-credential-reference',
+      }]);
+      const selected = await collectStateCensus({ ...result, readCatalogs: async () => [] });
+      expect(selected.ok).toBe(true);
+      expect(selected.inventory.map(entry => entry.name)).toEqual(['selected']);
+      const full = mergeNestedCensusRoots({ roots: [...result.roots, { id: 'installed', path: home }], declarations: result.declarations });
+      const census = await collectStateCensus({ ...full, readCatalogs: async () => [] });
+      expect(census.inventory.find(entry => entry.name === 'selected')?.classification).toBe('secret');
+      expect(census.residue.map(entry => entry.name)).toEqual(['unrelated']);
+    } finally { vi.unstubAllEnvs(); await rm(home, { recursive: true, force: true }); }
+  });
+  it.each([
+    'env:ACCOUNT_TOKEN', 'keychain:external', 'apikey:env:ACCOUNT_KEY', 'apikey:credentials',
+    'relative', 'file:relative', 'token:relative', 'apikey:file:relative', 'unknown:/credential',
+    'apikey:unknown:/credential', 'apikey:file:', 'apikey:env:invalid-name', 'codex-cli:',
+  ])('declares no filesystem ownership for unsupported or non-file reference %s', async credentialRef => {
+    expect(await accountCredentialCensusProducer([{ credentialRef }])).toEqual({ roots: [], declarations: [] });
+  });
+  it('surfaces credential directory IO failures after parsing a valid reference', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'credential-io-census-'));
+    try {
+      await writeFile(join(home, 'not-directory'), 'owner data');
+      await expect(accountCredentialCensusProducer([
+        { credentialRef: `apikey:file:${join(home, 'not-directory', 'nested', 'secret')}` },
+      ])).rejects.toMatchObject({ code: 'ENOTDIR' });
+    } finally { await rm(home, { recursive: true, force: true }); }
+  });
   it('inventories referenced auth and atomic refresh files without importing unrelated CLI state', async () => {
     const home = await mkdtemp(join(tmpdir(), 'account-census-'));
     try {
@@ -1710,6 +1759,110 @@ describe('secret census producer adapters', () => {
       await symlink(`${ordinary}-retained`, ordinary);
       expect(await owned()).toEqual([]);
     } finally { await rm(home, { recursive: true, force: true }); }
+  });
+  describe('native router retained census evidence', () => {
+    const fixture = async (runtimeHome: string, partial = false) => {
+      const container = join(runtimeHome, 'test-artifacts', 'arbitrary-run-name');
+      await mkdir(container, { recursive: true, mode: 0o700 });
+      const packet = await mkdtemp(join(container, 'native-router-'));
+      const identity = { workspace: 'fixture-workspace', harness: 'fixture', runId: 'fixture-run' };
+      const auxiliary = ['stdout', 'stderr', 'command-exit.json'].map(role => ({
+        role, state: 'produced' as const, path: join(packet, `group-0.${role}`),
+      }));
+      for (const entry of auxiliary) await writeFile(entry.path, entry.role === 'command-exit.json'
+        ? JSON.stringify({ writer: 'router-owned-child-close', status: 0 }) : `retained ${entry.role}`, { mode: 0o600 });
+      const expected: NativeCustodyGroup[] = [{ id: 'group-0', attempt: 'primary', selected: ['/fixture/test.ts'], runner: 'vitest',
+        armed: false, out: null, cwd: '/fixture', auxiliary: partial
+          ? [...auxiliary, { role: 'report', state: 'unavailable', reason: 'fixture-missing-report' }] : auxiliary }];
+      const contract = { identity, expected };
+      await writeFile(join(packet, 'expected.json'), JSON.stringify(contract), { mode: 0o600 });
+      const saved = retainNativeProofPacket(packet, { ...contract,
+        observations: [{ id: 'group-0', out: null, captureComplete: true }], execution: 'router-settled' });
+      await writeFile(join(packet, 'locator.json'), JSON.stringify(saved.locator), { mode: 0o600 });
+      return { packet, container, saved };
+    };
+    const native = async (home: string, runtimeHomes: string[] = []) => {
+      const result = await runtimeSidefileCensusProducer(home, {}, [], runtimeHomes);
+      return { ...result, declarations: result.declarations.filter(entry => entry.producer === 'test-file-native-router-custody') };
+    };
+    it('uses verified custody in ordinary and registered homes while preserving unknown neighbors', async () => {
+      const home = await mkdtemp(join(tmpdir(), 'native-census-'));
+      try {
+        const runtimeHome = join(home, '.papercusp');
+        const registered = join(home, 'registered');
+        const first = await fixture(runtimeHome);
+        await fixture(registered);
+        const unregistered = join(home, 'unregistered');
+        await fixture(unregistered);
+        const unknown = [join(first.container, 'owner.txt'), join(first.packet, 'owner.txt'),
+          join(first.packet, 'objects', 'unreferenced.json')];
+        for (const path of unknown) await writeFile(path, 'unknown retained input', { mode: 0o600 });
+        const before = await readFile(join(first.packet, 'expected.json'));
+        const result = await native(home, [registered]);
+        expect(result.roots.some(root => root.path === unregistered)).toBe(false);
+        expect(result.declarations.every(entry => entry.classification === 'state' && !entry.descendants && !entry.prune)).toBe(true);
+        const census = await collectStateCensus({ ...result, readCatalogs: async () => [] });
+        for (const path of unknown) expect(census.residue.some(entry => path.endsWith(entry.name))).toBe(true);
+        expect(census.inventory.filter(entry => entry.name.endsWith('/locator.json')).every(entry => entry.classification === 'state')).toBe(true);
+        expect(census.inventory.filter(entry => entry.name.endsWith('/locator.json'))).toHaveLength(2);
+        expect(await readFile(join(first.packet, 'expected.json'))).toEqual(before);
+        expect(census.ok).toBe(false);
+      } finally { await rm(home, { recursive: true, force: true }); }
+    });
+    it.each(['object', 'expected', 'locator', 'linked-packet', 'linked-metadata', 'public-metadata', 'missing-locator'])(
+      'leaves %s evidence unresolved', async corruption => {
+        const home = await mkdtemp(join(tmpdir(), 'invalid-native-census-'));
+        try {
+          const { packet, saved } = await fixture(join(home, '.papercusp'));
+          if (corruption === 'object') await writeFile(join(packet, 'objects', saved.locator.manifest.ref), '{}', { mode: 0o600 });
+          if (corruption === 'expected') await writeFile(join(packet, 'expected.json'), JSON.stringify({ identity: {}, expected: [] }));
+          if (corruption === 'locator') await writeFile(join(packet, 'locator.json'), '{}');
+          if (corruption === 'public-metadata') await chmod(join(packet, 'expected.json'), 0o644);
+          if (corruption === 'missing-locator') await rm(join(packet, 'locator.json'));
+          if (corruption === 'linked-packet') { await rename(packet, `${packet}-target`); await symlink(`${packet}-target`, packet); }
+          if (corruption === 'linked-metadata') {
+            await rename(join(packet, 'expected.json'), join(home, 'expected.json'));
+            await symlink(join(home, 'expected.json'), join(packet, 'expected.json'));
+          }
+          expect((await native(home)).declarations).toEqual([]);
+        } finally { await rm(home, { recursive: true, force: true }); }
+      });
+    it('preserves partial custody without treating it as native proof or acceptance', async () => {
+      const home = await mkdtemp(join(tmpdir(), 'partial-native-census-'));
+      try {
+        const { saved } = await fixture(join(home, '.papercusp'), true);
+        expect(saved.status).toBe('partial');
+        expect(saved.manifest.verdicts).toMatchObject({ nativeProof: 'unqualified', acceptance: 'unmeasured' });
+        expect((await native(home)).declarations.some(entry => entry.name.endsWith('/locator.json'))).toBe(true);
+      } finally { await rm(home, { recursive: true, force: true }); }
+    });
+    it('preserves moved proof bytes while leaving changed original streams unresolved', async () => {
+      const home = await mkdtemp(join(tmpdir(), 'moved-native-census-'));
+      try {
+        const { packet, container } = await fixture(join(home, '.papercusp'));
+        await writeFile(join(packet, 'group-0.stdout'), 'changed original stream');
+        let result = await native(home);
+        expect(result.declarations.some(entry => entry.name.endsWith('/group-0.stdout'))).toBe(false);
+        expect(result.declarations.some(entry => entry.name.endsWith('/group-0.stderr'))).toBe(true);
+        await rename(container, `${container}-moved`);
+        result = await native(home);
+        expect(result.declarations.some(entry => entry.name.endsWith('/locator.json'))).toBe(true);
+        expect(result.declarations.some(entry => entry.name.endsWith('/group-0.stderr'))).toBe(false);
+      } finally { await rm(home, { recursive: true, force: true }); }
+    });
+    it('does not follow linked artifact containers or runtime homes', async () => {
+      const home = await mkdtemp(join(tmpdir(), 'redirected-native-census-'));
+      try {
+        const runtimeHome = join(home, '.papercusp');
+        const { container } = await fixture(runtimeHome);
+        await rename(container, join(home, 'retained-container'));
+        await symlink(join(home, 'retained-container'), container);
+        expect((await native(home)).declarations).toEqual([]);
+        await rename(runtimeHome, `${runtimeHome}-target`);
+        await symlink(`${runtimeHome}-target`, runtimeHome);
+        expect((await native(home)).declarations).toEqual([]);
+      } finally { await rm(home, { recursive: true, force: true }); }
+    });
   });
   it('retains runtime writer directories under the relocated active workspace without pruning credentials or diagnostics', async () => {
     const result = runtimeRetainedCensusProducer();
