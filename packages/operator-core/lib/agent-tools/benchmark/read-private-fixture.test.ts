@@ -2,12 +2,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import type { PapercuspUnifiedToolContext } from '../_tool-context';
 import { BENCH_PRIVATE_FIXTURE_TOOL, benchFixtureAllocationSha256, freezeBenchFixtureReadBoundary,
-  type BenchFixtureAllocation } from '../../external-bench/private-fixture-reads';
+  type BenchFixtureAllocation, type BenchFixtureReadArgs } from '../../external-bench/private-fixture-reads';
+import { benchAttentionInputSchema } from '../../external-bench/private-fixture-reads';
+import { latencyAttentionFixtures } from '../../../test/_latency-acceptance';
 
-const mocks = vi.hoisted(() => ({ identity: vi.fn(), confinement: vi.fn(), item: vi.fn(), read: vi.fn(), lease: vi.fn(), source: vi.fn(), context: vi.fn() }));
+const mocks = vi.hoisted(() => ({ identity: vi.fn(), confinement: vi.fn(), item: vi.fn(), read: vi.fn(), lease: vi.fn(), source: vi.fn(), context: vi.fn(), result: vi.fn() }));
 vi.mock('../../external-bench/private-fixture-reads', async original => ({
   ...await original<Record<string, unknown>>(), requireBenchFixtureReadLease: mocks.lease,
-  requireBenchFixtureSourcePins: mocks.source, benchFixtureContextSnapshot: mocks.context }));
+  requireBenchFixtureSourcePins: mocks.source, benchFixtureContextSnapshot: mocks.context,
+  benchFixtureResultSnapshot: mocks.result }));
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: mocks.identity }));
 vi.mock('../../capability-envelope/session-confinement-store', () => ({ readSessionConfinement: mocks.confinement }));
 vi.mock('../../work-items', () => ({ getWorkItem: mocks.item, isSelfOwnerRecord: (a: string, b: string) => a === b }));
@@ -44,6 +47,37 @@ beforeEach(() => {
   mocks.source.mockResolvedValue(undefined);
 });
 describe('assignment-holder private fixture read route', () => {
+  it('reads the same retained T06 observation on first read and paging without invoking a product handler', async () => {
+    const fixture = latencyAttentionFixtures();
+    const { reference: _reference, measured: _measured, keys: _keys, observationRequired: _required, ...raw } = fixture;
+    const input = benchAttentionInputSchema.parse(raw);
+    const extended: BenchFixtureAllocation = { ...allocation, 'LATENCY-M1:T06': {
+      A: { input, viewWorkspaceId: input.workspace }, B: { input, viewWorkspaceId: input.otherWorkspace } } };
+    const frozen = freezeBenchFixtureReadBoundary({ binding: { ...reads(), sourcePins: undefined },
+      taskId: 'LATENCY-M1:T06', allocation: extended, expectedSha256: benchFixtureAllocationSha256(extended) });
+    mocks.confinement.mockResolvedValue({ ...confinement(), denyBenchmarkReadsOutside: frozen });
+    const { createHash } = await import('node:crypto');
+    const text = JSON.stringify({ normalizedContents: ['coord-message:selected', 'dark-flag:retained'],
+      principal: { input: 'admin', reader: 'pc-admin-coord-ui' }, raw: 'é🧪 '.repeat(2000) });
+    mocks.result.mockResolvedValue({ text, bytes: Buffer.byteLength(text), sha256: createHash('sha256').update(text).digest('hex') });
+    let request: BenchFixtureReadArgs = { operation: 'attention', case: 'A' };
+    let actual = '';
+    for (;;) {
+      const result = await tool.handler(request, ctx);
+      if (!('data' in result)) throw Error('Missing retained observation');
+      const packet = result.data as { privateFixtureResult: { text: string; complete: boolean;
+        next: null | { args: BenchFixtureReadArgs } } };
+      actual += packet.privateFixtureResult.text;
+      if (packet.privateFixtureResult.complete) break;
+      request = packet.privateFixtureResult.next!.args;
+    }
+    expect(actual).toBe(text); expect(mocks.read).not.toHaveBeenCalled();
+    expect(mocks.result.mock.calls.every(call => call.length === 3)).toBe(true);
+    mocks.lease.mockRejectedValue(Error('revoked'));
+    await expect(tool.handler({ operation: 'attention', case: 'A' }, ctx)).rejects.toThrow('revoked');
+    mocks.lease.mockResolvedValue(undefined); mocks.result.mockRejectedValue(Error('no retained product read'));
+    await expect(tool.handler({ operation: 'attention', case: 'B' }, ctx)).rejects.toThrow('no retained');
+  });
   it('keeps open holds and accounts for resolution noise in one packet', async () => {
     mocks.confinement.mockResolvedValue(confinement('LATENCY-M1:T09'));
     const conditions = await import('../coordination/condition-state');

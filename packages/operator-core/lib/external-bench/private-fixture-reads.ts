@@ -23,6 +23,23 @@ const timeline = z.object({
 }).strict().refine(value => Date.parse(value.until) > Date.parse(value.since),
   'Private timeline requires an increasing frozen window.');
 const conditions = z.object({ prefix: id }).strict();
+const attentionMessage = z.object({ msg_id: id, from: id, to: z.array(id).min(1).max(8),
+  kind: z.literal('message'), summary: z.string(), body: z.string(), expects: z.literal('none'),
+  ts: z.string().datetime({ offset: true }) }).strict();
+/** Input schedule only. Independent reference answers never enter the solver's
+ * boundary. The host replays this in an owned private DB and retains output. */
+export const benchAttentionInputSchema = z.object({ seed: z.literal('LATENCY-M1-attention-v1'),
+  workspace: id, otherWorkspace: id, harness: id,
+  seedMessages: z.array(attentionMessage).length(2),
+  unrelatedMessages: z.array(attentionMessage).length(100), relevantMessage: attentionMessage,
+  acknowledgment: z.object({ acker: id, msgId: id, atMs: z.number().int().safe().nonnegative() }).strict(),
+}).strict().refine(value => value.workspace !== value.otherWorkspace &&
+  value.seedMessages.some(row => row.msg_id === value.acknowledgment.msgId) &&
+  new Set([...value.seedMessages, ...value.unrelatedMessages, value.relevantMessage].map(row => row.msg_id)).size === 103,
+  'Private attention requires distinct workspaces and the complete unique event population.');
+const attention = z.object({ input: benchAttentionInputSchema, viewWorkspaceId: id }).strict()
+  .refine(value => [value.input.workspace, value.input.otherWorkspace].includes(value.viewWorkspaceId),
+    'Private attention view is outside its frozen source.');
 export const benchRetrievalScenarioId = z.enum(['on-time', 'synchronous-entry-block', 'queue-delay', 'late-timer',
   'late-success', 'abort-network', 'abort-queued', 'lexical-fallback']);
 const retrieval = z.object({ budgetMs: z.number().int().min(4).max(60_000),
@@ -38,6 +55,7 @@ export const benchFixtureAllocationSchema = z.object({
   'LATENCY-M1:T03': cases(plan),
   'LATENCY-M1:T04': cases(timeline).optional(),
   'LATENCY-M1:T05': cases(timeline).optional(),
+  'LATENCY-M1:T06': cases(attention).optional(),
   'LATENCY-M1:T07': cases(coverage).optional(),
   'LATENCY-M1:T08': cases(coverage).optional(),
   'LATENCY-M1:T09': cases(conditions).optional(),
@@ -45,6 +63,7 @@ export const benchFixtureAllocationSchema = z.object({
   verification: z.object({ 'LATENCY-M1:T01': verification.optional(),
     'LATENCY-M1:T02': verification.optional(), 'LATENCY-M1:T03': verification.optional(),
     'LATENCY-M1:T04': verification.optional(), 'LATENCY-M1:T05': verification.optional(),
+    'LATENCY-M1:T06': verification.optional(),
     'LATENCY-M1:T07': verification.optional(), 'LATENCY-M1:T08': verification.optional(),
     'LATENCY-M1:T09': verification.optional(), 'LATENCY-M1:T10': verification.optional() }).strict().optional(),
 }).strict();
@@ -60,6 +79,7 @@ export const benchFixtureBoundarySchema = z.discriminatedUnion('taskId', [
   bindingSchema.extend({ taskId: z.literal('LATENCY-M1:T03'), fixtureSha256: digest, cases: cases(plan) }).strict(),
   bindingSchema.extend({ taskId: z.literal('LATENCY-M1:T04'), fixtureSha256: digest, cases: cases(timeline) }).strict(),
   bindingSchema.extend({ taskId: z.literal('LATENCY-M1:T05'), fixtureSha256: digest, cases: cases(timeline) }).strict(),
+  bindingSchema.extend({ taskId: z.literal('LATENCY-M1:T06'), fixtureSha256: digest, cases: cases(attention) }).strict(),
   bindingSchema.extend({ taskId: z.literal('LATENCY-M1:T07'), fixtureSha256: digest, cases: cases(coverage) }).strict(),
   bindingSchema.extend({ taskId: z.literal('LATENCY-M1:T08'), fixtureSha256: digest, cases: cases(coverage) }).strict(),
   bindingSchema.extend({ taskId: z.literal('LATENCY-M1:T09'), fixtureSha256: digest, cases: cases(conditions) }).strict(),
@@ -80,7 +100,7 @@ export function freezeBenchFixtureReadBoundary(input: {
   const allocation = benchFixtureAllocationSchema.parse(input.allocation);
   if (benchFixtureAllocationSha256(allocation) !== input.expectedSha256)
     throw new Error('Private benchmark fixture allocation differs from its frozen arm.');
-  if (!['LATENCY-M1:T01', 'LATENCY-M1:T02', 'LATENCY-M1:T03', 'LATENCY-M1:T04', 'LATENCY-M1:T05', 'LATENCY-M1:T07', 'LATENCY-M1:T08', 'LATENCY-M1:T09', 'LATENCY-M1:T10'].includes(input.taskId)) return undefined;
+  if (!['LATENCY-M1:T01', 'LATENCY-M1:T02', 'LATENCY-M1:T03', 'LATENCY-M1:T04', 'LATENCY-M1:T05', 'LATENCY-M1:T06', 'LATENCY-M1:T07', 'LATENCY-M1:T08', 'LATENCY-M1:T09', 'LATENCY-M1:T10'].includes(input.taskId)) return undefined;
   const taskId = input.taskId as BenchFixtureReadBoundary['taskId'];
   if (!allocation[taskId]) throw new Error('Private benchmark task has no frozen source allocation.');
   return benchFixtureBoundarySchema.parse({ ...input.binding, taskId: input.taskId,
@@ -112,6 +132,11 @@ export async function readBenchFixtureSourceSnapshot(boundary: BenchFixtureReadB
   which: 'A' | 'B', scope: DbScope): Promise<unknown> {
   const { sql, ws } = resolveDb(scope);
   if (ws !== boundary.workspaceId) throw new Error('Private fixture source workspace differs.');
+  if (boundary.taskId === 'LATENCY-M1:T06') {
+    // Mutable replay rows are NOT the immutable input. Phase snapshots belong
+    // to the retained observation; source guards pin the exact event schedule.
+    return { source: boundary.cases[which] };
+  }
   if (boundary.taskId === 'LATENCY-M1:T10') {
     const source = boundary.cases[which];
     const { latencyRetrievalFixtures } = await import('./latency-retrieval');
@@ -345,13 +370,14 @@ export const benchFixtureReadArgs = z.discriminatedUnion('operation', [
   common.extend({ operation: z.literal('specs') }).strict(),
   common.extend({ operation: z.literal('timeline'), cursor: z.string().min(1).max(512).optional() }).strict(),
   common.extend({ operation: z.literal('conditions') }).strict(),
+  common.extend({ operation: z.literal('attention') }).strict(),
   common.extend({ operation: z.literal('coverage') }).strict(),
   common.extend({ operation: z.literal('retrieval'), scenarioId: benchRetrievalScenarioId }).strict(),
   common.extend({ operation: z.literal('context'), source: z.enum(['corpus', 'memory']),
     entryKey: z.string().min(1).max(4096).optional() }).strict(),
 ]);
 export type BenchFixtureReadArgs = z.infer<typeof benchFixtureReadArgs>;
-export type BenchFixtureProductCall = { tool: 'scorecards:get' | 'scorecards:list' | 'plans:get' | 'plans:get-specs' | 'sessions:timeline' | 'condition-prefix' | 'coverage-read' | 'frozen-context' | 'retrieval-observation';
+export type BenchFixtureProductCall = { tool: 'scorecards:get' | 'scorecards:list' | 'plans:get' | 'plans:get-specs' | 'sessions:timeline' | 'condition-prefix' | 'coverage-read' | 'frozen-context' | 'retrieval-observation' | 'attention-observation';
   args: Record<string, unknown> };
 
 /** Raw inputs use the existing physical context and operational lease. The
@@ -457,6 +483,8 @@ export function benchFixtureProductCall(boundary: BenchFixtureReadBoundary, rawA
     return { tool: 'coverage-read', args: { ...pinned.cases[args.case], workspaceId: pinned.workspaceId } };
   if (args.operation === 'conditions' && pinned.taskId === 'LATENCY-M1:T09')
     return { tool: 'condition-prefix', args: { prefix: pinned.cases[args.case].prefix } };
+  if (args.operation === 'attention' && pinned.taskId === 'LATENCY-M1:T06')
+    return { tool: 'attention-observation', args: { case: args.case } };
   if (args.operation === 'retrieval' && pinned.taskId === 'LATENCY-M1:T10') {
     const source = pinned.cases[args.case];
     if (!source.scenarioIds.includes(args.scenarioId)) throw new Error('Private retrieval scenario is not assigned to this case.');
