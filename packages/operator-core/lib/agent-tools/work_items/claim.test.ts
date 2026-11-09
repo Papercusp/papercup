@@ -256,11 +256,38 @@ describe('R3 claim receipt stack defaults (independent P023 acceptance)', () => 
       stackRegistry.projects = [{ slug: 'r3-fixture', path: root }];
       claimM.mockResolvedValue(issueItem({ id: 'WI-R3-STACK', harness: 'r3-fixture', assignee: 'me' }));
 
-      const receipt = await body({ id: 'WI-R3-STACK', harness: 'r3-fixture', changeKinds: ['ui'] });
+      const input = { id: 'WI-R3-STACK', harness: 'r3-fixture', changeKinds: ['ui'] };
+      const originalInput = structuredClone(input);
+      expect(tool.args.parse(input)).toEqual(input);
+      const projected = lookupByMcpName('work_items:claim');
+      expect(projected).toBeTruthy();
+      const dispatched = await dispatchProjectedTool(projected!, 'work_items:claim', input, {
+        uiClientId: 'me',
+        workspaceId: 'ws-1',
+        harnessSlug: 'r3-fixture',
+        log: vi.fn(),
+        signal: new AbortController().signal,
+        progress: vi.fn(),
+        emit: vi.fn(),
+        metadata: vi.fn(),
+        runId: 'claim-stack-original-input-replay',
+        role: 'su',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp',
+        requestedFormat: 'json',
+        requestedStructured: true,
+      } as never, {});
+      expect(dispatched.ok).toBe(true);
+      expect(input).toEqual(originalInput);
+      const receipt = dispatched.result?.structuredContent as Out['data'] | undefined;
+      expect(receipt).toBeDefined();
       const result = receipt.results[0];
       expect(result).toMatchObject({ ok: true, changeKinds: { recorded: true, current: ['ui'] } });
       expect(JSON.stringify(result)).toMatch(expectedTool);
       expect(JSON.stringify(result)).toMatch(/artifact|recorded/i);
+      expect(claimM).toHaveBeenCalledExactlyOnceWith('WI-R3-STACK', 'me', {
+        harness: 'r3-fixture', fromHolder: identity.ownerId,
+      });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -268,10 +295,39 @@ describe('R3 claim receipt stack defaults (independent P023 acceptance)', () => 
 });
 
 describe('work_items:claim gate-red singleton guard (green-main-cycle-time-2026-10-08 P-013, D-028(4))', () => {
+  const publicClaim = async (input: Record<string, unknown>) => {
+    const originalInput = structuredClone(input);
+    expect(tool.args.parse(input)).toEqual(input);
+    const projected = lookupByMcpName('work_items:claim');
+    expect(projected).toBeTruthy();
+    const dispatched = await dispatchProjectedTool(projected!, 'work_items:claim', input, {
+      uiClientId: 'me',
+      workspaceId: 'ws-1',
+      harnessSlug: 'papercusp',
+      log: vi.fn(),
+      signal: new AbortController().signal,
+      progress: vi.fn(),
+      emit: vi.fn(),
+      metadata: vi.fn(),
+      runId: 'claim-singleton-original-input-replay',
+      role: 'su',
+      gateBypass: { role: true, capability: true, quota: true },
+      transport: 'mcp',
+      requestedFormat: 'json',
+      requestedStructured: true,
+    } as never, {});
+    expect(dispatched.ok).toBe(true);
+    expect(input).toEqual(originalInput);
+    const result = dispatched.result?.structuredContent as Out['data'] | undefined;
+    expect(result).toBeDefined();
+    return result;
+  };
+
   it('refuses a gate-red-streak singleton before mutation when the CLAIMANT has no guaranteed re-wake', async () => {
     gateSingleton.conditionKey = 'gate-red-streak:papercup';
     gateSingleton.rewake = { guaranteed: false, reason: 'no-active-loop' };
-    const b = await body({ id: 'EI-red', assignee: 'bee-7' });
+    const b = await publicClaim({ id: 'EI-red', assignee: 'bee-7' });
+    expect(b).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 } });
     expect(b.results[0]).toMatchObject({
       ok: false,
       id: 'EI-red',
@@ -291,19 +347,23 @@ describe('work_items:claim gate-red singleton guard (green-main-cycle-time-2026-
   it('admits the frozen-repair-convergence singleton for a claimant with a guaranteed re-wake', async () => {
     gateSingleton.conditionKey = 'frozen-repair-convergence:papercup';
     gateSingleton.rewake = { guaranteed: true, reason: null };
-    const b = await body({ id: 'EI-conv' });
+    const b = await publicClaim({ id: 'EI-conv' });
+    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     expect(b.results[0]).toMatchObject({ ok: true, id: 'EI-conv' });
     expect(gateSingleton.readRewake).toHaveBeenCalledWith('me');
     expect(claimM).toHaveBeenCalledOnce();
+    expect(claimM).toHaveBeenCalledWith('EI-conv', 'me', { fromHolder: 'me' });
   });
 
   it('never guards a per-leg frozen-repair-leg item, even for a claimant with no loop (D-028(2))', async () => {
     gateSingleton.conditionKey = 'frozen-repair-leg:papercup:packages/x/a.test.ts';
     gateSingleton.rewake = { guaranteed: false, reason: 'no-active-loop' };
-    const b = await body({ id: 'EI-leg' });
+    const b = await publicClaim({ id: 'EI-leg' });
+    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     expect(b.results[0]).toMatchObject({ ok: true, id: 'EI-leg' });
     expect(gateSingleton.readRewake).not.toHaveBeenCalled();
     expect(claimM).toHaveBeenCalledOnce();
+    expect(claimM).toHaveBeenCalledWith('EI-leg', 'me', { fromHolder: 'me' });
   });
 });
 
