@@ -4,7 +4,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { canonicalJson } from './reproducibility/canonical-json';
 import { resolveDb, type DbScope } from './reproducibility/db';
-import { readBenchmarkContextSources, type BenchmarkContextInput } from './reproducibility/context';
+import { readBenchmarkContextSources, readFrozenBenchmarkSnapshot, type BenchmarkContextInput } from './reproducibility/context';
+import { currentBenchmarkProtocolSchema } from './reproducibility/schema';
 import { toolInvocationOwnerPredicate } from '../agent-tools/sessions/automatic-tool-names';
 
 export const BENCH_PRIVATE_FIXTURE_TOOL = 'benchmark:read-private-fixture';
@@ -286,10 +287,36 @@ export const benchFixtureReadArgs = z.discriminatedUnion('operation', [
   common.extend({ operation: z.literal('plan') }).strict(),
   common.extend({ operation: z.literal('specs') }).strict(),
   common.extend({ operation: z.literal('timeline'), cursor: z.string().min(1).max(512).optional() }).strict(),
+  common.extend({ operation: z.literal('context'), source: z.enum(['corpus', 'memory']),
+    entryKey: z.string().min(1).max(4096).optional() }).strict(),
 ]);
 export type BenchFixtureReadArgs = z.infer<typeof benchFixtureReadArgs>;
-export type BenchFixtureProductCall = { tool: 'scorecards:get' | 'scorecards:list' | 'plans:get' | 'plans:get-specs' | 'sessions:timeline';
+export type BenchFixtureProductCall = { tool: 'scorecards:get' | 'scorecards:list' | 'plans:get' | 'plans:get-specs' | 'sessions:timeline' | 'frozen-context';
   args: Record<string, unknown> };
+
+/** Raw inputs use the existing physical context and operational lease. The
+ * protocol supplies the hashes; the held-item ceiling supplies the checkout.
+ * Continuations re-read pinned bytes instead of copying a multi-MB corpus into
+ * the checkpoint on each read. They use the same lossless result page format. */
+export async function benchFixtureContextSnapshot(boundary: BenchFixtureReadBoundary, call: BenchFixtureProductCall,
+  checkout: string, scope: DbScope) {
+  if (call.tool !== 'frozen-context') throw new Error('Private context operation is undeclared.');
+  await requireBenchFixtureReadLease(boundary, scope);
+  const { sql, ws } = resolveDb(scope);
+  const [row] = await sql`SELECT config->'protocol' AS protocol FROM harness_shared.bench_runs
+    WHERE workspace_id = ${ws} AND id = ${boundary.lease!.hostRunId}`;
+  if (!row?.protocol || sha256(canonicalJson(row.protocol)) !== boundary.preregHash)
+    throw new Error('Private context protocol differs from its frozen preregistration.');
+  const context = currentBenchmarkProtocolSchema.shape.context.parse(row.protocol.context);
+  const source = z.enum(['corpus', 'memory']).parse(call.args.source), expected = context[`${source}Hash`];
+  const snapshot = readFrozenBenchmarkSnapshot(checkout, source, expected, context.forbiddenSources);
+  const entry = call.args.entryKey === undefined ? undefined : snapshot.entries.find(entry => entry.key === call.args.entryKey);
+  if (call.args.entryKey !== undefined && !entry) throw new Error('Private context entry key is not in its frozen snapshot.');
+  const text = canonicalJson({ source, snapshotSha256: expected,
+    ...(entry ? { entry } : { entries: snapshot.entries.map(entry => ({ key: entry.key,
+      bytes: Buffer.byteLength(entry.text), sha256: sha256(entry.text) })) }) });
+  return { text, sha256: sha256(text), bytes: Buffer.byteLength(text) };
+}
 
 /** Lossless result continuations live on the SAME operational lease. Only the
  * actual product reader can create one; a cursor cannot select another source.
@@ -363,6 +390,8 @@ export function benchFixtureResultPage(snapshot: { text: string; sha256: string;
  * native tool ceiling; the existing handlers perform the actual read. */
 export function benchFixtureProductCall(boundary: BenchFixtureReadBoundary, rawArgs: unknown): BenchFixtureProductCall {
   const pinned = benchFixtureBoundarySchema.parse(boundary), args = benchFixtureReadArgs.parse(rawArgs);
+  if (args.operation === 'context') return { tool: 'frozen-context', args: { source: args.source,
+    ...(args.entryKey !== undefined ? { entryKey: args.entryKey } : {}) } };
   const source = pinned.cases[args.case];
   if (args.operation === 'card' && 'issueId' in source) {
     const { operation: _, case: __, resultCursor: ___, ...paging } = args;

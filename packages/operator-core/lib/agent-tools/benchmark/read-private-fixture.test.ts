@@ -4,10 +4,10 @@ import type { PapercuspUnifiedToolContext } from '../_tool-context';
 import { BENCH_PRIVATE_FIXTURE_TOOL, benchFixtureAllocationSha256, freezeBenchFixtureReadBoundary,
   type BenchFixtureAllocation } from '../../external-bench/private-fixture-reads';
 
-const mocks = vi.hoisted(() => ({ identity: vi.fn(), confinement: vi.fn(), item: vi.fn(), read: vi.fn(), lease: vi.fn(), source: vi.fn() }));
+const mocks = vi.hoisted(() => ({ identity: vi.fn(), confinement: vi.fn(), item: vi.fn(), read: vi.fn(), lease: vi.fn(), source: vi.fn(), context: vi.fn() }));
 vi.mock('../../external-bench/private-fixture-reads', async original => ({
   ...await original<Record<string, unknown>>(), requireBenchFixtureReadLease: mocks.lease,
-  requireBenchFixtureSourcePins: mocks.source }));
+  requireBenchFixtureSourcePins: mocks.source, benchFixtureContextSnapshot: mocks.context }));
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: mocks.identity }));
 vi.mock('../../capability-envelope/session-confinement-store', () => ({ readSessionConfinement: mocks.confinement }));
 vi.mock('../../work-items', () => ({ getWorkItem: mocks.item, isSelfOwnerRecord: (a: string, b: string) => a === b }));
@@ -43,6 +43,18 @@ beforeEach(() => {
   mocks.source.mockResolvedValue(undefined);
 });
 describe('assignment-holder private fixture read route', () => {
+  it('uses the exact held checkout and host pins for context pages and withholds revoked reads', async () => {
+    const { createHash } = await import('node:crypto');
+    const text = JSON.stringify({ entry: { key: 'raw', text: 'é🧪 '.repeat(3000) } });
+    mocks.context.mockResolvedValue({ text, sha256: createHash('sha256').update(text).digest('hex'), bytes: Buffer.byteLength(text) });
+    const request = { operation: 'context', case: 'A', source: 'corpus', entryKey: 'raw' } as const;
+    const reply = await tool.handler(request, ctx);
+    expect(mocks.context).toHaveBeenCalledWith(reads(), { tool: 'frozen-context', args: { source: 'corpus', entryKey: 'raw' } }, '/private', { workspaceId: 'private' });
+    expect(reply).toMatchObject({ data: { privateFixtureResult: { complete: false, offset: 0 } } });
+    expect(mocks.read).not.toHaveBeenCalled();
+    mocks.lease.mockRejectedValue(Error('revoked host lease'));
+    await expect(tool.handler(request, ctx)).rejects.toThrow(/revoked/);
+  });
   it('resolves source IDs server-side and returns the delegated handler output', async () => {
     expect(await tool.handler({ operation: 'card', case: 'B' }, ctx)).toEqual({ data: { ok: true, evidence: 'actual handler output' } });
     expect(mocks.confinement).toHaveBeenCalledWith('su-solver', 'private');

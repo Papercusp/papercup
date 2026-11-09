@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readRestoredBenchmarkContext, restoreBenchmarkContext, readFrozenBenchmarkMemory,
+import { readRestoredBenchmarkContext, restoreBenchmarkContext, readFrozenBenchmarkMemory, readFrozenBenchmarkSnapshot,
   readBenchmarkContextSources, type BenchmarkContextInput } from './context';
 
 const roots: string[] = [];
@@ -30,6 +30,22 @@ function fixture() {
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 describe('physical frozen benchmark context', () => {
+  it('indexes a large private context without truncating its physically restored source', () => {
+    const f = fixture(), text = 'Original é🧪\\n"source" '.repeat(100_000);
+    const corpus = JSON.stringify({ entries: [{ key: 'raw:source', text }] });
+    writeFileSync(join(f.input.snapshotRoot, 'corpus.json'), corpus);
+    f.input.context.corpusHash = sha(corpus);
+    const input = { ...f.input, delivery: 'private-fixture' as const }, receipt = restoreBenchmarkContext(input);
+    expect(Buffer.byteLength(receipt.contextText)).toBeLessThan(2000);
+    expect(receipt.contextText).toContain(sha(corpus));
+    expect(receipt.contextText).toContain('entryKey');
+    expect(readFileSync(receipt.corpusPath, 'utf8')).toBe(corpus);
+    expect(readFrozenBenchmarkSnapshot(input.checkout, 'corpus', sha(corpus)).entries).toEqual([{ key: 'raw:source', text }]);
+    expect(readRestoredBenchmarkContext(input)).toEqual(receipt);
+    expect(() => readRestoredBenchmarkContext(f.input)).toThrow(/receipt differs/);
+    writeFileSync(receipt.corpusPath, JSON.stringify({ entries: [] }));
+    expect(() => readFrozenBenchmarkSnapshot(input.checkout, 'corpus', sha(corpus))).toThrow(/bytes differ/);
+  });
   it('preflights the exact corpus and memory without creating an assignment context', () => {
     const f = fixture(), sources = readBenchmarkContextSources(f.input);
     expect(sources.corpus.toString('utf8')).toBe(f.corpus);
