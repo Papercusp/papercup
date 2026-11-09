@@ -16,6 +16,7 @@ import {
   ISSUE_Q_SEARCH_INDEXES,
   TEST_RUNS_SEARCH_INDEXES,
   CODE_FAMILIARITY_INDEXES,
+  NATIVE_DISPATCH_FINGERPRINT_INDEXES,
   SESSION_TURN_PARTS_TABLE,
   SESSION_TURN_TRGM_EXPR,
   SESSION_TURNS_TABLE,
@@ -386,6 +387,7 @@ describe('runSessionSearchIndexBuildOnce', () => {
       ...ISSUE_Q_SEARCH_INDEXES.map((i) => [i.name, 'deferred-table-missing']),
       ...TEST_RUNS_SEARCH_INDEXES.map((i) => [i.name, 'deferred-table-missing']),
       ...CODE_FAMILIARITY_INDEXES.map((i) => [i.name, 'deferred-table-missing']),
+      ...NATIVE_DISPATCH_FINGERPRINT_INDEXES.map((i) => [i.name, 'deferred-table-missing']),
       [VOCAB_TRGM, 'built'],
     ]);
     for (const n of [TRGM, TS_DESC, VOCAB_TRGM]) expect(await indexValid(n)).toBe(true);
@@ -399,6 +401,7 @@ describe('runSessionSearchIndexBuildOnce', () => {
       ...ISSUE_Q_SEARCH_INDEXES.map((i) => [i.name, 'deferred-table-missing']),
       ...TEST_RUNS_SEARCH_INDEXES.map((i) => [i.name, 'deferred-table-missing']),
       ...CODE_FAMILIARITY_INDEXES.map((i) => [i.name, 'deferred-table-missing']),
+      ...NATIVE_DISPATCH_FINGERPRINT_INDEXES.map((i) => [i.name, 'deferred-table-missing']),
       [VOCAB_TRGM, 'present'],
     ]);
     expect(second.vocab.every((v) => v.action === 'current')).toBe(true);
@@ -421,10 +424,12 @@ describe('runSessionSearchIndexBuildOnce', () => {
 
   it('builds the invocation familiarity index online and recovers an interrupted build', async () => {
     await sql.unsafe(`CREATE TABLE harness_shared.tool_invocations (
+      id bigserial PRIMARY KEY,
       workspace_id text NOT NULL,
       tool_name text NOT NULL,
       coord_owner_id text,
-      status text NOT NULL
+      status text NOT NULL,
+      metadata_json jsonb
     )`);
     const { name } = CODE_FAMILIARITY_INDEXES[0];
     try {
@@ -442,6 +447,56 @@ describe('runSessionSearchIndexBuildOnce', () => {
       expect(recovered.invalidDropped).toContain(name);
       expect(recovered.indexes.find((i) => i.name === name)?.action).toBe('built');
       expect(await indexValid(name)).toBe(true);
+    } finally {
+      await sql.unsafe('DROP TABLE harness_shared.tool_invocations CASCADE');
+    }
+  }, 60_000);
+
+  it('builds the exact native dispatch index online and repairs an interrupted prebuild before migration', async () => {
+    const name = 'tool_invocations_native_dispatch_fingerprint_idx';
+    await sql.unsafe(`CREATE TABLE harness_shared.tool_invocations (
+      id bigserial PRIMARY KEY,
+      workspace_id text NOT NULL,
+      tool_name text NOT NULL,
+      coord_owner_id text,
+      status text NOT NULL,
+      metadata_json jsonb
+    )`);
+    try {
+      await sql.unsafe(`INSERT INTO harness_shared.tool_invocations (workspace_id, tool_name, status)
+        VALUES ('same-workspace', 'one', 'ok'), ('same-workspace', 'two', 'ok')`);
+      const first = await runSessionSearchIndexBuildOnce(sql, OPTS);
+      expect(first.indexes.find((i) => i.name === name)?.action).toBe('built');
+      expect(await indexValid(name)).toBe(true);
+      const [built] = await sql<Array<{ oid: number; definition: string }>>`
+        SELECT c.oid::int AS oid, pg_get_indexdef(c.oid) AS definition
+        FROM pg_class c WHERE c.oid = ${`harness_shared.${name}`}::regclass`;
+      expect(built.definition).toContain("->> 'valueFingerprint'::text");
+      expect(built.definition).toContain("->> 'callIdFingerprint'::text");
+      expect(built.definition).toContain('IS NOT NULL');
+      const migration = path.join(SQL_DIR, '1626-native-dispatch-fingerprint-lookup-index.sql');
+      const { existsSync } = await import('node:fs');
+      await applyMigrationForTest(sql, existsSync(migration) ? migration : `${migration}.DRAFT`);
+      const [afterMigration] = await sql<Array<{ oid: number }>>`
+        SELECT ${`harness_shared.${name}`}::regclass::oid::int AS oid`;
+      expect(afterMigration.oid).toBe(built.oid);
+      expect((await runSessionSearchIndexBuildOnce(sql, OPTS)).indexes.find((i) => i.name === name)?.action)
+        .toBe('present');
+
+      // A real failed concurrent build leaves the final name INVALID. The
+      // maintained builder must remove that leftover and rebuild it correctly.
+      await sql.unsafe(`DROP INDEX harness_shared.${name}`);
+      await expect(sql.unsafe(`CREATE UNIQUE INDEX CONCURRENTLY ${name}
+        ON harness_shared.tool_invocations (workspace_id)`)).rejects.toMatchObject({ code: '23505' });
+      expect(await indexValid(name)).toBe(false);
+      const recovered = await runSessionSearchIndexBuildOnce(sql, OPTS);
+      expect(recovered.invalidDropped).toContain(name);
+      expect(recovered.indexes.find((i) => i.name === name)?.action).toBe('built');
+      expect(await indexValid(name)).toBe(true);
+      const [repaired] = await sql<Array<{ definition: string }>>`
+        SELECT pg_get_indexdef(${`harness_shared.${name}`}::regclass) AS definition`;
+      expect(repaired.definition).toBe(built.definition);
+      await applyMigrationForTest(sql, existsSync(migration) ? migration : `${migration}.DRAFT`);
     } finally {
       await sql.unsafe('DROP TABLE harness_shared.tool_invocations CASCADE');
     }
