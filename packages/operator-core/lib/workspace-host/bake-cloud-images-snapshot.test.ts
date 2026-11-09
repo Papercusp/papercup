@@ -583,6 +583,59 @@ function runImageBuildProbeStorageFixture(
   return { status: result.status ?? -1, output, podmanCalls };
 }
 
+function runImageBuildProbeCleanupFixture(
+  phase: 'early' | 'release',
+  exitStatus: number,
+  options: { legacyTrap?: boolean; cleanupFails?: boolean } = {},
+) {
+  // Execute the shipped cleanup registrations at both lifecycle boundaries,
+  // without building an image or touching a real Podman store.
+  const preflight = IMAGE_BUILD_PROBE_SOURCE.indexOf('storage_driver=');
+  const releaseStart = IMAGE_BUILD_PROBE_SOURCE.indexOf('RELEASE_PROBE_ROOT="$(mktemp');
+  const releaseEnd = IMAGE_BUILD_PROBE_SOURCE.indexOf('RELEASE_PROBE_CONTEXT=', releaseStart);
+  expect(preflight).toBeGreaterThan(-1);
+  expect(releaseStart).toBeGreaterThan(preflight);
+  expect(releaseEnd).toBeGreaterThan(releaseStart);
+  const dir = mkdtempSync(join(tmpdir(), 'ei-282672-p306-cleanup-'));
+  const graphRoot = join(dir, 'private graph');
+  const runRoot = join(dir, 'private run');
+  const releaseRoot = join(dir, 'release fixture');
+  const buildLog = join(dir, 'build.log');
+  const releaseLog = join(dir, 'release.log');
+  const script = join(dir, 'probe.sh');
+  for (const root of [graphRoot, runRoot]) {
+    mkdirSync(root);
+    writeFileSync(join(root, 'sentinel'), 'private storage\n');
+  }
+  writeFileSync(script, [
+    IMAGE_BUILD_PROBE_SOURCE.slice(0, preflight),
+    'PRIVATE_STORAGE_ROOT="$TEST_GRAPH_ROOT"',
+    'PRIVATE_RUN_ROOT="$TEST_RUN_ROOT"',
+    'printf "retained build transcript\\n" > "$TEST_BUILD_LOG"',
+    'printf "retained release transcript\\n" > "$TEST_RELEASE_LOG"',
+    'mktemp() { mkdir -- "$TEST_RELEASE_ROOT"; touch "$TEST_RELEASE_ROOT/sentinel"; printf "%s\\n" "$TEST_RELEASE_ROOT"; }',
+    ...(phase === 'release' ? [IMAGE_BUILD_PROBE_SOURCE.slice(releaseStart, releaseEnd)] : []),
+    ...(options.legacyTrap ? ['trap \'rm -rf -- "$RELEASE_PROBE_ROOT"\' EXIT'] : []),
+    ...(options.cleanupFails ? ['rm() { if [[ "$*" == *"$TEST_GRAPH_ROOT"* ]]; then return 73; fi; command rm "$@"; }'] : []),
+    `exit ${exitStatus}`,
+  ].join('\n'));
+  try {
+    const result = spawnSync('bash', [script], {
+      env: { ...process.env, TEST_GRAPH_ROOT: graphRoot, TEST_RUN_ROOT: runRoot,
+        TEST_RELEASE_ROOT: releaseRoot, TEST_BUILD_LOG: buildLog, TEST_RELEASE_LOG: releaseLog },
+      encoding: 'utf8', timeout: 10_000,
+    });
+    return {
+      status: result.status,
+      output: `${result.stdout ?? ''}${result.stderr ?? ''}`,
+      remaining: [graphRoot, runRoot, releaseRoot].map((root) => existsSync(join(root, 'sentinel'))),
+      logs: [buildLog, releaseLog].map((log) => readFileSync(log, 'utf8')),
+    };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 describe('bake-cloud-images.sh startup snapshot (EI-22355025813361885)', () => {
   it('refuses missing provider secret-policy tooling before starting a build', () => {
     const result = runFixture(SOURCE, 'raw', undefined, undefined, false, 'pass', { genericToolsMissing: true });
@@ -1265,6 +1318,29 @@ describe('p306 rootful Podman storage preflight (EI-22772454141611988)', () => {
       expect(buildCall).not.toContain('--root ');
       expect(buildCall).not.toContain('--runroot ');
     }
+  });
+});
+
+describe('p306 cleanup composition (EI-28267282573890310)', () => {
+  it.each([
+    ['early', 0], ['early', 29], ['release', 0], ['release', 29],
+  ] as const)('cleans owned fixtures after %s exit %i while retaining transcripts and status', (phase, status) => {
+    const result = runImageBuildProbeCleanupFixture(phase, status);
+    expect(result.status, result.output).toBe(status);
+    expect(result.logs).toEqual(['retained build transcript\n', 'retained release transcript\n']);
+    expect(result.remaining).toEqual([false, false, false]);
+  });
+
+  it('detects the legacy late trap replacing private-store cleanup', () => {
+    const result = runImageBuildProbeCleanupFixture('release', 29, { legacyTrap: true });
+    expect(result.status, result.output).toBe(29);
+    expect(result.remaining).toEqual([true, true, false]);
+  });
+
+  it('attempts remaining cleanup and preserves the probe status when one removal fails', () => {
+    const result = runImageBuildProbeCleanupFixture('release', 29, { cleanupFails: true });
+    expect(result.status, result.output).toBe(29);
+    expect(result.remaining).toEqual([true, false, false]);
   });
 });
 
