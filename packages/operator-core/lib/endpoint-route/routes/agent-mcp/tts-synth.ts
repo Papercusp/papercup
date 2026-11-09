@@ -195,7 +195,8 @@ export async function synthesize(
           if (local.ok) return { ok: true, audio: local.audio, contentType: local.contentType };
           return { ok: false, error: `kokoro unreachable: ${(e as Error).message} (local fallback: ${local.error})`, status: 502 };
         }
-        return upstream(r, 'audio/wav');
+        // Keep body-read failures inside this try/catch after headers succeed.
+        return await upstream(r, 'audio/wav');
       }
       case 'elevenlabs': {
         const key = await readElevenLabsKey();
@@ -228,7 +229,7 @@ export async function synthesize(
             signal,
           },
         );
-        return upstream(r, 'audio/mpeg');
+        return await upstream(r, 'audio/mpeg');
       }
       case 'openai': {
         const key = await readOpenAiKey();
@@ -248,7 +249,7 @@ export async function synthesize(
           }),
           signal,
         });
-        return upstream(r, wantWav ? 'audio/wav' : 'audio/mpeg');
+        return await upstream(r, wantWav ? 'audio/wav' : 'audio/mpeg');
       }
       case 'cartesia': {
         const key = await readCartesiaKey();
@@ -271,7 +272,7 @@ export async function synthesize(
           }),
           signal,
         });
-        return upstream(r, wantWav ? 'audio/wav' : 'audio/mpeg');
+        return await upstream(r, wantWav ? 'audio/wav' : 'audio/mpeg');
       }
       default:
         return { ok: false, error: `unsupported engine '${engine}'`, status: 400 };
