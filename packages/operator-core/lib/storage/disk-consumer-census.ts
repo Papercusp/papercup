@@ -238,6 +238,8 @@ export interface DuRun {
   deniedSample: string[];
   /** Bounded first-line diagnostics, retained in the census row when the walk is incomplete. */
   stderrSample?: string[];
+  /** Complete diagnostic classification, or an explicit bounded-buffer overflow. */
+  diagnostics?: { lines: number; missingPaths: string[]; other: number; overflow: boolean };
   timedOut: boolean;
   exitCode: number | null;
   error?: string;
@@ -256,6 +258,7 @@ export class DuOutputParser {
   deniedCount = 0;
   readonly deniedSample: string[] = [];
   readonly stderrSample: string[] = [];
+  readonly diagnostics = { lines: 0, missingPaths: [] as string[], other: 0, overflow: false };
   private pending = '';
   private errPending = '';
 
@@ -273,6 +276,10 @@ export class DuOutputParser {
     const lines = this.errPending.split('\n');
     this.errPending = lines.pop() ?? '';
     for (const line of lines) this.deniedLine(line);
+    if (this.errPending.length > 8192) {
+      this.diagnostics.overflow = true;
+      this.errPending = this.errPending.slice(-8192);
+    }
   }
 
   /** Flush the unterminated tails; call once, after both streams ended. */
@@ -285,6 +292,13 @@ export class DuOutputParser {
   }
 
   private deniedLine(line: string): void {
+    if (line.trim()) {
+      this.diagnostics.lines++;
+      const missing = /^du: cannot access '([^'\r\n]+)': No such file or directory$/.exec(line);
+      if (missing && missing[1]!.length <= 4096 && this.diagnostics.missingPaths.length < 32) this.diagnostics.missingPaths.push(missing[1]!);
+      else if (missing) this.diagnostics.overflow = true;
+      else this.diagnostics.other++;
+    }
     const normalized = line.replace(/\s+/g, ' ').trim();
     if (normalized && this.stderrSample.length < CENSUS_DU_STDERR_SAMPLE_LINES) {
       this.stderrSample.push(normalized.slice(0, CENSUS_DU_STDERR_SAMPLE_LINE_CHARS));
@@ -304,12 +318,13 @@ export function censusDuArgs(root: string, maxDepth: number = CENSUS_MAX_DEPTH):
 /** Run du over one mount at low priority and stream it into a consumer tree. */
 export async function runDuTree(
   root: string,
-  opts: { floorBytes?: number; maxDepth?: number; timeoutMs?: number; sudo?: string | null } = {},
+  opts: { floorBytes?: number; maxDepth?: number; timeoutMs?: number; sudo?: string | null; countLinks?: boolean } = {},
 ): Promise<DuRun> {
   const floorBytes = opts.floorBytes ?? CENSUS_FLOOR_BYTES;
   const maxDepth = opts.maxDepth ?? CENSUS_MAX_DEPTH;
   const acc = new DuTreeAccumulator(root, { floorBytes, maxDepth });
   const duArgs = censusDuArgs(root, maxDepth);
+  if (opts.countLinks) duArgs.unshift('--count-links');
   const privileged = Boolean(opts.sudo) || process.getuid?.() === 0;
   // Best-effort I/O at the lowest level, not the idle class: see CENSUS_IONICE_ARGS.
   // sudo relays the timeout's SIGTERM to du, so the 90 min cap still ends the walk.
@@ -342,6 +357,7 @@ export async function runDuTree(
         deniedCount: parser.deniedCount,
         deniedSample: parser.deniedSample,
         ...(parser.stderrSample.length ? { stderrSample: parser.stderrSample } : {}),
+        diagnostics: parser.diagnostics,
         timedOut,
         exitCode: code,
         privileged,
@@ -349,6 +365,112 @@ export async function runDuTree(
       });
     });
   });
+}
+
+export interface CensusFailureCoverage {
+  status: 'bounded' | 'unbounded';
+  /** A snapshot bound on affected shards, never a repaired whole-device total. */
+  uncertainBytesUpperBound: number | null;
+  vanishedPaths: number;
+  shards: Array<{ path: string; upperBytes: number }>;
+  reason: string;
+}
+
+type CoveragePath = { dev: number; ino: number; directory: boolean };
+const inspectCoveragePath = async (path: string): Promise<CoveragePath | null> => {
+  try {
+    const stat = await fsp.lstat(path);
+    return { dev: stat.dev, ino: stat.ino, directory: stat.isDirectory() && !stat.isSymbolicLink() };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+};
+
+/** Bound the uncertain shards without repeating a whole-device walk or promoting exit 1
+ * to complete. Counting every hard link makes each fresh shard size an upper bound;
+ * replacing the original du totals would double-count links shared with other shards. */
+export async function reconcileCensusFailures(root: string, du: DuRun, opts: {
+  sudo?: string | null;
+  timeoutMs?: number;
+  now?: () => number;
+  inspectPath?: (path: string) => Promise<CoveragePath | null>;
+  measureShard?: typeof runDuTree;
+} = {}): Promise<CensusFailureCoverage> {
+  const shards: CensusFailureCoverage['shards'] = [];
+  let vanishedPaths = 0;
+  const unknown = (reason: string): CensusFailureCoverage => ({ status: 'unbounded',
+    uncertainBytesUpperBound: null, vanishedPaths, shards, reason });
+  const diagnostics = du.diagnostics;
+  if (du.summary.rootBytes === null) return unknown('missing root record');
+  if (du.exitCode !== 1 || du.timedOut || du.error || du.deniedCount || !diagnostics
+    || diagnostics.overflow || diagnostics.other || !diagnostics.lines
+    || diagnostics.lines !== diagnostics.missingPaths.length) return unknown('unresolved or incomplete diagnostics');
+  const now = opts.now ?? Date.now;
+  const deadline = now() + Math.min(opts.timeoutMs ?? 30_000, 30_000);
+  const inspect = opts.inspectPath ?? inspectCoveragePath;
+  const within = (path: string, parent: string) => path === parent || path.startsWith(parent === '/' ? '/' : parent + '/');
+  const selected = new Set<string>();
+  try {
+    const rootIdentity = await inspect(root);
+    if (!rootIdentity?.directory) return unknown('device root is not a directory');
+    for (const path of new Set(diagnostics.missingPaths)) {
+      if (now() >= deadline) return unknown('reconciliation deadline');
+      if (resolve(path) !== path || !within(path, root) || await inspect(path)) return unknown('failed path survives or is outside device');
+      vanishedPaths++;
+      const parents = du.summary.consumers.filter(c => c.kind === 'dir' && c.consumer !== root && within(c.consumer, root)
+        && within(dirname(path), c.consumer)).sort((a, b) => b.consumer.length - a.consumer.length);
+      let parent: string | undefined;
+      for (const candidate of parents) {
+        const identity = await inspect(candidate.consumer);
+        if (identity?.directory) { parent = candidate.consumer; break; }
+      }
+      if (!parent) return unknown('no bounded surviving recorded parent shard');
+      selected.add(parent);
+    }
+    const paths = [...selected].filter(path => ![...selected].some(other => other !== path && within(path, other)));
+    if (paths.length > 8) return unknown('more than eight affected shards');
+    for (const path of paths) {
+      const remaining = deadline - now();
+      if (remaining <= 0) return unknown('reconciliation deadline');
+      const before = await inspect(path);
+      if (!before?.directory || before.dev !== rootIdentity.dev) return unknown('parent shard disappeared or crossed a device');
+      const measured = await (opts.measureShard ?? runDuTree)(path, { sudo: opts.sudo,
+        timeoutMs: remaining, maxDepth: 0, floorBytes: Infinity, countLinks: true });
+      const after = await inspect(path);
+      const bytes = measured.summary.rootBytes;
+      if (now() > deadline || measured.exitCode !== 0 || measured.timedOut || measured.error || measured.deniedCount
+        || measured.diagnostics?.lines || bytes === null || !Number.isSafeInteger(bytes) || bytes < 0
+        || !after?.directory || before.dev !== after.dev || before.ino !== after.ino) return unknown('parent shard did not converge');
+      shards.push({ path, upperBytes: bytes });
+    }
+    for (const path of new Set(diagnostics.missingPaths)) {
+      if (now() >= deadline || await inspect(path)) return unknown('failed path returned during reconciliation');
+    }
+    const rootAfter = await inspect(root);
+    if (!rootAfter?.directory || rootAfter.dev !== rootIdentity.dev || rootAfter.ino !== rootIdentity.ino) return unknown('device root changed');
+    const upper = shards.reduce((sum, shard) => sum + shard.upperBytes, 0);
+    if (!Number.isSafeInteger(upper)) return unknown('shard allocation overflow');
+    return { status: 'bounded', uncertainBytesUpperBound: upper, vanishedPaths, shards,
+      reason: 'affected shard snapshots remeasured; original whole-device census remains incomplete' };
+  } catch {
+    return unknown('path inspection or shard measurement failed');
+  }
+}
+
+const FAILURE_COVERAGE_PREFIX = 'failure-coverage:';
+function readFailureCoverage(note: string | null): CensusFailureCoverage | null {
+  const encoded = note?.match(/(?:^|; )failure-coverage:([^;]+)/)?.[1];
+  if (!encoded) return null;
+  try {
+    const value = JSON.parse(decodeURIComponent(encoded)) as CensusFailureCoverage;
+    if (!['bounded', 'unbounded'].includes(value.status) || !Number.isSafeInteger(value.vanishedPaths)
+      || value.vanishedPaths < 0 || typeof value.reason !== 'string' || !Array.isArray(value.shards) || value.shards.length > 8
+      || value.shards.some(s => typeof s.path !== 'string' || !s.path.startsWith('/') || !Number.isSafeInteger(s.upperBytes) || s.upperBytes < 0)
+      || (value.status === 'unbounded' ? value.uncertainBytesUpperBound !== null
+        : !Number.isSafeInteger(value.uncertainBytesUpperBound) || value.uncertainBytesUpperBound !== value.shards.reduce((n, s) => n + s.upperBytes, 0))) return null;
+    return value;
+  } catch { return null; }
 }
 
 /** Bound on listing one directory's own files; a 427,868-entry directory lists in ~15 s. */
@@ -1082,6 +1204,7 @@ export interface CensusDeps {
   host?: string;
   devices?: CensusDevice[];
   runDu?: typeof runDuTree;
+  reconcileFailures?: typeof reconcileCensusFailures;
   measurePostgres?: (sql: CensusSql) => Promise<ApiSizedStore | null>;
   measureDocker?: () => Promise<ApiSizedStore | null>;
   /** sudo binary for a privileged walk, or null for unprivileged; probed once per pass. */
@@ -1214,6 +1337,8 @@ export async function censusOneDevice(
     const before = statDevice ? await statDevice(resolved.device).catch(() => null) : null;
     const walkStarted = Date.now();
     const du = await (deps.runDu ?? runDuTree)(resolved.device, { floorBytes, maxDepth, sudo });
+    const failureCoverage = du.exitCode === 0 ? null
+      : await (deps.reconcileFailures ?? reconcileCensusFailures)(resolved.device, du, { sudo });
     const walkMs = Date.now() - walkStarted;
     const after = statDevice ? await statDevice(resolved.device).catch(() => null) : null;
     const { device, note: usageNote } = reconcileWalkUsage(resolved, before, after);
@@ -1243,6 +1368,7 @@ export async function censusOneDevice(
       du.privileged ? 'du walked as root (sudo -n)' : 'du walked unprivileged (sudo -n unavailable)',
       censusPhaseNote(walkMs, attributionMs, du.summary.ownFiles.length),
       du.walkNote ?? null,
+      failureCoverage ? FAILURE_COVERAGE_PREFIX + encodeURIComponent(JSON.stringify(failureCoverage)) : null,
       ...ownFilesNotes,
       usageNote,
       stderrNote,
@@ -1345,6 +1471,8 @@ export type CensusBaselineStatus =
   | 'comparable' | 'latest-incomplete' | 'unavailable' | 'incomplete-candidates' | 'visibility-mismatch';
 
 export interface CensusDeviceView {
+  /** A bounded affected-shard snapshot still leaves complete=false for a failed walk. */
+  failureCoverage?: CensusFailureCoverage | null;
   device: string;
   /** Saved identities, retained for native alarm evidence (never inferred from time). */
   host?: string;
@@ -1485,6 +1613,7 @@ export async function readDiskConsumerCensus(
       stale: now.getTime() - finishedAt.getTime() > CENSUS_STALE_MS,
       complete,
       coverageIssues,
+      failureCoverage: readFailureCoverage(run.note),
       note: run.note,
       sizeBytes: Number(run.size_bytes),
       usedBytes: used,

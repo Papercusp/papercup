@@ -395,6 +395,25 @@ describe('disk consumer census (real du, real PG)', () => {
     if (stderrSample.length) expect(persisted.note).toContain('du stderr: ' + stderrSample.join(' | '));
   });
 
+  it('persists affected-shard bounds while retaining the failed whole-device verdict and unknown growth', async () => {
+    const at = new Date('2026-10-13T18:00:00Z'); const host = 'bounded-vanished-shards-host';
+    const coverage = { status: 'bounded' as const, uncertainBytesUpperBound: G, vanishedPaths: 1,
+      shards: [{ path: '/test-dev/data', upperBytes: G }], reason: 'affected shard snapshots remeasured' };
+    const result = await runDiskConsumerCensusOnce({ sql, host, devices: [device()], now: () => at,
+      statDevice: null, resolveSudo: async () => null,
+      measurePostgres: async () => null, measureDocker: async () => null,
+      runDu: async () => ({ summary: { rootBytes: 50 * G, consumers: [dir('/test-dev/data', 50 * G)], ownFiles: [], records: 2 },
+        deniedCount: 0, deniedSample: [], timedOut: false, exitCode: 1 }),
+      reconcileFailures: async () => coverage,
+    });
+    expect(result.failures).toEqual([]);
+    expect(result.runs[0]!.complete).toBe(false);
+    const persisted = (await readDiskConsumerCensus(sql, { host, now: at })).devices[0]!;
+    expect(persisted.failureCoverage).toEqual(coverage);
+    expect(persisted).toMatchObject({ complete: false, baselineStatus: 'latest-incomplete', baselineAt: null });
+    expect(persisted.consumers![0]!.growth24hBytes).toBeNull();
+  });
+
   it('distinguishes unreadable baseline candidates from an absent qualified baseline', async () => {
     const at = new Date('2026-10-13T17:00:00Z'); const host = 'unreadable-baseline-host';
     await writeCensusRun(sql, { runId: randomUUID(), host, device: device(), startedAt: new Date(at.getTime() - 24 * HOUR),

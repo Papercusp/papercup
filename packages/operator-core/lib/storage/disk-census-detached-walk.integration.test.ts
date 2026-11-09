@@ -8,7 +8,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { linkSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { runDuTree } from './disk-consumer-census';
 import {
   DetachedWalkAbandoned,
@@ -171,7 +171,9 @@ describe.skipIf(!linux)('detached census walk (real du, real processes)', () => 
   it('adopts a managed usage scan after more than 10s without metadata and keeps its heartbeat', async () => {
     const dir = join(base, 'usage-quiet-adopt'), first = countingLauncher();
     const ctl = new AbortController();
-    const command = () => ['sh', ['-c', 'sleep 12; printf "7\\t%s\\0" "$1"', 'quiet-du', tree]] as [string, string[]];
+    const release = join(base, 'release-quiet-usage');
+    const command = () => ['sh', ['-c', 'while [ ! -f "$2" ]; do sleep 0.1; done; printf "7\\t%s\\0" "$1"',
+      'quiet-du', tree, release]] as [string, string[]];
     await expect(runDetachedDuUsage([tree], {
       dir, launch: async (...args) => {
         const result = await first.launch(...args); ctl.abort(); return result;
@@ -182,20 +184,29 @@ describe.skipIf(!linux)('detached census walk (real du, real processes)', () => 
 
     const second = countingLauncher();
     const adopted = runDetachedDuUsage([tree], { dir, launch: second.launch, command, pollMs: 25, timeoutMs: 30_000 });
-    await new Promise(resolve => setTimeout(resolve, 10_500));
-    const progress = JSON.parse(readFileSync(join(dir, 'usage-progress.json'), 'utf8'));
-    expect(progress.heartbeatAt - progress.startedAt).toBeGreaterThanOrEqual(10_000);
-    expect(progress.metadataRecords).toBe(0);
-    expect(progress.lastMetadataAt).toBeNull();
-    expect(progress.error).toBeNull();
-    expect(walkProcessAlive(state)).toBe(true);
-
-    const run = await adopted;
-    expect(run.complete).toBe(true);
-    expect(run.bytes).toEqual(new Map([[tree, 7]]));
-    expect(first.launches).toEqual([1]);
-    expect(second.launches).toEqual([]);
-    expect((await readWalkState(dir))?.adoptions).toBe(1);
+    try {
+      // A fixed sleep can read a periodic heartbeat from before the threshold;
+      // keep metadata gated until the required heartbeat actually exists.
+      await vi.waitFor(() => {
+        const progress = JSON.parse(readFileSync(join(dir, 'usage-progress.json'), 'utf8'));
+        expect(progress.heartbeatAt - progress.startedAt).toBeGreaterThanOrEqual(10_000);
+      }, { timeout: 15_000, interval: 100 });
+      const progress = JSON.parse(readFileSync(join(dir, 'usage-progress.json'), 'utf8'));
+      expect(progress.metadataRecords).toBe(0);
+      expect(progress.lastMetadataAt).toBeNull();
+      expect(progress.error).toBeNull();
+      expect(walkProcessAlive(state)).toBe(true);
+      writeFileSync(release, '');
+      const run = await adopted;
+      expect(run.complete).toBe(true);
+      expect(run.bytes).toEqual(new Map([[tree, 7]]));
+      expect(first.launches).toEqual([1]);
+      expect(second.launches).toEqual([]);
+      expect((await readWalkState(dir))?.adoptions).toBe(1);
+    } finally {
+      writeFileSync(release, '');
+      await adopted.catch(() => {});
+    }
   }, 25_000);
 
   it('keeps cap bytes unknown after failed, partial, duplicate or malformed output', async () => {

@@ -14,7 +14,9 @@ import { delimiter, join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createTextCollector } from '../child-output.js';
-import { inspectRetentionTrees, measureDocker, resolveCensusSudo, type CensusSpawn } from './disk-consumer-census';
+import { DuOutputParser, inspectRetentionTrees, measureDocker, reconcileCensusFailures, resolveCensusSudo,
+  runDuTree, type CensusSpawn, type DuRun } from './disk-consumer-census';
+import { DuTreeAccumulator } from './usage';
 
 vi.mock('node:http', async (importOriginal) => ({
   ...(await importOriginal<typeof import('node:http')>()),
@@ -22,6 +24,88 @@ vi.mock('node:http', async (importOriginal) => ({
 }));
 
 const isRoot = process.getuid?.() === 0;
+
+describe('bounded failed disk census coverage', () => {
+  const failed = (): DuRun => ({ summary: { rootBytes: 100, consumers: [
+    { consumer: '/disk/shard', kind: 'dir', depth: 1, bytes: 90 }], ownFiles: [], records: 2 },
+    diagnostics: { lines: 1, missingPaths: ['/disk/shard/gone'], other: 0, overflow: false },
+    deniedCount: 0, deniedSample: [], exitCode: 1, timedOut: false });
+  const directory = { dev: 1, ino: 2, directory: true };
+  const inspectPath = async (path: string) => path.endsWith('/gone') ? null : directory;
+  const measured = (): DuRun => ({ ...failed(), exitCode: 0,
+    diagnostics: { lines: 0, missingPaths: [], other: 0, overflow: false } });
+
+  it('retains every diagnostic classification even after the human sample fills', () => {
+    const parser = new DuOutputParser(new DuTreeAccumulator('/disk'));
+    for (let n = 0; n < 7; n++) parser.stderr(`du: cannot access '/disk/gone-${n}': No such file or directory\n`);
+    parser.stderr("du: cannot read directory '/disk/private': Permission denied\n");
+    parser.end();
+    expect(parser.stderrSample).toHaveLength(5);
+    expect(parser.diagnostics).toMatchObject({ lines: 8, missingPaths: expect.any(Array), other: 1, overflow: false });
+    expect(parser.diagnostics.missingPaths).toHaveLength(7);
+    expect(parser.deniedCount).toBe(1);
+  });
+
+  it('marks a diagnostic overflow instead of certifying the retained prefix', () => {
+    const parser = new DuOutputParser(new DuTreeAccumulator('/disk'));
+    for (let n = 0; n < 33; n++) parser.stderr(`du: cannot access '/disk/gone-${n}': No such file or directory\n`);
+    parser.end();
+    expect(parser.diagnostics).toMatchObject({ lines: 33, overflow: true });
+    expect(parser.diagnostics.missingPaths).toHaveLength(32);
+  });
+
+  it('bounds a vanished file with one fresh count-links parent snapshot without altering original totals', async () => {
+    const du = failed(); const measureShard = vi.fn(async () => measured());
+    const result = await reconcileCensusFailures('/disk', du, { inspectPath, measureShard });
+    expect(result).toMatchObject({ status: 'bounded', uncertainBytesUpperBound: 100,
+      vanishedPaths: 1, shards: [{ path: '/disk/shard', upperBytes: 100 }] });
+    expect(measureShard).toHaveBeenCalledWith('/disk/shard', expect.objectContaining({ countLinks: true, maxDepth: 0 }));
+    expect(du.exitCode).toBe(1); expect(du.summary.rootBytes).toBe(100);
+  });
+
+  it.each(['permission', 'overflow', 'missing-root', 'unknown-error', 'timeout', 'surviving-path'])('does not bound %s evidence', async kind => {
+    const du = failed();
+    if (kind === 'permission') du.deniedCount = 1;
+    if (kind === 'overflow') du.diagnostics!.overflow = true;
+    if (kind === 'missing-root') du.summary.rootBytes = null;
+    if (kind === 'unknown-error') du.diagnostics!.other = 1;
+    if (kind === 'timeout') du.timedOut = true;
+    const measureShard = vi.fn(async () => measured());
+    const result = await reconcileCensusFailures('/disk', du, { inspectPath: kind === 'surviving-path' ? async () => directory : inspectPath, measureShard });
+    expect(result).toMatchObject({ status: 'unbounded', uncertainBytesUpperBound: null });
+    expect(measureShard).not.toHaveBeenCalled();
+  });
+
+  it.each(['new-inode', 'second-failure', 'late', 'reappeared'])('keeps %s reconciliation unbounded', async kind => {
+    let clock = 0; let measuredAlready = false;
+    const result = await reconcileCensusFailures('/disk', failed(), {
+      now: () => clock, timeoutMs: 10,
+      inspectPath: async path => path.endsWith('/gone')
+        ? (kind === 'reappeared' && measuredAlready ? directory : null)
+        : ({ ...directory, ino: kind === 'new-inode' && measuredAlready ? 3 : 2 }),
+      measureShard: async () => { measuredAlready = true; if (kind === 'late') clock = 11;
+        return kind === 'second-failure' ? failed() : measured(); },
+    });
+    expect(result).toMatchObject({ status: 'unbounded', uncertainBytesUpperBound: null });
+  });
+
+  it('uses a real du snapshot that safely overcounts multiply linked allocations', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'disk-census-bounded-'));
+    try {
+      const shard = join(root, 'shard'); await fsp.mkdir(shard);
+      await fsp.writeFile(join(shard, 'data'), Buffer.alloc(8192, 1));
+      await fsp.link(join(shard, 'data'), join(shard, 'second-link'));
+      const du = await runDuTree(root, { floorBytes: 1, timeoutMs: 5000 });
+      du.exitCode = 1;
+      du.diagnostics = { lines: 1, missingPaths: [join(shard, 'vanished')], other: 0, overflow: false };
+      const result = await reconcileCensusFailures(root, du, { timeoutMs: 5000 });
+      const expected = Number(execFileSync('du', ['--count-links', '-s', '-B1', shard], { encoding: 'utf8' }).split('\t')[0]);
+      expect(result.status).toBe('bounded');
+      expect(result.uncertainBytesUpperBound).toBe(expected);
+      expect(expected).toBeGreaterThan(du.summary.consumers.find(c => c.consumer === shard)!.bytes);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
 
 describe('streaming retention census evidence', () => {
   it('refuses exact pin allocation from an expiry-compacted census', async () => {

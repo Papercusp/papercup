@@ -230,6 +230,7 @@ export async function runDetachedDuWalk(root: string, opts: DetachedWalkOptions)
     return {
       summary, deniedCount: parser.deniedCount, deniedSample: parser.deniedSample,
       ...(parser.stderrSample.length ? { stderrSample: parser.stderrSample } : {}),
+      diagnostics: parser.diagnostics,
       timedOut: overdue || exitCode === TIMEOUT_EXIT_STATUS, exitCode, privileged,
       walkNote: walkNote(state), ...(error ? { error } : {}),
     };
