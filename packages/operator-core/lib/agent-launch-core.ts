@@ -1381,6 +1381,70 @@ export interface AgentLaunchClaim {
   priorLaunchedBy: string | null;
 }
 
+export interface AgentLaunchSourceBinding {
+  workspaceId: string;
+  sessionId: string;
+  ownerId: string | null;
+  advSessionId: number | null;
+  effect: 'original-session-resume';
+}
+
+export type AgentRecoveryAttribution =
+  | { status: 'unknown'; reason: string }
+  | { status: 'known'; priorActor: string; completedAt: string; priorIdempotencyKey: string;
+      receiptRef: string; effectRef: string; source: AgentLaunchSourceBinding };
+
+/** Attribution is stricter than idempotent replay: an old call may be completed
+ * without proving that this exact original session was successfully recovered. */
+export function recoveryAttributionFromClaim(
+  source: Pick<AgentLaunchSourceBinding, 'workspaceId' | 'sessionId'> & Partial<AgentLaunchSourceBinding>,
+  priorIdempotencyKey: string,
+  claim: AgentLaunchClaim,
+  now = Date.now(),
+): AgentRecoveryAttribution {
+  const summary = claim.priorSummary;
+  const binding = summary?.sourceBinding as Partial<AgentLaunchSourceBinding> | undefined;
+  const completedAt = summary?.completedAt;
+  if (!source.sessionId || !binding || summary?.requestKind !== 'capability:launch-agent' ||
+      binding.workspaceId !== source.workspaceId || binding.sessionId !== source.sessionId ||
+      binding.effect !== 'original-session-resume' ||
+      (source.ownerId != null && binding.ownerId !== source.ownerId) ||
+      (source.advSessionId != null && binding.advSessionId !== source.advSessionId) ||
+      !binding.ownerId || !Number.isInteger(binding.advSessionId) || Number(binding.advSessionId) <= 0 ||
+      summary.mode !== 'resume' || summary.launchState !== 'completed' || summary.opened !== 1 || summary.failed !== 0 ||
+      !claim.priorLaunchedBy?.trim() || !priorIdempotencyKey.trim() ||
+      typeof completedAt !== 'string' || !Number.isFinite(Date.parse(completedAt)) || Date.parse(completedAt) > now) {
+    return { status: 'unknown', reason: 'no exact, successful completed source/effect receipt' };
+  }
+  return { status: 'known', priorActor: claim.priorLaunchedBy, completedAt,
+    priorIdempotencyKey, receiptRef: `agent-launch:${priorIdempotencyKey}`,
+    effectRef: `original-session-resume:${binding.sessionId}`, source: binding as AgentLaunchSourceBinding };
+}
+
+/** Read the existing ledger by source effect, not the current retry key. Two
+ * candidates are enough to establish ambiguity; this never reserves a launch. */
+export async function readCompletedRecoveryForSource(source: AgentLaunchSourceBinding): Promise<AgentRecoveryAttribution> {
+  if (!source.sessionId) return { status: 'unknown', reason: 'original source session is unavailable' };
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<Array<{ idempotency_key: string; summary: Record<string, unknown>;
+      launched_at: number; launched_by: string | null }>>`
+      SELECT idempotency_key, summary, launched_at, launched_by
+        FROM harness_shared.agent_launch_idempotency
+       WHERE workspace_id = ${source.workspaceId}
+         AND summary->'sourceBinding'->>'sessionId' = ${source.sessionId}
+         AND launched_at >= ${Date.now() - LAUNCH_CLAIM_TTL_MS}
+       ORDER BY launched_at DESC
+       LIMIT 2`;
+    if (rows.length !== 1) return { status: 'unknown', reason: rows.length ? 'ambiguous source/effect receipts' : 'no retained exact source receipt (legacy binding may be missing)' };
+    const prior = rows[0];
+    return recoveryAttributionFromClaim(source, prior.idempotency_key, { won: false, priorSummary: prior.summary,
+      priorLaunchedAt: Number(prior.launched_at), priorLaunchedBy: prior.launched_by });
+  } catch {
+    return { status: 'unknown', reason: 'canonical recovery receipt ledger is unreadable' };
+  }
+}
+
 /** Read a retained receipt without reserving, renewing, pruning or releasing a
  * launch. Source recovery must retrieve a completed call before resolving an
  * owner whose live/native binding may have changed since that call. */

@@ -17,6 +17,8 @@ import {
   buildAgentLaunchCommand,
   claimAgentLaunch,
   readAgentLaunchClaim,
+  readCompletedRecoveryForSource,
+  recoveryAttributionFromClaim,
   recordAgentLaunchResult,
   releaseAgentLaunchClaim,
   composeMemberLaunchContext,
@@ -211,6 +213,42 @@ describe('readAgentLaunchClaim', () => {
     launchCoreSql.mockRejectedValueOnce(new Error('ledger unavailable'));
     await expect(readAgentLaunchClaim({ workspaceId: 'ws-test', idempotencyKey: 'unreadable' }))
       .rejects.toThrow('ledger unavailable');
+  });
+});
+
+describe('CLARITY exact source recovery receipts', () => {
+  const source = { workspaceId: 'ws-test', sessionId: 'original', ownerId: 'su-original', advSessionId: 11, effect: 'original-session-resume' as const };
+  const summary = { requestKind: 'capability:launch-agent', sourceBinding: source, mode: 'resume', launchState: 'completed', opened: 1, failed: 0, completedAt: '2026-01-01T00:00:00.000Z' };
+  const prior = { won: false, priorSummary: summary, priorLaunchedAt: 123, priorLaunchedBy: 'su-prior-recoverer' };
+
+  it('finds the unique prior key K1 by exact source/effect without requiring current key K2', async () => {
+    launchCoreSql.mockResolvedValueOnce([{ idempotency_key: 'K1', summary, launched_at: 123, launched_by: 'su-prior-recoverer' }]);
+    expect(await readCompletedRecoveryForSource(source)).toMatchObject({ status: 'known', priorIdempotencyKey: 'K1', priorActor: 'su-prior-recoverer', receiptRef: 'agent-launch:K1', effectRef: 'original-session-resume:original' });
+    const [query, ...values] = launchCoreSql.mock.calls[0];
+    expect(query.join(' ')).toMatch(/^\s*SELECT /);
+    expect(query.join(' ')).toContain('LIMIT 2');
+    expect(values.slice(0, 2)).toEqual(['ws-test', 'original']);
+    expect(query.join(' ')).not.toMatch(/INSERT|UPDATE|DELETE/);
+  });
+
+  it.each([
+    { sourceBinding: { ...source, workspaceId: 'other' } }, { sourceBinding: { ...source, sessionId: 'wrong' } },
+    { sourceBinding: { ...source, ownerId: 'wrong' } }, { sourceBinding: { ...source, advSessionId: 12 } },
+    { sourceBinding: { ...source, effect: 'fork' } }, { sourceBinding: undefined },
+    { requestKind: 'another-tool' }, { launchState: 'spawning' }, { opened: 0 }, { failed: 1 },
+    { completedAt: 'bad' }, { completedAt: '9999-01-01T00:00:00.000Z' },
+  ])('keeps wrong, legacy, unfinished or unreadable binding UNKNOWN: %j', (patch) => {
+    expect(recoveryAttributionFromClaim(source, 'K1', { ...prior, priorSummary: { ...summary, ...patch } }).status).toBe('unknown');
+  });
+
+  it('keeps missing/ambiguous/unreadable candidates UNKNOWN without a lease mutation', async () => {
+    launchCoreSql.mockResolvedValueOnce([]);
+    expect(await readCompletedRecoveryForSource(source)).toMatchObject({ status: 'unknown' });
+    launchCoreSql.mockResolvedValueOnce([{}, {}]);
+    expect(await readCompletedRecoveryForSource(source)).toMatchObject({ status: 'unknown', reason: expect.stringContaining('ambiguous') });
+    launchCoreSql.mockRejectedValueOnce(new Error('unreadable'));
+    expect(await readCompletedRecoveryForSource(source)).toMatchObject({ status: 'unknown', reason: expect.stringContaining('unreadable') });
+    for (const [query] of launchCoreSql.mock.calls) expect(query.join(' ')).toMatch(/^\s*SELECT /);
   });
 });
 
