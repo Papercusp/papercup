@@ -3144,6 +3144,172 @@ describe('identity-package eligibility on the push path (P-007)', () => {
     expect(packPins.calls).toEqual([]);
     expect(backend.search.mock.calls[0][1]).not.toHaveProperty('archivedEligibility');
   });
+
+  it('refreshes exact package pins once per confirmation attempt and rejects a revoked cached offer', async () => {
+    const rows = ['33333333-3333-4333-8333-333333333333', '44444444-4444-4444-8444-444444444444']
+      .map((id, index) => ({ ...packRow('1.0.0', id), scope: 'harness:papercusp',
+        text: index === 0 ? 'visibility pack note: independent approval before execution'
+          : 'visibility pack note: retain a rollback snapshot before migration',
+        metadata: { ...packRow('1.0.0', id).metadata, pack_item_id: `item-${index}`, validity: { status: 'current' } } }));
+    let pinned = new Set(['res-1.0.0']);
+    packPins.resolve = async () => pinned;
+    const backend = Object.assign(mockBackend(rows), {
+      get: vi.fn(async () => { throw new Error('unscoped package read forbidden'); }),
+      // Deliberately return the row even after revocation: the caller must
+      // independently check its current pins, not trust the cached offer.
+      listPage: vi.fn(async (options: { archivedEligibility?: unknown }) => ({
+        entries: options.archivedEligibility ? rows : [], total: options.archivedEligibility ? rows.length : 0 })),
+    });
+    useBackend(backend);
+    const prepared = await prepareMemoryContextBlock({ userId: null, workspaceId: 'ws',
+      harnessSlugs: ['papercusp'], potSlugs: [], queryContext: 'visibility pack note', budgetChars: 2400,
+      session: { sessionId: 'wearer-a', epoch: 2, port: 'turn-start' } });
+    const fragments = prepared!.fragments.filter(row => row.kind === 'memory');
+    expect(fragments).toHaveLength(2);
+    expect(packPins.calls).toHaveLength(1);
+    const signal = new AbortController().signal;
+    expect(await Promise.all(fragments.map(row => row.revalidateSource!(signal))))
+      .toEqual(fragments.map(row => row.sourceVersion));
+    expect(packPins.calls).toHaveLength(2);
+    expect(backend.listPage).toHaveBeenLastCalledWith({ scope: 'harness:papercusp', ids: rows.map(row => row.id),
+      includeSuperseded: true, archivedEligibility: { key: 'identity_package_resource', values: ['res-1.0.0'] },
+      offset: 0, limit: 8 });
+    pinned = new Set(['res-2.0.0']);
+    expect(await fragments[0].revalidateSource!(new AbortController().signal)).toBeNull();
+    await expect(stageMemoryEmission(getOrgPg().sql, 'wearer-a', 'revoked-package-attempt', fragments))
+      .rejects.toThrow('Memory emission source changed or is unavailable');
+    expect(packPins.calls).toHaveLength(4);
+    expect(packPins.calls.every(call => call.workspaceId === 'ws' && call.ownerId === 'wearer-a')).toBe(true);
+    expect(backend.get).not.toHaveBeenCalled();
+  });
+
+  it.each(['revoked', 'foreign-pool', 'malformed-provenance', 'read-error'])(
+    'keeps a confirmed package lifecycle unknown under %s authority', async scenario => {
+      const id = '44444444-4444-4444-8444-444444444444';
+      const before = contextSourceVersion({ namespace: 'memory:harness:papercusp', ref: id,
+        fullText: 'Earlier private package guidance', revision: null, updatedAt: null,
+        validity: { status: 'current', validAt: null, invalidAt: null, supersededBy: null } });
+      packPins.resolve = async () => scenario === 'revoked' ? new Set() : new Set(['res-1.0.0']);
+      const row = { ...packRow('1.0.0', id), scope: scenario === 'foreign-pool' ? 'harness:foreign' : 'harness:papercusp',
+        metadata: { ...packRow('1.0.0', id).metadata, pack_version: scenario === 'malformed-provenance' ? '' : '1.0.0',
+          validity: { status: 'current' } } };
+      const backend = Object.assign(mockBackend([]), {
+        get: vi.fn(async () => { throw new Error('unscoped package read forbidden'); }),
+        listPage: vi.fn(async (options: { archivedEligibility?: unknown }) => {
+          if (scenario === 'read-error') throw new Error('canonical package read unavailable');
+          return options.archivedEligibility ? { entries: [row], total: 1 } : { entries: [], total: 0 };
+        }),
+      });
+      const due = vi.spyOn(memoryLedger, 'memorySourcesDueForRevalidation').mockResolvedValue([before]);
+      useBackend(backend);
+      try {
+        const prepared = await prepareMemoryContextBlock({ userId: null, workspaceId: 'ws',
+          harnessSlugs: ['papercusp'], potSlugs: [], queryContext: 'unrelated task', budgetChars: 1400,
+          session: { sessionId: 'wearer-a', epoch: 2, port: 'mid-turn' } });
+        expect(prepared?.text ?? '').not.toContain('source-change');
+        expect(prepared?.text ?? '').not.toContain('package guidance');
+        expect(prepared?.fragments ?? []).toEqual([]);
+        expect(backend.get).not.toHaveBeenCalled();
+      } finally { due.mockRestore(); }
+    });
+
+  it('revalidates a pinned archived package absent from search without replaying its private prose', async () => {
+    const id = '44444444-4444-4444-8444-444444444444';
+    packPins.resolve = async () => new Set(['res-1.0.0']);
+    const before = contextSourceVersion({ namespace: 'memory:harness:papercusp', ref: id,
+      fullText: 'Earlier private package guidance', revision: null, updatedAt: null,
+      validity: { status: 'current', validAt: null, invalidAt: null, supersededBy: null } });
+    const row = { ...packRow('1.0.0', id), scope: 'harness:papercusp',
+      metadata: { ...packRow('1.0.0', id).metadata, validity: { status: 'current' } } };
+    const backend = Object.assign(mockBackend([]), {
+      listPage: vi.fn(async () => ({ entries: [row], total: 1 })),
+    });
+    const due = vi.spyOn(memoryLedger, 'memorySourcesDueForRevalidation').mockResolvedValue([before]);
+    useBackend(backend);
+    try {
+      const prepared = await prepareMemoryContextBlock({ userId: null, workspaceId: 'ws',
+        harnessSlugs: ['papercusp'], potSlugs: [], queryContext: 'unrelated task', budgetChars: 1400,
+        session: { sessionId: 'wearer-a', epoch: 2, port: 'mid-turn' } });
+      expect(prepared?.text).toContain('replace-earlier-version');
+      expect(prepared?.text).not.toContain('private package guidance');
+      expect(prepared?.text).not.toContain('visibility pack note');
+      expect(prepared?.fragments).toHaveLength(1);
+      const fragment = prepared!.fragments[0];
+      expect(await fragment.revalidateSource!(new AbortController().signal)).toEqual(fragment.sourceVersion);
+      expect(backend.listPage).toHaveBeenCalledWith({ scope: 'harness:papercusp', ids: [id],
+        includeSuperseded: true, archivedEligibility: { key: 'identity_package_resource', values: ['res-1.0.0'] },
+        offset: 0, limit: 8 });
+    } finally { due.mockRestore(); }
+  });
+
+  it('confirms pool-wide promoted rows after detach with one fresh active-only batch per attempt', async () => {
+    packPins.resolve = async () => new Set();
+    const rows = ['33333333-3333-4333-8333-333333333333', '44444444-4444-4444-8444-444444444444']
+      .map((id, index) => ({ ...packRow('1.0.0', id), scope: 'harness:papercusp',
+        text: index === 0 ? 'visibility pack note: require independent approval'
+          : 'visibility pack note: preserve the rollback snapshot',
+        metadata: { ...packRow('1.0.0', id).metadata, pack_item_id: `public-item-${index}`,
+          identity_package_promotion: { reviewed_by: 'reviewer', reason: 'pool-wide' }, validity: { status: 'current' } } }));
+    let visible = true;
+    let reads = 0;
+    const backend = Object.assign(mockBackend(rows), {
+      get: vi.fn(async () => { throw new Error('unscoped package read forbidden'); }),
+      listPage: vi.fn(async (_options: unknown) => {
+        // The first read sees the row; withdrawal may race the second,
+        // active-only read. Cached promotion metadata proves no visibility.
+        const entries = ++reads % 2 === 1 || visible ? rows : [];
+        return { entries, total: entries.length };
+      }),
+    });
+    useBackend(backend);
+    const prepared = await prepareMemoryContextBlock({ userId: null, workspaceId: 'ws',
+      harnessSlugs: ['papercusp'], potSlugs: [], queryContext: 'visibility pack note', budgetChars: 2400,
+      session: { sessionId: 'non-wearer', epoch: 2, port: 'turn-start' } });
+    const fragments = prepared!.fragments.filter(row => row.kind === 'memory');
+    expect(fragments).toHaveLength(2);
+    const newSharedSignal = new AbortController().signal;
+    expect(await Promise.all(fragments.map(row => row.revalidateSource!(newSharedSignal))))
+      .toEqual(fragments.map(row => row.sourceVersion));
+    expect(backend.listPage).toHaveBeenCalledTimes(2);
+    expect(backend.listPage.mock.calls.map(call => call[0])).toEqual([0, 1].map(() => ({
+      scope: 'harness:papercusp', ids: rows.map(row => row.id), includeSuperseded: true, offset: 0, limit: 8 })));
+    visible = false;
+    expect(await fragments[0].revalidateSource!(new AbortController().signal)).toBeNull();
+    await expect(stageMemoryEmission(getOrgPg().sql, 'non-wearer', 'withdrawn-promotion', fragments))
+      .rejects.toThrow('Memory emission source changed or is unavailable');
+    expect(backend.get).not.toHaveBeenCalled();
+  });
+
+  it.each(['current', 'retracted'] as const)(
+    'revalidates a promoted package absent from search with current pool-wide %s evidence', async status => {
+      packPins.resolve = async () => new Set();
+      const id = '44444444-4444-4444-8444-444444444444';
+      const before = contextSourceVersion({ namespace: 'memory:harness:papercusp', ref: id,
+        fullText: 'Earlier private package guidance', revision: null, updatedAt: null,
+        validity: { status: 'current', validAt: null, invalidAt: null, supersededBy: null } });
+      const row = { ...packRow('1.0.0', id), scope: 'harness:papercusp',
+        metadata: { ...packRow('1.0.0', id).metadata,
+          identity_package_promotion: { reviewed_by: 'reviewer', reason: 'pool-wide' }, validity: { status } } };
+      const backend = Object.assign(mockBackend([]), {
+        listPage: vi.fn(async (_options: unknown) => ({ entries: [row], total: 1 })),
+      });
+      const due = vi.spyOn(memoryLedger, 'memorySourcesDueForRevalidation').mockResolvedValue([before]);
+      useBackend(backend);
+      try {
+        const prepared = await prepareMemoryContextBlock({ userId: null, workspaceId: 'ws',
+          harnessSlugs: ['papercusp'], potSlugs: [], queryContext: 'unrelated task', budgetChars: 1400,
+          session: { sessionId: 'non-wearer', epoch: 2, port: 'mid-turn' } });
+        expect(prepared?.text).toContain(status === 'current' ? 'replace-earlier-version' : 'withdraw-earlier-version');
+        expect(prepared?.text).not.toContain('private package guidance');
+        expect(prepared?.text).not.toContain('visibility pack note');
+        expect(prepared?.fragments).toHaveLength(1);
+        const fragment = prepared!.fragments[0];
+        expect(await fragment.revalidateSource!(new AbortController().signal)).toEqual(fragment.sourceVersion);
+        expect(backend.listPage).toHaveBeenCalledTimes(4);
+        expect(backend.listPage.mock.calls.map(call => call[0])).toEqual([0, 1, 2, 3].map(() => ({
+          scope: 'harness:papercusp', ids: [id], includeSuperseded: true, offset: 0, limit: 8 })));
+      } finally { due.mockRestore(); }
+    });
 });
 
 describe('Jev on the push path (plan jev-decision-model-integration-2026-09-29, P-007/P-008, D-009)', () => {

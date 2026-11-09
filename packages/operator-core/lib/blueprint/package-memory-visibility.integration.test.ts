@@ -55,6 +55,10 @@ function canonicalStore() {
  * crosses Mem0Backend's filter encoding into the canonical SQL. */
 function recallBackend(store: CanonicalVectorStore) {
   return new Mem0Backend({ getClient: async () => ({}) as never, managedWrites: writes(),
+    listPage: async (filters, limit, offset, ids) => {
+      const [rows, total] = await store.listPage(filters, limit, offset, ids);
+      return { rows, total };
+    },
     vectorSearch: (query, topK, filters) => store.search(query, topK, filters),
     lexicalSearch: (query, topK, filters) => store.lexicalSearch(query, topK, filters) });
 }
@@ -113,6 +117,16 @@ describe('identity package recall visibility (real canonical store)', () => {
     expect(a.hits.find((hit) => hit.text === v1)!.metadata).toMatchObject({ source: 'pack',
       identity_package: { pack_id: 'visibility-pack', pack_version: '1.0.0', pack_item_id: 'shared', pinned: true } });
     expect(a.hits.find((hit) => hit.text === organic)!.metadata).not.toHaveProperty('identity_package');
+    // Confirmation re-reads exact IDs in an already-authorized pool. The
+    // archived exception is the same exact resource pin as both search legs.
+    const pinnedA = await resolveWearerPackageResources(db.adminSql, { workspaceId, ownerId: 'wearer-a' });
+    const pinnedId = a.hits.find(hit => hit.text === v1)!.id;
+    const exactRequest = { scope, ids: [pinnedId], limit: 8, offset: 0, ...packageRecallEligibility(pinnedA) };
+    const exact = await recall.listPage(exactRequest);
+    expect(exact.entries.map(row => row.text)).toEqual([v1]);
+    expect(exact.total).toBe(1);
+    expect(await recall.listPage({ scope, ids: [pinnedId], limit: 8, offset: 0 })).toEqual({ entries: [], total: 0 });
+    expect(await recall.listPage({ ...exactRequest, scope: 'harness:foreign' })).toEqual({ entries: [], total: 0 });
     // Unfiltered list recall and a malformed control admit no archived row.
     const [listed] = await store.list({ user_id: scope }, 50);
     expect(listed.map((row) => row.payload.data)).toEqual([organic]);
@@ -128,6 +142,11 @@ describe('identity package recall visibility (real canonical store)', () => {
     await wear('wearer-b', null, 'b2');
     expect((await recallAs('wearer-b')).texts).toEqual([organic]);
     expect((await recallAs('wearer-a')).texts).toEqual([organic, v2]);
+    const detachedPins = await resolveWearerPackageResources(db.adminSql, { workspaceId, ownerId: 'wearer-b' });
+    expect(detachedPins.size).toBe(0);
+    const v2Id = (await recallAs('wearer-a')).hits.find(hit => hit.text === v2)!.id;
+    expect(await recall.listPage({ scope, ids: [v2Id], limit: 8, offset: 0,
+      ...packageRecallEligibility(detachedPins) })).toEqual({ entries: [], total: 0 });
 
     // Reviewed promotion makes the row pool-wide and survives the last wearer's detach.
     const [{ id: promoted }] = await db.adminSql<Array<{ id: string }>>`SELECT id FROM harness_shared.memory_canonical
@@ -142,6 +161,10 @@ describe('identity package recall visibility (real canonical store)', () => {
       .toBe(false);
     const outsider = await recallAs('non-wearer');
     expect(outsider.texts).toEqual([organic, v2]);
+    const publicExact = { scope, ids: [promoted], limit: 8, offset: 0, includeSuperseded: true };
+    expect((await recall.listPage(publicExact)).entries.map(row => row.text)).toEqual([v2]);
+    expect((await recall.listPage(publicExact)).total).toBe(1);
+    expect(await recall.listPage({ ...publicExact, scope: 'harness:foreign' })).toEqual({ entries: [], total: 0 });
     expect(outsider.hits.find((hit) => hit.text === v2)!.metadata).toMatchObject({
       identity_package: { pack_version: '2.0.0', pinned: false },
       identity_package_promotion: { reviewed_by: 'reviewer', reason: 'useful' } });
@@ -149,5 +172,6 @@ describe('identity package recall visibility (real canonical store)', () => {
     expect(await receipt('2.0.0')).toMatchObject({ phase: 'detached' });
     expect((await recallAs('wearer-a')).texts).toEqual([organic, v2]);
     expect(await resolveWearerPackageResources(db.adminSql, { workspaceId, ownerId: 'wearer-a' })).toEqual(new Set());
+    expect((await recall.listPage(publicExact)).entries.map(row => row.text)).toEqual([v2]);
   });
 });

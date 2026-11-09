@@ -1340,6 +1340,7 @@ async function buildBlockInner(
   let userResults: MemoryEntry[] = [];
   let harnessHits: Array<{ hit: MemoryEntry; slug: string }> = [];
   let hiveHits: Array<{ hit: MemoryEntry; slug: string }> = [];
+  let pinnedPackResources: ReadonlySet<string> = new Set();
   let lifecycleEpoch: number | null = null;
   const lifecycleChanges: Array<{ version: ContextSourceVersion; notice: string }> = [];
   // P-002 / migration 758: what each retrieval LEG did on this call. Stays null
@@ -1356,8 +1357,18 @@ async function buildBlockInner(
   // Ordinary hive packs use the same bounded canonical rows as organic memory.
   // Their enable/disable authority is the existing hive setting, not a cached
   // search hit or disabledPacksFor's best-effort fallback on a read failure.
-  const currentSourceEntry = async (entry: MemoryEntry, settings: PackSettings): Promise<MemoryEntry | null> => {
-    if (isIdentityPackageHit(entry)) return null; // Exact archived package reads remain unsupported here.
+  const currentSourceEntry = async (entry: MemoryEntry, settings: PackSettings,
+    pinned: ReadonlySet<string>, poolVisible = false): Promise<MemoryEntry | null> => {
+    if (entry.metadata?.identity_package_resource !== undefined) {
+      const metadata = entry.metadata;
+      if (!isIdentityPackageHit(entry) || metadata.source !== 'pack' ||
+          !['pack_id', 'pack_version', 'pack_item_id'].every(key =>
+            typeof metadata[key] === 'string' && metadata[key].trim().length > 0) ||
+          (!poolVisible && !pinned.has(String(metadata.identity_package_resource)))) return null;
+      // Exact archived listing has already applied the current pool grant.
+      // Hive rows also obey the ordinary hive enable/disable setting below.
+      if (!potSlugFromScope(entry.scope)) return entry;
+    }
     if (entry.metadata?.source !== 'pack') return entry;
     const packId = entry.metadata.pack_id;
     const slug = potSlugFromScope(entry.scope);
@@ -1383,6 +1394,34 @@ async function buildBlockInner(
       ...(validity && typeof validity === 'object' && !Array.isArray(validity) ? validity : {}),
       status: 'retracted', invalid_at: new Date(setting.updatedAt).toISOString(), superseded_by: null,
     } } };
+  };
+  // A reviewed promotion survives detachment from the wearer's packages. The
+  // archived-eligible page alone cannot distinguish that row from a private
+  // one. Prove pool visibility with a fresh exact active-only read, never a
+  // promotion flag in a cached hit. Batch these reads per scope and attempt.
+  const currentSourceEntries = async (scope: string, ids: string[], pinned: ReadonlySet<string>,
+    signal?: AbortSignal): Promise<Array<{ entry: MemoryEntry; poolVisible: boolean }>> => {
+    if (!backend.listPage) return [];
+    signal?.throwIfAborted();
+    const page = await backend.listPage({ scope, ids, includeSuperseded: true,
+      ...packageRecallEligibility(pinned), offset: 0, limit: 8 });
+    const entries = page.entries.slice(0, 8).filter(entry => entry.scope === scope && ids.includes(entry.id));
+    const publicIds = [...new Set(entries.filter(entry => entry.metadata?.identity_package_resource !== undefined &&
+      !pinned.has(String(entry.metadata.identity_package_resource))).map(entry => entry.id))];
+    const publicEntries = new Map<string, MemoryEntry>();
+    if (publicIds.length > 0) {
+      signal?.throwIfAborted();
+      const active = await backend.listPage({ scope, ids: publicIds, includeSuperseded: true, offset: 0, limit: 8 });
+      for (const entry of active.entries.slice(0, 8)) {
+        if (entry.scope === scope && publicIds.includes(entry.id)) publicEntries.set(entry.id, entry);
+      }
+    }
+    signal?.throwIfAborted();
+    return entries.flatMap<{ entry: MemoryEntry; poolVisible: boolean }>(entry => {
+      if (!publicIds.includes(entry.id)) return [{ entry, poolVisible: false }];
+      const current = publicEntries.get(entry.id);
+      return current ? [{ entry: current, poolVisible: true }] : [];
+    });
   };
   let statsSchedule: Promise<void> | null = null;
   const writeRecallStatsSnapshot = (
@@ -1492,7 +1531,6 @@ async function buildBlockInner(
     // P-007 / D-021: the wearer (the su owner id carried as the session id) may
     // recall its applied exact-version pack rows; fails closed to none.
     const wearer = input.session?.sessionId?.trim() || null;
-    let pinnedPackResources: ReadonlySet<string> = new Set();
     if (wearer && scopes.length > 0) {
       try {
         pinnedPackResources = await deadline.run(
@@ -1571,15 +1609,16 @@ async function buildBlockInner(
             if (!scopes.includes(scope)) continue;
             const previous = new Map(due.filter(version => version.namespace === `memory:${scope}`)
               .map(version => [version.ref, version]));
-            const page = await deadline.run(() => backend.listPage!({ scope, ids: [...previous.keys()],
-              includeSuperseded: true, offset: 0, limit: 8 }), 'memory lifecycle sources');
+            const entries = await deadline.run(() => currentSourceEntries(scope, [...previous.keys()],
+              pinnedPackResources, deadline.signal), 'memory lifecycle sources');
             const seen = new Set<string>();
-            for (const entry of page.entries.slice(0, 8)) {
+            for (const { entry, poolVisible } of entries) {
               if (entry.scope !== scope || !previous.has(entry.id) || seen.has(entry.id) ||
                   (userScopes.includes(scope) && !keepUserPoolHitForWorkspace(entry, input.workspaceId)) ||
                   isFeedbackSuppressed(entry, feedback)) continue;
               seen.add(entry.id);
-              const sourceEntry = await deadline.run(() => currentSourceEntry(entry, packSettings), 'memory lifecycle pack settings');
+              const sourceEntry = await deadline.run(() => currentSourceEntry(entry, packSettings, pinnedPackResources, poolVisible),
+                'memory lifecycle package authority');
               if (!sourceEntry) continue;
               // A replacement may be outside the current grants. Do not expose
               // its ID merely because the authorized old row names it.
@@ -1986,18 +2025,24 @@ async function buildBlockInner(
           const selected = fragments?.filter(row => row.kind === 'memory' && row.sourceVersion) ?? [];
           const { loadFeedbackSignals, isFeedbackSuppressed } = await import('./feedback-rerank');
           const feedback = await loadFeedbackSignals(getOrgPg().sql);
+          // Cached offers must never reuse a wearer's old installation grants.
+          // Fail-closed resolution leaves package sources replayable/unknown.
+          const pinned = [...pinnedPackResources].some(resource => typeof resource === 'string' && resource.length > 0)
+            ? await wearerPackageResourcesOrEmpty(getOrgPg().sql, {
+              workspaceId: input.workspaceId, ownerId: input.session?.sessionId,
+            }) : new Set<string>();
           const packSettings: PackSettings = new Map();
           for (const scope of allowedScopes) {
             const ids = [...new Set(selected.filter(row => row.sourceVersion!.namespace === `memory:${scope}`).map(row => row.id))];
             for (let offset = 0; offset < ids.length; offset += 8) {
               signal.throwIfAborted();
               const batch = ids.slice(offset, offset + 8);
-              const page = await backend.listPage({ scope, ids: batch, includeSuperseded: true, offset: 0, limit: 8 });
-              for (const entry of page.entries.slice(0, 8)) {
+              const entries = await currentSourceEntries(scope, batch, pinned, signal);
+              for (const { entry, poolVisible } of entries) {
                 if (entry.scope !== scope || !batch.includes(entry.id) ||
                     (userScopes.includes(scope) && !keepUserPoolHitForWorkspace(entry, input.workspaceId)) ||
                     isFeedbackSuppressed(entry, feedback)) continue;
-                const sourceEntry = await currentSourceEntry(entry, packSettings);
+                const sourceEntry = await currentSourceEntry(entry, packSettings, pinned, poolVisible);
                 if (sourceEntry) current.set(`${scope}\u0000${entry.id}`, sourceEntry);
               }
             }
