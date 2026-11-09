@@ -84,8 +84,30 @@ const ctx = { uiClientId: 'su-tester', workspaceId: 'default' } as never;
 const parse = (x: unknown) => (get.args as { parse: (x: unknown) => unknown }).parse(x);
 type Out = { data: { results: Array<Record<string, any>> } };
 const one = async (x: unknown) => {
-  const res = (await get.handler(parse(x) as never, ctx)) as Out;
-  return res.data.results[0];
+  const originalInput = structuredClone(x);
+  expect(parse(x)).toEqual(x);
+  const projected = lookupByMcpName('work_items:get');
+  expect(projected).toBeTruthy();
+  const dispatched = await dispatchProjectedTool(projected!, 'work_items:get', x, {
+    ...(ctx as Record<string, unknown>),
+    log: vi.fn(),
+    signal: new AbortController().signal,
+    progress: vi.fn(),
+    emit: vi.fn(),
+    metadata: vi.fn(),
+    runId: 'get-remaining-original-history-replay',
+    role: 'su',
+    gateBypass: { role: true, capability: true, quota: true },
+    transport: 'mcp',
+    requestedFormat: 'json',
+    requestedStructured: true,
+  } as never, {});
+  expect(dispatched.ok).toBe(true);
+  expect(x).toEqual(originalInput);
+  const data = dispatched.result?.structuredContent as Out['data'] | undefined;
+  expect(data?.results).toHaveLength(1);
+  Object.values(writes).forEach(write => expect(write).not.toHaveBeenCalled());
+  return data!.results[0];
 };
 
 const ITEM = {
