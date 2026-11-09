@@ -545,6 +545,35 @@ describe('blocker decisions at the completion boundary', () => {
     return { row: { ...item, state: 'done', assignee: 'su-successor', payload: prepared.patch }, receipt: prepared.record };
   }
 
+  it('admits blocker-free completion and a measured self-resolution', async () => {
+    const row = { ...item, assignee: 'su-tester', payload: {} };
+    getWorkItem.mockResolvedValue(row);
+    setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...row, state: 'passed' }));
+    expect(await oneWithOutcome({ ...request, blockerDecision: undefined })).toMatchObject({ ok: true });
+    expect(blockerPreflight.read).not.toHaveBeenCalled();
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledOnce();
+
+    const unresolved = { ...row, state: 'blocked' };
+    getWorkItem.mockResolvedValue(unresolved);
+    const prepared = prepareBlockerDecision(row.payload, decision, { ownerId: 'su-tester',
+      sessionId: 'su-tester', workItemId: row.id, custodianId: 'su-tester' });
+    if (!prepared.ok) throw new Error('invalid measured resolution fixture');
+    blockerPreflight.read.mockResolvedValue(prepared);
+    setWorkItemStateWithAliasInfo.mockClear();
+    setWorkItemStateWithAliasInfo.mockImplementation(async (_id, _state, options) => {
+      options.onBlockerDecision({ record: prepared.record, replayed: false });
+      return okState({ ...row, state: 'passed', payload: prepared.patch });
+    });
+    expect(await oneWithOutcome(request)).toMatchObject({ ok: true, blockerDecision: prepared.record,
+      workItem: { state: 'passed', assignee: 'su-tester' } });
+    expect(blockerPreflight.read).toHaveBeenCalledWith(unresolved, decision,
+      expect.objectContaining({ ownerId: 'su-tester' }), expect.objectContaining({ requireResolution: true }));
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledOnce();
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(row.id, 'passed',
+      expect.objectContaining({ blockerDecision: { input: decision, sessionId: 'su-tester', effect: expect.any(Object) },
+        completionEvidence: expect.any(Object) }));
+  });
+
   it('replays the original receipt before current custody and live evidence without another write', async () => {
     const { row, receipt } = historicalRow();
     getWorkItem.mockResolvedValue(row);
