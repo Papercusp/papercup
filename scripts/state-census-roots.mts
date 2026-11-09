@@ -13,7 +13,7 @@ import { physicalDatabaseCensusEntries, integrationBaselineCensusDeclarations, t
 import type { CensusEntry, CensusRoot, CensusDeclaration } from '../packages/backup/src/state-census';
 import { configuredOperatorDatabaseCensusDeclarations, unitDatabaseCensusDeclarations, affectedTestCacheCensusProducer } from '../packages/operator-core/lib/backup/state-census-producers';
 import { migrationProducerTables, migrationDatabaseCensusDeclarations, registeredProjectMigrationSources, canonicalSqlMigrationCensusSources, type MigrationCensusSource } from '../packages/operator-core/lib/backup/state-census-producers';
-import { accountCredentialCensusProducer, runtimeSidefileCensusProducer, cliSetupHomeCensusProducer, templateStoreCensusProducer, planTemplateStoreCensusProducer } from '../packages/operator-core/lib/backup/state-census-producers';
+import { accountCredentialCensusProducer, runtimeSidefileCensusProducer, cliSetupHomeCensusProducer, runtimeRetainedCensusProducer, templateStoreCensusProducer, planTemplateStoreCensusProducer } from '../packages/operator-core/lib/backup/state-census-producers';
 import { buildExpected } from './templates-mirror-sync.mjs';
 import { historicalGitBlobIdentityResolver, workspaceTemplateStoreCensusProducer } from '../packages/operator-core/lib/backup/state-census-producers';
 import { fileURLToPath } from 'node:url';
@@ -120,7 +120,7 @@ export async function readRetainedReapTaskIds(
   return [...retained];
 }
 
-/** Reuse the setup writer's exact ownership rules across workspace homes. */
+/** Reuse setup and runtime writers across active and registered workspace homes. */
 export async function readWorkspaceSetupHomes(
   workspaces: readonly { id: string }[],
   resolveRoot: (workspace: string) => string = papercuspRootForWorkspace,
@@ -128,10 +128,12 @@ export async function readWorkspaceSetupHomes(
 ) {
   const paths = [...new Set([activeRoot, ...workspaces.map(workspace => resolveRoot(workspace.id))])];
   const producers = await Promise.all(paths.map(async (path, index) => {
-    const producer = await cliSetupHomeCensusProducer(path);
+    const setup = await cliSetupHomeCensusProducer(path);
+    const retained = runtimeRetainedCensusProducer(path);
     const id = `cli-setup-homes-${index}`;
-    return { roots: producer.roots.map(root => ({ ...root, id })),
-      declarations: producer.declarations.map(declaration => ({ ...declaration, root: id })) };
+    return { roots: setup.roots.map(root => ({ ...root, id })),
+      declarations: [...setup.declarations, ...retained.declarations]
+        .map(declaration => ({ ...declaration, root: id })) };
   }));
   return { roots: producers.flatMap(producer => producer.roots),
     declarations: producers.flatMap(producer => producer.declarations) };

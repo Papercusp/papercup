@@ -224,25 +224,43 @@ describe('unit census executable exit contract', () => {
       rmSync(mutex, { recursive: true, force: true });
     }
   });
-  it('scans inactive workspace setup homes without owning copied foreign files', async () => {
+  it('retains inactive workspace runtime state without owning copied foreign files or unregistered homes', async () => {
     const parent = mkdtempSync(join(tmpdir(), 'workspace-setup-census-'));
     try {
       const active = join(parent, 'active');
       const inactive = join(parent, 'inactive');
+      const unregistered = join(parent, 'unregistered');
       const name = 'deploy-credentials/.codex-setup-account-1234abcd';
-      for (const home of [active, inactive]) {
+      for (const home of [active, inactive, unregistered]) {
         mkdirSync(join(home, name), { recursive: true });
         writeFileSync(join(home, name, 'auth.json'), 'opaque');
         writeFileSync(join(home, name, 'foreign-source.ts'), 'foreign');
+        writeFileSync(join(home, 'deploy-credentials', 'unreferenced.json'), 'unproven credential');
+        mkdirSync(join(home, 'crash-reports'), { recursive: true });
+        writeFileSync(join(home, 'crash-reports', 'report.json'), 'retained diagnostic');
+        mkdirSync(join(home, 'snapshot-fold-checkpoints', 'nested'), { recursive: true });
+        writeFileSync(join(home, 'snapshot-fold-checkpoints', 'nested', 'checkpoint.json'), 'retained checkpoint');
+        writeFileSync(join(home, 'foreign-source.ts'), 'unrelated sibling');
       }
       const result = await readWorkspaceSetupHomes([{ id: 'active' }, { id: 'inactive' }, { id: 'inactive' }],
         workspace => join(parent, workspace), active);
       expect(result.roots.map(root => root.path)).toEqual([active, inactive]);
+      expect(result.roots.some(root => root.path === unregistered)).toBe(false);
+      const census = await collectStateCensus({ ...result, readCatalogs: async () => [] });
       for (const root of result.roots) {
-        expect(result.declarations.filter(entry => entry.root === root.id).map(entry => [entry.name, entry.classification]))
-          .toEqual([[name, 'state'], [`${name}/auth.json`, 'secret']]);
+        const inventory = census.inventory.filter(entry => entry.root === root.id);
+        expect(inventory.filter(entry => entry.classification === 'state').map(entry => entry.name).sort())
+          .toEqual(['deploy-credentials', name, 'crash-reports', 'crash-reports/report.json',
+            'snapshot-fold-checkpoints', 'snapshot-fold-checkpoints/nested',
+            'snapshot-fold-checkpoints/nested/checkpoint.json'].sort());
+        expect(inventory.filter(entry => entry.classification === 'secret').map(entry => entry.name))
+          .toEqual([`${name}/auth.json`]);
+        expect(census.residue.filter(entry => entry.root === root.id).map(entry => entry.name).sort())
+          .toEqual([`${name}/foreign-source.ts`, 'deploy-credentials/unreferenced.json', 'foreign-source.ts'].sort());
       }
-      expect(result.declarations.every(entry => !entry.descendants && !entry.prune)).toBe(true);
+      expect(result.declarations.every(entry => !entry.prune)).toBe(true);
+      expect(result.declarations.filter(entry => entry.descendants).map(entry => entry.name))
+        .toEqual(['crash-reports', 'snapshot-fold-checkpoints', 'crash-reports', 'snapshot-fold-checkpoints']);
     } finally { rmSync(parent, { recursive: true, force: true }); }
   });
 

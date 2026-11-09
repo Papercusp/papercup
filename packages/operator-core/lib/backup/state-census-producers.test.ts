@@ -737,6 +737,60 @@ describe('secret census producer adapters', () => {
       expect(await readFile(new URL('../../../../apps/tui/src/client.rs', import.meta.url), 'utf8')).toContain('"plans-list-standard-v1"');
     } finally { vi.unstubAllEnvs(); await rm(home, { recursive: true, force: true }); }
   });
+  it('censuses hook session records at default and relocated paths without owning foreign files or links', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'session-record-census-'));
+    const ordinary = join(home, '.papercusp');
+    const relocated = join(home, 'configured-home');
+    const override = join(home, 'ledger-override');
+    const advisory = join(ordinary, 'advisory-seen');
+    const ledgers = [join(ordinary, 'artifact-url-ledger'), join(relocated, 'artifact-url-ledger'), override];
+    try {
+      vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(home, 'absent-mutex'));
+      await mkdir(advisory, { recursive: true });
+      await writeFile(join(advisory, 'nested-session_1'), 'adv-fixture');
+      await writeFile(join(advisory, 'bad key'), 'foreign');
+      await writeFile(join(advisory, 'x'.repeat(121)), 'foreign');
+      await mkdir(join(advisory, 'copied-source'));
+      await writeFile(join(advisory, 'copied-source', 'index.ts'), 'foreign');
+      await symlink(join(advisory, 'nested-session_1'), join(advisory, 'linked-session'));
+      const { ledgerPathFor, appendLedger } = await import('../../../../apps/operator/scripts/hooks/cc/artifact-url-delivery-guard.mjs');
+      for (const directory of ledgers) {
+        const path = ledgerPathFor('session /1', { PAPERCUSP_ARTIFACT_LEDGER_DIR: directory });
+        appendLedger(path, ['fixture-artifact-id']);
+        await writeFile(join(directory, 'unknown.json'), 'foreign');
+        await writeFile(join(directory, `${'x'.repeat(121)}.ids`), 'foreign');
+        await mkdir(join(directory, 'copied.ids'));
+        await writeFile(join(directory, 'copied.ids', 'source.ts'), 'foreign');
+        await symlink(path, join(directory, 'linked.ids'));
+      }
+      const environment = { PAPERCUSP_HOME: relocated, PAPERCUSP_ARTIFACT_LEDGER_DIR: override };
+      const result = await runtimeSidefileCensusProducer(home, environment);
+      const census = await collectStateCensus({ ...result, readCatalogs: async () => [] });
+      const state = census.inventory.filter(entry => entry.classification === 'state');
+      expect(state.map(entry => entry.name).sort()).toEqual([
+        'advisory-seen', 'advisory-seen/nested-session_1', 'artifact-url-ledger',
+        'artifact-url-ledger/session__1.ids', 'session__1.ids', 'session__1.ids',
+      ].sort());
+      expect(result.declarations.every(entry => !entry.descendants && !entry.prune)).toBe(true);
+      expect(census.residue.map(entry => entry.name)).toEqual(expect.arrayContaining([
+        'advisory-seen/bad key', 'advisory-seen/linked-session', 'advisory-seen/copied-source/index.ts',
+        'artifact-url-ledger/unknown.json', 'linked.ids', 'copied.ids/source.ts',
+      ]));
+      expect(await readFile(join(ledgers[0], 'session__1.ids'), 'utf8')).toBe('fixture-artifact-id\n');
+      await rename(ledgers[0], join(home, 'ledger-target'));
+      await symlink(join(home, 'ledger-target'), ledgers[0]);
+      await rename(advisory, join(home, 'advisory-target'));
+      await symlink(join(home, 'advisory-target'), advisory);
+      await rename(override, join(home, 'override-target'));
+      await symlink(join(home, 'override-target'), override);
+      const linked = await runtimeSidefileCensusProducer(home, environment);
+      expect(linked.declarations.some(entry => entry.name.startsWith('advisory-seen') || entry.name.startsWith('artifact-url-ledger'))).toBe(false);
+      expect(linked.roots.some(entry => entry.path === override)).toBe(false);
+      const writer = await readFile(new URL('../../../../apps/operator/scripts/hooks/cc/pretooluse-bash-resource-gate.sh', import.meta.url), 'utf8');
+      expect(writer).toContain("return os.path.join(os.path.expanduser('~'), '.papercusp', 'advisory-seen')");
+      expect(writer).toContain("return re.sub(r'[^A-Za-z0-9_.-]', '_', str(sid))[:120]");
+    } finally { vi.unstubAllEnvs(); await rm(home, { recursive: true, force: true }); }
+  });
   it('uses actual default and relocated co-change/model cache writers without following links or owning neighbors', async () => {
     const home = await mkdtemp(join(tmpdir(), 'host-cache-census-'));
     const ordinary = join(home, '.papercusp');

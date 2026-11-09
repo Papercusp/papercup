@@ -52,9 +52,10 @@ export function installedRootCensusProducers() {
   return mergeNestedCensusRoots({ roots, declarations });
 }
 
-/** Active workspace writers; historical workspace copies still require their own evidence. */
-export function runtimeRetainedCensusProducer() {
-  const root: CensusRoot = { id: 'runtime-retained', path: papercuspRoot() };
+/** Runtime writers at an active or registered workspace root. Credential children
+ * still need exact account references or setup-writer evidence. */
+export function runtimeRetainedCensusProducer(path = papercuspRoot()) {
+  const root: CensusRoot = { id: 'runtime-retained', path };
   const declarations: CensusDeclaration[] = [
     { kind: 'path', root: root.id, name: 'deploy-credentials', classification: 'state', producer: 'deployment-account-link' },
     { kind: 'path', root: root.id, name: 'crash-reports', classification: 'state', producer: 'fatal-diagnostics', descendants: true },
@@ -407,6 +408,36 @@ export async function runtimeSidefileCensusProducer(home = homedir(), environmen
   // The embedding worker uses ||, while the co-change host helper trims the
   // pin; preserve both writer contracts rather than substituting papercuspRoot.
   const ordinaryHome = join(home, '.papercusp');
+  // Session hooks retain their own records, independently of workspace roots.
+  // Match the writers' direct-file grammar rather than claiming whole trees:
+  // arbitrary siblings, nested source and symlinks remain census residue.
+  const ledgerDirectories = new Set([join(ordinaryHome, 'artifact-url-ledger'),
+    join(papercuspHome(environment, home), 'artifact-url-ledger')]);
+  if (environment.PAPERCUSP_ARTIFACT_LEDGER_DIR) ledgerDirectories.add(environment.PAPERCUSP_ARTIFACT_LEDGER_DIR);
+  const sessionDirectories = [
+    { path: join(ordinaryHome, 'advisory-seen'), producer: 'bash-resource-gate-advisory-seen',
+      file: /^[A-Za-z0-9_.-]{1,120}$/ },
+    ...[...ledgerDirectories].map(path => ({ path, producer: 'artifact-url-delivery-ledger',
+      file: /^[A-Za-z0-9_.-]{1,120}\.ids$/ })),
+  ];
+  for (const directory of sessionDirectories) {
+    try {
+      if (!(await lstat(directory.path)).isDirectory()) continue;
+      if (dirname(directory.path) === ordinaryHome && !(await lstat(ordinaryHome)).isDirectory()) continue;
+    } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+    const local = dirname(directory.path) === ordinaryHome;
+    const sessionRoot = local ? root : { id: `runtime-session-records-${roots.length}`, path: directory.path };
+    if (!local) roots.push(sessionRoot);
+    const prefix = local ? `${basename(directory.path)}/` : '';
+    if (local) declarations.push({ kind: 'path', root: root.id, name: basename(directory.path),
+      classification: 'state', producer: directory.producer });
+    for (const entry of await readdir(directory.path, { withFileTypes: true })) {
+      if (entry.isFile() && directory.file.test(entry.name)) declarations.push({
+        kind: 'path', root: sessionRoot.id, name: `${prefix}${entry.name}`,
+        classification: 'state', producer: directory.producer,
+      });
+    }
+  }
   const cacheHomes = new Set([ordinaryHome, papercuspHome(environment, home), environment.PAPERCUSP_HOME || ordinaryHome]);
   for (const cacheHome of cacheHomes) {
     try {
