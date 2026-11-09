@@ -15,8 +15,11 @@
  * except the one under test (held-item checkpoints) — every leg is
  * best-effort in the implementation, so a failing mock never throws.
  */
-import { describe, expect, it, vi } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type { ControlAnchor } from './control-anchor';
+import type { PlanRow } from '../plans/source';
+
+const frozenPlanSource = vi.hoisted((): { row: PlanRow | null } => ({ row: null }));
 
 vi.mock('../../session-brief-mission', () => ({
   readCurrentMissionContinuity: vi.fn(async () => ({ availability: 'absent' as const })),
@@ -63,7 +66,7 @@ vi.mock('../mode/set', () => ({
   wakeSourceLostWarning: vi.fn(() => undefined),
 }));
 vi.mock('../plans/source', () => ({
-  getPlanRow: vi.fn(async (slug: string, opts: { workspaceId?: string; harnessSlug?: string }) => ({
+  getPlanRow: vi.fn(async (slug: string, opts: { workspaceId?: string; harnessSlug?: string }) => frozenPlanSource.row ?? ({
     workspaceId: opts.workspaceId ?? 'ws-1',
     harnessSlug: opts.harnessSlug ?? 'h',
     planSlug: slug,
@@ -134,6 +137,19 @@ vi.mock('../../carry-brief', async (importOriginal) => ({
     },
   ]),
 }));
+
+// Complete the partial mock's real imports before any case installs a one-shot
+// control/source response. A first selected case must not inherit initialization
+// from a preceding test or have its response consumed by a transitive import.
+beforeAll(async () => {
+  const { buildCompactionRecovery } = await import('./compaction-recovery');
+  const initialized = await buildCompactionRecovery('owner-x', 'ws-1', { sessionRole: 'judge' });
+  // Entering the partial carry-brief mock directly can expose its real store to
+  // a circular importer. Initialize through the subject's dependency order and
+  // fail setup if its store seam was not installed; never hide that as no items.
+  expect(initialized.coverage.heldItems).toBe(true);
+  expect(initialized.checkpoints?.[0]?.id).toBe('WI-37110');
+});
 
 describe('buildCompactionRecovery — held-item checkpoint fold', () => {
   it('routes judge recovery through authorized work-item and self-transcript reads', async () => {
@@ -825,4 +841,55 @@ describe('automatic compaction recovery — carried references re-checked at rec
     expect(renderAutomaticCompactionRecovery(delivery)).toContain('✗ GONE — work-item:WI-2 [WI-1 checkpoint]');
     expect(renderAutomaticCompactionRecovery(delivery, 'judge')).not.toContain('CARRIED REFERENCES');
   });
+});
+
+it('matches the complete paperwork authority history and omission manifest in compaction recovery', async () => {
+  const [{ getPlanRow }, { buildAndPersistControlAnchor }, { buildCompactionRecovery }] = await Promise.all([
+    import('../plans/source'), import('./control-anchor'), import('./compaction-recovery'),
+  ]);
+  vi.mocked(buildAndPersistControlAnchor).mockResolvedValueOnce(CONTROL);
+  const baseline = await getPlanRow('fleet-deltas-leader-primitives-2026-07-10', { workspaceId: 'ws-1', harnessSlug: 'h' });
+  if (!baseline) throw new Error('fixture requires a current plan');
+  frozenPlanSource.row = {
+    ...baseline,
+    workspaceId: 'ws-1', harnessSlug: 'h', planSlug: 'fleet-deltas-leader-primitives-2026-07-10',
+    contentHash: 'frozen-r19-plan', version: 18, status: 'ready',
+    content: '## Decisions\n\n' + [
+      '### D-001 — Current restriction\nP-017 remains paused. Retraction: old proof invalid; retain test-run:42.',
+      ...[2, 3, 4, 5, 6, 7, 8].map(n => `### D-00${n} — History ${n}\nHistorical detail ${n}.`),
+    ].join('\n\n') + '\n\n## Phase 1\n\n- **P-017** `wip` current task\n',
+  };
+  // Recovery also reads the plan while collecting held-item context. Keep the
+  // same frozen source for every read, then restore the surrounding suite's seam.
+  let recovery: Awaited<ReturnType<typeof buildCompactionRecovery>>;
+  try {
+    recovery = await buildCompactionRecovery('owner-x', 'ws-1', { heldItems: [] });
+  } finally {
+    frozenPlanSource.row = null;
+  }
+  expect(recovery.control).toEqual(CONTROL);
+  const actual = recovery.planAuthority;
+  const expected = {
+    resolution: 'current', controlGeneration: 17, workspaceId: 'ws-1', harness: 'h',
+    planSlug: 'fleet-deltas-leader-primitives-2026-07-10', version: 18, contentHash: 'frozen-r19-plan', planStatus: 'ready',
+    decisions: [
+      { id: 'D-001', title: 'Current restriction', body: 'P-017 remains paused. Retraction: old proof invalid; retain test-run:42.', truncated: false },
+      { id: 'D-004', title: 'History 4', body: 'Historical detail 4.', truncated: false },
+      { id: 'D-005', title: 'History 5', body: 'Historical detail 5.', truncated: false },
+      { id: 'D-006', title: 'History 6', body: 'Historical detail 6.', truncated: false },
+      { id: 'D-007', title: 'History 7', body: 'Historical detail 7.', truncated: false },
+      { id: 'D-008', title: 'History 8', body: 'Historical detail 8.', truncated: false },
+    ], taskLinkedDecisions: 1, decisionsMore: 2,
+    omittedDecisionRefs: ['fleet-deltas-leader-primitives-2026-07-10#D-002', 'fleet-deltas-leader-primitives-2026-07-10#D-003'],
+    items: [{ id: 'P-017', status: 'wip', text: 'current task', missing: false }],
+    specs: [{ specId: 'SPEC-P-017', revision: 4, contentHash: 'spec-hash-4', planItemId: 'P-017' }],
+  };
+  const check = (candidate: typeof actual) => expect(candidate).toEqual(expected);
+  check(actual);
+  if (actual?.resolution !== 'current') throw new Error('expected current fixture authority');
+  const missing = structuredClone(actual); missing.decisions.shift();
+  const extra = structuredClone(actual); extra.decisions.push({ id: 'D-999', title: 'Unrelated', body: 'Other task.', truncated: false });
+  const clipped = structuredClone(actual); clipped.decisions[0].body = 'P-017 remains paused.';
+  const reordered = structuredClone(actual); reordered.decisions.reverse();
+  for (const mutant of [missing, extra, clipped, reordered]) expect(() => check(mutant)).toThrow();
 });
