@@ -27,6 +27,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { setTimeout as delay } from 'node:timers/promises';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   ensureBootstrap,
@@ -214,8 +215,9 @@ describe('native hook operation fence', () => {
   it('preserves the edited generation before releasing paths to a queued successor', async () => {
     const p = { ...operation(['first.ts', 'second.ts']), goalRef: 'WI-test-generation' };
     expect((await acquire(p)).ok).toBe(true);
+    const { operation: _hookOperation, ...waiterParams } = p;
     const successor = await inWorkspaceTxn(p.coordinationDomain, 'successor', (tx) =>
-      tryInsertWaiter(tx, { ...p, owner: 'successor', operation: undefined, maxWaitSec: 120 }));
+      tryInsertWaiter(tx, { ...waiterParams, owner: 'successor', maxWaitSec: 120 }));
     if (!successor.ok || 'self_granted' in successor) throw new Error('successor must queue');
     const receipt = { pending: true, generation: 'immutable-A1' };
     const preserve = vi.fn(async (operationState: Parameters<NonNullable<Parameters<typeof tryFinishHookOperation>[1]['beforeRelease']>>[0]) => {
@@ -919,6 +921,66 @@ describe('coordinator predecessor custody', () => {
 });
 
 describe('tryRelease + grant cascade', () => {
+  // EI-28280477757151195: the real host killed source-capture transactions
+  // while Git was active outside SQL. Use a transaction-local short timeout;
+  // never alter a role/database setting or the shared production pool policy.
+  async function withShortIdleTimeout<T>(run: () => Promise<T>): Promise<T> {
+    const sql = getTxPool();
+    const begin = sql.begin.bind(sql);
+    const spy = vi.spyOn(sql, 'begin').mockImplementation(((callback: (tx: unknown) => Promise<unknown>) =>
+      begin(async tx => {
+        await tx`SELECT set_config('idle_in_transaction_session_timeout', '1200ms', true)`;
+        return callback(tx);
+      })) as typeof sql.begin);
+    try { return await run(); } finally { spy.mockRestore(); }
+  }
+
+  it('idle custody positive control loses an unmaintained real PG transaction', async () => {
+    await expect(getTxPool().begin(async tx => {
+      await tx`SELECT set_config('idle_in_transaction_session_timeout', '1200ms', true)`;
+      await delay(2400);
+      await tx`SELECT 1`;
+    })).rejects.toMatchObject({ code: expect.stringMatching(/^(25P03|CONNECTION_CLOSED|CONNECTION_ENDED)$/) });
+  });
+
+  it.each([false, true])('idle custody retains the fence across delayed capture (failure=%s)', async failCapture => {
+    const ws = nextWs();
+    const paths = ['idle-custody.ts'];
+    const held = await inWorkspaceTxn(ws, 'predecessor', tx => tryAcquire(tx, {
+      coordinationDomain: ws, owner: 'predecessor', ownerLabel: 'Predecessor', paths,
+      intent: 'preserve exact generation', ttlSec: 60,
+    }), { paths });
+    if (!held.ok) throw new Error('setup acquire failed');
+    const waiter = await inWorkspaceTxn(ws, 'successor', tx => tryInsertWaiter(tx, {
+      coordinationDomain: ws, owner: 'successor', ownerLabel: 'Successor', paths,
+      intent: 'await preserved generation', ttlSec: 60, maxWaitSec: 30,
+    }), { paths });
+    if (!waiter.ok || 'self_granted' in waiter) throw new Error('setup waiter failed');
+    const capture = vi.fn(async (rows: Parameters<NonNullable<Parameters<typeof tryRelease>[1]['beforeRelease']>>[0]) => {
+      expect(rows).toEqual([expect.objectContaining({ lock_id: held.lock_id, path: paths[0] })]);
+      await delay(2400);
+      expect((await readWaiterStatus(getTxPool(), waiter.ticket_id)).status).toBe('waiting');
+      expect((await readQueue(getTxPool(), { coordinationDomain: ws })).active_locks)
+        .toEqual([expect.objectContaining({ owner: 'predecessor', lock_id: held.lock_id, path: paths[0] })]);
+      if (failCapture) throw new Error('delayed custody unavailable');
+    });
+    const release = () => withShortIdleTimeout(() => inWorkspaceTxn(ws, 'predecessor', tx => tryRelease(tx, {
+      coordinationDomain: ws, owner: 'predecessor', lockId: held.lock_id, paths, beforeRelease: capture,
+    }), { paths }));
+    if (failCapture) {
+      await expect(release()).rejects.toThrow('delayed custody unavailable');
+      expect((await readWaiterStatus(getTxPool(), waiter.ticket_id)).status).toBe('waiting');
+      expect((await readQueue(getTxPool(), { coordinationDomain: ws })).active_locks)
+        .toEqual([expect.objectContaining({ owner: 'predecessor', lock_id: held.lock_id, path: paths[0] })]);
+    } else {
+      expect((await release()).released).toEqual(paths);
+      expect((await readWaiterStatus(getTxPool(), waiter.ticket_id)).status).toBe('granted');
+      expect((await readQueue(getTxPool(), { coordinationDomain: ws })).active_locks)
+        .toEqual([expect.objectContaining({ owner: 'successor', path: paths[0] })]);
+    }
+    expect(capture).toHaveBeenCalledTimes(1);
+  });
+
   it('preserves only the selected live rows before granting the successor', async () => {
     const ws = nextWs();
     const held = await inWorkspaceTxn(ws, 'a', tx => tryAcquire(tx, {
