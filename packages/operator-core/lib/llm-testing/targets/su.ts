@@ -1,6 +1,7 @@
 /**
  * `su` ChatTarget — in-process behavioral SUT for the **engineer-collaborator
- * playbook** (`apps/operator/prompts/papercusp-su-engineer.tools.md`).
+ * playbook**, rendered from the canonical blueprint source and active layers
+ * by `loadPlaybookBody` below.
  *
  * Plan `su-scenario-suite-2026-05-31`, D-001 option (a): the SU playbook is
  * not an HTTP endpoint (it's the system prompt for an interactive `psu`/
