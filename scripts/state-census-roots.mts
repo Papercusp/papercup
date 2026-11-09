@@ -64,12 +64,17 @@ export async function readMigrationCensusColumns(sql: ReturnType<typeof postgres
 }
 
 /** Importing this entry performs no census or host-catalog reads. */
-export async function runRootCensus(options: { args?: string[]; checkpointLogDir?: string; hostedProfileEvidence?: HostedProfileWriterEvidence[]; historicalWriterEvidence?: PlaywrightStateWriterEvidence[] } = {}) {
+export async function runRootCensus(options: { args?: string[]; checkpointLogDir?: string; hostedProfileEvidence?: HostedProfileWriterEvidence[]; historicalWriterEvidence?: PlaywrightStateWriterEvidence[]; onStage?: (stage: string) => void } = {}) {
 const args = options.args ?? [];
+// Report stage names only: callers can time or retain progress without logging
+// credential contents, archived commands, or filesystem inventory.
+const stage = options.onStage ?? (() => {});
+stage('installed-roots');
 const installed = installedRootCensusProducers();
 let hostedEvidence = options.hostedProfileEvidence ?? [];
 let playwrightEvidence: PlaywrightStateWriterEvidence[] = options.historicalWriterEvidence ?? [];
 if (args.includes('--host-catalogs') && options.hostedProfileEvidence === undefined && options.historicalWriterEvidence === undefined) {
+  stage('historical-writer-index');
   const sql = postgres(getHarnessAdminUrl(), { max: 1, connect_timeout: 5 });
   try {
     // Bound the writer dialect, not its filenames. A new destination is derived
@@ -94,8 +99,11 @@ if (args.includes('--host-catalogs') && options.hostedProfileEvidence === undefi
     playwrightEvidence = recovered;
   } finally { await sql.end(); }
 }
+stage('historical-hosted-profiles');
 const historicalHosted = await historicalHostedProfileCensusProducer(hostedEvidence);
+stage('historical-playwright-state');
 const historicalPlaywright = await historicalPlaywrightStateCensusProducer(playwrightEvidence);
+stage('historical-stripe-config');
 const historicalStripe = await historicalStripeConfigCensusProducer(playwrightEvidence);
 const combinedHosted = mergeNestedCensusRoots({ roots: [...installed.roots, ...historicalHosted.roots, ...historicalPlaywright.roots, ...historicalStripe.roots],
   declarations: [...installed.declarations, ...historicalHosted.declarations, ...historicalPlaywright.declarations, ...historicalStripe.declarations] });
@@ -103,6 +111,7 @@ installed.roots = combinedHosted.roots;
 installed.declarations = combinedHosted.declarations;
 // Query exact archive identities BEFORE the ledger limit; a batch is smaller
 // than the cap. Missing/GCed rows remain residue, never inferred from filenames.
+stage('reap-archive');
 const reapArchive = await reapArchiveCensusProducer(undefined, [], args.includes('--host-catalogs')
   ? async taskIds => {
     const { listTasks } = await import('../packages/operator-core/lib/task-manager/store');
@@ -112,15 +121,23 @@ const reapArchive = await reapArchiveCensusProducer(undefined, [], args.includes
     }
     return retained;
   } : undefined);
+stage('affected-test-cache');
 const affectedCache = await affectedTestCacheCensusProducer();
+stage('runtime-sidefiles');
 const sidefiles = await runtimeSidefileCensusProducer();
+stage('workspace-setup-homes');
 const setupHomes = await readWorkspaceSetupHomes(readRegistry().workspaces);
+stage('template-mirror');
 const templateExpected = (await buildExpected()).expected;
 const historicalTemplateIdentity = historicalGitBlobIdentityResolver(fileURLToPath(new URL('..', import.meta.url)));
+stage('template-store');
 const templateStore = await templateStoreCensusProducer(undefined, templateExpected, historicalTemplateIdentity);
+stage('workspace-template-stores');
 const workspaceTemplateStores = await workspaceTemplateStoreCensusProducer(undefined, templateExpected, historicalTemplateIdentity);
+stage('plan-template-store');
 const planTemplateStore = await planTemplateStoreCensusProducer();
 const hostCatalogs = args.includes('--host-catalogs');
+stage('account-credentials');
 const credentials = await accountCredentialCensusProducer(hostCatalogs
   ? await readWorkspaceCensusAccounts(readRegistry().workspaces) : []);
 const checkpointLogDir = options.checkpointLogDir ?? checkpointLogDirFromEnv();
@@ -138,6 +155,7 @@ const declarations = [...producers.declarations,
 const catalogEntries: CensusEntry[] = [];
 const migrationSources: MigrationCensusSource[] = [];
 if (hostCatalogs) {
+  stage('migration-sources');
   const { loadHarnessRegistry } = await import('../packages/operator-core/lib/harness-registry');
   migrationSources.push(...await canonicalSqlMigrationCensusSources());
   for (const workspace of readRegistry().workspaces) {
@@ -146,6 +164,7 @@ if (hostCatalogs) {
   }
 }
 if (args.includes('--restore-events') || hostCatalogs) {
+  stage('host-catalogs');
   const sql = postgres(getHarnessAdminUrl(), { max: 1, connect_timeout: 5 });
   try {
     for (const workspace of readRegistry().workspaces) {
@@ -180,7 +199,9 @@ if (args.includes('--restore-events') || hostCatalogs) {
     }
   } finally { await sql.end(); }
 }
-for (const root of producers.roots) {
+stage('filesystem-storage-markers');
+for (const [rootIndex, root] of producers.roots.entries()) {
+  stage(`filesystem-root-${rootIndex}:postgres-markers`);
   const topLevel = await readdir(root.path, { withFileTypes: true });
   for (const directory of topLevel.filter(entry => entry.isDirectory())) {
     try { await lstat(join(root.path, directory.name, 'PG_VERSION')); }
@@ -189,7 +210,13 @@ for (const root of producers.roots) {
   }
   // Bounded marker discovery in the home and its direct artifact containers.
   // Symlinks and retained trees are not followed or reclassified.
+  stage(`filesystem-root-${rootIndex}:virtualenv-markers`);
   for (const directory of topLevel.filter(entry => entry.isDirectory())) {
+    // The census already represents these writer-owned caches at their roots.
+    // Looking inside them can enumerate arbitrarily large spill/build trees
+    // and mistakes cached copies of producer markers for installed storage.
+    if (declarations.some(entry => entry.kind === 'path' && entry.root === root.id &&
+      entry.name === directory.name && entry.descendants && entry.prune && !entry.anyDepth)) continue;
     const children = await readdir(join(root.path, directory.name), { withFileTypes: true });
     const candidates = [directory.name, ...children.filter(entry => entry.isDirectory()).map(entry => `${directory.name}/${entry.name}`)];
     for (const name of candidates) {
@@ -198,6 +225,7 @@ for (const root of producers.roots) {
       declarations.push(await virtualenvCacheDeclaration(root, name));
     }
   }
+  stage(`filesystem-root-${rootIndex}:git-markers`);
   for (const directory of topLevel.filter(entry => entry.isDirectory())) {
     let metadata;
     try { metadata = await lstat(join(root.path, directory.name, '.git')); }
@@ -208,6 +236,7 @@ for (const root of producers.roots) {
     declarations.push(await gitStorageDeclaration(root, directory.name, true));
   }
   // Only the producer's exact per-workspace layout; scoped stores stay distinct.
+  stage(`filesystem-root-${rootIndex}:workspace-layouts`);
   const workspacePrefix = relative(root.path, workspacesRoot());
   const ownsWorkspaces = !workspacePrefix.startsWith('..') && !workspacePrefix.startsWith('/');
   const workspaces = ownsWorkspaces ? await readdir(workspacesRoot(), { withFileTypes: true }) : [];
@@ -229,6 +258,7 @@ for (const root of producers.roots) {
       }
     }
   }
+  stage(`filesystem-root-${rootIndex}:workspace-storage`);
   for (const workspace of layouts) {
     const parent = join(workspacesRoot(), workspace.name, '.papercusp');
     let harnesses;
@@ -305,6 +335,7 @@ for (const root of producers.roots) {
     }
   }
   // Derive the container from the clone writer, including relocated workspace roots.
+  stage(`filesystem-root-${rootIndex}:clone-storage`);
   const clonePath = defaultClonesDir();
   const clonePrefix = relative(root.path, clonePath).split(sep).join('/');
   let clones;
@@ -320,6 +351,7 @@ for (const root of producers.roots) {
     // Entire worktree is carried, including untracked files and linked pointers.
     declarations.push(await gitStorageDeclaration(root, `${clonePrefix}/${clone.name}`, true));
   }
+  stage(`filesystem-root-${rootIndex}:shared-postgres-storage`);
   let children;
   try { children = await readdir(join(root.path, '.shared'), { withFileTypes: true }); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
@@ -330,6 +362,7 @@ for (const root of producers.roots) {
   }
 }
 if (hostCatalogs && migrationSources.length) {
+  stage('migration-database-columns');
   const operatorUrl = getHarnessAdminUrl();
   for (const database of catalogEntries.filter(entry => entry.kind === 'database' &&
     !declarations.some(declaration => declaration.kind === 'database' && declaration.root === entry.root && declaration.name === entry.name))) {
@@ -344,11 +377,13 @@ if (hostCatalogs && migrationSources.length) {
     } finally { await sql.end(); }
   }
 }
+stage('collect-state-census');
 const census = await collectStateCensus({
   ...producers, declarations, representUnknownSubtrees: true,
   // This diagnostic intentionally does not certify catalogs.
   readCatalogs: async () => catalogEntries,
 });
+stage('complete');
 return {
   scope: hostCatalogs ? 'implemented-writer-filesystem-roots-and-host-catalogs' : 'implemented-writer-filesystem-roots-only', wholeInstallVerified: false,
   roots: producers.roots, ...census,
