@@ -23,27 +23,34 @@ const processTest = 'packages/operator-core/lib/release/checkpoint-qualification
 const stalledTest = 'packages/operator-core/lib/release/checkpoint-qualification-stalled-process.integration.test.ts';
 const healthSource = 'packages/operator-core/lib/release/watchdog-health.ts';
 const observerSource = 'packages/operator-core/lib/release/lost-gate-run-alarm.ts';
+const lifecycleTest = 'packages/operator-core/lib/release/checkpoint-qualification-lifecycle.integration.test.ts';
 
 const runtimeCases = [
   { title: 'retains qualification custody and reconciles terminal effects in the observed private background runtime',
-    managedTasks: false, selectors,
+    managedTasks: false, selectors, additionalSources: [],
     checks: [[custodyTest, reaperSource, 15], [terminalTest, transactionSource, 5]] as const },
   { title: 'observes blocked controllers, observer recovery and exact process custody in the private background runtime',
-    managedTasks: true,
+    managedTasks: true, additionalSources: [],
     selectors: ['recordWatchdogPassOutcome \\(real PG\\)', 'qualification real process bounds',
       'qualification independent stalled-process bounds'],
     checks: [[healthTest, healthSource, 13], [processTest, transactionSource, 7],
       [stalledTest, observerSource, 5]] as const },
+  { title: 'records executor identity refusal through the scheduled handler in the private background runtime',
+    managedTasks: false,
+    selectors: ['persists an unavailable executor through the real scheduled handler and refuses unqualified recovery'],
+    additionalSources: ['packages/operator-core/lib/harness/routines/release-actions.ts',
+      'packages/operator-core/lib/build-info.ts'],
+    checks: [[lifecycleTest, transactionSource, 1]] as const },
 ] as const;
 
 // Register literal titles: parameter formatting truncates long object values and
 // would change the existing canonical selector as well as the new case's name.
-for (const { title, managedTasks, selectors: selected, checks } of runtimeCases) {
+for (const { title, managedTasks, selectors: selected, checks, additionalSources } of runtimeCases) {
 it(title, async context => {
   let environmentObserved = false;
   let environmentError: unknown;
   const runId = await recordIsolatedIntegrationProof({ root, filePath,
-    sourcePaths: [...checks.flatMap(([testFile, sourceFile]) => [testFile, sourceFile]),
+    sourcePaths: [...checks.flatMap(([testFile, sourceFile]) => [testFile, sourceFile]), ...additionalSources,
       observerSource, healthSource,
       'packages/operator-core/lib/release/checkpoint-qualification-terminal-events.ts',
       'packages/operator-core/lib/release/gate-action-receipt.ts',
