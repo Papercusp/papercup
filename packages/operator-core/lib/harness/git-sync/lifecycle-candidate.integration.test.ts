@@ -413,6 +413,12 @@ describe('P003 generated custody', () => {
       manifest.workspaces.push('libs/child', 'libs/child/nested');
       manifest.dependencies['archive-pin'] = 'file:./archive.tgz';
       writeFileSync(join(f.repo, 'package.json'), JSON.stringify(manifest));
+      // This case exercises selected-pin custody, not a workspace-topology
+      // repair. Keep the selected root mirror coherent with its configured
+      // workspace population so the unrelated-graph guard stays meaningful.
+      const lock = JSON.parse(readFileSync(join(f.repo, 'package-lock.json'), 'utf8'));
+      lock.packages[''] = manifest;
+      writeFileSync(join(f.repo, 'package-lock.json'), JSON.stringify(lock));
       const archiveRoot = mkdtempSync(join(tmpdir(), 'git-sync-archive-')); roots.push(archiveRoot);
       mkdirSync(join(archiveRoot, 'package'));
       writeFileSync(join(archiveRoot, 'package/package.json'), '{"name":"archive-pin","version":"1.0.0"}');
