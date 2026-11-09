@@ -6,6 +6,8 @@ import { getHarnessAdminUrl } from '../embedded-pg-discovery';
 import { ensureBootstrap } from '../agent-tools/locks/su-lock-store';
 import { setupPlanPgFixture } from '../agent-tools/plans/__tests__/_pg-tool-fixture';
 import { setupEngineeringEvidenceFixture } from './_engineering-evidence-fixture';
+// R5's canonical entrypoint also runs the existing real-PG task-context scenarios.
+import './task-brief-engineering.integration.test';
 
 describe('native engineering evidence canonical PG adapters', () => {
   let state: Awaited<ReturnType<typeof setupEngineeringEvidenceFixture>>;
