@@ -39,7 +39,7 @@ async function readCompleteCodexSource(binding: { nativeSessionId: string; codex
   return readCompleteNativeSource(binding.codexHome, 'sessions', file);
 }
 
-/** Shared physical byte proof for both maintained native CLI formats. */
+/** Shared physical byte proof for the maintained native CLI formats. */
 async function readCompleteNativeSource(home: string, directory: 'sessions' | 'projects', file: string) {
   const [{ constants }, path] = await Promise.all([import('node:fs'), import('node:path')]);
   const root = path.join(await fs.realpath(home), directory);
@@ -471,6 +471,98 @@ export async function readClosedCodexTurnToolResult(sql: Sql, input: {
       callId: request.call_id, name: `${request.namespace ? request.namespace + '.' : ''}${request.name}`,
       callType: request.type,
       arguments: args, output: response.output, isError: response.is_error ?? null,
+      calledAt: new Date(calledAt).toISOString(), at: new Date(at).toISOString() };
+  } catch { return null; }
+}
+
+type OmpEvidenceRecord = {
+  type?: unknown; id?: unknown; parentId?: unknown; timestamp?: unknown; version?: unknown;
+  message?: { role?: unknown; stopReason?: unknown; content?: unknown; toolCallId?: unknown; toolName?: unknown; isError?: unknown };
+};
+
+/** Exact OMP call/result ancestry ending in one closed native response. The
+ * enrolled caller supplies the home; no shared-home fallback or authored path
+ * is accepted. This proves original execution, not the CLI's installed version
+ * (the session header's numeric version is only its transcript format). */
+export async function readClosedOmpMessageToolResult(sql: Sql, input: {
+  readonly workspaceId: string; readonly nativeSessionId: string; readonly agentHome: string;
+  readonly nativeMessageId: string; readonly messageRecordIndex: number;
+  readonly callRecordIndex: number; readonly callContentIndex: number; readonly resultRecordIndex: number;
+}): Promise<{ file: string; sourceSha256: string; nativeSessionId: string; nativeMessageId: string;
+  messageRecordIndex: number; callRecordIndex: number; callContentIndex: number; resultRecordIndex: number;
+  callId: string; name: string; arguments: string; output: string | unknown[]; isError: boolean;
+  calledAt: string; at: string } | null> {
+  const binding = { ...input };
+  if ([binding.workspaceId, binding.nativeSessionId, binding.agentHome, binding.nativeMessageId]
+    .some(value => typeof value !== 'string' || !value.trim()) ||
+    ![binding.messageRecordIndex, binding.callRecordIndex, binding.callContentIndex, binding.resultRecordIndex]
+      .every(index => Number.isSafeInteger(index) && index >= 0) ||
+    binding.callRecordIndex >= binding.resultRecordIndex || binding.resultRecordIndex >= binding.messageRecordIndex) return null;
+  try {
+    const file = await findOmpSessionPath(binding.nativeSessionId, { rootOverride: join(binding.agentHome, 'sessions') });
+    if (!file) return null;
+    const source = await readCompleteNativeSource(binding.agentHome, 'sessions', file);
+    if (!source.transcript.endsWith('\n')) return null;
+    const records: OmpEvidenceRecord[] = source.transcript.slice(0, -1).split('\n').map(line => JSON.parse(line));
+    if (records.some(row => !row || typeof row !== 'object' || Array.isArray(row))) return null;
+    const header = records[0];
+    if (header?.type !== 'session' || header.id !== binding.nativeSessionId ||
+      !Number.isSafeInteger(header.version) || (header.version as number) < 1 ||
+      records.slice(1).some(row => row.type === 'session')) return null;
+    const [frontier] = await sql<{ byte_offset: string; parser_state: { initialized?: boolean; bootstrapOffset?: number } }[]>`
+      SELECT byte_offset::text, parser_state FROM harness_shared.interactive_usage_files
+      WHERE workspace_id = ${binding.workspaceId} AND file_path = ${source.file}`;
+    if (!frontier || frontier.parser_state?.initialized !== true || frontier.parser_state.bootstrapOffset !== undefined ||
+      Number(frontier.byte_offset) !== Buffer.byteLength(source.transcript) || !await source.unchanged()) return null;
+    const ordinals = new Map<string, number>();
+    for (let index = 1; index < records.length; index++) {
+      const record = records[index]!;
+      if (typeof record.id !== 'string' || !record.id.trim() || ordinals.has(record.id) ||
+        record.parentId !== null && (typeof record.parentId !== 'string' || !ordinals.has(record.parentId))) return null;
+      ordinals.set(record.id, index);
+    }
+    const closure = records[binding.messageRecordIndex], call = records[binding.callRecordIndex],
+      result = records[binding.resultRecordIndex];
+    if (closure?.type !== 'message' || closure.id !== binding.nativeMessageId ||
+      closure.message?.role !== 'assistant' || closure.message.stopReason !== 'stop' ||
+      call?.type !== 'message' || call.message?.role !== 'assistant' || call.message.stopReason !== 'toolUse' ||
+      !Array.isArray(call.message.content) || result?.type !== 'message' || result.message?.role !== 'toolResult') return null;
+    const request = call.message.content[binding.callContentIndex] as Record<string, unknown> | undefined;
+    const response = result.message;
+    if (!request || request.type !== 'toolCall' || typeof request.id !== 'string' || !request.id.trim() ||
+      typeof request.name !== 'string' || !request.name.trim() || !request.arguments ||
+      typeof request.arguments !== 'object' || Array.isArray(request.arguments) ||
+      response.toolCallId !== request.id || response.toolName !== request.name || typeof response.isError !== 'boolean' ||
+      !(typeof response.content === 'string' || Array.isArray(response.content))) return null;
+    // A physical neighbor can be a different branch. Both records must be on
+    // this closure's ancestry after its latest user prompt, with no earlier
+    // closed/interrupted response between the pair and selected closure.
+    const ancestry: number[] = [];
+    let cursor: number | undefined = binding.messageRecordIndex;
+    while (cursor !== undefined) {
+      ancestry.push(cursor);
+      const row: OmpEvidenceRecord = records[cursor]!;
+      if (row.type === 'message' && row.message?.role === 'user') break;
+      cursor = typeof row.parentId === 'string' ? ordinals.get(row.parentId) : undefined;
+    }
+    const prompt = records[ancestry[ancestry.length - 1]!];
+    if (prompt?.type !== 'message' || prompt.message?.role !== 'user' ||
+      !ancestry.includes(binding.callRecordIndex) || !ancestry.includes(binding.resultRecordIndex) ||
+      ancestry.some(index => index !== binding.messageRecordIndex && records[index]?.message?.role === 'assistant' &&
+        records[index]?.message?.stopReason !== 'toolUse')) return null;
+    const calls = records.flatMap(row => row.type === 'message' && row.message?.role === 'assistant' &&
+      Array.isArray(row.message.content) ? row.message.content.filter(part => part?.type === 'toolCall' && part.id === request.id) : []);
+    const results = records.filter(row => row.type === 'message' && row.message?.role === 'toolResult' && row.message.toolCallId === request.id);
+    const calledAt = typeof call.timestamp === 'string' ? Date.parse(call.timestamp) : NaN;
+    const at = typeof result.timestamp === 'string' ? Date.parse(result.timestamp) : NaN;
+    const closedAt = typeof closure.timestamp === 'string' ? Date.parse(closure.timestamp) : NaN;
+    if (calls.length !== 1 || results.length !== 1 || ![calledAt, at, closedAt].every(Number.isFinite) ||
+      calledAt > at || at > closedAt || !await source.unchanged()) return null;
+    return { file: source.file, sourceSha256: source.sourceSha256, nativeSessionId: binding.nativeSessionId,
+      nativeMessageId: binding.nativeMessageId, messageRecordIndex: binding.messageRecordIndex,
+      callRecordIndex: binding.callRecordIndex, callContentIndex: binding.callContentIndex,
+      resultRecordIndex: binding.resultRecordIndex, callId: request.id, name: request.name,
+      arguments: JSON.stringify(request.arguments), output: response.content, isError: response.isError,
       calledAt: new Date(calledAt).toISOString(), at: new Date(at).toISOString() };
   } catch { return null; }
 }

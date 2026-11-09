@@ -26,9 +26,102 @@ import {
   readClosedClaudeMessageToolResult,
   readClosedCodexTurnInput,
   readClosedCodexTurnToolResult,
+  readClosedOmpMessageToolResult,
 } from './session-transcript-resolvers';
 
 afterEach(() => __resetTranscriptResolverCaches());
+
+describe('source-bound closed OMP tool results', () => {
+  const session = '11111111-2222-3333-4444-555555555555';
+  async function fixture(fault?: string) {
+    const rows: any[] = [
+      { type: 'session', id: session, version: 3, timestamp: '2026-11-09T00:00:00Z', cwd: '/private' },
+      { type: 'message', id: 'prompt', parentId: null, timestamp: '2026-11-09T00:00:00Z',
+        message: { role: 'user', content: [{ type: 'text', text: 'Inspect original bytes' }] } },
+      { type: 'message', id: 'call', parentId: 'prompt', timestamp: '2026-11-09T00:00:01Z',
+        message: { role: 'assistant', stopReason: 'toolUse', content: [
+          { type: 'toolCall', id: 'exact-call', name: 'mcp__papercusp__capability_read', arguments: { file_path: 'private/π' } }] } },
+      { type: 'custom', id: 'metadata', parentId: 'call', timestamp: '2026-11-09T00:00:01Z' },
+      { type: 'message', id: 'result', parentId: 'metadata', timestamp: '2026-11-09T00:00:02Z',
+        message: { role: 'toolResult', toolCallId: 'exact-call', toolName: 'mcp__papercusp__capability_read', isError: false,
+          content: [{ type: 'text', text: 'original π\nbytes' }] } },
+      { type: 'message', id: 'closed', parentId: 'result', timestamp: '2026-11-09T00:00:03Z',
+        message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Inspected' }] } },
+    ];
+    if (fault === 'error-result') rows[4].message.isError = true;
+    if (fault === 'string-result') rows[4].message.content = 'exact string result';
+    if (fault === 'foreign-session') rows[0].id = 'foreign-session';
+    if (fault === 'foreign-closure') rows[5].id = 'foreign-closure';
+    if (fault === 'wrong-result') rows[4].message.toolCallId = 'foreign-call';
+    if (fault === 'wrong-name') rows[4].message.toolName = 'foreign-tool';
+    if (fault === 'malformed-error') rows[4].message.isError = 'false';
+    if (fault === 'malformed-arguments') rows[2].message.content[0].arguments = 'unparsed';
+    if (fault === 'malformed-output') rows[4].message.content = {};
+    if (fault === 'missing-prompt') rows[1].message.role = 'assistant';
+    if (fault === 'open-response') rows[5].message.stopReason = 'toolUse';
+    if (fault === 'interrupted-response') rows[5].message.stopReason = 'error';
+    if (fault === 'other-branch') rows[4].parentId = 'prompt';
+    if (fault === 'other-prompt') rows[3] = { ...rows[3], type: 'message', message: { role: 'user' } };
+    if (fault === 'prior-closure') rows[3] = { ...rows[3], type: 'message', message: { role: 'assistant', stopReason: 'stop' } };
+    if (fault === 'missing-parent') rows[4].parentId = 'missing';
+    if (fault === 'cyclic-parent') rows[4].parentId = 'closed';
+    if (fault === 'duplicate-record') rows.push({ ...rows[3] });
+    if (fault === 'duplicate-call') rows[2].message.content.push({ ...rows[2].message.content[0] });
+    if (fault === 'duplicate-result') rows.push({ ...rows[4], id: 'another-result' });
+    if (fault === 'reversed-time') rows[4].timestamp = '2026-11-08T23:59:59Z';
+    if (fault === 'early-closure') rows[5].timestamp = '2026-11-09T00:00:01Z';
+    if (fault === 'invalid-time') rows[4].timestamp = 'unmeasured';
+    if (fault === 'second-header') rows.push({ ...rows[0] });
+    let transcript = rows.map(row => JSON.stringify(row) + '\n').join('');
+    if (fault === 'partial-source') transcript = transcript.slice(0, -1);
+    if (fault === 'invalid-json') transcript += '{\n';
+    const home = await fs.mkdtemp(join(tmpdir(), 'omp-source-tool-'));
+    const dir = join(home, 'sessions', 'private-cwd'); await fs.mkdir(dir, { recursive: true });
+    const file = join(dir, `2026-11-09_${session}.jsonl`); await fs.writeFile(file, transcript);
+    if (fault === 'linked-source') { await fs.rename(file, join(home, 'outside.jsonl')); await fs.symlink(join(home, 'outside.jsonl'), file); }
+    const calls: unknown[][] = [];
+    const sql = (async (_strings: TemplateStringsArray, ...values: unknown[]) => {
+      calls.push(values);
+      if (fault === 'source-mutated') await fs.appendFile(file, '{}\n');
+      return fault === 'missing-frontier' ? [] : [{ byte_offset: String(Buffer.byteLength(transcript) +
+        (fault === 'partial-frontier' ? -1 : fault === 'ahead-frontier' ? 1 : 0)),
+        parser_state: { initialized: fault !== 'uninitialized', ...(fault === 'bootstrap' ? { bootstrapOffset: 0 } : {}) } }];
+    }) as unknown as Sql;
+    return { home, file, transcript, calls, sql, binding: { workspaceId: 'private-omp-workspace', nativeSessionId: session,
+      agentHome: home, nativeMessageId: 'closed', messageRecordIndex: 5, callRecordIndex: 2, callContentIndex: 0, resultRecordIndex: 4 } };
+  }
+  it.each(['original', 'error-result', 'string-result'])('retains exact %s native output and arguments through metadata ancestry', async mode => {
+    const f = await fixture(mode);
+    try {
+      expect(await readClosedOmpMessageToolResult(f.sql, f.binding)).toEqual({ file: f.file,
+        sourceSha256: createHash('sha256').update(f.transcript).digest('hex'), nativeSessionId: session,
+        nativeMessageId: 'closed', messageRecordIndex: 5, callRecordIndex: 2, callContentIndex: 0, resultRecordIndex: 4,
+        callId: 'exact-call', name: 'mcp__papercusp__capability_read', arguments: JSON.stringify({ file_path: 'private/π' }),
+        output: mode === 'string-result' ? 'exact string result' : [{ type: 'text', text: 'original π\nbytes' }],
+        isError: mode === 'error-result', calledAt: '2026-11-09T00:00:01.000Z', at: '2026-11-09T00:00:02.000Z' });
+      expect(f.calls).toEqual([['private-omp-workspace', f.file]]);
+    } finally { await fs.rm(f.home, { recursive: true, force: true }); }
+  });
+  it.each(['foreign-session', 'foreign-closure', 'wrong-result', 'wrong-name', 'malformed-error', 'malformed-arguments',
+    'malformed-output', 'missing-prompt', 'open-response', 'interrupted-response', 'other-branch', 'other-prompt',
+    'prior-closure', 'missing-parent', 'cyclic-parent', 'duplicate-record', 'duplicate-call', 'duplicate-result',
+    'reversed-time', 'early-closure', 'invalid-time', 'second-header', 'partial-source', 'invalid-json', 'linked-source',
+    'source-mutated', 'missing-frontier', 'partial-frontier', 'ahead-frontier', 'uninitialized', 'bootstrap'])
+  ('refuses %s evidence authority', async fault => {
+    const f = await fixture(fault);
+    try { expect(await readClosedOmpMessageToolResult(f.sql, f.binding)).toBeNull(); }
+    finally { await fs.rm(f.home, { recursive: true, force: true }); }
+  });
+  it('refuses foreign homes and unallocated source ordinals', async () => {
+    const f = await fixture();
+    try {
+      for (const changed of [{ agentHome: join(f.home, 'foreign') }, { nativeMessageId: 'another-closure' },
+        { messageRecordIndex: -1 }, { callContentIndex: 1.5 }, { callContentIndex: 99 },
+        { callRecordIndex: 4 }, { resultRecordIndex: 2 }, { resultRecordIndex: 99 }])
+        expect(await readClosedOmpMessageToolResult(f.sql, { ...f.binding, ...changed })).toBeNull();
+    } finally { await fs.rm(f.home, { recursive: true, force: true }); }
+  });
+});
 
 describe('source-bound closed Codex input', () => {
   const session = '11111111-2222-3333-4444-555555555555', turn = 'private-input-turn';
