@@ -135,6 +135,59 @@
     "reportedDesktopHead": "fe432f9557",
     "cleanCommitClaim": false
   },
+  "installedAttempts": [
+    {
+      "name": "2026-11-09 V6",
+      "result": "failed",
+      "workItems": ["EI-28263081559300552", "EI-28267935588893720"],
+      "plane": "Exact installed extension and PUI; canonical3170; private GNOME Shell and private PulseAudio null sinks",
+      "assertionsPassed": 26,
+      "failedAssertion": "cancelling recording neither transcribes nor sends a turn",
+      "observation": "Attempted Stop voice click ended with [BLANK_AUDIO] draft and Review your transcript notice. Pointer target was not recorded, so cancellation causality is unconfirmed.",
+      "nativeProcess": {"status": 0, "error": null},
+      "stackSampling": {"status": "no-stall", "staleMs": 8000, "sampleTimeoutMs": 12000},
+      "testSourceSha256": "3516b97a3071d3c428bec1e27e34b11e0a73feff71001f5d79df753e5b5d782f",
+      "childSubstituted": 0,
+      "rawEvidence": "/tmp/wb-installed-voice-20261109-v6/installed-shell-voice.json",
+      "rawEvidenceSha256": "5ee25f7aca5101168951fb127a7a995f080ac54906f3ce93c1e2f238a117a444",
+      "log": "/tmp/wb-installed-voice-20261109-v6.log",
+      "logSha256": "c0c8e2ab6b48c32c59c62e1c2c9192e774c72ef397946abcccbc418e7367e5cc",
+      "limitations": "Local source proof; parent gitlink mismatch is stamped DIRTY. No installed-voice pass, no GC root-cause finding, no three-OS or shipment claim. Harness scope was not explicitly set on this run; verify ledger scope before binding proof."
+    },
+    {
+      "name": "2026-11-09 V7",
+      "result": "failed",
+      "workItems": ["EI-28267935588893720", "EI-28269043610671632", "WI-6554700010046808"],
+      "plane": "Exact installed extension and PUI; canonical3170 build346953fdef; private GNOME Shell and private PulseAudio null sinks",
+      "assertionsPassed": 32,
+      "failedAssertion": "actual canonical TTS reaches the unmodified installed playback device",
+      "observation": "Recording cancellation, actual canonical STT, transcript review and real seat editing passed. Read reply returned HTTP500 handler_error: The operation was aborted due to timeout. The reviewed draft was preserved. Every recorded pointer target was stable and stage-picked correctly, including Stop voice and Read reply.",
+      "nativeProcess": {"status": 0, "error": null},
+      "stackSampling": {"status": "no-stall", "staleMs": 8000, "sampleTimeoutMs": 12000},
+      "outputAudio": {"bytes": 906938, "rms": 0, "sha256": "eacbdfb4141d65db54bdac68c9384ef4e60e57be2ee0b4a2aadff09f3dcff707"},
+      "testSourceSha256": "e395b0925cc7c390f2189edf88cde3d7f5d67646c47ed355ea8c77ab893376f3",
+      "puiSha256": "76d278fa5a80c6f0211cb88f665ff284ad8b3ecad59ae1403d3997e02a83f1d6",
+      "childSubstituted": 0,
+      "testRunHarness": "papercusp",
+      "testRunGroup": "workbench-p002-installed-voice-20261109-v7",
+      "rawEvidence": "/tmp/wb-installed-voice-20261109-v7/installed-shell-voice.json",
+      "rawEvidenceSha256": "1dd692147e80c753ff95acfaec855eba620ed039229bce85e2c5856629905afb",
+      "log": "/tmp/wb-installed-voice-20261109-v7.log",
+      "logSha256": "4cf5d8478a3da7ce7e2253b25dd6247f0aa9a1f979642bf3c6afec1395e10a65",
+      "ttsInvestigation": {
+        "rootCause": "Unconfirmed. Source inspection found unawaited audio-body promises escaping the shared synthesis try/catch; regression tests added but not yet executed. This explains a candidate HTTP500 classification defect, not the upstream synthesis delay.",
+        "assistantSourceChars": 4252,
+        "assistantSourceSha256": "38d6ab2563aed6fe779c39b43b60b073f531abb988057b9ea1dcc8c58bb47cba",
+        "shortProbes": [
+          {"sourceChars": 256, "elapsedSeconds": 30.952437934, "exit": 1, "result": "same HTTP500 body timeout", "evidence": "/tmp/wb-tts-v7-probe-256.json", "sha256": "900feb94fdeb3183e8ff87a811cc35ef9cc26cb5eb015f9e6100feb59329cc78"},
+          {"sourceChars": 512, "elapsedSeconds": 31.663955021, "exit": 1, "result": "same HTTP500 body timeout", "evidence": "/tmp/wb-tts-v7-probe-512.json", "sha256": "245df565b065eaec854d0b974e17c106b274d7d7c8245145e158be8707248b94"}
+        ],
+        "runtime": "Local listener8880 is voicemode-kokoro.service, PID3838894, with service cwd at .voicemode/services/kokoro relative to the runtime account home. Health request timed out after3seconds. Recent bounded journal shows speech requests with HTTP200 headers. No service restart, configuration change or resource-cause attribution.",
+        "next": "Wait automatic capture of the new maintained body-timeout/cancellation regressions, run them against unchanged synthesis code, then fix the proven classification defect. Independently diagnose the upstream body delay before another full voice run."
+      },
+      "limitations": "Local source proof with parent gitlink mismatch stamped DIRTY; exact child test hash verified. V7 does not establish the historical V6 pointer cause or the V4/V5 GC cause. No installed-voice pass, three-OS certificate or shipment claim."
+    }
+  ],
   "limitations": [
     "Private real GNOME virtual seat with fixture PUI and production helper/device code.",
     "Synthetic GStreamer source and sink; no physical microphone, speaker or live speech-service claim.",
