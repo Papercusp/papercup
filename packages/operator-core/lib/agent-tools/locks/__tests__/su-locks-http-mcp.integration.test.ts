@@ -24,8 +24,9 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { liveTest, probeLive } from '../../../testing/live-integration';
 
@@ -142,6 +143,77 @@ async function callTool(
 async function releaseAll(agent: string) {
   try { await callTool(agent, 'locks:release', { all_mine: true }); } catch { /* ignore */ }
 }
+
+describe('expired file-lock custody over HTTP MCP transport', () => {
+  itLive('preserves predecessor A1 before successor acquisition without changing the shared index', liveTest(async () => {
+    // A private physical domain exercises the running host adapter without
+    // editing the shared checkout or borrowing a real agent's identity.
+    const repo = mkdtempSync(join(tmpdir(), 'locks-http-custody-'));
+    const predecessor = agentId('custody-predecessor');
+    const successor = agentId('custody-successor');
+    const git = (...args: string[]) => execFileSync('git', args, {
+      cwd: repo, encoding: 'utf8', timeout: 30_000,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+    }).trim();
+    try {
+      git('init', '-b', 'main');
+      git('config', 'user.name', 'HTTP custody fixture');
+      git('config', 'user.email', 'fixture@example.test');
+      writeFileSync(join(repo, 'a.txt'), 'base\n');
+      writeFileSync(join(repo, 'b.bin'), Buffer.from([0, 1]));
+      git('add', '--', 'a.txt', 'b.bin');
+      git('-c', 'commit.gpgsign=false', 'commit', '-m', 'fixture base');
+      const base = git('rev-parse', 'HEAD');
+      const acquired = await callTool(predecessor, 'locks:acquire', {
+        coordination_domain: repo, paths: ['a.txt', 'b.bin'],
+        intent: 'HTTP custody predecessor', ttl_sec: 5,
+      });
+      expect(acquired.ok).toBe(true);
+      writeFileSync(join(repo, 'a.txt'), 'A1 staged\n');
+      git('add', '--', 'a.txt');
+      writeFileSync(join(repo, 'a.txt'), 'A1 working\n');
+      const binary = Buffer.from([0, 255, 128, 1]);
+      writeFileSync(join(repo, 'b.bin'), binary);
+      const index = readFileSync(join(repo, '.git/index'));
+      // Expiry, rather than explicit release, reaches beforeFileLocksRelease.
+      await new Promise(resolve => setTimeout(resolve, 5_100));
+      const granted = await callTool(successor, 'locks:acquire', {
+        coordination_domain: repo, paths: ['a.txt', 'b.bin'],
+        intent: 'HTTP custody successor', ttl_sec: 60,
+      }, { timeoutMs: 30_000 });
+      expect(granted.ok).toBe(true);
+      const refs = git('for-each-ref', '--format=%(refname)', 'refs/papercusp/source-custody/')
+        .split('\n').filter(Boolean);
+      expect(refs).toHaveLength(1);
+      const ref = refs[0];
+      expect(JSON.parse(git('show', `${ref}:manifest.json`))).toMatchObject({
+        kind: 'candidate', base, paths: ['a.txt', 'b.bin'],
+        requestId: expect.stringMatching(/^release:/), generation: 1,
+      });
+      expect(git('show', `${ref}:payload/a.txt`)).toBe('A1 working');
+      expect(execFileSync('git', ['show', `${ref}:payload/b.bin`], { cwd: repo })).toEqual(binary);
+      expect(readFileSync(join(repo, '.git/index'))).toEqual(index);
+      expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('A1 working\n');
+      writeFileSync(join(repo, 'a.txt'), 'B1 working\n');
+      expect(git('show', `${ref}:payload/a.txt`)).toBe('A1 working');
+      expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('B1 working\n');
+      expect(readFileSync(join(repo, '.git/index'))).toEqual(index);
+      expect(git('rev-parse', 'HEAD')).toBe(base);
+      expect(git('branch', '--show-current')).toBe('main');
+      console.log(`HTTP_CUSTODY_ACCEPTANCE ${JSON.stringify({ baseUrl: BASE, repo, base,
+        predecessor, successor, lockId: granted.lock_id, custodyRef: ref })}`);
+    } finally {
+      try {
+        for (const owner of [predecessor, successor]) {
+          await callTool(owner, 'locks:release', { coordination_domain: repo, all_mine: true },
+            { timeoutMs: 30_000 });
+        }
+      } finally {
+        rmSync(repo, { recursive: true, force: true });
+      }
+    }
+  }), 90_000);
+});
 
 // ────────────────────────────────────────────────────────────────────
 // §1. Five tools over HTTP MCP transport
