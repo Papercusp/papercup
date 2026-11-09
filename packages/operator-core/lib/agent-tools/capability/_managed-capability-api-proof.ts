@@ -8,7 +8,9 @@ import type { recordIsolatedIntegrationProof } from '../../../test/isolated-inte
 import { preparePrivateOperatorApiBundle } from '../../../test/private-http-workspace-preflight';
 
 export function managedCapabilityApiProofOptions(
-  filePath: `packages/operator-core/lib/agent-tools/capability/managed-capability-api.${'integration' | 'e2e'}.test.ts`,
+  filePath: `packages/operator-core/lib/agent-tools/capability/managed-capability-api.${'integration' | 'e2e'}.test.ts`
+    | 'libs/papercusp/packages/orchestrator/src/managed-capability-matrix-real-client.integration.test.ts',
+  scenario: 'parity' | 'offline-recovery' = 'parity',
 ): Parameters<typeof recordIsolatedIntegrationProof>[0] {
   const root = resolve(__dirname, '../../../../..');
   let prepared: Awaited<ReturnType<typeof preparePrivateOperatorApiBundle>>;
@@ -36,6 +38,7 @@ export function managedCapabilityApiProofOptions(
         '--isolated-runtime=operator-api', '--', process.execPath, '--import', 'tsx',
         resolve(__dirname, '__fixtures__/managed-api-client.mts'),
         '--prepared-api-sha=' + prepared.sha256, '--prepared-receipt-sha=' + prepared.receiptSha256,
+        ...(scenario === 'offline-recovery' ? ['--offline-recovery-only'] : []),
       ], { cwd: root, env: childEnv, detached: true, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
       observe(child);
       let result: Awaited<ReturnType<typeof captureIsolatedWorker>>;
@@ -45,15 +48,21 @@ export function managedCapabilityApiProofOptions(
       expect(result.code, result.output).toBe(0);
       const cleanup = isolatedWorkerReceipt(result.output, 'MANAGED_API_CLEANUP');
       expect(cleanup, result.output).toBeDefined();
-      expect(JSON.parse(cleanup!)).toMatchObject({
-        rows: 1, processes: 'gone', browserRoots: 'gone', terminalRecorded: true,
-      });
+      expect(JSON.parse(cleanup!)).toMatchObject({ rows: scenario === 'offline-recovery' ? 0 : 1,
+        processes: 'gone', browserRoots: 'gone', terminalRecorded: true });
       const line = isolatedWorkerReceipt(result.output, 'MANAGED_API_PROOF');
       expect(line, result.output).toBeDefined();
       const proof = JSON.parse(line!);
-      expect(proof).toMatchObject({ transport: 'http', kernel: 'retained-across-clients', browser: 'retained-across-clients',
-        image: 'original-raster', patch: 'canonical-peer-lock-and-all-hunks',
-        pty: 'refused-without-private-session-bus', foreignHandles: 'refused' });
+      if (scenario === 'offline-recovery') {
+        expect(proof).toMatchObject({ transport: 'http', recovery: 'explicit-absent-route-refusals',
+          positiveControl: 'original-file-read', effectControl: 'unchanged',
+          scope: 'three-named-routes-only', installedClientJourney: 'not-executed' });
+        expect(proof.checked).toEqual(['capability:offline_recovery', 'capability:local_recovery', 'capability:recovery']);
+      } else {
+        expect(proof).toMatchObject({ transport: 'http', kernel: 'retained-across-clients', browser: 'retained-across-clients',
+          image: 'original-raster', patch: 'canonical-peer-lock-and-all-hunks',
+          pty: 'refused-without-private-session-bus', foreignHandles: 'refused' });
+      }
       await writeFile(resolve(evidenceDir, 'managed-api-proof.json'), JSON.stringify(proof));
     },
   };

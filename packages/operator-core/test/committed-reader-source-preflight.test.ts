@@ -801,6 +801,47 @@ describe('original build observations without runtime qualification', () => {
     expect(() => f.produceObserved()).toThrow(/fresh preparation directory/);
   });
 
+  it('hands original build observations to the explicit private fixture without promoting qualification', () => {
+    const f = observedBuildFixture(), built = f.produceObserved();
+    const argv = ['--prepared-api-sha=' + built.sha256, '--prepared-receipt-sha=' + built.receiptSha256];
+    const selection = resolvePreparedCommittedReaderSource(argv, join(f.dir, 'execute'),
+      { buildObservationOnly: true, root: f.root });
+    expect(selection).toEqual({ sourceReceiptPath: join(f.dir, 'prepare/verifier-source.json'),
+      selectedCommit: f.selected.selectedCommit, sourceReceiptSha256: f.observedSource.sourceReceiptSha256,
+      receiptSha256: built.receiptSha256 });
+    expect(JSON.parse(readFileSync(join(f.dir, 'prepare/operator-api-preflight.json'), 'utf8')).qualification)
+      .toEqual({ status: 'pending' });
+    expect(() => resolvePreparedCommittedReaderSource(argv, join(f.dir, 'execute'))).toThrow();
+    expect(() => f.consume()).toThrow();
+    expect(readFileSync(`${f.bundle}.builds`, 'utf8')).toBe('build\n');
+  });
+
+  it.each(['source', 'dependencies', 'inputs', 'artifact', 'bundle', 'receipt'] as const)(
+    'refuses changed %s at the explicit observation handoff', dimension => {
+      const f = observedBuildFixture(), built = f.produceObserved();
+      const path = dimension === 'source' ? join(f.dir, 'prepare/verifier-source.json')
+        : dimension === 'dependencies' ? join(f.root, 'node_modules/example/index.js')
+        : dimension === 'inputs' ? join(f.dir, 'prepare/operator-api-inputs.json')
+        : dimension === 'artifact' ? join(f.dir, 'prepare/asset.sql')
+        : dimension === 'bundle' ? f.bundle : join(f.dir, 'prepare/operator-api-preflight.json');
+      writeFileSync(path, readFileSync(path, 'utf8') + '\n');
+      expect(() => resolvePreparedCommittedReaderSource(['--prepared-api-sha=' + built.sha256,
+        '--prepared-receipt-sha=' + built.receiptSha256], join(f.dir, 'execute'),
+      { buildObservationOnly: true, root: f.root })).toThrow();
+      expect(readFileSync(`${f.bundle}.builds`, 'utf8')).toBe('build\n');
+    });
+
+  it('refuses a re-pinned observation receipt claiming preparation qualification', () => {
+    const f = observedBuildFixture(), built = f.produceObserved();
+    const path = join(f.dir, 'prepare/operator-api-preflight.json');
+    const receipt = JSON.parse(readFileSync(path, 'utf8'));
+    receipt.qualification.status = 'preparation-qualified';
+    writeFileSync(path, JSON.stringify(receipt));
+    expect(() => resolvePreparedCommittedReaderSource(['--prepared-api-sha=' + built.sha256,
+      '--prepared-receipt-sha=' + digest(readFileSync(path))], join(f.dir, 'execute'),
+    { buildObservationOnly: true, root: f.root })).toThrow(/cannot qualify preparation/);
+  });
+
   it.each(['source', 'dependencies', 'inputs'] as const)(
     'retains original inputs and refuses %s drift during compilation', dimension => {
       const script = dimension === 'source' ? 'printf changed > helper.ts\n'

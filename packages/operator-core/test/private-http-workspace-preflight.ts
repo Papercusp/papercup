@@ -2151,15 +2151,16 @@ export function resolvePreparedPrivateApiBundle(argv: readonly string[], evidenc
 
 /** Selected source crosses the sanitized child boundary through the parent's
  * pinned preparation receipt, never through an ambient selection default. */
-export function resolvePreparedCommittedReaderSource(argv: readonly string[], evidenceDir: string) {
+export function resolvePreparedCommittedReaderSource(argv: readonly string[], evidenceDir: string,
+  observation?: { buildObservationOnly: true; root: string }) {
   assert.equal(argv.filter(value => value.startsWith('--prepared-receipt-sha=')).length, 1,
     'Committed reader requires one pinned preparation receipt');
   const prepared = readPreparedPrivateApiBundle(argv, evidenceDir);
   assert.ok(prepared?.receipt, 'Committed reader requires an independently prepared pinned API');
   const { path: bundle, receipt } = prepared;
   const closure = receipt as unknown as CommittedReaderClosure;
-  assertCommittedReaderClosure(closure);
-  if (closure.phase === 'produced') {
+  if (!observation) assertCommittedReaderClosure(closure);
+  if (!observation && closure.phase === 'produced') {
     assert.equal(closure.qualification?.status, 'preparation-qualified',
       'Partial produced preparation is not qualified for consumption');
     retainedProducedInputs(closure, bundle);
@@ -2171,6 +2172,16 @@ export function resolvePreparedCommittedReaderSource(argv: readonly string[], ev
   assert.equal(source.sourceCommit, receipt.sourceCommit, 'Prepared source selection differs');
   assert.equal(createHash('sha256').update(readFileSync(source.receiptPath)).digest('hex'), source.sha256,
     'Retained selected source receipt changed after preflight');
+  if (observation) {
+    // The explicit observation lane validates original build/source/dependency
+    // bytes, while preserving pending qualification. It cannot enter the
+    // ordinary committed-reader branch above or certify runtime inputs.
+    assert.equal(observation.buildObservationOnly, true, 'Explicit build observation mode required');
+    qualifyObservedPrivateApiBuild({ root: observation.root, bundle,
+      receiptPath: join(dirname(bundle), 'operator-api-preflight.json'),
+      receiptSha256: prepared.receiptSha256!, sourceReceiptPath: source.receiptPath,
+      sourceReceiptSha256: source.sha256, selectedCommit: source.sourceCommit, preparationOnly: true });
+  }
   return { sourceReceiptPath: source.receiptPath, selectedCommit: source.sourceCommit,
     sourceReceiptSha256: source.sha256, receiptSha256: prepared.receiptSha256! };
 }
