@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { reapArchiveCensusProducer, maintenanceDatabaseCensusDeclarations } from '../packages/operator-core/lib/backup/state-census-producers';
 import { listTasks } from '../packages/operator-core/lib/task-manager/store';
-import { historicalHostedProfileCensusProducer, historicalPlaywrightStateCensusProducer, recoverHistoricalCensusWriterEvidence, type HostedProfileWriterEvidence, type IndexedCensusWriterEvidence, type PlaywrightStateWriterEvidence } from '../packages/operator-core/lib/backup/state-census-producers';
+import { historicalHostedProfileCensusProducer, historicalPlaywrightStateCensusProducer, historicalStripeConfigCensusProducer, recoverHistoricalCensusWriterEvidence, type HostedProfileWriterEvidence, type IndexedCensusWriterEvidence, type PlaywrightStateWriterEvidence } from '../packages/operator-core/lib/backup/state-census-producers';
 import { papercuspRoot, papercuspRootForWorkspace } from '../packages/operator-core/lib/papercusp-root';
 import { checkpointLogDirFromEnv } from '../packages/operator-core/lib/release/checkpoint-log-dir';
 
@@ -66,12 +66,12 @@ export async function readMigrationCensusColumns(sql: ReturnType<typeof postgres
 }
 
 /** Importing this entry performs no census or host-catalog reads. */
-export async function runRootCensus(options: { args?: string[]; checkpointLogDir?: string; hostedProfileEvidence?: HostedProfileWriterEvidence[] } = {}) {
+export async function runRootCensus(options: { args?: string[]; checkpointLogDir?: string; hostedProfileEvidence?: HostedProfileWriterEvidence[]; historicalWriterEvidence?: PlaywrightStateWriterEvidence[] } = {}) {
 const args = options.args ?? [];
 const installed = installedRootCensusProducers();
 let hostedEvidence = options.hostedProfileEvidence ?? [];
-let playwrightEvidence: PlaywrightStateWriterEvidence[] = [];
-if (args.includes('--host-catalogs') && options.hostedProfileEvidence === undefined) {
+let playwrightEvidence: PlaywrightStateWriterEvidence[] = options.historicalWriterEvidence ?? [];
+if (args.includes('--host-catalogs') && options.hostedProfileEvidence === undefined && options.historicalWriterEvidence === undefined) {
   const sql = postgres(getHarnessAdminUrl(), { max: 1, connect_timeout: 5 });
   try {
     // Bound the writer dialect, not its filenames. A new destination is derived
@@ -83,7 +83,8 @@ if (args.includes('--host-catalogs') && options.hostedProfileEvidence === undefi
       JOIN harness_shared.session_turn_parts receipt USING (workspace_id, source_kind, session_id)
       WHERE writer.workspace_id = 'default' AND writer.source_kind = 'codex' AND writer.part_kind = 'tool_use'
         AND (writer.text LIKE '%writeFileSync(destination,encrypt(%'
-          OR (writer.text LIKE '%chromium%' AND writer.text LIKE '%statePath%'))
+          OR (writer.text LIKE '%chromium%' AND writer.text LIKE '%statePath%')
+          OR writer.text LIKE '%securewrite(%')
         AND receipt.part_idx = writer.part_idx + 1 AND receipt.part_kind = 'tool_result'
       LIMIT 101
     `;
@@ -97,8 +98,9 @@ if (args.includes('--host-catalogs') && options.hostedProfileEvidence === undefi
 }
 const historicalHosted = await historicalHostedProfileCensusProducer(hostedEvidence);
 const historicalPlaywright = await historicalPlaywrightStateCensusProducer(playwrightEvidence);
-const combinedHosted = mergeNestedCensusRoots({ roots: [...installed.roots, ...historicalHosted.roots, ...historicalPlaywright.roots],
-  declarations: [...installed.declarations, ...historicalHosted.declarations, ...historicalPlaywright.declarations] });
+const historicalStripe = await historicalStripeConfigCensusProducer(playwrightEvidence);
+const combinedHosted = mergeNestedCensusRoots({ roots: [...installed.roots, ...historicalHosted.roots, ...historicalPlaywright.roots, ...historicalStripe.roots],
+  declarations: [...installed.declarations, ...historicalHosted.declarations, ...historicalPlaywright.declarations, ...historicalStripe.declarations] });
 installed.roots = combinedHosted.roots;
 installed.declarations = combinedHosted.declarations;
 // Query exact archive identities BEFORE the ledger limit; a batch is smaller

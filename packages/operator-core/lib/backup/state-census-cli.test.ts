@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { runRootCensus, readMigrationCensusColumns, readWorkspaceCensusAccounts, readWorkspaceSetupHomes } from '../../../../scripts/state-census-roots.mts';
 import { archiveReapTail } from '../task-manager/reap-archive';
+import * as censusProducers from './state-census-producers';
 
 // Some credential writers resolve their home at module load. Isolate before
 // collection, so the in-process census cannot enumerate the developer's home.
@@ -26,6 +27,36 @@ const fixtureHome = vi.hoisted(() => {
 afterAll(() => { vi.unstubAllEnvs(); rmSync(fixtureHome, { recursive: true, force: true }); });
 
 describe('unit census executable exit contract', () => {
+  it('merges receipt-backed Stripe declarations while preserving an unproven sibling as residue', async () => {
+    const directory = join(fixtureHome, '.config', 'papercusp');
+    // The root composition scans the workspace registry even with no entries.
+    const registry = join(fixtureHome, 'registry');
+    mkdirSync(registry, { recursive: true });
+    mkdirSync(directory, { recursive: true });
+    const owned = join(directory, 'receipt-backed.json');
+    const unknown = join(directory, 'unproven.json');
+    writeFileSync(owned, 'private fixture', { mode: 0o600 });
+    writeFileSync(unknown, 'unproven fixture', { mode: 0o600 });
+    const evidence = [{ ref: 'archive:fixture', toolInput: 'fixture', receipt: '{}',
+      startedAt: '2026-10-03T05:10:33Z', finishedAt: '2026-10-03T05:10:34Z' }];
+    // Detailed writer/receipt/byte admission is exercised by the producer suite;
+    // this test guards the canonical census composition boundary.
+    const producer = vi.spyOn(censusProducers, 'historicalStripeConfigCensusProducer').mockResolvedValue({
+      roots: [{ id: 'stripe-fixture', path: directory }], declarations: [{ kind: 'path', root: 'stripe-fixture',
+        name: 'receipt-backed.json', classification: 'secret', producer: 'historical-stripe-test-config:archive:fixture' }],
+    });
+    try {
+      const report = await runRootCensus({ checkpointLogDir: join(fixtureHome, 'checkpoint-history'),
+        historicalWriterEvidence: evidence });
+      expect(producer).toHaveBeenCalledWith(evidence);
+      expect(report.inventory.some(entry => entry.producers.includes('historical-stripe-test-config:archive:fixture') && entry.classification === 'secret')).toBe(true);
+      expect(report.residue.some(entry => entry.name.endsWith('unproven.json'))).toBe(true);
+      expect(report.wholeInstallVerified).toBe(false);
+    } finally {
+      producer.mockRestore(); rmSync(owned, { force: true }); rmSync(unknown, { force: true });
+      rmSync(registry, { recursive: true, force: true });
+    }
+  });
   it('scans inactive workspace setup homes without owning copied foreign files', async () => {
     const parent = mkdtempSync(join(tmpdir(), 'workspace-setup-census-'));
     try {
