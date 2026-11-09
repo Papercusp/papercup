@@ -8232,11 +8232,13 @@ export function codexResumeProviderSwitchPreflight(
 
 /** User-facing reason for refusing a native provider change that has not been
  * verified. The caller runs this before any CODEX_HOME repair or route write.
+ * @param {{ fork?: boolean, sessionId?: string | null }} [options]
  */
 export function codexResumeProviderSwitchRefusal(
   preflight,
-  { fork = false, sessionId = null } = {},
+  options = {},
 ) {
+  const { fork = false, sessionId = null } = options;
   if (!preflight?.required || preflight.allowed) return null;
   const operation = fork ? "fork" : "resume";
   const thread = sessionId ? " " + sessionId : "";
@@ -12210,11 +12212,23 @@ export function describeResumeClaimRefusal(
  * report on one silently exempted that whole cohort from the re-anchor (the
  * 2026-07-18 su-57b6247d successor-kill loop). Fire-and-forget, bounded, never
  * rejects — a respawn must never wait on it. Exported with injectables for tests.
+ * @param {object} [options]
+ * @param {string | null} [options.coordOwnerId]
+ * @param {string | null} [options.childLaunchSessionId]
+ * @param {any} [options.managedSuccessionPermit]
+ * @param {NodeJS.ProcessEnv} [options.env]
+ * @param {typeof fetch} [options.fetchImpl]
+ * @param {string} [options.operatorUrl]
+ * @param {string | null} [options.token]
+ * @param {number} [options.timeoutMs]
+ * @param {(ownerId: any, kind: any, extra?: Record<string, unknown>, dir?: string) => boolean} [options.appendEventImpl]
  */
 export async function reportSessionRespawned(
   advSessionId,
   sessionId,
-  {
+  options = {},
+) {
+  const {
     coordOwnerId = null,
     // WI-6554700010030031: set ONLY by an in-place context reset — the launch id
     // of the same child, which its env-pinned MCP header keeps presenting.
@@ -12226,8 +12240,7 @@ export async function reportSessionRespawned(
     token = null,
     timeoutMs = 2_000,
     appendEventImpl = appendHostEvent,
-  } = {},
-) {
+  } = options;
   if (!sessionId || (!advSessionId && !coordOwnerId)) return false;
   const startedAt = Date.now();
   const callerAttemptId = randomUUID();

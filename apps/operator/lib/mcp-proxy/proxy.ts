@@ -2112,11 +2112,16 @@ interface ForwardOutcome {
 function removeQueuedAgentRequest(agent: http.Agent, request: http.ClientRequest): void {
   // ClientRequest.destroy() only destroys an assigned socket. Node's Agent keeps socketless
   // requests in `requests` and Agent.removeSocket later dispatches the queue head.
-  for (const [name, queue] of Object.entries(agent.requests)) {
+  // Node exposes this internal mutation surface as ReadOnlyDict in its public types, but the
+  // runtime stores mutable arrays here. The verified cancellation guard requires removing the
+  // exact queued request before destroy(), so narrow that runtime contract explicitly.
+  const requests = agent.requests as unknown as Record<string, http.ClientRequest[] | undefined>;
+  for (const [name, queue] of Object.entries(requests)) {
+    if (!queue) continue;
     const index = queue.indexOf(request);
     if (index < 0) continue;
     queue.splice(index, 1);
-    if (queue.length === 0) delete agent.requests[name];
+    if (queue.length === 0) delete requests[name];
     return;
   }
 }

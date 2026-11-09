@@ -2905,7 +2905,7 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
     try {
       await listen(upstream);
       const proxy = track(createMcpProxy({ listenPort: 0, targetHost: "127.0.0.1",
-        targetPort: port(upstream), log: () => {} }));
+        targetPort: port(upstream), retryWindowMs: 1_000, log: () => {} }));
       await listen(proxy);
       const guardId = "11111111-1111-4111-8111-111111111111";
       const body = JSON.stringify({ owner: "private-owner", input: "private-input" });
@@ -2979,7 +2979,7 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
     try {
       await listen(upstream);
       const proxy = track(createMcpProxy({ listenPort: 0, targetHost: "127.0.0.1",
-        targetPort: port(upstream), maxInFlight: 4, controlPlaneReserve: 2,
+        targetPort: port(upstream), retryWindowMs: 1_000, maxInFlight: 4, controlPlaneReserve: 2,
         upstreamAgent: agent, controlPlaneAgent: agent, log: () => {} }));
       await listen(proxy);
       const first = request(port(proxy), "{}", "/api/agent-mcp/tool-guard",
@@ -3415,7 +3415,10 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
           operatorUrl: `http://127.0.0.1:${port(proxy)}`,
           token: "must-not-be-logged",
           timeoutMs: 3_000,
-          appendEventImpl: (_owner, _kind, event) => reportedEvents.push(event),
+          appendEventImpl: (_owner, _kind, event) => {
+            if (event) reportedEvents.push(event);
+            return true;
+          },
         })).resolves.toBe(false);
 
         const rows = fs
