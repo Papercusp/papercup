@@ -85,7 +85,9 @@ export function defaultDirectiveRoutingDeps(sqlOverride?: Sql): DirectiveRouting
       const { resolveSessionStates } = await import('./agent-tools/coordination/liveness-oracle');
       const verdicts = await resolveSessionStates(
         ownerIds.map((ownerId) => ({ ownerId })),
-        { hydratePerId: true, psuHostPositiveAuthority: true },
+        // Open directives form a candidate pool, not a single send target.
+        // Reuse the oracle's owner-filtered batch without changing authority.
+        { hydrateBatch: true, psuHostPositiveAuthority: true },
       );
       for (const id of ownerIds) out.set(id, verdicts.get(id)?.sessionState ?? null);
       return out;

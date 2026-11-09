@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { SessionState } from './agent-tools/coordination/presence-wakeability';
 import { namedQueryStageTimings, traceNamedQueryStage, withNamedQueryDiagnosticContext } from './agent-tools/db-diagnostic-correlation-wiring';
 import {
+  defaultDirectiveRoutingDeps,
   directivesInheritedBy,
   routeDirective,
   routeOpenDirectives,
@@ -34,6 +35,49 @@ function facts(over: Partial<DirectiveRoutingFacts> = {}): DirectiveRoutingFacts
 }
 
 const row = { id: 7, recordedBy: GONE };
+
+describe('default directive liveness', () => {
+  it('reads a candidate pool once while preserving live, ended and unknown verdicts', async () => {
+    const oracle = await import('./agent-tools/coordination/liveness-oracle');
+    const resolve = oracle.resolveSessionStates;
+    const now = Date.parse('2026-11-09T01:50:00Z');
+    const ids = Array.from({ length: 200 }, (_, index) => `su-directive-${index}`);
+    const rows = ids.map(ownerId => ({
+      ownerId, heartbeatAt: new Date(now - 1000).toISOString(), stale: false,
+      host: null, pid: null, source: 'test', agentRole: 'su',
+    }));
+    const byOwner = new Map(rows.map(entry => [entry.ownerId, entry]));
+    const pointRead = vi.fn(async (ownerId: string) => byOwner.get(ownerId) ?? null);
+    const batchRead = vi.fn(async () => rows);
+    const inputs = {
+      nowMs: now,
+      getPresenceFn: pointRead,
+      listPresenceFn: batchRead as never,
+      fetchWakeabilityFn: async () => new Map(ids.slice(0, -1).map(id => [id, { wakeable: true, liveTurn: false }])),
+      fetchRecordedLiveFn: async () => new Set<string>(),
+      fetchRecordedEndedFn: async () => new Set([ids[0]]),
+      probePidFn: () => null,
+      findHostFn: () => null,
+    };
+    const reference = await resolve(ids.map(ownerId => ({ ownerId })), {
+      ...inputs, hydratePerId: true, psuHostPositiveAuthority: true,
+    });
+    expect(reference.get(ids[0])?.sessionState).toBe('ended');
+    expect(reference.get(ids[1])?.sessionState).toBe('parked');
+    expect(reference.get(ids.at(-1)!)?.sessionState).toBeNull();
+    pointRead.mockClear();
+    const spy = vi.spyOn(oracle, 'resolveSessionStates').mockImplementation((subjects, options) =>
+      resolve(subjects, { ...options, ...inputs }));
+    try {
+      const states = await defaultDirectiveRoutingDeps().sessionStates(ids);
+      expect(states).toEqual(new Map([...reference].map(([id, verdict]) => [id, verdict.sessionState])));
+      expect(batchRead).toHaveBeenCalledExactlyOnceWith({ ownerIds: ids });
+      expect(pointRead).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
 
 describe('routeDirective', () => {
   it('stays with a live, parked or unknown addressee', () => {
