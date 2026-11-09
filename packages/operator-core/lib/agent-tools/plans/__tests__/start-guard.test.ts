@@ -250,8 +250,25 @@ const MAKE_CTX = () =>
     principal: { slug: 'agent-test' },
   }) as never;
 
-const run = async (args: Record<string, unknown>) =>
-  (await tool.handler({ harness: 'papercup', ...args } as never, MAKE_CTX())) as {
+const run = async (args: Record<string, unknown>) => {
+  const input = { harness: 'papercup', ...args };
+  const originalInput = structuredClone(input);
+  expect(tool.args.parse(input)).toEqual(input);
+  const projected = lookupByMcpName('plans:start');
+  expect(projected).toBeTruthy();
+  const dispatched = await dispatchProjectedTool(projected!, 'plans:start', input, {
+    ...(MAKE_CTX() as unknown as Record<string, unknown>),
+    runId: 'start-guard-original-input-replay',
+    emit: vi.fn(),
+    gateBypass: { role: true, capability: true, quota: true },
+    transport: 'mcp',
+    requestedFormat: 'json',
+    requestedStructured: true,
+  } as never, {});
+  expect(dispatched.ok).toBe(true);
+  expect(dispatched.result?.isError).not.toBe(true);
+  expect(input).toEqual(originalInput);
+  return { ...dispatched.result, data: dispatched.result?.structuredContent } as {
     data: {
       ok: true;
       results: Array<Record<string, unknown>>;
@@ -259,6 +276,7 @@ const run = async (args: Record<string, unknown>) =>
     };
     isError?: boolean;
   };
+};
 
 function legacyBarInput(): AcceptanceBarContractSnapshotInput {
   const empty = () => ({ rows: [], limit: 1, truncated: false });
