@@ -325,8 +325,11 @@ describe('unit census executable exit contract', () => {
           'control-identity': { processIdentity: 'linux:\n' }, 'extra-field': { unknown: true },
         }).map(([name, fields]) => [name, JSON.stringify({ ...lock, ...fields })] as [string, string]),
       ]);
-      const rejectedLocks: string[] = [`${unprovenPeer}${lockSuffix}`];
+      // Keep one visible unproven sibling in the inventory. The nested
+      // unproven-app remains a single failing subtree in diagnostic mode.
+      const rejectedLocks: string[] = [join(directory, 'registry', 'fixture', '.papercusp', 'harness', `unproven-store${lockSuffix}`)];
       writeFileSync(rejectedLocks[0], JSON.stringify(lock));
+      writeFileSync(`${unprovenPeer}${lockSuffix}`, JSON.stringify(lock));
       for (const kind of [...rejectedContents.keys(), 'symlink', 'directory',
         ...(process.platform === 'linux' ? ['fifo'] : [])]) {
         const store = join(directory, 'registry', 'fixture', '.papercusp', `lock-case-${kind}`, 'hyperbee');
@@ -393,6 +396,8 @@ describe('unit census executable exit contract', () => {
       expect(report.representedPeers.some((entry: { name: string }) => entry.name === 'registry/fixture/.papercusp/harness/retained-app/hyperbee')).toBe(true);
       expect(report.residue.some((entry: { name: string }) => entry.name === 'registry/fixture/.papercusp/harness/retained-app')).toBe(true);
       expect(report.residue.some((entry: { name: string }) => entry.name === 'registry/fixture/.papercusp/harness/unproven-app')).toBe(true);
+      expect(report.representedUnknown.some((entry: { name: string }) => entry.name === 'registry/fixture/.papercusp/harness/unproven-app')).toBe(true);
+      expect(report.inventory.some((entry: { name: string }) => entry.name === 'registry/fixture/.papercusp/harness/unproven-app/hyperbee.single-instance.lock')).toBe(false);
       expect(report.representedPeers.some((entry: { name: string }) => entry.name.includes('/unproven-app/'))).toBe(false);
       expect(report.representedPeers[0].disposition).toBe('preserve-state-subtree');
       expect(report.representedReleases[0].disposition).toBe('preserve-state-subtree');
@@ -418,6 +423,7 @@ describe('unit census executable exit contract', () => {
       expect(inProcess.residue.map(entry => `${entry.kind}:${entry.root}:${entry.name}`).sort())
         .toEqual(report.residue.map((entry: { kind: string; root: string; name: string }) => `${entry.kind}:${entry.root}:${entry.name}`).sort());
       for (const [path, content] of acceptedLocks) expect(readFileSync(path, 'utf8')).toBe(content);
+      expect(readFileSync(`${unprovenPeer}${lockSuffix}`, 'utf8')).toBe(JSON.stringify(lock));
       expect([...acceptedLocks.keys()].map(path => lstatSync(path).ino)).toEqual(lockInodes);
       expect(readlinkSync(rejectedLocks.find(path => path.includes('lock-case-symlink'))!)).toBe(`${peer}${lockSuffix}`);
       for (const [kind, content] of rejectedContents) {
