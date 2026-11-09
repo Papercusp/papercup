@@ -538,7 +538,8 @@ export function productionConformanceDeps(input: ProductionConformanceDepsInput)
       }
       if (check.kind === 'instrument') {
         const results = await runInstrumentChecks({ rubricRef: request.checkId, criteria: [{ key: request.checkId, check }],
-          workspaceId: input.workspaceId, harnessSlug: input.harnessSlug });
+          workspaceId: input.workspaceId, harnessSlug: input.harnessSlug,
+          subject: { kind: 'plan', ref: input.planSlug } });
         return foldResults('instrument', results, nowIso());
       }
       if (check.kind === 'requirements') {

@@ -22,6 +22,26 @@ describe('wouldCreateCycle (acyclicity guard, P-008)', () => {
     expect(wouldCreateCycle(m({ B: ['A'] }), 'C', ['B'])).toBe(false); // A<-B<-C linear
   });
 
+  it('allows a safe replacement despite an unrelated existing cycle', () => {
+    expect(wouldCreateCycle(m({ A: ['B'], B: ['A'] }), 'C', ['D'])).toBe(false);
+  });
+
+  it('allows an unchanged blocker set in an existing cycle', () => {
+    expect(wouldCreateCycle(m({ A: ['B'], B: ['A'] }), 'A', ['B'])).toBe(false);
+  });
+
+  it('still rejects a new cycle when an unrelated cycle already exists', () => {
+    expect(wouldCreateCycle(m({ A: ['B'], B: ['A'], D: ['C'] }), 'C', ['D'])).toBe(true);
+  });
+
+  it('rejects expanding an existing cycle to include another member', () => {
+    expect(wouldCreateCycle(m({ A: ['B'], B: ['A'], C: ['A'] }), 'A', ['B', 'C'])).toBe(true);
+  });
+
+  it('allows breaking one cycle while an unrelated cycle remains', () => {
+    expect(wouldCreateCycle(m({ A: ['B'], B: ['A'], C: ['D'], D: ['C'] }), 'A', [])).toBe(false);
+  });
+
   it('uses REPLACE semantics — clearing a blocked item breaks its prior cycle', () => {
     // current has A blocked-by B; replacing A's blockers with [] removes the back-edge.
     expect(wouldCreateCycle(m({ A: ['B'], B: ['A'] }), 'A', [])).toBe(false);

@@ -2488,6 +2488,30 @@ describe('listSpecEvidence timestamp normalization', () => {
       passedCaseTitles: ['suite > exactly passed case', 'suite > another passed case'],
     });
     if (testNamePattern === null) expect(row.testRunExecution).not.toHaveProperty('testNamePattern');
+    expect(row.testRunExecution).not.toHaveProperty('cases');
+    const savedExecution = structuredClone(h.rows[0].test_run_execution_details);
+    h.caseRows = [
+      { test_run_id: 44, case_key: 'duplicate title', occurrence: 0, status: 'pass', duration_ms: 1 },
+      { test_run_id: 44, case_key: 'duplicate title', occurrence: 1, status: 'fail', duration_ms: 2 },
+      { test_run_id: 44, case_key: 'unexecuted case', occurrence: 0, status: 'skip', duration_ms: 0 },
+    ];
+    const before = { schemaVersion: 1, units: ['staging-operator'], fingerprint: 'a'.repeat(64),
+      observedAt: '2026-10-06T16:30:00.000Z' };
+    Object.assign(h.rows[0].test_run_execution_details as object, {
+      runtimeEnvironmentBefore: before, runtimeEnvironmentAfter: { ...before, observedAt: '2026-10-06T16:31:00.000Z' },
+    });
+    h.rows[0].test_run_finished_at = '2026-10-06T16:32:00.000Z';
+    const [withCases] = await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'], includeCaseEvidence: true });
+    expect(withCases.testRunExecution).toMatchObject({ finishedAt: '2026-10-06T16:32:00.000Z', runtimeEnvironment: before,
+      cases: [
+        { caseKey: 'duplicate title', occurrence: 0, status: 'pass' },
+        { caseKey: 'duplicate title', occurrence: 1, status: 'fail' },
+        { caseKey: 'unexecuted case', occurrence: 0, status: 'skip' },
+      ] });
+    h.caseRows = null;
+    h.rows[0].test_run_execution_details = savedExecution;
+    delete h.rows[0].test_run_cases;
+    delete h.rows[0].test_run_finished_at;
     const query = h.queries.find(entry => entry.sql.includes('SELECT b.id'))?.sql ?? '';
     expect(query).toContain('tr.status AS test_run_status');
     expect(query).toContain('tr.execution_details AS test_run_execution_details');

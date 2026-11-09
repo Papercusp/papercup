@@ -35,6 +35,7 @@ import {
   parseBm25LatencyArtifact, platformComputedInstrumentKeys, getRegisteredInstrument,
 } from './rubric-instrument-registry';
 import { moduleRepoRoot } from './module-repo-root';
+import { MANAGED_INVENTORY_EVIDENCE_INSTRUMENT, MANAGED_NATIVE_CUTOVER_PLAN } from './managed-capability-inventory-evidence';
 import { CARRY_DRILL_LIFECYCLE_INSTRUMENT_KEY } from './cold-boot-drill';
 import { DREAM_CONTROL_LIVE_INSTRUMENT_KEY, DREAM_CONTROL_SOURCE_PLAN, measureDreamControlLiveEdition } from './dream/dream-control-live-instrument';
 import type { measureCarryDrillShipment } from './carry-drill-shipment';
@@ -879,6 +880,29 @@ export async function resolveScorecardInstrumentSnapshots(
           cannotObserve: measured.metrics.cannotObserve,
         },
       };
+      continue;
+    }
+    if (key === MANAGED_INVENTORY_EVIDENCE_INSTRUMENT) {
+      const evidenceRef = 'harness_shared.plan_spec_evidence+test_case_runs:managed-inventory-claim-integrity';
+      const workspaceId = input.rubric.workspaceId, harnessSlug = input.rubric.subjectHarnessSlug;
+      if (subject.kind !== 'plan' || subject.ref !== MANAGED_NATIVE_CUTOVER_PLAN ||
+          input.rubric.subjectPlan !== subject.ref || !workspaceId || !harnessSlug ||
+          start >= end || end > Date.parse(measuredAt) || Date.parse(measuredAt) - end > 60_000) {
+        snapshots[key] = { ...unknown('An exact native-cutover plan and current completed observation window are required.'), evidenceRef };
+        continue;
+      }
+      try {
+        const instrument = getRegisteredInstrument(key);
+        if (instrument?.evaluator !== 'platform' || !instrument.rescore) throw new Error('Inventory comparator is not registered.');
+        const result = await instrument.rescore.resolve({ workspaceId, harnessSlug,
+          windowStart: subject.windowStart, windowEnd: subject.windowEnd, subject: { kind: 'plan', ref: subject.ref } });
+        snapshots[key] = { verdict: result.verdict, measuredAt, provenance: 'platform-computed', evidenceRef,
+          window: { ...window, workspaceId, harnessSlug },
+          value: { resolver: key, resolverVersion: 1, detail: result.detail, evidenceRefs: result.evidenceRefs,
+            quantity: result.value, unit: instrument.rescore.unit } };
+      } catch (error) {
+        snapshots[key] = { ...unknown(`Inventory comparison unavailable: ${error instanceof Error ? error.message : String(error)}`), evidenceRef };
+      }
       continue;
     }
     if (Object.values(REUSE_MEASUREMENT_INSTRUMENT_KEYS).some(value => value === key)) {

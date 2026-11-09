@@ -6,7 +6,7 @@
  * coord_links rel='blocks'. Same feature→feature shape as the coord_links reader
  * (feature-blockers-edges.ts) so the seam swap is transparent, but on a dedicated, indexed,
  * single-purpose table. Acyclicity is enforced HERE on write (a CHECK can't see the transitive
- * graph), reusing `detectDependencyCycle`. FK to the unified work_items lands with P-009.
+ * graph), reusing the canonical dependency graph analysis. FK to the unified work_items lands with P-009.
  */
 import { getOrgPg, withSerializableRetry, type SerializableRetryOptions } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
@@ -14,7 +14,6 @@ import type { LinkRow, ObjectRef } from '@papercusp/coordination/capabilities';
 import type { Sql } from 'postgres';
 import { featureRef, FEATURE_KIND, isQualifiedFeatureRef } from '../issue-blocks-merge';
 import { resolveConcreteWorkspaceId } from '../workspace-registry';
-import { detectDependencyCycle } from '../feature-deps';
 import {
   analyzeDependencyGraph,
   dependencyIdentityKey,
@@ -1345,18 +1344,36 @@ export const workItemDepEdgeReader = {
 
 /**
  * Acyclicity guard (P-008): would REPLACING `blocked`'s blocker set with `newBlockers` create a
- * dependency cycle? Pure (reuses detectDependencyCycle). Replace-semantics matches the writer
- * (delete + insert the blocked item's edges); self-edges are dropped (the no-self-block invariant).
+ * dependency cycle? Compare cycle components before and after, matching the canonical writer:
+ * an unrelated pre-existing cycle must not reject a safe replacement. Replace-semantics matches
+ * delete + insert of the blocked item's edges; self-edges are dropped (the no-self-block invariant).
  */
 export function wouldCreateCycle(
   current: ReadonlyMap<string, readonly string[]>,
   blocked: string,
   newBlockers: readonly string[],
 ): boolean {
-  const edges = new Map<string, string[]>();
-  for (const [k, v] of current) if (k !== blocked) edges.set(k, [...v]);
-  edges.set(blocked, Array.from(new Set(newBlockers.filter((b) => b !== blocked))));
-  return detectDependencyCycle(edges).hasCycle;
+  const candidate = new Map(current);
+  candidate.set(blocked, Array.from(new Set(newBlockers.filter((b) => b !== blocked))));
+  const analyse = (graph: ReadonlyMap<string, readonly string[]>): DependencyGraphAnalysis => {
+    const ids = new Set<string>(graph.keys());
+    const edges: DependencyGraphEdgeInput[] = [];
+    for (const [dependant, blockers] of graph) {
+      for (const blocker of blockers) {
+        ids.add(blocker);
+        edges.push({
+          blocked: { kind: FEATURE_KIND, ref: dependant },
+          blocker: { kind: FEATURE_KIND, ref: blocker },
+        });
+      }
+    }
+    return analyzeDependencyGraph({
+      nodes: [...ids].map((ref) => ({ id: { kind: FEATURE_KIND, ref } })),
+      edges,
+    });
+  };
+  const beforeCycles = new Set(analyse(current).stronglyConnectedComponents.map(cycleSignature));
+  return analyse(candidate).stronglyConnectedComponents.some((component) => !beforeCycles.has(cycleSignature(component)));
 }
 
 /**

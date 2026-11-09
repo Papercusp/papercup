@@ -35,8 +35,14 @@ export function specQualityIdentityRefusal(
   recorded: { specSetHashVersion?: number; evaluatorBuild?: { sha: string | null; version: string } },
   live = getBuildInfo(),
 ): { code: 'spec_quality_evaluator_mismatch'; error: string } | undefined {
+  if (!live.sha?.trim()) return {
+    code: 'spec_quality_evaluator_mismatch',
+    error: `Spec quality requires a verified build identity; evaluator ${JSON.stringify(live)} has no attributable SHA. ` +
+      'Use a maintained runtime with a verified build identity, then re-evaluate and emit on that same build/route; ' +
+      'no card or audit was created. Historical cards remain unchanged.',
+  };
   if ((recorded.specSetHashVersion === undefined || recorded.specSetHashVersion === SPEC_SET_HASH_VERSION) &&
-      (!recorded.evaluatorBuild || (live.sha && recorded.evaluatorBuild.sha === live.sha &&
+      (!recorded.evaluatorBuild || (recorded.evaluatorBuild.sha === live.sha &&
         recorded.evaluatorBuild.version === live.version))) return undefined;
   return {
     code: 'spec_quality_evaluator_mismatch',

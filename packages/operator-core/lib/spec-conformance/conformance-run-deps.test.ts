@@ -41,9 +41,26 @@ import { judgeTestsFromLedger, lifecycleOnlyAdmissionRefusal, productionConforma
 import * as testContent from './conformance-test-content';
 import * as buildInfo from '../build-info';
 import { buildRubricCheckLedgerRow, type RubricCheckResult } from '../check-results-ledger';
+import * as checkLedger from '../check-results-ledger';
+import { MANAGED_INVENTORY_EVIDENCE_INSTRUMENT } from '../managed-capability-inventory-evidence';
 import { evaluateCriterionCargoChecks, type CriterionCargoCheckRunner, type RequirementRealizationReader } from '../rubrics-criterion-checks';
 import { runPlanConformance } from './conformance-run';
 import { evaluateConformanceClosure } from './closure-guard';
+
+it('executes a subject-scoped registered instrument on the canonical conformance plan', async () => {
+  const original = checkLedger.runInstrumentChecks;
+  const resolve = vi.fn(async () => ({ verdict: 'pass' as const, detail: 'measured fixture', value: 0 }));
+  const spy = vi.spyOn(checkLedger, 'runInstrumentChecks').mockImplementation(input =>
+    original({ ...input, resolvePlatform: resolve }));
+  try {
+    const result = await productionConformanceDeps({ workspaceId: 'workspace', harnessSlug: 'papercusp', planSlug: 'actual-plan' })
+      .evaluateCheck({ barKey: 'R-13', role: 'violated-when', checkId: 'R-13:inventory-claim-evidence-mismatch',
+        check: { kind: 'instrument', instrumentKey: MANAGED_INVENTORY_EVIDENCE_INSTRUMENT } });
+    expect(result.verdict).toBe('pass');
+    expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'workspace', harnessSlug: 'papercusp',
+      subject: { kind: 'plan', ref: 'actual-plan' } }), expect.any(Object));
+  } finally { spy.mockRestore(); }
+});
 
 describe('requirements checks through conformance and discharge closure', () => {
   const planContent = `---

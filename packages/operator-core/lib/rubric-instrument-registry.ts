@@ -2,6 +2,7 @@ import { papercuspPath } from '@papercusp/host-platform/home';
 import { LEAD_SOURCE_OBSERVATIONS_INSTRUMENT_KEY, leadSourceObservationsRescore } from './relationship-graph/qualification-instrument';
 import type { RecordedRubricCheckSubject } from '@papercusp/test-config/execution-details';
 import { TOOL_DELIVERY_INSTRUMENTS } from './tool-delivery-acceptance';
+import { MANAGED_INVENTORY_EVIDENCE_INSTRUMENT, managedCapabilityInventoryRescore } from './managed-capability-inventory-evidence';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
 import { engineeringEvidenceReleaseInstrument } from './code-intelligence/engineering-evidence-release-instrument';
 import { CODE_INTEL_UNKNOWN_RATE_INSTRUMENT_KEY, codeIntelUnknownRateRescore } from './code-intelligence/code-intel-unknown-rate-probe';
@@ -798,6 +799,7 @@ const COMMAND_INSTRUMENTS: readonly CommandInstrument[] = Object.freeze([
  */
 export function platformComputedInstrumentKeys(): string[] {
   return [
+    MANAGED_INVENTORY_EVIDENCE_INSTRUMENT,
     LEAD_SOURCE_OBSERVATIONS_INSTRUMENT_KEY,
     CARRY_DRILL_LIFECYCLE_INSTRUMENT_KEY,
     DREAM_CONTROL_LIVE_INSTRUMENT_KEY,
@@ -865,7 +867,8 @@ export function instrumentRegistry(): ReadonlyMap<string, RegisteredInstrument> 
       evaluator: 'platform',
       description: 'Resolved in-process by scorecards:emit / scorecards:evaluate as a platform-computed snapshot.',
       resolvedBy: 'scorecards:instrument-snapshots',
-      ...(key === LEAD_SOURCE_OBSERVATIONS_INSTRUMENT_KEY ? { rescore: leadSourceObservationsRescore() }
+      ...(key === MANAGED_INVENTORY_EVIDENCE_INSTRUMENT ? { rescore: managedCapabilityInventoryRescore() }
+        : key === LEAD_SOURCE_OBSERVATIONS_INSTRUMENT_KEY ? { rescore: leadSourceObservationsRescore() }
         : key === CODE_INTEL_UNKNOWN_RATE_INSTRUMENT_KEY ? { rescore: codeIntelUnknownRateRescore() }
         : key === CODE_INTEL_LIVENESS_INSTRUMENT_KEY ? { rescore: codeIntelLivenessRescore() }
         : key === LEG_OUTCOMES_INSTRUMENT_KEY ? { rescore: codeIntelLegOutcomesRescore() }

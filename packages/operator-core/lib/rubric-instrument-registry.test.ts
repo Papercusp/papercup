@@ -29,6 +29,7 @@ import { COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY } from './storage
 import { LIVE_FORKSERVER_INSTRUMENT_KEY } from './fleet/forkserver/live-instrument';
 import { DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY, POSTGRES_RETENTION_INSTRUMENT_KEY } from './storage/retention-interval-evidence';
 import { LEAD_SOURCE_OBSERVATIONS_INSTRUMENT_KEY } from './relationship-graph/qualification-instrument';
+import { MANAGED_INVENTORY_EVIDENCE_INSTRUMENT } from './managed-capability-inventory-evidence';
 import { retainMeasurementProvenance } from './measurement-provenance';
 import {
   BM25_LATENCY_INSTRUMENT_KEY,
@@ -249,6 +250,7 @@ describe('the registry seed set', () => {
 
   it('registers exactly the keys scorecards resolves as platform-computed', () => {
     const expected = [
+      MANAGED_INVENTORY_EVIDENCE_INSTRUMENT,
       DREAM_CONTROL_LIVE_INSTRUMENT_KEY,
       'observability:configured-project-delivery',
       'observability:staging-runtime-journey',
@@ -360,6 +362,12 @@ describe('the registry seed set', () => {
             expect(instrument.rescore?.unit).toBe('count');
             expect(instrument.rescore?.scope).toBe('harness');
             expect(await instrument.rescore!.resolve(window)).toEqual({ verdict: 'unknown', detail: 'Exact workspace and harness required.' });
+          } else if (key === MANAGED_INVENTORY_EVIDENCE_INSTRUMENT) {
+            expect(instrument.rescore?.windowMs).toBe(7 * 24 * 60 * 60_000);
+            expect(instrument.rescore?.scope).toBe('subject');
+            expect(await instrument.rescore!.resolve(window)).toEqual({
+              verdict: 'unknown', detail: 'exact_native_cutover_plan_workspace_harness_required',
+            });
           } else if (key === LEAD_SOURCE_OBSERVATIONS_INSTRUMENT_KEY) {
             expect(instrument.rescore?.windowMs).toBe(30 * 24 * 60 * 60_000);
             expect(instrument.rescore?.unit).toBe('count');

@@ -3348,6 +3348,8 @@ export interface ListSpecEvidenceOptions {
   diagnostics?: ListSpecEvidenceDiagnostics;
   /** Internal contract inspection only. Rows remain unmeasured and cannot prove freshness. */
   measurementMode?: 'metadata';
+  /** Exact case census and stable recorded runtime for inventory claim comparisons. */
+  includeCaseEvidence?: boolean;
 }
 
 export interface WorkItemSpecRevisionEdge {
@@ -5699,6 +5701,16 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
                   failed: parsedTestRunExecution.failed,
                   skipped: parsedTestRunExecution.skipped,
                   collectionFailed: parsedTestRunExecution.collectionFailed,
+                  // Preserve the exact ledger census for consumers comparing claims,
+                  // including failed/skipped cases and duplicate-title occurrences.
+                  ...(options.includeCaseEvidence ? {
+                    cases: row.test_run_cases ?? [],
+                    runtimeEnvironment: stableRecordedRuntimeEnvironment(
+                      parsedTestRunExecution.runtimeEnvironmentBefore,
+                      parsedTestRunExecution.runtimeEnvironmentAfter,
+                    ) ?? null,
+                    finishedAt: row.test_run_finished_at == null ? null : pgTimestampToIso(row.test_run_finished_at),
+                  } : {}),
                   ...(parsedTestRunExecution.testNamePattern !== null
                     ? { testNamePattern: parsedTestRunExecution.testNamePattern }
                     : {}),

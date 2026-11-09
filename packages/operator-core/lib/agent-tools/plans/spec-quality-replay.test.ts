@@ -1,9 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SpecClauseRevision } from './spec-clauses-store';
 import { hashPlanContent } from './content-hash';
 import { evaluatePlanSpecQuality } from './spec-quality';
 import { computeSpecSetHash, SPEC_SET_HASH_VERSION } from './spec-clause-compiler';
-import { getBuildInfo } from '../../build-info';
+import * as buildInfo from '../../build-info';
 import { scorecardEvidenceFingerprint } from '../../scorecards';
 import { applyPayloadTier } from '@papercusp/tooldef';
 import { applyResultDoor } from '../../result-door';
@@ -45,6 +45,8 @@ const call = async (args: Record<string, unknown>) => {
   return (result as { data: Record<string, any> }).data;
 };
 
+afterEach(() => vi.restoreAllMocks());
+
 beforeEach(() => {
   vi.resetAllMocks();
   reads.discovery.mockImplementation(async (_input: unknown, accept: () => Promise<unknown>) => ({ ok: true, result: await accept() }));
@@ -57,6 +59,18 @@ beforeEach(() => {
 });
 
 describe('immutable spec-quality replay (WI-10007284)', () => {
+  it.each([null, '', ' \t '].flatMap(sha => ['full', 'summary'].flatMap(detail =>
+    ['fresh', 'replay'].map(route => ({ sha, detail, route })))))(
+    'refuses an unpinned live evaluator before reads ($route, $detail, SHA=$sha)', async ({ sha, detail, route }) => {
+      vi.spyOn(buildInfo, 'getBuildInfo').mockReturnValue({ ...buildInfo.getBuildInfo(), sha });
+      const result = await call({ ...(route === 'replay' ? replayArgs : { slug: 'quality-plan', harness: 'papercusp' }), detail });
+      expect(result).toMatchObject({ ok: false, code: 'spec_quality_evaluator_mismatch' });
+      expect(result.error).toContain('verified build identity');
+      expect(result).not.toHaveProperty('scorecardDraft');
+      expect(result).not.toHaveProperty('scorecardBinding');
+      for (const read of Object.values(reads)) expect(read).not.toHaveBeenCalled();
+    });
+
   it('keeps an exact complete evidence binding through the bounded replay transport (WI-6554700010045887)', async () => {
     const full = await call(replayArgs);
     const summary = await call({ ...replayArgs, detail: 'summary' });
@@ -89,9 +103,9 @@ describe('immutable spec-quality replay (WI-10007284)', () => {
   it('binds the executable quality recipe to the serving evaluator and hash protocol', async () => {
     const result = await call({ slug: 'quality-plan', harness: 'papercusp' });
     expect(result.scorecardDraft.rerunRecipe).toMatchObject({
-      evaluator: 'plans:evaluate-spec-quality', evaluatorBuild: getBuildInfo(),
+      evaluator: 'plans:evaluate-spec-quality', evaluatorBuild: buildInfo.getBuildInfo(),
       specSetHashVersion: SPEC_SET_HASH_VERSION,
-      args: { expectedSpecSetHash: result.specSetHash, evaluatorBuild: getBuildInfo(),
+      args: { expectedSpecSetHash: result.specSetHash, evaluatorBuild: buildInfo.getBuildInfo(),
         specSetHashVersion: SPEC_SET_HASH_VERSION, replaySnapshot: result.replaySnapshot },
     });
     expect((await call(result.scorecardDraft.rerunRecipe.args)).ratings).toEqual(result.ratings);
