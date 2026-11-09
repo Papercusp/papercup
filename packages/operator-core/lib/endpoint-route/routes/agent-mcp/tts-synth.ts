@@ -33,6 +33,11 @@ import { prepareForReading } from '../../../voice-engines/prepareForTTS';
 import { CARTESIA_API_VERSION } from '../../../voice-engines/cartesia';
 
 const TTS_TIMEOUT_MS = 30_000;
+// The HTTP request cap is not a CPU inference budget. On the CPU Kokoro
+// service, even 128 source characters can exceed the existing 30s deadline.
+// The retained exact-source probe (EI-28269043610671632) completed every
+// lossless 40-byte work unit within that deadline, including numeric IDs.
+const KOKORO_READING_CHUNK_BYTES = 40;
 
 export type Synth =
   | { ok: true; audio: ArrayBuffer; contentType: string }
@@ -321,9 +326,10 @@ export async function* synthesizeReading(
   if (!resolved.ok) { yield resolved; return; }
   const prepared = prepareForReading(source, options.format);
   if (prepared.text === null) { yield { ok: false, error: 'No readable text to speak.', status: 400 }; return; }
-  // Shared route ceiling is below each supported provider's request cap. UTF-8
-  // bounding also keeps non-Latin requests within the same byte budget.
-  const chunks = splitSpeechText(prepared.text, { maxChars: MAX_TEXT_CHARS, maxUtf8Bytes: MAX_TEXT_CHARS });
+  // Bound local inference work separately from the providers' HTTP input cap.
+  // The same deterministic partition serves streaming and indexed native reads.
+  const chunkLimit = resolved.engine === 'kokoro' ? KOKORO_READING_CHUNK_BYTES : MAX_TEXT_CHARS;
+  const chunks = splitSpeechText(prepared.text, { maxChars: chunkLimit, maxUtf8Bytes: chunkLimit });
   const selected = options.chunkIndex;
   if (selected !== undefined && (!Number.isSafeInteger(selected) || selected < 0 || selected >= chunks.length)) {
     yield { ok: false, error: 'Reading chunk index is outside the source.', status: 400 }; return;

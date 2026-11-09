@@ -78,6 +78,48 @@ afterEach(() => {
 describe('incremental original reading', () => {
   const prefs = () => ({ ...PREFS, ttsEngine: 'elevenlabs' } as VoicePrefs);
 
+  it('finishes a long original reading through CPU Kokoro without oversized inference requests', async () => {
+    // Model the observed provider deadline failure, rather than accepting any
+    // payload merely because it is below the HTTP route's 4000-character cap.
+    const sent: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      expect(body).toMatchObject({ model: 'kokoro', voice: 'af_bella', response_format: 'wav' });
+      if (new TextEncoder().encode(body.input).length > 40) throw new DOMException('CPU inference deadline', 'TimeoutError');
+      sent.push(body.input);
+      return new Response('AUDIO-BYTES');
+    }));
+    const source = '🚧 Blocked — escalation:mw8ji2pl-0000-447eb0d2c6164340bda6672a576653 日本語. '.repeat(65) + ' FINAL TAIL.';
+    expect(source.length).toBeGreaterThan(4000);
+    const results = [];
+    for await (const result of synthesizeReading(source, { ...PREFS, ttsEngine: 'kokoro' } as VoicePrefs)) results.push(result);
+    expect(results.every(result => result.ok)).toBe(true);
+    expect(sent.join('')).toBe(source);
+    expect(results.at(-1)).toMatchObject({ engine: 'kokoro', end: source.length, index: sent.length - 1, total: sent.length });
+  });
+
+  it('keeps native indexed Kokoro reads on the same lossless partition and synthesizes only the requested unit', async () => {
+    const fetch = stubFetch();
+    const selected = { ...PREFS, ttsEngine: 'kokoro' } as VoicePrefs;
+    const source = 'Original 🐉 text with identifier 12345678901234567890. '.repeat(3) + ' LAST.';
+    const first = (await synthesizeReading(source, selected, { chunkIndex: 0 }).next()).value;
+    expect(first?.ok).toBe(true);
+    if (!first?.ok) throw new Error('first reading unit failed');
+    const sent = [first.text];
+    let end = first.end;
+    for (let index = 1; index < first.total; index++) {
+      const result = (await synthesizeReading(source, selected, { chunkIndex: index }).next()).value;
+      expect(result).toMatchObject({ ok: true, index, total: first.total, start: end });
+      if (!result?.ok) throw new Error('indexed reading unit failed');
+      expect(fetch).toHaveBeenCalledTimes(index + 1);
+      expect(JSON.parse(String(fetch.mock.calls[index][1]?.body)).input).toBe(result.text);
+      sent.push(result.text);
+      end = result.end;
+    }
+    expect(sent.join('')).toBe(source);
+    expect(end).toBe(source.length);
+  });
+
   it('sends the whole source once in ordered byte-bounded chunks with a final Unicode tail', async () => {
     const fetch = stubFetch();
     const source = '日本語 🐉 paragraph. '.repeat(600) + ' FINAL TAIL {name}.';
