@@ -4,6 +4,12 @@ import { describe, expect, it } from 'vitest';
 import { createOmpNativeHomes } from '../test/omp-native-home';
 
 describe('owned OMP native profiles', () => {
+  it('allocates nothing when a suite is only collected', () => {
+    const homes = createOmpNativeHomes();
+    try { expect(homes.root).toBeUndefined(); }
+    finally { homes.dispose(); }
+  });
+
   it('reuses extracted libraries across disposable homes while isolating settings and sessions', () => {
     const homes = createOmpNativeHomes();
     try {
@@ -23,7 +29,7 @@ describe('owned OMP native profiles', () => {
         .toBe('owned native artifact');
       expect(homes.nativeFiles()).toContain('18.0.3/fixture.node');
     } finally { homes.dispose(); }
-    expect(existsSync(homes.root)).toBe(false);
+    expect(existsSync(homes.root!)).toBe(false);
   });
 
   it('removes its native cache at teardown and refuses later allocation', () => {

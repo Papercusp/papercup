@@ -4,24 +4,27 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 export function createOmpNativeHomes() {
-  const root = mkdtempSync(join(tmpdir(), 'omp-native-homes-'));
-  const cache = join(root, 'natives');
-  mkdirSync(cache);
+  // Vitest also imports suites while listing tests; that path runs no teardown.
+  let root: string | undefined;
   let disposed = false;
   return {
-    root,
+    get root() { return root; },
     allocate() {
       if (disposed) throw new Error('OMP native homes already disposed');
+      if (!root) {
+        root = mkdtempSync(join(tmpdir(), 'omp-native-homes-'));
+        mkdirSync(join(root, 'natives'));
+      }
       const home = mkdtempSync(join(root, 'profile-'));
       mkdirSync(join(home, '.omp'));
-      symlinkSync(cache, join(home, '.omp', 'natives'), 'dir');
+      symlinkSync(join(root, 'natives'), join(home, '.omp', 'natives'), 'dir');
       return home;
     },
     nativeFiles() {
-      return readdirSync(cache, { recursive: true }).map(String).sort();
+      return root ? readdirSync(join(root, 'natives'), { recursive: true }).map(String).sort() : [];
     },
     dispose() {
-      rmSync(root, { recursive: true, force: true });
+      if (root) rmSync(root, { recursive: true, force: true });
       disposed = true;
     },
   };
