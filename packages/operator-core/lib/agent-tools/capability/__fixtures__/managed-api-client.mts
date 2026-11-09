@@ -42,7 +42,8 @@ const host = spawn(process.execPath, [bundle], { env: hostEnv, stdio: ['ignore',
 host.stdout.on('data', data => process.stdout.write(data));
 host.stderr.on('data', data => process.stderr.write(data));
 const hostIdentity = readProcessIdentity(host.pid!);
-try { await waitForPrivateOperator({ host, base, evidenceDir, environment: hostEnv, hostIdentity }); }
+try { await waitForPrivateOperator({ host, base, evidenceDir, environment: hostEnv, hostIdentity,
+  requireBuildIdentity: true }); }
 catch (error) { await stopPrivateOperatorHost(host); throw error; }
 stage('host-ready');
 const clients: Client[] = [];
