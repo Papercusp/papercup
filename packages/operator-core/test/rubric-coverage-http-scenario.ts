@@ -32,6 +32,13 @@ export function assertRubricCoverageReaderContracts() {
   criterionReaderArgs('EI-private-coverage', 'retained', clock);
 }
 
+export function rubricCoverageCriterionCard(detail: any) {
+  assert.equal(detail.ok, true, JSON.stringify(detail));
+  assert.equal(detail.evidenceRead?.complete, true, 'The selected criterion evidence must be complete');
+  assert.ok(detail.scorecard, 'The public getter must return the selected scorecard');
+  return detail.scorecard;
+}
+
 export async function measureRubricCoverageScenario(o: Options) {
   assert.match(o.workspace, /^test-runtime-/);
   assert.equal(issuesScopeWorkspace(), o.workspace);
@@ -125,9 +132,10 @@ export async function measureRubricCoverageScenario(o: Options) {
     assert.equal(full.coverage.fulfillment, 'unknown');
     for (const [index, key] of keys.entries()) {
       const detail = await invoke('scorecards:get', criterionReaderArgs(issue.id, key, clock));
-      assert.equal(detail.kind, 'found');
-      assert.deepEqual(detail.scorecard.coverage, full.coverage);
-      const { key: returnedKey, evidenceAction, ...rating } = detail.scorecard.criteria[0];
+      const criterionCard = rubricCoverageCriterionCard(detail);
+      assert.equal(criterionCard.issueId, issue.id);
+      assert.deepEqual(criterionCard.coverage, full.coverage);
+      const { key: returnedKey, evidenceAction, ...rating } = criterionCard.criteria[0];
       assert.equal(returnedKey, key);
       assert.deepEqual(rating, ratings[key]);
       assert.equal(evidenceAction.context.subjectRef, subject.ref);

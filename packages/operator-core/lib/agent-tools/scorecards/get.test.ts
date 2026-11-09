@@ -154,6 +154,18 @@ describe('scorecards:get evidence-first projection', () => {
     expect((getTool as unknown as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
   });
 
+  it('keeps the rubric HTTP consumer on the public criterion response contract', async () => {
+    const card = { ...scorecard, rerunRecipe: undefined, nKeys: 1,
+      criteria: [{ ...scorecard.criteria[0], evidence: 'Retained fixture evidence.' }] };
+    readScorecardEvidenceM.mockResolvedValue({ kind: 'found', scorecard: card });
+    const response = await getTool.handler({ issueId: card.issueId, criterionKey: card.criteria[0].key }, makeDispatchContext());
+    if (!('data' in response)) throw new Error('Expected a structured scorecard response');
+    const { rubricCoverageCriterionCard } = await import('../../../test/rubric-coverage-http-scenario');
+    expect(rubricCoverageCriterionCard(response.data)).toMatchObject({ issueId: card.issueId, criteria: card.criteria });
+    expect(() => rubricCoverageCriterionCard({ kind: 'found', scorecard: card })).toThrow();
+    expect(() => rubricCoverageCriterionCard({ ok: false, error: 'unavailable' })).toThrow();
+  });
+
   it('grading system full and compact readers preserve every criterion', async () => {
     const comparisonTime = '2026-11-01T12:01:00.001Z';
     const lastMeasurement = { testRunId: 1, value: 840, unit: 'ms', status: 'pass' as const,
