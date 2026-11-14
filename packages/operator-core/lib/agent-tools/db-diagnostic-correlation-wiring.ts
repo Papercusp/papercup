@@ -41,7 +41,10 @@ type NamedQueryStage = 'goal-list-sql' | 'goal-list-portfolio' | 'goal-list-pack
   'dream-observation-governors' | 'dream-observation-activity' | 'dream-observation-spend' |
   'testing-runs-rollup' | 'testing-runs-latest-rows' | 'testing-runs-history-rows' |
   'testing-runs-source-omissions' | 'testing-runs-foreground-run' | 'testing-runs-case-results' |
-  'plans-list-canonical-read' | 'plans-list-attribution-flag' | 'plans-list-attribution' |
+  'plans-list-canonical-read' | 'plans-list-handler-registration' | 'plans-list-tool-dispatch' |
+  'plans-list-output-parse' | 'plans-list-ui-projection' | 'plans-list-cache-read' |
+  'plans-list-index-read' | 'plans-list-blocked-overlay-read' | 'plans-list-lifecycle-read' |
+  'plans-list-gap-content-read' | 'plans-list-attribution-flag' | 'plans-list-attribution' |
   'attention-import' | 'attention-read' | 'attention-scope' | 'attention-aggregate' | 'attention-plans' | 'attention-escalations' |
   'attention-messages' | 'attention-smoke' | 'attention-reports' | 'attention-improvements' |
   'attention-approvals' | 'attention-questions' | 'attention-scout' | 'attention-needs-human' |

@@ -47,6 +47,7 @@ vi.mock("../../issue-blocks-merge", async (orig) => {
   };
 });
 vi.mock("../../scout/routed-ledger", () => ({
+  recordRoutedIdea: vi.fn(async () => undefined),
   readScoutPlanRefs: vi.fn(async () => new Set<string>()),
   readRoutedIdeas: vi.fn(async () => []),
 }));
@@ -61,6 +62,7 @@ import {
 import { _refreshCacheLayerForTests } from "../../cache/instance";
 import { installL2StoreForTests, setL2EnabledForTests, __resetL2StateForTests } from "../../cache/l2-tier";
 import type { PgL2Store } from "../../cache/pg-l2-store";
+import { namedQueryStageTimings, withNamedQueryDiagnosticContext } from "../db-diagnostic-correlation-wiring";
 
 const CACHE_LAYER = "papercusp-cache-layer";
 
@@ -113,6 +115,21 @@ afterEach(async () => {
 });
 
 describe("plans:list — cache wiring", () => {
+  it("keeps cache, index, blocked-overlay, and lifecycle timings in the request trace", async () => {
+    let stages: string[] = [];
+    await withNamedQueryDiagnosticContext("plans.list", async () => {
+      await run({ workspaceWide: true });
+      stages = namedQueryStageTimings()?.stages.map(({ stage }) => stage) ?? [];
+    });
+
+    expect(stages).toEqual(expect.arrayContaining([
+      "plans-list-cache-read",
+      "plans-list-index-read",
+      "plans-list-blocked-overlay-read",
+      "plans-list-lifecycle-read",
+    ]));
+  });
+
   it("a repeat call with the same args HITS (the source fetch runs once)", async () => {
     await run({});
     await run({});

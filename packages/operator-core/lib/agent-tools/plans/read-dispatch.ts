@@ -15,6 +15,7 @@
 import { handleHttpToolRequest, type HttpToolHostExtras } from '@papercusp/tooldef-http';
 import { PROJECTED_DEPS } from '../../projected-tool-deps';
 import { currentRequestWorkspaceId } from '../../workspace-als';
+import { traceNamedQueryStage } from '../db-diagnostic-correlation-wiring';
 
 const ADMIN_UI_CLIENT_ID = 'pc-admin-plans-ui';
 
@@ -74,9 +75,14 @@ export async function callPlansReadRaw(
   body: Record<string, unknown>,
   opts?: PlansReadOpts,
 ): Promise<PlansReadResult> {
+  const traceListStage = <T>(
+    stage: 'plans-list-handler-registration' | 'plans-list-tool-dispatch' | 'plans-list-output-parse' | 'plans-list-ui-projection',
+    run: () => PromiseLike<T>,
+  ): PromiseLike<T> => verb === 'list' ? traceNamedQueryStage(stage, run) : run();
+
   // The sync resolver's 10s budget includes this cold path. Importing the
   // entire operator catalog here can exhaust it before a read handler starts.
-  await registerPlanReadTool(verb);
+  await traceListStage('plans-list-handler-registration', () => registerPlanReadTool(verb));
   const sp = new URLSearchParams();
   sp.set('superuser', '1');
   sp.set('client', ADMIN_UI_CLIENT_ID);
@@ -109,7 +115,7 @@ export async function callPlansReadRaw(
   // Otherwise superuser dispatch supplies '*': source reads may inherit ALS,
   // but cachedRead keys that wildcard independently from the admin feed.
   const workspaceId = currentRequestWorkspaceId()?.trim();
-  const result = await handleHttpToolRequest(
+  const result = await traceListStage('plans-list-tool-dispatch', () => handleHttpToolRequest(
     {
       method: 'POST',
       pathname: `/api/agent-tools/plans/${verb}`,
@@ -120,7 +126,7 @@ export async function callPlansReadRaw(
       body: b,
     },
     HOST_EXTRAS,
-  );
+  ));
   if (result.status === 200) {
     const rb = result.body as { content?: Array<{ type: string; text?: string }> };
     const text = rb.content?.find((c) => c.type === 'text')?.text;
@@ -132,10 +138,13 @@ export async function callPlansReadRaw(
         // display shape — clip preview text + drop non-display blobs. get/etc.
         // pass through unchanged; agent/MCP sessions never reach callPlansReadRaw,
         // so the agent shapers are untouched. See ui-read-projection.ts.
-        const parsed: unknown = JSON.parse(text);
+        const parsed: unknown = await traceListStage('plans-list-output-parse', async () => JSON.parse(text));
         if (opts?.uiProjection === false) return { status: 200, data: parsed };
-        const { projectPlansReadForUi } = await import('./ui-read-projection');
-        return { status: 200, data: projectPlansReadForUi(verb, parsed) };
+        const projected = await traceListStage('plans-list-ui-projection', async () => {
+          const { projectPlansReadForUi } = await import('./ui-read-projection');
+          return projectPlansReadForUi(verb, parsed);
+        });
+        return { status: 200, data: projected };
       } catch {
         return { status: 200, data: text };
       }

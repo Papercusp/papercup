@@ -47,6 +47,7 @@ import { reconcileStartStatus } from './plan-start-state';
 import { shapePlansList } from './list-shape';
 import { cachedRead, type CachedReadCtx } from '../../cache';
 import { planOriginFromBlenderFlag } from './plan-provenance';
+import { traceNamedQueryStage } from '../db-diagnostic-correlation-wiring';
 
 /** Cap for the multi-harness arg per P-021 — keeps IN-style fan-out bounded. */
 const HARNESS_SLUGS_MAX = 64;
@@ -625,7 +626,7 @@ export default defineTool({
       harnesses: [...perHarness].sort(),
     };
 
-    const { plans, groups, harnessCount, batchUnknown, truncated } = await cachedRead(
+    const { plans, groups, harnessCount, batchUnknown, truncated } = await traceNamedQueryStage('plans-list-cache-read', () => cachedRead(
       { ...(ctx as CachedReadCtx), workspaceId },
       {
         tool: 'plans:list',
@@ -644,74 +645,77 @@ export default defineTool({
         // Fetch the index rows as per-harness batches. Workspace-wide reads them all
         // at once (one query by workspace_id) and groups by harness so the per-harness
         // gap-fill + row processing below is unchanged.
-        const batches: Array<{ harnessSlug: string; rows: PlanIndexRow[] }> = [];
-        if (args.workspaceWide) {
-          const allRows = await listPlanIndexRowsForWorkspace({
-            workspaceId,
-            includeArchived,
-            includeInstances,
-            ...(args.template ? { template: args.template } : {}),
-            ...(args.templateSlug ? { templateSlug: args.templateSlug } : {}),
-            ...sourceFilters,
-          });
-          const byHarness = new Map<string, PlanIndexRow[]>();
-          for (const r of allRows) {
-            const arr = byHarness.get(r.harnessSlug) ?? [];
-            arr.push(r);
-            byHarness.set(r.harnessSlug, arr);
-          }
-          for (const [harnessSlug, rows] of byHarness) batches.push({ harnessSlug, rows });
-        } else {
-          for (const harnessSlug of perHarness) {
-            try {
-              const rows = await listPlanIndexRows({
-                workspaceId,
-                harnessSlug,
-                includeArchived,
-                includeInstances,
-                ...(args.template ? { template: args.template } : {}),
-                ...(args.templateSlug ? { templateSlug: args.templateSlug } : {}),
-                ...sourceFilters,
-              });
-              batches.push({ harnessSlug, rows });
-            } catch (err) {
-              // infra round-3 F5 (+ EI-7864 follow-up): a stale/unregistered OR
-              // non-Hive-scoped slug must not spike the error-rate on plans:list
-              // (the highest-volume tool — ~2% of calls were `resolvePlanScope:
-              // harness '…' is not registered`, from callers querying a
-              // deregistered/stale hive slug). A LIST read of a harness that
-              // resolvePlanScope refuses is empty, not an error — match the
-              // harness_slugs fan-out path above (which already catches →
-              // unknownHarnesses). EI-7864: a standalone/scratch harness that is
-              // registered in `projects` but is NOT a Hive home (e.g. pot-verify,
-              // used for manual UI verification — WI-1992 plans are Hive-scoped)
-              // hit the SAME "list against a harness with no plans" shape but the
-              // narrower `/not registered/i` regex didn't cover its distinct
-              // "is not a Hive home" message, so it fell through to `throw err`
-              // uncaught. Both resolvePlanScope failure messages are swallowed
-              // here; any OTHER error (a real DB/query fault) still throws so
-              // genuine failures stay loud.
-              //
-              // P-014 / EI-19286551248996972: this used to test the message inline
-              // with a bare /not registered|not a Hive home/i — no `resolvePlanScope:`
-              // anchor, so it matched those words ANYWHERE in the string. That made a
-              // registry READ FAULT swallowable as an absence: RegistryReadUnavailableError
-              // appends `Underlying: <cause.message>`, and a DB/pool fault whose text
-              // happens to contain "not registered" would then be reported as ok:true + []
-              // for a harness that actually holds rows — the precise incident that filed
-              // this. Classification now goes through the shared, TYPE-first predicate in
-              // ./source (which rejects the fault by `instanceof` before reading any text),
-              // so a fault cannot be spelled into an absence. It is also the same predicate
-              // plans:items uses, so the two read tools can no longer disagree about what
-              // "unknown harness" means.
-              if (isUnknownPlanScopeError(err)) {
-                batchUnknown.push(harnessSlug);
-              } else {
-                throw err;
+        const batches = await traceNamedQueryStage('plans-list-index-read', async () => {
+          const readBatches: Array<{ harnessSlug: string; rows: PlanIndexRow[] }> = [];
+          if (args.workspaceWide) {
+            const allRows = await listPlanIndexRowsForWorkspace({
+              workspaceId,
+              includeArchived,
+              includeInstances,
+              ...(args.template ? { template: args.template } : {}),
+              ...(args.templateSlug ? { templateSlug: args.templateSlug } : {}),
+              ...sourceFilters,
+            });
+            const byHarness = new Map<string, PlanIndexRow[]>();
+            for (const r of allRows) {
+              const arr = byHarness.get(r.harnessSlug) ?? [];
+              arr.push(r);
+              byHarness.set(r.harnessSlug, arr);
+            }
+            for (const [harnessSlug, rows] of byHarness) readBatches.push({ harnessSlug, rows });
+          } else {
+            for (const harnessSlug of perHarness) {
+              try {
+                const rows = await listPlanIndexRows({
+                  workspaceId,
+                  harnessSlug,
+                  includeArchived,
+                  includeInstances,
+                  ...(args.template ? { template: args.template } : {}),
+                  ...(args.templateSlug ? { templateSlug: args.templateSlug } : {}),
+                  ...sourceFilters,
+                });
+                readBatches.push({ harnessSlug, rows });
+              } catch (err) {
+                // infra round-3 F5 (+ EI-7864 follow-up): a stale/unregistered OR
+                // non-Hive-scoped slug must not spike the error-rate on plans:list
+                // (the highest-volume tool — ~2% of calls were `resolvePlanScope:
+                // harness '…' is not registered`, from callers querying a
+                // deregistered/stale hive slug). A LIST read of a harness that
+                // resolvePlanScope refuses is empty, not an error — match the
+                // harness_slugs fan-out path above (which already catches →
+                // unknownHarnesses). EI-7864: a standalone/scratch harness that is
+                // registered in `projects` but is NOT a Hive home (e.g. pot-verify,
+                // used for manual UI verification — WI-1992 plans are Hive-scoped)
+                // hit the SAME "list against a harness with no plans" shape but the
+                // narrower `/not registered/i` regex didn't cover its distinct
+                // "is not a Hive home" message, so it fell through to `throw err`
+                // uncaught. Both resolvePlanScope failure messages are swallowed
+                // here; any OTHER error (a real DB/query fault) still throws so
+                // genuine failures stay loud.
+                //
+                // P-014 / EI-19286551248996972: this used to test the message inline
+                // with a bare /not registered|not a Hive home/i — no `resolvePlanScope:`
+                // anchor, so it matched those words ANYWHERE in the string. That made a
+                // registry READ FAULT swallowable as an absence: RegistryReadUnavailableError
+                // appends `Underlying: <cause.message>`, and a DB/pool fault whose text
+                // happens to contain "not registered" would then be reported as ok:true + []
+                // for a harness that actually holds rows — the precise incident that filed
+                // this. Classification now goes through the shared, TYPE-first predicate in
+                // ./source (which rejects the fault by `instanceof` before reading any text),
+                // so a fault cannot be spelled into an absence. It is also the same predicate
+                // plans:items uses, so the two read tools can no longer disagree about what
+                // "unknown harness" means.
+                if (isUnknownPlanScopeError(err)) {
+                  batchUnknown.push(harnessSlug);
+                } else {
+                  throw err;
+                }
               }
             }
           }
-        }
+          return readBatches;
+        });
 
         type AugmentedRow = ListRow & {
           startStatus: 'started' | 'paused' | 'done' | null;
@@ -730,7 +734,7 @@ export default defineTool({
         if (!compact) {
           // Only needed for the itemCounts overlay — skipped in compact mode.
           try {
-            allBlocked = await getAllBlockedPlanItems();
+            allBlocked = await traceNamedQueryStage('plans-list-blocked-overlay-read', () => getAllBlockedPlanItems());
           } catch {
             // Non-fatal — no issue-block overlay.
           }
@@ -739,10 +743,11 @@ export default defineTool({
         // P-007 (R-6): the freshness + acceptance signals for the derived lifecycle,
         // ONE batched read for every plan in every batch. Best-effort by contract —
         // a failed read is reported per row in `derivedLifecycle.unmeasured`.
-        const lifecycleSignals: PlanListLifecycleSignals = await readPlanListLifecycleSignals({
-          workspaceId,
-          planSlugs: batches.flatMap((b) => b.rows.map((r) => r.planSlug)),
-        });
+        const lifecycleSignals: PlanListLifecycleSignals = await traceNamedQueryStage('plans-list-lifecycle-read', () =>
+          readPlanListLifecycleSignals({
+            workspaceId,
+            planSlugs: batches.flatMap((b) => b.rows.map((r) => r.planSlug)),
+          }));
         const lifecycleNow = new Date().toISOString();
 
         for (const { harnessSlug, rows } of batches) {
@@ -761,9 +766,9 @@ export default defineTool({
           let gapContents = new Map<string, string>();
           if (gapSlugs.length > 0) {
             try {
-              gapContents = await getPlanContentsBySlugs(gapSlugs, {
+              gapContents = await traceNamedQueryStage('plans-list-gap-content-read', () => getPlanContentsBySlugs(gapSlugs, {
                 harnessSlug,
-              });
+              }));
             } catch {
               /* counts for gap rows degrade to {} */
             }
@@ -892,7 +897,7 @@ export default defineTool({
         const plans = aggregateOnly ? [] : limited;
         return { plans, groups, harnessCount: batches.length, batchUnknown, truncated };
       },
-    );
+    ));
 
     // unknownHarnesses from the explicit harness_slugs fan-out (resolved BEFORE the
     // cache, cheap) + batchUnknown from the cached fetch (the not-registered swallows).

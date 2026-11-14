@@ -57,6 +57,7 @@ vi.mock('../../projected-tool-deps', () => ({ PROJECTED_DEPS: {} }));
 
 import { callPlansRead, callPlansReadRaw } from './read-dispatch';
 import { runWithWorkspace } from '../../workspace-als';
+import { namedQueryStageTimings, withNamedQueryDiagnosticContext } from '../db-diagnostic-correlation-wiring';
 
 beforeEach(() => {
   H.calls = [];
@@ -78,6 +79,23 @@ describe('cold plans read registration', () => {
     expect(H.calls.map(call => call.pathname)).toEqual(
       ['attention', 'attention', ...otherReads].map(verb => `/api/agent-tools/plans/${verb}`),
     );
+  });
+});
+
+describe('plans:list latency diagnostics', () => {
+  it('retains registration, dispatch, parsing, and UI projection as request-owned stages', async () => {
+    let stages: string[] = [];
+    await withNamedQueryDiagnosticContext('plans.list', async () => {
+      await callPlansReadRaw('list', {});
+      stages = namedQueryStageTimings()?.stages.map(({ stage }) => stage) ?? [];
+    });
+
+    expect(stages).toEqual([
+      'plans-list-handler-registration',
+      'plans-list-tool-dispatch',
+      'plans-list-output-parse',
+      'plans-list-ui-projection',
+    ]);
   });
 });
 
