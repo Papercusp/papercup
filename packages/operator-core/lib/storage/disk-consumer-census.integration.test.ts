@@ -249,10 +249,24 @@ describe('disk consumer census (real du, real PG)', () => {
       }
     }
     const native = await readDiskConsumerCensus(sql, { host, orderBy: 'growth', limit: 20, expectedDevices: devices });
-    await runDiskHeadroomAlarmOnce({ readDiskCensus: async () => native.devices,
-      emitToast: (toast, observation) => emitStorageGrowthToast(toast, { ...observation!,
-        runtime: { ...observation!.runtime, host, buildSha: 'native-verifier-fixture' } },
+    // The unenforced-class leg (durable-disk-and-checkpoint-recovery P-002) sends its own toast
+    // with NO observation; forward it exactly as production's emitStorageGrowthToast receives it.
+    const alarm = await runDiskHeadroomAlarmOnce({ readDiskCensus: async () => native.devices,
+      emitToast: (toast, observation) => emitStorageGrowthToast(toast, observation && { ...observation,
+        runtime: { ...observation.runtime, host, buildSha: 'native-verifier-fixture' } },
       { db: drizzle(notificationSql) as never, workspaceId }) });
+    // Only cold-tier among these consumers is a class nothing enforces, so both cold volumes are
+    // named. A notifier that throws on the missing observation would surface here as UNKNOWN.
+    expect(alarm.unenforcedClassUnknown).toEqual([]);
+    expect(alarm.unenforcedClassGrowth.map(w => [w.device, w.classId])).toEqual([
+      ['/mnt/cold-a', 'cold-tier'], ['/mnt/cold-b', 'cold-tier']]);
+    // Persisted as a plain notification: no audit receipt, so native acceptance below still passes.
+    const classToasts = await rootSql`SELECT t.description FROM harness_shared.toast_log t
+      WHERE t.message LIKE 'Protected storage growth%'
+        AND NOT EXISTS (SELECT 1 FROM harness_shared.audit_log a WHERE a.subject = t.id::text)`;
+    expect(classToasts).toHaveLength(1);
+    expect(classToasts[0]!.description).toContain('cold-tier on /mnt/cold-a');
+    expect(classToasts[0]!.description).toContain('cold-tier on /mnt/cold-b');
     const scope = { workspaceId, host, buildSha: 'native-verifier-fixture' };
     expect((await measureNativeDiskHeadroomAlarm(rootSql, scope)).verdict).toBe('pass');
     expect((await measureNativeDiskHeadroomAlarm(rootSql, { ...scope, buildSha: 'other' })).verdict).toBe('unknown');
