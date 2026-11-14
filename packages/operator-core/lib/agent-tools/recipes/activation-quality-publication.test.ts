@@ -13,6 +13,24 @@ import { ACTIVATION_QUALITY_PUBLICATION_SCRIPT as script, ACTIVATION_QUALITY_BIN
   ACTIVATION_QUALITY_CAPABILITIES } from './activation-quality-publication';
 
 const json = (value: unknown): ToolResult => ({ content: [{ type: 'text', text: JSON.stringify(value) }] });
+function activationGuidance() {
+  const source = readFileSync(process.env.PROBE_SCRIPT ?? new URL(
+    '../../../../../apps/operator-docs/src/content/docs/system/plan-inputs.mdx', import.meta.url), 'utf8');
+  return source.split('## Complete activation diagnostic and exact publication')[1]?.split('## Supplying values')[0] ?? '';
+}
+function assertActivationGuidance(guidance: string) {
+  expect(guidance).toBeTruthy();
+  for (const required of ['activationReadiness:true', 'dryRun:true',
+    'persist-exact-passing-plan-specification-quality', 'scorecardDraft', 'Do not rewrite generated',
+    'emitted-pending', 'ready:false', 'Canonical `plans:start` and execution guards', 'independent']) {
+    expect(guidance, 'missing activation guidance: ' + required).toContain(required);
+  }
+  expect(guidance).not.toMatch(/\b(?:faster|speedup|latency|milliseconds)\b/i);
+  expect(guidance).not.toMatch(/\b(?:attempt|try|repeat|invoke|call|run)[^\n.!?]*plans:start[^\n.!?]*(?:discover|find|reveal|enumerate)/i);
+  expect(guidance).not.toContain('ready:true');
+  expect(guidance).not.toMatch(/\bemission\s+(?:means|grants|proves|implies)\s+(?:activation\s+)?readiness/i);
+  expect(guidance).not.toMatch(/\bemitted\s+card[^.\n]*(?:is|means|becomes)\s+(?:activation[- ]ready|ready)\b/i);
+}
 function fixture(qualityOverride?: unknown, emissionOverride?: unknown, readOverride?: unknown) {
   let draft: Record<string, any>;
   const evaluate = vi.fn(async (args: any) => {
@@ -66,20 +84,17 @@ describe('existing activation quality publication recipe', () => {
   });
 
   it('guidance distinguishes emitted pending ready and claims no unmeasured latency', () => {
-    const source = readFileSync(new URL('../../../../../apps/operator-docs/src/content/docs/system/plan-inputs.mdx',
-      import.meta.url), 'utf8');
-    const guidance = source.split('## Complete activation diagnostic and exact publication')[1]?.split('## Supplying values')[0];
-    expect(guidance).toBeTruthy();
-    expect(guidance).toContain('activationReadiness:true');
-    expect(guidance).toContain('dryRun:true');
-    expect(guidance).toContain('persist-exact-passing-plan-specification-quality');
-    expect(guidance).toContain('scorecardDraft');
-    expect(guidance).toContain('Do not rewrite generated');
-    expect(guidance).toContain('emitted-pending');
-    expect(guidance).toContain('ready:false');
-    expect(guidance).toContain('Canonical `plans:start` and execution guards');
-    expect(guidance).toContain('independent');
-    expect(guidance).not.toMatch(/\b(?:faster|speedup|latency|milliseconds)\b/i);
+    assertActivationGuidance(activationGuidance());
+  });
+  it.each([
+    ['serial attempted-start discovery', (text: string) => text + '\nRepeatedly attempt `plans:start` to discover blockers one at a time.'],
+    ['emitted pending reported ready', (text: string) => text.replace('`emitted-pending`, with `ready:false`', '`ready`, with `ready:true`')],
+    ['emission grants activation readiness', (text: string) => text + '\nEmission means activation readiness.'],
+    ['emitted card reported ready', (text: string) => text + '\nAn emitted card is ready.'],
+  ] as const)('guidance rejects the clause counterexample: %s', (_name, corrupt) => {
+    const guidance = activationGuidance();
+    assertActivationGuidance(guidance);
+    expect(() => assertActivationGuidance(corrupt(guidance))).toThrow();
   });
 
   it('passes saved-recipe preflight against the real current input and output contracts', async () => {
