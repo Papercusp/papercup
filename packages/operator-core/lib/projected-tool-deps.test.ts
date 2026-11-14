@@ -19,10 +19,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 // dispatch import graph (agent-mcp bootstrap reads the REAL @papercusp/db-org
 // `generated` at module load) still resolves, and so a cross-worker registry
 // leak can never strip a sibling's real export (the fleet flagged full vi.mock of
-// shared modules as a flake source). We override ONLY: the enforce flag-read, the
-// ledger emit (assert called + throws swallowed without a real PG insert), and the
-// llm-testing override registry. @papercusp/db-org is left REAL + un-mocked —
-// getOrgPg is lazy and never invoked by these tests.
+// shared modules as a flake source). The connection-scope wrapper is a passthrough
+// here; real pool saturation and fresh policy enforcement are covered by the
+// sibling projected-tool-deps.priority.integration.test.ts.
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  withPriorityOrgPg: async <T>(run: () => Promise<T>): Promise<T> => run(),
+}));
 vi.mock('@papercusp/flags/server', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/flags/server')>()),
   getFlag: vi.fn(),
@@ -199,9 +202,10 @@ describe('PROJECTED_DEPS.kernelEnforcement — D-030 activation/ownership seat',
   });
 
   it('is replaceable by a live control-plane resolver without changing PROJECTED_DEPS identity', async () => {
+    const dispatchResolver = PROJECTED_DEPS.kernelEnforcement;
     const resolver = vi.fn(async () => ({ decision: 'deny' as const, code: 'live-revocation' }));
     setKernelEnforcementResolver(resolver);
-    expect(PROJECTED_DEPS.kernelEnforcement).toBe(operatorKernelEnforcement);
+    expect(PROJECTED_DEPS.kernelEnforcement).toBe(dispatchResolver);
     const verdict = await PROJECTED_DEPS.kernelEnforcement!({
       phase: 'preflight',
       boundary: 'dispatch',

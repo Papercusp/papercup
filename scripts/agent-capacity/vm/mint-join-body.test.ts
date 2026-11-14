@@ -39,12 +39,14 @@ describe('mint-join-body refuses to write the join link inside the repository', 
   });
 
   it('the CLI exits 2 on an in-repo --out before touching any hive state', () => {
+    // Node >=25 runs TypeScript natively. tsx's CommonJS transform changes the
+    // bytes before the inherited committed-source guard can verify them.
     const r = spawnSync(
-      'npx',
-      ['tsx', 'scripts/agent-capacity/vm/mint-join-body.ts', '--hive', 'h', '--out', '.papercusp/scratch/jb.json'],
+      process.execPath,
+      ['scripts/agent-capacity/vm/mint-join-body.ts', '--hive', 'h', '--out', '.papercusp/scratch/jb.json'],
       { cwd: REPO_ROOT, encoding: 'utf8', timeout: 60_000 },
     );
-    expect(r.status).toBe(2);
+    expect(r.status, r.stderr || String(r.error ?? '')).toBe(2);
     expect(r.stderr).toMatch(/^REFUSED: .*inside the repository/m);
   });
 });
