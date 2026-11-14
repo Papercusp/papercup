@@ -79,6 +79,8 @@ describe('verify-tauri-headless source snapshot lock settle', () => {
     expect(r.status).toBe(0);
     expect(r.stdout).toContain('CENSUS after copy settle');
     expect(r.stdout).toContain('SLEEP 30');
+    // The wait must be visible on stdout (the live step log), not only stderr.
+    expect(r.stdout).toMatch(/^VH_PROGRESS phase=prepare step=operator-source-snapshot settle_pass=1 blocking_locks=1 remaining_sec=\d+ holders=su-peer$/m);
     expect(r.stdout).toContain('RESYNC /fixture/repo -- rsync -a --delete --exclude=node_modules /fixture/repo/ /fixture/snap/');
     expect(r.stdout.match(/^CENSUS/gm)).toHaveLength(2);
   });
