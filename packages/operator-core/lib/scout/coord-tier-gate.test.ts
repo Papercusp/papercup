@@ -11,6 +11,7 @@
  * filesystem), then the two assertions against the REAL tree.
  */
 import { describe, expect, it } from 'vitest';
+import { buildBuiltinToolSourceFiles } from '../static-tool-catalog';
 import {
   MIN_TIER_EXEMPTION_REASON,
   UNTIERED_BASELINE,
@@ -297,7 +298,13 @@ describe('THE RATCHET HAS TEETH (synthetic tree, real scan seam)', () => {
 
 describe('THE GATE, against the real tree', () => {
   it('has no untiered coordination behaviour outside the baseline', async () => {
+    const started = performance.now();
+    const sources = buildBuiltinToolSourceFiles(ROOT);
+    const catalogMs = performance.now() - started;
+    console.info(`COORD_TIER_SCAN phase=catalog files=${sources.length} elapsedMs=${Math.round(catalogMs)}`);
+    const scanStarted = performance.now();
     const r = await scanCoordTierGate(ROOT);
+    console.info(`COORD_TIER_SCAN phase=read-and-parse elapsedMs=${Math.round(performance.now() - scanStarted)}`);
     expect(
       r.offenders.map((o) => `${o.name} [${o.rule}] ${o.file ?? ''}\n      ${o.detail}`),
       "A coordination behaviour must resolve to one of D-001's tiers 1-3. Satisfy it with a REAL mechanism, " +

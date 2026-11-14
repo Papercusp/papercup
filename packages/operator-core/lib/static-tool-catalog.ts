@@ -184,11 +184,15 @@ function runtimeModuleSpecifiers(sourceFile: ts.SourceFile): string[] {
       const clause = statement.importClause;
       const named = clause?.namedBindings;
       const onlyNamedTypes =
-        named && ts.isNamedImports(named) && named.elements.length > 0 && named.elements.every((e) => e.isTypeOnly);
+        !clause?.name && named && ts.isNamedImports(named) && named.elements.length > 0 &&
+        named.elements.every((e) => e.isTypeOnly);
       if (clause?.isTypeOnly || onlyNamedTypes) continue;
       if (ts.isStringLiteralLike(statement.moduleSpecifier)) specifiers.push(statement.moduleSpecifier.text);
     } else if (ts.isExportDeclaration(statement)) {
       if (statement.isTypeOnly) continue;
+      const clause = statement.exportClause;
+      if (clause && ts.isNamedExports(clause) && clause.elements.length > 0 &&
+        clause.elements.every((element) => element.isTypeOnly)) continue;
       if (statement.moduleSpecifier && ts.isStringLiteralLike(statement.moduleSpecifier)) {
         specifiers.push(statement.moduleSpecifier.text);
       }
@@ -382,13 +386,15 @@ function importedStringConstantBindings(
   const imported: StringConstantBindings = { strings: new Map(), objects: new Map() };
   for (const statement of sourceFile.statements) {
     if (!ts.isImportDeclaration(statement) || !ts.isStringLiteralLike(statement.moduleSpecifier)) continue;
+    if (statement.importClause?.isTypeOnly) continue;
     const bindings = statement.importClause?.namedBindings;
     if (!bindings || !ts.isNamedImports(bindings) || bindings.elements.length === 0) continue;
+    const values = bindings.elements.filter((element) => !element.isTypeOnly);
+    if (values.length === 0) continue;
     const target = resolveGraphImport(statement.moduleSpecifier.text, file, repoRoot, packages);
     if (!target) continue;
     const exported = exportedStringConstantBindings(target, repoRoot, packages, cache, readSourceFile);
-    for (const element of bindings.elements) {
-      if (element.isTypeOnly) continue;
+    for (const element of values) {
       const name = (element.propertyName ?? element.name).text;
       const entries = exported.objects.get(name);
       if (entries) imported.objects.set(element.name.text, entries);
@@ -429,10 +435,12 @@ function exportedStringConstantBindings(
     ) {
       continue;
     }
+    const clause = statement.exportClause;
+    if (clause && ts.isNamedExports(clause) && clause.elements.length > 0 &&
+      clause.elements.every((element) => element.isTypeOnly)) continue;
     const source = resolveGraphImport(statement.moduleSpecifier.text, target, repoRoot, packages);
     if (!source) continue;
     const reexported = exportedStringConstantBindings(source, repoRoot, packages, cache, readSourceFile);
-    const clause = statement.exportClause;
     if (!clause) {
       for (const [name, entries] of reexported.objects) {
         if (!exported.objects.has(name)) exported.objects.set(name, entries);

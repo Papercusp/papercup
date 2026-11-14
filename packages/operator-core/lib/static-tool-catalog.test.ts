@@ -37,6 +37,87 @@ describe('static tool catalog derivation', () => {
     }
   });
 
+  it.each([
+    "import type { Ignored } from './types';",
+    "import { type Ignored } from './types';",
+  ])('does not read type-only dependencies when resolving tool identities: %s', (typeImport) => {
+    const root = mkdtempSync(resolve(tmpdir(), 'static-type-only-'));
+    const write = (path: string, text: string) => {
+      const fullPath = resolve(root, path);
+      mkdirSync(dirname(fullPath), { recursive: true });
+      writeFileSync(fullPath, text);
+      return fullPath;
+    };
+    try {
+      write('package.json', JSON.stringify({ workspaces: [] }));
+      const entry = write(PRODUCTION_TOOL_REGISTRY_ENTRYPOINT,
+        `${typeImport}\nimport { TOOL } from './identity';\ndefineTool({ name: TOOL });\n`);
+      const identity = write('packages/operator-core/lib/agent-tools/identity.ts',
+        "export const TOOL = 'fixture:runtime-identity';\n");
+      const types = write('packages/operator-core/lib/agent-tools/types.ts',
+        'export interface Ignored { name: string }\n');
+      const reads = vi.mocked(fs.readFileSync);
+      reads.mockClear();
+      expect([...buildBuiltinToolCatalog(root)]).toEqual(['fixture:runtime-identity']);
+      expect(buildProductionToolSourceFiles(root)).toEqual([entry, identity].sort());
+      expect(reads.mock.calls.some(([path]) => path === identity)).toBe(true);
+      expect(reads.mock.calls.filter(([path]) => path === types)).toHaveLength(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    "export type { Ignored } from './types';",
+    "export { type Ignored } from './types';",
+  ])('does not read type-only re-exports when resolving tool identities: %s', (typeExport) => {
+    const root = mkdtempSync(resolve(tmpdir(), 'static-type-export-'));
+    const write = (path: string, text: string) => {
+      const fullPath = resolve(root, path);
+      mkdirSync(dirname(fullPath), { recursive: true });
+      writeFileSync(fullPath, text);
+      return fullPath;
+    };
+    try {
+      write('package.json', JSON.stringify({ workspaces: [] }));
+      const entry = write(PRODUCTION_TOOL_REGISTRY_ENTRYPOINT,
+        "import { TOOL } from './names';\ndefineTool({ name: TOOL });\n");
+      const names = write('packages/operator-core/lib/agent-tools/names.ts',
+        `${typeExport}\nexport const TOOL = 'fixture:runtime-export';\n`);
+      const types = write('packages/operator-core/lib/agent-tools/types.ts',
+        'export interface Ignored { name: string }\n');
+      const reads = vi.mocked(fs.readFileSync);
+      reads.mockClear();
+      expect([...buildBuiltinToolCatalog(root)]).toEqual(['fixture:runtime-export']);
+      expect(buildProductionToolSourceFiles(root)).toEqual([entry, names].sort());
+      expect(reads.mock.calls.some(([path]) => path === names)).toBe(true);
+      expect(reads.mock.calls.filter(([path]) => path === types)).toHaveLength(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('follows a runtime default import alongside named type imports', () => {
+    const root = mkdtempSync(resolve(tmpdir(), 'static-default-type-'));
+    const write = (path: string, text: string) => {
+      const fullPath = resolve(root, path);
+      mkdirSync(dirname(fullPath), { recursive: true });
+      writeFileSync(fullPath, text);
+      return fullPath;
+    };
+    try {
+      write('package.json', JSON.stringify({ workspaces: [] }));
+      const entry = write(PRODUCTION_TOOL_REGISTRY_ENTRYPOINT,
+        "import runtime, { type Ignored } from './runtime';\nvoid runtime;\n");
+      const runtime = write('packages/operator-core/lib/agent-tools/runtime.ts',
+        "export interface Ignored {}\nexport default 1;\ndefineTool({ name: 'fixture:default-runtime' });\n");
+      expect([...buildBuiltinToolCatalog(root)]).toEqual(['fixture:default-runtime']);
+      expect(buildProductionToolSourceFiles(root)).toEqual([entry, runtime].sort());
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('reads each module once when identity resolution and runtime traversal share dependencies', () => {
     const root = mkdtempSync(resolve(tmpdir(), 'static-single-read-'));
     const write = (path: string, text: string) => {
