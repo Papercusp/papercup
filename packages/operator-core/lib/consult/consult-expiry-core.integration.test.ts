@@ -887,7 +887,7 @@ describe('sweepExpiredConsults — cascade advance (D-005/P-013)', () => {
       const { deps, alerts, reachCalls, emits } = makeDeps({ withReach: true });
       const task = { workspaceId: WS, taskId: 'stranded-answerer', class: 'agent-session', state: 'stranded',
         endedAt: PAST, detail: { consultAnswer: { conversationId: id, sourceOwnerId: 'resp-1',
-          answeringOwnerId: 'resp-1-fork' } } } as TaskRow;
+          answeringOwnerId: 'resp-1-fork' } } } as unknown as TaskRow;
       const detector = consultExpiryFindSilentResponders({
         now: () => NOW, getPresence: async () => null,
         resolveSessionStates: async () => new Map([['resp-1-fork', { sessionState: 'ended' }]]),

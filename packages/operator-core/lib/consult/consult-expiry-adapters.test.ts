@@ -34,7 +34,9 @@ import {
   type AwaitedEventEmitter,
   type ConsultDispatcherFactory,
 } from './consult-expiry-adapters';
-import { requesterAlertForRow, reviewConsultKind, type DueConsultRow } from './consult-expiry-core';
+import {
+  noQualifiedResponderIsUnmeasured, requesterAlertForRow, reviewConsultKind, reviewConversionAlertForRow, type DueConsultRow,
+} from './consult-expiry-core';
 import { currentRequestWorkspaceId, runWithWorkspace } from '../workspace-als';
 import type { TaskRow } from '../task-manager/types';
 import type { ResolveResumeResult, ResumeTarget } from '../agent-launch-core';
@@ -105,6 +107,35 @@ describe('P-005 durable requester alert', () => {
     const send = vi.fn(async () => { throw new Error('coord write failed'); });
     const alert = requesterAlertForRow({ row: alertRow, kind: 'expired', nowIso: '2026-09-20T01:00:00Z' });
     await expect(consultExpiryNotifyRequester(send)(alert)).rejects.toThrow('coord write failed');
+  });
+});
+
+describe('review conversion alert distinguishes unmeasured routing (EI-28715472028685425)', () => {
+  const convert = (routing: unknown) => reviewConversionAlertForRow({
+    row: { ...alertRow, state: 'no_qualified_responder', routing },
+    kind: 'rubric-vetting', workItemId: 'EI-1', nowIso: '2026-11-14T08:00:00Z',
+  }).body;
+
+  it('says no qualified reviewer only when relevance was measured', () => {
+    const measured = convert({ request: { version: 1, result: { verdict: 'no_qualified_responder' } } });
+    expect(measured).toContain('finished routing without a qualified reviewer');
+    expect(measured).not.toContain('could not measure');
+  });
+
+  it.each([
+    ['relevance_unmeasured', { request: { version: 1, result: { verdict: 'relevance_unmeasured' } } }],
+    ['preparation_failed', { request: { version: 1, result: { error: 'preparation_failed' } } }],
+    ['legacy exhausted preparation', { request: { version: 1, attempts: 3, lastError: 'embed timeout' } }],
+  ])('reports %s as unmeasured, never as a missing qualified reviewer', (_label, routing) => {
+    expect(noQualifiedResponderIsUnmeasured(routing)).toBe(true);
+    const body = convert(routing);
+    expect(body).toContain('could not measure reviewer relevance');
+    expect(body).not.toContain('finished routing without a qualified reviewer');
+  });
+
+  it('keeps an in-progress preparation (attempts < 3) out of the unmeasured class', () => {
+    expect(noQualifiedResponderIsUnmeasured({ request: { version: 1, attempts: 2, lastError: 'x' } })).toBe(false);
+    expect(noQualifiedResponderIsUnmeasured(null)).toBe(false);
   });
 });
 
@@ -247,7 +278,7 @@ describe('consultExpiryFindSilentResponders', () => {
       endedAt: id === 'unknown-end' ? null : '2026-11-12T18:33:00Z',
       detail: { consultAnswer: { conversationId: id === 'wrong-tag' ? 'other' : id,
         sourceOwnerId: 'source', answeringOwnerId: 'answerer-' + id } },
-    } as TaskRow);
+    } as unknown as TaskRow);
     const found = await consultExpiryFindSilentResponders({
       now: () => now,
       getPresence: async () => null,

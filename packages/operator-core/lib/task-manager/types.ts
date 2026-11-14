@@ -174,6 +174,13 @@ export interface TaskTerminalProvenance {
   peakMemoryBytes: number | null;
   /** Says whether peak RSS came from systemd's terminal snapshot or the ledger's last cgroup sample. */
   peakMemorySource: 'systemd' | 'cgroup-sample' | 'unknown';
+  /**
+   * ISO instant systemd moved the unit to inactive/failed (`InactiveEnterTimestamp`):
+   * the task's real end, as opposed to the moment a reconciler noticed it
+   * (WI-6554700010048562). `null` when systemd reported none (unit still live, or
+   * collected); absent on snapshots captured before this field existed.
+   */
+  inactiveEnterAt?: string | null;
 }
 
 function terminalString(value: unknown): string | null {
@@ -213,6 +220,7 @@ export function taskTerminalProvenanceFromDetail(
     memoryMaxBytes: terminalNumber(value.memoryMaxBytes),
     peakMemoryBytes: terminalNumber(value.peakMemoryBytes),
     peakMemorySource,
+    inactiveEnterAt: terminalString(value.inactiveEnterAt),
   };
 }
 

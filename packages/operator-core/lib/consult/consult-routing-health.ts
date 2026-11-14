@@ -48,7 +48,7 @@ export { expertiseExecutionHealthFromRows };
 export type { ExpertiseExecutionHealth };
 import { HARD_BLOCKED_EXPIRY_MS, PROCEED_EXPIRY_MS } from './get-feedback-core';
 import { DISPATCH_RECORDS_MAX } from './consult-dispatch';
-import { reviewConsultKind } from './consult-expiry-core';
+import { noQualifiedResponderIsUnmeasured, reviewConsultKind } from './consult-expiry-core';
 import { CONSULT_RECONCILIATION_DISPOSITIONS, type ConsultReconciliationDisposition } from './consult-verbs-core';
 import {
   ACCEPTANCE_GRADING_POLICY,
@@ -182,16 +182,9 @@ function requestOutcome(row: RoutingHealthConsultRow, nowMs: number): keyof Requ
   if (open && Number.isFinite(expiresMs) && nowMs < expiresMs) return 'pending';
   if (row.state === 'no_launchable_responder') return 'unlaunchable';
   if (row.state === 'no_qualified_responder') {
-    const result = jsonObject(request.result);
-    // This lifecycle also stores preparation/instrument failures. Only a
-    // measured route can establish that no expert qualified. Preserve the
-    // legacy exhausted-preparation record, which predates typed results.
-    if (result.verdict === 'relevance_unmeasured' || result.error === 'preparation_failed' ||
-        (request.version === 1 && request.result == null && typeof request.attempts === 'number' &&
-          request.attempts >= 3 && typeof request.lastError === 'string' && request.lastError.length > 0)) {
-      return 'unmeasured';
-    }
-    return 'unavailable';
+    // This lifecycle also stores preparation/instrument failures; the shared
+    // predicate keeps this census and the requester conversion message aligned.
+    return noQualifiedResponderIsUnmeasured(row.routing) ? 'unmeasured' : 'unavailable';
   }
   const attempts = walks.flatMap((walk) => walk.attempts);
   if (attempts.length > 0 && attempts.every((attempt) =>

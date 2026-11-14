@@ -1102,20 +1102,22 @@ async function stateRow(conversationId: string, ws: string = WS) {
 
 // ── Tests ────────────────────────────────────────────────────────────────
 describe('recoverable interactive feedback requests', () => {
-  async function exhaustedPreparation(key: string, legacy = false) {
+  async function exhaustedPreparation(
+    key: string, legacy = false, failure: Error = new Error('preparation storage unavailable'),
+  ) {
     const fixture = makeDeps(routeOf([cand('preparation-recovered-expert')]));
     const request = { ...baseReq, requestKey: key };
     const accepted = await acceptFeedbackRequestCore(request, fixture.deps);
     if ('error' in accepted) throw new Error(accepted.error);
-    const execute = vi.fn(async () => { throw new Error('preparation storage unavailable'); });
+    const execute = vi.fn(async () => { throw failure; });
     for (let attempt = 0; attempt < 3; attempt++) {
       await expect(continueFeedbackRequestCore(WS, accepted.conversation_id, {
         getSql: () => rootSql, now: () => new Date(NOW.getTime() + attempt * 31_000), execute,
-      })).rejects.toThrow('preparation storage unavailable');
+      })).rejects.toThrow(failure.message);
       const row = await stateRow(accepted.conversation_id);
       expect(row.state).toBe(attempt < 2 ? 'routing' : 'no_qualified_responder');
       expect(row.routing).toMatchObject({ request: { attempts: attempt + 1,
-        lastError: 'Error: preparation storage unavailable' } });
+        lastError: String(failure) } });
       if (attempt < 2) expect(row.routing).not.toHaveProperty('request.result');
       else expect(row.routing).toMatchObject({ request: { leaseToken: null, leaseUntil: null,
         result: { error: 'preparation_failed', stage: 'preparation', retryable: true,
@@ -1130,8 +1132,13 @@ describe('recoverable interactive feedback requests', () => {
     return { fixture, request, accepted };
   }
 
-  it.each([false, true])('recovers an exhausted preparation only on an explicit same-key retry (legacy=%s)', async (legacy) => {
-    const { fixture, request, accepted } = await exhaustedPreparation(`preparation-recovery-${legacy}`, legacy);
+  it.each([
+    { name: 'current-result', legacy: false, failure: new Error('preparation storage unavailable') },
+    { name: 'legacy-result-less', legacy: true, failure: new Error('preparation storage unavailable') },
+    { name: 'pooled-connection-closed', legacy: false,
+      failure: Object.assign(new Error('write CONNECTION_CLOSED 127.0.0.1:6432'), { code: 'CONNECTION_CLOSED' }) },
+  ])('recovers an exhausted preparation only on explicit same-key retry ($name)', async ({ name, legacy, failure }) => {
+    const { fixture, request, accepted } = await exhaustedPreparation('preparation-recovery-' + name, legacy, failure);
     const before = await stateRow(accepted.conversation_id);
     const later = () => new Date(NOW.getTime() + 93_000);
     const retryDeps = { ...fixture.deps, now: later };
@@ -1151,8 +1158,8 @@ describe('recoverable interactive feedback requests', () => {
     });
     const recovered = await stateRow(accepted.conversation_id);
     expect(recovered.routing).toMatchObject({ request: { attempts: 0,
-      lastError: 'Error: preparation storage unavailable', recoveryHistory: [{
-        attempts: 3, lastError: 'Error: preparation storage unavailable',
+      lastError: String(failure), recoveryHistory: [{
+        attempts: 3, lastError: String(failure),
         result: legacy ? null : { error: 'preparation_failed' },
       }] } });
     expect((recovered.routing as { request: { recoveryHistory: unknown[] } }).request.recoveryHistory).toHaveLength(1);

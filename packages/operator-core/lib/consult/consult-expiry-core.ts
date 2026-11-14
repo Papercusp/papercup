@@ -1100,6 +1100,22 @@ async function convertReviewConsult(
   return { status: 'converted', workItemId };
 }
 
+/** `no_qualified_responder` is ALSO the lifecycle state that stores relevance /
+ * instrument failures (`relevance_unmeasured`, exhausted `preparation_failed`).
+ * Only a measured route establishes that no expert qualified. One predicate
+ * shared by the requester conversion message and consult-routing-health, so the
+ * two surfaces never classify the same row differently (EI-28715472028685425).
+ * The legacy exhausted-preparation record predates typed results. */
+export function noQualifiedResponderIsUnmeasured(routing: unknown): boolean {
+  const obj = (value: unknown): Record<string, unknown> =>
+    value != null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+  const request = obj(obj(routing).request);
+  const result = obj(request.result);
+  return result.verdict === 'relevance_unmeasured' || result.error === 'preparation_failed' ||
+    (request.version === 1 && request.result == null && typeof request.attempts === 'number' &&
+      request.attempts >= 3 && typeof request.lastError === 'string' && request.lastError.length > 0);
+}
+
 /** The durable requester alert for a P-014 conversion. The replay key is per
  * conversation (not per cascade position): a conversion happens at most once. */
 export function reviewConversionAlertForRow(input: {
@@ -1127,7 +1143,10 @@ export function reviewConversionAlertForRow(input: {
     body:
       `At ${input.nowIso}, ${kind} consult ${row.conversation_id} ` +
       (row.state === 'no_qualified_responder'
-        ? 'finished routing without a qualified reviewer. The '
+        ? noQualifiedResponderIsUnmeasured(row.routing)
+          ? 'could not measure reviewer relevance (routing was unmeasured or its preparation failed), so no ' +
+            'reviewer was selected. This is not a finding that no qualified reviewer exists. The '
+          : 'finished routing without a qualified reviewer. The '
         : `had no reviewer exchange at half its window (silent selectee ${row.responder_id ?? '(unassigned)'}). The `) +
       `review was converted to work item ${workItemId}, which any eligible agent can claim ` +
       `(review-system-rework-reduction-2026-09-23 P-014). The consult is closed with outcome ` +

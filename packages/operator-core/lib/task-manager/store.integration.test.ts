@@ -631,6 +631,58 @@ describe('P-012 terminal provenance writer', () => {
     return (await store.getTask(taskId))!;
   }
 
+  it('stamps ended_at from systemd InactiveEnterTimestamp, clamped, and never from a live unit (WI-6554700010048562)', async () => {
+    const terminalFor = (scopeUnit: string, activeState: string, inactiveEnterAt: string): TaskTerminalProvenance => ({
+      capturedAt: new Date().toISOString(), scopeUnit, cgroupPath: null, invocationId: null,
+      loadState: 'loaded', activeState, serviceResult: activeState === 'failed' ? 'timeout' : null,
+      execMainCode: null, execMainStatus: null, memoryMaxBytes: null, peakMemoryBytes: null,
+      peakMemorySource: 'unknown', inactiveEnterAt,
+    });
+    const backdate = async (taskId: string): Promise<number> => {
+      const [row] = await db.sql<Array<{ started_at: Date }>>`
+        UPDATE harness_shared.task_ledger SET started_at = now() - interval '10 minutes'
+         WHERE task_id = ${taskId} RETURNING started_at
+      `;
+      return row!.started_at.getTime();
+    };
+    const endedAtOf = async (taskId: string): Promise<number> => (await db.sql<Array<{ ended_at: Date }>>`
+      SELECT ended_at FROM harness_shared.task_ledger WHERE task_id = ${taskId}
+    `)[0]!.ended_at.getTime();
+    // Terminal delivery is out of scope here; the real emitter needs the work_items schema.
+    const effects = { emitTerminal: vi.fn(async () => {}) };
+
+    // A RuntimeMaxSec kill one minute after start, noticed minutes later: systemd's instant wins.
+    const late = await liveTask('systemdendlate');
+    const lateStart = await backdate('systemdendlate');
+    const killedAt = new Date(lateStart + 60_000).toISOString();
+    await expect(store.closeTask('systemdendlate', {
+      state: 'ended_unobserved', terminalProvenance: terminalFor(late.scopeUnit!, 'failed', killedAt),
+    }, undefined, effects)).resolves.toBe(true);
+    expect(await endedAtOf('systemdendlate')).toBe(Date.parse(killedAt));
+    expect(await store.getTask('systemdendlate')).toMatchObject({
+      state: 'timed_out', terminalProvenance: { inactiveEnterAt: killedAt },
+    });
+
+    // Clock skew before started_at clamps to started_at rather than inverting the row.
+    const skew = await liveTask('systemdendskew');
+    const skewStart = await backdate('systemdendskew');
+    await store.closeTask('systemdendskew', {
+      state: 'ended_unobserved',
+      terminalProvenance: terminalFor(skew.scopeUnit!, 'failed', new Date(skewStart - 60_000).toISOString()),
+    }, undefined, effects);
+    expect(await endedAtOf('systemdendskew')).toBe(skewStart);
+
+    // A live unit's InactiveEnterTimestamp is an earlier state change, never the end.
+    const live = await liveTask('systemdendlive');
+    const liveStart = await backdate('systemdendlive');
+    await store.closeTask('systemdendlive', {
+      state: 'ended_unobserved',
+      terminalProvenance: terminalFor(live.scopeUnit!, 'active', new Date(liveStart + 60_000).toISOString()),
+    }, undefined, effects);
+    expect(effects.emitTerminal).toHaveBeenCalledTimes(3);
+    expect(await endedAtOf('systemdendlive')).toBeGreaterThan(liveStart + 9 * 60_000);
+  });
+
   it('persists pids.events max monotonically while keeping pids.current at its latest sample', async () => {
     await liveTask('pidseventstask');
     await db.sql`

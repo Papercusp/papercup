@@ -145,7 +145,18 @@ const TERMINAL_SHOW_PROPERTIES = [
   'MemoryPeak',
   'ControlGroup',
   'InvocationID',
+  // WI-6554700010048562: the instant systemd moved the unit to inactive/failed.
+  // Read with TERMINAL_SHOW_TIMESTAMP_ARG so it arrives as microsecond UTC rather
+  // than a localized wall-clock string. Without it the ledger's ended_at is the
+  // reconciler's OBSERVATION time, which lagged a RuntimeMaxSec kill by 5-30 min.
+  'InactiveEnterTimestamp',
 ] as const;
+
+/**
+ * Prints every timestamp property as `<wd> YYYY-MM-DD HH:MM:SS.ffffff UTC`.
+ * `*Monotonic` and non-timestamp properties are unaffected (verified, systemd 255).
+ */
+const TERMINAL_SHOW_TIMESTAMP_ARG = '--timestamp=us+utc';
 
 const FAILED_UNIT_AGE_PROPERTY = 'InactiveEnterTimestampMonotonic';
 
@@ -173,6 +184,30 @@ function terminalInteger(raw: string | undefined): number | null {
 
 function terminalText(raw: string | undefined): string | null {
   return raw && raw.length > 0 && raw !== '[not set]' ? raw : null;
+}
+
+const SYSTEMD_UTC_TIMESTAMP = /^(?:\S+ )?(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})(?:\.(\d{1,6}))? UTC$/;
+const SYSTEMD_UNIX_TIMESTAMP = /^@(\d+)$/;
+
+/**
+ * Parse a systemd timestamp property printed with `--timestamp=us+utc`
+ * (`Thu 2026-11-12 07:39:26.785192 UTC`) — or `--timestamp=unix` (`@1794632492`) —
+ * to an ISO instant. Anything else — empty (the unit never entered that state),
+ * `n/a`, or a LOCALIZED string from a call that omitted the flag — is `null`: an
+ * ambiguous wall clock is never guessed at; the caller keeps its observation time.
+ */
+export function parseSystemdTimestamp(raw: string | undefined): string | null {
+  const value = (raw ?? '').trim();
+  const unix = SYSTEMD_UNIX_TIMESTAMP.exec(value);
+  if (unix) {
+    const seconds = Number(unix[1]);
+    return seconds > 0 ? new Date(seconds * 1000).toISOString() : null;
+  }
+  const utc = SYSTEMD_UTC_TIMESTAMP.exec(value);
+  if (!utc) return null;
+  const millis = (utc[3] ?? '').padEnd(3, '0').slice(0, 3);
+  const parsed = Date.parse(`${utc[1]}T${utc[2]}.${millis}Z`);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
 }
 
 /**
@@ -211,6 +246,7 @@ export function parseTaskUnitTerminalSnapshots(
       memoryMaxBytes: unitNotFound ? null : terminalInteger(properties.get('MemoryMax')),
       peakMemoryBytes: unitNotFound ? null : peakMemoryBytes,
       peakMemorySource: unitNotFound || peakMemoryBytes == null ? 'unknown' : 'systemd',
+      inactiveEnterAt: unitNotFound ? null : parseSystemdTimestamp(properties.get('InactiveEnterTimestamp')),
     });
   }
   return found;
@@ -230,7 +266,10 @@ export async function inspectTaskUnitTerminals(
   try {
     const { stdout } = await execFn(
       'systemctl',
-      ['--user', 'show', '--no-pager', `--property=${TERMINAL_SHOW_PROPERTIES.join(',')}`, ...units],
+      [
+        '--user', 'show', '--no-pager', TERMINAL_SHOW_TIMESTAMP_ARG,
+        `--property=${TERMINAL_SHOW_PROPERTIES.join(',')}`, ...units,
+      ],
       { timeout: 10_000, maxBuffer: 1024 * 1024 },
     );
     return parseTaskUnitTerminalSnapshots(stdout, units, now().toISOString());
@@ -327,7 +366,7 @@ export async function scanStaleFailedTaskUnitTerminals(
     const properties = [...TERMINAL_SHOW_PROPERTIES, FAILED_UNIT_AGE_PROPERTY].join(',');
     const { stdout } = await execFn(
       'systemctl',
-      ['--user', 'show', '--no-pager', `--property=${properties}`, ...inspectedUnits],
+      ['--user', 'show', '--no-pager', TERMINAL_SHOW_TIMESTAMP_ARG, `--property=${properties}`, ...inspectedUnits],
       { timeout: 10_000, maxBuffer: 4 * 1024 * 1024 },
     );
     const blocks = parseSystemdPropertyBlocks(stdout);

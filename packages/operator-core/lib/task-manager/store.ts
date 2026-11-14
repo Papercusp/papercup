@@ -373,6 +373,17 @@ function terminalExitCode(terminal: TaskTerminalProvenance, fallback: number | n
   return fallback;
 }
 
+/**
+ * The instant systemd says the unit stopped, when the snapshot proves it stopped
+ * (WI-6554700010048562). A live unit's InactiveEnterTimestamp is empty or belongs
+ * to an earlier state change, so it is never a terminal instant.
+ */
+export function terminalEndedAt(terminal: TaskTerminalProvenance | null | undefined): string | null {
+  if (!terminal?.inactiveEnterAt) return null;
+  if (['active', 'activating', 'reloading', 'deactivating'].includes(terminal.activeState ?? '')) return null;
+  return Number.isFinite(Date.parse(terminal.inactiveEnterAt)) ? terminal.inactiveEnterAt : null;
+}
+
 export function classifyTerminalClose(
   input: CloseTaskInput,
   row: TaskRow | null,
@@ -483,6 +494,10 @@ export async function closeTask(
     effects.stage?.('task-close-cleanup-complete');
   }
   const terminalJson = classified.terminalProvenance ? JSON.stringify(classified.terminalProvenance) : null;
+  // systemd's own stop instant beats the moment this close OBSERVED the stop: a
+  // reconciler can notice a RuntimeMaxSec kill minutes late (WI-6554700010048562).
+  // Clamped to [started_at, now()] so clock skew can never invert the row.
+  const systemdEndedAt = terminalEndedAt(classified.terminalProvenance);
   effects.stage?.('task-close-update');
   const rows = await sql<Array<{
     task_id: string;
@@ -519,7 +534,12 @@ export async function closeTask(
              'terminalEventPending', true,
              'terminalEventRevision', COALESCE((detail ->> 'terminalEventRevision')::bigint, 0) + 1
            ),
-           ended_at = COALESCE(ended_at, now()),
+           ended_at = CASE
+             WHEN ${systemdEndedAt}::timestamptz IS NOT NULL
+               AND (ended_at IS NULL OR ${systemdEndedAt}::timestamptz < ended_at)
+               THEN LEAST(GREATEST(${systemdEndedAt}::timestamptz, started_at), now())
+             ELSE COALESCE(ended_at, now())
+           END,
            last_seen_at = now(),
            updated_at = now()
      WHERE task_id = ${taskId}

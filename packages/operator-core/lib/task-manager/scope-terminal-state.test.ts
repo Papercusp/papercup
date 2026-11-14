@@ -3,6 +3,7 @@ import {
   checkScopesReleased,
   inspectTaskUnitTerminals,
   parseActiveStateValues,
+  parseSystemdTimestamp,
   parseTaskUnitTerminalSnapshots,
   resetFailedTaskUnit,
   scanStaleFailedTaskUnitTerminals,
@@ -325,6 +326,35 @@ describe('stale failed task-unit discovery (EI-24354227978007755)', () => {
   });
 });
 
+describe('terminal stop instant (WI-6554700010048562)', () => {
+  it('parses us+utc and unix systemd timestamps and refuses anything ambiguous', () => {
+    expect(parseSystemdTimestamp('Thu 2026-11-12 07:39:26.785192 UTC')).toBe('2026-11-12T07:39:26.785Z');
+    expect(parseSystemdTimestamp('Thu 2026-11-12 07:39:26 UTC')).toBe('2026-11-12T07:39:26.000Z');
+    expect(parseSystemdTimestamp('@1794632492')).toBe(new Date(1794632492000).toISOString());
+    // Empty = never entered the state; a localized zone is ambiguous; @0 is unset.
+    for (const raw of ['', 'n/a', undefined, 'Thu 2026-11-12 02:39:26 EST', '@0']) {
+      expect(parseSystemdTimestamp(raw)).toBeNull();
+    }
+  });
+
+  it('requests InactiveEnterTimestamp in UTC and carries it, but never from a not-found unit', async () => {
+    const execFn = vi.fn<ExecFileFn>(async () => ({
+      stdout: [
+        'Id=pc-late1.service', 'LoadState=loaded', 'ActiveState=failed', 'Result=timeout',
+        'InactiveEnterTimestamp=Sat 2026-11-14 05:01:32.251234 UTC', '',
+        'Id=pc-gone1.service', 'LoadState=not-found', 'ActiveState=inactive',
+        'InactiveEnterTimestamp=Sat 2026-11-14 05:01:40.000000 UTC', '',
+      ].join('\n'),
+      stderr: '',
+    }));
+    const snapshots = await inspectTaskUnitTerminals(['pc-late1.service', 'pc-gone1.service'], execFn);
+    expect(execFn.mock.calls[0]![1]).toContain('--timestamp=us+utc');
+    expect(execFn.mock.calls[0]![1].find((arg) => arg.startsWith('--property='))).toContain('InactiveEnterTimestamp');
+    expect(snapshots.get('pc-late1.service')?.inactiveEnterAt).toBe('2026-11-14T05:01:32.251Z');
+    expect(snapshots.get('pc-gone1.service')?.inactiveEnterAt).toBeNull();
+  });
+});
+
 describe('P-012 terminal provenance', () => {
   const OOM_SHOW = [
     'Result=oom-kill',
@@ -359,6 +389,7 @@ describe('P-012 terminal provenance', () => {
       memoryMaxBytes: 33_554_432,
       peakMemoryBytes: 33_554_432,
       peakMemorySource: 'systemd',
+      inactiveEnterAt: null,
     });
     // An unknown/collected unit may say Result=success and zero exit fields, but
     // those are defaults, not historical verdicts. Keep the release fact and
@@ -376,6 +407,7 @@ describe('P-012 terminal provenance', () => {
       memoryMaxBytes: null,
       peakMemoryBytes: null,
       peakMemorySource: 'unknown',
+      inactiveEnterAt: null,
     });
   });
 
