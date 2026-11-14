@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { createServer, type ServerResponse } from 'node:http';
 import {
   readPendingSessionEndWitness,
+  describeSessionEndReportFailure,
   reportSessionEnded,
   reportSessionResumed,
   reportSessionResumeFinalized,
@@ -83,6 +84,26 @@ describe('keyed PSU lifecycle response-body recovery', () => {
     });
     expect(result).toMatchObject({ finalized: false, reason: 'http' });
     expect(attempts).toBe(1);
+  });
+
+  it('explains a failed end reconciliation without losing its deadline or pending witness', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'psu-end-diagnostic-'));
+    try {
+      const result = await reportSessionEnded(60670, 0, {
+        home, token: 'test', operatorUrl: 'http://operator.test',
+        endAttemptKey: 'end-60670', connectBudgetMs: 0, timeoutRetries: 0,
+        fetchImpl: async () => { throw new DOMException('deadline', 'TimeoutError'); },
+      });
+      expect(result.reported).toBe(false);
+      expect(describeSessionEndReportFailure(result)).toContain('http://operator.test');
+      expect(describeSessionEndReportFailure(result)).toContain('2000ms');
+      expect(readPendingSessionEndWitness(60670, home)?.endAttemptKey).toBe('end-60670');
+      expect(describeSessionEndReportFailure({ reason: 'http', status: 503 })).toBe('http; HTTP 503');
+      expect(describeSessionEndReportFailure({ reason: 'transport', phase: 'response-body', detail: 'terminated' }))
+        .toBe('transport; response-body; terminated');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it('recovers a native HTTP body reset after headers without a second logical finalize', async () => {

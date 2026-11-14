@@ -182,6 +182,10 @@ function ctx(over: Partial<UnifiedToolContext> = {}): UnifiedToolContext {
     workspaceId: 'ws-a',
     isSuperuser: true,
     uiClientId: 'owner-a',
+    signal: new AbortController().signal,
+    log: vi.fn(),
+    progress: vi.fn(),
+    emit: vi.fn(),
     ...over,
   } as UnifiedToolContext;
 }

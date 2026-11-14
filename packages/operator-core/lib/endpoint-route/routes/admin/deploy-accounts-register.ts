@@ -1,7 +1,9 @@
 /**
  * POST /api/admin/deploy-accounts/register — register a Claude or Codex gateway credential.
  *
- * Body: { accountId, label?, provider?, credentialType?, value }
+ * Body: { accountId, label?, provider?, credentialType?, value?, aliasOf? }
+ * Codex accepts a complete ChatGPT auth.json bundle, preserving its refresh credential.
+ * aliasOf reuses an existing Codex CLI account's credential home without another refresh writer.
  *   credentialType = 'api-key' for an Anthropic Console key (sk-ant-api… or sk-ant-usr…); registered with
  *                    the existing apikey:file: resolver and metered overflow policy.
  *   value = either a `claude setup-token` long-lived token (`sk-ant-oat…`) → written raw and
@@ -64,7 +66,7 @@ export default defineTool({
   async handler(req) {
     const csrf = requireAllowedOriginOr403(req);
     if (csrf) return csrf;
-    let body: { accountId?: string; label?: string; provider?: 'claude' | 'codex'; credentialType?: 'subscription' | 'api-key'; value?: string; anthropicWorkspaceId?: string; egress?: { proxyUrl?: string; localAddress?: string } };
+    let body: { accountId?: string; label?: string; provider?: 'claude' | 'codex'; credentialType?: 'subscription' | 'api-key'; value?: string; aliasOf?: string; anthropicWorkspaceId?: string; egress?: { proxyUrl?: string; localAddress?: string } };
     try {
       body = await req.json();
     } catch {
@@ -74,7 +76,8 @@ export default defineTool({
     const provider = body?.provider === 'codex' ? 'codex' : 'claude';
     const isApiKey = body?.credentialType === 'api-key';
     const anthropicWorkspaceId = typeof body?.anthropicWorkspaceId === 'string' ? body.anthropicWorkspaceId.trim() : '';
-    const value = body?.value?.trim();
+    const value = typeof body?.value === 'string' ? body.value.trim() : '';
+    const aliasOf = typeof body?.aliasOf === 'string' ? body.aliasOf.trim() : '';
     // Optional per-account egress (per-account IP routing) — only kept if a field is set.
     const proxyUrl = body?.egress?.proxyUrl?.trim();
     const localAddress = body?.egress?.localAddress?.trim();
@@ -91,7 +94,10 @@ export default defineTool({
     if (body.anthropicWorkspaceId !== undefined && (typeof body.anthropicWorkspaceId !== 'string' || !isApiKey || (anthropicWorkspaceId && !/^wrkspc_[A-Za-z0-9_-]+$/.test(anthropicWorkspaceId)))) {
       return Response.json({ ok: false, error: 'anthropicWorkspaceId must be a wrkspc_… id for an Anthropic API-key account' }, { status: 400 });
     }
-    if (!value) return Response.json({ ok: false, error: provider === 'codex' ? 'value required (a bearer token or env:NAME reference)' : 'value required (a sk-ant-oat… token or a .credentials.json bundle)' }, { status: 400 });
+    if (body.aliasOf !== undefined && (!aliasOf || provider !== 'codex' || !ID_RE.test(aliasOf) || aliasOf === accountId || value)) {
+      return Response.json({ ok: false, error: 'aliasOf must name another Codex CLI account and cannot be combined with value' }, { status: 400 });
+    }
+    if (!value && !aliasOf) return Response.json({ ok: false, error: provider === 'codex' ? 'value required (a ChatGPT auth.json bundle, bearer token or env:NAME reference)' : 'value required (a sk-ant-oat… token or a .credentials.json bundle)' }, { status: 400 });
 
     try {
       let credentialRef: string;
@@ -100,8 +106,14 @@ export default defineTool({
       // account dies with `Headers.append: invalid header value` (WI-1919, 2026-07-03: three pool
       // accounts never served a request). A bearer's alphabet has no whitespace, so collapsing ALL
       // of it reconstructs the intended token. Bundles (JSON) are left untouched.
-      const tokenValue = value.replace(/\s+/g, '');
-      if (isApiKey) {
+      const tokenValue = (value ?? '').replace(/\s+/g, '');
+      if (aliasOf) {
+        const source = (await accountStatus()).find((account) => account.id === aliasOf);
+        if (source?.provider !== 'codex' || !source.credentialRef.startsWith('codex-cli:')) {
+          return Response.json({ ok: false, error: 'aliasOf must name a registered Codex CLI account' }, { status: 400 });
+        }
+        credentialRef = source.credentialRef;
+      } else if (isApiKey) {
         if (!/^sk-ant-(?:api|usr)[A-Za-z0-9_-]+$/.test(tokenValue)) {
           return Response.json({ ok: false, error: 'value must be an Anthropic Console API key (sk-ant-api… or sk-ant-usr…). For a Max subscription, use browser login or a setup-token instead.' }, { status: 400 });
         }
@@ -147,6 +159,22 @@ export default defineTool({
         await writeFile(credPath, isBundle ? value : tokenValue, { mode: 0o600 });
         await chmod(credPath, 0o600);
         credentialRef = `${isBundle ? 'file' : 'token'}:${credPath}`;
+      } else if (value.startsWith('{')) {
+        try {
+          const auth = JSON.parse(value) as { auth_mode?: unknown; tokens?: { access_token?: unknown; refresh_token?: unknown } };
+          if (auth.auth_mode !== 'chatgpt' || typeof auth.tokens?.access_token !== 'string' || !auth.tokens.access_token.trim() || typeof auth.tokens.refresh_token !== 'string' || !auth.tokens.refresh_token.trim()) {
+            return Response.json({ ok: false, error: 'Codex bundle must contain a ChatGPT login with access and refresh tokens' }, { status: 400 });
+          }
+        } catch {
+          return Response.json({ ok: false, error: 'Codex auth.json bundle is invalid JSON' }, { status: 400 });
+        }
+        const home = papercuspPath('deploy-credentials', `${accountId}.codex-cli`);
+        await mkdir(home, { recursive: true, mode: 0o700 });
+        await chmod(home, 0o700);
+        const authPath = `${home}/auth.json`;
+        await writeFile(authPath, value, { mode: 0o600 });
+        await chmod(authPath, 0o600);
+        credentialRef = `codex-cli:${home}`;
       } else if (value.startsWith('env:')) {
         credentialRef = value;
       } else {

@@ -9379,7 +9379,9 @@ export async function fetchWithResilience(
   // Headers already arrived: preserve the body phase instead of reporting an
   // unreachable operator when its acknowledgement stream was interrupted.
   if (e?.lifecyclePhase) throw e;
-  const shownUrl = target?.url ?? launcherOperatorTarget().url;
+  // An injected/custom operatorUrl may differ from the launcher's default.
+  // Failover updates `url` above, so this also names the endpoint actually tried.
+  const shownUrl = new URL(url, target?.url ?? launcherOperatorTarget().url).origin;
   // WI-3271: guidance must match the install. A desktop (discovery) target has
   // no systemd — telling a Windows/desktop user to systemctl is a dead end; the
   // fix there is starting (or restarting) the Papercusp app itself.

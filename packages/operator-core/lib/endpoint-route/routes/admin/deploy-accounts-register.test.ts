@@ -186,6 +186,67 @@ describe('POST /api/admin/deploy-accounts/register — egress + invalidation (su
     );
   });
 
+  it('imports a complete Codex CLI login privately and preserves its refresh token without returning credentials', async () => {
+    const value = JSON.stringify({ auth_mode: 'chatgpt', tokens: {
+      access_token: 'import-access', refresh_token: 'import-refresh', id_token: 'import-id', account_id: 'provider-account',
+    }, last_refresh: '2026-11-14T20:00:00Z' }, null, 2);
+    const { status, body } = await post({ accountId: 'codex-import', provider: 'codex', value });
+    expect(status).toBe(200);
+    expect(lastRegisterInput()?.credentialRef).toBe('codex-cli:/tmp/test-papercusp/deploy-credentials/codex-import.codex-cli');
+    expect(h.mkdir).toHaveBeenCalledWith('/tmp/test-papercusp/deploy-credentials/codex-import.codex-cli', { recursive: true, mode: 0o700 });
+    expect(h.chmod).toHaveBeenCalledWith('/tmp/test-papercusp/deploy-credentials/codex-import.codex-cli', 0o700);
+    expect(h.writeFile).toHaveBeenCalledWith('/tmp/test-papercusp/deploy-credentials/codex-import.codex-cli/auth.json', value, { mode: 0o600 });
+    expect(h.chmod).toHaveBeenCalledWith('/tmp/test-papercusp/deploy-credentials/codex-import.codex-cli/auth.json', 0o600);
+    expect(h.gatewayFetch).toHaveBeenCalled();
+    for (const secret of ['import-access', 'import-refresh', 'import-id']) expect(JSON.stringify(body)).not.toContain(secret);
+  });
+
+  it.each([
+    '{broken',
+    JSON.stringify({ auth_mode: 'apikey', OPENAI_API_KEY: 'not-a-subscription' }),
+    JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: 'access' } }),
+    JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: 'access', refresh_token: ' ' } }),
+    JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: 123, refresh_token: 'refresh' } }),
+  ])('refuses unusable Codex CLI bundles before writing or registering', async value => {
+    const { status } = await post({ accountId: 'invalid-codex', provider: 'codex', value });
+    expect(status).toBe(400);
+    expect(h.writeFile).not.toHaveBeenCalled();
+    expect(h.mkdir).not.toHaveBeenCalled();
+    expect(h.registerAccount).not.toHaveBeenCalled();
+  });
+
+  it('preserves one credential home when another account id aliases an imported Codex login', async () => {
+    const credentialRef = 'codex-cli:/tmp/test-papercusp/deploy-credentials/canonical.codex-cli';
+    h.accountStatus.mockResolvedValue([{ id: 'canonical', provider: 'codex', credentialRef }]);
+    const { status } = await post({ accountId: 'alias', provider: 'codex', aliasOf: 'canonical' });
+    expect(status).toBe(200);
+    expect(lastRegisterInput()).toMatchObject({ id: 'alias', provider: 'codex', credentialRef });
+    expect(h.writeFile).not.toHaveBeenCalled();
+    expect(h.mkdir).not.toHaveBeenCalled();
+    expect(h.gatewayFetch).toHaveBeenCalled();
+  });
+
+  it.each([
+    { provider: 'claude', aliasOf: 'canonical' },
+    { provider: 'codex', aliasOf: 'alias' },
+    { provider: 'codex', aliasOf: '../canonical' },
+    { provider: 'codex', aliasOf: '' },
+    { provider: 'codex', aliasOf: 42 },
+    { provider: 'codex', aliasOf: 'canonical', value: 'another-credential' },
+    { provider: 'codex', aliasOf: 'missing' },
+  ])('refuses invalid credential aliases without touching credentials', async input => {
+    const { status } = await post({ accountId: 'alias', ...input });
+    expect(status).toBe(400);
+    expect(h.writeFile).not.toHaveBeenCalled();
+    expect(h.registerAccount).not.toHaveBeenCalled();
+  });
+
+  it('refuses to alias a bearer credential as a Codex CLI login', async () => {
+    h.accountStatus.mockResolvedValue([{ id: 'bearer', provider: 'codex', credentialRef: 'token:/private/bearer' }]);
+    expect((await post({ accountId: 'alias', provider: 'codex', aliasOf: 'bearer' })).status).toBe(400);
+    expect(h.registerAccount).not.toHaveBeenCalled();
+  });
+
   it('hot-applies an updated Codex account to the live gateway after saving it', async () => {
     const { status, body } = await post({
       accountId: 'aviynw_3',

@@ -67,9 +67,12 @@ export function deferSuPromptReferences(text: string, sources: {
     } else if (heading === 'Engineering discipline') {
       // These are execution/ownership rules, not reference examples. In particular,
       // never remove the single-live-gate-owner boundary while deferring its recipes.
+      // The lossless-data rule (app-wide-lossless-caps-and-agent-guidance-2026-11-08 P-001)
+      // is a judgment rule every implementer, planner and reviewer must READ at launch,
+      // not a procedure to fetch on demand, so it stays inline with its own clauses.
       const bullets = section.split(/\n(?=- \*\*)/);
       const core = bullets.filter((bullet, index) => index === 0 ||
-        /^- \*\*(?:Plan before|Shape, then|Audit the complete|Declare `changeKinds`|A red release\/CI gate)/.test(bullet));
+        /^- \*\*(?:Plan before|Shape, then|Audit the complete|Declare `changeKinds`|A red release\/CI gate|Lossless data)/.test(bullet));
       summary = core.join('\n').trimEnd() + '\n\nFetch engineering reference procedures before test selection, app scaffolding or release work. Tests and real verification ship with every behavioral change; reuse existing surfaces.';
     } else if (heading.startsWith('The deploy pipeline is ASYNC')) {
       source = policy;

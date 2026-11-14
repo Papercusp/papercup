@@ -6768,10 +6768,6 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     ).toBe(true);
     for (const path of [
       "/api/adv/sessions/ensure-codex-home",
-      "/api/agent-mcp/console/bootstrap-su/session-ended",
-      "/api/agent-mcp/console/bootstrap-su/session-resumed",
-      "/api/agent-mcp/console/bootstrap-su/session-resume-finalized",
-      "/api/agent-mcp/console/bootstrap-su/session-resume-released",
       "/api/adv/sessions/port/delivery",
       "/api/adv/sessions/port/status",
     ]) {
@@ -6781,12 +6777,17 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
         `rest:${path}`,
       ]);
     }
-    // WI-6554700010029903: the carry-respawn identity report is reserved but
-    // must not join the single-socket continuation FIFO.
-    const respawned = "/api/agent-mcp/console/bootstrap-su/session-respawned";
-    expect(isReservedControlPlanePath(respawned)).toBe(true);
-    expect(isReservedControlPlaneCall(ordinaryBody, respawned)).toBe(true);
-    expect(isCriticalContinuationCall(ordinaryBody, respawned)).toBe(false);
+    // Tracked-session transitions must retain reserved admission without joining
+    // the long-running continuation queue, including with query/trailing slash.
+    for (const transition of ["session-ended", "session-resumed", "session-resume-finalized",
+      "session-resume-released", "session-respawned"]) {
+      for (const suffix of ["", "/", "?client=psu"]) {
+        const path = "/api/agent-mcp/console/bootstrap-su/" + transition + suffix;
+        expect(isReservedControlPlanePath(path)).toBe(true);
+        expect(isReservedControlPlaneCall(ordinaryBody, path)).toBe(true);
+        expect(isCriticalContinuationCall(ordinaryBody, path)).toBe(false);
+      }
+    }
     expect(isReservedControlPlanePath("/api/tui/identity")).toBe(true);
     expect(isReservedControlPlanePath("/api/tui/identity/")).toBe(true);
     expect(isReservedControlPlanePath("/api/tui/identity?probe=startup")).toBe(
@@ -6827,6 +6828,52 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
         "/api/agent-mcp/console/bootstrap-su/heartbeat",
       ),
     ).toBe(false);
+  });
+
+  it.each([
+    "session-ended", "session-resumed", "session-resume-finalized", "session-resume-released",
+  ])("WI-6554700010048981: %s acknowledges while the continuation lane is occupied", async (transition) => {
+    let releaseHeld: () => void = () => {};
+    const heldGate = new Promise<void>((resolve) => { releaseHeld = resolve; });
+    const hits: string[] = [];
+    const upstream = track(http.createServer((req, res) => {
+      const path = req.url ?? "";
+      hits.push(path);
+      if (path.includes("held-compaction")) {
+        void heldGate.then(() => res.end('{"ok":true}'));
+      } else {
+        res.end('{"ok":true}');
+      }
+    }));
+    await listen(upstream);
+    const proxy = track(createMcpProxy({
+      listenPort: 0, targetHost: "127.0.0.1", targetPort: port(upstream),
+      maxInFlight: 2, controlPlaneReserve: 1, log: () => {},
+    }));
+    await listen(proxy);
+    const held = request(port(proxy), JSON.stringify({
+      method: "tools/call", params: { name: "session:request-compaction", arguments: {} },
+    }), "/api/mcp?client=held-compaction");
+    let lifecycle: Promise<unknown> | undefined;
+    try {
+      await waitFor(() => hits.some(path => path.includes("held-compaction")));
+      const path = "/api/agent-mcp/console/bootstrap-su/" + transition;
+      lifecycle = request(port(proxy), JSON.stringify({
+        advSessionId: 60670, endAttemptKey: "end-60670", resumeClaimKey: "resume-60670",
+      }), path).then(response => {
+        expect(response.status).toBe(200);
+      });
+      // Capacity as well as global ordering must be independent: the only
+      // continuation slot stays held until this lifecycle response is observed.
+      await waitFor(() => hits.includes(path), 500);
+      await lifecycle;
+      const health = JSON.parse((await get(port(proxy), MCP_PROXY_LOCAL_HEALTH_PATH)).body);
+      expect(health.inFlight.criticalContinuation).toBe(1);
+      expect(health.inFlight.criticalContinuationQueue.waiting).toBe(0);
+    } finally {
+      releaseHeld();
+      await Promise.allSettled([held, lifecycle]);
+    }
   });
 
   it("admits a lifecycle write from the reserved slot while ordinary traffic sheds", async () => {
@@ -10482,13 +10529,13 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     );
     await holderStarted;
 
-    // The lifecycle REST write carries a finite generic dwell, so its shed must attribute itself
+    // Session-port preparation carries a finite generic dwell, so its shed must attribute itself
     // to the holder, not to queue depth. `work_items:checkpoint` is intentionally non-expiring;
     // pure `improvements:capture` uses its dedicated lane.
     const lifecycle = request(
       port(proxy),
       body(2, "work_items:checkpoint"),
-      "/api/agent-mcp/console/bootstrap-su/session-ended?client=blocked-lifecycle",
+      "/api/adv/sessions/port/delivery?client=blocked-lifecycle",
     );
     await waitFor(() =>
       logs.some((line) => line.includes("queued critical-continuation request")),
@@ -11154,7 +11201,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       const malformed = request(port(proxy), JSON.stringify({ owner: "su-home-a" }),
         "/api/adv/sessions/ensure-codex-home?client=unkeyed-home");
       const lifecycle = request(port(proxy), JSON.stringify({ advSessionId: 103 }),
-        "/api/agent-mcp/console/bootstrap-su/session-ended?client=lifecycle");
+        "/api/adv/sessions/port/delivery?client=lifecycle");
       pending.push(malformed, lifecycle);
       await waitFor(() => queuedCount() >= 4);
       expect(hits).not.toContain("unkeyed-home");

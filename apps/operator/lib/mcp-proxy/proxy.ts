@@ -3143,20 +3143,18 @@ export const RESERVED_CONTROL_PLANE_PATHS = new Set([
   "/api/tui/identity",
 ]);
 
-// One-shot lifecycle mutations are the boundary that creates/ends a live
-// writer. They need the reserved admission pool plus the same isolated socket
-// as continuation checkpoints. Heartbeat is deliberately excluded: it repeats
-// and may fail fast under pressure.
+// Home/session-port preparation shares continuation ordering. The tracked-session
+// end/acquire/finalize/release handlers enforce their own atomic row transitions;
+// like respawn reports, they use RESERVED_CONTROL_PLANE_PATHS without this FIFO.
+// Otherwise an unrelated compaction can consume the launcher's entire 2s report
+// deadline before the handler runs, leaving a pending witness that blocks resume
+// indefinitely (WI-6554700010048981). Keep the existing admission/socket budgets.
 export const CRITICAL_SESSION_LIFECYCLE_PATHS = new Set([
   // Reconciliation follows the mutation on the same durability socket rather
   // than contending with ordinary traffic or reconnect handshakes.
   "/api/adv/sessions/ensure-codex-home",
   "/api/adv/sessions/port/delivery",
   "/api/adv/sessions/port/status",
-  "/api/agent-mcp/console/bootstrap-su/session-ended",
-  "/api/agent-mcp/console/bootstrap-su/session-resumed",
-  "/api/agent-mcp/console/bootstrap-su/session-resume-finalized",
-  "/api/agent-mcp/console/bootstrap-su/session-resume-released",
   // NOT session-respawned (WI-6554700010029903). Its caller (the psu host's
   // carry-respawn identity binding) gives each attempt ~2s and holds the
   // successor's continuation prompt until one is accepted. On this FIFO it

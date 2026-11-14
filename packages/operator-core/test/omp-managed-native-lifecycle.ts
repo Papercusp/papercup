@@ -96,7 +96,7 @@ export async function measureLifecycle(url: string, token: string, policy: Capab
         expect(su).toEqual(composeOmpCapabilityTools([], { ...policy, audience: 'interactive-su' }));
         for (const selected of [role, su]) {
           expect(selected).not.toEqual(['--no-tools']);
-          if (selected[0] === '--tools') expect(selected[1]!.split(',')).toContain(OMP_MANAGED_MCP_DISPATCHER);
+          if (selected[0] === '--tools') expect(selected[1]!.split(',')).not.toContain(OMP_MANAGED_MCP_DISPATCHER);
         }
         args = [...su, '-p', prompt];
       } else if (surface === 'resume') {

@@ -2624,7 +2624,7 @@ export function preflightWindowGuard({ personaBytes, contextSize, model, agent, 
     agent?: string | undefined;
     budget?: null | undefined;
 }): {
-    level: "refuse" | "ok" | "warn";
+    level: "warn" | "ok" | "refuse";
     pct: number;
     estTokens: number;
     window: number;
@@ -2676,7 +2676,7 @@ export function runLaunchPreflight({ promptFile, contextSize, model, agent, budg
     budget?: null | undefined;
     force: any;
 }): {
-    level: "refuse" | "ok" | "warn";
+    level: "warn" | "ok" | "refuse";
     pct: number;
     estTokens: number;
     window: number;
@@ -3120,6 +3120,15 @@ export function reportSessionEnded(advSessionId: number | string | null, exitCod
     endAttemptKey: string;
     status?: undefined;
 }>;
+/** Keep the actual transport/HTTP evidence in a pending-witness refusal.
+ * @param {{reason?: string, status?: number|null, phase?: string, detail?: string}} outcome
+ */
+export function describeSessionEndReportFailure(outcome: {
+    reason?: string;
+    status?: number | null;
+    phase?: string;
+    detail?: string;
+}): string;
 /**
  * Atomically ACQUIRE the right to resume a tracked session without claiming the
  * child is live. `psu --resume` reuses the original coord identity + adv row, so
