@@ -184,16 +184,53 @@ export interface ComposedProofComparison {
   rerunReadFrom: 'full-run-failing-set';
   /** Diagnostic agreement alone lacks the required context/instrument binding.
    * Optional only for historical rows; readers recompute it before adoption. */
-  qualification?: {
-    status: 'ineligible';
-    reason: 'full-gate-fallback' | 'qualification-context-unmeasured' | 'unverified-legacy-comparison';
-  };
+  qualification?: ComposedProofQualification;
 }
 
-function comparisonQualification(mode: unknown, comparison: unknown): NonNullable<ComposedProofComparison['qualification']> {
-  return { status: 'ineligible', reason: mode === 'full-gate' ? 'full-gate-fallback'
-    : mode === 'composed' && isRecord(comparison) && comparison.rerunReadFrom === 'full-run-failing-set'
-      ? 'qualification-context-unmeasured' : 'unverified-legacy-comparison' };
+/**
+ * R15-INSTRUMENT-ROTATION. Whether one shadow comparison may count toward the composed-proof cohort.
+ * `eligible` is derived from the record's own measured fields on every read, never from a stored claim.
+ */
+export type ComposedProofQualification =
+  | {
+      status: 'ineligible';
+      reason: 'full-gate-fallback' | 'qualification-context-unmeasured' | 'unverified-legacy-comparison'
+        | 'nothing-carried';
+    }
+  | {
+      status: 'eligible';
+      instrumentFingerprint: string;
+      proofContext: { before: string; after: string };
+      carriedCount: number;
+    };
+
+const PROOF_CONTEXT_FINGERPRINT = /^sha256-proof-context-v1:[a-f0-9]{64}$/;
+
+/** Both sides of the proof context by fingerprint; undefined when either side is unmeasured or incomplete. */
+function bindProofContext(value: ProofContextComparison | null | undefined): { before: string; after: string } | undefined {
+  const before = readProofContextIdentity(value?.before);
+  const after = readProofContextIdentity(value?.after);
+  if (!before || !after) return undefined;
+  if ([before, after].some((id) => Object.values(id.components).some((component) => component === null))) return undefined;
+  return { before: before.fingerprint, after: after.fingerprint };
+}
+
+function comparisonQualification(record: unknown, comparison: unknown): ComposedProofQualification {
+  const ineligible = (reason: Extract<ComposedProofQualification, { status: 'ineligible' }>['reason']) =>
+    ({ status: 'ineligible' as const, reason });
+  const mode = isRecord(record) ? record.mode : undefined;
+  if (mode === 'full-gate') return ineligible('full-gate-fallback');
+  if (!isRecord(record) || mode !== 'composed' || !isRecord(comparison)
+    || comparison.rerunReadFrom !== 'full-run-failing-set') return ineligible('unverified-legacy-comparison');
+  const instrument = parseRatchetInstrument(record.instrument);
+  const fingerprint = instrument?.status === 'measured' ? instrument.fingerprint : null;
+  const before = isRecord(record.proofContext) ? record.proofContext.before : undefined;
+  const after = isRecord(record.proofContext) ? record.proofContext.after : undefined;
+  if (fingerprint === null || typeof before !== 'string' || !PROOF_CONTEXT_FINGERPRINT.test(before)
+    || typeof after !== 'string' || !PROOF_CONTEXT_FINGERPRINT.test(after)) return ineligible('qualification-context-unmeasured');
+  const carried = record.carriedCount;
+  if (typeof carried !== 'number' || !Number.isInteger(carried) || carried < 1) return ineligible('nothing-carried');
+  return { status: 'eligible', instrumentFingerprint: fingerprint, proofContext: { before, after }, carriedCount: carried };
 }
 
 export interface ComposedProofShadowRecord {
@@ -215,6 +252,10 @@ export interface ComposedProofShadowRecord {
   typeOnlyFileCount?: number;
   typeOnlySample?: string[];
   runtimeFileCount?: number;
+  /** How many round-1 verdicts the composed plan carried without re-running them. */
+  carriedCount?: number;
+  /** Fingerprints of the measured, complete proof context on both sides; absent when either is unmeasured or incomplete. */
+  proofContext?: { before: string; after: string };
   uncomputableRadius?: string[];
   comparison?: ComposedProofComparison;
   /** Why no comparison was recorded after the full run, when none was. */
@@ -288,6 +329,7 @@ export async function planComposedProofShadow(input: ComposedProofShadowInput): 
         ? null
         : [...new Set([...radius, ...Object.keys(round1Tests).filter((t) => radiusHasTest(radius, t))])];
     const runtime = new Set(runtimePaths);
+    const proofContext = bindProofContext(input.proofContext);
     const plan = planComposedProof({
       proofContext: input.proofContext,
       round1Tests,
@@ -317,6 +359,8 @@ export async function planComposedProofShadow(input: ComposedProofShadowInput): 
         ...base,
         status: 'planned',
         mode: 'composed',
+        carriedCount: plan.carriedTests.length,
+        ...(proofContext ? { proofContext } : {}),
         round1Failing,
         rerunCount: plan.rerunTests.length,
         rerunSample: sample(plan.rerunTests),
@@ -358,7 +402,7 @@ export function compareComposedProofShadow(
         missedByComposed: [],
         extraInComposed: [],
         rerunReadFrom: 'full-run-failing-set',
-        qualification: comparisonQualification(plan.mode, null),
+        qualification: comparisonQualification({ ...record, mode: plan.mode }, null),
       },
     };
   }
@@ -379,9 +423,69 @@ export function compareComposedProofShadow(
       missedByComposed: sample(missedByComposed),
       extraInComposed: sample(extraInComposed),
       rerunReadFrom: 'full-run-failing-set',
-      qualification: comparisonQualification(plan.mode, { rerunReadFrom: 'full-run-failing-set' }),
+      qualification: comparisonQualification({ ...record, mode: plan.mode }, { rerunReadFrom: 'full-run-failing-set' }),
     },
   };
+}
+
+/**
+ * R15-INSTRUMENT-ROTATION. Qualified shadow runs counted under ONE instrument fingerprint.
+ * Credit never survives an instrument change: a different or unmeasured fingerprint starts from zero.
+ * This only counts. The switch that acts on the count belongs to the acting change (P-005).
+ */
+export interface ComposedProofShadowCohort {
+  schemaVersion: 'shadow-cohort-v1';
+  /** null while the executing instrument is unmeasured; such a cohort holds no credit. */
+  instrumentFingerprint: string | null;
+  qualifiedRuns: number;
+  /** `candidate:repairHead` keys already counted (newest last), so one lineage is credited once. */
+  countedRuns: string[];
+}
+
+/** Bound on remembered lineage keys. A lineage older than this many credited runs could be credited again. */
+export const COMPOSED_PROOF_COHORT_KEY_CAP = 16;
+
+/** Strict read of a stored cohort. Anything malformed or internally inconsistent is no cohort, so no credit. */
+export function parseComposedProofCohort(value: unknown): ComposedProofShadowCohort | undefined {
+  if (!isRecord(value) || value.schemaVersion !== 'shadow-cohort-v1') return undefined;
+  const raw = value.instrumentFingerprint;
+  const fingerprint = raw === null ? null : instrumentHash(raw) ? raw : undefined;
+  const runs = value.qualifiedRuns;
+  const keys = value.countedRuns;
+  if (fingerprint === undefined || typeof runs !== 'number' || !Number.isInteger(runs) || runs < 0) return undefined;
+  if (!Array.isArray(keys) || keys.length > COMPOSED_PROOF_COHORT_KEY_CAP
+    || keys.some((key) => typeof key !== 'string' || key.length < 3 || key.length > 25)
+    || new Set(keys).size !== keys.length) return undefined;
+  if (runs < keys.length || (runs > keys.length && keys.length < COMPOSED_PROOF_COHORT_KEY_CAP)) return undefined;
+  if (fingerprint === null && runs !== 0) return undefined;
+  return { schemaVersion: 'shadow-cohort-v1', instrumentFingerprint: fingerprint, qualifiedRuns: runs,
+    countedRuns: [...keys] as string[] };
+}
+
+/**
+ * One cohort step: the stored cohort plus one shadow record gives the next cohort.
+ *  - unmeasured instrument: no credit is held at all;
+ *  - a fingerprint different from the stored one: prior credit is dropped before this record is considered;
+ *  - a composed comparison that disagrees with the full run: credit under this fingerprint returns to zero;
+ *  - an eligible agreeing comparison: one credit per `candidate:repairHead` lineage;
+ *  - anything else (skipped, full-gate fallback, nothing carried): no evidence either way, the cohort is unchanged.
+ */
+export function advanceComposedProofCohort(previous: unknown, record: ComposedProofShadowRecord): ComposedProofShadowCohort {
+  const instrument = parseRatchetInstrument(record.instrument);
+  const fingerprint = instrument?.status === 'measured' ? instrument.fingerprint : null;
+  const reset: ComposedProofShadowCohort = {
+    schemaVersion: 'shadow-cohort-v1', instrumentFingerprint: fingerprint, qualifiedRuns: 0, countedRuns: [] };
+  if (fingerprint === null) return reset;
+  const prior = parseComposedProofCohort(previous);
+  const cohort = prior && prior.instrumentFingerprint === fingerprint ? prior : reset;
+  const comparison = record.comparison;
+  if (!comparison) return cohort;
+  if (record.mode === 'composed' && comparison.agree !== true) return reset;
+  if (comparisonQualification(record, comparison).status !== 'eligible') return cohort;
+  const key = record.candidate.slice(0, 12) + ':' + record.repairHead.slice(0, 12);
+  if (cohort.countedRuns.includes(key)) return cohort;
+  return { ...cohort, qualifiedRuns: cohort.qualifiedRuns + 1,
+    countedRuns: [...cohort.countedRuns, key].slice(-COMPOSED_PROOF_COHORT_KEY_CAP) };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -609,6 +713,8 @@ export function parseCommitPathLog(stdout: string): CandidateCommit[] {
 
 export interface RatchetShadowHealth {
   composedProof?: ComposedProofShadowRecord;
+  /** R15-INSTRUMENT-ROTATION: qualified shadow runs counted under one instrument fingerprint. */
+  composedProofCohort?: ComposedProofShadowCohort;
   newRedEjection?: NewRedEjectionShadowRecord;
 }
 
@@ -620,6 +726,8 @@ export interface RatchetShadowHealth {
 export function compactRatchetShadow(h: RatchetShadowHealth): RatchetShadowHealth {
   const cap = (xs: readonly string[] | undefined) => (xs ?? []).slice(0, 3).map((s) => s.slice(0, 128));
   const out: RatchetShadowHealth = {};
+  const cohort = parseComposedProofCohort(h.composedProofCohort);
+  if (cohort) out.composedProofCohort = cohort;
   const cp = h.composedProof;
   if (cp) {
     out.composedProof = {
@@ -635,13 +743,15 @@ export function compactRatchetShadow(h: RatchetShadowHealth): RatchetShadowHealt
       ...(cp.rerunCount !== undefined ? { rerunCount: cp.rerunCount } : {}),
       ...(cp.typeOnlyFileCount !== undefined ? { typeOnlyFileCount: cp.typeOnlyFileCount } : {}),
       ...(cp.runtimeFileCount !== undefined ? { runtimeFileCount: cp.runtimeFileCount } : {}),
+      ...(cp.carriedCount !== undefined ? { carriedCount: cp.carriedCount } : {}),
+      ...(cp.proofContext ? { proofContext: { before: cp.proofContext.before, after: cp.proofContext.after } } : {}),
       ...(cp.comparison
         ? {
             comparison: {
               ...cp.comparison,
               missedByComposed: cap(cp.comparison.missedByComposed),
               extraInComposed: cap(cp.comparison.extraInComposed),
-              qualification: comparisonQualification(cp.mode, cp.comparison),
+              qualification: comparisonQualification(cp, cp.comparison),
             },
           }
         : {}),
@@ -682,6 +792,8 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 export function parseRatchetShadowHealth(value: unknown): RatchetShadowHealth | undefined {
   if (!isRecord(value)) return undefined;
   const out: RatchetShadowHealth = {};
+  const cohort = parseComposedProofCohort(value.composedProofCohort);
+  if (cohort) out.composedProofCohort = cohort;
   const cp = value.composedProof;
   if (
     isRecord(cp) &&
@@ -697,7 +809,7 @@ export function parseRatchetShadowHealth(value: unknown): RatchetShadowHealth | 
       // Never adopt a caller's eligibility flag, including one surviving an
       // older result marker. Missing provenance remains unqualified history.
       ...(isRecord(cp.comparison) ? { comparison: { ...cp.comparison,
-        qualification: comparisonQualification(cp.mode, cp.comparison) } } : {}),
+        qualification: comparisonQualification(cp, cp.comparison) } } : {}),
     } as unknown as ComposedProofShadowRecord;
   }
   const nr = value.newRedEjection;
@@ -709,5 +821,5 @@ export function parseRatchetShadowHealth(value: unknown): RatchetShadowHealth | 
   ) {
     out.newRedEjection = nr as unknown as NewRedEjectionShadowRecord;
   }
-  return out.composedProof || out.newRedEjection ? out : undefined;
+  return out.composedProof || out.newRedEjection || out.composedProofCohort ? out : undefined;
 }

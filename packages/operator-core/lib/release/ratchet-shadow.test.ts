@@ -15,6 +15,9 @@ import {
   planNewRedEjectionShadow,
   sameTest,
   type RadiusQuery,
+  type ComposedProofShadowRecord,
+  advanceComposedProofCohort,
+  parseComposedProofCohort,
 } from './ratchet-shadow';
 import type { CandidateCommit } from './new-red-ejection';
 import type { OperatorArtifactIdentity } from './operator-artifact';
@@ -61,15 +64,27 @@ describe('instrument-v1 binding', () => {
     expect(parseRatchetInstrument({ ...unknown, missing: [] })).toBeUndefined();
   });
 
-  it('preserves the instrument through original shadow, compact marker and persisted consumer without granting eligibility', async () => {
+  it('preserves the instrument through original shadow, compact marker and persisted consumer, and grants eligibility only while it is measured', async () => {
     const instrument = captureRatchetInstrument(artifact(), context);
-    const shadow = await planComposedProofShadow({ instrument, proofContext: { before: context, after: context },
+    const plan = (bound: typeof instrument) => planComposedProofShadow({ instrument: bound, proofContext: { before: context, after: context },
       candidate: 'candidate', repairHead: 'head', round1: { failingTests: ['a.test.ts'], failingCount: 1 },
       changedFiles: [], radius: async () => new Set(), nowMs: 1 });
+    const shadow = await plan(instrument);
     const record = compareComposedProofShadow(shadow, { green: false, failingTests: ['a.test.ts'] });
     const compact = compactRatchetShadow({ composedProof: record });
-    expect(parseRatchetShadowHealth(JSON.parse(JSON.stringify(compact)))?.composedProof?.instrument).toEqual(instrument);
-    expect(compact.composedProof?.comparison?.qualification?.status).toBe('ineligible');
+    const reread = parseRatchetShadowHealth(JSON.parse(JSON.stringify(compact)));
+    expect(reread?.composedProof?.instrument).toEqual(instrument);
+    // R15-INSTRUMENT-ROTATION: the real planner output qualifies, and the persisted consumer re-derives the same answer.
+    const eligible = { status: 'eligible', instrumentFingerprint: instrument.fingerprint,
+      proofContext: { before: context.fingerprint, after: context.fingerprint }, carriedCount: 1 };
+    expect(compact.composedProof?.comparison?.qualification).toEqual(eligible);
+    expect(reread?.composedProof?.comparison?.qualification).toEqual(eligible);
+    // The same planner with an unmeasured instrument still composes and compares, and earns nothing.
+    const unmeasured = compareComposedProofShadow(await plan(captureRatchetInstrument(null, context)),
+      { green: false, failingTests: ['a.test.ts'] });
+    expect(unmeasured.mode).toBe('composed');
+    expect(compactRatchetShadow({ composedProof: unmeasured }).composedProof?.comparison?.qualification)
+      .toEqual({ status: 'ineligible', reason: 'qualification-context-unmeasured' });
     expect(parseRatchetShadowHealth({ composedProof: { ...record, instrument: { ...instrument, fingerprint: 'f'.repeat(64) } } }))
       .toBeUndefined();
   });
@@ -293,5 +308,95 @@ describe('records', () => {
     });
     expect(ok?.newRedEjection?.candidate).toBe('C');
     expect(ok?.composedProof).toBeUndefined();
+  });
+});
+
+describe('composed-proof cohort (R15-INSTRUMENT-ROTATION)', () => {
+  const hash = (seed: string) => createHash('sha256').update(seed).digest('hex');
+  // identity('base') is the baseline; identity(salt) changes every component; identity(salt, key) changes only `key`.
+  const identity = (salt: string, only?: string) => createProofContextIdentity(Object.fromEntries(PROOF_CONTEXT_COMPONENTS.map(key =>
+    [key, hash((only === undefined || only === key ? salt : 'base') + key)])) as ProofContextIdentity['components'])!;
+  const artifact = (): Extract<OperatorArtifactIdentity, { status: 'measured' }> => ({ status: 'measured',
+    sourceSha: 'a'.repeat(40), bundleSha256: 'b'.repeat(64), manifestSha256: 'c'.repeat(64),
+    sourceBlobs: Object.fromEntries(RATCHET_INSTRUMENT_DEFINITIONS.map(path => [path, 'd'.repeat(40)])), evidenceRef: '/boot/manifest' });
+  const instrument = captureRatchetInstrument(artifact(), identity('base'));
+  const bound = { before: identity('base').fingerprint, after: identity('after').fingerprint };
+  const run = (n: number, over: Record<string, unknown> = {}) => ({
+    schemaVersion: 1, instrument, candidate: hash('cand' + n).slice(0, 40), repairHead: hash('head' + n).slice(0, 40),
+    atMs: n, status: 'planned', mode: 'composed', carriedCount: 2, proofContext: bound,
+    comparison: { fullGreen: true, composedGreen: true, agree: true, missedByComposed: [], extraInComposed: [],
+      rerunReadFrom: 'full-run-failing-set' },
+    ...over,
+  }) as unknown as ComposedProofShadowRecord;
+  const qualified = (record: ComposedProofShadowRecord) =>
+    compactRatchetShadow({ composedProof: record }).composedProof?.comparison?.qualification;
+  const unmeasured = captureRatchetInstrument(null, identity('base'));
+
+  it('derives eligibility only from the measured instrument, the bound proof context and a carried verdict', () => {
+    expect(instrument.status).toBe('measured');
+    expect(unmeasured.status).toBe('unknown');
+    expect(qualified(run(1))).toEqual({ status: 'eligible', instrumentFingerprint: instrument.fingerprint,
+      proofContext: bound, carriedCount: 2 });
+    const reread = parseRatchetShadowHealth(JSON.parse(JSON.stringify(compactRatchetShadow({ composedProof: run(1) }))));
+    expect(reread?.composedProof?.comparison?.qualification).toEqual(qualified(run(1)));
+    for (const over of [{ instrument: unmeasured }, { instrument: undefined }, { proofContext: undefined },
+      { proofContext: { before: 'x', after: bound.after } }])
+      expect(qualified(run(1, over))).toEqual({ status: 'ineligible', reason: 'qualification-context-unmeasured' });
+    expect(qualified(run(1, { carriedCount: 0 }))).toEqual({ status: 'ineligible', reason: 'nothing-carried' });
+    expect(qualified(run(1, { mode: 'full-gate' }))).toEqual({ status: 'ineligible', reason: 'full-gate-fallback' });
+  });
+
+  it('counts one credit per qualified lineage and carries it across the stored boundary', () => {
+    let cohort = advanceComposedProofCohort(undefined, run(1));
+    expect(cohort).toEqual({ schemaVersion: 'shadow-cohort-v1', instrumentFingerprint: instrument.fingerprint,
+      qualifiedRuns: 1, countedRuns: [run(1).candidate.slice(0, 12) + ':' + run(1).repairHead.slice(0, 12)] });
+    cohort = advanceComposedProofCohort(cohort, run(1, { atMs: 99 }));
+    expect(cohort.qualifiedRuns).toBe(1);
+    cohort = advanceComposedProofCohort(cohort, run(2));
+    cohort = advanceComposedProofCohort(cohort, run(3, { carriedCount: 0 }));
+    cohort = advanceComposedProofCohort(cohort, run(4, { mode: 'full-gate' }));
+    cohort = advanceComposedProofCohort(cohort, run(5, { comparison: undefined, status: 'skipped' }));
+    expect(cohort.qualifiedRuns).toBe(2);
+    const stored = parseRatchetShadowHealth(JSON.parse(JSON.stringify(compactRatchetShadow({ composedProofCohort: cohort }))));
+    expect(stored?.composedProofCohort).toEqual(cohort);
+    expect(advanceComposedProofCohort(stored?.composedProofCohort, run(6)).qualifiedRuns).toBe(3);
+  });
+
+  it('drops prior credit when any bound instrument input changes, keeps it for unchanged bytes, and holds none while unmeasured', () => {
+    const prior = advanceComposedProofCohort(advanceComposedProofCohort(undefined, run(1)), run(2));
+    expect(prior.qualifiedRuns).toBe(2);
+    const original = artifact();
+    const rotations = {
+      execution: captureRatchetInstrument({ ...original, bundleSha256: 'e'.repeat(64) }, identity('base')),
+      definitions: captureRatchetInstrument({ ...original, sourceBlobs: { ...original.sourceBlobs,
+        [RATCHET_INSTRUMENT_DEFINITIONS[0]]: 'f'.repeat(40) } }, identity('base')),
+      schema: captureRatchetInstrument(original, identity('changed', 'schema')),
+      selection: captureRatchetInstrument(original, identity('changed', 'selectionGraph')),
+    };
+    for (const [input, rotated] of Object.entries(rotations)) {
+      expect(rotated.status, input).toBe('measured');
+      expect(rotated.fingerprint, input).not.toBe(instrument.fingerprint);
+      expect(advanceComposedProofCohort(prior, run(3, { instrument: rotated })), input).toMatchObject({
+        instrumentFingerprint: rotated.fingerprint, qualifiedRuns: 1 });
+      // The rotation alone drops prior credit, even when the rotated run earns nothing itself.
+      expect(advanceComposedProofCohort(prior, run(3, { instrument: rotated, carriedCount: 0 })).qualifiedRuns, input).toBe(0);
+    }
+    const same = captureRatchetInstrument({ ...original, evidenceRef: '/elsewhere', sourceSha: 'e'.repeat(40) }, identity('base'));
+    expect(advanceComposedProofCohort(prior, run(3, { instrument: same })).qualifiedRuns).toBe(3);
+    expect(advanceComposedProofCohort(prior, run(3, { instrument: unmeasured }))).toEqual({
+      schemaVersion: 'shadow-cohort-v1', instrumentFingerprint: null, qualifiedRuns: 0, countedRuns: [] });
+    expect(advanceComposedProofCohort(prior, run(3, { instrument: undefined })).qualifiedRuns).toBe(0);
+  });
+
+  it('returns to zero on a composed disagreement and refuses a forged or malformed stored cohort', () => {
+    const prior = advanceComposedProofCohort(advanceComposedProofCohort(undefined, run(1)), run(2));
+    expect(advanceComposedProofCohort(prior, run(3, { comparison: { ...run(3).comparison, agree: false, fullGreen: false,
+      missedByComposed: ['pkg/src/a.test.ts'] } }))).toMatchObject({ instrumentFingerprint: instrument.fingerprint, qualifiedRuns: 0 });
+    for (const forged of [{ ...prior, qualifiedRuns: 9 }, { ...prior, instrumentFingerprint: null }, { ...prior, countedRuns: 'x' },
+      { ...prior, schemaVersion: 'shadow-cohort-v0' }, { ...prior, countedRuns: [prior.countedRuns[0], prior.countedRuns[0]] }]) {
+      expect(parseComposedProofCohort(forged)).toBeUndefined();
+      expect(advanceComposedProofCohort(forged, run(3)).qualifiedRuns).toBe(1);
+      expect(parseRatchetShadowHealth({ composedProofCohort: forged })).toBeUndefined();
+    }
   });
 });
