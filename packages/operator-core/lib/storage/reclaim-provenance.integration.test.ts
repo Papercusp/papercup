@@ -34,7 +34,7 @@ describe('R6 governed native completion SQL', () => {
   });
   async function row(id: string, phase: 'started' | 'receipt', minute: number, details: Record<string, unknown>) {
     await db.sql`INSERT INTO harness_shared.audit_log VALUES (${`${id}-${phase}`},${beginning + minute * 60_000},
-      'system:disk-retention',${`disk-retention:${phase}`},${db.sql.json(details)},'workspace')`;
+      'system:disk-retention',${`disk-retention:${phase}`},${db.sql.json(JSON.parse(JSON.stringify(details)))},'workspace')`;
   }
   async function pair(id: string, start: number, end: number) {
     const receipt = { id, host: binding.host, runtime: binding.runtime, startedAt: at(start), finishedAt: at(end),
