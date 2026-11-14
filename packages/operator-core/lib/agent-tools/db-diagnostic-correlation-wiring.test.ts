@@ -25,6 +25,76 @@ afterEach(() => {
 });
 
 describe('db diagnostic correlation wiring', () => {
+  it('captures exact query timings at stage fulfillment and keeps them after ring eviction', async () => {
+    installDbDiagnosticCorrelationWiring();
+    const hooks = createPgDiagnosticHooks('org-admin');
+    const rows = [{ id: 1 }];
+    await withNamedQueryDiagnosticContext('plans.list', async () => {
+      const result = await traceNamedQueryStage('plans-attribution-revisions', async () => {
+        hooks.onresult({ connectionId: 1, queryId: 3, backendPid: null, query: 'select secret',
+          rowCount: 1, wireBytes: 8, elapsedMs: 12, preBuildMs: 2300, status: 'ok',
+          context: hooks.onquerycontext(), result: rows });
+        return rows;
+      }, { pgPool: 'org-admin' });
+      expect(result).toBe(rows);
+      for (let queryId = 4; queryId < 40; queryId++) hooks.onresult({
+        connectionId: 1, queryId, backendPid: null, query: 'select unrelated',
+        rowCount: 1, wireBytes: 8, elapsedMs: 99, status: 'ok', result: [{ id: 1 }],
+      });
+      const snapshot = namedQueryStageTimings();
+      expect(snapshot?.stages[0].database).toEqual({ pool: 'org-admin', status: 'exact-result',
+        queryId: 3, elapsedMs: 12, preBuildMs: 2300 });
+      snapshot!.stages[0].database!.elapsedMs = 999;
+      expect(namedQueryStageTimings()?.stages[0].database?.elapsedMs).toBe(12);
+      expect(JSON.stringify(namedQueryStageTimings())).not.toMatch(/secret|unrelated/);
+    });
+  });
+
+  it('never substitutes another request, an equal clone or an evicted query for the result', async () => {
+    installDbDiagnosticCorrelationWiring();
+    const hooks = createPgDiagnosticHooks('org-admin');
+    const rows = [{ id: 1 }];
+    const foreign = withNamedQueryDiagnosticContext('plans.list', () => hooks.onquerycontext());
+    await withNamedQueryDiagnosticContext('plans.list', async () => {
+      await traceNamedQueryStage('plans-attribution-members', async () => {
+        hooks.onresult({ connectionId: 1, queryId: 1, backendPid: null, query: 'select 1',
+          rowCount: 1, wireBytes: 8, elapsedMs: 1, status: 'ok', context: foreign, result: rows });
+        hooks.onresult({ connectionId: 1, queryId: 2, backendPid: null, query: 'select 1',
+          rowCount: 1, wireBytes: 8, elapsedMs: 2, status: 'ok',
+          context: hooks.onquerycontext(), result: [{ id: 1 }] });
+        return rows;
+      }, { pgPool: 'org-admin' });
+      expect(namedQueryStageTimings()?.stages[0].database)
+        .toEqual({ pool: 'org-admin', status: 'not-retained' });
+      await traceNamedQueryStage('plans-attribution-users', async () => {
+        hooks.onresult({ connectionId: 1, queryId: 3, backendPid: null, query: 'select 1',
+          rowCount: 1, wireBytes: 8, status: 'ok', context: hooks.onquerycontext(), result: rows });
+        for (let queryId = 4; queryId < 40; queryId++) hooks.onresult({
+          connectionId: 1, queryId, backendPid: null, query: 'select 1',
+          rowCount: 1, wireBytes: 8, status: 'ok', context: hooks.onquerycontext(), result: [],
+        });
+        return rows;
+      }, { pgPool: 'org-admin' });
+      expect(namedQueryStageTimings()?.stages[1].database?.status).toBe('not-retained');
+    });
+  });
+
+  it('preserves unknown database durations instead of reporting zero', async () => {
+    installDbDiagnosticCorrelationWiring();
+    const hooks = createPgDiagnosticHooks('org-admin');
+    const rows: unknown[] = [];
+    await withNamedQueryDiagnosticContext('plans.list', async () => {
+      await traceNamedQueryStage('plans-attribution-revisions', async () => {
+        hooks.onresult({ connectionId: 1, queryId: 1, backendPid: null, query: 'select 1',
+          rowCount: 0, wireBytes: 0, status: 'ok', context: hooks.onquerycontext(), result: rows });
+        return rows;
+      }, { pgPool: 'org-admin' });
+      expect(namedQueryStageTimings()?.stages[0].database).toMatchObject({
+        status: 'exact-result', elapsedMs: null, preBuildMs: null,
+      });
+    });
+  });
+
   it('discloses the bounded stage window while continuing every business read', async () => {
     await withNamedQueryDiagnosticContext('goals.detail', async () => {
       const results = await Promise.all(Array.from({ length: 35 }, (_, index) =>
