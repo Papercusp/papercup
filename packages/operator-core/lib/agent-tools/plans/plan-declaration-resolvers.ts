@@ -11,6 +11,7 @@ import type { LibraryCheckDeps, ReferenceLookup, ReuseReferenceResolvers } from 
 import type { DependencyBaseline } from './plan-library-ship-check';
 import { createHash } from 'node:crypto';
 import { discoverySubjectSnapshot, type DiscoveryAuditContext, type DiscoveryAuditPayload } from '../../plan-audits';
+import { readCommittedFiles, resolveMeasurementCommit, type CommittedTreeDeps } from './committed-tree-reader';
 import { previewDiscoveryDeclaration } from './plan-declarations';
 import { listSpecEvidence } from './spec-evidence-store';
 import { resolveSessionTurnRefs, SESSION_TURN_REF_PREFIX } from '../sessions/_shared';
@@ -41,18 +42,22 @@ export async function resolveDiscoveryAuditContext(content: string, previous: st
     ? await resolveSessionTurnRefs(options.sql, options.workspaceId, sessionRefs, {
       evidenceForOwner: options.ownerId,
     }) : [];
+  // Research capture is optional client assistance, not source authority.
+  // Resolve every selected source through the existing citation boundary, then
+  // measure all of them at their committed HEAD in one batch per repository.
+  const sourceLocations = new Map(await Promise.all(refs.filter(ref => ref.startsWith('source:'))
+    .map(async ref => [ref, await locateReference(options, ref.slice(7))] as const)));
+  const committedDigests = await committedSourceDigests(
+    [...sourceLocations.values()].flatMap(row => (row.location ? [row.location] : [])));
   for (const ref of refs.sort()) {
     const unknown = (reason: string) => evidence.push({ ref, state: 'unknown', usable: false, fingerprint: null, reason });
     if (ref.startsWith('source:')) {
-      const sourcePath = ref.slice(7);
-      // Research capture is optional client assistance, not source authority.
-      // Resolve the selected source through the existing citation boundary and
-      // measure its current bytes even when that client captured no trail.
-      const located = await locateReference(options, sourcePath);
+      const located = sourceLocations.get(ref)!;
       if (!located.location) { unknown('reason' in located.lookup ? located.lookup.reason : 'Source unavailable.'); continue; }
       try {
         const bytes = await readFile(located.location.absolutePath);
-        evidence.push({ ref, state: 'current', usable: true, fingerprint: createHash('sha256').update(bytes).digest('hex') });
+        evidence.push({ ref, state: 'current', usable: true,
+          fingerprint: committedDigests.get(located.location.absolutePath) ?? createHash('sha256').update(bytes).digest('hex') });
       } catch { unknown('The selected source could not be read at finalization.'); }
     } else if (ref.startsWith(SESSION_TURN_REF_PREFIX)) {
       const turn = sessionTurns.find(row => row.ref === ref);
@@ -80,6 +85,44 @@ export async function resolveDiscoveryAuditContext(content: string, previous: st
     } else unknown('Select source:<path>, session_turn:<kind>:<session>:<turn>, proof:<canonical binding id>, or doc:<canonical slug>; an invocation alone is not evidence.');
   }
   return { targets, evidence };
+}
+
+/**
+ * Discovery `source:` evidence is measured at the owning repository's committed HEAD —
+ * the basis the ship gate's CitationMeasurement already uses (plan-audits.ts, P-019) — so
+ * a peer's UNCOMMITTED edit on the shared tree cannot stale a finding while a COMMITTED
+ * change still does (EI-28781813683751020: a dirty work-items.ts re-staled DF-004 between
+ * every reconcile and plans:start). The digest is sha256 of the committed bytes, so a clean
+ * file keeps exactly the fingerprint the working-tree measurement produced and existing
+ * audits stay current. Returns absolutePath → sha256; a path with no committed regular
+ * file (untracked, outside a repository top level, unmeasurable) is absent and keeps the
+ * working-tree fingerprint, which can only over-report staleness, never waive it.
+ */
+export async function committedSourceDigests(
+  locations: readonly LocatedReference[],
+  treeDeps: CommittedTreeDeps = {},
+): Promise<Map<string, string>> {
+  const digests = new Map<string, string>();
+  const files = (await Promise.all(locations.map(async location =>
+    ((await stat(location.absolutePath).catch(() => null))?.isFile() ? location : null))))
+    .filter((location): location is LocatedReference => location !== null);
+  const byRoot = new Map<string, LocatedReference[]>();
+  for (const file of files) byRoot.set(file.repoRoot, [...(byRoot.get(file.repoRoot) ?? []), file]);
+  await Promise.all([...byRoot].map(async ([root, rows]) => {
+    try {
+      const commit = await resolveMeasurementCommit(root, treeDeps.git);
+      if (!commit) return;
+      const committed = await readCommittedFiles(root, commit, [...new Set(rows.map(row => row.relativePath))], treeDeps);
+      for (const row of rows) {
+        const file = committed.get(row.relativePath);
+        if (file) digests.set(row.absolutePath, file.sha256);
+      }
+    } catch {
+      // Unmeasured (tree read failed, a cited path is not a regular file at HEAD): this
+      // repository's sources keep their working-tree fingerprints.
+    }
+  }));
+  return digests;
 }
 
 /**
