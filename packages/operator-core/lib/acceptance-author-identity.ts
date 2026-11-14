@@ -42,17 +42,24 @@ function identityEdges(sql: Sql, workspaceId: string) {
         -- Materialize it once: a correlated scan of every prompt-bearing consult
         -- routing document for every launched session is quadratic in the two
         -- populations, even when the reachability walk itself is deduplicated.
-        WITH consult_dispatch(from_id, to_id) AS MATERIALIZED (
+        -- Extract the compact selection once before checking its shape and
+        -- expanding it. Reading both expressions from a wide routing document
+        -- otherwise detoasts that document twice per consult.
+        WITH consult_selections(selected) AS MATERIALIZED (
+          SELECT routing #> '{selection,selected}'
+            FROM harness_shared.consult_state
+           WHERE workspace_id = ${workspaceId}
+        ),
+        consult_dispatch(from_id, to_id) AS MATERIALIZED (
           SELECT sel->>'ownerId', sel->>'answeringOwnerId'
-            FROM harness_shared.consult_state cs
+            FROM consult_selections cs
             CROSS JOIN LATERAL jsonb_array_elements(
-                   CASE jsonb_typeof(cs.routing -> 'selection' -> 'selected')
-                     WHEN 'array' THEN cs.routing -> 'selection' -> 'selected'
+                   CASE jsonb_typeof(cs.selected)
+                     WHEN 'array' THEN cs.selected
                      ELSE '[]'::jsonb
                    END
                  ) AS sel
-           WHERE cs.workspace_id = ${workspaceId}
-             AND NULLIF(sel->>'ownerId', '') IS NOT NULL
+           WHERE NULLIF(sel->>'ownerId', '') IS NOT NULL
              AND NULLIF(sel->>'answeringOwnerId', '') IS NOT NULL
              AND sel->>'ownerId' IS DISTINCT FROM sel->>'answeringOwnerId'
           UNION

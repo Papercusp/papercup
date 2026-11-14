@@ -556,6 +556,33 @@ describe('isAcceptanceAuthorIdentity (audited coord rebind lineage)', () => {
     ).resolves.toBe(false);
   });
 
+  it('ignores malformed consult selections without suppressing ordinary launch lineage', async () => {
+    const source = 'su-malformed-source';
+    const fork = 'su-malformed-fork';
+    await db.adminSql`INSERT INTO harness_shared.adv_sessions
+      (workspace_id,mode,coord_owner_id,launch_spec)
+      VALUES (${workspaceId},'console',${fork},'{"launchedBy":"su-author"}')`;
+    const routings = [null, {}, { selection: null }, { selection: { selected: null } },
+      { selection: { selected: { ownerId: source, answeringOwnerId: fork } } },
+      { selection: { selected: 'not-an-array' } },
+      { selection: { selected: [null, {},
+        { ownerId: '', answeringOwnerId: fork },
+        { ownerId: source, answeringOwnerId: '' },
+        { ownerId: fork, answeringOwnerId: fork },
+      ] } },
+    ];
+    for (const [index, routing] of routings.entries()) {
+      await db.adminSql`INSERT INTO harness_shared.consult_state
+        (workspace_id,conversation_id,requester_id,responder_id,state,question,latency_contract,routing)
+        VALUES (${workspaceId},${`malformed-selection-${index}`},'su-consult-requester',${source},
+          'awaiting_responder','q','proceed',COALESCE(${db.adminSql.json(routing)}, 'null'::jsonb))`;
+    }
+    const opts = { sql: db.adminSql, workspaceId };
+    expect(await areAcceptanceLineageRelated('su-author', fork, opts)).toBe(true);
+    expect(await areAcceptanceLineageRelated(source, fork, opts)).toBe(false);
+    expect(await lineagePartyKeys([source, fork], opts)).toEqual(new Map([[source, source], [fork, fork]]));
+  });
+
   it('P-005: a routed fork is judged by its SOURCE lineage, not by the requester recorded as its launcher', async () => {
     const opts = { sql: db.adminSql, workspaceId };
     // The acceptance-BAR amendment apply guard refuses an approval whose author is

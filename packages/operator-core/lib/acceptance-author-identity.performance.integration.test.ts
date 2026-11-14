@@ -15,6 +15,28 @@ const workspaceId = 'p004-frozen-lineage';
 const migration = fileURLToPath(new URL('../../../libs/papercusp/libs/db/sql/1217-adv-session-launch-parent-projection.sql', import.meta.url));
 let db: OrgTestDb;
 
+// Restore only the previous routing extraction on the real tagged query. Keep
+// its parameter order, edge filters, ledger fallback and recursive walk intact.
+function withoutCompactSelection(strings: string[]): string[] {
+  const marker = '\u0000';
+  let fragment = strings.join(marker);
+  const start = fragment.indexOf('WITH consult_selections(selected) AS MATERIALIZED (');
+  const end = fragment.indexOf('consult_dispatch(from_id, to_id) AS MATERIALIZED (');
+  if (start < 0) return strings;
+  expect(end).toBeGreaterThan(start);
+  expect(fragment.slice(start, end).split(marker)).toHaveLength(2);
+  fragment = fragment.slice(0, start) + 'WITH ' + fragment.slice(end);
+  fragment = fragment
+    .replace('FROM consult_selections cs', 'FROM harness_shared.consult_state cs')
+    .replace('jsonb_typeof(cs.selected)', "jsonb_typeof(cs.routing -> 'selection' -> 'selected')")
+    .replace("WHEN 'array' THEN cs.selected", "WHEN 'array' THEN cs.routing -> 'selection' -> 'selected'")
+    .replace("WHERE NULLIF(sel->>'ownerId', '') IS NOT NULL",
+      `WHERE cs.workspace_id = ${marker}\n             AND NULLIF(sel->>'ownerId', '') IS NOT NULL`);
+  const restored = fragment.split(marker);
+  expect(restored).toHaveLength(strings.length);
+  return restored;
+}
+
 // Keep the real production edge set and recursive query in both arms. Change
 // only where the launch parent comes from, so parity cannot pass by comparing
 // two independently handwritten implementations of lineage.
@@ -23,14 +45,16 @@ function withProjection(
   explain?: (plan: Record<string, unknown>) => void,
   analyze = true,
   sql: Sql = db.adminSql,
+  compactSelection = true,
 ): Sql {
   return new Proxy(sql, {
     apply(target, receiver, args: unknown[]) {
       const [first, ...values] = args;
       if (!Array.isArray(first) || !Object.hasOwn(first, 'raw')) return Reflect.apply(target, receiver, args);
-      const strings = first.map((part: string) => projected ? part
+      let strings = first.map((part: string) => projected ? part
         : part.replaceAll('launch_parent_owner IS NOT NULL', "NULLIF(launch_spec->>'launchedBy', '') IS NOT NULL")
           .replaceAll('launch_parent_owner', "(launch_spec->>'launchedBy')"));
+      if (!compactSelection) strings = withoutCompactSelection(strings);
       const outer = /^\s*WITH RECURSIVE/.test(strings[0]);
       if (explain && outer) {
         strings[0] = (analyze ? 'EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ' : 'EXPLAIN (FORMAT JSON) ') + strings[0];
@@ -85,8 +109,9 @@ beforeAll(async () => {
            'awaiting_responder', 'q', 'proceed',
            jsonb_build_object('selection', jsonb_build_object('selected', jsonb_build_array(
              jsonb_build_object('ownerId', 'noise-source-' || n, 'answeringOwnerId', 'noise-answer-' || n)
-           )), 'context', repeat(md5(n::text), 128))
+           )), 'context', wide.body)
       FROM generate_series(1,2500) n
+      CROSS JOIN (SELECT string_agg(md5(i::text), '') body FROM generate_series(1,512) i) wide
   `;
   // Model a ledger much larger than the consult-answer population. The partial
   // covering index must let the production edge query skip ordinary task rows.
@@ -203,6 +228,44 @@ it('uses the partial task-ledger index and scans consultAnswer edges once', asyn
   );
   expect(populationScan, 'EXPLAIN ANALYZE should expose the full consultAnswer edge scan').toBeDefined();
   expect(populationScan?.actualLoops).toBe(1);
+}, 30_000);
+
+it('extracts compact consult selections once with identical parties and fewer buffer accesses', async () => {
+  const candidates = ['chain-0','chain-2','consult-fork','sibling-a','sibling-b','cycle-a','cycle-b','foreign-child'];
+  const expected = await lineagePartyKeys(candidates, {
+    workspaceId, sql: withProjection(true, undefined, true, db.adminSql, false),
+  });
+  expect(await lineagePartyKeys(candidates, { workspaceId, sql: withProjection(true) })).toEqual(expected);
+  const accesses: { original: number[]; compact: number[] } = { original: [], compact: [] };
+  // Counterbalance cache/order effects; count hits AND reads so cache warmth
+  // cannot masquerade as removing the duplicate wide-document accesses.
+  for (const compact of [false, true, true, false]) {
+    let measured: Record<string, unknown> | undefined;
+    await lineagePartyKeys(candidates, {
+      workspaceId,
+      sql: withProjection(true, (plan) => { measured = plan; }, true, db.adminSql, compact),
+    });
+    expect(measured).toBeDefined();
+    const root = measured!.Plan as Record<string, unknown>;
+    const count = Number(root['Shared Hit Blocks'] ?? 0) + Number(root['Shared Read Blocks'] ?? 0);
+    accesses[compact ? 'compact' : 'original'].push(count);
+    if (compact) {
+      const selections: Record<string, unknown>[] = [];
+      const relations: Record<string, unknown>[] = [];
+      const visit = (node: Record<string, unknown>) => {
+        if (node['CTE Name'] === 'consult_selections') selections.push(node);
+        if (node['Relation Name'] === 'consult_state') relations.push(node);
+        for (const child of (node.Plans ?? []) as Record<string, unknown>[]) visit(child);
+      };
+      visit(root);
+      expect(selections).toHaveLength(1);
+      expect(selections[0]['Actual Loops']).toBe(1);
+      expect(relations).toHaveLength(1);
+      expect(relations[0]['Actual Loops']).toBe(1);
+    }
+  }
+  console.info('COMPACT_CONSULT_SELECTION_ACCESSES', JSON.stringify(accesses));
+  expect(Math.max(...accesses.compact)).toBeLessThan(Math.min(...accesses.original));
 }, 30_000);
 
 it('completes 100 frozen candidate lookups below 500ms p95 with parity and a cheaper measured edge scan', async () => {
