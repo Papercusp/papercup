@@ -1,8 +1,15 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import * as fs from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return { ...actual, readFileSync: vi.fn(actual.readFileSync) };
+});
+
 import { listAllProjectedTools } from '@papercusp/agent-mcp';
 import './agent-tools/index';
 import {
@@ -51,6 +58,34 @@ describe('static tool catalog derivation', () => {
       write('packages/operator-core/lib/agent-tools/identity.ts',
         "export const TOOL = 'fixture:continue' as const;\nexport const UNUSED = 'fixture:unused';\n");
       expect([...buildBuiltinToolCatalog(root)]).toEqual(['fixture:continue']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reads each module once when identity resolution and runtime traversal share dependencies', () => {
+    const root = mkdtempSync(resolve(tmpdir(), 'static-single-read-'));
+    const write = (path: string, text: string) => {
+      const fullPath = resolve(root, path);
+      mkdirSync(dirname(fullPath), { recursive: true });
+      writeFileSync(fullPath, text);
+      return fullPath;
+    };
+    try {
+      write('package.json', JSON.stringify({ workspaces: [] }));
+      const entry = write(PRODUCTION_TOOL_REGISTRY_ENTRYPOINT,
+        "import { publicName as identity } from './names';\ndefineTool({ name: identity });\n");
+      const barrel = write('packages/operator-core/lib/agent-tools/names.ts',
+        "export { TOOL as publicName } from './identity';\n");
+      const identity = write('packages/operator-core/lib/agent-tools/identity.ts',
+        "export const TOOL = 'fixture:single-read' as const;\n");
+      const reads = vi.mocked(fs.readFileSync);
+      reads.mockClear();
+      expect([...buildBuiltinToolCatalog(root)]).toEqual(['fixture:single-read']);
+      expect(buildProductionToolSourceFiles(root)).toEqual([entry, identity, barrel].sort());
+      for (const file of [entry, barrel, identity]) {
+        expect(reads.mock.calls.filter(([path]) => path === file), file).toHaveLength(1);
+      }
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
