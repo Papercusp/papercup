@@ -376,6 +376,7 @@ function isHypotheticalRunStatus(text: string, index: number): boolean {
 export function describeUnreadRun(
   body: string | null | undefined,
   storedChecks: number,
+  successfulReadPaths: readonly string[] = [],
 ): UnreadRunAdvisory | null {
   if (storedChecks > 0) return null;
   const text = (body ?? '').trim();
@@ -399,10 +400,18 @@ export function describeUnreadRun(
     if (isCompletedAndReadRun(inFlightText, range, match, scopedMatches)) return [];
     return [{ match, range }];
   });
+  // A successful current-turn file read proves only the exact absolute path
+  // named by its invocation. Keep the warning if any run reference in the
+  // associated clause lacks that proof (including shell/task handles).
+  const provenReadPaths = new Set(successfulReadPaths);
+  const unreadAnchoredMatches = anchoredMatches.filter(({ range }) => {
+    const refs = collect(inFlightText.slice(range.start, range.end), RUN_REF_RE, false);
+    return refs.length === 0 || refs.some((ref) => !provenReadPaths.has(ref));
+  });
   // Retain an adjacent diagnosis as signal metadata once a concrete following
   // run admission has independently supplied the execution reference.
   const relevantMatches = scopedMatches.filter((match) =>
-    anchoredMatches.some(({ match: anchored }) => anchored === match || (
+    unreadAnchoredMatches.some(({ match: anchored }) => anchored === match || (
       /^not yet diagnosed$/i.test(match[0]) &&
       (anchored.index ?? 0) > (match.index ?? 0) &&
       /^[.!?\s]*(?:run|test|suite|job|command|process|build|check|lint|typecheck)\b[^.!?\n]{0,80}$/i.test(
@@ -412,7 +421,7 @@ export function describeUnreadRun(
   );
   const inFlight = [...new Set(relevantMatches.map((match) => match[0].trim().toLowerCase()))].slice(0, MAX_SIGNALS);
   if (inFlight.length === 0) return null;
-  const signalSentences = anchoredMatches.map(({ range }) => range);
+  const signalSentences = unreadAnchoredMatches.map(({ range }) => range);
   const runRefs = collect(inFlightText, RUN_REF_RE, false, (match) =>
     signalSentences.some(({ start, end }) => match.index >= start && match.index < end),
   );
