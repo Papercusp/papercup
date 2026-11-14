@@ -215,6 +215,28 @@ export function enumerateAffectedTaskSelection(tasks, { root, filterDir, runReso
       } catch (error) { unenumerated.push({ task: id, reason: error.message, command }); }
       continue;
     }
+    // Router operands are repository-relative even from an npm workspace.
+    if (words[0] === 'node' && words[1] &&
+        path.resolve(wsRoot, words[1]) === path.resolve(root, 'scripts/test-files.mjs')) {
+      try {
+        const operands = words.slice(2);
+        if (!operands.length || resolvedCommand !== words.join(' ') ||
+            operands.some(file => !/^[\w./@-]+$/.test(file) || file.startsWith('-')))
+          throw new Error('unsupported-test-router-argument');
+        const files = operands.map(file => {
+          const absolute = path.resolve(root, file);
+          const relative = path.relative(root, absolute).replaceAll('\\', '/');
+          if (relative === '..' || relative.startsWith('../') || path.isAbsolute(relative) ||
+              !isTestFile(relative) || !statSync(absolute).isFile())
+            throw new Error('invalid-test-router-population');
+          return relative;
+        });
+        entries.push({ ...task, runner: 'test-file-router', files: [...new Set(files)].sort() });
+      } catch (error) {
+        unenumerated.push({ task: id, reason: error.message, command });
+      }
+      continue;
+    }
     if (words[0] === 'node' && words.includes('--test')) {
       try {
         const patterns = [];

@@ -156,6 +156,31 @@ describe('changed-path provenance: the banner', () => {
 });
 
 describe('changed-path provenance: through the real CLI', () => {
+  it('enumerates exact router operands and refuses invalid populations', () => {
+    const file = 'scripts/npm-install-safe.test.mjs';
+    const enumerate = (command: string) => enumerateAffectedTaskSelection([{
+      ws: { name: 'router-fixture', dir: 'packages/operator-core', scripts: { test: command } },
+      script: 'test',
+    }], { root: REPO_ROOT, runResolver: () => { throw new Error('explicit router needs no workspace census'); } });
+    const prefix = 'node ../../scripts/test-files.mjs ';
+    const valid = enumerate(prefix + file);
+    expect(valid.coverage).toBe('complete');
+    expect(valid.files).toEqual([file]);
+    expect(valid.unenumerated).toEqual([]);
+    for (const operand of [
+      'scripts/npm-install-safe.mjs',
+      'scripts/__missing-router-population__.test.mjs',
+      '../outside.test.mjs',
+      file + ' --reporter=json',
+    ]) {
+      const invalid = enumerate(prefix + operand);
+      expect(invalid.coverage, operand).toBe('partial');
+      expect(invalid.files, operand).toEqual([]);
+      expect(invalid.unenumerated, operand).toHaveLength(1);
+    }
+    expect(enumerate('node /tmp/test-files.mjs ' + file).coverage).toBe('partial');
+  });
+
   it('retains managed-carry regression files when merging enumerated promotion tasks', () => {
     // Exercise the parent aggregation independently of subprocess loading.
     // The next case separately checks the actual selector and config census.
@@ -168,6 +193,11 @@ describe('changed-path provenance: through the real CLI', () => {
     ].map(({ dir, script }) => ({
       ws: { ...JSON.parse(readFileSync(resolve(REPO_ROOT, dir, 'package.json'), 'utf8')), dir }, script,
     }));
+    // Keep this aggregation fixture independent of the evolving native tail.
+    // The next test still enumerates the production scripts unchanged.
+    const nativeFile = 'scripts/npm-install-safe.test.mjs';
+    for (const task of tasks) if (task.ws.dir === 'packages/operator-core')
+      task.ws.scripts['test:node-maintenance'] = 'node ../../scripts/test-files.mjs ' + nativeFile;
     const populations = [
       ['apps/operator/scripts/hooks/cc/__tests__/precompact-managed-carry.test.ts',
         'apps/operator/lib/psu-pty-host.test.ts'],
@@ -177,17 +207,25 @@ describe('changed-path provenance: through the real CLI', () => {
         'packages/operator-core/lib/agent-tools/session/request-compaction-continuation-addressing.test.ts',
         'packages/operator-core/lib/cold-boot-drill-live.test.ts'],
     ];
+    let censusRequestCount = 0;
     const manifest = enumerateAffectedTaskSelection(tasks, { root: REPO_ROOT,
-      runResolver: (requests: Array<{ config?: unknown }>) => {
-        expect(requests).toHaveLength(populations.length);
-        return requests.map((request, index) => ({ ok: true, enumerated: true,
-          config: request.config, repositoryFiles: populations[index] }));
+      runResolver: (requests: Array<{ root: string; env?: Record<string, string>; config?: unknown }>) => {
+        censusRequestCount += requests.length;
+        return requests.map(request => {
+          const index = request.root === resolve(REPO_ROOT, 'apps/operator') ? 0
+            : request.env?.PC_TEST_LANE === 'pure' ? 1
+              : request.env?.PC_TEST_LANE === 'stateful' ? 2 : -1;
+          expect(index, 'unexpected workspace/lane in the census').toBeGreaterThanOrEqual(0);
+          return { ok: true, enumerated: true, config: request.config,
+            repositoryFiles: populations[index] };
+        });
       },
     });
+    expect(censusRequestCount).toBe(populations.length);
     expect(manifest.coverage).toBe('complete');
     expect(manifest.unenumerated).toEqual([]);
     expect(manifest.overlaps).toEqual([]);
-    expect(manifest.files).toEqual(populations.flat().sort());
+    expect(manifest.files).toEqual([...populations.flat(), nativeFile].sort());
   });
 
   it('keeps managed-carry regressions in the normal promotion task manifests', () => {
