@@ -642,7 +642,9 @@ describe('identity hook ports through the real CLI (P-011)', () => {
       fetchImpl,
     });
 
-    expect(origins).toEqual(['http://127.0.0.1:3170']);
+    // The bounded retry (EI-28788424262267205) asks the SAME selected build again;
+    // it must never widen to the unselected main-build proxy.
+    expect(origins).toEqual(Array(ports.PORTS['pre-tool'].unavailableAttempts).fill('http://127.0.0.1:3170'));
     expect(result).toContain('plan_execution_not_ready');
     expect(JSON.parse(result!).hookSpecificOutput).toMatchObject({
       permissionDecision: 'deny',
@@ -1381,7 +1383,7 @@ describe('identity hook ports through the real CLI (P-011)', () => {
             event: { tool_name: 'exec_command', tool_input: { cmd } },
             env: hookEnv({ PAPERCUSP_SID: 'sid-guard', PAPERCUSP_WORKSPACE: 'papercusp-workspace' }),
             fetchImpl: stalledFetch });
-          await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs);
+          await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs * ports.PORTS['pre-tool'].unavailableAttempts);
           expect(await read, cmd).toBeNull();
         }
 
@@ -1390,19 +1392,19 @@ describe('identity hook ports through the real CLI (P-011)', () => {
             cmd: "rg -n -F 'plan_execution_not_ready' apps/operator/scripts/hooks/inject/core.mjs",
           } },
           env: hookEnv({ PAPERCUSP_SID: 'sid-guard' }), fetchImpl: stalledFetch });
-        await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs);
+        await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs * ports.PORTS['pre-tool'].unavailableAttempts);
         expect(await qualifiedRead).toBeNull();
 
         const pipeline = runInjection({ adapter, nativeEvent,
           event: { tool_name: 'exec_command', tool_input: { cmd: reportedReadOnlyPipeline } },
           env: hookEnv({ PAPERCUSP_SID: 'sid-guard' }), fetchImpl: stalledFetch });
-        await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs);
+        await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs * ports.PORTS['pre-tool'].unavailableAttempts);
         expect(await pipeline).toBeNull();
 
         const gitMutation = runInjection({ adapter, nativeEvent,
           event: { tool_name: 'exec_command', tool_input: { cmd: 'git update-ref refs/heads/read-guard-test HEAD' } },
           env: hookEnv({ PAPERCUSP_SID: 'sid-guard' }), fetchImpl: stalledFetch });
-        await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs);
+        await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs * ports.PORTS['pre-tool'].unavailableAttempts);
         expect(JSON.parse((await gitMutation)!).hookSpecificOutput).toMatchObject({
           permissionDecision: 'deny',
           permissionDecisionReason: expect.stringContaining('plan_execution_not_ready'),
@@ -1411,7 +1413,7 @@ describe('identity hook ports through the real CLI (P-011)', () => {
         const mutatingPipeline = runInjection({ adapter, nativeEvent,
           event: { tool_name: 'exec_command', tool_input: { cmd: 'ps -eo pid,comm | touch output' } },
           env: hookEnv({ PAPERCUSP_SID: 'sid-guard' }), fetchImpl: stalledFetch });
-        await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs);
+        await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs * ports.PORTS['pre-tool'].unavailableAttempts);
         expect(JSON.parse((await mutatingPipeline)!).hookSpecificOutput).toMatchObject({
           permissionDecision: 'deny',
           permissionDecisionReason: expect.stringContaining('plan_execution_not_ready'),
@@ -1420,7 +1422,7 @@ describe('identity hook ports through the real CLI (P-011)', () => {
         const write = runInjection({ adapter, nativeEvent,
           event: { tool_name: 'exec_command', tool_input: { cmd: 'touch source.ts' } },
           env: hookEnv({ PAPERCUSP_SID: 'sid-guard' }), fetchImpl: stalledFetch });
-        await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs);
+        await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs * ports.PORTS['pre-tool'].unavailableAttempts);
         const decision = JSON.parse((await write)!).hookSpecificOutput;
         expect(decision).toMatchObject({
           permissionDecision: 'deny',
@@ -1429,7 +1431,7 @@ describe('identity hook ports through the real CLI (P-011)', () => {
         const qualifiedWrite = runInjection({ adapter, nativeEvent,
           event: { tool_name: 'functions.exec_command', tool_input: { cmd: 'touch source.ts' } },
           env: hookEnv({ PAPERCUSP_SID: 'sid-guard' }), fetchImpl: stalledFetch });
-        await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs);
+        await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs * ports.PORTS['pre-tool'].unavailableAttempts);
         expect(JSON.parse((await qualifiedWrite)!).hookSpecificOutput).toMatchObject({
           permissionDecision: 'deny',
           permissionDecisionReason: expect.stringContaining('plan_execution_not_ready'),
@@ -1439,7 +1441,7 @@ describe('identity hook ports through the real CLI (P-011)', () => {
             patch: '*** Begin Patch\n*** Update File: source.ts\n@@\n-old\n+new\n*** End Patch',
           } },
           env: hookEnv({ PAPERCUSP_SID: 'sid-guard' }), fetchImpl: stalledFetch });
-        await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs);
+        await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs * ports.PORTS['pre-tool'].unavailableAttempts);
         const patchDecision = JSON.parse((await nativePatch)!).hookSpecificOutput;
         expect(patchDecision).toMatchObject({
           permissionDecision: 'deny',
@@ -1452,7 +1454,7 @@ describe('identity hook ports through the real CLI (P-011)', () => {
             patch: '*** Begin Patch\n*** Update File: source.ts\n@@\n-old\n+new\n*** End Patch',
           } },
           env: hookEnv({ PAPERCUSP_SID: 'sid-guard' }), fetchImpl: stalledFetch });
-        await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs);
+        await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs * ports.PORTS['pre-tool'].unavailableAttempts);
         const qualifiedPatchDecision = JSON.parse((await qualifiedPatch)!).hookSpecificOutput;
         expect(qualifiedPatchDecision).toMatchObject({
           permissionDecision: 'deny',
@@ -1463,11 +1465,98 @@ describe('identity hook ports through the real CLI (P-011)', () => {
         const ptoolWrite = runInjection({ adapter, nativeEvent,
           event: { tool_name: 'exec_command', tool_input: { cmd: refusedPtoolWrite } },
           env: hookEnv({ PAPERCUSP_SID: 'sid-guard' }), fetchImpl: stalledFetch });
-        await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs);
+        await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs * ports.PORTS['pre-tool'].unavailableAttempts);
         expect(JSON.parse((await ptoolWrite)!).hookSpecificOutput).toMatchObject({
           permissionDecision: 'deny',
           permissionDecisionReason: expect.stringContaining('plan_execution_not_ready'),
         });
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+  });
+
+  // EI-28788424262267205: measured 2026-11-14, both origins of ONE lookup hit the
+  // 1.5s wall and a read-only shell call was denied; the identical call 30s later
+  // passed. One more bounded lookup must run before a fail-closed deny, and the
+  // deny must name the read-only form that needs no verdict.
+  it('pre-tool: one unavailable authority lookup is retried once before a fail-closed deny', async () => {
+    const { runInjection } = await import('../core.mjs');
+    const spec = ports.PORTS['pre-tool'];
+    expect(spec.unavailableAttempts).toBe(2);
+    const lookupsOf = (ids: string[]) => ((_url: unknown, init: RequestInit) => {
+      const id = String(JSON.parse(String(init.body)).guardRequestId);
+      if (!ids.includes(id)) ids.push(id);
+      return new Promise((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+      });
+    }) as unknown as typeof fetch;
+    const shellWrite = { tool_name: 'exec_command', tool_input: { cmd: 'touch source.ts' } };
+
+    for (const [adapter, nativeEvent] of [[claude, 'PreToolUse'], [codex, 'pre-tool-use']] as const) {
+      vi.useFakeTimers();
+      try {
+        // Lookup 1 stalls on every origin; lookup 2 answers with an empty verdict.
+        const recoveredIds: string[] = [];
+        const stalled = lookupsOf(recoveredIds);
+        const recoveringFetch = ((url: unknown, init: RequestInit) => {
+          const id = String(JSON.parse(String(init.body)).guardRequestId);
+          if (recoveredIds.length === 0 || recoveredIds[0] === id) return stalled(url as string, init);
+          if (!recoveredIds.includes(id)) recoveredIds.push(id);
+          return Promise.resolve(new Response(JSON.stringify({ text: '' }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        }) as unknown as typeof fetch;
+        const recovered = runInjection({ adapter, nativeEvent, event: shellWrite,
+          env: hookEnv({ PAPERCUSP_SID: 'sid-guard-retry' }), fetchImpl: recoveringFetch });
+        await vi.advanceTimersByTimeAsync(spec.timeoutMs * spec.unavailableAttempts);
+        expect(await recovered).toBeNull();
+        expect(recoveredIds).toHaveLength(2);
+
+        // Both lookups stall: still fail-closed, after exactly two bounded walls.
+        const deniedIds: string[] = [];
+        let settled = false;
+        const denied = runInjection({ adapter, nativeEvent, event: shellWrite,
+          env: hookEnv({ PAPERCUSP_SID: 'sid-guard-retry' }), fetchImpl: lookupsOf(deniedIds) })
+          .finally(() => { settled = true; });
+        await vi.advanceTimersByTimeAsync(spec.timeoutMs);
+        expect(settled).toBe(false);
+        await vi.advanceTimersByTimeAsync(spec.timeoutMs);
+        const reason = JSON.parse((await denied)!).hookSpecificOutput.permissionDecisionReason as string;
+        expect(deniedIds).toHaveLength(2);
+        expect(reason).toContain('plan_execution_not_ready');
+        expect(reason).toContain('stage=wall-during-fetch');
+        expect(reason).toMatch(/firstAttempt=wall-during-fetch\/\d+ms/);
+        // The named read-only retry form is one the guard actually admits.
+        expect(reason).toContain("ptool <read-verb> --json - <<'JSON'");
+        expect(reason).toContain('work_items:get');
+        const namedRetry = runInjection({ adapter, nativeEvent, event: { tool_name: 'exec_command', tool_input: { cmd: [
+          "ptool work_items:get --json - <<'JSON'", '{"id":"EI-28788424262267205"}', 'JSON',
+        ].join('\n') } }, env: hookEnv({ PAPERCUSP_SID: 'sid-guard-retry' }), fetchImpl: lookupsOf([]) });
+        await vi.advanceTimersByTimeAsync(spec.timeoutMs * spec.unavailableAttempts);
+        expect(await namedRetry).toBeNull();
+
+        // A native edit gets the retry but not the shell-only hint.
+        const patch = runInjection({ adapter, nativeEvent, event: { tool_name: 'apply_patch', tool_input: {
+          patch: '*** Begin Patch\n*** Update File: source.ts\n@@\n-old\n+new\n*** End Patch' } },
+        env: hookEnv({ PAPERCUSP_SID: 'sid-guard-retry' }), fetchImpl: lookupsOf([]) });
+        await vi.advanceTimersByTimeAsync(spec.timeoutMs * spec.unavailableAttempts);
+        const patchReason = JSON.parse((await patch)!).hookSpecificOutput.permissionDecisionReason as string;
+        expect(patchReason).toMatch(/firstAttempt=wall-during-fetch/);
+        expect(patchReason).not.toContain('ptool <read-verb>');
+
+        // An HTTP answer is the server speaking: never retried in search of a better one.
+        const httpIds: string[] = [];
+        const httpError = ((_url: unknown, init: RequestInit) => {
+          httpIds.push(String(JSON.parse(String(init.body)).guardRequestId));
+          return Promise.resolve(new Response('busy', { status: 503 }));
+        }) as unknown as typeof fetch;
+        const refused = runInjection({ adapter, nativeEvent, event: shellWrite,
+          env: hookEnv({ PAPERCUSP_SID: 'sid-guard-retry' }), fetchImpl: httpError });
+        await vi.advanceTimersByTimeAsync(spec.timeoutMs * spec.unavailableAttempts);
+        const refusedReason = JSON.parse((await refused)!).hookSpecificOutput.permissionDecisionReason as string;
+        expect(new Set(httpIds).size).toBe(1);
+        expect(refusedReason).toContain('httpStatus=503');
+        expect(refusedReason).not.toContain('firstAttempt=');
       } finally {
         vi.useRealTimers();
       }

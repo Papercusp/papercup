@@ -1281,15 +1281,26 @@ function isCanonicalReviewPtoolCommand(command, env) {
     if (tool === 'events:await') return isCanonicalGradingAuditAwait(toolArgs);
     // The pinned mcp-call verb has already passed its narrower evidence-read allowlist above.
     // Keep that decision authoritative here so the two-stage checks cannot drift apart.
-    return (pinned !== null && pinned[2] === tool) ||
-      ['facts:list', 'tools:find', 'testing:runs', 'dev:pg_query', 'plans:get', 'plans:items', 'plans:evaluate-spec-quality', 'work_items:get', 'events:status', 'reports:get',
-      'rubrics:get', 'scorecards:get', 'capability:read',
-      'conversations:get', 'coord:inbox', 'coord:read', 'docs:get', 'docs:search',
-      'consult:reply', 'consult:decline'].includes(tool);
+    return (pinned !== null && pinned[2] === tool) || CANONICAL_UNVERDICTED_PTOOL_VERBS.includes(tool);
   } catch {
     return false;
   }
 }
+
+/**
+ * Typed ptool verbs admitted without a server verdict. The fail-closed deny
+ * below names this same list, so its suggested retry cannot drift from what the
+ * guard actually admits (EI-28788424262267205).
+ */
+const CANONICAL_UNVERDICTED_PTOOL_VERBS = Object.freeze([
+  'facts:list', 'tools:find', 'testing:runs', 'dev:pg_query', 'plans:get', 'plans:items', 'plans:evaluate-spec-quality', 'work_items:get', 'events:status', 'reports:get',
+  'rubrics:get', 'scorecards:get', 'capability:read',
+  'conversations:get', 'coord:inbox', 'coord:read', 'docs:get', 'docs:search',
+  'consult:reply', 'consult:decline']);
+
+/** Stages where no HTTP answer arrived at all. An HTTP status is the server
+ * speaking and is never retried in search of a more permissive answer. */
+const GUARD_TRANSPORT_MISS_STAGES = new Set(['wall-during-fetch', 'unreachable', 'request-failed']);
 
 /**
  * Only a small set of non-implementation operations may pass through when the
@@ -1376,12 +1387,20 @@ export async function runInjection({ adapter, nativeEvent, event, env = process.
             (Number.isInteger(post.status) ? `; httpStatus=${post.status}` : '') +
             (post.transportPhase ? `; transportPhase=${post.transportPhase}; fetchMs=${post.fetchMs}; headersElapsedMs=${post.headersElapsedMs}; responseBodyMs=${post.responseBodyMs}` : '') +
             (post.operatorOrigin ? `; operatorOrigin=${post.operatorOrigin}` : '') +
-            (post.guardAttempts?.length ? `; guardAttempts=${JSON.stringify(post.guardAttempts)}` : '')
+            (post.guardAttempts?.length ? `; guardAttempts=${JSON.stringify(post.guardAttempts)}` : '') +
+            (post.retriedAfter ? `; firstAttempt=${post.retriedAfter.stage}/${post.retriedAfter.elapsedMs}ms` +
+              (post.retriedAfter.guardRequestId ? `; firstRequestId=${post.retriedAfter.guardRequestId}` : '') : '')
           : `stage=guard-threw; errorType=${error?.name ?? 'unknown'}`;
+        // A blocked shell caller needs a retry that works while the operator is
+        // slow, not only "restore access": name the typed read form admitted above.
+        const readOnlyRetry = SHELL_PRE_TOOL_NAMES.has(authorizationToolName(partial.tool))
+          ? " A read-only operator call needs no verdict in the typed form ptool <read-verb> --json - <<'JSON' " +
+            '<args> JSON, where <read-verb> is one of: ' + CANONICAL_UNVERDICTED_PTOOL_VERBS.join(', ') + '.'
+          : '';
         return adapter.render('pre-tool',
           'plan_execution_not_ready: execution-authority lookup failed; no server verdict was received. ' +
           'This invocation was denied fail-closed because it may mutate state. Guard diagnostic: ' +
-          detail + '. Restore operator access, then retry.', event);
+          detail + '. Restore operator access, then retry.' + readOnlyRetry, event);
       };
     }
 
@@ -1412,12 +1431,28 @@ export async function runInjection({ adapter, nativeEvent, event, env = process.
       ...(turnStartRequestId ? { turnStartRequestId } : {}),
     };
 
-    const response = await postInjection(port, request, {
+    const postOptions = {
       env,
       fetchImpl,
       ...(ledger ? { onTurnStartOutcome: outcome => ledger.recordOutcome(outcome) } : {}),
       onHookOutcome: outcome => { post = outcome; },
-    });
+    };
+    let response = await postInjection(port, request, postOptions);
+    // EI-28788424262267205: a lookup that got NO HTTP answer is retried, each try
+    // under its own wall, before the fail-closed deny below. Guard lookups are
+    // idempotent reads with a fresh request id per try. Only calls that would be
+    // denied pay for it; an HTTP status or an empty verdict is never retried.
+    const attempts = Math.max(1, Math.floor(specFor(port).unavailableAttempts ?? 1));
+    // Headers that arrived before a body stall are the server answering, so only
+    // a lookup with no headers at all qualifies (headersElapsedMs stays null).
+    for (let attempt = 1; unavailableMutationGuard && attempt < attempts && !response &&
+        GUARD_TRANSPORT_MISS_STAGES.has(post?.stage) && post?.headersElapsedMs == null; attempt++) {
+      const missed = post;
+      post = null;
+      response = await postInjection(port, request, postOptions);
+      if (post) post = { ...post, retriedAfter: { stage: missed.stage, elapsedMs: missed.elapsedMs,
+        ...(missed.guardRequestId ? { guardRequestId: missed.guardRequestId } : {}) } };
+    }
     if (!response && post?.stage !== 'response-received' && unavailableMutationGuard)
       return done('guard-unavailable-deny', unavailableMutationGuard(), { port });
     const safeText = fenceControlTransition(response?.text ?? null, owner);
