@@ -65,6 +65,7 @@ vi.mock('../../../adv-sessions', () => ({
   RECORDED_LIVE_MAX_AGE_MS: 12 * 60 * 60 * 1000,
   NATIVE_SESSION_ID_RE: /^[0-9a-f-]{36}$/i,
   endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
+  workspaceForCoordOwner: vi.fn(async () => 'papercusp-workspace'),
   recordAdvSession: vi.fn(async () => 1),
   recordSuLaunchSpec: vi.fn(async () => true),
   readSuLaunchSpecByOwner: readLaunchSpecMock,

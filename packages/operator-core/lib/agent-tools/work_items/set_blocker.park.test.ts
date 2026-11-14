@@ -13,6 +13,13 @@ const setWorkItemStateWithAliasInfo = vi.fn();
 const getModes = vi.fn();
 const planItemNeedsHumanContradiction = vi.fn();
 const openDecisionReviewPark = vi.fn();
+// This suite isolates park-door wiring; blocker evidence policy has its own
+// boundary integration suite and must not read live fleet state here.
+vi.mock('../../blocker-resolution-evidence', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../blocker-resolution-evidence')>()),
+  blockerBoundaryContext: async () => ({ ownerId: 'su-a', sessionId: 'su-a', workspaceId: 'default', root: null }),
+  preflightBlockerDecision: vi.fn(async () => ({ ok: true, ordinary: true })),
+}));
 // Partial mock: set_blocker's transitive imports (the hold path, P-010) read real work-items
 // exports such as ISSUE_FAMILY_KINDS, so only the row accessors are replaced.
 vi.mock('../../work-items', async (importOriginal) => ({
