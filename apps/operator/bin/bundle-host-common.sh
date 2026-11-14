@@ -226,8 +226,11 @@ NODE
 BUNDLE_HOST_TESTING_CORE_UNWITNESSED='unwitnessed:helper-not-committed'
 # EI-28752668992567658: the producing witness binds the worker's whole input and
 # resolution interval. A LIVE shared tree (dozens of concurrent editors) cannot
-# hold that interval across a multi-minute host build, so a witnessed attempt is
-# refused on almost every bg-host restart. A refusal must cost only the testing
+# hold that interval across a multi-minute host build. WI-6554700010048604:
+# `testing-core-witness.mjs prepare` therefore compiles from a private,
+# content-addressed copy of the consumed closure, which no peer can write, so a
+# witnessed attempt no longer races live-tree churn. This degrade remains the
+# fallback for a genuine refusal. A refusal must cost only the testing
 # core, never the whole host rebuild: the worker is rebuilt UNWITNESSED, so the
 # bundled testing core fails closed (testing_core_missing_witness, or an artifact
 # mismatch when the parent already embedded the witness) while every other host
