@@ -22,11 +22,15 @@ describe('legacy needs-human reconcile wiring', () => {
 
   it('seeds the matching target as an active durable single-flight routine', () => {
     const src = read(SEED_FILE);
+    const seedPolicy = read(join(HERE, 'seed-routine-main.ts'));
+    expect(src).toContain("from './seed-routine-main'");
+    expect(src).toContain('void runRoutineSeed({');
     expect(src).toContain('const TARGET_ROLE = `system:${NAME}`');
     expect(src).toContain(`'durable'`);
-    expect(src).toContain(`'skip', 'skip-old'`);
+    expect(seedPolicy).toContain(`'skip', 'skip-old'`);
     expect(src).toContain(`const active = !process.argv.includes('--inactive')`);
-    expect(src).toContain('active intentionally NOT re-applied on conflict');
+    expect(src).not.toMatch(/\breplaceActive\s*:/);
+    expect(seedPolicy).toContain('q.replaceActive ? sql`active = EXCLUDED.active,` : sql``');
   });
 
   it('is guarded as an always-on bespoke seed and classified as non-LLM spend', () => {

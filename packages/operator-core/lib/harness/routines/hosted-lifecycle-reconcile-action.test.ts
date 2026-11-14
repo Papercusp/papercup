@@ -243,7 +243,9 @@ describe('the sweep is actually wired in, not merely written', () => {
     const src = read(SEED_FILE);
     expect(src).toContain(`'ephemeral'`);
     expect(src).toContain('interval_sec');
-    expect(src).toContain('next_fire_at');
+    expect(src).toContain("nextFire: 'null'");
+    expect(read(join(HERE, 'seed-routine-main.ts')))
+      .toContain("q.nextFire === 'null' ? sql`NULL` : sql`now()`");
   });
 
   it('is seeded ACTIVE by default — finished work does not ship dark', () => {
@@ -251,7 +253,12 @@ describe('the sweep is actually wired in, not merely written', () => {
   });
 
   it('a re-seed does not clobber an operator pause', () => {
-    expect(read(SEED_FILE)).toContain('active intentionally NOT re-applied on conflict');
+    const src = read(SEED_FILE);
+    expect(src).toContain("from './seed-routine-main'");
+    expect(src).toContain('void runRoutineSeed({');
+    expect(src).not.toMatch(/\breplaceActive\s*:/);
+    expect(read(join(HERE, 'seed-routine-main.ts')))
+      .toContain('q.replaceActive ? sql`active = EXCLUDED.active,` : sql``');
   });
 });
 

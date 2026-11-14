@@ -18,12 +18,16 @@ describe('scheduled Inbox resolver wiring', () => {
 
   it('seeds an active durable single-flight cron with the bounded cap', () => {
     const src = read(SEED);
+    const seedPolicy = read(join(HERE, 'seed-routine-main.ts'));
+    expect(src).toContain("from './seed-routine-main'");
+    expect(src).toContain('void runRoutineSeed({');
     expect(src).toContain("const TARGET_ROLE = `system:${NAME}`");
     expect(src).toContain("'durable'");
-    expect(src).toContain("'skip', 'skip-old'");
+    expect(seedPolicy).toContain("'skip', 'skip-old'");
     expect(src).toContain('const active = !process.argv.includes(\'--inactive\')');
     expect(src).toContain('INBOX_BULK_RESOLVE_CAP');
-    expect(src).toContain('active intentionally NOT re-applied on conflict');
+    expect(src).not.toMatch(/\breplaceActive\s*:/);
+    expect(seedPolicy).toContain('q.replaceActive ? sql`active = EXCLUDED.active,` : sql``');
   });
 
   it('guards the seed and classifies the resolver as model-spending', async () => {
