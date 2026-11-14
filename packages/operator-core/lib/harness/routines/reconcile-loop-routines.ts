@@ -2621,7 +2621,7 @@ export async function reconcileLoopRoutines(
                    END,
                    metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
                      'providerRetrySchedule',
-                     jsonb_build_object('nextFireAt', ${reArmIso}, 'source', 'reconcile-loop-routines')
+                    jsonb_build_object('nextFireAt', ${reArmIso}::text, 'source', 'reconcile-loop-routines')
                    ),
                    updated_at = now()
              WHERE id = ${row.id}

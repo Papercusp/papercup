@@ -14,6 +14,11 @@
  * the caller's (or the probe's). Unlike :3170 it needs no commit, no staging
  * sync and touches no shared database. Registered as the
  * `operator-api-working-tree` class in packages/operator-core/lib/serving-runtimes.ts.
+ *
+ * Limit: bundle-host.sh's own Node helpers load through committed-source-loader.mjs,
+ * so an EDITED helper silently runs its HEAD version and an UNTRACKED one fails the
+ * build. A change to the builder itself is exercised only once it is committed.
+ * Runbook: agent-insights/operator-api-working-tree-test-route.
  */
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';

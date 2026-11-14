@@ -208,7 +208,7 @@ async function rearmLoopAfterDeath(
            metadata = CASE WHEN ${providerDerivedDeadline}
              THEN COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
                'providerRetrySchedule',
-               jsonb_build_object('nextFireAt', ${iso}, 'source', 'resume-turn-death')
+              jsonb_build_object('nextFireAt', ${iso}::text, 'source', 'resume-turn-death')
              )
              ELSE COALESCE(metadata, '{}'::jsonb) - 'providerRetrySchedule'
            END,

@@ -6,6 +6,26 @@ import { tmpdir } from 'node:os';
 import { retainDetachedVitestReport, TestRunArtifactPacket, testRunDeadline } from './run-artifacts';
 import { verifyNativeProofPacket } from '../../../../../scripts/lib/budgeted-task-scheduler.mjs';
 
+/**
+ * WI-6554700010048955 tripwire: when armed, the sync fs calls the packet used to make on
+ * the operator host thread throw instead of running. Disarmed, every call passes through
+ * unchanged, so the rest of this file sees the real module.
+ */
+const fsTripwire = vi.hoisted(() => ({ armed: false, calls: [] as string[] }));
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  const trap = <K extends 'appendFileSync' | 'writeFileSync' | 'readFileSync' | 'readdirSync' | 'lstatSync'>(name: K) =>
+    ((...args: unknown[]) => {
+      if (fsTripwire.armed) {
+        fsTripwire.calls.push(name);
+        throw new Error(`sync fs call ${name} on the host thread`);
+      }
+      return (actual[name] as (...forwarded: unknown[]) => unknown)(...args);
+    }) as (typeof actual)[K];
+  return { ...actual, default: actual, appendFileSync: trap('appendFileSync'), writeFileSync: trap('writeFileSync'),
+    readFileSync: trap('readFileSync'), readdirSync: trap('readdirSync'), lstatSync: trap('lstatSync') };
+});
+
 const roots: string[] = [];
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 describe('maintained run deadlines and retained artifacts', () => {
@@ -192,5 +212,53 @@ describe('maintained run deadlines and retained artifacts', () => {
     expect(JSON.parse(readFileSync(join(packet.paths.directory, 'source.json'), 'utf8')).inputs[0])
       .toMatchObject({ path: 'subject.test.ts', sha256: expect.stringMatching(/^[a-f0-9]{64}$/) });
     expect(readFileSync(packet.paths.phases, 'utf8')).toContain('router-result');
+  });
+});
+
+describe('packet writes stay off the operator host thread (WI-6554700010048955)', () => {
+  it('stage/write/captureSelectedSources make no sync fs call, and land in call order on flush', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'run-artifacts-async-')); roots.push(root);
+    writeFileSync(join(root, 'subject.test.ts'), 'export const pinned = 1;\n');
+    const packet = new TestRunArtifactPacket('async-writes', root, testRunDeadline(60_000), join(root, 'retained'));
+    const config = { attempt: 1 };
+    fsTripwire.armed = true;
+    try {
+      // Positive control: the armed tripwire really intercepts a named `node:fs` sync call in
+      // this module graph, so the pre-fix appendFileSync/writeFileSync/readFileSync would trip it.
+      expect(() => writeFileSync(join(root, 'probe.txt'), 'x')).toThrow(/sync fs call writeFileSync/);
+      expect(fsTripwire.calls).toEqual(['writeFileSync']);
+      fsTripwire.calls.length = 0;
+      packet.captureSelectedSources(['subject.test.ts'], { commit: 'fixture' });
+      packet.stage('a');
+      packet.write('configuration.json', config);
+      config.attempt = 2; // serialized at call time: a later mutation must not leak into the queued bytes
+      packet.stage('b');
+      packet.write('router.json', { n: 1 });
+      packet.write('router.json', { n: 2 });
+      await packet.flush();
+    } finally {
+      fsTripwire.armed = false;
+    }
+    expect(fsTripwire.calls).toEqual([]);
+    const phases = readFileSync(packet.paths.phases, 'utf8').trim().split('\n').map(line => JSON.parse(line).stage);
+    expect(phases).toEqual(['start', 'a', 'b']);
+    expect(JSON.parse(readFileSync(join(packet.paths.directory, 'configuration.json'), 'utf8'))).toEqual({ attempt: 1 });
+    expect(JSON.parse(readFileSync(join(packet.paths.directory, 'router.json'), 'utf8'))).toEqual({ n: 2 });
+    expect(JSON.parse(readFileSync(join(packet.paths.directory, 'source.json'), 'utf8'))).toMatchObject({
+      worktree: { commit: 'fixture' },
+      inputs: expect.arrayContaining([
+        expect.objectContaining({ path: 'subject.test.ts', sha256: expect.stringMatching(/^[a-f0-9]{64}$/) }),
+      ]),
+    });
+  });
+
+  it('surfaces a failed queued write once at flush and keeps later writes flowing', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'run-artifacts-async-fail-')); roots.push(root);
+    const packet = new TestRunArtifactPacket('async-failure', root, testRunDeadline(60_000), join(root, 'retained'));
+    packet.write(join('no-such-dir', 'lost.json'), { lost: true });
+    packet.write('kept.json', { kept: true });
+    await expect(packet.flush()).rejects.toThrow(/ENOENT/);
+    await expect(packet.flush()).resolves.toBeUndefined();
+    expect(JSON.parse(readFileSync(join(packet.paths.directory, 'kept.json'), 'utf8'))).toEqual({ kept: true });
   });
 });

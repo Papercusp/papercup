@@ -4443,6 +4443,9 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
     }
     packet.write('configuration.json', captureConfigurationSnapshot(childEnv));
     packet.stage('router-start', { deadline });
+    // Packet writes are queued off the host main thread (WI-6554700010048955); the
+    // source pins, configuration snapshot and phases must be on disk before the child starts.
+    await packet.flush();
     // `testing:run` can itself be invoked from the repository's pc-heavy
     // wrapper. That wrapper exports a one-shot readiness/finalization marker
     // for its direct child; forwarding those exact paths into this nested

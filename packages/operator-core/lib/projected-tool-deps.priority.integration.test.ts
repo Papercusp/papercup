@@ -75,14 +75,14 @@ describe('desktop authority reads under ordinary pool saturation', () => {
     void waiting.catch(() => {});
     try {
       for (const phase of ['preflight', 'enforce'] as const) {
-        expect(await whileSaturated(PROJECTED_DEPS.kernelEnforcement!({ ...request, phase })))
-          .toMatchObject({ decision: 'allow' });
+        await expect(whileSaturated(PROJECTED_DEPS.kernelEnforcement!({ ...request, phase })))
+          .resolves.toMatchObject({ decision: 'allow' });
       }
-      expect(await whileSaturated(PROJECTED_DEPS.kernelPolicy!(request)))
-        .toMatchObject({ decision: 'allow' });
-      expect(await whileSaturated(PROJECTED_DEPS.checkCapabilityEnvelope!({
+      await expect(whileSaturated(PROJECTED_DEPS.kernelPolicy!(request)))
+        .resolves.toMatchObject({ decision: 'allow' });
+      await expect(whileSaturated(PROJECTED_DEPS.checkCapabilityEnvelope!({
         toolName: request.toolName, capabilities: [], ctx: request.ctx, args: {},
-      }))).toBeNull();
+      }))).resolves.toBeNull();
       expect(ordinaryAcquired).toBe(false);
       expect(getOrgPg().poolLabel).toBe('org-admin');
 
@@ -100,11 +100,11 @@ describe('desktop authority reads under ordinary pool saturation', () => {
           declaredAt: new Date(now).toISOString(), expiresAt: new Date(now + 60_000).toISOString(),
         } } })})
       `;
-      expect(await whileSaturated(PROJECTED_DEPS.kernelEnforcement!({ ...request, phase: 'enforce' })))
-        .toMatchObject({ decision: 'deny', code: 'revoked' });
-      expect(await whileSaturated(PROJECTED_DEPS.checkCapabilityEnvelope!({
+      await expect(whileSaturated(PROJECTED_DEPS.kernelEnforcement!({ ...request, phase: 'enforce' })))
+        .resolves.toMatchObject({ decision: 'deny', code: 'revoked' });
+      await expect(whileSaturated(PROJECTED_DEPS.checkCapabilityEnvelope!({
         toolName: request.toolName, capabilities: [], ctx: request.ctx, args: {},
-      }))).toMatchObject({ decision: 'deny' });
+      }))).resolves.toMatchObject({ decision: 'deny' });
       expect(ordinaryAcquired).toBe(false);
       expect(getOrgPg().poolLabel).toBe('org-admin');
     } finally {

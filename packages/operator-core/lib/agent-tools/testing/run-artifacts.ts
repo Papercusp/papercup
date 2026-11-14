@@ -1,6 +1,6 @@
 /** Retained evidence for the existing testing:run route; this module launches nothing. */
-import { appendFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { mkdir, lstat, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdirSync, mkdtempSync } from 'node:fs';
+import { appendFile, mkdir, lstat, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { papercuspHome } from '@papercusp/host-platform/home';
@@ -212,27 +212,64 @@ export class TestRunArtifactPacket {
     this.write('manifest.json', { schemaVersion: 1, runId, root, deadline, state: 'running', paths: this.paths });
     this.stage('start');
   }
+  /**
+   * WI-6554700010048955: packet writes never run on the caller's thread. This
+   * class runs inside the operator host, and a sync write there parks the whole
+   * event loop: under IO pressure one `writeFileSync` from finish() held :3170's
+   * main thread for 5.2 s (openSync alone 4.5 s), long enough for every
+   * `/api/agent-mcp/tool-guard` lookup to miss its 1.5 s wall and fail closed.
+   * Writes keep their call ORDER through one promise chain, each value is
+   * serialized at call time (later mutation cannot leak in), and the first failure
+   * is surfaced by flush(), which every read-back point awaits.
+   */
+  private writeChain: Promise<void> = Promise.resolve();
+  private writeFailure: { error: unknown } | null = null;
+  private enqueueWrite(task: () => Promise<unknown>): void {
+    this.writeChain = this.writeChain.then(task).then(() => undefined, (error: unknown) => {
+      this.writeFailure ??= { error };
+    });
+  }
+  /** Settle every queued packet write; rethrows the first failure since the last flush. */
+  async flush(): Promise<void> {
+    await this.writeChain;
+    const failure = this.writeFailure;
+    this.writeFailure = null;
+    if (failure) throw failure.error;
+  }
   stage(stage: string, detail: Record<string, unknown> = {}): void {
-    appendFileSync(this.paths.phases, JSON.stringify({ kind: 'testing-run-phase', runId: this.runId, stage,
-      atMs: Date.now(), ...detail }) + '\n', { mode: 0o600 });
+    const path = this.paths.phases;
+    const line = JSON.stringify({ kind: 'testing-run-phase', runId: this.runId, stage,
+      atMs: Date.now(), ...detail }) + '\n';
+    this.enqueueWrite(() => appendFile(path, line, { mode: 0o600 }));
   }
   write(name: string, value: unknown): void {
-    writeFileSync(join(this.paths.directory, name), JSON.stringify(value, null, 2) + '\n', { mode: 0o600 });
+    const path = join(this.paths.directory, name);
+    const body = JSON.stringify(value, null, 2) + '\n';
+    this.enqueueWrite(() => writeFile(path, body, { mode: 0o600 }));
   }
   /** Selected bytes and dependency lock are pins, not a claim of a loaded import closure.
-   * The maintained reporter owns loaded-source evidence; preserve its runtime inputs too. */
+   * The maintained reporter owns loaded-source evidence; preserve its runtime inputs too.
+   * The pins are hashed by the queued writer (async reads), ahead of every later packet
+   * write, and runTestFilesCore flushes the queue before the router child starts. */
   captureSelectedSources(files: string[], worktree: unknown, root = this.root): void {
     this.selectedFiles = files.map(file => resolve(root, file));
-    const inputs = [...new Set([...files, 'package.json', 'package-lock.json', 'scripts/test-files.mjs'])].map(file => {
-      const path = resolve(root, file);
-      const local = relative(root, path);
-      if (local === '..' || local.startsWith('../') || isAbsolute(local)) return { path: file, status: 'outside-root' };
-      try { return { path: local, sha256: createHash('sha256').update(readFileSync(path)).digest('hex') }; }
-      catch { return { path: local, status: 'unavailable' }; }
+    const names = [...new Set([...files, 'package.json', 'package-lock.json', 'scripts/test-files.mjs'])];
+    const worktreeJson = JSON.stringify(worktree);
+    const runtimeInputs = this.paths.runtimeInputs;
+    const sourcePath = join(this.paths.directory, 'source.json');
+    this.enqueueWrite(async () => {
+      const inputs = await Promise.all(names.map(async file => {
+        const path = resolve(root, file);
+        const local = relative(root, path);
+        if (local === '..' || local.startsWith('../') || isAbsolute(local)) return { path: file, status: 'outside-root' };
+        try { return { path: local, sha256: createHash('sha256').update(await readFile(path)).digest('hex') }; }
+        catch { return { path: local, status: 'unavailable' }; }
+      }));
+      await writeFile(sourcePath, JSON.stringify({ root,
+        worktree: worktreeJson === undefined ? undefined : JSON.parse(worktreeJson), inputs,
+        coverage: 'selected files and dependency lock; loaded import closure is reporter-owned',
+        runtimeInputs }, null, 2) + '\n', { mode: 0o600 });
     });
-    this.write('source.json', { root, worktree, inputs,
-      coverage: 'selected files and dependency lock; loaded import closure is reporter-owned',
-      runtimeInputs: this.paths.runtimeInputs });
   }
   bindNativeIdentity(workspace: string | undefined, harness: string | undefined): void {
     this.custodyIdentity = { workspace: workspace || 'unscoped', harness: harness || 'unscoped', runId: this.runId };
@@ -245,29 +282,29 @@ export class TestRunArtifactPacket {
     const auxiliary: NativeCustodyAuxiliary[] = [];
     const required = ['source.json', 'configuration.json', 'router.json', 'ledger.json', 'phases.jsonl'];
     for (const name of required) auxiliary.push({ role: name, state: 'produced', path: join(this.paths.directory, name) });
-    const inventory = (directory: string, role: string, depth = 0): void => {
+    const inventory = async (directory: string, role: string, depth = 0): Promise<void> => {
       if (depth > 8 || auxiliary.length > 4096) throw new Error('packet auxiliary inventory limit');
-      for (const name of readdirSync(directory).sort()) {
-        const path = join(directory, name), stat = lstatSync(path);
+      for (const name of (await readdir(directory)).sort()) {
+        const path = join(directory, name), stat = await lstat(path);
         if (stat.isSymbolicLink()) throw new Error('packet auxiliary redirected');
-        if (stat.isDirectory()) inventory(path, `${role}/${name}`, depth + 1);
+        if (stat.isDirectory()) await inventory(path, `${role}/${name}`, depth + 1);
         else auxiliary.push({ role: `${role}/${name}`, state: 'produced', path });
       }
     };
     for (const [role, path] of [['reports', this.paths.reports], ['owned-databases', this.paths.ownedDatabases],
-      ['executed-inputs', this.paths.runtimeInputs]] as const) inventory(path, role);
+      ['executed-inputs', this.paths.runtimeInputs]] as const) await inventory(path, role);
     this.outputLogs.forEach((path, index) => auxiliary.push({ role: `router-output/${index}`, state: 'produced', path }));
-    const routers = readdirSync(this.paths.directory).filter(name => name.startsWith('native-router-')).sort();
+    const routers = (await readdir(this.paths.directory)).filter(name => name.startsWith('native-router-')).sort();
     const routerGroups: NativeCustodyGroup[] = [];
     const routerVerdicts = [];
     for (const name of routers) {
       const directory = join(this.paths.directory, name);
-      const declaration = JSON.parse(readFileSync(join(directory, 'expected.json'), 'utf8'));
-      const locator = JSON.parse(readFileSync(join(directory, 'locator.json'), 'utf8'));
+      const declaration = JSON.parse(await readFile(join(directory, 'expected.json'), 'utf8'));
+      const locator = JSON.parse(await readFile(join(directory, 'locator.json'), 'utf8'));
       const verified = verifyNativeProofPacket(directory, locator, { identity, expected: declaration.expected });
       routerGroups.push(...declaration.expected);
       routerVerdicts.push(verified.status);
-      inventory(directory, name);
+      await inventory(directory, name);
     }
     if (routers.length) {
       const actual = routerGroups.filter(group => group.attempt === 'primary').flatMap(group => group.selected).sort();
@@ -289,11 +326,17 @@ export class TestRunArtifactPacket {
   async finish(detail: Record<string, unknown>): Promise<void> {
     this.stage('retained', { childState: this.childState });
     let nativeCustody: unknown;
-    try { nativeCustody = await this.retainNative(detail); }
+    try {
+      // Retention reads the packet back (phases.jsonl, source.json, ...): every queued write lands first.
+      await this.flush();
+      nativeCustody = await this.retainNative(detail);
+    }
     catch (error) { nativeCustody = { byteCustody: 'unavailable', error: String(error),
       nativeProof: 'unqualified', acceptance: 'unmeasured', producerRetirement: 'retained' }; }
     this.write('manifest.json', { schemaVersion: 1, runId: this.runId, root: this.root,
       deadline: this.deadline, state: 'retained', childState: this.childState, paths: this.paths,
       groupCleanups: this.groupCleanups, ...detail, nativeCustody });
+    // finish() resolves only once the retained manifest is durable; a failed write rejects, as before.
+    await this.flush();
   }
 }

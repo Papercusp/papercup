@@ -9,8 +9,9 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type postgres from 'postgres';
 import type { TurnResult } from '@papercusp/testing-shell/llm';
@@ -45,6 +46,8 @@ import { resolveContainmentTree } from '../../containment-tree';
 import { deriveIndexFromContent } from './derive-index';
 import { writePlanIndexRows } from './plan-index-rows';
 import { setSpecClause, listSpecClauses } from './spec-clauses-store';
+import { measureRepoFilesEvidenceAtRoot, type RepoFilesEvidenceMeasurement } from './spec-evidence-store';
+import { loadHarnessRegistry, saveHarnessRegistry } from '../../harness-registry';
 import { writePlanItemAnchors } from '../../plan-items/anchor-store';
 import { engineeringEvidenceStore } from '../../code-intelligence/engineering-evidence-store';
 import { engineeringEvidenceQuery, readEngineeringEvidence } from '../../code-intelligence/engineering-evidence';
@@ -112,6 +115,7 @@ let fx: PlanPgFixture;
 let admin: postgres.Sql;
 let previousWorkspaceId: string | undefined;
 const capturedThreadIds = new Set<string>();
+const proofMeasurementRoots = new Set<string>();
 
 beforeAll(async () => {
   previousWorkspaceId = process.env.PAPERCUSP_WORKSPACE_ID;
@@ -229,7 +233,10 @@ afterAll(async () => {
   `.catch(() => {});
   if (previousWorkspaceId === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
   else process.env.PAPERCUSP_WORKSPACE_ID = previousWorkspaceId;
-  await fx?.dispose();
+  try { await fx?.dispose(); }
+  finally {
+    await Promise.all([...proofMeasurementRoots].map(root => rm(root, { recursive: true, force: true })));
+  }
 });
 
 function dataOf<T>(value: unknown): T {
@@ -541,8 +548,25 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
     const stamp = Date.parse(seed.recordedFrom);
     const digest = (bytes: string | Uint8Array) => createHash('sha256').update(bytes).digest('hex');
     const sourcePath = 'packages/operator-core/lib/prior-attempt-context.ts';
-    const sourceHash = digest(await readFile(new URL('../../prior-attempt-context.ts', import.meta.url)));
-    const testHash = digest(await readFile(new URL(import.meta.url)));
+    const sourceBytes = await readFile(new URL('../../prior-attempt-context.ts', import.meta.url));
+    const testBytes = await readFile(new URL(import.meta.url));
+    const sourceHash = digest(sourceBytes);
+    const testHash = digest(testBytes);
+    // A private, non-git root makes the synthetic control independent of peer
+    // commits. Copy the exact input bytes; canonical measurement hashes the
+    // {path,sha256} file sets, not these raw file hashes. This is fixture
+    // currentness only, never evidence that the copied test actually executed.
+    const proofRoot = await mkdtemp(join(tmpdir(), 'gec-proof-measurement-'));
+    proofMeasurementRoots.add(proofRoot);
+    const proofTestPath = 'gec-b-fixture.integration.test.ts';
+    await mkdir(dirname(join(proofRoot, sourcePath)), { recursive: true });
+    await writeFile(join(proofRoot, sourcePath), sourceBytes);
+    await writeFile(join(proofRoot, proofTestPath), testBytes);
+    const proofRecipe: RepoFilesEvidenceMeasurement = { schemaVersion: 1, kind: 'repo-files',
+      rootHarnessSlug: h, sourcePaths: [sourcePath], testPaths: [proofTestPath] };
+    const proofFingerprints = await measureRepoFilesEvidenceAtRoot(proofRoot, proofRecipe);
+    expect(proofFingerprints.sourceFingerprint).not.toBe(sourceHash);
+    expect(proofFingerprints.testFingerprint).not.toBe(testHash);
     // Independent admitted cohort, read at both boundaries. Raw code retains
     // refinements/authorization and undeclared output contracts that JSON Schema
     // cannot express. A changed source refuses zero until an exact detector is
@@ -603,10 +627,15 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
         ids: [...contractNames, 'acceptance:criterion', 'acceptance:work-definition'], rows,
         sourceFiles: { ids: [...contractPaths, metadataId], rows: sources } };
     };
-    const content = `---\ntitle: Frozen B history fixture\nstatus: active\n---\n# Frozen B history fixture\n\n## Work\n\n- **P-001** \`todo\` Retain exact seeded evidence.\n\n## Decisions\n\n### D-001 — Retired target\nRelated: P-001\n\nThe prior target is retired.\n\n### ${seed.bindingDecision.id} — Current scoped reader\nDate: ${seed.bindingDecision.recorded}\nRelated: P-001\n\n${seed.bindingDecision.body}\n`;
+    const content = `---\ntitle: Frozen B history fixture\nstatus: active\n---\n# Frozen B history fixture\n\n## Work\n\n- **P-001** \`todo\` Retain exact seeded evidence.\n- **P-999** \`todo\` Isolate the missing measurement recipe control.\n\n## Decisions\n\n### D-001 — Retired target\nRelated: P-001\n\nThe prior target is retired.\n\n### ${seed.bindingDecision.id} — Current scoped reader\nDate: ${seed.bindingDecision.recorded}\nRelated: P-001\n\n${seed.bindingDecision.body}\n`;
     await seedPlan(admin, workspace, h, p, content);
     await seedPlan(admin, foreignWorkspace, h, p, content);
     await seedPlan(admin, workspace, n.foreignHarness, p, content);
+    const registry = await loadHarnessRegistry(workspace);
+    await saveHarnessRegistry({ ...registry, projects: [
+      ...registry.projects.filter(project => project.slug !== h),
+      { slug: h, path: proofRoot, hive_slug: h },
+    ] }, workspace);
     // seedPlan already registers the Pot. Bind the frozen logical identity to
     // that actual composite key instead of creating a parallel fixture Pot.
     const pots = await admin`SELECT workspace_id,pot_home_slug FROM harness_shared.pots
@@ -656,9 +685,17 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
     const [spec] = await listSpecClauses({ workspaceId: workspace, harnessSlug: h, planSlug: p,
       specIds: [n.spec], revision: seed.proof.applicableSpecRevision, limit: 1 });
     expect(spec).toMatchObject({ specId: n.spec, revision: seed.proof.applicableSpecRevision });
-    await admin`INSERT INTO harness_shared.work_item_spec_revision_edges
-      (workspace_id,harness_slug,work_item_id,plan_slug,spec_id,spec_revision,spec_fingerprint,created_by)
-      VALUES (${workspace},${h},${item},${p},${n.spec},${spec.revision},${spec.contentHash},'su-gec-fixture')`;
+    const seedSpecRevisionEdge = async (specId: string, revision: number, fingerprint: string) => {
+      const edges = await admin`INSERT INTO harness_shared.work_item_spec_revision_edges
+        (workspace_id,harness_slug,work_item_id,plan_slug,spec_id,spec_revision,spec_fingerprint,created_by)
+        VALUES (${workspace},${h},${item},${p},${specId},${revision},${fingerprint},'su-gec-fixture')
+        RETURNING workspace_id,harness_slug,work_item_id,plan_slug,spec_id,spec_revision,spec_fingerprint`;
+      expect(edges, 'each immutable binding requires its exact seven-column revision edge').toEqual([
+        { workspace_id: workspace, harness_slug: h, work_item_id: item, plan_slug: p,
+          spec_id: specId, spec_revision: revision, spec_fingerprint: fingerprint },
+      ]);
+    };
+    await seedSpecRevisionEdge(n.spec, spec.revision, spec.contentHash);
     // This is a synthetic authority fixture in the disposable store. It is
     // deliberately never inserted into the live test ledger as passing proof.
     const [proofRun] = await admin`INSERT INTO harness_shared.test_runs
@@ -690,7 +727,7 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
     // records simulate the positive input; they are NOT an actual execution or
     // a shipment receipt and never leave this disposable database as live proof.
     const proofCase = 'gec-b-fixture.scoped-reader';
-    const proofReceipt: ExecutionBoundaryReceipt = {
+    const proofReceipt = {
       boundary: 'graph:query:evidence', callId: `gec-b-proof-${fixtureToken}`,
       workspaceId: workspace, harness: h, traceId: digest(`${fixtureToken}:trace`).slice(0, 32),
       spanId: digest(`${fixtureToken}:span`).slice(0, 16),
@@ -698,10 +735,10 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
       startedAt: stamp + 5, endedAt: stamp + 10, outcome: 'ok', sourceFingerprint: sourceHash,
       buildSha: targetArtifact, artifactFingerprint: digest(targetArtifact),
       environmentFingerprint: digest(`isolated-pg:${fixtureToken}`), workflowId: null,
-    };
+    } satisfies ExecutionBoundaryReceipt;
     const proofObservation = { caseKey: proofCase, occurrence: 1, receipt: proofReceipt };
     const proofDetails = {
-      schemaVersion: 1, root: process.cwd(), filePath: 'gec-b-fixture.integration.test.ts',
+      schemaVersion: 1, root: proofRoot, filePath: proofTestPath,
       runGroupId: null, workspaceId: workspace, harnessSlug: h, testNamePattern: null,
       mutationPhase: null, commitSha: targetArtifact, worktreeDirty: false,
       collectionFailed: false, passed: 1, failed: 0, skipped: 0,
@@ -743,10 +780,11 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
     expect(deployment.detail).not.toHaveProperty('testRunId');
     const [binding] = await admin`INSERT INTO harness_shared.spec_evidence_bindings
       (workspace_id,harness_slug,work_item_id,plan_slug,spec_id,spec_revision,spec_fingerprint,
-        evidence_kind,evidence_ref,source_fingerprint,test_fingerprint,test_run_id,binding_fingerprint,created_by)
+        evidence_kind,evidence_ref,source_fingerprint,test_fingerprint,test_run_id,binding_fingerprint,created_by,details)
       VALUES (${workspace},${h},${item},${p},${n.spec},${spec.revision},${spec.contentHash},
-        'test','gec-b-fixture.integration.test.ts',${sourceHash},${testHash},${proofRun.id},${digest(canonicalJson(seed.proof))},
-        'su-gec-fixture') RETURNING id`;
+        'test',${proofTestPath},${proofFingerprints.sourceFingerprint},${proofFingerprints.testFingerprint},
+        ${proofRun.id},${digest(canonicalJson(seed.proof))},
+        'su-gec-fixture',${admin.json({ currentMeasurement: proofRecipe })}) RETURNING id`;
     const [anchor] = await admin`SELECT id FROM harness_shared.plan_item_anchors
       WHERE workspace_id=${workspace} AND harness_slug=${h} AND plan_slug=${p} AND item_id='P-001'`;
     const threadStore = new PgThreadStore({ getSql: () => admin, ensureSchema: async () => {}, workspaceId: workspace });
@@ -853,6 +891,7 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
       testSourceHash: testHash, consumerSourceHash: sourceHash,
       physicalStores: { pots, commitAttributions, resumeEdges, resumeChain,
         proofControl: { kind: 'synthetic-private-reference-control', invocationId: Number(proofInvocation.id),
+          measurement: { recipe: proofRecipe, fingerprints: proofFingerprints, root: proofRoot },
           case: { runId: Number(proofRun.id), key: proofCase, occurrence: 1, status: 'pass' },
           observation: proofObservation, executionDetails: proofDetails },
         resumeFixtures: { resumeRoot, resumeBridge, descendantGoal: g, plan: p, item: children[24],
@@ -931,7 +970,9 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
       const cases = candidate.cases;
       const execution = candidate.execution;
       if (!proof || proof.runId !== Number(proofRun.id) || proof.withdrawn
-        || proof.fingerprints.sourceFingerprint !== sourceHash || proof.fingerprints.testFingerprint !== testHash
+        || proof.state !== 'current' || proof.reasons.length !== 0
+        || proof.fingerprints.sourceFingerprint !== proofFingerprints.sourceFingerprint
+        || proof.fingerprints.testFingerprint !== proofFingerprints.testFingerprint
         || cases.length !== 1 || cases[0]?.runId !== proof.runId || cases[0]?.key !== proofCase
         || cases[0]?.occurrence !== 1 || cases[0]?.status !== 'pass'
         || execution?.status !== 'observed' || execution.gaps.length !== 0
@@ -943,6 +984,55 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
       }
     };
     requirePositiveFixture(fixtureProofQualification);
+    // Read real changed/missing measurement inputs through the same adapter.
+    // Merely changing the expected object cannot catch an adapter that silently
+    // accepts stale proof or one whose recipe/root never resolves.
+    const measurementControls: Record<string, typeof fixtureProofQualification.proof> = {};
+    const readFixtureProof = async () => (await evidence.proofs(scope, exactSpec!, 10))
+      .find(proof => proof.id === Number(binding.id));
+    for (const [dimension, path, bytes] of [
+      ['source', sourcePath, sourceBytes], ['test', proofTestPath, testBytes],
+    ] as const) {
+      try {
+        await writeFile(join(proofRoot, path), Buffer.concat([bytes, Buffer.from('\n// stale fixture control\n')]));
+        const proof = await readFixtureProof();
+        measurementControls[`${dimension}-stale`] = proof;
+        expect(proof).toMatchObject({ state: 'stale', reasons: expect.arrayContaining([`${dimension}-stale`]) });
+        expect(() => requirePositiveFixture({ ...fixtureProofQualification, proof })).toThrow('prerequisites missing');
+      } finally { await writeFile(join(proofRoot, path), bytes); }
+    }
+    // Evidence bindings are append-only. Give the missing-recipe control its
+    // own clause/item so it cannot mutate or dequalify the primary proof.
+    const missingRecipeSpecId = `${n.spec}-MISSING-RECIPE`;
+    const missingRecipeSaved = await admin.begin(async tx => setSpecClause({
+      planSlug: p, specId: missingRecipeSpecId, expectedRevision: 0, planItemId: 'P-999',
+      behavior: 'A binding without a measurement recipe remains unknown.',
+      behaviorClass: 'happy-path', requiredEvidence: ['tree'], requiredTestLayers: ['integration'],
+      mutationRequired: false, lifecycleStatus: 'active', actorId: 'su-gec-fixture',
+      falsifier: { observation: 'A missing recipe is admitted as current proof.',
+        probeMethod: 'Read the immutable no-recipe control through the production evidence adapter.' },
+    }, { executor: tx as never, workspaceId: workspace, harnessSlug: h }));
+    expect(missingRecipeSaved.status).toBe('created');
+    const missingRecipeSpec = await evidence.spec(scope, p, missingRecipeSpecId, 1);
+    expect(missingRecipeSpec).toMatchObject({ id: missingRecipeSpecId, revision: 1 });
+    await seedSpecRevisionEdge(missingRecipeSpecId, missingRecipeSpec!.revision, missingRecipeSpec!.fingerprint!);
+    const [missingRecipeBinding] = await admin`INSERT INTO harness_shared.spec_evidence_bindings
+      (workspace_id,harness_slug,work_item_id,plan_slug,spec_id,spec_revision,spec_fingerprint,
+        evidence_kind,evidence_ref,source_fingerprint,test_fingerprint,test_run_id,binding_fingerprint,created_by,details)
+      VALUES (${workspace},${h},${item},${p},${missingRecipeSpecId},1,${missingRecipeSpec!.fingerprint},
+        'test',${proofTestPath},${proofFingerprints.sourceFingerprint},${proofFingerprints.testFingerprint},
+        ${proofRun.id},${digest(canonicalJson({ control: 'missing-recipe', primary: binding.id }))},
+        'su-gec-fixture','{}'::jsonb) RETURNING id`;
+    const missingRecipeProof = (await evidence.proofs(scope, missingRecipeSpec!, 10))
+      .find(proof => proof.id === Number(missingRecipeBinding.id));
+    measurementControls['missing-recipe'] = missingRecipeProof;
+    expect(missingRecipeProof).toMatchObject({ state: 'unknown', reasons: expect.arrayContaining([
+      'source-current-fingerprint-not-supplied', 'test-current-fingerprint-not-supplied',
+    ]) });
+    expect(() => requirePositiveFixture({ ...fixtureProofQualification, proof: missingRecipeProof }))
+      .toThrow('prerequisites missing');
+    const restoredProof = await readFixtureProof();
+    requirePositiveFixture({ ...fixtureProofQualification, proof: restoredProof });
     // Detector controls: the former empty seed, an uncorrelated execution and
     // a different run/case must fail before any model is constructed or sent.
     expect(() => requirePositiveFixture({ ...fixtureProofQualification, cases: [] })).toThrow('prerequisites missing');
@@ -953,10 +1043,10 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
       cases: [{ ...fixtureProofQualification.cases[0]!, runId: Number(newerFailedRun.id) }],
     })).toThrow('prerequisites missing');
     expect(() => requirePositiveFixture({ ...fixtureProofQualification, proof: {
-      ...fixtureProofQualification.proof!, fingerprints: { sourceFingerprint: sourceHash, testFingerprint: null },
+      ...fixtureProofQualification.proof!, fingerprints: { sourceFingerprint: proofFingerprints.sourceFingerprint, testFingerprint: null },
     } })).toThrow('prerequisites missing');
     if (artifactDirectory) await writeFile(join(artifactDirectory, 'gec-b-positive-proof-prerequisites.json'),
-      canonicalJson(fixtureProofQualification));
+      canonicalJson({ ...fixtureProofQualification, measurementControls, restoredProof }));
     await recordPhase('fixture-verified');
 
     // Exercise the existing public admission adapter with real canonical stores.

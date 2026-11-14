@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -286,37 +286,26 @@ describe('operator release artifact provenance', () => {
     expect(boot(parent)).toEqual(written); // legacy full-population expectation
   });
 
-  async function compiledBootRuntime() {
-    const f = fixture(), sourceRoot = resolve(import.meta.dirname, '../../../..');
+  // Build immutable fixture bytes once; every case still writes its own artifact
+  // and launches fresh runtime processes against its private parent manifest.
+  const sourceRoot = resolve(import.meta.dirname, '../../../..');
+  const sourceLoader = createRequire(import.meta.url).resolve('tsx');
+  type BootBuild = Awaited<ReturnType<typeof import('esbuild').build>>;
+  let bootBundle: { bytes: Uint8Array; metafile: NonNullable<BootBuild['metafile']> };
+  beforeAll(async () => {
     const runtimePath = join(sourceRoot, 'packages/operator-core/lib/observability/runtime.ts');
-    // This is a source-level runtime fixture. Reuse the maintained worker's tsx
-    // route for external local TypeScript; single-file ESM bundling can hoist
-    // those imports even when their configuration readers are never called.
-    const sourceLoader = createRequire(import.meta.url).resolve('tsx');
-    symlinkSync(join(sourceRoot, 'node_modules'), join(f.root, 'node_modules'), 'dir');
-    const bootEnv = { PATH: process.env.PATH, NODE_ENV: 'test', PAPERCUSP_BUILD_SHA: f.sourceSha };
-    const loaderControl = join(dirname(f.entry), 'loader-control.mjs');
-    writeFileSync(loaderControl, "console.log('BOOT_PARENT_LOADER_READY');");
-    const smoke = spawnSync(process.execPath, ['--import', sourceLoader, '--input-type=module', '--eval',
-      "import { pathToFileURL } from 'node:url'; await import(pathToFileURL(process.argv[1]).href);", loaderControl],
-    { encoding: 'utf8', timeout: 15_000, env: bootEnv });
-    expect(smoke.error, smoke.stdout + smoke.stderr).toBeUndefined();
-    expect(smoke.status, smoke.stdout + smoke.stderr).toBe(0);
-    expect(smoke.stdout).toContain('BOOT_PARENT_LOADER_READY');
     const { build } = await import('esbuild');
+    const started = performance.now();
     const result = await build({ absWorkingDir: sourceRoot, bundle: true, platform: 'node', format: 'esm',
-      outfile: f.entry, metafile: true, logLevel: 'silent',
-      // Keep the runtime and DBOS tracing adapters in the bundle; optional OTLP
-      // peers and native addons stay external so Node resolves only this host's ABI.
+      outfile: 'boot-parent-runtime-boundary.mjs', write: false, metafile: true, logLevel: 'silent',
       external: [join(sourceRoot, 'packages/operator-core/lib/telemetry-flush'),
         join(sourceRoot, 'packages/operator-core/lib/auth/loopback-peer-trust'),
         '@opentelemetry/exporter-trace-otlp-proto', '@opentelemetry/exporter-logs-otlp-proto',
         '@opentelemetry/sdk-logs', '@opentelemetry/sdk-trace-base',
-        // Match bundle-host.sh: the real CommonJS compiler needs its own filename.
         'typescript', 'cpu-features', 'onnxruntime-node', 'ssh2'],
       banner: { js: "import { createRequire as createBootBoundaryRequire } from 'node:module'; const require = createBootBoundaryRequire("
         + JSON.stringify(join(sourceRoot, 'package.json')) + ");" },
-      define: { __PAPERCUSP_BUNDLED_SIDECAR__: 'true', __PAPERCUSP_BUNDLED_SOURCE_SHA__: JSON.stringify(f.sourceSha) },
+      define: { __PAPERCUSP_BUNDLED_SIDECAR__: 'true', __PAPERCUSP_BUNDLED_SOURCE_SHA__: JSON.stringify('a'.repeat(40)) },
       stdin: { resolveDir: sourceRoot, sourcefile: 'boot-parent-runtime-boundary.ts', loader: 'ts', contents: `
         import { readFileSync } from 'node:fs';
         import { initializeRuntimeObservability, runtimeObservabilityHealth, shutdownRuntimeObservability } from ${JSON.stringify(runtimePath)};
@@ -332,13 +321,41 @@ describe('operator release artifact provenance', () => {
           initialized: health.initialized, artifact: health.artifact, pid: process.pid }));
         await shutdownRuntimeObservability();
       ` } });
+    bootBundle = { bytes: result.outputFiles![0]!.contents, metafile: result.metafile! };
+    process.stderr.write('BOOT_PARENT_PHASE ' + JSON.stringify({ phase: 'suite-bundle',
+      durationMs: Math.round(performance.now() - started) }) + '\n');
+  }, 30_000);
+
+  async function compiledBootRuntime() {
+    const f = fixture();
+    const timedPhase = <T>(phase: string, operation: () => T): T => {
+      const started = performance.now();
+      try { return operation(); }
+      finally { process.stderr.write('BOOT_PARENT_PHASE ' + JSON.stringify({ phase,
+        durationMs: Math.round(performance.now() - started) }) + '\n'); }
+    };
+    // This is a source-level runtime fixture. Reuse the maintained worker's tsx
+    // route for external local TypeScript; single-file ESM bundling can hoist
+    // those imports even when their configuration readers are never called.
+    symlinkSync(join(sourceRoot, 'node_modules'), join(f.root, 'node_modules'), 'dir');
+    const bootEnv = { PATH: process.env.PATH, NODE_ENV: 'test', PAPERCUSP_BUILD_SHA: f.sourceSha };
+    const loaderControl = join(dirname(f.entry), 'loader-control.mjs');
+    writeFileSync(loaderControl, "console.log('BOOT_PARENT_LOADER_READY');");
+    const smoke = timedPhase('loader-smoke', () => spawnSync(process.execPath, ['--import', sourceLoader, '--input-type=module', '--eval',
+      "import { pathToFileURL } from 'node:url'; await import(pathToFileURL(process.argv[1]).href);", loaderControl],
+    { encoding: 'utf8', timeout: 15_000, env: bootEnv }));
+    expect(smoke.error, smoke.stdout + smoke.stderr).toBeUndefined();
+    expect(smoke.status, smoke.stdout + smoke.stderr).toBe(0);
+    expect(smoke.stdout).toContain('BOOT_PARENT_LOADER_READY');
+    writeFileSync(f.entry, bootBundle.bytes);
     // Catch banner/bundle binding collisions before any runtime control starts.
-    const syntax = spawnSync(process.execPath, ['--check', f.entry], { encoding: 'utf8', timeout: 15_000 });
+    const syntax = timedPhase('syntax', () => spawnSync(process.execPath, ['--check', f.entry],
+      { encoding: 'utf8', timeout: 15_000 }));
     expect(syntax.error, syntax.stderr).toBeUndefined();
     expect(syntax.status, syntax.stderr).toBe(0);
     // Independent compiler input and output measurement for this source-level
     // boot-boundary fixture. This does not claim full BG service/dependency closure.
-    const members = Object.fromEntries(Object.keys(result.metafile!.inputs)
+    const members = Object.fromEntries(Object.keys(bootBundle.metafile.inputs)
       .filter(path => !path.includes('node_modules/') && !path.endsWith('boot-parent-runtime-boundary.ts'))
       .sort().map(path => {
         const bytes = readFileSync(join(sourceRoot, path));
@@ -354,12 +371,12 @@ describe('operator release artifact provenance', () => {
     const boot = (input: typeof parent, legacy = false) => {
       const configPath = join(dirname(f.entry), 'boot-parent-config.json');
       writeFileSync(configPath, JSON.stringify({ parent: input, legacy }));
-      const child = spawnSync(process.execPath, ['--import', sourceLoader, '--input-type=module', '--eval',
+      const child = timedPhase('boot', () => spawnSync(process.execPath, ['--import', sourceLoader, '--input-type=module', '--eval',
         "import { pathToFileURL } from 'node:url'; await import(pathToFileURL(process.argv[1]).href);",
         f.entry, configPath], {
         encoding: 'utf8', timeout: 15_000,
         env: bootEnv,
-      });
+      }));
       if (child.error || child.status !== 0) {
         // Preserve complete child errors independently of assertion truncation.
         process.stderr.write('BOOT_PARENT_CHILD_DIAGNOSTICS\n' + child.stdout + child.stderr);
@@ -493,7 +510,7 @@ describe('BG compiler input custody', () => {
       format: 'esm', platform: 'node', write: false, logLevel: 'silent', plugins: [custody.plugin] });
     const imported = await import('data:text/javascript;base64,' + Buffer.from(result.outputFiles[0]!.contents).toString('base64'));
     expect({ y: imported.y, dep: imported.dep }).toEqual({ y: 2, dep: 41 });
-    expect(custody.verifyBeforePublication().map(row => row.path)).toEqual([
+    expect(custody.verifyBeforePublication().map((row: { path: string }) => row.path)).toEqual([
       BG_INPUTS[0]!, 'node_modules/fixture-dependency/index.js', 'packages/core/index.ts',
     ]);
     expect(readFileSync(join(prepared.root, '.verifier-source.json'))).toEqual(originalReceipt);
