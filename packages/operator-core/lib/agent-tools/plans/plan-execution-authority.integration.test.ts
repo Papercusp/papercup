@@ -905,6 +905,12 @@ describe('canonical successful-start revision authority (real PG)', () => {
   });
 
   it('preserves and invalidates execution authority through the canonical locked content writer', async () => {
+    // Seed the existing canonical node, as a promoted plan has before progress.
+    // This fixture deliberately omits the unrelated new-node allocation schema.
+    await seedLine('P-001');
+    await db.sql`UPDATE harness_shared.work_items SET plan_phase='Phase 1',plan_deliverable='code' WHERE plan_line_id='P-001'`;
+    const original = body + '\n## Phase 1\n- **P-001** `todo` Preserve findings deliverable: code\n';
+    await db.sql`UPDATE harness_shared.harness_plans SET content=${original},content_hash=${hashPlanContent(original)}`;
     // withPlanLock also reads plan admission metadata; this fixture intentionally
     // models that field lazily so the canonical content-writer path remains covered.
     await db.sql.unsafe('ALTER TABLE harness_shared.harness_plans ADD COLUMN IF NOT EXISTS acceptance_bar_rubric_slug text');
@@ -924,7 +930,7 @@ describe('canonical successful-start revision authority (real PG)', () => {
     // normalization of is_legacy/promote_policy as a structured input change.
     const canonicalWrite = await withPlanLock(planCtx, writeOptions, async current => {
       if (current === null) throw new Error('started plan disappeared before canonical setup write');
-      return { newBody: current + '\n## Phase 1\n- **P-001** `todo` Preserve findings deliverable: code\n', value: null };
+      return { newBody: current, value: null };
     });
     expect(canonicalWrite.kind).toBe('applied');
     const receipt = await issue();
@@ -946,8 +952,10 @@ describe('canonical successful-start revision authority (real PG)', () => {
     const { flipStatusInBody } = await import('./set-status');
     for (const [status, note, noteKind] of [
       ['todo', '← WI-6554700010048264 released', 'progress'],
-      ['done', '← WI-6554700010048264 completed (done)', undefined],
+      ['done', '← WI-6554700010048264 completed (done)', 'progress'],
     ] as const) {
+      // Completion commits its canonical node state before reflecting the note.
+      if (status === 'done') await db.sql`UPDATE harness_shared.work_items SET status='done' WHERE plan_line_id='P-001'`;
       const reflected = await withPlanLock(planCtx, writeOptions, async current => {
         if (current === null) throw new Error('started plan disappeared before reflection');
         const changed = flipStatusInBody(current, 'P-001', status, note, noteKind);
@@ -955,7 +963,7 @@ describe('canonical successful-start revision authority (real PG)', () => {
         return { newBody: changed.newBody, value: null };
       });
       expect(reflected.kind).toBe('applied');
-      expect(await readExecutionPlanRow(scope)).toMatchObject({
+      expect(await readExecutionPlanRow(scope), `${status} reflection must retain the start`).toMatchObject({
         execution_start_revision_seq: receipt.seq, execution_start_invalidation: null,
       });
       expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual([]);
