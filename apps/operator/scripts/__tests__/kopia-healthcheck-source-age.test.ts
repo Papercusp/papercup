@@ -61,6 +61,8 @@ function runHealthcheck(
   status: Record<string, unknown> = {},
   unitCgroup?: UnitCgroupFixture,
   alertFixture: AlertFixture = {},
+  maintenanceError = '',
+  archiveFixture?: { error: string; exitCode: number },
 ) {
   const root = mkdtempSync(join(tmpdir(), 'kopia-healthcheck-source-age-'));
   tempDirs.push(root);
@@ -97,12 +99,19 @@ function runHealthcheck(
   const testScript = join(scriptDir, 'kopia-healthcheck.sh');
   const alertStub = join(root, 'alert-stub.sh');
   const alertLog = join(root, 'alert.log');
+  const maintenanceCalls = join(root, 'maintenance-calls');
 
   for (const path of [home, dumpDir, scriptDir, fakeBin, logDir, stateDir, join(home, 'macos-vm')]) {
     mkdirSync(path, { recursive: true });
   }
 
   const now = Math.floor(Date.now() / 1000);
+  if (archiveFixture) {
+    mkdirSync(join(dumpDir, 'pg', 'fixture'), { recursive: true });
+    const restore = join(fakeBin, 'pg_restore');
+    writeFileSync(restore, '#!/usr/bin/env bash\nprintf "%s\\n" "$TEST_ARCHIVE_ERROR" >&2\nexit "$TEST_ARCHIVE_EXIT"\n');
+    chmodSync(restore, 0o755);
+  }
   writeFileSync(
     join(dumpDir, 'STATUS.json'),
     JSON.stringify({ lastSuccessEpoch: now - 10 * 60, ...status }, null, 2),
@@ -122,6 +131,11 @@ function runHealthcheck(
     [
       '#!/usr/bin/env bash',
       '[ "$KOPIA_LOG_DIR" = "$KOPIA_TEST_EXPECT_LOG_DIR" ] || { echo "missing KOPIA_LOG_DIR" >&2; exit 90; }',
+      'if [ "$1" = "maintenance" ] && [ "$2" = "info" ]; then',
+      '  echo probe >> "$TEST_MAINTENANCE_CALLS"',
+      '  if [ -n "$TEST_MAINTENANCE_ERROR" ]; then echo "$TEST_MAINTENANCE_ERROR" >&2; exit 1; fi',
+      '  echo \'{"schedule":{}}\'; exit 0',
+      'fi',
       'if [ "$1" != "snapshot" ] || [ "$2" != "list" ]; then exit 2; fi',
       'case "$3" in',
       '  --all) printf %s\\n ' + shellQuote(allSources) + ' ;;',
@@ -178,6 +192,10 @@ function runHealthcheck(
       KOPIA_VM_VERIFY_MARKER: join(root, 'missing-vm-marker'),
       BACKUP_ALERT_CMD: alertStub,
       TEST_ALERT_LOG: alertLog,
+      TEST_MAINTENANCE_ERROR: maintenanceError,
+      TEST_ARCHIVE_ERROR: archiveFixture?.error ?? '',
+      TEST_ARCHIVE_EXIT: String(archiveFixture?.exitCode ?? 0),
+      TEST_MAINTENANCE_CALLS: maintenanceCalls,
       MAX_SNAP_AGE_S: '3600',
       KOPIA_UNIT_CGROUP_ROOT: unitCgroupRoot,
       KOPIA_HEALTHCHECK_SYSTEMCTL: fakeSystemctl,
@@ -187,6 +205,7 @@ function runHealthcheck(
   });
 
   return {
+    maintenanceCalls: existsSync(maintenanceCalls) ? readFileSync(maintenanceCalls, 'utf8').trim().split('\n').length : 0,
     systemctlCalls: existsSync(subStateCounter) ? Number(readFileSync(subStateCounter, 'utf8').trim()) : 0,
     result,
     log: readFileSync(join(logDir, 'healthcheck.log'), 'utf8'),
@@ -196,6 +215,64 @@ function runHealthcheck(
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+describe('Kopia healthcheck archive diagnostics (EI-28646224189373945)', () => {
+  it('retains the failed reader exit code and its error instead of asserting corruption without a cause', () => {
+    const run = runHealthcheck(60, {}, undefined, {}, '', {
+      error: 'pg_restore: could not open input file toc.dat: No such file or directory', exitCode: 7,
+    });
+    expect(run.result.status, run.log).toBe(1);
+    expect(run.log).toContain('pg_restore -l failed, exit 7');
+    expect(run.log).toContain('No such file or directory');
+    expect(run.log).not.toContain('OK: dump ');
+    expect(run.alertLog).toBe('');
+  });
+
+  it('bounds multiline archive errors while retaining a failing verdict', () => {
+    const run = runHealthcheck(60, {}, undefined, {}, '', { error: 'invalid TOC\n' + 'x'.repeat(3000), exitCode: 1 });
+    expect(run.result.status, run.log).toBe(1);
+    expect(run.log).toContain('invalid TOC');
+    expect(run.log).not.toContain('x'.repeat(513));
+    expect(run.log).not.toContain('OK: dump ');
+  });
+
+  it('continues to accept a readable archive', () => {
+    const run = runHealthcheck(60, {}, undefined, {}, '', { error: '', exitCode: 0 });
+    expect(run.result.status, run.log).toBe(0);
+    expect(run.log).toContain('OK: dump ');
+  });
+});
+
+describe('Kopia healthcheck maintenance schedule (EI-27672009448091168)', () => {
+  it('fails on an invalid maintenance schedule even when dumps and snapshots are fresh', () => {
+    const run = runHealthcheck(60, {}, undefined, {}, 'unable to get maintenance schedule: invalid schedule blob');
+    const evidence = [run.result.stdout, run.result.stderr, run.log].join('\n');
+
+    expect(run.maintenanceCalls).toBe(1);
+    expect(run.result.status, evidence).toBe(1);
+    expect(evidence).toContain('Kopia maintenance metadata is unreadable');
+    expect(evidence).toContain('invalid schedule blob');
+    expect(run.log).not.toContain('OK: dump ');
+    expect(run.alertLog).toBe('');
+  });
+
+  it('fails when maintenance health cannot be measured', () => {
+    const run = runHealthcheck(60, {}, undefined, {}, 'unable to open repository');
+    const evidence = [run.result.stdout, run.result.stderr, run.log].join('\n');
+
+    expect(run.maintenanceCalls).toBe(1);
+    expect(run.result.status, evidence).toBe(1);
+    expect(evidence).toContain('unable to open repository');
+  });
+
+  it('stays green after reading a valid maintenance schedule', () => {
+    const run = runHealthcheck(60);
+
+    expect(run.maintenanceCalls).toBe(1);
+    expect(run.result.status, [run.result.stdout, run.result.stderr, run.log].join('\n')).toBe(0);
+    expect(run.log).toContain('OK: dump ');
+  });
 });
 
 describe('Kopia healthcheck dump-source recency', () => {
