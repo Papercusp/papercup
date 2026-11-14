@@ -11,10 +11,52 @@ const SCRIPT = process.env.PROBE_SCRIPT ?? path.join(__dirname, 'p2p-join-soak.s
 // the few the driver parses; npx stands in for gcp-rails; node for mcp-call; gh and journalctl
 // for the tower side. Nothing reaches GCP, the network or the coordination server.
 const FAKE_GCLOUD = String.raw`#!/usr/bin/env bash
-cmd=""; for a in "$@"; do case "$a" in --command=*) cmd=$(printf '%s' "$a" | sed '1s/^--command=//') ;; esac; done
+cmd=""; prev=""; for a in "$@"; do
+  [ "$prev" = --command ] && cmd=$a
+  case "$a" in --command=*) cmd=$(printf '%s' "$a" | sed '1s/^--command=//') ;; esac
+  prev=$a
+done
+sync_s4() {
+  git -C "$HIVE" fetch -q "$FAKE/joiner" HEAD:refs/fake/joiner && git -C "$HIVE" merge -q --no-edit refs/fake/joiner &&
+    git -C "$FAKE/joiner" fetch -q "$HIVE" HEAD:refs/fake/tower && git -C "$FAKE/joiner" merge -q --no-edit refs/fake/tower
+}
+if [ "$1 $2" = "compute instances" ]; then
+  echo "gcloud $*" >> "$FAKE/calls.log"
+  case "$3" in
+    describe) cat "$FAKE/vm-status" 2>/dev/null || echo RUNNING ;;
+    simulate-maintenance-event)
+      [ "$((FAKE_S4_RECLAIM_FAIL + 0))" = 1 ] && exit 1
+      echo TERMINATED > "$FAKE/vm-status" ;;
+    start)
+      echo RUNNING > "$FAKE/vm-status"; touch "$FAKE/restarted"
+      if [ "$((FAKE_S4_NO_CONVERGE + 0))" != 1 ]; then
+        sync_s4 >/dev/null 2>&1
+        if [ "$((FAKE_S4_DUPLICATE + 0))" = 1 ]; then
+          f=s4-p2pjoin-joiner-inflight.txt
+          echo duplicate > "$FAKE/joiner/$f"
+          git -C "$FAKE/joiner" add "$f" && git -C "$FAKE/joiner" commit -qm duplicate
+          echo 'p2pjoin joiner inflight' > "$FAKE/joiner/$f"
+          git -C "$FAKE/joiner" add "$f" && git -C "$FAKE/joiner" commit -qm restored
+          sync_s4 >/dev/null 2>&1
+        fi
+      fi ;;
+  esac
+  exit 0
+fi
 if [ "$1 $2" = "compute scp" ]; then echo "scp $*" >> "$FAKE/calls.log"; exit "$((FAKE_SCP_RC + 0))"; fi
 echo "ssh $(printf '%s' "$cmd" | tr '\n' ' ')" >> "$FAKE/calls.log"
 [ -t 0 ] || cat > /dev/null
+if [[ "$cmd" == *s4-* ]]; then
+  if [ -e "$FAKE/restarted" ] && [ "$((FAKE_S4_SSH_FAIL + 0))" = 1 ]; then exit 255; fi
+  if [ -e "$FAKE/restarted" ] && [ "$((FAKE_S4_SSH_PARTIAL + 0))" = 1 ]; then echo S4_VERIFIED; exit 255; fi
+  translated=$(printf '%s' "$cmd" | sed "s@sudo -u pcsrv @@g; s@/srv/joiner/.papercusp-workspaces/clones/hello-world-3-pot@$FAKE/joiner@g")
+  bash -c "$translated"; rc=$?
+  if [[ "$cmd" == *JOINER_COMMIT_RC* ]]; then
+    if [[ "$cmd" == *before-reclaim* ]] && [ "$((FAKE_S4_CONTROL_FAIL + 0))" != 1 ]; then sync_s4 >/dev/null 2>&1; fi
+    if [[ "$cmd" == *inflight* ]] && [ "$((FAKE_S4_ALREADY_CONVERGED + 0))" = 1 ]; then sync_s4 >/dev/null 2>&1; fi
+  fi
+  exit "$rc"
+fi
 case "$cmd" in
   true) exit 0 ;;
   *install-server.sh*)
@@ -78,6 +120,7 @@ describe('vm/p2p-join-soak.sh (faked gcloud, gcp-rails, mcp-call)', () => {
     root = mkdtempSync(path.join(tmpdir(), 'p2p-join-soak-'));
     mkdirSync(path.join(root, 'scripts/agent-capacity/vm'), { recursive: true });
     copyFileSync(SCRIPT, path.join(root, 'scripts/agent-capacity/vm/p2p-join-soak.sh'));
+    copyFileSync(path.join(__dirname, 'reclaim-drill.sh'), path.join(root, 'scripts/agent-capacity/vm/reclaim-drill.sh'));
     mkdirSync(path.join(root, 'bin'));
     for (const [name, body] of [
       ['gcloud', FAKE_GCLOUD], ['npx', FAKE_NPX], ['node', FAKE_NODE], ['gh', FAKE_GH], ['journalctl', FAKE_JOURNALCTL],
@@ -92,6 +135,16 @@ describe('vm/p2p-join-soak.sh (faked gcloud, gcp-rails, mcp-call)', () => {
   afterEach(() => rmSync(root, { recursive: true, force: true }));
 
   const run = (env: Record<string, string> = {}) => {
+    if (env.RECLAIM === '1') {
+      spawnSync('git', ['-C', hive(), 'config', 'user.name', 's4-test']);
+      spawnSync('git', ['-C', hive(), 'config', 'user.email', 's4-test@papercusp.invalid']);
+      writeFileSync(path.join(hive(), 'initial.txt'), 'shared ancestor\n');
+      spawnSync('git', ['-C', hive(), 'add', 'initial.txt']);
+      spawnSync('git', ['-C', hive(), 'commit', '-qm', 'initial']);
+      spawnSync('git', ['clone', '-q', hive(), path.join(root, 'joiner')]);
+      spawnSync('git', ['-C', path.join(root, 'joiner'), 'config', 'user.name', 's4-test']);
+      spawnSync('git', ['-C', path.join(root, 'joiner'), 'config', 'user.email', 's4-test@papercusp.invalid']);
+    }
     const r = spawnSync('bash', [path.join(root, 'scripts/agent-capacity/vm/p2p-join-soak.sh')], {
       env: {
         PATH: `${path.join(root, 'bin')}:${process.env.PATH ?? '/usr/bin:/bin'}`,
@@ -247,9 +300,79 @@ describe('vm/p2p-join-soak.sh (faked gcloud, gcp-rails, mcp-call)', () => {
     expect(run({ HIVE: path.join(root, 'not-a-repo') }).code).toBe(2);
     expect(run({ CONFLICT_AT_OBS: 'soon' }).code).toBe(2);
     expect(run({ REVOKE: 'yes' }).code).toBe(2);
+    expect(run({ RECLAIM: 'yes' }).code).toBe(2);
+    expect(run({ RECLAIM: '1', CONFLICT_AT_OBS: '2' }).code).toBe(2);
     // An unresolved D-055 conflict parks the joiner, which would read as a successful revoke.
     expect(run({ REVOKE: '1', CONFLICT_AT_OBS: '2' }).code).toBe(2);
     expect(calls()).toBe('');
+  });
+
+  describe('RECLAIM=1 (S4)', () => {
+    const s4 = (env: Record<string, string> = {}) => run({
+      RECLAIM: '1', OBS_LIMIT: '1', REVOKE_WAIT_SEC: '1', S8_POLL_SEC: '0', S8_COMMIT_RETRY_SEC: '0',
+      RECLAIM_POLL_MAX: '1', RECLAIM_POLL_SEC: '0', RECLAIM_SSH_TRIES: '1', RECLAIM_SSH_SEC: '0', ...env,
+    });
+
+    it('reclaims with pending commits, rejoins with both exact origins and blobs once, then tears down', () => {
+      const r = s4();
+      expect(r.code).toBe(0);
+      expect(calls()).toContain('--spot --on-reclaim=stop');
+      expect(r.out).toMatch(/S4_INFLIGHT towerCommit=[a-f0-9]{40} joinerCommit=[a-f0-9]{40} crossings=00/);
+      expect(r.out).toMatch(/S4_RESULT verdict=reconverged control=ok lost=0 duplicates=0 elapsedSec=\d+/);
+      const origins = readFileSync(path.join(out(), 's4-origins.tsv'), 'utf8').trim().split('\n');
+      expect(origins).toHaveLength(3);
+      for (const row of origins.slice(1)) {
+        const [, commit, blob, file] = row.split('\t');
+        for (const repo of [hive(), path.join(root, 'joiner')]) {
+          expect(spawnSync('git', ['-C', repo, 'merge-base', '--is-ancestor', commit, 'HEAD']).status).toBe(0);
+          expect(spawnSync('git', ['-C', repo, 'rev-parse', `HEAD:${file}`], { encoding: 'utf8' }).stdout.trim()).toBe(blob);
+        }
+      }
+      expect(readFileSync(path.join(out(), 's4-reclaim.log'), 'utf8')).toContain('RECLAIM_DONE');
+      const lines = calls().split('\n');
+      expect(lines.findIndex((l) => l.includes('simulate-maintenance-event'))).toBeLessThan(lines.findIndex((l) => l.includes('instances start')));
+      expect(lines.findIndex((l) => l.includes('instances start'))).toBeLessThan(lines.findIndex((l) => l.includes('gcp-rails.ts teardown')));
+    });
+
+    it.each([
+      ['control-failed', { FAKE_S4_CONTROL_FAIL: '1' }],
+      ['already-converged-before-reclaim', { FAKE_S4_ALREADY_CONVERGED: '1' }],
+    ])('refuses reclaim without the required precondition: %s', (reason, env) => {
+      const r = s4(env);
+      expect(r.code).toBe(7);
+      expect(r.out).toContain(`verdict=inconclusive reason=${reason}`);
+      expect(calls()).not.toContain('simulate-maintenance-event');
+      expect(calls()).toContain('gcp-rails.ts teardown');
+    });
+
+    it.each<Record<string, string>>([
+      { FAKE_S4_NO_CONVERGE: '1' },
+      { FAKE_S4_DUPLICATE: '1' },
+      { FAKE_S4_SSH_FAIL: '1' },
+      { FAKE_S4_SSH_PARTIAL: '1' },
+    ])('does not claim recovery for missing, duplicated or unreadable evidence: %j', (env) => {
+      const r = s4({ ...env, REVOKE: '1' });
+      expect(r.code).toBe(7);
+      expect(r.out).toContain('verdict=inconclusive reason=recovery-not-proven');
+      expect(r.out).not.toContain('verdict=reconverged');
+      expect(calls()).not.toContain('revoke_contributor');
+      expect(calls()).toContain('gcp-rails.ts teardown');
+    });
+
+    it('a failed reclaim never becomes recovery and still tears down the retained disk', () => {
+      const r = s4({ FAKE_S4_RECLAIM_FAIL: '1' });
+      expect(r.code).toBe(7);
+      expect(r.out).toContain('verdict=inconclusive reason=reclaim-failed');
+      expect(calls()).not.toContain('instances start');
+      expect(calls()).toContain('gcp-rails.ts teardown');
+    });
+
+    it('runs S8 only after S4 has proved recovery on the same peer', () => {
+      const r = s4({ REVOKE: '1' });
+      expect(r.code).toBe(0);
+      expect(r.out.indexOf('S4_RESULT verdict=reconverged')).toBeGreaterThan(-1);
+      expect(r.out.indexOf('S8_RESULT verdict=revoked')).toBeGreaterThan(r.out.indexOf('S4_RESULT verdict=reconverged'));
+    });
   });
 
   // S8 (WI-10004393): revoke ONLY the joiner's device, then prove it can no longer push or pull.
