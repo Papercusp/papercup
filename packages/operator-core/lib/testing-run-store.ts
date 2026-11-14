@@ -540,7 +540,13 @@ async function prunePersistedRunSnapshots(sqlOverride?: SqlLike): Promise<void> 
   `);
 }
 
-type DetachedReportRecoveryScope = { workspaceId: string; harnessSlug: string; root: string };
+type DetachedReportRecoveryScope = {
+  workspaceId: string;
+  harnessSlug: string;
+  root: string;
+  /** Exact retained packets remain usable after the short-lived snapshot is pruned. */
+  retainedReports?: readonly import('./agent-tools/testing/run-artifacts').RetainedDetachedVitestReport[];
+};
 
 /** The short-lived UI snapshot may expire before its saved evidence is recovered. */
 async function readReportRecoveryTask(
@@ -805,11 +811,11 @@ async function readPersistedRunSnapshot(
     state: row.task_state, exit_code: row.task_exit_code ?? null, cwd: row.task_cwd ?? null,
   } : null;
   if (reportTaskRecovery) {
-    const recovered = await reconcilePersistedReportArtifact(snapshot, row, sql, environment);
+    const recovered = await reconcilePersistedReportArtifact(snapshot, row, sql, environment, recoveryScope?.retainedReports);
     // A task reconstructed for evidence recovery is never a liveness verdict.
     return recovered === snapshot ? null : { snapshot: recovered, task };
   }
-  return { snapshot: await reconcilePersistedOrphan(snapshot, row, sql, environment), task };
+  return { snapshot: await reconcilePersistedOrphan(snapshot, row, sql, environment, recoveryScope?.retainedReports), task };
 }
 
 async function readPersistedRunSnapshotWithRetry(
@@ -1291,6 +1297,7 @@ async function reconcilePersistedOrphan(
   row: DurableRunSnapshotRow,
   sql: SqlLike,
   environment?: Readonly<Record<string, string | undefined>>,
+  retainedReports?: DetachedReportRecoveryScope['retainedReports'],
 ): Promise<RunSnapshot> {
   if (snapshot.status === 'running' && row.task_id && row.task_workspace_id &&
       typeof row.task_state === 'string' && FOREGROUND_LIVE_TASK_STATES.has(row.task_state)) {
@@ -1321,7 +1328,7 @@ async function reconcilePersistedOrphan(
     }
     await appendDetachedOutput(observed, artifact ?? null, environment);
   }
-  const fromReport = await reconcilePersistedReportArtifact(observed, row, sql, environment);
+  const fromReport = await reconcilePersistedReportArtifact(observed, row, sql, environment, retainedReports);
   if (fromReport !== observed) return fromReport;
   const fromTestRunLedger = await reconcilePersistedTestRun(observed, task, taskLinked, sql);
   if (fromTestRunLedger !== observed) return fromTestRunLedger;
@@ -1498,9 +1505,13 @@ async function expandDetachedReportArtifacts(
   return expanded.flat();
 }
 
-async function readRetainedReportArtifacts(snapshot: RunSnapshot, artifacts: PreparedDetachedReportArtifact[]) {
+async function readRetainedReportArtifacts(
+  snapshot: RunSnapshot,
+  artifacts: PreparedDetachedReportArtifact[],
+  retainedReports?: DetachedReportRecoveryScope['retainedReports'],
+) {
   const { readRetainedDetachedVitestReport } = await import('./agent-tools/testing/run-artifacts');
-  const references: import('./agent-tools/testing/run-artifacts').RetainedDetachedVitestReport[] = [];
+  const references = [...(retainedReports ?? [])];
   for (const match of snapshot.output.matchAll(/\[detached-recovery\] retained report artifact (\{[^\n]+\})/g)) {
     const ref = JSON.parse(match[1]!);
     if (typeof ref?.reportPath === 'string') references.push(ref);
@@ -1687,6 +1698,7 @@ export function completedDetachedReport(
 async function reconcilePersistedReportArtifact(
   snapshot: RunSnapshot, row: DurableRunSnapshotRow, sql: SqlLike,
   environment?: Readonly<Record<string, string | undefined>>,
+  retainedReports?: DetachedReportRecoveryScope['retainedReports'],
 ): Promise<RunSnapshot> {
   const noVerdict = isDetachedNoVerdictError(snapshot);
   const closed = snapshot.status === 'pass' || snapshot.status === 'fail';
@@ -1718,7 +1730,7 @@ async function reconcilePersistedReportArtifact(
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       // The close callback can retain a report and consume its temporary sink
       // before a later reader repairs missing receipts. Reuse that exact packet.
-      sources = await readRetainedReportArtifacts(snapshot, artifacts);
+      sources = await readRetainedReportArtifacts(snapshot, artifacts, retainedReports);
     }
     const expanded = sources.map(source => source.artifact);
     const reports = sources.map(({ artifact, reportText }) => ({ artifact, reportText,
@@ -1727,9 +1739,9 @@ async function reconcilePersistedReportArtifact(
     if (reports.some(report => report.rows === null)
       || !hasCompleteReportCoverage(artifacts, requestedFiles, reports, !environment)) return snapshot;
     const retainedSnapshot = { ...snapshot };
-    const retainedReports = await Promise.all(reports.map(report =>
+    const retainedEvidence = await Promise.all(reports.map(report =>
       retainDetachedReportEvidence(retainedSnapshot, report.artifact, report.reportText, environment ?? process.env)));
-    const allReportsRetained = retainedReports.every(Boolean);
+    const allReportsRetained = retainedEvidence.every(Boolean);
     const recovered = await boundedOrgTxn(async tx => {
       const scopedSql = tx as unknown as SqlLike;
       // Sibling recovery readers share one transaction lock. Ingestion and the

@@ -1237,6 +1237,10 @@ describe('durable detached snapshot lifecycle', () => {
     { name: 'retained packet rejects changed bytes', status: 'error', expected: null, legacy: true, expired: true, archivedOnly: true, archiveCorruption: 'hash' },
     { name: 'retained packet rejects another tenant', status: 'error', expected: null, legacy: true, expired: true, archivedOnly: true, archiveCorruption: 'scope' },
     { name: 'retained packet rejects redirected report', status: 'error', expected: null, legacy: true, expired: true, archivedOnly: true, archiveCorruption: 'symlink' },
+    { name: 'pruned snapshot retained packet reference', status: 'running', expected: 'pass', legacy: true, expired: true, missing: true, archivedOnly: true, explicitArchive: true },
+    { name: 'pruned snapshot retained packet rejects changed bytes', status: 'running', expected: null, legacy: true, expired: true, missing: true, archivedOnly: true, explicitArchive: true, archiveCorruption: 'hash' },
+    { name: 'pruned snapshot retained packet rejects another tenant', status: 'running', expected: null, legacy: true, expired: true, missing: true, archivedOnly: true, explicitArchive: true, archiveCorruption: 'scope' },
+    { name: 'pruned snapshot retained packet without a reference', status: 'running', expected: null, legacy: true, expired: true, missing: true, archivedOnly: true },
     { name: 'ended_unobserved retained PASS', status: 'running', expected: 'pass', taskState: 'ended_unobserved', processExit: null },
     { name: 'ended_unobserved retained FAIL', status: 'error', expected: 'fail', failure: true, taskState: 'ended_unobserved', processExit: null },
     { name: 'ended_unobserved report redacts child-only text without launch environment', status: 'running', expected: 'fail', failure: true, taskState: 'ended_unobserved', processExit: null, secretOutput: true },
@@ -1269,7 +1273,7 @@ describe('durable detached snapshot lifecycle', () => {
       taskState?: 'ended_unobserved' | 'running' | 'killed';
       processExit?: number | null;
       routerReports?: boolean; missingRouterGroup?: boolean; partialRouterGroup?: boolean;
-      archivedOnly?: boolean; existingFailure?: boolean; archiveCorruption?: 'hash' | 'scope' | 'symlink';
+      archivedOnly?: boolean; explicitArchive?: boolean; existingFailure?: boolean; archiveCorruption?: 'hash' | 'scope' | 'symlink';
     };
     const { status } = options;
     const taskState = options.taskState ?? (options.cancelled ? 'killed' : 'exited');
@@ -1324,6 +1328,7 @@ describe('durable detached snapshot lifecycle', () => {
       }
       let archivedOutput = '';
       const archivedPaths: string[] = [];
+      const archivedReferences: import('./agent-tools/testing/run-artifacts').RetainedDetachedVitestReport[] = [];
       if (options.archivedOnly) {
         const { retainDetachedVitestReport } = await import('./agent-tools/testing/run-artifacts');
         for (const sourcePath of [reportPath, ...(options.routerReports ? [siblingPath] : [])]) {
@@ -1333,6 +1338,7 @@ describe('durable detached snapshot lifecycle', () => {
             reportText: text });
           retainedRunDirectory = dirname(dirname(ref.manifestPath));
           archivedPaths.push(ref.reportPath);
+          archivedReferences.push(ref);
           archivedOutput += `\n[detached-recovery] retained report artifact ${JSON.stringify(ref)}\n`;
           await rm(sourcePath);
           if (options.archiveCorruption === 'hash') {
@@ -1368,7 +1374,7 @@ describe('durable detached snapshot lifecycle', () => {
             ...(options.inlineSelector ? ['--testNamePattern=saved assertion'] : ['-t', 'saved assertion']),
           ] : snapshot.command, status, exit_code: status === 'pass' ? 0 : null,
           started_at: snapshot.startedAt, finished_at: status === 'error' ? snapshot.startedAt + 30 : null,
-          output: archivedOutput + (status === 'error' ? '[detached-recovery] no test verdict was observed.' : ''), truncated: false,
+          output: options.missing ? '' : archivedOutput + (status === 'error' ? '[detached-recovery] no test verdict was observed.' : ''), truncated: false,
           task_state: taskState, task_exit_code: processExit,
           task_deadline_at: options.deadlineExpired ? new Date(Date.now() - 1_000) : null,
           task_ended_at: taskState === 'running' ? null : snapshot.startedAt + 25,
@@ -1396,6 +1402,7 @@ describe('durable detached snapshot lifecycle', () => {
 
       const recovery = store.getRunAsync(snapshot.runId, sql as unknown as Sql, options.legacy || options.archivedOnly ? {
         root: '/tmp', harnessSlug: 'papercusp', workspaceId: options.wrongScope ? 'other-workspace' : 'papercusp-workspace',
+        ...(options.explicitArchive ? { retainedReports: archivedReferences } : {}),
       } : undefined);
       if (options.ambiguous) {
         await expect(recovery).rejects.toBeInstanceOf(store.TestingRunSnapshotUnavailableError);
@@ -1407,7 +1414,7 @@ describe('durable detached snapshot lifecycle', () => {
       // No launch-time environment survives this path. Case titles and errors must
       // never be reconstructed from opaque child text, even with a complete report.
       expect(sql.mock.calls.some(([strings]) => strings.join(' ').includes('INSERT INTO harness_shared.test_case_runs'))).toBe(false);
-      const recoveryOutput = (recovered?.output ?? '').replace(archivedOutput, '');
+      const recoveryOutput = (recovered?.output ?? '').replace(options.missing ? '' : archivedOutput, '');
       const retainedMatches = [...recoveryOutput.matchAll(/\[detached-recovery\] retained report artifact (\{[^\n]+\})/g)];
       const expectedRetainedCount = options.routerReports && !options.missingRouterGroup && !options.partialRouterGroup ? 2 : 1;
       const reportWasRecovered = /(?:recorded|recovered) completed saved Vitest report/.test(recoveryOutput);
