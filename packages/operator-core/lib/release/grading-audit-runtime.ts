@@ -517,8 +517,15 @@ export async function ensureGradingAuditRuntime(input: {
     const recovered = existing?.locator ?? (deps.recoverSource ?? recoverSource)(input.workspaceId, input.evaluatorBuild, now);
     let locator = recovered;
     if (!locator) {
+      // A live row whose locator is past its absolute deadline cannot serve: the
+      // runtime stops itself at expiresAtSec and its task deadline equals it. Retire
+      // it under this mutex instead of refusing until an out-of-band kill — a
+      // past-deadline row once wedged acquisition for 16 minutes (EI-28734517302278942).
+      const expiredLive = exact.filter(row => (row.state === 'running' || row.state === 'pending') &&
+        (locatorFrom(row)?.expiresAtSec ?? Number.POSITIVE_INFINITY) <= now);
+      for (const row of expiredLive) await (deps.stop ?? stopRuntime)(row.taskId);
       // Never create a second endpoint while an unproven task may still serve.
-      if (exact.some(row => row.state === 'running' || row.state === 'pending')) {
+      if (exact.some(row => (row.state === 'running' || row.state === 'pending') && !expiredLive.includes(row))) {
         throw new Error('Existing audit runtime has no valid recovery locator');
       }
       const previous = ordered.map(row => ({ row, locator: locatorFrom(row) }))

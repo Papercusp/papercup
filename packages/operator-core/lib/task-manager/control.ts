@@ -27,8 +27,9 @@ import { linuxPpidFromProcStat, linuxProcStateFromStat, readProcessGroupId, read
 import { absCgroupDir, nodeCgroupFs, walkCgroupTree, type CgroupFs } from './cgroup-read';
 import { reportFreezeDeadlines, type InnerTimeoutHint, type LedgerDeadline } from './freeze-deadline';
 import { notifyTaskKillRequested } from './kill-notify';
+import { inspectTaskUnitTerminals, type ExecFileFn } from './scope-terminal-state';
 import { closeTask, getSubtree, getTask, reopenStrandedTask, updateTaskLimits } from './store';
-import { isLiveOwnedState, taskIdFromScopeUnit, type TaskRow } from './types';
+import { isLiveOwnedState, taskIdFromScopeUnit, type TaskRow, type TaskTerminalProvenance } from './types';
 
 // Lazily promisified (NOT `const execFileAsync = promisify(execFile)` at module
 // scope): this module is reachable via a transitive import chain from test files
@@ -283,6 +284,19 @@ async function scopeCgroupPath(
  * never parse the kill's error text. Returns the already_gone detail, or null
  * when the unit is still known or the question itself failed.
  */
+/** Systemd terminal snapshot for a just-emptied scope, or null when systemd holds
+ *  no evidence (a collected unit). Same evidence floor as managed-spawn's close. */
+async function inspectKillTerminal(
+  scopeUnit: string,
+  d: ReturnType<typeof deps>,
+): Promise<TaskTerminalProvenance | null> {
+  const snapshots = await inspectTaskUnitTerminals([scopeUnit], d.execFileAsync as unknown as ExecFileFn);
+  const candidate = snapshots.get(scopeUnit) ?? null;
+  return candidate && (candidate.serviceResult || candidate.invocationId || candidate.loadState === 'loaded')
+    ? candidate
+    : null;
+}
+
 async function collectedAfterFailedSignal(scopeUnit: string, d: ReturnType<typeof deps>): Promise<string | null> {
   const resolved = await scopeCgroupPath(scopeUnit, d);
   return !resolved.ok && resolved.error === 'already_gone' ? resolved.detail : null;
@@ -363,6 +377,14 @@ export async function killTask(taskId: string, opts: KillTaskOptions = {}): Prom
 
   // ── the trustworthy path ────────────────────────────────────────────────
   if (row.confined && row.scopeUnit) {
+    // WI-6554700010048617: resolve and probe the scope BEFORE signalling. A scope
+    // that already holds no process was stopped by something else (a RuntimeMaxSec
+    // timeout, an OOM kill, an exit the watcher has not recorded yet); only that
+    // case needs systemd's terminal snapshot, so an ordinary kill pays no extra
+    // round-trip. The same resolution serves the post-signal verification below, so
+    // a row whose stored path does not validate still costs exactly one `show`.
+    const scopeCgroup = await resolveRowScopeCgroup(row, d);
+    const emptyBeforeSignal = countCgroupProcesses(scopeCgroup, d) === 0;
     // EI-21905196224862433: announce kill-intent BEFORE the signal actually goes
     // out. A confined job's Node-side watcher is the `systemd-run --pipe --wait`
     // CLIENT, not the payload — that client exits 0 once the unit is gone
@@ -401,9 +423,10 @@ export async function killTask(taskId: string, opts: KillTaskOptions = {}): Prom
     // EI-19478780721557822: a `systemctl kill` exit code only proves the SIGNAL was
     // delivered, never that the subtree actually died — a re-parented / D-state /
     // otherwise unkillable descendant can survive both SIGTERM and an escalated
-    // SIGKILL. Re-probe (bounded, not wall-clock — see waitForScopeEmpty) before
+    // SIGKILL. Re-probe (bounded, not wall-clock — see waitForCgroupEmpty) the
+    // scope-validated cgroup resolved above (see `resolveRowScopeCgroup`) before
     // reporting anything, and never close the row as `killed` while it is not.
-    let verification = await waitForScopeEmpty(row, d);
+    let verification = await waitForCgroupEmpty(scopeCgroup ?? '', d);
     let stopFallback: { ok: boolean; detail?: string } | null = null;
     if (!verification.empty && signal === 'SIGTERM' && !escalated) {
       // A transient agent-session scope can accept the signal while systemd
@@ -413,7 +436,7 @@ export async function killTask(taskId: string, opts: KillTaskOptions = {}): Prom
       // the no-false-green contract intact.
       const stop = await systemctl(['stop', row.scopeUnit], d);
       stopFallback = stop;
-      verification = await waitForScopeEmpty(row, d);
+      verification = await waitForCgroupEmpty(scopeCgroup ?? '', d);
     }
     const { empty, survivors, residue } = verification;
     if (!empty) {
@@ -456,7 +479,16 @@ export async function killTask(taskId: string, opts: KillTaskOptions = {}): Prom
         detail: `TERMINAL-ROW REAP (WI-37521): scope ${row.scopeUnit} was verified holding live process(es) despite ledger state '${row.state}', signalled ${signal}${escalated ? ' (escalated to SIGKILL)' : ''} — now verified empty. The row's own state is left unchanged (already terminal).`,
       };
     }
-    await closeTask(taskId, { state: 'killed', exitReason: `scope kill ${signal}${escalated ? ' (escalated)' : ''}` });
+    // WI-6554700010048617: a scope that was ALREADY empty before this signal had
+    // stopped on its own (a RuntimeMaxSec timeout, an OOM kill) and is only being
+    // observed now. Hand systemd's terminal snapshot to closeTask so
+    // classifyTerminalClose records the real outcome (timed_out / oom) and ended_at
+    // from InactiveEnterTimestamp, instead of stamping 'killed' at observation time.
+    const killReason = `scope kill ${signal}${escalated ? ' (escalated)' : ''}`;
+    const terminal = emptyBeforeSignal ? await inspectKillTerminal(row.scopeUnit, d) : null;
+    await closeTask(taskId, terminal
+      ? { state: 'killed', exitReason: killReason, terminalProvenance: terminal }
+      : { state: 'killed', exitReason: killReason });
     return {
       ok: true,
       taskId,
@@ -841,17 +873,6 @@ async function waitForCgroupEmpty(
   return { empty: false, survivors: pids.size, residue: summarizeResidue(pids, d) };
 }
 
-/** Re-probe up to REPROBE_RETRIES times (REPROBE_POLL_MS apart) for the scope to
- *  actually empty. Returns the LAST observed survivor count (plus a residue
- *  diagnostic when non-empty) so a non-empty outcome can be reported honestly
- *  instead of as a bare "signalled". */
-async function waitForScopeEmpty(
-  row: TaskRow,
-  d: ReturnType<typeof deps>,
-): Promise<{ empty: boolean; survivors: number; residue?: ResidueBreakdown }> {
-  // Scope-validated, not the stored path — see `resolveRowScopeCgroup`.
-  return waitForCgroupEmpty((await resolveRowScopeCgroup(row, d)) ?? '', d);
-}
 
 /**
  * Pause / resume — the verb a process table cannot offer and a cgroup gives away

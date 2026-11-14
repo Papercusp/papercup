@@ -319,6 +319,23 @@ describe('exact grading audit runtime lifecycle (EI-25971079852455067)', () => {
     expect(f.deps.spawn).toHaveBeenCalledTimes(1);
   });
 
+  it('retires a live row past its absolute deadline instead of refusing (EI-28734517302278942)', async () => {
+    const f = fixture();
+    const first = await ensureGradingAuditRuntime(f.input, f.deps);
+    // Before expiry, a live exact-label row is reused, never stopped.
+    expect((await ensureGradingAuditRuntime(f.input, f.deps)).taskId).toBe(first.taskId);
+    expect(f.stop).not.toHaveBeenCalled();
+    // The task outlived its deadline: the ledger still reads running after expiry.
+    f.deps.now = () => (first.expiresAtSec + 1) * 1000;
+    expect(f.rows.find(row => row.taskId === first.taskId)?.state).toBe('running');
+    const next = await ensureGradingAuditRuntime(f.input, f.deps);
+    expect(f.stop).toHaveBeenCalledWith(first.taskId);
+    expect(f.rows.find(row => row.taskId === first.taskId)?.state).toBe('killed');
+    expect(next.taskId).not.toBe(first.taskId);
+    expect(next.expiresAtSec).toBeGreaterThan(first.expiresAtSec);
+    expect(f.deps.spawn).toHaveBeenCalledTimes(2);
+  });
+
   it('refuses wrong commits, dirty source, missing artifact proof and replaced bundle bytes', async () => {
     const rebuilt = await rebuiltFixture();
     expect((await qualifyRematerializedGradingAuditSource(rebuilt.sourceRoot, rebuilt.evaluatorBuild)).sourceSha).toBe(rebuilt.sourceSha);

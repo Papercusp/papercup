@@ -8,6 +8,7 @@ import type { TaskRow, TaskState } from './types';
 const store = vi.hoisted(() => ({
   rows: new Map<string, TaskRow>(),
   closed: [] as { taskId: string; state: string; reason: string | null }[],
+  closeTerminals: new Map<string, unknown>(),
   reopened: [] as string[],
   limitUpdates: [] as { taskId: string; limits: { memoryMaxBytes?: number; cpuWeight?: number; tasksMax?: number } }[],
   persistLimits: true,
@@ -16,8 +17,12 @@ const store = vi.hoisted(() => ({
 vi.mock('./store', () => ({
   getTask: async (id: string) => store.rows.get(id) ?? null,
   getSubtree: async (rootId: string) => [...store.rows.values()].filter((r) => r.rootTaskId === rootId),
-  closeTask: async (id: string, input: { state: string; exitReason?: string | null }) => {
+  closeTask: async (
+    id: string,
+    input: { state: string; exitReason?: string | null; terminalProvenance?: unknown },
+  ) => {
     store.closed.push({ taskId: id, state: input.state, reason: input.exitReason ?? null });
+    store.closeTerminals.set(id, input.terminalProvenance ?? null);
     return true;
   },
   reopenStrandedTask: async (id: string) => {
@@ -67,6 +72,16 @@ function row(over: Partial<TaskRow> & { taskId: string }): TaskRow {
   };
   store.rows.set(r.taskId, r);
   return r;
+}
+
+/** A cgroup fs in which each scope holds a live pid until its unit name appears
+ *  in `signalled`: the shape of a kill that actually empties a running scope. */
+function liveUntilSignalled(signalled: readonly string[]) {
+  return {
+    readFile: (path: string) => (signalled.some((unit) => path.includes(`/${unit}/`)) ? '' : '4242\n'),
+    readDir: () => [] as string[],
+    isDir: () => true,
+  };
 }
 
 beforeEach(() => {
@@ -127,6 +142,38 @@ describe('killTask — confined path', () => {
     // point of addressing the cgroup.
     expect(kill).not.toHaveBeenCalled();
     expect(store.closed).toEqual([{ taskId: 'b1', state: 'killed', reason: 'scope kill SIGTERM' }]);
+    // No systemd evidence (empty `show`) ⇒ no snapshot is fabricated.
+    expect(store.closeTerminals.get('b1')).toBeNull();
+  });
+
+  // WI-6554700010048617: a scope that systemd already stopped on RuntimeMaxSec
+  // and that is killed only LATER must carry the systemd terminal snapshot into
+  // closeTask, so the row records timed_out at InactiveEnterTimestamp rather
+  // than 'killed' at observation time.
+  it('passes the systemd terminal snapshot of an already-stopped scope to closeTask', async () => {
+    row({ taskId: 'late1' });
+    const out = await killTask('late1', {
+      execFileAsync: (async (_f: string, args: string[]) => ({
+        stdout: args.includes('show')
+          ? ['Id=pc-late1.scope', 'LoadState=loaded', 'ActiveState=failed', 'Result=timeout',
+            'InvocationID=0123456789abcdef0123456789abcdef',
+            'InactiveEnterTimestamp=Sat 2026-11-14 03:44:41.000000 UTC', ''].join('\n')
+          : '',
+        stderr: '',
+      })) as never,
+    });
+    expect(out.ok).toBe(true);
+    const terminal = store.closeTerminals.get('late1') as
+      { serviceResult?: string; inactiveEnterAt?: string | null; scopeUnit?: string } | null;
+    expect(terminal?.serviceResult).toBe('timeout');
+    expect(terminal?.inactiveEnterAt).toBe('2026-11-14T03:44:41.000Z');
+    expect(terminal?.scopeUnit).toBe('pc-late1.scope');
+    // The real closeTask classifies this snapshot as timed_out at the systemd instant.
+    const { classifyTerminalClose, terminalEndedAt } = await vi.importActual<typeof import('./store')>('./store');
+    const classified = classifyTerminalClose(
+      { state: 'killed', exitReason: 'scope kill SIGTERM', terminalProvenance: terminal as never }, null);
+    expect(classified.state).toBe('timed_out');
+    expect(terminalEndedAt(classified.terminalProvenance)).toBe('2026-11-14T03:44:41.000Z');
   });
 
   // EI-21905196224862433: a confined job's Node-side watcher is the
@@ -422,11 +469,16 @@ describe('killTask — confined path', () => {
     // on every probe — the stored path is authoritative exactly when it validates.
     row({ taskId: 'matching' });
     let shows = 0;
+    // Alive until the signal: a scope that is ALREADY empty is the
+    // WI-6554700010048617 case, which legitimately asks systemd for its terminal
+    // snapshot. A live scope that the kill empties must cost no `show` at all.
+    let signalled = false;
     const out = await killTask('matching', {
       sleep: async () => {},
-      fs: { readFile: () => '', readDir: () => [], isDir: () => true },
+      fs: { readFile: () => (signalled ? '' : '4242\n'), readDir: () => [], isDir: () => true },
       execFileAsync: (async (_f: string, args: string[]) => {
         if (args[1] === 'show') shows++;
+        if (args[1] === 'kill') signalled = true;
         return { stdout: '', stderr: '' };
       }) as never,
     });
@@ -523,12 +575,14 @@ describe('killTask — confined path', () => {
   it('does NOT escalate when the scope emptied after SIGTERM', async () => {
     row({ taskId: 'b3' });
     const calls: string[][] = [];
+    let signalled = false;
     await killTask('b3', {
       escalateAfterMs: 1,
       sleep: async () => {},
-      fs: { readFile: () => '', readDir: () => [], isDir: () => true },
+      fs: { readFile: () => (signalled ? '' : '4242\n'), readDir: () => [], isDir: () => true },
       execFileAsync: (async (_f: string, args: string[]) => {
         calls.push(args);
+        signalled = true;
         return { stdout: '', stderr: '' };
       }) as never,
     });
@@ -1087,6 +1141,8 @@ describe('killTask — subtree', () => {
     const units: string[] = [];
     await killTask('child', {
       includeSubtree: true,
+      sleep: async () => {},
+      fs: liveUntilSignalled(units),
       execFileAsync: (async (_f: string, args: string[]) => {
         units.push(args[args.length - 1]!);
         return { stdout: '', stderr: '' };
@@ -1104,6 +1160,8 @@ describe('killTask — subtree', () => {
     const units: string[] = [];
     await killTask('d1', {
       includeSubtree: true,
+      sleep: async () => {},
+      fs: liveUntilSignalled(units),
       execFileAsync: (async (_f: string, args: string[]) => {
         units.push(args[args.length - 1]!);
         return { stdout: '', stderr: '' };
