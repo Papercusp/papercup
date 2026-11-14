@@ -1,9 +1,6 @@
 #!/usr/bin/env node
 import { papercuspHome, papercuspPath } from '@papercusp/host-platform/home';
-import {
-  composeOmpCapabilityTools,
-  OMP_MANAGED_MCP_DISPATCHER,
-} from '@papercusp/orchestrator/managed-capability-policy';
+import { composeOmpCapabilityTools } from '@papercusp/orchestrator/managed-capability-policy';
 /**
  * psu-launcher.mjs — the `psu` command.
  *
@@ -2505,8 +2502,7 @@ export function roleLaunchArgs(
       promptFile,
       ...modelArgsFor("omp", model),
       ...ompTitleMitigationArgs(model),
-      ...composeOmpCapabilityTools([], { ...capabilityPolicy, surface: 'launch', audience: 'headless-agent',
-        ompManagedMcpDispatcher: OMP_MANAGED_MCP_DISPATCHER }),
+      ...composeOmpCapabilityTools([], { ...capabilityPolicy, surface: 'launch', audience: 'headless-agent' }),
     ];
     if (coordExtPath) args.push("-e", coordExtPath);
     // omp-context-injection-parity-2026-08-09 P-003: turn-start + mid-turn
@@ -2655,8 +2651,7 @@ export function suLaunchArgs(
       // provider-backed title request that lost a real tracked session while the
       // pool was throttled. Held by the suLaunchArgs > omp argv regression tests.
       ...ompTitleMitigationArgs(),
-      ...composeOmpCapabilityTools([], { ...capabilityPolicy, surface: 'launch', audience: 'interactive-su',
-        ompManagedMcpDispatcher: OMP_MANAGED_MCP_DISPATCHER }),
+      ...composeOmpCapabilityTools([], { ...capabilityPolicy, surface: 'launch', audience: 'interactive-su' }),
     ];
     if (coordExtPath) args.push("-e", coordExtPath);
     args.push(...nativeOmpExtensionArgs("omp"));
@@ -3340,7 +3335,6 @@ export function resumeArgsFor(
     return { bin: "omp", args: composeOmpCapabilityTools(args, {
       ...capabilityPolicy, surface: 'resume',
       audience: !session.role || launchesOnSuTier(session.role) ? 'interactive-su' : 'headless-agent',
-      ompManagedMcpDispatcher: OMP_MANAGED_MCP_DISPATCHER,
     }) };
   }
   if (session.agent === "codex") {
@@ -11529,6 +11523,18 @@ export async function reportSessionEnded(advSessionId, exitCode, opts = {}) {
   }
 }
 
+/** Keep the actual transport/HTTP evidence in a pending-witness refusal.
+ * @param {{reason?: string, status?: number|null, phase?: string, detail?: string}} outcome
+ */
+export function describeSessionEndReportFailure(outcome) {
+  return [
+    outcome.reason ?? "unknown",
+    outcome.status != null ? `HTTP ${outcome.status}` : null,
+    outcome.phase,
+    outcome.detail,
+  ].filter(Boolean).join("; ");
+}
+
 /**
  * Atomically ACQUIRE the right to resume a tracked session without claiming the
  * child is live. `psu --resume` reuses the original coord identity + adv row, so
@@ -15248,7 +15254,7 @@ async function launchResume(
       if (!outcome.reported) {
         console.error(
           `psu: legacy resume cleanup for session #${session.id} was not acknowledged ` +
-            `(${outcome.reason ?? "unknown"}); the pending end witness will retry on the next resume.`,
+            `(${describeSessionEndReportFailure(outcome)}); the pending end witness will retry on the next resume.`,
         );
       }
       return;
@@ -15317,7 +15323,7 @@ async function launchResume(
       if (!reconciled.reported) {
         console.error(
           `psu: refusing to resume session #${session.id} — its pending end witness ` +
-            `could not be reconciled (${reconciled.reason ?? "unknown"}); no agent process was spawned.`,
+            `could not be reconciled (${describeSessionEndReportFailure(reconciled)}); no agent process was spawned.`,
         );
         process.exit(2);
       }

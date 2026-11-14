@@ -25,7 +25,6 @@ const nativeHomes = createOmpNativeHomes();
 afterAll(() => nativeHomes.dispose());
 export const admitted: CapabilityPolicyRequest = {
   client: 'omp', surface: 'launch', clientVersions: { omp: '18.0.3' }, ompNativeTools: nativeTools,
-  ompManagedMcpDispatcher: OMP_MANAGED_MCP_DISPATCHER,
   readiness: [{ family: 'shell-ssh-interpreters', cutoverReady: true, openGapIds: [] }],
   cutoverStaging: { 'shell-ssh-interpreters': 'full' },
   adoption: [{ client: 'omp', family: 'shell-ssh-interpreters', managedPathProven: true,
@@ -82,14 +81,23 @@ export async function measureLifecycle(url: string, token: string, policy: Capab
         args = [...selection, '-p'];
       } else if (surface === 'launch') {
         const toolArgs = (argv: (string | undefined)[]) => {
-          const index = argv.indexOf('--tools');
-          const selected = index < 0 ? selection : argv.slice(index, index + 2);
+          const index = argv.findIndex(arg => arg === '--tools' || arg === '--no-tools' || arg?.startsWith('--tools='));
+          if (index < 0) return [];
+          const flag = argv[index]!;
+          if (flag.startsWith('--tools=')) return ['--tools', flag.slice('--tools='.length)];
+          if (flag === '--no-tools') return [flag];
+          const selected = argv.slice(index, index + 2);
           expect(selected).not.toContain(undefined);
           return selected.filter((arg): arg is string => arg !== undefined);
         };
         const su = toolArgs(suLaunchArgs('omp', { capabilityPolicy: policy }).args);
-        expect(toolArgs(roleLaunchArgs('omp', { capabilityPolicy: policy }).args)).toEqual(su);
-        expect(composeOmpCapabilityTools(selection, policy)).toEqual(su);
+        const role = toolArgs(roleLaunchArgs('omp', { capabilityPolicy: policy }).args);
+        expect(role).toEqual(composeOmpCapabilityTools([], { ...policy, audience: 'headless-agent' }));
+        expect(su).toEqual(composeOmpCapabilityTools([], { ...policy, audience: 'interactive-su' }));
+        for (const selected of [role, su]) {
+          expect(selected).not.toEqual(['--no-tools']);
+          if (selected[0] === '--tools') expect(selected[1]!.split(',')).toContain(OMP_MANAGED_MCP_DISPATCHER);
+        }
         args = [...su, '-p', prompt];
       } else if (surface === 'resume') {
         args = resumeArgsFor({ agent: 'omp', ompThreadId: transcript!, role: 'worker' }, {
