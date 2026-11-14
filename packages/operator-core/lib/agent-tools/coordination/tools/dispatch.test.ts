@@ -49,7 +49,7 @@ describe('public original-item recovery door (handler wiring, mocked recovery I/
   };
   const context = {
     uiClientId: 'su-requester', isSuperuser: true, workspaceId: 'ws-recovery',
-    harnessSlug: 'original-harness', profile: 'engineer', transport: 'mcp',
+    harnessSlug: 'original-harness' as string | null, profile: 'engineer', transport: 'mcp',
     runId: 'original-run', spawnId: 'original-spawn', chunkId: 'original-chunk',
     admissionRecoveryAuthority: { kind: 'superuser', role: 'operator', credentialSha256: 'a'.repeat(64) },
   };
@@ -1121,6 +1121,42 @@ describe('composeDispatch — promoted workItemIds', () => {
     ...patch,
   });
 
+  it('resolves self before assigning work or delivering its required wake', async () => {
+    const ownerId = 'su-12345678-abcd-4000-8000-1234567890ab';
+    const assignWorkItems = vi.fn(async () => assignment({ targetAgent: ownerId }));
+    const { call, calls } = mockCall({
+      'coord:send': sendEnv(ownerId, { mode: 'required', targets: [ownerId], queued: 1 }),
+    });
+
+    const result = await composeDispatch(
+      { to: 'self', note: 'accept the existing integration handoff', workItemIds: ['WI-READY'], harness: 'papercusp' },
+      call,
+      { assignWorkItems },
+      ownerId,
+    );
+
+    expect(assignWorkItems).toHaveBeenCalledWith({
+      workItemIds: ['WI-READY'], targetAgent: ownerId, actor: ownerId, harness: 'papercusp',
+    });
+    expect(calls.map((entry) => entry.name)).toEqual(['coord:send']);
+    expect(calls[0]?.args.to).toEqual([ownerId]);
+    expect(result).toMatchObject({ ok: true, to: ownerId });
+  });
+
+  it('refuses an unauthenticated self selector before any read or assignment', async () => {
+    const assignWorkItems = vi.fn();
+    const { call, calls } = mockCall({});
+
+    await expect(composeDispatch(
+      { to: 'self', note: 'take the handoff', workItemIds: ['WI-READY'] },
+      call,
+      { assignWorkItems },
+    )).rejects.toThrow('self requires an authenticated caller');
+
+    expect(assignWorkItems).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
+  });
+
   it('assigns and wakes only the filtered actionable work-item frontier', async () => {
     const assignWorkItems = vi.fn(async () => assignment());
     const { call, calls } = mockCall({
@@ -1160,6 +1196,35 @@ describe('composeDispatch — promoted workItemIds', () => {
     expectQueuedWake(result);
   });
 
+  it('EI-28618751188923794: wakes the live adopter while keeping the work-item assignment on its stable name', async () => {
+    const ownerId = 'su-12345678-abcd-4000-8000-1234567890ab';
+    const assignWorkItems = vi.fn(async () => assignment({ targetAgent: 'bug-triage' }));
+    const resolveStableTarget = vi.fn(async (): Promise<StableAgentTargetState> => ({
+      requested: 'bug-triage', ownerId, present: true, sessionState: 'parked', wakeable: true,
+    }));
+    const { call, calls } = mockCall({
+      'coord:presence': presence([]),
+      'coord:send': (args: Record<string, unknown>) => {
+        expect(args.to).toEqual([ownerId]);
+        return sendEnv(ownerId, { mode: 'required', targets: [ownerId], queued: 1, woken: 1 });
+      },
+    });
+
+    const result = await composeDispatch({
+      to: 'bug-triage', note: 'execute the original application run',
+      workItemIds: ['WI-READY', 'WI-BLOCKED'], harness: 'email',
+    }, call, { assignWorkItems, resolveStableTarget });
+
+    expect(resolveStableTarget).toHaveBeenCalledExactlyOnceWith('bug-triage');
+    expect(assignWorkItems).toHaveBeenCalledWith({
+      workItemIds: ['WI-READY', 'WI-BLOCKED'], targetAgent: 'bug-triage', harness: 'email',
+    });
+    expect(JSON.stringify(calls.find((entry) => entry.name === 'coord:send')?.args.body)).toContain('WI-READY');
+    expect(JSON.stringify(calls.find((entry) => entry.name === 'coord:send')?.args.body)).not.toContain('WI-BLOCKED');
+    expect(result).toMatchObject({ ok: true, to: ownerId, sessionState: 'parked', wakeable: true });
+    expectQueuedWake(result);
+  });
+
   it('does not send or wake when every promoted work-item is still blocked', async () => {
     const allBlocked = assignment({
       requested: ['WI-BLOCKED'],
@@ -1193,6 +1258,26 @@ describe('composeDispatch — promoted workItemIds', () => {
     expect(result.delivered).toBeNull();
     expect(result.queued).toBe(0);
     expect(result.warning).toMatch(/remain unassigned.*not woken/i);
+  });
+
+  it('keeps a blocked frontier unwoken even when its stable name has a live adopter', async () => {
+    const ownerId = 'su-12345678-abcd-4000-8000-1234567890ab';
+    const resolveStableTarget = vi.fn(async (): Promise<StableAgentTargetState> => ({
+      requested: 'bug-triage', ownerId, present: true, sessionState: 'parked', wakeable: true,
+    }));
+    const { call, calls } = mockCall({ 'coord:presence': presence([]) });
+    const result = await composeDispatch({
+      to: 'bug-triage', note: 'execute only actionable work', workItemIds: ['WI-BLOCKED'],
+    }, call, {
+      resolveStableTarget,
+      assignWorkItems: vi.fn(async () => assignment({
+        targetAgent: 'bug-triage', requested: ['WI-BLOCKED'], actionable: [], assigned: [], executionWorkItemIds: [],
+      })),
+    });
+
+    expect(resolveStableTarget).toHaveBeenCalledExactlyOnceWith('bug-triage');
+    expect(calls.map((entry) => entry.name)).toEqual(['coord:presence']);
+    expect(result).toMatchObject({ ok: true, to: ownerId, delivered: null, queued: 0 });
   });
 
   it('returns a loud structured absent-target failure without undoing assignment', async () => {

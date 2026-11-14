@@ -231,9 +231,9 @@ export interface ComposeDispatchDeps {
   /** Invocation-scoped observer; omitted by pure composition callers. */
   runPhase?: <T>(phase: DispatchPhaseName, operation: () => Promise<T>) => Promise<T>;
   /**
-   * Stable-name resolver consulted ONLY after the required wake already failed for a
-   * non-canonical `to` (WI-6554700010010992). Omitted by pure composition callers, which
-   * then keep the raw target_absent/target_dead classification.
+   * Resolve promoted work-item names before delivery when direct presence misses;
+   * diagnose failed wakes for other dispatches (WI-6554700010010992).
+   * Pure composition callers may omit this resolver.
    */
   resolveStableTarget?: (targetAgent: string) => Promise<StableAgentTargetState>;
 }
@@ -388,6 +388,16 @@ export async function composeDispatch(
   deps: ComposeDispatchDeps = {},
   caller?: string,
 ): Promise<DispatchResult> {
+  // Resolve the selector before any presence, capacity, or assignment read. The
+  // recovery door already does this; leaving it literal here can claim work for
+  // a nonexistent owner named "self" before required delivery rejects it.
+  if (args.to === 'self') {
+    const ownerId = caller?.trim();
+    if (!ownerId || ownerId === 'self') {
+      throw new Error('coord:dispatch self requires an authenticated caller');
+    }
+    args = { ...args, to: ownerId };
+  }
   const hydrate = deps.hydrateRefs ?? hydrateRefs;
   const runPhase = <T>(phase: DispatchPhaseName, operation: () => Promise<T>) =>
     deps.runPhase ? deps.runPhase(phase, operation) : operation();
@@ -397,6 +407,8 @@ export async function composeDispatch(
   let wakeable: boolean | null = null;
   const exactOwnerId = CANONICAL_OWNER_ID_RE.test(args.to);
   let presenceOwnerId: string | null = exactOwnerId ? args.to : null;
+  let stableTarget: StableAgentTargetState | null = null;
+  let deliveryOwnerId: string | null = null;
   try {
     await runPhase('target_resolution', async () => {
       if (exactOwnerId) return;
@@ -410,6 +422,14 @@ export async function composeDispatch(
         sessionState = row.sessionState;
         wakeable = row.wakeable;
         presenceOwnerId = row.ownerId || null;
+      } else if (args.workItemIds?.length && deps.resolveStableTarget) {
+        stableTarget = await deps.resolveStableTarget(args.to);
+        if (stableTarget.present) {
+          sessionState = stableTarget.sessionState;
+          wakeable = stableTarget.wakeable;
+          // Assignment stays on the name; delivery follows its live adopter.
+          deliveryOwnerId = stableTarget.ownerId;
+        }
       }
     });
   } catch {
@@ -648,7 +668,7 @@ export async function composeDispatch(
   // blocked descendants is a correct no-op, not a reason to burn a turn and ask
   // the agent to bypass the DAG. Assignment failures remain loud (`ok:false`).
   if (workItems && workItems.executionWorkItemIds.length === 0) {
-    const resolvedTo = presenceOwnerId || args.to;
+    const resolvedTo = deliveryOwnerId || presenceOwnerId || args.to;
     return {
       ok: workItems.ok,
       to: resolvedTo,
@@ -672,7 +692,7 @@ export async function composeDispatch(
   //    target's own coord:inbox-wake key, returning the authoritative queued-delivery
   //    signal (queued / recipient_absent / recipient_dead). It does not confirm a turn.
   const sendEnv = (await runPhase('required_delivery', () => call('coord:send', {
-    to: [args.to],
+    to: [deliveryOwnerId || args.to],
     summary: args.note,
     // The structured-body gate refuses a plain string, and expects:'action' below makes a
     // body mandatory — so dispatch always sends one. `forYouBecause` is satisfiable here in
@@ -715,7 +735,7 @@ export async function composeDispatch(
   // coord:send resolves a short handle/prefix to the full ownerId — prefer that as
   // the authoritative resolved target; fall back to the presence row, then the input.
   const resolvedTo =
-    (Array.isArray(r0.to) ? r0.to.find((t) => t !== '*' && t !== 'human') : undefined) || presenceOwnerId || args.to;
+    (Array.isArray(r0.to) ? r0.to.find((t) => t !== '*' && t !== 'human') : undefined) || deliveryOwnerId || presenceOwnerId || args.to;
 
   const wake = r0.wake ?? {};
   // coord:send's wake.queued is the event engine's matched/queued count; the
@@ -800,13 +820,13 @@ export async function composeDispatch(
   }
   // WI-6554700010010992: a stable NAME whose every adopter has ended is resolved by
   // coord:send to one dead session id, so the chain above names that id. Ask the
-  // stable-target resolver once, only on this already-failed path and only for a
+  // stable-target resolver once (reusing work-item preflight) for a
   // non-canonical input. When it confirms the name outlived its adopters, report the
   // NAME and its plan_items:adopt_name repair (the shared classifier's own branch).
   if (failure && (failure.code === 'target_absent' || failure.code === 'target_dead') && !exactOwnerId) {
     let stable: StableAgentTargetState | null = null;
     try {
-      stable = (await deps.resolveStableTarget?.(args.to)) ?? null;
+      stable = stableTarget ?? (await deps.resolveStableTarget?.(args.to)) ?? null;
     } catch {
       /* degrade: keep the raw classification */
     }
