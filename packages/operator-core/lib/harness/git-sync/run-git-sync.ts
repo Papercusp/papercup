@@ -10410,7 +10410,10 @@ async function runGitSyncPass(
     // Diagnostics must not change sync behavior, including if an injected sink fails.
     const timingLog = (event: string, detail: object): void => {
       try {
-        log(`[git-sync:submodule-timing] ${JSON.stringify({ event, slug, runId: timing.runId, repoRoot: repo, pid: timing.pid, ...detail })}`);
+        const message = `[git-sync:submodule-timing] ${JSON.stringify({ event, slug, runId: timing.runId, repoRoot: repo, pid: timing.pid, ...detail })}`;
+        // Routine timing is informational; keep the default stream safe for CLI protocols.
+        if (opts.log) opts.log(message);
+        else process.stderr.write(`${message}\n`);
       } catch { /* diagnostic-only */ }
     };
     timingLog('phase-start', { sourceUrl: timing.sourceUrl, startedAt: timing.startedAt });

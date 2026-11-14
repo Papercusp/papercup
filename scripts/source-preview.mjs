@@ -44,7 +44,7 @@
 //
 // Exit: 0 ok / in sync · 1 finding / drift / refused · 2 usage or cannot check.
 import assert from 'node:assert/strict';
-import { normalizeVerifierInputs, validateCommittedVerifierInputs,
+import { TAURI_VERIFIER_INPUTS as NATIVE_VERIFIER_INPUTS, normalizeVerifierInputs, validateCommittedVerifierInputs,
   measureVerifierSourceBytesFromGit } from './verifier-source-preflight.mjs';
 import { compilerOptionsFromArgs, createCompilerInputCustody } from './lib/compiler-input-custody.mjs';
 import { captureTestingCoreInputUniverse, qualifyTestingCoreConfigurationClosure, retainTestingCoreResolverMetadata,
@@ -536,51 +536,8 @@ export function materializeCommit({ repo, sha, dest, allow, prefix = '' }) {
  */
 // Shared by early e2e admission and the native snapshot. Explicit caller
 // acceptance paths remain required; this tooling profile cannot replace them.
-export const TAURI_VERIFIER_INPUTS = Object.freeze([
-  'package.json',
-  'package-lock.json',
-  'papercusp-desktop/package.json',
-  'papercusp-desktop/package-lock.json',
-  'scripts/npm-install-safe.mjs',
-  'scripts/verify-tauri-headless.sh',
-  'scripts/run-operator-e2e-isolated.sh',
-  'scripts/lib/operator-e2e-assertion.sh',
-  'scripts/lib/verify-tauri-assertion-env.mjs',
-  'scripts/lib/verify-tauri-screenshot.sh',
-  'scripts/lib/run-in-isolated-netns.sh',
-  'packages/operator-core/lib/testing-playwright-reporter.ts',
-  'packages/operator-core/lib/testing-native-runtime.ts',
-  'packages/operator-core/lib/process-identity.ts',
-  'apps/operator/e2e/_fake-llm-fixture.ts',
-  'apps/operator/e2e/_fake-llm-fixture-child.ts',
-  'apps/operator/bin/bundle-host.sh',
-  'apps/operator/bin/bundle-host-common.sh',
-  'scripts/source-preview.mjs',
-  'scripts/verifier-source-preflight.mjs',
-  'scripts/lib/committed-source-loader.mjs',
-  'scripts/restricted-hold-tree-gate.mjs',
-  'scripts/lib/spa-require-built.sh',
-  'scripts/lib/budgeted-task-scheduler.mjs',
-  'scripts/lib/task-cgroup-limits.mjs',
-  'scripts/lib/task-deadline.mjs',
-  'scripts/lib/verify-tauri-deadline.mjs',
-  'scripts/pc-heavy.sh',
-  'apps/operator/bin/release/dependency-generation.sh',
-  'papercusp-desktop/bin/tauri-guarded',
-  'papercusp-desktop/bin/lib/claim-target-dir.sh',
-  'papercusp-desktop/bin/lib/cargo-target-root.sh',
-  'papercusp-desktop/bin/lib/release-artifacts.sh',
-  'papercusp-desktop/bin/lib/federation-asserts.sh',
-  'papercusp-desktop/bin/lib/disk-preflight.sh',
-  'papercusp-desktop/bin/lib/pinned-deps.sh',
-  'papercusp-desktop/src-tauri/src/main.rs',
-  'papercusp-desktop/src-tauri/src/native_console.rs',
-  'papercusp-desktop/src-tauri/src/wsl_sidecar_staging.rs',
-  'papercusp-desktop/test/native-console-gnome.test.mjs',
-  'papercusp-desktop/test/monorepo-host-preflight.mjs',
-  'scripts/lib/node-test-host-preflight.mjs',
-  'packages/operator-core/lib/gnome-terminal-policy.json',
-]);
+/** @type {readonly string[]} */
+export const TAURI_VERIFIER_INPUTS = NATIVE_VERIFIER_INPUTS;
 
 // These exact outputs are rebuilt from the recorded source during verification.
 // Older commits may track them; an archive must not seal their stale bytes as

@@ -598,6 +598,31 @@ const SPA_RUNTIME_FILES = [
 const DEPENDENCY_POLICY_PATH = 'apps/operator/bin/release/dependency-generation.sh';
 const DEPENDENCY_POLICY = readFileSync(new URL('../../../' + DEPENDENCY_POLICY_PATH, import.meta.url), 'utf8');
 
+/** These command-lifecycle fixtures stop at a controlled generation boundary;
+ * real generation builds and their source closure are exercised separately. */
+function writeVerifierGenerationBoundary(root: string): void {
+  write(root, DEPENDENCY_POLICY_PATH, [
+    '#!/bin/bash', 'if [ "${BASH_SOURCE[0]}" = "$0" ]; then',
+    'set -eu', 'integration= ref= source=',
+    'while [ "$#" -gt 0 ]; do', '  case "$1" in',
+    '    --integration) integration="$2"; shift 2 ;;',
+    '    --ensure-ref) ref="$2"; shift 2 ;;',
+    '    --verifier-source) source="$2"; shift 2 ;;',
+    '    *) exit 94 ;;', '  esac', 'done',
+    'test -n "$integration" && test -n "$ref" && test -n "$source"',
+    'test "$integration" != "$source"',
+    'test "$(git -C "$integration" rev-parse --verify "$ref^{commit}")" = "$ref"',
+    'test -s "$source/.verifier-source.json"', 'exit 0', 'fi',
+    // Census sources this same file as a library. Keep its real population
+    // policy while replacing only the expensive executable generation build.
+    DEPENDENCY_POLICY,
+  ].join('\n'));
+  const library = spawnSync('bash', ['-c',
+    'source "$1" && declare -F dependency_generation_source_records >/dev/null',
+    'fixture-generation-policy', join(root, DEPENDENCY_POLICY_PATH)], { env: childEnv(), encoding: 'utf8' });
+  expect(library.status, library.stderr).toBe(0);
+}
+
 /** Real private loader closure; no links back to the checkout's dependencies. */
 function installVerifierTsx(root: string): void {
   const installed = new Set<string>();
@@ -1120,6 +1145,13 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     expect(() => estimateVerifierCommandBudget(readVerifierPhaseMeasurements(path)))
       .toThrow('requires completed phase');
     writeFileSync(path, JSON.stringify({ ...rows[0], sequence: 9 }));
+    expect(readVerifierPhaseMeasurements(path)).toEqual({});
+    for (const sequence of [0, -1, 1.5]) {
+      writeFileSync(path, JSON.stringify({ ...rows[0], sequence }));
+      expect(() => readVerifierPhaseMeasurements(path)).toThrow('Invalid verifier phase budget receipt');
+    }
+    writeFileSync(path, [{ ...rows[0], sequence: 9 }, { ...rows[1], sequence: 8 }]
+      .map(row => JSON.stringify(row)).join('\n'));
     expect(() => readVerifierPhaseMeasurements(path)).toThrow('Invalid verifier phase budget receipt');
   });
 
@@ -2097,7 +2129,8 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     const script = 'scripts/source-preview.mjs';
     const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
     write(fixture.repo, script, "import value from '@native-proof/runtime';\nif (value !== 'private-snapshot') throw Error('wrong dependency');\nconsole.log(process.argv.includes('verifier-measure') ? '4096' : 'inputs-ok');\n");
-    write(fixture.repo, DEPENDENCY_POLICY_PATH, DEPENDENCY_POLICY);
+    if (generationHelper) writeVerifierGenerationBoundary(fixture.repo);
+    else write(fixture.repo, DEPENDENCY_POLICY_PATH, DEPENDENCY_POLICY);
     // Keep the physical-donor precondition and real independent Node resolution;
     // substitute only the expensive production dependency census/copy.
     const snapshotVerb = copiesDependencies && generationHelper ? 'snapshot-generation-locked' : 'snapshot-locked';
@@ -2240,7 +2273,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     const script = 'scripts/source-preview.mjs';
     const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
     write(fixture.repo, script, "console.log(process.argv.includes('verifier-measure') ? '4096' : 'inputs-ok');\n");
-    write(fixture.repo, DEPENDENCY_POLICY_PATH, DEPENDENCY_POLICY);
+    writeVerifierGenerationBoundary(fixture.repo);
     write(fixture.repo, helper, [
       '#!/bin/bash', 'set -eu', 'case "$1" in',
       '  trees) echo node_modules; exit ;;',
@@ -2438,7 +2471,8 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       '  preflight-generation) echo "fixture stop after runtime preflight" >&2; exit 74 ;;',
       '  snapshot-generation-locked) exit 93 ;;', '  *) exit 94 ;;', 'esac', '',
     ].join('\n'));
-    git(fixture.repo, ['add', setup, helper]);
+    writeVerifierGenerationBoundary(fixture.repo);
+    git(fixture.repo, ['add', setup, helper, DEPENDENCY_POLICY_PATH]);
     git(fixture.repo, ['commit', '-qm', 'fake runtime preflight boundary fixture']);
     const nowMs = Date.now();
     const deadline = nowMs + (mode === 'expired' ? -1 : mode === 'short' ? 120_000
@@ -2511,7 +2545,8 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       '  preflight-generation) echo "runtime cache accepted; generation guard reached" >&2; exit 74 ;;',
       '  snapshot-generation-locked) exit 93 ;;', '  *) exit 94 ;;', 'esac', '',
     ].join('\n'));
-    git(fixture.repo, ['add', setup, helper]);
+    writeVerifierGenerationBoundary(fixture.repo);
+    git(fixture.repo, ['add', setup, helper, DEPENDENCY_POLICY_PATH]);
     git(fixture.repo, ['commit', '-qm', 'pinned runtime asset admission fixture']);
     const ref = git(fixture.repo, ['rev-parse', 'HEAD']).trim();
     const source = layout === 'frozen-source' ? join(tmp, 'runtime-asset-frozen-source') : fixture.repo;

@@ -182,7 +182,8 @@ export function write(root: string, rel: string, body: string): void {
 
 /** Freeze the portable import closure used by the dependency-generation verifier. */
 export function copyVerifierGenerationSupport(root: string, sourceRoot = SOURCE_ROOT): void {
-  for (const path of ['packages/operator-core/lib/util/cli-entry.ts',
+  for (const path of ['apps/operator/bin/release/dependency-generation-verifier.mjs',
+    'packages/operator-core/lib/util/cli-entry.ts',
     'libs/test-config/src/verifier-source.ts', 'libs/test-config/src/tracked-files.mjs',
     'libs/test-config/src/git-index-fault-core.mjs'])
     write(root, path, readFileSync(join(sourceRoot, path), 'utf8'));
