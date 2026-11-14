@@ -277,10 +277,10 @@ describe('run-operator-e2e-isolated.sh', () => {
     expect(result.recorded).not.toBeNull();
   });
 
-  it('treats an explicit .live.ts profile as a filtered run before native preflight', () => {
+  it('treats the maintained .live.ts controls profile as a filtered run before native preflight', () => {
     const f = fixture(0);
     const args = ['--config', 'playwright.engineering-evidence.config.ts', 'e2e/engineering-evidence-controls.live.ts'];
-    const result = run(f, args, { PAPERCUSP_ENGINEERING_CONTROLS_LIVE: '1' });
+    const result = run(f, args);
     expect(result.status, result.out).toBe(0);
     expect(result.recorded.argv).toEqual(args);
   });

@@ -18,8 +18,17 @@
  */
 
 export interface ActionableCondition {
-  /** Key prefix, always ending in ':'. */
+  /**
+   * Key prefix, always ending in ':' — unless {@link exact} is set, in which case it is the
+   * whole condition key and matches only itself.
+   */
   prefix: string;
+  /**
+   * The family is ONE fixed key, not a `<family>:<subject>` namespace (`alarm:disk-space`).
+   * Matched by equality, so a key that merely starts with it is not this condition
+   * (EI-28368247087883955: a bare key in a startsWith catalog matched every extension of it).
+   */
+  exact?: true;
   /**
    * How to get the HARNESS this condition belongs to.
    *
@@ -118,7 +127,13 @@ export const DISK_SPACE_ALARM_CONDITION_KEY = 'alarm:disk-space';
  */
 export const ACTIONABLE_CONDITIONS: readonly ActionableCondition[] = [
   // Disk recovery is an operational incident, independent of live gate custody.
-  { prefix: DISK_SPACE_ALARM_CONDITION_KEY, harnessFrom: 'ambient', severity: 'critical', lifecycleOwnedBySource: true },
+  {
+    prefix: DISK_SPACE_ALARM_CONDITION_KEY,
+    exact: true,
+    harnessFrom: 'ambient',
+    severity: 'critical',
+    lifecycleOwnedBySource: true,
+  },
   // `assignTo: 'live-gate-owner'` on the gate and repair-queue entries below: see
   // ActionableCondition.assignTo (gate-repair-plane-on-current-build-2026-10-15 P-004).
   { prefix: 'green-stall:', harnessFrom: 'suffix', severity: 'critical', assignTo: 'live-gate-owner' },
@@ -199,7 +214,7 @@ export const ACTIONABLE_CONDITION_PREFIXES: readonly string[] = ACTIONABLE_CONDI
 export function actionableConditionFor(conditionKey: string): ActionableCondition | null {
   const key = conditionKey.trim();
   if (!key) return null;
-  return ACTIONABLE_CONDITIONS.find((c) => key.startsWith(c.prefix)) ?? null;
+  return ACTIONABLE_CONDITIONS.find((c) => (c.exact ? key === c.prefix : key.startsWith(c.prefix))) ?? null;
 }
 
 /**

@@ -154,6 +154,19 @@ describe('Playwright isolated webServer contract', () => {
     expect(listing).toMatch(/Total: 1 test in 1 file/);
   }, PLAYWRIGHT_CHILD_TIMEOUT_MS + 10_000);
 
+  it('keeps the engineering evidence Playwright profile on controls; P-007 acceptance uses Tauri', () => {
+    const env = { ...process.env };
+    delete env.PAPERCUSP_ENGINEERING_CONTROLS_LIVE;
+    const listing = execFileSync(process.execPath, [
+      require.resolve('@playwright/test/cli'), 'test',
+      '--config', 'playwright.engineering-evidence.config.ts',
+      '--list', '--reporter=list',
+    ], { cwd: OPERATOR_DIR, encoding: 'utf8', timeout: PLAYWRIGHT_CHILD_TIMEOUT_MS, env });
+    expect(listing).toContain('ee.shared-controls: real-app checkbox and evidence-repair input states');
+    expect(listing).not.toContain('ee.current-or-shipped');
+    expect(listing).toMatch(/Total: 1 test in 1 file/);
+  }, PLAYWRIGHT_CHILD_TIMEOUT_MS + 10_000);
+
   it('passes the selected port strictly and preserves Vite startup diagnostics', async () => {
     const previousPort = process.env.OPERATOR_E2E_PORT;
     const previousBaseUrl = process.env.OPERATOR_E2E_BASE_URL;

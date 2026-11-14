@@ -97,7 +97,19 @@ describe('isActionableConditionKey', () => {
   it('every catalog entry is a namespaced prefix, not a bare key', () => {
     // conditionKeys are `<family>:<subject>`; a prefix without the colon would
     // match far more than intended.
-    for (const p of ACTIONABLE_CONDITION_PREFIXES) expect(p.endsWith(':')).toBe(true);
+    // A fixed single-key family declares `exact` instead and is matched by equality.
+    for (const c of ACTIONABLE_CONDITIONS) expect(c.exact === true || c.prefix.endsWith(':')).toBe(true);
+    expect(ACTIONABLE_CONDITION_PREFIXES).toEqual(ACTIONABLE_CONDITIONS.map((c) => c.prefix));
+  });
+
+  it('matches an exact-key entry only by equality (EI-28368247087883955)', () => {
+    const exact = ACTIONABLE_CONDITIONS.filter((c) => c.exact);
+    expect(exact.map((c) => c.prefix)).toContain('alarm:disk-space');
+    for (const c of exact) {
+      expect(isActionableConditionKey(c.prefix)).toBe(true);
+      expect(isActionableConditionKey(`${c.prefix}-elsewhere`)).toBe(false);
+      expect(isActionableConditionKey(`${c.prefix}:sub`)).toBe(false);
+    }
   });
 });
 
@@ -225,8 +237,10 @@ describe('resolveConditionHarness', () => {
 
   it('every catalog entry declares how its harness is derived', () => {
     for (const c of ACTIONABLE_CONDITIONS) {
-      expect(c.prefix.endsWith(':')).toBe(true);
+      expect(c.exact === true || c.prefix.endsWith(':')).toBe(true);
       expect(['suffix', 'ambient', 'leading-segment']).toContain(c.harnessFrom);
+      // An exact key has no suffix to read a harness from.
+      if (c.exact) expect(c.harnessFrom).toBe('ambient');
     }
   });
 
