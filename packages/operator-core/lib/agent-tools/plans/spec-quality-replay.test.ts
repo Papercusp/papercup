@@ -8,7 +8,7 @@ import { scorecardEvidenceFingerprint } from '../../scorecards';
 import { applyPayloadTier } from '@papercusp/tooldef';
 import { applyResultDoor } from '../../result-door';
 
-const reads = vi.hoisted(() => ({ plan: vi.fn(), clauses: vi.fn(), snapshot: vi.fn(), rubrics: vi.fn(), rubricRevision: vi.fn(), discovery: vi.fn() }));
+const reads = vi.hoisted(() => ({ plan: vi.fn(), clauses: vi.fn(), snapshot: vi.fn(), rubrics: vi.fn(), rubricRevision: vi.fn(), rubric: vi.fn(), discovery: vi.fn() }));
 vi.mock('../../plan-audits', async original => ({ ...await original<typeof import('../../plan-audits')>(),
   withCurrentDiscovery: reads.discovery }));
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: () => ({ ownerId: 'su-replay-test' }) }));
@@ -16,11 +16,12 @@ vi.mock('./source', async (original) => ({ ...await original<typeof import('./so
 vi.mock('./revisions', async (original) => ({ ...await original<typeof import('./revisions')>(), getPlanRevisionSnapshot: reads.snapshot }));
 vi.mock('./spec-clauses-store', async (original) => ({ ...await original<typeof import('./spec-clauses-store')>(), listSpecClauses: reads.clauses }));
 vi.mock('../../rubrics', async (original) => ({ ...await original<typeof import('../../rubrics')>(),
-  getAcceptanceRubricsForPlan: reads.rubrics, getRubric: reads.rubricRevision }));
+  getAcceptanceRubricsForPlan: reads.rubrics, getRubric: reads.rubricRevision, readRubric: reads.rubric }));
 vi.mock('./_ctx-opts', async (original) => ({ ...await original<typeof import('./_ctx-opts')>(),
   ctxToPlanSourceOpts: async () => ({}), resolveEffectiveHarnessSlug: () => 'papercusp' }));
 vi.mock('../_harness-scope', async (original) => ({ ...await original<typeof import('../_harness-scope')>(), harnessScopedCtx: (_h: unknown, ctx: unknown) => ctx }));
 import tool from './evaluate-spec-quality';
+import { emitScorecard } from '../scorecards/emit';
 
 const oldBody = '---\ntitle: Replay fixture\nstatus: ready\n---\n## Items\n- **P-001** `todo` Accept an event';
 const newBody = oldBody + '\n- **P-002** `todo` Validate an event';
@@ -60,6 +61,32 @@ beforeEach(() => {
 });
 
 describe('immutable spec-quality replay (WI-10007284)', () => {
+  it.each(['clauses', 'plan'])('preserves historical reflection but refuses new publication after current %s change', async change => {
+    const historical = await call(replayArgs);
+    expect(historical).toMatchObject({ ok: true, verdict: 'pass' });
+    expect(reads.plan).not.toHaveBeenCalled();
+    if (change === 'plan') reads.clauses.mockResolvedValue([oldClause]);
+    reads.rubric.mockResolvedValue({ kind: 'found', rubric: {
+      rubricId: 'spec-quality', kind: 'standard', status: 'active',
+      criteria: Object.keys(historical.ratings).map(key => ({ key, title: key })),
+      ratingScale: ['pass', 'fail', 'unknown'],
+    } });
+    const dispatchTool = vi.fn(async (_name: string, args: Record<string, unknown>) => {
+      const { payloadTier: _tier, ...evaluatorArgs } = args;
+      return call(evaluatorArgs);
+    });
+    const result = await emitScorecard(historical.scorecardDraft, { createdBy: 'su-replay-test' }, {
+      getEvaluatorBuild: buildInfo.getBuildInfo,
+      resolveSpecQualityPlanSubject: async () => ({ planSlug: 'quality-plan', harnessSlug: 'papercusp' }),
+      withCurrentDiscovery: reads.discovery,
+      dispatchTool,
+    });
+    expect(result).toMatchObject({ ok: false, code: 'invalid_spec_quality_binding' });
+    expect(dispatchTool).toHaveBeenCalledOnce();
+    expect(dispatchTool.mock.calls[0][1]).not.toHaveProperty('replaySnapshot');
+    expect(reads.plan).toHaveBeenCalledOnce();
+  });
+
   it('pins live BAR scope evaluation to an immutable rubric revision and replays it after the scope changes', async () => {
     const rubric = { rubricId: 'acceptance-quality-plan', revision: 8, criteriaHash: 'c'.repeat(64),
       kind: 'acceptance', subjectPlan: 'quality-plan', subjectHarnessSlug: 'papercusp', classRef: 'plan-class-feature-ship',
