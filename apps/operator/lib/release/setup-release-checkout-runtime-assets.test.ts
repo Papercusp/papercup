@@ -409,9 +409,9 @@ describe('setup-release-checkout.sh 3b — gitignored runtime asset provisioning
     const leftover = 'apps/operator/public/internal/docs.old.3438785/index.html';
     mkdirSync(dirname(join(integration, leftover)), { recursive: true });
     writeFileSync(join(integration, leftover), 'previous docs mirror');
-    // The live mirror beside it is not ignored, exactly as in the real tree. That
-    // is what makes git report docs.old.<pid>/ as its own entry instead of
-    // folding it into a wholly-ignored internal/.
+    // The live mirror beside it is not ignored, as in the tree while the mirror
+    // was still tracked. That alone keeps docs.old.<pid>/ its own entry under
+    // traditional --ignored; the next test covers the mirror-ignored shape.
     mkdirSync(join(integration, 'apps/operator/public/internal/docs'), { recursive: true });
     writeFileSync(join(integration, 'apps/operator/public/internal/docs/index.html'), 'live docs mirror');
     expect(git(integration, 'status', '--porcelain', '--ignored', '--', 'apps/operator/public')).toContain(
@@ -420,6 +420,50 @@ describe('setup-release-checkout.sh 3b — gitignored runtime asset provisioning
     const r = runBlock();
     expect(r.status, r.stderr).toBe(0);
     expect(existsSync(join(release, leftover))).toBe(false);
+    expect(existsSync(join(release, VDITOR_REL))).toBe(true);
+  });
+
+  // WI-6554700010048840: once the generated docs mirror is untracked and ignored,
+  // EVERYTHING under internal/ is ignored. Traditional `git status --ignored` then
+  // folds it into ONE `!! apps/operator/public/internal/` entry. The docs.old.*
+  // skip no longer matches, so the whole of internal/ is copied, the 350 MB
+  // swap leftover included. The block must list entries at the granularity of the
+  // ignore PATTERNS, so the leftover stays its own entry and is skipped.
+  it('skips docs.old.<pid> and provisions the live mirror when the live docs mirror is itself ignored', () => {
+    writeFileSync(
+      join(integration, '.gitignore'),
+      [
+        'apps/operator/public/vditor/',
+        'apps/operator/public/ort-wasm-*',
+        'apps/operator/public/internal/docs.old.*/',
+        'apps/operator/public/internal/docs/',
+      ].join('\n'),
+    );
+    // public/ itself holds tracked files in the real tree. Without one here git
+    // folds the WHOLE of public/ into one entry, not just internal/.
+    const tracked = 'apps/operator/public/favicon.svg';
+    writeFileSync(join(integration, tracked), '<svg/>');
+    git(integration, 'add', '--', tracked);
+    git(integration, '-c', 'user.email=t@example.invalid', '-c', 'user.name=t', 'commit', '-qm', 'tracked public file');
+    const leftover = 'apps/operator/public/internal/docs.old.3438785/index.html';
+    const live = 'apps/operator/public/internal/docs/index.html';
+    for (const [rel, body] of [[leftover, 'previous docs mirror'], [live, 'live docs mirror']] as const) {
+      mkdirSync(dirname(join(integration, rel)), { recursive: true });
+      writeFileSync(join(integration, rel), body);
+    }
+    // Precondition: this IS the collapsing shape. If git stops folding it,
+    // the fixture no longer tests the regression.
+    expect(git(integration, 'status', '--porcelain', '--ignored', '--', 'apps/operator/public')).toContain(
+      '!! apps/operator/public/internal/\n',
+    );
+    const r = runBlock();
+    expect(r.status, r.stderr).toBe(0);
+    expect(
+      existsSync(join(release, leftover)),
+      'docs.old.<pid> was copied: the block enumerated the collapsed internal/ entry, ' +
+        'so the docs.old.* skip never saw the leftover',
+    ).toBe(false);
+    expect(readFileSync(join(release, live), 'utf8')).toBe('live docs mirror');
     expect(existsSync(join(release, VDITOR_REL))).toBe(true);
   });
 

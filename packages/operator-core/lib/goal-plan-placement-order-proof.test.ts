@@ -7,6 +7,7 @@ vi.mock('./goals/holder', () => ({
 }));
 
 import { readGoalPortfolioBrief, renderGoalPortfolioBrief } from './goal-launch-settings';
+import { ISSUE_FAMILY_KINDS_SQL_LIST } from './work-nature/agent-work-predicate';
 
 const NOW = new Date('2026-09-23T11:00:00.000Z');
 const scenarios = ['blocked-head-next-eligible', 'eligible-ordered-head'] as const;
@@ -36,7 +37,10 @@ async function portfolio(scenario: Scenario, applyControl = true, faultyControl 
     if (scenario === 'blocked-head-next-eligible') plans[1].status = 'draft';
     else plans.reverse(); // Simulate a projection that lost its SQL ORDER BY.
   }
-  const readPortfolioRows = (statement: string) => {
+  const sql = Object.assign((first: TemplateStringsArray) => {
+    const statement = first.join(' ');
+    // Owner-wall fragments are interpolation inputs, not independent statements.
+    if (/^\s*(COALESCE\(\s*NULLIF\(wall\.payload|wall\.status <> ALL)/.test(statement)) return { fragment: statement };
     if (!statement.includes('WITH goal_row AS')) throw new Error('Unexpected portfolio SQL');
     return Promise.resolve([{
       status: 'active', properties: { worklist: { value: ['plan:papercusp/alpha', 'plan:papercusp/beta'] } },
@@ -46,13 +50,12 @@ async function portfolio(scenario: Scenario, applyControl = true, faultyControl 
       drain_fleet: { slug: 'goal-fixture-drain', controlState: 'active', live: 2, working: 1 },
       report_movements: [], owner_walls: [], killed_work: [], blender_pending: 0,
     }]);
-  };
-  const sql = Object.assign((first: TemplateStringsArray) => {
-    const statement = first.join(' ');
-    // Owner-wall fragments are interpolation inputs, not independent statements.
-    if (/^\s*(COALESCE\(\s*NULLIF\(wall\.payload|wall\.status <> ALL)/.test(statement)) return { fragment: statement };
-    return readPortfolioRows(statement);
-  }, { unsafe: readPortfolioRows }) as unknown as Sql;
+  }, {
+    unsafe: (fragment: string) => {
+      if (fragment !== ISSUE_FAMILY_KINDS_SQL_LIST) throw new Error('Unexpected portfolio SQL fragment');
+      return { fragment };
+    },
+  }) as unknown as Sql;
   const launch: NonNullable<Parameters<typeof readGoalPortfolioBrief>[0]['launch']> = {
     goalBrief: {
       title: 'Order fixture', body: 'Delegate eligible plans', killCriterion: 'fixture ends',
