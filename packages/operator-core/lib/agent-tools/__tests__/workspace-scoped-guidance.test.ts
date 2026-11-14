@@ -8,7 +8,6 @@ describe('workspace-scoped harness guidance (EI-9247)', () => {
     const descriptions = [
       docsAuthor.args.shape.harness.description,
       plansGet.description,
-      plansGet.guidance?.when,
       harnessArg.description,
     ];
 
@@ -17,5 +16,13 @@ describe('workspace-scoped harness guidance (EI-9247)', () => {
       expect(description).toContain('unscoped');
       expect(description).toContain('--all-workspaces');
     }
+  });
+
+  it('keeps the concise plan hint explicit about concrete harnesses and unscoped all access', () => {
+    const hint = plansGet.guidance?.when;
+
+    expect(hint).toContain('concrete harness');
+    expect(hint).toContain('within the workspace');
+    expect(hint).toContain("harness:'all' requires an unscoped session");
   });
 });
