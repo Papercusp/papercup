@@ -64,8 +64,12 @@ it('runs a caller against an operator bundled from the working tree on private p
         workspace: expect.stringMatching(/^test-runtime-/),
         bundleSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
         health: { service: 'papercusp-operator' },
-        mode: 'caller', probe: null, callerExit: 0, hostStopped: true,
+        mode: 'caller', callerExit: 0, hostStopped: true,
+        // The acceptance bar: the working-tree operator answers a real MCP tool call.
+        probe: { calledTool: expect.stringMatching(/^coord[:_]whoami$/), calledToolOk: true,
+          toolCount: expect.any(Number) },
       });
+      expect(receipt.probe.toolCount).toBeGreaterThan(0);
       expect(LIVE_OPERATOR_PORTS).not.toContain(new URL(receipt.base).port);
 
       const sawLine = rows.find(row => row.startsWith('WORKING_TREE_CALLER_SAW '));
