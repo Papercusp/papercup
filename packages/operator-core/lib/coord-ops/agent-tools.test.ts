@@ -26,6 +26,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/agent-mcp';
+import { BlueprintSchema } from '@papercusp/orchestrator/blueprint';
+import { mockOrgPgSql } from '../testing/mock-org-pg';
 import { askOwnerArgs } from './agent-tools';
 import { askOp } from './ops/compose';
 import type { CoordOpCaps, CoordOpCtx } from './types';
@@ -62,11 +64,13 @@ describe('oddsmith:analyze confined agent surface', () => {
     previous = getCoordOp('oddsmith:analyze');
     dispatchHarness.mockReset().mockResolvedValue({ requestKey: input.requestKey, analysis: [] });
     registerCoordOp(makeHarnessOpProxy(manifest, dispatchHarness));
-    vi.spyOn(orgDb, 'getOrgPg').mockReturnValue({ sql: {} } as never);
+    mockOrgPgSql(vi.spyOn(orgDb, 'getOrgPg'), vi.fn(() => { throw new Error('Unexpected SQL in confined tool unit test'); }));
     vi.spyOn(names, 'resolveAdoptedName').mockResolvedValue('oddsmith-analyst');
     vi.spyOn(federation, 'canonicalHiveHomeSlug').mockImplementation(async (_workspace, harness) =>
       ['oddsmith', 'local-oddsmith'].includes(harness) ? 'oddsmith-hive' : 'foreign-hive');
-    vi.spyOn(blueprints, 'getEffectiveBlueprint').mockResolvedValue({ ops: [manifest] } as never);
+    vi.spyOn(blueprints, 'getEffectiveBlueprint').mockResolvedValue(BlueprintSchema.parse({
+      id: 'oddsmith', workItem: { kind: 'analysis' }, spine: {}, ops: [manifest],
+    }));
   });
   afterEach(() => {
     vi.restoreAllMocks();

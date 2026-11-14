@@ -343,6 +343,8 @@ describe("current-build defaults for release repair-plane tools", () => {
       "release:repair-queue", "release:test-downgrade",
       "consult:get_feedback", "consult:reply", "consult:decline", "consult:close", "consult:routing-health",
       "locks:release",
+      "plans:start", "plans:set-status",
+      "work_items:claim", "work_items:release", "work_items:complete", "work_items:set_state",
     ]);
   });
 
@@ -437,6 +439,37 @@ describe("current-build defaults for release repair-plane tools", () => {
 
   it("recognizes test-downgrade as a current-build default", () => {
     expect(currentBuildDefaultTool({ name: "release:test-downgrade", arguments: { op: "list" } })).not.toBeNull();
+  });
+
+  it.each(["plans:start", "plans:set-status", "work_items:claim", "work_items:release", "work_items:complete", "work_items:set_state"])(
+    "keeps %s on the writer that preserves execution authority",
+    async (name) => {
+      for (const request of [call(name, {}), call("tools:invoke", { name, args: {} })]) {
+        expect(applyMcpBuildSelector(buf(request), { defaultToCurrentBuild: true }))
+          .toMatchObject({ kind: "routed", build: "staging" });
+      }
+      const seen: Array<{ label: string; body: string }> = [];
+      const main = await listen(stubOperator("main", seen));
+      const staging = await listen(stubOperator("staging", seen));
+      const p = await proxyFor(() => staticMcpProxyTargets("127.0.0.1", port(main), port(staging)));
+      expect((await post(p, JSON.stringify(call(name, {})))).status).toBe(200);
+      expect(seen.map(entry => entry.label)).toEqual(["staging"]);
+    },
+  );
+
+  it("routes nested progress writers without matching unrelated start or claim verbs", () => {
+    for (const script of [
+      "return tools.plans.start({});", "return tools.plans.setStatus({});",
+      "return tools.work_items.claim({});", "return tools.workItems.release({});",
+      "return tools['work_items']['complete']({});", "return tools.workItems.setState({});",
+    ]) {
+      expect(applyMcpBuildSelector(buf(call("code:run", { script })), { defaultToCurrentBuild: true }))
+        .toMatchObject({ kind: "routed", build: "staging" });
+    }
+    for (const script of ["return tools.pot.start({});", "return tools.resource.claim({});", "return tools.plans.get({});"]) {
+      expect(applyMcpBuildSelector(buf(call("code:run", { script })), { defaultToCurrentBuild: true }))
+        .toEqual({ kind: "none" });
+    }
   });
 
   it("routes native release proof intact in direct, wrapped and script calls", () => {

@@ -132,6 +132,15 @@ export const CURRENT_BUILD_DEFAULT_TOOLS: readonly string[] = [
   // Native edit hooks ship with staging and must retain their full session
   // attribution proof; a pinned release may reject newer proof fields.
   "locks:release",
+  // Plan starts and their progress reflections share a database authority fence.
+  // Older release writers lack its transaction-scoped preservation marker and
+  // revoke a valid start when an item is merely claimed, released or completed.
+  "plans:start",
+  "plans:set-status",
+  "work_items:claim",
+  "work_items:release",
+  "work_items:complete",
+  "work_items:set_state",
 ];
 
 const CURRENT_BUILD_DEFAULT_LOOKUP: ReadonlySet<string> = new Set(
@@ -155,10 +164,11 @@ const CURRENT_BUILD_DEFAULT_SCRIPT_PATTERNS: ReadonlyArray<{ tool: string; patte
     const verb = tool.slice(tool.indexOf(":") + 1);
     const words = verb.split(/[-_]/).map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
     const spelling = words.join("[-_]?");
+    const namespaceSpelling = namespace.split(/[-_]/).join("[-_]?");
     // Short verbs such as `close` and `release` occur on unrelated tools. Require
     // their namespace while retaining the established repair-plane spellings.
-    const pattern = namespace === "consult" || namespace === "locks"
-      ? new RegExp(`\\btools(?:\\.${namespace}|\\[['\"]${namespace}['\"]\\])\\s*(?:\\.${spelling}\\b|\\[['\"]${spelling}['\"]\\])|\\b${namespace}[:_]${spelling}\\b`, "i")
+    const pattern = namespace !== "release"
+      ? new RegExp(`\\btools(?:\\.${namespaceSpelling}|\\[['\"]${namespaceSpelling}['\"]\\])\\s*(?:\\.${spelling}\\b|\\[['\"]${spelling}['\"]\\])|\\b${namespaceSpelling}[:_]${spelling}\\b`, "i")
       : new RegExp(spelling, "i");
     return { tool: normalizeMcpName(tool), pattern };
   });

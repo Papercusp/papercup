@@ -615,6 +615,12 @@ export const CURRENT_BUILD_DEFAULT_TOOLS = Object.freeze([
   'consult:close',
   'consult:routing-health',
   'locks:release',
+  'plans:start',
+  'plans:set-status',
+  'work_items:claim',
+  'work_items:release',
+  'work_items:complete',
+  'work_items:set_state',
 ]);
 
 /** Same normalization as `normalizeMcpName` in @papercusp/tooldef. */
@@ -634,8 +640,9 @@ const CURRENT_BUILD_DEFAULT_SCRIPT_PATTERNS = CURRENT_BUILD_DEFAULT_TOOLS.map((t
   const verb = tool.slice(tool.indexOf(':') + 1);
   const words = verb.split(/[-_]/).map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
   const spelling = words.join('[-_]?');
-  const pattern = namespace === 'consult' || namespace === 'locks'
-    ? new RegExp(`\\btools(?:\\.${namespace}|\\[['"]${namespace}['"]\\])\\s*(?:\\.${spelling}\\b|\\[['"]${spelling}['"]\\])|\\b${namespace}[:_]${spelling}\\b`, 'i')
+  const namespaceSpelling = namespace.split(/[-_]/).join('[-_]?');
+  const pattern = namespace !== 'release'
+    ? new RegExp(`\\btools(?:\\.${namespaceSpelling}|\\[['"]${namespaceSpelling}['"]\\])\\s*(?:\\.${spelling}\\b|\\[['"]${spelling}['"]\\])|\\b${namespaceSpelling}[:_]${spelling}\\b`, 'i')
     : new RegExp(spelling, 'i');
   return { tool: normalizeMcpToolName(tool), pattern };
 });

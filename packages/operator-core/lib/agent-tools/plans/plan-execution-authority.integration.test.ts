@@ -924,7 +924,7 @@ describe('canonical successful-start revision authority (real PG)', () => {
     // normalization of is_legacy/promote_policy as a structured input change.
     const canonicalWrite = await withPlanLock(planCtx, writeOptions, async current => {
       if (current === null) throw new Error('started plan disappeared before canonical setup write');
-      return { newBody: current, value: null };
+      return { newBody: current + '\n## Phase 1\n- **P-001** `todo` Preserve findings deliverable: code\n', value: null };
     });
     expect(canonicalWrite.kind).toBe('applied');
     const receipt = await issue();
@@ -940,6 +940,26 @@ describe('canonical successful-start revision authority (real PG)', () => {
     expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual([]);
     expect(await checkPlanExecutionGuard({ ownerId: identity.ownerId, workspaceId: scope.workspaceId,
       toolName: 'apply_patch', args: {} })).toBeNull();
+
+    // This release -> completion sequence revoked the live start when the
+    // completion ran on an older host without the preservation marker.
+    const { flipStatusInBody } = await import('./set-status');
+    for (const [status, note, noteKind] of [
+      ['todo', '← WI-6554700010048264 released', 'progress'],
+      ['done', '← WI-6554700010048264 completed (done)', undefined],
+    ] as const) {
+      const reflected = await withPlanLock(planCtx, writeOptions, async current => {
+        if (current === null) throw new Error('started plan disappeared before reflection');
+        const changed = flipStatusInBody(current, 'P-001', status, note, noteKind);
+        if (!changed.found) throw new Error('reflection target disappeared');
+        return { newBody: changed.newBody, value: null };
+      });
+      expect(reflected.kind).toBe('applied');
+      expect(await readExecutionPlanRow(scope)).toMatchObject({
+        execution_start_revision_seq: receipt.seq, execution_start_invalidation: null,
+      });
+      expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual([]);
+    }
 
     // Seq 76 added this exact untyped author note after start receipt 75. It is
     // not a typed operational-progress receipt, so execution meaning changes.
