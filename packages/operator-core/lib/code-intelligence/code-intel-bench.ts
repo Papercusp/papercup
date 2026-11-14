@@ -121,7 +121,7 @@ export const BENCH_PROBES: readonly BenchProbe[] = Object.freeze([
   },
   {
     caseId: 'rust-trait-implementations',
-    file: 'papercusp-desktop/src-tauri/src/endpoint_ipc.rs',
+    file: 'papercusp-desktop/src-tauri/src/endpoint_ipc_transport.rs',
     anchor: 'enum IpcStream',
     symbol: 'IpcStream',
     rationale:

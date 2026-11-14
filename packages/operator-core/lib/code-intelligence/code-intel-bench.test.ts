@@ -244,11 +244,15 @@ describe('project rooting — the false-empty class (P-010 defect 1)', () => {
     expect(error).toMatch(/false-empty|EMPTY/);
   });
 
-  it('leaves TypeScript rooted at the monorepo root, which is correct for it', () => {
+  it('roots TypeScript at its nearest configured project for symbol search', () => {
     const tsFile = resolve(REPO_ROOT, 'libs/generic/search/src/leg-health.ts');
     const { root, error } = resolveProjectRoot('typescript', tsFile, REPO_ROOT);
     expect(error).toBeNull();
-    expect(root).toBe(REPO_ROOT);
+    expect(root).toBe(resolve(REPO_ROOT, 'libs/generic/search'));
+    expect(root).not.toBe(REPO_ROOT);
+    expect(
+      existsSync(join(root, 'tsconfig.json')) || existsSync(join(root, 'jsconfig.json')),
+    ).toBe(true);
   });
 
   it('every Rust bench probe resolves to a real crate root', () => {
