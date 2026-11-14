@@ -19,6 +19,9 @@ import { planClassAllowsAllExemptItems } from '../../plan-class-refs';
 
 export const SPEC_QUALITY_RUBRIC_REF = 'spec-quality';
 
+/** Increment when implementation-independence detector semantics change; prose can change independently. */
+export const IMPLEMENTATION_INDEPENDENCE_DETECTOR_REVISION = 2;
+
 export const SPEC_QUALITY_CRITERIA = [
   'stable-revision-identity',
   'item-contract-coverage',
@@ -1132,6 +1135,7 @@ export function evaluatePlanSpecQuality(input: {
   });
   const implementationIndependenceControlsPassed = implementationIndependenceDetectorControls.every((control) => control.passed);
   const implementationIndependenceCoverage =
+    ' Detector semantics revision: ' + IMPLEMENTATION_INDEPENDENCE_DETECTOR_REVISION + '.' +
     ' Fields inspected per clause: behavior and falsifier.observation (falsifier.probeMethod is excluded because it legitimately names the test or probe).' +
     ' Detector coverage: implementation filenames, explicitly qualified/quoted construct symbols (including snake_case identifiers), bare lowerCamel identifiers (excluding recognized public platform/device names and metric spellings), repository paths, internal route literals, named operations, mandated reuse of existing surfaces (including shared UI components/report cards, runtimes, flows, pipelines, ledgers, mechanisms, scheduling paths and sweeps, including passive by prescriptions), imperative implementation selection, filesystem permission modes, named storage backends, encryption, and mirroring. Inspected ' +
     behavioral.length + ' active/accepted behavior clause(s), including ' +
