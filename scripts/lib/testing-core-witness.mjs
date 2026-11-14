@@ -24,8 +24,19 @@ const controls = ['package-lock.json', 'apps/operator/bin/bundle-host-common.sh'
   'packages/operator-core/lib/retained-replay-sources.json'];
 // Build products are not a source universe. A selected input in one of these
 // trees is refused by the first onLoad plugin rather than silently admitted.
+// Unambiguous product/state names are excluded at any depth. The generic names
+// below are ALSO ordinary source directory names (operator-core's
+// lib/agent-tools/build holds the build:* tool group — excluding it by basename
+// failed every staging host bundle, EI-28737711143045377), so they count as
+// products only at a package root: the census root, or a directory carrying a
+// package.json / Cargo.toml manifest.
 const productDirs = new Set(['.git', '.papercusp', '.next', 'dist-host', 'dist-verify',
-  'dist-sidecar', 'dist', 'build', 'out', 'coverage', 'target', 'sidecar', 'env-sidecars', '_retired', '.cache']);
+  'dist-sidecar', 'sidecar', 'env-sidecars', '_retired', '.cache']);
+const packageProductDirs = new Set(['dist', 'build', 'out', 'coverage', 'target']);
+const packageManifests = ['package.json', 'Cargo.toml'];
+const isProductDir = (path, root) => productDirs.has(basename(path))
+  || (packageProductDirs.has(basename(path)) && (dirname(path) === root
+    || packageManifests.some(name => existsSync(join(dirname(path), name)))));
 const stateDirs = new Set(['.git', '.papercusp', '.cache', '.next', '.turbo']);
 
 function identity(path) {
@@ -122,7 +133,7 @@ export function captureTestingCoreInputUniverse(root, outputDir) {
     visited.add(path);
     const local = relative(root, path).split(sep).join('/'), original = identity(path);
     if (path !== root && (local === omittedOutput || stateDirs.has(basename(path))
-      || (!dependency && productDirs.has(basename(path))))) return;
+      || (!dependency && isProductDir(path, root)))) return;
     rows.push({ path, original });
     if (original.kind === 'directory') {
       for (const child of readdirSync(path).sort()) walk(join(path, child), dependency || basename(path) === 'node_modules');

@@ -277,6 +277,23 @@ describe('testing core producing-build witness', () => {
     expect(existsSync(f.outfile)).toBe(false);
   });
 
+  it('admits a generic product-named SOURCE directory below a package root (EI-28737711143045377)', () => {
+    const f = fixture();
+    // operator-core/lib/agent-tools/build holds the build:* tool group; a
+    // basename-only exclusion refused it and failed every staging host bundle.
+    const source = 'packages/operator-core/lib/agent-tools/build/typecheck.ts';
+    f.put(source, 'export const typecheck = 1;');
+    f.put('packages/operator-core/package.json', '{"name":"operator-core"}');
+    const products = ['packages/operator-core/build/stale.js', 'packages/operator-core/dist/stale.js', 'out/stale.js'];
+    for (const product of products) f.put(product, 'export const stale = 1;');
+    const universe = captureTestingCoreInputUniverse(f.root, dirname(f.outfile));
+    const custody = createCompilerInputCustody({ root: universe.domainRoot, files: universe.files,
+      discoverInputs: true, verifyBoundary: () => {} });
+    expect(custody.readToolchainInput(join(f.root, source)).contents.toString()).toContain('typecheck');
+    for (const product of products)
+      expect(() => custody.readToolchainInput(join(f.root, product))).toThrow(/outside original census/);
+  });
+
   it('refuses symlinked native configuration without guessing extends semantics', async () => {
     const f = fixture();
     f.put('compiler.settings', '{"compilerOptions":{"target":"ES2022"}}');
