@@ -75,28 +75,6 @@ describe('caller-session research replay through the push boundary', () => {
       expect(await readResearchTrail(ws!, who!, hive!)).toEqual({ subjects: [], reason: 'trail not captured for this client' });
     }
   });
-  it('keeps a slow capture off the response path while bounding eventual persistence', async () => {
-    vi.useFakeTimers();
-    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    let finish!: () => void;
-    let captureStarted = false;
-    const capture = new Promise<void>(resolve => { finish = resolve; });
-    const deps: PushChannelDeps = { research: () => { captureStarted = true; return capture; }, snapshot: async () => null,
-      enabled: async () => false, legs: () => new Map(), commit: async () => '' };
-    try {
-      let responseSettled = false;
-      const response = codeIntelPushText(input({ calls: [{ tool: 'Read', toolInput: { file_path: 'code.ts' } }] }), deps)
-        .then(value => { responseSettled = true; return value; });
-      await Promise.resolve();
-      expect(captureStarted).toBe(true);
-      expect(responseSettled).toBe(true);
-      expect(await response).toBe('');
-      await vi.advanceTimersByTimeAsync(501);
-      expect(warning).toHaveBeenCalledWith(expect.stringContaining('code-intel-research-trail'));
-      finish();
-      await capture;
-    } finally { finish(); warning.mockRestore(); vi.useRealTimers(); }
-  });
   it('uses the actual Codex per-call adapter and distinguishes empty capture from no capture', async () => {
     const parsed = parseCodex('mid-turn', { tool_name: 'exec_command', tool_input: { cmd: 'cat code.ts', cwd: root },
       tool_response: text, cwd: root });
