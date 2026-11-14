@@ -26,6 +26,34 @@ Tracked work: WI-6554700010048040.
   (su-4125b63f, label `bar-amendment-review:4346c69d8e09`). Its answer arrives as a comment
   on WI-6554700010048040.
 
+## Resubmission after the pre-apply review
+
+- The first pre-apply reviewer, su-4125b63f, returned OBJECT in thread-post:1228833.
+  - **Blocking:** the bars cited `shared-reference-system-2026-11-13#D-022`, but that
+    Decision was not yet recorded in the pinned plan copy.
+  - **Non-blocking:** R-38's "claim cycle" had no floor, so a judge item could be reclaimed
+    after an arbitrarily short cycle.
+- Both were fixed before resubmitting:
+  - D-022 was recorded with `plans:add-decision` (plan v78).
+  - R-38's requirement block (plan v77) now says a claim cycle is never shorter than one
+    `LIFECYCLE_JUDGE_INTERVAL_MS` judge interval, which is 60 minutes
+    (`packages/operator-core/lib/task-manager/lifecycle-judgement.ts:36`). The amendment
+    payload carries the same floor.
+- The first resubmission dry run failed server-side on a Postgres statement timeout (57014),
+  so the retry used a new idempotency key. The retry (receipt `review-52489ae8…`) posted
+  preview thread-post:1228901, with `proposedPatchHash` `93ba9de6…` and subject plan revision
+  74 → 79. That post contains D-022 and the R-38 floor.
+- No router-eligible reviewer was free again, so a second fresh outside-lineage reviewer was
+  launched: su-755dd078, label `bar-amendment-review:80539679357b`.
+- su-755dd078 approved in thread-post:1228954 (`approve thread-post:1228901`). Its verified
+  source hash `8f92fb6e…` matches the preview's `reviewSourceHash`.
+- Applied on 2026-11-14 with `approvalRef` thread-post:1228954 and idempotency key
+  `srs-acceptance-rev10-20261114b-apply1`. The call passed its foreground deadline and
+  finished server-side; `rubrics:amend-status` reported `committed`, `ok: true` at about
+  18:27Z. The rubric is active with 38 criteria.
+- Lesson: the pre-apply reviewer checks that every plan Decision a bar cites already exists in
+  the pinned plan copy. Record the Decision before the amendment dry run, not after apply.
+
 ## Finding → bar map
 
 | finding | severity | disposition |
