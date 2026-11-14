@@ -510,21 +510,29 @@ describe('composeDispatch', () => {
     expect(dispatch.args.safeParse({ ...base, note: 'x'.repeat(731) }).success).toBe(true);
   });
 
-  it('skips the optional presence read for an exact owner id so delivery cannot wait on alias resolution', async () => {
+  it('skips the optional presence read for an exact owner id and explains unknown liveness', async () => {
     const target = 'su-c7a0035f-da52-48f1-88f1-7f939f04c1b7';
     const { call, calls } = mockCall({
       'coord:presence': () => { throw new Error('exact ids must not need a roster lookup'); },
       'plan_items:status': { items: [] },
       'plan_items:assign': { ok: true, results: [{ ok: true }, { ok: true }] },
-      'coord:send': sendEnv(target, { mode: 'required', targets: [target], woken: 1 }),
+      'coord:send': sendEnv(target, { mode: 'required', targets: [target] }),
     });
 
     const result = await composeDispatch({ ...baseArgs, to: target }, call);
 
     expect(calls.map((entry) => entry.name)).not.toContain('coord:presence');
     expect(calls.map((entry) => entry.name)).toContain('coord:send');
-    expect(result).toMatchObject({ to: target, sessionState: null, wakeable: null });
-    expectQueuedWake(result);
+    expect(result).toMatchObject({
+      to: target,
+      sessionState: null,
+      wakeable: null,
+      livenessReason: 'canonical-owner-id-fast-path',
+      woken: 0,
+      pickupConfirmed: false,
+    });
+    expect(result).not.toHaveProperty('queued');
+    expect(result.warning).toMatch(/no queued\/woken count.*liveness reason.*canonical-owner-id-fast-path/i);
   });
 
   it('full dispatch to a PARKED target: assigns lane + delivers note + queues wake without pickup', async () => {
@@ -690,6 +698,29 @@ describe('composeDispatch', () => {
     expect(res.delivered).toBe('m-1');
   });
 
+  it('reports a live target when a pure directed wake receipt reports zero queued deliveries', async () => {
+    const target = 'su-7a2aFULL';
+    const { call, calls } = mockCall({
+      'coord:presence': presence([{ ownerId: target, sessionState: 'live', wakeable: true }]),
+      'coord:send': sendEnv(target, { mode: 'required', targets: [target], queued: 0, woken: 0 }),
+    });
+    const res = await composeDispatch({ to: 'su-7a2a', note: 'resume what I sent you' }, call);
+
+    expect(calls.map((entry) => entry.name)).toEqual(['coord:presence', 'coord:send']);
+    expect(res).toMatchObject({
+      ok: true,
+      to: target,
+      sessionState: 'live',
+      wakeable: true,
+      assigned: null,
+      delivered: 'm-1',
+      queued: 0,
+      woken: 0,
+      pickupConfirmed: false,
+    });
+    expect(res.warning).toMatch(/zero queued deliveries.*no pickup is confirmed.*sessionState=live, wakeable=true/i);
+  });
+
   it('degrades when the presence read fails — sessionState null, dispatch still runs', async () => {
     const { call, calls } = mockCall({
       'coord:presence': () => {
@@ -701,6 +732,7 @@ describe('composeDispatch', () => {
     const res = await composeDispatch(baseArgs, call);
     expect(res.sessionState).toBeNull();
     expect(res.wakeable).toBeNull();
+    expect(res.livenessReason).toBe('presence-read-failed');
     expectQueuedWake(res); // the durable wake was queued, but pickup is unconfirmed
     expect(calls.map((c) => c.name)).toContain('coord:send');
   });

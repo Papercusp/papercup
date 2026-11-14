@@ -103,11 +103,17 @@ export interface DispatchResult {
   /** The RESOLVED target ownerId (coord:send resolves a short handle/prefix). */
   to: string;
   /** The target's session state at dispatch time (P-001): live | parked | ended |
-   *  recorded | null (federated/unknown row, or the presence read degraded). An
-   *  `ended` target is NOT wakeable — see `warning`. */
+   *  recorded | null (liveness was not observed; see livenessReason). An ended
+   *  target is NOT wakeable — see warning. */
   sessionState: string | null;
   /** A live inbox-wake await exists → the wake can land (null = couldn't derive). */
   wakeable: boolean | null;
+  /** Why target liveness is unknown when sessionState or wakeable is null. */
+  livenessReason?:
+    | 'canonical-owner-id-fast-path'
+    | 'presence-row-not-found'
+    | 'presence-read-failed'
+    | 'presence-row-unknown';
   /** The durable lane assignment outcome (null when no planSlug+items were given —
    *  a pure directed wake). */
   assigned: DispatchAssigned | null;
@@ -406,6 +412,9 @@ export async function composeDispatch(
   let sessionState: string | null = null;
   let wakeable: boolean | null = null;
   const exactOwnerId = CANONICAL_OWNER_ID_RE.test(args.to);
+  let livenessReason: DispatchResult['livenessReason'] = exactOwnerId
+    ? 'canonical-owner-id-fast-path'
+    : undefined;
   let presenceOwnerId: string | null = exactOwnerId ? args.to : null;
   let stableTarget: StableAgentTargetState | null = null;
   let deliveryOwnerId: string | null = null;
@@ -422,18 +431,26 @@ export async function composeDispatch(
         sessionState = row.sessionState;
         wakeable = row.wakeable;
         presenceOwnerId = row.ownerId || null;
-      } else if (args.workItemIds?.length && deps.resolveStableTarget) {
-        stableTarget = await deps.resolveStableTarget(args.to);
-        if (stableTarget.present) {
-          sessionState = stableTarget.sessionState;
-          wakeable = stableTarget.wakeable;
-          // Assignment stays on the name; delivery follows its live adopter.
-          deliveryOwnerId = stableTarget.ownerId;
+        if (sessionState === null || wakeable === null) livenessReason = 'presence-row-unknown';
+        else livenessReason = undefined;
+      } else {
+        livenessReason = 'presence-row-not-found';
+        if (args.workItemIds?.length && deps.resolveStableTarget) {
+          stableTarget = await deps.resolveStableTarget(args.to);
+          if (stableTarget.present) {
+            sessionState = stableTarget.sessionState;
+            wakeable = stableTarget.wakeable;
+            // Assignment stays on the name; delivery follows its live adopter.
+            deliveryOwnerId = stableTarget.ownerId;
+            if (sessionState === null || wakeable === null) livenessReason = 'presence-row-unknown';
+            else livenessReason = undefined;
+          }
         }
       }
     });
   } catch {
     /* degrade: sessionState/wakeable stay null */
+    livenessReason = livenessReason ?? 'presence-read-failed';
   }
 
   // 1.25. Stable-agent work-item assignment. This is the concrete execution
@@ -741,7 +758,9 @@ export async function composeDispatch(
   // coord:send's wake.queued is the event engine's matched/queued count; the
   // detached wake pump has not yet proved that the target executed a turn. The
   // woken fallback keeps dispatch compatible with older coord:send responses.
-  const queued = typeof wake.queued === 'number' ? wake.queued : typeof wake.woken === 'number' ? wake.woken : 0;
+  const reportedQueued =
+    typeof wake.queued === 'number' ? wake.queued : typeof wake.woken === 'number' ? wake.woken : undefined;
+  const queued = reportedQueued ?? 0;
   const woken = 0;
   // EI-5957: a wake STAGES (never delivers) when the target is in MANUAL wake-mode.
   const staged = typeof wake.staged === 'number' ? wake.staged : 0;
@@ -759,11 +778,12 @@ export async function composeDispatch(
     to: resolvedTo,
     sessionState,
     wakeable,
+    ...(livenessReason ? { livenessReason } : {}),
     assigned,
     workItems,
     delivered: typeof r0.msg_id === 'string' ? r0.msg_id : null,
     woken,
-    queued,
+    ...(reportedQueued !== undefined ? { queued: reportedQueued } : {}),
     pickupConfirmed: false,
     ...(Array.isArray(wake.pickup) && wake.pickup.length > 0 ? { pickup: wake.pickup } : {}),
     ...(itemsHydrated > 0 ? { itemsHydrated } : {}),
@@ -891,6 +911,29 @@ export async function composeDispatch(
       `coord:dispatch queued ${queued} durable wake delivery for ${resolvedTo}, but pickup is NOT confirmed — ` +
       'verify a fresh work-item checkpoint or activity timestamp before treating the assigned lane as active.';
     result.warning = result.warning ? `${result.warning} ${pickupWarning}` : pickupWarning;
+  }
+  if (!result.warning && !failure && reportedQueued === undefined) {
+    const livenessNote = result.livenessReason
+      ? ' Target liveness reason: ' + result.livenessReason + '.'
+      : sessionState !== null
+        ? ' Presence observed sessionState=' + sessionState + ', wakeable=' + String(wakeable) + '.'
+        : '';
+    result.warning =
+      'coord:dispatch issued the coord:send required-wake call, but its response included no queued/woken count; ' +
+      'queued is unknown and omitted. woken:0 and pickupConfirmed:false mean no pickup was confirmed.' +
+      livenessNote +
+      ' Do not infer target death or transport failure from this response.';
+  } else if (!result.warning && !failure && reportedQueued === 0) {
+    const livenessNote = result.livenessReason
+      ? ' Target liveness reason: ' + result.livenessReason + '.'
+      : sessionState !== null
+        ? ' Presence observed sessionState=' + sessionState + ', wakeable=' + String(wakeable) + '.'
+        : '';
+    result.warning =
+      'coord:dispatch required-wake receipt reported zero queued deliveries without recipient_absent, ' +
+      'recipient_dead, or staged disposition; no pickup is confirmed.' +
+      livenessNote +
+      ' Do not infer target death from this response.';
   }
   if (failure?.code === 'target_adopter_gone') {
     // The generic dead/absent warnings above name one session; the repair is the name's.
