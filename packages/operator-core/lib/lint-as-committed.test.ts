@@ -1683,9 +1683,26 @@ console.log('CLONE_PREREQUISITES_OK');
 
   it.each(['compatible', 'mismatched'] as const)('uses an explicit %s dependency donor without changing source authority', state => {
     const f = fixture('node build.cjs');
-    const donor = mkdtempSync(join(tmpdir(), 'lac-explicit-donor-'));
+    const env = commandEnvironment();
+    env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT = join(env.TMPDIR!, 'generations');
+    const donor = mkdtempSync(join(env.TMPDIR!, mod.WORK_ROOT_PREFIX + 'explicit-donor-'));
     try {
       cpSync(f.root, donor, { recursive: true, verbatimSymlinks: true });
+      // The selected retained donor is the oldest idle kept tree, beyond the
+      // runner's cap. Its own sweep must protect this input until copying ends.
+      const now = Date.now();
+      writeFileSync(join(donor, mod.OWNER_MARKER), JSON.stringify({
+        pid: 2147483647, keep: true, createdAtMs: now - 3600_000,
+        sha: f.head, dependencyMode: 'independent-copy-v1',
+      }));
+      const spareTrees = Array.from({ length: mod.MAX_IDLE_KEPT_TREES + 1 }, (_, i) => {
+        const tree = join(env.TMPDIR!, mod.WORK_ROOT_PREFIX + 'idle-' + i);
+        mkdirSync(join(tree, '.git'), { recursive: true });
+        writeFileSync(join(tree, mod.OWNER_MARKER), JSON.stringify({
+          pid: 2147483647, keep: true, createdAtMs: now - i * 1000,
+        }));
+        return tree;
+      });
       const dependency = 'node_modules/fixture-dependency/index.cjs';
       for (const [root, value] of [[f.root, 'source-install'], [donor, 'donor-install']]) {
         mkdirSync(dirname(join(root, dependency)), { recursive: true });
@@ -1696,15 +1713,21 @@ console.log('CLONE_PREREQUISITES_OK');
       const probe = readFileSync(join(f.root, 'probe.cjs'), 'utf8');
       snapshot(f.root, { 'probe.cjs': probe + `
 require('node:assert/strict').equal(require('fixture-dependency/index.cjs'), 'donor-install');
+require('node:assert/strict').deepEqual(
+  require('node:fs').readdirSync(process.env.PAPERCUSP_RELEASE_RETENTION_ROOT).filter(name => name.startsWith('lease-agent-pin-')), []);
 console.log('EXPLICIT_DONOR_SOURCE_OK');
 ` }, f.head);
       writeFileSync(join(f.root, 'package-lock.json'), '{"lockfileVersion":3}\n');
       if (state === 'mismatched') writeFileSync(join(donor, 'package-lock.json'), '{"lockfileVersion":2}\n');
       const result = spawnSync(process.execPath, [scriptPath, 'lint:probe',
         '--workspace-dir=libs/runtime', '--dependency-donor=' + donor], {
-        cwd: f.root, env: commandEnvironment(), encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL',
+        cwd: f.root, env, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL',
       });
       const output = result.stdout + result.stderr;
+      expect(existsSync(donor), output).toBe(true);
+      expect(existsSync(spareTrees.at(-1)!)).toBe(false);
+      // Both success and rejected materialization release the temporary pin.
+      expect(readdirSync(env.PAPERCUSP_RELEASE_RETENTION_ROOT!).filter(name => name.startsWith('lease-agent-pin-'))).toEqual([]);
       if (state === 'compatible') {
         expect(result.status, output).toBe(0);
         expect(output).toContain('EXPLICIT_DONOR_SOURCE_OK');
