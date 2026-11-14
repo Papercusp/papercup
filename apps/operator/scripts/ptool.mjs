@@ -2470,6 +2470,11 @@ export const PTOOL_FLEET_WIND_DOWN_TIMEOUT_MS = PTOOL_FOREGROUND_TOOL_TIMEOUT_MS
 // must also move this client deadline, including through tools:invoke.
 export const PTOOL_AGENT_LAUNCH_TIMEOUT_MS = AGENT_LAUNCH_CLIENT_TIMEOUT_MS;
 
+// EI-28789978723752193: consult:reply persists its post before wake/dispatch
+// settlement and declares a 120s handler budget. Outlive MCP's extra 5s so
+// the client observes the receipt instead of abandoning a committed reply.
+const PTOOL_CONSULT_REPLY_TIMEOUT_MS = 130_000;
+
 // EI-21305071238818431: coord:orient declares a 120s server-side dispatch budget.
 // Its handler-local 50s aggregate fence does not cover time spent before/after the
 // composition body (dispatch contention and result shaping/serialization); the
@@ -2668,6 +2673,8 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // tool's 90s handler + 5s MCP settlement window so it observes the typed
   // result instead of returning an ambiguous may-have-executed timeout.
   ['capability:launch-agent', PTOOL_AGENT_LAUNCH_TIMEOUT_MS],
+  // Replies have a bounded post-and-delivery settlement contract.
+  ['consult:reply', PTOOL_CONSULT_REPLY_TIMEOUT_MS],
   ['code:run', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   // `recipes:run` executes the same foreground orchestration worker as
   // `code:run`, including its 45s server-side ceiling. Keep the client beyond
@@ -2737,13 +2744,9 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // writes are still settling and surface MCP -32001/outcome-unknown. Keep
   // this write-side coordination call outside the MCP transport cap.
   ['work_items:request_release', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
-  // EI-22351729180562005: consult:get_feedback can spend most of the MCP
-  // transport window selecting/reviving a responder and durably routing the
-  // conversation. A live call completed successfully in 47.954s after ptool's
-  // ordinary 30s deadline had already reported its mutation outcome unknown.
-  // Keep direct and tools:invoke-wrapped calls outside the transport window so
-  // callers receive the typed consult receipt instead of reconciling by hand.
-  ['consult:get_feedback', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // consult:get_feedback shares the agent-launch handler budget for routing
+  // and kickoff settlement; keep direct and deferred callers outside it.
+  ['consult:get_feedback', PTOOL_AGENT_LAUNCH_TIMEOUT_MS],
   // EI-21386877660531420: activity:tool-log scans and compacts the activity
   // ledger. In a concurrent projected batch that read can outlive ptool's
   // ordinary 30s deadline even though it is bounded and still progressing.

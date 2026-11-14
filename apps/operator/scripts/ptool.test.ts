@@ -1399,6 +1399,32 @@ describe('ptool bearer-token resolution', () => {
 });
 
 describe('ptool call deadlines', () => {
+  it.each([
+    ['consult:reply', false],
+    ['consult:reply', true],
+    ['consult:get_feedback', false],
+    ['consult:get_feedback', true],
+  ] as const)('outlives the declared %s server budget (deferred=%s)', (tool, deferred) => {
+    const replySource = readFileSync(new URL(
+      '../../../packages/operator-core/lib/agent-tools/consult/reply.ts',
+      import.meta.url,
+    ), 'utf8');
+    const replyTimeout = replySource.match(/timeoutSec:\s*(\d+)/);
+    expect(replyTimeout).not.toBeNull();
+    const handlerSeconds = tool === 'consult:reply'
+      ? Number(replyTimeout![1])
+      : AGENT_LAUNCH_HANDLER_TIMEOUT_SEC;
+    const args = tool === 'consult:reply'
+      ? { conversation_id: 'consult-budget-test', kind: 'new_fact', body: 'Updated evidence.' }
+      : { question: 'Review the evidence.', allow_dispatch: false };
+    const deadline = deferred
+      ? timeoutForTool('tools:invoke', { name: tool, args })
+      : timeoutForTool(tool, args);
+
+    expect(deadline).toBeGreaterThan((handlerSeconds + 5) * 1000);
+    expect(timeoutForTool('ordinary:read')).toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
   it('keeps the pg_hot_queries client alive through the maximum sample on direct and deferred calls', () => {
     const args = { windowSec: 600, limit: 10 };
     const direct = timeoutForTool('dev:pg_hot_queries', args);
@@ -1803,14 +1829,13 @@ describe('ptool call deadlines', () => {
       name: 'work_items:request_release',
       args: { id: 'WI-1', deadlineSec: 30, onSilence: 'reclaim', reason: 'timeout mapping regression' },
     })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
-    // EI-22351729180562005: live rubric-vetting routing completed in 47.954s;
-    // the client must not abandon either transport shape at the flat 30s
-    // deadline and turn a successful consult write into outcome-unknown.
-    expect(timeoutForTool('consult:get_feedback')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    // Consultation routing now shares the agent-launch handler contract;
+    // neither transport shape may stop at the older foreground allowance.
+    expect(timeoutForTool('consult:get_feedback')).toBe(PTOOL_AGENT_LAUNCH_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', {
       name: 'consult:get_feedback',
       args: { question: 'timeout mapping regression', policy: 'rubric-vetting' },
-    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    })).toBe(PTOOL_AGENT_LAUNCH_TIMEOUT_MS);
     expect(timeoutForTool('activity:tool-log')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('sessions:search')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('sessions:read')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
