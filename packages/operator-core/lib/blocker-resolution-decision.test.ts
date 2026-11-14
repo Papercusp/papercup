@@ -23,6 +23,37 @@ const defer = (): BlockerDecisionInput => ({
 });
 
 describe('host unmeasured runtime provenance', () => {
+  it('admits only an exact host-bound pending commit settlement as an event recheck', async () => {
+    const runtime = { kind: 'runtime' as const, ref: 'legacy-native-condition' };
+    const remedy = { kind: 'source' as const, ref: 'package.json' };
+    const recheckRef = { kind: 'event' as const, ref: 'work-item:settled:WI-2' };
+    const scope = { workspaceId: 'w', harnessSlug: 'h', workItemId: 'WI-1', custodianId: 'su-a' };
+    const input: BlockerDecisionInput = { schemaVersion: 1, idempotencyKey: 'pending-settlement', disposition: 'defer',
+      symptom: 'Verified repair awaits committed identity', evidenceRefs: [runtime, remedy],
+      investigation: [{ action: 'Read original condition', outcome: 'Unmeasured', evidenceRefs: [runtime] }],
+      attempts: [{ action: 'Verify repair', outcome: 'Pending settlement', evidenceRefs: [remedy] }],
+      deferral: { reason: 'technical-limit', responsibleParty: 'su-a', nextAction: 'Consume exact settlement',
+        reasonEvidenceRefs: [runtime], recheckRef } };
+    const settlement = { status: 'available' as const, condition: 'pending' as const, reachable: true,
+      responsibleParty: 'su-a', canonicalWorkItemId: 'WI-2',
+      pendingCommitSettlement: { generation: 1, evidenceHash: 'e'.repeat(64) } };
+    const check = (measurement: BlockerEvidenceMeasurement, ref = recheckRef) => validateBlockerDecisionEvidence(
+      { ...input, deferral: { ...input.deferral, recheckRef: ref } },
+      { ownerId: 'su-a', workItemId: 'WI-1', obligationRefs: [runtime], unmeasuredRuntimeDeferral: scope,
+        readEvidence: async evidence => evidence.kind === 'runtime'
+          ? { status: 'unmeasured-runtime', ref: runtime.ref, scope, detail: 'Original predicate remains unmeasured' }
+          : evidence.kind === 'event' ? measurement : { status: 'available' } });
+    expect(await check(settlement)).toEqual({ ok: true });
+    for (const override of [{ pendingCommitSettlement: undefined },
+      { pendingCommitSettlement: { generation: 0, evidenceHash: 'e'.repeat(64) } },
+      { pendingCommitSettlement: { generation: 1, evidenceHash: 'invalid' } },
+      { canonicalWorkItemId: 'WI-other' }, { canonicalWorkItemId: 'WI-1' },
+      { responsibleParty: 'su-b' }, { condition: 'satisfied' as const }, { reachable: false }]) {
+      expect(await check({ ...settlement, ...override })).toMatchObject({ ok: false });
+    }
+    expect(await check(settlement, { kind: 'event', ref: 'work-item:done:WI-2' })).toMatchObject({ ok: false });
+    expect(await check(settlement, { kind: 'event', ref: 'arbitrary:pending:WI-2' })).toMatchObject({ ok: false });
+  });
   it('requires the exact canonical obligation and matching authenticated scope', async () => {
     const runtime = { kind: 'runtime' as const, ref: 'legacy-native-condition' };
     const remedy = { kind: 'source' as const, ref: 'package.json' };

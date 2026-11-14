@@ -303,6 +303,8 @@ export type BlockerEvidenceMeasurement =
      * when their canonical readers return this exact identity. */
     conditionIdentity?: string;
     canonicalWorkItemId?: string;
+    /** Host-validated proposed completion, bound to its exact stored manifest. */
+    pendingCommitSettlement?: { generation: number; evidenceHash: string };
     responsibleParty?: string;
     liveOwnerId?: string;
     authorityDenied?: boolean;
@@ -388,11 +390,16 @@ export async function validateBlockerDecisionEvidence(
       missing.push('attempted safe remedy with measured available supporting evidence');
     }
     const recheck = measured.get(evidenceKey(recheckRef));
-    if (recheckRef.kind !== 'work-item' || recheck?.status !== 'available' ||
+    const pendingSettlement = recheckRef.kind === 'event' && recheck?.status === 'available' &&
+      recheckRef.ref === `work-item:settled:${recheck.canonicalWorkItemId}` &&
+      Number.isSafeInteger(recheck.pendingCommitSettlement?.generation) &&
+      (recheck.pendingCommitSettlement?.generation ?? 0) > 0 &&
+      /^[0-9a-f]{64}$/.test(recheck.pendingCommitSettlement?.evidenceHash ?? '');
+    if ((recheckRef.kind !== 'work-item' && !pendingSettlement) || recheck?.status !== 'available' ||
         recheck.reachable !== true || recheck.condition !== 'pending' ||
         !recheck.canonicalWorkItemId || recheck.canonicalWorkItemId === context.workItemId ||
         recheck.responsibleParty !== responsibleParty) {
-      missing.push('separate canonical reachable pending work-item recheck owned by the responsible custodian');
+      missing.push('separate canonical reachable pending work-item or exact commit-settlement recheck owned by the responsible custodian');
     }
     return missing.length ? refuse(missing) : { ok: true };
   }
