@@ -1,7 +1,0 @@
----
-rel_path: "portability/census/v67-proof/04-p053-v67-child-provenance.json.part-000"
-updated_at: 1794257870941
-_body: "content"
----
-
-H4sIAAAAAAAC/yVQ20rEMBD9ldBn0ybpbbuQB4UVxEUXW18UWdJksg32Zi6iiP9uqA/DXM/MmfP6k2gzQrJHSTYsE2STsG7Ai9ZGQpauYgUrg1szD85jYb3RQnq3pWa+YBvmLBpu7/V4HDO7BA8WKyB1USqKtdwVuOi1wL0qBJZ92ff1TinCCCaxXBa6wtBLigtVESx2dYmprJXMma4rRlPnVVyZjssluULJaOaNandou/Pt3fFwfjq0z8cOWfgIkREoThF8gQz/4SS8HLbIeeGD46twDhQaQCjeN4LmipREojDLZZqMj6iT8IPjJKNotcsnzGKWwCN6WiMuehtnrj1nhFWYUkyajpF9yfYkT5ti94LkYEbVhj7K4zcW5L/0sPio6KPWDvzNd5QvNkYRDw9gT8LC7E9G8ZyyJqcNcu9mjQe7+JPjtE5+3/4A47RqVakBAAA=

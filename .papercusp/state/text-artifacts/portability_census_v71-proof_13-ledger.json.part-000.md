@@ -1,7 +1,0 @@
----
-rel_path: "portability/census/v71-proof/13-ledger.json.part-000"
-updated_at: 1794260716374
-_body: "content"
----
-
-H4sIAAAAAAAC/52PTU8DIRCG7/srCGdJqF26tt41vXnzPMK0bpYCzoDGNP3vAo1pvHp8vzLPnAchJJXwTLEkuRPSgXPbyVi1eVhPatyYe7U16JRZaeMAR62dkXdt9RVp4QQW2yxBQrKFk7rZvfUOFJD5T+e232c8teh1r1Za62k9TtfQx7h0oHNVVecYfStm5DyH464ic2/+F7/uOBa60vtowf/aHtqRF6Sn2bf0AJ6xRpcOxhly6e8QHpAwWFQx+O9HkQi5SQHBiU8kN9ssCD/KTCg8uiNSleDewC5yuAw/sSOK5HsBAAA=

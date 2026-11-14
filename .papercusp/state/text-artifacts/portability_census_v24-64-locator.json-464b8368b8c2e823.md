@@ -1,7 +1,0 @@
----
-rel_path: "portability/census/v24-64-locator.json-464b8368b8c2e823"
-updated_at: 1794230641786
-_body: "content"
----
-
-{"manifest":{"ref":"a6f2e128186765311a84b7d6e4ad40892f10e0fce99efea065b2cb6c9428fdde.native-proof.json","sha256":"a6f2e128186765311a84b7d6e4ad40892f10e0fce99efea065b2cb6c9428fdde","byteLength":4717},"identity":{"workspace":"papercusp-workspace","harness":"papercusp","runId":"50d7e24d-f60a-4967-925e-14310837217d"},"expectedHash":"31d57f466d88fcdf536dd33f96e59ed0d38b50ec8e0d5a88ba69d74c8ef986eb","inventoryHash":"d6680af2a0996473ba9facde7381ccfae5fa4532c740e15b2405dd0f6d408769"}

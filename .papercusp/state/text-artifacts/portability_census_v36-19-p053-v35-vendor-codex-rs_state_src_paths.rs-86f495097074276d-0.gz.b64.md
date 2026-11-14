@@ -1,7 +1,0 @@
----
-rel_path: "portability/census/v36-19-p053-v35-vendor-codex-rs_state_src_paths.rs-86f495097074276d-0.gz.b64"
-updated_at: 1794238365150
-_body: "content"
----
-
-H4sIAAAAAAAC/1WOuw7CMAxF93yFJ5QM9APcUhZ2kIC5MmkqImhStY4QQvw7plV5ePBwpXPuTYMDe+5jiIgbYnfwrctV+kmPbKdg4BqxIz4j7uTnSnXppG0vlAEa7sFCE6DxV1e1sfaNd3XFoqsSWz1ysHiDBpYlbDv2MRRzZSEtZQkPBXJXxzAbYAUcL152NANi65hqYhp1JqMbec7iRZt1NgPaTEH+UaVOENlCjPDXJ+6ZynzgqM0E7WPr9Jcy6qleCpAtrCcBAAA=

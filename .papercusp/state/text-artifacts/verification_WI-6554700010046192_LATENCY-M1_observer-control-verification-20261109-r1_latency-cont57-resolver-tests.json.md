@@ -1,8 +1,0 @@
----
-rel_path: "verification/WI-6554700010046192/LATENCY-M1/observer-control-verification-20261109-r1/latency-cont57-resolver-tests.json"
-updated_at: 1794251091900
-_body: "content"
----
-
-{"ok":true,"runId":"725a04e5-9a27-4afc-b2c1-158beda1ba09","root":"/home/marsh-office/papercupai-workspace/papercusp","passed":8,"failed":0,"skipped":243,"files":1,"failures":[],"failuresTruncated":false,"durationMs":28189.61,"byFile":{"packages/operator-core/test/committed-reader-source-preflight.test.ts":{"passed":8,"failed":0,"skipped":243,"collectionFailed":false,"runId":23775971,"ledgerDurationMs":1760}},"artifacts":{"directory":"/home/marsh-office/.papercusp/test-artifacts/testing-run/run-5M73gx","manifest":"/home/marsh-office/.papercusp/test-artifacts/testing-run/run-5M73gx/manifest.json","phases":"/home/marsh-office/.papercusp/test-artifacts/testing-run/run-5M73gx/phases.jsonl","reports":"/home/marsh-office/.papercusp/test-artifacts/testing-run/run-5M73gx/reports","ownedDatabases":"/home/marsh-office/.papercusp/test-artifacts/testing-run/run-5M73gx/owned-databases","runtimeInputs":"/home/marsh-office/.papercusp/test-artifacts/testing-run/run-5M73gx/executed-inputs","nativeProof":"/home/marsh-office/.papercusp/test-artifacts/testing-run/run-5M73gx/native-proof"},"cleanup":{"complete":true,"databases":[],"errors":[]},"testRunIds":[23775971],"rootSource":"requested","runnerDurationMs":1756,"phaseTimingsMs":{"preflightMs":198.73,"provenanceMs":69.09,"preparationMs":0.01,"admissionGateMs":0.01,"handoffMs":null,"admissionWaitMs":91.7,"routerExecutionMs":20827.12,"ledgerIdReadbackMs":30.17,"finalizationMs":0.05,"totalHandlerMs":28189.61}}
-

@@ -1,7 +1,0 @@
----
-rel_path: "portability/census/v36-47-router.json-ad5bbb5b8ae84e35-0.gz.b64"
-updated_at: 1794238365150
-_body: "content"
----
-
-H4sIAAAAAAAC/9WRzWqFMBCF9z6FuL7jT9SofYNCoYVC4VK6iMlEQ6ORZLIqffdGV+0jdDEw5xvmcJj5yvK8kE5h8ZA3t1MEs+zCJrlHay9CZkP1HCkxLWzAC4rZeUL1h5EIn4/q96qLdER6csuLoDWkyXuiiVer27DahA8rOK2NxKo8xIFexnBUhIFAeDJaSAqXNPsCPu5VKqD27a7vlU/m6KGf5nqoaw2jUgK6lmuYJmxg4LzRkqFW3QBd37eS8wkYG1lSs4SRIQOt2hqHlveMT2UglSxL65bi9i9ini16fyVOgT+uk8vVWPVKgs6XFtK6kL6UfWc/mI8y4uoBAAA=

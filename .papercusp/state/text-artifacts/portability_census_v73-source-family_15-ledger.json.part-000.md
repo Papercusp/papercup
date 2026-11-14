@@ -1,7 +1,0 @@
----
-rel_path: "portability/census/v73-source-family/15-ledger.json.part-000"
-updated_at: 1794261980892
-_body: "content"
----
-
-H4sIAAAAAAAC/52PPU/DMBCG9/wKy3MtJWlCSNmpurExX5xLiWJsc2eDUNX/ju0KVayM75fuuUslhKRoj+SilwchocWp2/e90pMeVdcOnRqXx0ZBU09NPz4sY9PKXV59OdrYg8Y88+CRdGSv7nZpvQFZZP7Tue9PAd9z9HpSTV3Xw74bbqFxbitAl6SSDs6ZXAzIYbXnQ0Lm0vwvftqxi3SjN06D+bUN5CMvSM+ryekChjFF1wLGAUIs7xAuSGg1KmfN95PwhJylADuLT6R51UEQfsSVUBicz0hJwjyB3mR1rX4AzrTJjHsBAAA=

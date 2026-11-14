@@ -1,7 +1,0 @@
----
-rel_path: "portability/census/v24-65-expected.json-2f2018ac12a37674"
-updated_at: 1794230641786
-_body: "content"
----
-
-{"identity":{"workspace":"papercusp-workspace","harness":"papercusp","runId":"50d7e24d-f60a-4967-925e-14310837217d"},"expected":[{"id":"group-0","attempt":"primary","selected":["/home/marsh-office/papercupai-workspace/papercusp/packages/operator-core/lib/backup/state-census-cli.test.ts"],"runner":"vitest","armed":false,"processSources":{"preload":null,"workspace":null,"root":null},"out":null,"cwd":"/home/marsh-office/papercupai-workspace/papercusp/packages/operator-core","auxiliary":[{"role":"stdout","state":"produced","path":"/home/marsh-office/.papercusp/test-artifacts/testing-run/run-e3MACR/native-router-aEtBC7/group-0.stdout"},{"role":"stderr","state":"produced","path":"/home/marsh-office/.papercusp/test-artifacts/testing-run/run-e3MACR/native-router-aEtBC7/group-0.stderr"},{"role":"command-exit.json","state":"produced","path":"/home/marsh-office/.papercusp/test-artifacts/testing-run/run-e3MACR/native-router-aEtBC7/group-0.command-exit.json"},{"role":"report","state":"produced","path":"/tmp/pcv/testing-run-replay-2i1G2e/report.json"},{"role":"PC_EXECUTED_SOURCE_MAP_RESULT","state":"not-requested","reason":"PC_EXECUTED_SOURCE_MAP_RESULT-unset"},{"role":"PAPERCUSP_TEST_RUN_RECEIPT_FILE","state":"not-requested","reason":"PAPERCUSP_TEST_RUN_RECEIPT_FILE-unset"}]}]}

@@ -1,7 +1,0 @@
----
-rel_path: "audits/parked-resume-2026-11-09-su-5132f/report-receipt.json"
-updated_at: 1794234032060
-_body: "content"
----
-
-{"ok":true,"report_id":"rpt_51a6039a-8b38-49f5-9cd5-0f3ee6d833d3","request_key":null,"workspace_id":"papercusp-workspace","title":"Parked agents resumed — 46 pickups, one authentication blocker","summary":"One-time sweep of102 parked agents:47 original continuations contacted,46 fresh live pickups verified, one authentication exception retained.","kind":"status-digest","subject":{"kind":"work_item","ref":"WI-6554700010046961","label":"Parked-agent resumption"},"origin":{"harness_slug":null,"author_owner_id":"su-5132fc6b-3ce3-49b9-b207-c4140f4bc5c1","author_session_ref":"01a1c09a-dcf1-7951-a1fc-8ac454f1625a"},"visibility":"workspace","supersedes_report_id":null,"lineage_id":"rpt_51a6039a-8b38-49f5-9cd5-0f3ee6d833d3","source":"agent","tags":["agents","resumption"],"published_at":"2026-11-09T14:20:29.238Z","updated_at":"2026-11-09T14:20:29.238Z","retired_at":null,"path":"/reports?sel=rpt_51a6039a-8b38-49f5-9cd5-0f3ee6d833d3","body_bytes":20013,"body_sha256":"c712f8cac88d13552084544773902b38d5ebceb93549e4cca8413170b8ff4372","goal_owner_report":null,"event_emitted":true,"_meta":{"explicitFullRequest":true,"format":"json","_seeAlso":[{"tool":"reports:list (browse the library)"},{"tool":"reports:get (read one back, with its lineage)"},{"tool":"reports:retire (soft-retire one you authored)"}]}}

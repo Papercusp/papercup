@@ -1,8 +1,0 @@
----
-rel_path: "portability/census/v58/17-p053-v58-terminal.json.part-000"
-updated_at: 1794252348729
-_body: "content"
----
-
-{"ok":true,"mode":"evidence-recovery","evidenceBundle":{"status":"recorded","verificationFingerprint":"aabbcbef10cd98a11a4801bdc4b8fd19e06d586c855eb3a6f519a94ff18b3774","acceptance":"requires-review","rows":[{"specId":"PPC-P-053-1","specRevision":2,"evidenceRef":"test-run-group:cfc8ce90-a7ec-4a5a-bb48-0766079788fa:0","testRunId":23776112,"ledgerRunGroupId":"a2877d5d-a7d2-4bab-a892-91cb5a1e4709","phase":"settled","outcome":"pass","bindingStatus":"unchanged"},{"specId":"PPC-P-053-1","specRevision":2,"evidenceRef":"test-run-group:cfc8ce90-a7ec-4a5a-bb48-0766079788fa:1","testRunId":23776113,"ledgerRunGroupId":"a2877d5d-a7d2-4bab-a892-91cb5a1e4709","phase":"settled","outcome":"pass","bindingStatus":"unchanged"}],"total":2,"omitted":0,"readRef":{"tool":"plans:get-spec-evidence","args":{"harness":"papercusp","slug":"portable-papercusp-container-and-native-2026-10-06","workItemIds":["WI-10007347"],"evidenceRefs":["test-run-group:cfc8ce90-a7ec-4a5a-bb48-0766079788fa:0","test-run-group:cfc8ce90-a7ec-4a5a-bb48-0766079788fa:1"]}},"detachedRunStatus":{"runId":"a2877d5d-a7d2-4bab-a892-91cb5a1e4709","status":"pass","exitCode":0,"finishedAt":1794252255042},"recovery":{"tool":"testing:run","args":{"harness":"papercusp","recoverEvidence":{"workItemId":"WI-10007347","planSlug":"portable-papercusp-container-and-native-2026-10-06","originRunId":"cfc8ce90-a7ec-4a5a-bb48-0766079788fa","runId":"a2877d5d-a7d2-4bab-a892-91cb5a1e4709"}}},"recoveryWait":{"limitMs":20000,"waitedMs":4860,"ledgerWaitedMs":6,"outcome":"terminal"}}}
-

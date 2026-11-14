@@ -1,7 +1,0 @@
----
-rel_path: "portability/census/v71-proof/47-group-0.stdout.part-000"
-updated_at: 1794260722787
-_body: "content"
----
-
-H4sIAAAAAAAC//MK9vdTKEotyC8qUSgvyiwpSc1TKMlX0C/JLdAvSC7TL0ktLsnMS9ctKs3TBSrLSazU9S91cytO1Ydo0ssqzs/jAgBllSb1RgAAAA==
