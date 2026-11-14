@@ -1665,8 +1665,14 @@ if [ "$checkout_needs_advance" = 1 ]; then
   else
     headroom_status=$?
     if [[ "$headroom_status" -eq 75 ]]; then
-      log "deferring candidate preparation until critical disk headroom recovers; the next tick retries cleanup"
-      exit 0
+      age="$(current_commit_age_sec "$served_sha")"
+      if [ "$age" -lt "$MAX_STALE_SEC" ] 2>/dev/null; then
+        log "deferring candidate preparation — :$STAGING_PORT serves a ${age}s-old build (< ${MAX_STALE_SEC}s ceiling); the next tick retries cleanup"
+        exit 0
+      fi
+      log "staleness ceiling reached (${age}s ≥ ${MAX_STALE_SEC}s) while candidate preparation remains blocked by critical disk headroom; escalating instead of deferring again"
+      log "FATAL: refusing to keep :$STAGING_PORT on a stale generation without candidate headroom; preserving the serving generation"
+      exit 1
     fi
     log "FATAL: could not verify candidate filesystem headroom (exit $headroom_status); preserving the serving generation"
     exit 1

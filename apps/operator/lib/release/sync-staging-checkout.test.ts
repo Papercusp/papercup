@@ -1377,9 +1377,10 @@ describe('sync-staging-checkout.sh superseded generation pruning (WI-10005310)',
       const allocation = join(root, 'candidate-allocated');
       const result = runFn(['staging_preparation_has_headroom'], [
         'log() { printf "%s\\n" "$*"; }',
+        'current_commit_age_sec() { printf "%s\\n" 1; }',
         'staging_sync_checkpoint() { :; }',
         'prepare_staging_candidate() { touch "$TEST_ALLOCATION"; STAGING_CANDIDATE_ROOT="$STAGING_ROOT"; }',
-        'checkout_needs_advance=1; target=0123456789abcdef',
+        'checkout_needs_advance=1; target=0123456789abcdef; served_sha=served; MAX_STALE_SEC=1800; STAGING_PORT=3170',
         script.slice(start, end),
       ].join('\n'), {
         env: {
@@ -1396,6 +1397,44 @@ describe('sync-staging-checkout.sh superseded generation pruning (WI-10005310)',
       if (status === 75) {
         expect(result.stderr).toContain('retaining the serving generation while cleanup continues');
         expect(result.stdout).toContain('the next tick retries cleanup');
+      }
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.each([
+    ['younger than the ceiling', '119', 0],
+    ['at the ceiling', '120', 1],
+  ] as const)('bounds a status-75 candidate-preparation deferral when the served build is %s', (_name, age, status) => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-headroom-age-'));
+    try {
+      const script = readFileSync(SCRIPT_PATH, 'utf8');
+      const start = script.indexOf('\nSYNC_ROOT="');
+      const end = script.indexOf('\nif [ "$restart_required" = 1 ]; then', start);
+      expect(start).toBeGreaterThan(0);
+      expect(end).toBeGreaterThan(start);
+      const result = runFn(['staging_preparation_has_headroom'], [
+        'log() { printf "%s\\n" "$*"; }',
+        'current_commit_age_sec() { printf "%s\\n" "$TEST_AGE"; }',
+        'checkout_needs_advance=1; target=0123456789abcdef; served_sha=served; MAX_STALE_SEC=120; restart_required=0; STAGING_PORT=3170',
+        script.slice(start, end),
+      ].join('\n'), {
+        env: {
+          INTEGRATION_ROOT: resolve(dirname(SCRIPT_PATH), '../../../..'),
+          STAGING_GENERATIONS_ROOT: root,
+          STAGING_ROOT: root,
+          TEST_AGE: age,
+          PAPERCUSP_DISK_ALARM_CRITICAL_GB: '1000000000000000',
+        },
+      });
+      expect(result.status, result.stderr + result.stdout).toBe(status);
+      if (status === 0) {
+        expect(result.stdout).toContain('serves a 119s-old build (< 120s ceiling)');
+        expect(result.stdout).toContain('the next tick retries cleanup');
+      } else {
+        expect(result.stdout).toContain('staleness ceiling reached (120s ≥ 120s)');
+        expect(result.stdout).toContain('FATAL: refusing to keep :3170 on a stale generation without candidate headroom');
+        expect(result.stderr).toContain('available bytes below');
+        expect(result.stderr).toContain('writer reserve +');
       }
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
