@@ -319,11 +319,12 @@ mod native_resume_tests {
     fn native_resume_reuses_local_and_saved_connection_routes() {
         let selected = selection();
         let spec = selected.resolve(&payload(), "desktop").unwrap();
-        assert_eq!(spec.argv, ["psu", "--resume", "41"]);
+        assert_eq!(spec.argv, ["psu", "--resume", "41", "--no-picker"]);
         assert_eq!(spec.adv_session_id, Some(41));
         assert_eq!(spec.cwd.as_deref(), Some("/exact directory"));
         let kdl = crate::layout::session_tab_kdl(&spec, "/bundle/pui").unwrap();
         assert!(kdl.contains("pending:adv:41"));
+        assert!(kdl.contains("\"--no-picker\""));
         assert!(kdl.contains("name=\"Terminal\" size=\"56%\" focus=true"));
         let remote = selected.resolve(&payload(), "other-desktop").unwrap();
         assert_eq!(
@@ -365,7 +366,7 @@ mod native_resume_tests {
         let selected = selection();
         assert_eq!(
             selected.resolve(&p, "desktop").unwrap().argv,
-            ["psu", "--resume", "41"]
+            ["psu", "--resume", "41", "--no-picker"]
         );
         for state in [
             Value::Null,

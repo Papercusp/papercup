@@ -1557,6 +1557,21 @@ impl OperatorClient {
             .await
     }
 
+    /// Reuse UI intents and the desktop's palette→main route. Never spawn a
+    /// browser on the remote terminal host or guess an HTTP origin.
+    pub async fn open_workspace_link(&self, route: &str) -> Result<()> {
+        anyhow::ensure!(crate::markdown::workspace_route(route), "Invalid workspace link");
+        let envelope = self.run_tool("ui:dispatch", serde_json::json!({
+            "target": "desktop", "intent": "native_window",
+            "args": { "action": "open_route", "route": route }, "timeout_ms": 5000
+        })).await?;
+        let result = run_tool_inner_json(&envelope)?;
+        anyhow::ensure!(result["status"] == "done" || result["status"] == "ok", "Desktop did not accept this link: {}", result);
+        anyhow::ensure!(result["result"]["protocol"] == "desktop-route-v1"
+            && result["result"]["requested"] == true, "Desktop app needs an update before it can open workspace links");
+        Ok(())
+    }
+
     /// Execute a mutation the TUI already confirmed in its own y/n modal. The
     /// server still re-checks eligibility, authorization and capability, and
     /// the ordinary projected-tool dispatcher still writes the audit record;
@@ -2736,12 +2751,15 @@ impl OperatorClient {
                 InboxOperation::Stop | InboxOperation::Resume => {
                     let saved = saved.as_ref().unwrap();
                     if request.operation == InboxOperation::Resume {
-                        anyhow::ensure!(matches!(saved["run"]["phase"].as_str(), Some("review" | "failed" | "complete")),
-                            "stop the active run before continuing retryable items");
+                        anyhow::ensure!(saved["run"]["phase"] == "review",
+                            "the run is not in review; refresh Inbox before continuing retryable items");
                         for id in request.item_ids.as_ref().unwrap() {
                             let rows: Vec<_> = saved["items"].as_array().unwrap().iter().filter(|row| row["itemId"] == *id).collect();
                             anyhow::ensure!(rows.len() == 1 && InboxRequest::retryable(rows[0]), "selected item is no longer retryable");
                         }
+                    } else {
+                        anyhow::ensure!(matches!(saved["run"]["phase"].as_str(), Some("pending" | "running")),
+                            "the run is not active; refresh Inbox before stopping it");
                     }
                     anyhow::ensure!(current.same_rendezvous(&self.backend_identity().await?), "environment changed before run control");
                     result = self.post_json("/api/admin/attention-bulk-resolve", if request.operation == InboxOperation::Stop {
@@ -4623,7 +4641,9 @@ mod tests {
         use super::*;
         use serde_json::{json, Value};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        for scenario in ["start", "stale-seed", "apply", "action-denied", "record-denied", "owner-only", "changed-detail", "unoffered", "auth-denied", "changed-environment", "canonical", "canonical-denied", "canonical-wrong-item", "canonical-unresolved", "named", "named-stale", "named-unoffered", "linked", "linked-denied"] {
+        for scenario in ["start", "stale-seed", "apply", "action-denied", "record-denied", "owner-only", "changed-detail", "unoffered", "auth-denied", "changed-environment", "canonical", "canonical-denied", "canonical-wrong-item", "canonical-unresolved", "named", "named-stale", "named-unoffered", "linked", "linked-denied",
+            "resume-pending", "resume-running", "resume-review", "resume-failed", "resume-complete",
+            "stop-pending", "stop-running", "stop-review", "stop-failed", "stop-complete"] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let base = format!("http://{}", listener.local_addr().unwrap());
             let identity = json!({"schemaVersion":1,"workspaceId":"isolated","store":{"id":"fixture","target":"test","source":"test"},
@@ -4650,13 +4670,26 @@ mod tests {
             let mut steps: Vec<(&str, &str, Option<Value>, u16, Value)> = vec![("GET", "/api/tui/identity", None,
                 if scenario == "auth-denied" {401} else {200}, identity.clone())];
             let start = matches!(scenario, "start" | "stale-seed");
-            let request = if start { json!({"environment":environment,"operation":"start","confirmed":true,"items":[seed],"filter":filter}) }
+            let control = scenario.split_once('-').filter(|(op, _)| matches!(*op, "resume" | "stop"));
+            let control_allowed = control.is_some_and(|(op, phase)| if op == "resume" { phase == "review" } else { matches!(phase, "pending" | "running") });
+            let request = if let Some((op, _)) = control { json!({"environment":environment,"operation":op,"confirmed":true,
+                    "runId":"run +/=& λ","itemIds":if op == "resume" {json!([item["id"]])} else {Value::Null}}) }
+                else if start { json!({"environment":environment,"operation":"start","confirmed":true,"items":[seed],"filter":filter}) }
                 else { json!({"environment":environment,"operation":"apply","confirmed":true,"runId":"run +/=& λ",
                     "expected":{"id":item["id"],"kind":item["kind"],"ref":item["ref"]},"actionId":action_id,
                     "answer":if linked {json!(" literal answer λ ")} else {Value::Null}}) };
             if scenario != "auth-denied" {
                 steps.push(("GET", "/api/tui/identity", None, 200, identity.clone()));
-                if start {
+                if let Some((op, phase)) = control {
+                    steps.push(("GET", "/api/zero-harness/rest-query", Some(json!({"name":"plans.attentionBulkRun","args":{"runId":"run +/=& λ"}})), 200,
+                        json!({"rows":[{"run":{"runId":"run +/=& λ","phase":phase},"items":[{"itemId":item["id"],"outcome":"failed"}]}]})));
+                    if control_allowed {
+                        steps.push(("GET", "/api/tui/identity", None, 200, identity.clone()));
+                        let mut body = json!({"op":op,"runId":"run +/=& λ"});
+                        if op == "resume" { body["itemIds"] = json!([item["id"]]); }
+                        steps.push(("POST", "/api/admin/attention-bulk-resolve", Some(body), 200, json!({"ok":true,"runId":"run +/=& λ"})));
+                    }
+                } else if start {
                     let mut live = item.clone(); if scenario == "stale-seed" { live["ref"]["msgId"] = json!("different"); }
                     steps.push(("GET", "/api/zero-harness/rest-query", Some(json!({"name":"plans.attention","args":{}})), 200,
                         json!({"rows":[{"items":[live]}]})));
@@ -4733,7 +4766,7 @@ mod tests {
             });
             let client = OperatorClient { transport:Transport::Http(HttpClient::new(base.clone(),Some("native-inbox-fixture".into()))), endpoint:base, selection_source:"test".into() };
             let result = client.native_inbox_action(&serde_json::from_value(request).unwrap()).await;
-            if matches!(scenario, "start" | "apply" | "record-denied" | "canonical" | "named" | "linked") {
+            if control_allowed || matches!(scenario, "start" | "apply" | "record-denied" | "canonical" | "named" | "linked") {
                 let result = result.unwrap(); assert_eq!(result["rows"][0]["ok"], true);
                 if scenario == "record-denied" { assert_eq!(result["rows"][0]["recorded"], false); assert!(result["rows"][0]["warning"].as_str().unwrap().contains("do not repeat")); }
             } else { assert!(result.is_err(), "accepted {scenario}"); }

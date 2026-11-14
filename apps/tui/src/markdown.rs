@@ -24,13 +24,51 @@
 //!
 //! Scope is deliberately bounded to what agent output actually contains:
 //! fenced code, inline code, bold, italic, ATX headings, bullet/ordered lists,
-//! blockquotes. Links render literally — a terminal cannot click one, and the
-//! URL is the half worth reading.
+//! blockquotes and workspace links. Workspace links carry display-cell ranges
+//! so the TUI can hand an explicit click to the existing desktop UI channel.
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use crate::theme::Theme;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkSpan {
+    pub line: usize,
+    pub column: usize,
+    pub width: usize,
+    pub target: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ScreenLink {
+    pub area: ratatui::layout::Rect,
+    pub target: String,
+}
+
+#[derive(Default)]
+pub struct RenderedMarkdown {
+    pub lines: Vec<Line<'static>>,
+    pub links: Vec<LinkSpan>,
+}
+
+impl RenderedMarkdown {
+    fn append(&mut self, mut other: Self) {
+        for link in &mut other.links { link.line += self.lines.len(); }
+        self.links.extend(other.links);
+        self.lines.extend(other.lines);
+    }
+}
+
+pub fn workspace_route(target: &str) -> bool {
+    let family = target.strip_prefix('/').and_then(|path| path.split(['/', '?', '#']).next());
+    // These are app object views, not absolute filesystem paths emitted by
+    // coding agents. An absolute file link must remain a file link.
+    matches!(family, Some("reports" | "plans" | "harness" | "adv" | "goals" | "agents" | "admin"))
+        && target.len() <= 4096 && target.starts_with('/')
+        && !target.starts_with("//")
+        && !target.chars().any(|c| c.is_control() || c.is_whitespace() || c == '\\')
+}
 
 /// Code hue. Deliberately NOT `Theme::info()`: that style is bold, and bold is
 /// already spoken for by `**bold**`. Two different markups that render
@@ -44,6 +82,7 @@ fn code_style() -> Style {
 struct Seg {
     text: String,
     style: Style,
+    target: Option<String>,
 }
 
 impl Seg {
@@ -51,6 +90,7 @@ impl Seg {
         Self {
             text: text.into(),
             style,
+            target: None,
         }
     }
 }
@@ -61,8 +101,12 @@ impl Seg {
 /// a settled message is never reinterpreted, because once the turn is done an
 /// unmatched `**` is simply text the model wrote.
 pub fn render(body: &str, width: usize, streaming: bool) -> Vec<Line<'static>> {
+    render_with_links(body, width, streaming).lines
+}
+
+pub fn render_with_links(body: &str, width: usize, streaming: bool) -> RenderedMarkdown {
     let width = width.max(8);
-    let mut out: Vec<Line<'static>> = Vec::new();
+    let mut out = RenderedMarkdown::default();
     let lines: Vec<&str> = body.split('\n').collect();
     let last_idx = lines.len().saturating_sub(1);
     let mut in_fence = false;
@@ -78,7 +122,7 @@ pub fn render(body: &str, width: usize, streaming: bool) -> Vec<Line<'static>> {
                 in_fence = true;
                 let lang = trimmed.trim_start_matches('`').trim();
                 if !lang.is_empty() {
-                    out.push(Line::from(Span::styled(format!("  {lang}"), Theme::dim())));
+                    out.lines.push(Line::from(Span::styled(format!("  {lang}"), Theme::dim())));
                 }
             }
             continue;
@@ -88,13 +132,13 @@ pub fn render(body: &str, width: usize, streaming: bool) -> Vec<Line<'static>> {
             // indentation and alignment, which is the entire point of a code
             // block. Reflowing it would silently corrupt what it shows.
             for chunk in hard_split(raw, width.saturating_sub(2)) {
-                out.push(Line::from(Span::styled(format!("  {chunk}"), code_style())));
+                out.lines.push(Line::from(Span::styled(format!("  {chunk}"), code_style())));
             }
             continue;
         }
 
         if trimmed.is_empty() {
-            out.push(Line::from(""));
+            out.lines.push(Line::from(""));
             continue;
         }
 
@@ -103,14 +147,14 @@ pub fn render(body: &str, width: usize, streaming: bool) -> Vec<Line<'static>> {
         // ── ATX heading ──────────────────────────────────────────────────
         if let Some(rest) = atx_heading(trimmed) {
             let segs = parse_inline(rest, Theme::header(), open_ok);
-            out.extend(wrap_segs(&segs, width, None, 0));
+            out.append(wrap_segs(&segs, width, None, 0));
             continue;
         }
 
         // ── blockquote ───────────────────────────────────────────────────
         if let Some(rest) = trimmed.strip_prefix('>') {
             let segs = parse_inline(rest.trim_start(), Theme::dim(), open_ok);
-            out.extend(wrap_segs(
+            out.append(wrap_segs(
                 &segs,
                 width,
                 Some(("│ ".to_string(), Theme::dim())),
@@ -125,13 +169,13 @@ pub fn render(body: &str, width: usize, streaming: bool) -> Vec<Line<'static>> {
             let prefix = format!("{}{} ", " ".repeat(indent), marker);
             let cont = prefix.chars().count();
             let segs = parse_inline(rest, Style::default(), open_ok);
-            out.extend(wrap_segs(&segs, width, Some((prefix, Theme::dim())), cont));
+            out.append(wrap_segs(&segs, width, Some((prefix, Theme::dim())), cont));
             continue;
         }
 
         // ── paragraph ────────────────────────────────────────────────────
         let segs = parse_inline(raw, Style::default(), open_ok);
-        out.extend(wrap_segs(&segs, width, None, 0));
+        out.append(wrap_segs(&segs, width, None, 0));
     }
     out
 }
@@ -217,6 +261,34 @@ fn parse_inline(src: &str, base: Style, open_ok: bool) -> Vec<Seg> {
             lit.push(c);
             i += 1;
             continue;
+        }
+
+        // Complete Markdown workspace links only; partial streaming syntax,
+        // external URLs and code stay literal. Balanced parentheses permit
+        // ordinary route fragments without guessing where a target ends.
+        if c == '[' {
+            if let Some(label_end) = (i + 1..chars.len()).find(|&n| chars[n] == ']') {
+                if chars.get(label_end + 1) == Some(&'(') {
+                    let mut depth = 1usize;
+                    let mut end = label_end + 2;
+                    while end < chars.len() && depth > 0 {
+                        match chars[end] { '(' => depth += 1, ')' => depth -= 1, _ => {} }
+                        if depth > 0 { end += 1; }
+                    }
+                    if depth == 0 {
+                        let target: String = chars[label_end + 2..end].iter().collect();
+                        if workspace_route(&target) && label_end > i + 1 {
+                            flush_lit!();
+                            let label: String = chars[i + 1..label_end].iter().collect();
+                            let mut parts = parse_inline(&label, base.fg(Theme::active().sky).add_modifier(Modifier::UNDERLINED), false);
+                            for part in &mut parts { part.target = Some(target.clone()); }
+                            out.extend(parts);
+                            i = end + 1;
+                            continue;
+                        }
+                    }
+                }
+            }
         }
 
         // *italic* — only when the `*` actually opens a word, so `2 * 3` and a
@@ -357,16 +429,21 @@ fn leading_spaces(s: &str) -> usize {
 }
 
 fn hard_split(s: &str, width: usize) -> Vec<String> {
-    if width == 0 || s.chars().count() <= width {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    if width == 0 || s.width() <= width {
         return vec![s.to_string()];
     }
     let mut out = Vec::new();
     let mut cur = String::new();
+    let mut columns = 0usize;
     for ch in s.chars() {
-        if cur.chars().count() == width {
+        let ch_width = ch.width().unwrap_or(0);
+        if !cur.is_empty() && columns + ch_width > width {
             out.push(std::mem::take(&mut cur));
+            columns = 0;
         }
         cur.push(ch);
+        columns += ch_width;
     }
     out.push(cur);
     out
@@ -374,7 +451,7 @@ fn hard_split(s: &str, width: usize) -> Vec<String> {
 
 enum Tok {
     Space,
-    Word(String, Style),
+    Word(String, Style, Option<String>),
 }
 
 /// Word-wrap styled runs into lines, carrying each run's style across the
@@ -385,7 +462,7 @@ fn wrap_segs(
     width: usize,
     first_prefix: Option<(String, Style)>,
     cont_indent: usize,
-) -> Vec<Line<'static>> {
+) -> RenderedMarkdown {
     let mut toks: Vec<Tok> = Vec::new();
     for seg in segs {
         for (i, part) in seg.text.split(' ').enumerate() {
@@ -393,12 +470,13 @@ fn wrap_segs(
                 toks.push(Tok::Space);
             }
             if !part.is_empty() {
-                toks.push(Tok::Word(part.to_string(), seg.style));
+                toks.push(Tok::Word(part.to_string(), seg.style, seg.target.clone()));
             }
         }
     }
 
     let mut out: Vec<Line<'static>> = Vec::new();
+    let mut links = Vec::new();
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut cur_w = 0usize;
     let mut pending_space = false;
@@ -425,8 +503,9 @@ fn wrap_segs(
                     pending_space = true;
                 }
             }
-            Tok::Word(w, st) => {
-                let wlen = w.chars().count();
+            Tok::Word(w, st, target) => {
+                use unicode_width::UnicodeWidthStr;
+                let wlen = w.width();
                 let need = wlen + usize::from(pending_space && has_content);
                 if has_content && cur_w + need > width {
                     break_line(&mut out, &mut spans, &mut cur_w);
@@ -447,12 +526,14 @@ fn wrap_segs(
                         if k > 0 {
                             break_line(&mut out, &mut spans, &mut cur_w);
                         }
-                        cur_w += chunk.chars().count();
+                        if let Some(target) = &target { links.push(LinkSpan { line: out.len(), column: cur_w, width: chunk.width(), target: target.clone() }); }
+                        cur_w += chunk.width();
                         spans.push(Span::styled(chunk, st));
                     }
                     has_content = true;
                     continue;
                 }
+                if let Some(target) = target { links.push(LinkSpan { line: out.len(), column: cur_w, width: wlen, target }); }
                 cur_w += wlen;
                 spans.push(Span::styled(w, st));
                 has_content = true;
@@ -466,12 +547,34 @@ fn wrap_segs(
     if out.is_empty() {
         out.push(Line::from(""));
     }
-    out
+    RenderedMarkdown { lines: out, links }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_links_keep_exact_targets_across_wrapping_and_wide_text() {
+        let doc = render_with_links("界 [read this report](/reports?sel=rpt_exact)", 12, false);
+        assert!(!doc.links.is_empty());
+        assert_eq!(doc.links[0].column, 3);
+        assert!(doc.links.iter().all(|link| link.target == "/reports?sel=rpt_exact"));
+        assert!(doc.links.iter().all(|link| link.column + link.width <= 12));
+        assert!(flat(&doc.lines).join(" ").contains("read this"));
+        assert!(!flat(&doc.lines).join(" ").contains("rpt_exact"));
+    }
+
+    #[test]
+    fn code_external_and_partial_links_never_become_workspace_actions() {
+        for body in ["`[report](/reports?sel=x)`", "```\n[report](/reports?sel=x)\n```", "[outside](https://example.com)", "[partial](/reports?sel=x", "[host](//evil.example)", "[host](/\\evil.example)"] {
+            assert!(render_with_links(body, 80, true).links.is_empty(), "{body}");
+        }
+        assert!(workspace_route("/plans?sel=workbench#D-024"));
+        assert!(!workspace_route("/reports\n?sel=x"));
+        let file = std::env::temp_dir().join("workspace-link-fixture.rs");
+        assert!(!workspace_route(&file.to_string_lossy()));
+    }
 
     fn flat(lines: &[Line<'static>]) -> Vec<String> {
         lines

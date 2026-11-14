@@ -3275,6 +3275,18 @@ async fn run<B: Backend>(
                     ));
                     terminal.draw(|f| ui::draw(f, &app))?;
                 }
+                Action::OpenWorkspaceLink { route } => {
+                    let tx = tx.clone();
+                    tokio::spawn(async move {
+                        let result = async {
+                            let client = OperatorClient::from_discovery().await?;
+                            client.open_workspace_link(&route).await
+                        }.await;
+                        if let Err(error) = result {
+                            let _ = tx.send(Event::Error(format!("Could not open desktop link: {error}")));
+                        }
+                    });
+                }
                 Action::OpenCardLink { correlation_id } => {
                     let result = async {
                         let client = OperatorClient::from_discovery().await?;
@@ -5582,7 +5594,7 @@ async fn agent_context_snapshot(
     } else {
         client.roster_typed().await.map(|(active, _)| active)
     }
-    .map_err(|error| format!("Agent roster unavailable: {error}"))?;
+    .map_err(|error| format!("Agent roster unavailable: {error:#}"))?;
     let entry = match &scope {
         app::WakeFilter::Owner(id) => agent_context_entry(id, &roster),
         // Queen (and the never-used All fallback): the roster's canonical
@@ -5964,6 +5976,25 @@ mod session_sidebar_tests {
         assert!(error.contains("503"), "{error}");
         assert_eq!(requests.lock().unwrap().as_slice(), ["/api/adv/roster"]);
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn session_sidebar_preserves_http_roster_endpoint_and_transport_cause() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+        let client = OperatorClient::from_selection(&endpoint).unwrap();
+        let error = agent_context_snapshot(
+            &client,
+            app::AgentCtxMode::Orders,
+            &app::WakeFilter::Owner("pending:adv:41".into()),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("Agent roster unavailable"), "{error}");
+        assert!(error.contains("GET /api/adv/roster"), "{error}");
+        assert!(error.contains(&endpoint), "{error}");
+        assert!(error.contains("connect"), "{error}");
     }
 }
 

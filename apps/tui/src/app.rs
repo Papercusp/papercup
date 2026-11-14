@@ -420,6 +420,8 @@ pub enum Action {
     /// until its authoritative close so a failed request can be retried. `payload` is the
     /// submit body (`{picks:[…]}` / `{value:…}`), absent for decline/cancel.
     OpenCardLink { correlation_id: String },
+    /// An explicit workspace link click; the desktop receives the same route.
+    OpenWorkspaceLink { route: String },
     CardRespond {
         conversation_id: String,
         correlation_id: String,
@@ -2162,6 +2164,8 @@ pub struct App {
     /// pui-chat-first-ux P-018: the left-button drag in progress on the
     /// chat-first screen, in screen cells. `None` when no button is held.
     pub mouse_selection: Option<crate::chat_copy::MouseSelection>,
+    pub chat_link_regions: std::cell::RefCell<Vec<crate::markdown::ScreenLink>>,
+    pub mouse_link_target: Option<String>,
     /// The last frame drawn while `mouse_selection` was set, written by
     /// `ui::draw`. The release copies the selected text out of it: the app
     /// keeps a model, not the screen, and the screen is what was selected.
@@ -2977,6 +2981,8 @@ impl App {
             chat_slash_selected: 0,
             chat_shortcuts_open: false,
             mouse_selection: None,
+            chat_link_regions: std::cell::RefCell::new(Vec::new()),
+            mouse_link_target: None,
             mouse_selection_frame: std::cell::RefCell::new(None),
             chat_scroll_limit: std::cell::Cell::new(None),
             plans: Vec::new(),
@@ -3844,6 +3850,17 @@ impl App {
             crate::chat_copy::passthrough_from_env(),
         );
         self.apply_copy_outcome(outcome)
+    }
+
+    fn open_focused_workspace_link(&mut self) -> Action {
+        let target = self.effective_chat_focus().and_then(|index| self.chat_messages.get(index))
+            .filter(|message| message.role == "assistant")
+            .and_then(|message| crate::markdown::render_with_links(&message.content, 80, message.streaming)
+                .links.into_iter().next().map(|link| link.target));
+        match target {
+            Some(route) => Action::OpenWorkspaceLink { route },
+            None => { self.chat_toast("info", "No workspace link in the focused turn".into()); Action::Render }
+        }
     }
 
     /// Turn a copy outcome into a toast plus an action. Shared by the
@@ -9572,7 +9589,14 @@ impl App {
                 .titled(format!("connect · {agent}@{}", entry.host)),
             );
         }
-        let argv = vec!["psu".to_string(), "--resume".to_string(), id.to_string()];
+        // This row already selects the local computer. Do not make the actual
+        // vendor terminal stop at psu's interactive location picker.
+        let argv = vec![
+            "psu".to_string(),
+            "--resume".to_string(),
+            id.to_string(),
+            "--no-picker".to_string(),
+        ];
         let title = if agent.is_empty() {
             format!("resume · adv:{id}")
         } else {
@@ -9598,6 +9622,11 @@ impl App {
         let topo = self.topology.as_ref()?;
         let commands: Vec<Vec<String>> = [
             self.resume_spec(entry).map(|spec| spec.argv),
+            // Panes opened before local resumes suppressed the picker still
+            // carry this exact command. Preserve their identity, not prefixes.
+            entry.adv_session_id.filter(|id| *id > 0).map(|id| {
+                vec!["psu".to_string(), "--resume".to_string(), id.to_string()]
+            }),
             entry.dock_pane_argv(),
         ]
         .into_iter()
@@ -13488,6 +13517,7 @@ impl App {
                 // A selection is in screen cells; scrolling moves the text
                 // out from under it.
                 self.mouse_selection = None;
+                self.mouse_link_target = None;
                 self.mouse_selection_frame.borrow_mut().take();
                 if m.kind == MouseEventKind::ScrollUp {
                     self.scroll_chat_back(Self::WHEEL_LINES)
@@ -13497,6 +13527,9 @@ impl App {
                 }
             }
             MouseEventKind::Down(MouseButton::Left) => {
+                self.mouse_link_target = self.chat_link_regions.borrow().iter()
+                    .find(|link| link.area.contains(ratatui::layout::Position::new(at.0, at.1)))
+                    .map(|link| link.target.clone());
                 self.mouse_selection = Some(crate::chat_copy::MouseSelection {
                     anchor: at,
                     head: at,
@@ -13517,6 +13550,15 @@ impl App {
                 };
                 sel.head = at;
                 let frame = self.mouse_selection_frame.borrow_mut().take();
+                let pressed = self.mouse_link_target.take();
+                if sel.is_click() {
+                    let current = self.chat_link_regions.borrow().iter()
+                        .find(|link| link.area.contains(ratatui::layout::Position::new(at.0, at.1)))
+                        .map(|link| link.target.clone());
+                    if let Some(route) = pressed.filter(|target| current.as_ref() == Some(target)) {
+                        return Action::OpenWorkspaceLink { route };
+                    }
+                }
                 // A click is not a selection, and nothing is copied before a
                 // frame showed the selection being made.
                 let (false, Some(frame)) = (sel.is_click(), frame) else {
@@ -13916,6 +13958,10 @@ impl App {
         // Once open it is modal and owns text/nav keys until Enter/Esc.
         if self.session_switcher.is_some() {
             return self.session_switcher_key(code);
+        }
+        if code == KeyCode::Enter && mods.contains(KeyModifiers::CONTROL)
+            && self.operator_input_active() && !self.chat_composing {
+            return self.open_focused_workspace_link();
         }
         if code == KeyCode::Char('s') && mods.contains(KeyModifiers::CONTROL) {
             self.session_switcher = Some(SessionSwitcher {
@@ -24750,10 +24796,14 @@ mod tests {
             feature: Some("F-9".into()),
             ..live_windowed_entry("claude")
         };
-        assert_eq!(
-            a.resolve_agent_route(&entry),
-            AgentRoute::LocalPane { pane_id: 5 }
-        );
+        for command in ["psu --resume 7", "psu --resume 7 --no-picker"] {
+            a.topology.as_mut().unwrap().panes[0].command = Some(command.into());
+            assert_eq!(
+                a.resolve_agent_route(&entry),
+                AgentRoute::LocalPane { pane_id: 5 },
+                "{command}"
+            );
+        }
     }
 
     #[test]
@@ -24772,6 +24822,9 @@ mod tests {
             Some("echo psu --resume 7"),
             Some("psu --resume 7 --connect=other-host"),
             Some("psu --resume 7 --resume 8"),
+            Some("psu --resume 70 --no-picker"),
+            Some("psu --resume 7 --no-picker --connect=other-host"),
+            Some("psu --resume 7 --no-picker --resume 8"),
             Some("claude --resume unrelated"),
         ] {
             let mut pane = topo_pane(5, "claude · F-9 · same-plan · su");
@@ -24807,6 +24860,7 @@ mod tests {
         );
         let mut duplicate = pane.clone();
         duplicate.id = 6;
+        duplicate.command = Some("psu --resume 7 --no-picker".into());
         a.topology.as_mut().unwrap().panes.push(duplicate);
         assert!(matches!(
             a.resolve_agent_route(&entry),
@@ -25025,7 +25079,7 @@ mod tests {
         let a = App::new();
         match a.resolve_agent_route(&ended_resumable_entry("claude")) {
             AgentRoute::Resume { spec } => {
-                assert_eq!(spec.argv, vec!["psu", "--resume", "42"]);
+                assert_eq!(spec.argv, vec!["psu", "--resume", "42", "--no-picker"]);
                 assert_eq!(spec.cwd.as_deref(), Some("/repo"));
             }
             other => panic!("expected Resume, got {other:?}"),
@@ -25043,7 +25097,11 @@ mod tests {
             let spec = a
                 .resume_spec(&ended_resumable_entry(agent))
                 .unwrap_or_else(|| panic!("{agent}: expected a resume spec"));
-            assert_eq!(spec.argv, vec!["psu", "--resume", "42"], "{agent}");
+            assert_eq!(
+                spec.argv,
+                vec!["psu", "--resume", "42", "--no-picker"],
+                "{agent}"
+            );
             assert_eq!(spec.cwd.as_deref(), Some("/repo"), "{agent}");
             assert_eq!(spec.title.as_deref(), Some(format!("resume · {agent}").as_str()));
             assert!(!spec.close_on_exit, "{agent}: a refusal must stay visible");
@@ -25088,7 +25146,7 @@ mod tests {
             entry.host = app.local_host.clone();
             assert_eq!(
                 app.resume_spec(&entry).unwrap().argv,
-                vec!["psu", "--resume", "42"]
+                vec!["psu", "--resume", "42", "--no-picker"]
             );
         }
         for host in ["-remote", "remote host", "remote/other", "remote\nother"] {
@@ -32260,6 +32318,36 @@ mod mouse_tests {
             .chunks(80)
             .map(|row| row.iter().map(|c| c.symbol()).collect())
             .collect()
+    }
+
+    #[test]
+    fn a_workspace_link_click_and_keyboard_action_keep_exact_report_identity() {
+        let mut a = chat_first_app(0);
+        a.chat_messages.push(ChatMessage::assistant("Read the [saved summary](/reports?sel=rpt_exact)."));
+        draw(&a);
+        let link = a.chat_link_regions.borrow().first().expect("visible link").clone();
+        a.update(mouse(MouseEventKind::Down(MouseButton::Left), link.area.x, link.area.y));
+        draw(&a);
+        assert_eq!(a.update(mouse(MouseEventKind::Up(MouseButton::Left), link.area.x, link.area.y)),
+            Action::OpenWorkspaceLink { route: "/reports?sel=rpt_exact".into() });
+        a.chat_composing = false;
+        assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::CONTROL),
+            Action::OpenWorkspaceLink { route: "/reports?sel=rpt_exact".into() });
+    }
+
+    #[test]
+    fn a_link_that_changes_between_press_and_release_is_not_activated() {
+        let mut a = chat_first_app(0);
+        a.chat_messages.push(ChatMessage::assistant("[summary](/reports?sel=first)"));
+        draw(&a);
+        let link = a.chat_link_regions.borrow()[0].clone();
+        a.update(mouse(MouseEventKind::Down(MouseButton::Left), link.area.x, link.area.y));
+        a.chat_messages[0].content = "[summary](/reports?sel=second)".into();
+        draw(&a);
+        assert_eq!(a.update(mouse(MouseEventKind::Up(MouseButton::Left), link.area.x, link.area.y)), Action::Render);
+        a.chat_messages.clear();
+        draw(&a);
+        assert!(a.chat_link_regions.borrow().is_empty());
     }
 
     #[test]

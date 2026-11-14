@@ -13,6 +13,7 @@ import {
 import { findShadowedManagedShims, formatShadowedShimProblems } from './lib/shadowed-managed-shims.mjs';
 import { missingPlaywrightBrowsers, browserCachePath } from './ensure-playwright-browsers.mjs';
 import { assertCudaProviderAssets } from './install-onnxruntime-node.mjs';
+import { tsImport } from 'tsx/esm/api';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -79,6 +80,33 @@ function assertSubmoduleWorktreesSane() {
 
 console.log('papercup test-doctor\n');
 const submodulesOnly = process.argv.includes('--submodules-only');
+const scratchOnly = process.argv.includes('--scratch-only');
+// Explicit offline diagnostics keep their supplied inventory separate from the
+// ordinary doctor run, which always discovers the complete policy registry.
+const scratchOption = flag => {
+  const index = process.argv.indexOf(flag);
+  if (index < 0) return undefined;
+  if (!scratchOnly || !process.argv[index + 1] || process.argv[index + 1].startsWith('--')) {
+    throw new Error(`${flag} requires a path and --scratch-only`);
+  }
+  return process.argv[index + 1];
+};
+const fstabPath = scratchOption('--fstab');
+const mountinfoPath = scratchOption('--mountinfo');
+const scratchRoot = scratchOption('--scratch-root');
+if (!submodulesOnly) {
+const { readMissingDeclaredMounts, formatMissingMountsEscalation } = await tsImport(
+  '../packages/operator-core/lib/storage/declared-mounts.ts', import.meta.url,
+);
+if (fstabPath || mountinfoPath || scratchRoot) console.log('  scoped scratch diagnostic (explicit inventory)');
+const mountProblems = await readMissingDeclaredMounts(fstabPath, mountinfoPath,
+  scratchRoot ? { scratchRoots: async () => [scratchRoot] } : {});
+check('declared mounts and registered scratch roots use their required devices', () => {
+  if (mountProblems === null) throw new Error('Mount/scratch placement is unknown; complete device/root inventory could not be read.');
+  if (mountProblems.length) throw new Error(formatMissingMountsEscalation(mountProblems).body);
+});
+if (scratchOnly) process.exit(ok ? 0 : 1);
+}
 if (!submodulesOnly) {
   check('docker CLI on PATH', () => execSync('docker --version', { stdio: 'pipe' }));
   check('docker daemon reachable', () => execSync('docker ps', { stdio: 'pipe' }));

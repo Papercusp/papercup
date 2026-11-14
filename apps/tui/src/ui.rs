@@ -71,6 +71,7 @@ pub(crate) fn too_small_for_compact(cols: u16, rows: u16) -> bool {
 }
 
 pub fn draw(f: &mut Frame, app: &App) {
+    app.chat_link_regions.borrow_mut().clear();
     if app.too_small() {
         draw_too_small(f, app);
     } else if app.compact_side() {
@@ -3227,6 +3228,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
 
     let inner_w = transcript_area.width.saturating_sub(side_borders).max(1) as usize;
     let mut lines: Vec<Line> = Vec::new();
+    let mut link_spans: Vec<crate::markdown::LinkSpan> = Vec::new();
     // Inline, the transcript has no title bar to say that older turns can be
     // loaded, so the first line of the history says it instead (it is on
     // screen exactly when PgUp at the top would load them).
@@ -3370,7 +3372,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             && (!inline || app.chat_focus.is_some() || !app.chat_composing);
         let inline_turn = inline && matches!(m.role.as_str(), "user" | "assistant");
         if inline_turn {
-            push_inline_turn(&mut lines, m, focused, inner_w, app.chat_tools_expanded);
+            push_inline_turn(&mut lines, &mut link_spans, m, focused, inner_w, app.chat_tools_expanded);
         }
         let header = if focused {
             format!("▸ {header}")
@@ -3422,7 +3424,10 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         if inline_turn {
             // Drawn by `push_inline_turn` above.
         } else if m.role == "assistant" {
-            lines.extend(crate::markdown::render(&body, inner_w, m.streaming));
+            let mut rendered = crate::markdown::render_with_links(&body, inner_w, m.streaming);
+            for link in &mut rendered.links { link.line += lines.len(); }
+            link_spans.extend(rendered.links);
+            lines.extend(rendered.lines);
         } else {
             for wl in wrap_text(&body, inner_w) {
                 lines.push(Line::from(wl));
@@ -3597,6 +3602,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         if inline {
             push_inline_turn(
                 &mut lines,
+                &mut link_spans,
                 &crate::models::ChatMessage::user(echo),
                 false,
                 inner_w,
@@ -3639,6 +3645,18 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     // Scrolling up clamps to this (App::scroll_chat_up), so the wheel stops
     // at the top instead of banking notches past it.
     app.chat_scroll_limit.set(Some(max_top));
+    let border = u16::from(!inline);
+    let content = Rect::new(transcript_area.x + border, transcript_area.y + border,
+        transcript_area.width.saturating_sub(border * 2), visible);
+    app.chat_link_regions.borrow_mut().extend(link_spans.into_iter().filter_map(|link| {
+        let row = link.line.checked_sub(top as usize)?;
+        if row >= visible as usize || link.column >= content.width as usize { return None; }
+        Some(crate::markdown::ScreenLink {
+            area: Rect::new(content.x + link.column as u16, content.y + row as u16,
+                link.width.min(content.width as usize - link.column) as u16, 1),
+            target: link.target,
+        })
+    }));
 
     let earlier = if app.chat_loading_earlier {
         " · ↑ loading…"
@@ -4104,6 +4122,7 @@ pub fn workbench_footer_hint(hint: &str, workbench_pane: bool) -> String {
 /// Each one is a real binding of the composing arm in `App::on_key`, or of
 /// `App::on_mouse` for the wheel and drag (P-018).
 const CHAT_SHORTCUTS: &[(&str, &str)] = &[
+    ("Ctrl+Enter", "open first link in focused turn"),
     ("Enter", "send"),
     ("Shift+Enter", "new line (or \\ then Enter)"),
     ("/", "commands"),
@@ -4222,6 +4241,7 @@ fn quiet_footer_line(hint: &str, status: &str, width: usize) -> String {
 /// `▸` replaces the marker on the block `y` would copy.
 fn push_inline_turn(
     lines: &mut Vec<Line<'static>>,
+    links: &mut Vec<crate::markdown::LinkSpan>,
     m: &crate::models::ChatMessage,
     focused: bool,
     inner_w: usize,
@@ -4258,7 +4278,10 @@ fn push_inline_turn(
             // indented under the gutter.
             Vec::new()
         } else {
-            crate::markdown::render(&text, text_w, m.streaming)
+            let mut rendered = crate::markdown::render_with_links(&text, text_w, m.streaming);
+            for link in &mut rendered.links { link.line += lines.len(); link.column += 2; }
+            links.extend(rendered.links);
+            rendered.lines
         }
     } else {
         wrap_text(&m.content, text_w)
