@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { fleetProductivityRescore, measureFleetProductivity } from './execution-productivity';
 import * as database from '@papercusp/db-org';
+import { mockOrgPgSql } from '../testing/mock-org-pg';
 import { getRegisteredInstrument } from '../rubric-instrument-registry';
 
 let db: OrgTestDb;
@@ -77,7 +78,8 @@ describe('real fleet productivity source populations', () => {
   });
 
   it('executes the registered resolver and preserves unknown historical claim-hours instead of certifying only its throughput', async () => {
-    const spy = vi.spyOn(database, 'getOrgPg').mockReturnValue({ sql: db.adminSql } as never);
+    const spy = vi.spyOn(database, 'getOrgPg');
+    mockOrgPgSql(vi.mocked(database.getOrgPg), db.adminSql);
     try {
       expect(getRegisteredInstrument('fleet:member-productivity')).toMatchObject({ evaluator: 'platform', rescore: { scope: 'subject' } });
       const result = await fleetProductivityRescore().resolve({ ...window, subject: { kind: 'fleet', ref: window.fleet } });

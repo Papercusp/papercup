@@ -2201,7 +2201,7 @@ export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOw
      * 'superseded' when a PRODUCTION respawn replaced the payload of an
      * already-pending re-poll (EI-19480099650947832 — nothing is dropped).
      */
-    schedule(msg: any): "queued" | "closed" | "superseded" | "duplicate";
+    schedule(msg: any): "superseded" | "queued" | "closed" | "duplicate";
     /**
      * Close all detached re-arm work when this PTY host is ending. Every
      * accepted message receives one terminal settlement so its delivery dedup
@@ -2733,7 +2733,7 @@ export function controlSocketSelfHealAction({ metaMine, sockOnDisk, serverListen
     metaMine: any;
     sockOnDisk: any;
     serverListening: any;
-}): "healthy" | "rebind" | "reassert";
+}): "rebind" | "healthy" | "reassert";
 export function closeControlServerForRebind(server: any, afterClose: any): void;
 export function decodeControl(payload: any): {
     ownerId: any;
@@ -4753,12 +4753,13 @@ export function makeHeadlessCodexModelChoiceStateMachine({ enabled, startupMs, n
     };
 };
 export function managedCodexStartupUpdateDialogEnabled(env?: NodeJS.ProcessEnv): boolean;
-/** Prepend CODEX_STARTUP_UPDATE_CHECK_OVERRIDE to a managed Codex child's argv.
+/** Prepend managed startup defaults to a Codex child's argv.
  * Pure. Applies only when the agent is Codex AND the command is the Codex
  * binary itself (the bin test of the launcher's codexManagedDaemonArgs), so a
  * wrapper or another program run under PAPERCUSP_AGENT=codex never receives a
- * foreign `-c`. Argv that already sets the key is returned unchanged, so an
- * explicit caller choice always wins.
+ * foreign `-c`. Explicit caller choices win independently for each key.
+ * The MCP budget reaches carry children even if their retained home predates
+ * the current materializer. Only the managed server receives the override.
  * @param {{command: string, args: readonly string[], env?: EnvironmentMap}} target
  * @returns {string[]}
  */
@@ -5108,7 +5109,7 @@ export function shouldReapDetachedPtyScopeResidue({ bridgeTty, headless, launche
  *  note \bconnected\b does NOT match inside "disconnected" (no word boundary
  *  after "dis"), but explicit negatives keep this robust to copy drift. Pure —
  *  exported for tests. */
-export function mcpServerRowStatus(line: any, name: any): "unknown" | "not-connected" | "connected" | null;
+export function mcpServerRowStatus(line: any, name: any): "unknown" | "connected" | "not-connected" | null;
 /** Is the /mcp dialog showing the single-server DETAIL view for `name`? Claude
  *  can open /mcp straight into it (header `Papercusp MCP Server`, then action
  *  rows such as `1. Authenticate  2. Reconnect  3. Disable`), so there is no
@@ -5363,7 +5364,7 @@ export function rearmWakeTurnOutcome(outcome: any, { submittedToCurrentChild }?:
  * A busy-gate deferral remains pending only when the re-arm controller still
  * owns that exact delivery; folded IDs that the re-arm does not own stay
  * retryable. */
-export function deliveryDedupSettlement(deliveryOutcome: any, rearmOwnsDelivery?: boolean): "pending" | "completed" | "cancelled" | "clear";
+export function deliveryDedupSettlement(deliveryOutcome: any, rearmOwnsDelivery?: boolean): "cancelled" | "completed" | "pending" | "clear";
 /** Persist the re-arm controller's retry window with a failed Codex-home attempt. */
 export function codexHomeEnsureFailureMetadata(failure: any, capMs: any): {
     retryable: boolean;
@@ -5429,16 +5430,22 @@ export function makeInjectMutex({ now, warnMs, forceReleaseMs, onStuck, }?: {
 };
 export function makeStaleFireGuard(): {
     /**
-     * Decide + COMMIT in one call (mirrors makeTurnCoalescer's admit/claim
-     * commit-at-delivery style): a message with no `routineId`/`fireNumber`
+     * Compare without committing so provenance can be renewed for a still-current
+     * fire. A message with no `routineId`/`fireNumber`
      * (not a loop-fire wake, or a pre-WI-5510 sender) always admits and never
      * touches the map — this guard is opt-in per-message, not a new
-     * requirement on every control-socket write. When both are present,
-     * admits (and records `fireNumber` as the new high-water mark) only when
-     * `fireNumber` is STRICTLY NEWER than the last one committed for this
-     * `routineId`; an equal-or-older fire number is a stale/duplicate
-     * delivery and must be DROPPED (admit:false) without updating state.
+     * requirement on every control-socket write.
      */
+    compare: (routineId: any, fireNumber: any) => {
+        admit: boolean;
+        lastDelivered: any;
+    };
+    /** Commit only after all freshness checks and any exact-row renewal succeed. */
+    commit: (routineId: any, fireNumber: any) => {
+        admit: boolean;
+        lastDelivered: any;
+    };
+    /** Backward-compatible compare + commit operation for callers without renewal. */
     admit(routineId: any, fireNumber: any): {
         admit: boolean;
         lastDelivered: any;
@@ -5446,6 +5453,16 @@ export function makeStaleFireGuard(): {
     /** Live count of distinct loop instances tracked (diagnostics/tests). */
     size(): number;
 };
+/**
+ * Renew one exact loop-fire ledger row after the host has compared its fire
+ * identity against the high-water mark. The append retains the original nonce,
+ * payload hash, and issuer; missing or mismatched evidence fails closed.
+ */
+export function renewCurrentLoopFireProvenance(message: any, { nowMs, readRows, appendRow, }?: {
+    nowMs?: number | undefined;
+    readRows?: typeof readProvenanceRowsForSid | undefined;
+    appendRow?: typeof appendProvenanceRow | undefined;
+}): Promise<number | null>;
 /** EI-18109211232286833: is a `carry-respawn` control message too stale to
  *  deliver? `receivedAtMs` is the moment this host first decoded the message
  *  (stamped once in `conn.on('end')`, reused unchanged across every
@@ -6385,6 +6402,8 @@ export const HEADLESS_ROLE_MCP_VERIFY_ATTEMPTS: 2;
  *  legitimate late retry of an already-accepted delivery is always still deduped, while
  *  the map cannot grow unbounded on a long-lived host. Exported for tests. */
 export const DELIVERY_DEDUP_TTL_MS: number;
+/** The bounded renewal horizon mirrors turn-provenance.ts's 65-minute loop-fire TTL. */
+export const LOOP_FIRE_PROVENANCE_RENEWAL_MAX_AGE_MS: number;
 /** Enough trailing output to hold a DEC private-mode toggle split across two
  *  pty chunks (`ESC[?1004;2004h` is 14 chars). */
 export const BRACKETED_PASTE_TAIL_CHARS: 32;
@@ -6499,4 +6518,7 @@ import { readSync } from 'node:fs';
 import { readFileSync } from 'node:fs';
 import { readdirSync } from 'node:fs';
 import { Worker } from 'node:worker_threads';
+declare function readProvenanceRowsForSid(sid: any): Promise<any[]>;
+declare function appendProvenanceRow(row: any): Promise<boolean>;
 import { stageAgentIdentityTty } from '../../../libs/papercusp-shared/src/agent/loopback-identity-tty.mjs';
+export {};

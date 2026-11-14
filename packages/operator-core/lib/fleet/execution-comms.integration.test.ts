@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { getRegisteredInstrument } from '../rubric-instrument-registry';
 import * as database from '@papercusp/db-org';
+import { mockOrgPgSql } from '../testing/mock-org-pg';
 import { FLEET_COMMS_KEY, fleetCommsRescore, measureFleetComms, rateFleetComms } from './execution-comms';
 
 let db: OrgTestDb;
@@ -80,7 +81,8 @@ describe('real exact fleet communication sources', () => {
   });
 
   it('resolves the registered subject instrument with numeric severity and source evidence', async () => {
-    const spy = vi.spyOn(database, 'getOrgPg').mockReturnValue({ sql: db.adminSql } as never);
+    const spy = vi.spyOn(database, 'getOrgPg');
+    mockOrgPgSql(vi.mocked(database.getOrgPg), db.adminSql);
     try {
       expect(getRegisteredInstrument(FLEET_COMMS_KEY)).toMatchObject({ evaluator: 'platform', rescore: { scope: 'subject' } });
       const result = await fleetCommsRescore().resolve({ ...window, subject: { kind: 'fleet', ref: window.fleet } });
