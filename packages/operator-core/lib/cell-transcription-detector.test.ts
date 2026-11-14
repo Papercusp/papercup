@@ -136,6 +136,23 @@ describe('cell-transcription detector — FALSE positives it must NOT raise (EI-
     expect(resolverCalls).toBe(0);
   });
 
+  it('does not treat a private background-run UUID prefix as a deployed SHA even when Git resolves it', async () => {
+    const text =
+      'Recovered canonical parser path mechanically from git show72590fd8: packages/plugin-loader/src/daemon/handler-bootstrap.ts. ' +
+      'I will include its exact loaded bytes alongside both6154 production paths after maintained refresh. ' +
+      'Original readiness key remains unfired/expired; actual qualification still open. ' +
+      'Own6208 fullunit117 + scopedtypes4files pass; maintained private background run f8592a33 is running with deadline00:17:07Z. ' +
+      'No duplicate refresh/cleanup.';
+    let resolverCalls = 0;
+    const hint = await cellTranscriptionHintResolvingCommits(text, async () => {
+      resolverCalls += 1;
+      return true;
+    });
+
+    expect(hint).toBeNull();
+    expect(resolverCalls).toBe(0);
+  });
+
   for (const [label, text] of mustNotFire) {
     it(`does not fire on ${label}`, () => {
       expect(detectCellTranscriptions(text), `text: ${text}`).toEqual([]);
