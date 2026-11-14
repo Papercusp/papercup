@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -184,6 +184,30 @@ describe('testing core producing-build witness', () => {
     const next = await prepareTestingCore(f);
     expect(next.witness.sourceSha256).toBe(first.witness.sourceSha256);
     expect(next.input.sources.map((row: {path: string}) => row.path)).not.toContain('.mcp.json');
+  });
+
+  it('keeps verification archive dependency metadata outside compiler custody during hard-link churn', async () => {
+    const f = fixture();
+    const metadata = 'apps/operator/dist-verify/previous-build/node_modules/archive-only/package.json';
+    f.put(metadata, '{"name":"archive-only"}');
+    const receipt = await prepareTestingCore({ ...f, phase: async (name: string, run: () => Promise<unknown>) => {
+      if (name === 'final') {
+        const alias = join(dirname(join(f.root, metadata)), 'linked-package.json');
+        linkSync(join(f.root, metadata), alias);
+        rmSync(alias);
+      }
+      return run();
+    } });
+    expect(receipt.input.sources.some((row: {path: string}) => row.path.includes('dist-verify'))).toBe(false);
+    expect(verifyTestingCoreReceipt(receipt, receipt.witness)).toEqual(receipt.witness);
+  });
+
+  it('refuses a module imported from a verification archive before publishing output', async () => {
+    const f = fixture();
+    f.put('apps/operator/dist-verify/previous-build/core.ts', 'export const result = 99;');
+    f.put('core.ts', 'export {result} from "./apps/operator/dist-verify/previous-build/core";');
+    await expect(prepareTestingCore(f)).rejects.toThrow(/outside original census/);
+    expect(existsSync(f.outfile)).toBe(false);
   });
 
   it('refuses symlinked native configuration without guessing extends semantics', async () => {
