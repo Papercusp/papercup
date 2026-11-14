@@ -1061,7 +1061,7 @@ describe('identity hook ports through the real CLI (P-011)', () => {
     }
   });
 
-  it('pre-tool: unavailable authority permits pinned scorecard evidence paging without admitting writes or shell execution', async () => {
+  it('pre-tool: unavailable authority permits pinned rubric and scorecard evidence reads without admitting writes or shell execution', async () => {
     const { runInjection } = await import('../core.mjs');
     const command = (header: string, args: unknown = { issueId: 'EI-123', rerunRecipeOffset: 2580 }) =>
       [header + " <<'JSON'", JSON.stringify(args), 'JSON'].join('\n');
@@ -1069,6 +1069,8 @@ describe('identity hook ports through the real CLI (P-011)', () => {
     const pinnedGitEvidence = 'node scripts/mcp-call.mjs --port=3170 capability:git-evidence --json -';
     const pinnedToolsFind = 'node scripts/mcp-call.mjs --port=3170 tools:find --json -';
     const safe = [
+      command('ptool rubrics:get --json -', { rubricRef: 'rubric-123', detail: 'full' }),
+      command('ptool tools:invoke --json -', { name: 'rubrics:get', args: { rubricRef: 'rubric-123', detail: 'full' } }),
       command('ptool scorecards:get --json -'),
       command('ptool scorecards:get --json - --url=http://127.0.0.1:3170'),
       command(pinned),
@@ -1085,6 +1087,7 @@ describe('identity hook ports through the real CLI (P-011)', () => {
       command('ptool tools:invoke --json -', { name: 'scorecards:get', args: { issueId: 'EI-123' } }),
     ];
     const unsafe = [
+      command('ptool tools:invoke --json -', { name: 'rubrics:propose', args: {} }),
       command(pinned.replace('scorecards:get', 'scorecards:emit')),
       command(pinned.replace('scorecards:get', 'work_items:complete')),
       command(pinned.replace('scorecards:get', 'tools:invoke'), {
@@ -1336,6 +1339,7 @@ describe('identity hook ports through the real CLI (P-011)', () => {
     const readOnlyCommands = [
       readOnlyInspection,
       reportedReadOnlyReads,
+      'git rev-parse HEAD && git ls-tree HEAD',
       "rg -n -C 2 'plan_execution_not_ready|isSafeWithoutExecutionAuthority' apps/operator/scripts/hooks/inject/core.mjs",
       [
         "ptool tools:find --json - <<'JSON'",
@@ -1381,11 +1385,28 @@ describe('identity hook ports through the real CLI (P-011)', () => {
           expect(await read, cmd).toBeNull();
         }
 
+        const qualifiedRead = runInjection({ adapter, nativeEvent,
+          event: { tool_name: 'functions.exec_command', tool_input: {
+            cmd: "rg -n -F 'plan_execution_not_ready' apps/operator/scripts/hooks/inject/core.mjs",
+          } },
+          env: hookEnv({ PAPERCUSP_SID: 'sid-guard' }), fetchImpl: stalledFetch });
+        await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs);
+        expect(await qualifiedRead).toBeNull();
+
         const pipeline = runInjection({ adapter, nativeEvent,
           event: { tool_name: 'exec_command', tool_input: { cmd: reportedReadOnlyPipeline } },
           env: hookEnv({ PAPERCUSP_SID: 'sid-guard' }), fetchImpl: stalledFetch });
         await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs);
         expect(await pipeline).toBeNull();
+
+        const gitMutation = runInjection({ adapter, nativeEvent,
+          event: { tool_name: 'exec_command', tool_input: { cmd: 'git update-ref refs/heads/read-guard-test HEAD' } },
+          env: hookEnv({ PAPERCUSP_SID: 'sid-guard' }), fetchImpl: stalledFetch });
+        await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs);
+        expect(JSON.parse((await gitMutation)!).hookSpecificOutput).toMatchObject({
+          permissionDecision: 'deny',
+          permissionDecisionReason: expect.stringContaining('plan_execution_not_ready'),
+        });
 
         const mutatingPipeline = runInjection({ adapter, nativeEvent,
           event: { tool_name: 'exec_command', tool_input: { cmd: 'ps -eo pid,comm | touch output' } },
@@ -1405,6 +1426,14 @@ describe('identity hook ports through the real CLI (P-011)', () => {
           permissionDecision: 'deny',
           permissionDecisionReason: expect.stringContaining('plan_execution_not_ready'),
         });
+        const qualifiedWrite = runInjection({ adapter, nativeEvent,
+          event: { tool_name: 'functions.exec_command', tool_input: { cmd: 'touch source.ts' } },
+          env: hookEnv({ PAPERCUSP_SID: 'sid-guard' }), fetchImpl: stalledFetch });
+        await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs);
+        expect(JSON.parse((await qualifiedWrite)!).hookSpecificOutput).toMatchObject({
+          permissionDecision: 'deny',
+          permissionDecisionReason: expect.stringContaining('plan_execution_not_ready'),
+        });
         const nativePatch = runInjection({ adapter, nativeEvent,
           event: { tool_name: 'apply_patch', tool_input: {
             patch: '*** Begin Patch\n*** Update File: source.ts\n@@\n-old\n+new\n*** End Patch',
@@ -1418,6 +1447,19 @@ describe('identity hook ports through the real CLI (P-011)', () => {
         });
         expect(patchDecision.permissionDecisionReason).toContain('stage=wall-during-fetch');
         expect(patchDecision.permissionDecisionReason).toContain('timeoutMs=1500');
+        const qualifiedPatch = runInjection({ adapter, nativeEvent,
+          event: { tool_name: 'functions.apply_patch', tool_input: {
+            patch: '*** Begin Patch\n*** Update File: source.ts\n@@\n-old\n+new\n*** End Patch',
+          } },
+          env: hookEnv({ PAPERCUSP_SID: 'sid-guard' }), fetchImpl: stalledFetch });
+        await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs);
+        const qualifiedPatchDecision = JSON.parse((await qualifiedPatch)!).hookSpecificOutput;
+        expect(qualifiedPatchDecision).toMatchObject({
+          permissionDecision: 'deny',
+          permissionDecisionReason: expect.stringContaining('plan_execution_not_ready'),
+        });
+        expect(qualifiedPatchDecision.permissionDecisionReason).toContain('stage=wall-during-fetch');
+        expect(qualifiedPatchDecision.permissionDecisionReason).toContain('timeoutMs=1500');
         const ptoolWrite = runInjection({ adapter, nativeEvent,
           event: { tool_name: 'exec_command', tool_input: { cmd: refusedPtoolWrite } },
           env: hookEnv({ PAPERCUSP_SID: 'sid-guard' }), fetchImpl: stalledFetch });

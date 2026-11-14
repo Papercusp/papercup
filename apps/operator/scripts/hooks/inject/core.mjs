@@ -839,6 +839,11 @@ const SHELL_PRE_TOOL_NAMES = new Set(['Bash', 'bash', 'exec_command', 'shell_com
 const PLAN_ANCHOR_REPAIR_KEYS = new Set(['slug', 'harness', 'itemId', 'anchors', 'expectedHash', 'rationale']);
 const CANONICAL_GRADING_AUDIT_AWAIT_EVENT = /^scorecard:grading-audit:[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/;
 
+/** Codex keeps native tools under the `functions.` namespace in hook events. */
+function authorizationToolName(tool) {
+  return typeof tool === 'string' ? tool.replace(/^functions\./, '') : '';
+}
+
 /**
  * Read the command carried by a native shell-tool event.
  * @param {{ input?: unknown, toolInput?: unknown }} partial
@@ -930,6 +935,13 @@ function isReadOnlyRipgrepInvocation(tokens, env) {
 /** ps only reads process metadata; shell operators and interpolation are rejected earlier. */
 function isReadOnlyProcessListInvocation(tokens) {
   return tokens[0] === 'ps';
+}
+
+/** Only the reported Git plumbing reads bypass authority when it is unavailable. */
+function isReadOnlyGitInspectionInvocation(tokens) {
+  return tokens[0] === 'git' &&
+    (tokens[1] === 'rev-parse' || tokens[1] === 'ls-tree') &&
+    tokens.length > 2;
 }
 
 /** head reads files/stdin and writes only to stdout; shell redirections are rejected earlier. */
@@ -1271,7 +1283,7 @@ function isCanonicalReviewPtoolCommand(command, env) {
     // Keep that decision authoritative here so the two-stage checks cannot drift apart.
     return (pinned !== null && pinned[2] === tool) ||
       ['facts:list', 'tools:find', 'testing:runs', 'dev:pg_query', 'plans:get', 'plans:items', 'plans:evaluate-spec-quality', 'work_items:get', 'events:status', 'reports:get',
-      'scorecards:get', 'capability:read',
+      'rubrics:get', 'scorecards:get', 'capability:read',
       'conversations:get', 'coord:inbox', 'coord:read', 'docs:get', 'docs:search',
       'consult:reply', 'consult:decline'].includes(tool);
   } catch {
@@ -1287,7 +1299,7 @@ function isCanonicalReviewPtoolCommand(command, env) {
  * @param {NodeJS.ProcessEnv} env
  */
 function isSafeWithoutExecutionAuthority(partial, env) {
-  if (!SHELL_PRE_TOOL_NAMES.has(partial?.tool ?? '')) return false;
+  if (!SHELL_PRE_TOOL_NAMES.has(authorizationToolName(partial?.tool))) return false;
   const command = shellCommandFromPartial(partial);
   if (command === null) return false;
   const segments = readOnlyCommandSegments(command);
@@ -1298,6 +1310,7 @@ function isSafeWithoutExecutionAuthority(partial, env) {
       isReadOnlyHeadInvocation(tokens) ||
       isReadOnlyFileReadInvocation(tokens) ||
       isReadOnlyProcessListInvocation(tokens) ||
+      isReadOnlyGitInspectionInvocation(tokens) ||
       isReadOnlyInspectionUtilityInvocation(tokens));
   })) ||
     isCanonicalPlanEditCommand(command) || isCanonicalReviewPtoolCommand(command, env);
@@ -1351,7 +1364,7 @@ export async function runInjection({ adapter, nativeEvent, event, env = process.
     // Context delivery retains its fail-silent contract; native edits and arbitrary
     // shell execution require an actual server verdict. Read/Grep/Glob still work.
     if (port === 'pre-tool' &&
-        /^(?:Edit|Write|MultiEdit|edit|write|apply_patch|Bash|bash|exec_command|shell_command|shell|write_stdin)$/.test(partial.tool ?? '') &&
+        /^(?:Edit|Write|MultiEdit|edit|write|apply_patch|Bash|bash|exec_command|shell_command|shell|write_stdin)$/.test(authorizationToolName(partial.tool)) &&
         !isSafeWithoutExecutionAuthority(partial, env)) {
       unavailableMutationGuard = (error = null) => {
         // No trace-file opt-in should be needed to distinguish an HTTP refusal
