@@ -226,14 +226,14 @@ describe('activation readiness application-read-only boundary', () => {
         ready: current.ready, advice: current.consult } }));
   }, 120_000);
 
-  it('keeps get, activation audit and refused start on the same real diagnostic basis', async () => {
+  it.each([true, false])('keeps get, activation audit and refused start on the same real diagnostic basis (dryRun=%s)', async dryRun => {
     const ctx = { workspaceId: fx.workspaceId, harnessSlug: harness,
       uiClientId: requesterId, isSuperuser: true } as never;
     const before = await snapshot();
     const get = await getTool.handler(getTool.args.parse({ slug, harness,
       activationReadiness: true, includeEnrichments: false, mode: 'meta' }), ctx) as { data: any };
     const audit = await auditTool.handler(auditTool.args.parse({ slug, harness,
-      phase: 'activation', dryRun: true, sourceRanges: [], mappings: [] }), ctx) as { data: any };
+      phase: 'activation', dryRun, sourceRanges: [], mappings: [] }), ctx) as { data: any };
     const start = await startTool.handler(startTool.args.parse({ slug, harness }), ctx) as { data: any };
     const read = get.data.results[0];
     const refused = start.data.results[0];
@@ -251,7 +251,7 @@ describe('activation readiness application-read-only boundary', () => {
         .toMatchObject({ status: 'not-applicable', codes: ['conformance_not_applicable'] });
     }
     const project = (diagnostic: any) => ({ basis: diagnostic.basis, freshness: diagnostic.freshness,
-      stages: diagnostic.stages.filter((s: any) => s.id !== 'consult') });
+      stages: dryRun ? diagnostic.stages.filter((s: any) => s.id !== 'consult') : diagnostic.stages });
     expect(diagnostics[0]).toMatchObject({ ready: false, freshness: 'current',
       counts: { total: 14, returned: 14, omitted: 0 } });
     expect(project(diagnostics[1])).toEqual(project(diagnostics[0]));
@@ -261,7 +261,13 @@ describe('activation readiness application-read-only boundary', () => {
     }
     // The preview deliberately does not recruit/route; this difference is
     // explicit and must not hide a disagreement in the other thirteen stages.
-    expect(diagnostics[1].consult).toMatchObject({ outcome: 'unavailable' });
+    if (dryRun) {
+      expect(diagnostics[1].consult).toMatchObject({ outcome: 'unavailable' });
+    } else {
+      expect(diagnostics[1].consult).toEqual(diagnostics[0].consult);
+      expect(diagnostics[2].consult).toEqual(diagnostics[0].consult);
+      expect(diagnostics[0].consult.outcome).toBe('proceed');
+    }
     expect(await snapshot()).toEqual(before);
     expect(shadow).not.toHaveBeenCalled();
   }, 120_000);
