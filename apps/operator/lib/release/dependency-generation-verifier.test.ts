@@ -91,6 +91,12 @@ function fixture(workspace = 'packages/cli') {
   // silently substitute the previous committed helper for the code under test.
   const tooling = join(root, 'tooling');
   cpSync(dirname(script), join(tooling, 'apps/operator/bin/release'), { recursive: true });
+  // The copied verifier imports this tracked-file helper; include its only
+  // local runtime dependency so the committed tooling fixture is self-contained.
+  const trackedFiles = 'libs/test-config/src/tracked-files.mjs';
+  const gitIndexFaultCore = 'libs/test-config/src/git-index-fault-core.mjs';
+  write(tooling, trackedFiles, readFileSync(join(repo, trackedFiles), 'utf8'));
+  write(tooling, gitIndexFaultCore, readFileSync(join(repo, gitIndexFaultCore), 'utf8'));
   // The lock-tree auditor's source-only CLI guard is a runtime dependency,
   // including when the shell fixture runs before any npm installation.
   const cliEntry = 'packages/operator-core/lib/util/cli-entry.ts';
@@ -128,6 +134,9 @@ fs.mkdirSync('dist');fs.copyFileSync('src/cli.cjs','dist/cli.cjs');
     'node_modules/@tauri-apps/cli': { version: '2.0.0' },
   } }));
   cpSync(join(tooling, 'apps'), join(donor, 'apps'), { recursive: true });
+  // runVerifierCommand freezes its invoked-source tree from the donor commit,
+  // so runtime imports must be present in this source tree as well as tooling.
+  cpSync(join(tooling, 'libs'), join(donor, 'libs'), { recursive: true });
   write(donor, sourceVerifier, readFileSync(join(tooling, sourceVerifier), 'utf8'));
   write(donor, cliEntry, readFileSync(join(tooling, cliEntry), 'utf8'));
   write(donor, 'papercusp-desktop/bin/lib/pinned-deps.sh', readFileSync(snapshotHelper, 'utf8'));
@@ -503,6 +512,16 @@ describe('D012 native generation closure', () => {
     execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
       'commit', '-qm', 'managed client source B with unchanged locks'], { cwd: f.donor });
     const refB = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: f.donor, encoding: 'utf8' }).trim();
+    const verifierHelpers = [
+      'libs/test-config/src/tracked-files.mjs',
+      'libs/test-config/src/git-index-fault-core.mjs',
+    ];
+    for (const path of verifierHelpers) {
+      expect(existsSync(join(f.root, 'tooling', path))).toBe(true);
+      expect(execFileSync('git', ['ls-tree', '-r', '--name-only', refB, '--', path], {
+        cwd: f.donor, encoding: 'utf8',
+      }).trim()).toBe(path);
+    }
     for (const lock of ['package-lock.json', 'papercusp-desktop/package-lock.json']) {
       expect(execFileSync('git', ['show', `${refB}:${lock}`], { cwd: f.donor }))
         .toEqual(execFileSync('git', ['show', `${refA}:${lock}`], { cwd: f.donor }));
