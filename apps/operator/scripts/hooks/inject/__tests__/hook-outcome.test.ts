@@ -18,7 +18,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const { postInjection, runInjection, hookOutcomeTracer } = await import(path.join(HERE, '..', 'core.mjs'));
 const { PORTS } = (await import(path.join(HERE, '..', 'ports.mjs'))) as {
-  PORTS: Record<string, { timeoutMs: number }>;
+  PORTS: Record<string, { timeoutMs: number; unavailableAttempts?: number }>;
 };
 
 const answer = (text: string) => (async () => ({ ok: true, status: 200, json: async () => ({ text }) })) as unknown as typeof fetch;
@@ -400,10 +400,14 @@ describe('unavailable mutation authority reports its transport branch', () => {
       guardRequestId = JSON.parse(String(init.body)).guardRequestId;
       init.signal!.addEventListener('abort', () => reject(new Error('aborted')));
     })) as unknown as typeof fetch);
-    await vi.advanceTimersByTimeAsync(PORTS['pre-tool']!.timeoutMs);
+    // EI-28788424262267205: each transport-miss retry runs under its own wall,
+    // so the deny lands after one wall per declared attempt.
+    const attempts = PORTS['pre-tool']!.unavailableAttempts ?? 1;
+    for (let i = 0; i < attempts; i++) await vi.advanceTimersByTimeAsync(PORTS['pre-tool']!.timeoutMs);
     const out = await pending;
     expect(guardRequestId).toMatch(/^[0-9a-f-]{36}$/);
     expect(out).toContain(`requestId=${guardRequestId}`);
+    if (attempts > 1) expect(out).toMatch(/firstAttempt=wall-during-fetch\/\d+ms; firstRequestId=[0-9a-f-]{36}/);
     expect(out).toContain('stage=wall-during-fetch');
     expect(out).toContain('transportPhase=waiting-for-headers');
     expect(out).toContain('headersElapsedMs=null');
@@ -456,9 +460,13 @@ describe('unavailable mutation authority reports its transport branch', () => {
       });
     }) as typeof fetch;
     const pending = runPinnedToProxy(fetchImpl);
-    await vi.advanceTimersByTimeAsync(PORTS['pre-tool']!.timeoutMs);
+    // Each retry repeats the same two-origin split inside its own wall; the
+    // guardAttempts diagnostic below describes the final attempt.
+    const attempts = PORTS['pre-tool']!.unavailableAttempts ?? 1;
+    for (let i = 0; i < attempts; i++) await vi.advanceTimersByTimeAsync(PORTS['pre-tool']!.timeoutMs);
     const out = await pending;
-    expect(origins).toEqual(['http://127.0.0.1:9071', 'http://localhost:3070']);
+    expect(origins).toEqual(Array.from({ length: attempts },
+      () => ['http://127.0.0.1:9071', 'http://localhost:3070']).flat());
     expect(out).toContain('execution-authority lookup failed');
     expect(out).toContain('stage=wall-during-fetch');
     const firstBudget = Math.floor(PORTS['pre-tool']!.timeoutMs / 2);
