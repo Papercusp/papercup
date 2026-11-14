@@ -95,6 +95,42 @@ describe('upsert + read round-trip', () => {
     expect(updated!.anchorPaths).toEqual(['src/**']);
     expect(await rec.getAuthoredDocContent(HARNESS, docId, WS)).toBe(content);
   });
+
+  it.each(['insert', 'update'] as const)('stores authored frontmatter as a JSON object on %s', async (operation) => {
+    const docId = 'guides/frontmatter.md';
+    if (operation === 'update') {
+      await rec.upsertDocRecord({
+        harnessSlug: HARNESS, docId, workspaceId: WS, source: 'manual',
+        subjectRef: [], anchorPaths: [], content: '---\ntitle: Original\n---\nOriginal body\n',
+      });
+    }
+    const content = '---\ntitle: Authored metadata\ntags: [docs, rust]\nreviewed: 2026-11-13\n---\nCanonical body\n';
+    await rec.upsertDocRecord({
+      harnessSlug: HARNESS, docId, workspaceId: WS, source: 'manual',
+      subjectRef: [], anchorPaths: [], content,
+    });
+    const [stored] = await db.adminSql`
+      SELECT frontmatter, jsonb_typeof(frontmatter) AS frontmatter_type,
+             frontmatter->>'title' AS indexed_title
+        FROM harness_shared.harness_docs
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND doc_id = ${docId}
+    `;
+    expect(stored.frontmatter_type).toBe('object');
+    expect(stored.indexed_title).toBe('Authored metadata');
+    expect(stored.frontmatter).toEqual({
+      title: 'Authored metadata', tags: ['docs', 'rust'], reviewed: '2026-11-13',
+    });
+    await rec.upsertDocRecord({
+      harnessSlug: HARNESS, docId, workspaceId: WS, source: 'manual',
+      subjectRef: [], anchorPaths: [], status: 'review',
+    });
+    const [afterMetadata] = await db.adminSql`
+      SELECT frontmatter FROM harness_shared.harness_docs
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND doc_id = ${docId}
+    `;
+    expect(afterMetadata.frontmatter).toEqual(stored.frontmatter);
+    expect(await rec.getAuthoredDocContent(HARNESS, docId, WS)).toBe(content);
+  });
 });
 
 describe('overlay survives regeneration (D-003/P-005)', () => {
