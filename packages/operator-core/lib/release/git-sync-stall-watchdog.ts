@@ -46,6 +46,12 @@ import { readRoutineEngineLiveness } from './routine-engine-liveness';
 import type { IneligibleReason } from '../harness/git-sync/git-sync-eligibility';
 import { isLocalDiskFullError, localDiskFullClause } from '../harness/git-sync/git-fetch-headroom-refusal';
 import { gitSyncLegPhrase } from '../harness/git-sync/git-sync-escalation';
+import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
+import {
+  gitSyncStallConditionKey,
+  raiseStallIncidentSeverity,
+  type StallSeverityDeps,
+} from './pipeline-stall-incidents';
 
 /** Tree HEAD unchanged this long while the routine is active ⇒ commits aren't landing.
  *  EI-7531: the papercusp tree stranded 2622 dirty paths for 10.5h while git-sync looked
@@ -626,6 +632,90 @@ export function gitSyncStallEscalationBody(opts: {
   });
 }
 
+/**
+ * How long a STRANDING git-sync stall has lasted, for incident severity (WI-6554700010048238).
+ * Only the two signals with a real clock count: the frozen-HEAD clock (fault onset, see
+ * decideHeadClock) and the time since the routine last fired. A pure fault or reap streak has no
+ * trustworthy start time here (its sweep counters advance once per watchdog host per sweep), so
+ * it returns null and the incident keeps the severity it already has.
+ */
+export function gitSyncStallDurationMs(
+  verdict: Pick<GitSyncStallVerdict, 'commitStale' | 'fireStale'>,
+  clocks: { headUnchangedMs: number | null; lastFiredMs: number | null; nowMs: number },
+): number | null {
+  const spans: number[] = [];
+  if (verdict.commitStale && clocks.headUnchangedMs != null && Number.isFinite(clocks.headUnchangedMs)) {
+    spans.push(clocks.headUnchangedMs);
+  }
+  if (verdict.fireStale && clocks.lastFiredMs != null && Number.isFinite(clocks.lastFiredMs)) {
+    spans.push(clocks.nowMs - clocks.lastFiredMs);
+  }
+  return spans.length > 0 ? Math.max(0, ...spans) : null;
+}
+
+/**
+ * The condition keys an incident for this install's stall can hold: the watchdog's own
+ * per-install alarm key (a hand-keyed incident may use it) and the per-harness key that agent
+ * sightings filed through `improvements:capture` default to.
+ */
+export function gitSyncStallIncidentKeys(installSlug: string): string[] {
+  return [...new Set([`git-sync-stall:${installSlug}`, gitSyncStallConditionKey(installSlug)])];
+}
+
+const STALL_SEVERITY_WRITER = 'system:git-sync-stall-watchdog';
+
+function gitSyncStallSeverityDeps(sql: Sql, workspaceId: string): StallSeverityDeps {
+  return {
+    // Bridge-minted rows hold the key in condition_key; capture-minted rows keep it in
+    // payload.watchdogKey with condition_key NULL. Match either.
+    findOpenIncidents: async (keys) => {
+      const rows = await sql<{ feature_id: string; severity: string | null }[]>`
+        SELECT feature_id, severity_projection AS severity
+          FROM harness_shared.work_items
+         WHERE workspace_id = ${workspaceId}
+           AND (condition_key = ANY(${keys}::text[]) OR payload->>'watchdogKey' = ANY(${keys}::text[]))
+           AND NOT (status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
+           AND lane IS DISTINCT FROM 'observation'`;
+      return rows.map((r) => ({ id: r.feature_id, severity: r.severity }));
+    },
+    bumpSeverity: async (id, to) => {
+      const { updateIssue } = await import('../issues-engineer');
+      return (await updateIssue(id, { severity: to, by: STALL_SEVERITY_WRITER }, { workspaceId })) != null;
+    },
+    comment: async (id, body, idempotencyKey) => {
+      const { commentIssue } = await import('../issues-engineer');
+      try {
+        await commentIssue(id, body, STALL_SEVERITY_WRITER, { workspaceId, idempotencyKey });
+      } catch (e) {
+        // Another host already posted this tier's comment from a different install of the same
+        // harness. The severity is raised; the one comment that exists is enough.
+        if (!(e instanceof Error && e.message === 'comment_idempotency_conflict')) throw e;
+      }
+    },
+  };
+}
+
+/** Raise the open incident(s) for a confirmed stall to the tier its duration has reached. Never throws. */
+async function raiseGitSyncStallIncidentSeverity(
+  sql: Sql,
+  installSlug: string,
+  workspaceId: string,
+  stallDurationMs: number | null,
+): Promise<void> {
+  if (stallDurationMs === null) return;
+  try {
+    const raised = await raiseStallIncidentSeverity(
+      { keys: gitSyncStallIncidentKeys(installSlug), subject: `git-sync (${installSlug})`, stallDurationMs },
+      gitSyncStallSeverityDeps(sql, workspaceId),
+    );
+    for (const r of raised) {
+      console.warn(`[git-sync-stall-watchdog] stall incident ${r.id} severity ${r.from ?? 'unset'} -> ${r.to} (${installSlug})`);
+    }
+  } catch (e) {
+    console.warn(`[git-sync-stall-watchdog] stall severity raise failed: ${e instanceof Error ? e.message : e}`);
+  }
+}
+
 export interface GitSyncStallWatchdogResult {
   alarmed: string[];
   recovered: string[];
@@ -902,6 +992,19 @@ export async function checkGitSyncStall(
       }
 
       if (verdict.stalled) {
+        // WI-6554700010048238: severity rises with stall duration. This runs on EVERY confirmed
+        // stalled sweep, including after the one-shot alarm below, because that is when the
+        // duration grows. It raises only an incident that already exists: today that is one
+        // opened by an agent's improvements:capture sighting. The alarm itself mints none yet
+        // (WI-6554700010048637), so with no sighting there is nothing to raise.
+        if (watchdogAlerted || shouldAlarmSustained(verdict.stalled, stallSweeps, stallSustainMinSweeps)) {
+          await raiseGitSyncStallIncidentSeverity(
+            sql,
+            row.install_slug,
+            row.workspace_id,
+            gitSyncStallDurationMs(verdict, { headUnchangedMs, lastFiredMs, nowMs: now }),
+          );
+        }
         if (watchdogAlerted) continue; // already alarmed; one-shot until recovery
         // EI-9030b: hold back a not-yet-SUSTAINED stall — a transient that self-heals before the
         // next sweep confirms it never pages (and so never emits a paired recovery notice). The

@@ -85,6 +85,7 @@ import { activeWorkspaceId } from '../workspace-registry';
 import { notifyAttention } from '../attention-notify';
 import { broadcastSevereEvent, broadcastSevereEventResolvedMany } from '../severe-event-broadcast';
 import { resolveSevereEventOwner } from '../severe-event-owner';
+import { gitSyncInstallHarness } from '../release/pipeline-stall-incidents';
 import { currentLoopLag } from '../event-loop-lag-monitor';
 import { getBuildInfo } from '../build-info';
 import {
@@ -499,6 +500,38 @@ export function isGitSyncMissedIntervalsSignature(sig: string): boolean {
   return sig === GIT_SYNC_MISSED_INTERVALS_SIGNATURE || sig.startsWith(`${GIT_SYNC_MISSED_INTERVALS_SIGNATURE}:`);
 }
 
+/**
+ * WI-6554700010048238: ONE starvation incident per HARNESS, not per install. A stalled superproject
+ * starves every submodule install with it (papercusp, papercusp/libs/papercusp-db,
+ * papercusp/libs/generic/search, … paged and recovered together on 2026-11-14), and a key per
+ * install turned that one stall into a dozen open rows. The worst reading represents the harness.
+ */
+export function collapseStarvedInstallsByHarness(
+  entries: ReadonlyArray<{ installSlug: string | null; missedIntervals: number }>,
+): Array<{ installSlug: string | null; missedIntervals: number }> {
+  const worst = new Map<string | null, number>();
+  for (const { installSlug, missedIntervals } of entries) {
+    const subject = installSlug ? gitSyncInstallHarness(installSlug) : null;
+    worst.set(subject, Math.max(worst.get(subject) ?? missedIntervals, missedIntervals));
+  }
+  return [...worst].map(([installSlug, missedIntervals]) => ({ installSlug, missedIntervals }));
+}
+
+/** The worst entry belonging to a signal subject: a harness (the collapsed key) or, for a row
+ *  raised before the collapse, the install itself. */
+export function worstGitSyncInstallForSubject<T extends { installSlug: string | null; missedIntervals: number }>(
+  entries: readonly T[],
+  subject: string,
+): T | undefined {
+  let worst: T | undefined;
+  for (const entry of entries) {
+    const slug = entry.installSlug;
+    if (!slug || (slug !== subject && gitSyncInstallHarness(slug) !== subject)) continue;
+    if (!worst || entry.missedIntervals > worst.missedIntervals) worst = entry;
+  }
+  return worst;
+}
+
 function gitSyncMissedIntervalSummary(installSlug: string | null, missedIntervals: number): string {
   return (
     `git-sync${installSlug ? ` on ${installSlug}` : ''} has missed ${missedIntervals} consecutive scheduler intervals. ` +
@@ -530,7 +563,7 @@ function gitSyncMissedIntervalsRevalidationEvidence(
     ? sig.slice(GIT_SYNC_MISSED_INTERVALS_SIGNATURE.length + 1)
     : null;
   if (installSlug) {
-    const candidate = starvedCandidates.find((entry) => entry.installSlug === installSlug);
+    const candidate = worstGitSyncInstallForSubject(starvedCandidates, installSlug);
     return candidate
       ? `live routines recheck at ${observedAt} confirmed ${installSlug} remains a starvation candidate at ${candidate.missedIntervals} missed intervals (threshold >= ${GIT_SYNC_MISSED_INTERVALS_ALARM})`
       : `live routines recheck at ${observedAt} found no current starvation candidate for ${installSlug}; the filtered candidate list is not a raw-zero or commit-progress measure`;
@@ -709,7 +742,7 @@ export function evaluateLivenessAlarm(
     : typeof gitSyncMissedMax === 'number' && gitSyncMissedMax >= GIT_SYNC_MISSED_INTERVALS_ALARM
       ? [{ installSlug: deployData?.gitSyncMissedIntervalsInstallSlug ?? null, missedIntervals: gitSyncMissedMax }]
       : [];
-  for (const { installSlug: slug, missedIntervals: gitSyncMissed } of starvedInstalls) {
+  for (const { installSlug: slug, missedIntervals: gitSyncMissed } of collapseStarvedInstallsByHarness(starvedInstalls)) {
     signals.push({
       key: gitSyncMissedIntervalsSignature(slug),
       severity: 'blocker',
@@ -1356,7 +1389,7 @@ export function resolveEvidenceFor(
       : null;
     const perInstall = dp?.data?.gitSyncMissedIntervalsByInstall;
     const installCandidate = slug && Array.isArray(perInstall)
-      ? perInstall.find((e) => e.installSlug === slug)
+      ? worstGitSyncInstallForSubject(perInstall, slug)
       : undefined;
     const installNote = slug && Array.isArray(perInstall)
       ? installCandidate
@@ -2408,7 +2441,7 @@ export async function runLivenessAlarmTick(
             null,
             starvedNow.reduce((max, candidate) => Math.max(max, candidate.missedIntervals), 0),
           )]
-        : starvedNow.map((candidate) =>
+        : collapseStarvedInstallsByHarness(starvedNow).map((candidate) =>
             gitSyncMissedIntervalSignal(candidate.installSlug, candidate.missedIntervals));
       const firstGitSyncSignal = signals.findIndex((signal) => isGitSyncMissedIntervalsSignature(signal.key));
       const otherSignals = signals.filter((signal) => !isGitSyncMissedIntervalsSignature(signal.key));

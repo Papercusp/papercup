@@ -1053,10 +1053,19 @@ async function acceptanceBarClauseWrite(args: {
   const layersOnly = !unchangedBar && prior?.barHash === clause.source_bar_hash &&
     computeAcceptanceBarHash({ ...criterion, requiredTestLayers: prior.requiredTestLayers, check: prior.check })
       === clause.source_bar_hash;
+  // Every verification-contract field says HOW or WHERE the promise is proven, not
+  // WHAT it is: test layers, structured check, evidence plane(s), the runtime the
+  // proof must run in, and the production configuration it must run under. Restore
+  // ALL of them from the prior BAR before comparing. Omitting runtime/configuration
+  // classified a runtime declaration as a meaning change and replaced reviewed atomic
+  // behaviors with their compound parent model (WI-6554700010048590).
+  const priorProofContract = prior ? {
+    requiredTestLayers: prior.requiredTestLayers, check: prior.check,
+    evidencePlane: prior.evidencePlane, requiredEvidencePlanes: prior.requiredEvidencePlanes,
+    evidenceRuntime: prior.evidenceRuntime, productionConfiguration: prior.productionConfiguration,
+  } : undefined;
   const proofOnly = !unchangedBar && prior?.barHash === clause.source_bar_hash &&
-    computeAcceptanceBarHash({ ...criterion, requiredTestLayers: prior.requiredTestLayers, check: prior.check,
-      evidencePlane: prior.evidencePlane, requiredEvidencePlanes: prior.requiredEvidencePlanes })
-      === clause.source_bar_hash;
+    computeAcceptanceBarHash({ ...criterion, ...priorProofContract }) === clause.source_bar_hash;
   // Intent is hashed, so annotation must refresh proof identity. It must not
   // replace reviewed atomic refinements with their possibly compound parent.
   // Only rationale/source provenance may change; a legacy intent must repeat
@@ -1071,9 +1080,7 @@ async function acceptanceBarClauseWrite(args: {
       .some((request) => normalizedText(criterion.intent!.request) === normalizedText(request)));
   const intentAnnotationOnly = !unchangedBar && prior?.barHash === clause.source_bar_hash &&
     requestUnchanged && normalizedConstraints(criterion.intent?.constraints) === normalizedConstraints(prior.intent?.constraints) &&
-    computeAcceptanceBarHash({ ...criterion, intent: prior.intent,
-      requiredTestLayers: prior.requiredTestLayers, check: prior.check,
-      evidencePlane: prior.evidencePlane, requiredEvidencePlanes: prior.requiredEvidencePlanes }) === clause.source_bar_hash &&
+    computeAcceptanceBarHash({ ...criterion, intent: prior.intent, ...priorProofContract }) === clause.source_bar_hash &&
     await args.historicalPinResolves?.(clause, common);
   const preserveRefinements = unchangedBar || proofOnly || intentAnnotationOnly;
   // Keep atomic-only proof layers; remove a parent's explicitly dropped layers.

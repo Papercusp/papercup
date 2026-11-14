@@ -421,15 +421,23 @@ async function deliveryFixture() {
     acceptance, target };
 }
 
+/** P-008's authored blockers as withPlanLock persisted them (read back from work_item_deps). */
+async function finalBlockedBy() {
+  const nodes = await readPlanLineNodes(fx.admin, { workspaceId: fx.workspaceId, harnessSlug: harness, slug });
+  return nodes.find(node => node.id === 'P-008')?.blockedBy;
+}
+
 describe('original proof-warming discovery before review and implementation', () => {
   it('completes current-build discovery before exact-shipped acceptance without certifying final delivery', async () => {
     await runWithWorkspace(fx.workspaceId, async () => {
       const delivery = await deliveryFixture();
-      expect(await reconcilePlanAuthoredDependenciesNow(slug, 'P-008', harness, OWNER))
-        .toMatchObject({ resolved: [delivery.prerequisite] });
+      // P-008 is a unified plan-line node: withPlanLock owns its authored dependency
+      // graph, including settled prerequisites. The legacy D-050 reconcile is a no-op
+      // for it and must never subtract the P-007 edge once that row becomes terminal.
+      expect(await reconcilePlanAuthoredDependenciesNow(slug, 'P-008', harness, OWNER)).toBeNull();
       const receipt = await delivery.closeCurrent();
-      expect(await reconcilePlanAuthoredDependenciesNow(slug, 'P-008', harness, OWNER))
-        .toMatchObject({ resolved: [] });
+      expect(await reconcilePlanAuthoredDependenciesNow(slug, 'P-008', harness, OWNER)).toBeNull();
+      expect(await finalBlockedBy()).toEqual(['P-007']);
       expect((await getWorkItem(delivery.finalItem, harness))?.state).toBe('open');
       expect((await delivery.acceptance(false)).verdict.satisfied).toBe(false);
       expect(await delivery.completionGate(delivery.finalItem)).toMatchObject({ ok: false });
@@ -497,8 +505,8 @@ describe('original proof-warming discovery before review and implementation', ()
       await setWorkItemState(delivery.prerequisite, 'dropped', { harness, by: OWNER, family: 'feature',
         completionRef: 'private-fixture:abandoned-prerequisite', completionAuthority: 'committed',
         completionEvidence: { summary: 'Abandoned contribution calibration; never successful delivery proof.' } });
-      expect(await reconcilePlanAuthoredDependenciesNow(slug, 'P-008', harness, OWNER))
-        .toMatchObject({ resolved: [] });
+      expect(await reconcilePlanAuthoredDependenciesNow(slug, 'P-008', harness, OWNER)).toBeNull();
+      expect(await finalBlockedBy()).toEqual(['P-007']);
       await expect(measureWorkItemsEvidenceForScope(fx.workspaceId, harness, delivery.receiptRecipe))
         .rejects.toThrow('successful_completion_receipt_unavailable');
       expect(await delivery.completionGate(delivery.finalItem)).toMatchObject({ ok: false });
@@ -617,6 +625,19 @@ describe('original proof-warming discovery before review and implementation', ()
     expect(review.route).toHaveBeenCalledOnce();
     expect(review.open).not.toHaveBeenCalled();
     expect(await startAttempt('P-002')).toBeNull();
+  });
+
+  it('EI-28751347466140676 a nested same-plan discovery admission reuses the held lock instead of refusing plan_busy', async () => {
+    await revision(plan(revisedFindings(), true));
+    expect(await finalized()).toMatchObject({ ok: true, discovery: { readiness: { ready: true } } });
+    // scorecards:emit holds this admission while it replays plans:evaluate-spec-quality,
+    // which re-enters withCurrentDiscovery for the same plan.
+    const nested = await withCurrentDiscovery(input(), async () =>
+      withCurrentDiscovery(input(), async (_tx, subject) => subject.version, { context: resolver }), { context: resolver });
+    expect(nested).toMatchObject({ ok: true, result: { ok: true } });
+    // The admission ends with its callback; a later fresh call takes its own lock.
+    expect(await withCurrentDiscovery(input(), async () => 'after', { context: resolver }))
+      .toMatchObject({ ok: true, result: 'after' });
   });
 
   it('plans:get-input-schema reports the Discovery refusal for a legacy ready plan', async () => {

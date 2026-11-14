@@ -2365,6 +2365,27 @@ describe('handler — dynamic activation (dynamic-tool-surface-2026-07-01)', () 
     }
   });
 
+  it('directs clipped exact schemas to the explicit full payload tier', async () => {
+    const bounded = await callHandler({ query: 'testing:run', limit: 1 });
+
+    expect(bounded.hits.map((hit) => hit.tool)).toEqual(['testing:run']);
+    expect(bounded.hits[0]?.argSchema).toContain('…');
+    expect(bounded.howToCall).toContain('payloadTier:"full"');
+    expect(bounded.howToCall).toContain('same clipped schema');
+
+    const full = await callHandler(
+      { query: 'testing:run', limit: 1 },
+      { payloadTierOverride: 'full' },
+    );
+    expect(full.truncated).toBe(false);
+    const schemaText = full.hits[0]?.argSchema;
+    expect(schemaText).toEqual(expect.any(String));
+    const schema = JSON.parse(schemaText ?? '{}') as { properties?: Record<string, unknown> };
+    expect(Object.keys(schema.properties ?? {})).toEqual(
+      expect.arrayContaining(['background', 'privatePg', 'timeoutMs', 'work_item_id']),
+    );
+  });
+
   it('fills explicit tool-name matches that generic relevance ranking left out', async () => {
     const names = [
       'work_items:link',

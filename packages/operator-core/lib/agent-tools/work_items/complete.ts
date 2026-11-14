@@ -3350,6 +3350,9 @@ export async function synchronizeFinishWork(
         item: stamp.item_id,
         status: reflected,
         note: `← ${opts.id} completed (${state})`,
+        // Match the fallback lifecycle reflection: this receipt is progress,
+        // not authored plan-line text that changes execution scope.
+        noteKind: 'progress',
         // WI-38908 / EI-19972048649686949 — the SAME guard reflect-rules.ts:141 passes.
         // It has to be HERE too, because this is the path that actually runs: the reflect
         // rule stands down whenever this leg succeeded (reflect-rules.ts:162 skips when

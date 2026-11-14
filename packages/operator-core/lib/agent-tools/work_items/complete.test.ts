@@ -2207,7 +2207,9 @@ describe('work_items:complete (keyed-array)', () => {
       1,
       expect.objectContaining({
         fire: 'plans:set-status',
-        args: expect.objectContaining({ slug: 'release-plan', item: 'P-007', status: 'done' }),
+        args: expect.objectContaining({
+          slug: 'release-plan', item: 'P-007', status: 'done', noteKind: 'progress',
+        }),
       }),
     );
     expect(fireReactionInProcess).toHaveBeenNthCalledWith(

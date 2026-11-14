@@ -3251,7 +3251,9 @@ describe('template_data persistence boundary — the set-template-data door', ()
   // proven), so an amendment adding the structured check the ship gate demands must
   // not erase the atomic clause either (WI-10002563). model/falsifier are
   // meaning changes and still re-project.
-  it.each(['layers', 'check', 'model', 'falsifier', 'plane'] as const)(
+  // `runtime` (evidenceRuntime + its live plane) is verification contract too: it moves
+  // WHERE the promise is proven, not WHAT it is (WI-6554700010048590).
+  it.each(['layers', 'check', 'model', 'falsifier', 'plane', 'runtime'] as const)(
     'preserves reviewed scenarios and causal pairing only for verification-contract changes (%s)',
     async (change) => {
       const alternateUnitCheck = 'packages/operator-core/lib/acceptance-bar-contract-completeness.test.ts';
@@ -3298,6 +3300,9 @@ describe('template_data persistence boundary — the set-template-data door', ()
                 ...(change === 'model' ? { model: 'The changed outcome holds.', bar: undefined } : {}),
                 ...(change === 'falsifier' ? { driftMarkers: 'The changed outcome is absent.' } : {}),
                 ...(change === 'plane' ? { evidencePlane: 'live' as const } : {}),
+                ...(change === 'runtime'
+                  ? { evidencePlane: 'live' as const, evidenceRuntime: 'staging-operator' as const }
+                  : {}),
               }
             : criterion,
         ),
@@ -3311,10 +3316,10 @@ describe('template_data persistence boundary — the set-template-data door', ()
         expect(rubricAfter.criteria.find((entry) => entry.barKey === before.sourceBar!.barKey)!.check)
           .toEqual({ kind: 'tests', files: ['packages/operator-core/lib/rubrics.integration.test.ts', alternateUnitCheck] });
       }
-      if (change === 'layers' || change === 'check' || change === 'plane') {
+      if (change === 'layers' || change === 'check' || change === 'plane' || change === 'runtime') {
         expect(after).toMatchObject({
           ...authored,
-          requiredEvidence: change === 'plane'
+          requiredEvidence: change === 'plane' || change === 'runtime'
             ? before.requiredEvidence.map((value) => value === 'tree' ? 'live' : value)
             : before.requiredEvidence,
           requiredTestLayers: ['e2e', 'integration', 'unit'],

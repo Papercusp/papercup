@@ -31,6 +31,7 @@ import {
   type CaptureWatchdogIdentityConflictError,
 } from '../../harness/improvements/capture-core';
 import { isVolumeGatedToolErrorClass } from '../../harness/improvements/tool-error-volume-gate';
+import { defaultStallCaptureConditionKey } from '../../release/pipeline-stall-incidents';
 import { enterAgentReview } from '../../harness/improvements/agent-review';
 import { OBSERVATION_KINDS, ObservationEvidenceError } from '../../harness/improvements/observation-types';
 import {
@@ -1451,7 +1452,15 @@ export default defineTool({
     const captureWatchdogKey =
       args.conditionKey ??
       toolFailureRowKey ??
-      (effectiveLane === 'observation' ? defaultScorecardConditionKey(observation) : undefined);
+      (effectiveLane === 'observation' ? defaultScorecardConditionKey(observation) : undefined) ??
+      // WI-6554700010048238: a stall sighting attaches to the one open row for that stall.
+      defaultStallCaptureConditionKey({
+        kind: effectiveKind,
+        lane: effectiveLane,
+        title: args.title,
+        body: args.body,
+        harness: ctxHarness ?? (captureScope?.startsWith('harness:') ? captureScope.slice('harness:'.length) : 'papercusp'),
+      });
     // work-queue-admission-and-bulk-dedup P-008: a successful unkeyed
     // observation filing is DONE from the caller's perspective. Whether the
     // server minted a row, HARD-folded onto a survivor, or SOFT-linked a fresh

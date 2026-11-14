@@ -1676,7 +1676,7 @@ export default defineTool({
       build: z
         .enum(['main', 'staging'])
         .optional()
-        .describe("Which build's catalog to search: 'staging' finds tools that exist only on staging (:3170). Default main."),
+        .describe("Which build's catalog to search. Omitted: staging (:3170) when this proxy has a staging target, else main."),
     }).superRefine((args, ctx) => {
       // normalizeToolsFindArgs has already mapped a q-only call to query here.
       // Keep query optional in the published structural schema so the q alias
@@ -1812,7 +1812,7 @@ export default defineTool({
     let projectedHits = hits.map((h) => projectHit(h, fullArgSchemaRequested));
 
     const hasToolsInvokeHit = projectedHits.some((hit) => hit.tool === 'tools:invoke');
-    const exactNameRecoveryNote = ' A schema containing … is incomplete; query that exact tool name before invoking it.' + (exactNames.length > 0
+    const exactNameRecoveryNote = ' If an `argSchema` contains …, it is incomplete. Re-run `tools:find` with the dispatch-level `payloadTier:"full"` to receive the complete accepted argument schema; repeating the same bounded query may return the same clipped schema.' + (exactNames.length > 0
       ? ' Exact names are prioritized; if `omittedTools` is present, query each listed name individually.'
       : '');
     const generationBindingInstruction = servingGeneration

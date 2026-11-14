@@ -56,6 +56,7 @@ import { execFile } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { NOTE_SUFFIX_RE, parsePlan } from '@papercusp/plan-parser';
 import { activeWorkspaceId } from './workspace-registry';
@@ -2913,6 +2914,12 @@ interface DiscoveryEffects {
     historicalTargets?: Record<string, string>) => Promise<DiscoveryAuditContext>;
 }
 
+/** Discovery admissions held by the current async context, keyed by plan lock key
+ * (EI-28751347466140676). Pinned so a split module record cannot hide an outer
+ * admission from a nested caller. */
+const discoveryAdmissionState = pinModuleState('@papercusp/operator-core.plan-audits.discovery-admissions',
+  () => ({ als: new AsyncLocalStorage<Map<string, { executor: AuditSql; active: boolean }>>() }));
+
 /** Shared accepting boundary for finalization and review/start reservations.
  * The plan writer uses this same advisory lock. Evidence is measured twice
  * before the caller may reserve an accepting effect on this transaction. */
@@ -3038,7 +3045,22 @@ export async function withCurrentDiscovery<T>(input: CurrentDiscoveryInput,
     return { ok: true as const, result: await accept(executor, { content: plan.content, version: plan.version,
       contentHash: plan.content_hash, discovery, auditId: finalizedAudit!.audit_seq }) };
   };
-  return transaction ? run(transaction) : sql.begin(tx => run(tx as unknown as AuditSql));
+  // Reentrant admission (EI-28751347466140676): a callback already running under
+  // this plan's discovery admission (scorecards:emit replaying
+  // plans:evaluate-spec-quality) re-enters on the HELD transaction. Postgres grants
+  // an advisory re-acquire to the same session; a fresh sql.begin would try-lock
+  // against our own lock and refuse plan_busy on every call.
+  const lockKey = planAdvisoryLockKey(input.workspaceId, input.harnessSlug, input.planSlug);
+  const held = transaction ? undefined : discoveryAdmissionState.als.getStore()?.get(lockKey);
+  const admit = async (executor: AuditSql) => {
+    const entry = { executor, active: true };
+    const store = new Map(discoveryAdmissionState.als.getStore() ?? []);
+    store.set(lockKey, entry);
+    try { return await discoveryAdmissionState.als.run(store, () => run(executor)); }
+    finally { entry.active = false; }
+  };
+  const executor = transaction ?? (held?.active ? held.executor : undefined);
+  return executor ? admit(executor) : sql.begin(tx => admit(tx as unknown as AuditSql));
 }
 
 /**
