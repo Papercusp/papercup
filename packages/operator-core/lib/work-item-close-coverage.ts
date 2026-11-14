@@ -20,10 +20,11 @@
  * import hop, so a file reached only transitively reads as uncovered: the warning can over-
  * report, never refuse.
  */
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import nodePath from 'node:path';
 
-/** One edit-ledger row for the work-item. `file` is repo-relative. */
+/** One edit-ledger row normalized into the same path namespace as test-run files. */
 export interface CloseCoverageEdit {
   file: string;
   tsMs: number;
@@ -203,6 +204,41 @@ export function closeCoverageWarningText(itemId: string, r: CloseCoverageReport)
   );
 }
 
+/**
+ * Map an edit-ledger path from its repository root into the workspace-root path namespace used
+ * by test_runs.file_path. Repositories outside the workspace keep an opaque root identity so
+ * equal repo-relative filenames cannot count as coverage across repositories.
+ */
+function workspaceRelativeCoveragePath(workspaceRoot: string, repositoryRoot: string | null, file: string): string {
+  const normalizedFile = normalize(file);
+  if (!repositoryRoot?.trim()) return normalizedFile;
+
+  const workspace = nodePath.resolve(workspaceRoot);
+  const repository = nodePath.resolve(repositoryRoot);
+  const absoluteFile = nodePath.resolve(repository, normalizedFile);
+  if (!isWithinPath(repository, absoluteFile) || !isWithinPath(workspace, absoluteFile)) {
+    const rootId = createHash('sha256').update(repository).digest('hex').slice(0, 16);
+    return normalize('@external/' + rootId + '/' + normalizedFile);
+  }
+  return normalize(nodePath.relative(workspace, absoluteFile).split(nodePath.sep).join('/'));
+}
+
+function isWithinPath(root: string, candidate: string): boolean {
+  const relative = nodePath.relative(root, candidate);
+  return relative === '' || (!nodePath.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + nodePath.sep));
+}
+
+export function prepareCloseCoverageEdits(
+  workspaceRoot: string,
+  rows: Array<{ repositoryRoot: string | null; file: string; tsMs: number }>,
+): { edits: CloseCoverageEdit[]; packageRoots: string[] } {
+  const edits = rows.map((row) => ({
+    file: workspaceRelativeCoveragePath(workspaceRoot, row.repositoryRoot, row.file),
+    tsMs: row.tsMs,
+  }));
+  return { edits, packageRoots: [...new Set(edits.map((edit) => packageRoot(edit.file)))] };
+}
+
 function normalize(p: string): string {
   return String(p ?? '')
     .trim()
@@ -308,20 +344,24 @@ export async function computeCloseCoverage(opts: {
     const { sql } = getOrgPg();
     const from = new Date(windowStartMs);
     const to = new Date(windowEndMs);
-    const editRows = await sql<{ file: string; ts_ms: string | number }[]>`
-      SELECT file, extract(epoch FROM max(ts)) * 1000 AS ts_ms
+    const editRows = await sql<{ repo_root: string | null; file: string; ts_ms: string | number }[]>`
+      SELECT repo_root, file, extract(epoch FROM max(ts)) * 1000 AS ts_ms
         FROM harness_shared.edit_attribution_ledger
        WHERE workspace_id = ${workspaceId}
          AND work_item_id = ${workItemId}
          AND ts >= ${from} AND ts <= ${to}
-       GROUP BY file
+       GROUP BY repo_root, file
     `;
     if (editRows.length === 0) return null;
+    const { edits, packageRoots: rootPatterns } = prepareCloseCoverageEdits(opts.repoRoot, editRows.map((r) => ({
+      repositoryRoot: r.repo_root,
+      file: r.file,
+      tsMs: Number(r.ts_ms),
+    })));
     // Only tests under an edited file's package root can exercise it (same file, sibling test,
     // or a direct relative import). Filtering in SQL keeps the row cap from dropping the
     // alphabetically-late test files of a busy window: 24 h of workspace runs measured
     // 15,112 (file, status, dirty) rows on 2026-10-28, above the cap.
-    const rootPatterns = [...new Set(editRows.map((r) => packageRoot(r.file)))];
     const filterByRoot = rootPatterns.length > 0 && !rootPatterns.includes('');
     const likePatterns = rootPatterns.map((r) => `${r.replace(/[\\%_]/g, (c) => `\\${c}`)}/%`);
     const rowCap = CLOSE_COVERAGE_MAX_TEST_FILES * 3;
@@ -342,7 +382,6 @@ export async function computeCloseCoverage(opts: {
       worktreeDirty: r.worktree_dirty,
       finishedAtMs: Number(r.finished_ms),
     }));
-    const edits: CloseCoverageEdit[] = editRows.map((r) => ({ file: r.file, tsMs: Number(r.ts_ms) }));
     // Only tests that could cover an edited file need their source read: same top-level package.
     const roots = new Set(edits.map((e) => packageRoot(e.file)));
     const candidateTests = [...new Set(testRuns.map((r) => r.testFile))].filter((t) => roots.has(packageRoot(t)));

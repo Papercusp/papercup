@@ -4,6 +4,7 @@ import {
   closeCoverageWarningText,
   directImportCoverageMapping,
   relativeImportSpecifiers,
+  prepareCloseCoverageEdits,
   type CloseCoverageTestRun,
   type CoverageMapping,
 } from './work-item-close-coverage';
@@ -34,6 +35,30 @@ describe('classifyCloseCoverage (R-10)', () => {
     expect(r.coveredFiles).toEqual(['lib/a.ts']);
     expect(r.anyCleanPass).toBe(true);
     expect(r.cleanTree).toBe('clean-pass');
+  });
+
+  it('matches a submodule edit to its workspace-root test without matching the same src path in another repo', () => {
+    const workspaceRoot = '/workspace/papercusp';
+    const { edits, packageRoots } = prepareCloseCoverageEdits(workspaceRoot, [{
+      repositoryRoot: '/workspace/papercusp/libs/generic/plan-parser',
+      file: 'src/renderer.ts',
+      tsMs: 2_000,
+    }]);
+    const sameRepositoryTest = 'libs/generic/plan-parser/src/renderer.test.ts';
+    const otherRepositoryTest = 'libs/generic/other-parser/src/renderer.test.ts';
+    const r = classifyCloseCoverage({
+      edits,
+      testRuns: [run(sameRepositoryTest, 'pass', false), run(otherRepositoryTest, 'pass', false)],
+      covers: directImportCoverageMapping(() => null),
+      windowStartMs: W0,
+      windowEndMs: W1,
+    });
+
+    expect(edits.map((entry) => entry.file)).toEqual(['libs/generic/plan-parser/src/renderer.ts']);
+    expect(packageRoots).toEqual(['libs/generic']);
+    expect(r.coveredFiles).toEqual(['libs/generic/plan-parser/src/renderer.ts']);
+    expect(r.uncoveredFiles).toEqual([]);
+    expect(r.passingRuns).toBe(1);
   });
 
   it('a failing run still exercised its file; a skipped or out-of-window run did not', () => {
