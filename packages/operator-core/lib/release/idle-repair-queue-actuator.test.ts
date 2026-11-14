@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   IDLE_REPAIR_QUEUE_MS,
   IDLE_RUNG_GRACE_MS,
@@ -8,6 +8,8 @@ import {
   idleQueueFixerDispatch,
   parseEpisode,
   runIdleQueueActuatorPass,
+  readIdleQueueRunInFlight,
+  type IdleQueueRunLockDeps,
   evaluateIdleQueueActuatorWindow,
   buildIdleQueueActuatorObservation,
   IDLE_ACTUATOR_PASS_MARKER,
@@ -87,6 +89,71 @@ function fixture(
   };
   return { state, calls, messages, at, deps };
 }
+
+describe('idle repair-queue run-lock routing', () => {
+  const scope = { installSlug: 'fork-install', workspaceId: 'workspace' };
+  const home = '/repos/operator-home';
+  const fork = '/repos/fork';
+
+  function routingDeps(subject: string | null, held: boolean) {
+    const extraEnv: Record<string, string> = subject === null ? {} : { PAPERCUSP_INTEGRATION_ROOT: subject };
+    return {
+      integrationRoot: () => home,
+      resolveRouting: vi.fn<IdleQueueRunLockDeps['resolveRouting']>(async () => ({
+        root: home,
+        extraEnv,
+      })),
+      readRunLock: vi.fn((root: string) => ({ held: root === (subject ?? home) && held })),
+    };
+  }
+
+  it('suppresses a fork relaunch while its run is active even when the home lock is idle', async () => {
+    const deps = routingDeps(fork, true);
+    const runInFlight = await readIdleQueueRunInFlight(scope, deps);
+    const f = fixture(snapshot({ phase: 'ready-to-verify', runInFlight }));
+
+    expect(await f.at(61)).toMatchObject({ decision: 'not-idle' });
+    expect(deps.resolveRouting).toHaveBeenCalledWith(scope, home);
+    expect(deps.readRunLock).toHaveBeenCalledExactlyOnceWith(fork);
+    expect(f.calls).toEqual([]);
+  });
+
+  it('keeps an idle home queue recoverable when routing needs no subject overlay', async () => {
+    const deps = routingDeps(null, false);
+    const homeScope = { ...scope, installSlug: 'papercusp' };
+    const runInFlight = await readIdleQueueRunInFlight(homeScope, deps);
+    const f = fixture(snapshot({ phase: 'ready-to-verify', runInFlight }));
+
+    expect(await f.at(61)).toMatchObject({ decision: 'act' });
+    expect(deps.resolveRouting).toHaveBeenCalledWith(homeScope, home);
+    expect(deps.readRunLock).toHaveBeenCalledExactlyOnceWith(home);
+    expect(f.calls).toEqual(['wake-gate-owner:su-gate-holder']);
+  });
+
+  it('does not probe a different pipeline when routing skips the requested gate', async () => {
+    const deps = routingDeps(fork, false);
+    deps.resolveRouting.mockResolvedValue({ root: home, extraEnv: {}, skip: { reason: 'not-found' } });
+    const runInFlight = await readIdleQueueRunInFlight(scope, deps);
+    const f = fixture(snapshot({ phase: 'ready-to-verify', runInFlight }));
+
+    expect(runInFlight).toBeNull();
+    expect(await f.at(61)).toMatchObject({ decision: 'wait' });
+    expect(deps.readRunLock).not.toHaveBeenCalled();
+    expect(f.calls).toEqual([]);
+  });
+
+  it.each(['routing', 'lock'] as const)('preserves unknown state when the %s read fails', async (failure) => {
+    const deps = routingDeps(fork, false);
+    if (failure === 'routing') deps.resolveRouting.mockRejectedValue(new Error('registry unavailable'));
+    else deps.readRunLock.mockImplementation(() => { throw new Error('lock unavailable'); });
+    const runInFlight = await readIdleQueueRunInFlight(scope, deps);
+    const f = fixture(snapshot({ phase: 'ready-to-verify', runInFlight }));
+
+    expect(runInFlight).toBeNull();
+    expect(await f.at(61)).toMatchObject({ decision: 'wait' });
+    expect(f.calls).toEqual([]);
+  });
+});
 
 describe('idle repair-queue fixer handoff', () => {
   const queue = createFrozenCandidateRepairQueue({

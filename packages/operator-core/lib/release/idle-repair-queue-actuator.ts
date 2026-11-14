@@ -41,6 +41,7 @@
 
 import type { Sql } from 'postgres';
 import type { ReleaseFixerDispatchSkip } from '../harness/routines/release-actions';
+import type { CheckpointRouting } from '../harness/routines/hive-release-env';
 import {
   DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS,
   type FrozenCandidateRepairQueue,
@@ -107,6 +108,30 @@ export interface IdleQueueSnapshot {
   /** True only when the holder's session can take a turn (live or parked). */
   gateHolderWakeable: boolean;
   blockedReason: string | null;
+}
+
+export interface IdleQueueRunLockDeps {
+  integrationRoot: () => string;
+  resolveRouting: (
+    scope: { installSlug: string; workspaceId: string },
+    defaultRoot: string,
+  ) => Promise<Pick<CheckpointRouting, 'root' | 'extraEnv' | 'skip'>>;
+  readRunLock: (root: string) => { held: boolean };
+}
+
+/** Use the launcher's subject root; an idle tooling checkout says nothing about a fork's run. */
+export async function readIdleQueueRunInFlight(
+  scope: { installSlug: string; workspaceId: string },
+  deps: IdleQueueRunLockDeps,
+): Promise<boolean | null> {
+  try {
+    const routing = await deps.resolveRouting(scope, deps.integrationRoot());
+    if (routing.skip) return null;
+    return deps.readRunLock(routing.extraEnv.PAPERCUSP_INTEGRATION_ROOT ?? routing.root).held;
+  } catch {
+    // Unresolved routing or lock state must not recommend another run.
+    return null;
+  }
 }
 
 export type IdleQueueDecision =
@@ -999,11 +1024,16 @@ export async function checkIdleRepairQueue(
         const holderState = own?.holderSessionState ?? null;
         let runInFlight: boolean | null = null;
         try {
-          const [{ integrationRoot }, { isCheckpointRunLockHeldCheap }] = await Promise.all([
+          const [{ integrationRoot }, { isCheckpointRunLockHeldCheap }, { resolveCheckpointRouting }] = await Promise.all([
             import('../release-deploy-launch'),
             import('../release-checkpoint-launch'),
+            import('../harness/routines/hive-release-env'),
           ]);
-          runInFlight = isCheckpointRunLockHeldCheap(integrationRoot()).held;
+          runInFlight = await readIdleQueueRunInFlight({ installSlug, workspaceId }, {
+            integrationRoot,
+            resolveRouting: resolveCheckpointRouting,
+            readRunLock: isCheckpointRunLockHeldCheap,
+          });
         } catch {
           // Unknown is distinct from idle: do not wake the gate owner or recommend a refire.
           runInFlight = null;
