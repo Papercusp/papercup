@@ -15,3 +15,86 @@ index 9ad1c4d..1d2c7ee 100644
          exports.pointLocations.set(name, { name, ...cpi, hitCount: 0 });
      }
      if (exports.pointTriggers.has(name)) {
+diff --git a/node_modules/@dbos-inc/dbos-sdk/dist/src/system_database.js b/node_modules/@dbos-inc/dbos-sdk/dist/src/system_database.js
+index d634cf874bf4f73cf9ed017d911799749a95900f..89b4d1dd43baae477d39c837001893113196d8fc 100644
+--- a/node_modules/@dbos-inc/dbos-sdk/dist/src/system_database.js
++++ b/node_modules/@dbos-inc/dbos-sdk/dist/src/system_database.js
+@@ -422,6 +422,8 @@
+     return function (target, propertyName, descriptor) {
+         const method = descriptor.value;
+         descriptor.value = async function (...args) {
++            // Prepare logical-call identity once, outside the retry loop.
++            if (options.prepareArgs) args = options.prepareArgs(args);
+             // Read the defaults per call so the backoff stays tunable after the decorator is applied.
+             const maxBackoff = options.maxBackoff ?? utils_1.dbRetryConfig.maxBackoffSec;
+             let retries = 0;
+@@ -3925,10 +3927,12 @@
+     async recordOperationResultInternal(client, workflowID, functionID, functionName, checkConflict, startTimeEpochMs, endTimeEpochMs, options = {}) {
+         try {
+             const out = await client.query(`INSERT INTO ${this.schemaName}.operation_outputs
+-         (workflow_uuid, function_id, output, error, function_name, child_workflow_id, started_at_epoch_ms, completed_at_epoch_ms, serialization, application_name)
+-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
++         (workflow_uuid, function_id, output, error, function_name, child_workflow_id, started_at_epoch_ms, completed_at_epoch_ms, serialization, application_name, checkpoint_invocation_id)
++         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+          ON CONFLICT (workflow_uuid, function_id) DO UPDATE
+-         SET completed_at_epoch_ms = operation_outputs.completed_at_epoch_ms
++         SET checkpoint_invocation_id = operation_outputs.checkpoint_invocation_id
++         WHERE EXCLUDED.checkpoint_invocation_id IS NOT NULL
++           AND operation_outputs.checkpoint_invocation_id = EXCLUDED.checkpoint_invocation_id
+          RETURNING completed_at_epoch_ms;`, [
+                 workflowID,
+                 functionID,
+@@ -3941,14 +3945,16 @@
+                 options.serialization ?? null,
+                 // Mirrors the parent: only the running application records its steps.
+                 this.appName ?? null,
++                options.checkpointInvocationID ?? null,
+             ]);
+-            if (checkConflict &&
+-                (out?.rowCount ?? 0) > 0 &&
+-                Number(out?.rows?.[0]?.completed_at_epoch_ms) !== endTimeEpochMs) {
++            // EI-28700612188968008: only this invocation may reclaim its row.
++            // A separate identical call is still a loser, even in the same ms.
++            const inserted = out?.rowCount === 1;
++            if (checkConflict && !inserted) {
+                 dbos_executor_1.DBOSExecutor.globalInstance?.logger.warn(`Step output for ${workflowID}(${functionID}):${functionName} already recorded`);
+                 throw new error_1.DBOSWorkflowConflictError(workflowID);
+             }
+-            if (Number(out?.rows?.[0]?.completed_at_epoch_ms) === endTimeEpochMs) {
++            if (inserted) {
+                 // Winning the checkpoint proves this executor is advancing the workflow:
+                 // claim the executor_id marker (skips the write when already ours).
+                 await client.query(`UPDATE "${this.schemaName}".workflow_status
+@@ -4204,7 +4210,12 @@
+     __metadata("design:returntype", Promise)
+ ], SystemDatabase.prototype, "getOperationResultAndThrowIfCancelled", null);
+ __decorate([
+-    dbRetry(),
++    dbRetry({ prepareArgs: (args) => {
++            // Copy options so independent calls reusing the same object never
++            // share identity. Retries retain this exact prepared argument.
++            args[6] = { ...args[6], checkpointInvocationID: (0, crypto_1.randomUUID)() };
++            return args;
++        } }),
+     __metadata("design:type", Function),
+     __metadata("design:paramtypes", [String, Number, String, Boolean, Number, Number, Object]),
+     __metadata("design:returntype", Promise)
+diff --git a/node_modules/@dbos-inc/dbos-sdk/dist/src/sysdb_migrations/internal/migrations.js b/node_modules/@dbos-inc/dbos-sdk/dist/src/sysdb_migrations/internal/migrations.js
+index b00e3f486cc2cb869bc0181ce70b7f902ede1d91..64735b16545b8159517f475ed85d02bea86e2c98 100644
+--- a/node_modules/@dbos-inc/dbos-sdk/dist/src/sysdb_migrations/internal/migrations.js
++++ b/node_modules/@dbos-inc/dbos-sdk/dist/src/sysdb_migrations/internal/migrations.js
+@@ -915,6 +915,14 @@
+                 `ALTER TABLE "${schemaName}"."queues" ADD COLUMN IF NOT EXISTS "partition_rate_limit_period_sec" DOUBLE PRECISION DEFAULT NULL`,
+             ],
+         },
++        // A public writer retains this identity across its own database retries.
++        // Null remains a competing/legacy writer; payload/time equality is irrelevant.
++        {
++            name: '109_checkpoint_invocation_identity',
++            pg: [
++                `ALTER TABLE "${schemaName}"."operation_outputs" ADD COLUMN IF NOT EXISTS "checkpoint_invocation_id" TEXT DEFAULT NULL`,
++            ],
++        },
+     ];
+ }
+ //# sourceMappingURL=migrations.js.map
