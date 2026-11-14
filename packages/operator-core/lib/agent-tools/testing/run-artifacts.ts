@@ -109,21 +109,19 @@ async function writeArtifactAtomically(path: string, bytes: Buffer): Promise<voi
  * the run store removes its temporary ingestion sink. The snapshot receives
  * both paths and the digest, so the bytes remain discoverable after restart.
  */
-export async function retainDetachedVitestReport(input: {
+type DetachedVitestReportIdentity = {
   runId: string;
   root: string;
   sourcePath: string;
-  reportText: string;
   scope?: { harnessSlug: string; workspaceId: string };
-  sanitization?: string;
-}): Promise<RetainedDetachedVitestReport> {
+};
+
+function detachedVitestReportPaths(input: DetachedVitestReportIdentity, sha256: string) {
   if (!input.runId || !isAbsolute(input.root) || !isAbsolute(input.sourcePath)) {
     throw new Error('detached_report_artifact_identity_invalid');
   }
   const sourceName = basename(input.sourcePath).replace(/[^A-Za-z0-9._-]/g, '_').slice(-96) || 'report.json';
   const reportName = sourceName.endsWith('.json') ? sourceName : 'report.json';
-  const bytes = Buffer.from(input.reportText, 'utf8');
-  const sha256 = createHash('sha256').update(bytes).digest('hex');
   const identity = JSON.stringify({ runId: input.runId, root: input.root, reportName, sha256, scope: input.scope ?? null });
   const runKey = createHash('sha256').update(input.runId).digest('hex').slice(0, 24);
   const artifactKey = createHash('sha256').update(identity).digest('hex').slice(0, 24);
@@ -131,6 +129,47 @@ export async function retainDetachedVitestReport(input: {
   const runDirectory = join(base, `run-${runKey}`);
   const packetDirectory = join(runDirectory, `report-${artifactKey}`);
   const reportsDirectory = join(packetDirectory, 'reports');
+  return { base, runDirectory, packetDirectory, reportsDirectory, reportName,
+    reportPath: join(reportsDirectory, reportName), manifestPath: join(packetDirectory, 'manifest.json') };
+}
+
+/** Read only the exact content-addressed packet recorded by this run's snapshot. */
+export async function readRetainedDetachedVitestReport(input: DetachedVitestReportIdentity & {
+  reference: RetainedDetachedVitestReport;
+}): Promise<string | null> {
+  const ref = input.reference;
+  if (!ref || typeof ref.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(ref.sha256)
+    || !Number.isSafeInteger(ref.byteLength) || ref.byteLength < 0
+    || typeof ref.manifestPath !== 'string' || typeof ref.reportPath !== 'string') return null;
+  const runKey = createHash('sha256').update(input.runId).digest('hex').slice(0, 24);
+  const runDirectory = join(defaultTestRunArtifactBase(), 'detached-recovery', `run-${runKey}`);
+  if (dirname(dirname(ref.manifestPath)) !== runDirectory || basename(ref.manifestPath) !== 'manifest.json'
+    || !/^report-[a-f0-9]{24}$/.test(basename(dirname(ref.manifestPath)))) return null;
+  const { realpath } = await import('node:fs/promises');
+  if (await realpath(ref.manifestPath) !== resolve(ref.manifestPath)) return null;
+  const manifest = JSON.parse(await readFile(ref.manifestPath, 'utf8'));
+  if (manifest.schemaVersion !== 1 || manifest.kind !== 'detached-vitest-report'
+    || manifest.runId !== input.runId || manifest.root !== input.root
+    || manifest.scope?.workspaceId !== input.scope?.workspaceId
+    || manifest.scope?.harnessSlug !== input.scope?.harnessSlug
+    || manifest.report?.path !== ref.reportPath || manifest.report?.sha256 !== ref.sha256
+    || manifest.report?.byteLength !== ref.byteLength) return null;
+  // Keep the original scope key order used by older content-addressed packets.
+  const expected = detachedVitestReportPaths({ ...input, scope: manifest.scope ?? undefined }, ref.sha256);
+  if (ref.reportPath !== expected.reportPath || ref.manifestPath !== expected.manifestPath
+    || await realpath(ref.reportPath) !== resolve(expected.reportPath)) return null;
+  const bytes = await readFile(ref.reportPath);
+  if (bytes.byteLength !== ref.byteLength || createHash('sha256').update(bytes).digest('hex') !== ref.sha256) return null;
+  return bytes.toString('utf8');
+}
+
+export async function retainDetachedVitestReport(input: DetachedVitestReportIdentity & {
+  reportText: string;
+  sanitization?: string;
+}): Promise<RetainedDetachedVitestReport> {
+  const bytes = Buffer.from(input.reportText, 'utf8');
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  const { base, runDirectory, packetDirectory, reportsDirectory, reportName } = detachedVitestReportPaths(input, sha256);
   for (const directory of [base, runDirectory, packetDirectory, reportsDirectory]) {
     await ensureArtifactDirectory(directory);
   }

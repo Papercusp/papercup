@@ -152,9 +152,9 @@ vi.mock('./testing-worktree', async (importOriginal) => {
 });
 
 type Store = typeof import('./testing-run-store');
-function measuredPass(filePath: string, runGroupId: string | null) {
+function measuredPass(filePath: string, runGroupId: string | null, root = '/tmp') {
   return {
-    schemaVersion: 1, root: '/tmp', filePath, runGroupId,
+    schemaVersion: 1, root, filePath, runGroupId,
     workspaceId: null, harnessSlug: null, testNamePattern: 'selected assertion',
     passed: 7, failed: 0, skipped: 118, collectionFailed: false,
     mutationPhase: null, commitSha: null, worktreeDirty: false,
@@ -346,6 +346,43 @@ describe('startRun', () => {
       launchedBy: 'testing-run-store',
       detail: { runId: snap.runId, kind: 'vitest', verificationPurpose: 'work-item-verification' },
     }), 4242);
+  });
+
+  it('applies a confined worker one-shot preload only after the environment runner', async () => {
+    const { spawnSync } = await vi.importActual<typeof import('node:child_process')>('node:child_process');
+    const { buildExactEnvPayloadWithTransport } = await import('./systemd-scope');
+    const root = await mkdtemp('/tmp/testing-core-scope-handoff-');
+    const transfer = join(root, 'retained-core');
+    await writeFile(transfer, 'verified core');
+    const preload = 'data:text/javascript;base64,' + Buffer.from([
+      "import { readFileSync, rmSync } from 'node:fs';",
+      `readFileSync(${JSON.stringify(transfer)}); rmSync(${JSON.stringify(transfer)});`,
+      'delete process.env.NODE_OPTIONS; globalThis.verifiedCore = true;',
+    ].join('\n')).toString('base64');
+    let transport: { release(): void } | undefined;
+    const enrolment = {
+      taskId: 'task-confined-core', confined: true, scopeUnit: 'pc-task-confined-core.scope',
+      enrolled: true, registrationReady: null, releaseEnvironmentTransport: vi.fn(),
+      wrap: vi.fn((binary: string, argv: string[], env: NodeJS.ProcessEnv) => {
+        const payload = buildExactEnvPayloadWithTransport([binary, ...argv], env);
+        transport = payload.transport;
+        return { binary: payload.argv[0]!, argv: payload.argv.slice(1) };
+      }),
+    };
+    taskManagerMocks.begin.mockReturnValueOnce(enrolment);
+    try {
+      store.startRun(req({ command: process.execPath, args: ['--input-type=module', '-e',
+        'if (!globalThis.verifiedCore) throw new Error("core was not verified"); process.stdout.write(process.env.TEST_WORKER_VALUE);'],
+      env: { NODE_OPTIONS: `--import=${JSON.stringify(preload)}`, TEST_WORKER_VALUE: 'worker-ok' } }));
+      const [binary, argv, options] = spawnMock.mock.calls[0] as unknown as [string, string[], { env: NodeJS.ProcessEnv }];
+      const result = spawnSync(binary, argv, { env: options.env, encoding: 'utf8', timeout: 10_000 });
+      expect(result.error, result.stderr).toBeUndefined();
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toBe('worker-ok');
+    } finally {
+      transport?.release();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('finishes the enrolled task on a synchronous spawn error', () => {
@@ -1195,6 +1232,11 @@ describe('durable detached snapshot lifecycle', () => {
     { name: 'pruned snapshot wrong tenant', status: 'running', expected: null, legacy: true, expired: true, missing: true, wrongScope: true },
     { name: 'pruned snapshot partial report', status: 'running', expected: null, legacy: true, expired: true, missing: true, partial: true },
     { name: 'pruned snapshot ambiguous task', status: 'running', expected: null, legacy: true, expired: true, missing: true, ambiguous: true },
+    { name: 'retained packet after temporary cleanup', status: 'error', expected: 'pass', legacy: true, expired: true, archivedOnly: true },
+    { name: 'retained mixed router packets after temporary cleanup', status: 'error', expected: 'fail', expired: true, archivedOnly: true, failure: true, routerReports: true, existingFailure: true },
+    { name: 'retained packet rejects changed bytes', status: 'error', expected: null, legacy: true, expired: true, archivedOnly: true, archiveCorruption: 'hash' },
+    { name: 'retained packet rejects another tenant', status: 'error', expected: null, legacy: true, expired: true, archivedOnly: true, archiveCorruption: 'scope' },
+    { name: 'retained packet rejects redirected report', status: 'error', expected: null, legacy: true, expired: true, archivedOnly: true, archiveCorruption: 'symlink' },
     { name: 'ended_unobserved retained PASS', status: 'running', expected: 'pass', taskState: 'ended_unobserved', processExit: null },
     { name: 'ended_unobserved retained FAIL', status: 'error', expected: 'fail', failure: true, taskState: 'ended_unobserved', processExit: null },
     { name: 'ended_unobserved report redacts child-only text without launch environment', status: 'running', expected: 'fail', failure: true, taskState: 'ended_unobserved', processExit: null, secretOutput: true },
@@ -1227,6 +1269,7 @@ describe('durable detached snapshot lifecycle', () => {
       taskState?: 'ended_unobserved' | 'running' | 'killed';
       processExit?: number | null;
       routerReports?: boolean; missingRouterGroup?: boolean; partialRouterGroup?: boolean;
+      archivedOnly?: boolean; existingFailure?: boolean; archiveCorruption?: 'hash' | 'scope' | 'symlink';
     };
     const { status } = options;
     const taskState = options.taskState ?? (options.cancelled ? 'killed' : 'exited');
@@ -1279,7 +1322,35 @@ describe('durable detached snapshot lifecycle', () => {
           }],
         }));
       }
+      let archivedOutput = '';
+      const archivedPaths: string[] = [];
+      if (options.archivedOnly) {
+        const { retainDetachedVitestReport } = await import('./agent-tools/testing/run-artifacts');
+        for (const sourcePath of [reportPath, ...(options.routerReports ? [siblingPath] : [])]) {
+          const text = await readFile(sourcePath, 'utf8');
+          const ref = await retainDetachedVitestReport({ runId: snapshot.runId, root: '/tmp', sourcePath,
+            scope: { harnessSlug: 'papercusp', workspaceId: options.archiveCorruption === 'scope' ? 'other-workspace' : 'papercusp-workspace' },
+            reportText: text });
+          retainedRunDirectory = dirname(dirname(ref.manifestPath));
+          archivedPaths.push(ref.reportPath);
+          archivedOutput += `\n[detached-recovery] retained report artifact ${JSON.stringify(ref)}\n`;
+          await rm(sourcePath);
+          if (options.archiveCorruption === 'hash') {
+            const changed = text.replace('saved assertion', 'other assertion');
+            expect(Buffer.byteLength(changed)).toBe(Buffer.byteLength(text));
+            await writeFile(ref.reportPath, changed);
+          } else if (options.archiveCorruption === 'symlink') {
+            const redirected = join(reportDir, 'redirected.json');
+            await writeFile(redirected, text);
+            await rm(ref.reportPath);
+            await symlink(redirected, ref.reportPath);
+          }
+        }
+      }
       const ledger: Record<string, unknown>[] = [];
+      const existingFailure = { id: 17, file_path: 'lib/saved.test.ts', status: 'fail',
+        finished_at: new Date(snapshot.startedAt + 25), output_tail: null };
+      if (options.existingFailure) ledger.push(existingFailure);
       const writes: Record<string, unknown>[] = [];
       const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
         const statement = strings.join(' ');
@@ -1297,7 +1368,7 @@ describe('durable detached snapshot lifecycle', () => {
             ...(options.inlineSelector ? ['--testNamePattern=saved assertion'] : ['-t', 'saved assertion']),
           ] : snapshot.command, status, exit_code: status === 'pass' ? 0 : null,
           started_at: snapshot.startedAt, finished_at: status === 'error' ? snapshot.startedAt + 30 : null,
-          output: status === 'error' ? '[detached-recovery] no test verdict was observed.' : '', truncated: false,
+          output: archivedOutput + (status === 'error' ? '[detached-recovery] no test verdict was observed.' : ''), truncated: false,
           task_state: taskState, task_exit_code: processExit,
           task_deadline_at: options.deadlineExpired ? new Date(Date.now() - 1_000) : null,
           task_ended_at: taskState === 'running' ? null : snapshot.startedAt + 25,
@@ -1323,7 +1394,7 @@ describe('durable detached snapshot lifecycle', () => {
         catch (error) { ledger.splice(before); throw error; }
       } });
 
-      const recovery = store.getRunAsync(snapshot.runId, sql as unknown as Sql, options.legacy ? {
+      const recovery = store.getRunAsync(snapshot.runId, sql as unknown as Sql, options.legacy || options.archivedOnly ? {
         root: '/tmp', harnessSlug: 'papercusp', workspaceId: options.wrongScope ? 'other-workspace' : 'papercusp-workspace',
       } : undefined);
       if (options.ambiguous) {
@@ -1336,7 +1407,7 @@ describe('durable detached snapshot lifecycle', () => {
       // No launch-time environment survives this path. Case titles and errors must
       // never be reconstructed from opaque child text, even with a complete report.
       expect(sql.mock.calls.some(([strings]) => strings.join(' ').includes('INSERT INTO harness_shared.test_case_runs'))).toBe(false);
-      const recoveryOutput = recovered?.output ?? '';
+      const recoveryOutput = (recovered?.output ?? '').replace(archivedOutput, '');
       const retainedMatches = [...recoveryOutput.matchAll(/\[detached-recovery\] retained report artifact (\{[^\n]+\})/g)];
       const expectedRetainedCount = options.routerReports && !options.missingRouterGroup && !options.partialRouterGroup ? 2 : 1;
       const reportWasRecovered = /(?:recorded|recovered) completed saved Vitest report/.test(recoveryOutput);
@@ -1393,7 +1464,18 @@ describe('durable detached snapshot lifecycle', () => {
       }
       if (options.expected !== 'pass' && options.expected !== 'fail') {
         if (options.routerReports || options.missingRequestedFile) expect(writes).toHaveLength(0);
-        await expect(readFile(reportPath, 'utf8')).resolves.toContain('testResults');
+        if (options.archivedOnly) {
+          expect(writes).toHaveLength(0);
+          for (const path of archivedPaths) await expect(readFile(path, 'utf8')).resolves.toContain('testResults');
+        } else await expect(readFile(reportPath, 'utf8')).resolves.toContain('testResults');
+        return;
+      }
+      if (options.existingFailure) {
+        expect(recovered).toMatchObject({ status: 'fail', exitCode: 1 });
+        expect(ledger.filter(row => row.file_path === existingFailure.file_path)).toEqual([existingFailure]);
+        expect(writes).toHaveLength(1);
+        expect(writes[0]).toMatchObject({ file_path: 'lib/second.test.ts', status: 'pass', run_group_id: snapshot.runId });
+        for (const path of archivedPaths) await expect(readFile(path, 'utf8')).resolves.toContain('testResults');
         return;
       }
       expect(recovered).toMatchObject({ exitCode: processExit, finishedAt: snapshot.startedAt + 25 });
@@ -1415,6 +1497,126 @@ describe('durable detached snapshot lifecycle', () => {
       }
       await expect(readFile(reportPath)).rejects.toMatchObject({ code: 'ENOENT' });
       if (options.routerReports) await expect(readFile(siblingPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      if (retainedRunDirectory) await rm(retainedRunDirectory, { recursive: true, force: true });
+      await rm(reportDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { name: 'mixed parent and submodule roots', wrongRoot: false, shouldRecover: true },
+    { name: 'an artifact with the wrong submodule root', wrongRoot: true, shouldRecover: false },
+  ])('reconciles root-bound detached report coverage for $name', async ({ wrongRoot, shouldRecover }) => {
+    const parentRoot = '/workspace/papercusp';
+    const submoduleRoot = join(parentRoot, 'apps/slack-asana-bug-drill');
+    const artifactSubmoduleRoot = wrongRoot ? join(parentRoot, 'apps/other-checkout') : submoduleRoot;
+    const parentFile = 'packages/operator-core/lib/inference-gateway/request-stage-telemetry.test.ts';
+    const submoduleFile = 'src/dispatch-stack.test.ts';
+    const reportDir = await mkdtemp('/tmp/papercusp-testing-run-mixed-root-');
+    const parentReportPath = join(reportDir, 'parent.json');
+    const submoduleReportPath = join(reportDir, 'submodule.json');
+    let retainedRunDirectory: string | undefined;
+    try {
+      execFileSyncMock.mockImplementation((_command: string, args: string[]) =>
+        args[0] === 'rev-parse' ? 'launch-sha\n' : '',
+      );
+      const scope = { harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace' };
+      const { snapshot } = await store.startRunDurable(req({
+        cwd: parentRoot,
+        requestedFiles: [parentFile, join('apps/slack-asana-bug-drill', submoduleFile)],
+        detachedReportArtifacts: [
+          { reportPath: parentReportPath, root: parentRoot, requestedFiles: [join(parentRoot, parentFile)],
+            routerReports: true, scope },
+          { reportPath: submoduleReportPath, root: artifactSubmoduleRoot,
+            requestedFiles: [join(artifactSubmoduleRoot, submoduleFile)], routerReports: true, scope },
+        ],
+      }), vi.fn(async () => []) as unknown as Sql);
+      const detail = taskManagerMocks.begin.mock.calls.at(-1)![0].detail;
+      const storedArtifacts = (detail as {
+        detachedReportArtifacts?: { schemaVersion?: number; artifacts?: Array<Record<string, unknown>> };
+      }).detachedReportArtifacts;
+      expect(storedArtifacts?.schemaVersion).toBe(1);
+      expect(storedArtifacts?.artifacts?.map(artifact => ({
+        root: artifact.root, requestedFiles: artifact.requestedFiles, scope: artifact.scope,
+      }))).toEqual([
+        { root: parentRoot, requestedFiles: [join(parentRoot, parentFile)], scope },
+        { root: artifactSubmoduleRoot, requestedFiles: [join(artifactSubmoduleRoot, submoduleFile)], scope },
+      ]);
+      expect(storedArtifacts?.artifacts?.every(artifact => {
+        const worktreeBefore = artifact.worktreeBefore as { commit?: unknown } | undefined;
+        return Boolean(worktreeBefore && (worktreeBefore.commit === null || typeof worktreeBefore.commit === 'string'));
+      })).toBe(true);
+      const report = (filePath: string) => JSON.stringify({
+        success: true, numTotalTests: 1, numPassedTests: 1, numFailedTests: 0, numPendingTests: 0, numTodoTests: 0,
+        testResults: [{ name: filePath, status: 'passed', startTime: snapshot.startedAt,
+          endTime: snapshot.startedAt + 25, assertionResults: [{ status: 'passed', fullName: 'selected assertion' }] }],
+      });
+      const parentReportText = report(join(parentRoot, parentFile));
+      const submoduleReportText = report(join(submoduleRoot, submoduleFile));
+      await Promise.all([
+        writeFile(parentReportPath, parentReportText),
+        writeFile(submoduleReportPath, submoduleReportText),
+      ]);
+      const parentRows = store.completedDetachedReport(parentReportText, parentRoot, undefined, [join(parentRoot, parentFile)]);
+      expect(parentRows?.map(row => row.filePath)).toEqual([parentFile]);
+      if (wrongRoot) {
+        expect(store.completedDetachedReport(submoduleReportText, artifactSubmoduleRoot, undefined,
+          [join(artifactSubmoduleRoot, submoduleFile)])).toBeNull();
+      } else {
+        const submoduleRows = store.completedDetachedReport(submoduleReportText, submoduleRoot, undefined,
+          [join(submoduleRoot, submoduleFile)]);
+        expect(submoduleRows?.map(row => row.filePath)).toEqual([submoduleFile]);
+      }
+      store._resetTestingRunStore();
+
+      const ledger: Record<string, unknown>[] = [];
+      const writes: Record<string, unknown>[] = [];
+      const row = {
+        run_id: snapshot.runId, task_id: snapshot.taskId, kind: 'vitest', label: 'mixed-root recovery',
+        file_path: null, command: snapshot.command, status: 'running', exit_code: null,
+        started_at: snapshot.startedAt, finished_at: null,
+        output: '[detached-recovery] no test verdict was observed.', truncated: false,
+        task_state: 'exited', task_exit_code: 0, task_deadline_at: null,
+        task_ended_at: new Date(snapshot.startedAt + 25), task_detail: detail,
+        task_cwd: parentRoot, task_harness_slug: 'papercusp', task_workspace_id: 'papercusp-workspace',
+        snapshot_missing: false,
+      };
+      const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        const statement = strings.join(' ');
+        if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')
+          || statement.includes('FROM harness_shared.task_ledger AS task_ledger')) return [row];
+        if (statement.includes('FROM harness_shared.test_runs')) return ledger;
+        if (statement.includes('INSERT INTO harness_shared.test_runs')) {
+          const inserted = insertedColumns(strings, values);
+          writes.push(inserted);
+          ledger.push({ file_path: inserted.file_path, status: inserted.status, finished_at: inserted.finished_at,
+            output_tail: inserted.output_tail, execution_details: inserted.execution_details ?? null });
+          return [{ id: writes.length }];
+        }
+        if (statement.includes('UPDATE harness_shared.testing_run_snapshots')) return [{ run_id: snapshot.runId }];
+        return [];
+      }) as unknown as Sql;
+      Object.assign(sql, { begin: async (run: (tx: typeof sql) => Promise<unknown>) => {
+        const before = ledger.length;
+        try { return await run(sql); }
+        catch (error) { ledger.splice(before); throw error; }
+      } });
+
+      const recovered = await store.getRunAsync(snapshot.runId, sql);
+      const retainedMatches = [...(recovered?.output ?? '').matchAll(/\[detached-recovery\] retained report artifact (\{[^\n]+\})/g)];
+      for (const match of retainedMatches) {
+        const retained = JSON.parse(match[1]!) as { manifestPath: string };
+        retainedRunDirectory = dirname(dirname(retained.manifestPath));
+      }
+      if (shouldRecover) {
+        expect(recovered?.status, JSON.stringify({
+          output: (recovered?.output ?? '').slice(-1500), insertedFiles: writes.map(write => write.file_path),
+        })).toBe('pass');
+        expect(writes.map(write => write.file_path).sort()).toEqual([parentFile, submoduleFile].sort());
+      } else {
+        expect(recovered?.status).not.toBe('pass');
+        expect(writes).toHaveLength(0);
+      }
     } finally {
       if (retainedRunDirectory) await rm(retainedRunDirectory, { recursive: true, force: true });
       await rm(reportDir, { recursive: true, force: true });
@@ -2740,7 +2942,7 @@ describe('durable detached snapshot lifecycle', () => {
         '/tmp/legacy-testing/scripts/test-files.mjs', ...scenario.files, '--', '--reporter=admin-reporter.ts'];
     const ledgerRows = (scenario.ledgerFiles ?? requested).map((file_path, index) => ({
       file_path, status: 'pass', finished_at: new Date(1_700_000_001_000 + index * 1_000),
-      output_tail: null, execution_details: measuredPass(file_path, runId),
+      output_tail: null, execution_details: measuredPass(file_path, runId, '/tmp/legacy-testing'),
     }));
     const sql = vi.fn(async (strings: TemplateStringsArray) => {
       const statement = strings.join(' ');

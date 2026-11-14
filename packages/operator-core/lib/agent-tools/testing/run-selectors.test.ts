@@ -196,6 +196,35 @@ describe('testing:run selector arbitration', () => {
     expect(mixed.requestedFiles).toEqual(expected);
   });
 
+  it('preserves checkout groups and root-bound manifests through mixed deadline recovery', async () => {
+    const parentRoot = REPO_ROOT;
+    const submoduleRoot = join(REPO_ROOT, 'apps/slack-asana-bug-drill');
+    const groups = [
+      { root: parentRoot, files: ['packages/operator-core/lib/inference-gateway/request-stage-telemetry.test.ts'] },
+      { root: submoduleRoot, files: ['src/dispatch-stack.test.ts'] },
+    ];
+    const now = Date.now();
+    const request = buildDetachedMixedTestRunRequest({
+      groups,
+      harnessSlug: 'papercusp',
+      workspaceId: 'papercusp-workspace',
+      timeoutMs: 90_000,
+      deadline: { startedAtMs: now, taskDeadlineAtMs: now + 90_000,
+        childCutoffAtMs: now + 85_000, cleanupReserveMs: 5_000 },
+    });
+    const artifacts = request.detachedReportArtifacts ?? [];
+    try {
+      expect(artifacts.map(artifact => ({ root: artifact.root, requestedFiles: artifact.requestedFiles }))).toEqual([
+        { root: parentRoot, requestedFiles: [join(parentRoot, groups[0]!.files[0]!)] },
+        { root: submoduleRoot, requestedFiles: [join(submoduleRoot, groups[1]!.files[0]!)] },
+      ]);
+      expect(request.args.at(-1)).toContain('"groups":' + JSON.stringify(groups));
+    } finally {
+      const directories = [...new Set(artifacts.map(artifact => dirname(artifact.reportPath)))];
+      await Promise.all(directories.map(directory => rm(directory, { recursive: true, force: true })));
+    }
+  });
+
   it('keeps detached timeout recovery locally adoptable and preserves its explicit harness scope', () => {
     const files = ['agent-credentials.test.ts'];
     const single = buildDetachedTestRunRequest({
