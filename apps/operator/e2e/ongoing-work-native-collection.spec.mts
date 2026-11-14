@@ -337,6 +337,49 @@ test('real Work on Everything goal exposes its saved picks in the native progres
   const ready = (expression: string) => expect.poll(() => measure(expression), {
     timeout: 90_000, intervals: [500, 1000],
   }).toBe(true);
+  const guardGoalWrites = () => measure(`(() => {
+    const original = window.fetch.bind(window);
+    window.__realWoeWrites = [];
+    window.fetch = (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
+      if (!['GET', 'HEAD'].includes(method) && new URL(url, location.href).pathname.startsWith('/api/admin/goals/')) {
+        window.__realWoeWrites.push({ url, method });
+        return Promise.reject(new Error('Read-only actual-goal verification refuses goal writes'));
+      }
+      return original(input, init);
+    };
+    return true;
+  })()`);
+  const captureLayout = async (name: string, surface: string, action: string) => {
+    await measure(`document.querySelector(${JSON.stringify(action)}).scrollIntoView({ block: 'center' })`);
+    const layout = await measure(`(() => {
+      const root = document.querySelector(${JSON.stringify(surface)});
+      const button = document.querySelector(${JSON.stringify(action)});
+      const bounds = root.getBoundingClientRect(), control = button.getBoundingClientRect();
+      return { viewport: innerWidth, document: document.documentElement.scrollWidth,
+        content: root.scrollWidth, available: root.clientWidth,
+        left: bounds.left, right: bounds.right, height: bounds.height,
+        control: { left: control.left, right: control.right, height: control.height },
+        writes: window.__realWoeWrites };
+    })()`);
+    const screenshot = info.outputPath(`real-goal-${name}-${layout.viewport}.png`);
+    await run('import', ['-display', process.env.VERIFY_TAURI_DISPLAY!, '-window', 'root', screenshot], { timeout: 20_000 });
+    await info.attach(`real-goal-${name}`, { path: screenshot, contentType: 'image/png' });
+    await attachNativeEvidence(info, `real-goal-${name}-geometry`, {
+      body: JSON.stringify(layout), contentType: 'application/json',
+    });
+    expect(layout.viewport).toBe(Number(process.env.VERIFY_TAURI_WINDOW?.split('x')[0] ?? 1280));
+    expect(layout.document, `${name}: document horizontal overflow`).toBeLessThanOrEqual(layout.viewport + 1);
+    expect(layout.content, `${name}: surface horizontal overflow`).toBeLessThanOrEqual(layout.available + 1);
+    expect(layout.height).toBeGreaterThan(0);
+    expect(layout.left).toBeGreaterThanOrEqual(-1);
+    expect(layout.right).toBeLessThanOrEqual(layout.viewport + 1);
+    expect(layout.control.height).toBeGreaterThan(0);
+    expect(layout.control.left).toBeGreaterThanOrEqual(-1);
+    expect(layout.control.right).toBeLessThanOrEqual(layout.viewport + 1);
+    expect(layout.writes).toEqual([]);
+  };
   try {
     await recordJourney(info, async () => {
       // The independent oracle is the saved goal, not the collection renderer.
@@ -370,20 +413,7 @@ test('real Work on Everything goal exposes its saved picks in the native progres
 
       await native('navigate', `${process.env.VERIFY_TAURI_DEV_URL}/adv?tab=hud&scope=all&hudtab=goals&welcome=0&ws=${workspaceId}&hudgoal=${goalId}&hudwoeedit=false&hudwoescope=all&hudwoesearch=&hudwoestate=&hudwoeempty=true`, '--json');
       await ready(`!!document.querySelector('${panel} [aria-label="Goal health"]') && !!document.querySelector('${panel} .woe__header button[aria-pressed="false"]')`);
-      await measure(`(() => {
-        const original = window.fetch.bind(window);
-        window.__realWoeWrites = [];
-        window.fetch = (input, init) => {
-          const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-          const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
-          if (!['GET', 'HEAD'].includes(method) && new URL(url, location.href).pathname.startsWith('/api/admin/goals/')) {
-            window.__realWoeWrites.push({ url, method });
-            return Promise.reject(new Error('Read-only actual-goal verification refuses goal writes'));
-          }
-          return original(input, init);
-        };
-        return true;
-      })()`);
+      await guardGoalWrites();
       // Edit priorities changes URL view state. Do not click membership,
       // reorder, review/apply, pause or any other live mutation control.
       await native('click', `${panel} .woe__header button[aria-pressed="false"]`, '--json');
@@ -405,8 +435,35 @@ test('real Work on Everything goal exposes its saved picks in the native progres
           writes: window.__realWoeWrites,
         };
       })()`);
+      await captureLayout('saved-worklist-detail', panel, `${panel} .woe__header button[aria-pressed]`);
+      // Preserve the saved-picks table before navigating to the package views.
+      const screenshot = info.outputPath('real-goal-progress-table.png');
+      await run('import', ['-display', process.env.VERIFY_TAURI_DISPLAY!, '-window', 'root', screenshot], { timeout: 20_000 });
+      await info.attach('real-goal-progress-table', { path: screenshot, contentType: 'image/png' });
+      const packagesResponse = await request.get(`${process.env.VERIFY_TAURI_DEV_URL}/api/zero-harness/rest-query`, {
+        params: { name: 'goals.list', args: JSON.stringify({ workspaceId }) },
+        headers: { 'x-papercusp-workspace': workspaceId },
+      });
+      expect(packagesResponse.ok()).toBe(true);
+      const entry = (await packagesResponse.json()).rows[0].goalPackages
+        .find((item: { ref: string }) => item.ref === 'work-on-everything');
+      expect(entry?.activeGoalId, 'The real featured package must name its existing goal').toBeTruthy();
+      const rail = '[data-testid="goal-packages-rail"]';
+      const open = `${rail} [data-testid="pkg-card-work-on-everything"]`;
+      for (const [tab, variant] of [['goals', 'featured'], ['sessions', 'compact']] as const) {
+        await measure('window.__nativeCollectionPreviousDocument = true; true');
+        await native('navigate', `${process.env.VERIFY_TAURI_DEV_URL}/adv?tab=hud&scope=all&hudtab=${tab}&welcome=0&ws=${workspaceId}`, '--json');
+        const surface = `${rail} .hud-ongoing--${variant}`;
+        await ready(`${nativeCollectionDocumentReady(surface)} && new URL(location.href).searchParams.get('hudtab') === ${JSON.stringify(tab)} && !!document.querySelector(${JSON.stringify(open)})`);
+        await guardGoalWrites();
+        await captureLayout(variant, surface, open);
+        await native('click', open, '--json');
+        await ready(`new URL(location.href).searchParams.get('hudgoal') === ${JSON.stringify(entry.activeGoalId)} && !!document.querySelector('${panel} .woe__header button')`);
+        await captureLayout(`${variant}-opened-detail`, panel, `${panel} .woe__header button`);
+      }
       const after = await readSaved();
-      await attachNativeEvidence(info, 'real-goal-table-readback', { body: JSON.stringify({ goalId, before, expected, dom, after, migration }), contentType: 'application/json' });
+      await attachNativeEvidence(info, 'real-goal-table-readback', { body: JSON.stringify({ goalId, before, expected, dom, after, migration,
+        packageGoalId: entry.activeGoalId, nativeLayouts: ['saved-worklist-detail', 'featured', 'compact', 'opened-detail'] }), contentType: 'application/json' });
       expect(dom.rows).toBeGreaterThan(0);
       expect(dom.selected.sort((a: { id: string }, b: { id: string }) => a.id.localeCompare(b.id)))
         .toEqual(expected.sort((a, b) => a.id.localeCompare(b.id)));
@@ -417,11 +474,6 @@ test('real Work on Everything goal exposes its saved picks in the native progres
       expect(dom.pending).toBe(false);
       expect(dom.writes).toEqual([]);
       expect(after).toEqual(before);
-      // Capture this owned display directly: the platform window title differs
-      // between desktop builds, while DISPLAY is verifier-provenanced.
-      const screenshot = info.outputPath('real-goal-progress-table.png');
-      await run('import', ['-display', process.env.VERIFY_TAURI_DISPLAY!, '-window', 'root', screenshot], { timeout: 20_000 });
-      await info.attach('real-goal-progress-table', { path: screenshot, contentType: 'image/png' });
     });
   } finally {
     await sql.end({ timeout: 5 });
