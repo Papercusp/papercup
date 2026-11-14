@@ -1,0 +1,64 @@
+diff --git a/node_modules/esbuild/lib/main.js b/node_modules/esbuild/lib/main.js
+index 1e0cafb750b8b8a972edd2ee3fb9a31c2ac10a3e..69450ea51842d1b8c5526458ee8ef705e2be9511 100644
+--- a/node_modules/esbuild/lib/main.js
++++ b/node_modules/esbuild/lib/main.js
+@@ -555,6 +555,8 @@
+   };
+ }
+ function createChannel(streamIn) {
++  // PAPERCUSP D068: opaque lifetime of this actual service pipe.
++  const papercuspService = Object.freeze({});
+   const requestCallbacksByKey = {};
+   const closeData = { didClose: false, reason: "" };
+   let responseCallbacks = {};
+@@ -598,8 +600,30 @@
+   let sendRequest = (refs, value, callback) => {
+     if (closeData.didClose) return callback("The service is no longer running" + closeData.reason, null);
+     let id = nextRequestID++;
+-    responseCallbacks[id] = (error, response) => {
++    let papercuspNotify;
++    // Only the async native transform channel participates. Observers are
++    // diagnostics: their absence or exceptions never change compiler behavior.
++    try {
++      if (!streamIn.isSync && streamIn.papercuspChild && value.command === "transform") {
++        const observers = [];
++        const identity = { version: 1, channel: papercuspService, requestId: id,
++          implementation: module.exports, child: streamIn.papercuspChild };
++        const observe = module.exports[Symbol.for("@papercusp/test-config.esbuild-native-use-observer-v1")];
++        if (typeof observe === "function") observe({
++          ...identity, register(observer) {
++            if (typeof observer === "function" && observers.length < 8) observers.push(observer);
++          }
++        });
++        papercuspNotify = (phase) => {
++          for (const observe of observers) {
++            try { observe({ ...identity, phase }); } catch {}
++          }
++        };
++      }
++    } catch {}
++    responseCallbacks[id] = (error, response, papercuspDecoded = false) => {
+       try {
++        if (papercuspNotify) papercuspNotify(papercuspDecoded ? "response" : "closed");
+         callback(error, response);
+       } finally {
+         if (refs) refs.unref();
+@@ -654,8 +678,8 @@
+     } else {
+       let callback = responseCallbacks[packet.id];
+       delete responseCallbacks[packet.id];
+-      if (packet.value.error) callback(packet.value.error, {});
+-      else callback(null, packet.value);
++      if (packet.value.error) callback(packet.value.error, {}, true);
++      else callback(null, packet.value, true);
+     }
+   };
+   let buildOrContext = ({ callName, refs, options, isTTY: isTTY2, defaultWD: defaultWD2, callback }) => {
+@@ -1981,6 +2005,7 @@
+     cwd: defaultWD
+   });
+   let { readFromStdout, afterClose, service } = createChannel({
++    papercuspChild: child,
+     writeToStdin(bytes) {
+       child.stdin.write(bytes, (err) => {
+         if (err) afterClose(err);
