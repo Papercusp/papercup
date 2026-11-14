@@ -41,6 +41,9 @@ export async function measureLifecycle(url: string, token: string, policy: Capab
   const sessions = join(home, 'sessions');
   const resultPath = join(home, 'result.json');
   writeFileSync(extension, ompLifecycleProvider, { mode: 0o600 });
+  // Keep project-level MCP loading explicit in the isolated OMP profile.
+  const mcpConfig = join(home, 'mcp-config.yml');
+  writeFileSync(mcpConfig, 'mcp:\n  enableProjectConfig: true\n', { mode: 0o600 });
   const mcpUrl = new URL(url);
   mcpUrl.searchParams.set('tools', 'tools:invoke');
   const tokenFile = join(home, 'mcp-token');
@@ -54,7 +57,7 @@ export async function measureLifecycle(url: string, token: string, policy: Capab
     XDG_CONFIG_HOME: join(home, '.config'), XDG_DATA_HOME: join(home, '.local', 'share'),
     PI_CODING_AGENT_DIR: home, PI_CONFIG_DIR: home, OMP_PROOF_RESULT: resultPath };
   const common = ['--mode', 'json', '--no-title', '--no-extensions', '--no-skills', '--no-rules',
-    '--extension', extension, '--model', 'surface-fixture/proof', '--thinking', 'off',
+    '--config', mcpConfig, '--extension', extension, '--model', 'surface-fixture/proof', '--thinking', 'off',
     '--auto-approve', '--session-dir', sessions];
   const selection = ['--tools', nativeTools.join(',')];
   const observations: { surface: string; version: string; names: string[]; hasNativeExecution: boolean;
