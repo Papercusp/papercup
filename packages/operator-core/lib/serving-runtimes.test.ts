@@ -5,9 +5,9 @@
  * read as an answer for all of them. Each case below pins one runtime's own rule, and
  * the three-valued contract (null-with-a-reason is never collapsed into false).
  */
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   CURRENT_BUILD_TEST_CLASSES,
@@ -72,6 +72,20 @@ describe('runtime selection', () => {
     // differ from origin/staging; the route must describe that source accurately.
     expect(currentBuildTestRoute('operator-api')?.source).toMatch(/committed local/i);
     expect(currentBuildTestRoute('operator-api')?.source).not.toContain('origin/staging');
+    // WI-6554700010048234: the commit-independent operator-API route bundles the
+    // working tree itself, so it must not claim a serving runtime (:3170 or :3070)
+    // and its route file must exist on disk.
+    const workingTree = currentBuildTestRoute('operator-api-working-tree');
+    expect(workingTree).toMatchObject({
+      runtime: null,
+      routeFile: 'scripts/operator-api-working-tree.mjs',
+      readiness: 'requires-prerequisites',
+    });
+    expect(workingTree?.source).toMatch(/uncommitted/i);
+    expect(workingTree?.verification).toContain('WORKING_TREE_OPERATOR_API_RECEIPT');
+    const workingTreeRouteFile = workingTree?.routeFile;
+    expect(workingTreeRouteFile).toBeTruthy();
+    expect(existsSync(join(resolve(import.meta.dirname, '../../..'), workingTreeRouteFile ?? '__missing-route-file__'))).toBe(true);
     expect(currentBuildRoutesForRuntime('bg-host')).toMatchObject([
       { id: 'background-federation', readiness: 'requires-prerequisites' },
     ]);
@@ -105,7 +119,7 @@ describe('runtime selection', () => {
 
   it('keeps pre-release route gaps explicit instead of claiming :3170 covers every class', () => {
     expect(CURRENT_BUILD_TEST_CLASSES.map(({ id }) => id)).toEqual([
-      'unit-integration', 'operator-api', 'background-federation', 'migration',
+      'unit-integration', 'operator-api', 'operator-api-working-tree', 'background-federation', 'migration',
       'desktop-native', 'multi-machine-p2p-git', 'aws-ami-candidate', 'candidate-install-upgrade', 'final-release',
     ]);
     expect(CURRENT_BUILD_TEST_CLASSES.filter(({ readiness }) => readiness === 'gap').map(({ id }) => id))
