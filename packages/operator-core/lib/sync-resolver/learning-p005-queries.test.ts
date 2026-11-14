@@ -3,8 +3,8 @@
 // learning.releaseReadiness (no args → retained snapshot SELECT). The observations
 // rows must use the same live partition as their companion summary.
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { knownQueryNamesV2 } from './index';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { knownQueryNamesV2, resolveNamedQueryV2 as r } from './index';
 
 const { readDerivedSnapshotRowsMock, registerDerivedReadMock, readPageMock } = vi.hoisted(() => ({
   readDerivedSnapshotRowsMock: vi.fn(async (_key: string) => [] as unknown[]),
@@ -44,16 +44,13 @@ describe('P-005 resolver gates', () => {
 
   describe('routing', () => {
     beforeEach(() => {
-      vi.resetModules();
       readDerivedSnapshotRowsMock.mockClear();
       readPageMock.mockClear();
     });
-    afterEach(() => vi.resetModules());
 
     it('learning.observations DEFAULT view (limit 200) reads the live partition rather than retained stock', async () => {
       const snap = [{ id: 'EI-1', title: 'snapshot', body: 'x', refs: [], createdAt: '2026-08-21T00:00:00.000Z' }];
       readDerivedSnapshotRowsMock.mockImplementation(async () => snap);
-      const { resolveNamedQueryV2: r } = await import('./index');
       const rows = (await r('learning.observations', { limit: 200 })) as unknown[];
       expect(rows).toMatchObject([{ id: 'EI-9', title: 'live' }]);
       expect(readDerivedSnapshotRowsMock).not.toHaveBeenCalled();
@@ -65,7 +62,6 @@ describe('P-005 resolver gates', () => {
     });
 
     it('learning.observations with a state filter falls through to the live keyset reader', async () => {
-      const { resolveNamedQueryV2: r } = await import('./index');
       const rows = (await r('learning.observations', { state: 'resolved', limit: 200 })) as unknown[];
       expect(rows).toHaveLength(1);
       expect(readDerivedSnapshotRowsMock).not.toHaveBeenCalled();
@@ -81,7 +77,6 @@ describe('P-005 resolver gates', () => {
     it('learning.releaseReadiness (no args) reads the snapshot', async () => {
       const snap = [{ ready: true }];
       readDerivedSnapshotRowsMock.mockImplementation(async () => snap);
-      const { resolveNamedQueryV2: r } = await import('./index');
       const rows = (await r('learning.releaseReadiness', {})) as unknown[];
       expect(rows).toBe(snap);
       expect(readDerivedSnapshotRowsMock).toHaveBeenCalledWith('learning.releaseReadiness');
