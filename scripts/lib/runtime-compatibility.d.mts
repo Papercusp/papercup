@@ -22,6 +22,7 @@ export function validRuntimeProofIdentity(runtime: unknown): boolean;
 export function runtimeProofFingerprint(runtime: unknown): string | null;
 export function captureRuntimeProofIdentity(options: {
   root: string; cwd?: string; environment?: NodeJS.ProcessEnv; executable?: string;
+  execArgv?: string[];
 }): RuntimeProofIdentity | null;
 export function captureCurrentRuntimeProofIdentity(options: {
   root: string; environment?: NodeJS.ProcessEnv;

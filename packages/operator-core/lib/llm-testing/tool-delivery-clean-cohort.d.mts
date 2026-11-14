@@ -33,6 +33,33 @@ export function assertCleanCohortCapturedInputs(input: {
   fixture: string; portableSha256: string; readHash: (path: string) => string;
 }): void;
 export function parseCleanCohortArgs(argv: string[]): {
-  experimentId: string; fixture: string; readinessPath: string | undefined;
+  experimentId?: string; fixture?: string; readinessPath?: string; capturePath?: string;
 };
+export interface CleanCohortCaptureRequest {
+  baselineExperimentId: string;
+  experimentId: string;
+  arms: { compactArm: string; fullArm: string };
+  decisionRef: string;
+  privateCaptureFile: string;
+  portableFile: string;
+  receiptDirectory: string;
+}
+export function validateCleanCohortCaptureRequest(request: CleanCohortCaptureRequest,
+  baseline: { experiment: { id: string }; configuration: { replicationsPerArm: number; neverRetryMeasuredReplication: boolean } }): void;
+export function cleanCohortCaptureDelta(before: Record<string, unknown>, after: Record<string, unknown>):
+  Record<string, { beforeSha256: string; afterSha256: string; unchanged?: boolean; before?: unknown; after?: unknown }>;
+export function captureCleanCohortRequest(input: { SuTarget: unknown; prompt: string; variant: unknown; model: string }): Promise<Record<string, unknown>>;
+export interface CleanCohortCaptureDeltaEntry {
+  beforeSha256: string; afterSha256: string; unchanged?: boolean; before?: unknown; after?: unknown; custody?: string;
+}
+export interface CleanCohortPortableCapture {
+  [key: string]: unknown;
+  capture: { [key: string]: unknown; privateCapture: { originalSha256: string; custody: string } };
+  treatmentDelta: { basisExperimentId: string; previousPrivateSha256: string;
+    components: Record<string, CleanCohortCaptureDeltaEntry> };
+}
+export function buildCleanCohortCapture(input: { request: CleanCohortCaptureRequest; baseline: unknown;
+  baselinePrivateCapture: Buffer; catalogs: unknown; requests: unknown; expectedModel: { id: string; effort: string };
+  boundary: unknown; controllerBoundary: unknown; sourcePins: unknown; createdAt: string }):
+  { privateCapture: Buffer; portable: CleanCohortPortableCapture };
 export function main(argv?: string[]): Promise<Record<string, unknown>>;

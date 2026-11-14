@@ -29,16 +29,43 @@ export function nativeChildSourcePreflight({ root, files }: {
     verdict: string;
     message: string;
 } | null;
+/** Check the native qualification fixture's exact dependency prerequisite before
+ * baseline PG setup. This only reads the maintained selector; the fixture must
+ * still select and lease it at execution time. No install, publication or proof
+ * authorization is performed here.
+ * @param {{ root: string, files: string[], env: NodeJS.ProcessEnv, testNamePattern?: RegExp }} input
+ * @param {{ hasMarker?: (path: string) => boolean,
+ *   probe?: (root: string, env: NodeJS.ProcessEnv) => { status: number | null,
+ *     stdout?: string, stderr?: string, error?: unknown } }} [readers]
+ */
+export function nativeChildDependencyPreflight({ root, files, env, testNamePattern }: {
+    root: string;
+    files: string[];
+    env: NodeJS.ProcessEnv;
+    testNamePattern?: RegExp;
+}, readers?: {
+    hasMarker?: (path: string) => boolean;
+    probe?: (root: string, env: NodeJS.ProcessEnv) => {
+        status: number | null;
+        stdout?: string;
+        stderr?: string;
+        error?: unknown;
+    };
+}): {
+    verdict: string;
+    message: string;
+} | null;
 /**
  * Contract (owned by libs/test-config/src/host-preflight-global-setup.ts):
  *   → { verdict: 'admit', setEnv? } | { verdict: 'skipped', reason } | { verdict: 'refuse', message }
  * A refusal aborts the vitest run with `message`; `setEnv` is applied to vitest's main-process env.
- * @param {{ root: string, files: string[], env: NodeJS.ProcessEnv }} input
+ * @param {{ root: string, files: string[], env: NodeJS.ProcessEnv, testNamePattern?: RegExp }} input
  */
-export function hostPreflight({ root, files, env }: {
+export function hostPreflight({ root, files, env, testNamePattern }: {
     root: string;
     files: string[];
     env: NodeJS.ProcessEnv;
+    testNamePattern?: RegExp;
 }): {
     verdict: string;
     message: string;
@@ -55,12 +82,18 @@ export function hostPreflight({ root, files, env }: {
  * config walks up to this file and lists it in `globalSetup` only when it exists, so a standalone
  * clone runs none. Same semantics as test-config's runHostPreflight: refuse throws before any test
  * runs; admit sets the marker in vitest's main-process env.
- * @param {{ vitest: { state: { getPaths(): string[] } } }} project
+ * @param {{ vitest: { state: { getPaths(): string[] }, config?: { testNamePattern?: RegExp } } }} project
  */
 export function setup(project: {
     vitest: {
         state: {
             getPaths(): string[];
         };
+        config?: {
+            testNamePattern?: RegExp;
+        };
     };
 }): Promise<void>;
+export const NATIVE_QUALIFICATION_SUITE_NAME: "checkpoint qualification lifecycle (real row lock and JSONB)";
+export const NATIVE_QUALIFICATION_CASE_NAME: "keeps a real acknowledged file banked across %s and executes only its unfinished peer";
+export const NATIVE_QUALIFICATION_SCENARIOS: readonly string[];

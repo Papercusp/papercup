@@ -92,7 +92,9 @@ function main() {
 }
 // Copied verbatim and invoked by bare Node before node_modules exists. This
 // count-bounded standalone guard is enrolled in lint:no-hand-rolled-cli-entry.
-if (process.argv[1] && fileURLToPath(import.meta.url) === realpathSync(process.argv[1])) {
+// Node uses "-" as argv[1] for stdin modules; it is not a script path.
+if (process.argv[1] && process.argv[1] !== '-' &&
+    fileURLToPath(import.meta.url) === realpathSync(process.argv[1])) {
   try {
     main();
   } catch (error) {

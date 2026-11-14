@@ -2431,6 +2431,8 @@ export interface SpawnHeadlessOpts {
   /** Release a reservation made by beforeSpawn after child creation, or on an
    * error path after the guard passed. */
   afterSpawn?: () => void | Promise<void>;
+  /** Persist exact process custody before boot/kickoff verification can wait. */
+  onProcessCreated?: (receipt: { taskId: string; pid: number | null; logPath: string; normalizedLogPath: string }) => void | Promise<void>;
   /**
    * Opt into a parent-visible proof that the detached launch kickoff reached
    * the backend's native transcript. The receipt env is carried through the
@@ -2923,6 +2925,8 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
       closeSync(logFd); // the child holds its own dup of the fd
       logFd = null;
     }
+
+    await opts.onProcessCreated?.({ taskId: enrolment.taskId, pid: child.pid ?? null, logPath, normalizedLogPath });
 
     // Boot-death probe: psu that dies at launch (bad model spec, missing backend,
     // config-dir fault) exits within the window — surface it + the log tail, not

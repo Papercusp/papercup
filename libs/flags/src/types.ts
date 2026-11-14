@@ -3196,6 +3196,13 @@ export const FLAGS = {
   // machinery alone allows (throttle is a two-pass preference; shed only blocks
   // the pin). OFF is the kill-switch: selection is byte-identical to pre-governor.
   ACCOUNT_BURN_GOVERNOR: "papercusp-account-burn-governor",
+  // stuck-work-detection-and-honest-waits-2026-11-13 D-003 / P-002 / P-010: the
+  // waiting check's NOTICE switch. OFF = the routine still runs every 600s and
+  // records each flagged group in its run diagnostics, but files no condition item
+  // and sends no message. ON = durable notice item + one message to the item's
+  // assignee (else the declarer, else the owner). D-003 keeps it a registered
+  // kill-switch so it can be turned off if live volume diverges from the replay.
+  STUCK_WORK_NOTICES: "papercusp-stuck-work-notices",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -3219,6 +3226,10 @@ export const DARK_FLAGS: ReadonlyMap<
   [FLAGS.PLUGIN_INVOCATION_POLICY, {
     case: "owner-authority",
     reason: "app-security-runtime-boundaries-and-defense-in-depth-2026-10-31 P-002/P-019: security authorization cutover. Enabling denies installed plugin calls without an independently bound host PDP and current exact resource approvals. Keep OFF during implementation; under Avi's standing AUTO authorization, enable in P-019 only after host binding, independently precommitted population qualification and required acceptance. OFF retains legacy dispatch and makes no security guarantee. This is a pending security rollout, not a finished feature; WI-6554700010044290 tracks the binding and qualification work.",
+  }],
+  [FLAGS.STUCK_WORK_NOTICES, {
+    case: "cutover",
+    reason: "stuck-work-detection-and-honest-waits-2026-11-13 D-003: waiting-check notices switch on only after P-010 reports flags per day and the share that were real on out-of-sample days. Until then the routine runs silently and records its flags. P-010 removes this entry (default ON, still a kill-switch).",
   }],
   [FLAGS.SESSION_ARCHIVE_COLD_MIGRATION, {
     case: "cutover",

@@ -36,39 +36,6 @@ export function probeIndexAuditSink({ timeoutMs, pollMs, run, readState, now, sl
     errorCode?: string;
 };
 /**
- * Is this error git telling us the repository index is unreadable?
- *
- * TRUE means "the instrument failed", never "the subject is in violation". Callers must convert
- * a true here into an UNDETERMINED verdict, never into a finding and never into a silent pass.
- */
-export function isRepositoryIndexFault(error: any): boolean;
-/**
- * Run a git-reading closure, retrying only the repository-index-fault class.
- *
- * Any OTHER error propagates untouched and immediately — this widens nothing, it only makes the
- * one known-transient, known-self-healing fault recoverable. Returns the closure's value; throws
- * RepositoryIndexFaultError if the index is still unreadable after `attempts`.
- *
- * Defaults (4 attempts, 250ms, doubling → ~1.75s worst case) are sized to git-sync's repair
- * window while staying far below any guard's own runtime, so a healthy run pays nothing at all:
- * the retry path is entered only after a fault has already been classified.
- *
- * @template T
- * @param {() => T} run
- * @param {{ attempts?: number, delayMs?: number, onRetry?: (info: { attempt: number, of: number, delayMs: number, error: unknown }) => void }} [options]
- * @returns {T}
- */
-export function withGitIndexFaultRetry<T>(run: () => T, { attempts, delayMs, onRetry }?: {
-    attempts?: number;
-    delayMs?: number;
-    onRetry?: (info: {
-        attempt: number;
-        of: number;
-        delayMs: number;
-        error: unknown;
-    }) => void;
-}): T;
-/**
  * Print the UNDETERMINED banner for a persistent index fault and return EXIT_NOT_CHECKED.
  *
  * Returns null when the error is NOT an index fault, so the caller rethrows instead of
@@ -120,11 +87,5 @@ export const INDEX_FAULT_TRACKING_ITEM: "WI-10004911";
 export const INDEX_FAULT_CAPTURE_COMMAND: "sudo -n ausearch --input-logs -k papercusp-gitindex -i --start recent | grep -E '^type=(SYSCALL|PATH|PROCTITLE)'";
 export const INDEX_AUDIT_SINK_STATE_PATH: "/run/auditd.state";
 export const INDEX_AUDIT_SINK_PROBE_COMMAND: "node scripts/lib/git-index-fault.mjs --audit-sink";
-/** Thrown when the index is still unreadable after every retry. */
-export class RepositoryIndexFaultError extends Error {
-    constructor(message: any, { attempts, cause }?: {});
-    isRepositoryIndexFault: boolean;
-    attempts: any;
-    cause: any;
-}
 import { EXIT_NOT_CHECKED } from './not-checked.mjs';
+export { isRepositoryIndexFault, RepositoryIndexFaultError, withGitIndexFaultRetry } from "../../libs/test-config/src/git-index-fault-core.mjs";

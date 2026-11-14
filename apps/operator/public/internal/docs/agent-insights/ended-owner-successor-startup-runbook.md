@@ -1,0 +1,17 @@
+# Ended-owner successor startup runbook
+URL: /internal/docs/agent-insights/ended-owner-successor-startup-runbook
+
+Diagnose a valid successor rejected as owner-ended and preserve exact predecessor custody through bounded governor startup admission.
+
+The symptom `owner-ended` can occur before a valid successor opens a process. A successor intentionally retains the coordination identity of an ended predecessor; the resource governor must distinguish that new, authorized startup from an obsolete lease.
+
+1. Read the exact launch receipt. Preserve `processOpened: 0`, `spawnAttempted: false` and the governor transition separately from a native process failure. Read the current predecessor ADV binding and actual host/writer evidence before retrying.
+2. Keep terminal custody checks intact. An ordinary headless task without the exact ADV/PID/incarnation evidence cannot authorize reconciliation of an unended predecessor. A refusal is not permission to stamp the row ended, invent presence or create a replacement identity.
+3. Before admission, reserve the exact verified predecessor with `acquireAdvSessionResume`. A terminal ADV uses its workspace/binding pin and `requireTerminal: true`; a successor qualified by exact terminal-task custody reuses that existing keyed reservation.
+4. Pass the existing startup fields to the governor: `launchedBy`, `targetOwnerId`, `resumeAdvSessionId`, `resumeClaimKey` and `resumeStartupExpiresAtMs`. `readResumeStartupLaunchers` checks the exact row/key, bounded freshness, absence of a newer ADV and a live launcher. Never exempt ended owners globally.
+5. Release the exact reservation if admission or process creation fails. Process-open alone is not bootstrap completion: retain bounded startup protection while the child boots. Expiry, launcher death and a newer ADV preserve ordinary reclamation. Recheck existing task custody after headless installation and before the native effect.
+6. Activate through the maintained runtime route and verify the actual executed bundle before functional retry. A successful local test or a changed PID does not establish release shipment or a qualified whole-worker metadata tuple.
+
+EI-28362849992701819 measured this omission in `capability:launch-agent`: in-place resumes passed startup protection, successors did not. The five new/strengthened regressions failed against unchanged production source (run `fb215d2f-f2fa-4813-b4ef-af6ac99f2b0d`), then 103 targeted successor/resume cases passed after the wiring change (`fef633d9-1656-4424-9aeb-580d07eb28eb`). The existing real-PG guard passed on legacy and cutover stores (`afa5c52c-e784-496f-a184-321e4fb11858`), including launcher-death and expiry behavior; cleanup completed. These are local verification receipts. Runtime activation and original workflow acceptance remain separate obligations on the work item.
+
+The original incident also included distinct failures: an incomplete predecessor custody record, a console-bootstrap response timeout, and a Claude upstream `401 invalid x-api-key`. A startup reservation does not repair credentials or establish which bootstrap phase was slow.

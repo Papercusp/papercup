@@ -485,15 +485,26 @@ _pc_heavy_scratch_mktemp() {
 # PC_HEAVY_NO_SELF_COPY=1. Temp copies are left for /tmp's reaper (the script
 # manages its own traps later; an EXIT rm here would be clobbered).
 if [ -z "${_PC_HEAVY_SELF_COPIED:-}" ] && [ "${PC_HEAVY_NO_SELF_COPY:-}" != "1" ] && [ -f "$0" ]; then
-  _pc_heavy_self_copy="$(_pc_heavy_scratch_mktemp self .sh)" && {
+  printf '[pc-heavy] PC_HEAVY_PHASE phase=self-copy-temp state=start pid=%s elapsed_sec=%s\n' "$BASHPID" "$SECONDS" >&2
+  _pc_heavy_self_copy="$(_pc_heavy_scratch_mktemp self .sh)"
+  _pc_heavy_temp_status=$?
+  printf '[pc-heavy] PC_HEAVY_PHASE phase=self-copy-temp state=end result=%s exit=%s pid=%s elapsed_sec=%s\n' \
+    "$([ "$_pc_heavy_temp_status" -eq 0 ] && echo ok || echo failed)" "$_pc_heavy_temp_status" "$BASHPID" "$SECONDS" >&2
+  if [ "$_pc_heavy_temp_status" -eq 0 ]; then
+    printf '[pc-heavy] PC_HEAVY_PHASE phase=self-copy-copy state=start pid=%s elapsed_sec=%s\n' "$BASHPID" "$SECONDS" >&2
     if cp "$0" "$_pc_heavy_self_copy" 2>/dev/null; then
+      printf '[pc-heavy] PC_HEAVY_PHASE phase=self-copy-copy state=end result=ok exit=0 pid=%s elapsed_sec=%s\n' "$BASHPID" "$SECONDS" >&2
       export _PC_HEAVY_SELF_COPIED=1
       if [ -d "/proc/$$/fd" ] && { exec {_pc_heavy_self_fd}<"$_pc_heavy_self_copy"; } 2>/dev/null; then
         exec bash "/proc/$$/fd/$_pc_heavy_self_fd" "$@"
       fi
       exec bash "$_pc_heavy_self_copy" "$@"
+    else
+      _pc_heavy_copy_status=$?
+      printf '[pc-heavy] PC_HEAVY_PHASE phase=self-copy-copy state=end result=failed exit=%s pid=%s elapsed_sec=%s\n' \
+        "$_pc_heavy_copy_status" "$BASHPID" "$SECONDS" >&2
     fi
-  }
+  fi
   # Fail-open: no temp file / copy failed -> run in place, as before this guard.
   echo "[pc-heavy] self-copy unavailable; running in place (mid-run rewrite hazard unmitigated)" >&2
 fi

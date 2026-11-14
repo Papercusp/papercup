@@ -56,6 +56,10 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // P-010 / EI-26074325417052646: destructive PG-payload cutover waits for
   // a successful backup and compatible readers on the shared database.
   "papercusp-session-archive-cold-migration",
+  // stuck-work-detection-and-honest-waits-2026-11-13 D-003 (2026-11-13, su-5d156330):
+  // NEW flag, staged cutover. Waiting-check notices switch on only after P-010's
+  // out-of-sample report; until then the routine runs silently. P-010 removes it.
+  "papercusp-stuck-work-notices",
   // papercusp-capability-exec-sandbox: EI-16635 BUG-FIX correction (EI-7230-class —
   // own comment always said "OFF by default until validated end-to-end on a
   // bwrap-capable host", never actually added to DARK_FLAGS, so P-011 derived it
@@ -826,7 +830,9 @@ describe("production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)", (
     // both stay 12. Count 36 → 35.
     // P-010 adds a destructive-migration cutover interlock. Count 36 → 37.
     // P-002/P-019 adds the registered security-policy cutover. Count 37 → 38.
-    expect(offCount).toBe(38);
+    // stuck-work-detection-and-honest-waits-2026-11-13 D-003 adds the waiting-check
+    // notice cutover (case 'cutover', so the parking watermark stays 12). Count 38 → 39.
+    expect(offCount).toBe(39);
   });
 
   it("sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark", () => {

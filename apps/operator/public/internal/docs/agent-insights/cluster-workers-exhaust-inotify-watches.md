@@ -98,29 +98,14 @@ disable the FS→PG mirror on **every** process and silently stale the harness p
 
 Tracked as EI-3385.
 
-## Boot-failure backstop (`onUnbootable`, 2026-06-25)
+## Boot-failure backstop (`onBootFailure`, updated 2026-11-07; EI-11343)
 
-A separate enhancement in `cluster-fork.ts` (same file): an optional
-`onUnbootable` callback arms a **fast-stop** when workers cannot boot at all —
-distinct from a runtime crash that happens after a worker is healthy.
+An early worker exit is evidence of a startup failure, not evidence that the build is unbootable. Exit timing, code, and signal do not identify the root cause.
 
-The heuristic: a worker that exits within `bootGraceMs` (default **10 s**) of
-being forked is counted as a **consecutive boot failure**. Once
-`consecutiveBootFailures >= workers` (every slot in the cluster has failed to
-boot, with no worker ever staying up past the grace threshold), the cluster
-declares itself **UNBOOTABLE**, logs a fatal, and calls `onUnbootable` instead
-of respawning into an infinite crash loop.
+After `workers` consecutive early exits with no worker known to have survived the grace window, `cluster-fork.ts` stops its local respawn storm and calls `onBootFailure`. The callback receives the observed exit code and signal, plus any typed startup errors reported by workers over cluster IPC.
 
-Key state tracked per cluster lifecycle:
+When `listenWithEaddrinuseRetry` exhausts its retries on `EADDRINUSE`, `hono-host.ts` sends the worker's address and port to the primary before the worker exits. The primary checks that port with the canonical `listListeningSockets` reader and logs `port <p> already in use by pid <pid> (<command>)` when the owner is visible. If the owner is hidden, the listener disappeared, or lookup times out, the message says so instead of guessing.
 
-* `sawHealthy` — true once ANY worker has survived past `bootGraceMs`; if set,
-  a fast exit is treated as a normal runtime crash and respawned within budget
-  (the build can boot, this is a runtime failure).
-* `consecutiveBootFailures` — count of workers that exited inside the grace
-  window before any worker was seen healthy; reset to 0 when `sawHealthy` flips.
+The Hono host exits with ordinary code 1 after a generic boot failure so the service restart policy can handle transient failures. Only `boot-integrity-preflight.ts`, which measures missing boot modules, uses its distinct exit code 78. Do not infer `MODULE_NOT_FOUND`, advise `npm ci`, or suggest rollback from worker exit timing or code alone. Other startup failures remain unknown and direct the operator to the first worker error in the logs.
 
-This backstop is **OPT-IN** — pass `onUnbootable` to arm it; without it the
-legacy respawn-budget behaviour continues. The production runner passes it so
-that a build that can never start (wrong Node version, missing native dep,
-MODULE\_NOT\_FOUND at startup) stops fast and surfaces cleanly instead of
-thrashing systemd's restart throttle.
+A worker that survives `bootGraceMs` and later crashes follows the ordinary bounded respawn path; it does not trigger the boot-failure callback.

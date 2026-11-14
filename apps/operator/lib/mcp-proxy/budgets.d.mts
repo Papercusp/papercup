@@ -18,6 +18,9 @@ export const PSU_CLIENT_HEADROOM_MS: number;
 /** psu's per-request timeout. Env: PAPERCUSP_PSU_TIMEOUT_MS, else window + headroom. */
 export const PSU_REQUEST_TIMEOUT_MS: number;
 
+/** Required Codex MCP startup: proxy recovery window + headroom, rounded up. */
+export const CODEX_MCP_STARTUP_TIMEOUT_SEC: number;
+
 export function derivePsuTimeoutMs(opts?: {
   overrideMs?: number | null;
   retryWindowMs?: number;

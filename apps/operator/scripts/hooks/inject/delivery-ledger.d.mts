@@ -15,6 +15,10 @@ export function ledgerDir(env?: NodeJS.ProcessEnv): string;
  * @returns {DeliveryLedger | null}
  */
 export function openDeliveryLedger(owner: string | null | undefined, env?: NodeJS.ProcessEnv, port?: "turn-start" | "mid-turn" | "mcp" | "compact"): DeliveryLedger | null;
+/** Called only by the managed native host after reading a complete OMP stdout
+ * frame. The extension's execute/tool_result callbacks are earlier boundaries:
+ * later hooks may still remove or change their model-visible content. */
+export function recordOmpMcpEmission(payload: any, owner: any, nativeSessionId: any, env?: NodeJS.ProcessEnv): boolean;
 /** Extend the existing delivery ledger for optional code-intelligence emission.
  * A generation-scoped exclusive directory serializes fresh hook processes. On
  * contention or an IO error, suppress only optional advice. A crashed writer's
@@ -28,7 +32,7 @@ export function codeIntelDelivery(owner: any, env: any, update: any, boundary?: 
  * @property {() => string | null} confirmed  the token this session last proved it emitted
  * @property {() => object[]} confirmedFactBodies private manifests from that token's immutable stdout receipt
  * @property {() => object[]} confirmedMemoryDeliveries exact fragments from recent immutable stdout receipts
- * @property {(token: unknown, emission?: { payload?: string, client?: string, format?: string, nativeSessionId?: string | null, control?: object | null, factBodyOffers?: object[], memoryFragmentOffers?: object[] }) => void} offer
+ * @property {(token: unknown, emission?: { payload?: string, client?: string, format?: string, nativeSessionId?: string | null, packingReceipt?: { attemptId: string, sha256: string }, control?: object | null, factBodyOffers?: object[], memoryFragmentOffers?: object[] }) => void} offer
  *   remember the returned token and the exact payload that the caller will emit
  * @property {() => boolean} commit           record the offered token; call ONLY after emitting
  */
@@ -55,6 +59,10 @@ export type DeliveryLedger = {
         client?: string;
         format?: string;
         nativeSessionId?: string | null;
+        packingReceipt?: {
+            attemptId: string;
+            sha256: string;
+        };
         control?: object | null;
         factBodyOffers?: object[];
         memoryFragmentOffers?: object[];

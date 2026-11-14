@@ -783,6 +783,34 @@ export async function ensureNativeSessionOnDisk(ctx?: unknown): Promise<boolean>
   return true;
 }
 
+/** Probe the executable running THIS hook, rather than today's PATH install or
+ * a package beside a different OMP binary. Node/Bun source launchers whose own
+ * --version is not OMP remain unknown. Linux's proc handle survives replacement
+ * of the installed binary while this process is running. */
+export async function readOwnOmpRuntimeVersion(run: typeof execFile = execFile): Promise<string | null> {
+  return new Promise(resolveVersion => {
+    run(process.platform === 'linux' ? '/proc/self/exe' : process.execPath, ['--version'],
+      { timeout: 5000, maxBuffer: 4096, encoding: 'utf8' }, (error, stdout) => {
+        resolveVersion(error ? null : /^omp\/(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)\r?\n?$/.exec(stdout)?.[1] ?? null);
+      });
+  });
+}
+
+/** Existing native custom-entry API supplies the version's original session
+ * ancestry. No model-authored version, launch env stamp or new datastore. */
+export async function recordOmpRuntimeVersion(pi: Pick<HookApi, 'appendEntry'>, ctx: unknown,
+  readVersion: () => Promise<string | null> = readOwnOmpRuntimeVersion): Promise<boolean> {
+  const nativeSessionId = nativeSessionIdFromContext(ctx);
+  if (!nativeSessionId || !pi.appendEntry) return false;
+  const clientVersion = await readVersion();
+  if (!clientVersion || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(clientVersion) ||
+      nativeSessionIdFromContext(ctx) !== nativeSessionId) return false;
+  pi.appendEntry('papercusp-omp-runtime', { schemaVersion: 1, nativeSessionId, clientVersion,
+    measuredAt: new Date().toISOString() });
+  await ensureNativeSessionOnDisk(ctx);
+  return true;
+}
+
 function nativeSessionIdFromContext(ctx: unknown): string {
   try {
     const sessionId = (ctx as HookSessionLinkContext | undefined)?.sessionManager?.getSessionId?.();
@@ -5374,6 +5402,7 @@ type ToolResultHandler = (
 ) => Promise<{ content?: unknown } | void> | { content?: unknown } | void;
 
 interface HookApi {
+  appendEntry?(customType: string, data: unknown): void;
   on(event: 'session_start', handler: SessionStartHandler): void;
   on(event: 'session_shutdown', handler: SessionShutdownHandler): void;
   on(event: 'turn_start', handler: TurnStartHandler): void;
@@ -5456,6 +5485,7 @@ const ORIENTATION_PRIMER = [
 export default function register(pi: HookApi): void {
   pi.on('session_start', async (_event, ctx) => {
     pokeStallWatchdog(); // heartbeat: arm the stall watchdog at the very first event
+    await safe(() => recordOmpRuntimeVersion(pi, ctx), false);
     await safe(() => onSessionStart(ctx), undefined);
     // One startup render gives the terminal an immediate title. Subsequent
     // display refreshes ride the generation-stamped post-tool activity bundle.

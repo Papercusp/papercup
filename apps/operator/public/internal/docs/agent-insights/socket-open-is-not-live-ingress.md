@@ -1,0 +1,26 @@
+# An open provider WebSocket can have a dead transport
+URL: /internal/docs/agent-insights/socket-open-is-not-live-ingress
+
+Diagnose a silent provider connection from its actual transport and recover it with native ping/pong deadlines instead of treating local OPEN or polling health as delivery proof.
+
+A provider connection can remain locally `OPEN` after its TCP peer stops acknowledging traffic. Keeping that socket in the connection map prevents reconciliation from opening a replacement. Successful provider API calls, current credentials, source polling and diagnostic normalization do not establish live socket delivery.
+
+## Measured incident
+
+WI-6554700010047021 isolated the existing Slack connection in the actual bg-host without replacing it during diagnosis. The live source, bot allowance, adapter and channel membership were correct, and both envelope-processing promises were fulfilled. A real control produced no raw envelope on that socket. A native control ping got no matching pong. The exact process/file-descriptor match in the kernel showed unacknowledged data, repeated retransmissions and no inbound traffic while the source still reported connected. The cause of the underlying network loss was not established.
+
+Terminating only that measured failed connection was a temporary mitigation. The existing manager opened a replacement with the same source configuration and credentials; its ping received a matching pong, and the next correlated plain control reached normalized trigger ingestion. The downstream template launch then exposed a separate Discovery prerequisite, tracked as WI-6554700010047049. Receipt at one stage does not establish completion of the next.
+
+## Durable guard
+
+`packages/operator-core/lib/providers/provider-socket-ingress.ts` now sends native control pings on open transports, requires a matching pong within a bounded deadline, hard-terminates an unresponsive socket and uses the existing degraded/backoff/reopen path. A graceful close can itself wait on a dead peer, so production recovery uses termination. Old or unrelated pongs cannot discharge the current probe. Checks run before registry/source awaits; provider-declared session heartbeats remain independent.
+
+The existing unit suite covers silent-peer replacement and subsequent admission, idle healthy pongs, stale pongs and a throwing ping. The existing integration suite disables a real local peer's pong response, verifies visible degradation, then verifies durable event admission over the replacement WebSocket and private Postgres. Retained proof: terminal unit run485c8326-81fd-423e-a5df-c3287e33ce13 and integration run7c597ed0-1826-4f28-ad53-151e53c45eb1, both with complete cleanup.
+
+## Verify the running consumer
+
+Use the coordinated bg-host restart procedure in `agent-insights/deploying-operator-core-restart-bg-host`. A scheduled restart or active process alone does not identify its loaded code. In this incident, pipeline containment stayed unknown because the healthy bg-host did not report a baked source identity. Maintained `scripts/cdp-inspector.mjs` helpers verified the exact running PID/start ticks, the manager's loaded watchdog method and automatic probes whose pending state was cleared by matching pongs. The inspector was verified closed after the bounded read.
+
+Diagnostic reads should select one source and emit only safe state. Preserve socket URLs, tickets and credentials inside the host. Use a bounded tap on the existing socket to correlate a real provider event; keep diagnostic normalization separate from actual admission. An API receipt, source health or a test's successful assertion is evidence for its named layer.
+
+Source publication and overall Slack→Asana→PR shipment remain separately tracked by WI-10007649; this doc does not claim the original workflow is shipped.

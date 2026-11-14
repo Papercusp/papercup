@@ -384,6 +384,55 @@ function runSync(args: string[], env: Record<string, string> = {}, cwd?: string)
 }
 
 describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
+  it('reports the pre-admission self-copy phase while copy is blocked', async () => {
+    const fakeBin = join(dir, 'fake-bin');
+    mkdirSync(fakeBin);
+    const copyStarted = join(dir, 'fake-cp-started');
+    const copyRelease = join(dir, 'fake-cp-release');
+    const fakeCp = join(fakeBin, 'cp');
+    writeFileSync(fakeCp, [
+      '#!/bin/sh',
+      ': > "$PC_HEAVY_TEST_COPY_STARTED"',
+      'while [ ! -e "$PC_HEAVY_TEST_COPY_RELEASE" ]; do sleep 0.02; done',
+      'exit 1',
+      '',
+    ].join('\n'));
+    chmodSync(fakeCp, 0o755);
+
+    const child = spawn('bash', [PC_HEAVY, 'bash', '-c', 'printf child-ran'], {
+      cwd: dir,
+      env: baseEnv({
+        PATH: fakeBin + ':' + (process.env.PATH ?? ''),
+        TMPDIR: dir,
+        PC_HEAVY_TEST_COPY_STARTED: copyStarted,
+        PC_HEAVY_TEST_COPY_RELEASE: copyRelease,
+        PC_HEAVY_TIMEOUT_SEC: '30',
+        PC_HEAVY_SLOTS: '1',
+      }),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const stdout = createTextCollector(child.stdout);
+    const stderr = createTextCollector(child.stderr);
+    const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+      child.once('close', (code, signal) => resolve({ code, signal }));
+    });
+    let result: { code: number | null; signal: NodeJS.Signals | null } = { code: null, signal: null };
+    try {
+      await waitFor('the injected pre-admission copy to start', () => existsSync(copyStarted));
+      await untilStderr(child, stderr,
+        text => text.includes('PC_HEAVY_PHASE phase=self-copy-copy state=start'),
+        'pre-admission self-copy phase');
+      expect(stderr.peek()).not.toContain('PC_HEAVY_PHASE phase=self-copy-copy state=end');
+    } finally {
+      writeFileSync(copyRelease, 'go\n');
+      result = await closed;
+    }
+
+    expect(result.code).toBe(0);
+    expect(stderr.text()).toContain('PC_HEAVY_PHASE phase=self-copy-copy state=end result=failed');
+    expect(stdout.text()).toContain('child-ran');
+  });
+
   it('exports PC_HEAVY_BYPASS=1 into the child', () => {
     const r = runSync(['bash', '-c', 'printf %s "$PC_HEAVY_BYPASS"'], { PC_HEAVY_SLOTS: '2' });
     expect(r.status).toBe(0);
