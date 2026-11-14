@@ -1163,6 +1163,7 @@ describe('evaluatePlanSpecQuality', () => {
       });
 
       expect(result.ratings['implementation-independence'].rating).toBe('pass');
+      expect(result.ratings['implementation-independence'].evidence).toContain('Detector semantics revision: 2.');
     },
   );
 
@@ -1177,6 +1178,25 @@ describe('evaluatePlanSpecQuality', () => {
     });
 
     expect(result.ratings['implementation-independence'].rating).toBe('fail');
+  });
+
+  it('pins detector revision 2 to representative coupled and independent verdicts', () => {
+    const goldenCases = [
+      { behavior: 'The retrieval report includes nDCG@5 for the frozen queries and ground truth.', expected: 'pass' },
+      { behavior: 'The user sees saved settings after reopening the page.', expected: 'pass' },
+      { behavior: 'The function nDCG calculates the retrieval scores.', expected: 'fail' },
+      { behavior: 'runSyncBatchDeltaCheck evaluates the batch under sustained load.', expected: 'fail' },
+    ] as const;
+
+    for (const { behavior, expected } of goldenCases) {
+      const result = evaluatePlanSpecQuality({
+        planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
+        classRef: 'plan-class-feature-ship', clauses: [clause({ behavior })],
+      });
+      const rating = result.ratings['implementation-independence'];
+      expect(rating.rating).toBe(expected);
+      expect(rating.evidence).toContain('Detector semantics revision: 2.');
+    }
   });
 
   it('accepts observable persistence without prescribing its storage mechanism', () => {
