@@ -69,6 +69,16 @@ describe.skipIf(!isolated)('Reports library in the isolated native desktop', () 
     expect(manifest.result).toBe('pass');
     expect(manifest.original).not.toBe(manifest.correction);
     expect(manifest.privatePeer).toBeTruthy();
+    const handoff = JSON.parse(readFileSync(join(match![1].trim(),
+      'phases/native/terminal-desktop-report-handoff.json'), 'utf8'));
+    expect(handoff.reportId).toBe(manifest.original);
+    expect(handoff.route).toBe(`/reports?sel=${manifest.original}`);
+    expect(handoff.desktopHandoff).toMatchObject({ status: 'done',
+      result: { protocol: 'desktop-route-v1', requested: true } });
+    expect(handoff.reader).toMatchObject({ pathname: '/reports', reportId: manifest.original,
+      workspace: nativeProfile.workspaceId, evidenceVisible: true });
+    expect(handoff.reader.title).toEqual(expect.any(String));
+    expect(handoff.reader.title.length).toBeGreaterThan(0);
     expect(manifest.sse.before.sse.connectedSinceMs).not.toBeNull();
     expect(manifest.sse.afterPublish.invalidations.bySseName['reports.list'])
       .toBeGreaterThan(manifest.sse.before.invalidations.bySseName['reports.list'] ?? 0);
@@ -79,7 +89,7 @@ describe.skipIf(!isolated)('Reports library in the isolated native desktop', () 
       'publish-tool', 'publish-exact-readback', 'unknown-citation-isolation',
       'SSE-arrival', 'deep-link', 'metadata', 'Mermaid-render',
       'copy-exact-Markdown', 'immutable-citation', 'history-navigation',
-      'agent-tools-filter-state-roundtrip', 'agent-tools-reader-close-reopen',
+      'terminal-desktop-report-handoff', 'agent-tools-filter-state-roundtrip', 'agent-tools-reader-close-reopen',
       'filter-negative-control', 'reader-width', 'human-owner-private-read',
       'retire-tool', 'SSE-retirement', 'retired-citation-readback',
     ]));

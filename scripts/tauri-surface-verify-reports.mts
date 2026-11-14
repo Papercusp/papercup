@@ -528,6 +528,33 @@ async function verifyReports(evidenceDir: string) {
     // presence + intent/SSE transport. Every Reports state field round-trips.
     poll(`!!sessionStorage.getItem('papercusp_ui_client_id')`);
     const clientId = JSON.parse(native('eval', `JSON.stringify(sessionStorage.getItem('papercusp_ui_client_id'))`));
+    // The terminal's open-link action uses this same public tool/intent seam.
+    // Exercise the actual native command and exact reader, not merely a queued
+    // request receipt or a DOM-only set_url navigation.
+    const desktopRoute = `/reports?sel=${original.report_id}`;
+    const desktopHandoff = runTool('ui:dispatch', { target: 'desktop', intent: 'native_window',
+      args: { action: 'open_route', route: desktopRoute }, timeout_ms: 30_000 });
+    assert.equal(desktopHandoff.status, 'done', 'Native desktop did not acknowledge the terminal handoff');
+    assert.equal(desktopHandoff.result?.protocol, 'desktop-route-v1');
+    assert.equal(desktopHandoff.result?.requested, true);
+    poll(`location.pathname === '/reports'
+      && new URL(location.href).searchParams.get('sel') === ${JSON.stringify(original.report_id)}
+      && new URL(location.href).searchParams.get('ws') === ${JSON.stringify(workspace)}
+      && document.querySelector('.reports-reader h2')?.textContent === ${JSON.stringify(title)}
+      && document.querySelector('.reports-body')?.textContent.includes('RIGHTMOST EVIDENCE')`);
+    const desktopReader = JSON.parse(native('eval', `JSON.stringify({
+      pathname: location.pathname,
+      reportId: new URL(location.href).searchParams.get('sel'),
+      workspace: new URL(location.href).searchParams.get('ws'),
+      title: document.querySelector('.reports-reader h2')?.textContent,
+      evidenceVisible: document.querySelector('.reports-body')?.textContent.includes('RIGHTMOST EVIDENCE')
+    })`));
+    assert.deepEqual(desktopReader, { pathname: '/reports', reportId: original.report_id,
+      workspace, title, evidenceVisible: true });
+    save('terminal-desktop-report-handoff.json', { route: desktopRoute, desktopHandoff,
+      reportId: original.report_id, workspace, reader: desktopReader });
+    native('screenshot', '--selector', 'html', '--title', '^Papercusp$',
+      '--output', join(evidenceDir, 'terminal-desktop-report-handoff.png'));
     const drivenParams = Object.fromEntries(filters);
     drivenParams.pot = original.origin.harness_slug ?? 'reports-native-no-such-pot';
     const dispatch = runTool('ui:dispatch', { client_id: clientId, intent: 'set_url',
@@ -630,7 +657,7 @@ async function verifyReports(evidenceDir: string) {
         'SSE-arrival', 'deep-link', 'metadata', 'Mermaid-render', 'reader-full-width-normal', 'reader-full-width-fullscreen',
         'wide-table-last-column-normal', 'wide-table-last-column-fullscreen', 'fullscreen-preserves-table', 'copy-exact-Markdown',
         'lineage-collapse', 'immutable-citation', 'previous-version', 'history-URL', 'history-navigation',
-        'filter-restoration', 'agent-tools-filter-state-roundtrip', 'agent-tools-reader-close-reopen',
+        'filter-restoration', 'terminal-desktop-report-handoff', 'agent-tools-filter-state-roundtrip', 'agent-tools-reader-close-reopen',
         'filter-negative-control', 'clear-filters-preserves-citation', 'reader-width', 'human-owner-private-read',
         'retire-tool', 'SSE-retirement', 'retired-citation-readback'] });
   } catch (error) {
