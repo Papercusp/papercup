@@ -1,0 +1,225 @@
+diff --git a/node_modules/vite/dist/node/chunks/config.js b/node_modules/vite/dist/node/chunks/config.js
+index 9a45043275249a25101fd7991ffcfc316478840e..2f247e03492d792de9ff3b16b77501191a253e6a 100644
+--- a/node_modules/vite/dist/node/chunks/config.js
++++ b/node_modules/vite/dist/node/chunks/config.js
+@@ -1,5 +1,6 @@
+ import { a as __toCommonJS, i as __require, n as __esmMin, o as __toDynamicImportESM, r as __export, s as __toESM, t as __commonJSMin } from "./chunk.js";
+ import { A as OPTIMIZABLE_ENTRY_RE, C as ERR_FILE_NOT_FOUND_IN_OPTIMIZED_DEP_DIR, D as JS_TYPES_RE, E as FS_PREFIX, F as defaultAllowedOrigins, I as loopbackHosts, L as wildcardHosts, M as SPECIAL_QUERY_RE, N as VERSION, O as KNOWN_ASSET_TYPES, P as VITE_PACKAGE_DIR, R as require_picocolors, S as ENV_PUBLIC_PATH, T as ESBUILD_BASELINE_WIDELY_AVAILABLE_TARGET, _ as DEFAULT_SERVER_CONDITIONS, a as CLIENT_ENTRY, b as DEV_PROD_CONDITION, c as DEFAULT_ASSETS_INLINE_LIMIT, d as DEFAULT_CLIENT_MAIN_FIELDS, f as DEFAULT_CONFIG_FILES, g as DEFAULT_PREVIEW_PORT, h as DEFAULT_EXTERNAL_CONDITIONS, i as CLIENT_DIR, j as ROLLUP_HOOKS, k as METADATA_FILENAME, l as DEFAULT_ASSETS_RE, m as DEFAULT_EXTENSIONS, n as createLogger, o as CLIENT_PUBLIC_PATH, p as DEFAULT_DEV_PORT, r as printServerUrls, s as CSS_LANGS_RE, t as LogLevels, u as DEFAULT_CLIENT_CONDITIONS, v as DEFAULT_SERVER_MAIN_FIELDS, w as ERR_OPTIMIZE_DEPS_PROCESSING_ERROR, x as ENV_ENTRY, y as DEP_VERSION_RE } from "./logger.js";
++import { AsyncLocalStorage as PapercuspAsyncLocalStorage } from "node:async_hooks";
+ import { builtinModules, createRequire } from "node:module";
+ import { parseAst, parseAstAsync } from "rollup/parseAst";
+ import * as fs$1 from "node:fs";
+@@ -5471,7 +5472,10 @@
+ 	if (options$1?.ignoreNodeModules && isInNodeModules$1(dir)) return null;
+ 	const cache$1 = options$1?.cache;
+ 	const configName = options$1?.configName ?? "tsconfig.json";
+-	if (cache$1?.hasConfigPath(dir, configName)) return cache$1.getConfigPath(dir, configName);
++	if (cache$1?.hasConfigPath(dir, configName)) {
++		papercuspRecordTsconfigSearch("cacheHits", { kind: "find", path: dir });
++		return cache$1.getConfigPath(dir, configName);
++	}
+ 	const { promise, resolve: resolve$4, reject } = makePromise();
+ 	if (options$1?.root && !path.isAbsolute(options$1.root)) options$1.root = path.resolve(options$1.root);
+ 	findUp(dir, {
+@@ -5490,6 +5494,7 @@
+ function findUp(dir, { resolve: resolve$4, reject, promise }, options$1) {
+ 	const { cache: cache$1, root, configName } = options$1 ?? {};
+ 	if (cache$1) if (cache$1.hasConfigPath(dir, configName)) {
++		papercuspRecordTsconfigSearch("cacheHits", { kind: "find", path: dir });
+ 		let cached;
+ 		try {
+ 			cached = cache$1.getConfigPath(dir, configName);
+@@ -5502,6 +5507,7 @@
+ 	} else cache$1.setConfigPath(dir, promise, configName);
+ 	const tsconfig = path.join(dir, options$1?.configName ?? "tsconfig.json");
+ 	fs.stat(tsconfig, (err$2, stats) => {
++		papercuspTsconfigStat(tsconfig, err$2, stats);
+ 		if (stats && (stats.isFile() || stats.isFIFO())) resolve$4(tsconfig);
+ 		else if (err$2?.code !== "ENOENT") reject(err$2);
+ 		else {
+@@ -5661,7 +5667,10 @@
+ async function parse$13(filename, options$1) {
+ 	/** @type {import('./cache.js').TSConfckCache} */
+ 	const cache$1 = options$1?.cache;
+-	if (cache$1?.hasParseResult(filename)) return getParsedDeep(filename, cache$1, options$1);
++	if (cache$1?.hasParseResult(filename)) {
++		papercuspRecordTsconfigSearch("cacheHits", { kind: "parse", path: path.resolve(filename) });
++		return getParsedDeep(filename, cache$1, options$1);
++	}
+ 	const { resolve: resolve$4, reject, promise } = makePromise();
+ 	cache$1?.setParseResult(filename, promise, true);
+ 	try {
+@@ -5691,6 +5700,7 @@
+ * @param {import('./public.d.ts').TSConfckParseOptions} options - options
+ */
+ async function getParsedDeep(filename, cache$1, options$1) {
++	papercuspRecordTsconfigSearch("cacheHits", { kind: "parse", path: path.resolve(filename) });
+ 	const result = await cache$1.getParseResult(filename);
+ 	if (result.tsconfig.extends && !result.extended || result.tsconfig.references && !result.referenced) {
+ 		const promise = Promise.all([parseExtends(result, cache$1), parseReferences(result, options$1)]).then(() => result);
+@@ -5706,15 +5716,40 @@
+ * @param {boolean} [skipCache] - skip cache
+ * @returns {Promise<import('./public.d.ts').TSConfckParseResult>}
+ */
++// PAPERCUSP D068: retain only digests of the exact strings consumed by tsconfck.
++const papercuspTsconfigSources = new WeakMap();
++// Call-local observations; opaque resolver internals and cache origins stay unknown.
++const papercuspTsconfigSearch = new PapercuspAsyncLocalStorage();
++function papercuspRecordTsconfigSearch(kind, observation) {
++	try {
++		const search = papercuspTsconfigSearch.getStore();
++		if (!search) return;
++		if (search[kind].length >= 1024) { search.truncated = true; return; }
++		search[kind].push(Object.freeze(observation));
++	} catch { /* Diagnostics cannot alter parser behavior. */ }
++}
++function papercuspTsconfigStat(file, error, stats) {
++	papercuspRecordTsconfigSearch("lookups", { path: file,
++		outcome: stats?.isFile() ? "file" : stats?.isFIFO() ? "fifo" : error?.code === "ENOENT" ? "missing" : error ? "error" : "other",
++		errorCode: error?.code ?? null });
++}
+ async function parseFile$1(tsconfigFile, cache$1, skipCache) {
+-	if (!skipCache && cache$1?.hasParseResult(tsconfigFile) && !cache$1.getParseResult(tsconfigFile)._isRootFile_) return cache$1.getParseResult(tsconfigFile);
+-	const promise = promises.readFile(tsconfigFile, "utf-8").then(toJson).then((json) => {
+-		const parsed = JSON.parse(json);
++	if (!skipCache && cache$1?.hasParseResult(tsconfigFile) && !cache$1.getParseResult(tsconfigFile)._isRootFile_) {
++		papercuspRecordTsconfigSearch("cacheHits", { kind: "file", path: tsconfigFile });
++		return cache$1.getParseResult(tsconfigFile);
++	}
++	const promise = promises.readFile(tsconfigFile, "utf-8").then((source) => {
++		const parsed = JSON.parse(toJson(source));
+ 		applyDefaults(parsed, tsconfigFile);
+-		return {
++		const result = {
+ 			tsconfigFile,
+ 			tsconfig: normalizeTSConfig(parsed, path.dirname(tsconfigFile))
+ 		};
++		papercuspTsconfigSources.set(result, Object.freeze({
++			path: tsconfigFile, sha256: crypto.createHash("sha256").update(source).digest("hex"),
++			byteLength: Buffer.byteLength(source)
++		}));
++		return result;
+ 	}).catch((e$1) => {
+ 		throw new TSConfckParseError(`parsing ${tsconfigFile} failed: ${e$1}`, "PARSE_FILE", tsconfigFile, e$1);
+ 	});
+@@ -5797,13 +5832,19 @@
+ 	const req$4 = createRequire$1(from);
+ 	let error$1;
+ 	try {
+-		return req$4.resolve(extended);
++		const resolved = req$4.resolve(extended);
++		papercuspRecordTsconfigSearch("extends", { from, request: extended, resolved, errorCode: null });
++		return resolved;
+ 	} catch (e$1) {
++		papercuspRecordTsconfigSearch("extends", { from, request: extended, resolved: null, errorCode: e$1.code ?? null });
+ 		error$1 = e$1;
+ 	}
+ 	if (extended[0] !== "." && !path.isAbsolute(extended)) try {
+-		return req$4.resolve(`${extended}/tsconfig.json`);
++		const resolved = req$4.resolve(`${extended}/tsconfig.json`);
++		papercuspRecordTsconfigSearch("extends", { from, request: `${extended}/tsconfig.json`, resolved, errorCode: null });
++		return resolved;
+ 	} catch (e$1) {
++		papercuspRecordTsconfigSearch("extends", { from, request: `${extended}/tsconfig.json`, resolved: null, errorCode: e$1.code ?? null });
+ 		error$1 = e$1;
+ 	}
+ 	throw new TSConfckParseError(`failed to resolve "extends":"${extended}" in ${from}`, "EXTENDS_RESOLVE", from, error$1);
+@@ -6058,7 +6099,8 @@
+ 	"dynamic-import": true,
+ 	"import-meta": true
+ };
+-async function transformWithEsbuild(code, filename, options$1, inMap, config$2, watcher) {
++async function transformWithEsbuild(code, filename, options$1, inMap, config$2, watcher, papercuspEnvironment) {
++	let papercuspTsconfig = { status: typeof options$1?.tsconfigRaw === "string" ? "inline" : "not-used", inputs: [] };
+ 	let loader$1 = options$1?.loader;
+ 	if (!loader$1) {
+ 		const ext = path.extname(validExtensionRE.test(filename) ? filename : cleanUrl(filename)).slice(1);
+@@ -6083,7 +6125,8 @@
+ 		];
+ 		const compilerOptionsForFile = {};
+ 		if (loader$1 === "ts" || loader$1 === "tsx") try {
+-			const { tsconfig: loadedTsconfig, tsconfigFile } = await loadTsconfigJsonForFile(filename, config$2);
++			const { tsconfig: loadedTsconfig, tsconfigFile, papercuspInputs } = await loadTsconfigJsonForFile(filename, config$2);
++			papercuspTsconfig = papercuspInputs;
+ 			if (watcher && tsconfigFile && config$2) ensureWatchedFile(watcher, tsconfigFile, config$2.root);
+ 			const loadedCompilerOptions = loadedTsconfig.compilerOptions ?? {};
+ 			for (const field of meaningfulFields) if (field in loadedCompilerOptions) compilerOptionsForFile[field] = loadedCompilerOptions[field];
+@@ -6119,8 +6162,29 @@
+ 	delete resolvedOptions.include;
+ 	delete resolvedOptions.exclude;
+ 	delete resolvedOptions.jsxInject;
++	let papercuspSettle;
+ 	try {
+-		const result = await transform(code, resolvedOptions);
++		// PAPERCUSP D068: opt-in observation at the actual applied call boundary.
++		// Observer failures cannot change compilation; an absent receipt stays unknown.
++		try {
++			const observe = config$2?.[Symbol.for("@papercusp/test-config.applied-compiler-observer-v1")];
++			if (typeof observe === "function") papercuspSettle = observe({
++				version: 1, environment: papercuspEnvironment, moduleId: filename, code,
++				options: resolvedOptions, tsconfig: papercuspTsconfig,
++				implementation: { viteVersion: VERSION, esbuildVersion: esbuild.version, moduleUrl: import.meta.url, esbuild,
++					functions: { transformWithEsbuild, loadTsconfigJsonForFile, parse: parse$13,
++						parseFile: parseFile$1, parseExtends, resolveSolutionTSConfig, transform } }
++			});
++		} catch { /* Incomplete diagnostics never grant reuse. */ }
++		let result;
++		try {
++			const invoke = () => transform(code, resolvedOptions);
++			result = await (typeof papercuspSettle?.run === "function" ? papercuspSettle.run(invoke) : invoke());
++		} catch (error) {
++			try { if (typeof papercuspSettle === "function") papercuspSettle({ status: "failure", error }); } catch {}
++			throw error;
++		}
++		try { if (typeof papercuspSettle === "function") papercuspSettle({ status: "success", result }); } catch {}
+ 		let map$1;
+ 		if (inMap && resolvedOptions.sourcemap) {
+ 			const nextMap = JSON.parse(result.map);
+@@ -6169,7 +6233,7 @@
+ 		},
+ 		async transform(code, id) {
+ 			if (filter$1(id) || filter$1(cleanUrl(id))) {
+-				const result = await transformWithEsbuild(code, id, transformOptions, void 0, config$2, server?.watcher);
++				const result = await transformWithEsbuild(code, id, transformOptions, void 0, config$2, server?.watcher, this.environment);
+ 				if (result.warnings.length) result.warnings.forEach((m) => {
+ 					this.warn(prettifyMessage(m, code));
+ 				});
+@@ -6299,13 +6363,32 @@
+ 	return cache$1;
+ }
+ async function loadTsconfigJsonForFile(filename, config$2) {
+-	const { tsconfig, tsconfigFile } = await parse$13(filename, {
+-		cache: getTSConfckCache(config$2),
+-		ignoreNodeModules: true
+-	});
++	const search = { schemaVersion: "tsconfig-resolution-search-v1", status: "partial",
++		lookups: [], extends: [], cacheHits: [], truncated: false };
++	const parse = () => parse$13(filename, { cache: getTSConfckCache(config$2), ignoreNodeModules: true });
++	const observing = typeof config$2?.[Symbol.for("@papercusp/test-config.applied-compiler-observer-v1")] === "function";
++	const parsed = observing ? await papercuspTsconfigSearch.run(search, parse) : await parse();
++	// Follow the exact cached parser objects, never re-read mutable files here.
++	const pending = [parsed], seen = new Set(), inputs = [];
++	let status = parsed.tsconfigFile ? "captured" : "absent";
++	while (pending.length) {
++		const entry = pending.pop();
++		if (seen.has(entry)) continue;
++		if (seen.size >= 1024) { status = "unavailable"; break; }
++		seen.add(entry);
++		const source = papercuspTsconfigSources.get(entry);
++		if (source) inputs.push(source);
++		else if (entry.tsconfigFile) status = "unavailable";
++		// extended[0] is tsconfck's config clone; the original is entry itself.
++		pending.push(...(entry.extended?.slice(1) ?? []), ...(entry.referenced ?? []));
++		if (entry.solution) pending.push(entry.solution);
++	}
+ 	return {
+-		tsconfigFile,
+-		tsconfig
++		tsconfigFile: parsed.tsconfigFile,
++		tsconfig: parsed.tsconfig,
++		papercuspInputs: { status, inputs: Object.freeze(inputs), ...(observing ? { search: Object.freeze({ ...search,
++			lookups: Object.freeze([...search.lookups]), extends: Object.freeze([...search.extends]),
++			cacheHits: Object.freeze([...search.cacheHits]) }) } : {}) }
+ 	};
+ }
+ async function reloadOnTsconfigChange(server, changedFile) {
