@@ -167,6 +167,22 @@ export interface OwnHeadPublishTickInput {
    * so a worktree too large to unshallow within budget costs later legs nothing.
    */
   unshallowDeferredUntil?: number | null;
+  /**
+   * WI-6554700010048546: budget for the ref-less worktree → store object
+   * transfer (`git fetch --quiet <worktree> <branchRef>` into the hive store).
+   * Omitted ⇒ NETWORK_RUN_GIT_TIMEOUT_MS. It used to run on runGit's 60s
+   * local-op default, and that is not a local-op-speed call. The store's
+   * namespace head advances only when this transfer succeeds, so the pending
+   * range is everything committed since the last successful publish. Measured
+   * 2026-11-14: 73 commits / 9,896 objects packed to 355MB, and
+   * `pack-objects` alone took 55.9s at loadavg 167, before sidecar
+   * dispatch/admission (10-55s per call at that load). Every fire was killed
+   * at 60s and retried with a larger range, so origin/staging stayed frozen
+   * for 5 days. The git-sync caller MUST pass
+   * `boundedUnshallowTimeoutMs(idleDeadline)`, for the same post-legs
+   * liveness-guard reason as `unshallowTimeoutMs`.
+   */
+  objectTransferTimeoutMs?: number;
   /** Clock seam for tests. */
   now?: () => number;
 }
@@ -460,7 +476,9 @@ export async function runOwnHeadPublishTick(
   const beforeTransfer = await listTempPackFiles(runGit, repoPath);
   let fetch: Awaited<ReturnType<RunGit>> | undefined;
   try {
-    fetch = await runGit(['fetch', '--quiet', input.worktreePath, branchRef], repoPath);
+    fetch = await runGit(['fetch', '--quiet', input.worktreePath, branchRef], repoPath, {
+      timeoutMs: input.objectTransferTimeoutMs ?? NETWORK_RUN_GIT_TIMEOUT_MS,
+    });
   } finally {
     if (fetch?.code !== 0) {
       await pruneFailedFetchTempPacks(runGit, repoPath, beforeTransfer, (message) => errors.push(message));

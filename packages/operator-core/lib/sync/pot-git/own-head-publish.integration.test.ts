@@ -18,6 +18,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { deflateSync } from 'node:zlib';
 import {
+  NETWORK_RUN_GIT_TIMEOUT_MS,
   defaultRunGit,
   ensurePotGitRepo,
   hiveGitRepoPath,
@@ -378,6 +379,45 @@ describe('own-head publish (G-2a: worktree head → own namespace, guarded)', ()
       expect(out.changed).toBe(false);
       expect(out.unshallow?.state).toBe('failed');
       expect(out.unshallow?.error).toContain('timed out');
+    });
+
+    // WI-6554700010048546: the worktree → store object transfer ran on runGit's 60s
+    // local-op default. A 5-day backlog (355MB pack, 55.9s pack-objects alone at
+    // loadavg 167) was killed every fire, so origin/staging stayed frozen.
+    it('passes the caller-bounded object-transfer budget to the worktree → store fetch', async () => {
+      const local = await mkdtemp(join(root, 'bounded-transfer-'));
+      await git(['init', '-q', '-b', BRANCH, local], root);
+      await commitFile(local, 'head.txt', 'head', 'head');
+      const seenTimeouts: Array<number | undefined> = [];
+      const out = await runOwnHeadPublishTick({
+        potHomeSlug: HIVE, repoKey: 'bounded-transfer', worktreePath: local,
+        branch: BRANCH, devicePubkeyBase64: devicePubkey(),
+        objectTransferTimeoutMs: 234_000,
+        runGit: async (args, cwd, options) => {
+          if (args[0] === 'fetch' && args.includes(local)) seenTimeouts.push(options?.timeoutMs);
+          return defaultRunGit(args, cwd, options);
+        },
+      });
+      expect(seenTimeouts).toEqual([234_000]);
+      expect(out.errors).toEqual([]);
+      expect(out.changed).toBe(true);
+    });
+
+    it('an omitted object-transfer budget is the network timeout, never the 60s local-op default', async () => {
+      const local = await mkdtemp(join(root, 'default-transfer-'));
+      await git(['init', '-q', '-b', BRANCH, local], root);
+      await commitFile(local, 'head.txt', 'head', 'head');
+      const seenTimeouts: Array<number | undefined> = [];
+      const out = await runOwnHeadPublishTick({
+        potHomeSlug: HIVE, repoKey: 'default-transfer', worktreePath: local,
+        branch: BRANCH, devicePubkeyBase64: devicePubkey(),
+        runGit: async (args, cwd, options) => {
+          if (args[0] === 'fetch' && args.includes(local)) seenTimeouts.push(options?.timeoutMs);
+          return defaultRunGit(args, cwd, options);
+        },
+      });
+      expect(seenTimeouts).toEqual([NETWORK_RUN_GIT_TIMEOUT_MS]);
+      expect(out.changed).toBe(true);
     });
 
     it('a deferred unshallow issues NO fetch and returns at once, so later legs keep their budget', async () => {
