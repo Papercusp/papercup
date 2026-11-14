@@ -77,6 +77,7 @@ function fixture(helper: 'committed' | 'untracked'): Fixture {
     '#!/usr/bin/env bash',
     'printf "helper %s\\n" "$*" >> "$LOG"',
     'if [[ "$2" == define ]]; then printf "%s" "--define:__PAPERCUSP_TESTING_CORE_WITNESS__=\\"witnessed\\""; fi',
+    'if [[ "$2" == verify && -n "${HELPER_VERIFY_EXIT:-}" ]]; then exit "$HELPER_VERIFY_EXIT"; fi',
     'exit "${HELPER_EXIT:-0}"',
     '',
   ].join('\n'));
@@ -178,10 +179,44 @@ describe('WI-6554700010048115 — host testing-core step without a committed wit
     expect(r.vars.VERIFY_RC).toBe('0');
   });
 
-  it('a committed helper that refuses still fails prepare (no silent fallback to unwitnessed)', () => {
+  // EI-28752668992567658: a live shared tree cannot hold the witness interval across a
+  // host build, so a refusal must cost only the testing core (which then fails closed),
+  // never the whole host rebuild. The fallback is LOUD, never silent.
+  it('a committed helper that refuses degrades LOUDLY to an unwitnessed worker instead of failing the host', () => {
     const fx = fixture('committed');
     const r = run(fx, { HELPER_EXIT: '9' });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.vars.PREPARE_RC).toBe('0');
+    expect(r.stderr).toContain('WARN(EI-28752668992567658): the producing witness refused the worker build');
+    expect(r.vars.DEFINE).toBe('--define:__PAPERCUSP_TESTING_CORE_WITNESS__=undefined');
+    expect(r.vars.BINDING).toBe('unwitnessed:custody-refused');
+    const esbuild = r.calls.filter(c => c.startsWith('esbuild '));
+    expect(esbuild).toHaveLength(2);
+    expect(esbuild[1]).toContain('esbuild receipt= args=');
+    expect(r.vars.VERIFY_RC).toBe('0');
+    expect(r.stderr).toContain('WARN(EI-28752668992567658): testing-core witness verification skipped');
+  });
+
+  it('still fails prepare when the witness refuses AND the unwitnessed worker compile fails', () => {
+    const fx = fixture('committed');
+    const r = run(fx, { HELPER_EXIT: '9', ESBUILD_EXIT: '3' });
     expect(r.vars.PREPARE_RC).toBe('1');
-    expect(r.stderr).not.toContain(WARN_TAG);
+  });
+
+  it('a witness VERIFY refusal after a witnessed build degrades loudly instead of failing the host', () => {
+    const fx = fixture('committed');
+    const r = run(fx, { HELPER_VERIFY_EXIT: '9' });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.vars.PREPARE_RC).toBe('0');
+    expect(r.vars.VERIFY_RC).toBe('0');
+    expect(r.stderr).toContain(
+      'WARN(EI-28752668992567658): the producing testing-core interval changed after the witnessed worker build',
+    );
+    const esbuild = r.calls.filter(c => c.startsWith('esbuild '));
+    expect(esbuild).toHaveLength(2);
+    expect(esbuild[0]).toContain(`esbuild receipt=${join(fx.out, 'testing-core.worker.witness.json')} args=`);
+    // The replacement worker is built WITHOUT a producing receipt (unwitnessed).
+    expect(esbuild[1]).toContain('esbuild receipt= args=');
+    expect(r.calls.filter(c => c.startsWith('helper ')).map(c => c.split(' ')[2])).toEqual(['define', 'verify']);
   });
 });
