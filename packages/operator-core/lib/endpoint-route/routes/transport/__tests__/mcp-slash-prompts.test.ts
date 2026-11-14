@@ -86,6 +86,15 @@ function registerFixtureCatalog(): void {
 }
 
 describe('dynamicSlashListings — parity with tools/list (P-004)', () => {
+  it('uses the installed base role for membership while preserving profile and empty-role denials', () => {
+    const tool = makeTool('worker:read', { agentRoles: ['worker'], profile: 'engineer' });
+    expect(slashToolVisibleTo(tool, 'app-analyst', 'engineer')).toBe(false);
+    expect(slashToolVisibleTo(tool, 'app-analyst', 'engineer', 'worker')).toBe(true);
+    expect(slashToolVisibleTo(tool, 'app-analyst', 'power', 'worker')).toBe(false);
+    expect(slashToolVisibleTo(tool, 'app-analyst', 'engineer', null)).toBe(false);
+    expect(slashToolVisibleTo({ ...tool, agentRoles: [] }, 'app-analyst', 'engineer', 'worker')).toBe(false);
+  });
+
   it('projects every visible tool except expose.slash:false, same walk as tools/list', () => {
     // NB: importing @papercusp/agent-mcp registers real tools as a module
     // side-effect, so the registry is never empty here — assert the parity

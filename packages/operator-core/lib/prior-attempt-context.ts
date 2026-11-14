@@ -1850,7 +1850,10 @@ export async function resolvePriorAttemptRefs(
         // Rebuilding the plan/spec/sibling census first can exhaust the read
         // budget and make an immutable approval source permanently unreadable.
         const commentPrefix = `${workItemId}#comment:`;
-        if (deps.threadPost && wanted.every((ref) => {
+        // Plan/goal comment refs share this spelling, but their synthetic
+        // anchor is not a work item. Their admitted threads are resolved by
+        // the scoped collector below, never the item-only fast path.
+        if ((!opts.target || opts.target.kind === 'work_item') && deps.threadPost && wanted.every((ref) => {
           const suffix = ref.startsWith(commentPrefix) ? ref.slice(commentPrefix.length) : '';
           return /^[1-9]\d*$/.test(suffix) && Number.isSafeInteger(Number(suffix));
         })) {

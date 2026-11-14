@@ -3010,11 +3010,13 @@ export async function searchWorkItemDuplicateCandidates(
     WITH seed AS MATERIALIZED (
       SELECT to_tsquery('english', ${seedQuery}) AS query
     ),
-    -- EI-28715095781460073: each seed term's lexemes, computed once. A term matches a row
-    -- iff ALL its lexemes are in the row's tsvector (plainto_tsquery's AND semantics), so
-    -- the per-row count detoasts _search ONCE instead of once per term (O(rows x terms)).
+    -- EI-28715095781460073: each seed term's tsquery, computed once. A term matches a row
+    -- iff ALL its lexemes are in the row's tsvector (plainto_tsquery's AND semantics). The
+    -- per-row LATERAL below detoasts _search ONCE (the no-op concat + OFFSET 0 materialises
+    -- it) and then runs one cheap @@ per term. The previous tsvector_to_array form allocated
+    -- a text[] per row and measured 2.7x slower on a 124-term input (3.2-3.5s vs 1.2s).
     seed_terms AS MATERIALIZED (
-      SELECT ARRAY(SELECT lexeme FROM unnest(to_tsvector('english', seed_term.token))) AS lexemes
+      SELECT plainto_tsquery('english', seed_term.token) AS q
         FROM unnest(${seedTokens}::text[]) AS seed_term(token)
     ),
     candidates AS MATERIALIZED (
@@ -3024,11 +3026,11 @@ export async function searchWorkItemDuplicateCandidates(
                   THEN NULL ELSE wi.harness_slug END AS harness
         FROM harness_shared.work_items wi
         CROSS JOIN seed
-        CROSS JOIN LATERAL (SELECT tsvector_to_array(wi._search) AS lexemes OFFSET 0) row_terms
+        CROSS JOIN LATERAL (SELECT wi._search || ''::tsvector AS v OFFSET 0) row_vec
         CROSS JOIN LATERAL (
           SELECT count(*)::integer AS matched
             FROM seed_terms
-           WHERE seed_terms.lexemes <@ row_terms.lexemes
+           WHERE row_vec.v @@ seed_terms.q
         ) seed_matches
        WHERE wi.workspace_id = ${issueWorkspace}
          AND wi.item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
@@ -3043,11 +3045,11 @@ export async function searchWorkItemDuplicateCandidates(
         -- work_items relation for feature-family rows as well.
         FROM harness_shared.work_items w
         CROSS JOIN seed
-        CROSS JOIN LATERAL (SELECT tsvector_to_array(w._search) AS lexemes OFFSET 0) row_terms
+        CROSS JOIN LATERAL (SELECT w._search || ''::tsvector AS v OFFSET 0) row_vec
         CROSS JOIN LATERAL (
           SELECT count(*)::integer AS matched
             FROM seed_terms
-           WHERE seed_terms.lexemes <@ row_terms.lexemes
+           WHERE row_vec.v @@ seed_terms.q
         ) seed_matches
        WHERE w.workspace_id = ${featureWorkspace}
          AND ${featureFamilyKindClause(sql, featureWorkspace)}

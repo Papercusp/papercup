@@ -77,9 +77,11 @@ export function slashToolVisibleTo(
   tool: ProjectedTool,
   role?: AgentRole,
   profile?: 'engineer' | 'power' | 'generic',
+  roleForAllowlist?: string | null,
 ): boolean {
   if (!tool.expose.mcp || resolveSlashExposure(tool) === null) return false;
-  if (role && tool.agentRoles && !tool.agentRoles.includes(role)) return false;
+  if (role && tool.agentRoles && !tool.agentRoles.includes(role) &&
+      !tool.agentRoles.some(allowed => allowed === roleForAllowlist)) return false;
   if (profile === 'power' && tool.profile === 'engineer') return false;
   return true;
 }

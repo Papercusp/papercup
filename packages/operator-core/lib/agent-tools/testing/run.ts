@@ -117,7 +117,7 @@ import {
   type SpawnRequest,
 } from '../../testing-run-store';
 import { deriveAffectedPlan } from './affected-plan';
-import { nativeConsultScenarioSchema } from './native-consult';
+import { invokeNativeConsultScenario, nativeConsultScenarioSchema } from './native-consult-contract';
 import { executeSecurityQualification, securityQualificationMetadata, securityQualificationSchema,
   securityQualificationSelectionError } from './run-security-qualification';
 import { resolveAgentWorkspaceRoot, resolveCapabilityIntegrationRoot } from '../capability/base-dir';
@@ -5094,8 +5094,7 @@ export default defineTool({
         workItemId: args.work_item_id, background: true, timeoutMs: DETACHED_RECOVERY_TIMEOUT_MS });
       if (refusal) return { data: refusal };
       try {
-        const { acceptNativeConsultScenario } = await import('./native-consult');
-        return { data: await acceptNativeConsultScenario({ scenario: args.nativeConsult, identity,
+        return { data: await invokeNativeConsultScenario({ scenario: args.nativeConsult, identity,
           workspaceId: ctx.workspaceId, harnessSlug, workItemId: args.work_item_id }) };
       } catch (error) {
         return { data: { ok: false, error: 'native_consult_acceptance_failed', message: String(error) } };

@@ -551,8 +551,33 @@ describe('test-time evidence continuity', () => {
     expect(retired.withdrawal.reason).toContain('without an attributed result');
   });
 
+  it.each([runId, detached])('recovers automatically abandoned mappings from a later scoped ledger result: %s', async recoveredRunId => {
+    const d = deps();
+    await prepareTestEvidence(request, runId, [binding.testPath], scope, d);
+    const initial = d.bind.mock.calls[0]![0];
+    const retired = { ...pendingEvidenceRow(2, {
+      ...initial.details, testExecution: { ...initial.details.testExecution, runId: recoveredRunId },
+    }), withdrawal: {
+      at: '2026-09-24T00:00:01.000Z', by: scope.actorId,
+      reason: `Detached test run ${recoveredRunId} has no live snapshot or scoped file ledger after the 60s pending grace; this attempt is abandoned and must be rerun.`,
+    } };
+    d.list.mockImplementation(async options => options.includeRetracted ? [retired] : []);
+    d.ledger.mockResolvedValue([{ id: 42, file_path: binding.testPath, status: 'pass',
+      finished_at: '2026-09-24T00:00:02Z', execution_details: { ...measured, runGroupId: recoveredRunId } }]);
+
+    const bundle = await recoverTestEvidence({ workItemId: 'WI-1', planSlug: 'p1',
+      originRunId: runId, runId: recoveredRunId, waitMs: 0 }, scope, d);
+
+    expect(bundle.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass', testRunId: 42 });
+    expect(d.bind.mock.calls.at(-1)![0]).toMatchObject({
+      sourceFingerprint: 'source-before', testFingerprint: 'test-before',
+      details: { testExecution: { runId: recoveredRunId, originRunId: runId } },
+    });
+  });
+
   it.each<{ reason?: string; phase?: string; testRunId?: number; reasonRunId?: string; reasonPath?: string }>([
     { reason: 'Reviewer withdrew invalid evidence deliberately.' },
+    { reason: 'Detached test run faf310d9-ea4e-498c-be6b-6773fe46a276 has no live snapshot or scoped file ledger after the 60s pending grace; this attempt is abandoned and must be rerun.' },
     { phase: 'settled' },
     { testRunId: 99 },
     { reasonRunId: 'faf310d9-ea4e-498c-be6b-6773fe46a276' },

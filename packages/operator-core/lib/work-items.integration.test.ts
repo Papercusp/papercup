@@ -4150,6 +4150,40 @@ describe('unified work_items surface (real PG)', () => {
     }
   });
 
+  it('fulltext duplicate prescreen counts each seed term once per row, stem collisions included (EI-28715095781460073)', async () => {
+    // 7 tokens, all indexable: seeds are the 6 longest (zorblax is omitted), minimumOverlap
+    // = ceil(0.59 * 7) = 5, so a row needs >= 4 seed matches. 'observation' and 'observed'
+    // are distinct query tokens that both stem to 'observ', so a row saying only 'observing'
+    // satisfies BOTH seed terms. The per-row count must keep that (plainto_tsquery semantics)
+    // while still rejecting a row with only 3 seed matches.
+    const query = 'zorblax quintessa observation observed fremulon kadabrix wizzlethorp';
+    const stemMatch = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'observing wizzlethorp quintessa',
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
+    const fourDistinct = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'observation kadabrix fremulon quintessa',
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
+    const nearMiss = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'wizzlethorp quintessa fremulon',
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
+
+    const result = await wi.searchWorkItemDuplicateCandidates(query);
+    expect(result.complete).toBe(true);
+    const ids = new Set(result.items.map((candidate) => candidate.id));
+    expect(ids.has(stemMatch.id)).toBe(true);
+    expect(ids.has(fourDistinct.id)).toBe(true);
+    expect(ids.has(nearMiss.id)).toBe(false);
+  });
+
   it('search excludes retired chunks by default but an explicit chunk read remains available', async () => {
     const parent = await wi.createWorkItem({
       kind: 'feature',

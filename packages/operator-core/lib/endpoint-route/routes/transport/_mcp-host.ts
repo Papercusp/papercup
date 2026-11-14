@@ -52,6 +52,7 @@ import {
   lookupByMcpName,
   resolveMcpName,
   listMcpProjections,
+  AGENT_ROLES,
   projectedToolRegistryRevision,
   applyToolManifest,
   papercuspGateBypass,
@@ -2474,6 +2475,7 @@ import {
   wrapOperatorKernelSpawn,
 } from '../../../projected-tool-deps';
 import { isPreferredDoor } from '../../../code-run-batch-nudge';
+import { resolveInstalledRoleForAllowlist } from '../../../blueprint-role-base';
 
 // EI-18803497769946984: names a tool that is holding the ambient workspace transaction
 // past ~45s, before Postgres's 60s idle timeout kills the backend and the caller gets a
@@ -2527,12 +2529,15 @@ async function dispatchWithSynthesizedTx<T>(
   baseCtx: UnifiedToolContext,
   run: (ctx: UnifiedToolContext) => Promise<T>,
 ): Promise<T> {
-  // Role denial is independent of the synthesized principal. Run the same
-  // allowlist condition as dispatch-stack before opening a workspace transaction
-  // so an out-of-role call cannot wait on DB acquisition before its known denial.
+  // Built-in roles cannot be installed aliases, so their known role denial can
+  // skip principal synthesis. Custom roles must retain their OWN synthesized
+  // principal even when a later installed-alias lookup admits the role. Resolving
+  // an alias twice here would race: a failed first lookup followed by a successful
+  // dispatcher lookup must never reach a handler without capability enforcement.
   if (
     tool.agentRoles &&
     baseCtx.role &&
+    AGENT_ROLES.some(role => role === baseCtx.role) &&
     !baseCtx.gateBypass?.role &&
     !tool.agentRoles.includes(baseCtx.role)
   ) {
@@ -3429,7 +3434,9 @@ async function resolveVisibleToolListings(extra: unknown, phases: PhaseTracker =
   // power); coerce so the narrow listMcpProjections param need not carry 'generic'.
   const profile = rawProfile === 'generic' ? 'engineer' : rawProfile;
   const bypass = urlFromExtra(extra)?.searchParams.get('manifestBypass') === '1';
-  let result = applyToolManifest(listMcpProjections(role, profile), { bypass });
+  const roleForAllowlist = spawnRes.kind === 'ok'
+    ? await resolveInstalledRoleForAllowlist(spawnRes.ctx) : null;
+  let result = applyToolManifest(listMcpProjections(role, profile, roleForAllowlist), { bypass });
   let requiredToolPrincipalAndAppFilter = (_name: string) => true;
   let requiredToolListings: Map<string, ReturnType<typeof listMcpProjections>[number]> | null = null;
   const requiredToolListing = (name: string): ReturnType<typeof listMcpProjections>[number] | undefined => {
@@ -3928,7 +3935,8 @@ async function getSlashPrompt(
     );
   }
   const tool = resolveSlashToolForPrompt(promptName);
-  if (!tool || !slashToolVisibleTo(tool, spawnRes.ctx.role, spawnRes.ctx.profile)) {
+  const roleForAllowlist = await resolveInstalledRoleForAllowlist(spawnRes.ctx);
+  if (!tool || !slashToolVisibleTo(tool, spawnRes.ctx.role, spawnRes.ctx.profile, roleForAllowlist)) {
     throw new Error(`unknown_prompt: no slash-exposed tool for "${promptName}" in this session`);
   }
   const rendered = renderSlashPromptForTool(tool, args);

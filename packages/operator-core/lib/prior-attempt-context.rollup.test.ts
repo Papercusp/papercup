@@ -1378,6 +1378,7 @@ describe('exact scoped history recovery', () => {
     })]);
     expect(resolved?.unresolved).toEqual([`${prefix}404`, `${prefix}405`]);
     expect(deps.item).not.toHaveBeenCalled();
+    expect(deps.thread).not.toHaveBeenCalled();
     expect(threadPost.mock.calls.map(([input]) => input.postId)).toEqual([1, 404, 405]);
     expect(threadPost.mock.calls.every(([input]) => Boolean(input.workspaceId))).toBe(true);
   });

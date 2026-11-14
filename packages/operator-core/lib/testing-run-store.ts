@@ -162,6 +162,7 @@ interface RunState {
   proc: ChildProcess | null;
   cwd: string;
   worktreeBefore: WorktreeGitSnapshot;
+  detachedReportArtifacts: PreparedDetachedReportArtifact[];
   /** Launch-time environment stays process-local so recovery can redact child output exactly. */
   childEnv: NodeJS.ProcessEnv;
   finalization: Promise<void> | null;
@@ -326,6 +327,15 @@ function requestedFilesFromTaskDetail(value: unknown): string[] | null {
   }
   if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return null;
   return requestedFilesFromValue((detail as { requestedFiles?: unknown }).requestedFiles);
+}
+
+function detachedReportArtifactsFromTaskDetail(value: unknown): unknown {
+  let detail = value;
+  if (typeof detail === 'string') {
+    try { detail = JSON.parse(detail); } catch { return undefined; }
+  }
+  if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return undefined;
+  return (detail as { detachedReportArtifacts?: unknown }).detachedReportArtifacts;
 }
 
 /** Older routers persisted the exact request only in argv, before task manifests.
@@ -774,6 +784,8 @@ async function readPersistedRunSnapshot(
   if (!snapshot) throw new TestingRunSnapshotUnavailableError();
   const task = row.task_state ? {
     state: row.task_state, exit_code: row.task_exit_code ?? null, cwd: row.task_cwd ?? null,
+    requested_files: requestedFilesFromTaskDetail(row.task_detail),
+    detached_report_artifacts: detachedReportArtifactsFromTaskDetail(row.task_detail),
   } : null;
   if (reportTaskRecovery) {
     const recovered = await reconcilePersistedReportArtifact(snapshot, row, sql, environment, recoveryScope?.retainedReports);
@@ -838,7 +850,7 @@ export interface DetachedRunLedgerRecovery {
 
 const MAX_DETACHED_RUN_LEDGER_FILES = 200;
 
-/** Reporter paths are relative to each checkout root; compare them in the task's request root. */
+/** Legacy reporter paths are relative to the task's single request root. */
 function ledgerFilePathsInTaskRoot(
   files: DetachedRunLedgerRecovery['files'],
   taskCwd?: string | null,
@@ -857,13 +869,107 @@ function ledgerFilePathsInTaskRoot(
   return paths as string[];
 }
 
+type RootBoundRequestedFile = { root: string; path: string };
+type RootBoundRequestedFiles =
+  | { status: 'absent' }
+  | { status: 'invalid' }
+  | { status: 'valid'; files: RootBoundRequestedFile[] };
+
+function rootBoundFileKey(file: RootBoundRequestedFile): string {
+  return JSON.stringify([pathResolve(file.root), file.path]);
+}
+
+function rootBoundRequestedFilesFromValue(value: unknown): RootBoundRequestedFiles {
+  let metadata = value;
+  if (metadata === undefined || metadata === null) return { status: 'absent' };
+  if (typeof metadata === 'string') {
+    try { metadata = JSON.parse(metadata); } catch { return { status: 'invalid' }; }
+  }
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return { status: 'invalid' };
+  const record = metadata as { schemaVersion?: unknown; artifacts?: unknown };
+  if (record.schemaVersion !== 1 || !Array.isArray(record.artifacts)) return { status: 'invalid' };
+  if (record.artifacts.length === 0) return { status: 'absent' };
+  const hasManifest = record.artifacts.some((artifact) => Boolean(artifact && typeof artifact === 'object'
+    && !Array.isArray(artifact) && Object.prototype.hasOwnProperty.call(artifact, 'requestedFiles')));
+  if (!hasManifest) return { status: 'absent' };
+
+  const files: RootBoundRequestedFile[] = [];
+  for (const artifact of record.artifacts) {
+    if (!artifact || typeof artifact !== 'object' || Array.isArray(artifact)) return { status: 'invalid' };
+    const entry = artifact as { root?: unknown; requestedFiles?: unknown };
+    const root = entry.root;
+    const requested = entry.requestedFiles;
+    if (typeof root !== 'string' || !isAbsolute(root) || !Array.isArray(requested)
+      || requested.length === 0
+      || !requested.every((file): file is string => typeof file === 'string' && isAbsolute(file))) {
+      return { status: 'invalid' };
+    }
+    const normalized = normalizedRequestedReportPaths(root, requested);
+    if (!normalized || normalized.length !== requested.length) return { status: 'invalid' };
+    files.push(...normalized.map((path) => ({ root: pathResolve(root), path })));
+  }
+  const keys = files.map(rootBoundFileKey);
+  return files.length > 0 && new Set(keys).size === files.length
+    ? { status: 'valid', files }
+    : { status: 'invalid' };
+}
+
+function ledgerFileIdentities(files: DetachedRunLedgerRecovery['files']): RootBoundRequestedFile[] | null {
+  const identities = files.map((file) => {
+    const executionRoot = file.executionDetails?.root;
+    if (typeof executionRoot !== 'string' || !isAbsolute(executionRoot)) return null;
+    const root = pathResolve(executionRoot);
+    const absoluteFile = pathResolve(root, file.filePath);
+    const relative = pathRelative(root, absoluteFile);
+    const normalized = relative.replaceAll(String.fromCharCode(92), posix.sep);
+    if (!normalized || normalized === '.' || normalized === '..' || normalized.startsWith('../')
+      || isAbsolute(normalized)) return null;
+    return { root, path: normalized };
+  });
+  if (identities.some((identity) => identity === null)) return null;
+  const present = identities as RootBoundRequestedFile[];
+  return new Set(present.map(rootBoundFileKey)).size === present.length ? present : null;
+}
+
+function hasExactRootBoundFileCoverage(
+  requestedFiles: RootBoundRequestedFile[],
+  files: DetachedRunLedgerRecovery['files'],
+): boolean {
+  const measured = ledgerFileIdentities(files);
+  if (!measured || measured.length !== requestedFiles.length) return false;
+  const requestedKeys = requestedFiles.map(rootBoundFileKey);
+  const measuredSet = new Set(measured.map(rootBoundFileKey));
+  return new Set(requestedKeys).size === requestedKeys.length
+    && requestedKeys.every((key) => measuredSet.has(key));
+}
+
+function requestedFilesForCoverage(
+  rootBoundFiles: RootBoundRequestedFiles,
+  legacyFiles: string[] | null,
+): string[] | null {
+  return rootBoundFiles.status === 'valid' ? rootBoundFiles.files.map((file) => file.path) : legacyFiles;
+}
+
 function hasExactPassedFileCoverage(
   requestedFiles: string[] | null,
   files: DetachedRunLedgerRecovery['files'],
   taskCwd?: string | null,
+  rootBoundFiles: RootBoundRequestedFiles = { status: 'absent' },
 ): boolean {
+  if (!requestedFiles || rootBoundFiles.status === 'invalid') return false;
+  if (rootBoundFiles.status === 'valid') {
+    if (!hasExactRootBoundFileCoverage(rootBoundFiles.files, files)) return false;
+    const identities = ledgerFileIdentities(files)!;
+    const outcomes = new Map(files.map((file, index) => [rootBoundFileKey(identities[index]!), file]));
+    return rootBoundFiles.files.every((identity) => {
+      const file = outcomes.get(rootBoundFileKey(identity));
+      const details = file?.executionDetails;
+      return file?.status === 'pass' && details !== null && details !== undefined
+        && details.passed > 0 && details.failed === 0 && !details.collectionFailed;
+    });
+  }
   const paths = ledgerFilePathsInTaskRoot(files, taskCwd);
-  if (!requestedFiles || !hasExactFileCoverage(requestedFiles, files, taskCwd) || !paths) return false;
+  if (!hasExactFileCoverage(requestedFiles, files, taskCwd) || !paths) return false;
   const outcomes = new Map(files.map((file, index) => [paths[index]!, file]));
   return requestedFiles.every((filePath) => {
     const file = outcomes.get(filePath);
@@ -879,7 +985,10 @@ function hasExactFileCoverage(
   requestedFiles: string[] | null,
   files: DetachedRunLedgerRecovery['files'],
   taskCwd?: string | null,
+  rootBoundFiles: RootBoundRequestedFiles = { status: 'absent' },
 ): requestedFiles is string[] {
+  if (!requestedFiles || rootBoundFiles.status === 'invalid') return false;
+  if (rootBoundFiles.status === 'valid') return hasExactRootBoundFileCoverage(rootBoundFiles.files, files);
   if (!requestedFiles || requestedFiles.length === 0
     || new Set(requestedFiles).size !== requestedFiles.length
     || files.length !== requestedFiles.length) return false;
@@ -893,11 +1002,13 @@ function provisionalVerdictFromLedger(
   requestedFiles: string[],
   recovery: DetachedRunLedgerRecovery,
   taskCwd?: string | null,
+  rootBoundFiles: RootBoundRequestedFiles = { status: 'absent' },
 ): ProvisionalTestVerdict | null {
   if (recovery.status !== 'pass' && recovery.status !== 'fail') return null;
-  if (!hasExactFileCoverage(requestedFiles, recovery.files, taskCwd)) return null;
+  if (!hasExactFileCoverage(requestedFiles, recovery.files, taskCwd, rootBoundFiles)) return null;
   if (recovery.files.some((file) => file.executionDetails === null)) return null;
-  if (recovery.status === 'pass' && !hasExactPassedFileCoverage(requestedFiles, recovery.files, taskCwd)) return null;
+  if (recovery.status === 'pass'
+    && !hasExactPassedFileCoverage(requestedFiles, recovery.files, taskCwd, rootBoundFiles)) return null;
   if (recovery.status === 'fail' && !recovery.files.some((file) =>
     file.status === 'fail' && (file.executionDetails!.failed > 0 || file.executionDetails!.collectionFailed))) {
     return null;
@@ -955,6 +1066,7 @@ interface PersistedDetachedTaskRow {
   exit_code: number | null;
   cwd?: string | null;
   requested_files?: unknown;
+  detached_report_artifacts?: unknown;
 }
 
 type DetachedTaskLedgerLookup =
@@ -968,7 +1080,8 @@ async function readPersistedDetachedTask(
   let query: PromiseLike<unknown>;
   try {
     query = sql`
-      SELECT state, exit_code, cwd, detail->'requestedFiles' AS requested_files
+      SELECT state, exit_code, cwd, detail->'requestedFiles' AS requested_files,
+             detail->'detachedReportArtifacts' AS detached_report_artifacts
         FROM harness_shared.task_ledger
        WHERE detail->>'runId' = ${runId}
          AND class = 'test-run'
@@ -1092,11 +1205,13 @@ export async function getTestRunLedgerRecoveryAsync(
   const task = taskLookup.kind === 'found' ? taskLookup.task : null;
   const taskLinked = taskLookup.kind === 'found';
   if (!taskAllowsDetachedLedgerRecovery(task, taskLinked)) return null;
+  const rootBoundFiles = rootBoundRequestedFilesFromValue(task?.detached_report_artifacts);
+  const requestedFiles = requestedFilesForCoverage(rootBoundFiles, requestedFilesFromValue(task?.requested_files));
   const rows = await readPersistedTestRunLedgerRows(runId, sql);
   if (!rows) return null;
   const recovery = deriveDetachedRunLedgerRecovery(runId, rows);
   if (recovery?.status === 'pass'
-    && !hasExactPassedFileCoverage(requestedFilesFromValue(task?.requested_files), recovery.files, task?.cwd)) return null;
+    && !hasExactPassedFileCoverage(requestedFiles, recovery.files, task?.cwd, rootBoundFiles)) return null;
   return recovery && taskAllowsDetachedLedgerRecovery(task, taskLinked, recovery.status) ? recovery : null;
 }
 
@@ -1122,13 +1237,15 @@ async function reconcilePersistedTestRun(
   taskLinked: boolean,
   sql: SqlLike,
 ): Promise<RunSnapshot> {
+  const rootBoundFiles = rootBoundRequestedFilesFromValue(task?.detached_report_artifacts);
   if (taskLinked && task?.state === 'ended_unobserved' && task.exit_code === null
     && (snapshot.status === 'running' || isDetachedNoVerdictError(snapshot))) {
     const rows = await readPersistedTestRunLedgerRows(snapshot.runId, sql);
     const recovery = rows && deriveDetachedRunLedgerRecovery(snapshot.runId, rows);
-    const requestedFiles = requestedFilesFromValue(task.requested_files)
-      ?? requestedFilesFromValue(snapshot.requestedFiles);
-    const verdict = recovery && requestedFiles && provisionalVerdictFromLedger(requestedFiles, recovery, task.cwd);
+    const requestedFiles = requestedFilesForCoverage(rootBoundFiles, requestedFilesFromValue(task.requested_files)
+      ?? requestedFilesFromValue(snapshot.requestedFiles));
+    const verdict = recovery && requestedFiles
+      && provisionalVerdictFromLedger(requestedFiles, recovery, task.cwd, rootBoundFiles);
     if (verdict) {
       // Exact reporter evidence proves file outcomes, never the missing wrapper exit.
       const observed = withProvisionalVerdict({
@@ -1175,14 +1292,14 @@ async function reconcilePersistedTestRun(
   }
 
   if (snapshot.status !== 'running') return snapshot;
-  const requestedFiles = requestedFilesFromValue(task?.requested_files)
-    ?? requestedFilesFromValue(snapshot.requestedFiles);
+  const requestedFiles = requestedFilesForCoverage(rootBoundFiles, requestedFilesFromValue(task?.requested_files)
+    ?? requestedFilesFromValue(snapshot.requestedFiles));
   if (taskLinked && task?.state === 'running' && requestedFiles) {
     const rows = await readPersistedTestRunLedgerRows(snapshot.runId, sql);
     if (!rows) return snapshot;
     const recovery = deriveDetachedRunLedgerRecovery(snapshot.runId, rows);
     if (!recovery) return snapshot;
-    const provisionalVerdict = provisionalVerdictFromLedger(requestedFiles, recovery);
+    const provisionalVerdict = provisionalVerdictFromLedger(requestedFiles, recovery, task?.cwd, rootBoundFiles);
     return provisionalVerdict ? withProvisionalVerdict(snapshot, provisionalVerdict) : snapshot;
   }
   if (!taskAllowsDetachedLedgerRecovery(task, taskLinked)) return snapshot;
@@ -1196,6 +1313,7 @@ async function reconcilePersistedTestRun(
       requestedFilesFromValue(task?.requested_files) ?? requestedFilesFromValue(snapshot.requestedFiles),
       recovery.files,
       task?.cwd,
+      rootBoundFiles,
     )) return snapshot;
 
   const { status, exitCode, finishedAt } = recovery;
@@ -2272,6 +2390,7 @@ function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot
   } = prepared;
   const state: RunState = {
     snapshot, proc: null, cwd, worktreeBefore, childEnv, finalization: null,
+    detachedReportArtifacts,
     snapshotSql: opts.snapshotSql, progressTimer: null, progressWrite: null,
   };
   _runs.set(snapshot.runId, state);
@@ -2613,8 +2732,12 @@ async function withholdUnverifiedVitestPass(
         ? await readPersistedDetachedTask(snapshot.runId, sql)
         : observedTask ? { kind: 'found', task: observedTask } : { kind: 'absent' };
       task = lookup.kind === 'found' ? lookup.task : null;
-      if (hasExactPassedFileCoverage(requestedFiles, recovery.files, task?.cwd)) {
-        provisionalVerdict = provisionalVerdictFromLedger(requestedFiles, recovery, task?.cwd);
+      const rootBoundFiles = rootBoundRequestedFilesFromValue(task?.detached_report_artifacts);
+      const coverageRequestedFiles = requestedFilesForCoverage(rootBoundFiles, requestedFiles);
+      if (hasExactPassedFileCoverage(coverageRequestedFiles, recovery.files, task?.cwd, rootBoundFiles)) {
+        provisionalVerdict = provisionalVerdictFromLedger(
+          coverageRequestedFiles, recovery, task?.cwd, rootBoundFiles,
+        );
         // Reporter rows measure assertions. They cannot erase a timeout or a
         // failed outer finalization, including when late rows fill a coverage gap.
         // Preserve an existing reporter PASS with unknown process exit. A
@@ -2701,7 +2824,12 @@ export async function getRunAsync(
     }
     if (local.snapshot.finishedAt !== null && local.finalization) await local.finalization;
     if (observedTask === undefined && local.observedProcessExit !== undefined) {
-      observedTask = { state: 'exited', exit_code: local.observedProcessExit, cwd: local.cwd };
+      observedTask = {
+        state: 'exited',
+        exit_code: local.observedProcessExit,
+        cwd: local.cwd,
+        detached_report_artifacts: { schemaVersion: 1, artifacts: local.detachedReportArtifacts },
+      };
     }
     let snapshot = await withholdUnverifiedVitestPass({ ...local.snapshot }, sqlOverride, observedTask);
     if ((local.snapshot.status === 'pass' && snapshot.status !== 'pass')

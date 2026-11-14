@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { acceptNativeConsultScenario, type NativeConsultScenario } from './native-consult';
+import { invokeNativeConsultScenario, registerNativeConsultScenarioHandler } from './native-consult-contract';
 import type { acceptFeedbackRequestProd } from '../../consult/get-feedback-prod';
 
 const scenario: NativeConsultScenario = { sourceBackend: 'claude', sourceState: 'ended', targetBackend: 'codex',
@@ -9,6 +10,14 @@ const input = { scenario, identity: { ownerId: 'owner-requester' } as never,
   workspaceId: 'workspace-native', harnessSlug: 'papercusp', workItemId: 'WI-native' };
 
 describe('native consult durable acceptance', () => {
+  it('dispatches through the registered host acceptance adapter', async () => {
+    const handler = vi.fn(async () => ({ ok: true, mode: 'native-consult' }));
+    registerNativeConsultScenarioHandler(handler);
+
+    await expect(invokeNativeConsultScenario(input)).resolves.toEqual({ ok: true, mode: 'native-consult' });
+    expect(handler).toHaveBeenCalledExactlyOnceWith(input);
+  });
+
   it('preserves the nonempty source-plan-lease predicate in durable acceptance', async () => {
     const accept = vi.fn(async () => ({ state: 'routing', pending: true })) as unknown as typeof acceptFeedbackRequestProd;
     await acceptNativeConsultScenario({ ...input, scenario: { ...scenario, requireSourcePlanClaims: true } },

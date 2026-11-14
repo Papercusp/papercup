@@ -742,6 +742,7 @@ import './testing/prune_orphan_runs';
 import './testing/flakiness';
 import './testing/case-categories';
 import './testing/run';
+import './testing/native-consult';
 import './testing/record-run';
 import './testing/record-native-check';
 import './testing/run-status';

@@ -1076,11 +1076,13 @@ export async function recoverTestEvidence(recovery: Recovery, scope: Scope, deps
       // Never revive deliberate withdrawals, settled proof, pre-launch refusals,
       // or an older mapping hidden by a later withdrawal for the same reference.
       const retired = row.withdrawal.reason?.match(/^Detached test run ([0-9a-f-]+) terminated \((?:pass|fail|error|cancelled), exit (?:-?\d+|unknown)\) without an attributed result for (.+); this attempt cannot settle and must be rerun\.$/);
-      if (execution.phase !== 'pending' || row.testRunId != null || !retired
-        || retired[2] !== binding.testPath
-        || (execution.runId !== recovery.originRunId && execution.runId !== retired[1])
-        || (!originOnlyRecovery && retired[1] !== recovery.runId)) continue;
-      recoveredRunId = retired[1]!;
+      const abandoned = row.withdrawal.reason?.match(/^Detached test run ([0-9a-f-]+) has no live snapshot or scoped file ledger after the 60s pending grace; this attempt is abandoned and must be rerun\.$/);
+      const retiredRunId = retired?.[1] ?? abandoned?.[1];
+      if (execution.phase !== 'pending' || row.testRunId != null || !retiredRunId
+        || (retired && retired[2] !== binding.testPath)
+        || (execution.runId !== recovery.originRunId && execution.runId !== retiredRunId)
+        || (!originOnlyRecovery && retiredRunId !== recovery.runId)) continue;
+      recoveredRunId = retiredRunId;
     }
     recoveredRunIds.add(recoveredRunId);
     const measurement = repoFilesEvidenceMeasurementSchema.parse(row.details.currentMeasurement);

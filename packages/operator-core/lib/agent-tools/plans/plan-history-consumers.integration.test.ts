@@ -991,15 +991,20 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
     expect(serializerSource).toContain('parameters[i] = x = type in options.serializers');
     expect(serializerSource).toContain('options.serializers[type](x)');
     const serializerSourceRef = `source:${fileURLToPath(new URL(serializerPath, import.meta.url))}@${digest(serializerSource)}#Bind`;
-    const observationWrites = await Promise.all(([
+    const observationWrites = (await Promise.all(([
       ['1f6499853c48d246238643053bea9e1badadff3acf66d02f3aaa264af4f769b0', 11, '../../degradation/fallback-observations.ts'],
       ['d4590cde1bab3537449c3a6da30041fe8b88be33a48d2f143caf0d7c75cd60e0', 22, '../../degradation/fallback-observations.ts'],
       ['6bb1972dbd518dd64f34f69acd1a325917b0118c078fd92e390d64e73ba251bc', 12, '../../goals/plan-closure-observations.ts'],
       ['7bf62a411b55921ec42b81623184880e2fdf71b7e9900ba1254cc2e15844c0c7', 12, '../../goals/plan-closure-observations.ts'],
-    ] as const).map(async ([queryHash, parameterCount, path]) => ({ queryHash, parameterCount,
-      pool: path.includes('fallback-observations') ? 'fixture-admin' : 'org-admin', command: 'INSERT' as const, serializerSourceRef,
-      sourceRef: `source:${fileURLToPath(new URL(path, import.meta.url))}@${digest(await readFile(new URL(path, import.meta.url)))}`,
-      persistedParameters: Array.from({ length: parameterCount }, (_, index) => index) })));
+    ] as const).map(async ([queryHash, parameterCount, path]) => {
+      const registration = { queryHash, parameterCount, command: 'INSERT' as const, serializerSourceRef,
+        sourceRef: `source:${fileURLToPath(new URL(path, import.meta.url))}@${digest(await readFile(new URL(path, import.meta.url)))}`,
+        persistedParameters: Array.from({ length: parameterCount }, (_, index) => index) };
+      // The same maintained fallback writer accepts an explicit fixture handle
+      // and otherwise uses getOrgPg().sql. Registration remains pool-specific.
+      return (path.includes('fallback-observations') ? ['fixture-admin', 'org-admin'] : ['org-admin'])
+        .map(pool => ({ ...registration, pool }));
+    }))).flat();
     const sqlStatements: Array<{ query: string; command: string | null; status: string }> = [];
     // Finite source review of the original retained run-nggCRB statements.
     // These hashes were frozen BEFORE this execution; never enroll a statement
@@ -1226,32 +1231,67 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
     } finally { jsonControlTap.restore(); }
     }
 
-    // Both original fallback batch arities are required, independently of how
-    // many observations a public reader happens to enqueue on this execution.
+    // Verify containment before exercising the production writer with no handle.
+    const defaultFallbackSql = getOrgPg().sql;
+    const fixtureDatabase = await admin`SELECT current_database() AS database`;
+    const defaultDatabase = await defaultFallbackSql`SELECT current_database() AS database`;
+    expect(defaultDatabase[0].database).toBe(fixtureDatabase[0].database);
+
+    // Both original fallback batch arities and both actual writer routes are
+    // required, independently of what a public reader happens to enqueue.
     await flushFallbackObservations({ sql: admin });
-    const fallbackControlTap = observeGroundedStoreOperations({ scope: sqlScope, deps: {}, operations: [],
-      sourceRef: 'isolated-pg:fallback-serialization-control', attemptId: 'fallback-serialization-control',
-      postgres: [{ pool: 'fixture-admin', client: admin }], serializedSqlParameters: observationWrites.filter(row => row.pool === 'fixture-admin') });
-    let fallbackControlHashes: string[] = [];
+    const fallbackControlHashes: string[] = [];
+    const fallbackControls: unknown[] = [];
+    const emitFallbackBatches = async (label: string, sql?: postgres.Sql) => {
+      const options = sql ? { sql } : {};
+      for (const count of [1, 2]) {
+        for (let index = 0; index < count; index++) expect(observeFallback('gec-serializer-control', {
+          eligible: 1, applied: 0, reason: `original-λ-${label}-${count}-${index}`, scope: h,
+        }, { ...options, workspaceId: workspace })).toBe(true);
+        expect(await flushFallbackObservations(options)).toMatchObject({ written: count, failed: 0, dropped: 0 });
+      }
+    };
+    for (const { pool, client, sql } of [
+      { pool: 'fixture-admin', client: admin, sql: admin },
+      { pool: 'org-admin', client: defaultFallbackSql, sql: undefined },
+    ]) {
+      const registrations = observationWrites.filter(row => row.pool === pool
+        && row.sourceRef.includes('/degradation/fallback-observations.ts@'));
+      const fallbackControlTap = observeGroundedStoreOperations({ scope: sqlScope, deps: {}, operations: [],
+        sourceRef: `isolated-pg:fallback-serialization-control:${pool}`, attemptId: `fallback-serialization-control:${pool}`,
+        postgres: [{ pool, client }], serializedSqlParameters: registrations });
+      try {
+        await fallbackControlTap.run(() => emitFallbackBatches(pool, sql));
+        const census = fallbackControlTap.seal();
+        expect(census.complete).toBe(true);
+        expect(census.rows).toHaveLength(2);
+        expect(census.rows.every(row => row.sql?.pool === pool)).toBe(true);
+        const hashes = census.rows.map(row => row.sql!.queryHash);
+        expect(hashes.sort()).toEqual(registrations.map(row => row.queryHash).sort());
+        expect(census.rows.every(row => row.kind === 'write' && row.persistedBytes! > 0
+          && row.sql?.serializedParameters?.values.length === row.sql?.serializedParameters?.parameterCount)).toBe(true);
+        fallbackControlHashes.push(...hashes);
+        fallbackControls.push({ pool, writer: sql ? 'explicit' : 'default', census });
+      } finally { fallbackControlTap.restore(); }
+    }
+    // The original defect must stay unknown when only the other pool is
+    // registered, even with identical SQL and complete driver capture.
+    const wrongPoolTap = observeGroundedStoreOperations({ scope: sqlScope, deps: {}, operations: [],
+      sourceRef: 'isolated-pg:fallback-wrong-pool-control', attemptId: 'fallback-wrong-pool-control',
+      postgres: [{ pool: 'fixture-admin', client: admin }, { pool: 'org-admin', client: defaultFallbackSql }],
+      serializedSqlParameters: observationWrites.filter(row => row.pool === 'fixture-admin') });
     try {
-      await fallbackControlTap.run(async () => {
-        for (const count of [1, 2]) {
-          for (let index = 0; index < count; index++) expect(observeFallback('gec-serializer-control', {
-            eligible: 1, applied: 0, reason: `original-λ-${count}-${index}`, scope: h,
-          }, { sql: admin, workspaceId: workspace })).toBe(true);
-          expect(await flushFallbackObservations({ sql: admin })).toMatchObject({ written: count, failed: 0, dropped: 0 });
-        }
-      });
-      const census = fallbackControlTap.seal();
+      await wrongPoolTap.run(() => emitFallbackBatches('wrong-pool'));
+      const census = wrongPoolTap.seal();
       expect(census.complete).toBe(true);
       expect(census.rows).toHaveLength(2);
-      fallbackControlHashes = census.rows.map(row => row.sql!.queryHash);
-      expect(fallbackControlHashes.sort()).toEqual(observationWrites.filter(row => row.pool === 'fixture-admin').map(row => row.queryHash).sort());
-      expect(census.rows.every(row => row.kind === 'write' && row.persistedBytes! > 0
-        && row.sql?.serializedParameters?.values.length === row.sql?.serializedParameters?.parameterCount)).toBe(true);
+      expect(census.rows.every(row => row.sql?.pool === 'org-admin'
+        && row.kind === 'unknown' && row.persistedBytes === null)).toBe(true);
+      expect(measureGroundedEvidence({ scope: sqlScope, storage: census }).values.storageBytes).toBeNull();
       if (artifactDirectory) await writeFile(join(artifactDirectory, 'gec-b-fallback-serializer-control.json'),
-        canonicalJson({ census, observationWrites }));
-    } finally { fallbackControlTap.restore(); }
+        canonicalJson({ controls: fallbackControls, wrongPool: census, observationWrites,
+          containment: { fixtureDatabase: fixtureDatabase[0].database, defaultDatabase: defaultDatabase[0].database } }));
+    } finally { wrongPoolTap.restore(); }
     await recordPhase('fallback-serialization-verified');
 
     // Exercise the actual public consumers, rather than qualifying their SQL

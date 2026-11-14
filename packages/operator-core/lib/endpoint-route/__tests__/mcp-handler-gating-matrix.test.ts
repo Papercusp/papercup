@@ -102,6 +102,7 @@ const h = vi.hoisted(() => {
     signingRows: null as null | Array<{ value_b64: string; rotated_at: string }>,
     fakeTx,
     fakeSql,
+    installedBaseRole: null as string | null,
     flushPendingTelemetry: vi.fn(async () => {}),
     kernelAuthority,
     nativeSessionBinding: 'unbound' as 'bound' | 'unbound' | 'foreign',
@@ -402,6 +403,13 @@ vi.mock('../../projected-tool-deps', async (importOriginal) => {
     },
   };
 });
+// The persisted declaration reader has its own installed/scope tests. Here the
+// native transport and production dispatcher share this controlled host result.
+vi.mock('../../blueprint-role-base', () => ({
+  resolveInstalledRoleForAllowlist: async (ctx: Pick<UnifiedToolContext, 'role' | 'workspaceId' | 'harnessSlug'>) =>
+    ctx.role === 'app-scoper' && ctx.workspaceId === 'ws-test' && ctx.harnessSlug === 'papercup'
+      ? h.installedBaseRole : null,
+}));
 vi.mock('../../capability-envelope/blueprint-envelopes', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../capability-envelope/blueprint-envelopes')>();
   return {
@@ -868,6 +876,16 @@ registerProjectedTool({
   needsWorkspaceTx: true,
   expose: { mcp: { name: 'gatingtest:engineer' } },
   fn: probeFn('gatingtest:engineer'),
+});
+registerProjectedTool({
+  pluginName: 'gating-matrix-test',
+  description: 'test-only probe: installed alias still requires its own capability',
+  inputSchema: { type: 'object', additionalProperties: false },
+  capabilities: ['plans:write'],
+  agentRoles: ['scoper'],
+  requirePrincipal: false,
+  expose: { mcp: { name: 'gatingtest:alias_cap' } },
+  fn: probeFn('gatingtest:alias_cap'),
 });
 registerProjectedTool({
   pluginName: 'gating-matrix-test',
@@ -2937,6 +2955,7 @@ beforeEach(() => {
   deltaWireRequested.length = 0;
   deltaWireReplies.length = 0;
   h.withWorkspaceCalls.length = 0;
+  h.installedBaseRole = null;
   h.nativeSessionBinding = 'unbound';
   h.nativeSessionRows = null;
   h.livePtyHost = null;
@@ -5610,6 +5629,45 @@ describe('tools/call — auth failures reject before any dispatch', () => {
 /* ─── tools/call — role / profile / workspace dispatch matrix ────────── */
 
 describe('tools/call — role, profile, and workspace gating through the dispatcher', () => {
+  it('installed base-role ingress retains the custom principal, caps and workspace transaction', async () => {
+    h.installedBaseRole = 'scoper';
+    const res = await callTool('gatingtest:scoped', {}, extraFor(signedUrl({ role: 'app-scoper' })));
+    expect(res.isError, textOf(res)).toBeUndefined();
+    expect(seen).toHaveLength(1);
+    const call = seen[0]!;
+    expect(call.ctx.role).toBe('app-scoper');
+    expect(call.ctx.principal).toMatchObject({ slug: 'system:app-scoper', workspaceId: 'ws-test' });
+    expect([...call.ctx.principal!.capabilities]).toEqual(['agent_tools:read']);
+    expect(call.ctx.tx).toBe(h.fakeTx);
+    expect(call.alsWorkspace).toBe('ws-test');
+    expect(call.ctx.gateBypass).toEqual({ role: false, capability: false, quota: false });
+  });
+
+  it.each(['direct', 'nested'])('installed base-role ingress enforces missing capability on %s dispatch', async route => {
+    h.installedBaseRole = 'scoper';
+    const extra = extraFor(signedUrl({ role: 'app-scoper' }));
+    const res = route === 'direct'
+      ? await callTool('gatingtest:alias_cap', {}, extra)
+      : await callTool('tools:invoke', { name: 'gatingtest:alias_cap', args: {} }, extra);
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('missing_capability');
+    expect(seen).toEqual([]);
+  });
+
+  it('installed base-role ingress lists the same role membership and refuses a foreign scope', async () => {
+    h.installedBaseRole = 'scoper';
+    const listed = await listTools(extraFor(signedUrl({ role: 'app-scoper',
+      tools: 'gatingtest:scoped,gatingtest:engineer' })));
+    const names = listed.tools.map(tool => tool.name);
+    expect(names).toContain('gatingtest:scoped');
+    expect(names).not.toContain('gatingtest:engineer');
+    const denied = await callTool('gatingtest:scoped', {},
+      extraFor(signedUrl({ role: 'app-scoper', harness: 'hiveB-home' })));
+    expect(denied.isError).toBe(true);
+    expect(textOf(denied)).toContain('role_not_allowed');
+    expect(seen).toEqual([]);
+  });
+
   it('out-of-role call → role_not_allowed, handler NOT executed', async () => {
     const res = await callTool('gatingtest:scoped', {}, extraFor(signedUrl({ role: 'worker' })));
     expect(res.isError).toBe(true);

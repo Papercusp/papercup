@@ -10,6 +10,8 @@ import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { captureConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
 import { MAX_RECORDED_PASSED_CASES } from '@papercusp/test-config/execution-details';
+import { buildDetachedTestRunRequest } from './agent-tools/testing/run';
+import { testRunDeadline } from './agent-tools/testing/run-artifacts';
 
 /**
  * Map a captured `INSERT INTO … (col, …) VALUES (${…}, …)` call onto its column names.
@@ -381,6 +383,88 @@ describe('startRun', () => {
       expect(result.stdout).toBe('worker-ok');
     } finally {
       transport?.release();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { mode: 'old coupled confined', confined: true, coupled: true },
+    { mode: 'fixed confined', confined: true, coupled: false },
+    { mode: 'fixed unconfined', confined: false, coupled: false },
+  ])('retains the compiled testing core through the $mode launch', async ({ confined, coupled }) => {
+    const { spawnSync } = await vi.importActual<typeof import('node:child_process')>('node:child_process');
+    const { pathToFileURL } = await import('node:url');
+    const { buildExactEnvPayloadWithTransport } = await import('./systemd-scope');
+    const root = await mkdtemp('/tmp/testing-compiled-core-handoff-');
+    const sourceSha256 = createHash('sha256').update('independent retained core source').digest('hex');
+    const core = join(root, 'core.mjs');
+    const source = [
+      "import { origin } from './origin.mjs';",
+      `export const testingCoreSourceSha256 = ${JSON.stringify(sourceSha256)};`,
+      'export async function runTestFilesCore(options) {',
+      '  return { ok: true, marker: "retained-core", origin, runId: options.runId };',
+      '}',
+    ].join('\n');
+    const expected = { schemaVersion: 1, sourceSha256,
+      artifactSha256: createHash('sha256').update(source).digest('hex') };
+    let transport: { release(): void } | undefined;
+    let request: ReturnType<typeof buildDetachedTestRunRequest> | undefined;
+    const enrolment = {
+      taskId: 'task-compiled-core-handoff', confined,
+      scopeUnit: confined ? 'pc-task-compiled-core-handoff.scope' : null,
+      enrolled: true, registrationReady: null, releaseEnvironmentTransport: vi.fn(),
+      wrap: vi.fn((binary: string, argv: string[], env: NodeJS.ProcessEnv) => {
+        if (!confined) return { binary, argv };
+        const payload = buildExactEnvPayloadWithTransport([binary, ...argv], env);
+        transport = payload.transport;
+        return { binary: payload.argv[0]!, argv: payload.argv.slice(1) };
+      }),
+    };
+    taskManagerMocks.begin.mockReturnValueOnce(enrolment);
+    try {
+      await writeFile(core, source);
+      await writeFile(join(root, 'origin.mjs'), 'export const origin = "retained-core-origin";');
+      request = buildDetachedTestRunRequest({ root, files: ['feature.test.ts'],
+        deadline: testRunDeadline(120_000), workItemId: 'WI-compiled-core-handoff',
+        compiledCore: { moduleUrl: pathToFileURL(core).href, expected } });
+      const transferPath = join(dirname(request.detachedReportArtifacts![0]!.reportPath), 'testing-core.retained.mjs');
+      expect(await readFile(transferPath, 'utf8')).toBe(source);
+      const snapshot = store.startRun(request);
+      const [binary, argv, options] = spawnMock.mock.calls[0] as unknown as
+        [string, string[], { cwd: string; env: NodeJS.ProcessEnv }];
+      const workerEnv = enrolment.wrap.mock.calls[0]![2];
+      expect(workerEnv.NODE_OPTIONS).toBe(request.env!.NODE_OPTIONS);
+      expect(options.env.NODE_OPTIONS).toBe(confined ? process.env.NODE_OPTIONS : request.env!.NODE_OPTIONS);
+      // Change only the outer environment to reproduce the former launch path.
+      // Every case owns a fresh request and one-shot transfer.
+      const result = spawnSync(binary, argv, { cwd: options.cwd,
+        env: coupled ? workerEnv : options.env, encoding: 'utf8', timeout: 10_000 });
+      const artifacts = taskManagerMocks.begin.mock.calls[0]![0].detail.detachedReportArtifacts.artifacts as
+        Array<{ stdoutPath?: string }>;
+      const output = [result.stdout, result.stderr,
+        ...await Promise.all(artifacts.map(artifact => artifact.stdoutPath
+          ? readFile(artifact.stdoutPath, 'utf8').catch(() => '') : ''))].join('\n');
+      expect(result.error, output).toBeUndefined();
+      const records = output.split('\n').flatMap(line => {
+        try { return [JSON.parse(line)]; } catch { return []; }
+      });
+      if (coupled) {
+        expect(result.status, output).not.toBe(0);
+        expect(output).toContain('ENOENT');
+        expect(output).toContain(transferPath);
+        expect(records.some(record => record.phase === 'bootstrap-start')).toBe(false);
+      } else {
+        expect(result.status, output).toBe(0);
+        expect(records).toContainEqual(expect.objectContaining({ phase: 'bootstrap-start' }));
+        expect(records).toContainEqual(expect.objectContaining({ phase: 'core-witness-verified',
+          coreMode: 'compiled', sourceSha256: expected.sourceSha256, artifactSha256: expected.artifactSha256 }));
+        expect(records).toContainEqual(expect.objectContaining({ ok: true, marker: 'retained-core',
+          origin: 'retained-core-origin', runId: snapshot.runId }));
+      }
+    } finally {
+      transport?.release();
+      await Promise.all((request?.detachedReportArtifacts ?? []).map(artifact =>
+        rm(dirname(artifact.reportPath), { recursive: true, force: true })));
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -1511,14 +1595,20 @@ describe('durable detached snapshot lifecycle', () => {
   });
 
   it.each([
-    { name: 'mixed parent and submodule roots', wrongRoot: false, shouldRecover: true },
-    { name: 'an artifact with the wrong submodule root', wrongRoot: true, shouldRecover: false },
-  ])('reconciles root-bound detached report coverage for $name', async ({ wrongRoot, shouldRecover }) => {
+    { name: 'mixed parent and submodule roots', siblingTaskRoot: false, wrongRoot: false, shouldRecover: true },
+    { name: 'sibling candidate-generation and canonical roots', siblingTaskRoot: true, wrongRoot: false, shouldRecover: true },
+    { name: 'an artifact with the wrong submodule root', siblingTaskRoot: false, wrongRoot: true, shouldRecover: false },
+  ])('reconciles root-bound detached report coverage for $name', async ({ siblingTaskRoot, wrongRoot, shouldRecover }) => {
     const parentRoot = '/workspace/papercusp';
-    const submoduleRoot = join(parentRoot, 'apps/slack-asana-bug-drill');
+    const taskRoot = siblingTaskRoot ? '/workspace/papercusp-candidate-generation' : parentRoot;
+    const nestedSubmoduleRoot = join(parentRoot, 'apps/slack-asana-bug-drill');
+    const submoduleRoot = siblingTaskRoot ? '/workspace/slack-asana-bug-drill' : nestedSubmoduleRoot;
     const artifactSubmoduleRoot = wrongRoot ? join(parentRoot, 'apps/other-checkout') : submoduleRoot;
     const parentFile = 'packages/operator-core/lib/inference-gateway/request-stage-telemetry.test.ts';
     const submoduleFile = 'src/dispatch-stack.test.ts';
+    const requestedFiles = siblingTaskRoot
+      ? [parentFile, submoduleFile]
+      : [parentFile, join('apps/slack-asana-bug-drill', submoduleFile)];
     const reportDir = await mkdtemp('/tmp/papercusp-testing-run-mixed-root-');
     const parentReportPath = join(reportDir, 'parent.json');
     const submoduleReportPath = join(reportDir, 'submodule.json');
@@ -1529,8 +1619,8 @@ describe('durable detached snapshot lifecycle', () => {
       );
       const scope = { harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace' };
       const { snapshot } = await store.startRunDurable(req({
-        cwd: parentRoot,
-        requestedFiles: [parentFile, join('apps/slack-asana-bug-drill', submoduleFile)],
+        cwd: taskRoot,
+        requestedFiles,
         detachedReportArtifacts: [
           { reportPath: parentReportPath, root: parentRoot, requestedFiles: [join(parentRoot, parentFile)],
             routerReports: true, scope },
@@ -1585,7 +1675,8 @@ describe('durable detached snapshot lifecycle', () => {
         output: '[detached-recovery] no test verdict was observed.', truncated: false,
         task_state: 'exited', task_exit_code: 0, task_deadline_at: null,
         task_ended_at: new Date(snapshot.startedAt + 25), task_detail: detail,
-        task_cwd: parentRoot, task_harness_slug: 'papercusp', task_workspace_id: 'papercusp-workspace',
+        task_cwd: taskRoot, task_harness_slug: 'papercusp', task_workspace_id: 'papercusp-workspace',
+        detached_report_artifacts: storedArtifacts,
         snapshot_missing: false,
       };
       const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {

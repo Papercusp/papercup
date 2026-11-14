@@ -84,7 +84,8 @@ vi.mock("@papercusp/db-org", async (orig) => {
     }),
   };
 });
-vi.mock("../../rubrics", () => ({
+vi.mock("../../rubrics", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../rubrics")>()),
   getAcceptanceRubricForPlan: M.getAcceptanceRubricForPlan,
 }));
 vi.mock("../../plan-audits", () => ({
@@ -107,10 +108,14 @@ const ctx = (workspaceId = "ws-get-include", harnessSlug = "papercup"): never =>
     progress: vi.fn(),
   }) as never;
 
-const run = async (args: Record<string, unknown>) =>
-  ((await tool.handler(args as never, ctx())) as {
+const run = async (args: Record<string, unknown>) => {
+  const result = ((await tool.handler(args as never, ctx())) as {
     data: { results: Array<Record<string, unknown>> };
   }).data;
+  expect(result.results, JSON.stringify(result)).toHaveLength(1);
+  expect(result.results[0], JSON.stringify(result.results[0])).toMatchObject({ ok: true });
+  return result;
+};
 
 beforeEach(async () => {
   resetOperatorCacheForTests();

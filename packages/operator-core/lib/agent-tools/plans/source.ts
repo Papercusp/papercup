@@ -44,7 +44,7 @@ import { fill_workspace_id_from_projects, isOperatorHomeScope,
 export { fill_workspace_id_from_projects,
   type ProjectsWorkspaceLookup, type RegistryWorkspaceResolver } from '../../harness/workspace-for-harness';
 import { potHomeSlugForHarness } from '../../hive-federation';
-import { isTerminalItemStatus } from '../../fleet-drained-events';
+import { isTerminalItemStatus } from '../../plan-item-status';
 import type { AgenticPlanExecutionTarget } from '../../agentic-plan-execution-target';
 import type {
   BlueprintOperationRoutineTarget,
@@ -879,7 +879,7 @@ export async function planSlugExistsInWorkspace(
 /** Item statuses that are themselves terminal — the only item statuses worth
  *  surfacing from a terminal (shipped/superseded) plan in a cross-plan query
  *  (items.ts's isTerminalPlanHiddenFromCrossPlan). Reuses the canonical
- *  `isTerminalItemStatus` from fleet-drained-events.ts (the ONE answer to
+ *  `isTerminalItemStatus` from plan-item-status.ts (the ONE answer to
  *  "is a plan item done") rather than redefining it here. */
 
 /**

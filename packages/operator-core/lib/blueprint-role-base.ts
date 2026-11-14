@@ -7,7 +7,9 @@ import { canonicalHiveHomeSlug } from './hive-federation';
 
 const canonicalRoles: ReadonlySet<string> = new Set(AGENT_ROLES);
 
-export async function resolveInstalledRoleForAllowlist(ctx: UnifiedToolContext): Promise<string | null> {
+export async function resolveInstalledRoleForAllowlist(
+  ctx: Pick<UnifiedToolContext, 'role' | 'workspaceId' | 'harnessSlug'>,
+): Promise<string | null> {
   const { role, workspaceId, harnessSlug } = ctx;
   if (!role || canonicalRoles.has(role) || !workspaceId || !harnessSlug || harnessSlug === '*') return null;
   try {

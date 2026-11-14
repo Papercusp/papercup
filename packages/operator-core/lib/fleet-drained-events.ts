@@ -36,16 +36,11 @@
 import { emitAwaitedEvent } from './events/await/engine';
 import { listFleetAssignments, type FleetAssignmentRow } from './fleet/assignments';
 import type { FleetLaneHealth } from './fleet/lane-health';
+import { isTerminalItemStatus, TERMINAL_ITEM_STATUSES } from './plan-item-status';
 import type { FleetScopeTerminalExhaustion } from './scheduler/fleet-scope-admission';
 import { resolveConcreteWorkspaceId } from './workspace-registry';
 
-/** Terminal plan-item statuses — a finished item (mirrors plans/set-status isTerminalStatus). */
-export const TERMINAL_ITEM_STATUSES = ['done', 'dropped'] as const;
-
-/** Is this stored item status terminal (the item is finished, held/assigned by no one)? */
-export function isTerminalItemStatus(status: string): boolean {
-  return status === 'done' || status === 'dropped';
-}
+export { isTerminalItemStatus, TERMINAL_ITEM_STATUSES };
 
 /** Count the plan items that are NOT terminal (todo/wip/blocked/needs-human) — the
  *  still-CLAIMABLE work. Only `storedStatus` is read, so any item-shaped object works. */

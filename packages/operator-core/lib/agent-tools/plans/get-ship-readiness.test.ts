@@ -130,7 +130,8 @@ vi.mock('@papercusp/db-org', async (orig) => {
     }),
   };
 });
-vi.mock('../../rubrics', () => ({
+vi.mock('../../rubrics', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../rubrics')>()),
   getAcceptanceRubricForPlan: M.getAcceptanceRubricForPlan,
 }));
 vi.mock('../../plan-audits', () => ({
