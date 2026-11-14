@@ -24,15 +24,31 @@ const billingStore: HostedBillingStore = {
 const headers = (session = 'owner') => ({ headers: { 'test-session': session } });
 
 describe('P538 hosted pool usage integration', () => {
-  it('serves scoped pool accounting through the real runtime without posting usage charges', async () => {
+  it.each([
+    { name: 'fully priced invoice', backupMicros: 100, unresolvedBackup: false, invoiceMicros: 900,
+      knownMicros: 270, totalMicros: 270, overheadMicros: 450, unallocatedMicros: 0, complete: true, gaps: [] },
+    { name: 'unknown backup price with zero residual', backupMicros: null, unresolvedBackup: false, invoiceMicros: 800,
+      knownMicros: 240, totalMicros: null, overheadMicros: 400, unallocatedMicros: 0, complete: false,
+      gaps: ['invoice-a:unpriced:backup'] },
+    { name: 'unknown backup price with invoice residual', backupMicros: null, unresolvedBackup: false, invoiceMicros: 829,
+      knownMicros: 240, totalMicros: null, overheadMicros: 400, unallocatedMicros: 29, complete: false,
+      gaps: ['invoice-a:unpriced:backup'] },
+    { name: 'unresolved backup allocation', backupMicros: 100, unresolvedBackup: true, invoiceMicros: 900,
+      knownMicros: 240, totalMicros: null, overheadMicros: 400, unallocatedMicros: 100, complete: false,
+      gaps: ['invoice-a:unresolved-allocation:backup'] },
+  ])('$name stays scoped without posting usage charges', async ({ backupMicros, unresolvedBackup,
+    invoiceMicros, knownMicros, totalMicros, overheadMicros, unallocatedMicros, complete, gaps }) => {
     const append = vi.fn(async () => 'recorded' as const);
     const poolUsage = vi.fn(async (input: UsageRead) => ({ scope: input.scope, month: input.month,
       workspaces: ['customer-a', 'customer-b'].map(customerWorkspaceId => ({ ...input.scope, customerWorkspaceId })),
       source: { complete: true, observedAtMs: T, maximumAgeMs: 0, evidenceRef: 'fixture:pool-period' },
-      bills: [{ invoiceId: 'invoice-a', periodRef: input.month, currency: 'USD', totalMicros: 900,
+      bills: [{ invoiceId: 'invoice-a', periodRef: input.month, currency: 'USD', totalMicros: invoiceMicros,
         lines: POOL_COST_CATEGORIES.map(category => ({ id: category, category, kind: 'charge' as const,
-          provider: 'gcp', periodRef: input.month, currency: 'USD', amountMicros: 100, sourceRef: 'fixture:bill',
-          allocation: { kind: 'compute' as const, achievedAgentMilliseconds: 1000, capacityEvidenceRef: 'fixture:achieved',
+          provider: 'gcp', periodRef: input.month, currency: 'USD',
+          amountMicros: category === 'backup' ? backupMicros : 100, sourceRef: 'fixture:bill',
+          allocation: category === 'backup' && unresolvedBackup
+            ? { kind: 'unresolved' as const, reason: 'backup allocation unavailable' }
+            : { kind: 'compute' as const, achievedAgentMilliseconds: 1000, capacityEvidenceRef: 'fixture:achieved',
             tenants: [{ tenantId: 'customer-a', activeAgentMilliseconds: 300 },
               { tenantId: 'customer-b', activeAgentMilliseconds: 200 }] } })) }] }));
     const built = await createHostedBillingRuntime({ publicOrigin: 'https://app.example', stripeSecretKeyRef: null,
@@ -44,9 +60,10 @@ describe('P538 hosted pool usage integration', () => {
     const response = await built.app.request('/api/hosted/billing/usage?month=2026-10&workspaceId=customer-a', headers());
     expect(response.status).toBe(200);
     const body = await response.json();
-    expect(body.statement.infrastructure).toMatchObject({ tenantTotalMicros: 270, sharedOverheadMicros: 450,
-      poolTotalMicros: 900, unallocatedMicros: 0, observedAtMs: T, complete: true });
-    expect(body.statement.infrastructure.tenants).toEqual([{ customerWorkspaceId: 'customer-a', knownMicros: 270, totalMicros: 270 }]);
+    expect(body.statement.infrastructure).toMatchObject({ knownTenantMicros: knownMicros, tenantTotalMicros: totalMicros,
+      creditsExcludedTenantMicros: totalMicros, sharedOverheadMicros: overheadMicros, poolTotalMicros: invoiceMicros,
+      unallocatedMicros, observedAtMs: T, complete, gaps });
+    expect(body.statement.infrastructure.tenants).toEqual([{ customerWorkspaceId: 'customer-a', knownMicros, totalMicros }]);
     expect(JSON.stringify(body)).not.toContain('customer-b');
     expect(body.statement.consumptionBilled.micros).toBe(0); expect(append).not.toHaveBeenCalled();
     expect(poolUsage).toHaveBeenCalledExactlyOnceWith({ scope: { controlWorkspaceId: CONTROL,
