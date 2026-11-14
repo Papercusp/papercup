@@ -193,6 +193,9 @@
     // and its read-only share tool. The source-preview-*.test.ts and
     // share-source-cli.test.ts suites import both directly.
     "scripts/source-preview.mjs",
+    // P-001 source controls import the maintained preflight and bundled CLI guard.
+    "scripts/verifier-source-preflight.mjs",
+    "scripts/check-bundled-cli-entry-guards.mjs",
     // Shared exact-buffer and producing-witness APIs are imported by native controls.
     "scripts/lib/compiler-input-custody.mjs",
     "scripts/lib/testing-core-witness.mjs",
