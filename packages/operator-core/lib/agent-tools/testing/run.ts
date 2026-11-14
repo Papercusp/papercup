@@ -92,7 +92,8 @@ import { parseTestRunExecutionDetails, TEST_RUN_READER_CONTRACT_ENV, TEST_RUN_RE
   testRunExecutionDetailsReaderContract, testRunExecutionDetailsReaderMismatch } from '@papercusp/test-config/execution-details';
 import { resolveTestRunsPgUrl } from '@papercusp/test-config/admin-test-runs-reporter';
 import { captureConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
-import { cleanupOwnedTestDatabases, dropDatabaseOnDedicatedConnection, type OwnedTestDbCleanupResult } from '@papercusp/test-config/pg';
+import { cleanupOwnedTestDatabases, type OwnedTestDbCleanupResult } from '@papercusp/test-config/owned-test-db-cleanup';
+import { dropDatabaseOnDedicatedConnection } from '@papercusp/test-config/test-db-drop';
 import { redactSensitiveText } from '../../sensitive-text';
 import { TestRunArtifactPacket, testRunDeadline, type TestRunArtifactPaths, type TestRunDeadline } from './run-artifacts';
 import { recoverRetainedVitestLedger } from './retained-ledger';
