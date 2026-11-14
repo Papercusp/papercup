@@ -602,7 +602,7 @@ describe('writeRoleCodexHome', () => {
     await installFakeHooks();
     installOwnerRuntimeProof('role-7');
     const writeRoleCodexHome = await load();
-    const out = writeRoleCodexHome({ sessionKey: 7, mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'P', sid: 'role-7' });
+    const out = writeRoleCodexHome({ sessionKey: 7, mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'P' });
     // D-010: codex reads hooks.json (NOT settings.json, which it ignores).
     expect(existsSync(join(out.codexHome, 'settings.json'))).toBe(false);
     const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
