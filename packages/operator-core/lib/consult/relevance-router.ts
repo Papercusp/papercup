@@ -163,14 +163,14 @@ export interface RoutingCandidate {
   ownerId: string;
   /** Independent, bounded evidence about an explicitly named technical subject.
    * Absence is the legacy/general-question contract, not a failed measurement. */
-  subjectEvidence?: { subject: string; status: 'supported' | 'mismatch' | 'unmeasured'; score: number | null };
+  subjectEvidence?: { subject: string; status: 'supported' | 'mismatch' | 'unanchored' | 'unmeasured'; score: number | null };
   /** Every requested source anchor must independently clear its evidence floor. */
   subjectEvidenceCoverage?: {
-    status: 'supported' | 'mismatch' | 'unmeasured';
+    status: 'supported' | 'mismatch' | 'unanchored' | 'unmeasured';
     required: string[];
     evidence: Array<{
       subject: string;
-      status: 'supported' | 'mismatch' | 'unmeasured';
+      status: 'supported' | 'mismatch' | 'unanchored' | 'unmeasured';
       score: number | null;
       anchor?: { ref: string; sessionId: string; turnIdx: number; exact: boolean };
     }>;
@@ -279,6 +279,8 @@ export interface RoutingSnapshot {
     threshold: number;
     evaluated: number;
     unmeasured: number;
+    /** Bounded owners with usable text but no exact required subject anchor. */
+    unanchored?: number;
     /** Eligible owners outside the bounded scoring menu, not scorer failures. */
     budgetLimited?: number;
     limit: number;
@@ -1545,7 +1547,7 @@ async function routeConsultCore(
 
   // Similar words and a general completion history do not establish expertise
   // in a named system. Validate a bounded above-floor pool against its primary
-  // subject; keep mismatches/unmeasured candidates for labelled minimum fill.
+  // subject; keep mismatches/unanchored/unmeasured candidates explicitly labelled.
   const subjectCoverageByOwner = new Map<string, NonNullable<RoutingCandidate['subjectEvidenceCoverage']>>();
   if (subjectRefs.length || unresolvedSubjectRefs.length) {
     const failureCounts = new Map<string, SubjectEvidenceFailure & { count: number }>();
@@ -1604,6 +1606,8 @@ async function routeConsultCore(
         text: r.subjectText,
       })));
     const usable = passages.filter(p => typeof p.text === 'string' && p.text.trim());
+    const usableOwners = new Set(usable.map(passage => passage.ownerId));
+    const anchoredOwnersBySubject = subjectRefs.map(() => new Set<string>());
     const evidenceStartedAt = Date.now();
     const deadline = deps.subjectEvidenceDeadline === undefined
       ? evidenceStartedAt + SUBJECT_EVIDENCE_TIMEOUT_MS
@@ -1625,6 +1629,7 @@ async function routeConsultCore(
               all.push(unmeasured);
               continue;
             }
+            passageIndexes.forEach(index => anchoredOwnersBySubject[subjectIndex]!.add(usable[index]!.ownerId));
             if (Date.now() >= deadline) {
               recordFailure({ reason: 'deadline' });
               const unmeasured = usable.map(() => null as number | null);
@@ -1677,7 +1682,11 @@ async function routeConsultCore(
                   },
                 }]
               : []);
-            if (!observed.length) return { subject, status: 'unmeasured' as const, score: null };
+            if (!observed.length) {
+              const unanchored = usableOwners.has(ownerId) && !unresolvedSubjectRefs.includes(subject) &&
+                !anchoredOwnersBySubject[subjectIndex]!.has(ownerId);
+              return { subject, status: unanchored ? 'unanchored' as const : 'unmeasured' as const, score: null };
+            }
             const best = observed.reduce((a, b) => b.score > a.score ? b : a);
             return {
               subject,
@@ -1688,7 +1697,8 @@ async function routeConsultCore(
           });
           const status = unresolvedSubjectRefs.length || evidence.some(row => row.status === 'unmeasured')
             ? 'unmeasured'
-            : evidence.some(row => row.status === 'mismatch') ? 'mismatch' : 'supported';
+            : evidence.some(row => row.status === 'mismatch') ? 'mismatch'
+              : evidence.some(row => row.status === 'unanchored') ? 'unanchored' : 'supported';
           subjectCoverageByOwner.set(ownerId, { status, required: subjectRefs, evidence, unresolved: unresolvedSubjectRefs });
         }
       } catch (error) {
@@ -1697,6 +1707,7 @@ async function routeConsultCore(
     }
     const coverage = [...subjectCoverageByOwner.values()];
     const unmeasured = coverage.filter(row => row.status === 'unmeasured').length;
+    const unanchored = coverage.filter(row => row.status === 'unanchored').length;
     const budgetLimited = eligible.length - boundedOwners.length;
     base.subjectValidation = {
       ...(subjectRefs.length === 1 ? { subject: subjectRefs[0] } : {}),
@@ -1704,6 +1715,7 @@ async function routeConsultCore(
       threshold: SUBJECT_EVIDENCE_MIN_SCORE,
       evaluated: coverage.length - unmeasured,
       unmeasured,
+      ...(unanchored > 0 ? { unanchored } : {}),
       budgetLimited,
       limit: SUBJECT_EVIDENCE_OWNER_LIMIT,
       budgetMs: evidenceBudgetMs,

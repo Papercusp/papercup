@@ -506,6 +506,45 @@ describe('bounded subject evidence against real transcript SQL', () => {
     expect(measured.snapshot.subjectValidation?.failures).toBeUndefined();
   });
 
+  it('treats usable evidence missing one exact required anchor as unanchored, not an outage', async () => {
+    const sourceRef = 'packages/operator-core/lib/acceptance-rubric-vetting.ts';
+    const requiredTestRef = 'packages/operator-core/lib/agent-tools/plans/discovery-guidance-http.integration.test.ts';
+    const transcript = 'The implementation records the source rationale at ' + sourceRef;
+    await passage('subject-partial-anchor', transcript, 0.05);
+    const scoredSubjects: string[] = [];
+    const result = await routeConsult({
+      ...baseParams,
+      question: 'Review the implementation and its required discovery guidance test.',
+      subjectRefs: [sourceRef, requiredTestRef],
+      excludeOwners: ['agent-alpha', 'agent-beta', 'agent-subfloor', 'agent-machineonly', 'agent-looponly'],
+    }, deps(0, {
+      scoreSubjectEvidence: async (subject, texts) => {
+        scoredSubjects.push(subject);
+        expect(texts).toEqual([transcript]);
+        return texts.map(() => 0.9);
+      },
+    }));
+
+    expect(scoredSubjects).toEqual([sourceRef]);
+    expect(result.qualified).toEqual([]);
+    expect(result.verdict).toBe('no_qualified_responder');
+    expect(result.snapshot.degraded).toBeUndefined();
+    expect(result.snapshot.subjectValidation).toMatchObject({
+      subjects: [sourceRef, requiredTestRef], evaluated: 1, unmeasured: 0, unanchored: 1, budgetLimited: 0,
+    });
+    expect(result.snapshot.subjectValidation?.failures).toBeUndefined();
+    const candidate = result.snapshot.candidates.find(row => row.ownerId === 'subject-partial-anchor')!;
+    expect(candidate.subjectEvidenceCoverage).toMatchObject({
+      status: 'unanchored',
+      required: [sourceRef, requiredTestRef],
+      evidence: [
+        { subject: sourceRef, status: 'supported', score: 0.9 },
+        { subject: requiredTestRef, status: 'unanchored', score: null },
+      ],
+    });
+    expect(snapshotCandidateQualifies(result.snapshot, candidate)).toBe(false);
+  });
+
   it('freezes pending scorer phase evidence when the routing deadline wins', async () => {
     const text = 'Fixed computer:provision_desktop source receipt; private passage payload.';
     await passage('subject-deadline', text, 0);

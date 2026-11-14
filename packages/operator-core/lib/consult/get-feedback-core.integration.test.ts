@@ -2588,6 +2588,46 @@ describe('getFeedbackCore — honest no_qualified_responder', () => {
     });
   });
 
+  it('does not retry an unanchored subject as an evidence instrument outage', async () => {
+    const subject = 'packages/operator-core/lib/agent-tools/plans/discovery-guidance-http.integration.test.ts';
+    const unanchored = cand('unanchored-owner', { subjectEvidenceCoverage: {
+      status: 'unanchored', required: [subject],
+      evidence: [{ subject, status: 'unanchored', score: null }], unresolved: [],
+    } });
+    const route = routeOf([], { all: [unanchored] });
+    route.verdict = 'no_qualified_responder';
+    route.snapshot.subjectValidation = {
+      subjects: [subject], threshold: 0.6, evaluated: 1, unmeasured: 0,
+      unanchored: 1, budgetLimited: 0, limit: 8, unresolved: [],
+    };
+    const fixture = makeDeps(route);
+    const request = { ...baseReq, resolvedSubjectRefs: [subject], requestKey: 'unanchored-subject-no-retry' };
+    const accepted = await acceptFeedbackRequestCore(request, fixture.deps);
+    if ('error' in accepted) throw new Error(accepted.error);
+    await continueFeedbackRequestCore(WS, accepted.conversation_id, {
+      getSql: () => rootSql,
+      now: () => NOW,
+      execute: (payload, context) => getFeedbackCore(payload, { ...fixture.deps, acceptedRequest: context }),
+    });
+
+    const before = await stateRow(accepted.conversation_id);
+    expect(before.routing).toMatchObject({
+      request: { result: { verdict: 'no_qualified_responder', reason: 'below_floor' } },
+      subjectValidation: { unmeasured: 0, unanchored: 1 },
+    });
+    expect(before.routing).not.toHaveProperty('degraded');
+    const retries = await Promise.all([
+      acceptFeedbackRequestCore(request, fixture.deps), acceptFeedbackRequestCore(request, fixture.deps),
+    ]);
+    for (const retry of retries) expect(retry).toMatchObject({
+      conversation_id: accepted.conversation_id, state: 'no_qualified_responder', pending: false,
+      result: { verdict: 'no_qualified_responder', reason: 'below_floor' },
+    });
+    expect(await stateRow(accepted.conversation_id)).toEqual(before);
+    expect(fixture.routeCalls).toHaveLength(1);
+    expect(fixture.reached).toHaveLength(0);
+  });
+
   it.each([false, true])('does not rearm healthy bounded uncertainty on same-key retries (legacy label: %s)', async (legacy) => {
     const route = routeOf([]);
     route.verdict = 'relevance_unmeasured';
