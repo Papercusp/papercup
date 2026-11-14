@@ -51,6 +51,7 @@ vi.mock('./plan-verification-escape', async (orig) => ({
   readNonCodeDeliverableShipEvidence: vi.fn(async () => []),
 }));
 vi.mock('./rubrics', () => ({
+  autoRatifyRubricOnFirstScorecard: vi.fn().mockResolvedValue(null),
   getAcceptanceRubricsForPlan: vi.fn(),
   getRubric: vi.fn(),
   getRubricPlanRevision: vi.fn(),

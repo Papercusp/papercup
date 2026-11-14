@@ -1297,7 +1297,7 @@ export async function openSourceStoreForCut(inp: {
         }),
       retryOpts('backfill'),
     );
-    const { waitedMs } = await withPgRetry(
+    const { waitedMs, drainedThroughId, newerPending } = await withPgRetry(
       () =>
         (inp.waitImpl ?? waitForOperatorDrain)({
           pg: inp.pg ?? getOrgPg().sql,
@@ -1308,7 +1308,8 @@ export async function openSourceStoreForCut(inp: {
     );
     warn(
       `[cut-seed] refreshed via the live operator for ${inp.workspaceId}::${inp.hive}: ` +
-        `backfill enqueued=${backfill.enqueued} dropped=${backfill.dropped}; operator drained to zero in ${waitedMs}ms.`,
+        `backfill enqueued=${backfill.enqueued} dropped=${backfill.dropped}; operator drained through fence ` +
+        `id=${drainedThroughId ?? 'none (already zero)'} in ${waitedMs}ms; ${newerPending} newer row(s) replicate after the snapshot.`,
     );
   } else if (!inp.workspaceId) {
     warn('[cut-seed] no --workspace-id: skipping pre-cut corestore refresh (no DB scope to backfill/drain).');
@@ -1519,7 +1520,8 @@ export async function openSourceStoreForCut(inp: {
 // construction. Measured failure 2026-08-09T14:35Z: freeze onset ~14:30:14Z, drain resumed
 // 14:35:52Z (338s blackout), cut refused at 300s having done ~19k rows of real work.
 // WIDENING IS SAFE, and not a mask: this bounds only how long we WAIT, never what we SHIP —
-// the cut proceeds only at `undrained === 0`, so no extra wait can ever admit an omitted row.
+// the cut proceeds only once every row up to its fixed fence is drained, so no extra wait can
+// ever admit an omitted row.
 // A genuinely dead drain still never reaches 0 and still fails, just after one recycle's worth
 // of patience instead of before it. outbox-drain's own DRAIN_BACKLOG_STALL_MS (10min) and the
 // WI-5147 age/size detectors remain the escalation path for a truly-wedged drain.
@@ -1554,7 +1556,14 @@ export async function waitForOperatorDrain(inp: {
   readonly now?: () => number;
   readonly sleep?: (ms: number) => Promise<void>;
   readonly warn?: (msg: string) => void;
-}): Promise<{ undrained: number; waitedMs: number }> {
+}): Promise<{
+  undrained: number;
+  waitedMs: number;
+  /** The fixed fence the wait completed against (null when the total was already zero). */
+  drainedThroughId: string | null;
+  /** Rows newer than the fence still pending; they replicate after the snapshot. */
+  newerPending: number;
+}> {
   const stallMs = inp.stallMs ?? CUT_SEED_DRAIN_STALL_MS;
   const pollMs = inp.pollMs ?? 500;
   const now = inp.now ?? (() => Date.now());
@@ -1567,21 +1576,31 @@ export async function waitForOperatorDrain(inp: {
   // so any fixed total budget either fails a perfectly healthy cut or is so large it stops
   // catching a genuinely wedged operator. Track a fixed cohort of pending rows: arrivals
   // cannot demonstrate delivery, and a healthy drainer can make progress even when new
-  // writes keep the total backlog constant or growing. Once a cohort drains, start the
-  // next one; only the total reaching zero authorizes the snapshot.
-  let cohortThrough: string | null = null;
-  let lastCohortRemaining = Number.POSITIVE_INFINITY;
+  // writes keep the total backlog constant or growing.
+  //
+  // The cohort is a FIXED FENCE, not a rolling one (WI-6554700010048913). Waiting for the
+  // TOTAL to reach zero livelocked a live cut for 18+ min: with fleet writes arriving
+  // continuously and the drainer landing in bursts (~82s mean latency measured), the
+  // steady-state backlog never touches zero at a 500ms poll, and every drained cohort
+  // counted as progress, so the stall clock never fired either. The fence is captured at
+  // the first poll, AFTER backfill returned, so it covers every backfilled row. A zero-total
+  // check was never stronger than this: it is itself point-in-time, and rows written
+  // between it and the snapshot are omitted and replicate later either way. Both rules
+  // guarantee "every row up to instant T is drained"; the fence fixes T so the wait ends.
+  let fenceId: string | null = null;
+  let lastFenceRemaining = Number.POSITIVE_INFINITY;
   let lastProgressAt = now();
   let lastWarnAt = 0;
 
   for (;;) {
+    const queriedFence: string | null = fenceId;
     const [state] = await inp.pg<({
       undrained: number;
       cohort_remaining: number;
       newest_undrained_id: string | null;
     } & SeedOutboxQuarantine)[]>`
       SELECT count(*)::int AS undrained,
-             count(*) FILTER (WHERE id <= ${cohortThrough}::bigint)::int AS cohort_remaining,
+             count(*) FILTER (WHERE id <= ${queriedFence}::bigint)::int AS cohort_remaining,
              max(id)::text AS newest_undrained_id,
              count(*) FILTER (WHERE (to_jsonb(o.*) ->> 'quarantined_at') IS NOT NULL)::int AS quarantined,
              min(id) FILTER (WHERE (to_jsonb(o.*) ->> 'quarantined_at') IS NOT NULL)::text AS first_quarantined_id
@@ -1594,14 +1613,24 @@ export async function waitForOperatorDrain(inp: {
     // from other writers must not keep this impossible wait alive indefinitely.
     refuseQuarantinedSeedOutbox(state, inp.workspaceId, inp.hive);
     const { undrained } = state;
-    if (undrained === 0) return { undrained: 0, waitedMs: now() - started };
+    if (undrained === 0) {
+      return { undrained: 0, waitedMs: now() - started, drainedThroughId: queriedFence, newerPending: 0 };
+    }
 
-    if (cohortThrough === null || state.cohort_remaining === 0) {
-      cohortThrough = state.newest_undrained_id;
-      lastCohortRemaining = undrained;
+    if (queriedFence === null) {
+      // First poll (or a poll that saw no id): `id <= NULL` counted nothing, so arm the fence.
+      fenceId = state.newest_undrained_id;
+      lastFenceRemaining = undrained;
       lastProgressAt = now();
-    } else if (state.cohort_remaining < lastCohortRemaining) {
-      lastCohortRemaining = state.cohort_remaining;
+    } else if (state.cohort_remaining === 0) {
+      return {
+        undrained: 0,
+        waitedMs: now() - started,
+        drainedThroughId: queriedFence,
+        newerPending: undrained,
+      };
+    } else if (state.cohort_remaining < lastFenceRemaining) {
+      lastFenceRemaining = state.cohort_remaining;
       lastProgressAt = now();
     }
     const stalledFor = now() - lastProgressAt;

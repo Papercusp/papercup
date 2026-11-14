@@ -1230,26 +1230,44 @@ describe('waitForOperatorDrain (WI-4487 — the operator owns the log append)', 
     expect(calls).toBe(4);
   });
 
-  it('starts another pending cohort without treating the completed cohort as a zero backlog', async () => {
+  it('completes at the fixed fence while steady arrivals keep the total above zero (WI-6554700010048913)', async () => {
+    // Regression: the 0.0.34 cut waited 18+ min because the total never hit zero under
+    // continuous fleet writes. The fence is armed once and never re-armed.
     const states = [
       { undrained: 5, cohort_remaining: 0, newest_undrained_id: '9007199254740993' },
-      { undrained: 9, cohort_remaining: 0, newest_undrained_id: '9007199254741002' },
-      { undrained: 9, cohort_remaining: 9, newest_undrained_id: '9007199254741002' },
-      { undrained: 9, cohort_remaining: 9, newest_undrained_id: '9007199254741002' },
-      { undrained: 0, cohort_remaining: 0, newest_undrained_id: null },
+      { undrained: 9, cohort_remaining: 4, newest_undrained_id: '9007199254741002' },
+      { undrained: 12, cohort_remaining: 0, newest_undrained_id: '9007199254741010' },
     ];
     let calls = 0;
     const pg = vi.fn(async (strings: TemplateStringsArray, through: string | null) => {
       expect(strings.join('?')).toContain('id <= ?::bigint');
-      expect(through).toBe([null, '9007199254740993', '9007199254741002', '9007199254741002'][calls]);
+      // Big ids stay strings; the fence never advances to the newer arrivals.
+      expect(through).toBe([null, '9007199254740993', '9007199254740993'][calls]);
       return [states[calls++]];
     }) as never;
+    let t = 0;
+    const res = await waitForOperatorDrain({
+      ...base, pg, stallMs: 1_000, now: () => t,
+      sleep: async () => { t += 600; }, warn: () => {},
+    });
+    expect(calls).toBe(3);
+    expect(res).toMatchObject({ undrained: 0, drainedThroughId: '9007199254740993', newerPending: 12 });
+  });
+
+  it('still refuses when the fenced rows stop draining, however much newer traffic arrives', async () => {
+    const states = [
+      { undrained: 5, cohort_remaining: 0, newest_undrained_id: '50' },
+      { undrained: 9, cohort_remaining: 5, newest_undrained_id: '60' },
+      { undrained: 20, cohort_remaining: 5, newest_undrained_id: '70' },
+    ];
+    let calls = 0;
+    const pg = (async () => [states[Math.min(calls++, states.length - 1)]]) as never;
     let t = 0;
     await expect(waitForOperatorDrain({
       ...base, pg, stallMs: 1_000, now: () => t,
       sleep: async () => { t += 600; }, warn: () => {},
-    })).rejects.toThrow(/NO progress draining 9/);
-    expect(calls).toBe(4);
+    })).rejects.toThrow(/NO progress draining 20/);
+    expect(calls).toBe(3);
   });
 
   it('keeps waiting while the backlog SHRINKS, however long it takes (a real backfill is ~8k rows)', async () => {
