@@ -93,7 +93,7 @@ describe('pui-loop prompt profile (D-034 / WI-583183)', () => {
       join(projectDir, 'packages/operator-core/lib/endpoint-route/routes/agent-chats/index.ts'),
       'utf8',
     );
-    expect(route).toContain("import { assembleRolePrompt as assembleOperatorRolePrompt } from '../../../prompt-assembly'");
+    expect(route).toMatch(/import\s*\{[^}]*\bassembleRolePrompt\s+as\s+assembleOperatorRolePrompt\b[^}]*\}\s*from\s*['"]\.\.\/\.\.\/\.\.\/prompt-assembly['"]/);
     expect(route).toMatch(/chat\.role === 'operator'[\s\S]*useLoopEngine[\s\S]*profile: 'pui-loop'/);
     expect(route).toMatch(/profile: 'pui-loop'[\s\S]*projectDir[\s\S]*toolNames:/);
   });
