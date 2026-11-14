@@ -84,7 +84,11 @@ import {
   tomlEscape,
   type CodexModelCatalogMaterialized,
 } from '@papercusp/orchestrator/codex-gateway-config';
-import { readCodexLockRuntimeVerdict, type CodexLockRuntimeVerdict } from './codex-lock-runtime';
+import {
+  readCodexLockRuntimeVerdict,
+  type CodexLockMode,
+  type CodexLockRuntimeVerdict,
+} from './codex-lock-runtime';
 import { lintInstructionText, type InstructionLintReport, type InstructionRuntimeContext } from './instruction-lint';
 import {
   buildContextBudget,
@@ -865,6 +869,8 @@ export function writeCodexLockHooks(
   codexHome: string,
   opts: {
     lockSid?: string;
+    /** Only a verified runtime may install automatic per-edit acquisition. */
+    lockMode?: CodexLockMode;
     coordSid?: string;
     activitySid?: string;
     /** Durable adv_sessions row id for exact lifecycle re-anchors. */
@@ -889,7 +895,8 @@ export function writeCodexLockHooks(
   const dir = installedHookPath('cc');
   const pre = join(dir, 'pretooluse-locks-acquire.sh');
   const post = join(dir, 'posttooluse-locks-release.sh');
-  if (!existsSync(pre) || !existsSync(post)) return false;
+  const automaticLocks = opts.lockMode === 'automatic';
+  if (!existsSync(post) || (automaticLocks && !existsSync(pre))) return false;
   const root = shellSingleQuote(resolveWorkspaceRoot());
   const headless = opts.headless ?? process.env.PAPERCUSP_PSU_HEADLESS === '1';
   // Codex gives hook commands a minimal/stale environment. The lock hooks MUST
@@ -1094,12 +1101,15 @@ export function writeCodexLockHooks(
     });
   }
 
-  const preToolUse: CodexHook[] = [
-    {
-      matcher: CODEX_LOCK_PRE_MATCHER,
-      hooks: [{ type: 'command', command: `PAPERCUSP_CODEX_HOOK=1 PAPERCUSP_WORKSPACE_ROOT=${root}${lockIdentity} ${pre}` }],
-    },
-  ];
+  // Manual mode means the agent acquires the edit lock explicitly. Keep the
+  // PostToolUse release hook below so a config repaired from automatic mode can
+  // still drain any cached grant, but do not race the explicit claim here.
+  const preToolUse: CodexHook[] = automaticLocks
+    ? [{
+        matcher: CODEX_LOCK_PRE_MATCHER,
+        hooks: [{ type: 'command', command: `PAPERCUSP_CODEX_HOOK=1 PAPERCUSP_WORKSPACE_ROOT=${root}${lockIdentity} ${pre}` }],
+      }]
+    : [];
 
   // EI-18801362747285637: Claude already installed this guard globally, but
   // managed Codex homes carried only the lock hook. A Codex apply_patch could
@@ -1386,6 +1396,7 @@ function repairSuCodexHomeIdentityImpl(
   const hookOwners = Array.from(hooksText.matchAll(/PAPERCUSP_(?:LOCK_)?SID='([^']+)'/g), (match) => match[1]);
   const hooksExpected = diagnostics.lockEnforcement === 'hooks-configured' || existsSync(hooksPath);
   const expectedAdvSessionId = numericAdvSessionId(advSessionId);
+  const lockMode = readCodexLockRuntimeVerdict({ ownerId: sid, hooksConfigured: true }).lockMode;
   const hooksMatch = hooksExpected
     ? hookOwners.length > 0 && hookOwners.every((owner) => owner === sid)
     : hookOwners.length === 0;
@@ -1393,15 +1404,25 @@ function repairSuCodexHomeIdentityImpl(
     if (!hooksExpected) return true;
     try {
       const parsed = JSON.parse(hooksText) as {
-        hooks?: Record<string, Array<{ hooks?: Array<{ command?: string }> }>>;
+        hooks?: Record<string, Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>>;
       };
       const expected = `PAPERCUSP_WORKSPACE_ROOT=${shellSingleQuote(resolveWorkspaceRoot())}`;
-      return [
-        ['PreToolUse', 'pretooluse-locks-acquire.sh'],
-        ['PostToolUse', 'posttooluse-locks-release.sh'],
-      ].every(([event, script]) => parsed.hooks?.[event]?.some((group) =>
-        group.hooks?.some((hook) => hook.command?.includes(script) && hook.command.includes(expected)),
-      ) === true);
+      const acquireGroups = parsed.hooks?.PreToolUse?.filter((group) =>
+        group.hooks?.some((hook) => hook.command?.includes('pretooluse-locks-acquire.sh')),
+      ) ?? [];
+      const acquireMatches = lockMode === 'automatic'
+        ? acquireGroups.length === 1 &&
+          acquireGroups[0].matcher === CODEX_LOCK_PRE_MATCHER &&
+          acquireGroups[0].hooks?.some((hook) =>
+            hook.command?.includes('pretooluse-locks-acquire.sh') && hook.command.includes(expected),
+          ) === true
+        : acquireGroups.length === 0;
+      const releaseMatches = parsed.hooks?.PostToolUse?.some((group) =>
+        group.matcher === CODEX_LOCK_POST_MATCHER && group.hooks?.some((hook) =>
+          hook.command?.includes('posttooluse-locks-release.sh') && hook.command.includes(expected),
+        ),
+      ) === true;
+      return acquireMatches && releaseMatches;
     } catch {
       return false;
     }
@@ -1566,6 +1587,7 @@ function repairSuCodexHomeIdentityImpl(
 
   const hooksInstalled = writeCodexLockHooks(codexHome, {
     lockSid: sid,
+    lockMode,
     coordSid: sid,
     activitySid: sid,
     advSessionId,
@@ -1725,8 +1747,11 @@ export function writeRoleCodexHome(opts: WriteRoleCodexHomeOptions): RoleCodexHo
   // session is a WORKER, so it also reports to the activity bridge (under its
   // session identity); no coordSid → the merged hook's coord fold stays OFF
   // (PAPERCUSP_COORD_FOLD=0, roles don't ride the SU coord bus).
+  const lockOwnerId = opts.sid ?? `role-${opts.sessionKey}`;
+  const lockMode = readCodexLockRuntimeVerdict({ ownerId: lockOwnerId, hooksConfigured: true }).lockMode;
   const hooksInstalled = writeCodexLockHooks(codexHome, {
     lockSid: opts.sid,
+    lockMode,
     advSessionId: opts.sessionKey,
     activitySid: opts.sid,
     objectiveSid: opts.sid,
@@ -1736,7 +1761,7 @@ export function writeRoleCodexHome(opts: WriteRoleCodexHomeOptions): RoleCodexHo
     mcpUrl: opts.mcpUrl,
   });
   const lockRuntime = readCodexLockRuntimeVerdict({
-    ownerId: opts.sid ?? `role-${opts.sessionKey}`,
+    ownerId: lockOwnerId,
     hooksConfigured: hooksInstalled,
   });
   const agentsText = codexAgentsPrompt(opts.promptText, lockRuntime);
@@ -2348,8 +2373,10 @@ function writeSuCodexHomeImpl(opts: WriteSuCodexHomeOptions, ownerSidIo?: CodexH
   // trip, parity with the Claude global-settings coord entry, EI-11405) — an
   // SU/engineer session is a worker too, so it gets the activity bridge either
   // way; both keyed to the session id.
+  const lockMode = readCodexLockRuntimeVerdict({ ownerId: opts.sid, hooksConfigured: true }).lockMode;
   const hooksInstalled = writeCodexLockHooks(codexHome, {
     lockSid: opts.sid,
+    lockMode,
     coordSid: opts.sid,
     activitySid: opts.sid,
     advSessionId: opts.sessionKey,

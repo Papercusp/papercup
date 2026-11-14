@@ -600,8 +600,9 @@ describe('writeRoleCodexHome', () => {
 
   it('P-030/D-010: installs the SU-locks hooks.json (codex discovery file) when hooks are present', async () => {
     await installFakeHooks();
+    installOwnerRuntimeProof('role-7');
     const writeRoleCodexHome = await load();
-    const out = writeRoleCodexHome({ sessionKey: 7, mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'P' });
+    const out = writeRoleCodexHome({ sessionKey: 7, mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'P', sid: 'role-7' });
     // D-010: codex reads hooks.json (NOT settings.json, which it ignores).
     expect(existsSync(join(out.codexHome, 'settings.json'))).toBe(false);
     const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
@@ -654,12 +655,13 @@ describe('writeRoleCodexHome', () => {
 
   it('uses the declared canonical workspace for hooks instead of a serving candidate (EI-25920487778813638)', async () => {
     await installFakeHooks();
+    installOwnerRuntimeProof('role-canonical-hook');
     const workspace = join(fakeHome, 'workspace');
     vi.stubEnv('PAPERCUSP_CANONICAL_TREE', join(workspace, 'papercusp'));
     vi.stubEnv('PAPERCUSP_WORKSPACE_ROOT', join(workspace, 'papercusp-staging.generations', '.candidate-test'));
     try {
       const writeRoleCodexHome = await load();
-      const out = writeRoleCodexHome({ sessionKey: 'canonical-hook-scope', mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'P' });
+      const out = writeRoleCodexHome({ sessionKey: 'canonical-hook-scope', mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'P', sid: 'role-canonical-hook' });
       const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
       for (const event of ['PreToolUse', 'PostToolUse']) {
         expect(hooks.hooks[event][0].hooks[0].command).toContain(`PAPERCUSP_WORKSPACE_ROOT='${workspace}'`);
@@ -671,11 +673,12 @@ describe('writeRoleCodexHome', () => {
 
   it('uses the hook home default when no workspace is declared (EI-25920487778813638)', async () => {
     await installFakeHooks();
+    installOwnerRuntimeProof('role-default-hook');
     vi.stubEnv('PAPERCUSP_CANONICAL_TREE', '');
     vi.stubEnv('PAPERCUSP_WORKSPACE_ROOT', '');
     try {
       const writeRoleCodexHome = await load();
-      const out = writeRoleCodexHome({ sessionKey: 'default-hook-scope', mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'P' });
+      const out = writeRoleCodexHome({ sessionKey: 'default-hook-scope', mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'P', sid: 'role-default-hook' });
       const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
       expect(hooks.hooks.PreToolUse[0].hooks[0].command).toContain(`PAPERCUSP_WORKSPACE_ROOT='${join(fakeHome, 'papercupai-workspace')}'`);
     } finally {
@@ -728,6 +731,7 @@ describe('writeRoleCodexHome', () => {
 
   it('a role session WITH a sid gets the activity-bridge hook (worker activity → fleet view) with the coord fold OFF', async () => {
     await installFakeHooks();
+    installOwnerRuntimeProof('role-abc-9');
     const writeRoleCodexHome = await load();
     const out = writeRoleCodexHome({
       sessionKey: 71,
@@ -2129,6 +2133,12 @@ describe('writeSuCodexHome', () => {
     expect(diag.lockOwnerSid).toBe('s');
     expect(readFileSync(out.agentsPath, 'utf8')).toContain('papercusp-rule:file-locking=explicit-manual');
     const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
+    expect(hooks.hooks.PreToolUse.some((group: { hooks: { command: string }[] }) =>
+      group.hooks.some((hook) => hook.command.includes('pretooluse-locks-acquire.sh')),
+    )).toBe(false);
+    expect(hooks.hooks.PostToolUse.some((group: { hooks: { command: string }[] }) =>
+      group.hooks.some((hook) => hook.command.includes('posttooluse-locks-release.sh')),
+    )).toBe(true);
     expect(hooks.hooks.PreCompact).toHaveLength(1);
     expect(hooks.hooks.PreCompact[0].matcher).toBe('^auto$');
     expect(hooks.hooks.PreCompact[0].hooks[0].timeout).toBe(600);
@@ -2161,6 +2171,13 @@ describe('writeSuCodexHome', () => {
     const agents = readFileSync(out.agentsPath, 'utf8');
     const diag = JSON.parse(readFileSync(join(out.codexHome, 'papercusp-diagnostics.json'), 'utf8'));
     expect(diag).toMatchObject({ lockMode: 'automatic', hookHealth: 'verified', runtimeProbed: true });
+    const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
+    expect(hooks.hooks.PreToolUse.some((group: { hooks: { command: string }[] }) =>
+      group.hooks.some((hook) => hook.command.includes('pretooluse-locks-acquire.sh')),
+    )).toBe(true);
+    expect(hooks.hooks.PostToolUse.some((group: { hooks: { command: string }[] }) =>
+      group.hooks.some((hook) => hook.command.includes('posttooluse-locks-release.sh')),
+    )).toBe(true);
     expect(agents).not.toContain('old static lock advice');
     expect(agents.match(/papercusp-rule:file-locking=/g)).toHaveLength(1);
     expect(agents).toContain('papercusp-rule:file-locking=automatic-hooks');
@@ -2174,6 +2191,38 @@ describe('writeSuCodexHome', () => {
         }),
       ]),
     });
+  });
+
+  it('repairs the acquire hook when the owner runtime changes between manual and automatic', async () => {
+    await installFakeHooks();
+    const { writeSuCodexHome, ensureSuCodexHomeConfig } = await loadMod();
+    const opts = {
+      sessionKey: 'lock-mode-resume',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText: 'PRESERVE',
+      sid: 'su-lock-mode-resume',
+    };
+    const home = writeSuCodexHome(opts);
+    const hooksPath = join(home.codexHome, 'hooks.json');
+    const hasAcquire = () => JSON.parse(readFileSync(hooksPath, 'utf8')).hooks.PreToolUse.some(
+      (group: { hooks: { command: string }[] }) =>
+        group.hooks.some((hook) => hook.command.includes('pretooluse-locks-acquire.sh')),
+    );
+    const hasRelease = () => JSON.parse(readFileSync(hooksPath, 'utf8')).hooks.PostToolUse.some(
+      (group: { hooks: { command: string }[] }) =>
+        group.hooks.some((hook) => hook.command.includes('posttooluse-locks-release.sh')),
+    );
+
+    expect(hasAcquire()).toBe(false);
+    expect(hasRelease()).toBe(true);
+    installOwnerRuntimeProof(opts.sid);
+    expect(ensureSuCodexHomeConfig(opts)).toMatchObject({ identityRepaired: true });
+    expect(hasAcquire()).toBe(true);
+
+    rmSync(join(fakeHome, '.papercusp', 'locks-cache'), { recursive: true, force: true });
+    expect(ensureSuCodexHomeConfig(opts)).toMatchObject({ identityRepaired: true });
+    expect(hasAcquire()).toBe(false);
+    expect(hasRelease()).toBe(true);
   });
 
   it('reads non-secret CODEX_HOME diagnostics, including latest rollout id and resume command', async () => {
@@ -2253,6 +2302,7 @@ describe('writeSuCodexHome', () => {
 
   it('adds the coord-folding activity hook (PostToolUse, matcher .*, baked PAPERCUSP_SID = the session id)', async () => {
     await installFakeHooks();
+    installOwnerRuntimeProof('su-abc-123');
     const { writeSuCodexHome } = await loadMod();
     const out = writeSuCodexHome({
       sessionKey: 12,
@@ -2621,6 +2671,7 @@ describe('writeCodexLockHooks — context-injection hooks (P-004)', () => {
 
   it('omits the dispatcher when it is absent while keeping installed owner-provenance capture', async () => {
     await installFakeHooks(); // provenance hook present; dispatcher deliberately absent
+    installOwnerRuntimeProof('role-inject-42');
     const writeRoleCodexHome = await load();
     const out = writeRoleCodexHome({
       sessionKey: 42,
