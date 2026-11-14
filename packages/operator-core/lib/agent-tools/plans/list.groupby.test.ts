@@ -27,6 +27,7 @@ const M = vi.hoisted(() => ({
   listPlanIndexRows: vi.fn(async (_opts?: unknown) => [] as unknown[]),
   listPlanIndexRowsForWorkspace: vi.fn(async (_opts?: unknown) => [] as unknown[]),
   getPlanContentsBySlugs: vi.fn(async () => new Map<string, string>()),
+  getPlanContentsByHarnessAndSlugs: vi.fn(async () => new Map<string, Map<string, string>>()),
   resolveHarnessPlansDir: vi.fn(async (slug: string) => ({
     harnessSlug: slug,
   })),
@@ -48,6 +49,7 @@ vi.mock('./source', async (orig) => {
     listPlanIndexRows: M.listPlanIndexRows,
     listPlanIndexRowsForWorkspace: M.listPlanIndexRowsForWorkspace,
     getPlanContentsBySlugs: M.getPlanContentsBySlugs,
+    getPlanContentsByHarnessAndSlugs: M.getPlanContentsByHarnessAndSlugs,
     resolveHarnessPlansDir: M.resolveHarnessPlansDir,
   };
 });
@@ -64,6 +66,7 @@ vi.mock('../../issue-blocks-merge', async (orig) => {
   };
 });
 vi.mock('../../scout/routed-ledger', () => ({
+  recordRoutedIdea: vi.fn(async () => undefined),
   readScoutPlanRefs: vi.fn(async () => new Set<string>()),
   readRoutedIdeas: vi.fn(async () => []),
 }));
@@ -140,6 +143,10 @@ beforeEach(async () => {
   setL2EnabledForTests(false);
   M.listPlanIndexRows.mockReset();
   M.listPlanIndexRows.mockResolvedValue([]);
+  M.listPlanIndexRowsForWorkspace.mockReset();
+  M.listPlanIndexRowsForWorkspace.mockResolvedValue([]);
+  M.getPlanContentsByHarnessAndSlugs.mockReset();
+  M.getPlanContentsByHarnessAndSlugs.mockResolvedValue(new Map());
   M.readPlanListLifecycleSignals.mockReset();
   M.readPlanListLifecycleSignals.mockResolvedValue({ activity: new Map(), acceptance: new Map() });
   setFlagOverridesForTest({ [CACHE_LAYER]: false });
@@ -155,6 +162,33 @@ afterEach(async () => {
 });
 
 describe('plans:list — groupBy aggregates', () => {
+  it('batches workspace-wide projection gaps once and keeps duplicate slugs scoped by harness', async () => {
+    M.listPlanIndexRowsForWorkspace.mockResolvedValue([
+      row({ planSlug: 'shared-slug', harnessSlug: 'hive-alpha' }),
+      row({ planSlug: 'shared-slug', harnessSlug: 'hive-beta' }),
+    ]);
+    M.getPlanContentsByHarnessAndSlugs.mockResolvedValue(new Map([
+      ['hive-alpha', new Map([
+        ['shared-slug', '## Phase 1\n\n- **P-001** `todo` alpha item\n'],
+      ])],
+      ['hive-beta', new Map([
+        ['shared-slug', '## Phase 1\n\n- **P-001** `todo` beta one\n- **P-002** `todo` beta two\n'],
+      ])],
+    ]));
+
+    const { plans } = await run({ workspaceWide: true });
+
+    expect(M.getPlanContentsByHarnessAndSlugs).toHaveBeenCalledTimes(1);
+    expect(M.getPlanContentsByHarnessAndSlugs).toHaveBeenCalledWith([
+      { harnessSlug: 'hive-alpha', planSlug: 'shared-slug' },
+      { harnessSlug: 'hive-beta', planSlug: 'shared-slug' },
+    ], 'ws-groupby');
+    expect(plans).toEqual(expect.arrayContaining([
+      expect.objectContaining({ harness: 'hive-alpha', slug: 'shared-slug', itemCounts: { todo: 1 } }),
+      expect.objectContaining({ harness: 'hive-beta', slug: 'shared-slug', itemCounts: { todo: 2 } }),
+    ]));
+  });
+
   it('derives one-time vs triggered from schedule, external binding, or either plan-input schema source', async () => {
     expect(derivePlanTriggerSources(triggerRow())).toEqual([]);
     expect(derivePlanTriggerSources(triggerRow({ schedule: { cron: '0 9 * * *' } }))).toEqual(['schedule']);

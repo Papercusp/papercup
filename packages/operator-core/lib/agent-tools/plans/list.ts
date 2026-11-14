@@ -16,6 +16,7 @@ import {
   listPlanIndexRows,
   listPlanIndexRowsForWorkspace,
   getPlanContentsBySlugs,
+  getPlanContentsByHarnessAndSlugs,
   resolveHarnessPlansDir,
   resolvePlanScope,
   isUnknownPlanScopeError,
@@ -750,6 +751,22 @@ export default defineTool({
           }));
         const lifecycleNow = new Date().toISOString();
 
+        // Workspace-wide reads can return rows from many harnesses. Fetch all
+        // projection-gap content with one workspace-scoped transaction and keep
+        // harness+slug identity so duplicate slugs cannot cross-contaminate rows.
+        const gapKeys = batches.flatMap(({ harnessSlug, rows }) => rows
+          .filter((row) => !row.isLegacy && row.items.length === 0)
+          .map((row) => ({ harnessSlug, planSlug: row.planSlug })));
+        let gapContents = new Map<string, Map<string, string>>();
+        if (gapKeys.length > 0) {
+          try {
+            gapContents = await traceNamedQueryStage('plans-list-gap-content-read', () =>
+              getPlanContentsByHarnessAndSlugs(gapKeys, workspaceId));
+          } catch {
+            /* counts for projection-gap rows degrade to {} */
+          }
+        }
+
         for (const { harnessSlug, rows } of batches) {
           // Index-only rows (audit P-042 — EI-98/EI-174/EI-175): every field this
           // row needs lives in the harness_plans projection columns, so the
@@ -762,18 +779,6 @@ export default defineTool({
           // below. Best-effort — on failure their counts degrade to {}.
           // Fetched in compact mode too: the derived lifecycle needs every row's
           // items, and a gap row read as itemless would report `no-items`.
-          const gapSlugs = rows.filter((r) => !r.isLegacy && r.items.length === 0).map((r) => r.planSlug);
-          let gapContents = new Map<string, string>();
-          if (gapSlugs.length > 0) {
-            try {
-              gapContents = await traceNamedQueryStage('plans-list-gap-content-read', () => getPlanContentsBySlugs(gapSlugs, {
-                harnessSlug,
-              }));
-            } catch {
-              /* counts for gap rows degrade to {} */
-            }
-          }
-
           const itemsForRow = (row: PlanIndexRow): PlanItem[] => {
             if (row.items.length > 0) {
               return row.items.map((i) => ({
@@ -788,7 +793,7 @@ export default defineTool({
                 rawLine: '',
               }));
             }
-            const content = gapContents.get(row.planSlug);
+            const content = gapContents.get(harnessSlug)?.get(row.planSlug);
             return content ? parsePlan(content).items : [];
           };
 

@@ -71,7 +71,13 @@ vi.mock('../../../hive-federation', async (original) => {
   };
 });
 
-import { getPlanItemRow, listPlanIndexRows, listPlanIndexRowsForWorkspace, planItemsForRow } from '../source';
+import {
+  getPlanContentsByHarnessAndSlugs,
+  getPlanItemRow,
+  listPlanIndexRows,
+  listPlanIndexRowsForWorkspace,
+  planItemsForRow,
+} from '../source';
 
 beforeEach(() => {
   H.statements.length = 0;
@@ -197,5 +203,31 @@ The plan is under test.
     expect(H.statements[0]!.text).toContain('input_schema IS NOT NULL AS has_input_schema');
     expect(H.statements[0]!.text).toContain('FROM harness_shared.trigger_bindings');
     expect(H.statements[0]!.text).toContain('tb.detached_at IS NULL');
+  });
+
+  it('fetches exact harness+slug content pairs in one workspace-scoped query', async () => {
+    H.rows.push([
+      { harness_slug: 'hive-alpha', plan_slug: 'shared-slug', content: 'alpha content' },
+      { harness_slug: 'hive-beta', plan_slug: 'shared-slug', content: 'beta content' },
+    ]);
+
+    const contents = await getPlanContentsByHarnessAndSlugs([
+      { harnessSlug: 'hive-alpha', planSlug: 'shared-slug' },
+      { harnessSlug: 'hive-beta', planSlug: 'shared-slug' },
+    ], 'shape-workspace');
+
+    expect(H.statements).toHaveLength(1);
+    expect(H.statements[0]!.text).toContain('FROM unnest($1::text[], $2::text[]) AS requested(harness_slug, plan_slug)');
+    expect(H.statements[0]!.text).toContain('JOIN harness_shared.harness_plans hp');
+    expect(H.statements[0]!.text).toContain('hp.workspace_id = $3');
+    expect(H.statements[0]!.values).toEqual([
+      ['hive-alpha', 'hive-beta'],
+      ['shared-slug', 'shared-slug'],
+      'shape-workspace',
+    ]);
+    expect(contents).toEqual(new Map([
+      ['hive-alpha', new Map([['shared-slug', 'alpha content']])],
+      ['hive-beta', new Map([['shared-slug', 'beta content']])],
+    ]));
   });
 });

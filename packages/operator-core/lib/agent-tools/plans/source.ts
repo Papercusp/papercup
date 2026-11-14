@@ -1509,6 +1509,44 @@ export async function getPlanContentsBySlugs(
 }
 
 /**
+ * Batched content fetch for projection gaps spanning multiple harnesses in one
+ * workspace. Preserve the composite plan identity: slugs are only unique within
+ * a harness, and workspace-wide plans:list can contain the same slug more than
+ * once. Pair the arrays through unnest so the query fetches only requested rows
+ * instead of their harness × slug cross-product.
+ */
+export async function getPlanContentsByHarnessAndSlugs(
+  keys: Array<{ harnessSlug: string; planSlug: string }>,
+  workspaceId: string,
+): Promise<Map<string, Map<string, string>>> {
+  if (keys.length === 0) return new Map();
+  const harnessSlugs = keys.map((key) => key.harnessSlug);
+  const planSlugs = keys.map((key) => key.planSlug);
+  const rows = await withWorkspace(workspaceId, async (tx) => tx<Array<{
+    harness_slug: string;
+    plan_slug: string;
+    content: string;
+  }>>`
+    SELECT hp.harness_slug, hp.plan_slug, hp.content
+      FROM unnest(${harnessSlugs}::text[], ${planSlugs}::text[]) AS requested(harness_slug, plan_slug)
+      JOIN harness_shared.harness_plans hp
+        ON hp.harness_slug = requested.harness_slug
+       AND hp.plan_slug = requested.plan_slug
+     WHERE hp.workspace_id = ${workspaceId}
+  `);
+  const contents = new Map<string, Map<string, string>>();
+  for (const row of rows) {
+    let bySlug = contents.get(row.harness_slug);
+    if (!bySlug) {
+      bySlug = new Map();
+      contents.set(row.harness_slug, bySlug);
+    }
+    bySlug.set(row.plan_slug, row.content);
+  }
+  return contents;
+}
+
+/**
  * Return only plan slugs whose canonical content declares the spec-triad
  * policy. This metadata probe lets `plans:items` preserve declaration
  * precedence without transferring every plan body on the index path.
