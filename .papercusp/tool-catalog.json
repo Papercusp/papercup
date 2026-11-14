@@ -23052,7 +23052,7 @@
       "guidance": {
         "when": "Before activation read the COMPLETE source conversation; map every requirement, boundary, constraint, correction, rejection, decision, dependency, sequence, acceptance condition, open question, follow-up. ## Requirements: **R-N — Title.** outcome; use a fenced `requirement` JSON block for METHOD/check/layers. Design needs a BAR-to-work map; ordinary bullet lists do not satisfy the BAR parser. Finalize incorporated Discovery with { slug, phase:'discovery' } before implementation review. Completion cites actual code.",
         "notWhen": "Rubrics: scorecards:emit. Decisions: plans:add-decision.",
-        "chaining": "Brief → scoped discovery → findings incorporated via plans:set-content → discovery audit → full independent implementation review → activation → start. Completion → rubric/scorecard → shipped."
+        "chaining": "Brief → scoped discovery → findings incorporated via plans:set-content → discovery audit → full independent implementation review → plans:get { slug, harness, activationReadiness:true } → activation → start. Quality and its independent grading audit precede contract critique. A nested start shares its actual consult advice with this response; history and truthful consulted/reason/id disposition remain required. Completion → rubric/scorecard → shipped."
       }
     },
     {
@@ -24020,9 +24020,9 @@
         "researcher"
       ],
       "guidance": {
-        "when": "You have an exact slug and need the plan contents. In operator/superuser scope, the slug auto-resolves its owning harness within the caller's workspace; pass a concrete `harness` (for example, 'papercusp') when you need to constrain or disambiguate that lookup. `harness: 'all'` is only valid in an unscoped (--all-workspaces) session.",
+        "when": "Read an exact slug from PG. Pass a concrete harness to constrain/disambiguate lookup; operator scope resolves its owner within the workspace. harness:'all' requires an unscoped session.",
         "notWhen": "You don't know the slug — call plans:list first. Item-only queries across plans should use plans:items.",
-        "chaining": "plans:list → plans:get { slug } (or { slug, harness } to constrain scope) → optionally plans:items for cross-plan picks."
+        "chaining": "plans:list → plans:get { slug, harness, activationReadiness:true } before activation audit/start: inspect the complete stage population, canonical codes, dependencies and next actions. Detail is bounded with explicit counts; unknown/waiting stages need resolution. The preview is read-only and advisory; canonical start and execution guards still apply. Use plans:items for cross-plan picks."
       }
     },
     {
@@ -26859,9 +26859,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "After scoped Discovery findings are incorporated and finalized with plans:audit { slug, phase:'discovery' }, full implementation review and the complete source-conversation activation audit. First-class clauses must follow `plans:evaluate-spec-quality` → `scorecards:emit` with `terminal:true` → settled, automatically routed independent non-author `grading-integrity` audit before `plans:start`. In-flight work and historical terminal records are preserved.",
+        "when": "After finalized Discovery, full implementation review and source-conversation activation audit. First-class clauses need a terminal exact spec-quality card and settled independent non-author grading-integrity audit. Preserve in-flight and historical work.",
         "notWhen": "The plan is already started; use plans:pause or plans:set-run-status.",
-        "chaining": "Brief → scoped discovery → findings incorporated → plans:audit { slug, phase:'discovery' } → full independent implementation review → activation audit → plans:evaluate-spec-quality → `scorecards:emit` the returned draft with `terminal:true` → settled automatically routed non-author `grading-integrity` audit → plans:start { slug }. Relevant changes reopen affected discovery judgments; cosmetic edits reuse them. See `/internal/docs/system/plan-inputs`."
+        "chaining": "plans:get { slug, harness, activationReadiness:true } → activation audit → plans:evaluate-spec-quality → scorecards:emit its exact draft with terminal:true → settled independent grading-integrity audit → current contract critique → plans:start. Refusals retain primary errors and approval/promotion receipts alongside advisory stages; a preview never grants start authority. Use consult history; answer consult_available truthfully with consulted, consult_reason and applicable consult_id. Material changes reopen affected judgments; cosmetic edits reuse provenance. Full sequence: /internal/docs/system/plan-inputs."
       }
     },
     {
