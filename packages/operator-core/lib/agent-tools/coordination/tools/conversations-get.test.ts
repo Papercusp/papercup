@@ -303,9 +303,12 @@ describe('conversations:get handler (bulk keyed-array)', () => {
       expect(reply.consult).not.toHaveProperty('review');
     });
 
-    it('exposes an unmeasured routing result and remedy separately from the no-responder lifecycle', async () => {
-      const result = { verdict: 'relevance_unmeasured', reason: 'evidence_unavailable',
-        hint: 'This does not prove no expert exists.', remaining_candidates: [] };
+    it.each([
+      { label: 'unmeasured relevance', result: { verdict: 'relevance_unmeasured', reason: 'evidence_unavailable',
+        hint: 'This does not prove no expert exists.', remaining_candidates: [] } },
+      { label: 'exhausted preparation', result: { error: 'preparation_failed', stage: 'preparation', retryable: true,
+        hint: 'Relevance is unmeasured. Retry the same request_key after resolving preparation failure.' } },
+    ])('exposes $label and its remedy separately from the no-responder lifecycle', async ({ result }) => {
       getM.mockResolvedValue(detail('c-unmeasured', { kind: 'consult', state: 'open' }));
       consultM.mockResolvedValue(new Map([['c-unmeasured', {
         ...consultRow('c-unmeasured'), state: 'no_qualified_responder', closed_at: null, request_result: result,
