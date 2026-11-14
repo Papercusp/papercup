@@ -369,7 +369,6 @@ export interface GitlinkOriginObservation {
   tip: string;
 }
 
-const originExecFile = promisify(execFile);
 const originOid = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 
 /**
@@ -397,6 +396,7 @@ export async function observeGitlinkOrigin(input: {
       // Reuse the existing agent socket, without admitting SSH commands/config.
       ...(process.env.SSH_AUTH_SOCK ? { SSH_AUTH_SOCK: process.env.SSH_AUTH_SOCK } : {}),
     };
+    const originExecFile = promisify(execFile);
     const run = (args: string[]) => originExecFile('git', [
       '-c', 'protocol.allow=never', '-c', 'protocol.https.allow=always',
       '-c', 'protocol.ssh.allow=always', '-c', 'protocol.file.allow=always', ...args,

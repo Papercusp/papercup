@@ -6,12 +6,11 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { writeFile } from 'node:fs/promises';
 
-const execute = promisify(execFile);
-
 /** Keep child diagnostics even when startup fails before Playwright writes its report. */
 export async function runReportBrowser(command: string, args: string[], options: {
   cwd: string; env: NodeJS.ProcessEnv; directory: string; timeoutMs?: number;
 }) {
+  const execute = promisify(execFile);
   const startedAt = new Date().toISOString();
   let stdout = '', stderr = '', failure: unknown;
   try {

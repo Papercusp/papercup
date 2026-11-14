@@ -11,8 +11,6 @@ import { lstat, opendir, readdir, readlink, realpath } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 
-const execFileAsync = promisify(execFile);
-
 interface LinkObservation {
   path: string;
   text: string;
@@ -55,7 +53,7 @@ function within(root: string, target: string): boolean {
 async function gitIgnored(repositoryRoot: string, path: string, options: OffloadLinkScanOptions): Promise<boolean> {
   if (!within(repositoryRoot, path) || path === repositoryRoot) throw new Error(`Git publication path outside repository: ${path}`);
   try {
-    await execFileAsync('git', ['-C', repositoryRoot, 'check-ignore', '--quiet', '--no-index', '--',
+    await promisify(execFile)('git', ['-C', repositoryRoot, 'check-ignore', '--quiet', '--no-index', '--',
       relative(repositoryRoot, path).split(sep).join('/')],
     { encoding: 'utf8', timeout: 30_000, maxBuffer: 1024 * 1024, signal: options.signal });
     return true;
@@ -86,7 +84,7 @@ async function assertNoTrackedSource(sourceRoot: string, options: OffloadLinkSca
       if (ancestor === logicalRoot) throw new Error(`Git source tree cannot use a symlink offload: ${logicalRoot}`);
       // Literal pathspecs also protect names containing Git wildcard syntax.
       // Errors, timeouts and output-budget exhaustion fail the preflight closed.
-      const { stdout } = await execFileAsync('git', ['-C', ancestor, 'ls-files', '--cached', '-z', '--',
+      const { stdout } = await promisify(execFile)('git', ['-C', ancestor, 'ls-files', '--cached', '-z', '--',
         `:(literal)${relative(ancestor, logicalRoot).split(sep).join('/')}`],
       { encoding: 'utf8', timeout: 30_000, maxBuffer: 8 * 1024 * 1024, signal: options.signal });
       if (stdout.length) throw new Error(`Git-tracked source cannot use a symlink offload: ${logicalRoot}`);

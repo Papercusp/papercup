@@ -16,7 +16,6 @@ import { fileURLToPath } from 'node:url';
 import { withFsMutex, withFsMutexRead } from './fs-mutex.mjs';
 import { installLockNameForRoot } from './install-lock-name.mjs';
 
-const run = promisify(execFile);
 const digest = value => createHash('sha256').update(value).digest('hex');
 const schemaVersion = 'committed-dependency-resume-v1';
 const verifierFingerprint = digest(readFileSync(fileURLToPath(import.meta.url)));
@@ -97,6 +96,7 @@ function safeRelative(path) {
 }
 
 async function command(helper, args, script, deadline) {
+  const run = promisify(execFile);
   const remaining = deadline - Date.now();
   if (remaining <= 0) throw new Incomplete();
   try {

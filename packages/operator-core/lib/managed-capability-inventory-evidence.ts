@@ -24,7 +24,6 @@ import { canonicalToolName } from './behaviour-suite/transcript';
 
 export const MANAGED_INVENTORY_EVIDENCE_INSTRUMENT = 'managed-capability:inventory-claim-integrity';
 export const MANAGED_NATIVE_CUTOVER_PLAN = 'managed-agent-capability-contract-and-native-cutover-2026-09-13';
-const execute = promisify(execFile);
 const LIMIT = 1000;
 /** Retained R-13 detector map, including the explicitly promised API e2e path.
  * A different API integration suite cannot silently discharge that obligation. */
@@ -86,7 +85,7 @@ export async function parseManagedCapabilityInventoryGaps(source: string): Promi
  * A bounded/incomplete or unparseable history supplies no passing baseline. */
 export async function retainedInventoryHistory(
   run: (args: string[], root: string) => Promise<string> = async (args, root) =>
-    (await execute('git', args, { cwd: root, timeout: 10_000, maxBuffer: 1024 * 1024 })).stdout,
+    (await promisify(execFile)('git', args, { cwd: root, timeout: 10_000, maxBuffer: 1024 * 1024 })).stdout,
 ): Promise<{ inventory: PreviousInventory; refs: string[] } | undefined> {
   const root = join(moduleRepoRoot(import.meta.url), 'libs/papercusp');
   try {
@@ -117,6 +116,7 @@ export async function retainedInventoryHistory(
 
 /** Version probes establish only installed version identity, never journey parity. */
 async function installedClientVersions(): Promise<Partial<Record<CapabilityClientFamily, string>>> {
+  const execute = promisify(execFile);
   const rows = await Promise.all((['claude', 'codex', 'omp'] as const).map(async client => {
     try {
       const result = await execute(client, ['--version'], { timeout: 5000, maxBuffer: 8192 });
