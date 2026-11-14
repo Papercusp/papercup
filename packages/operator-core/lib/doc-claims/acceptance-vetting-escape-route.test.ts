@@ -37,6 +37,14 @@ const GUARD_RELPATH = 'packages/operator-core/lib/agent-tools/scorecards/grader-
 
 const read = (relpath: string): string => readFileSync(join(ROOT, relpath), 'utf8');
 
+const PLAN_RUNBOOK = 'apps/operator-docs/src/content/docs/agent-insights/acceptance-rubrics-on-every-plan-runbook.mdx';
+const DIRECT_STEPS = ['amend if needed', 'current critique', 'bind', 'adequacy', 'independent grade'];
+
+function normalVettingSteps(text: string): string[] {
+  const section = text.match(/### The order:[^\n]*\n([\s\S]*?)(?=\n### |\n## |$)/)?.[1] ?? '';
+  return [...section.matchAll(/^\d+\. \*\*([^*]+)\*\*/gm)].map(match => match[1]!.toLowerCase());
+}
+
 /**
  * The subject path is overridable so this guard's falsifiability can be proved
  * against a COPY outside the tree — the tier-2 route in CLAUDE.md's
@@ -111,5 +119,28 @@ describe('the vetting/grading escape route is documented, not only in the source
     expect(section).toContain('grader_is_sole_vetting_critic');
     expect(section).toContain('vettingWorkItem');
     expect(section).toMatch(/second INDEPENDENT critic/i);
+  });
+});
+
+describe('the plan-completion runbook follows direct critique before the legacy fallback', () => {
+  it('keeps meta-attestation out of the normal ordered steps and documents its fallback separately', () => {
+    const text = read(PLAN_RUNBOOK);
+    expect(normalVettingSteps(text)).toEqual(DIRECT_STEPS);
+    expect(text).toMatch(/current independent critique satisfies vetting directly/i);
+    expect(text).toMatch(/no meta-scorecard, ratings, or grading-integrity audit/i);
+    const fallback = text.match(/### Legacy fallback: meta-scorecard\n([\s\S]*?)(?=\n### |\n## |$)/)?.[1] ?? '';
+    expect(fallback).toMatch(/no current direct critique/i);
+    expect(fallback).toContain('scorecards:emit');
+    expect(fallback).toContain('meta-acceptance-rubric');
+  });
+
+  it('CONTROL: rejects the former mandatory attestation step and a missing flow', () => {
+    const formerFlow = '### The order: amend → vet → attest → bind → cards → grade\n\n' +
+      '1. **amend** — finish the text.\n2. **vet** — obtain critique.\n' +
+      '3. **attest** — emit the meta-scorecard.\n4. **bind** — bind proof.\n' +
+      '5. **cards** — evaluate adequacy.\n6. **grade** — independent grading.\n';
+    expect(normalVettingSteps(formerFlow)).not.toEqual(DIRECT_STEPS);
+    expect(normalVettingSteps('## Unrelated guidance\nNo vetting flow.')).not.toEqual(DIRECT_STEPS);
+    expect(normalVettingSteps('### The order: current path\nNo numbered steps.')).not.toEqual(DIRECT_STEPS);
   });
 });
