@@ -141,7 +141,6 @@ export const DISPOSITIONS = Object.freeze({
   'log-only-fallback|scripts/check-partial-index-alignment.mjs': NA_LINT,
   'log-only-fallback|scripts/check-sidecar-fallback-reported.mjs': NA_LINT,
   'log-only-fallback|scripts/lib/tsc-baseline-gate.mjs': NA_LINT,
-  'log-only-fallback|scripts/lint-as-committed.mjs': NA_LINT,
   'log-only-fallback|scripts/mcp-call.mjs': NA_CLI,
   'log-only-fallback|scripts/npm-install-safe.mjs': NA_CLI,
   'log-only-fallback|scripts/report-cargo-tests.mjs': NA_CLI,
