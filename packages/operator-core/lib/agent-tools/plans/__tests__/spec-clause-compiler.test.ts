@@ -312,6 +312,25 @@ describe('compileSpecClauses', () => {
     expect(specBehaviorNonAtomicReason(behavior)).toBe('behavior joins multiple independently observable outcomes');
   });
 
+  it('keeps absent completed-step output as a noun modifier in a single custody predicate', () => {
+    const behavior = 'Qualification custody remains held for every enumerated mutation while any enrolled managed scope is live or unknown, regardless of DBOS age or absent completed-step output, under the retained explicit operator and scoped-operation authorities';
+    const result = compileSpecClauses(
+      plan('  - **[VAL-demo-completed-step]**', '    - **Verify:** ' + behavior),
+      { enrichments: { 'VAL-demo-completed-step': { behaviorClass: 'state', lifecycleStatus: 'active' } } },
+    );
+
+    expect(specBehaviorNonAtomicReason(behavior)).toBeNull();
+    expect(result.ok).toBe(true);
+    expect(result.diagnostics).toEqual([]);
+    expect(result.candidates[0].behavior).toBe(behavior);
+  });
+
+  it('still rejects a real coordinated outcome after absent completed-step output', () => {
+    expect(specBehaviorNonAtomicReason(
+      'The operation remains pending despite absent completed-step output and emits a separate receipt',
+    )).toBe('behavior joins multiple independently observable outcomes');
+  });
+
   it('rejects coordinated subject lists with a source-presence predicate', () => {
     const behavior =
       'Implemented provider contracts, durable controller, credential lifecycle, artifact boundaries, and ordinary lifecycle semantics are present in the current tree.';
