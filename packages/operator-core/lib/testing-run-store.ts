@@ -1553,7 +1553,7 @@ function parseRedactedTestReportJson(
 }
 
 /** A recovery verdict needs the complete JSON reporter, not a partially flushed file. */
-function completedDetachedReport(
+export function completedDetachedReport(
   text: string,
   root: string,
   environment?: Readonly<Record<string, string | undefined>>,
@@ -3446,6 +3446,31 @@ export interface PersistHarnessTestRunsParams {
   configurationSnapshot?: ConfigurationSnapshot | null;
   /** Test seam: inject a fake sql client. Defaults to getOrgPg().sql. */
   sql?: SqlLike;
+}
+
+/** Reconcile retained Vitest bytes under the same lock used by detached close/restart recovery. */
+export async function reconcileHarnessTestRunRows(params: PersistHarnessTestRunsParams): Promise<HarnessTestRunEvidence[]> {
+  return boundedOrgTxn(async tx => {
+    const sql = tx as unknown as SqlLike;
+    await sql`SELECT pg_advisory_xact_lock(hashtextextended(${`testing-run-report:${params.runGroupId}`}, 0))`;
+    const existing = await readPersistedTestRunLedgerRows(params.runGroupId, sql);
+    if (existing === null) throw new Error('retained_report_ledger_unavailable');
+    await persistDetachedReportRows({ ...params, sql }, existing);
+    const rows = await readHarnessTestRunEvidence({ workspaceId: params.workspaceId,
+      harnessSlug: params.harnessSlug, runGroupId: params.runGroupId, sql });
+    if (!rows || rows.length !== params.rows.length) throw new Error('retained_report_readback_incomplete');
+    for (const row of rows) {
+      const expected = params.rows.find(entry => entry.filePath === row.file_path);
+      const details = parseTestRunExecutionDetails(row.execution_details);
+      if (!expected?.execution || row.framework !== 'vitest' || row.status !== expected.status || !details
+        || details.root !== params.root || details.runGroupId !== params.runGroupId
+        || details.workspaceId !== params.workspaceId || details.harnessSlug !== params.harnessSlug
+        || details.passed !== expected.execution.passed || details.failed !== expected.execution.failed
+        || details.skipped !== expected.execution.skipped || details.collectionFailed !== expected.execution.collectionFailed)
+        throw new Error('retained_report_existing_result_mismatch');
+    }
+    return rows;
+  });
 }
 
 /** Called under the detached-report transaction lock: files and their cases commit together. */

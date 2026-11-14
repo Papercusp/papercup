@@ -51,6 +51,8 @@ export const PENDING_TEST_EVIDENCE_ABANDONMENT_GRACE_MS = 60_000;
 export const recoverTestEvidenceSchema = z.object({
   workItemId: z.string().min(1).max(200), planSlug: z.string().min(1).max(120).optional(),
   originRunId: z.string().uuid(), runId: z.string().uuid(),
+  artifactDirectory: z.string().min(1).max(4096).optional()
+    .describe('Retained testing:run packet directory for this exact origin/run. Verify sealed bytes and scope, then reconcile missing Vitest ledger rows without executing tests.'),
   waitMs: z.number().int().min(0).max(RECOVERY_WAIT_CEILING_MS).optional()
     .describe(`Wait up to this long (default ${RECOVERY_WAIT_DEFAULT_MS}ms) for a detached run to finish and its file-level ledger result to arrive before reconciling; 0 reconciles immediately.`),
 }).strict();

@@ -498,12 +498,15 @@ describe('bounded plan history production consumers', () => {
 
 describe('GEC.N1-N8 persisted slice regression and cost', () => {
   const runFrozenHistory = async (branchPreflight: boolean, journeyPreflight = false,
-    journeyControl: false | 'J1' | 'J2' | 'J3' = false) => {
+    journeyControl: false | 'J1' | 'J2' | 'J3' = false,
+    observedTransportControl: false | 'J2' | 'J3' = false) => {
     const readerPreflight = branchPreflight || journeyPreflight;
+    const syntheticTransport = Boolean(journeyControl || observedTransportControl);
     const phase = branchPreflight ? 'reader-branches' : journeyPreflight ? 'j1-readers'
-      : journeyControl ? `${journeyControl.toLowerCase()}-transport-control` : 'full';
+      : observedTransportControl ? `${observedTransportControl.toLowerCase()}-observed-transport-control`
+        : journeyControl ? `${journeyControl.toLowerCase()}-transport-control` : 'full';
     const artifactRoot = process.env.PAPERCUSP_TEST_ARTIFACT_DIR;
-    const artifactDirectory = artifactRoot && (readerPreflight || journeyControl
+    const artifactDirectory = artifactRoot && (readerPreflight || syntheticTransport
       ? join(artifactRoot, branchPreflight ? 'q2-reader-branches' : phase) : artifactRoot);
     if (artifactDirectory) await mkdir(artifactDirectory, { recursive: true });
     const phaseStart = performance.now();
@@ -1349,7 +1352,7 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
     // Explicitly selected model measurement, using the maintained SuTarget
     // transport and the same real PG/public reader. Ordinary integration runs
     // remain provider-free, like the existing bug-triage model fixture.
-    if (readerPreflight || journeyControl || ['1', 'preflight'].includes(process.env.PAPERCUSP_TEST_GEC_MODEL ?? '')) {
+    if (readerPreflight || syntheticTransport || ['1', 'preflight'].includes(process.env.PAPERCUSP_TEST_GEC_MODEL ?? '')) {
       const preflight = readerPreflight || process.env.PAPERCUSP_TEST_GEC_MODEL === 'preflight';
       if (!preflight) {
         expect(actualConsumerStorageQualified,
@@ -1363,9 +1366,11 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
       // Include the excluded action in the real schema catalog, but intercept
       // it before any handler: this test must never touch the live gate.
       if (!preflight) await Promise.all([import('../release/deploy'), import('../testing/run'), import('../work_items/complete')]);
-      if (journeyControl === 'J2') await import('../../coord-ops/agent-tools');
+      const includesAuthorityRequest = journeyControl === 'J2' || observedTransportControl === 'J2' || (!preflight
+        && (process.env.PAPERCUSP_TEST_GEC_MODEL_CASES ?? '').split(',').includes('J2'));
+      if (includesAuthorityRequest) await import('../../coord-ops/agent-tools');
       const catalogNames = ['graph:query', 'plans:get', 'work_items:get',
-        ...(journeyControl === 'J2' ? ['coord:ask-owner'] : []),
+        ...(includesAuthorityRequest ? ['coord:ask-owner'] : []),
         ...(!preflight ? ['release:deploy', 'testing:run', 'work_items:complete'] : [])];
       const catalog = buildCatalog(catalogNames.map(name => {
         const projected = listAllProjectedTools().find(tool => tool.expose.mcp?.name === name);
@@ -1376,7 +1381,7 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
       // canonicalJson to encode the runtime Map (or silently dropping it).
       const catalogSnapshot = { tools: catalog.tools, canonicalBySanitized: [...catalog.canonicalBySanitized] };
       expect(new Map(JSON.parse(canonicalJson(catalogSnapshot)).canonicalBySanitized)).toEqual(catalog.canonicalBySanitized);
-      const model = journeyControl ? LEARNING_MODEL_SPEC : process.env.LLM_TEST_SUT_MODEL || LEARNING_MODEL_SPEC;
+      const model = syntheticTransport ? LEARNING_MODEL_SPEC : process.env.LLM_TEST_SUT_MODEL || LEARNING_MODEL_SPEC;
       if (!preflight) {
         const { isCodexResponsesModel } = await import('../../llm-testing/targets/codex-responses-tool-loop');
         expect(isCodexResponsesModel(model), 'GEC provider tap requires the maintained Codex Responses route').toBe(true);
@@ -1396,9 +1401,11 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
       // Select new resume captures without rerunning historical Q1 evidence.
       // With no selector, preserve the ordinary opt-in question-only run.
       const modelCases = branchPreflight ? ['Q2'] : journeyControl ? [journeyControl] : journeyPreflight ? ['J1']
-        : (process.env.PAPERCUSP_TEST_GEC_MODEL_CASES ?? 'J1').split(',');
+        : observedTransportControl ? [observedTransportControl] : (process.env.PAPERCUSP_TEST_GEC_MODEL_CASES ?? 'J1').split(',');
       expect(modelCases.every(id => ['J1', 'J2', 'J3', 'Q2', 'Q3', 'C1', 'C2', 'C4'].includes(id))).toBe(true);
       expect(new Set(modelCases).size).toBe(modelCases.length);
+      expect(!preflight || modelCases.every(id => !['J2', 'J3'].includes(id)),
+        'J2/J3 require the composed durable route; the reader-only preflight cannot capture them').toBe(true);
       const shipmentCase = materialized.manifest.cases.find(candidate => candidate.id === 'Q2')!;
       const shipmentMutations: string[] = Array.isArray(shipmentCase.mutation)
         ? shipmentCase.mutation.filter((mutation): mutation is string => typeof mutation === 'string') : [];
@@ -1457,7 +1464,7 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
       for (const iteration of [1, 2, 3]) {
         resetOperatorCacheForTests();
         resetCachedReadStatsForTests();
-        const mutationTag = journeyControl ? '-transport-control'
+        const mutationTag = observedTransportControl ? '-observed-transport-control' : journeyControl ? '-transport-control'
           : caseId === 'Q2' ? `-${shipmentMutation.replace(/[^a-z0-9]+/gi, '-')}` : '';
         const recorderRef = artifactDirectory ? join(artifactDirectory, `gec-b-model-${caseId}${mutationTag}-pre${iteration}.json`)
           : `isolated-pg:${workspace}/gec-b-model-${caseId}${mutationTag}-pre${iteration}`;
@@ -1466,21 +1473,26 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
           runId: `gec-b-model-${RUN}${mutationTag}`, ownerId: 'su-gec-model-integration', caseId, arm: 'pre', iteration,
           manifestHash: materialized.manifestHash, fixtureHash: retained.sha256, sourceFingerprint: modelSourceFingerprint,
           testFingerprint: testHash, runtimeFingerprint: digest(canonicalJson({ node: process.versions.node,
-            class: journeyControl ? 'scripted-transport-current-source-isolated-pg' : 'real-model-current-source-isolated-pg' })),
+            class: syntheticTransport ? 'scripted-transport-current-source-isolated-pg' : 'real-model-current-source-isolated-pg' })),
           configFingerprint: digest(canonicalJson({ model, catalog: catalogSnapshot, stage: caseId,
-            cacheEnabled, journeyControl, shipmentMutation: caseId === 'Q2' ? shipmentMutation : null,
+            cacheEnabled, journeyControl, observedTransportControl, shipmentMutation: caseId === 'Q2' ? shipmentMutation : null,
             scope: 'current-source private-PG; not serving-runtime acceptance' })),
         };
         const providerTapes: Array<{ id: string; provider: string; raw: string; sha256: string; ref: string;
           artifact: { sha256: string; relPath: string } }> = [];
         const routes: Array<{ status: number; account: string | null }> = [];
+        let providerControlFetch: typeof fetch | undefined;
         const observed = observeGroundedModelFetch({ scope: measurementScope, sourceRef: recorderRef,
           attemptId: `${caseId}-pre${iteration}`, provider: 'codex', purpose: 'model',
           purposeRef: 'current-source:SuTarget.sendViaCodex',
           fetchImpl: async (request, options) => {
             const headers = new Headers(options?.headers);
             headers.set('x-papercusp-owner', measurementScope.ownerId);
-            const response = await fetch(request, { ...options, headers });
+            // The maintained regression enters the observed transport with
+            // deterministic provider frames. It cannot reach the network or
+            // qualify model measurements, even if the observer drains fully.
+            if (observedTransportControl) expect(providerControlFetch).toBeDefined();
+            const response = await (observedTransportControl ? providerControlFetch! : fetch)(request, { ...options, headers });
             routes.push({ status: response.status, account: response.headers.get('x-papercusp-routed-account') });
             return response;
           },
@@ -1605,7 +1617,7 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
           return { freshContext: null,
             question: `Why does plan ${p}, item P-001 in harness ${h}, use this implementation? Read its current evidence and report the decision and proof, including gaps.` };
         };
-        if (journeyControl === 'J2' || journeyControl === 'J3') {
+        if (caseId === 'J2' || caseId === 'J3') {
           // One admission spans the real question reader and fresh-process
           // crash/recovery stages. Compose each process's original census;
           // an interrupted child stays incomplete even after successful replay.
@@ -1625,6 +1637,7 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
             result: TurnResult | null; durationMs: number; dispatches: Array<{ tool: string; args: unknown }>; durable?: DurableStage }> = [];
           const controlRequests: Array<{ caseId: string; body: unknown }> = [];
           const dispatches: Array<{ tool: string; args: unknown }> = [];
+          const sendFailures: Array<{ caseId: string; error: string }> = [];
           const { SuTarget } = await import('../../llm-testing/targets/su');
           const { askOwnerArgs } = await import('../../coord-ops/agent-tools');
           let activeDurable: DurableStage | undefined;
@@ -1644,7 +1657,9 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
                 ?? 'No extra durable dispatch is permitted by this control.') };
               return modelStoreTap.run(() => fixtureRead(tool, args));
             } });
+          const contractsBefore = await readContracts(modelSourceFingerprint, `${recorderRef}#contracts-before`);
           const admittedAt = new Date().toISOString(), monotonicStartMs = performance.now();
+          try {
           for (const stageId of stageIds) {
             const started = performance.now(), dispatchStart = dispatches.length;
             activeDurable = undefined;
@@ -1693,25 +1708,35 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
               return new Response(`data: ${JSON.stringify({ type: 'response.completed', response: { output } })}\n\ndata: [DONE]\n\n`,
                 { headers: { 'content-type': 'text/event-stream' } });
             };
-            const session = await new SuTarget({ catalog: stageCatalog, codexFetch: controlFetch,
+            if (observedTransportControl) providerControlFetch = controlFetch;
+            const session = await new SuTarget({ catalog: stageCatalog,
+              codexFetch: journeyControl ? controlFetch : observed.fetch,
               loadSystemPrompt: () => 'Use current scoped evidence. A recorded result does not grant current authority.',
             }).open({ runId: `${measurementScope.runId}:${stageId}`, sutModel: model, workspaceMode: 'isolated',
               transport: 'in-process', dispatchOverride: { override: async (tool, args) => ({ content: [{ type: 'text',
                 text: JSON.stringify(await dispatch.dispatch(tool, args)) }] }) } });
-            let result: TurnResult;
+            let result: TurnResult | null = null;
             try { result = await session.send({ trigger: 'user_message', messages: [{ role: 'user', content: current.question }] }); }
+            catch (error) { sendFailures.push({ caseId: stageId, error: String(error) }); }
             finally { await session.close(); }
             stages.push({ caseId: stageId, ...current, result, durationMs: performance.now() - started,
               dispatches: dispatches.slice(dispatchStart), ...(activeDurable ? { durable: activeDurable } : {}) });
             await recordPhase(`${caseId}-${iteration}-${stageId}-settled`);
           }
+          } finally { await observed.drain(); }
+          const observedModels = journeyControl ? undefined : observed.seal();
+          const models = syntheticTransport ? undefined : observedModels;
+          const contractsAfter = await readContracts(modelSourceFingerprint, `${recorderRef}#contracts-after`);
+          const contractCapture = captureGroundedContractChanges({ scope: measurementScope, sourceRef: recorderRef,
+            before: contractsBefore, after: contractsAfter });
           const children = durableStages.flatMap(stage => [stage.crash, stage.recovered]);
           const durable = composeDurableCaptureCensus(measurementScope, recorderRef,
             children.map(child => child.census));
           const parentStorage = modelStoreTap.seal(), parentInvocations = dispatch.seal();
           const input = { scope: measurementScope,
             boundary: { scope: measurementScope, sourceRef: recorderRef, admittedAt, settledAt: new Date().toISOString(),
-              monotonicStartMs, monotonicEndMs: performance.now(), drained: true }, durable,
+              monotonicStartMs, monotonicEndMs: performance.now(), drained: true }, durable, models,
+            contracts: contractCapture.census,
             storage: composeDurableCaptureCensus(measurementScope, recorderRef,
               [parentStorage, ...children.map(child => child.storage)]),
             invocations: composeDurableCaptureCensus(measurementScope, recorderRef,
@@ -1720,6 +1745,8 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
           const oracles = stages.map(stage => {
             const first = stage.dispatches[0], args = first?.args as Record<string, unknown> | undefined;
             const withinDeadline = stage.durationMs <= Number(definition.expected!.eachReadOrResumeMaxMs);
+            const completed = !sendFailures.some(failure => failure.caseId === stage.caseId)
+              && ((stage.durable !== undefined && stage.caseId !== 'C3') || stage.result?.finishReason === 'done');
             const actual = stage.durable?.originalCalls.map(row => [row.tool, row.mode]);
             const expected = stage.caseId === 'C3' ? [['items:put', 'crash'], ['items:get', 'recover']]
               : stage.caseId === 'C5' ? [['items:get', 'crash'], ['items:put', 'recover']]
@@ -1727,9 +1754,9 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
             const durableMatches = canonicalJson(actual ?? null) === canonicalJson(expected);
             let answer: Record<string, unknown> | null = null;
             if (stage.result) { try { answer = JSON.parse(stage.result.assistantText); } catch { /* retained below */ } }
-            const matches = stage.caseId === 'Q3' ? canonicalJson(answer?.events) === canonicalJson(
+            const matches = stage.caseId === 'Q3' ? canonicalJson(answer?.events ?? null) === canonicalJson(
               materialized.manifest.cases.find(row => row.id === 'Q3')!.expected!.events)
-              && canonicalJson(answer?.olderBindingAuthority) === canonicalJson(
+              && canonicalJson(answer?.olderBindingAuthority ?? null) === canonicalJson(
                 materialized.manifest.cases.find(row => row.id === 'Q3')!.expected!.olderBindingAuthority)
               : stage.caseId === 'Q2' ? answer?.shipment === 'supported' && answer?.supportedArtifact === targetArtifact
                 && answer?.deployment === materialized.mapping[seed.proof.deploymentReceipt]
@@ -1742,18 +1769,31 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
                 && !stage.dispatches.some(call => call.tool === 'work_items:complete')
               : durableMatches && stage.durable?.result.outcome.status === (stage.caseId === 'C5' ? 'succeeded' : 'needs-reconciliation')
                 && (stage.caseId !== 'C6' || (stage.durable?.result.outcome.reconciliation as { tool?: string })?.tool === 'mail:send');
-            return { caseId: stage.caseId, withinDeadline, matches, actualDispatches: actual ?? stage.dispatches,
-              modelQualified: false, passed: false };
+            const proofQualified = stage.caseId !== 'Q2' || (fixtureProofQualification.cases.length > 0
+              && fixtureProofQualification.execution?.gaps.length === 0);
+            const modelQualified = !syntheticTransport && models?.complete === true;
+            return { caseId: stage.caseId, completed: Boolean(completed), withinDeadline, matches, proofQualified,
+              actualDispatches: actual ?? stage.dispatches, modelQualified,
+              passed: modelQualified && Boolean(completed) && withinDeadline && matches && proofQualified };
           });
-          const tape = canonicalJson({ kind: 'composed-durable-transport-control', acceptance: 'unmeasured',
-            limitation: 'Scripted consumer choices; original parent/child populations retained, interrupted drains and write bytes unknown. Models unqualified. No scalar baseline admission.',
+          const ids = syntheticTransport ? [] : await recordRubricCheckResults(measured.ledgerResults,
+            { workspaceId: workspace, harnessSlug: h, runGroupId: measurementScope.runId }, admin);
+          const ledgerRows = await admin`SELECT id,status,execution_details FROM harness_shared.test_runs
+            WHERE workspace_id=${workspace} AND id=ANY(${ids}) ORDER BY id`;
+          const journeyPassed = !syntheticTransport && oracles.every(oracle => oracle.passed);
+          const tape = canonicalJson({ kind: observedTransportControl ? 'composed-durable-observed-transport-control'
+            : journeyControl ? 'composed-durable-transport-control' : 'composed-durable-model-capture',
+            acceptance: 'unmeasured',
+            limitation: 'Original parent/child populations retained; interrupted drains, write bytes and serving closure remain unqualified. Scripted controls do not qualify models or scalar baselines.',
             stageIds, stages, oracles, controlRequests, parentStorage, parentInvocations, input, measured,
-            runtimeClosure, modelSourceHashes, fixtureProofQualification, journeyPassed: false });
+            sendFailures, models, observedModels, model, routes, providerTapes, contractsBefore, contractsAfter, contractCapture, ledgerRows,
+            runtimeClosure, modelSourceHashes, fixtureProofQualification, journeyPassed });
           await writeFile(recorderRef, tape);
           const saved = await saveImmutableTextArtifact(h, tape);
           expect(await loadImmutableTextArtifact(h, saved.sha256)).toBe(tape);
           expect(stages.map(stage => stage.caseId)).toEqual(stageIds);
-          expect(oracles.map(oracle => oracle.matches)).toEqual(caseId === 'J2'
+          expect(sendFailures).toEqual([]);
+          if (syntheticTransport) expect(oracles.map(oracle => oracle.matches)).toEqual(caseId === 'J2'
             ? [true, iteration !== 2, iteration !== 3] : [iteration !== 2, true, true]);
           for (const stage of stages) if (stage.result) {
             expect(stage.result.finishReason, stage.result.error).toBe('done');
@@ -1780,11 +1820,29 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
           expect(measured.values.durableSteps).toBeNull();
           expect(measured.values.retrievalCalls).toBeNull();
           expect(measured.values.storageOperations).toBeNull();
-          expect(measured.values.modelCalls).toBeNull();
+          if (syntheticTransport) {
+            expect(measured.values.modelCalls).toBeNull();
+            expect(ledgerRows).toEqual([]);
+            expect(oracles.every(oracle => !oracle.modelQualified && !oracle.passed)).toBe(true);
+            if (observedTransportControl) {
+              expect(observedModels?.complete).toBe(true);
+              expect(controlRequests.length).toBeGreaterThan(0);
+              expect(observedModels?.ids).toHaveLength(controlRequests.length);
+              expect(providerTapes).toHaveLength(controlRequests.length);
+              expect(routes).toHaveLength(controlRequests.length);
+            } else {
+              expect(providerTapes).toEqual([]);
+              expect(routes).toEqual([]);
+            }
+            expect(journeyPassed).toBe(false);
+          } else {
+            expect(models?.complete).toBe(true);
+            expect(measured.values.modelCalls).toBeGreaterThan(0);
+            expect(providerTapes.length).toBeGreaterThan(0);
+            expect(ledgerRows).toHaveLength(measured.ledgerResults.length);
+          }
           expect(measured.values.storageBytes).toBeNull();
           expect(measured.complete).toBe(false);
-          expect(providerTapes).toEqual([]);
-          expect(routes).toEqual([]);
           continue;
         }
         if (preflight) {
@@ -2226,6 +2284,9 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
 
   it.each(['J2', 'J3'] as const)('GEC.%s composed DBOS transport control',
     journey => runFrozenHistory(false, false, journey), 400_000);
+
+  it.each(['J2', 'J3'] as const)('GEC.%s composed observed transport regression',
+    journey => runFrozenHistory(false, false, false, journey), 400_000);
 
   it('persists recorder controls to the existing ledger and rejects every missing dimension and foreign run', async () => {
     // These are isolated recorder controls, NOT paired product baselines or a

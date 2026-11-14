@@ -499,7 +499,7 @@ function clipOutputTail(value: unknown, maxChars: number): { value: unknown; cli
   const marker = `…[TRUNCATED +${value.length} chars — pass payloadTier:"full" for complete output]`;
   if (marker.length >= maxChars) return { value: marker.slice(0, maxChars), clipped: true };
   const keep = maxChars - marker.length;
-  return { value: `${value.slice(0, keep)}${marker}`, clipped: true };
+  return { value: `${marker}${value.slice(-keep)}`, clipped: true };
 }
 
 function projectTestingRun(row: unknown, outputTailChars: number): { row: Record<string, unknown>; clipped: boolean } {
@@ -848,6 +848,9 @@ export default defineTool({
           ? "source <> 'mutation-probe' (default row-list exclusion)"
           : 'none (exact testRunIds receipt lookup)';
     const shouldCountSourceOmissions = args.source !== undefined || testRunIds == null;
+    const statusFilterBeforeLatest = latestPerFile
+      ? sql`TRUE`
+      : sql`(${statuses}::text[] IS NULL OR status = ANY(${statuses}::text[]))`;
 
     const where = sql`
        WHERE (${pathLike}::text IS NULL OR file_path ILIKE ${pathLike} ESCAPE '\\')
@@ -857,7 +860,7 @@ export default defineTool({
          AND ${sourceFilter}
          AND (${workspace}::text IS NULL OR workspace_id = ${workspace})
          AND (${harness}::text IS NULL OR harness_slug = ${harness})
-         AND (${statuses}::text[] IS NULL OR status = ANY(${statuses}::text[]))
+         AND ${statusFilterBeforeLatest}
          AND (${sinceTs}::timestamptz IS NULL OR started_at >= ${sinceTs}::timestamptz)`;
 
     if (args.rollup) {
@@ -868,10 +871,17 @@ export default defineTool({
       // outcome instead of counting a historical fail forever. Keep an explicit
       // latestPerFile:false escape hatch for callers that intentionally want the
       // raw attempt history in an aggregate.
+      const latestStatusFilter = statuses == null
+        ? sql``
+        : sql`WHERE latest.status = ANY(${statuses}::text[])`;
       const rollupRows = latestPerFile
-        ? sql`SELECT DISTINCT ON (${keyCol}, file_path) *
-                FROM filtered
-               ORDER BY ${keyCol}, file_path, finished_at DESC NULLS LAST, id DESC`
+        ? sql`SELECT latest.*
+                FROM (
+                  SELECT DISTINCT ON (${keyCol}, file_path) *
+                    FROM filtered
+                   ORDER BY ${keyCol}, file_path, finished_at DESC NULLS LAST, id DESC
+                ) AS latest
+                ${latestStatusFilter}`
         : sql`SELECT * FROM filtered`;
       const rows = await runDiagnosticQuery(
         TESTING_RUNS_DIAGNOSTIC_STAGES.rollup,
@@ -987,9 +997,17 @@ export default defineTool({
       };
     let rows: TestRunRow[];
     if (latestPerFile) {
+      const matchingLatest = statuses == null
+        ? sql`SELECT id, file_path, finished_at, started_at FROM latest`
+        : sql`SELECT latest.id, latest.file_path, latest.finished_at, latest.started_at
+                FROM latest
+                JOIN harness_shared.test_runs AS selected_run ON selected_run.id = latest.id
+               WHERE selected_run.status = ANY(${statuses}::text[])`;
       // Keep the all-time/global winner set narrow through DISTINCT and the
       // page sort. The partial covering index matches this exact predicate and
-      // order; fetch wide JSON/text columns only for the selected page.
+      // order; fetch wide JSON/text columns only for the selected page. Apply
+      // status selection after the winner is chosen so an older red attempt
+      // cannot survive when the same file's latest run passed.
       rows = await runDiagnosticQuery(
         TESTING_RUNS_DIAGNOSTIC_STAGES.latestRows,
         () => sql<TestRunRow[]>`
@@ -1001,16 +1019,18 @@ export default defineTool({
           SELECT DISTINCT ON (file_path) id, file_path, finished_at, started_at
             FROM filtered
            ORDER BY file_path, finished_at DESC NULLS LAST, id DESC
+        ), matching_latest AS MATERIALIZED (
+          ${matchingLatest}
         ), page AS MATERIALIZED (
           SELECT id, count(*) OVER () AS total
-            FROM latest
+            FROM matching_latest
            ORDER BY finished_at DESC NULLS LAST, started_at DESC, id DESC
            LIMIT ${limit}
         )
         SELECT p.id::text, p.workspace_id, p.harness_slug, p.execution_details, p.configuration_snapshot,
                p.file_path, p.status, p.framework, p.duration_ms::text, p.started_at, p.finished_at,
                CASE WHEN p.status = ANY(${RED_STATUSES as unknown as string[]}::text[])
-                    THEN left(p.output_tail, ${OUTPUT_TAIL_CHARS}) END AS output_tail,
+                    THEN right(p.output_tail, ${OUTPUT_TAIL_CHARS}) END AS output_tail,
                p.run_group_id, p.source, p.branch, p.commit_sha,
                p.loop_lag_p95_ms, p.rss_mb, p.worktree_dirty, p.is_scratch_config,
                page.total::text AS total
@@ -1032,7 +1052,7 @@ export default defineTool({
         SELECT p.id::text, p.workspace_id, p.harness_slug, p.execution_details, p.configuration_snapshot,
                p.file_path, p.status, p.framework, p.duration_ms::text, p.started_at, p.finished_at,
                CASE WHEN p.status = ANY(${RED_STATUSES as unknown as string[]}::text[])
-                    THEN left(p.output_tail, ${OUTPUT_TAIL_CHARS}) END AS output_tail,
+                    THEN right(p.output_tail, ${OUTPUT_TAIL_CHARS}) END AS output_tail,
                p.run_group_id, p.source, p.branch, p.commit_sha,
                p.loop_lag_p95_ms, p.rss_mb, p.worktree_dirty, p.is_scratch_config,
                (SELECT count(*) FROM picked)::text AS total

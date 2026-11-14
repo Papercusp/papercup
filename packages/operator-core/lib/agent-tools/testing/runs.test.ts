@@ -235,6 +235,21 @@ describe('testing:runs rollup source isolation', () => {
     expect(data).not.toHaveProperty('reason');
   });
 
+  it('applies status selection after the latest rollup winner is chosen', async () => {
+    await runsTool.handler({
+      commitSha: 'abc123',
+      rollup: 'commit',
+      status: ['fail', 'error'],
+    } as never, {} as never);
+    const rollupCall = sqlCalls.find((call) => call.strings.some((part) => part.includes('WITH filtered')));
+    const queryText = rollupCall ? renderSqlFragment({ strings: rollupCall.strings, args: rollupCall.values }) : '';
+
+    const winnerOffset = queryText.indexOf('DISTINCT ON (');
+    const statusOffset = queryText.indexOf('latest.status = ANY(');
+    expect(winnerOffset).toBeGreaterThanOrEqual(0);
+    expect(statusOffset).toBeGreaterThan(winnerOffset);
+  });
+
   it('passes source:ci into an omitted-source runGroup rollup and reports it', async () => {
     const result = (await runsTool.handler({ rollup: 'runGroup' } as never, {} as never)) as {
       data?: { source?: string };
@@ -756,6 +771,28 @@ describe('testing:runs exact ID selection', () => {
     const queryText = renderSqlFragment(sqlCalls.find((call) => call.strings.some((part) => part.includes('WITH filtered'))) ?? { strings: [], values: [] });
     expect(queryText).toContain('SELECT DISTINCT ON (file_path)');
   });
+
+  it('applies status selection after selecting each latest-per-file row', async () => {
+    await runsTool.handler({ status: ['fail', 'error'] } as never, {} as never);
+    const queryText = renderSqlFragment(sqlCalls.find((call) => call.strings.some((part) => part.includes('WITH filtered'))) ?? { strings: [], values: [] });
+
+    const winnerOffset = queryText.indexOf('SELECT DISTINCT ON (file_path)');
+    const statusOffset = queryText.indexOf('selected_run.status = ANY(');
+    expect(queryText).toContain('matching_latest AS MATERIALIZED');
+    expect(queryText).toContain('AND TRUE');
+    expect(winnerOffset).toBeGreaterThanOrEqual(0);
+    expect(statusOffset).toBeGreaterThan(winnerOffset);
+  });
+
+  it.each([
+    ['latest-per-file history', {}],
+    ['exact-ID history', { testRunIds: exactIds }],
+  ])('reads the final failure-output window for %s', async (_label, args) => {
+    await runsTool.handler(args as never, {} as never);
+    const queryText = renderSqlFragment(sqlCalls.find((call) => call.strings.some((part) => part.includes('WITH filtered'))) ?? { strings: [], values: [] });
+    expect(queryText).toContain('right(p.output_tail');
+    expect(queryText).not.toContain('left(p.output_tail');
+  });
 });
 
 describe('testing:runs empty results', () => {
@@ -1073,6 +1110,19 @@ describe('testing:runs payload-tier shape', () => {
     expect(runs[0]).toMatchObject({ id: 17692431, workspaceId: 'workspace-a', harnessSlug: 'papercusp' });
     expect(runs[0]).toHaveProperty('outputTailTruncated', true);
     expect(shaped.payloadBounded).toMatchObject({ totalRuns: 19, showingRuns: runs.length });
+  });
+
+  it.each(['trimmed', 'standard'] as const)('preserves the final SQL diagnostic in a %s failure tail', (tier) => {
+    const diagnostic = 'SQLSTATE-23505-diagnostic-at-end';
+    const shaped = shapeTestingRuns({ runs: [{
+      id: 17692499,
+      status: 'fail',
+      outputTail: `beginning-${'x'.repeat(2_000)}-${diagnostic}`,
+    }] }, tier) as { runs: Array<{ outputTail: string; outputTailTruncated: boolean }> };
+    const outputTail = shaped.runs[0]!.outputTail;
+    expect(outputTail).toContain('[TRUNCATED');
+    expect(outputTail.endsWith(diagnostic)).toBe(true);
+    expect(shaped.runs[0]!.outputTailTruncated).toBe(true);
   });
 });
 

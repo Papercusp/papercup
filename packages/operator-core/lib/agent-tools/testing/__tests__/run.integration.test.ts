@@ -1385,8 +1385,15 @@ describe('groupDirectVitestRoutes (EI-21414388102126733)', () => {
 });
 
 describe('shouldIngestVitestLedgerInProcess', () => {
+  async function installVitestVersion(root: string, version: string) {
+    const packageRoot = join(root, 'node_modules/vitest');
+    await mkdir(packageRoot, { recursive: true });
+    await writeFile(join(packageRoot, 'package.json'), JSON.stringify({ name: 'vitest', version }));
+  }
+
   it('resolves the reporter through the selected checkout package export', async () => {
     const externalRoot = await makeScratchTestCheckout('papercusp-testing-run-package-reporter-');
+    await installVitestVersion(externalRoot, '4.0.0');
     const packageRoot = join(externalRoot, 'node_modules/@papercusp/test-config');
     const reporterPath = join(packageRoot, 'src/admin-test-runs-reporter.ts');
     await mkdir(dirname(reporterPath), { recursive: true });
@@ -1414,12 +1421,31 @@ describe('shouldIngestVitestLedgerInProcess', () => {
 
   it('leaves a managed checkout own reporter as the single writer', async () => {
     const managedRoot = await makeScratchTestCheckout('papercusp-testing-run-local-reporter-');
+    await installVitestVersion(managedRoot, '4.0.0');
     const localReporter = join(managedRoot, 'libs/test-config/src/admin-test-runs-reporter.ts');
     await mkdir(dirname(localReporter), { recursive: true });
     await writeFile(localReporter, 'export default class Reporter {}\n');
 
     expect(shouldIngestVitestLedgerInProcess(managedRoot)).toBe(false);
   });
+
+  it.each(['2.1.9', '3.2.4', '5.0.0', 'unknown'])(
+    'uses parent ingestion for Vitest %s even when the v4 reporter resolves locally', async version => {
+      const root = await makeScratchTestCheckout('papercusp-testing-run-incompatible-reporter-');
+      await installVitestVersion(root, version);
+      const reporter = join(root, 'libs/test-config/src/admin-test-runs-reporter.ts');
+      await mkdir(dirname(reporter), { recursive: true });
+      await writeFile(reporter, 'export default class Reporter { onTestRunEnd() {} }\n');
+
+      expect(resolveAdminTestRunsReporterPath(root)).toBeUndefined();
+      expect(shouldIngestVitestLedgerInProcess(root)).toBe(true);
+      expect(buildDetachedTestRunRequest({ root, files: ['packages/x/real.test.ts'] }).args)
+        .not.toContain(`--reporter=${reporter}`);
+      expect(buildDetachedMixedTestRunRequest({
+        groups: [{ root, files: ['packages/x/real.test.ts'] }],
+      }).args.join(' ')).not.toContain(`--reporter=${reporter}`);
+    },
+  );
 });
 
 /**
@@ -1745,6 +1771,71 @@ describe('testing:run (integration)', () => {
     expect(manifest.deadline).toEqual(out.deadline);
     expect(manifest.childState).toBe('closed');
   });
+
+  it.each([1, 2])('retains native child evidence and cleanup after automatic timeout recovery across %i checkout(s)', async (count) => {
+    await mkdir(join(REPO_ROOT, '.papercusp', 'tmp'), { recursive: true });
+    const parent = await mkdtemp(join(REPO_ROOT, '.papercusp', 'tmp', 'testing-run-auto-replay-'));
+    selectorRoots.push(parent);
+    const roots = ['operator-core', 'db'].slice(0, count).map(name => join(parent, name));
+    const files = roots.map(root => join(root, 'real.test.ts'));
+    for (const [index, root] of roots.entries()) {
+      await mkdir(join(root, '.git'), { recursive: true });
+      await mkdir(join(root, 'scripts'), { recursive: true });
+      await writeFile(join(root, 'package.json'), JSON.stringify({ private: true, workspaces: [] }));
+      await writeFile(files[index]!, 'export {};\n');
+      await writeFile(join(root, 'scripts', 'test-files.mjs'), [
+        "import { writeFileSync } from 'node:fs';",
+        "import { join } from 'node:path';",
+        "const directory = process.env.PAPERCUSP_TEST_ARTIFACT_DIR;",
+        "if (!directory) throw new Error('native child artifact directory missing');",
+        "const tape = join(directory, 'automatic-recovery-child.json');",
+        "writeFileSync(tape, JSON.stringify({ directory, runId: process.env.PAPERCUSP_TEST_RUN_GROUP,",
+        "  taskDeadlineAtMs: Number(process.env.PAPERCUSP_TEST_TASK_DEADLINE_AT_MS),",
+        "  childCutoffAtMs: Number(process.env.PAPERCUSP_TEST_CHILD_CUTOFF_AT_MS),",
+        "  cleanupReserveMs: Number(process.env.PAPERCUSP_TEST_CLEANUP_RESERVE_MS) }));",
+        "writeFileSync('child-proof-path.json', JSON.stringify({ tape }));",
+        "const output = process.argv.find(arg => arg.startsWith('--outputFile='));",
+        `writeFileSync(output.slice('--outputFile='.length), JSON.stringify({ testResults: [{ name: ${JSON.stringify(files[index])}, status: 'passed',`,
+        "  assertionResults: [{ fullName: 'automatic recovery child', status: 'passed' }] }] }));",
+        "console.log('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed');",
+      ].join('\n'));
+      await sealScratchTestCheckout(root);
+    }
+    // The controlled foreground outcome isolates the recovery seam. The
+    // detached store, bootstrap, core and router children execute for real.
+    const runRouterFn = vi.fn(async () => ({ code: null, signal: 'SIGTERM' as const,
+      timedOut: true, aborted: false, output: 'controlled foreground timeout' }));
+    const result = await runTestFilesCore({ root: roots[0]!, files, timeoutMs: 45_000,
+      recoveryTimeoutMs: 120_000 }, { runRouterFn });
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: false, error: 'timeout' });
+    const detachedRunId = 'detachedRunId' in result ? result.detachedRunId : undefined;
+    expect(detachedRunId).toBeTypeOf('string');
+    if (!detachedRunId) return;
+    const originalManifest = JSON.parse(await readFile(result.artifacts!.manifest, 'utf8'));
+    const originalDeadline = originalManifest.deadline;
+    try {
+      await vi.waitFor(() => expect(getRun(detachedRunId)?.status).not.toBe('running'), { timeout: 100_000 });
+      const detached = getRun(detachedRunId);
+      expect(detached, JSON.stringify({ status: detached?.status, exitCode: detached?.exitCode,
+        outputTail: detached?.output.slice(-2000) })).toMatchObject({ status: 'pass', exitCode: 0 });
+      for (const root of roots) {
+        const { tape } = JSON.parse(await readFile(join(root, 'child-proof-path.json'), 'utf8'));
+        const child = JSON.parse(await readFile(tape, 'utf8'));
+        expect(child).toMatchObject({ runId: detachedRunId,
+          taskDeadlineAtMs: originalDeadline.taskDeadlineAtMs,
+          childCutoffAtMs: originalDeadline.childCutoffAtMs,
+          cleanupReserveMs: originalDeadline.cleanupReserveMs });
+        expect(child.directory).not.toBe(result.artifacts!.directory);
+        const manifest = JSON.parse(await readFile(join(child.directory, 'manifest.json'), 'utf8'));
+        expect(manifest).toMatchObject({ childState: 'closed', deadline: originalDeadline,
+          cleanup: { complete: true, errors: [] } });
+      }
+      expect(result.cleanup?.complete).toBe(true);
+      expect(runRouterFn).toHaveBeenCalledTimes(count);
+    } finally {
+      if (getRun(detachedRunId)?.status === 'running') await cancelFixtureRecovery(detachedRunId);
+    }
+  }, 150_000);
 
   it('never grants fresh detached recovery after a caller-bound foreground timeout', async () => {
     const root = await makeScratchTestCheckout('papercusp-testing-bound-recovery-');

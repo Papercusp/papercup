@@ -95,6 +95,7 @@ import { captureConfigurationSnapshot } from '@papercusp/test-config/configurati
 import { cleanupOwnedTestDatabases, dropDatabaseOnDedicatedConnection, type OwnedTestDbCleanupResult } from '@papercusp/test-config/pg';
 import { redactSensitiveText } from '../../sensitive-text';
 import { TestRunArtifactPacket, testRunDeadline, type TestRunArtifactPaths, type TestRunDeadline } from './run-artifacts';
+import { recoverRetainedVitestLedger } from './retained-ledger';
 import {
   boundTestRunPayload,
   captureWorktreeSnapshotAsync,
@@ -360,10 +361,21 @@ export function shouldIngestVitestLedgerInProcess(testRoot: string): boolean {
   return resolveAdminTestRunsReporterPath(testRoot) === undefined;
 }
 
-/** Resolve the reporter from the checkout that will run Vitest, with a source-tree fallback. */
+/** Resolve only a reporter whose lifecycle is supported by the executing Vitest. */
 export function resolveAdminTestRunsReporterPath(testRoot: string): string | undefined {
+  const requireFromCheckout = createRequire(join(testRoot, 'package.json'));
   try {
-    const resolved = createRequire(join(testRoot, 'package.json')).resolve(
+    // The maintained reporter implements the Vitest 4 onTestModuleEnd/onTestRunEnd
+    // lifecycle. Vitest 1–3 can load it successfully without ever calling those
+    // methods, so path existence alone silently loses the entire ledger. Unknown
+    // versions use the existing parent JSON writer as well.
+    const vitest = JSON.parse(readFileSync(requireFromCheckout.resolve('vitest/package.json'), 'utf8'));
+    if (typeof vitest.version !== 'string' || !/^4\./.test(vitest.version)) return undefined;
+  } catch {
+    return undefined;
+  }
+  try {
+    const resolved = requireFromCheckout.resolve(
       '@papercusp/test-config/admin-test-runs-reporter',
     );
     if (existsSync(resolved)) return resolved;
@@ -4157,6 +4169,7 @@ export async function runTestFilesCore(opts: RunTestFilesCoreOptions, deps: Test
   } finally {
     packet.write('ledger.json', { runGroup: runId, workspace: opts.workspaceId ?? null,
       harness: opts.harnessSlug ?? null, workItem: opts.workItemId ?? null,
+      testNamePattern: opts.testNamePattern ?? null,
       lookup: { tool: 'testing:runs', runGroup: runId, source: 'local', latestPerFile: false },
       status: 'reference-only; presence and verdict require ledger readback' });
     try {
@@ -4251,7 +4264,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
             ...(opts.workItemId !== undefined ? { workItemId: opts.workItemId } : {}),
             ...(opts.reporterStageTrace ? { reporterStageTrace: true } : {}),
             timeoutMs: recoveryTimeoutMs,
-            ...(opts.deadline ? { deadline: opts.deadline } : {}),
+            deadline,
           }),
         );
         return {
@@ -4644,7 +4657,9 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
                 ...(opts.privatePg ? { privatePg: true } : {}),
                 ...(opts.reporterStageTrace ? { reporterStageTrace: true } : {}),
                 timeoutMs: recoveryTimeoutMs,
-                ...(opts.deadline ? { deadline: opts.deadline } : {}),
+                // Automatic recovery owns the same logical budget and native
+                // artifact/cleanup route as explicitly caller-bound recovery.
+                deadline,
               }),
             )
           : undefined;
@@ -4847,7 +4862,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
     // workspace-scoped execution ledger. Reuse the Tests-tab ingestion
     // primitives over the exact JSON reports we already distilled; the write
     // happens in the operator process, where the database handle is known, and
-    // only when no child reporter exists so a managed checkout cannot double-
+    // only when no compatible child reporter exists so a managed checkout cannot double-
     // record the same run group.
     await persistExternalTestRunRows([
       ...reportTexts,
@@ -5122,13 +5137,18 @@ export default defineTool({
       if (!harnessSlug || !ctx.workspaceId || ctx.workspaceId === '*')
         return { data: { ok: false, error: 'evidence_requires_concrete_scope' } };
       try {
+        const ledgerRecovery = args.recoverEvidence.artifactDirectory
+          ? await recoverRetainedVitestLedger({ directory: args.recoverEvidence.artifactDirectory,
+            runId: args.recoverEvidence.runId, workItemId: args.recoverEvidence.workItemId,
+            workspaceId: ctx.workspaceId, harnessSlug }) : undefined;
         const evidenceBundle = await recoverTestEvidence(args.recoverEvidence, {
-          root: resolveAgentWorkspaceRoot(ctx),
+          root: ledgerRecovery?.root ?? resolveAgentWorkspaceRoot(ctx),
           harnessSlug,
           workspaceId: ctx.workspaceId,
           actorId: resolveAgentIdentity(ctx).ownerId,
         });
-        return { data: { ok: true, mode: 'evidence-recovery', evidenceBundle } };
+        return { data: { ok: true, mode: 'evidence-recovery', evidenceBundle,
+          ...(ledgerRecovery ? { ledgerRecovery } : {}) } };
       } catch (error) {
         return { data: { ok: false, error: 'evidence_recovery_failed', message: String(error) } };
       }
