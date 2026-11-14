@@ -13,6 +13,7 @@ import {
   type ForegroundKernelEvidence,
   type ForegroundKernelVerdict,
 } from './testing-run-store';
+import { readForegroundKernelVerdict } from './testing-run-store-foreground-kernel';
 
 const taskManagerMocks = vi.hoisted(() => ({
   reconcileTick: vi.fn(),
@@ -172,7 +173,7 @@ describe('getForegroundRunVerdictAsync', () => {
   it('runs the shared dry-run reconciler against only the exact foreground task', async () => {
     nextReconcileTick = reconcileTickResult({ endedUnobserved: [{ taskId: 'task-1' }] });
     const fake = fakeSql({ tasks: [task('running')], ledgerRows: 0 });
-    expect(await getForegroundRunVerdictAsync('run-1', fake.sql))
+    expect(await getForegroundRunVerdictAsync('run-1', fake.sql, readForegroundKernelVerdict))
       .toMatchObject({ taskState: 'ended_unobserved', verdict: 'lost' });
     expect(taskManagerMocks.reconcileTick).toHaveBeenCalledWith(expect.objectContaining({
       dryRun: true,

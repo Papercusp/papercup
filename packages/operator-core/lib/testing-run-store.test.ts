@@ -2504,7 +2504,10 @@ describe('durable detached snapshot lifecycle', () => {
       }
       return [];
     }) as unknown as Sql;
-    const recovered = await store.getRunAsync('kernel-run', sql);
+    const { readForegroundKernelVerdict } = await import('./testing-run-store-foreground-kernel');
+    const recovered = await store.getRunAsync(
+      'kernel-run', sql, undefined, undefined, readForegroundKernelVerdict,
+    );
     expect(recovered).toMatchObject({ status: expected, exitCode: null });
     expect(kernelMocks.list).toHaveBeenCalledWith({
       workspaceId: 'kernel-workspace', taskId: 'kernel-task', includeEnded: true, limit: 2,

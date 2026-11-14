@@ -47,6 +47,7 @@ import { readConfigurationSnapshot } from '@papercusp/test-config/configuration-
 import { CRITICAL_P95_MS } from '../../event-loop-lag-monitor';
 import { toIso } from '../_pg-timestamp';
 import { getForegroundRunVerdictAsync, type ForegroundRunVerdict } from '../../testing-run-store';
+import { readForegroundKernelVerdict } from '../../testing-run-store-foreground-kernel';
 import {
   namedQueryStageTimings,
   traceNamedQueryStage,
@@ -220,7 +221,8 @@ function emptyResultMetadata(
  */
 export async function foregroundRunMetadata(
   runGroup: string,
-  readVerdict: (runId: string) => Promise<ForegroundRunVerdict | null> = getForegroundRunVerdictAsync,
+  readVerdict: (runId: string) => Promise<ForegroundRunVerdict | null> = (runId) =>
+    getForegroundRunVerdictAsync(runId, undefined, readForegroundKernelVerdict),
 ): Promise<
   | { foregroundRun: ForegroundRunVerdict; foregroundRunHint?: string }
   | { foregroundRunUnavailable: true }

@@ -47,6 +47,7 @@ import { activeWorkspaceId } from '../../../workspace-registry';
 import { valRetirementRefusal, type ValRetirementRefusalCode } from '../../../agent-tools/plans/val-retirement';
 import { runGovernedOperation } from '../../../resource-governor/execution';
 import { startRunAsync, getRunAsync, cancelRunAsync } from '../../../testing-run-store';
+import { readForegroundKernelVerdict } from '../../../testing-run-store-foreground-kernel';
 
 interface HarnessTestRow {
   id: string;
@@ -423,7 +424,9 @@ const runDetachedStatus = defineTool({
   path: '/harness/:slug/testing/run-detached/:runId',
   auth: 'loopback',
   async handler(_req, ctx) {
-    const snapshot = await getRunAsync(ctx.params.runId as string);
+    const snapshot = await getRunAsync(
+      ctx.params.runId as string, undefined, undefined, undefined, readForegroundKernelVerdict,
+    );
     return snapshot ? Response.json(snapshot) : Response.json({ error: 'unknown runId' }, { status: 404 });
   },
 });

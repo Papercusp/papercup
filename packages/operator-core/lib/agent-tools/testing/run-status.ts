@@ -19,6 +19,7 @@ import {
   type ForegroundRunVerdict,
   type RunSnapshot,
 } from '../../testing-run-store';
+import { readForegroundKernelVerdict } from '../../testing-run-store-foreground-kernel';
 
 export type TestingRunStatusResult =
   | { ok: true; snapshot: RunSnapshot }
@@ -58,7 +59,7 @@ export default defineTool({
     let snapshot: RunSnapshot | null;
     let snapshotUnavailable = false;
     try {
-      snapshot = await getRunAsync(args.runId);
+      snapshot = await getRunAsync(args.runId, undefined, undefined, undefined, readForegroundKernelVerdict);
     } catch (error) {
       if (!(error instanceof TestingRunSnapshotUnavailableError)) throw error;
       snapshot = null;
@@ -100,7 +101,7 @@ export default defineTool({
     // A foreground run (e.g. one released by a host-shutdown handoff) has no
     // detached snapshot; its task row decides running vs recorded vs lost.
     try {
-      const foreground = await getForegroundRunVerdictAsync(args.runId);
+      const foreground = await getForegroundRunVerdictAsync(args.runId, undefined, readForegroundKernelVerdict);
       if (foreground) return { data: { ok: true, foreground } };
     } catch (error) {
       if (!(error instanceof TestingRunSnapshotUnavailableError)) throw error;

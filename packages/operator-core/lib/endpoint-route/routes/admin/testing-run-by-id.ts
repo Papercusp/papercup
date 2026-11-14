@@ -7,6 +7,7 @@
 
 import { defineTool } from '@papercusp/agent-mcp';
 import { getRunAsync, cancelRunAsync } from '../../../testing-run-store';
+import { readForegroundKernelVerdict } from '../../../testing-run-store-foreground-kernel';
 
 export const get = defineTool({
   method: 'GET',
@@ -15,7 +16,7 @@ export const get = defineTool({
   async handler(_req, ctx): Promise<Response> {
     const runId = ctx.params.runId;
     if (!runId) return new Response('missing runId', { status: 400 });
-    const snap = await getRunAsync(runId);
+    const snap = await getRunAsync(runId, undefined, undefined, undefined, readForegroundKernelVerdict);
     if (!snap) return new Response('unknown runId', { status: 404 });
     return Response.json(snap);
   },

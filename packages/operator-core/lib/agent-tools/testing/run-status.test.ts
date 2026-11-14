@@ -25,6 +25,7 @@ import {
   type RunSnapshot,
 } from '../../testing-run-store';
 import { detachedRecoveryHint, detachedTestTimeoutHint } from './run';
+import { readForegroundKernelVerdict } from '../../testing-run-store-foreground-kernel';
 
 const getRunMock = vi.mocked(getRunAsync);
 const ledgerRecoveryMock = vi.mocked(getTestRunLedgerRecoveryAsync);
@@ -55,7 +56,7 @@ describe('testing:run-status foreground verdict (WI-6554700010018414)', () => {
     const out = await call('041def13');
 
     expect(out.data).toEqual({ ok: true, foreground });
-    expect(foregroundMock).toHaveBeenCalledWith('041def13');
+    expect(foregroundMock).toHaveBeenCalledWith('041def13', undefined, readForegroundKernelVerdict);
   });
 
   it('prefers a terminal ledger recovery over the foreground task lookup', async () => {

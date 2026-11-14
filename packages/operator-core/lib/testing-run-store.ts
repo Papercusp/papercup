@@ -57,9 +57,6 @@ import {
   syncEnrolmentScopePath,
 } from './task-manager/enroll-sync';
 import { isTerminalState, WORK_ITEM_VERIFICATION_PURPOSE, type TaskSpec, type TaskState } from './task-manager/types';
-import { listTasks } from './task-manager/store';
-import { reconcileTick } from './task-manager/reconcile-tick';
-import { defaultForeignSignature } from './task-manager/scan';
 import { REPO_ROOT } from './agent-tools/docs/_repo-paths';
 import { boundedPgReadTxn } from './pg-read-query';
 import { boundedOrgTxn } from './pg-bounded-txn';
@@ -667,50 +664,17 @@ export function classifyForegroundKernelEvidence(
   return { status: 'terminal', taskState: 'ended_unobserved' };
 }
 
-type ForegroundKernelReader = (taskId: string, workspaceId: string) => Promise<ForegroundKernelVerdict>;
+export type ForegroundKernelReader = (taskId: string, workspaceId: string) => Promise<ForegroundKernelVerdict>;
 
-/** Read fresh kernel truth for just this task through the shared dry-run reconciler. */
-async function readForegroundKernelVerdict(
-  taskId: string,
-  workspaceId: string,
-): Promise<ForegroundKernelVerdict> {
-  let currentTaskState: string | null | undefined;
-  const tick = await reconcileTick({
-    dryRun: true,
-    workspaceId,
-    listLive: async (targetWorkspaceId) => {
-      const rows = await listTasks({
-        workspaceId: targetWorkspaceId ?? workspaceId,
-        taskId,
-        includeEnded: true,
-        limit: 2,
-      });
-      currentTaskState = rows.length === 1 ? rows[0]!.state : null;
-      return rows;
-    },
-    scanOptions: { foreignSignature: defaultForeignSignature(REPO_ROOT) },
-  });
-
-  // Degraded, ambiguous, or unclassified evidence stays unknown. In particular,
-  // absence from an incomplete scan must never turn a stored running row into LOST.
-  const alive = tick.result.alive.filter((row) => row.taskId === taskId).length;
-  const stranded = tick.result.stranded.filter((row) => row.taskId === taskId).length;
-  const endedUnobserved = tick.result.endedUnobserved.filter((row) => row.taskId === taskId).length;
-  return classifyForegroundKernelEvidence({
-    degraded: tick.degraded,
-    taskState: currentTaskState,
-    aliveCount: alive,
-    strandedCount: stranded,
-    endedUnobservedCount: endedUnobserved,
-    unresolved: tick.result.unresolved.some((row) => row.taskId === taskId),
-    tooYoung: tick.result.tooYoung.includes(taskId),
-  });
-}
+// The worker-safe store has no host process scanner. Callers that can prove
+// foreground liveness inject the host-only reader from
+// testing-run-store-foreground-kernel; an unavailable reader stays unknown.
+const unknownForegroundKernelVerdict: ForegroundKernelReader = async () => ({ status: 'unknown' });
 
 export async function getForegroundRunVerdictAsync(
   runId: string,
   sqlOverride?: SqlLike,
-  readKernelVerdict: ForegroundKernelReader = readForegroundKernelVerdict,
+  readKernelVerdict: ForegroundKernelReader = unknownForegroundKernelVerdict,
 ): Promise<ForegroundRunVerdict | null> {
   const sql = await snapshotSql(sqlOverride);
   if (!sql) return null;
@@ -765,6 +729,7 @@ async function readPersistedRunSnapshot(
   sqlOverride?: SqlLike,
   recoveryScope?: DetachedReportRecoveryScope,
   environment?: Readonly<Record<string, string | undefined>>,
+  readKernelVerdict: ForegroundKernelReader = unknownForegroundKernelVerdict,
 ): Promise<PersistedSnapshotRead | null> {
   const sql = await snapshotSql(sqlOverride);
   if (!sql) throw new TestingRunSnapshotUnavailableError();
@@ -815,7 +780,12 @@ async function readPersistedRunSnapshot(
     // A task reconstructed for evidence recovery is never a liveness verdict.
     return recovered === snapshot ? null : { snapshot: recovered, task };
   }
-  return { snapshot: await reconcilePersistedOrphan(snapshot, row, sql, environment, recoveryScope?.retainedReports), task };
+  return {
+    snapshot: await reconcilePersistedOrphan(
+      snapshot, row, sql, environment, recoveryScope?.retainedReports, readKernelVerdict,
+    ),
+    task,
+  };
 }
 
 async function readPersistedRunSnapshotWithRetry(
@@ -823,8 +793,9 @@ async function readPersistedRunSnapshotWithRetry(
   sqlOverride?: SqlLike,
   recoveryScope?: DetachedReportRecoveryScope,
   environment?: Readonly<Record<string, string | undefined>>,
+  readKernelVerdict: ForegroundKernelReader = unknownForegroundKernelVerdict,
 ): Promise<PersistedSnapshotRead | null> {
-  let snapshot = await readPersistedRunSnapshot(runId, sqlOverride, recoveryScope, environment);
+  let snapshot = await readPersistedRunSnapshot(runId, sqlOverride, recoveryScope, environment, readKernelVerdict);
   if (snapshot) return snapshot;
 
   // `testing:run` waits for the initial upsert before it marks detachedDurable
@@ -834,7 +805,7 @@ async function readPersistedRunSnapshotWithRetry(
   // absent; read errors remain snapshot_unavailable and are never retried here.
   for (const delayMs of DETACHED_RUN_DURABILITY_RETRY_DELAYS_MS) {
     await waitForSnapshotRetry(delayMs);
-    snapshot = await readPersistedRunSnapshot(runId, sqlOverride, recoveryScope, environment);
+    snapshot = await readPersistedRunSnapshot(runId, sqlOverride, recoveryScope, environment, readKernelVerdict);
     if (snapshot) return snapshot;
   }
   return null;
@@ -1298,12 +1269,13 @@ async function reconcilePersistedOrphan(
   sql: SqlLike,
   environment?: Readonly<Record<string, string | undefined>>,
   retainedReports?: DetachedReportRecoveryScope['retainedReports'],
+  readKernelVerdict: ForegroundKernelReader = unknownForegroundKernelVerdict,
 ): Promise<RunSnapshot> {
   if (snapshot.status === 'running' && row.task_id && row.task_workspace_id &&
       typeof row.task_state === 'string' && FOREGROUND_LIVE_TASK_STATES.has(row.task_state)) {
     // Reuse the foreground oracle: only an independently confirmed released
     // scope is terminal. A strand, partial scan or read failure stays unknown.
-    const kernel = await readForegroundKernelVerdict(row.task_id, row.task_workspace_id)
+    const kernel = await readKernelVerdict(row.task_id, row.task_workspace_id)
       .catch((): ForegroundKernelVerdict => ({ status: 'unknown' }));
     if (kernel.status === 'terminal') row = { ...row, task_state: kernel.taskState };
   }
@@ -2704,6 +2676,7 @@ export async function getRunAsync(
   sqlOverride?: SqlLike,
   recoveryScope?: DetachedReportRecoveryScope,
   environment?: Readonly<Record<string, string | undefined>>,
+  readKernelVerdict: ForegroundKernelReader = unknownForegroundKernelVerdict,
 ): Promise<RunSnapshot | null> {
   evictOldRuns();
   const local = _runs.get(runId);
@@ -2712,7 +2685,7 @@ export async function getRunAsync(
     let observedTask: PersistedDetachedTaskRow | null | undefined;
     if ((local.snapshot.status === 'running' || isDetachedNoVerdictError(local.snapshot)) && local.snapshot.taskId) {
       const persisted = await readPersistedRunSnapshot(
-        runId, sqlOverride ?? local.snapshotSql, recoveryScope, local.childEnv,
+        runId, sqlOverride ?? local.snapshotSql, recoveryScope, local.childEnv, readKernelVerdict,
       );
       // Preserve fresher local progress while the task is live, and never
       // overwrite a cancellation/close that completed during the durable read.
@@ -2741,12 +2714,12 @@ export async function getRunAsync(
     }
     return snapshot;
   }
-  const persisted = await readPersistedRunSnapshotWithRetry(runId, sqlOverride, recoveryScope, environment);
+  const persisted = await readPersistedRunSnapshotWithRetry(runId, sqlOverride, recoveryScope, environment, readKernelVerdict);
   if (persisted) return withholdUnverifiedVitestPass(persisted.snapshot, sqlOverride, persisted.task);
 
   const detachedRunId = await readDetachedRunIdForOrigin(runId, sqlOverride);
   if (!detachedRunId || detachedRunId === runId) return null;
-  return getRunAsync(detachedRunId, sqlOverride, recoveryScope, environment);
+  return getRunAsync(detachedRunId, sqlOverride, recoveryScope, environment, readKernelVerdict);
 }
 
 /** Resolve the foreground ID emitted by testing:run to its detached recovery handle. */
