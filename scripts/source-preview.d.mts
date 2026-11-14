@@ -3815,7 +3815,7 @@ export function exportSnapshot({ repoRoot, ref, out, target: targetName, license
     out: string;
     manifest: {
         schema: number;
-        target: "preview" | "public";
+        target: "public" | "preview";
         purpose: string;
         year: number;
         source: {
