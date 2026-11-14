@@ -89,11 +89,16 @@ describe('seed singleton with a live drainer', () => {
     expect(pending).toBe(3);
   });
 
-  it('waits for all refilled cohorts to drain, preserving bigint IDs and workspace/hive scope', async () => {
+  it('completes against the fixed fence while writers keep the total backlog above zero, preserving bigint IDs and workspace/hive scope', async () => {
+    // WI-6554700010048913: every poll drains one row and enqueues two, so the TOTAL
+    // pending count grows forever and never reaches zero. The old total==0 rule
+    // livelocked here; the fence armed at the first poll must still end the wait once
+    // every row up to that fence is drained.
     const workspaceId = 'cohort-progress';
     let id = 9007199254741100n;
     await enqueue(workspaceId, id);
     await enqueue(workspaceId, ++id);
+    const fence = id.toString();
     await enqueue(workspaceId, ++id, 'unrelated-hive');
     let t = 0;
     let polls = 0;
@@ -108,20 +113,22 @@ describe('seed singleton with a live drainer', () => {
           WHERE id IN (
             SELECT id FROM harness_shared.substrate_outbox
             WHERE workspace_id = ${workspaceId} AND harness_slug = 'cohort' AND drained_at IS NULL
-            ORDER BY id LIMIT ${polls <= 2 ? 1 : 100})`;
-        if (polls <= 2) {
-          await enqueue(workspaceId, ++id);
-          await enqueue(workspaceId, ++id);
-        } else if (polls === 3) {
-          await enqueue(workspaceId, ++id);
-        }
+            ORDER BY id LIMIT 1)`;
+        await enqueue(workspaceId, ++id);
+        await enqueue(workspaceId, ++id);
       },
     });
-    expect(result).toEqual({ undrained: 0, waitedMs: 2_400 });
-    expect(polls).toBe(4);
-    const [{ pending }] = await observer<{ pending: number }[]>`
-      SELECT count(*)::int AS pending FROM harness_shared.substrate_outbox
-      WHERE workspace_id = ${workspaceId} AND drained_at IS NULL`;
-    expect(pending).toBe(1); // The unrelated hive neither blocks nor counts as delivery.
+    expect(result).toEqual({ undrained: 0, waitedMs: 1_200, drainedThroughId: fence, newerPending: 4 });
+    expect(polls).toBe(2);
+    const rows = await observer<{ harness_slug: string; pending: number }[]>`
+      SELECT harness_slug, count(*)::int AS pending FROM harness_shared.substrate_outbox
+      WHERE workspace_id = ${workspaceId} AND drained_at IS NULL
+      GROUP BY harness_slug ORDER BY harness_slug`;
+    // Newer cohort rows stay pending (they replicate after the snapshot); the unrelated
+    // hive neither blocks nor counts as delivery.
+    expect(rows).toEqual([
+      { harness_slug: 'cohort', pending: 4 },
+      { harness_slug: 'unrelated-hive', pending: 1 },
+    ]);
   });
 });
