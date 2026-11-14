@@ -221,15 +221,18 @@ describe('test-loaded migration drafts (WI-6554700010008558)', () => {
   });
 
   it(`every draft a test has loaded for more than ${GRACE_DAYS} days has an accountable owner`, () => {
+    const unowned = unownedStaleDrafts(scan(), ALLOWED_TEST_LOADED_DRAFTS, Date.now());
     expect(
-      unownedStaleDrafts(scan(), ALLOWED_TEST_LOADED_DRAFTS, Date.now()),
+      unowned,
       'These tests prove code against migrations no database has. Arm each migration, or delete the draft and ' +
-        "the test's use of it if the design moved on, or add an ALLOWED_TEST_LOADED_DRAFTS entry naming an OPEN owner.",
+        "the test's use of it if the design moved on, or add an ALLOWED_TEST_LOADED_DRAFTS entry naming an OPEN owner.\n" +
+        unowned.join('\n'),
     ).toEqual([]);
   });
 
   it('every allowlist entry still names a draft that exists and that a test still loads', () => {
-    expect(staleEntries(scan(), ALLOWED_TEST_LOADED_DRAFTS)).toEqual([]);
+    const stale = staleEntries(scan(), ALLOWED_TEST_LOADED_DRAFTS);
+    expect(stale, `Stale test-loaded draft allowances:\n${stale.join('\n')}`).toEqual([]);
   });
 
   it('every allowlist entry names an owner and a reason', () => {
