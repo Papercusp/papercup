@@ -150,6 +150,35 @@ describe('cold tier native evidence ledgers', () => {
       expect((await measureDurableHeadroomTargets(db.sql, window)).verdict)
         .toBe(dryRun === true ? 'pass' : 'unknown');
     });
+  it.each(['started', 'receipt'])(
+    'retains unattributed native evidence beside a healthy cohort (%s)', async phase => {
+      await seedTargets();
+      for (const host of ['', ' ', '\t', 'fixture-host ', 'other host', null, 42]) {
+        const details = { id: 'unattributed', host, startedAt: at(30.4), dryRun: false };
+        await db.sql`INSERT INTO harness_shared.audit_log VALUES
+          ('unattributed',${Date.parse(at(30.4))},'system:disk-retention',${`disk-retention:${phase}`},
+           'unattributed',${db.sql.json(details)},'workspace')`;
+        expect((await measureDurableHeadroomTargets(db.sql, window)).verdict,
+          `phase=${phase}, host=${JSON.stringify(host)}`).toBe('unknown');
+        await db.sql`UPDATE harness_shared.disk_census_runs SET avail_bytes=399999999999 WHERE run_id='/30'`;
+        expect((await measureDurableHeadroomTargets(db.sql, window)).verdict,
+          `floor dip, phase=${phase}, host=${JSON.stringify(host)}`).toBe('fail');
+        await db.sql`UPDATE harness_shared.disk_census_runs SET avail_bytes=400000000000 WHERE run_id='/30'`;
+        await db.sql`DELETE FROM harness_shared.audit_log WHERE id='unattributed'`;
+      }
+    });
+  it('excludes positively identified foreign hosts and explicit dry runs from the native population', async () => {
+    await seedTargets();
+    for (const selected of [{ host: 'other-host', dryRun: false }, { host: '', dryRun: true },
+      { host: ' \t ', dryRun: true }]) {
+      const details = { id: 'excluded', startedAt: at(30.4), ...selected };
+      await db.sql`INSERT INTO harness_shared.audit_log VALUES
+        ('excluded',${Date.parse(at(30.4))},'system:disk-retention','disk-retention:started',
+         'excluded',${db.sql.json(details)},'workspace')`;
+      expect((await measureDurableHeadroomTargets(db.sql, window)).verdict).toBe('pass');
+      await db.sql`DELETE FROM harness_shared.audit_log WHERE id='excluded'`;
+    }
+  });
   it('does not hide a middle dip or hostless legacy attempt behind good endpoints', async () => {
     await seedTargets();
     await db.sql`UPDATE harness_shared.audit_log SET details=details-'host' WHERE id='30-started'`;

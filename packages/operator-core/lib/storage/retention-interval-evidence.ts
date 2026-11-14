@@ -219,6 +219,8 @@ export async function measurePostgresRetentionEvidence(sql: Pick<import('postgre
   });
 }
 
+const soakCensusRowSchema = z.object({ id: z.string().min(1), host: z.string().min(1), path: z.enum(['/', '/mnt/data']),
+  at: z.string().datetime({ offset: true }), availableBytes: bytes, complete: z.boolean() });
 const targetRecordsSchema = z.object({
   censuses: soakCensusRows(),
   attempts: z.array(z.object({ id: z.string().min(1), host: z.string().min(1),
@@ -234,10 +236,7 @@ const targetRecordsSchema = z.object({
     // SQL NULL means linkage is unconfirmed; it must not hide native floor/run failures.
     planTerminal: z.boolean(), linkedSuccessor: z.boolean().nullable(), siblingId: z.literal('WI-10007751'), siblingTerminal: z.boolean() }),
 });
-function soakCensusRows() {
-  return z.array(z.object({ id: z.string().min(1), host: z.string().min(1), path: z.enum(['/', '/mnt/data']),
-    at: z.string().datetime({ offset: true }), availableBytes: bytes, complete: z.boolean() })).max(20_000);
-}
+function soakCensusRows() { return z.array(soakCensusRowSchema).max(20_000); }
 
 /** Exact R-10 assessment: decimal GB/TB, 72 hourly buckets on each device, and
  * the full native started/finished population. No alarm can excuse a target dip. */
@@ -252,12 +251,33 @@ export function assessDurableHeadroomTargets(input: unknown,
   const parsed = targetRecordsSchema.safeParse(input);
   const start = Date.parse(window.windowStart), end = Date.parse(window.windowEnd), measured = Date.parse(window.measuredAt);
   const hour = 3_600_000;
-  if (!parsed.success || !window.host.trim() || ![start, end, measured].every(Number.isFinite) || end - start !== 72 * hour || end > measured) {
+  if (!window.host.trim() || ![start, end, measured].every(Number.isFinite) || end - start !== 72 * hour || end > measured) {
     add('evidence-shape', 'unknown', 'Require a completed exact 72h window and complete, host-attributed native census/run/disposition records.');
+    return finish();
+  }
+  // An unrelated malformed receipt cannot erase an independently valid native
+  // floor measurement. Validate each sample before using its host/clock/bytes.
+  const addMeasuredDips = () => {
+    const raw = (input as { censuses?: unknown } | null)?.censuses;
+    const dipped = new Set<'/' | '/mnt/data'>();
+    for (const candidate of Array.isArray(raw) ? raw.slice(0, 20_000) : []) {
+      const sample = soakCensusRowSchema.safeParse(candidate);
+      if (!sample.success || sample.data.host !== window.host) continue;
+      const row = sample.data, at = Date.parse(row.at);
+      const floor = row.path === '/' ? 400 * 1000 ** 3 : 2 * 1000 ** 4;
+      if (at >= start && at <= end && row.availableBytes < floor) dipped.add(row.path);
+    }
+    for (const path of dipped) add(`exact-target:${path}`, 'fail',
+      'A valid native sample breached the decimal-byte floor despite other indeterminate evidence.');
+  };
+  if (!parsed.success) {
+    addMeasuredDips();
+    add('evidence-shape', 'unknown', 'Require complete, host-attributed native census/run/disposition records.');
     return finish();
   }
   const { censuses, attempts, receipts, dispositions } = parsed.data;
   if ([...censuses, ...attempts, ...receipts].some(r => r.host !== window.host)) {
+    addMeasuredDips();
     add('host-scope', 'unknown', 'Foreign-host records cannot certify this window.'); return finish();
   }
   const binding = durableHeadroomBindingSchema.safeParse(window.headroomBinding);
@@ -349,7 +369,10 @@ export async function measureDurableHeadroomTargets(sql: Pick<import('postgres')
   ), activity AS (
     SELECT action, details FROM harness_shared.audit_log
     WHERE workspace_id=$4 AND actor='system:disk-retention' AND action IN ('disk-retention:started','disk-retention:receipt')
-      AND (details->>'host'=$1 OR jsonb_typeof(details->'host') IS DISTINCT FROM 'string')
+      -- An empty or whitespace-containing token cannot establish foreign-host
+      -- scope. Keep it for validation even beside an otherwise healthy cohort.
+      AND (details->>'host'=$1 OR jsonb_typeof(details->'host') IS DISTINCT FROM 'string'
+        OR details->>'host' !~ '^[^[:space:]]+$')
       -- Only an explicitly boolean dry run is known not to have real effects.
       -- Missing/malformed flags must reach the assessor, never vanish beside a
       -- healthy cohort and turn an incomplete population into a passing window.
