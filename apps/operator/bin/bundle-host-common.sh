@@ -9,6 +9,45 @@ fi
 PAPERCUSP_BUNDLE_HOST_COMMON_LOADED=1
 
 # Resolve the selected source, never an enclosing checkout's identity.
+# Print an unreferenced commit whose tree byte-equals <repo>'s working tree,
+# recursing depth-first into initialized submodules (WI-6554700010048234).
+# Writes loose objects only: no ref, real index or working-tree file changes.
+# A clean repository returns HEAD; the fixed identity and date make the commit
+# content-addressed, so the same bytes always yield the same SHA.
+bundle_host_snapshot_commit() { # <repo dir>
+  local repo="$1" head status index_dir real_index entry mode path sub_sha tree rc=0
+  local -a gitlinks=()
+  head="$(git -C "$repo" rev-parse --verify --quiet 'HEAD^{commit}')" || return 1
+  status="$(git -C "$repo" status --porcelain=v1 --untracked-files=all --ignore-submodules=none)" || return 1
+  if [[ -z "$status" ]]; then printf '%s\n' "$head"; return 0; fi
+  while IFS= read -r -d '' entry; do
+    mode="${entry%% *}"
+    path="${entry#*$'\t'}"
+    # An uninitialized submodule keeps its recorded gitlink.
+    [[ "$mode" == 160000 && -e "$repo/$path/.git" ]] || continue
+    sub_sha="$(bundle_host_snapshot_commit "$repo/$path")" || return 1
+    gitlinks+=("160000,$sub_sha,$path")
+  done < <(git -C "$repo" ls-files --stage -z)
+  index_dir="$(mktemp -d "${TMPDIR:-/tmp}/bundle-host-snapshot.XXXXXX")" || return 1
+  # Start from a copy of the real index for its stat cache; else from HEAD.
+  real_index="$(git -C "$repo" rev-parse --path-format=absolute --git-path index 2>/dev/null)" || real_index=""
+  if [[ -z "$real_index" ]] || ! cp -- "$real_index" "$index_dir/index" 2>/dev/null; then
+    GIT_INDEX_FILE="$index_dir/index" git -C "$repo" read-tree "$head" || rc=1
+  fi
+  (( rc == 0 )) && { GIT_INDEX_FILE="$index_dir/index" git -C "$repo" add -A >/dev/null 2>&1 || rc=1; }
+  for entry in "${gitlinks[@]}"; do
+    (( rc == 0 )) || break
+    GIT_INDEX_FILE="$index_dir/index" git -C "$repo" update-index --cacheinfo "$entry" || rc=1
+  done
+  (( rc == 0 )) && { tree="$(GIT_INDEX_FILE="$index_dir/index" git -C "$repo" write-tree)" || rc=1; }
+  rm -rf -- "$index_dir"
+  (( rc == 0 )) || return 1
+  GIT_AUTHOR_NAME='bundle-host snapshot' GIT_AUTHOR_EMAIL='bundle-host-snapshot@invalid' \
+    GIT_COMMITTER_NAME='bundle-host snapshot' GIT_COMMITTER_EMAIL='bundle-host-snapshot@invalid' \
+    GIT_AUTHOR_DATE='@0 +0000' GIT_COMMITTER_DATE='@0 +0000' \
+    git -C "$repo" commit-tree --no-gpg-sign "$tree" -p "$head" -m 'bundle-host working-tree snapshot'
+}
+
 bundle_host_source_sha() { # <canonical source root> [node command...]
   local repo_root="$1"
   shift
@@ -43,7 +82,17 @@ NODE
     if ! status="$(git -C "$repo_root" status --porcelain=v1 --untracked-files=all --ignore-submodules=none 2>/dev/null)"; then
       printf '%s+dirty' "$source_sha"
     elif [[ -n "$status" ]]; then
-      printf '%s+dirty' "$source_sha"
+      # Opt-in (the working-tree operator-API route only): name the exact
+      # bytes with a content-addressed snapshot commit instead of HEAD. A
+      # snapshot failure keeps the artifact unattributable, never relabelled.
+      local snapshot=""
+      if [[ "${PAPERCUSP_BUNDLE_SNAPSHOT_DIRTY:-}" == 1 ]] \
+        && snapshot="$(bundle_host_snapshot_commit "$repo_root")" \
+        && snapshot="$(git -C "$repo_root" rev-parse --short "$snapshot")" && [[ -n "$snapshot" ]]; then
+        printf '%s' "$snapshot"
+      else
+        printf '%s+dirty' "$source_sha"
+      fi
     else
       printf '%s' "$source_sha"
     fi
