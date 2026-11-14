@@ -1650,21 +1650,6 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for scripts/okf-backfill-insights.mjs: this CI/guard helper subprocess is bounded and awaited (or release/control metadata), creates no independent resident queue, and must remain runnable while productive capacity is pressured.",
   },
   {
-    path: "scripts/operator-api-working-tree.mjs",
-    code: "resource-start-outside-admission",
-    disposition: "bypass",
-    reason:
-      "P-016 reviewed bypass disposition for scripts/operator-api-working-tree.mjs (WI-6554700010048234, plan pipeline-stall-resilience-2026-11-14): the commit-independent operator-API test route. Its only start is ONE `fork(scripts/with-test-pg.mjs, ['--isolated-runtime=operator-api', ...])`, which the CLI awaits until `close` (forwarding SIGINT/SIGTERM) before exiting with the child's code. The child runs one disposable private operator host plus a migrated PG for a single verification and tears both down itself (stopPrivateOperatorHost and with-test-pg cleanup). Nothing is detached or unref'd, and no resident queue survives the call. Its governed caller is packages/operator-core/lib/working-tree-operator-api.integration.test.ts under testing:run; a direct agent invocation has the same one-shot footprint as one isolated integration suite. Pinned by matchesSource to that one awaited fork: a second start, a detach or an unref falls out of the exemption.",
-    matchesSource: (source) => {
-      const code = stripCommentsAndStrings(source);
-      return childProcessVerbCallCount(code) === 1 &&
-        source.includes("fork(join(ROOT, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api'") &&
-        source.includes("child.on('close'") &&
-        !/\bdetached\b|\.unref\s*\(|\bnew\s+Worker\s*\(|\bnew\s+Piscina\s*\(/.test(code) &&
-        !hasCalledResourceStartAlias(code);
-    },
-  },
-  {
     path: "scripts/patch-coverage.ts",
     code: "resource-start-outside-admission",
     disposition: "bypass",
