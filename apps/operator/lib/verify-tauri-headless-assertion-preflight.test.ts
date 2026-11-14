@@ -20,6 +20,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const ROOT = resolve(__dirname, '../../..');
@@ -114,6 +115,36 @@ function runAssertionPreflightOnly(assertionSource: string) {
     killSignal: 'SIGKILL',
   });
 }
+
+describe('verify-tauri-deadline module entry guard', () => {
+  it('allows pure helpers to be imported from Node stdin', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'verify-tauri-deadline-stdin.'));
+    const helperDir = join(dir, 'scripts/lib');
+    try {
+      mkdirSync(helperDir, { recursive: true });
+      for (const helper of ['verify-tauri-deadline.mjs', 'task-deadline.mjs']) {
+        writeFileSync(join(helperDir, helper), readFileSync(resolve(ROOT, 'scripts/lib', helper)));
+      }
+
+      const moduleUrl = pathToFileURL(join(helperDir, 'verify-tauri-deadline.mjs')).href;
+      const result = spawnSync(process.execPath, ['--input-type=module', '-'], {
+        cwd: ROOT,
+        input: [
+          `import { verifierTaskBudget } from ${JSON.stringify(moduleUrl)};`,
+          "console.log(verifierTaskBudget({ env: {}, phase: 'assert' }).knownEstimateMs);",
+          '',
+        ].join('\n'),
+        encoding: 'utf8',
+        timeout: 15_000,
+      });
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toBe('120000\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 function runManifestPreflight(actual: string, claimed: string, claimedRoot?: string, heredocLines: string[] = []) {
   const dir = mkdtempSync(join(tmpdir(), 'verify-tauri-env-manifest.'));
