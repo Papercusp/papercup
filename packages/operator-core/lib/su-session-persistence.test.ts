@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, type Dirent } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -132,31 +132,46 @@ describe('P-004 durable SU-session persistence', () => {
     const exportedFunctions = [...source.matchAll(/^export (?:async )?function (\w+)/gm)].map((m) => m[1]);
 
     /** Production (non-test) sources that mention this module, plus the module itself. */
-    function productionSources(): string[] {
+    function productionSources(readDirectory: (directory: string) => Pick<Dirent, 'name' | 'isDirectory' | 'isFile'>[]
+      = directory => readdirSync(directory, { withFileTypes: true })): string[] {
       const bodies: string[] = [source];
       for (const root of SOURCE_ROOTS) {
-        let entries: string[];
-        try {
-          entries = readdirSync(join(repoRoot, root), { recursive: true }) as unknown as string[];
-        } catch {
-          continue;
-        }
-        for (const rel of entries) {
-          if (typeof rel !== 'string') continue;
-          if (!/\.(ts|tsx)$/.test(rel) || /\.test\.tsx?$/.test(rel)) continue;
-          if (rel.split(/[\\/]/).some((segment) => SKIP_DIRS.has(segment))) continue;
-          if (rel.endsWith(`${MODULE_BASENAME}.ts`)) continue;
-          let body: string;
-          try {
-            body = readFileSync(join(repoRoot, root, rel), 'utf8');
-          } catch {
-            continue;
+        const pending = [join(repoRoot, root)];
+        while (pending.length) {
+          const directory = pending.pop()!;
+          let entries: ReturnType<typeof readDirectory>;
+          try { entries = readDirectory(directory); } catch { continue; }
+          for (const entry of entries) {
+            const path = join(directory, entry.name);
+            if (entry.isDirectory()) {
+              // Prune before enumeration: filtering recursive readdir output
+              // still walks every dependency/build tree before discarding it.
+              if (!SKIP_DIRS.has(entry.name)) pending.push(path);
+              continue;
+            }
+            if (!entry.isFile() || !/\.(ts|tsx)$/.test(entry.name) || /\.test\.tsx?$/.test(entry.name)) continue;
+            if (entry.name === `${MODULE_BASENAME}.ts`) continue;
+            let body: string;
+            try { body = readFileSync(path, 'utf8'); } catch { continue; }
+            if (body.includes(MODULE_BASENAME)) bodies.push(body);
           }
-          if (body.includes(MODULE_BASENAME)) bodies.push(body);
         }
       }
       return bodies;
     }
+
+    it('prunes dependency and build trees before enumerating their contents', () => {
+      const visited: string[] = [];
+      const packages = join(repoRoot, 'packages');
+      const bodies = productionSources(directory => {
+        visited.push(directory);
+        return directory === packages ? [...SKIP_DIRS, 'src'].map(name => ({
+          name, isDirectory: () => true, isFile: () => false,
+        })) : [];
+      });
+      expect(bodies).toEqual([source]);
+      expect(visited).toEqual([packages, join(packages, 'src'), join(repoRoot, 'apps')]);
+    });
 
     /** A name is reachable when it appears as a call anywhere but its declaration. */
     function callSites(name: string, bodies: readonly string[]): number {
