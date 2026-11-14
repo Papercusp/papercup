@@ -135,12 +135,12 @@ const ACCEPTANCE_PIN_VALUE_PREFIX =
   /\b(?:pin|pinned|pinning)\b[^\n]{0,50}\b(?:acceptance|verification|test(?:s)?|run)\s+to\s*$/i;
 
 /**
- * A file/path's last commit is historical containment evidence. Keep the
- * qualifier anchored to the value so a nearby pipeline word cannot make it
- * look like the currently deployed commit.
+ * A file/path's last commit or an explicitly old test proof is historical
+ * evidence. Keep the qualifier anchored to the value so a nearby pipeline
+ * word cannot make it look like the currently deployed commit.
  */
 const HISTORICAL_COMMIT_VALUE_PREFIX =
-  /\b(?:last|latest|most\s+recent)\s+commit(?:\s+(?:sha|hash))?\s*(?:is|=|:)?\s*$/i;
+  /(?:\b(?:last|latest|most\s+recent)\s+commit(?:\s+(?:sha|hash))?|\b(?:old|historical|prior|previous)[\w-]{0,24}\s+(?:(?:test|suite|run)\s+)?proof)\s*(?:is|=|:)?\s*$/i;
 
 const EXPLICIT_PIPELINE_STATE_AFTER_VALUE =
   /^\s*(?:is|was|now|currently)\s+(?:(?:(?:the|a)\s+)?(?:deploy(?:ed|ing|ment)?|serving|serves|live|release[d]?|staging|main|running|shipped)\b|at\s+:(?:3070|3170)\b)/i;
@@ -212,6 +212,15 @@ const SESSION_ID_VALUE_PREFIX =
   /\b(?:native[-\s]+)?session(?:[-\s]+(?:id|identifier|uuid|prefix))?\s*(?:[:=#]\s*)?$/i;
 
 /**
+ * Coordination message/request identifiers can be shortened to a bare hex prefix
+ * in prose. A nearby word like "released" must not turn that reference into a Git
+ * position, even when the prefix happens to resolve to a commit.
+ */
+const COORDINATION_ID_VALUE_PREFIX =
+  /\b(?:coord(?:ination)?[-\s]+)?(?:message|msg|request|event)(?:[-\s]+(?:id|identifier|prefix|key))?\s*(?:[:=#]\s*)?$/i;
+const COORDINATION_CUE_VALUE_SUFFIX = /^\s+cue\b/i;
+
+/**
  * Git blob object ids are hex-shaped, but a blob is an object artifact rather than
  * a commit or pipeline position. Keep this exclusion anchored to the value: both
  * `InboxPane staging blob <sha>` and `<sha> fixture` shapes must stay quiet even
@@ -280,6 +289,20 @@ function isExplicitMemoryIdentifier(haystack: string, valueStart: number): boole
 function isExplicitSessionIdentifier(haystack: string, valueStart: number): boolean {
   const before = haystack.slice(Math.max(0, valueStart - CONTEXT_WINDOW), valueStart);
   return SESSION_ID_VALUE_PREFIX.test(before);
+}
+
+function isExplicitCoordinationReference(haystack: string, valueStart: number, valueLength: number): boolean {
+  const before = haystack.slice(Math.max(0, valueStart - CONTEXT_WINDOW), valueStart);
+  if (COORDINATION_ID_VALUE_PREFIX.test(before)) return true;
+
+  const afterStart = valueStart + valueLength;
+  const after = haystack.slice(afterStart, Math.min(haystack.length, afterStart + CONTEXT_WINDOW));
+  const cue = COORDINATION_CUE_VALUE_SUFFIX.exec(after);
+  if (!cue) return false;
+
+  // Preserve a real claim such as "abc1234 cue is deployed" while treating a
+  // shortened message cue like "the leader's earlier abc1234 cue" as an identifier.
+  return !EXPLICIT_PIPELINE_STATE_AFTER_VALUE.test(after.slice(cue[0].length));
 }
 
 function isGitBlobHash(haystack: string, valueStart: number, valueLength: number): boolean {
@@ -468,6 +491,7 @@ export function detectCellTranscriptions(text: unknown, options: DetectOptions =
       // that HEAD value keeps it classified as a deployment claim.
       if (
         isExplicitLockOrLeaseIdentifier(haystack, m.index, m[0].length) ||
+        (p.commitSha && isExplicitCoordinationReference(haystack, m.index, m[0].length)) ||
         isExplicitMemoryIdentifier(haystack, m.index) ||
         (p.commitSha && isArtifactRevisionValue(haystack, m.index)) ||
         (p.commitSha &&

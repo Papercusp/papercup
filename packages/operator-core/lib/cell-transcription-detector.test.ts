@@ -83,6 +83,10 @@ describe('cell-transcription detector — FALSE positives it must NOT raise (EI-
   const mustNotFire = [
     // A citation, not a state claim — the single most important negative.
     ['a historical commit citation', 'see commit abc1234 for the rationale behind this change'],
+    [
+      'an old test proof SHA beside a staging snapshot',
+      'Scoped admission join returned physical blocked/authoritynull; staging-ref snapshot8df10ed, old157PASS proof ce293e4.',
+    ],
     ['a fix reference', 'this was fixed in abc1234, which predates the refactor'],
     // Hex-shaped things that are not shas.
     ['a hex colour', 'the token resolves to #a1b2c3d and the contrast still passes'],
@@ -164,6 +168,54 @@ describe('cell-transcription detector — FALSE positives it must NOT raise (EI-
       async () => true,
     );
     expect(positive).toContain('9a4319b7');
+  });
+
+  it('keeps the recorded historical git-sync run separate from the preceding live-roster sentence', async () => {
+    const text = [
+      "Current tree metadata clean; your live sync's attributed candidates report3 drift fields",
+      'I read your EI-28355975418068024 custody/checkpoint and current live roster. ' +
+        'In the existing c693c320… sync, logs16:18:27Z/16:20:13Z reject attributed commits for ' +
+        'b3cf986b/e67af623 with NPM_INSTALL_SAFE_WORKSPACE_LOCK_DRIFT:3 fields. ' +
+        'At16:28 our canonical exported findRootLockManifestMismatches(process.cwd()) returns[]. ' +
+        'No working-tree lock edit made. Current drift filed EI-28599921543233667; ' +
+        'exact fields/candidate identity still unknown. Please identify existing candidate metadata ' +
+        'repair owner/evidence or retain this investigation on your lane.',
+    ].join('\n');
+    expect(detectCellTranscriptions(text)).toEqual([]);
+    for (const verdict of [true, null] as const) {
+      const asked: string[] = [];
+      expect(await cellTranscriptionHintResolvingCommits(text, async token => {
+        asked.push(token);
+        return verdict;
+      })).toBeNull();
+      expect(asked).toEqual([]);
+    }
+  });
+
+  it('still detects a deployed SHA after an explicitly historical git-sync UUID', async () => {
+    const text = 'Historical git-sync run c693c320-8573-4730-8a01-44d3bbb7969a failed. ' +
+      ':3070 is serving abc1234 right now.';
+    const asked: string[] = [];
+    expect(await cellTranscriptionHintResolvingCommits(text, async token => {
+      asked.push(token);
+      return true;
+    })).toContain('abc1234');
+    expect(asked).toEqual(['abc1234']);
+  });
+
+  it('does not treat a released coordination cue prefix as a commit even when Git resolves it', async () => {
+    const text = "WI5782 was already released on the leader's earlier b22d3373 cue";
+    const requested: string[] = [];
+    const hint = await cellTranscriptionHintResolvingCommits(text, async token => {
+      requested.push(token);
+      return true;
+    });
+
+    expect(hint).toBeNull();
+    expect(requested).toEqual([]);
+    expect(detectCellTranscriptions('b22d3373 cue is deployed to :3070', {
+      resolvesToCommit: () => true,
+    })).toMatchObject([{ value: 'b22d3373', cell: 'git.pipelinePosition' }]);
   });
 
   it('DOES fire when a source HEAD is explicitly described as deployed', () => {
