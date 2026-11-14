@@ -57,6 +57,7 @@ import {
   detectUnscannedStagedOffenders,
   parseDirtyPaths,
   readStagedIndexTextsFromGit,
+  sharedContentVerdictCache,
   type ContentOffender,
 } from './content-guard';
 import {
@@ -8542,6 +8543,9 @@ async function commitOneRepoWithScratch(
       detectors: o.contentDetectors,
       log: o.log,
       scanned: contentScanned,
+      // WI-6554700010048235: an unchanged dirty backlog re-paid every pure detector on
+      // every fire; the process-wide memo skips verdicts already computed for the same blob.
+      verdictCache: sharedContentVerdictCache(),
     });
     noteSlowPhase('content detectors');
     if (o.preDetectedContentOffenders && o.preDetectedContentOffenders.length > 0) {

@@ -16,6 +16,8 @@
  * verdict excludes a file.
  */
 import { createHash } from 'node:crypto';
+import { LruCache } from '@papercusp/cache';
+import { pinModuleState } from '@papercusp/module-singleton';
 import type { RunGit } from './run-git-sync';
 import type { ContentDetector, ContentDetectorContext } from '../../content-lint/registry';
 import { DEFAULT_SCAN_CHUNK_BYTES, partitionBlobsForScan } from '../../sync/pot-git/chunked-blob-scan';
@@ -59,6 +61,78 @@ export function contentSnapshotHash(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex');
 }
 
+/**
+ * WI-6554700010048235: memo of content-detector verdicts per blob. git-sync re-runs
+ * every detector over every dirty file on every fire, so an unchanged dirty backlog
+ * re-pays the full detector cost each fire (measured 2026-11-14 from the bg-host
+ * journal: `content detectors` was the costliest slow pre-stage phase on the papercusp
+ * root — 13 slow fires, 720s total, worst 203s, in ~5h). A verdict is keyed on
+ * (repo, path, detector, sha256 of the text the detector saw), so a changed file is a
+ * new key. Process-lifetime (one bg-host process runs every fire; a detector code
+ * change restarts it and empties the memo), LRU-bounded, and TTL-bounded so a
+ * detector that consults repo context outside its key cannot serve a stale verdict
+ * for longer than {@link CONTENT_VERDICT_CACHE_TTL_MS}. A THROWING detector is never
+ * memoised — it keeps failing open on every fire, exactly as before.
+ */
+export interface ContentVerdictCache {
+  /** `undefined` = miss; `null` = memoised clean; a string = memoised error. */
+  get(key: string): string | null | undefined;
+  set(key: string, verdict: string | null): void;
+}
+
+export const CONTENT_VERDICT_CACHE_MAX_ENTRIES = 50_000;
+export const CONTENT_VERDICT_CACHE_TTL_MS = 30 * 60_000;
+
+export function createContentVerdictCache(
+  opts: { maxEntries?: number; ttlMs?: number; now?: () => number } = {},
+): ContentVerdictCache {
+  const lru = new LruCache<{ verdict: string | null; at: number }>(opts.maxEntries ?? CONTENT_VERDICT_CACHE_MAX_ENTRIES);
+  const ttlMs = opts.ttlMs ?? CONTENT_VERDICT_CACHE_TTL_MS;
+  const now = opts.now ?? Date.now;
+  return {
+    get(key) {
+      const hit = lru.get(key);
+      if (!hit) return undefined;
+      if (now() - hit.at > ttlMs) {
+        lru.delete(key);
+        return undefined;
+      }
+      return hit.verdict;
+    },
+    set(key, verdict) {
+      lru.set(key, { verdict, at: now() });
+    },
+  };
+}
+
+const contentVerdictCacheState = pinModuleState(
+  '@papercusp/operator-core.git-sync.content-verdict-cache',
+  () => ({ cache: createContentVerdictCache(), detectIds: new WeakMap<object, number>(), nextDetectId: 1 }),
+);
+
+/**
+ * The process-wide verdict memo git-sync passes on every fire. Pinned through
+ * `pinModuleState`, so a duplicated module record still shares one memo.
+ */
+export function sharedContentVerdictCache(): ContentVerdictCache {
+  return contentVerdictCacheState.cache;
+}
+
+/**
+ * Memo key. Carries the identity of the detector's `detect` FUNCTION, not just its
+ * `key`, so two implementations sharing a key (a test stub beside the real detector)
+ * can never read each other's verdicts.
+ */
+export function contentVerdictCacheKey(repoPath: string, file: string, detector: ContentDetector, textHash: string): string {
+  const s = contentVerdictCacheState;
+  let id = s.detectIds.get(detector.detect);
+  if (id === undefined) {
+    id = s.nextDetectId++;
+    s.detectIds.set(detector.detect, id);
+  }
+  return `${repoPath}\0${file}\0${detector.key}#${id}\0${textHash}`;
+}
+
 /** Stable detector-result token shared by the guard and action-layer revalidation. */
 export function detectorResultHash(detectorKey: string, error: string): string {
   return createHash('sha256')
@@ -92,6 +166,12 @@ export interface ContentGuardDeps {
    * it to tell a staged blob this pass already judged from one it never saw.
    */
   scanned?: Map<string, string>;
+  /**
+   * WI-6554700010048235: verdict memo. Omitted/`null` ⇒ every detector runs (no memo).
+   * Consulted only for detectors that declare `verdictCacheable` (pure functions of
+   * `(file, text)`); production passes {@link sharedContentVerdictCache}.
+   */
+  verdictCache?: ContentVerdictCache | null;
 }
 
 /**
@@ -238,8 +318,10 @@ export async function detectContentOffenders(deps: ContentGuardDeps): Promise<Co
     readErrorCount: 0,
     detectorCalls: 0,
     detectorMs: 0,
+    verdictCacheHits: 0,
     offenderCount: 0,
   };
+  const verdictCache = deps.verdictCache ?? null;
   const emitSlowPassMetrics = (activeDetectorCount: number): void => {
     const elapsedMs = Math.max(0, clock() - passStartedAt);
     if (elapsedMs < 10_000 || !log) return;
@@ -360,6 +442,7 @@ export async function detectContentOffenders(deps: ContentGuardDeps): Promise<Co
     // The working-tree text we detected on — the CAS baseline for a deterministic
     // auto-repair write, so we never clobber a concurrent editor's newer content.
     let baseline = text;
+    let textHash: string | null = null;
     for (const d of dets) {
       const measuredDetector: ContentDetector = {
         ...d,
@@ -395,7 +478,21 @@ export async function detectContentOffenders(deps: ContentGuardDeps): Promise<Co
           : {}),
       };
       try {
-        const error = await measuredDetector.detect(file, text, { repoPath });
+        textHash ??= contentSnapshotHash(text);
+        // Only a detector that declares itself a pure function of (file, text) is memoised;
+        // one that reads runtime state outside its key (secrets exemptions, repo context)
+        // always re-runs, so a memo can never outlive the state its verdict came from.
+        const cacheKey =
+          verdictCache && d.verdictCacheable ? contentVerdictCacheKey(repoPath, file, d, textHash) : null;
+        const memo = cacheKey ? verdictCache!.get(cacheKey) : undefined;
+        let error: string | null;
+        if (memo !== undefined) {
+          metrics.verdictCacheHits++;
+          error = memo;
+        } else {
+          error = (await measuredDetector.detect(file, text, { repoPath })) || null;
+          if (cacheKey) verdictCache!.set(cacheKey, error);
+        }
         if (!error) continue;
         // WI-276 deterministic pre-pass: try the detector's own safe repair BEFORE
         // quarantining + dispatching the LLM fixer. Applied only to an ALREADY-failing
@@ -404,6 +501,7 @@ export async function detectContentOffenders(deps: ContentGuardDeps): Promise<Co
           const repaired = await tryAutoFix(measuredDetector, file, text, baseline, { repoPath }, { readText, writeText, log });
           if (repaired != null) {
             text = repaired; // subsequent detectors see the repaired text
+            textHash = null; // …so their memo key is the repaired text's
             baseline = repaired; // and future writes CAS against the just-written content
             continue; // no offender recorded — the file commits normally this tick
           }
@@ -424,7 +522,7 @@ export async function detectContentOffenders(deps: ContentGuardDeps): Promise<Co
     }
     // The text every detector above judged (post-repair). Recorded for offenders too:
     // their exclusion keeps them out of the index, so the hash is never consulted.
-    deps.scanned?.set(file, contentSnapshotHash(text));
+    deps.scanned?.set(file, textHash ?? contentSnapshotHash(text));
   });
   metrics.offenderCount = offenders.length;
   emitSlowPassMetrics(active.length);

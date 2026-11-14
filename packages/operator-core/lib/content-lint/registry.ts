@@ -112,6 +112,16 @@ export interface ContentDetector {
    * (mdx, smart-quotes, secrets, …) — that stays the default.
    */
   repoScope?: 'superproject-only';
+  /**
+   * WI-6554700010048235: `true` declares `detect` a PURE function of `(file, text)` — no
+   * repo files, database rows, env or clock — so the git-sync content guard may memoise
+   * its verdict per blob and skip re-running it over an unchanged dirty backlog on every
+   * fire. Omit it for any detector that reads state outside its arguments: `secrets`
+   * consults runtime path exemptions, `identity-leak` reads repo context, and a memoised
+   * verdict there could outlive the state it was computed from. A detector that THROWS
+   * is never memoised whatever this says, so an unavailable tool keeps failing open.
+   */
+  verdictCacheable?: true;
 }
 
 /** Shared exclusions — retired trees, vendored code, build output (mirror the lint scripts).
@@ -131,6 +141,7 @@ export const CONTENT_FIXER_ROLE = 'content-fixer';
 /** The MDX compile detector — scoped to the astro-built docs set (check-mdx.mjs). */
 export const mdxDetector: ContentDetector = {
   key: 'mdx',
+  verdictCacheable: true,
   glob: `${DOCS_PREFIX}**/*.mdx`,
   matches: (f) => f.endsWith('.mdx') && f.startsWith(DOCS_PREFIX) && !isExcludedPath(f),
   detect: async (file, text) => {
@@ -150,6 +161,7 @@ export const mdxDetector: ContentDetector = {
 /** The curly-quote-as-code detector — tracked .ts/.tsx (check-smart-quotes.mjs). */
 export const smartQuotesDetector: ContentDetector = {
   key: 'smart-quotes',
+  verdictCacheable: true,
   glob: '**/*.{ts,tsx}',
   matches: (f) => /\.(ts|tsx)$/.test(f) && !isExcludedPath(f),
   detect: (file, text) => {
@@ -208,6 +220,7 @@ export const smartQuotesDetector: ContentDetector = {
  */
 export const emptyTsSourceDetector: ContentDetector = {
   key: 'empty-ts-source',
+  verdictCacheable: true,
   glob: '**/*.{ts,tsx,mts,cts}',
   matches: (file) => /\.(ts|tsx|mts|cts)$/.test(file) && !DECLARATION_FILE_RE.test(file) && !isExcludedPath(file),
   detect: (file, text) =>
@@ -219,6 +232,7 @@ export const emptyTsSourceDetector: ContentDetector = {
 
 export const tsParseDetector: ContentDetector = {
   key: 'ts-parse',
+  verdictCacheable: true,
   glob: '**/*.{ts,tsx,mts,cts}',
   matches: (f) => /\.(ts|tsx|mts|cts)$/.test(f) && !isExcludedPath(f),
   detect: (file, text) => {
@@ -267,6 +281,7 @@ const DECLARATION_FILE_RE = /\.d\.(ts|mts|cts)$/;
 
 export const esbuildTransformDetector: ContentDetector = {
   key: 'esbuild-transform',
+  verdictCacheable: true,
   glob: '**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}',
   matches: (f) =>
     /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(f) &&
@@ -320,6 +335,7 @@ export const esbuildTransformDetector: ContentDetector = {
  */
 export const sqlCommentBacktickDetector: ContentDetector = {
   key: 'sql-comment-backtick',
+  verdictCacheable: true,
   glob: '**/*.{ts,tsx,mjs}',
   matches: (f) => sqlCommentBacktickScopeMatches(f) && !isExcludedPath(f),
   detect: (file, text) => {
@@ -363,6 +379,7 @@ export const sqlCommentBacktickDetector: ContentDetector = {
  */
 export const shellSyntaxDetector: ContentDetector = {
   key: 'shell-syntax',
+  verdictCacheable: true,
   glob: '**/*.sh',
   matches: (f) => f.endsWith('.sh') && !isExcludedPath(f),
   detect: (file, text) => {
@@ -387,6 +404,7 @@ export const shellSyntaxDetector: ContentDetector = {
  */
 export const conflictMarkersDetector: ContentDetector = {
   key: 'conflict-markers',
+  verdictCacheable: true,
   glob: '**/*',
   matches: (f) => !isExcludedPath(f),
   detect: (file, text) => {
@@ -424,6 +442,7 @@ export const conflictMarkersDetector: ContentDetector = {
  */
 export const nulBytesDetector: ContentDetector = {
   key: 'nul-bytes',
+  verdictCacheable: true,
   glob: '**/*.{ts,tsx,js,jsx,mjs,cjs,json,md,mdx,css,sql,sh,yml,yaml,toml}',
   matches: nulByteScopeMatches,
   detect: (file, text) => {
@@ -477,6 +496,7 @@ export const nulBytesDetector: ContentDetector = {
  */
 export const constantConditionalDetector: ContentDetector = {
   key: 'constant-conditional',
+  verdictCacheable: true,
   glob: '**/*.{ts,tsx}',
   matches: (f) => /\.(ts|tsx)$/.test(f) && !isExcludedPath(f),
   detect: (file, text) => {
@@ -538,6 +558,7 @@ export const constantConditionalDetector: ContentDetector = {
  */
 export const focusedTestDetector: ContentDetector = {
   key: 'focused-test',
+  verdictCacheable: true,
   glob: '**/*.{test,spec}.{ts,tsx}',
   matches: (f) => /\.(test|spec)\.(ts|tsx)$/.test(f) && !isExcludedPath(f),
   detect: (file, text) => {

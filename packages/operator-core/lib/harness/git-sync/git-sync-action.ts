@@ -6182,6 +6182,9 @@ async function runOwnHeadPublishLeg(slug: string, workspaceId: string, branch: s
       workspaceId,
       unshallowTimeoutMs: boundedUnshallowTimeoutMs(gitSyncActionIdleTimeoutMs()),
       unshallowDeferredUntil: priorUnshallow?.nextAttemptAt ?? null,
+      // WI-6554700010048546: the worktree → store object transfer must not run
+      // on the 60s local-op default. A multi-day backlog packs to hundreds of MB.
+      objectTransferTimeoutMs: boundedUnshallowTimeoutMs(gitSyncActionIdleTimeoutMs()),
     });
     const nextUnshallow = nextUnshallowBackoff(priorUnshallow, outcome.unshallow, Date.now());
     if (nextUnshallow !== priorUnshallow) {
