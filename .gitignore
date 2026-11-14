@@ -240,6 +240,11 @@ node_modules.pinned-deps-old.*/
 # (PG-canonical; table-registry resolves it to sync:'none', and its rule forbids
 # sync:'git' for fs-watcher mirrors). Tracking them grew the repo ~60MB/day.
 .papercusp/state/text-artifacts/
+# WI-6554700010048618: the same table's mirror for the durable-park audit
+# (work-items-durable-park-audit.ts saveTextArtifact key reports/durable-parks/*).
+# Each daily evidence matrix is ~15 MiB; PG keeps the canonical copy and no reader
+# falls back to disk.
+.papercusp/reports/durable-parks/
 .papercusp/private-desktop-candidates/
 **/scratch/relgit-*/
 **/scratch/lockdom-*/
