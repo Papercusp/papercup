@@ -16,6 +16,32 @@ import { toolsetFromNames, UNKNOWN_TOOLSET } from './push-toolset';
 import { EMPTY_PUSH_NOTE_MS, noteEmptyPush, resetEmptyPushNotes } from './push-channel';
 import { pushSnapshotMissReason } from './push-snapshot';
 
+describe('research capture deadline', () => {
+  it('keeps a slow capture off the response path while bounding eventual persistence', async () => {
+    vi.useFakeTimers();
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let finish!: () => void;
+    let captureStarted = false;
+    const capture = new Promise<void>(resolve => { finish = resolve; });
+    const deps: PushChannelDeps = { research: () => { captureStarted = true; return capture; }, snapshot: async () => null,
+      enabled: async () => false, legs: () => new Map(), commit: async () => '' };
+    const input: PushInput = { owner: 'research-owner', workspace: 'research-workspace', harness: 'research-harness',
+      root: '.', client: 'claude', calls: [{ tool: 'Read', toolInput: { file_path: 'code.ts' } }] };
+    try {
+      let responseSettled = false;
+      const response = codeIntelPushText(input, deps).then(value => { responseSettled = true; return value; });
+      await Promise.resolve();
+      expect(captureStarted).toBe(true);
+      expect(responseSettled).toBe(true);
+      expect(await response).toBe('');
+      await vi.advanceTimersByTimeAsync(501);
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('code-intel-research-trail'));
+      finish();
+      await capture;
+    } finally { finish(); warning.mockRestore(); vi.useRealTimers(); }
+  });
+});
+
 const now = Date.now();
 const raw = () => ({ schema: 'graph-dependency-snapshot-v1', index: { backend: 'first-party-imports', lastCommit: 'a'.repeat(40) },
   generatedAt: new Date(now).toISOString(), edges: [
@@ -390,11 +416,13 @@ describe('shared snapshot-backed push channel', () => {
   });
 
   it('uses the default nonblocking snapshot reader on the cold hook path', async () => {
-    const [registry, home, workspace, snapshots, research] = await Promise.all([
+    const [registry, home, workspace, snapshots, research, flags] = await Promise.all([
       import('../harness-registry'), import('../harness/operator-home-harness'),
       import('../workspace-registry'), import('./push-snapshot'), import('./research-trail'),
+      import('@papercusp/flags/server'),
     ]);
     const peek = vi.spyOn(snapshots, 'peekPushSnapshot').mockReturnValue(null);
+    const readFlag = flags.getFlag;
     const spies = [peek,
       vi.spyOn(registry, 'loadHarnessRegistry').mockResolvedValue({
         projects: [{ slug: 'papercusp', path: '/repo' }],
@@ -402,9 +430,12 @@ describe('shared snapshot-backed push channel', () => {
       vi.spyOn(home, 'operatorHomeHarnessSlug').mockReturnValue('papercusp'),
       vi.spyOn(workspace, 'activeWorkspaceId').mockReturnValue(input.workspace),
       vi.spyOn(research, 'recordResearchBatch').mockResolvedValue(undefined),
+      vi.spyOn(flags, 'getFlag').mockImplementation((...args) => args[0] === PUSH_LEG_FLAGS.notes
+        ? Promise.resolve(false) : readFlag(...args)),
     ];
     try {
-      // Exercise production defaults, rather than injecting PushChannelDeps.
+      // Exercise the default snapshot reader on a Read call while disabling the
+      // unrelated notes database read, covered by its injected unit suite.
       expect(await codeIntelPushText(input)).toBe('');
       expect(peek).toHaveBeenCalledExactlyOnceWith('papercusp');
     } finally { for (const spy of spies) spy.mockRestore(); }
