@@ -1994,6 +1994,33 @@ describe('inspectFreshAmendmentReviewer', () => {
     }
   });
 
+  it('reclaims a running reviewer when its latest native turn ended on provider error', async () => {
+    const analyzeTranscript = vi.fn(() => ({
+      trailingAccountWallTurns: 0,
+      trailingProviderErrorTurns: 1,
+      lastProviderErrorEvidence: 'provider rejected the last turn',
+    }));
+    const resolveSessionStates = vi.fn(async () => new Map([['reviewer-owner', {
+      sessionState: 'live', selfWake: 'loop',
+    }]]));
+    const hasLaterPost = vi.fn(async () => false);
+    const result = await inspectFreshAmendmentReviewer(input, {
+      readTaskState: vi.fn(async () => 'running' as const),
+      resolveSessionStates: resolveSessionStates as never,
+      analyzeTranscript: analyzeTranscript as never,
+      hasLaterPost,
+    });
+
+    expect(result).toEqual({
+      state: 'reclaimable', taskId: 'reviewer-1', taskState: 'running',
+      nativeRef: '/retained/reviewer-1.jsonl', reason: 'provider-error',
+      evidence: 'provider rejected the last turn',
+    });
+    expect(analyzeTranscript).toHaveBeenCalledWith('/retained/reviewer-1.jsonl');
+    expect(hasLaterPost).toHaveBeenCalledWith({ workspaceId: 'ws-review-recovery', previewPostRef: 'thread-post:42',
+      authorId: 'reviewer-owner' });
+  });
+
   it('does not reclaim a running reviewer whose live session has no failure evidence', async () => {
     const resolveSessionStates = vi.fn(async () => new Map([['reviewer-owner', {
       sessionState: 'live', selfWake: 'loop',
