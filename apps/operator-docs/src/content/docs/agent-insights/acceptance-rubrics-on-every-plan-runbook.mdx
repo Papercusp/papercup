@@ -25,6 +25,9 @@ documents:
   - "packages/operator-core/lib/acceptance-bar-seed.ts"
   - "packages/operator-core/lib/agent-tools/rubrics/amend.ts"
   - "packages/operator-core/lib/plan-verification-profile.ts"
+  - "packages/operator-core/lib/acceptance-rubric-vetting.ts"
+  - "packages/operator-core/lib/acceptance-rubric-critique.ts"
+  - "packages/operator-core/lib/doc-claims/acceptance-vetting-escape-route.test.ts"
 plans:
   - "plan-verification-profiles-2026-10-17"
 ---
@@ -120,26 +123,29 @@ rubrics:propose {
 }
 ```
 
-Use the matching plan class (`plan-class-feature-ship`, `plan-class-bugfix`, `plan-class-migration`, or `plan-class-investigation`). Vet the current revision with a `consult:get_feedback` critique and emit the meta-scorecard. Any later rubric edit invalidates both the attestation and independent grading because the gate pins scorecards to the plan revision; batch intended edits before requesting grading.
+Use the matching plan class (`plan-class-feature-ship`, `plan-class-bugfix`, `plan-class-migration`, or `plan-class-investigation`). Request a current independent critique through `consult:get_feedback { policy:'rubric-vetting' }`, naming the rubric ID and current criteriaHash, or the exact rubric revision when the hash is unavailable. A current independent critique satisfies vetting directly; it needs no meta-scorecard, ratings, or grading-integrity audit. A changed criteriaHash needs a critique of the new hash; an unchanged hash can preserve critique across a revision-only edit. Batch intended changes before binding proof and requesting independent grading. See [acceptance-rubric vetting](/internal/docs/agent-insights/acceptance-rubric-vetting) for the identity checks and legacy fallback.
 
 For a started BAR meaning change, use `rubrics:amend { dryRun:true, ... }` and follow the authenticated outside-lineage approval path. The reviewer posts the exact approval JSON as a `work_items:comment` on any existing thread they can write to, preferably an item they already hold. The `thread-post:<id>` lookup is workspace-wide by local post id, not tied to the requester's thread, so no separate counter-sign work-item is needed. See `agent-insights/unified-requirement-contract` for the full amendment contract.
 
-### The order: amend → vet → attest → bind → cards → grade
+### The order: amend if needed → current critique → bind → adequacy → independent grade
 
-Do these steps in exactly this order. A vetting critique should cost a text edit, not a proof cycle:
+Complete the contract and its current critique before binding proof:
 
-1. **amend** — get the BAR text complete first: METHOD, falsifier, structured check, `requiredTestLayers`. Every one of these is a `rubrics:amend`.
-2. **vet** — `consult:get_feedback { policy:'rubric-vetting' }` on the current revision. Fold every critique into ONE further amendment.
-3. **attest** — `scorecards:emit` against `meta-acceptance-rubric` for that final revision.
-4. **bind** — only now bind proof with `plans:bind-spec-evidence`.
-5. **cards** — run `plans:evaluate-spec-test-adequacy` and emit the adequacy cards.
-6. **grade** — independent grading, then the author's verdict (section 4).
+1. **amend if needed** — get the BAR text complete first: METHOD, falsifier, structured check, `requiredTestLayers`. Use `rubrics:amend` for an intended change; do not amend a complete current contract just to repeat the ceremony.
+2. **current critique** — request `consult:get_feedback { policy:'rubric-vetting' }` against the current rubric identity, or reuse an existing current independent consult or review-work-item critique that the gate accepts. Address the findings together. If an amendment changes criteriaHash, obtain critique of that new hash before continuing. The accepted direct critique completes vetting.
+3. **bind** — bind proof with `plans:bind-spec-evidence` after vetting is current.
+4. **adequacy** — run `plans:evaluate-spec-test-adequacy` and emit the adequacy cards.
+5. **independent grade** — obtain the separate acceptance grading of the finished work, then the author's verdict (section 4). Direct vetting does not replace either step.
 
 Why this order: an amendment re-revisions the clauses it touches. Proof, adequacy cards and grading bound to the old revision then no longer cover those clauses, and must be redone. Vetting is where amendments come from. So vetting after proof reliably pays for proof twice. The audit behind `review-system-rework-reduction-2026-09-23` measured a whole "vetting after proof" re-proof cycle on one plan.
 
 The gate follows this order. The acceptance gate's `NEXT REPAIR` line ranks contract-text codes first, then `bar_snapshot_vetting_missing` / `bar_snapshot_vetting_stale`, then proof, adequacy and grading codes (`ACCEPTANCE_BAR_REPAIR_ORDER`). `plans:bind-spec-evidence` still writes BAR proof bound to an unvetted revision, but its result carries an `acceptance_rubric_unvetted_before_proof` advisory. Treat that advisory as the cue to stop binding and vet first. Binding early stays legal; it is just the expensive order.
 
 **Re-binding proof after a clause or source change.** For test or mutation proof, bind the clean ledger row with `items:[{ fromTestRun, canonicalTestPath, sourcePaths }]`. Use a probe row with `worktree_dirty=false`, ideally run in an as-committed clone. Then retract the stale row with `retract:[{ bindingId, reason }]`. Operational proof cannot use `fromTestRun`, which derives only test, mutation and counterexample rows. Record the run with `testing:record-run` from a committed `docs/evidence/…json` (`schemaVersion:1`, kind `operational-test-evidence`). Then bind it with the single `binding` form: `testRunId`, `evidenceRef`, a top-level `measurement:{ schemaVersion:1, kind:'repo-files', sourcePaths }`, and `details.adequacy` with `collected`, `executed`, `skipped` and `outcome`. Pass `supersedeAtRevision:true` too. An operational binding without `testRunId` or those adequacy fields is still bound, but it does not supersede the old row.
+
+### Legacy fallback: meta-scorecard
+
+Use this fallback only when no current direct critique satisfies vetting and the historical card-based attestation path is needed. Emit `scorecards:emit` against `meta-acceptance-rubric`, with `subject:{ kind:'rubric', ref:'<acceptance-rubric-slug>' }` and exactly one of `vettingConsult` or `vettingWorkItem`. The legacy card retains its currentness, ratings and grading-audit checks; follow the [vetting runbook](/internal/docs/agent-insights/acceptance-rubric-vetting) for those requirements and any actual legacy grader refusal. A current direct critique takes precedence over legacy cards. Do not emit a meta-scorecard merely to complete the normal direct-critique sequence.
 
 ## 4. Independent grading, then the implementer's verdict
 
@@ -187,7 +193,7 @@ Code-truth family, controlled by `PLAN_ITEM_COMPLETION_GATE` and `PLAN_CODE_AUDI
 Rubric family:
 
 - `acceptance_rubric_missing` — author the post-implementation rubric.
-- `acceptance_rubric_unvetted` — critique and attest the current rubric revision.
+- `acceptance_rubric_unvetted` — obtain a current independent critique of the rubric identity; use the explicit legacy fallback only when no current direct critique satisfies vetting.
 - `acceptance_ungraded` — obtain a complete non-synthesized grading.
 - `self_graded_only` — obtain a grading from someone other than the rubric author.
 - `acceptance_not_recorded` — record the post-grading author verdict.
