@@ -236,6 +236,10 @@ node_modules.pinned-deps-old.*/
 **/vitest-tmp/
 .papercusp/vitest-tmp/
 .papercusp/scratch/
+# WI-6554700010048547: disk mirrors of harness_shared.harness_text_artifacts
+# (PG-canonical; table-registry resolves it to sync:'none', and its rule forbids
+# sync:'git' for fs-watcher mirrors). Tracking them grew the repo ~60MB/day.
+.papercusp/state/text-artifacts/
 .papercusp/private-desktop-candidates/
 **/scratch/relgit-*/
 **/scratch/lockdom-*/

@@ -337,7 +337,10 @@ function mockSql(opts: MockOpts = {}): Sql {
     if (text.includes('UPDATE harness_shared.goals')) return Promise.resolve([]);
     return Promise.resolve([]);
   };
-  return fn as unknown as Sql;
+  return Object.assign(fn, {
+    // Raw SQL fragments compose into the tagged query without executing it.
+    unsafe: (fragment: string) => fragment,
+  }) as unknown as Sql;
 }
 
 const WS = 'ws-1';

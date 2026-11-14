@@ -32,6 +32,7 @@ import {
   isNativeCodeIntelTool,
 } from './code-intelligence/code-intel-result-status';
 import { resolveDispatchPremises } from './agent-tools/premises-gate';
+import { resolveInstalledRoleForAllowlist } from './blueprint-role-base';
 import {
   PASS_THROUGH,
   papercuspComputeQuotaWindow,
@@ -2393,6 +2394,7 @@ export const PROJECTED_DEPS: DispatchProjectedDeps = {
   kernelEnforcement: operatorKernelEnforcement,
   kernelPolicy: operatorKernelEnforcement,
   authorizationFailureHint,
+  resolveRoleForAllowlist: resolveInstalledRoleForAllowlist,
   // Turn-level presence beat (liveness-hardening P-001): mark activity as soon
   // as a projected dispatch starts, so a long-running handler remains visible
   // while it is still in flight rather than only after settlement.
