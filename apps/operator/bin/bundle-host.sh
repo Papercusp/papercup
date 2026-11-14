@@ -386,12 +386,25 @@ done <<< "$VIEM_ALIAS_OUTPUT"
 # bundle (EI-21647996938145436).
 # A verifier export has no .git directory and may live inside another checkout.
 # Reuse its source receipt and archive validator; never borrow a parent's HEAD.
+bundle_host_set_source_sha() { # <sha> — the label and its compile-time define move together
+  SOURCE_SHA="$1"
+  BUNDLED_SOURCE_SHA_DEFINE=()
+  if [[ -n "$SOURCE_SHA" ]]; then
+    BUNDLED_SOURCE_SHA_DEFINE=(
+      "--define:__PAPERCUSP_BUNDLED_SOURCE_SHA__=\"${SOURCE_SHA}\""
+    )
+  fi
+}
 SOURCE_SHA="$(bundle_host_source_sha "$REPO_ROOT" "${COMMITTED_NODE[@]}")" || exit $?
-BUNDLED_SOURCE_SHA_DEFINE=()
-if [[ -n "$SOURCE_SHA" ]]; then
-  BUNDLED_SOURCE_SHA_DEFINE=(
-    "--define:__PAPERCUSP_BUNDLED_SOURCE_SHA__=\"${SOURCE_SHA}\""
-  )
+bundle_host_set_source_sha "$SOURCE_SHA"
+# WI-6554700010048234: a working-tree snapshot label (PAPERCUSP_BUNDLE_SNAPSHOT_DIRTY=1) names
+# the tree as it was when minted, but peers keep editing the shared tree and esbuild starts a
+# minute or more later (2026-11-14: a peer edit 50 s before esbuild read its bytes under an older
+# label). In that mode the compile loop below re-mints the label right before each esbuild run
+# and fences the result. A verifier export has no .git directory, so it never takes this path.
+SNAPSHOT_FENCE=0
+if [[ "${PAPERCUSP_BUNDLE_SNAPSHOT_DIRTY:-}" == 1 && ! -f "$REPO_ROOT/.verifier-source.json" ]]; then
+  SNAPSHOT_FENCE=1
 fi
 # EI-9413: bundle-host.sh reruns on EVERY service restart (ExecStartPre), and
 # systemd's restart-always can fire another attempt while a prior esbuild
@@ -413,6 +426,10 @@ LOCKFILE="$OUTFILE.build.lock"
 TMPFILE="$OUTFILE.tmp.$$"
 METAFILE="$TMPFILE.meta.json"
 PROBE_STAMP="$TMPFILE.probe-window.json"
+# Snapshot mode: the compile subshell hands its final label back through SOURCE_SHA_FILE, and the
+# fence receipt publishes beside the bundle it describes ($OUTFILE.snapshot-fence.json).
+SOURCE_SHA_FILE="$TMPFILE.source-sha"
+FENCE_RECEIPT_TMP="$TMPFILE.snapshot-fence.json"
 # EI-18119538868734274: the blueprints/ and sql/ asset directories below are
 # published with the SAME tmp-then-atomic-swap discipline as $TMPFILE here —
 # see the two "publish" comments further down for why (a live process's
@@ -481,7 +498,7 @@ restricted_hold_fallback() { # <log> — sets FALLBACK_RC; the caller exits with
 }
 bundle_host_on_exit() {
   local rc=$?
-  rm -f "$TMPFILE" "$METAFILE" "$PROBE_STAMP"
+  rm -f "$TMPFILE" "$METAFILE" "$PROBE_STAMP" "$SOURCE_SHA_FILE" "$FENCE_RECEIPT_TMP"
   [[ -n "$NEW_BLUEPRINTS_DIR" ]] && rm -rf "$NEW_BLUEPRINTS_DIR"
   [[ -n "$NEW_SQL_DIR" ]] && rm -rf "$NEW_SQL_DIR"
   [[ -n "$SYSTEMD_ENV_RUNNER_TMP" ]] && rm -f "$SYSTEMD_ENV_RUNNER_TMP"
@@ -598,9 +615,16 @@ if bundle_host_run_step compiler-resolve bundle_host_prepare_esbuild "$REPO_ROOT
   # the gate resolves PAPERCUSP_BUNDLE_PROBE_WAIT_SEC, then the PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC
   # umbrella, then 90 s (WI-10006268).
   probe_attempt=1
+  fence_attempt=1
   while :; do
     bundle_host_run_step host-probe-wait "${COMMITTED_NODE[@]}" "$REPO_ROOT/scripts/mutation-probe-window-gate.mjs" wait --root "$REPO_ROOT" \
       --stamp-file "$PROBE_STAMP" || exit 1
+    if (( SNAPSHOT_FENCE == 1 )); then
+      # WI-6554700010048234: mint the label as late as possible, then fence what esbuild read.
+      SOURCE_SHA="$(bundle_host_source_sha "$REPO_ROOT" "${COMMITTED_NODE[@]}")" || exit $?
+      bundle_host_set_source_sha "$SOURCE_SHA"
+      printf '%s\n' "$SOURCE_SHA" >"$SOURCE_SHA_FILE" || exit 1
+    fi
     compiler_rc=0
     bundle_host_run_step host-compile bundle_host_esbuild "$REPO_ROOT" "$ENTRY" \
       --bundle --platform=node --format=esm --target=node22 \
@@ -618,16 +642,34 @@ if bundle_host_run_step compiler-resolve bundle_host_prepare_esbuild "$REPO_ROOT
       echo "ERROR: esbuild failed to bundle $ENTRY (see the esbuild diagnostics above)."
       exit "$compiler_rc"
     fi
-    if bundle_host_run_step host-probe-verify "${COMMITTED_NODE[@]}" "$REPO_ROOT/scripts/mutation-probe-window-gate.mjs" verify --root "$REPO_ROOT" \
+    if ! bundle_host_run_step host-probe-verify "${COMMITTED_NODE[@]}" "$REPO_ROOT/scripts/mutation-probe-window-gate.mjs" verify --root "$REPO_ROOT" \
       --stamp-file "$PROBE_STAMP"; then
-      break
+      if (( probe_attempt >= 2 )); then
+        echo "ERROR: a mutation probe opened a window during both bundle attempts; refusing to publish a bundle that may hold a mutant (WI-10005321)."
+        exit 1
+      fi
+      probe_attempt=$((probe_attempt + 1))
+      echo "→ a mutation-probe window opened during the bundle; rebuilding once (WI-10005321)"
+      continue
     fi
-    if (( probe_attempt >= 2 )); then
-      echo "ERROR: a mutation probe opened a window during both bundle attempts; refusing to publish a bundle that may hold a mutant (WI-10005321)."
-      exit 1
+    # Snapshot mode: every repo input esbuild read must still equal the label's bytes. Plain node
+    # (type stripping), not COMMITTED_NODE: this route exists to build uncommitted bytes, and the
+    # fence is a read-only git comparison. Exit 75 = inputs moved; anything else non-zero = error.
+    if (( SNAPSHOT_FENCE == 1 )) && [[ -n "$SOURCE_SHA" && "$SOURCE_SHA" != *+dirty ]]; then
+      fence_rc=0
+      bundle_host_run_step host-snapshot-fence node "$HELPER_DIR/bundle-host-snapshot-fence.ts" \
+        "$REPO_ROOT" "$SOURCE_SHA" "$METAFILE" "$FENCE_RECEIPT_TMP" || fence_rc=$?
+      if (( fence_rc == 75 && fence_attempt < 3 )); then
+        fence_attempt=$((fence_attempt + 1))
+        echo "→ compiler inputs moved after source snapshot $SOURCE_SHA; re-snapshotting and rebuilding (attempt $fence_attempt/3, WI-6554700010048234)"
+        continue
+      fi
+      if (( fence_rc != 0 )); then
+        echo "ERROR: snapshot fence refused source label $SOURCE_SHA (rc=$fence_rc after $fence_attempt attempt(s)); keeping the last-known-good bundle (WI-6554700010048234)."
+        exit 1
+      fi
     fi
-    probe_attempt=$((probe_attempt + 1))
-    echo "→ a mutation-probe window opened during the bundle; rebuilding once (WI-10005321)"
+    break
   done
   # This subshell is the left side of `|| bundle_rc=$?`; Bash disables errexit inside such a
   # tested compound command. An unwrapped checker failure therefore fell through to ascii-escape + mv,
@@ -671,10 +713,20 @@ if bundle_host_run_step compiler-resolve bundle_host_prepare_esbuild "$REPO_ROOT
   # durable dependency/profile evidence reference (EI-25614031378277343).
   # Both published files participate in the same restricted-hold rollback.
   mv -f "$METAFILE" "$OUTFILE.meta.json" || exit 1
+  # The fence receipt describes exactly this bundle; a build without one must not inherit a stale receipt.
+  if [[ -s "$FENCE_RECEIPT_TMP" ]]; then
+    mv -f "$FENCE_RECEIPT_TMP" "$OUTFILE.snapshot-fence.json" || exit 1
+  else
+    rm -f "$OUTFILE.snapshot-fence.json"
+  fi
   mv -f "$TMPFILE" "$OUTFILE"
 ) 9>"$LOCKFILE" >>"$BUILD_LOG" 2>&1 || bundle_rc=$?
 else
   bundle_rc=$?
+fi
+# The subshell may have re-minted the label; the spawner define and the freshness stamp below use it.
+if [[ -s "$SOURCE_SHA_FILE" ]]; then
+  bundle_host_set_source_sha "$(<"$SOURCE_SHA_FILE")"
 fi
 cat "$BUILD_LOG"
 if [[ $bundle_rc -ne 0 ]]; then
