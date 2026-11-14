@@ -4119,6 +4119,7 @@ export class PreviewError extends Error {
  * The caller retains this receipt outside the export, then verifies it before execution.
  * @param {{repo: string, ref: string, dest: string, inputs?: string[], inputsFile?: string, gitCheckout?: boolean}} options
  */
+/** @type {readonly string[]} */
 export const TAURI_VERIFIER_INPUTS: readonly string[];
 export const ALLOWLIST_PATH: string;
 export { main as runCli };

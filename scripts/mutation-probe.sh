@@ -3449,6 +3449,24 @@ contain_write_setup() {
 # BEFORE covering any ancestor, including children created by the baseline.
 # Rebinding these holds preserves dependency mounts without copying the tree.
 contain_abort() { printf '%s\n' "$*" > "$abort"; exit 97; }
+# Copy one batch of split-directory files. The entries were listed moments
+# earlier and a writer may delete one in between: git-sync creates and removes
+# .git/papercusp-git-sync-candidate-*.index.manifest on every tick
+# (EI-28789389055399317). A vanished source is not a containment failure, so a
+# failed batch is retried file by file; only a file that still exists and still
+# cannot be copied fails the copy.
+contain_copy_files() {
+  local dest="$1" f
+  shift
+  cp -Pp -- "$@" "$dest/" 2>/dev/null && return 0
+  for f in "$@"; do
+    [ -e "$f" ] || [ -L "$f" ] || continue
+    cp -Pp -- "$f" "$dest/" && continue
+    [ -e "$f" ] || [ -L "$f" ] || continue
+    return 1
+  done
+  return 0
+}
 passthrough_paths=()
 passthrough_holds=()
 for p in "${passthroughs[@]}"; do
@@ -3495,7 +3513,7 @@ for i in "${!levels[@]}"; do
       files+=("$e")
       file_count=$((file_count + 1))
       if [ "$file_count" -ge 128 ]; then
-        cp -Pp -- "${files[@]}" "$s/" || contain_abort "could not copy split-directory files under $p"
+        contain_copy_files "$s" "${files[@]}" || contain_abort "could not copy split-directory files under $p"
         files=()
         file_count=0
       fi
@@ -3504,7 +3522,7 @@ for i in "${!levels[@]}"; do
     fi
   done
   if [ "$file_count" -gt 0 ]; then
-    cp -Pp -- "${files[@]}" "$s/" || contain_abort "could not copy split-directory files under $p"
+    contain_copy_files "$s" "${files[@]}" || contain_abort "could not copy split-directory files under $p"
   fi
   chown --reference="$p" "$s" && chmod --reference="$p" "$s" \
     || contain_abort "could not preserve split-directory permissions for $p"
