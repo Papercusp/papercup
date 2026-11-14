@@ -259,6 +259,25 @@ describe('guardFileLock', () => {
     expect(out).toEqual({ acquired: true, result: 'R', coordinated: false });
     expect(h.tryAcquire).not.toHaveBeenCalled();
   });
+
+  // EI-28695934252570938 follow-up: reading the identity before the uncoordinated
+  // early return made every out-of-repository write require an attributable owner
+  // (21 capability:write/edit cases in file-tools.test.ts threw AgentIdentityRequiredError).
+  it('resolves no owner identity for an uncoordinated write', async () => {
+    const callsBefore = h.readIdentity.mock.calls.length;
+    const run = vi.fn().mockResolvedValue('R');
+    const out = await guardFileLock({ projectDir: NO_REPO, log: () => {} } as never, ['foo.ts'], { intent: 't' }, run);
+    expect(out).toEqual({ acquired: true, result: 'R', coordinated: false });
+    expect(h.readIdentity.mock.calls.length).toBe(callsBefore);
+  });
+
+  it('still fails closed on a missing identity for an in-repository write, before the body runs', async () => {
+    h.readIdentity.mockImplementationOnce(() => { throw new Error('identity_required'); });
+    const run = vi.fn().mockResolvedValue('R');
+    await expect(guardFileLock(ctx, ['foo.ts'], { intent: 't' }, run)).rejects.toThrow('identity_required');
+    expect(run).not.toHaveBeenCalled();
+    expect(h.tryAcquire).not.toHaveBeenCalled();
+  });
 });
 
 /**

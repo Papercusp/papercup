@@ -193,34 +193,27 @@ export async function guardFileLock<T>(
   // and the byte that gets written can never disagree.
   const cwd = resolveCapabilityBaseDir(ctx);
 
-  const { ownerId, ownerLabel, coordinationDomain: defaultDomain } = readFileLockIdentity(ctx);
   const baseRepoRoot = findRepoRoot(cwd);
-  let coordinationDomain = defaultDomain;
-  let domains: string[] = [];
   // Keep the repository and its relative key together. A submodule key paired
   // with the parent domain neither contends with its peer nor captures its bytes.
+  // Only each path's repository root is resolved here. Mapping the base
+  // repository to the caller's coordination domain needs the caller's identity,
+  // which is read below, after the uncoordinated early return.
+  let located: Array<{ root: string; path: string }>;
   let paths: string[];
   try {
-    const identities = rawPaths.map((p) => {
+    located = rawPaths.map((p) => {
       const absolute = isAbsolute(p) ? p : resolve(cwd, p);
       const managed = managedRepositoryPathToLockIdentity(absolute);
       const root = managed?.coordinationDomain ?? findRepoRoot(absolute);
       const path = managed?.path ?? toRepoRelative(absolute, cwd);
-      return root && path ? {
-        coordinationDomain: root === baseRepoRoot ? defaultDomain : root, path,
-      } : null;
-    }).filter((r): r is { coordinationDomain: string; path: string } => r !== null);
-    domains = [...new Set(identities.map((r) => r.coordinationDomain))];
-    paths = identities.length > 0 ? normalizePaths(identities.map((r) => r.path)) : [];
-    if (domains.length === 1) coordinationDomain = domains[0]!;
+      return root && path ? { root, path } : null;
+    }).filter((r): r is { root: string; path: string } => r !== null);
+    paths = located.length > 0 ? normalizePaths(located.map((r) => r.path)) : [];
   } catch {
     // Preserve the existing handling of malformed/outside-repository paths.
+    located = [];
     paths = [];
-  }
-  // This guard owns one repository transaction and one preservation receipt.
-  // Never collapse an operation spanning repositories onto one of their keys.
-  if (domains.length > 1) {
-    throw new Error('file-lock-multiple-repositories: split the edit by repository');
   }
 
   if (paths.length === 0) {
@@ -238,6 +231,19 @@ export async function guardFileLock<T>(
       coordinated: false,
     };
   }
+
+  // Read the identity only now. An uncoordinated write has no repository key and
+  // so needs no attributable owner. Every coordinated write still fails closed
+  // without one, and that throw stays outside the path-resolution try/catch, so
+  // it can never downgrade an in-repository write to uncoordinated.
+  const { ownerId, ownerLabel, coordinationDomain: defaultDomain } = readFileLockIdentity(ctx);
+  const domains = [...new Set(located.map((r) => (r.root === baseRepoRoot ? defaultDomain : r.root)))];
+  // This guard owns one repository transaction and one preservation receipt.
+  // Never collapse an operation spanning repositories onto one of their keys.
+  if (domains.length > 1) {
+    throw new Error('file-lock-multiple-repositories: split the edit by repository');
+  }
+  const coordinationDomain = domains[0] ?? defaultDomain;
 
   const ttlSec = spec.ttlSec ?? DEFAULT_TTL_SEC;
   const goalRef = readAgentStateStamp(ownerId).goalRef ?? undefined;
