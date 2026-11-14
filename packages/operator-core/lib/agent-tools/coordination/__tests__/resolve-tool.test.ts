@@ -22,7 +22,10 @@ vi.mock('../identity', () => ({
     userId: null,
   }),
 }));
-vi.mock('../card-link', () => ({ unblockLinkedCard: vi.fn() }));
+vi.mock('../card-link', () => ({
+  commitLinkedConverseCard: vi.fn(async () => {}),
+  unblockLinkedCard: vi.fn(),
+}));
 
 import resolveTool from '../tools/resolve';
 import { unblockLinkedCard } from '../card-link';
