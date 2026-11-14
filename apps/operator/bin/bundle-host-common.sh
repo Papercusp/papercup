@@ -224,6 +224,25 @@ NODE
 # that binding in this build's shell; a running host never learns its expected
 # digest from the sibling it is being asked to execute.
 BUNDLE_HOST_TESTING_CORE_UNWITNESSED='unwitnessed:helper-not-committed'
+# EI-28752668992567658: the producing witness binds the worker's whole input and
+# resolution interval. A LIVE shared tree (dozens of concurrent editors) cannot
+# hold that interval across a multi-minute host build, so a witnessed attempt is
+# refused on almost every bg-host restart. A refusal must cost only the testing
+# core, never the whole host rebuild: the worker is rebuilt UNWITNESSED, so the
+# bundled testing core fails closed (testing_core_missing_witness, or an artifact
+# mismatch when the parent already embedded the witness) while every other host
+# module still ships current code instead of a stale last-known-good bundle.
+# The fallback is loud (WARN line + build-steps journal); it never lets an
+# unwitnessed testing core RUN, which is the property the witness protects.
+BUNDLE_HOST_TESTING_CORE_DEGRADED='unwitnessed:custody-refused'
+BUNDLE_HOST_TESTING_CORE_WORKER_ARGS=()
+bundle_host_degrade_testing_core() { # <repo root> <reason>
+  echo "WARN(EI-28752668992567658): $2; building testing-core.worker.mjs UNWITNESSED — the bundled testing core refuses to run until a witnessed rebuild succeeds." >&2
+  (( ${#BUNDLE_HOST_TESTING_CORE_WORKER_ARGS[@]} > 0 )) || return 78
+  bundle_host_esbuild "$1" "${BUNDLE_HOST_TESTING_CORE_WORKER_ARGS[@]}" >&2 || return 1
+  BUNDLE_HOST_TESTING_CORE_WITNESS_DEFINE='--define:__PAPERCUSP_TESTING_CORE_WITNESS__=undefined'
+  BUNDLE_HOST_TESTING_CORE_BINDING="$BUNDLE_HOST_TESTING_CORE_DEGRADED"
+}
 bundle_host_prepare_testing_core() { # <repo root> <out dir> [parent boundary args...]
   local repo_root="$1" out_dir="$2" argument native_pkg
   shift 2
@@ -245,6 +264,7 @@ bundle_host_prepare_testing_core() { # <repo root> <out dir> [parent boundary ar
     --banner:js="$HOST_BANNER" "${HOST_BANNER_DEFINES[@]}" "${boundary[@]}"
     --outfile="$out_dir/testing-core.worker.mjs" --metafile="$out_dir/testing-core.worker.mjs.meta.json"
   )
+  BUNDLE_HOST_TESTING_CORE_WORKER_ARGS=("${worker_args[@]}")
   # WI-6554700010048115: COMMITTED_NODE refuses a helper with no committed
   # version, while this script itself runs from the working tree. Until the
   # witness helper is committed, compile the worker WITHOUT a producing witness
@@ -258,14 +278,18 @@ bundle_host_prepare_testing_core() { # <repo root> <out dir> [parent boundary ar
     BUNDLE_HOST_TESTING_CORE_BINDING="$BUNDLE_HOST_TESTING_CORE_UNWITNESSED"
     return 0
   fi
-  local binding
-  binding="$(BUNDLE_HOST_TESTING_CORE_PREPARE_RECEIPT="$receipt" bundle_host_esbuild "$repo_root" \
-    "${worker_args[@]}")" || return 1
+  local binding define
   local -a witness_node=("${COMMITTED_NODE[@]:-node}")
-  BUNDLE_HOST_TESTING_CORE_WITNESS_DEFINE="$("${witness_node[@]}" \
-    "$repo_root/scripts/lib/testing-core-witness.mjs" define "$receipt" "$binding")" || return 1
+  if binding="$(BUNDLE_HOST_TESTING_CORE_PREPARE_RECEIPT="$receipt" bundle_host_esbuild "$repo_root" \
+      "${worker_args[@]}")" && define="$("${witness_node[@]}" \
+      "$repo_root/scripts/lib/testing-core-witness.mjs" define "$receipt" "$binding")"; then
+    BUNDLE_HOST_TESTING_CORE_WITNESS_DEFINE="$define"
+    BUNDLE_HOST_TESTING_CORE_RECEIPT="$receipt"
+    BUNDLE_HOST_TESTING_CORE_BINDING="$binding"
+    return 0
+  fi
   BUNDLE_HOST_TESTING_CORE_RECEIPT="$receipt"
-  BUNDLE_HOST_TESTING_CORE_BINDING="$binding"
+  bundle_host_degrade_testing_core "$repo_root" 'the producing witness refused the worker build (see its error above)'
 }
 
 bundle_host_verify_testing_core() { # <repo root>
@@ -274,9 +298,16 @@ bundle_host_verify_testing_core() { # <repo root>
     echo 'WARN(WI-6554700010048115): testing-core witness verification skipped (helper not committed).' >&2
     return 0
   fi
+  if [[ "$BUNDLE_HOST_TESTING_CORE_BINDING" == "$BUNDLE_HOST_TESTING_CORE_DEGRADED" ]]; then
+    echo 'WARN(EI-28752668992567658): testing-core witness verification skipped (worker already built unwitnessed).' >&2
+    return 0
+  fi
   local -a witness_node=("${COMMITTED_NODE[@]:-node}")
   "${witness_node[@]}" "$1/scripts/lib/testing-core-witness.mjs" verify \
-    "$BUNDLE_HOST_TESTING_CORE_RECEIPT" "$BUNDLE_HOST_TESTING_CORE_BINDING"
+    "$BUNDLE_HOST_TESTING_CORE_RECEIPT" "$BUNDLE_HOST_TESTING_CORE_BINDING" && return 0
+  # The witnessed worker may already be published beside a parent that embeds
+  # its expectation. Replacing it unwitnessed makes that pair fail closed.
+  bundle_host_degrade_testing_core "$1" 'the producing testing-core interval changed after the witnessed worker build'
 }
 
 bundle_host_select_profile() {
