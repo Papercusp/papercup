@@ -349,6 +349,8 @@ describe('canonical readiness evidence and coordination remain available before 
   it.each([
     ['sessions:read', { ref: 'session_turn:codex:source:0' }],
     ['sessions:search', { session: 'self', mode: 'verbatim', query: 'original requirement' }],
+    ['tools:find', { query: 'work_items:complete' }],
+    ['conversations:get', { id: 'consult-1' }],
     ['plans:revisions', { slug: 'review-plan' }],
     ['plans:revision-transcript', { revisionId: 1 }],
     ['journal:push-utilization', { sinceHours: 24 }],
