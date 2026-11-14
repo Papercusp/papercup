@@ -15,10 +15,9 @@
  * sync and touches no shared database. Registered as the
  * `operator-api-working-tree` class in packages/operator-core/lib/serving-runtimes.ts.
  */
-import { fork } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const USAGE = 'usage: node scripts/operator-api-working-tree.mjs [-- <caller command using PAPERCUSP_OPERATOR_URL / PAPERCUSP_OPERATOR_MCP_URL / PAPERCUSP_OPERATOR_BEARER>]';
@@ -35,36 +34,32 @@ mkdirSync(join(evidenceDir, 'tmp'), { recursive: true });
 const modules = join(evidenceDir, 'node_modules');
 symlinkSync(join(ROOT, 'node_modules'), modules, 'dir');
 
-const env = { ...process.env, FORCE_COLOR: '0', TMPDIR: join(evidenceDir, 'tmp'),
-  WORKING_TREE_OPERATOR_API_EVIDENCE_DIR: evidenceDir, WORKING_TREE_OPERATOR_API_CALLER_CWD: process.cwd() };
-delete env.PC_HEAVY_PREEMPT_READY_FILE;
-delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
-// PC_ISOLATED_RUNTIME_PROOF=1 makes with-test-pg send proof receipts to ITS
-// parent (this CLI) and hold the worker until an isolated-runtime-observed
-// reply arrives (10s, then "original worker observation timed out"). With a
-// supervising verifier above us (IPC present) we relay both directions below;
-// without one there is no observer, so the proof mode must not be forwarded.
-const relayProof = env.PC_ISOLATED_RUNTIME_PROOF === '1' && typeof process.send === 'function';
-if (!relayProof) {
-  delete env.PC_ISOLATED_RUNTIME_PROOF;
-  delete env.PC_ISOLATED_RUNTIME_START_TOKEN;
-  delete env.PAPERCUSP_ISOLATED_PROGRESS_FILE;
+Object.assign(process.env, { FORCE_COLOR: '0', TMPDIR: join(evidenceDir, 'tmp'),
+  WORKING_TREE_OPERATOR_API_EVIDENCE_DIR: evidenceDir, WORKING_TREE_OPERATOR_API_CALLER_CWD: process.cwd() });
+delete process.env.PC_HEAVY_PREEMPT_READY_FILE;
+delete process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
+// PC_ISOLATED_RUNTIME_PROOF=1 makes with-test-pg send proof receipts to its
+// IPC parent and hold the worker until an isolated-runtime-observed reply
+// arrives. Without a supervising verifier above us (no IPC) there is no
+// observer, so the proof mode must not leak in from the environment.
+if (!(process.env.PC_ISOLATED_RUNTIME_PROOF === '1' && typeof process.send === 'function')) {
+  delete process.env.PC_ISOLATED_RUNTIME_PROOF;
+  delete process.env.PC_ISOLATED_RUNTIME_START_TOKEN;
+  delete process.env.PAPERCUSP_ISOLATED_PROGRESS_FILE;
 }
 
 console.error(`[operator-api-working-tree] evidence → ${evidenceDir}`);
-const child = fork(join(ROOT, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
+process.on('exit', () => rmSync(modules, { force: true }));
+// This process BECOMES with-test-pg (loaded in-process, never forked): the
+// isolated-runtime proof pins the supervisor as the verifier's DIRECT child
+// (observeIsolatedWorkerLifetime in packages/operator-core/test/
+// isolated-integration-proof.ts asserts supervisorPid === child.pid and
+// supervisor.parentPid === observer.pid, measured from /proc). An intermediate
+// fork here makes every observed run die with "original worker observation
+// refused", and no message relay can repair a kernel-measured parentage.
+// argv / cwd reproduce exactly what a direct `node scripts/with-test-pg.mjs` sees.
+process.argv = [process.execPath, join(ROOT, 'scripts/with-test-pg.mjs'), '--isolated-runtime=operator-api', '--',
   process.execPath, '--import', 'tsx', join(ROOT, 'packages/operator-core/test/working-tree-operator-api-fixture.ts'),
-  ...(caller.length ? ['--', ...caller] : [])], { cwd: ROOT, env, execArgv: [], stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
-if (relayProof) {
-  // Transparent proof relay: the verifier observes with-test-pg's worker as if
-  // it had forked with-test-pg itself (messages carry their own pids/tokens).
-  child.on('message', message => { if (process.connected) process.send(message); });
-  const toChild = message => { if (child.connected) child.send(message); };
-  process.on('message', toChild);
-  child.once('exit', () => { process.off('message', toChild); if (process.connected) process.disconnect(); });
-}
-for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => child.kill(signal));
-child.on('close', (code, signal) => {
-  rmSync(modules, { force: true });
-  process.exit(code ?? (signal ? 128 : 1));
-});
+  ...(caller.length ? ['--', ...caller] : [])];
+process.chdir(ROOT);
+await import(pathToFileURL(join(ROOT, 'scripts/with-test-pg.mjs')).href);
