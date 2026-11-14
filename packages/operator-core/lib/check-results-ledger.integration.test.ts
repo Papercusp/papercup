@@ -164,6 +164,24 @@ it('reads exact historical rubric-check receipts without substituting later or o
   await expect(readLatestRubricCheckResults({ ...input, asOf: 'invalid' }, sql())).rejects.toThrow('valid timestamp');
 });
 
+it('uses result generation order for current conformance while retaining measurement-time history', async () => {
+  const rubricRef = 'conformance-regenerated-result-fixture';
+  const check = { id: 'R-1:falsifier:0', rubricRef, criterionKey: 'R-1', kind: 'probe' as const, unit: null };
+  const earlierEvaluation = await recordRubricCheckResults([{
+    check: { ...check, value: 1 }, verdict: 'pass', measuredAt: '2026-11-07T22:26:52.817Z', durationMs: 1,
+  }], SCOPE, sql());
+  const laterEvaluation = await recordRubricCheckResults([{
+    check: { ...check, value: 2 }, verdict: 'fail', measuredAt: '2026-11-06T22:05:27.165Z', durationMs: 1,
+  }], SCOPE, sql());
+
+  const current = await readLatestRubricCheckResults({ rubricRef, workspaceId: WS }, sql());
+  expect(current.get(check.id)).toMatchObject({ testRunId: laterEvaluation[0], status: 'fail', check: { value: 2 },
+    finishedAt: '2026-11-06T22:05:27.165Z' });
+
+  const historical = await readLatestRubricCheckResults({ rubricRef, workspaceId: WS, asOf: '2026-11-07T23:00:00Z' }, sql());
+  expect(historical.get(check.id)).toMatchObject({ testRunId: earlierEvaluation[0], status: 'pass', check: { value: 1 } });
+});
+
 it('grading history keeps latest attempt and last measurement in the same subject', async () => {
   const rubricRef = 'grading-subject-history';
   const subject = { kind: 'artifact', ref: 'build-a' };

@@ -543,6 +543,8 @@ export async function readLatestRubricCheckResults(
   }
   if (input.testRunIds?.length === 0) return new Map();
   const prefix = `rubric-check/${input.rubricRef}/`;
+  // A live read asks for the latest ledger attempt, which may reevaluate an older source
+  // measurement. Use ledger generation order there; explicit asOf reads retain event-time order.
   const rows = (await sql`
     SELECT DISTINCT ON (file_path, (status = 'error')) id, file_path, status, finished_at, output_tail, execution_details
       FROM harness_shared.test_runs
@@ -552,7 +554,10 @@ export async function readLatestRubricCheckResults(
        AND status IN ('pass', 'fail', 'error')
        AND (${input.asOf ?? null}::timestamptz IS NULL OR finished_at <= ${input.asOf ?? null}::timestamptz)
        AND (${input.testRunIds ?? null}::bigint[] IS NULL OR id = ANY(${input.testRunIds ?? null}::bigint[]))
-     ORDER BY file_path, (status = 'error'), finished_at DESC NULLS LAST, id DESC
+     ORDER BY file_path, (status = 'error'),
+              CASE WHEN ${input.asOf ?? null}::timestamptz IS NULL THEN id END DESC NULLS LAST,
+              CASE WHEN ${input.asOf ?? null}::timestamptz IS NOT NULL THEN finished_at END DESC NULLS LAST,
+              id DESC
   `) as Array<{
     id: number | string; file_path: string; status: string; finished_at: Date | string | null;
     output_tail: string | null; execution_details: unknown;
@@ -561,9 +566,12 @@ export async function readLatestRubricCheckResults(
   const own = new Map<string, LatestRubricCheckResult>();
   const perSubjectChecks = new Set<string>();
   const files = new Map<string, { latest: LatestRubricCheckResult; measured?: LatestRubricCheckResult }>();
-  const newer = (a: LatestRubricCheckResult, b: LatestRubricCheckResult) =>
-    Date.parse(a.finishedAt) > Date.parse(b.finishedAt)
-      || (Date.parse(a.finishedAt) === Date.parse(b.finishedAt) && a.testRunId > b.testRunId);
+  const newer = (a: LatestRubricCheckResult, b: LatestRubricCheckResult) => {
+    if (input.asOf === undefined) return a.testRunId > b.testRunId;
+    const aFinished = Date.parse(a.finishedAt);
+    const bFinished = Date.parse(b.finishedAt);
+    return aFinished > bFinished || (aFinished === bFinished && a.testRunId > b.testRunId);
+  };
   for (const row of rows) {
     const check = parseTestRunExecutionDetails(row.execution_details)?.check;
     if (!check || check.rubricRef !== input.rubricRef) continue;
