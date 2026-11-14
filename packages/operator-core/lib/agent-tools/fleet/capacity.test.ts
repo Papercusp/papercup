@@ -44,6 +44,19 @@ const {
   })),
   mockAdvSessionsByCoordOwner: vi.fn(async () => new Map()),
 }));
+vi.mock('../../inference-gateway/gateway-request-outcome-store', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../inference-gateway/gateway-request-outcome-store')>();
+  return {
+    ...actual,
+    summarizeGatewayProviderOutcomes: vi.fn<typeof actual.summarizeGatewayProviderOutcomes>(async (query) =>
+      actual.summarizeProviderOutcomeCounts(
+        query.provider,
+        { fromMs: query.fromMs, toMs: query.toMs ?? query.nowMs ?? Date.now() },
+        [{ outcome: 'ok', ownerId: 'capacity-fixture', count: 1 }],
+      ),
+    ),
+  };
+});
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'test-ws' }));
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: mockResolveAgentIdentity,
