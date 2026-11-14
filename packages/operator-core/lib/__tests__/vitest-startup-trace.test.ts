@@ -79,6 +79,55 @@ describe('cooperative worker census qualification controls', () => {
     expect(f.rows.some(row => row.reason === 'close-timeout')).toBe(true);
   });
 
+  it('construction-ledger binds source, original argument fingerprints and return/abort to one admission', () => {
+    const f = fixture(), args: [URL, { execArgv: string[]; env: Record<string, string>; workerData: { original: number } }] = [new URL('file:///worker.mjs'), { execArgv: [],
+      env: { NODE_OPTIONS: '', PRIVATE_TOKEN: 'must-never-be-retained' }, workerData: { original: 7 } }];
+    let thrown = false;
+    const failure = Object.create(null);
+    class Native { constructor(...values: any[]) {
+      values.forEach((value, index) => expect(value).toBe(args[index]));
+      if (thrown) throw failure;
+    } }
+    const Wrapped = f.census.wrap(Native, (_: unknown, construct: () => any) => construct());
+    new Wrapped(...args);
+    thrown = true;
+    let caught;
+    try { new Wrapped(...args); } catch (error) { caught = error; }
+    expect(caught).toBe(failure);
+    const reserves = f.rows.filter(row => row.event === 'cooperative-reserve');
+    expect(reserves).toHaveLength(2);
+    expect(reserves[0].construction.arguments).toMatchObject({ status: 'complete', sha256: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    expect(reserves[0].construction.arguments).toEqual(reserves[1].construction.arguments);
+    expect(reserves[0].construction.source).toMatchObject({ status: 'observed', stack: expect.arrayContaining([
+      expect.objectContaining({ scriptName: expect.stringContaining('vitest-startup-trace.test.ts'),
+        lineNumber: expect.any(Number), columnNumber: expect.any(Number), scriptId: expect.any(String) }),
+    ]) });
+    for (const [index, event] of ['cooperative-constructed', 'cooperative-abort'].entries()) {
+      const outcome = f.rows.find(row => row.event === event);
+      expect(outcome).toMatchObject({ childAdmission: reserves[index].childAdmission,
+        constructionId: reserves[index].constructionId, epoch: f.options.epoch, admission: 0 });
+    }
+    expect(JSON.stringify(f.rows)).not.toContain('must-never-be-retained');
+    args[1].workerData!.original = 8;
+    try { new Wrapped(...args); } catch (error) { expect(error).toBe(failure); }
+    expect(f.rows.filter(row => row.event === 'cooperative-reserve')[2].construction.arguments.sha256)
+      .not.toBe(reserves[0].construction.arguments.sha256);
+  });
+
+  it('construction-ledger never evaluates getters or proxies and leaves opaque or bounded arguments unknown', () => {
+    const f = fixture(); let inspected = 0;
+    const accessor = { get workerData() { inspected++; throw new Error('accessor evaluated'); } };
+    const proxy = new Proxy({}, { ownKeys() { inspected++; throw new Error('proxy evaluated'); },
+      getPrototypeOf() { inspected++; throw new Error('proxy evaluated'); } });
+    class Native { constructor(...args: any[]) { expect(args).toHaveLength(1); } }
+    const Wrapped = f.census.wrap(Native, (_: unknown, construct: () => any) => construct());
+    for (const arg of [accessor, proxy, 'x'.repeat(65537), { callback() {} }]) new Wrapped(arg);
+    expect(inspected).toBe(0);
+    expect(f.rows.filter(row => row.event === 'cooperative-reserve').map(row => row.construction.arguments.status))
+      .toEqual(['unknown', 'unknown', 'unknown', 'unknown']);
+    expect(f.census.snapshot().constructing).toBe(0);
+  });
+
   it('late-construction cannot enlarge an already fixed population or suppress the native constructor', () => {
     const f = fixture();
     expect(f.census.close()).toBe(true);
@@ -176,6 +225,60 @@ describe('cooperative worker census qualification controls', () => {
     expect(f.census.awaitAcknowledgements()).toBe(false);
   });
 
+  it('terminal ACK and failed-kill hold do not call replaced application intrinsics or IO properties', () => {
+    const apply = Reflect.apply, define = Object.defineProperty;
+    const own = Object.getOwnPropertyDescriptor, remove = Reflect.deleteProperty;
+    const clock = performance, oldClock = own(clock, 'now'), originalNow = clock.now;
+    const rows: string[] = [];
+    const io = { publish(event: string) { rows.push(event); return true; } };
+    const census = createCooperativeWorkerCensus({ epoch: randomUUID(), maxIsolates: 2,
+      closeTimeoutMs: 1000 }, io);
+    expect(census.close()).toBe(true);
+    const originals: Array<[object, string, PropertyDescriptor]> = [];
+    let terminal = false, callbacks = 0;
+    const replace = (target: object, key: string) => {
+      const descriptor = own(target, key)!;
+      originals.push([target, key, descriptor]);
+      define(target, key, { ...descriptor, value: function(this: unknown, ...args: unknown[]) {
+        if (terminal) callbacks++;
+        return apply(descriptor.value, this, args);
+      } });
+    };
+    for (const key of ['load', 'store', 'add', 'sub', 'notify', 'wait', 'waitAsync', 'compareExchange'])
+      replace(Atomics, key);
+    replace(Array, 'from');
+    replace(Array.prototype, 'every');
+    replace(Array.prototype, 'includes');
+    replace(Math, 'min');
+    replace(io, 'publish');
+    define(clock, 'now', { configurable: true, value() {
+      if (terminal) callbacks++;
+      return apply(originalNow, clock, []);
+    } });
+    let acknowledged = false, held = false, releasedHold = true;
+    let state: ReturnType<typeof census.snapshot> | undefined;
+    try {
+      acknowledged = census.acknowledge(() => { terminal = true; return { sealed: true }; });
+      held = census.awaitAcknowledgements();
+      census.release();
+      releasedHold = census.hold();
+      state = census.snapshot();
+    } finally {
+      terminal = false;
+      for (let index = originals.length - 1; index >= 0; index--)
+        define(originals[index][0], originals[index][1], originals[index][2]);
+      if (oldClock) define(clock, 'now', oldClock);
+      else remove(clock, 'now');
+    }
+    expect(callbacks).toBe(0);
+    expect(acknowledged).toBe(true);
+    expect(held).toBe(true);
+    expect(releasedHold).toBe(false);
+    expect(state).toMatchObject({ phase: 'CLOSED', fixedCount: 1, released: true, faults: 2 });
+    expect(rows).toContain('cooperative-end-ack');
+    expect(rows).toContain('cooperative-held');
+  });
+
   it('native self-kill failure delegates unchanged inputs and preserves the exact thrown identity after release', () => {
     const observer = new URL('../../../../libs/test-config/src/process-termination-observer.mjs', import.meta.url).href;
     const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
@@ -205,6 +308,120 @@ describe('cooperative worker census qualification controls', () => {
     "(await import('node:worker_threads')).default.Worker",
     "(await import('worker_threads')).default.Worker",
   ];
+  it.each(['retained-functions', 'stats-constructor-setter', 'stats-chain-tail-getter', 'inspector-prototype-hook'])(
+    'terminal publication avoids application callbacks or withholds the take for %s', mode => {
+    const dir = mkdtempSync(join(tmpdir(), 'native-terminal-publication-'));
+    const out = join(dir, 'sources.json'), app = join(dir, 'app.mjs');
+    const marker = join(dir, 'callbacks'), takeMarker = join(dir, 'take');
+    const capture = join(dir, 'capture.mjs');
+    writeFileSync(capture, `import { Session } from 'node:inspector';
+      import { openSync, writeSync } from 'node:fs';
+      const apply = Reflect.apply, post = Session.prototype.post;
+      const callbackFd = openSync(${JSON.stringify(marker)}, 'wx');
+      const takeFd = openSync(${JSON.stringify(takeMarker)}, 'wx');
+      const byte = Buffer.from('x');
+      let taken = false;
+      globalThis.terminalCallback = () => { if (taken) writeSync(callbackFd, byte, 0, 1); };
+      Session.prototype.post = function(method) {
+        const result = apply(post, this, arguments);
+        if (method === 'Profiler.takePreciseCoverage') { taken = true; writeSync(takeFd, byte, 0, 1); }
+        return result;
+      };`);
+    const source = `import fs from 'node:fs';
+      import { createHash } from 'node:crypto';
+      function entered() { return 8; } function dormant() { return 7; } entered();
+      const apply = Reflect.apply, define = Object.defineProperty;
+      const hashInstance = createHash('sha256'), hash = Object.getPrototypeOf(hashInstance);
+      let stats = Object.getPrototypeOf(fs.lstatSync(${JSON.stringify(app)}));
+      while (stats && !Object.hasOwn(stats, 'isFile')) stats = Object.getPrototypeOf(stats);
+      const mutations = [
+        [JSON, 'stringify'], [Date, 'now'], [Buffer, 'from'], [Buffer, 'byteLength'],
+        [Buffer.prototype, 'equals'], [String.prototype, 'startsWith'], [Array.prototype, 'some'],
+        [hash, 'update'], [hash, 'digest'], [hash, 'copy'],
+        [fs, 'openSync'], [fs, 'writeSync'], [fs, 'closeSync'], [fs, 'writeFileSync'],
+        [fs, 'readFileSync'], [fs, 'linkSync'], [fs, 'unlinkSync'], [fs, 'lstatSync'],
+        [stats, 'isFile'], [stats, 'isSymbolicLink'],
+      ];
+      for (let index = 0; index < mutations.length; index++) {
+        const [target, name] = mutations[index], descriptor = Object.getOwnPropertyDescriptor(target, name);
+        define(target, name, { ...descriptor, value: function() {
+          globalThis.terminalCallback(); return apply(descriptor.value, this, arguments);
+        } });
+      }
+      if (${JSON.stringify(mode)} === 'inspector-prototype-hook')
+        for (const target of [Object.prototype, Array.prototype]) define(target, 'toJSON', {
+          configurable: true, value() { globalThis.terminalCallback(); return this; },
+        });
+      // Hash/copy construct a new receiver and assign internal symbol fields.
+      // Retained .update/.digest functions alone do not exclude these setters.
+      for (const key of Reflect.ownKeys(hashInstance)) {
+        if (typeof key !== 'symbol') continue;
+        define(hash, key, { configurable: true, set(value) {
+          globalThis.terminalCallback();
+          define(this, key, { value, configurable: true, enumerable: true, writable: true });
+        } });
+      }
+      const installStatsSetter = () => {
+        define(stats, 'mode', { configurable: true, set(value) {
+          globalThis.terminalCallback();
+          define(this, 'mode', { value, configurable: true, enumerable: true, writable: true });
+        } });
+      };
+      if (${JSON.stringify(mode)} === 'stats-constructor-setter') installStatsSetter();
+      if (${JSON.stringify(mode)} === 'stats-chain-tail-getter') {
+        let chainLength = 0;
+        for (let prototype = fs.Stats.prototype; prototype !== null; prototype = Object.getPrototypeOf(prototype))
+          chainLength++;
+        // The old final look-ahead read this absent index after checking Stats.
+        // Its getter can then install a setter that lstat invokes after take.
+        define(Array.prototype, String(chainLength), { configurable: true,
+          get() { installStatsSetter(); return undefined; },
+          set(value) { define(this, String(chainLength), {
+            value, configurable: true, enumerable: true, writable: true,
+          }); },
+        });
+      }
+      const environment = process.env;
+      define(process, 'env', { configurable: true, get() { globalThis.terminalCallback(); return environment; } });
+      process.kill(process.pid, 'SIGKILL');`;
+    writeFileSync(app, source);
+    try {
+      const result = spawnSync(process.execPath, [app], {
+        env: nativeProcessTraceEnv({ ...process.env, NODE_OPTIONS: `--import=${capture}`,
+          PC_EXECUTED_SOURCE_MAP_OUT: out, PAPERCUSP_TEST_STARTUP_TRACE: '0' }, {
+          pinnedSources: [{ path: app, sha256: createHash('sha256').update(source).digest('hex'),
+            byteLength: Buffer.byteLength(source) }],
+          loaderCensus: { batches: 128, bytes: 16 * 1024 ** 2,
+            cooperative: { epoch: randomUUID(), maxIsolates: 2, closeTimeoutMs: 2000, preciseCoverage: true } },
+        }), encoding: 'utf8', timeout: 10_000,
+      });
+      expect(result.error, result.stderr).toBeUndefined();
+      expect(result.signal, result.stderr).toBe('SIGKILL');
+      expect(readFileSync(marker, 'utf8')).toBe('');
+      const rows = readNativeProcessTraceArtifacts(out).rows.map(({ row }: any) => row);
+      const terminal = rows.find((row: any) => row.observation?.schemaVersion === 'node-engine-precise-terminal-v1');
+      const end = rows.find((row: any) => row.event === 'module-census-end');
+      const ack = rows.find((row: any) => row.event === 'cooperative-end-ack');
+      const held = rows.find((row: any) => row.event === 'cooperative-held');
+      if (mode === 'stats-constructor-setter' || mode === 'inspector-prototype-hook') {
+        expect(readFileSync(takeMarker, 'utf8')).toBe('');
+        if (mode === 'stats-constructor-setter')
+          expect(rows.some((row: any) => row.event === 'cooperative-unknown' &&
+            row.reason === 'terminal-stat-constructor-drift')).toBe(true);
+        expect(terminal).toBeUndefined();
+        expect(end).toBeUndefined();
+        expect(ack).toBeUndefined();
+        expect(held).toBeUndefined();
+        return;
+      }
+      expect(readFileSync(takeMarker, 'utf8')).toBe('x');
+      expect(terminal?.observation.phase).toBe('taken');
+      expect(terminal?.cooperativeSequence).toBeLessThan(end?.cooperativeSequence);
+      expect(end?.cooperativeSequence).toBeLessThan(ack?.cooperativeSequence);
+      expect(ack?.cooperativeSequence).toBeLessThan(held?.cooperativeSequence);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }, 20_000);
+
   const runWorkerControl = (view: string, mode = 'sibling') => {
     const dir = mkdtempSync(join(tmpdir(), 'native-cooperative-control-'));
     const out = join(dir, 'sources.json'), workerPath = join(dir, 'worker.mjs');
@@ -217,7 +434,19 @@ describe('cooperative worker census qualification controls', () => {
         await once(child, 'message');` : ''}
       parentPort.postMessage('ready'); ${mode === 'early-exit' ? '' : 'setTimeout(() => {}, 60000);'}`);
     const capture = join(dir, 'capture.mjs');
-    writeFileSync(capture, `import { Worker } from 'node:worker_threads'; globalThis.capturedWorker = Worker;`);
+    const fault = /^precise-(?:worker-)?(?:start|take)-(?:pending|failed|partial)$/.test(mode);
+    writeFileSync(capture, fault ? `import { Session } from 'node:inspector';
+      import { isMainThread } from 'node:worker_threads';
+      const original = Session.prototype.post;
+      Session.prototype.post = function(method, ...args) {
+        const mode = ${JSON.stringify(mode)}, parts = mode.split('-');
+        const phase = parts.at(-2), kind = parts.at(-1);
+        if (mode.includes('-worker-') && isMainThread || method !== 'Profiler.' + phase + 'PreciseCoverage')
+          return Reflect.apply(original, this, [method, ...args]);
+        if (kind === 'pending') return;
+        args.at(-1)(kind === 'failed' ? new Error('controlled protocol failure') : null,
+          kind === 'partial' ? { result: [] } : undefined);
+      };` : `import { Worker } from 'node:worker_threads'; globalThis.capturedWorker = Worker;`);
     const epoch = randomUUID();
     try {
       const result = spawnSync(process.execPath, [
@@ -228,10 +457,18 @@ describe('cooperative worker census qualification controls', () => {
           ${mode === 'bootstrap-dropped' ? "env: { NODE_OPTIONS: '' }," : ''} workerData: { original: 7 } });
         await once(worker, ${JSON.stringify(mode === 'early-exit' ? 'exit' : 'message')});
         process.kill(process.pid, 'SIGKILL');`], {
-        env: nativeProcessTraceEnv({ ...process.env, NODE_OPTIONS: mode === 'captured' ? `--import=${capture}` : '',
+        env: nativeProcessTraceEnv({ ...process.env, NODE_OPTIONS: mode === 'captured' || fault ? `--import=${capture}` : '',
           PC_EXECUTED_SOURCE_MAP_OUT: out, PAPERCUSP_TEST_STARTUP_TRACE: '0',
-        }, { loaderCensus: { batches: 128, bytes: 16 * 1024 ** 2,
-          cooperative: { epoch, maxIsolates: 8, closeTimeoutMs: 2000 } } }),
+        }, {
+          ...(mode.startsWith('precise') && mode !== 'precise-missing-pins' ? {
+            pinnedSources: [{ path: workerPath,
+              sha256: createHash('sha256').update(readFileSync(workerPath)).digest('hex'),
+              byteLength: readFileSync(workerPath).length }],
+          } : {}),
+          loaderCensus: { batches: 128, bytes: 16 * 1024 ** 2,
+            cooperative: { epoch, maxIsolates: 8, closeTimeoutMs: 2000,
+              ...(mode.startsWith('precise') ? { preciseCoverage: true as const } : {}) } },
+        }),
         encoding: 'utf8', timeout: 10_000,
       });
       expect(result.error, result.stderr).toBeUndefined();
@@ -252,6 +489,13 @@ describe('cooperative worker census qualification controls', () => {
       expect(f.initial.population.complete).toBe(false);
       expect(f.trace.population).toMatchObject({ complete: true, truncatedBy: null });
       const rows = f.trace.rows.map(({ row }: any) => row);
+      const reserve = rows.find((row: any) => row.event === 'cooperative-reserve');
+      const constructed = rows.find((row: any) => row.event === 'cooperative-constructed');
+      const child = rows.find((row: any) => row.event === 'cooperative-join');
+      expect(reserve.construction.arguments.status).toBe('complete');
+      expect(reserve.construction.source.status).toBe('observed');
+      expect(constructed).toMatchObject({ constructionId: reserve.constructionId,
+        childAdmission: child.admission, childThreadId: child.threadId });
       expect(rows.filter((row: any) => row.event === 'cooperative-end-ack')).toHaveLength(2);
       expect(rows.filter((row: any) => row.event === 'cooperative-held')[0].population)
         .toMatchObject({ phase: 'CLOSED', fixedCount: 2, constructing: 0, activeHooks: 0, faults: 0, released: false });
@@ -262,6 +506,10 @@ describe('cooperative worker census qualification controls', () => {
         { ...f.termination, kernelProcessIdentity: 'other-kernel-process' }])
         expect(readNativeProcessTraceArtifacts(f.out, 0, Number.MAX_SAFE_INTEGER,
           { terminations: [terminal] }).population.complete).toBe(false);
+      const returned = f.trace.rows.find(({ row }: any) => row.event === 'cooperative-constructed')!;
+      rmSync(join(f.out + '.native-processes', createHash('sha256').update(returned.bytes).digest('hex') + '.json'));
+      expect(readNativeProcessTraceArtifacts(f.out, 0, Number.MAX_SAFE_INTEGER,
+        { terminations: [f.termination] }).population.complete).toBe(false);
     } finally { rmSync(f.dir, { recursive: true, force: true }); }
   }, 20_000);
 
@@ -279,10 +527,111 @@ describe('cooperative worker census qualification controls', () => {
     } finally { rmSync(f.dir, { recursive: true, force: true }); }
   }, 20_000);
 
+  it('precise protocol durably publishes one complete own response before each isolate END and ACK', () => {
+    const f = runWorkerControl(workerViews[2], 'precise');
+    try {
+      expect(f.trace.population.complete).toBe(true); // authenticated OUT protocol only
+      const rows = f.trace.rows.map(({ row }: any) => row);
+      const precise = rows.filter((row: any) => row.observation?.schemaVersion === 'node-engine-precise-terminal-v1');
+      expect(precise).toHaveLength(2);
+      for (const receipt of precise) {
+        const observation = receipt.observation;
+        expect(observation).toMatchObject({ epoch: f.epoch, phase: 'taken', runtimeQualification: 'unknown',
+          fence: 'terminal-entered-suffix-unverified' });
+        const end = rows.find((row: any) => row.event === 'module-census-end' && row.processIdentity === receipt.processIdentity);
+        const ack = rows.find((row: any) => row.event === 'cooperative-end-ack' && row.processIdentity === receipt.processIdentity);
+        expect(receipt.cooperativeSequence).toBeLessThan(end.cooperativeSequence);
+        expect(end.cooperativeSequence).toBeLessThan(ack.cooperativeSequence);
+        expect(Array.isArray(observation.raw.result)).toBe(true);
+        const tracePath = join(f.out + '.native-processes', createHash('sha256').update(
+          f.trace.rows.find(({ row }: any) => row === receipt)!.bytes).digest('hex') + '.json');
+        const bytes = readFileSync(tracePath);
+        rmSync(tracePath);
+        expect(readNativeProcessTraceArtifacts(f.out, 0, Number.MAX_SAFE_INTEGER,
+          { terminations: [f.termination] }).population.complete).toBe(false);
+        writeFileSync(tracePath, bytes);
+      }
+      // Rehash the event and attachment so these fail on isolate/epoch binding,
+      // not merely on custody corruption. A parent's valid response cannot
+      // discharge the worker's own terminal obligation.
+      const child = f.trace.rows.find(({ row }: any) => row.threadId > 0 &&
+        row.observation?.schemaVersion === 'node-engine-precise-terminal-v1')!;
+      const parent = precise.find((row: any) => row.threadId === 0)!;
+      const originalPath = join(f.out + '.native-processes', createHash('sha256').update(child.bytes).digest('hex') + '.json');
+      for (const observation of [{ ...child.row.observation, epoch: randomUUID() }, parent.observation]) {
+        const envelope = JSON.parse(child.bytes.toString('utf8'));
+        const changed = Buffer.from(JSON.stringify(observation));
+        const sha256 = createHash('sha256').update(changed).digest('hex');
+        const attachmentPath = join(f.out + '.native-processes', sha256 + '.engine');
+        writeFileSync(attachmentPath, changed);
+        delete envelope.observation;
+        envelope.observationArtifact = { ref: sha256 + '.engine', sha256, byteLength: changed.length };
+        const bytes = Buffer.from(JSON.stringify(envelope));
+        const changedPath = join(f.out + '.native-processes', createHash('sha256').update(bytes).digest('hex') + '.json');
+        rmSync(originalPath);
+        writeFileSync(changedPath, bytes);
+        try {
+          expect(readNativeProcessTraceArtifacts(f.out, 0, Number.MAX_SAFE_INTEGER,
+            { terminations: [f.termination] }).population.complete).toBe(false);
+        } finally {
+          rmSync(changedPath);
+          writeFileSync(originalPath, child.bytes);
+        }
+      }
+      expect(readNativeProcessTraceArtifacts(f.out, 0, Number.MAX_SAFE_INTEGER,
+        { terminations: [f.termination] }).population.complete).toBe(true);
+    } finally { rmSync(f.dir, { recursive: true, force: true }); }
+  }, 20_000);
+
+  it('precise protocol cannot publish END/ACK without an armed pinned-source observer', () => {
+    const f = runWorkerControl(workerViews[2], 'precise-missing-pins');
+    try {
+      const rows = f.trace.rows.map(({ row }: any) => row);
+      expect(f.trace.population.complete).toBe(false);
+      expect(rows.some((row: any) => row.event === 'module-census-end')).toBe(false);
+      expect(rows.some((row: any) => row.event === 'cooperative-end-ack')).toBe(false);
+    } finally { rmSync(f.dir, { recursive: true, force: true }); }
+  }, 20_000);
+
+  it.each(['start-pending', 'start-failed', 'take-pending', 'take-failed', 'take-partial'])(
+    'precise protocol forbids END/ACK for a pending, failed or incomplete response (%s)', fault => {
+      const f = runWorkerControl(workerViews[2], 'precise-' + fault);
+      try {
+        const rows = f.trace.rows.map(({ row }: any) => row);
+        expect(f.trace.population.complete).toBe(false);
+        expect(rows.some((row: any) => row.event === 'module-census-end')).toBe(false);
+        expect(rows.some((row: any) => row.event === 'cooperative-end-ack')).toBe(false);
+      } finally { rmSync(f.dir, { recursive: true, force: true }); }
+    }, 20_000);
+
+  it('precise protocol keeps a failed worker UNKNOWN even when the main isolate has a complete own response', () => {
+    const f = runWorkerControl(workerViews[2], 'precise-worker-take-failed');
+    try {
+      const rows = f.trace.rows.map(({ row }: any) => row);
+      expect(f.trace.population.complete).toBe(false);
+      expect(rows.some((row: any) => row.event === 'engine-script-execution' && row.threadId === 0 &&
+        row.observation?.schemaVersion === 'node-engine-precise-terminal-v1')).toBe(true);
+      expect(rows.filter((row: any) => row.event === 'cooperative-end-ack')).toHaveLength(1);
+      expect(rows.some((row: any) => row.event === 'cooperative-end-ack' && row.threadId > 0)).toBe(false);
+    } finally { rmSync(f.dir, { recursive: true, force: true }); }
+  }, 20_000);
+
   it.each(['captured', 'bootstrap-dropped', 'early-exit'])(
     'previously-captured-or-bypassed-constructor / unsupported-cjs-esm-view / early-unexpected-exit stays unknown (%s)', mode => {
       const f = runWorkerControl(workerViews[2], mode);
-      try { expect(f.trace.population.complete).toBe(false); }
+      try {
+        expect(f.trace.population.complete).toBe(false);
+        if (mode === 'bootstrap-dropped') {
+          const rows = f.trace.rows.map(({ row }: any) => row);
+          const reserve = rows.find((row: any) => row.event === 'cooperative-reserve');
+          expect(reserve.construction.arguments.status).toBe('complete');
+          expect(reserve.construction.source.status).toBe('observed');
+          expect(rows.find((row: any) => row.event === 'cooperative-constructed'))
+            .toMatchObject({ constructionId: reserve.constructionId, childAdmission: reserve.childAdmission,
+              childThreadId: expect.any(Number) });
+          expect(rows.some((row: any) => row.event === 'cooperative-join')).toBe(false);
+        }
+      }
       finally { rmSync(f.dir, { recursive: true, force: true }); }
     }, 20_000);
 });

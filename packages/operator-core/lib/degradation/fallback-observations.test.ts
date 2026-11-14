@@ -105,7 +105,7 @@ describe('coalescing identical decisions (WI-6554700010009713)', () => {
     observeFallback('gate-pass-reuse', decision, { sql: f.sql, observedAt: latest });
 
     expect(await flushFallbackObservations()).toMatchObject({ written: 1, failed: 0 });
-    expect(f.inserts.flat()[0].observed_at).toEqual(latest);
+    expect(f.inserts.flat()[0].observed_at).toEqual(latest.toISOString());
   });
 
   it('keeps rows apart when any key field or the handle differs, and never folds a correlated decision', async () => {

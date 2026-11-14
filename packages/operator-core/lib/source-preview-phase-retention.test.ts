@@ -192,11 +192,11 @@ describe('verifier phase evidence retention', () => {
     const path = join(root, 'temporary.phases.jsonl');
     const run = verifierPhaseRunner(path, { PAPERCUSP_HOME: join(root, 'persistent'),
       PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: 'retention-fixture' }, join(root, 'child.json'));
-    await run('source.freeze', () => 1);
+    await run('deps.runtime-assets.preflight', () => 1);
     const selection = selectVerifierDependencySnapshot('copy', true);
     await run('deps.snapshot', () => 2, { snapshotSelection: selection });
     const failure = new Error('fixture failed');
-    await expect(run('child.run', () => { throw failure; })).rejects.toBe(failure);
+    await expect(run('deps.runtime-assets.preflight', () => { throw failure; })).rejects.toBe(failure);
     const original = readFileSync(path);
     const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
     expect(run.archivePath.startsWith(join(root, 'persistent', 'checkpoint-logs') + '/')).toBe(true);
@@ -216,12 +216,75 @@ describe('verifier phase evidence retention', () => {
     expect(selectVerifierDependencySnapshot('copy', false)).toEqual({
       copyMode: 'copy', generationSnapshotSupported: false, command: 'snapshot-locked',
     });
-    expect(rows.at(-1)).toMatchObject({ phase: 'child.run', event: 'failed', error: 'fixture failed' });
+    expect(rows.at(-1)).toMatchObject({ phase: 'deps.runtime-assets.preflight', event: 'failed', error: 'fixture failed' });
     expect(readVerifierPhaseMeasurements(run.archivePath)).toEqual({
-      'source.freeze': rows[1].durationMs,
+      'deps.runtime-assets.preflight': rows[1].durationMs,
       'deps.snapshot': rows[3].durationMs,
     });
     expect(() => readVerifierPhaseMeasurements(path)).toThrow('ENOENT');
+  });
+
+  it('reuses completed timings from historical receipts with missing phase sequence entries', () => {
+    const root = mkdtempSync(join(tmpdir(), 'verifier-phase-sequence-gap-'));
+    fixtures.push(root);
+    const path = join(root, 'historical.phases.jsonl');
+    const rows = [
+      { schemaVersion: 'verifier-phase-v1', sequence: 1, taskId: 'fixture', phase: 'deps.postverify',
+        event: 'started', elapsedMs: 0 },
+      { schemaVersion: 'verifier-phase-v1', sequence: 226, taskId: 'fixture', phase: 'deps.postverify',
+        event: 'progress', elapsedMs: 1_599_481,
+        progress: { completedTrees: 93, totalTrees: 95, currentTree: 'papercusp-desktop/node_modules', cacheHit: false } },
+      { schemaVersion: 'verifier-phase-v1', sequence: 229, taskId: 'fixture', phase: 'cleanup',
+        event: 'started', elapsedMs: 1_603_993 },
+      { schemaVersion: 'verifier-phase-v1', sequence: 230, taskId: 'fixture', phase: 'cleanup',
+        event: 'completed', elapsedMs: 1_670_182, durationMs: 66_189 },
+    ];
+    writeFileSync(path, rows.map(row => JSON.stringify(row)).join('\n') + '\n');
+
+    expect(readVerifierPhaseMeasurements(path)).toEqual({ cleanup: 66_189 });
+    writeFileSync(path, rows.map((row, index) => JSON.stringify(index === 3 ? { ...row, sequence: 228 } : row)).join('\n') + '\n');
+    expect(() => readVerifierPhaseMeasurements(path)).toThrow('Invalid verifier phase budget receipt');
+  });
+
+  it('rolls back a partial census progress mirror append and preserves sequence reuse', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'verifier-phase-append-rollback-'));
+    fixtures.push(root);
+    const path = join(root, 'temporary.phases.jsonl');
+    const run = verifierPhaseRunner(path, { PAPERCUSP_HOME: join(root, 'persistent') }, join(root, 'child.json'));
+    const append = nativeFs.appendFileSync;
+    let appendCalls = 0;
+    const spy = vi.spyOn(nativeFs, 'appendFileSync').mockImplementation((target, data, options) => {
+      appendCalls++;
+      if (appendCalls === 4) {
+        const partial = typeof data === 'string' ? data.slice(0, Math.max(1, Math.floor(data.length / 2)))
+          : Buffer.from(data).subarray(0, Math.max(1, Math.floor(Buffer.byteLength(data) / 2)));
+        append(target, partial, options);
+        throw Object.assign(new Error('fixture append failed'), { code: 'ENOSPC' });
+      }
+      return append(target, data, options);
+    });
+    syncBuiltinESMExports();
+    try {
+      await run('deps.postverify', async () => {
+        expect(() => run.reportProgress?.('deps.postverify', {
+          completedTrees: 0, totalTrees: 2, currentTree: 'first/node_modules',
+        })).toThrow('fixture append failed');
+        run.reportProgress?.('deps.postverify', {
+          completedTrees: 1, totalTrees: 2, currentTree: 'second/node_modules',
+        });
+      });
+    } finally {
+      spy.mockRestore();
+      syncBuiltinESMExports();
+    }
+
+    const receipt = readFileSync(path);
+    expect(readFileSync(run.archivePath)).toEqual(receipt);
+    const rows = receipt.toString().trim().split('\n').map(line => JSON.parse(line));
+    expect(rows.map(row => row.sequence)).toEqual([1, 2, 3]);
+    expect(rows.map(row => row.event)).toEqual(['started', 'progress', 'completed']);
+    expect(rows[1].progress).toEqual({ completedTrees: 1, totalTrees: 2, currentTree: 'second/node_modules' });
+    expect(readVerifierPhaseMeasurements(path)).toEqual({ 'deps.postverify': rows[2].durationMs });
   });
 
   it('honors the existing log directory override and refuses to overwrite a retained run', async () => {

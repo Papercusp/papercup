@@ -94,10 +94,26 @@ type _PeerLogOpSharesEnvelope = Pick<OpEnvelope, 'table' | 'hbKey' | 'value' | '
 const _opEnvelopeCompat: (op: PeerLogOp) => _PeerLogOpSharesEnvelope = (op) => op;
 void _opEnvelopeCompat;
 
+/**
+ * The atomic boundary between waiting for an intentional append hold and the
+ * underlying Hypercore append. Timeout-sensitive callers can leave admission
+ * unbounded while applying their row timeout only to completion.
+ */
+export interface OwnLogAppendAdmission {
+  admitted: Promise<void>;
+  completion: Promise<void>;
+}
+
 /** The peer's own writable log handle. */
 export interface OwnLog {
   /** Append a single op to the end of the log. */
   append(op: PeerLogOp): Promise<void>;
+  /**
+   * Optional split-phase append. admitted resolves immediately before
+   * core.append starts, after any withAppendsHeld wait; completion tracks the
+   * actual core append. Existing adapters and fakes may keep using append.
+   */
+  appendWithAdmission?(op: PeerLogOp): OwnLogAppendAdmission;
   /**
    * Append many ops in one Hypercore batch (one signing + flush instead of
    * one per op). Semantically identical to awaiting `append` per op; exists
@@ -323,6 +339,22 @@ export async function openNamedLog(
   return {
     async append(op: PeerLogOp): Promise<void> {
       await appendUnlessHeld(() => core.append(stampOpHlc(op)));
+    },
+    appendWithAdmission(op: PeerLogOp): OwnLogAppendAdmission {
+      let resolveAdmitted!: () => void;
+      let rejectAdmitted!: (error: unknown) => void;
+      const admitted = new Promise<void>((resolve, reject) => {
+        resolveAdmitted = resolve;
+        rejectAdmitted = reject;
+      });
+      const completion = appendUnlessHeld(() => {
+        resolveAdmitted();
+        return core.append(stampOpHlc(op));
+      });
+      // If admission itself fails before the hold opens, surface that through
+      // both phases; a core append failure occurs after admitted has resolved.
+      void completion.catch(rejectAdmitted);
+      return { admitted, completion };
     },
     async appendBatch(ops: PeerLogOp[]): Promise<void> {
       if (ops.length === 0) return;

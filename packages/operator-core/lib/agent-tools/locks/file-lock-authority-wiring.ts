@@ -144,8 +144,8 @@ export function adaptSuLockStore(): FileLockCoordinator {
           lockId: p.lockId,
           paths: p.paths,
           allMine: p.allMine,
-          beforeRelease: async rows => { preservationRecorded = await preserveReleasedEditGenerations({
-            repoRoot: p.coordinationDomain, rows, agentId: p.owner,
+          beforeRelease: async (rows, protectRepositoryPaths) => { preservationRecorded = await preserveReleasedEditGenerations({
+            repoRoot: p.coordinationDomain, rows, agentId: p.owner, protectRepositoryPaths,
             workspaceId: p.workspaceId, contributor: p.contributor, sessionId: p.nativeEditProof?.sessionId ?? p.owner,
           }); },
         }),

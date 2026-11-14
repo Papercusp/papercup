@@ -1951,6 +1951,97 @@ describe('deferred scratch quota recovery', () => {
     expect(scratchRmCallCount()).toBe(1);
   });
 
+  it('releases the quota data lease when background cleanup meets a busy retention-pin mutex', async () => {
+    const workspaceId = 'ws-Q-pin-admission';
+    const quotaRun = makeSparseRun(workspaceId, UUID(51), WORKSPACE_QUOTA_BYTES - 128 * 1024 ** 2);
+    const writerRun = makeRunDir(workspaceId, 'result-door', UUID(52), 0);
+    const writerPath = join(writerRun, 'spill.bin');
+    vi.mocked(withUnpinnedPath).mockClear();
+    vi.mocked(rmAsync).mockClear();
+    let refresh: Promise<void> | undefined;
+    let writer: Promise<void> | undefined;
+
+    try {
+      await withFsMutex('papercusp-disk-retention', async () => {
+        const refreshAttempt = refreshScratchUsage(workspaceId);
+        refresh = refreshAttempt;
+        await vi.waitFor(() => expect(
+          vi.mocked(withUnpinnedPath).mock.calls.some(([path]) => String(path) === quotaRun),
+        ).toBe(true));
+
+        let refreshTimeout: ReturnType<typeof setTimeout> | undefined;
+        const releasedDataLease = await Promise.race([
+          refreshAttempt.then(() => true),
+          new Promise<boolean>((resolve) => {
+            refreshTimeout = setTimeout(() => resolve(false), 1_500);
+          }),
+        ]);
+        if (refreshTimeout) clearTimeout(refreshTimeout);
+        expect(releasedDataLease).toBe(true);
+
+        writer = writeWithScratchQuota({
+          workspaceId,
+          filePath: writerPath,
+          bytes: 512,
+          mutexTimeoutMs: 500,
+        }, async () => { await writeFile(writerPath, Buffer.alloc(512)); });
+        await writer;
+      });
+    } finally {
+      await Promise.allSettled([refresh, writer].filter((promise): promise is Promise<void> => Boolean(promise)));
+    }
+
+    expect(readFileSync(writerPath)).toHaveLength(512);
+    expect(existsSync(quotaRun)).toBe(true);
+    expect(vi.mocked(rmAsync).mock.calls.some(([path]) => String(path) === quotaRun)).toBe(false);
+  });
+
+  it('reports fast quota refusal when request-time recovery cannot enter the retention-pin mutex', async () => {
+    const workspaceId = 'ws-Q-pin-recovery';
+    makeSparseRun(workspaceId, UUID(53), WORKSPACE_QUOTA_BYTES + 1024);
+    const writerRun = makeRunDir(workspaceId, 'result-door', UUID(54), 0);
+    const timings: ScratchWriteTimings[] = [];
+    let releaseRetention!: () => void;
+    let retentionStarted!: () => void;
+    const retentionGate = new Promise<void>((resolve) => { releaseRetention = resolve; });
+    const started = new Promise<void>((resolve) => { retentionStarted = resolve; });
+    const retentionLock = withFsMutex('papercusp-disk-retention', async () => {
+      retentionStarted();
+      await retentionGate;
+    });
+    await started;
+
+    const attempt = writeWithScratchQuota({
+      workspaceId,
+      filePath: join(writerRun, 'spill.bin'),
+      bytes: 16,
+      mutexTimeoutMs: 500,
+      onTiming: (row) => timings.push(row),
+    }, async () => {});
+    const settledAttempt = attempt.then(
+      () => ({ timedOut: false as const, error: null }),
+      (error) => ({ timedOut: false as const, error }),
+    );
+    let attemptTimeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const outcome = await Promise.race([
+        settledAttempt,
+        new Promise<{ timedOut: true }>((resolve) => {
+          attemptTimeout = setTimeout(() => resolve({ timedOut: true }), 1_500);
+        }),
+      ]);
+      if (attemptTimeout) clearTimeout(attemptTimeout);
+      expect(outcome.timedOut).toBe(false);
+      if (!outcome.timedOut) expect(outcome.error).toBeInstanceOf(ScratchQuotaError);
+      expect(timings.at(-1)?.quotaRecoveryDiagnostics).toMatchObject({ pinAdmissionDeferred: true });
+    } finally {
+      if (attemptTimeout) clearTimeout(attemptTimeout);
+      releaseRetention();
+      await retentionLock;
+      await Promise.allSettled([attempt]);
+    }
+  });
+
   it('reuses an in-flight usage measurement when quota waiters have not written yet', async () => {
     const runDir = makeRunDir('ws-Q', 'quota', UUID(1), 100);
     const wsRoot = scratchRootForWorkspace('ws-Q');

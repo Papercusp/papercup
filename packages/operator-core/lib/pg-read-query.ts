@@ -3732,6 +3732,8 @@ export async function boundedPgReadTxn<T>(
     client?: OrgSql;
     timeoutMs?: number;
     acquireTimeoutMs?: number;
+    /** Use one MVCC snapshot across a multi-statement read probe. */
+    isolationLevel?: 'repeatable read';
     /**
      * Optional acquisition-registry pool label. Injected clients are
      * deliberately unmeasured by default because they may not be backed by
@@ -3776,8 +3778,12 @@ export async function boundedPgReadTxn<T>(
         sql.begin(async (tx) => {
           // BEGIN has returned; setup is still covered by the acquisition deadline.
           phase = 'setup';
-          // READ ONLY must be the first transaction setting before the query.
-          await tx.unsafe('SET TRANSACTION READ ONLY');
+          // Transaction characteristics must be the first setting before any query.
+          await tx.unsafe(
+            opts.isolationLevel === 'repeatable read'
+              ? 'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY'
+              : 'SET TRANSACTION READ ONLY',
+          );
           await tx`SELECT set_config('statement_timeout', ${`${timeoutMs}ms`}, true)`;
           if (lockTimeoutMs !== null) {
             await tx`SELECT set_config('lock_timeout', ${`${lockTimeoutMs}ms`}, true)`;
@@ -4605,6 +4611,27 @@ function extractFilterPredicates(rawSql: string, masked: string): string[] {
   return out;
 }
 
+/** Whether FILTER buckets include both sides of a plain column's nullness test. */
+function hasComplementaryNullnessFilters(predicates: readonly string[]): boolean {
+  const seen = new Map<string, number>();
+  for (const raw of predicates) {
+    const predicate = raw.replace(/\s+/g, ' ').trim();
+    // Keep this deliberately narrow: simple unquoted SQL identifiers are safe to
+    // case-fold, while arbitrary expressions or quoted identifiers need a parser.
+    const match = /^([a-z_][a-z0-9_$]*(?:\s*\.\s*[a-z_][a-z0-9_$]*)*)\s+is\s+(not\s+)?null$/i.exec(
+      predicate,
+    );
+    if (!match) continue;
+
+    const expression = match[1]!.replace(/\s*\.\s*/g, '.').toLowerCase();
+    const polarity = match[2] ? 2 : 1;
+    const prior = seen.get(expression) ?? 0;
+    if ((prior | polarity) === 3) return true;
+    seen.set(expression, prior | polarity);
+  }
+  return false;
+}
+
 /** Location of the shallowest WHERE clause, sliced from the raw SQL.
  *
  * The WHERE is located at whatever depth it actually sits at rather than only
@@ -4907,6 +4934,10 @@ export function planPredicatePartition(rawSql: string): PredicatePartitionPlan |
   // WHERE is then a shared scope rather than a discriminator.
   const predicates = filters.length ? filters : whereConjuncts;
   if (!predicates.length) return null;
+  // IS NULL and IS NOT NULL are complementary non-null booleans. When both
+  // appear as scalar FILTER buckets for the same simple expression, every row
+  // satisfies exactly one of them, so there is no fall-through to investigate.
+  if (filters.length && hasComplementaryNullnessFilters(filters)) return null;
 
   const scope: string[] = [];
   const dimensions: string[] = [];
@@ -5154,6 +5185,7 @@ export async function executePredicatePartition(
       {
         ...(opts.client ? { client: opts.client } : {}),
         timeoutMs: opts.timeoutMs ?? PREDICATE_PARTITION_TIMEOUT_MS,
+        isolationLevel: 'repeatable read',
       },
     );
   } catch {

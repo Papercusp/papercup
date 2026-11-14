@@ -58,6 +58,7 @@ import {
   formatToolCatalogBypass,
   formatToolCatalogFailure,
   isSdkBootstrapInstallWait,
+  importSdkModulesWithInstallAwareness,
   buildMcpCallRecoveryInvocation,
   runMcpCallRecovery,
   isLoopPressureShed,
@@ -538,6 +539,25 @@ describe('ptool MCP identity binding', () => {
     expect(url.searchParams.get('native_session')).toBe('inherited-native-id');
     expect(isForeignNativeSessionRejection(refusal)).toBe(true);
     expect(shouldRetryWithoutNativeSession(refusal, { client, env })).toBe(true);
+    // WI-6554700010048107: the live-host incarnation fence has its own reason and
+    // a trailing recovery hint, on both the tool-result and the transport-error path.
+    const staleLiveHost = {
+      isError: true,
+      content: [{
+        type: 'text',
+        text: 'request_rejected: superuser_stale_live_host_native_session This native session is still bound to this owner…',
+      }],
+    };
+    expect(isForeignNativeSessionRejection(staleLiveHost)).toBe(true);
+    expect(shouldRetryWithoutNativeSession(staleLiveHost, { client, env })).toBe(true);
+    expect(isForeignNativeSessionRejection(
+      new Error('MCP error -32603: mcp_auth_failed: superuser_stale_live_host_native_session'))).toBe(true);
+    expect(isForeignNativeSessionRejection({
+      isError: true,
+      content: [{ type: 'text', text: 'request_rejected: superuser_foreign_native_session_v2' }],
+    })).toBe(false);
+    expect(isForeignNativeSessionRejection(
+      new Error('MCP error -32603: mcp_auth_failed: superuser_stale_live_host_native_session_v2'))).toBe(false);
     expect(shouldRetryWithoutNativeSession({
       isError: true,
       content: [{ type: 'text', text: 'request_rejected: authorization_denied' }],
@@ -2885,6 +2905,19 @@ describe('ptool keyed result recovery without concurrent replay', () => {
     ['conversations:get', 'tools:invoke'],
     ['plans:edit', 'plans:edit'],
     ['plans:edit', 'tools:invoke'],
+    // EI-28725841892231262: the rest of the canonical plan-writer class.
+    ['plans:set-content', 'plans:set-content'],
+    ['plans:set-content', 'tools:invoke'],
+    ['plans:set-content-chunk', 'plans:set-content-chunk'],
+    ['plans:set-content-chunk', 'tools:invoke'],
+    ['plans:add-decision', 'plans:add-decision'],
+    ['plans:add-decision', 'tools:invoke'],
+    ['plans:add-item', 'plans:add-item'],
+    ['plans:add-item', 'tools:invoke'],
+    ['plans:set-now', 'plans:set-now'],
+    ['plans:set-now', 'tools:invoke'],
+    ['plans:set-status', 'plans:set-status'],
+    ['plans:set-status', 'tools:invoke'],
   ])('delivers a valid %s after 35 seconds through %s without replay', async (toolName, route) => {
     vi.useFakeTimers();
     try {
@@ -2897,6 +2930,12 @@ describe('ptool keyed result recovery without concurrent replay', () => {
         'conversations:get': { id: 'conversation-1' },
         'plans:edit': { slug: 'scope-plan', itemId: 'P-001', anchors: [{ path: 'src/policy.ts',
           change: { action: 'investigate', summary: 'Confirm the existing policy boundary', reason: 'Initial source scope' } }] },
+        'plans:set-content': { slug: 'scope-plan', content: '# Scope plan\n', expectedHash: 'abc123' },
+        'plans:set-content-chunk': { slug: 'scope-plan', uploadId: 'upload-1', index: 0, total: 1, chunk: '# Scope plan\n' },
+        'plans:add-decision': { slug: 'scope-plan', title: 'Keep the boundary', body: 'Rationale.' },
+        'plans:add-item': { slug: 'scope-plan', title: 'Verify the boundary' },
+        'plans:set-now': { slug: 'scope-plan', state: 'Reconciling', next: 'Start the plan' },
+        'plans:set-status': { slug: 'scope-plan', itemId: 'P-001', status: 'wip' },
       };
       const toolArgs = inputs[toolName];
       const args = route === 'tools:invoke' ? { name: toolName, args: toolArgs } : toolArgs;
@@ -4401,7 +4440,7 @@ describe('ptool module-resolution failures are terminal, not retried (WI-6554700
     ).rejects.toThrow(/^ptool: SDK bootstrap failed before operator connection: Cannot find package '@modelcontextprotocol\/sdk'/);
 
     // One import per SDK entrypoint, no retry, and no network attempt on either candidate.
-    expect(importSdkModule).toHaveBeenCalledTimes(2);
+    expect(importSdkModule).toHaveBeenCalledTimes(3);
     expect(connectOnce).not.toHaveBeenCalled();
     expect(sleep).not.toHaveBeenCalled();
   });
@@ -4474,6 +4513,101 @@ describe('ptool SDK bootstrap recovery during install:safe drains', () => {
     );
     expect(child.stdin.end).toHaveBeenCalledWith('{"intent":"recover"}');
   });
+
+  it('finishes Node-only recovery under a held install writer without leaving SDK imports pending', async () => {
+    const previousLockDir = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+    const previousMutexHeld = process.env.PAPERCUSP_INSTALL_MUTEX_HELD;
+    const previousMutexDisabled = process.env.PAPERCUSP_DISABLE_FS_MUTEX;
+    const lockDir = mkdtempSync(join(tmpdir(), 'ptool-sdk-group-recovery-'));
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let signalWriterEntered!: () => void;
+    const writerEntered = new Promise<void>((resolve) => { signalWriterEntered = resolve; });
+    let releaseWriter!: () => void;
+    const writerRelease = new Promise<void>((resolve) => { releaseWriter = resolve; });
+    let writerHeld = false;
+    let install: Promise<number> | undefined;
+    let bootstrap: Promise<unknown> | undefined;
+
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = lockDir;
+    delete process.env.PAPERCUSP_INSTALL_MUTEX_HELD;
+    delete process.env.PAPERCUSP_DISABLE_FS_MUTEX;
+    try {
+      const [{ withFsMutex, withFsMutexRead }, { repoLockName }] = await Promise.all([
+        import('../../../scripts/lib/fs-mutex.mjs'),
+        import('../../../scripts/npm-install-safe.mjs'),
+      ]);
+      const lockName = repoLockName();
+      install = withFsMutex(lockName, async () => {
+        writerHeld = true;
+        signalWriterEntered();
+        await writerRelease;
+        writerHeld = false;
+        return 0;
+      });
+      await writerEntered;
+
+      const doImport = vi.fn(async (specifier: string) => ({ specifier }));
+      bootstrap = preparePtoolConnectionModules({ transport: 'http' }, {
+        recoverOnInstallWait: true,
+        importSdkModules: (specifiers, options) => importSdkModulesWithInstallAwareness(specifiers, {
+          ...options,
+          doImport,
+          loadInstallMutex: vi.fn().mockResolvedValue([
+            { withFsMutexRead },
+            { repoLockName: () => lockName },
+          ]),
+        }),
+      });
+      const bootstrapOutcome = await Promise.race([
+        bootstrap.then(
+          (value) => ({ status: 'prepared' as const, value }),
+          (error) => ({ status: 'rejected' as const, error }),
+        ),
+        new Promise<{ status: 'pending' }>((resolve) => {
+          setTimeout(() => resolve({ status: 'pending' }), 150);
+        }),
+      ]);
+      expect(bootstrapOutcome.status).toBe('rejected');
+      if (bootstrapOutcome.status !== 'rejected') throw new Error('SDK bootstrap remained pending behind install:safe');
+      expect(isSdkBootstrapInstallWait(bootstrapOutcome.error)).toBe(true);
+      expect(doImport).not.toHaveBeenCalled();
+
+      const recoveryChild = Object.assign(new EventEmitter(), {
+        stdin: { end: vi.fn<(payload: string) => void>() },
+      });
+      const spawnImpl = vi.fn(() => {
+        queueMicrotask(() => recoveryChild.emit('close', 5, null));
+        return recoveryChild;
+      });
+      const invocation = {
+        command: process.execPath,
+        args: ['/repo/scripts/mcp-call.mjs', 'scorecards:repair', '--json', '-'],
+        payload: { op: 'get' },
+        port: '3170',
+      };
+      const recovered = await runMcpCallRecovery({ invocation, spawnImpl });
+      expect(recovered).toMatchObject({ handled: true, started: true, exitCode: 5 });
+      expect(spawnImpl).toHaveBeenCalledWith(
+        process.execPath,
+        invocation.args,
+        expect.objectContaining({ stdio: ['pipe', 'inherit', 'inherit'] }),
+      );
+      expect(recoveryChild.stdin.end).toHaveBeenCalledWith('{"op":"get"}');
+      expect(writerHeld).toBe(true);
+    } finally {
+      releaseWriter();
+      await install?.catch(() => {});
+      await bootstrap?.catch(() => {});
+      consoleError.mockRestore();
+      if (previousLockDir === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+      else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = previousLockDir;
+      if (previousMutexHeld === undefined) delete process.env.PAPERCUSP_INSTALL_MUTEX_HELD;
+      else process.env.PAPERCUSP_INSTALL_MUTEX_HELD = previousMutexHeld;
+      if (previousMutexDisabled === undefined) delete process.env.PAPERCUSP_DISABLE_FS_MUTEX;
+      else process.env.PAPERCUSP_DISABLE_FS_MUTEX = previousMutexDisabled;
+      rmSync(lockDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('ptool SDK import install-race tolerance (EI-21860372620642128)', () => {
@@ -4506,7 +4640,7 @@ describe('ptool SDK import install-race tolerance (EI-21860372620642128)', () =>
       ),
       cause: installWaitTimeout,
     });
-    expect(importSdkModule).toHaveBeenCalledTimes(2);
+    expect(importSdkModule).toHaveBeenCalledTimes(3);
   });
 
   it('captures available bytes and free inodes when the reader marker mkdir fails with ENOSPC', async () => {
@@ -4625,6 +4759,105 @@ describe('ptool SDK import install-race tolerance (EI-21860372620642128)', () =>
     } finally {
       releaseInstaller();
       consoleError.mockRestore();
+    }
+  });
+
+  it('reuses the connection-prepared result schema when install:safe starts before projected dispatch', async () => {
+    const previousLockDir = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+    const previousMutexHeld = process.env.PAPERCUSP_INSTALL_MUTEX_HELD;
+    const previousMutexDisabled = process.env.PAPERCUSP_DISABLE_FS_MUTEX;
+    const lockDir = mkdtempSync(join(tmpdir(), 'ptool-projected-schema-'));
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let signalWriterEntered!: () => void;
+    const writerEntered = new Promise<void>((resolve) => { signalWriterEntered = resolve; });
+    let releaseWriter!: () => void;
+    const writerRelease = new Promise<void>((resolve) => { releaseWriter = resolve; });
+    let writerHeld = false;
+    let install: Promise<number> | undefined;
+    let pending: Promise<unknown> | undefined;
+    let withoutPreparedSchema: Promise<unknown> | undefined;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = lockDir;
+    delete process.env.PAPERCUSP_INSTALL_MUTEX_HELD;
+    delete process.env.PAPERCUSP_DISABLE_FS_MUTEX;
+    try {
+      const [{ withFsMutex }, { repoLockName }] = await Promise.all([
+        import('../../../scripts/lib/fs-mutex.mjs'),
+        import('../../../scripts/npm-install-safe.mjs'),
+      ]);
+      const prepared = await preparePtoolConnectionModules({ transport: 'http' });
+      expect(prepared.CallToolResultSchema).toBeDefined();
+
+      const lockName = repoLockName();
+      install = withFsMutex(lockName, async () => {
+        writerHeld = true;
+        signalWriterEntered();
+        await writerRelease;
+        writerHeld = false;
+        return 0;
+      });
+      await writerEntered;
+
+      const params = { name: 'plans:get', arguments: { projection: { pick: ['slug'] } } };
+      const result = { content: [{ type: 'text', text: 'projected result' }] };
+      expect(prepared.CallToolResultSchema.parse(result)).toEqual(result);
+      const client = { request: vi.fn(async () => result) };
+      withoutPreparedSchema = callToolWithReplayRecovery(client, params, { timeoutMs: 1_000 });
+      const legacyOutcome = await Promise.race([
+        withoutPreparedSchema.then(
+          (value) => ({ status: 'completed' as const, value }),
+          (error) => ({ status: 'rejected' as const, error }),
+        ),
+        new Promise<{ status: 'blocked' }>((resolve) => {
+          timeout = setTimeout(() => resolve({ status: 'blocked' }), 150);
+        }),
+      ]);
+      if (timeout) clearTimeout(timeout);
+      timeout = undefined;
+      expect(legacyOutcome.status).toBe('blocked');
+      expect(client.request).not.toHaveBeenCalled();
+      expect(consoleError).toHaveBeenCalledWith(expect.stringContaining(
+        'waiting for install:safe to finish before importing @modelcontextprotocol/sdk/types.js',
+      ));
+
+      pending = callToolWithReplayRecovery(client, params, {
+        timeoutMs: 1_000,
+        callToolResultSchema: prepared.CallToolResultSchema,
+      });
+      const outcome = await Promise.race([
+        pending.then(
+          (value) => ({ status: 'completed' as const, value }),
+          (error) => ({ status: 'rejected' as const, error }),
+        ),
+        new Promise<{ status: 'blocked' }>((resolve) => {
+          timeout = setTimeout(() => resolve({ status: 'blocked' }), 150);
+        }),
+      ]);
+      expect(outcome.status).toBe('completed');
+      if (outcome.status !== 'completed') throw new Error('projected dispatch waited for install:safe after connection setup');
+      expect(outcome.value).toEqual({ client, result });
+      expect(client.request).toHaveBeenCalledWith(
+        { method: 'tools/call', params },
+        prepared.CallToolResultSchema,
+        expect.objectContaining({ timeout: expect.any(Number) }),
+      );
+      expect(client.request).toHaveBeenCalledTimes(1);
+      expect(writerHeld).toBe(true);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      releaseWriter();
+      await install?.catch(() => {});
+      await pending?.catch(() => {});
+      await withoutPreparedSchema?.catch(() => {});
+      consoleError.mockRestore();
+      if (previousLockDir === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+      else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = previousLockDir;
+      if (previousMutexHeld === undefined) delete process.env.PAPERCUSP_INSTALL_MUTEX_HELD;
+      else process.env.PAPERCUSP_INSTALL_MUTEX_HELD = previousMutexHeld;
+      if (previousMutexDisabled === undefined) delete process.env.PAPERCUSP_DISABLE_FS_MUTEX;
+      else process.env.PAPERCUSP_DISABLE_FS_MUTEX = previousMutexDisabled;
+      rmSync(lockDir, { recursive: true, force: true });
     }
   });
 
@@ -4941,7 +5174,7 @@ describe('ptool stdio catalog generation bridge', () => {
     const callTool = vi.fn();
     const listTools = vi.fn(async () => [entry(), { name: 'other', inputSchema: { type: 'object' } }]);
     const bridge = createPtoolStdioBridge({ listTools: vi.fn(), callTool }, { listTools, toolName: 'tools:invoke' });
-    expect((await bridge.listTools()).tools.map(tool => tool.name)).toEqual(['tools:invoke']);
+    expect((await bridge.listTools()).tools.map((tool: { name: string }) => tool.name)).toEqual(['tools:invoke']);
     listTools.mockRejectedValueOnce(new Error('unavailable'));
     await expect(bridge.listTools()).rejects.toThrow(/unavailable/);
     await expect(bridge.callTool({ name: 'tools:invoke' })).rejects.toThrow(/read tools\/list/);

@@ -183,10 +183,10 @@ export interface GetFeedbackRequest {
   cascade?: SourceAuditCascadeMeta | GoalTenureGradingCascadeMeta | import('./decision-review').DecisionReviewCascadeMeta;
 }
 
-/** P-005 creation-side refusals — structural, BEFORE any conversation/row is
- * written (a depth/cycle refusal is a pre-flight arg problem, not a routing
- * verdict, so it does not enter the D-003 honesty feed). */
+/** Structural creation refusals and accepted-request preparation failures.
+ * Neither is a measured routing verdict. */
 export type GetFeedbackError =
+  | { error: 'preparation_failed'; stage: 'preparation'; retryable: true; hint: string }
   | { error: 'parent_consult_not_found'; parent_consult_id: string; hint: string }
   | { error: 'consult_depth_exceeded'; depth: number; max_depth: number; hint: string }
   | { error: 'consult_cycle'; lineage: string[]; hint: string }
@@ -363,8 +363,9 @@ interface AcceptedRequest {
   leaseUntil?: string | null;
   attempts?: number;
   result?: GetFeedbackResult | GetFeedbackError;
-  /** Prior instrument failures retained when the requester retries this identity. */
-  recoveryHistory?: Array<{ at: string; result: GetFeedbackResult }>;
+  /** Prior failures retained when the requester explicitly retries this identity. */
+  recoveryHistory?: Array<{ at: string; result: GetFeedbackResult | GetFeedbackError | null;
+    attempts?: number; lastError?: string }>;
   lastError?: string;
 }
 
@@ -443,14 +444,20 @@ async function acceptReadyFeedbackRequestCore(req: GetFeedbackRequest,
     hint: 'This request_key already names a different question or options. Reuse its original payload for recovery, or use a new key for a fresh consult.',
   };
   const previous = row.routing.request.result;
-  if (previous && 'verdict' in previous && previous.verdict === 'relevance_unmeasured' &&
-      (previous.degraded === 'embed-unavailable' || previous.degraded === 'evidence-unavailable')) {
+  const retryInstrument = previous && 'verdict' in previous && previous.verdict === 'relevance_unmeasured' &&
+    (previous.degraded === 'embed-unavailable' || previous.degraded === 'evidence-unavailable');
+  // Older exhausted preparations have no result at all. Recover only the
+  // recorded exception-budget case, never an arbitrary result-less lifecycle.
+  const retryPreparation = (stored.attempts ?? 0) >= 3 && Boolean(stored.lastError) &&
+    (!previous || ('error' in previous && previous.error === 'preparation_failed' &&
+      previous.stage === 'preparation' && previous.retryable === true));
+  if (retryInstrument || retryPreparation) {
     const retryPayload = { ...req,
       launchOperatorBaseUrl: stored.payload.launchOperatorBaseUrl ?? req.launchOperatorBaseUrl,
       launchOperatorHost: stored.payload.launchOperatorHost ?? req.launchOperatorHost };
     const retryFingerprint = requestFingerprint(retryPayload);
     const now = (deps.now?.() ?? new Date()).toISOString();
-    // An explicit same-payload retry can recover an instrument outage. This is
+    // An explicit same-payload retry can recover a preparation/instrument failure. This is
     // preparation only: the existing continuation must acquire its CAS lease
     // and rerun the governed router before it can select or dispatch anyone.
     // Fence every trace of selection/delivery, including ambiguous launch work.
@@ -463,23 +470,31 @@ async function acceptReadyFeedbackRequestCore(req: GetFeedbackRequest,
              routing = jsonb_set(routing, '{request}',
                ((routing->'request') - 'result') || jsonb_build_object(
                  'payload', ${sql.json(retryPayload as never)}, 'fingerprint', ${retryFingerprint}::text,
+                 'attempts', 0, 'leaseToken', NULL, 'leaseUntil', NULL,
                  'recoveryHistory', COALESCE(routing #> '{request,recoveryHistory}', '[]'::jsonb) ||
                    jsonb_build_array(jsonb_build_object('at', ${now}::text,
-                     'result', routing #> '{request,result}'))))
+                     'result', routing #> '{request,result}',
+                     'attempts', routing #> '{request,attempts}',
+                     'lastError', routing #> '{request,lastError}'))))
        WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${opened.conversation_id}
          AND requester_id = ${req.requesterId}
          AND routing->'request' = ${sql.json(row.routing.request as never)}
          AND routing #>> '{request,version}' = '1'
-         AND routing #>> '{request,result,reason}' IN ('embed_unavailable', 'evidence_unavailable')
-         AND routing #>> '{request,result,degraded}' = routing->>'degraded'
-         AND routing->>'degraded' IN ('embed-unavailable', 'evidence-unavailable')
-         AND routing #>> '{request,result,state}' = 'no_qualified_responder'
-         AND routing #> '{request,result,responder}' = 'null'::jsonb
-         AND routing #> '{request,result,wake}' @> '{"attempted":false,"queued":0,"woke":0}'::jsonb
+         AND (${retryPreparation} OR (
+           routing #>> '{request,result,reason}' IN ('embed_unavailable', 'evidence_unavailable')
+           AND routing #>> '{request,result,degraded}' = routing->>'degraded'
+           AND routing->>'degraded' IN ('embed-unavailable', 'evidence-unavailable')
+           AND routing #>> '{request,result,state}' = 'no_qualified_responder'
+           AND routing #> '{request,result,responder}' = 'null'::jsonb
+           AND routing #> '{request,result,wake}' @> '{"attempted":false,"queued":0,"woke":0}'::jsonb))
          AND COALESCE(routing #> '{request,result,dispatch}', 'null'::jsonb) = 'null'::jsonb
          AND COALESCE(routing #> '{request,result,archive}', 'null'::jsonb) = 'null'::jsonb
+         AND COALESCE(routing #> '{request,result,responder}', 'null'::jsonb) = 'null'::jsonb
+         AND COALESCE(routing #> '{request,result,wake}', '{"attempted":false,"queued":0,"woke":0}'::jsonb)
+           @> '{"attempted":false,"queued":0,"woke":0}'::jsonb
          AND routing->>'deliveryIntent' = 'dispatch'
-         AND routing #> '{selection,selected}' = '[]'::jsonb
+         AND (routing #> '{selection,selected}' = '[]'::jsonb OR
+           (${retryPreparation} AND COALESCE(routing->'selection', 'null'::jsonb) = 'null'::jsonb))
          AND COALESCE(routing->'cascadeDispatch', 'null'::jsonb) = 'null'::jsonb
          AND state = 'no_qualified_responder' AND closed_at IS NULL AND responder_id IS NULL
          AND wakes_used = 0 AND exchanges_used = 0 AND outcome IS NULL AND expires_at IS NULL
@@ -545,12 +560,20 @@ export async function continueFeedbackRequestCore(
         AND routing #>> '{request,leaseToken}' = ${token}`;
   } catch (error) {
     const attempts = (request.attempts ?? 0) + 1;
+    const exhausted = attempts >= 3;
+    const result: GetFeedbackError = { error: 'preparation_failed', stage: 'preparation', retryable: true,
+      hint: 'Consult preparation exhausted its automatic retry budget before a routing result was recorded. '
+        + 'Relevance is unmeasured; this is not a no-expert finding. Retry the same request_key and payload '
+        + 'to recover this request after the preparation failure is resolved.' };
     await sql`
       UPDATE harness_shared.consult_state SET routing = jsonb_set(routing, '{request}',
         (routing->'request') || ${sql.json({ attempts, leaseToken: null,
-          leaseUntil: new Date(now.getTime() + 30_000).toISOString(),
-          lastError: String(error).slice(0, 500) } as never)}),
-        state = CASE WHEN state = 'routing' AND ${attempts} >= 3 THEN 'no_qualified_responder' ELSE state END
+          leaseUntil: exhausted ? null : new Date(now.getTime() + 30_000).toISOString(),
+          lastError: String(error).slice(0, 500) } as never)} ||
+          CASE WHEN state = 'routing' AND ${exhausted}
+            THEN ${sql.json({ result } as never)} ELSE '{}'::jsonb END),
+        state = CASE WHEN state = 'routing' AND ${exhausted} THEN 'no_qualified_responder' ELSE state END,
+        updated_at = ${now.toISOString()}::timestamptz
       WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
         AND routing #>> '{request,leaseToken}' = ${token}`;
     throw error;
@@ -652,6 +675,8 @@ export interface GetFeedbackResult {
     qualification: 'unmeasured';
     evidence: RoutingCandidate['evidence'];
   }>;
+  /** Bounded diagnostics already retained on the routing snapshot, without raw source text. */
+  subject_validation?: RouteResult['snapshot']['subjectValidation'];
   origin_task_ref: string | null;
   latency_contract: LatencyContract;
   expires_at: string | null;
@@ -709,9 +734,9 @@ interface ConsultArchiveRow {
  * Extract the stable subject identifiers from a consult question. Embedding
  * similarity is deliberately broad; these exact refs are the safety fence for
  * archive reuse when a question names a rubric, plan, or other durable object.
- * A question without named refs remains compatible only with another question
- * without named refs, so a specific archived answer cannot silently answer a
- * generic request (or vice versa).
+ * Preserve explicit code symbols and source filenames as refs too: without
+ * them, a technical question about one source recipe can be treated as the same
+ * subject as an unrelated operational question when both lack typed refs.
  * Version-stamped slugs are also refs when callers omit the kind word, as in
  * "vet acceptance-example-2026-08-30". Without this fallback, both that
  * specific request and an unrelated dated rubric can look subjectless here.
@@ -738,6 +763,17 @@ export function consultSubjectKeys(question: string): string[] {
   for (const match of question.matchAll(revisionPin)) keys.add(`revision:${match[1]}`);
   const hashPin = /\b(?:criteria[\s_-]*)?hash[\s:#=]*([a-f0-9]{7,64})\b/gi;
   for (const match of question.matchAll(hashPin)) keys.add(`hash:${match[1].toLowerCase()}`);
+  const technicalRef = /\b[a-z][A-Za-z0-9_$]*[A-Z][A-Za-z0-9_$]*\b|\b[A-Za-z0-9_-]+\.(?:[cm]?[jt]sx?|json|mdx?|py|rs|go|sql|sh)\b/g;
+  for (const match of question.matchAll(technicalRef)) {
+    // This conventional label is already parsed as a hash pin above, and is
+    // not itself a source subject.
+    if (match[0] !== 'criteriaHash') keys.add(`code:${match[0]}`);
+  }
+  const inlineCode = /`([^`]+)`/g;
+  for (const match of question.matchAll(inlineCode)) {
+    const ref = match[1].trim();
+    if (ref) keys.add(`code:${ref}`);
+  }
   return [...keys].sort();
 }
 
@@ -2108,6 +2144,7 @@ async function getReadyFeedbackCore(req: GetFeedbackRequest, deps: GetFeedbackDe
     responder: finalChosen,
     responder_via: finalChosenVia,
     ...(unmeasuredCandidates ? { unmeasured_candidates: unmeasuredCandidates } : {}),
+    ...(route.snapshot.subjectValidation ? { subject_validation: route.snapshot.subjectValidation } : {}),
     remaining_candidates: (finalSelected.length > 0
       ? retrievalOnly ? finalSelected : finalSelected.slice(1)
       : route.qualified.map((c) => ({ candidate: c, via: 'floor' as SelectionVia }))

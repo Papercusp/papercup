@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as taskProvenance from '../../../../scripts/lib/passing-task-verdict-cache.mjs';
 import * as gitBatch from '../git-batch';
 import * as gitSidecar from '../fleet/git-via-sidecar';
+import * as artifact from '../release/operator-artifact';
+import * as moduleRepository from '../module-repo-root';
 import { createTestContentEquivalence } from './conformance-test-content';
 
 describe('conformance immutable dependency content', () => {
@@ -164,9 +166,10 @@ describe('conformance immutable dependency content', () => {
     const routed = vi.spyOn(gitSidecar, 'execFileViaSidecar');
     expect(await createTestContentEquivalence(root)({ file, recordedSha, currentSha }))
       .toEqual({ equivalent: true, reason: 'canonical semantic dependency closure matches' });
-    const treeReads = routed.mock.calls.filter(([command, args]) => command === 'git' && args[0] === 'ls-tree' && args.includes('-rz'));
+    const treeReads = routed.mock.calls.filter(([command, args]) => command === 'git' && args.includes('ls-tree') && args.includes('-rz'));
     expect(treeReads.map(([, args]) => args.at(-1)).sort()).toEqual([recordedSha, currentSha].sort());
-    expect(treeReads.every(([, , options]) => options.subsystem === 'conformance-test-content'
+    expect(treeReads.every(([, args, options]) => args[0] === '--no-replace-objects'
+      && options.subsystem === 'conformance-test-content'
       && options.cwd === root && options.timeoutMs === 15_000)).toBe(true);
   });
 
@@ -286,6 +289,105 @@ describe('conformance immutable dependency content', () => {
       reason: expect.stringContaining('shared-input-module-graph') });
     expect(await compare({ file, recordedSha: 'f'.repeat(40), currentSha })).toMatchObject({ equivalent: false });
     expect(await compare({ file: '../unknown.test.ts', recordedSha, currentSha })).toMatchObject({ equivalent: false });
+  });
+
+  it('qualifies external Git reads against the boot source and ignores poisoned Git environment and replace refs', async () => {
+    write('docs/note.md', 'unrelated');
+    const sourceSha = commit();
+    const moduleRoot = mkdtempSync(join(tmpdir(), 'conformance-module-root-'));
+    const bundleRoot = mkdtempSync(join(tmpdir(), 'conformance-external-bundle-'));
+    const poisonRoot = mkdtempSync(join(tmpdir(), 'conformance-poison-git-'));
+    const bundlePath = join(bundleRoot, 'hono-host.mjs');
+    writeFileSync(bundlePath, '// qualified fixture bundle');
+    for (const args of [['init', '-q'], ['config', 'user.name', 'Test'], ['config', 'user.email', 'test@example.invalid']]) {
+      execFileSync('git', args, { cwd: poisonRoot });
+    }
+    writeFileSync(join(poisonRoot, 'package.json'), '{}');
+    execFileSync('git', ['add', '.'], { cwd: poisonRoot });
+    execFileSync('git', ['commit', '-qm', 'poison'], { cwd: poisonRoot });
+    const poisonGitDir = execFileSync('git', ['rev-parse', '--absolute-git-dir'], {
+      cwd: poisonRoot, encoding: 'utf8',
+    }).trim();
+    const argvEntry = process.argv[1]!;
+    const environmentKeys = [
+      'PAPERCUSP_INTEGRATION_ROOT', 'GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY',
+      'GIT_COMMON_DIR', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_NO_REPLACE_OBJECTS',
+    ];
+    const environment = new Map(environmentKeys.map(key => [key, process.env[key]] as const));
+    const restoreEnvironment = () => {
+      for (const key of environmentKeys) {
+        const value = environment.get(key);
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    };
+    let qualifiedSourceSha = sourceSha;
+    const moduleRootSpy = vi.spyOn(moduleRepository, 'moduleRepoRoot').mockReturnValue(moduleRoot);
+    const artifactSpy = vi.spyOn(artifact, 'measureBootOperatorArtifact').mockImplementation(() => ({
+      status: 'measured', sourceSha: qualifiedSourceSha, bundleSha256: 'a'.repeat(64),
+      manifestSha256: 'b'.repeat(64), sourceBlobs: { 'apps/operator/bin/hono-host.ts': 'c'.repeat(40) },
+      evidenceRef: 'temporary external bundle fixture',
+    }));
+    const sidecarGitSpy = vi.spyOn(gitSidecar, 'execFileViaSidecar').mockImplementation(async (command, args, options) => ({
+      stdout: execFileSync(command, args, {
+        cwd: options.cwd, env: options.env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+      }),
+      stderr: '',
+    }));
+    const gitBatchSpy = vi.spyOn(gitBatch, 'runGitBatch');
+
+    try {
+      process.argv[1] = bundlePath;
+      Object.assign(process.env, {
+        PAPERCUSP_INTEGRATION_ROOT: root,
+        GIT_DIR: poisonGitDir,
+        GIT_WORK_TREE: poisonRoot,
+        GIT_INDEX_FILE: join(poisonGitDir, 'index'),
+        GIT_OBJECT_DIRECTORY: join(poisonGitDir, 'objects'),
+        GIT_COMMON_DIR: poisonGitDir,
+        GIT_ALTERNATE_OBJECT_DIRECTORIES: join(poisonGitDir, 'objects'),
+        GIT_NO_REPLACE_OBJECTS: '0',
+      });
+
+      const poisonedEnvironmentResult = await createTestContentEquivalence()({ file, recordedSha, currentSha: sourceSha });
+      expect(poisonedEnvironmentResult, JSON.stringify(poisonedEnvironmentResult))
+        .toEqual({ equivalent: true, reason: 'canonical semantic dependency closure matches' });
+
+      qualifiedSourceSha = 'f'.repeat(40);
+      expect(await createTestContentEquivalence()({ file, recordedSha, currentSha: qualifiedSourceSha }))
+        .toMatchObject({ equivalent: false, reason: expect.stringContaining('does not match the boot-qualified artifact') });
+
+      restoreEnvironment();
+      process.env.PAPERCUSP_INTEGRATION_ROOT = root;
+      write(file, 'export const passing = false;');
+      const replacedSha = commit();
+      git('replace', replacedSha, sourceSha);
+      expect(git('show-ref', 'refs/replace/' + replacedSha)).toContain(replacedSha);
+      qualifiedSourceSha = replacedSha;
+      expect(await createTestContentEquivalence()({ file, recordedSha: sourceSha, currentSha: replacedSha }))
+        .toMatchObject({ equivalent: false });
+      expect(moduleRootSpy).toHaveBeenCalled();
+      expect(artifactSpy).toHaveBeenCalledWith(bundlePath, expect.anything());
+      const clearedGitEnv = [
+        'GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_COMMON_DIR',
+        'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+      ];
+      const routedGit = sidecarGitSpy.mock.calls.filter(([command]) => command === 'git');
+      expect(routedGit.length).toBeGreaterThan(0);
+      expect(routedGit.every(([, args, options]) => args[0] === '--no-replace-objects'
+        && options.env?.GIT_NO_REPLACE_OBJECTS === '1'
+        && clearedGitEnv.every(key => !(key in (options.env ?? {}))))).toBe(true);
+      const batchEnvs = gitBatchSpy.mock.calls.map(([, options]) => options?.env).filter(Boolean);
+      expect(batchEnvs.length).toBeGreaterThan(0);
+      expect(batchEnvs.every(env => env.GIT_NO_REPLACE_OBJECTS === '1'
+        && clearedGitEnv.every(key => !(key in env)))).toBe(true);
+    } finally {
+      restoreEnvironment();
+      process.argv[1] = argvEntry;
+      rmSync(moduleRoot, { recursive: true, force: true });
+      rmSync(bundleRoot, { recursive: true, force: true });
+      rmSync(poisonRoot, { recursive: true, force: true });
+    }
   });
 
   it.each(['absorbed', 'named-absorbed', 'standalone', 'nested-absorbed', 'nested-standalone'])(

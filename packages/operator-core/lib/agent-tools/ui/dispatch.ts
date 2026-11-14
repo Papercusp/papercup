@@ -25,7 +25,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { uiCrossWorkspaceBlock } from './_workspace-guard';
 import { hardText, LIMITS } from '../limits';
-import { dispatchUiIntent } from '../../ui/dispatch-intent';
+import { dispatchUiIntent, uniqueNativeDesktopClient } from '../../ui/dispatch-intent';
 
 const DEFAULT_TIMEOUT_MS = 5_000;
 const MAX_TIMEOUT_MS = 60_000;
@@ -49,6 +49,8 @@ export default defineTool({
   args: z.object({
     /** Target tab. Defaults to ctx.uiClientId. */
     client_id: z.string().optional(),
+    /** User-initiated terminal handoffs can target the unique native desktop. */
+    target: z.literal('desktop').optional(),
     /** Intent name, e.g. "set_url" or a feature-registered name. */
     intent: hardText(LIMITS.SHORT_TITLE),
     /** Args object passed to the intent handler. */
@@ -57,7 +59,17 @@ export default defineTool({
     timeout_ms: z.number().int().positive().max(MAX_TIMEOUT_MS).optional(),
   }),
   async handler(args, ctx) {
-    const clientId = args.client_id ?? ctx.uiClientId ?? null;
+    if (args.target && args.client_id) {
+      return { isError: true, content: [{ type: 'text', text: 'Pass target or client_id, not both.' }] };
+    }
+    let clientId = args.client_id ?? ctx.uiClientId ?? null;
+    if (args.target === 'desktop') {
+      if (args.intent !== 'native_window' || args.args?.action !== 'open_route') {
+        return { isError: true, content: [{ type: 'text', text: 'Desktop target requires native_window/open_route.' }] };
+      }
+      try { clientId = await uniqueNativeDesktopClient(); }
+      catch (error) { return { isError: true, content: [{ type: 'text', text: String(error) }] }; }
+    }
     if (!clientId) {
       return {
         isError: true,
@@ -74,7 +86,10 @@ export default defineTool({
     }
     const timeoutMs = args.timeout_ms ?? DEFAULT_TIMEOUT_MS;
     const principalSlug = ctx.principal?.slug ?? (ctx.isSuperuser ? 'system:operator' : `agent:${ctx.role ?? 'unknown'}`);
-    const result = await dispatchUiIntent({ clientId, intent: args.intent, args: args.args ?? {}, requestedBy: principalSlug, timeoutMs });
+    const intentArgs = args.intent === 'native_window' && args.args?.action === 'open_route'
+      ? { ...args.args, expiresAt: Date.now() + timeoutMs }
+      : args.args ?? {};
+    const result = await dispatchUiIntent({ clientId, intent: args.intent, args: intentArgs, requestedBy: principalSlug, timeoutMs });
     return {
       isError: result.status === 'error' || result.status === 'timeout',
       content: [{ type: 'text', text: JSON.stringify(result) }],

@@ -53,7 +53,14 @@ const SCRIPT = process.env.PROBE_SCRIPT
   ? resolve(process.env.PROBE_SCRIPT)
   : resolve(__dirname, '../../../bin/reclaim-docker-disk.sh');
 
+const REAL_PYTHON = execFileSync('bash', ['-c', 'command -v python3'], { encoding: 'utf8' }).trim();
+const REAL_DU = execFileSync('bash', ['-c', 'command -v du'], { encoding: 'utf8' }).trim();
 const src = readFileSync(SCRIPT, 'utf8');
+const censusSource = src.match(/const census = String\.raw\x60([\s\S]*?)\x60;/)?.[1];
+  // The census owns a 30 s budget; leave enough outer time for its structured
+  // timeout receipt to reach the assertion and ledger.
+  const fixtureTimeoutMs = 40_000;
+  vi.setConfig({ testTimeout: fixtureTimeoutMs + 5_000 });
 
 /** Strip comment-only lines so prohibitions match EXECUTABLE shell, not the docblock
  *  (which deliberately names `docker volume prune` in order to forbid it). */
@@ -129,7 +136,7 @@ describe('WI-39305 — docker reclaim removes ONLY anonymous volumes', () => {
     expect(code).toMatch(/image\s+prune[^\n]*--filter\s+"until=/);
   });
 
-  it('never fails its timer (no `set -e`), so a wedged daemon is a logged no-op', () => {
+  it('does not use `set -e`; unavailable daemons remain logged no-ops', () => {
     expect(code).toMatch(/^set -uo pipefail$/m);
     expect(code).not.toMatch(/^set -euo/m);
   });
@@ -167,39 +174,79 @@ describe('Podman stores use the existing guarded image policy', () => {
   const fixture = () => {
     const root = mkdtempSync(join(tmpdir(), 'reclaim-container-fixture-'));
     const log = join(root, 'calls');
+    const unshareLog = join(root, 'unshare-calls');
+    const duLog = join(root, 'du-calls');
+    const duCounter = join(root, 'du-counter');
     const executable = (name: string, body: string) => writeFileSync(join(root, name), '#!/bin/bash\n' + body, { mode: 0o755 });
     for (const name of ['docker', 'rootless', 'rootful']) mkdirSync(join(root, 'stores', name), { recursive: true });
     executable('docker', '[[ "${DOCKER_UP:-0}" == 1 ]] || exit 1\nif [[ "$1" == info ]]; then [[ "$*" != *--format* ]] || echo "$FIXTURE_ROOT/stores/docker"; exit 0; fi\nprintf "docker %s\\n" "$*" >>"$FIXTURE_LOG"\n');
     executable('sudo', '[[ "$1" == "-n" ]] && shift\nexport STORE=rootful\nexec "$@"\n');
-    executable('podman', 'if [[ "$1" == "info" ]]; then [[ "$*" != *--format* ]] || echo "${FIXTURE_ALIAS:-$FIXTURE_ROOT/stores/${STORE:-rootless}}"; exit "${PODMAN_DOWN:-0}"; fi\nprintf "%s %s\\n" "${STORE:-rootless}" "$*" >>"$FIXTURE_LOG"\nif [[ -n "${FIXTURE_PAUSE:-}" && "${STORE:-rootless}" == rootless ]]; then touch "$FIXTURE_PAUSE"; while [[ ! -e "$FIXTURE_PAUSE.continue" ]]; do sleep 0.01; done; fi\nexit "${FIXTURE_NATIVE_EXIT:-0}"\n');
+    executable('podman', 'if [[ "$1" == "info" ]]; then [[ "$*" != *--format* ]] || echo "${FIXTURE_ALIAS:-$FIXTURE_ROOT/stores/${STORE:-rootless}}"; exit "${PODMAN_DOWN:-0}"; fi\nif [[ "$1" == "unshare" ]]; then printf "podman unshare python3\\n" >>"$FIXTURE_UNSHARE_LOG"; shift; export FIXTURE_PODMAN_UNSHARE=1; exec "$@"; fi\nprintf "%s %s\\n" "${STORE:-rootless}" "$*" >>"$FIXTURE_LOG"\nif [[ -n "${FIXTURE_PAUSE:-}" && "${STORE:-rootless}" == rootless ]]; then touch "$FIXTURE_PAUSE"; while [[ ! -e "$FIXTURE_PAUSE.continue" ]]; do sleep 0.01; done; fi\nexit "${FIXTURE_NATIVE_EXIT:-0}"\n');
     executable('df', 'if [[ "$*" == *--output=avail* ]]; then if [[ -n "$FIXTURE_AVAILABLE_AFTER" && -f "$FIXTURE_DF_COUNTER" ]]; then echo "$FIXTURE_AVAILABLE_AFTER"; else value="$FIXTURE_AVAILABLE"; [[ -n "$value" ]] || value=100000000000; echo "$value"; touch "$FIXTURE_DF_COUNTER"; fi; else echo 100000000000; fi\n');
     const env = { ...process.env, PATH: root + ':' + process.env.PATH, FIXTURE_ROOT: root, FIXTURE_LOG: log,
       PAPERCUSP_RELEASE_RETENTION_ROOT: join(root, 'pins'), PAPERCUSP_FS_MUTEX_LOCK_DIR: join(root, 'mutex'),
       FIXTURE_DF_COUNTER: join(root, 'df-counter'),
+      FIXTURE_REAL_PYTHON: REAL_PYTHON, FIXTURE_UNSHARE_LOG: unshareLog,
+      FIXTURE_REAL_DU: REAL_DU, FIXTURE_DU_LOG: duLog, FIXTURE_DU_COUNTER: duCounter,
       PAPERCUSP_FS_MUTEX_TIMEOUT_MS: '2000', DRY_RUN: '0', SKIP_IMAGES: '0', SKIP_TESTCONTAINERS: '1',
       FIXTURE_ALIAS: '', IMAGE_MAX_AGE: '168h', RECLAIM_MIN_FREE_PCT: '101' };
     const installFailedCensus = () => executable('python3',
       'if [[ "$1" == "-c" ]]; then echo \'{"complete":false,"permissionDenied":false,"error":"filesystem boundary"}\'; exit 0; fi\nexit 97\n');
-    return { root, env, calls: () => existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : [], installFailedCensus };
+    const installNamespaceAwareCensus = () => executable('python3',
+      'if [[ "$1" == "-c" && "${STORE:-rootless}" == rootless && "${FIXTURE_PODMAN_UNSHARE:-0}" != 1 ]]; then echo \'{"complete":false,"permissionDenied":true,"error":"permission denied outside Podman user namespace"}\'; exit 0; fi\nexec "$FIXTURE_REAL_PYTHON" "$@"\n');
+    const installSinglePassCensus = () => {
+      executable('find', 'printf "find\\n" >>"$FIXTURE_DU_LOG"; exit 97\n');
+      executable('du', 'printf "du\\n" >>"$FIXTURE_DU_LOG"; exec "$FIXTURE_REAL_DU" "$@"\n');
+    };
+    const installFailFirstDu = () => executable('du',
+      'printf "du\\n" >>"$FIXTURE_DU_LOG"\nif [[ ! -e "$FIXTURE_DU_COUNTER" ]]; then touch "$FIXTURE_DU_COUNTER"; echo "synthetic first-pass failure" >&2; exit 23; fi\nexec "$FIXTURE_REAL_DU" "$@"\n');
+    return {
+      root, env,
+      calls: () => existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : [],
+      unshareCalls: () => existsSync(unshareLog) ? readFileSync(unshareLog, 'utf8').trim().split('\n') : [],
+      nativeCalls: () => existsSync(duLog) ? readFileSync(duLog, 'utf8').trim().split('\n') : [],
+      installFailedCensus,
+      installNamespaceAwareCensus,
+      installSinglePassCensus,
+      installFailFirstDu,
+    };
   };
   const pin = (f: ReturnType<typeof fixture>, path: string, expired = false) => {
     const nowMs = Date.now() - (expired ? 120_000 : 0);
     return createRetentionPin({ path, owner: 'fixture', reason: 'review', expiresAt: new Date(nowMs + 60_000).toISOString() },
       { dir: f.env.PAPERCUSP_RELEASE_RETENTION_ROOT, nowMs });
   };
-  const runFixture = (overrides: Record<string, string> = {}, prepare?: (f: ReturnType<typeof fixture>) => void) => {
+  const runFixture = (overrides: Record<string, string> = {}, prepare?: (f: ReturnType<typeof fixture>) => void,
+    expectedStatus = 0) => {
     const f = fixture();
     try {
       prepare?.(f);
-      const output = execFileSync('bash', [SCRIPT], { encoding: 'utf8', timeout: 5000,
-        env: { ...f.env, ...overrides } });
+      let output = '';
+      let status = 0;
+      try {
+        output = execFileSync('timeout', ['--signal=TERM', '--kill-after=1s', `${fixtureTimeoutMs / 1000}s`,
+          'bash', SCRIPT], { encoding: 'utf8', timeout: fixtureTimeoutMs + 2000,
+          env: { ...f.env, ...overrides } });
+      } catch (error) {
+        const failure = error as { status?: number | null; stdout?: string | Buffer; stderr?: string | Buffer; message?: string };
+        const captured = (value?: string | Buffer) => typeof value === 'string'
+          ? value : Buffer.isBuffer(value) ? value.toString('utf8') : '';
+        const actualStatus = typeof failure.status === 'number' ? failure.status : null;
+        if (actualStatus !== expectedStatus) {
+          throw new Error('expected reclaim script exit ' + expectedStatus + ', got ' + actualStatus
+            + ': ' + (failure.message ?? 'unknown failure') + '\nstdout:\n' + captured(failure.stdout)
+            + '\nstderr:\n' + captured(failure.stderr));
+        }
+        status = actualStatus as number;
+        output = captured(failure.stdout);
+      }
       const receipts = output.split('\n').filter(line => line.startsWith('[docker-reclaim] store-receipt '))
         .map(line => JSON.parse(line.slice('[docker-reclaim] store-receipt '.length)));
-      return { output, calls: f.calls(), receipts };
+      return { output, calls: f.calls(), receipts, status, unshareCalls: f.unshareCalls(), nativeCalls: f.nativeCalls() };
     } finally { rmSync(f.root, { recursive: true, force: true }); }
   };
 
-  it('retains a Docker store with a live descendant pin while other stores still collect', () => {
+  it('retains a Docker store with a whole-store pin while other stores still collect', () => {
     const result = runFixture({ DOCKER_UP: '1' }, f => pin(f, join(f.root, 'stores/docker')));
     expect(result.calls.some(call => call.startsWith('docker '))).toBe(false);
     expect(result.calls).toHaveLength(2);
@@ -207,7 +254,7 @@ describe('Podman stores use the existing guarded image policy', () => {
   });
 
   it('runs native cleanup when pin admission succeeds but the allocation census hits a boundary', () => {
-    const result = runFixture({}, f => f.installFailedCensus());
+    const result = runFixture({}, f => f.installFailedCensus(), 1);
     expect(result.calls).toEqual([
       'rootless image prune -af --filter until=168h',
       'rootful image prune -af --filter until=168h',
@@ -215,13 +262,76 @@ describe('Podman stores use the existing guarded image policy', () => {
     expect(result.receipts).toHaveLength(2);
     expect(result.receipts.every(r => r.measurementComplete === false && r.complete === false
       && r.error.includes('filesystem boundary'))).toBe(true);
+    expect(result.status).toBe(1);
+    expect(result.output).toContain('returning failure for systemd health visibility');
+  });
+
+  it('retries rootless census in the Podman user namespace after a permission denial', () => {
+    const result = runFixture({}, f => f.installNamespaceAwareCensus());
+    const rootless = result.receipts.find(r => r.store === 'podman-rootless');
+    expect(result.status).toBe(0);
+    expect(result.unshareCalls).toEqual(['podman unshare python3', 'podman unshare python3']);
+    expect(rootless).toMatchObject({ measurementComplete: true, complete: true, status: 'within-cap' });
+  });
+
+  it('keeps one-filesystem boundaries and ignores pin roots outside the physical store', () => {
+    expect(censusSource).toBeTruthy();
+    expect(censusSource).toContain('"--one-file-system"');
+    expect(censusSource).toContain('"--no-dereference"');
+    const root = mkdtempSync(join(tmpdir(), 'reclaim-census-boundary-'));
+    try {
+      const nested = join(root, 'nested');
+      mkdirSync(nested);
+      const payload = join(nested, 'payload');
+      writeFileSync(payload, Buffer.alloc(65_536));
+      const expectedBytes = (lstatSync(root).blocks + lstatSync(nested).blocks
+        + lstatSync(payload).blocks) * 512;
+      const result = JSON.parse(execFileSync(REAL_PYTHON, ['-c', censusSource], {
+        encoding: 'utf8', timeout: 10_000, input: JSON.stringify({ root, pins: ['/proc'] }),
+      }));
+      expect(result).toMatchObject({ complete: true, pinnedBytes: 0, bytes: expectedBytes });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('uses native allocation accounting with global hardlink and pin deduplication', () => {
+    expect(censusSource).toBeTruthy();
+    const root = mkdtempSync(join(tmpdir(), 'reclaim-census-parallel-'));
+    try {
+      const parallel = join(root, 'parallel');
+      mkdirSync(parallel);
+      const dirs = Array.from({ length: 4 }, (_, index) => join(parallel, 'entry-' + index));
+      for (const directory of dirs) mkdirSync(directory);
+      const paths = dirs.map(directory => join(directory, 'payload'));
+      for (const path of paths) writeFileSync(path, Buffer.alloc(8192));
+      linkSync(paths[0], join(root, 'outside-hardlink'));
+      const outsidePayload = join(root, 'outside-payload');
+      writeFileSync(outsidePayload, Buffer.alloc(4096));
+      const symlink = join(parallel, 'outside-link');
+      symlinkSync(outsidePayload, symlink);
+      const bytes = (lstatSync(root).blocks + lstatSync(parallel).blocks
+        + dirs.reduce((sum, path) => sum + lstatSync(path).blocks, 0)
+        + paths.reduce((sum, path) => sum + lstatSync(path).blocks, 0)
+        + lstatSync(outsidePayload).blocks + lstatSync(symlink).blocks) * 512;
+      const pinnedBytes = (lstatSync(parallel).blocks
+        + dirs.reduce((sum, path) => sum + lstatSync(path).blocks, 0)
+        + paths.reduce((sum, path) => sum + lstatSync(path).blocks, 0)
+        + lstatSync(symlink).blocks) * 512;
+      const result = JSON.parse(execFileSync(REAL_PYTHON, ['-c', censusSource], {
+        encoding: 'utf8', timeout: 10_000, input: JSON.stringify({ root, pins: [parallel, dirs[0]] }),
+      }));
+      expect(result).toMatchObject({ complete: true, bytes, pinnedBytes });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('keeps a live store pin blocking native cleanup when the allocation census fails', () => {
     const result = runFixture({}, f => {
       f.installFailedCensus();
       pin(f, join(f.root, 'stores/rootless'));
-    });
+    }, 1);
     expect(result.calls).toEqual(['rootful image prune -af --filter until=168h']);
     expect(result.output).toContain('retention pin protects podman-rootless');
   });
@@ -244,13 +354,15 @@ describe('Podman stores use the existing guarded image policy', () => {
     expect(result.calls).toHaveLength(2);
   });
 
-  it('refuses native mutation when the retention store is malformed', () => {
+  it('refuses native mutation and reports unmeasured stores when retention is malformed', () => {
     const result = runFixture({ DOCKER_UP: '1' }, f => {
       mkdirSync(f.env.PAPERCUSP_RELEASE_RETENTION_ROOT);
       writeFileSync(join(f.env.PAPERCUSP_RELEASE_RETENTION_ROOT, 'lease-broken.tsv'), 'broken');
-    });
+    }, 1);
     expect(result.calls).toEqual([]);
     expect(result.output).toContain('retention pin admission failed');
+    expect(result.status).toBe(1);
+    expect(result.output).toContain('returning failure for systemd health visibility');
   });
 
   it('holds the shared pin mutex until the native prune command finishes', async () => {
@@ -391,5 +503,28 @@ describe('Podman stores use the existing guarded image policy', () => {
     expect(receipt).toMatchObject({ status: 'pinned-overage', complete: true, unprotectedOverageBytes: 0 });
     expect(receipt.pinnedBytes).toBe(receipt.afterBytes);
     expect(result.calls.every(call => !call.startsWith('rootless '))).toBe(true);
+  });
+
+  it('uses one native du traversal per measurement and never starts a recursive find walk', () => {
+    const result = runFixture({ DOCKER_UP: '1', PODMAN_DOWN: '1', DRY_RUN: '1' },
+      f => f.installSinglePassCensus());
+    const receipt = result.receipts.find(r => r.store === 'docker');
+    expect(result.nativeCalls).toEqual(['du', 'du']);
+    expect(receipt).toMatchObject({ measurementComplete: true, status: 'dry-run' });
+  });
+
+  it('keeps a failed before census visible while sweeping without a redundant after scan', () => {
+    const result = runFixture({ DOCKER_UP: '1', PODMAN_DOWN: '1' }, f => {
+      f.installSinglePassCensus();
+      f.installFailFirstDu();
+    }, 1);
+    const receipt = result.receipts.find(r => r.store === 'docker');
+    expect(result.nativeCalls).toEqual(['du']);
+    expect(result.calls.some(call => call.startsWith('docker builder prune'))).toBe(true);
+    expect(result.calls.some(call => call.startsWith('docker image prune'))).toBe(true);
+    expect(result.status).toBe(1);
+    expect(receipt).toMatchObject({ measurementComplete: false, complete: false, status: 'measurement-failed' });
+    expect(receipt.error).toContain('before:');
+    expect(receipt.error).toContain('skipped because before measurement failed');
   });
 });

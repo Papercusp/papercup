@@ -197,6 +197,20 @@ describe('routingHealthFromRows — seeded attempts in and out of the window', (
 });
 
 describe('routingHealthFromRows request cohort', () => {
+  it.each([
+    { request: { version: 1, result: { verdict: 'relevance_unmeasured' } }, unmeasured: true },
+    { request: { version: 1, result: { error: 'preparation_failed', stage: 'preparation' } }, unmeasured: true },
+    { request: { version: 1, attempts: 3, lastError: 'storage unavailable' }, unmeasured: true },
+    { request: { version: 1, result: { verdict: 'no_qualified_responder', reason: 'below_floor' } }, unmeasured: false },
+  ])('distinguishes an unmeasured terminal request from measured absence: $request', ({ request, unmeasured }) => {
+    const health = routingHealthFromRows([row({ conversation_id: 'terminal-request', created_at: iso(T0 + H),
+      state: 'no_qualified_responder', routing: { deliveryIntent: 'dispatch', request },
+    })], { sinceMs: SINCE, untilMs: UNTIL, nowMs: NOW });
+    expect(health.requestCohort.totals.outcomes).toMatchObject({
+      unavailable: unmeasured ? 0 : 1, unmeasured: unmeasured ? 1 : 0, pending: 0,
+    });
+  });
+
   it('counts accepted preparation as pending while preserving legacy and terminal unknown controls', () => {
     const make = (id: string, partial: Partial<RoutingHealthConsultRow>) => row({
       conversation_id: id, created_at: iso(T0 + H), routing: { deliveryIntent: 'dispatch' }, ...partial,

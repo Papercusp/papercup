@@ -893,6 +893,18 @@ describe('systemd-run oneshot detach advisory (EI-20235141119412683)', () => {
     expect(ctx).toContain('--no-block');
   });
 
+  it('keeps the advisory but omits the unsupported allow decision for Codex', () => {
+    const out = runGate(
+      bashCmd('systemd-run --user --property=Type=oneshot ./gate.sh'),
+      { ...AGENT, PAPERCUSP_CODEX_HOOK: '1' },
+    );
+    expect(out.status, describeGateExit(out)).toBe(0);
+    const hookOutput = JSON.parse(out.stdout).hookSpecificOutput;
+    expect(hookOutput.additionalContext).toContain('systemd-run oneshot advisory');
+    expect(hookOutput).not.toHaveProperty('permissionDecision');
+    expect(hookOutput).not.toHaveProperty('permissionDecisionReason');
+  });
+
   it.each([
     ['--no-block is already present', 'systemd-run --user --no-block --property=Type=oneshot ./gate.sh'],
     ['--wait means the caller INTENDS to block', 'systemd-run --user --wait --property=Type=oneshot ./gate.sh'],

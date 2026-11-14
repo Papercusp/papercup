@@ -1,7 +1,8 @@
 /** Immutable Git inputs, judged by the SAME closure policy as passing-task reuse. */
 import { createHash } from 'node:crypto';
+import { existsSync, realpathSync } from 'node:fs';
 import { lstat } from 'node:fs/promises';
-import { dirname, isAbsolute, matchesGlob, relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, matchesGlob, relative, resolve } from 'node:path';
 import {
   passingTaskVerdictDependencyProvenance,
   passingTaskVerdictSharedInputProvenance,
@@ -10,9 +11,16 @@ import {
 import { STANDALONE_PACKAGE_DIRS } from '../../../../scripts/lib/test-runner-classes.mjs';
 import { nextForkSlot, runGitBatch } from '../git-batch';
 import { execFileViaSidecar } from '../fleet/git-via-sidecar';
-import { moduleRepoRoot } from '../module-repo-root';
+import { getBuildInfo } from '../build-info';
+import { measureBootOperatorArtifact, operatorArtifactSource } from '../release/operator-artifact';
+import * as moduleRepository from '../module-repo-root';
 
 const SHA = /^[a-f0-9]{7,40}$/i;
+const FULL_SHA = /^[a-f0-9]{40}$/i;
+const GIT_ENV_TO_CLEAR = [
+  'GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_COMMON_DIR',
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+] as const;
 type Repository = { cwd: string; gitDir?: string };
 type Entry = { repo: Repository; oid: string; mode: string; type: string };
 type ContentCache = {
@@ -36,14 +44,21 @@ export type TestContentEquivalence = (input: {
   file: string; recordedSha: string; currentSha: string;
 }) => Promise<{ equivalent: boolean; reason: string }>;
 
+function immutableGitEnvironment(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, GIT_NO_REPLACE_OBJECTS: '1' };
+  for (const key of GIT_ENV_TO_CLEAR) delete env[key];
+  return env;
+}
+
 async function git(repo: Repository, args: string[]): Promise<Buffer> {
   await nextForkSlot();
   // Yield between fallback forks, and use the maintained small-process route
   // on serving hosts. Traversing immutable submodule pins must not repeatedly
   // copy the background host's page tables just to read Git metadata.
-  const result = await execFileViaSidecar('git', [...(repo.gitDir ? ['--git-dir', repo.gitDir, '--work-tree', repo.cwd] : []), ...args], {
+  const result = await execFileViaSidecar('git', ['--no-replace-objects',
+    ...(repo.gitDir ? ['--git-dir', repo.gitDir, '--work-tree', repo.cwd] : []), ...args], {
     cwd: repo.cwd, timeoutMs: 15_000, maxBuffer: 64 * 1024 * 1024,
-    subsystem: 'conformance-test-content',
+    env: immutableGitEnvironment(), subsystem: 'conformance-test-content',
   });
   return Buffer.from(result.stdout, 'utf8');
 }
@@ -137,12 +152,14 @@ async function loadTexts(view: Snapshot, files: readonly string[]): Promise<void
       const commands = batch.map(([, { entry }]) => {
         return {
           repo: entry.repo.cwd,
-          args: [...(entry.repo.gitDir ? ['--git-dir', entry.repo.gitDir, '--work-tree', entry.repo.cwd] : []),
+          args: ['--no-replace-objects',
+            ...(entry.repo.gitDir ? ['--git-dir', entry.repo.gitDir, '--work-tree', entry.repo.cwd] : []),
             'cat-file', 'blob', entry.oid],
         };
       });
       const results = await runGitBatch(commands, {
         label: 'conformance-test-content', timeoutMs: 15_000, maxBuffer: 64 * 1024 * 1024,
+        env: immutableGitEnvironment(),
       });
       for (let index = 0; index < batch.length; index++) {
         const result = results[index];
@@ -236,8 +253,34 @@ async function dependencyProof(view: Snapshot, file: string): Promise<ResolvedDe
   return view.proofs.get(workspaceName)!;
 }
 
+type ResolvedRepository = { root: string; sourceSha?: string };
+
+async function resolveRepository(rootOverride?: string): Promise<ResolvedRepository> {
+  if (rootOverride !== undefined) return { root: rootOverride };
+  const moduleRoot = moduleRepository.moduleRepoRoot(import.meta.url);
+  if (existsSync(resolve(moduleRoot, '.git'))) return { root: moduleRoot };
+
+  const candidate = process.env.PAPERCUSP_INTEGRATION_ROOT;
+  const entry = process.argv[1];
+  if (!candidate || !entry) throw new Error('External conformance Git source is not qualified');
+  const bundlePath = realpathSync(entry);
+  if (basename(bundlePath) !== 'hono-host.mjs') throw new Error('External conformance entry is not the maintained host bundle');
+  const artifact = measureBootOperatorArtifact(bundlePath, getBuildInfo().sha);
+  if (artifact.status !== 'measured') throw new Error('External conformance bundle is unqualified: ' + artifact.reason);
+
+  const sourceRoot = realpathSync(candidate);
+  const gitTopLevel = realpathSync((await git({ cwd: sourceRoot }, ['rev-parse', '--show-toplevel'])).toString('utf8').trim());
+  if (gitTopLevel !== sourceRoot) throw new Error('External conformance source root is not a Git repository root');
+  const sourceSha = await operatorArtifactSource(sourceRoot, async (cwd, args) =>
+    (await git({ cwd }, args)).toString('utf8').trim());
+  if (!FULL_SHA.test(sourceSha) || sourceSha !== artifact.sourceSha) {
+    throw new Error('External conformance source does not match the boot-qualified artifact');
+  }
+  return { root: sourceRoot, sourceSha };
+}
+
 /** Request-scoped caches: no mutable working-tree observation or synthetic receipt. */
-export function createTestContentEquivalence(root = moduleRepoRoot(import.meta.url)): TestContentEquivalence {
+function createContentComparator(repositoryRoot: string, qualifiedCurrentSha: string | null): TestContentEquivalence {
   const snapshots = new Map<string, Promise<Snapshot>>();
   const cache: ContentCache = { trees: new Map(), submodules: new Map(), blobs: new Map(), blobLoads: Promise.resolve() };
   const testEntries = new Map<string, Promise<string | null>>();
@@ -245,7 +288,7 @@ export function createTestContentEquivalence(root = moduleRepoRoot(import.meta.u
     const key = JSON.stringify([sha, file]);
     if (!testEntries.has(key)) testEntries.set(key, (async () => {
       try {
-        const records = (await git({ cwd: root }, ['ls-tree', '-z', '--full-tree', sha, '--', file]))
+        const records = (await git({ cwd: repositoryRoot }, ['ls-tree', '-z', '--full-tree', sha, '--', file]))
           .toString('utf8').split('\0').filter(Boolean);
         if (records.length !== 1) return null;
         const tab = records[0]!.indexOf('\t');
@@ -259,7 +302,7 @@ export function createTestContentEquivalence(root = moduleRepoRoot(import.meta.u
   const patterns = new Map<string, Promise<string[]>>();
   const workspace = async (sha: string, file: string) => {
     if (!patterns.has(sha)) patterns.set(sha, (async () => {
-      const manifest = JSON.parse((await git({ cwd: root }, ['show', sha + ':package.json'])).toString('utf8'));
+      const manifest = JSON.parse((await git({ cwd: repositoryRoot }, ['show', sha + ':package.json'])).toString('utf8'));
       if (!Array.isArray(manifest.workspaces) || manifest.workspaces.some((value: unknown) => typeof value !== 'string')) {
         throw new Error('workspace enumeration unavailable');
       }
@@ -281,7 +324,7 @@ export function createTestContentEquivalence(root = moduleRepoRoot(import.meta.u
       if (!recordedDir || recordedDir !== currentDir) return false;
       const key = JSON.stringify([recordedSha, currentSha, recordedDir]);
       if (!workspaceChanges.has(key)) workspaceChanges.set(key, (async () => {
-        const records = (await git({ cwd: root }, ['--literal-pathspecs', 'diff-tree', '--no-commit-id',
+        const records = (await git({ cwd: repositoryRoot }, ['--literal-pathspecs', 'diff-tree', '--no-commit-id',
           '--raw', '--no-abbrev', '-r', '--no-renames', '-z', recordedSha, currentSha, '--', recordedDir]))
           .toString('utf8').split('\0');
         if (records.pop() !== '' || records.length % 2 !== 0) return false;
@@ -299,7 +342,7 @@ export function createTestContentEquivalence(root = moduleRepoRoot(import.meta.u
     } catch { return false; /* Unknown ownership/diffs still need the canonical proof. */ }
   };
   const proof = (sha: string, file: string) => {
-    if (!snapshots.has(sha)) snapshots.set(sha, snapshot(root, sha, cache));
+    if (!snapshots.has(sha)) snapshots.set(sha, snapshot(repositoryRoot, sha, cache));
     return snapshots.get(sha)!.then(view => dependencyProof(view, file));
   };
   return async ({ file, recordedSha, currentSha }) => {
@@ -307,8 +350,20 @@ export function createTestContentEquivalence(root = moduleRepoRoot(import.meta.u
       return { equivalent: false, reason: 'content identity unavailable' };
     }
     try {
-      if (recordedSha !== currentSha) {
-        const [recordedTest, currentTest] = await Promise.all([testEntry(recordedSha, file), testEntry(currentSha, file)]);
+      let resolvedRecordedSha = recordedSha;
+      let resolvedCurrentSha = currentSha;
+      if (qualifiedCurrentSha) {
+        if (!FULL_SHA.test(recordedSha) || !qualifiedCurrentSha.startsWith(currentSha.toLowerCase())) {
+          return { equivalent: false, reason: 'content identity does not match the qualified source artifact' };
+        }
+        resolvedRecordedSha = recordedSha.toLowerCase();
+        resolvedCurrentSha = qualifiedCurrentSha;
+        await git({ cwd: repositoryRoot }, ['cat-file', '-e', resolvedRecordedSha + '^{commit}']);
+      }
+      if (resolvedRecordedSha !== resolvedCurrentSha) {
+        const [recordedTest, currentTest] = await Promise.all([
+          testEntry(resolvedRecordedSha, file), testEntry(resolvedCurrentSha, file),
+        ]);
         // The test itself belongs to the semantic closure. A changed immutable
         // blob/mode is sufficient to reject reuse before enumerating dependencies;
         // matching entries never establish equivalence on their own.
@@ -317,13 +372,32 @@ export function createTestContentEquivalence(root = moduleRepoRoot(import.meta.u
         }
         // The owning workspace is a mandatory part of the canonical closure.
         // This only rejects reuse; equal local inputs still need every dependency.
-        if (recordedTest && currentTest && await workspaceChanged(recordedSha, currentSha, file)) {
+        if (recordedTest && currentTest && await workspaceChanged(resolvedRecordedSha, resolvedCurrentSha, file)) {
           return { equivalent: false, reason: 'semantic dependency closure changed' };
         }
       }
-      const [recorded, current] = await Promise.all([proof(recordedSha, file), proof(currentSha, file)]);
+      const [recorded, current] = await Promise.all([
+        proof(resolvedRecordedSha, file), proof(resolvedCurrentSha, file),
+      ]);
       const equivalent = recorded.hash === current.hash && recorded.listHash === current.listHash;
       return { equivalent, reason: equivalent ? 'canonical semantic dependency closure matches' : 'semantic dependency closure changed' };
+    } catch (error) {
+      return { equivalent: false, reason: error instanceof Error ? error.message : String(error) };
+    }
+  };
+}
+
+export function createTestContentEquivalence(root?: string): TestContentEquivalence {
+  let context: Promise<TestContentEquivalence> | undefined;
+  return async input => {
+    if (!SHA.test(input.recordedSha) || !SHA.test(input.currentSha)
+        || input.file.startsWith('/') || input.file.split('/').includes('..')) {
+      return { equivalent: false, reason: 'content identity unavailable' };
+    }
+    try {
+      context ??= resolveRepository(root).then(({ root: resolvedRoot, sourceSha }) =>
+        createContentComparator(resolvedRoot, sourceSha ?? null));
+      return await (await context)(input);
     } catch (error) {
       return { equivalent: false, reason: error instanceof Error ? error.message : String(error) };
     }

@@ -262,6 +262,9 @@ export function assessDurableHeadroomTargets(input: unknown,
     const missing = Array.from({ length: 72 }, (_, h) => h).filter(h => !rows.some(r =>
       Date.parse(r.at) >= start + h * hour && Date.parse(r.at) < start + (h + 1) * hour && r.complete));
     add(`hourly-coverage:${path}`, missing.length ? 'unknown' : 'pass', `Missing/incomplete hourly buckets: ${missing.join(',') || 'none'}.`);
+    const incomplete = rows.filter(r => !r.complete).map(r => r.id);
+    add(`census-completeness:${path}`, incomplete.length ? 'unknown' : 'pass',
+      `Every observed census must be complete; incomplete samples: ${incomplete.join(',') || 'none'}.`);
     const floor = path === '/' ? 400 * 1000 ** 3 : 2 * 1000 ** 4;
     add(`exact-target:${path}`, rows.some(r => r.availableBytes < floor) ? 'fail' : rows.length ? 'pass' : 'unknown', `Every observed sample must have >=${floor} free bytes.`);
   }

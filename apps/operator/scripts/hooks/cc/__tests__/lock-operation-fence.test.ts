@@ -11,6 +11,7 @@ const authority = 'prepared-test-authority';
 let session: string;
 let root: string, home: string, cache: string, ws: string, repo: string, origin: string;
 let server: Server;
+let attributionNudge: string | undefined;
 let requests: Array<{ name: string; args: any; url: string }>;
 let mutations: Map<string, { state: string; paths: string[] }>;
 let grants: Set<string>, explicit: Set<string>, proofs: Map<string, any>;
@@ -32,6 +33,7 @@ beforeEach(async () => {
   fs.writeFileSync(join(home, '.papercusp/superuser-token'), 'fixture-bearer');
   fs.writeFileSync(join(home, '.papercusp/su-agent-id'), 'fixture-agent');
   requests = []; mutations = new Map(); grants = new Set(); explicit = new Set(); proofs = new Map();
+  attributionNudge = undefined;
   loseAcquire = false; unknownFinish = false; terminalWithoutRelease = false; legacy = false; lateAcquire = undefined;
   persistedBeforeHttp = true;
   schemaQualified = true; rejectOperation = false; listRequests = []; schemaBySession = new Map();
@@ -90,7 +92,8 @@ beforeEach(async () => {
           if (loseAcquire) { lateAcquire = acquire; empty = true; }
           else result = acquire()
             ? { ok: true, lock_id: 'correlated-grant', operation_id: op.id,
-                held: paths, newly_held: paths.filter((p: string) => !explicit.has(p)) }
+                held: paths, newly_held: paths.filter((p: string) => !explicit.has(p)),
+                ...(attributionNudge ? { attribution_nudge: attributionNudge } : {}) }
             : { ok: false, reason: 'operation_finished', operation_id: op.id };
         } else if (unknownFinish) {
           result = { ok: false, reason: 'operation_authority_unknown', operation_id: op.id };
@@ -135,7 +138,13 @@ function payload(id = 'edit-one', paths = ['sub/one.ts']) {
     tool_input: `*** Begin Patch\n${paths.map(p => `*** Update File: ${join(repo, p)}\n@@\n-a\n+b`).join('\n')}\n*** End Patch` };
 }
 
-async function hook(file: string, input: object, expectOperation = true, hookDirectory = hooks) {
+async function hook(
+  file: string,
+  input: object,
+  expectOperation = true,
+  hookDirectory = hooks,
+  extraEnv: NodeJS.ProcessEnv = {},
+) {
   const result = await runHookProcess('bash', [join(hookDirectory, file)], {
     input: JSON.stringify(input), env: {
       ...process.env, HOME: home, PAPERCUSP_LOCKS_CACHE_DIR: cache, PAPERCUSP_WORKSPACE_ROOT: ws,
@@ -144,6 +153,7 @@ async function hook(file: string, input: object, expectOperation = true, hookDir
       PAPERCUSP_NATIVE_SESSION_ID: session, CODEX_HOME: undefined,
       PAPERCUSP_LIFECYCLE_REPLAY_TRACE: join(root, 'lifecycle-replays'),
       PAPERCUSP_LIFECYCLE_RELEASE_HOOK: join(hooks, 'posttooluse-locks-release.sh'),
+      ...extraEnv,
     },
   });
   expect(result.status).toBe(0);
@@ -231,6 +241,18 @@ describe('native hook operation fence', () => {
     expect(new URL(listRequests[0], origin).searchParams.get('native_session')).toBe(session);
     expect(acquires().some(r => r.args.hook_operation)).toBe(true);
     expect(fs.existsSync(join(cache, 'edit-session-qualified.operation.json'))).toBe(true);
+  });
+
+  it('keeps Codex lock attribution context without the unsupported allow decision', async () => {
+    attributionNudge = 'file-lock attribution advisory';
+    const result = await hook('pretooluse-locks-acquire.sh', payload('edit-codex-advisory'), true, hooks, {
+      PAPERCUSP_CODEX_HOOK: '1',
+    });
+    const hookOutput = JSON.parse(result.stdout).hookSpecificOutput;
+    expect(hookOutput.additionalContext).toContain('file-lock attribution advisory');
+    expect(hookOutput).not.toHaveProperty('permissionDecision');
+    expect(hookOutput).not.toHaveProperty('permissionDecisionReason');
+    expect(fs.existsSync(join(cache, 'edit-codex-advisory.operation.json'))).toBe(true);
   });
 
   it('does not reuse a protocol verdict across authenticated native sessions', async () => {

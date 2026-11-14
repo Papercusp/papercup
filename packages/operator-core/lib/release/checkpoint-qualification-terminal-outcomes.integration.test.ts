@@ -296,6 +296,94 @@ describe('checkpoint qualification terminal outcomes (real Postgres)', () => {
     expect(await readStoredQualification(target)).toMatchObject({ status: 'present', transaction: before });
   });
 
+  it.each(['first-accepted-projection', 'second-accepted-projection', 'batch-completion-projection'] as const)(
+    '%s: resumes only unfinished terminal delivery with the incomplete manifest intact', async boundary => {
+      const identity = { ...target, attemptId: 'batch-interrupted', candidate: 'batch-candidate',
+        runId: 'batch-run', green: false, candidates: ['batch-candidate'] };
+      const delivery = checkpointTerminalDelivery(identity, [
+        { key: 'green-checkpoint:red', summary: 'Incomplete qualification.',
+          payload: { sha: identity.candidate, runId: identity.runId } },
+        { key: 'green-checkpoint:red:papercusp', summary: 'Incomplete qualification for papercusp.',
+          payload: { sha: identity.candidate, runId: identity.runId } },
+      ]);
+      await beginStoredQualification(target, { ...identity, nowMs: 100 });
+      const owner = { ...identity, runnerId: 'batch-runner', pid: process.pid, pidIdentity: 'boot:batch',
+        leaseDurationMs: 1000, nowMs: 200 };
+      expect((await reserveStoredQualificationRunner(target, owner)).status).toBe('updated');
+      const manifest = { schemaVersion: 1 as const, units: [
+        { id: 'finished', kind: 'test' as const, path: 'finished.test.ts' },
+        { id: 'pending', kind: 'test' as const, path: 'pending.test.ts' },
+        { id: 'delivery', kind: 'post-suite' as const, path: 'delivery.ts' },
+      ] };
+      const receipt = { unitId: 'finished', completionId: 'passed-before-batch-interruption', observedAtMs: 250,
+        state: 'pass' as const, firstAttemptVerdict: 'pass' as const, observedCount: 1, worktreeDirty: false };
+      expect((await recordStoredQualificationWorkProgress(target, { ...owner, repairHead: null, root: '/repo',
+        taskKey: 'full-qualification', runnerIdentity: 'proof-v3 node', runContext: 'ci', manifest,
+        retryStates: [], updates: [{ receipt }], nowMs: 300 })).status).toBe('updated');
+      const terminal = { ...identity, reason: 'not-green', nowMs: 400,
+        terminalEvent: { status: 'not-green', detail: { ...identity, fullCandidate: identity.candidate,
+          terminalDelivery: delivery } } };
+      expect((await recordStoredQualificationVerdict(target, terminal)).status).toBe('updated');
+      const before = await readStoredQualification(target);
+      expect(before).toMatchObject({ status: 'present', transaction: { phase: 'terminal',
+        outcome: { kind: 'red' }, continuation: { manifest, receipts: [receipt] } } });
+
+      // Fail a real SQL projection after the separate reaction receipt committed.
+      // Recovery must consult that receipt even when the pipeline cursor is behind.
+      let interrupted = false;
+      db.sql = new Proxy(sql, {
+        apply(original, receiver, args) {
+          const query = Array.isArray(args[0]) ? args[0].join('') : '';
+          const eventId = delivery.events[boundary === 'first-accepted-projection' ? 0 : 1]!.id;
+          const matches = boundary === 'batch-completion-projection'
+            ? query.includes("'{terminalDelivery,pending}'")
+            : Array.isArray(args[1]) && args[1].join('/') === `terminalDelivery/accepted/${eventId}`;
+          if (!interrupted && query.includes('UPDATE harness_shared.pipeline_events') && matches) {
+            interrupted = true;
+            throw new Error(`interrupted at ${boundary}`);
+          }
+          return Reflect.apply(original, receiver, args);
+        },
+      });
+      const emit = vi.fn(async (_event: typeof delivery.events[number]) =>
+        ({ ok: true, latchRecorded: true, notified: ['subscriber'], msgId: 'batch-message' }));
+      try {
+        expect((await recoverCheckpointTerminalEvents(target, { emit })).failed)
+          .toEqual([expect.stringContaining(`interrupted at ${boundary}`)]);
+      } finally {
+        db.sql = sql;
+      }
+      expect(interrupted).toBe(true);
+      const emittedBeforeRestart = boundary === 'first-accepted-projection' ? 1 : 2;
+      expect(emit).toHaveBeenCalledTimes(emittedBeforeRestart);
+      const receipts = await sql<{ dedup_id: string; status: string }[]>`
+        SELECT dedup_id, status FROM harness_shared.event_reactions WHERE workspace_id = ${target.workspaceId}`;
+      expect(receipts).toEqual(expect.arrayContaining(delivery.events.slice(0, emittedBeforeRestart)
+        .map(event => ({ dedup_id: event.id, status: 'completed' }))));
+      expect(receipts).toHaveLength(emittedBeforeRestart);
+      const [pending] = await sql<{ id: string; detail: { terminalDelivery: typeof delivery } }[]>`
+        SELECT id::text, detail FROM harness_shared.pipeline_events WHERE workspace_id = ${target.workspaceId}`;
+      expect(pending!.detail.terminalDelivery.pending).toBe(true);
+      expect(pending!.detail.terminalDelivery.accepted).toEqual(Object.fromEntries(delivery.events
+        .slice(0, boundary === 'batch-completion-projection' ? 2 : emittedBeforeRestart - 1)
+        .map(event => [event.id, true])));
+      expect(await readStoredQualification(target)).toEqual(before);
+
+      expect((await recoverCheckpointTerminalEvents(target, { emit })).failed).toEqual([]);
+      expect((await recoverCheckpointTerminalEvents(target, { emit })).failed).toEqual([]);
+      expect(emit.mock.calls.map(([event]) => event.id)).toEqual(delivery.events.map(event => event.id));
+      const rows = await sql<{ id: string; detail: { terminalDelivery: typeof delivery } }[]>`
+        SELECT id::text, detail FROM harness_shared.pipeline_events WHERE workspace_id = ${target.workspaceId}`;
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ id: pending!.id, detail: { terminalDelivery: {
+        ...delivery, pending: false, accepted: Object.fromEntries(delivery.events.map(event => [event.id, true])),
+      } } });
+      expect(await readStoredQualification(target)).toEqual(before);
+      expect((await recordStoredQualificationVerdict(target, { ...terminal, green: true, reason: 'advanced' })).status)
+        .toBe('conflict');
+      expect(await readStoredQualification(target)).toEqual(before);
+    });
+
   it.each(['promotion', 'deployment', 'notification'] as const)(
     'delivered-before-receipt: %s stays uncertain and duplicate recovery does not repeat its effect', async effect => {
       const dedupId = `qualification:${target.workspaceId}:attempt-1:run-1:${effect}`;

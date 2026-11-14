@@ -131,6 +131,9 @@ export async function writeOperatorArtifactManifest(input: {
    * explicit output root changes only entry containment; source objects and
    * compiler inputs are still verified against root and sourceSha. */
   artifactRoot?: string;
+  /** When supplied, account for exactly these derived object-define inputs.
+   * They are not filesystem source blobs; unexplained virtual inputs refuse. */
+  generatedInputs?: readonly string[];
 }, git: GitRead = gitRead): Promise<OperatorArtifactIdentity> {
   const root = realpathSync(input.root);
   const entry = realpathSync(input.entry);
@@ -146,6 +149,11 @@ export async function writeOperatorArtifactManifest(input: {
   const meta = JSON.parse(stableFile(entry + '.meta.json').toString('utf8'));
   if (!meta.inputs || typeof meta.inputs !== 'object' || Array.isArray(meta.inputs)) throw new Error('operator-artifact-inputs-missing');
   const sourceBlobs: Record<string, string> = {};
+  const generated = input.generatedInputs === undefined ? undefined : new Set(input.generatedInputs);
+  if (generated && (generated.size !== input.generatedInputs!.length ||
+      [...generated].some(name => !/^<define:[A-Za-z_$][\w$]*>$/.test(name)))) {
+    throw new Error('operator-artifact-generated-input-invalid');
+  }
   const trees = new Map([['', await treeObjects(root, input.sourceSha, git)]]);
   const sourceBlob = async (rel: string): Promise<string | undefined> => {
     let prefix = '';
@@ -164,7 +172,16 @@ export async function writeOperatorArtifactManifest(input: {
   // root, including when deploy-deps starts bundle-host.sh in apps/operator.
   const buildRoot = root;
   for (const name of Object.keys(meta.inputs).sort()) {
-    if (name.startsWith('<') || name.startsWith('node:')) continue;
+    if (name.startsWith('<') || name.startsWith('node:')) {
+      if (generated) {
+        const row = meta.inputs[name];
+        if (!generated.delete(name) || !row || row.bytes !== 0 || !Array.isArray(row.imports) ||
+            row.imports.length !== 0 || Object.keys(row).sort().join(',') !== 'bytes,imports') {
+          throw new Error('operator-artifact-generated-input-mismatch');
+        }
+      }
+      continue;
+    }
     const path = resolve(buildRoot, name);
     const rel = relative(root, path);
     if (!normalized(rel)) throw new Error('operator-artifact-input-outside-source');
@@ -174,6 +191,7 @@ export async function writeOperatorArtifactManifest(input: {
     if (!expected || blob(stableFile(path), expected.length) !== expected) throw new Error('operator-artifact-input-mismatch');
     sourceBlobs[rel] = expected;
   }
+  if (generated?.size) throw new Error('operator-artifact-generated-input-missing');
   if (!Object.keys(sourceBlobs).length) throw new Error('operator-artifact-inputs-empty');
   if (await operatorArtifactSource(root, git) !== input.sourceSha || !stableFile(entry).equals(bytes)) {
     throw new Error('operator-artifact-build-changed');

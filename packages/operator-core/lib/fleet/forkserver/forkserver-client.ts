@@ -50,8 +50,23 @@ export interface SidecarChild extends EventEmitter {
   readonly signalCode: NodeJS.Signals | null;
   readonly stdout: Readable | null;
   readonly stderr: Readable | null;
+  readonly forkserverLifecycleTiming?: ForkserverChildLifecycleTiming;
   kill(signal?: NodeJS.Signals): boolean;
 }
+
+export type ForkserverChildLifecycleEvent = 'spawn' | 'exit' | 'close';
+
+export interface ForkserverChildLifecycleEventTiming {
+  /** Timestamp taken in the forkserver process when Node delivered the child event. */
+  forkserverAtMs: number | null;
+  /** Timestamp taken in the sidecar process when the corresponding IPC message arrived. */
+  parentReceivedAtMs: number;
+}
+
+export type ForkserverChildLifecycleTiming = Partial<Record<
+  ForkserverChildLifecycleEvent,
+  ForkserverChildLifecycleEventTiming
+>> & { closeCallbackAtMs?: number };
 
 interface ErrorInfo {
   name?: string; message: string; code?: string; errno?: number; syscall?: string; path?: string; spawnargs?: string[];
@@ -77,6 +92,7 @@ class ForkedChild extends EventEmitter implements SidecarChild {
   signalCode: NodeJS.Signals | null = null;
   readonly stdout: Readable | null;
   readonly stderr: Readable;
+  readonly forkserverLifecycleTiming: ForkserverChildLifecycleTiming = {};
   private closed = false;
 
   constructor(hasStdoutPipe: boolean) {
@@ -91,7 +107,13 @@ class ForkedChild extends EventEmitter implements SidecarChild {
   }
 
   /** Called for each forkserver message addressed to this child. */
-  receive(m: { t: string; error?: ErrorInfo; d?: unknown; code?: number | null; signal?: NodeJS.Signals | null }): void {
+  receive(m: { t: string; error?: ErrorInfo; d?: unknown; code?: number | null; signal?: NodeJS.Signals | null; eventAtMs?: number }): void {
+    if (m.t === 'spawn' || m.t === 'exit' || m.t === 'close') {
+      this.forkserverLifecycleTiming[m.t] = {
+        forkserverAtMs: typeof m.eventAtMs === 'number' && Number.isFinite(m.eventAtMs) ? m.eventAtMs : null,
+        parentReceivedAtMs: Date.now(),
+      };
+    }
     switch (m.t) {
       case 'spawn': setImmediate(() => this.emit('spawn')); break;
       case 'error': { const e = toError(m.error ?? { message: 'forkserver child error' }); setImmediate(() => this.emit('error', e)); break; }

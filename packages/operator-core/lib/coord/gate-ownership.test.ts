@@ -23,7 +23,7 @@ import {
 import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
 import { CRITICAL_CLAIM_PROGRESS_LEASE_MS } from '../agent-tools/work_items/release-force-guard';
 import { noSubjectThread, silentThread, unmeasuredThread } from './cell-thread';
-import type { ConditionObject } from './condition-object';
+import { findConditionObjects, type ConditionObject } from './condition-object';
 
 const OWNERSHIP_NOW_MS = 1_800_000_000_000;
 const ownershipAtAge = (ageMs: number): string => new Date(OWNERSHIP_NOW_MS - ageMs).toISOString();
@@ -491,6 +491,47 @@ describe('readGateOwnership', () => {
     expect(own.eventKey).toBe('green-stall:papercusp');
   });
 
+  it.each([false, true])('finds pot-home ownership for an install name (duplicate: %s)', async (duplicate) => {
+    const install = 'papercusp-pr-drill-20261014';
+    const key = gateStallConditionKey(install);
+    const held = {
+      condition_key: key,
+      work_item: 'WI-1234',
+      harness_slug: `${install}-pot`,
+      title: 'Dedicated gate',
+      status: 'wip',
+      taken_by: 'su-holder' as string | null,
+      taken_at: ownershipAtAge(10_000),
+      last_progress_at: ownershipAtAge(5_000),
+      expires_at: null,
+      payload: {},
+      checkpoint_await_created_at: null,
+      checkpoint_await_expires_at: null,
+    };
+    const rows = duplicate
+      ? [held, { ...held, work_item: 'WI-1235', status: 'open', taken_by: null }]
+      : [held];
+    const own = await readGateOwnership({
+      harness: install,
+      nowMs: OWNERSHIP_NOW_MS,
+      resolveSessionStates: oracle('live'),
+      findConditionObjects: async (keys, scope = {}) => findConditionObjects(keys, {
+        ...scope,
+        nowMs: OWNERSHIP_NOW_MS,
+        // Model the production query's exact-key and physical-home predicates;
+        // use its real projection, including no-object map entries and duplicates.
+        sql: (async () => rows.filter((row) => keys.includes(row.condition_key) &&
+          (!scope.harnessSlug || scope.harnessSlug === row.harness_slug))) as never,
+      }),
+    });
+
+    expect(own.eventKey).toBe(key);
+    expect(own.workItem).toBe('WI-1234');
+    expect(own.takenBy).toBe('su-holder');
+    expect(own.duplicates).toEqual(duplicate ? ['WI-1235'] : []);
+    expect(own.claimState).toBe('held');
+  });
+
   // REGRESSION GUARD (WI-37451). Measured live 2026-08-09: the gate was firing
   // healthily and answering red (`gate-red-streak:papercusp` open, an ownable
   // work-item existed) while `green-stall:` had never opened at all. The old
@@ -609,12 +650,11 @@ describe('readGateOwnership', () => {
   });
 
   it('resolves the operator-home condition for a workspace-wide harness sentinel', async () => {
-    const seen: { keys?: string[]; harnessSlug?: string } = {};
+    const seen: { keys?: string[] } = {};
     const own = await readGateOwnership({
       harness: '*',
-      findConditionObjects: (async (keys: string[], scope: { harnessSlug: string }) => {
+      findConditionObjects: (async (keys: string[]) => {
         seen.keys = keys;
-        seen.harnessSlug = scope.harnessSlug;
         return new Map([['green-stall:papercusp', mkObj({ claimState: 'held', takenBy: 'su-live' })]]);
       }) as never,
       resolveSessionStates: oracle('live'),
@@ -622,7 +662,6 @@ describe('readGateOwnership', () => {
 
     expect(seen).toEqual({
       keys: ['green-stall:papercusp', 'gate-red-streak:papercusp'],
-      harnessSlug: 'papercusp',
     });
     expect(own.eventKey).toBe('green-stall:papercusp');
     expect(own.assessment).toBe('held-live');

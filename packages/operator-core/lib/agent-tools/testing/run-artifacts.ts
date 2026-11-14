@@ -16,27 +16,45 @@ export interface TestRunDeadline {
   taskDeadlineAtMs: number;
   childCutoffAtMs: number;
   cleanupReserveMs: number;
+  /** Private-PG bootstrap allowance, separate from the assertion budget. */
+  setupTimeoutMs?: number;
+  effectiveSetupTimeoutMs?: number;
+  setupDeadlineAtMs?: number;
+  verificationTimeoutMs?: number;
 }
 export function testRunDeadline(timeoutMs: number, options: {
-  now?: number; taskDeadlineAtMs?: number; cleanupReserveMs?: number;
+  now?: number; taskDeadlineAtMs?: number; cleanupReserveMs?: number; setupTimeoutMs?: number;
 } = {}): TestRunDeadline {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error('test run budget must be positive');
   const now = options.now ?? Date.now();
   if (options.taskDeadlineAtMs !== undefined && !Number.isFinite(options.taskDeadlineAtMs)) {
     throw new Error('absolute test task deadline must be finite');
   }
-  const taskDeadlineAtMs = Math.min(now + timeoutMs, options.taskDeadlineAtMs ?? Infinity);
-  const available = Math.max(0, taskDeadlineAtMs - now);
-  const requestedReserve = options.cleanupReserveMs ?? Math.min(30_000, Math.floor(timeoutMs / 3));
-  if (!Number.isFinite(requestedReserve) || requestedReserve < 0 || requestedReserve >= timeoutMs) {
-    throw new Error('test cleanup reserve must be nonnegative and smaller than the task budget');
+  const setupTimeoutMs = options.setupTimeoutMs ?? 0;
+  if (!Number.isFinite(setupTimeoutMs) || setupTimeoutMs < 0) {
+    throw new Error('private-PG setup budget must be nonnegative and finite');
   }
+  const requestedWorkBudgetMs = timeoutMs + setupTimeoutMs;
+  const requestedReserve = options.cleanupReserveMs ?? Math.min(30_000, Math.floor(requestedWorkBudgetMs / 3));
+  if (!Number.isFinite(requestedReserve) || requestedReserve < 0 || requestedReserve >= requestedWorkBudgetMs) {
+    throw new Error('test cleanup reserve must be nonnegative and smaller than the work budget');
+  }
+  // For private-PG runs, timeoutMs is the assertion budget. Add setup and cleanup
+  // outside it; the caller's absolute deadline remains a hard cap.
+  const requestedTaskDeadlineAtMs = now + requestedWorkBudgetMs + (setupTimeoutMs > 0 ? requestedReserve : 0);
+  const taskDeadlineAtMs = Math.min(requestedTaskDeadlineAtMs, options.taskDeadlineAtMs ?? Infinity);
+  const available = Math.max(0, taskDeadlineAtMs - now);
   // An explicit reserve defines a fixed child cutoff. Shrinking it as preparation
   // elapses would move that cutoff forward and consume the caller's cleanup time.
   const cleanupReserveMs = options.cleanupReserveMs === undefined
     ? Math.min(requestedReserve, available) : requestedReserve;
-  return { startedAtMs: now, taskDeadlineAtMs, cleanupReserveMs,
-    childCutoffAtMs: taskDeadlineAtMs - cleanupReserveMs };
+  const childCutoffAtMs = taskDeadlineAtMs - cleanupReserveMs;
+  if (setupTimeoutMs <= 0) return { startedAtMs: now, taskDeadlineAtMs, cleanupReserveMs, childCutoffAtMs };
+  const effectiveSetupTimeoutMs = Math.min(setupTimeoutMs,
+    Math.max(0, childCutoffAtMs - now - timeoutMs));
+  return { startedAtMs: now, taskDeadlineAtMs, cleanupReserveMs, childCutoffAtMs,
+    setupTimeoutMs, effectiveSetupTimeoutMs, setupDeadlineAtMs: now + effectiveSetupTimeoutMs,
+    verificationTimeoutMs: timeoutMs };
 }
 
 export interface TestRunArtifactPaths {

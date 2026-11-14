@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { BG_INPUTS, makeBgCompilerCandidate } from './source-preview.fixture';
 import { createBgVerifierCompilerCustody } from '../../../scripts/source-preview.mjs';
-import { findBundledTopLevelAwaits } from '../../../scripts/check-bundled-cli-entry-guards.mjs';
+import { findBundledCliEntryGuards, findBundledTopLevelAwaits } from '../../../scripts/check-bundled-cli-entry-guards.mjs';
 
 // Exercise the maintained compiler against private fixture generations. These
 // source controls do not authorize preparation or activation of a real BG host.
@@ -58,6 +58,7 @@ describe('BG private dependency compiler boundaries', () => {
     const metafilePath = join(evidence, 'bundle.meta.json');
     writeFileSync(metafilePath, JSON.stringify(compiled.metafile));
     expect(await findBundledTopLevelAwaits({ metafilePath, baseDir: repoRoot })).toEqual([]);
+    expect(findBundledCliEntryGuards({ metafilePath, baseDir: repoRoot })).toEqual([]);
     const env = { ...process.env };
     delete env.NODE_OPTIONS;
     const plain = spawnSync(process.execPath, ['--input-type=module', '-e',
@@ -65,6 +66,17 @@ describe('BG private dependency compiler boundaries', () => {
     { cwd: repoRoot, env, encoding: 'utf8', timeout: 30_000 });
     expect({ status: plain.status, error: plain.error, stderr: plain.stderr }).toMatchObject({ status: 0, error: undefined });
     expect(plain.stdout).toBe('function');
+    // This helper now belongs to source-preview's host import graph. Execute
+    // its actual inlined guard with the production define: no library CLI runs.
+    const witnessPath = join(evidence, 'witness.mjs');
+    await build({ absWorkingDir: repoRoot,
+      entryPoints: [join(repoRoot, 'scripts/lib/testing-core-witness.mjs')],
+      outfile: witnessPath, bundle: true, format: 'esm', platform: 'node', logLevel: 'silent',
+      define: { __PAPERCUSP_BUNDLED_SIDECAR__: 'true' } });
+    const bundled = spawnSync(process.execPath, [witnessPath],
+      { cwd: repoRoot, env, encoding: 'utf8', timeout: 30_000 });
+    expect({ status: bundled.status, stdout: bundled.stdout, stderr: bundled.stderr })
+      .toEqual({ status: 0, stdout: '', stderr: '' });
   });
 
   it('canonical-dependency-mutation-isolated compiles accepted private bytes while the canonical dependency changes', async () => {

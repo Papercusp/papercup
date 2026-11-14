@@ -66,9 +66,10 @@
 #     ones (comparing a `du -sh` to a `du -sb`, or docker's figure to df's,
 #     manufactures progress out of nothing).
 #
-#   - NEVER fail the timer. Every step is best-effort; a docker daemon that is
-#     down, wedged, or not installed makes this a logged no-op, exactly like
-#     its sibling reapers.
+#   - KEEP THE TIMER SCHEDULED. A missing or unreachable manager is a logged
+#     no-op. If a discovered store cannot be measured, finish the sweep and
+#     return failure from this one-shot service so health cannot report success
+#     with unknown allocation. The independent OnCalendar timer stays armed.
 #
 # Knobs (all optional):
 #   DRY_RUN=1                 preview every action, change nothing
@@ -117,6 +118,7 @@ PIN_GUARD_INPUT=''
 PIN_GUARD_PID=''
 PIN_GUARD_OUTPUT=''
 STORE_NATIVE_FAILURES=0
+STORE_MEASUREMENT_FAILED=0
 STORE_SKIP_REASON=''
 declare -A SEEN_CONTAINER_STORES=()
 container_pin_guard_release() {
@@ -126,8 +128,12 @@ container_pin_guard_release() {
     exec {PIN_GUARD_INPUT}>&-
     if IFS= read -r receipt <&"$PIN_GUARD_OUTPUT"; then
       log "store-receipt $receipt"
+      if [[ "$receipt" == *'"measurementComplete":false'* ]]; then
+        STORE_MEASUREMENT_FAILED=1
+      fi
     else
       log 'store-receipt {"complete":false,"status":"guard-receipt-failed"}'
+      STORE_MEASUREMENT_FAILED=1
     fi
     exec {PIN_GUARD_OUTPUT}<&-
     wait "$PIN_GUARD_PID" || true
@@ -167,67 +173,137 @@ container_pin_guard_acquire() {
       // This is a read-only, bounded, no-follow allocated-inode census. Native
       // managers retain exclusive authority to delete their internal layouts.
       const census = String.raw`
-import os, sys, json, stat, time
+import os, sys, json, stat, time, subprocess
 request = json.load(sys.stdin)
-root, pins = request["root"], request["pins"]
+root = os.path.normpath(request["root"])
+pins = request["pins"]
 deadline = time.monotonic() + 30
-seen, pinned_seen = {}, {}
-total = pinned = entries = 0
-def covers(path):
-    return any(scope == "/" or path == scope or path.startswith(scope + "/") for scope in pins)
-def add(path, s):
-    global total, pinned, entries
-    entries += 1
-    if entries > 1000000 or time.monotonic() >= deadline:
-        raise RuntimeError("allocation census budget exceeded")
-    key, size = (s.st_dev, s.st_ino), s.st_blocks * 512
-    if size < 0:
-        raise RuntimeError("invalid allocation")
-    if key in seen and seen[key] != size:
-        raise RuntimeError("allocation changed during census")
-    if key not in seen:
-        seen[key] = size
-        total += size
-    if covers(path) and key not in pinned_seen:
-        pinned_seen[key] = size
-        pinned += size
-def walk(fd, path, device):
-    before = os.fstat(fd)
-    if before.st_dev != device:
-        raise RuntimeError("filesystem boundary")
-    add(path, before)
-    with os.scandir(fd) as children:
-        for child in children:
-            child_path = os.path.join(path, child.name)
-            s = os.stat(child.name, dir_fd=fd, follow_symlinks=False)
-            if s.st_dev != device:
-                raise RuntimeError("filesystem boundary")
-            if stat.S_ISDIR(s.st_mode):
-                nested = os.open(child.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
-                try:
-                    current = os.fstat(nested)
-                    if (s.st_dev, s.st_ino) != (current.st_dev, current.st_ino):
-                        raise RuntimeError("directory identity changed")
-                    walk(nested, child_path, device)
-                finally:
-                    os.close(nested)
-            else:
-                add(child_path, s)
-    after = os.fstat(fd)
-    if (before.st_dev, before.st_ino, before.st_ctime_ns) != (after.st_dev, after.st_ino, after.st_ctime_ns):
-        raise RuntimeError("directory changed during census")
+fd = None
+def remaining():
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise TimeoutError("allocation census budget exceeded")
+    return left
+def within(path, base):
+    return path == base or path.startswith(base.rstrip(os.sep) + os.sep)
+def parse_ctime_ns(value):
+    seconds, dot, fraction = value.partition(b".")
+    if not dot:
+        return int(seconds) * 1000000000
+    return int(seconds) * 1000000000 + int((fraction[:9] + b"000000000")[:9])
+def run_native(args, input_data=None, env=None):
+    started = time.monotonic()
+    try:
+        result = subprocess.run(args, input=input_data, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, timeout=remaining(), env=env)
+    except subprocess.TimeoutExpired as error:
+        partial = error.stdout or b""
+        if isinstance(partial, str):
+            partial = partial.encode("utf-8", "replace")
+        raise TimeoutError("allocation census timed out in %s after %.2fs (%d output bytes)"
+            % (args[0], time.monotonic() - started, len(partial))) from error
+    if result.returncode:
+        detail = result.stderr.decode("utf-8", "replace").strip()
+        if "Permission denied" in detail or "Operation not permitted" in detail:
+            raise PermissionError(detail[:240])
+        raise RuntimeError((detail or (args[0] + " failed"))[:240])
+    return result.stdout
 try:
     fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    try:
-        initial = os.fstat(fd)
-        walk(fd, root, initial.st_dev)
-        identity = str(initial.st_dev) + ":" + str(initial.st_ino)
-    finally:
-        os.close(fd)
+    initial = os.fstat(fd)
+    if not stat.S_ISDIR(initial.st_mode):
+        raise RuntimeError("store root is not a directory")
+    device = initial.st_dev
+    identity = str(device) + ":" + str(initial.st_ino)
+    root_bytes = os.fsencode(root)
+    # Resolve pin parents physically. Include a final symlink without
+    # following it, plus its in-store target when one exists.
+    pin_paths = set()
+    pin_identities = {}
+    for candidate in pins:
+        candidate = os.path.normpath(candidate)
+        parent = os.path.realpath(os.path.dirname(candidate))
+        physical = os.path.normpath(os.path.join(parent, os.path.basename(candidate)))
+        if not os.path.isabs(physical) or not within(physical, root):
+            continue
+        try:
+            pin_stat = os.lstat(physical)
+        except FileNotFoundError:
+            continue
+        if pin_stat.st_dev != device:
+            continue
+        pin_paths.add(physical)
+        pin_identities[physical] = (pin_stat.st_dev, pin_stat.st_ino, pin_stat.st_ctime_ns, pin_stat.st_mode)
+        if stat.S_ISLNK(pin_stat.st_mode):
+            target = os.path.realpath(physical)
+            if within(target, root):
+                try:
+                    target_stat = os.stat(target)
+                except FileNotFoundError:
+                    pass
+                else:
+                    if target_stat.st_dev == device:
+                        pin_paths.add(target)
+                        pin_identities[target] = (target_stat.st_dev, target_stat.st_ino,
+                            target_stat.st_ctime_ns, target_stat.st_mode)
+    # GNU du suppresses a summary row for a nested operand already walked
+    # beneath an earlier directory operand; keep pinned roots disjoint.
+    ordered_pins = sorted(pin_paths, key=lambda path: (path.count(os.sep), path))
+    pin_paths = []
+    for candidate in ordered_pins:
+        covered = False
+        for scope in pin_paths:
+            if within(candidate, scope):
+                try:
+                    scope_stat = os.lstat(scope)
+                except FileNotFoundError:
+                    continue
+                if stat.S_ISDIR(scope_stat.st_mode):
+                    covered = True
+                    break
+        if not covered:
+            pin_paths.append(candidate)
+    operands = [os.fsencode(path) for path in pin_paths]
+    # A whole-store pin already covers root; GNU du omits duplicate operand rows.
+    if root_bytes not in operands:
+        operands.append(root_bytes)
+    du_input = b"".join(path + b"\0" for path in operands)
+    du_args = ["du", "--no-dereference", "--one-file-system", "--block-size=1",
+        "--null", "--summarize", "--total", "--files0-from=-"]
+    du_env = os.environ.copy()
+    du_env["LC_ALL"] = "C"
+    du_output = run_native(du_args, du_input, du_env)
+    records = du_output.split(b"\0")
+    if len(records) != len(operands) + 2 or records[-1] != b"":
+        raise RuntimeError("incomplete native allocation census")
+    values = []
+    for record in records[:-1]:
+        amount, separator, _path = record.partition(b"\t")
+        if not separator or not amount.isdigit():
+            raise RuntimeError("invalid native allocation result")
+        values.append(int(amount))
+    if sum(values[:-1]) != values[-1]:
+        raise RuntimeError("native allocation total is inconsistent")
+    total = values[-1]
+    pinned = sum(values[:len(pin_paths)])
     if total > 9007199254740991 or pinned > total:
         raise RuntimeError("allocation overflow")
+    # Keep the physical store root and every pin operand stable across the
+    # native walk; du supplies no-follow, device-boundary and hardlink rules.
+    current_root = os.stat(root, follow_symlinks=False)
+    if (current_root.st_dev, current_root.st_ino, current_root.st_ctime_ns) != (
+            initial.st_dev, initial.st_ino, initial.st_ctime_ns):
+        raise RuntimeError("store root identity changed")
+    for path, expected in pin_identities.items():
+        current = os.lstat(path)
+        if (current.st_dev, current.st_ino, current.st_ctime_ns, current.st_mode) != expected:
+            raise RuntimeError("pinned path identity changed")
+    os.close(fd)
+    fd = None
     print(json.dumps({"bytes": total, "pinnedBytes": pinned, "identity": identity, "complete": True}))
 except Exception as error:
+    if fd is not None:
+        os.close(fd)
     print(json.dumps({"complete": False, "permissionDenied": isinstance(error, PermissionError), "error": str(error)[:240]}))
 `;
       try {
@@ -286,6 +362,9 @@ except Exception as error:
             const options = { input: JSON.stringify({ root: physicalRoot, pins: pinPaths }),
               encoding: "utf8", timeout: 35000, maxBuffer: 8192, stdio: ["pipe", "pipe", "pipe"] };
             let result = JSON.parse(execFileSync("python3", args, options));
+            if (!result.complete && result.permissionDenied && store === "podman-rootless") {
+              result = JSON.parse(execFileSync("podman", ["unshare", "python3", ...args], options));
+            }
             if (result.permissionDenied && privileged) {
               result = JSON.parse(execFileSync("sudo", ["-n", "python3", ...args], options));
             }
@@ -305,7 +384,9 @@ except Exception as error:
           const [failures, skip] = (await released).trim().split("\t");
           receipt.nativeFailures = Number(failures) || 0;
           let after, afterError = null;
-          if (!pinned || before) {
+          if (beforeError) {
+            afterError = new Error("skipped because before measurement failed");
+          } else if (!pinned || before) {
             try { after = measure(); }
             catch (error) { afterError = error; }
           }
@@ -317,7 +398,7 @@ except Exception as error:
             receipt.pinnedOverageBytes = Math.max(0, after.pinnedBytes - maxBytes);
             receipt.unprotectedOverageBytes = Math.max(0, after.bytes - Math.max(maxBytes, after.pinnedBytes));
           }
-          if (before && after && !afterError) {
+          if (before && after && !beforeError && !afterError) {
             receipt.measurementComplete = true;
             receipt.reclaimedBytes = skip || pinned ? 0 : Math.max(0, before.bytes - after.bytes);
             receipt.status = skip || (receipt.nativeFailures ? "native-failed"
@@ -350,6 +431,8 @@ except Exception as error:
   output="${CONTAINER_PIN_GUARD[0]:-}"
   if [[ -z "$PIN_GUARD_PID" || -z "$input" || -z "$output" ]]; then
     log "retention pin admission failed: $label guard unavailable — skipping store"
+    STORE_MEASUREMENT_FAILED=1
+    log "store-receipt {\"store\":\"${label}\",\"status\":\"guard-unavailable\",\"complete\":false,\"measurementComplete\":false}"
     container_pin_guard_release
     return 1
   fi
@@ -366,7 +449,11 @@ except Exception as error:
   [[ -z "$identity" ]] || SEEN_CONTAINER_STORES[$identity]="$label"
   if [[ "$readiness" != LOCKED ]]; then
     if [[ "$readiness" == PINNED ]]; then log "retention pin protects $label — skipping store"
-    else log "retention pin admission failed: $label — skipping store"; fi
+    else
+      log "retention pin admission failed: $label — skipping store"
+      STORE_MEASUREMENT_FAILED=1
+      log "store-receipt {\"store\":\"${label}\",\"status\":\"guard-failed\",\"complete\":false,\"measurementComplete\":false}"
+    fi
     container_pin_guard_release
     return 1
   fi
@@ -650,5 +737,9 @@ if [[ -n "$AFTER" ]]; then
   fi
 else
   log "done: could not re-read df"
+fi
+if (( STORE_MEASUREMENT_FAILED )); then
+  log "one or more discovered container stores could not be measured — returning failure for systemd health visibility"
+  exit 1
 fi
 exit 0

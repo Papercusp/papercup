@@ -12,12 +12,12 @@ function fixture() {
   const taggedCalls: Array<{
     cwd: string;
     args: string[];
-    diagnosticTags: { runId: string; commandClass: 'git' | 'other'; gitSubcommand?: string };
+    diagnosticTags: gitSidecar.SidecarDiagnosticTags;
   }> = [];
   const diagnosticCalls: Array<{
     cwd: string;
     subcommand: string | null;
-    diagnosticTags?: { runId: string; commandClass: 'git' | 'other'; gitSubcommand?: string };
+    diagnosticTags?: gitSidecar.SidecarDiagnosticTags;
   }> = [];
   const logs: string[] = [];
   const recorded = new Map<string, any>();

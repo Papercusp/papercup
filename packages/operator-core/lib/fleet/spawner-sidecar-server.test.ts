@@ -135,7 +135,8 @@ describe('spawner sidecar health', () => {
       await expect(client.call('process:exec', {
         command: 'node', args: ['-e', '0'], cwd: directory,
         diagnosticTags: {
-          runId, commandClass: 'git', gitSubcommand: 'fetch', argv: ['secret'], env: { PRIVATE: 'secret' }, paths: ['/private'],
+          runId, commandClass: 'git', gitSubcommand: 'fetch', callsite: 'private-index-attributed',
+          argv: ['secret'], env: { PRIVATE: 'secret' }, paths: ['/private'],
         },
       })).resolves.toMatchObject({ code: 0, stdout: '', stderr: '' });
 
@@ -153,7 +154,7 @@ describe('spawner sidecar health', () => {
         requestId: expect.anything(),
         clientConnectionId: expect.stringMatching(/^[0-9a-f-]{36}$/i),
         diagnosticRequestId: expect.stringMatching(/^[0-9a-f-]{36}$/i),
-        diagnosticTags: { runId, commandClass: 'git', gitSubcommand: 'fetch' },
+        diagnosticTags: { runId, commandClass: 'git', gitSubcommand: 'fetch', callsite: 'private-index-attributed' },
         admissionPhases: [{ phase: 'enqueue', state: 'fulfilled', elapsedMs: 5 }],
         poolAcquisitionContext: {
           requestId: expect.stringMatching(/^[0-9a-f-]{36}$/i),
@@ -162,7 +163,9 @@ describe('spawner sidecar health', () => {
         poolAcquisitions: [{ pool: 'org-app', outcome: 'acquired' }],
         poolAcquisitionsOmitted: 0,
       });
-      expect(settled?.diagnosticTags).toEqual({ runId, commandClass: 'git', gitSubcommand: 'fetch' });
+      expect(settled?.diagnosticTags).toEqual({
+        runId, commandClass: 'git', gitSubcommand: 'fetch', callsite: 'private-index-attributed',
+      });
       expect(JSON.stringify(settled)).not.toMatch(/secret|PRIVATE|paths|argv|\/private/);
       expect(executedParams).not.toHaveProperty('diagnosticTags');
       expect(settled?.poolAcquisitionContext).toMatchObject({ requestId: settled?.diagnosticRequestId });

@@ -56,7 +56,7 @@ import {
   finishSyncEnrolment,
   syncEnrolmentScopePath,
 } from './task-manager/enroll-sync';
-import { isTerminalState, type TaskSpec, type TaskState } from './task-manager/types';
+import { isTerminalState, WORK_ITEM_VERIFICATION_PURPOSE, type TaskSpec, type TaskState } from './task-manager/types';
 import { listTasks } from './task-manager/store';
 import { reconcileTick } from './task-manager/reconcile-tick';
 import { defaultForeignSignature } from './task-manager/scan';
@@ -1289,6 +1289,9 @@ async function reconcilePersistedOrphan(
   if (taskTerminal || deadlineExpired) {
     const artifact = detachedArtifactsFromRow(snapshot, row)
       .find(candidate => candidate.stdoutPath || candidate.stderrPath);
+    if (!environment && taskState === 'ended_unobserved' && task?.exit_code === null) {
+      await appendDetachedTimeoutResult(observed, row);
+    }
     await appendDetachedOutput(observed, artifact ?? null, environment);
   }
   const fromReport = await reconcilePersistedReportArtifact(observed, row, sql, environment);
@@ -1305,9 +1308,12 @@ async function reconcilePersistedOrphan(
   }
 
   const finishedAt = Date.now();
+  const recoveredTimeoutResult = observed.output.includes(DETACHED_TIMEOUT_RESULT_MARKER);
   const note = taskTerminal
     ? `\n[detached-recovery] task-manager reports linked process ${row.task_id ?? snapshot.taskId ?? 'unknown'} ` +
-      `is no longer live (state=${taskState}); no test verdict was observed.\n`
+      `is no longer live (state=${taskState}); ${recoveredTimeoutResult
+        ? 'a run-bound timeout result was recovered, but process exit remains unobserved.'
+        : 'no test verdict was observed.'}\n`
     : `\n[detached-recovery] linked task ${row.task_id ?? snapshot.taskId ?? 'unknown'} ` +
       `passed its durable runtime deadline${taskDeadlineAt === null ? '' : ` at ${new Date(taskDeadlineAt).toISOString()}`}; ` +
       'no test verdict was observed.\n';
@@ -1531,6 +1537,21 @@ function detachedArtifactsFromRow(snapshot: RunSnapshot, row: DurableRunSnapshot
   }];
 }
 
+/**
+ * Redact decoded values, never the JSON transport. Text rules can consume the
+ * escape before a quote in a nested receipt URI (for example token=...), making
+ * a complete reporter document unparsable and falsely refusing its verdict.
+ * Keep the same credential rules and child environment for every projection.
+ */
+function parseRedactedTestReportJson(
+  text: string,
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+): unknown {
+  return JSON.parse(text, (key, value: unknown) => isSensitiveValueKey(key)
+    ? '[redacted]'
+    : typeof value === 'string' ? redactSensitiveText(value, [], environment) : value);
+}
+
 /** A recovery verdict needs the complete JSON reporter, not a partially flushed file. */
 function completedDetachedReport(
   text: string,
@@ -1539,7 +1560,7 @@ function completedDetachedReport(
   requestedFiles?: unknown,
 ): HarnessTestFileRow[] | null {
   try {
-    const safeText = redactSensitiveText(text, [], environment ?? process.env);
+    const safeText = JSON.stringify(parseRedactedTestReportJson(text, environment));
     const report = JSON.parse(safeText);
     if (typeof report.success !== 'boolean' || !Array.isArray(report.testResults)
       || report.testResults.length === 0 || report.testResults.some((file: VitestJsonFile) =>
@@ -1799,6 +1820,7 @@ function prepareRun(
     workItemId: req.workItemId ?? null,
     detail: {
       runId,
+      verificationPurpose: WORK_ITEM_VERIFICATION_PURPOSE,
       ...(req.originRunId ? { originRunId: req.originRunId } : {}),
       kind: req.kind,
       ...(req.requestedFiles ? { requestedFiles: [...req.requestedFiles] } : {}),
@@ -1871,7 +1893,7 @@ async function retainDetachedReportEvidence(
 ): Promise<{ reportPath: string; manifestPath: string; sha256: string; byteLength: number } | null> {
   try {
     const { retainDetachedVitestReport } = await import('./agent-tools/testing/run-artifacts');
-    let safeReport = redactSensitiveText(reportText, [], environment);
+    let safeReport = JSON.stringify(parseRedactedTestReportJson(reportText, environment));
     let sanitization: string | undefined;
     if (!childEnvironmentAvailable) {
       // A post-restart reader does not have the child's launch environment, so
@@ -2042,9 +2064,76 @@ async function persistDetachedReportArtifacts(
 }
 
 const DETACHED_OUTPUT_MARKER = '\n[detached-recovery] persisted child output\n';
+const DETACHED_TIMEOUT_RESULT_MARKER = '\n[detached-recovery] run-bound serialized timeout result\n';
 // Keep both stream tails plus their marker and the orphan disposition within
 // the rolling snapshot cap, so repeated status reads retain the once marker.
 const DETACHED_STREAM_TAIL_BYTES = (OUTPUT_CAP_BYTES - 1024) / 2;
+
+function taskDetailRecord(value: unknown): Record<string, unknown> | null {
+  let detail = value;
+  if (typeof detail === 'string') {
+    try { detail = JSON.parse(detail); } catch { return null; }
+  }
+  return detail && typeof detail === 'object' && !Array.isArray(detail)
+    ? detail as Record<string, unknown>
+    : null;
+}
+
+/**
+ * After a host restart the child launch environment is gone, so raw detached
+ * output cannot be exposed safely. A timeout result emitted by our replay
+ * worker is still recoverable when its complete JSON line carries the exact
+ * detached run id. Project only stable fields and known preparation markers;
+ * never copy arbitrary router output into the status snapshot.
+ */
+function summarizeDetachedTimeoutResult(output: string, runId: string): string | null {
+  if (!output.endsWith('\n')) return null;
+  const matches: Array<{ timeoutMs: number; routerOutput?: string }> = [];
+  for (const line of output.split(/\r?\n/)) {
+    if (!line || line.length > 8_192) continue;
+    let value: unknown;
+    try { value = JSON.parse(line); } catch { continue; }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+    const result = value as Record<string, unknown>;
+    if (result.ok !== false || result.runId !== runId || result.error !== 'timeout'
+      || typeof result.root !== 'string' || result.root.length === 0
+      || !Number.isSafeInteger(result.timeoutMs) || (result.timeoutMs as number) <= 0) continue;
+    matches.push({
+      timeoutMs: result.timeoutMs as number,
+      ...(typeof result.routerOutput === 'string' ? { routerOutput: result.routerOutput.slice(-4_096) } : {}),
+    });
+  }
+  if (matches.length !== 1) return null;
+
+  const result = matches[0]!;
+  const details = [`error=timeout`, `timeoutMs=${result.timeoutMs}`];
+  const routerOutput = result.routerOutput ?? '';
+  if (/TEST_FILE_INSTALL_READER_WAIT\b/.test(routerOutput)) {
+    details.push('cause=TEST_FILE_INSTALL_READER_WAIT');
+    const waitLine = /TEST_FILE_INSTALL_READER_WAIT\b[^\r\n]*/.exec(routerOutput)?.[0] ?? '';
+    const elapsedMs = /\belapsedMs=(\d{1,15})\b/.exec(waitLine)?.[1];
+    const waitedSec = /\bwaitedSec=(\d{1,12})\b/.exec(waitLine)?.[1];
+    const mutexTimeoutMs = /Timed out after (\d{1,15})ms waiting for fs-mutex writer\b/i.exec(routerOutput)?.[1];
+    if (elapsedMs) details.push(`elapsedMs=${elapsedMs}`);
+    if (waitedSec) details.push(`waitedSec=${waitedSec}`);
+    if (mutexTimeoutMs) details.push(`fsMutexTimeoutMs=${mutexTimeoutMs}`);
+  }
+  return `runId=${runId} ${details.join(' ')}; no per-file test verdict was recorded.`;
+}
+
+async function appendDetachedTimeoutResult(snapshot: RunSnapshot, row: DurableRunSnapshotRow): Promise<void> {
+  if (snapshot.output.includes(DETACHED_TIMEOUT_RESULT_MARKER)
+    || snapshot.output.includes(DETACHED_OUTPUT_MARKER)) return;
+  if (snapshot.kind !== 'vitest' || row.task_state !== 'ended_unobserved' || row.task_exit_code != null) return;
+  const detail = taskDetailRecord(row.task_detail);
+  if (detail?.runId !== snapshot.runId || detail.kind !== 'vitest'
+    || typeof detail.originRunId !== 'string' || detail.originRunId.length === 0) return;
+  const artifact = detachedArtifactsFromRow(snapshot, row).find(candidate => candidate.stdoutPath);
+  if (!artifact?.stdoutPath) return;
+  const stdout = await readDetachedOutputTail(artifact.stdoutPath);
+  const summary = summarizeDetachedTimeoutResult(stdout.text, snapshot.runId);
+  if (summary) appendSnapshotOutput(snapshot, `${DETACHED_TIMEOUT_RESULT_MARKER}${summary}\n`);
+}
 
 async function readDetachedOutputTail(path: string | undefined): Promise<{ text: string; truncated: boolean }> {
   if (typeof path !== 'string' || !isAbsolute(path)) return { text: '', truncated: false };
@@ -2770,7 +2859,7 @@ export function parseVitestJsonForHarnessRows(
 ): HarnessTestFileRow[] {
   let parsed: { testResults?: VitestJsonFile[] };
   try {
-    parsed = JSON.parse(redactSensitiveText(jsonText, [], environment)) as { testResults?: VitestJsonFile[] };
+    parsed = parseRedactedTestReportJson(jsonText, environment) as { testResults?: VitestJsonFile[] };
   } catch {
     return [];
   }
@@ -2949,7 +3038,7 @@ export function parseFailureDetailsSidecar(
 ): TestFailureDetail[] {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(redactSensitiveText(jsonText, [], environment));
+    parsed = parseRedactedTestReportJson(jsonText, environment);
   } catch {
     return [];
   }
@@ -3032,9 +3121,7 @@ export function distillVitestRun(
 
   let parsed: { testResults?: VitestJsonFile[] };
   try {
-    parsed = JSON.parse(
-      redactSensitiveText(jsonText, [], opts?.environment ?? process.env),
-    ) as { testResults?: VitestJsonFile[] };
+    parsed = parseRedactedTestReportJson(jsonText, opts?.environment) as { testResults?: VitestJsonFile[] };
   } catch {
     return empty;
   }

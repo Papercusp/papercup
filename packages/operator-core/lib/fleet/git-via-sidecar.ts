@@ -536,10 +536,12 @@ export function resetSidecarFallbackStatsForTest(): void {
  * slack so it cannot race a legitimate timeout RESPONSE coming back.
  */
 export interface SidecarDiagnosticTags {
-  runId: string;
-  commandClass: 'git' | 'other';
+  runId?: string;
+  commandClass?: 'git' | 'other';
   /** Bounded git-only command label; argv and paths are never copied into diagnostics. */
   gitSubcommand?: string;
+  /** Bounded static source label; never include a path, filename, or dynamic identity. */
+  callsite?: string;
 }
 
 export async function runGitViaSpawnerSidecar(

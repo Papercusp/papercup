@@ -7,7 +7,7 @@ import { promises as fs } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { moduleRepoRoot } from '../module-repo-root';
 import { z } from 'zod';
-import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
+import { withFsMutex, type FsMutexContinuationTicket } from '../../../../scripts/lib/fs-mutex.mjs';
 import { inspectRetentionTrees, type RetentionTreeCensus } from './disk-consumer-census';
 import { DetachedWalkAbandoned, readWalkState, runDetachedWalk, waitForWalk, walkAttemptFiles,
   walkProcessAlive, type DetachedWalkOptions } from './disk-census-detached-walk';
@@ -49,6 +49,7 @@ const retentionMutexBrand = Symbol('retention-mutex');
 export type RetentionMutexContext = {
   readonly [retentionMutexBrand]: true;
   hasWaiters: () => Promise<boolean>;
+  reserveContinuationTicket: () => Promise<FsMutexContinuationTicket>;
 };
 const activeRetentionMutexes = new WeakMap<RetentionMutexContext, Set<string>>();
 

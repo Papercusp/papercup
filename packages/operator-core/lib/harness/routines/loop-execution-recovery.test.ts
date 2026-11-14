@@ -204,4 +204,17 @@ describe('expected loop execution recovery', () => {
     i.host.execution!.lastProgressAt = i.firedAt - 1;
     expect(decideLoopExecutionRecovery(i).action).toBe('observe');
   });
+
+  it('retains verified successor proof when the post-fire native turn has already settled', () => {
+    const i = fixture();
+    i.host.execution!.phase = 'settled';
+    i.host.execution!.turnStartedAt = nowMs - 10_000;
+    i.host.execution!.receivedAtMs = nowMs - 10_000;
+    expect(decideLoopExecutionRecovery(i)).toMatchObject({
+      action: 'settle',
+      state: { reason: 'native-turn-settled', verifiedSuccessorFireAt: i.firedAt },
+    });
+    i.host.execution!.turnStartedAt = i.firedAt;
+    expect(decideLoopExecutionRecovery(i).state.verifiedSuccessorFireAt).toBeUndefined();
+  });
 });

@@ -193,24 +193,31 @@ const fixtureBuildRemover = (entry: RetentionEntry, ms: number, _observe?: (timi
   }), undefined, dryRun);
 
 describe('retention on a real fixture tree', () => {
-  it('loads the real workspace-host owner and retains an unqualified private cut', async () => {
+  it('loads the workspace-host owner lazily and forwards the fixture scope', async () => {
     fixture = await mkdtemp(join(tmpdir(), 'disk-retention-owner-'));
     const cut = join(fixture, '.papercusp', 'wh-release-unqualified');
     await mkdir(cut, { recursive: true });
-    await writeFile(join(cut, 'owner-evidence'), 'retain this incomplete build');
     vi.stubEnv('HOME', fixture);
     vi.stubEnv('PAPERCUSP_HOME', join(fixture, '.papercusp'));
     try {
       const nowMs = Date.now();
+      const ownerResult = { ok: true, cuts: [{ workDir: cut, status: 'retained' as const,
+        reason: 'no completed writer state' }] };
+      const reclaim = vi.fn(async () => ownerResult);
+      const loadOwner = vi.fn(async () => ({ reclaimWorkspaceHostCutIntermediatesWithProtection: reclaim }));
       const delegate = createWorkspaceHostCutRetentionDelegate({ repoRoot: fixture,
-        protection: () => ({ pins: [], nowMs, isPinned: pinProtection([], nowMs) }) });
-      // Keep the real lazy owner and its dependencies. Vitest transforms this
-      // integration; the plain-Node bundle boundary has its separate unit proof.
+        protection: () => ({ pins: [], nowMs, isPinned: pinProtection([], nowMs) }), loadOwner });
+      // The owner suite exercises real cut qualification; this fixture covers the
+      // lazy adapter without invoking the host owner's native-process preflight.
+      expect(loadOwner).not.toHaveBeenCalled();
       const result = await withFsMutex('papercusp-disk-retention', () =>
-        delegate.run(true, undefined, nowMs + 10_000));
-      expect(result).toEqual({ ok: true, detail: { ok: true, cuts: [{ workDir: cut,
-        status: 'retained', reason: 'no completed writer state' }] } });
-      expect(await readFile(join(cut, 'owner-evidence'), 'utf8')).toBe('retain this incomplete build');
+        delegate.run(true, undefined, nowMs + 10_000), {
+          lockRootDir: join(fixture, '.papercusp', 'fs-mutex'), timeoutMs: 10_000,
+        });
+      expect(loadOwner).toHaveBeenCalledTimes(1);
+      expect(reclaim).toHaveBeenCalledWith({ repoRoot: fixture, dryRun: true,
+        notAfterMs: nowMs + 10_000, pins: [], nowMs }, expect.any(Function));
+      expect(result).toEqual({ ok: true, detail: ownerResult });
     } finally {
       vi.unstubAllEnvs();
     }
@@ -1596,13 +1603,24 @@ describe('retention on a real fixture tree', () => {
       await expect(stat(dead)).rejects.toMatchObject({ code: 'ENOENT' });
       const repeated = await nativeRetentionCommand(repoRoot, '/usr/bin/env', args, { timeoutMs: 10_000 });
       expect(repeated, JSON.stringify(repeated)).toMatchObject({ ok: true });
-      const { getTask } = await import('../task-manager/store');
+      const { getTask, recoverPendingTaskTerminalEvents } = await import('../task-manager/store');
       for (const result of [streamed, listed, removed, repeated]) {
         const id = (result.detail as { taskId: string }).taskId;
         // The helper must await persistence itself. Polling here hid the window
         // where a short-lived caller could exit and lose the terminal write.
         expect(await getTask(id)).toMatchObject({ state: 'exited', exitCode: 0 });
       }
+      // waitForCompletion covers the durable terminal row; the event outbox can
+      // still be finishing after that receipt. Drain it while this fixture's PG
+      // connection remains open so cleanup cannot race the pending event write.
+      phase('terminal-event-drain');
+      await recoverPendingTaskTerminalEvents(null, db.sql);
+      const [pendingTerminalEvents] = await db.sql`
+        SELECT count(*)::int AS count FROM harness_shared.task_ledger
+         WHERE ended_at IS NOT NULL AND state IN ('exited', 'killed', 'timed_out', 'stranded', 'ended_unobserved')
+           AND detail -> 'terminalEventPending' = 'true'::jsonb
+      `;
+      expect(Number(pendingTerminalEvents?.count ?? -1)).toBe(0);
       phase('complete');
     } finally {
       phase('database-cleanup');
@@ -2281,6 +2299,110 @@ describe('retention on a real fixture tree', () => {
     await expect(stat(paths[0]!)).rejects.toMatchObject({ code: 'ENOENT' });
     expect(await readFile(paths[1]!, 'utf8')).toBe('expired');
   });
+  it('bounds a pin writer between two reclaim passes while resumed cleanup makes one effect', async () => {
+    const { root, options } = await setup();
+    const paths = [join(root, 'old-a'), join(root, 'old-b'), join(root, 'old-c')];
+    for (const path of paths) await writeFile(path, 'expired');
+
+    let inspectStarted!: () => void, releaseInspect!: () => void;
+    const inspectionReady = new Promise<void>(resolve => { inspectStarted = resolve; });
+    const inspectionRelease = new Promise<void>(resolve => { releaseInspect = resolve; });
+    let inspectionHeld = false;
+    const inspectTrees = vi.fn(async (path: string, input: Parameters<typeof inspectRetentionTrees>[1]) => {
+      const result = await inspectRetentionTrees(path, input);
+      if (!input.paths && !inspectionHeld) {
+        inspectionHeld = true; inspectStarted(); await inspectionRelease;
+      }
+      return result;
+    });
+
+    let pinQueued!: () => void;
+    const pinTicketReady = new Promise<void>(resolve => { pinQueued = resolve; });
+    let pinQueuedAt = 0, pinAcquiredAt = 0, protectedByPeer = false;
+    let yieldedToPinWriter!: () => void;
+    const yieldedSignal = new Promise<void>(resolve => { yieldedToPinWriter = resolve; });
+    let resumedAfterPin!: () => void, releaseAfterPin!: () => void;
+    const resumedSignal = new Promise<void>(resolve => { resumedAfterPin = resolve; });
+    const resumeRelease = new Promise<void>(resolve => { releaseAfterPin = resolve; });
+    let resumeGateUsed = false;
+    let watchSecondPass = false, secondPassQueuedAt: number | undefined, secondPassStartedAt: number | undefined;
+    let signalSecondPassQueued!: () => void;
+    const secondPassQueueReady = new Promise<void>(resolve => { signalSecondPassQueued = resolve; });
+    fixtureMutex.observe = phase => {
+      if (watchSecondPass && phase === 'mutex-waiting' && secondPassQueuedAt === undefined) {
+        secondPassQueuedAt = performance.now(); signalSecondPassQueued();
+      }
+    };
+
+    const removedWhileSecondWaited: string[] = [];
+    const firstPass = runDiskReclaimOnce({
+      ...options, runBudgetMs: 30_000, inspectTrees,
+      readProtection: async ({ renewEvidence }) => {
+        if (!renewEvidence && protectedByPeer && !resumeGateUsed) {
+          resumeGateUsed = true; resumedAfterPin(); await resumeRelease;
+        }
+        return { paths: [], pins: protectedByPeer
+          ? [{ paths: [paths[2]!], expiresAt: new Date(options.nowMs + 60_000).toISOString() }]
+          : [] };
+      },
+      removeEntry: async entry => {
+        if (secondPassQueuedAt !== undefined && secondPassStartedAt === undefined) removedWhileSecondWaited.push(entry.path);
+        await rm(entry.path);
+      },
+      record: async (phase, details) => {
+        if (phase === 'progress' && (details as { phase?: string }).phase === 'yield-to-queued-writer') yieldedToPinWriter();
+      },
+    });
+    const pending: Promise<unknown>[] = [firstPass];
+
+    try {
+      await inspectionReady;
+      const pinWriter = withFsMutex('papercusp-disk-retention', async () => {
+        pinAcquiredAt = performance.now(); protectedByPeer = true;
+      }, { timeoutMs: 5_000, retryMs: 5, onWaiting: () => {
+        if (pinQueuedAt === 0) { pinQueuedAt = performance.now(); pinQueued(); }
+      } });
+      pending.push(pinWriter);
+      await pinTicketReady;
+      releaseInspect();
+      await yieldedSignal;
+      await pinWriter;
+      await resumedSignal;
+
+      const secondPass = runDiskReclaimOnce({
+        ...options, runBudgetMs: 30_000, dryRun: true, inspectTrees,
+        readProtection: async () => {
+          if (secondPassStartedAt === undefined) secondPassStartedAt = performance.now();
+          return { paths: [], pins: [{ paths: [paths[2]!], expiresAt: new Date(options.nowMs + 60_000).toISOString() }] };
+        },
+      });
+      pending.push(secondPass);
+      watchSecondPass = true;
+      await secondPassQueueReady;
+      releaseAfterPin();
+
+      const [firstReceipt, secondReceipt] = await Promise.all([firstPass, secondPass]);
+      const pinWriterWaitMs = pinAcquiredAt - pinQueuedAt;
+      const secondPassWaitMs = secondPassStartedAt! - secondPassQueuedAt!;
+      expect(Number.isFinite(pinWriterWaitMs)).toBe(true);
+      expect(pinWriterWaitMs).toBeLessThan(5_000);
+      expect(Number.isFinite(secondPassWaitMs)).toBe(true);
+      expect(secondPassWaitMs).toBeLessThan(5_000);
+      expect(removedWhileSecondWaited).toEqual([paths[0]]);
+      expect(firstReceipt.complete, firstReceipt.errors.join('; ')).toBe(true);
+      expect(secondReceipt.complete, secondReceipt.errors.join('; ')).toBe(true);
+      expect(firstReceipt.entries.filter(entry => entry.status === 'removed').map(entry => entry.path))
+        .toEqual([paths[0], paths[1]]);
+      expect(firstReceipt.entries.find(entry => entry.path === paths[2]))
+        .toMatchObject({ status: 'protected', reason: 'live retention lease or pin' });
+      await expect(stat(paths[0]!)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(stat(paths[1]!)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await readFile(paths[2]!, 'utf8')).toBe('expired');
+    } finally {
+      releaseInspect(); releaseAfterPin();
+      await Promise.allSettled(pending);
+    }
+  });
   it('serializes overlapping fixture passes with the real mutex and preserves the losing pass', async () => {
     const { root, options } = await setup(); const path = join(root, 'old'); await writeFile(path, 'expired');
     let signalEntered = () => {}; let releaseFirst = () => {};
@@ -2828,9 +2950,11 @@ describe('retention on a real fixture tree', () => {
       expect(context.receipt).toEqual(receipt);
       const notifications: AttentionNotifyInput[] = [];
       const alarm = await runDiskSpaceAlarmOnce({
+        readOpenAlarm: async () => null,
         readContext: () => readDiskAlarmContext(sql, 'fixture-workspace'),
         sample: async () => [{ path: '/', totalBytes: 500 * gib, freeBytes: 99 * gib, freePct: 0.198, totalInodes: 0, freeInodes: 0, freeInodesPct: 0 }],
         emitToast: async () => {}, attributeUsage: async () => ({ entries: [], truncated: false }),
+        ensureRecovery: async () => ({ workItem: 'fixture-recovery', owner: 'fixture-owner', status: 'assigned' }),
         escalate: async (input) => { notifications.push(input); }, recentlyEscalated: async () => false,
         readMissingMounts: async () => null, resolve: async () => false,
         broadcast: async () => true,

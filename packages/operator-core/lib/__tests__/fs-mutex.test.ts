@@ -192,6 +192,78 @@ describe('censusLegacyFsMutexRoot read-only inspection', () => {
     }
   });
 
+  it.each(['EACCES', 'EPERM', 'EIO', undefined])(
+    'keeps aged unreadable writer, reader and queue owners unknown (%s)',
+    async (code) => {
+      const temp = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-owner-unreadable-'));
+      const root = join(temp, 'legacy');
+      const homeDir = join(temp, 'home');
+      const markers = [
+        join(root, 'cache.lock'),
+        join(root, 'cache.readers', 'reader.lock'),
+        join(root, 'cache.queue', 'waiting.ticket'),
+      ];
+      const owner = JSON.stringify({ pid: process.pid, host: hostname() });
+      const ownerPaths = new Set(markers.map(marker => join(marker, 'owner.json')));
+      const old = new Date(Date.now() - 120_000);
+      for (const marker of markers) {
+        await mkdir(marker, { recursive: true });
+        await writeFile(join(marker, 'owner.json'), owner);
+        await utimes(marker, old, old);
+      }
+      const io = {
+        readFile: async (path: string, encoding: 'utf8') => {
+          if (ownerPaths.has(path)) throw Object.assign(new Error('owner unreadable'), { code });
+          return readFile(path, encoding);
+        },
+      };
+      try {
+        expect(await censusLegacyFsMutexRoot(root, 60_000, io)).toMatchObject({
+          complete: true,
+          writer: { active: 0, stale: 0, unknown: 1 },
+          reader: { active: 0, stale: 0, unknown: 1 },
+          queue: { active: 0, stale: 0, unknown: 1 },
+        });
+        await expect(ensureFsMutexLockRoot({}, { platform: 'linux', homeDir, legacyRoot: root, io }))
+          .rejects.toMatchObject({ code: 'ELEGACYFSLOCKBUSY' });
+        expect((await lstat(root)).isDirectory()).toBe(true);
+        await expect(lstat(join(homeDir, '.papercusp', 'fs-mutex-locks')))
+          .rejects.toHaveProperty('code', 'ENOENT');
+        for (const marker of markers) {
+          expect(await readFile(join(marker, 'owner.json'), 'utf8')).toBe(owner);
+        }
+      } finally {
+        await rm(temp, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each(['missing', 'malformed', 'invalid'])('still classifies aged %s owners as stale', async (kind) => {
+    const root = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-owner-abandoned-'));
+    const markers = [
+      join(root, 'cache.lock'),
+      join(root, 'cache.readers', 'reader.lock'),
+      join(root, 'cache.queue', 'waiting.ticket'),
+    ];
+    try {
+      for (const marker of markers) {
+        await mkdir(marker, { recursive: true });
+        if (kind !== 'missing') {
+          await writeFile(join(marker, 'owner.json'), kind === 'malformed' ? '{' : '{"pid":0}');
+        }
+        await utimes(marker, new Date(0), new Date(0));
+      }
+      expect(await censusLegacyFsMutexRoot(root, 60_000)).toMatchObject({
+        complete: true,
+        writer: { active: 0, stale: 1, unknown: 0 },
+        reader: { active: 0, stale: 1, unknown: 0 },
+        queue: { active: 0, stale: 1, unknown: 0 },
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('returns an incomplete census without creating a missing root', async () => {
     const parent = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-census-missing-'));
     const missing = join(parent, 'missing');
@@ -728,6 +800,41 @@ describe('withFsMutex', () => {
       kill.mockRestore();
       if (previousLockDir === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
       else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = previousLockDir;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['writer', 'reader', 'queue'].flatMap(kind =>
+    ['EACCES', 'EPERM', 'EIO', undefined].map(code => ({ kind, code })),
+  ))('never reclaims an aged unreadable $kind owner ($code)', async ({ kind, code }) => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-unreadable-reclaim-'));
+    const name = 'unreadable-reclaim';
+    const marker = kind === 'writer' ? join(dir, `${name}.lock`)
+      : kind === 'reader' ? join(dir, `${name}.readers`, 'protected.lock')
+        : join(dir, `${name}.queue`, '0000000000000001-protected.ticket');
+    const ownerPath = join(marker, 'owner.json');
+    const owner = JSON.stringify({ pid: process.pid, host: hostname() });
+    await mkdir(marker, { recursive: true });
+    await writeFile(ownerPath, owner);
+    await utimes(marker, new Date(0), new Date(0));
+    let entered = false;
+    try {
+      await expect(withFsMutex(name, async () => { entered = true; }, {
+        lockRootDir: dir,
+        timeoutMs: 40,
+        retryMs: 1,
+        staleMs: 1,
+        io: {
+          readFile: async (path: string, encoding: 'utf8') => {
+            if (path === ownerPath) throw Object.assign(new Error('owner unreadable'), { code });
+            return readFile(path, encoding);
+          },
+        },
+      })).rejects.toMatchObject({ code: 'ETIMEDOUT' });
+      expect(entered).toBe(false);
+      expect((await lstat(marker)).isDirectory()).toBe(true);
+      expect(await readFile(ownerPath, 'utf8')).toBe(owner);
+    } finally {
       await rm(dir, { recursive: true, force: true });
     }
   });
@@ -1319,21 +1426,88 @@ describe('fs-mutex lease reclamation', () => {
     }
   });
 
-  it('does not expose an interrupted reader publication to a writer', async () => {
+  it.each(['reader', 'budget'] as const)('does not pin a writer after interrupted %s cleanup', async mode => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-reader-cleanup-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+    const name = 'interrupted-reader-cleanup';
+    const moduleUrl = new URL('../../../../scripts/lib/fs-mutex.mjs', import.meta.url).href;
+    const childSource = [
+      'import { rm } from "node:fs/promises";',
+      'import { join } from "node:path";',
+      'import { withFsMutexRead, withFsMutexBudget } from ' + JSON.stringify(moduleUrl) + ';',
+      'const io = { rm: async (path, options) => {',
+      '  await rm(join(path, "owner.json"), { force: true });',
+      '  process.send("cleanup-owner-removed");',
+      '  setInterval(() => {}, 1000);',
+      '  await new Promise(() => {});',
+      '} };',
+      'const options = { lockRootDir: process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR, io,',
+      '  timeoutMs: 1000, retryMs: 5, workers: 1, workerMemoryMb: 1,',
+      '  workerBudget: 1, memoryBudgetMb: 1, maxConcurrentTasks: 1, resource: "fixture" };',
+      'await ' + (mode === 'reader' ? 'withFsMutexRead' : 'withFsMutexBudget') +
+        '(' + JSON.stringify(name) + ', async () => {}, options);',
+    ].join('\n');
+    const childEnv: NodeJS.ProcessEnv = { ...process.env, PAPERCUSP_FS_MUTEX_LOCK_DIR: dir };
+    // Exercise the edited module in this subprocess rather than its HEAD blob.
+    delete childEnv.NODE_OPTIONS;
+    const child = spawn(process.execPath, ['--input-type=module', '-e', childSource], {
+      env: childEnv, stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+    });
+    const childExited = new Promise<void>(resolve => child.once('exit', () => resolve()));
+    const cleanupStarted = new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('reader did not reach cleanup')), 3000);
+      child.once('message', message => {
+        clearTimeout(timer);
+        resolve(String(message));
+      });
+      child.once('exit', (code, signal) => {
+        clearTimeout(timer);
+        reject(new Error('reader exited before cleanup: ' + code + '/' + signal));
+      });
+    });
+
+    try {
+      await expect(cleanupStarted).resolves.toBe('cleanup-owner-removed');
+      child.kill('SIGKILL');
+      await childExited;
+      await expect(readdir(join(dir, name + '.readers'))).resolves.toEqual([]);
+      await expect(withFsMutex(name, async () => 'writer-acquired', {
+        lockRootDir: dir, timeoutMs: 1000, staleMs: 60_000, retryMs: 5,
+      })).resolves.toBe('writer-acquired');
+
+      const stagingRoot = join(dir, name + '.readers-staging');
+      const retired = await readdir(stagingRoot);
+      expect(retired).toHaveLength(1);
+      const old = new Date(Date.now() - 60_000);
+      await utimes(join(stagingRoot, retired[0]), old, old);
+      await withFsMutexRead(name, async () => undefined, {
+        lockRootDir: dir, timeoutMs: 1000, staleMs: 1, retryMs: 5,
+      });
+      await expect(readdir(stagingRoot)).resolves.toEqual([]);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      await childExited;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['reader', 'budget'] as const)('does not expose an interrupted %s publication to a writer', async mode => {
     const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-reader-publication-'));
     process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
     const moduleUrl = new URL('../../../../scripts/lib/fs-mutex.mjs', import.meta.url).href;
     const childSource = [
-      'import { withFsMutexRead } from ' + JSON.stringify(moduleUrl) + ';',
+      'import { withFsMutexRead, withFsMutexBudget } from ' + JSON.stringify(moduleUrl) + ';',
       'const io = { writeFile: async (path) => {',
       '  if (path.endsWith("owner.json")) {',
       '    process.send("owner-write-started");',
       '    await new Promise(() => {});',
       '  }',
       '} };',
-      'await withFsMutexRead("interrupted-reader-publication", async () => {}, {',
+      'await ' + (mode === 'reader' ? 'withFsMutexRead' : 'withFsMutexBudget') + '("interrupted-reader-publication", async () => {}, {',
       '  lockRootDir: process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR, io,',
       '  timeoutMs: 1000, staleMs: 5000, retryMs: 5,',
+      '  workers: 1, workerMemoryMb: 1, workerBudget: 1, memoryBudgetMb: 1,',
+      '  maxConcurrentTasks: 1, resource: "fixture",',
       '});',
     ].join('\n');
     const childEnv: NodeJS.ProcessEnv = { ...process.env, PAPERCUSP_FS_MUTEX_LOCK_DIR: dir };
@@ -1456,6 +1630,55 @@ describe('withFsMutex fairness (FIFO ticket queue)', () => {
 
     expect(order).toEqual(['holder', 'B', 'C']);
     await rm(dir, { recursive: true, force: true });
+  });
+
+  it('keeps a reserved continuation ahead of writers that arrive later', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-continuation-'));
+    const name = 'continuation-fairness';
+    const options = { lockRootDir: dir, timeoutMs: 5_000, retryMs: 5 };
+    const order: string[] = [];
+    let continuationTicket: { cancel: () => Promise<void> } | undefined;
+    let waiterB: Promise<string> | undefined;
+    let waiterC: Promise<string> | undefined;
+    let resumed: Promise<string> | undefined;
+    let releaseB!: () => void;
+    const bReleased = new Promise<void>(resolve => { releaseB = resolve; });
+    let bStarted!: () => void;
+    const bEntered = new Promise<void>(resolve => { bStarted = resolve; });
+    let bQueued!: () => void;
+    const bTicketReady = new Promise<void>(resolve => { bQueued = resolve; });
+
+    const holder = withFsMutex(name, async held => {
+      if (!held) throw new Error('continuation test requires an enabled mutex');
+      waiterB = withFsMutex(name, async () => {
+        order.push('B'); bStarted(); await bReleased; return 'B';
+      }, { ...options, onWaiting: () => bQueued() });
+      await bTicketReady;
+      continuationTicket = await held.reserveContinuationTicket();
+    }, options);
+
+    try {
+      await holder;
+      await bEntered;
+      let cQueued!: () => void;
+      const cTicketReady = new Promise<void>(resolve => { cQueued = resolve; });
+      waiterC = withFsMutex(name, async () => { order.push('C'); return 'C'; },
+        { ...options, onWaiting: () => cQueued() });
+      await cTicketReady;
+      resumed = withFsMutex(name, async () => { order.push('continuation'); return 'continuation'; },
+        { ...options, continuationTicket: continuationTicket! });
+
+      releaseB();
+      await expect(Promise.all([waiterB!, resumed, waiterC])).resolves.toEqual(['B', 'continuation', 'C']);
+      expect(order).toEqual(['B', 'continuation', 'C']);
+      await expect(withFsMutex(name, async () => 'must not reacquire',
+        { ...options, continuationTicket: continuationTicket! })).rejects.toThrow(/Invalid or already-used/);
+    } finally {
+      releaseB();
+      await continuationTicket?.cancel();
+      await Promise.allSettled([holder, ...(waiterB ? [waiterB] : []), ...(resumed ? [resumed] : []), ...(waiterC ? [waiterC] : [])]);
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it('reserves after the initial reader cohort drains even when newcomers keep arriving', async () => {

@@ -95,7 +95,7 @@ beforeAll(async () => {
       requested_by text, workspace_id text NOT NULL,
       created_at timestamptz NOT NULL DEFAULT now(), completed_at timestamptz
     )`);
-  await rootSql.unsafe(`CREATE TABLE harness_shared.ui_clients (client_id text PRIMARY KEY, workspace_id text NOT NULL)`);
+  await rootSql.unsafe(`CREATE TABLE harness_shared.ui_clients (client_id text PRIMARY KEY, workspace_id text NOT NULL, viewport jsonb NOT NULL DEFAULT '{}'::jsonb, last_seen_at timestamptz NOT NULL DEFAULT now())`);
   h.sql = rootSql;
 }, 90_000);
 
@@ -123,7 +123,7 @@ beforeEach(async () => {
 
 describe('explicit summary composition through projected tools and the real UI intent store', () => {
   it('keeps original read, summary-only and explicitly narrated cached summary separate', async () => {
-    await rootSql`INSERT INTO harness_shared.ui_clients VALUES ('requesting-tab', ${activeWorkspaceId()})`;
+    await rootSql`INSERT INTO harness_shared.ui_clients (client_id, workspace_id) VALUES ('requesting-tab', ${activeWorkspaceId()})`;
     const content = { kind: 'text', text: 'Original report: 12 and 34. EXACT FINAL TAIL', ref: 'provided:report', partial: true };
     const original = await readDocument({ content });
     expect(original.result?.structuredContent).toMatchObject({ ok: true, text: content.text });
@@ -168,7 +168,7 @@ describe('explicit summary composition through projected tools and the real UI i
 
 describe('voice:say projected narration through the real UI intent store', () => {
   it('delivers authorized source and returns the requesting tab receipt without a second tab intent', async () => {
-    await rootSql`INSERT INTO harness_shared.ui_clients VALUES ('requesting-tab', ${activeWorkspaceId()}), ('another-tab', ${activeWorkspaceId()})`;
+    await rootSql`INSERT INTO harness_shared.ui_clients (client_id, workspace_id) VALUES ('requesting-tab', ${activeWorkspaceId()}), ('another-tab', ${activeWorkspaceId()})`;
     const [response] = await Promise.all([
       narrate({ operation: 'read', content: { kind: 'html', html: '<p>FIRST 12</p><p>FINAL 34</p>', ref: 'provided:article', partial: true } }),
       respond('done', { readingId: 'read-1', status: 'starting' }),
@@ -187,7 +187,7 @@ describe('voice:say projected narration through the real UI intent store', () =>
     const args = { operation: 'read', content: { kind: 'text', text: 'Private source' } };
     for (const clientWorkspace of [null, 'foreign-workspace']) {
       await rootSql`TRUNCATE harness_shared.ui_clients`;
-      if (clientWorkspace) await rootSql`INSERT INTO harness_shared.ui_clients VALUES ('requesting-tab', ${clientWorkspace})`;
+      if (clientWorkspace) await rootSql`INSERT INTO harness_shared.ui_clients (client_id, workspace_id) VALUES ('requesting-tab', ${clientWorkspace})`;
       const denied = await narrate(args);
       expect(denied.result?.structuredContent).toMatchObject({ ok: false, error: 'destination_unavailable' });
     }
@@ -197,7 +197,7 @@ describe('voice:say projected narration through the real UI intent store', () =>
   });
 
   it('routes an explicit reading control to the requesting tab and returns its stored status', async () => {
-    await rootSql`INSERT INTO harness_shared.ui_clients VALUES ('requesting-tab', ${activeWorkspaceId()})`;
+    await rootSql`INSERT INTO harness_shared.ui_clients (client_id, workspace_id) VALUES ('requesting-tab', ${activeWorkspaceId()})`;
     const [response] = await Promise.all([
       narrate({ operation: 'control', readingId: 'read-1', action: 'pause' }),
       respond('done', { readingId: 'read-1', status: 'paused' }),
@@ -210,6 +210,48 @@ describe('voice:say projected narration through the real UI intent store', () =>
 });
 
 // Concurrent "browser tab": flip the first pending intent to a terminal status.
+describe('terminal-to-desktop handoff through the real intent store', () => {
+  it('selects the exact eligible native desktop and preserves the report route and expiry', async () => {
+    await rootSql`INSERT INTO harness_shared.ui_clients (client_id, workspace_id, viewport) VALUES
+      ('desktop', ${activeWorkspaceId()}, '{"nativeDesktop":true}'::jsonb),
+      ('browser', ${activeWorkspaceId()}, '{}'::jsonb),
+      ('foreign-desktop', 'different-workspace', '{"nativeDesktop":true}'::jsonb)`;
+    const started = Date.now();
+    const route = '/reports?sel=rpt_exact-report';
+    const [response] = await Promise.all([
+      call({ target: 'desktop', intent: 'native_window', args: { action: 'open_route', route, expiresAt: -1 }, timeout_ms: 5000 }, { principal: { slug: 'terminal-reader' }, uiClientId: 'pui-attribution-only' }),
+      respond('done', { protocol: 'desktop-route-v1', requested: true, route }),
+    ]);
+    expect(response.isError).toBe(false);
+    const [row] = await rootSql`SELECT client_id, args, workspace_id FROM harness_shared.ui_intents`;
+    expect(row).toMatchObject({ client_id: 'desktop', workspace_id: activeWorkspaceId(), args: { action: 'open_route', route } });
+    expect(row!.args.expiresAt).toBeGreaterThanOrEqual(started + 5000);
+    expect(row!.args.expiresAt).toBeLessThanOrEqual(Date.now() + 5000);
+    expect(JSON.parse(response.content[0]!.text)).toMatchObject({ status: 'done', result: { protocol: 'desktop-route-v1', route } });
+  });
+
+  it('never sends a route to a stale, foreign or non-native client', async () => {
+    await rootSql`INSERT INTO harness_shared.ui_clients (client_id, workspace_id, viewport, last_seen_at) VALUES
+      ('stale', ${activeWorkspaceId()}, '{"nativeDesktop":true}'::jsonb, now() - interval '2 minutes'),
+      ('foreign', 'different-workspace', '{"nativeDesktop":true}'::jsonb, now()),
+      ('browser', ${activeWorkspaceId()}, '{}'::jsonb, now())`;
+    const response = await call({ target: 'desktop', intent: 'native_window', args: { action: 'open_route', route: '/reports?sel=exact' } });
+    expect(response.isError).toBe(true);
+    expect(response.content[0]!.text).toContain('desktop_unavailable');
+    expect(await rootSql`SELECT id FROM harness_shared.ui_intents`).toHaveLength(0);
+  });
+
+  it('rejects ambiguity and conflicting selectors before issuing an intent', async () => {
+    await rootSql`INSERT INTO harness_shared.ui_clients (client_id, workspace_id, viewport) VALUES
+      ('one', ${activeWorkspaceId()}, '{"nativeDesktop":true}'::jsonb),
+      ('two', ${activeWorkspaceId()}, '{"nativeDesktop":true}'::jsonb)`;
+    const args = { target: 'desktop', intent: 'native_window', args: { action: 'open_route', route: '/plans?sel=exact' } };
+    expect((await call(args)).content[0]!.text).toContain('desktop_ambiguous');
+    expect((await call({ ...args, client_id: 'one' })).isError).toBe(true);
+    expect(await rootSql`SELECT id FROM harness_shared.ui_intents`).toHaveLength(0);
+  });
+});
+
 async function respond(status: string, result: unknown) {
   for (let i = 0; i < 300; i++) {
     const r = await rootSql`UPDATE harness_shared.ui_intents SET status=${status}, result=${rootSql.json(result as never)}, completed_at=now() WHERE status='pending' RETURNING id`;

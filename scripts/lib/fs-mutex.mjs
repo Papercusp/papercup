@@ -35,7 +35,9 @@ import {
 } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 
-/** @typedef {{ opendir?: typeof opendir, symlink?: typeof symlink, readFile?: (path: string, encoding: 'utf8') => Promise<string>, writeFile?: typeof writeFile, processIdentity?: (pid: number) => ({ tgid?: number, startTicks?: string, bootId?: string, kthread?: boolean } | null) }} FsMutexIo */
+/** @typedef {{ opendir?: typeof opendir, symlink?: typeof symlink, readFile?: (path: string, encoding: 'utf8') => Promise<string>, writeFile?: typeof writeFile, rm?: typeof rm, processIdentity?: (pid: number) => ({ tgid?: number, startTicks?: string, bootId?: string, kthread?: boolean } | null) }} FsMutexIo */
+/** @typedef {{ cancel: () => Promise<void> }} FsMutexContinuationTicket */
+const continuationTicketStates = new WeakMap();
 
 const DEFAULT_TIMEOUT_MS = 180_000;
 const DEFAULT_STALE_MS = 10 * 60_000;
@@ -156,9 +158,19 @@ async function legacyLeaseState(markerDir, staleMs, io = {}) {
   }
   if (!markerStat.isDirectory()) return "unknown";
 
+  let ownerText;
+  try {
+    ownerText = await (io.readFile ?? readFile)(join(markerDir, "owner.json"), "utf8");
+  } catch (error) {
+    // An unreadable owner is not proof of abandonment, regardless of age.
+    // Only a positively missing record can use the stale-marker fallback.
+    if (error?.code !== "ENOENT") return "unknown";
+    return Date.now() - markerStat.mtimeMs > staleMs ? "stale" : "unknown";
+  }
+
   let owner;
   try {
-    owner = JSON.parse(await readFile(join(markerDir, "owner.json"), "utf8"));
+    owner = JSON.parse(ownerText);
   } catch {
     return Date.now() - markerStat.mtimeMs > staleMs ? "stale" : "unknown";
   }
@@ -637,8 +649,10 @@ async function reclaimAbandonedLock(
       observeOwner(rawOwner);
       return JSON.parse(rawOwner);
     });
-  } catch {
-    // The age fallback below handles unreadable and unparseable records.
+  } catch (error) {
+    // Keep unobservable owners fenced. Only a missing or malformed record
+    // permits age-based recovery; permission and IO failures prove neither.
+    if (error?.code !== "ENOENT" && !(error instanceof SyntaxError)) return false;
   }
   if (!owner || !Number.isInteger(owner.pid) || owner.pid <= 0 ||
       typeof owner.host !== "string" || owner.host.length === 0) {
@@ -828,7 +842,7 @@ async function listReaderLocks(readersDir) {
 }
 
 /**
- * Reconcile interrupted pre-publication readers without acquiring a dependency
+ * Reconcile interrupted reader publication/retirement without acquiring a dependency
  * lease. Reuse the same owner/age policy as published leases; a fresh publisher,
  * matching live owner, remote owner, or unproven process identity stays intact.
  * Each pass is bounded so a large abandoned container cannot monopolize admission.
@@ -846,6 +860,20 @@ export async function reconcileFsMutexStagingReaders(name, opts = {}) {
     (removed ? reclaimed : retained).push(marker);
   }
   return { reclaimed, retained, remaining: Math.max(0, markers.length - 256) };
+}
+
+async function retireReaderLease(readerDir, stagingDir, io = {}) {
+  // Remove the published name atomically before recursive cleanup can unlink
+  // owner.json. A kill during rm then leaves only non-blocking staging debris;
+  // the existing bounded reconciler applies the normal owner/age policy to it.
+  await mkdir(dirname(stagingDir), { recursive: true });
+  try {
+    await rename(readerDir, stagingDir);
+  } catch (error) {
+    if (error.code === "ENOENT") return;
+    throw error;
+  }
+  await (io.rm ?? rm)(stagingDir, { recursive: true, force: true });
 }
 
 async function waitForReaders(
@@ -913,8 +941,8 @@ async function waitForReaders(
  * open while that cohort drains. The writer then reserves admission and drains all
  * remaining/racing readers, so newcomers cannot indefinitely extend the open phase.
  *
- * @param {(context?: { hasWaiters: () => Promise<boolean> }) => Promise<T>} fn
- * @param {{ mode?: 'read' | 'reader' | 'write', waitForReadersBeforeReserve?: boolean, lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, deferAfterHolderAgeMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, onTimedOut?: (info: { waitedMs: number, timeoutMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, intent?: Record<string, string | number | boolean>, io?: FsMutexIo }} [opts]
+ * @param {(context?: { hasWaiters: () => Promise<boolean>, reserveContinuationTicket: () => Promise<FsMutexContinuationTicket> }) => Promise<T>} fn
+ * @param {{ mode?: 'read' | 'reader' | 'write', waitForReadersBeforeReserve?: boolean, lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, deferAfterHolderAgeMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, onTimedOut?: (info: { waitedMs: number, timeoutMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, intent?: Record<string, string | number | boolean>, continuationTicket?: FsMutexContinuationTicket, io?: FsMutexIo }} [opts]
  * @returns {Promise<T>}
  */
 export async function withFsMutex(name, fn, opts = {}) {
@@ -941,9 +969,10 @@ export async function withFsMutex(name, fn, opts = {}) {
       }
     }
     : (_name, operation) => operation();
-  // Root resolution is outside the mutex's timeout budget, but remains visible in
-  // caller timing maps. The nested `lock-root.*` phases intentionally overlap
-  // `lock-root.ensure`; they identify which root-resolution operation consumed time.
+  // Root resolution and abandoned-staging reconciliation are admission preflight,
+  // outside the mutex-wait timeout but visible in caller timing maps. The nested
+  // `lock-root.*` phases intentionally overlap `lock-root.ensure` and identify which
+  // root-resolution operation consumed time.
   /** @type {{ phaseTimingsMs?: Record<string, number>, lockRootDir?: string, io?: FsMutexIo }} */
   const rootOptions = {};
   if (opts.lockRootDir !== undefined) rootOptions.lockRootDir = opts.lockRootDir;
@@ -966,6 +995,10 @@ export async function withFsMutex(name, fn, opts = {}) {
   const intent = sanitizeIntent(opts.intent);
   await measureAdmissionSubphase("staging-reader-reconcile", () =>
     reconcileFsMutexStagingReaders(name, { lockRootDir: root, staleMs, io }));
+  // `timeoutMs` bounds time queued for a writer/readers, not bounded maintenance that
+  // runs before a ticket can contend. Starting this budget before reconciliation made
+  // a slow orphan scan report ETIMEDOUT with no holder even when the writer was free.
+  const waitStartedAt = Date.now();
   const owner = {
     pid: process.pid,
     ...processIdentity(process.pid),
@@ -988,19 +1021,32 @@ export async function withFsMutex(name, fn, opts = {}) {
   // ticket bookkeeping itself fails for any reason, fall back to the pre-existing racing
   // behaviour for THIS caller rather than ever deadlocking on a broken queue.
   const ticketsDir = queueRoot(root, name);
-  const myTicketDir = join(ticketsDir, `${ticketId(startedAt)}.ticket`);
+  let myTicketDir;
   let ticketRegistered = false;
   let writerOwner;
-  try {
-    await measureAdmissionSubphase("queue-root-mkdir", () => mkdir(ticketsDir, { recursive: true }));
-    await measureAdmissionSubphase("ticket-mkdir", () => mkdir(myTicketDir));
-    await measureAdmissionSubphase("ticket-owner-write", () => writeFileIo(
-      join(myTicketDir, "owner.json"),
-      JSON.stringify(owner, null, 2) + "\n",
-    ));
+  let continuationState;
+  if (opts.continuationTicket !== undefined) {
+    continuationState = continuationTicketStates.get(opts.continuationTicket);
+    if (!continuationState || continuationState.status !== "reserved" ||
+        continuationState.name !== name || continuationState.root !== root) {
+      throw new Error(`Invalid or already-used fs-mutex continuation ticket for "${name}"`);
+    }
+    continuationState.status = "consuming";
+    myTicketDir = continuationState.ticketDir;
     ticketRegistered = true;
-  } catch {
-    ticketRegistered = false;
+  } else {
+    myTicketDir = join(ticketsDir, `${ticketId(startedAt)}.ticket`);
+    try {
+      await measureAdmissionSubphase("queue-root-mkdir", () => mkdir(ticketsDir, { recursive: true }));
+      await measureAdmissionSubphase("ticket-mkdir", () => mkdir(myTicketDir));
+      await measureAdmissionSubphase("ticket-owner-write", () => writeFileIo(
+        join(myTicketDir, "owner.json"),
+        JSON.stringify(owner, null, 2) + "\n",
+      ));
+      ticketRegistered = true;
+    } catch {
+      ticketRegistered = false;
+    }
   }
 
   let announcedWaiting = false;
@@ -1024,7 +1070,7 @@ export async function withFsMutex(name, fn, opts = {}) {
   let lastObservedOwner = "(not observed)";
   let lastObservedQueueHead;
   let timeoutReported = false;
-  const reportTimedOut = (error, waitedMs = Date.now() - startedAt) => {
+  const reportTimedOut = (error, waitedMs = Date.now() - waitStartedAt) => {
     if (timeoutReported) return error;
     timeoutReported = true;
     const subphaseTimings = admissionSubphaseTimingsMs
@@ -1050,7 +1096,7 @@ export async function withFsMutex(name, fn, opts = {}) {
     return error;
   };
   const throwIfAdmissionTimedOut = () => {
-    const waitedMs = Date.now() - startedAt;
+    const waitedMs = Date.now() - waitStartedAt;
     if (waitedMs < timeoutMs) return;
     const error = new Error(
       "Timed out after " + timeoutMs + "ms waiting for fs-mutex \"" + name +
@@ -1060,7 +1106,7 @@ export async function withFsMutex(name, fn, opts = {}) {
     throw reportTimedOut(error, waitedMs);
   };
   const sleepWithinAdmissionBudget = async () => {
-    const remainingMs = timeoutMs - (Date.now() - startedAt);
+    const remainingMs = timeoutMs - (Date.now() - waitStartedAt);
     if (remainingMs <= 0) {
       throwIfAdmissionTimedOut();
       return;
@@ -1128,7 +1174,7 @@ export async function withFsMutex(name, fn, opts = {}) {
         if (oldest != null && oldest !== myTicketDir) {
           // Someone else registered first — don't even attempt the mkdir race this
           // cycle; let them go before us.
-          const elapsed = Date.now() - startedAt;
+          const elapsed = Date.now() - waitStartedAt;
           await measureAdmissionSubphase("waiting-notice", () => announceWaiting(elapsed));
           throwIfAdmissionTimedOut();
           await sleepWithinAdmissionBudget();
@@ -1148,7 +1194,7 @@ export async function withFsMutex(name, fn, opts = {}) {
         );
         await measureAdmissionSubphase("reader-drain-before-reserve", () => waitForReaders(readersDir, {
           readerCohort: new Set(readerCohort),
-          timeoutMs, staleMs, retryMs, startedAt,
+          timeoutMs, staleMs, retryMs, startedAt: waitStartedAt,
           onWaiting: opts.onWaiting, waitingNoticeIntervalMs, io,
         }));
         throwIfAdmissionTimedOut();
@@ -1184,7 +1230,7 @@ export async function withFsMutex(name, fn, opts = {}) {
         throwIfAdmissionTimedOut();
         if (reclaimed) continue;
 
-        const elapsed = Date.now() - startedAt;
+        const elapsed = Date.now() - waitStartedAt;
         await measureAdmissionSubphase("waiting-notice", () => announceWaiting(elapsed));
         throwIfAdmissionTimedOut();
         await measureAdmissionSubphase("aged-holder-preflight", deferForAgedHolder);
@@ -1201,6 +1247,8 @@ export async function withFsMutex(name, fn, opts = {}) {
         );
       } catch {
         // best-effort — a missing/already-cleaned ticket is not an error
+      } finally {
+        if (continuationState?.status === "consuming") continuationState.status = "consumed";
       }
     }
   }
@@ -1211,7 +1259,7 @@ export async function withFsMutex(name, fn, opts = {}) {
         timeoutMs,
         staleMs,
         retryMs,
-        startedAt,
+        startedAt: waitStartedAt,
         onWaiting: opts.onWaiting,
         waitingNoticeIntervalMs,
         io,
@@ -1234,7 +1282,7 @@ export async function withFsMutex(name, fn, opts = {}) {
     // `timeoutMs` restarts from zero, so an N-shard run's real worst case is N × timeoutMs.
     // Fires inside the try so a throwing callback still releases the lock.
     if (opts.onAcquired) opts.onAcquired({
-      waitedMs: Date.now() - startedAt,
+      waitedMs: Date.now() - waitStartedAt,
       ...(admissionSubphaseTimingsMs
         ? { admissionSubphaseTimingsMs: { ...admissionSubphaseTimingsMs } }
         : {}),
@@ -1246,9 +1294,43 @@ export async function withFsMutex(name, fn, opts = {}) {
     const nextOwnerPath = join(lockDir, "owner.next.json");
     await writeFileIo(nextOwnerPath, `${JSON.stringify(runningOwner, null, 2)}\n`);
     await rename(nextOwnerPath, join(lockDir, "owner.json"));
-    return await fn({
-      hasWaiters: async () => (await oldestTicketDir(ticketsDir, staleMs, retryMs, io)) != null,
-    });
+    let callbackActive = true;
+    const reserveContinuationTicket = async () => {
+      if (!callbackActive) throw new Error(`Cannot reserve a continuation after releasing fs-mutex "${name}"`);
+      const createdAtMs = Date.now();
+      const ticketDir = join(ticketsDir, `${ticketId(createdAtMs)}.ticket`);
+      const ticketOwner = { ...owner, startedAt: new Date(createdAtMs).toISOString(), phase: "continuation-waiting" };
+      await measureAdmissionSubphase("continuation-queue-root-mkdir", () => mkdir(ticketsDir, { recursive: true }));
+      try {
+        await measureAdmissionSubphase("continuation-ticket-mkdir", () => mkdir(ticketDir));
+        await measureAdmissionSubphase("continuation-ticket-owner-write", () => writeFileIo(
+          join(ticketDir, "owner.json"),
+          JSON.stringify(ticketOwner, null, 2) + "\n",
+        ));
+      } catch (error) {
+        try { await (io.rm ?? rm)(ticketDir, { recursive: true, force: true }); } catch { /* best-effort partial publication cleanup */ }
+        throw error;
+      }
+      const state = { name, root, ticketDir, status: "reserved" };
+      const ticket = {
+        cancel: async () => {
+          if (state.status !== "reserved") return;
+          await measureAdmissionSubphase("continuation-ticket-cancel", () =>
+            (io.rm ?? rm)(ticketDir, { recursive: true, force: true }));
+          state.status = "cancelled";
+        },
+      };
+      continuationTicketStates.set(ticket, state);
+      return ticket;
+    };
+    try {
+      return await fn({
+        hasWaiters: async () => (await oldestTicketDir(ticketsDir, staleMs, retryMs, io)) != null,
+        reserveContinuationTicket,
+      });
+    } finally {
+      callbackActive = false;
+    }
   } finally {
     await rm(lockDir, { recursive: true, force: true });
   }
@@ -1276,7 +1358,7 @@ export async function withFsMutex(name, fn, opts = {}) {
  * @template T
  * @param {string} name
  * @param {(workers: number) => Promise<T>} fn
- * @param {{ workers: number, workerMemoryMb: number, workerBudget: number, memoryBudgetMb: number, memoryBudgetScope?: string, sharedMemoryBudgetMb?: number, maxConcurrentTasks: number, resource: string, intent?: Record<string, string | number | boolean>, timeoutMs?: number, retryMs?: number, lockRootDir?: string, remainingMs?: () => number, onWaiting?: (info: {owner: string, elapsedMs: number}) => void, onAcquired?: (info: {waitedMs: number}) => void }} opts
+ * @param {{ workers: number, workerMemoryMb: number, workerBudget: number, memoryBudgetMb: number, memoryBudgetScope?: string, sharedMemoryBudgetMb?: number, maxConcurrentTasks: number, resource: string, intent?: Record<string, string | number | boolean>, timeoutMs?: number, retryMs?: number, lockRootDir?: string, remainingMs?: () => number, onWaiting?: (info: {owner: string, elapsedMs: number}) => void, onAcquired?: (info: {waitedMs: number}) => void, io?: FsMutexIo }} opts
  * @returns {Promise<T>}
  */
 export async function withFsMutexBudget(name, fn, opts) {
@@ -1299,7 +1381,9 @@ export async function withFsMutexBudget(name, fn, opts) {
   const retryMs = opts.retryMs ?? DEFAULT_RETRY_MS;
   const staleMs = intEnv('PAPERCUSP_FS_MUTEX_STALE_MS', DEFAULT_STALE_MS);
   const ticket = join(queue, `${ticketId(started)}.ticket`);
-  const reader = join(readers, `${process.pid}-${randomUUID()}.lock`);
+  const readerMarkerName = `${process.pid}-${randomUUID()}.lock`;
+  const reader = join(readers, readerMarkerName);
+  const readerStagingDir = join(root, `${safeName(name)}.readers-staging`, readerMarkerName);
   const request = { workers: opts.workers, workerMemoryMb: opts.workerMemoryMb,
     workerBudget: opts.workerBudget, memoryBudgetMb: opts.memoryBudgetMb,
     ...(opts.memoryBudgetScope ? { memoryBudgetScope: opts.memoryBudgetScope,
@@ -1345,6 +1429,7 @@ export async function withFsMutexBudget(name, fn, opts) {
       constraints, availableWorkers: workers, availableMemoryMb: memory, activeTasks: active.length, taskCap };
   };
   let granted = 0, announced = -Infinity, waitState;
+  await reconcileFsMutexStagingReaders(name, { lockRootDir: root, staleMs, io: opts.io });
   await mkdir(queue, { recursive: true });
   await mkdir(readers, { recursive: true });
   await mkdir(ticket);
@@ -1385,13 +1470,15 @@ export async function withFsMutexBudget(name, fn, opts) {
         }
         const { workers } = allocation(request, active);
         if (!workers || remaining() <= 0) return;
-        await mkdir(reader);
-        await writeFile(join(reader, 'owner.json'), JSON.stringify({ ...owner,
+        await mkdir(dirname(readerStagingDir), { recursive: true });
+        await mkdir(readerStagingDir);
+        await (opts.io?.writeFile ?? writeFile)(join(readerStagingDir, 'owner.json'), JSON.stringify({ ...owner,
           acquiredAt: new Date().toISOString(), mode: 'read', admission: { ...request, workers } }));
+        await rename(readerStagingDir, reader);
         // Writer/reader handshake: a legacy writer that wins the race drains
         // this marker; back out before executing any user callback.
         if (await writerLockIsHeld(writer, staleMs) || remaining() <= 0) {
-          await rm(reader, { recursive: true, force: true }); return;
+          await retireReaderLease(reader, readerStagingDir, opts.io); return;
         }
         granted = workers;
         await rm(ticket, { recursive: true, force: true });
@@ -1412,7 +1499,8 @@ export async function withFsMutexBudget(name, fn, opts) {
     return await fn(granted);
   } finally {
     await rm(ticket, { recursive: true, force: true });
-    await rm(reader, { recursive: true, force: true });
+    await retireReaderLease(reader, readerStagingDir, opts.io);
+    await rm(readerStagingDir, { recursive: true, force: true });
   }
 }
 
@@ -1520,13 +1608,13 @@ export async function withFsMutexRead(name, fn, opts = {}) {
         await rm(readerStagingDir, { recursive: true, force: true });
       if (error.code !== "EEXIST") {
         if (markerCreated)
-          await rm(readerDir, { recursive: true, force: true });
+          await retireReaderLease(readerDir, readerStagingDir, io);
         throw error;
       }
     }
 
     if (ready) break;
-    if (markerCreated) await rm(readerDir, { recursive: true, force: true });
+    if (markerCreated) await retireReaderLease(readerDir, readerStagingDir, io);
 
     const elapsed = Date.now() - startedAt;
     if (
@@ -1573,7 +1661,7 @@ export async function withFsMutexRead(name, fn, opts = {}) {
     });
     return await fn();
   } finally {
-    await rm(readerDir, { recursive: true, force: true });
+    await retireReaderLease(readerDir, readerStagingDir, io);
   }
 }
 

@@ -7452,6 +7452,26 @@ describe('sweep exposure (P-006)', () => {
       expect(d?.lever).toContain('locks:release does not lift it');
       expect(gitSyncDeferralFor('packages/locked.ts', { skippedPaths: skipped, syncAgeMs: 60_000 })?.reason).toBe('edit-lock');
     });
+
+    it('does not infer a current hold or commit timing from an old turn snapshot', () => {
+      const path = 'packages/a.ts';
+      const gitSync = { ...HEALTHY_GIT_SYNC, skippedPaths: skipped, syncAgeMs: 30 * 60_000 };
+      const deferral = gitSyncDeferralFor(path, gitSync);
+      expect(deferral?.reason).toBe('turn-hold');
+      expect(deferral?.detail).toContain('does not establish a current hold');
+      expect(deferral?.lever).toContain('fresh completed sweep');
+      expect(deferral?.lever).not.toContain('none needed');
+      expect(deferral?.lever).not.toContain('it commits');
+
+      const input = stageInput(evaluateSweepExposure({
+        dirtyUncommitted: true, dirtyPaths: [path], nextSweepAtMs: NOW + 60_000, nowMs: NOW,
+      }));
+      input.input = { path };
+      input.gitSync = gitSync;
+      const committed = computeStages(input).find(stage => stage.name === 'committed');
+      expect(committed?.detail).toContain('does not establish a current hold');
+      expect(committed?.lever).toBe(deferral?.lever);
+    });
   });
 
   it('distinguishes an unattributed disclosure-window hold from an edit lock', () => {

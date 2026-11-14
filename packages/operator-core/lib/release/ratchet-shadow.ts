@@ -7,7 +7,8 @@
  * SHADOW first: each planner computes what it WOULD do beside the real verdict, and the record
  * goes to `gate_health.ratchetShadow`. Nothing here changes a verdict, builds a candidate, or
  * routes a red to anyone. Acting is a separate switch per planner, after at least 5 recorded
- * shadow runs with no disagreement (D-025 #4).
+ * qualified shadow runs under the current instrument with no disagreement (D-025 #4, D-065).
+ * The diagnostic records here lack the required qualification context and do not qualify.
  *
  * WHAT IS RECORDED.
  *   - composedProof: at a green selective verification of a frozen repair head, the plan (which
@@ -43,6 +44,85 @@ import {
   type CandidateCommit,
   type FailureAttribution,
 } from './new-red-ejection';
+import { readProofContextIdentity, type ProofContextComparison } from '@papercusp/test-config/configuration-snapshot';
+import { createHash } from 'node:crypto';
+import type { OperatorArtifactIdentity } from './operator-artifact';
+
+/** Required definitions must belong to the executing artifact's input census.
+ * A checkout read or a build SHA alone cannot stand in for loaded artifacts.
+ * External selector scripts absent from that census leave the instrument unknown. */
+export const RATCHET_INSTRUMENT_DEFINITIONS = [
+  'packages/operator-core/lib/release/ratchet-shadow.ts',
+  'packages/operator-core/lib/release/composed-promotion-proof.ts',
+  'packages/operator-core/lib/release/new-red-ejection.ts',
+  'packages/operator-core/lib/release/verdict-flip-quarantine.ts',
+  'packages/operator-core/lib/release/critical-area-registry.ts',
+  'packages/operator-core/lib/release/checkpoint-qualification-transaction.ts',
+  'packages/operator-core/lib/release/repair-manifest.ts',
+  'libs/test-config/src/configuration-snapshot.ts',
+  'libs/test-config/src/execution-details.ts',
+  'scripts/affected-tests.mjs',
+  'scripts/lib/related-tests.mjs',
+] as const;
+
+export type RatchetInstrument =
+  | { schemaVersion: 'instrument-v1'; status: 'unknown'; fingerprint: null; missing: string[] }
+  | { schemaVersion: 'instrument-v1'; status: 'measured'; fingerprint: string;
+      components: { execution: string; definitions: string; schema: string; selection: string } };
+
+const instrumentDigest = (value: unknown) => createHash('sha256')
+  .update(JSON.stringify(['instrument-v1', value])).digest('hex');
+const instrumentHash = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+
+/** Consume the boot-time bundle receipt, never re-hash a possibly replaced disk
+ * entry. Schema includes the applied-migration/schema measurement owed by the
+ * context producer; the selector identity must also have its own producer.
+ * This binds observations, and does not make a shadow row eligible or acting. */
+export function captureRatchetInstrument(artifact: OperatorArtifactIdentity | null | undefined,
+  proofContext: unknown): RatchetInstrument {
+  const context = readProofContextIdentity(proofContext);
+  const missing: string[] = [];
+  const measured = artifact?.status === 'measured' && instrumentHash(artifact.bundleSha256)
+    && instrumentHash(artifact.manifestSha256) && isRecord(artifact.sourceBlobs)
+    && Object.keys(artifact.sourceBlobs).length > 0
+    && Object.entries(artifact.sourceBlobs).every(([path, sha]) => path.length > 0
+      && !path.startsWith('/') && !path.includes('\\')
+      && path.split('/').every(part => part !== '' && part !== '.' && part !== '..')
+      && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(sha));
+  if (!measured) missing.push('executing-artifact-unmeasured');
+  else if (RATCHET_INSTRUMENT_DEFINITIONS.some(path => !Object.hasOwn(artifact.sourceBlobs, path)))
+    missing.push('executing-definition-closure-incomplete');
+  if (!context?.components.schema) missing.push('applied-schema-unmeasured');
+  if (!context?.components.selectionGraph) missing.push('selection-graph-unmeasured');
+  if (missing.length) return { schemaVersion: 'instrument-v1', status: 'unknown', fingerprint: null, missing };
+  const known = artifact as Extract<OperatorArtifactIdentity, { status: 'measured' }>;
+  const components = { execution: known.bundleSha256,
+    definitions: instrumentDigest(Object.entries(known.sourceBlobs).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)),
+    schema: context!.components.schema!, selection: context!.components.selectionGraph! };
+  return { schemaVersion: 'instrument-v1', status: 'measured', components,
+    fingerprint: instrumentDigest([components.execution, components.definitions, components.schema, components.selection]) };
+}
+
+/** Recompute persisted identities; never adopt a caller's hash or completeness flag. */
+export function parseRatchetInstrument(value: unknown): RatchetInstrument | undefined {
+  if (!isRecord(value) || value.schemaVersion !== 'instrument-v1') return undefined;
+  if (value.status === 'unknown') {
+    if (Object.keys(value).sort().join(',') !== 'fingerprint,missing,schemaVersion,status'
+      || value.fingerprint !== null || !Array.isArray(value.missing) || value.missing.length < 1
+      || value.missing.length > 4 || new Set(value.missing).size !== value.missing.length
+      || !value.missing.every(reason => ['executing-artifact-unmeasured', 'executing-definition-closure-incomplete',
+        'applied-schema-unmeasured', 'selection-graph-unmeasured'].includes(reason))) return undefined;
+    return { schemaVersion: 'instrument-v1', status: 'unknown', fingerprint: null, missing: [...value.missing] };
+  }
+  const c = value.components;
+  if (value.status !== 'measured' || Object.keys(value).sort().join(',') !== 'components,fingerprint,schemaVersion,status'
+    || !isRecord(c) || Object.keys(c).sort().join(',') !== 'definitions,execution,schema,selection'
+    || ![c.execution, c.definitions, c.schema, c.selection].every(instrumentHash)
+    || value.fingerprint !== instrumentDigest([c.execution, c.definitions, c.schema, c.selection])) return undefined;
+  return { schemaVersion: 'instrument-v1', status: 'measured', fingerprint: value.fingerprint as string,
+    components: { execution: c.execution as string, definitions: c.definitions as string,
+      schema: c.schema as string, selection: c.selection as string } };
+}
 
 /** Test files a set of changed paths can reach; null when the selector widened or failed. */
 export type RadiusQuery = (paths: readonly string[]) => Promise<ReadonlySet<string> | null>;
@@ -102,10 +182,23 @@ export interface ComposedProofComparison {
   extraInComposed: string[];
   /** Re-run entries read as passing because the full run did not report them failing. */
   rerunReadFrom: 'full-run-failing-set';
+  /** Diagnostic agreement alone lacks the required context/instrument binding.
+   * Optional only for historical rows; readers recompute it before adoption. */
+  qualification?: {
+    status: 'ineligible';
+    reason: 'full-gate-fallback' | 'qualification-context-unmeasured' | 'unverified-legacy-comparison';
+  };
+}
+
+function comparisonQualification(mode: unknown, comparison: unknown): NonNullable<ComposedProofComparison['qualification']> {
+  return { status: 'ineligible', reason: mode === 'full-gate' ? 'full-gate-fallback'
+    : mode === 'composed' && isRecord(comparison) && comparison.rerunReadFrom === 'full-run-failing-set'
+      ? 'qualification-context-unmeasured' : 'unverified-legacy-comparison' };
 }
 
 export interface ComposedProofShadowRecord {
   schemaVersion: 1;
+  instrument?: RatchetInstrument;
   /** The frozen candidate whose round-1 results are carried. */
   candidate: string;
   /** The repair head the full run judged. */
@@ -136,6 +229,8 @@ export interface ComposedProofShadow {
 }
 
 export interface ComposedProofShadowInput {
+  instrument?: RatchetInstrument;
+  proofContext?: ProofContextComparison | null;
   candidate: string;
   repairHead: string;
   /** The frozen candidate's round-1 failing set; null when no round was recorded at it. */
@@ -151,6 +246,9 @@ export interface ComposedProofShadowInput {
 export async function planComposedProofShadow(input: ComposedProofShadowInput): Promise<ComposedProofShadow> {
   const base: ComposedProofShadowRecord = {
     schemaVersion: 1,
+    ...(input.instrument ? { instrument: parseRatchetInstrument(input.instrument) ?? {
+      schemaVersion: 'instrument-v1' as const, status: 'unknown' as const, fingerprint: null,
+      missing: ['executing-artifact-unmeasured'] } } : {}),
     candidate: input.candidate,
     repairHead: input.repairHead,
     atMs: input.nowMs,
@@ -191,6 +289,7 @@ export async function planComposedProofShadow(input: ComposedProofShadowInput): 
         : [...new Set([...radius, ...Object.keys(round1Tests).filter((t) => radiusHasTest(radius, t))])];
     const runtime = new Set(runtimePaths);
     const plan = planComposedProof({
+      proofContext: input.proofContext,
       round1Tests,
       lintLegs,
       admissions: [{ id: 'lineage', changedFiles: input.changedFiles }],
@@ -238,7 +337,9 @@ export async function planComposedProofShadow(input: ComposedProofShadowInput): 
 /**
  * After the full canonical run at the repair head: compose the verdict the proof would have
  * reached and compare it with the full verdict. A full-gate plan would have run this same full
- * run, so it agrees by construction.
+ * run, so it agrees by construction. A selective/full comparison may qualify
+ * only with complete bound identities and the current instrument (D-065/R15).
+ * This diagnostic form carries neither, so agreement alone cannot qualify it.
  */
 export function compareComposedProofShadow(
   shadow: ComposedProofShadow,
@@ -257,6 +358,7 @@ export function compareComposedProofShadow(
         missedByComposed: [],
         extraInComposed: [],
         rerunReadFrom: 'full-run-failing-set',
+        qualification: comparisonQualification(plan.mode, null),
       },
     };
   }
@@ -277,6 +379,7 @@ export function compareComposedProofShadow(
       missedByComposed: sample(missedByComposed),
       extraInComposed: sample(extraInComposed),
       rerunReadFrom: 'full-run-failing-set',
+      qualification: comparisonQualification(plan.mode, { rerunReadFrom: 'full-run-failing-set' }),
     },
   };
 }
@@ -521,6 +624,7 @@ export function compactRatchetShadow(h: RatchetShadowHealth): RatchetShadowHealt
   if (cp) {
     out.composedProof = {
       schemaVersion: 1,
+      ...(parseRatchetInstrument(cp.instrument) ? { instrument: parseRatchetInstrument(cp.instrument) } : {}),
       candidate: cp.candidate.slice(0, 12),
       repairHead: cp.repairHead.slice(0, 12),
       atMs: cp.atMs,
@@ -537,6 +641,7 @@ export function compactRatchetShadow(h: RatchetShadowHealth): RatchetShadowHealt
               ...cp.comparison,
               missedByComposed: cap(cp.comparison.missedByComposed),
               extraInComposed: cap(cp.comparison.extraInComposed),
+              qualification: comparisonQualification(cp.mode, cp.comparison),
             },
           }
         : {}),
@@ -584,8 +689,16 @@ export function parseRatchetShadowHealth(value: unknown): RatchetShadowHealth | 
     typeof cp.candidate === 'string' &&
     typeof cp.repairHead === 'string' &&
     (cp.status === 'planned' || cp.status === 'skipped' || cp.status === 'error')
+    && (cp.instrument === undefined || parseRatchetInstrument(cp.instrument) !== undefined)
   ) {
-    out.composedProof = cp as unknown as ComposedProofShadowRecord;
+    out.composedProof = {
+      ...cp,
+      ...(cp.instrument === undefined ? {} : { instrument: parseRatchetInstrument(cp.instrument) }),
+      // Never adopt a caller's eligibility flag, including one surviving an
+      // older result marker. Missing provenance remains unqualified history.
+      ...(isRecord(cp.comparison) ? { comparison: { ...cp.comparison,
+        qualification: comparisonQualification(cp.mode, cp.comparison) } } : {}),
+    } as unknown as ComposedProofShadowRecord;
   }
   const nr = value.newRedEjection;
   if (

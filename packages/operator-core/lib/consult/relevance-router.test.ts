@@ -350,6 +350,29 @@ describe('problem-specific expertise qualification', () => {
     expect(subjectEvidenceQuery('packages/core/lease.ts')).toBe('packages/core/lease.ts');
   });
 
+  it('scores plan subject refs as source evidence instead of requiring a tool contract', async () => {
+    const planRef = 'plan:green-main-cycle-time-2026-10-08';
+    const contracts = [
+      { name: 'computer:provision_desktop', description: 'Start a sandboxed GUI desktop.' },
+      { name: 'release:checkpoint-run', description: 'Run the release gate checkpoint suite.' },
+    ];
+    const scorer = vi.fn(async (_text: string, queries: string[]) => queries.map((_, i) => i ? 0.1 : 0.9));
+    const onFailure = vi.fn();
+
+    expect(expertiseSubject(`Review ${planRef} and identify its open promotion constraints.`)).toBe(planRef);
+    expect(subjectEvidenceQuery(planRef)).toBe(planRef);
+    const scores = await scoreSubjectEvidence(planRef, ['release gate checkpoint'], Date.now() + 4000,
+      { contracts, scorer, onFailure });
+
+    expect(scores[0]).toBeGreaterThanOrEqual(SUBJECT_EVIDENCE_MIN_SCORE);
+    expect(onFailure).not.toHaveBeenCalledWith({ reason: 'missing-contract' });
+    expect(scorer).toHaveBeenCalledWith('release gate checkpoint', [
+      planRef,
+      'release:checkpoint-run\nRun the release gate checkpoint suite.',
+      ...NATURAL_SUBJECT_INTENT_CONTRASTS,
+    ], expect.any(Object));
+  });
+
   it('preserves a conceptual positive and refuses above-floor mismatches, including snapshot refill', () => {
     const floors = { simFloor: 0.4, relevanceFloor: 0.41 };
     for (const status of ['supported', 'mismatch', 'unmeasured'] as const) {

@@ -42,6 +42,14 @@ describe('mcp-proxy budgets — the client/proxy invariant', () => {
 });
 
 describe('mcp-proxy budgets — derivePsuTimeoutMs', () => {
+  it('keeps required Codex startup alive through the proxy recovery contract', () => {
+    expect(B.CODEX_MCP_STARTUP_TIMEOUT_SEC * 1000)
+      .toBeGreaterThanOrEqual(B.MCP_PROXY_RETRY_WINDOW_MS + B.PSU_CLIENT_HEADROOM_MS);
+    // Nov 13: Codex exited after 30s while initialize recovered after 54s.
+    expect(B.psuTimeoutInvertsProxyBudget(30_000)).toBe(true);
+    expect(B.psuTimeoutInvertsProxyBudget(B.CODEX_MCP_STARTUP_TIMEOUT_SEC * 1000)).toBe(false);
+  });
+
   it('derives window + headroom when there is no override', () => {
     expect(B.derivePsuTimeoutMs({ retryWindowMs: 90_000, headroomMs: 30_000 })).toBe(120_000);
   });

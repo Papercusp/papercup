@@ -50,7 +50,12 @@ import type { GitSyncSkippedPath } from './harness/git-sync/run-git-sync';
 // EI-19447523039740352. Safe direction: release-deploy-launch imports git-pipeline-STATS,
 // never git-pipeline-POSITION, so this does not close an import cycle.
 import { readDeployInFlight, type DeployInFlight } from './release-deploy-launch';
-import { probeServiceStart, readProcStartMs, resolveServiceStartMs } from './agent-tools/dev/systemd-service-probe';
+import {
+  probeServiceStart,
+  readProcStartMs,
+  resolveServiceStartMs,
+  type ResolvedServiceStart,
+} from './agent-tools/dev/systemd-service-probe';
 import { RESTART_TARGET_UNITS } from './agent-tools/dev/restart-target-units';
 import {
   classifyPathsAgainstCandidate,
@@ -3856,8 +3861,8 @@ export function gitSyncDeferralFor(
       reason: 'turn-hold',
       detail:
         `${when} held this path under the turn-scoped hold: ${entry.owner} edited it during a turn that had not ended. ` +
-        'Forcing git-sync:run holds it again until that turn ends, the session ends, or 60 min pass since the edit.',
-      lever: `none needed — it commits with ${entry.owner}'s other edits on the first sweep after that turn ends; locks:release does not lift it`,
+        'That snapshot does not establish a current hold. A later sweep re-evaluates whether the turn or session ended, or the 60 min hold limit elapsed.',
+      lever: `After ${entry.owner}'s turn ends, check a fresh completed sweep for this path's remaining exclusions; locks:release does not lift it`,
     };
   }
   if ('owner' in entry && isRestrictedHoldIntent(entry.intent)) {
@@ -4785,7 +4790,7 @@ export interface PipelinePositionDeps {
    * 4x-filed "deployed != running" gap unfixed while looking implemented, which is
    * the ship-it-dark failure this plan exists to avoid.
    */
-  probeUnitStart?: (unit: string) => Promise<{ pid: number | null; startedAtMs: number | null } | null>;
+  probeUnitStart?: (unit: string) => Promise<ResolvedServiceStart | null>;
   /**
    * WI-2141731: ask the serving process for its OWN build sha (`/api/health`).
    * Injected by TESTS only — the default really probes, for the same reason
@@ -5305,7 +5310,7 @@ export function resetDeployInFlightCacheForTest(): void {
 // codeAsOfMs` more likely TRUE. This detector exists to refuse exactly that
 // unearned YES, so the derivation is a fallback for hosts without /proc, never a
 // preference. Preference order + rationale live on the helper.
-const probeUnitStartUncached = async (unit: string): Promise<{ pid: number | null; startedAtMs: number | null } | null> =>
+const probeUnitStartUncached = async (unit: string): Promise<ResolvedServiceStart | null> =>
   // EI-24356772206513832: this diagnostic already keeps its release Git reads
   // local. A failed spawner-sidecar startup otherwise adds its 10s timeout to
   // the systemd probe before it falls back to the same local command. Several
@@ -5350,7 +5355,7 @@ export const UNIT_START_PROBE_TTL_MS = 2_000;
  */
 export const UNIT_START_IDENTITY_MAX_MS = 60_000;
 
-type UnitStartProbe = { pid: number | null; startedAtMs: number | null } | null;
+type UnitStartProbe = ResolvedServiceStart | null;
 
 /** Fork-free read of `/proc/<pid>`'s start (epoch ms); null when the pid is gone. Injectable for tests. */
 export type ProcStartReader = (pid: number) => Promise<number | null>;
@@ -5383,7 +5388,7 @@ export async function probeUnitStartShared(
   return value;
 }
 
-const realProbeUnitStart = (unit: string): Promise<{ pid: number | null; startedAtMs: number | null } | null> =>
+const realProbeUnitStart = (unit: string): Promise<ResolvedServiceStart | null> =>
   probeUnitStartShared(unit);
 
 /** Test-only: drop memoized unit-start probes. */

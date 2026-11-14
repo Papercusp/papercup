@@ -94,3 +94,7 @@ export function psuTimeoutInvertsProxyBudget(timeoutMs, retryWindowMs = MCP_PROX
  * flight. Override with PAPERCUSP_PSU_TIMEOUT_MS.
  */
 export const PSU_REQUEST_TIMEOUT_MS = derivePsuTimeoutMs({ overrideMs: envMs('PAPERCUSP_PSU_TIMEOUT_MS') });
+
+/** Required Codex MCP initialization must outlive the proxy recovery window.
+ * The psu HTTP override is independent of Codex. Round up to whole seconds. */
+export const CODEX_MCP_STARTUP_TIMEOUT_SEC = Math.ceil(derivePsuTimeoutMs() / 1000);

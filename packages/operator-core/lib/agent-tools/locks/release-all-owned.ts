@@ -73,8 +73,8 @@ export async function releaseAllOwnedLocks(params: {
           coordinationDomain: domain,
           owner: ownerId,
           allMine: true,
-          beforeRelease: async rows => { await preserveReleasedEditGenerations({
-            repoRoot: domain, rows, agentId: ownerId,
+          beforeRelease: async (rows, protectRepositoryPaths) => { await preserveReleasedEditGenerations({
+            repoRoot: domain, rows, agentId: ownerId, protectRepositoryPaths,
             workspaceId: source?.workspaceId ?? undefined, contributor: source?.userId ?? undefined,
             sessionId: ownerId,
           }); },

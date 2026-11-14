@@ -29,6 +29,7 @@ import type { SqlTag } from './bump-last-surfaced';
 import { createHash, randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { parseContextSourceVersion, type ContextSourceVersion } from './temporal-render';
+import type { ContextPackingScope } from '../context-packing-receipts';
 
 /** Private host metadata; no recalled plaintext is persisted in a receipt. */
 export type MemoryFragmentManifest = {
@@ -126,7 +127,14 @@ function modelVisibleStrings(value: unknown): string[] {
  * write. This prepares an offer; only a subsequent exact receipt stamps it. */
 export async function withMemoryEmissionReceipt<T extends object>(
   sql: SqlTag, ownerId: string, confirmations: unknown, run: () => Promise<T>,
+  collectionScope?: Omit<ContextPackingScope, 'ownerId'>,
 ): Promise<T & { _meta?: Record<string, unknown> }> {
+  // Only the authenticated host supplies this scope. Legacy compact/recovery
+  // consumers retain the existing four-argument behavior.
+  const sourceScope = collectionScope ? { ...collectionScope, ownerId } : null;
+  const token = randomUUID(), createdAt = new Date().toISOString();
+  const collector = sourceScope ? await import('../context-packing-receipts') : null;
+  const attribution = sourceScope ? await collector!.captureContextPackingAttribution(sourceScope) : null;
   if (Array.isArray(confirmations) && confirmations.length <= 16) {
     for (const proof of confirmations) {
       try { await confirmMemoryEmission(sql, ownerId, proof); }
@@ -146,13 +154,26 @@ export async function withMemoryEmissionReceipt<T extends object>(
     (`\n${visible.trimEnd()}\n`).includes(`\n${row.rendered}\n`) &&
     createHash('sha256').update(row.rendered).digest('hex') === row.bodySha256 &&
     Buffer.byteLength(row.rendered) === row.bodyBytes);
-  if (!fragments.length) return result;
-  const token = randomUUID();
-  try { await stageMemoryEmission(sql, ownerId, token, fragments); }
-  catch { return result; }
-  return { ...result, _meta: { ...response._meta,
+  let staging: 'empty' | 'staged' | 'failed' = 'empty';
+  if (fragments.length) {
+    try { await stageMemoryEmission(sql, ownerId, token, fragments); staging = 'staged'; }
+    catch { staging = 'failed'; }
+  }
+  const prepared = staging === 'staged' ? { ...result, _meta: { ...response._meta,
     'papercusp/memoryEmission': { owner: ownerId, token,
-      fragments: fragments.map(({ revalidateSource: _reader, ...fragment }) => fragment) } } };
+      fragments: fragments.map(({ revalidateSource: _reader, ...fragment }) => fragment) } } } : result;
+  if (!sourceScope) return prepared;
+  let custody: object;
+  try {
+    const ref = await collector!.saveMcpContextPreparation(sourceScope, { attemptId: token, createdAt, attribution: attribution!,
+      staging, response: prepared, offers: scope.fragments, selected: fragments });
+    custody = { attemptId: token, status: 'stored', sha256: ref.sha256 };
+  } catch {
+    // Keep a missing durable record observable in the native response. A later
+    // census must not mistake absence for a successful zero-context attempt.
+    custody = { attemptId: token, status: 'UNKNOWN', reason: 'preparation-storage-failed' };
+  }
+  return { ...prepared, _meta: { ...(prepared as typeof response)._meta, 'papercusp/contextPreparation': custody } };
 }
 
 /** Extend coord_read_cursors, with one surface per token so competing ports

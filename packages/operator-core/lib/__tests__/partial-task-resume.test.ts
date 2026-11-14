@@ -3,6 +3,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { createHash } from 'node:crypto';
+import { captureRecordedProofContext, createRecordedTestPopulation, createSourceByteSnapshot } from '../../../../libs/test-config/src/execution-details.ts';
+import { createProofContextIdentity, PROOF_CONTEXT_COMPONENTS, type ProofContextIdentity,
+  observeViteTransformOptions, readViteTransformOptions } from '@papercusp/test-config/configuration-snapshot';
 import { nativeProcessTraceEnv } from '../../../../scripts/lib/vitest-startup-trace.mjs';
 import {
   PARTIAL_TASK_CHECKPOINT_SCHEMA,
@@ -29,6 +32,13 @@ const ID = {
   sourceCommit: 'a'.repeat(40),
   sourceDigest: 'b'.repeat(64),
 };
+
+// Complete synthetic identities exercise the pure consumer contract. Native
+// producer tests below retain their actual partial measurements and cannot reuse.
+const measuredContext = createProofContextIdentity(Object.fromEntries(PROOF_CONTEXT_COMPONENTS.map(key =>
+  [key, createHash('sha256').update(key).digest('hex')])) as ProofContextIdentity['components'])!;
+const measuredContexts = (units: Array<{ id: string }>) => Object.fromEntries(units.map(unit =>
+  [unit.id, { after: measuredContext, reach: [] as unknown[] }]));
 
 describe('remaining work preserves the original selected population', () => {
   it('freezes the same original npm invocations before task-key initialization, including standalone and empty guards', () => {
@@ -66,11 +76,12 @@ describe('remaining work preserves the original selected population', () => {
       units: [{ id: 'post:build', kind: 'post-suite', path: 'package.json' }] };
     const prepared = preparePartialContinuationManifest({ tasks: inventory, selection, postSuite, root: ID.root });
     const expected = { ...ID, attemptId: 'attempt', candidate: ID.sourceCommit, repairHead: null,
-      manifest: prepared.manifest, runnerIdentity: 'native', runContext: 'ci', retryStates: [] };
+      manifest: prepared.manifest, runnerIdentity: 'native', runContext: 'ci', retryStates: [],
+      proofContexts: measuredContexts(prepared.manifest.units) };
     const receipt = (unitId: string, path: string) => ({ unitId, completionId: `done:${unitId}`, observedAtMs: 1,
       state: 'pass', worktreeDirty: false, observedCount: 1, firstAttemptVerdict: 'pass', proof: {
         recordedSha: ID.sourceCommit, executedModules: [path], readPaths: [], inputsCaptured: true,
-        opaqueReasons: [], runnerIdentity: 'native', runContext: 'ci' } });
+        opaqueReasons: [], runnerIdentity: 'native', runContext: 'ci', proofContext: measuredContext } });
     const checkpoint = { ...ID, continuation: { schemaVersion: 1, ...expected,
       receipts: [receipt(`test:${files[0]}`, files[0]!), receipt('guard:ws :: guard', 'package.json')] } };
     const project = () => preparePartialRemainingSelection(checkpoint, expected, { selection, postSuite });
@@ -193,11 +204,12 @@ describe('original npm native channel preparation', () => {
         const prepared = preparePartialContinuationManifest({ ...input, tasks: [input.task], selection });
         expect(prepared.status).toBe('ready');
         const expected = { ...ID, root, taskKey: 'qualification', attemptId: 'attempt', candidate: ID.sourceCommit,
-          repairHead: null, manifest: prepared.manifest, runnerIdentity: 'native', runContext: 'ci', retryStates: [] };
+          repairHead: null, manifest: prepared.manifest, runnerIdentity: 'native', runContext: 'ci', retryStates: [],
+          proofContexts: measuredContexts(prepared.manifest.units) };
         const receipts = [{ unitId: 'test:a.test.ts', completionId: 'saved-first-file', observedAtMs: 1,
           state: 'pass', worktreeDirty: false, observedCount: 1, firstAttemptVerdict: 'pass', proof: {
             recordedSha: ID.sourceCommit, executedModules: ['a.test.ts'], readPaths: [], inputsCaptured: true,
-            opaqueReasons: [] as string[], runnerIdentity: 'native', runContext: 'ci' } }];
+            opaqueReasons: [] as string[], runnerIdentity: 'native', runContext: 'ci', proofContext: measuredContext } }];
         const emptyFirst = ['empty-step', 'empty-pass', 'all-empty-pass'].includes(scenario);
         if (emptyFirst) receipts.push({ ...receipts[0]!, unitId: 'test:remaining.test.ts',
           completionId: 'saved-second-file', proof: { ...receipts[0]!.proof, executedModules: ['remaining.test.ts'] } });
@@ -265,11 +277,13 @@ describe('original npm native channel preparation', () => {
         const prepared = preparePartialContinuationManifest({ root, tasks: [task], selection, postSuite: input.postSuite });
         expect(prepared.status).toBe('ready');
         const expected = { ...ID, root, taskKey: 'qualification', attemptId: 'attempt', candidate: ID.sourceCommit,
-          repairHead: null, manifest: prepared.manifest, runnerIdentity: 'native', runContext: 'ci', retryStates: [] };
+          repairHead: null, manifest: prepared.manifest, runnerIdentity: 'native', runContext: 'ci', retryStates: [],
+          proofContexts: measuredContexts(prepared.manifest.units) };
         const testReceipt = { unitId: 'test:a.test.ts', completionId: 'saved-test', observedAtMs: 1,
           state: 'pass', worktreeDirty: false, observedCount: 1, firstAttemptVerdict: 'pass', proof: {
             recordedSha: ID.sourceCommit, executedModules: ['a.test.ts'], readPaths: [], inputsCaptured: true,
-            opaqueReasons: scenario === 'invalidated' ? ['unknown-input'] : [], runnerIdentity: 'native', runContext: 'ci' } };
+            opaqueReasons: scenario === 'invalidated' ? ['unknown-input'] : [], runnerIdentity: 'native', runContext: 'ci',
+            proofContext: measuredContext } };
         const receipts = scenario === 'banked-hook' ? [{ ...testReceipt, unitId: `command:${task.id}:0`,
           completionId: 'saved-hook', proof: { ...testReceipt.proof, executedModules: ['package.json'] } }] : [testReceipt];
         const checkpoint = { root, taskKey: expected.taskKey, continuation: { schemaVersion: 1, ...expected, receipts } };
@@ -663,12 +677,13 @@ describe('partial-task continuation proof composition', () => {
     { id: 'post-a', kind: 'post-suite', path: 'scripts/post.mjs' },
   ];
   const expected = { ...ID, attemptId: 'logical-one', candidate: ID.sourceCommit, repairHead: null,
-    manifest: { schemaVersion: 1, units }, runContext: 'ci', runnerIdentity: 'proof-v3 node' };
+    manifest: { schemaVersion: 1, units }, runContext: 'ci', runnerIdentity: 'proof-v3 node',
+    proofContexts: measuredContexts(units) };
   const receipt = (unit: typeof units[number]) => ({ unitId: unit.id, completionId: `completion:${unit.id}`,
     observedAtMs: 100, state: 'pass', worktreeDirty: false, observedCount: 1, firstAttemptVerdict: 'pass',
     proof: { recordedSha: ID.sourceCommit, executedModules: [unit.path, 'lib/shared.ts'],
       readPaths: ['fixtures/input.json'], inputsCaptured: true, opaqueReasons: [] as string[],
-      runContext: 'ci', runnerIdentity: 'proof-v3 node' } });
+      runContext: 'ci', runnerIdentity: 'proof-v3 node', proofContext: measuredContext } });
   const checkpoint = () => ({ ...ID, selectedFiles: ['lib/a.test.ts'], passedFiles: [], state: 'partial',
     continuation: { schemaVersion: 1, attemptId: expected.attemptId, candidate: expected.candidate,
       repairHead: null, manifest: structuredClone(expected.manifest), receipts: units.map(receipt) } });
@@ -689,6 +704,68 @@ describe('partial-task continuation proof composition', () => {
   it('composes a green verdict only from valid proofs of the complete selected population', () => {
     expect(evaluate()).toMatchObject({ verdict: 'green', run: [], reused: ['guard-a', 'post-a', 'test-a'],
       counts: { selected: 3, required: 3, passed: 3, pending: 0 } });
+  });
+
+  it('refuses missing current or original context even at unchanged Git and runtime identities', () => {
+    expect(evaluate(checkpoint(), { proofContexts: undefined })).toMatchObject({ verdict: 'incomplete',
+      reused: [], run: ['guard-a', 'post-a', 'test-a'] });
+    const value = checkpoint();
+    delete (value.continuation.receipts[0]!.proof as { proofContext?: unknown }).proofContext;
+    expect(evaluate(value)).toMatchObject({ verdict: 'incomplete', run: ['test-a'],
+      invalidated: [{ id: 'test-a', reason: 'proof-context-unmeasured' }] });
+  });
+
+  it('requires an independent original ledger binding before retaining a native pass', () => {
+    const value = checkpoint();
+    const receipt = value.continuation.receipts.find(row => row.unitId === 'test-a')!;
+    const producingRun = { qualificationAttemptId: expected.attemptId, runGroupId: 'original-run',
+      completionId: receipt.completionId, selectedManifestHash: 'a'.repeat(64) };
+    Object.assign(receipt.proof, { producingRun });
+    const unmeasured = () => expect(evaluate(value)).toMatchObject({ run: ['test-a'],
+      invalidated: [{ id: 'test-a', reason: 'original-test-ledger-unmeasured' }] });
+    unmeasured();
+    const originals = { status: 'known', runGroupId: producingRun.runGroupId,
+      selectedManifestHash: producingRun.selectedManifestHash, bindings: [{ unitId: 'test-a',
+        completionId: receipt.completionId, reference: { schemaVersion: 'original-test-run-reference-v2' } }] };
+    Object.assign(value.continuation, { nativeProducers: [{ runGroupId: producingRun.runGroupId, originals }] });
+    // Contract fixture only. The DB boundary separately validates the complete
+    // reference and rereads the original; this presence check grants no capability.
+    expect(evaluate(value)).toMatchObject({ run: [], reused: ['guard-a', 'post-a', 'test-a'] });
+    originals.bindings[0]!.completionId = 'foreign-completion';
+    unmeasured();
+    originals.bindings[0]!.completionId = receipt.completionId;
+    originals.selectedManifestHash = 'b'.repeat(64);
+    unmeasured();
+  });
+
+  it.each(PROOF_CONTEXT_COMPONENTS)('requalifies changed %s inputs only with complete bound reach', component => {
+    const after = createProofContextIdentity({ ...measuredContext.components, [component]: 'f'.repeat(64) })!;
+    const reach = [{ schemaVersion: 'reach-v1', component,
+      before: measuredContext.components[component], after: after.components[component],
+      provenance: { version: 'test-consumer-graph-v1', before: '1'.repeat(64), after: '2'.repeat(64), complete: true },
+      tests: ['lib/a.test.ts'], legs: ['guard-a'] }];
+    const contexts = Object.fromEntries(units.map(unit => [unit.id, { after, reach }]));
+    expect(evaluate(checkpoint(), { proofContexts: contexts })).toMatchObject({ verdict: 'incomplete',
+      run: ['guard-a', 'test-a'], reused: ['post-a'] });
+    for (const incomplete of [undefined, [], [{ ...reach[0], provenance: { ...reach[0]!.provenance, complete: false } }]]) {
+      const unknown = Object.fromEntries(units.map(unit => [unit.id, { after, reach: incomplete }]));
+      expect(evaluate(checkpoint(), { proofContexts: unknown })).toMatchObject({ reused: [],
+        run: ['guard-a', 'post-a', 'test-a'] });
+    }
+    const missing = createProofContextIdentity({ ...after.components, [component]: null })!;
+    expect(evaluate(checkpoint(), { proofContexts: Object.fromEntries(units.map(unit => [unit.id, { after: missing, reach }])) }))
+      .toMatchObject({ reused: [], run: ['guard-a', 'post-a', 'test-a'] });
+  });
+
+  it('binds reach to the receipt instead of a substituted before identity and accepts JSONB ordering', () => {
+    const after = createProofContextIdentity({ ...measuredContext.components, fixtures: 'f'.repeat(64) })!;
+    const forged = Object.fromEntries(units.map(unit => [unit.id, { before: after, after, reach: [] }]));
+    expect(evaluate(checkpoint(), { proofContexts: forged })).toMatchObject({ reused: [],
+      run: ['guard-a', 'post-a', 'test-a'] });
+    const value = checkpoint();
+    value.continuation.receipts[0]!.proof.proofContext = JSON.parse(JSON.stringify({
+      ...measuredContext, components: Object.fromEntries(Object.entries(measuredContext.components).reverse()) }));
+    expect(evaluate(value)).toMatchObject({ verdict: 'green', run: [] });
   });
 
   it.each(units)('retains a missing or invalid $kind as pending rather than green', unit => {
@@ -793,10 +870,15 @@ describe('native durable continuation outcomes', () => {
       readPaths: ['/repo/fixtures/input.json'], opaqueReasons: [] as string[] }],
     nativeRun: { schemaVersion: 'native-vitest-run-v1', startedAtMs: 100, gaps: [] as string[], finishedAtMs: null as number | null,
       terminalHook: null as string | null, reason: null as string | null,
-      unhandledErrorCount: null as number | null, modulePopulationMatched: false,
+      unhandledErrorCount: null as number | null, modulePopulationMatched: false, selectedPopulationMatched: false,
       selectedManifest: { specifications: structuredClone(selectedSpecifications), sha256: hash(selectedSpecifications) },
       files: [{ testFile: 'lib/a.test.ts', completionId: 'completion-a', observedAtMs: 123, state: 'passed',
-        firstAttemptVerdict: 'pass', cases: [{ status: 'pass' }],
+        firstAttemptVerdict: 'pass', cases: [{ status: 'pass' }], projectName: null,
+        populationCaptureStatus: 'captured',
+        population: createRecordedTestPopulation([
+          { identity: ['', 'lib/a.test.ts', 'passes', 1, 'test'], selected: true, outcome: 'passed' },
+        ], [['', 'lib/a.test.ts', 'passes', 1, 'test']]),
+        execution: { collectionFailed: false, passed: 1, failed: 0, skipped: 0 },
         proof: { sourceEvidence: { schemaVersion: 'vite-collected-source-evidence-v1', status: 'stable',
           sources: [{ path: 'lib/a.test.ts', sha256: 'a'.repeat(64), currentSha256: 'a'.repeat(64) }], reasons: [] } } }] } });
   const read = (value = snapshot(), overrides = {}, classify = true, producerOverrides: Record<string, unknown> | null = null,
@@ -826,14 +908,14 @@ describe('native durable continuation outcomes', () => {
     const native = snapshot();
     Object.assign(native.nativeRun, { scope: 'vitest-reporter-callbacks', pid: 12, ppid: 11,
       finishedAtMs: 140, reason: 'passed', terminalHook: 'onTestRunEnd',
-      unhandledErrorCount: 0, modulePopulationMatched: true });
+      unhandledErrorCount: 0, modulePopulationMatched: true, selectedPopulationMatched: true });
     // Runtime read closure is deliberately unavailable; current evidence must
     // authenticate independently, without inventing a reusable proof.
     native.rows[0]!.inputsCaptured = false;
     native.rows[0]!.opaqueReasons = ['runtime-closure-unmeasured'];
     const physical = { ...expected, candidate: ID.sourceCommit, repairHead: null, runContext: 'ci',
       runnerIdentity: 'proof-v3 node', runId: 'physical-run-one', runnerId: 'owner-one', pidIdentity: 'boot:42',
-      runnerReservedAtMs: 40, nowMs: 200 };
+      runnerReservedAtMs: 40, nowMs: 200, proofContexts: measuredContexts(manifest.units) };
     mkdirSync(`${traceOut}.native-processes`);
     const emptyHash = createHash('sha256').update('').digest('hex');
     const stream = { scope: 'node-writable-call-inputs', captureComplete: true, sha256: emptyHash,
@@ -869,7 +951,7 @@ describe('native durable continuation outcomes', () => {
       const guard = { unitId: 'guard', completionId: 'guard-completion', state: 'pass', observedAtMs: 123,
         worktreeDirty: false, observedCount: 1, proof: { recordedSha: ID.sourceCommit, runContext: physical.runContext,
           runnerIdentity: physical.runnerIdentity, executedModules: ['scripts/guard.mjs'], inputsCaptured: true,
-          readPaths: [], opaqueReasons: [] } };
+          readPaths: [], opaqueReasons: [], proofContext: measuredContext } };
       const checkpoint = { ...ID, continuation: { schemaVersion: 1, ...physical,
         receipts: [...observed.receipts, guard] } };
       return { observed, physical, checkpoint };
@@ -942,7 +1024,7 @@ describe('native durable continuation outcomes', () => {
         if (scenario === 'source') native.nativeRun.files[0].proof.sourceEvidence.status = 'changed';
         if (scenario === 'config') native.configSources.status = 'changed';
         if (scenario === 'first-attempt') native.nativeRun.files[0].firstAttemptVerdict = 'fail';
-        if (scenario === 'cases') native.nativeRun.files[0].cases = [];
+        if (scenario === 'cases') native.nativeRun.files[0].population = undefined;
         if (scenario === 'time') native.nativeRun.files[0].observedAtMs = 141;
         if (scenario === 'fence') physical.runnerReservedAtMs = 51;
         if (scenario === 'group') physical.runId = 'replacement';
@@ -1000,7 +1082,7 @@ describe('native durable continuation outcomes', () => {
       candidate: ID.sourceCommit, repairHead: null, manifest, receipts: recovered.receipts } };
     expect(evaluatePartialTaskContinuation(checkpoint, { ...expected, candidate: ID.sourceCommit,
       repairHead: null, runContext: 'ci', runnerIdentity: 'proof-v3 node' })).toMatchObject({
-      verdict: 'incomplete', reused: ['a'], run: ['guard'] });
+      verdict: 'incomplete', reused: [], run: ['a', 'guard'] });
   });
 
   it('requires independent exact selection including case filters and attempt identity', () => {
@@ -1039,11 +1121,235 @@ describe('native durable continuation outcomes', () => {
     expect(read(failed)).toMatchObject({ status: 'ready', receipts: [{ state: 'infra' }] });
   });
 
+  it('retains measured context and refuses a canonical context transplanted from another population', () => {
+    let expectedContext: ReturnType<typeof captureRecordedProofContext>;
+    const { observed: retained } = currentFixture(({ native }) => {
+      const file = native.nativeRun.files[0];
+      expectedContext = captureRecordedProofContext({ commitSha: native.recordedSha,
+        worktreeDirty: native.worktreeDirty, population: file.population });
+      Object.assign(file, { proofContext: expectedContext });
+    });
+    expect(retained).toMatchObject({ status: 'ready' });
+    expect(retained.receipts[0]!.proof.proofContext).toEqual(expectedContext!);
+    for (const damage of ['fingerprint', 'population', 'source', 'dependencies', 'compilerConfiguration',
+      'submodules', 'testConfiguration', 'runtimeCapabilities', 'generatedAssets', 'schema', 'fixtures',
+      'behavior', 'selectionGraph'] as const) {
+      const { observed: damaged } = currentFixture(({ native }) => {
+        const file = native.nativeRun.files[0];
+        const context = captureRecordedProofContext({ commitSha: native.recordedSha,
+          worktreeDirty: native.worktreeDirty, population: file.population });
+        Object.assign(file, { proofContext: damage === 'fingerprint' ? { ...context, fingerprint: 'forged' }
+          : createProofContextIdentity({ ...context.components, [damage]: 'f'.repeat(64) }) });
+      });
+      expect(damaged).toMatchObject({ status: 'refused', reason: 'native-proof-context-invalid',
+        receipts: [], currentEvidence: [] });
+    }
+  });
+
+  it('retains the original worker incarnation and refuses replacement, missing or malformed process observations', () => {
+    const processIdentity = { pid: 123, threadId: 0, bootId: '01234567-89ab-cdef-0123-456789abcdef', startTicks: '456' };
+    const workerExecution = { schemaVersion: 'worker-execution-v1',
+      captureId: '12345678-9abc-def0-1234-56789abcdef0', testFile: '/repo/lib/a.test.ts',
+      before: processIdentity, after: processIdentity };
+    const run = (execution: unknown, compilerInputs?: unknown) => {
+      const value = snapshot();
+      Object.assign(value.nativeRun.files[0]!.proof, { inputs: { workerExecution: execution,
+        ...(compilerInputs === undefined ? {} : { compilerInputs }) } });
+      return read(value);
+    };
+    expect(run(workerExecution)).toMatchObject({ status: 'ready', receipts: [{ proof: { workerExecution } }] });
+    const compilerInputs = { schemaVersion: 'worker-compiler-inputs-v1', scope: 'vitest-inlined-vm-calls',
+      populationStatus: 'unknown', captureId: workerExecution.captureId, testFile: workerExecution.testFile,
+      inputSha256: '1'.repeat(64), vmCallCount: 1,
+      missing: ['transform-pipeline-unobserved', 'vm-options-partially-observed'] };
+    expect(run(workerExecution, compilerInputs)).toMatchObject({ status: 'ready',
+      receipts: [{ proof: { workerCompilerInputs: compilerInputs } }] });
+    const environment = {};
+    observeViteTransformOptions(environment, { root: '/repo', esbuild: { target: 'esnext' } });
+    const viteTransformOptions = readViteTransformOptions(environment)!;
+    const withOptions = { ...compilerInputs, viteTransformOptions };
+    expect(run(workerExecution, withOptions)).toMatchObject({ status: 'ready',
+      receipts: [{ proof: { workerCompilerInputs: withOptions } }] });
+    for (const damage of [{ populationStatus: 'complete' }, { complete: true }, { missing: [] },
+      { optionHashes: ['malformed'] }, { scope: 'per-test-complete' }])
+      expect(run(workerExecution, { ...withOptions, viteTransformOptions: { ...viteTransformOptions, ...damage } }))
+        .toMatchObject({ status: 'refused', reason: 'native-worker-compiler-inputs-mismatch', receipts: [], currentEvidence: [] });
+    for (const damage of [{ captureId: 'ffffffff-ffff-ffff-ffff-ffffffffffff' },
+      { testFile: '/repo/other.test.ts' }, { populationStatus: 'complete' }, { missing: [] },
+      { inputSha256: null }, { complete: true }])
+      expect(run(workerExecution, { ...compilerInputs, ...damage })).toMatchObject({ status: 'refused',
+        reason: 'native-worker-compiler-inputs-mismatch', receipts: [], currentEvidence: [] });
+    expect(run(undefined, compilerInputs)).toMatchObject({ status: 'refused',
+      reason: 'native-worker-compiler-inputs-mismatch', receipts: [], currentEvidence: [] });
+    const value = snapshot();
+    const at = new Date().toISOString();
+    const reset = { schemaVersion: 'worker-database-reset-v1', captureId: workerExecution.captureId,
+      testFile: workerExecution.testFile, runGroupId: 'physical-run-one',
+      startedAt: at, finishedAt: at, databases: [] };
+    Object.assign(value.nativeRun.files[0]!.proof, { inputs: { workerExecution, workerDatabaseReset: reset } });
+    expect(read(value)).toMatchObject({ status: 'ready', receipts: [{ proof: { workerDatabaseReset: reset } }] });
+    for (const damage of [{ captureId: 'ffffffff-ffff-ffff-ffff-ffffffffffff' },
+      { testFile: '/repo/other.test.ts' }, { runGroupId: 'foreign-group' }, { complete: true }]) {
+      Object.assign(value.nativeRun.files[0]!.proof, { inputs: { workerExecution, workerDatabaseReset: { ...reset, ...damage } } });
+      expect(read(value)).toMatchObject({ status: 'refused', reason: 'native-worker-database-reset-mismatch', receipts: [] });
+    }
+    for (const changed of [null, {}, { ...workerExecution, testFile: '/repo/other.test.ts' },
+      { ...workerExecution, before: null }, { ...workerExecution, after: null },
+      ...[{ pid: 124 }, { threadId: 1 }, { startTicks: '457' },
+        { bootId: 'ffffffff-ffff-ffff-ffff-ffffffffffff' }]
+        .map(change => ({ ...workerExecution, after: { ...processIdentity, ...change } }))])
+      expect(run(changed)).toMatchObject({ status: 'refused',
+        reason: 'native-worker-execution-unmeasured-or-changed', receipts: [], currentEvidence: [] });
+  });
+
+  it('retains original worker test options and refuses changed or replaced native configuration observations', () => {
+    const configuration = { schemaVersion: 'vitest-worker-configuration-v1', before: '5'.repeat(64), after: '5'.repeat(64) };
+    const run = (damaged: unknown) => currentFixture(({ native }) => {
+      const file = native.nativeRun.files[0];
+      file.proof.inputs = { testFile: file.testFile, reads: [], opaque: [], testConfiguration: damaged };
+      file.proofContext = captureRecordedProofContext({ commitSha: native.recordedSha,
+        worktreeDirty: native.worktreeDirty, population: file.population, workerTestConfiguration: configuration });
+    }).observed;
+    const retained = run(configuration);
+    expect(retained).toMatchObject({ status: 'ready' });
+    expect(retained.receipts[0]!.proof.workerTestConfiguration).toEqual(configuration);
+    expect(retained.receipts[0]!.proof.proofContext?.components.testConfiguration).toMatch(/^[a-f0-9]{64}$/);
+    for (const damaged of [undefined, null, {}, { ...configuration, before: null },
+      { ...configuration, after: '6'.repeat(64) },
+      { ...configuration, before: '6'.repeat(64), after: '6'.repeat(64) }])
+      expect(run(damaged)).toMatchObject({ status: 'refused', reason: 'native-proof-context-invalid' });
+  });
+
+  it('binds retained dependency context to the original worker measurements and refuses a replacement', () => {
+    const runtime = { name: 'node', version: '25.1.0', executable: '/qualified/node', platform: 'linux', arch: 'x64',
+      binarySha256: '1'.repeat(64), lockfileSha256: '2'.repeat(64), nativeDependencyGeneration: '3'.repeat(64),
+      configurationSha256: '4'.repeat(64) };
+    const workerRuntime = { before: runtime, after: runtime };
+    const prepare = (native: any) => {
+      const file = native.nativeRun.files[0];
+      file.proof.inputs = { testFile: file.testFile, reads: [], opaque: [], runtime: workerRuntime };
+      file.proofContext = captureRecordedProofContext({ commitSha: native.recordedSha,
+        worktreeDirty: native.worktreeDirty, population: file.population, workerRuntime });
+    };
+    const { observed } = currentFixture(({ native }) => { prepare(native); });
+    expect(observed).toMatchObject({ status: 'ready' });
+    expect(observed.receipts[0]?.proof.workerRuntime).toEqual(workerRuntime);
+    expect(observed.receipts[0]?.proof.proofContext?.components.dependencies).toMatch(/^[a-f0-9]{64}$/);
+    for (const damage of ['missing', 'changed'] as const) {
+      const { observed: refused } = currentFixture(({ native }) => {
+        prepare(native);
+        native.nativeRun.files[0].proof.inputs.runtime = damage === 'missing' ? undefined
+          : { before: { ...runtime, lockfileSha256: 'f'.repeat(64) },
+              after: { ...runtime, lockfileSha256: 'f'.repeat(64) } };
+      });
+      expect(refused).toMatchObject({ status: 'refused', reason: 'native-proof-context-invalid' });
+    }
+  });
+
+  it('binds retained source-byte context to original observations and refuses replacement', () => {
+    const pin = createSourceByteSnapshot([{ path: 'source.ts', sha256: '1'.repeat(64) }])!;
+    const sourceBytes = { schemaVersion: 'source-byte-observation-v1', before: pin, after: pin };
+    const prepare = (native: any) => {
+      const file = native.nativeRun.files[0]; file.sourceBytes = sourceBytes;
+      file.proofContext = captureRecordedProofContext({ commitSha: native.recordedSha,
+        worktreeDirty: native.worktreeDirty, population: file.population, sourceBytes });
+    };
+    const { observed } = currentFixture(({ native }) => prepare(native));
+    expect(observed).toMatchObject({ status: 'ready' });
+    expect(observed.receipts[0]?.proof.sourceBytes).toEqual(sourceBytes);
+    expect(observed.receipts[0]?.proof.proofContext?.components.source).toBe(pin.sha256);
+    for (const damaged of [undefined, { ...sourceBytes, before: null },
+      { ...sourceBytes, after: { ...pin, sha256: 'f'.repeat(64) } }, { ...sourceBytes, extra: true }]) {
+      const { observed: refused } = currentFixture(({ native }) => {
+        prepare(native); native.nativeRun.files[0].sourceBytes = damaged;
+      });
+      expect(refused).toMatchObject({ status: 'refused', reason: 'native-proof-context-invalid' });
+    }
+  });
+
+  it('binds retained submodule context to original before/after checkout observations and refuses replacement', () => {
+    const sourceSubmodules = { schemaVersion: 'submodule-checkouts-v1',
+      before: [['libs/observed', 'a'.repeat(40)]], after: [['libs/observed', 'a'.repeat(40)]] };
+    const prepare = (native: any) => {
+      const file = native.nativeRun.files[0];
+      file.sourceSubmodules = sourceSubmodules;
+      file.proofContext = captureRecordedProofContext({ commitSha: native.recordedSha,
+        worktreeDirty: native.worktreeDirty, population: file.population, sourceSubmodules });
+    };
+    const { observed } = currentFixture(({ native }) => prepare(native));
+    expect(observed).toMatchObject({ status: 'ready' });
+    expect(observed.receipts[0]?.proof.sourceSubmodules).toEqual(sourceSubmodules);
+    expect(observed.receipts[0]?.proof.proofContext?.components.submodules).toMatch(/^[a-f0-9]{64}$/);
+    for (const damaged of [undefined, { ...sourceSubmodules, before: null },
+      { ...sourceSubmodules, after: [['libs/observed', 'f'.repeat(40)]] },
+      { ...sourceSubmodules, before: [], after: [] }, { ...sourceSubmodules, extra: true }]) {
+      const { observed: refused } = currentFixture(({ native }) => {
+        prepare(native);
+        native.nativeRun.files[0].sourceSubmodules = damaged;
+      });
+      expect(refused).toMatchObject({ status: 'refused', reason: 'native-proof-context-invalid' });
+    }
+  });
+
+  it('consumes full long-title and duplicate populations beyond the diagnostic cap', () => {
+    const { observed } = currentFixture(({ native }) => {
+      const file = native.nativeRun.files[0];
+      const cases = Array.from({ length: 1300 }, (_, index) => ({
+        identity: ['', file.testFile, 'duplicate '.repeat(600), index + 1, 'test'] as [string, string, string, number, string],
+        selected: true, outcome: 'passed' as const,
+      }));
+      // Static skips remain in the complete collection but are not owed work.
+      cases.push({ identity: ['', file.testFile, 'static skip', 1, 'test'], selected: false, outcome: 'skipped' as any });
+      file.population = createRecordedTestPopulation(cases, cases.filter(row => row.selected).map(row => row.identity));
+      file.execution = { collectionFailed: false, passed: 1300, failed: 0, skipped: 1 };
+      file.cases = []; // No diagnostic list is needed to authenticate this outcome.
+    });
+    expect(observed).toMatchObject({ status: 'ready', currentEvidence: [{ scope: 'current-execution' }],
+      receipts: [{ observedCount: 1300, proof: { population: { schemaVersion: 'population-v1' },
+        producingRun: { qualificationAttemptId: 'attempt-one', runGroupId: 'physical-run-one',
+          completionId: 'completion-a', selectedManifestHash: hash(selectedSpecifications),
+          physicalCustody: { reporterPid: 12, childIdentity: 'test-child', terminal: true } } } }] });
+    expect(observed.receipts[0]!.proof.population?.cases).toHaveLength(1301);
+    expect(observed.receipts[0]!.proof.opaqueReasons).toContain('runtime-closure-unmeasured');
+  });
+
+  it.each(['missing', 'status', 'hash', 'outcome-hash', 'order-hash', 'selection-hash',
+    'project', 'file', 'leg', 'count', 'collection', 'selected-skipped', 'hidden-failure', 'selected-manifest'])(
+    'withholds current evidence for an unproven complete population: %s', scenario => {
+      const { observed } = currentFixture(({ native }) => {
+        const file = native.nativeRun.files[0];
+        // The sampled diagnostic list stays green in every negative control.
+        if (scenario === 'missing') file.population = undefined;
+        else if (scenario === 'status') file.populationCaptureStatus = 'collection-unavailable';
+        else if (scenario === 'hash') file.population.populationHash = '0'.repeat(64);
+        else if (scenario === 'outcome-hash') file.population.outcomesHash = '0'.repeat(64);
+        else if (scenario === 'order-hash') file.population.executionOrderHash = '0'.repeat(64);
+        else if (scenario === 'selection-hash') file.population.selectionHash = '0'.repeat(64);
+        else if (scenario === 'count') file.execution.passed++;
+        else if (scenario === 'collection') file.execution.collectionFailed = true;
+        else if (scenario === 'selected-manifest') native.nativeRun.selectedPopulationMatched = false;
+        else {
+          const row = structuredClone(file.population.cases[0]);
+          if (scenario === 'project') row.identity[0] = 'other-project';
+          if (scenario === 'file') row.identity[1] = 'lib/other.test.ts';
+          if (scenario === 'leg') row.identity[4] = 'other-leg';
+          if (scenario === 'selected-skipped' || scenario === 'hidden-failure') {
+            row.outcome = scenario === 'hidden-failure' ? 'failed' : 'skipped';
+            file.execution = { collectionFailed: false, passed: 0,
+              failed: scenario === 'hidden-failure' ? 1 : 0, skipped: scenario === 'selected-skipped' ? 1 : 0 };
+          }
+          file.population = createRecordedTestPopulation([row], [row.identity]);
+        }
+      });
+      expect(observed.currentEvidence).toEqual([]);
+      expect(observed.receipts[0]!.proof.opaqueReasons.length).toBeGreaterThan(0);
+    });
+
   it('never reuses unclassified, opaque, unstable or terminal-error proof', () => {
     expect(read(snapshot(), {}, false).receipts[0]!.proof.inputsCaptured).toBe(false);
     for (const damage of [
       (v: ReturnType<typeof snapshot>) => { v.nativeRun.files[0]!.proof.sourceEvidence.status = 'unknown'; },
-      (v: ReturnType<typeof snapshot>) => { v.nativeRun.files[0]!.cases = []; },
+      (v: ReturnType<typeof snapshot>) => { v.nativeRun.files[0]!.population = undefined; },
       (v: ReturnType<typeof snapshot>) => { v.rows[0]!.opaqueReasons = ['socket']; },
       (v: ReturnType<typeof snapshot>) => { v.nativeRun.finishedAtMs = 200; v.nativeRun.reason = 'failed'; v.nativeRun.unhandledErrorCount = 1; },
     ]) {

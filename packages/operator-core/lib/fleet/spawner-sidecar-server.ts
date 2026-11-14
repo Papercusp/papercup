@@ -83,22 +83,37 @@ const SAFE_PROCESS_EXEC_CALLER_LABELS = new Set<ProcessExecCallerLabel>(
 );
 const SAFE_DIAGNOSTIC_RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SAFE_GIT_SUBCOMMAND = /^[a-z][a-z0-9-]{0,63}$/;
-type SafeProcessExecDiagnosticTags = { runId: string; commandClass: 'git' | 'other'; gitSubcommand?: string };
+const SAFE_GIT_CALLSITE = /^[a-z][a-z0-9-]{0,63}$/;
+type SafeProcessExecDiagnosticTags = {
+  runId?: string;
+  commandClass?: 'git' | 'other';
+  gitSubcommand?: string;
+  callsite?: string;
+};
 
 function safeProcessExecDiagnosticTags(value: unknown): SafeProcessExecDiagnosticTags | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const candidate = value as Record<string, unknown>;
-  if (typeof candidate.runId !== 'string' || !SAFE_DIAGNOSTIC_RUN_ID.test(candidate.runId) ||
-      (candidate.commandClass !== 'git' && candidate.commandClass !== 'other')) return null;
-  const gitSubcommand = candidate.commandClass === 'git'
+  const runId = typeof candidate.runId === 'string' && SAFE_DIAGNOSTIC_RUN_ID.test(candidate.runId)
+    ? candidate.runId.toLowerCase()
+    : undefined;
+  const commandClass = candidate.commandClass === 'git' || candidate.commandClass === 'other'
+    ? candidate.commandClass
+    : undefined;
+  const callsite = typeof candidate.callsite === 'string' && SAFE_GIT_CALLSITE.test(candidate.callsite)
+    ? candidate.callsite
+    : undefined;
+  if ((!runId || !commandClass) && !callsite) return null;
+  const gitSubcommand = commandClass === 'git'
     && typeof candidate.gitSubcommand === 'string'
     && SAFE_GIT_SUBCOMMAND.test(candidate.gitSubcommand)
     ? candidate.gitSubcommand
     : undefined;
   return {
-    runId: candidate.runId.toLowerCase(),
-    commandClass: candidate.commandClass,
+    ...(runId ? { runId } : {}),
+    ...(commandClass ? { commandClass } : {}),
     ...(gitSubcommand ? { gitSubcommand } : {}),
+    ...(callsite ? { callsite } : {}),
   };
 }
 
@@ -389,6 +404,7 @@ export function runSpawnerSidecarServer(deps: {
           let childPid: number | null = null;
           let slow = false;
           const stageMs: Partial<Record<ExecProcessStage, number>> = {};
+          let forkserverLifecycleTiming: Record<string, unknown> | null = null;
           const admissionPhases = new Map<string, {
             state: 'pending' | 'fulfilled' | 'rejected';
             startedAt: number;
@@ -405,6 +421,7 @@ export function runSpawnerSidecarServer(deps: {
                 ...(requestCallerLabels.has(id) ? { callerLabel: requestCallerLabels.get(id) } : {}),
                 ...(diagnosticTags ? { diagnosticTags } : {}),
                 childPid, stage, elapsedMs: elapsedMs(), stageMs: { ...stageMs },
+                ...(forkserverLifecycleTiming ? { forkserverLifecycleTiming } : {}),
                 admissionPhases: Array.from(admissionPhases, ([phase, timing]) => ({
                   phase,
                   state: timing.state,
@@ -433,9 +450,18 @@ export function runSpawnerSidecarServer(deps: {
             delete executionParams.diagnosticTags;
             const execution = (deps.executeProcess ?? execProcess)(executionParams, {
               signal: controller.signal,
-              onStage: (nextStage) => {
+              onStage: (nextStage, details) => {
                 stage = nextStage;
                 stageMs[nextStage] ??= elapsedMs();
+                if (details?.forkserverLifecycleTiming) {
+                  forkserverLifecycleTiming = {
+                    ...(forkserverLifecycleTiming ?? {}),
+                    ...details.forkserverLifecycleTiming,
+                    ...(nextStage === 'child-close' && details.observedAtMs !== undefined
+                      ? { closeCallbackAtMs: details.observedAtMs }
+                      : {}),
+                  };
+                }
                 if (slow) report('progress');
               },
               onAdmissionPhase: (event) => {

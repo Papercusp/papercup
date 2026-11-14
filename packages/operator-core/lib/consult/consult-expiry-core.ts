@@ -77,6 +77,8 @@ export interface DueConsultRow {
   exchanges_used?: number;
   /** Typed responder perspectives, independent of the exchange-cap debit. */
   has_responder_reply: boolean;
+  /** Latest typed requester follow-up still owed by the current selection. */
+  pending_followup_post_id?: string | null;
   /** True when the row has passed half of its TTL (created_at → expires_at)
    * without a responder reply — the P-014 conversion trigger, computed in SQL. */
   is_half_silent?: boolean;
@@ -215,6 +217,9 @@ export interface SilentResponderCandidate {
    * window, an empty thread is evidence of failed dispatch, not source silence. */
   answeringOwnerId: string | null;
   routedAt: string;
+  /** Canonically measured outstanding follow-up. This leg only alerts; it must
+   * not reuse silent-first-pickup cascading or ignore live task successors. */
+  followupPostId?: string;
   /** Earlier cascade participants may have posted a decline to advance here.
    * Their posts cannot establish pickup by this selection. */
   priorResponderIds?: string[];
@@ -429,6 +434,7 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
            to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS snapshot_updated_at,
            latency_contract, question, routing, cascade_cursor, cascade_digest,
            exchanges_used, dispatch_attempts, engagement.has_responder_reply,
+           pending_followup.post_id AS pending_followup_post_id,
            COALESCE(
              NOT engagement.has_responder_reply
                AND expires_at IS NOT NULL
@@ -445,10 +451,37 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
              AND reply.kind IN ('answer', 'clarifying_question', 'new_fact')
         ) AS has_responder_reply
       ) engagement
+      LEFT JOIN LATERAL (
+        SELECT followup.post_id::text AS post_id
+          FROM harness_shared.consult_post_meta followup
+         WHERE cs.state = 'active'
+           AND followup.workspace_id = cs.workspace_id
+           AND followup.conversation_id = cs.conversation_id
+           AND followup.author_id = cs.requester_id
+           AND followup.kind IN ('question', 'new_fact')
+           AND followup.created_at <= ${nowIso}::timestamptz
+           AND NOT EXISTS (
+             SELECT 1 FROM harness_shared.consult_post_meta later
+              WHERE later.workspace_id = cs.workspace_id
+                AND later.conversation_id = cs.conversation_id
+                AND (later.created_at, later.post_id) > (followup.created_at, followup.post_id)
+                AND (
+                  later.author_id IS NULL
+                  OR later.author_id NOT IN (cs.requester_id, cs.responder_id,
+                    COALESCE(cs.routing->'selection'->'selected'->cs.cascade_cursor->>'answeringOwnerId', cs.responder_id))
+                  OR later.kind = 'close'
+                  OR (later.author_id IN (cs.responder_id,
+                        cs.routing->'selection'->'selected'->cs.cascade_cursor->>'answeringOwnerId')
+                      AND later.kind IN ('answer', 'decline', 'clarifying_question'))
+                )
+           )
+         ORDER BY followup.created_at DESC, followup.post_id DESC LIMIT 1
+      ) pending_followup ON true
      WHERE closed_at IS NULL
        AND (
          expires_at < ${nowIso}::timestamptz
          OR (state = 'awaiting_responder' AND responder_id IS NOT NULL)
+         OR (state = 'active' AND responder_id IS NOT NULL AND pending_followup.post_id IS NOT NULL)
          OR (state = 'awaiting_responder' AND NOT engagement.has_responder_reply AND expires_at IS NOT NULL
              AND ${nowIso}::timestamptz >= created_at + (expires_at - created_at) / 2)
          -- A measured empty review route has neither a responder nor a TTL.
@@ -469,15 +502,19 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
      LIMIT ${limit}
   `) as unknown as DueConsultRow[];
 
-  // One bounded detector call covers every non-due awaiting row in this tick.
+  // One bounded detector call covers initial pickup and active follow-up debt.
   // The detector receives each row's workspace because this sweep is shared
   // across workspaces; a failure fails closed for the early leg only.
   let silentResponderIds = new Set<string>();
   const earlyCandidates = due
     .flatMap((row) => {
-      if (row.is_due === true || row.state !== 'awaiting_responder' || row.responder_id == null) return [];
+      const followupPostId = row.state === 'active' ? row.pending_followup_post_id : null;
+      if (row.is_due === true || row.responder_id == null ||
+          (row.state !== 'awaiting_responder' && !followupPostId)) return [];
       const selection = currentSelectionAnswerer(row.routing, row.cascade_cursor, row.responder_id);
       if (!selection) return [];
+      if (followupPostId && (!selection.answeringOwnerId || row.requester_id === row.responder_id ||
+          row.requester_id === selection.answeringOwnerId)) return [];
       return [{
         workspaceId: row.workspace_id,
         conversationId: row.conversation_id,
@@ -485,6 +522,7 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
         sourceOwnerId: row.responder_id,
         answeringOwnerId: selection.answeringOwnerId,
         routedAt: timestampToIso(row.updated_at),
+        ...(followupPostId ? { followupPostId } : {}),
         ...(selection.priorResponderIds.length > 0 ? { priorResponderIds: selection.priorResponderIds } : {}),
       }];
     });
@@ -590,7 +628,9 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
     const isSilentEarlyRow =
       !isDue && row.state === 'awaiting_responder' && row.responder_id != null &&
       (silentResponderIds.has(row.conversation_id) || firstTurnRejection !== undefined);
-    if (!isDue && !isSilentEarlyRow) continue;
+    const isStalledFollowup = !isDue && row.state === 'active' &&
+      row.pending_followup_post_id != null && silentResponderIds.has(row.conversation_id);
+    if (!isDue && !isSilentEarlyRow && !isStalledFollowup) continue;
 
     // Detection can take long enough for a reply or close to win. Revalidate
     // the selected row immediately before sending its durable alert; on a read
@@ -612,7 +652,7 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
     try {
       await deps.notifyRequester(requesterAlertForRow({
         row,
-        kind: isDue ? 'expired' : 'pickup_failed',
+        kind: isStalledFollowup ? 'followup_stalled' : isDue ? 'expired' : 'pickup_failed',
         nowIso,
       }));
       requesterAlerts.push(row.conversation_id);
@@ -620,6 +660,11 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
       requesterAlertFailures.push(row.conversation_id);
       continue;
     }
+
+    // An engaged reviewer can hold valuable feedback and a still-current
+    // review contract. Signal recovery of that original continuation; never
+    // replace it or turn a stranded task into an implicit decline/approval.
+    if (isStalledFollowup) continue;
 
     let terminalSlot = { state: row.state, cascadeCursor: row.cascade_cursor, expiresAt: row.expires_at };
     let exhaustedAfterDispatch = false;
@@ -1092,10 +1137,26 @@ export function reviewConversionAlertForRow(input: {
 
 export function requesterAlertForRow(input: {
   row: DueConsultRow;
-  kind: 'pickup_failed' | 'expired';
+  kind: 'pickup_failed' | 'expired' | 'followup_stalled';
   nowIso: string;
 }): Parameters<ExpirySweepDeps['notifyRequester']>[0] {
   const { row, kind } = input;
+  if (kind === 'followup_stalled') {
+    return {
+      requesterId: row.requester_id,
+      workspaceId: row.workspace_id,
+      conversationId: row.conversation_id,
+      msgId: ['consult-followup-requester-alert', row.workspace_id, row.conversation_id,
+        String(row.cascade_cursor), row.pending_followup_post_id!].map(encodeURIComponent).join(':'),
+      summary: `Consult ${row.conversation_id}: answering continuation ended with a follow-up outstanding — recovery pending`,
+      body: `At ${input.nowIso}, consult ${row.conversation_id} was active with an unanswered requester follow-up ` +
+        `(post ${row.pending_followup_post_id}). The current selection's exact answering tasks have terminal receipts ` +
+        'and no matching live successor was measured. Restore the original answering continuation through the supported ' +
+        'session recovery route and verify a reply to the current request. Earlier feedback remains intact. ' +
+        'This alert does not confirm recovery or approval and does not launch another reviewer. ' +
+        `Read conversations:get { conversation_id: ${JSON.stringify(row.conversation_id)} } for current state and feedback.`,
+    };
+  }
   // Neither wall-clock time nor reason belongs in the replay key: a failed
   // early-pickup notification may retry after the ordinary expiry threshold.
   // Encoding each component avoids delimiter collisions between workspaces.

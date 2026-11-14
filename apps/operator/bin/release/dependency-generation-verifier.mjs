@@ -10,6 +10,7 @@ import { readFile as readFileAsync } from 'node:fs/promises';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readVerifierSourceReceiptSync } from '../../../../libs/test-config/src/verifier-source.ts';
+import { presentOnDisk } from '../../../../libs/test-config/src/tracked-files.mjs';
 
 const RECEIPT = '.papercusp-workspace-build.json';
 const CLOSURE = '.verifier-closure.json';
@@ -144,7 +145,10 @@ function sourcePaths(root, archive = archiveSource(root)) {
   function visit(repo, prefix = '') {
     const names = execFileSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'],
       { cwd: repo, maxBuffer: 64 * 1024 * 1024 }).toString().split('\0').filter(Boolean);
-    for (const name of names) {
+    // Git's index may retain an already deleted leaf until the next sync.
+    // The live census excludes it, changing custody membership; dangling links
+    // remain visible to the identity checks rather than being silently omitted.
+    for (const name of presentOnDisk(names, repo)) {
       const path = prefix + name;
       if (!sourceInput(path)) continue;
       const file = safe(root, path), stat = lstatSync(file);

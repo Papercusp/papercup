@@ -154,6 +154,17 @@ describe('maintained run deadlines and retained artifacts', () => {
     expect(testRunDeadline(45_000, { now: 20_000, taskDeadlineAtMs: 46_000, cleanupReserveMs: 10_000 }))
       .toMatchObject({ taskDeadlineAtMs: 46_000, childCutoffAtMs: 36_000, cleanupReserveMs: 10_000 });
   });
+  it('keeps private-PG setup outside the assertion budget and cleanup reserve', () => {
+    expect(testRunDeadline(240_000, { now: 1000, setupTimeoutMs: 300_000, cleanupReserveMs: 30_000 })).toEqual({
+      startedAtMs: 1000, taskDeadlineAtMs: 571_000, childCutoffAtMs: 541_000, cleanupReserveMs: 30_000,
+      setupTimeoutMs: 300_000, effectiveSetupTimeoutMs: 300_000, setupDeadlineAtMs: 301_000,
+      verificationTimeoutMs: 240_000,
+    });
+    expect(testRunDeadline(240_000, { now: 1000, taskDeadlineAtMs: 500_000,
+      setupTimeoutMs: 300_000, cleanupReserveMs: 30_000 }))
+      .toMatchObject({ taskDeadlineAtMs: 500_000, childCutoffAtMs: 470_000,
+        effectiveSetupTimeoutMs: 229_000, setupDeadlineAtMs: 230_000, verificationTimeoutMs: 240_000 });
+  });
   it('never refreshes an exhausted inherited deadline or accepts an invalid reserve', () => {
     expect(testRunDeadline(45_000, { now: 50_000, taskDeadlineAtMs: 46_000 }))
       .toMatchObject({ taskDeadlineAtMs: 46_000, childCutoffAtMs: 46_000, cleanupReserveMs: 0 });

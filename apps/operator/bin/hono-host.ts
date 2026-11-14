@@ -33,6 +33,7 @@ import './boot-flag-store';
 import './hono-host-port-preflight';
 import { observeFallback } from '@papercusp/operator-core/lib/degradation/fallback-observations';
 import { randomUUID } from 'node:crypto';
+import { channel } from 'node:diagnostics_channel';
 import cluster from 'node:cluster';
 import { createAdaptorServer } from '@hono/node-server';
 import { installGuardHttpDiagnostics } from '@papercusp/operator-core/lib/endpoint-route/telemetry';
@@ -120,7 +121,10 @@ import {
   resolveClusterWorkers,
   describeClusterWorkersSource,
   resolveExpectedOperatorProcs,
+  CLUSTER_BOOT_FAILURE_MESSAGE_TYPE,
+  type ClusterBootFailureMessage,
 } from '@papercusp/operator-core/lib/cluster-fork';
+import { describeClusterStartupFailures } from '@papercusp/operator-core/lib/cluster-startup-diagnostic';
 import { getResourceProfile } from '@papercusp/operator-core/lib/resource-profile';
 import { isBenignHostError } from './host-benign-errors';
 import { applyServerTimeouts } from './host-request-deadline';
@@ -513,6 +517,39 @@ function startRequestServers(): void {
   // EADDRINUSE) by the time this fires, so the same message + exit code apply.
   const onListenFatal = (err: NodeJS.ErrnoException): void => {
     console.error('[hono-host] fatal uncaughtException — exiting:', err);
+    if (cluster.isWorker && err.code === 'EADDRINUSE' && typeof process.send === 'function') {
+      const listenError = err as NodeJS.ErrnoException & { address?: string; port?: number };
+      const message: ClusterBootFailureMessage = {
+        type: CLUSTER_BOOT_FAILURE_MESSAGE_TYPE,
+        schemaVersion: 1,
+        code: 'EADDRINUSE',
+        address: typeof listenError.address === 'string' ? listenError.address : hostname,
+        port: typeof listenError.port === 'number' && Number.isInteger(listenError.port) && listenError.port > 0 && listenError.port <= 65535
+          ? listenError.port
+          : port,
+      };
+      let exited = false;
+      let exitTimer: ReturnType<typeof setTimeout> | undefined;
+      const exitWorker = (): void => {
+        if (exited) return;
+        exited = true;
+        if (exitTimer) clearTimeout(exitTimer);
+        process.exit(1);
+      };
+      // Let the primary receive the typed error before this worker exits. The
+      // bounded fallback keeps a broken IPC channel from pinning a dead worker.
+      exitTimer = setTimeout(exitWorker, 250);
+      try {
+        process.send(message, (sendError) => {
+          if (sendError) console.error('[hono-host] could not report EADDRINUSE to cluster primary:', sendError);
+          exitWorker();
+        });
+      } catch (sendError) {
+        console.error('[hono-host] could not report EADDRINUSE to cluster primary:', sendError);
+        exitWorker();
+      }
+      return;
+    }
     process.exit(1);
   };
   const listenOpts = {
@@ -840,12 +877,16 @@ function startRequestServers(): void {
 // fleet and can't multiply past max_connections (the 2026-06-17 exhaustion).
 // ENABLING is owner-gated: cross-process sync-invalidate needs the pg-listen-hub on,
 // and it should be validated under the Tauri shell / a staging restart first.
-const clusterWorkers = resolveClusterWorkers(process.env, getResourceProfile().httpWorkers);
+const clusterEnvironment = {
+  PAPERCUSP_CLUSTER_WORKERS: process.env.PAPERCUSP_CLUSTER_WORKERS,
+  PAPERCUSP_CLUSTER: process.env.PAPERCUSP_CLUSTER,
+};
+const clusterWorkers = resolveClusterWorkers(clusterEnvironment, getResourceProfile().httpWorkers);
 // EI-8817/EI-8818: name the exact env var + value that drove this so a wrong
 // resolution (e.g. an unintended multi-worker fork storm) is one-glance diagnosable
 // from the boot log instead of ~30min of forensics re-deriving CLUSTER_WORKERS'
 // precedence over CLUSTER by hand.
-console.log(`[cluster] resolved ${clusterWorkers} worker(s) (source: ${describeClusterWorkersSource(process.env)})`);
+console.log(`[cluster] resolved ${clusterWorkers} worker(s) (source: ${describeClusterWorkersSource(clusterEnvironment)})`);
 // WI-38448: without a durable secret every reuse-port worker mints a different
 // key, so the pairing response works only when later requests happen to land on
 // its signer. Fail before forking. Sidecar re-execs do not serve device routes.
@@ -945,6 +986,28 @@ const clusterHandle = sidecarMode ? null : startCluster({
     // a slow/large migration set hadn't created yet, permanently and silently
     // never federating (su-72ce40f2's diagnosis, WI-5441, post 53143).
     void waitForBootMigrationGate().then(async () => {
+      // The existing native fixture preload subscribes before this entrypoint.
+      // Observe the catalogue through THIS request worker's database client;
+      // a parent fixture's query cannot establish what this process observed.
+      // Ordinary hosts have no subscriber and do no additional database work.
+      const schemaObservation = channel('papercusp:api-worker-schema');
+      if (schemaObservation.hasSubscribers) {
+        try {
+          const { getOrgPg } = await import('@papercusp/db-org');
+          const query = `SELECT table_schema, table_name, column_name, data_type, udt_name,
+            is_nullable, column_default, ordinal_position FROM information_schema.columns
+            WHERE table_schema = 'harness_shared' ORDER BY table_name, ordinal_position LIMIT 32769`;
+          const observed = await getOrgPg().sql.begin('read only', async tx => {
+            await tx`SET LOCAL statement_timeout = '2s'`;
+            const [{ pid }] = await tx`SELECT pg_backend_pid() AS pid`;
+            return { backendPid: pid, rows: await tx.unsafe(query) };
+          });
+          schemaObservation.publish({ query, ...observed });
+        } catch {
+          // Evidence failure remains explicit without changing host startup.
+          schemaObservation.publish({ unavailable: true });
+        }
+      }
       try {
         const recovered = await recoverAdmissionPreviewsAtHostBoot();
         if (recovered > 0) console.warn(`[hono-host] recovered ${recovered} orphaned admission preview(s)`);
@@ -1017,14 +1080,25 @@ const clusterHandle = sidecarMode ? null : startCluster({
   // Stop the local respawn storm; use the ordinary process-failure path so systemd
   // can retry transient startup failures. The boot-integrity preflight retains its
   // distinct exit code when it has measured missing dependencies.
-  onBootFailure: ({ consecutiveBootFailures, lastCode, lastSignal }) => {
-    console.error(
-      `[hono-host] cluster startup failed: ${consecutiveBootFailures} worker(s) exited before staying healthy ` +
-        `(last exit code=${lastCode} signal=${lastSignal}); root cause is unknown from the supervisor's ` +
-        `worker-exit telemetry. Inspect the first worker error above before choosing remediation. ` +
-        'Exiting the primary with code 1 for the ordinary service restart policy.',
-    );
-    process.exit(1);
+  onBootFailure: ({ consecutiveBootFailures, lastCode, lastSignal, startupFailures }) => {
+    void describeClusterStartupFailures(startupFailures).then((diagnostics) => {
+      const diagnosis = diagnostics.length
+        ? `${diagnostics.join('; ')}. `
+        : `Root cause is unknown from the supervisor's worker-exit telemetry; inspect the first worker error above. `;
+      console.error(
+        `[hono-host] cluster startup failed: ${consecutiveBootFailures} worker(s) exited before staying healthy ` +
+          `(last exit code=${lastCode} signal=${lastSignal}). ${diagnosis}` +
+          'Exiting the primary with code 1 for the ordinary service restart policy.',
+      );
+      process.exit(1);
+    }).catch((error) => {
+      console.error(
+        `[hono-host] cluster startup failed: ${consecutiveBootFailures} worker(s) exited before staying healthy ` +
+          `(last exit code=${lastCode} signal=${lastSignal}); startup-diagnostic lookup failed: ${String(error)}. ` +
+          'Exiting the primary with code 1 for the ordinary service restart policy.',
+      );
+      process.exit(1);
+    });
   },
 });
 

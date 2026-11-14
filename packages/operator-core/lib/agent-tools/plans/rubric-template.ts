@@ -18,7 +18,8 @@
  * for side-effect (belt-and-suspenders + discoverability).
  */
 import { z } from 'zod';
-import { CONTINUITY_PROBE_MAX_PER_WAKE, RUBRIC_PROBE_MAX_PER_EMIT } from '../limits';
+import { canonicalJson } from '@papercusp/hash-chain';
+import { CONTINUITY_PROBE_MAX_PER_WAKE, RUBRIC_PROBE_MAX_PER_EMIT, SQL_PROBE_DEFAULT_MAX_ROWS } from '../limits';
 import { normalizeRequirementSections } from '../../requirement-contract';
 import { leadingScaleLabel } from '../../rubric-rating-vocabulary';
 import { SERVING_RUNTIME_IDS, RUNTIME_VINTAGE_EVIDENCE_RUNTIME_RE, type RuntimeVintageEvidenceRuntimeId } from '../../serving-runtimes';
@@ -1407,11 +1408,37 @@ export function isForbiddenMandatoryPassRating(value: string): boolean {
  * each bespoke criterion names a non-empty `driftMarkers` falsifier, and the rubric
  * scale has a label for evidence that cannot produce a verdict.
  */
+/** Complete JSON identity, with the same shape defaults as continuityProbeShapeSchema.
+ * This is counting/identity only: each consumer still passes live semantic validation.
+ * Keep schema revisions, SQL, pins, projection and predicates in the identity. */
+export function criterionProbeIdentity(probe: unknown): string {
+  if (probe && typeof probe === 'object' && !Array.isArray(probe)) {
+    const value = probe as Record<string, unknown>;
+    if (value.kind === 'tool') return canonicalJson({ ...value, args: value.args === undefined ? {} : value.args });
+    if (value.kind === 'sql') return canonicalJson({ ...value, maxRows: value.maxRows === undefined ? SQL_PROBE_DEFAULT_MAX_ROWS : value.maxRows });
+  }
+  return canonicalJson(probe);
+}
+
+export function distinctCriterionProbeCount(criteria: ReadonlyArray<{ check?: RubricCriterionCheck }>): number {
+  const identities = new Set<string>();
+  for (const { check } of criteria) {
+    const probes = check?.kind === 'probe' ? check.all ?? [check.probe]
+      : check?.kind === 'tests' ? check.all ?? [] : [];
+    for (const probe of probes) identities.add(criterionProbeIdentity(probe));
+  }
+  return identities.size;
+}
+
 const canonicalRubricTemplateDataAuthoringSchema = rubricTemplateDataSchema.superRefine((d, ctx) => {
-  const probeCount = d.criteria.reduce((n, c) => n + (c.check?.kind === 'probe' ? (c.check.all?.length ?? 1)
-    : c.check?.kind === 'tests' ? (c.check.all?.length ?? 0) : 0), 0);
+  let probeCount: number;
+  try { probeCount = distinctCriterionProbeCount(d.criteria); }
+  catch (error) {
+    ctx.addIssue({ code: 'custom', path: ['criteria'], message: `probe identity is not canonical JSON: ${String(error)}` });
+    return;
+  }
   if (probeCount > RUBRIC_PROBE_MAX_PER_EMIT) {
-    ctx.addIssue({ code: 'custom', path: ['criteria'], message: `rubric declares ${probeCount} probes; execution cap is ${RUBRIC_PROBE_MAX_PER_EMIT}` });
+    ctx.addIssue({ code: 'custom', path: ['criteria'], message: `rubric declares ${probeCount} distinct probes; execution cap is ${RUBRIC_PROBE_MAX_PER_EMIT}` });
   }
   if (rubricKindOf(d) !== 'acceptance') return;
 

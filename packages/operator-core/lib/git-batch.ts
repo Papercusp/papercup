@@ -111,6 +111,8 @@ export interface GitBatchOptions {
   maxBuffer?: number;
   /** `$0` of the helper — shows up in `ps` and audit logs. */
   label?: string;
+  /** Per-invocation environment for callers that must isolate inherited Git state. */
+  env?: NodeJS.ProcessEnv;
 }
 
 export interface GitBatchInvocation {
@@ -230,7 +232,7 @@ export async function runGitBatch(
       encoding: 'utf8',
       maxBuffer: opts.maxBuffer ?? 32 * 1024 * 1024,
       timeout: opts.timeoutMs ?? 30_000,
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+      env: { ...(opts.env ?? process.env), GIT_OPTIONAL_LOCKS: '0' },
     });
     stdout = String(out.stdout);
   } catch (error) {

@@ -933,6 +933,10 @@ const PLANS_START_RECEIPT_PRESERVE_PATHS = [
   'results[].promotedBlockError',
   'results[].admission.ready', 'results[].admission.reason',
   'results[].admission.message', 'results[].admissionError',
+  'results[].executionStart', 'results[].executionStartIssued',
+  'results[].earlierSideEffectsMayHaveCommitted',
+  'results[].admission.executionStart', 'results[].admission.executionStartIssued',
+  'results[].admission.earlierSideEffectsMayHaveCommitted',
   'results[].claimSpecBinding.ok', 'results[].claimSpecBindingError',
   'results[].message', 'results[].promotion.workItems[].workItemId',
 ] as const;
@@ -1290,12 +1294,12 @@ const RELEASE_REPAIR_QUEUE_PRESERVE_PATHS = [
   'repairQueue.signature[].workspace',
   'repairQueue.signature[].admittedRound',
   'repairQueue.signature[].measuredHead',
-  'repairQueue.signature[].cases',
   'repairQueue.signature[].casesCount',
   'repairQueue.signature[].casesOmittedCount',
-  'repairQueue.signature[].errors',
   'repairQueue.signature[].errorsCount',
   'repairQueue.signature[].errorsOmittedCount',
+  'repairQueue.signature[].cases',
+  'repairQueue.signature[].errors',
   'repairQueue._compactProjection',
 ] as const;
 
@@ -1388,7 +1392,10 @@ function compactReleaseRepairQueueBody(value: unknown): JsonObject | null {
   compact.repairQueue = queue;
   compact._compactProjection = {
     kind: 'release:repair-queue',
-    preserves: [...RELEASE_REPAIR_QUEUE_PRESERVE_PATHS],
+    preserves: [
+      'repairQueue phase/candidate/repairHead/decision/nextAction',
+      'signature prefix/cardinality and per-entry case/error counts and samples',
+    ],
     omits: ['unselected queue diagnostics and signature entries after the bounded prefix'],
     recovery: 'full result is in _projection.cursor',
   };

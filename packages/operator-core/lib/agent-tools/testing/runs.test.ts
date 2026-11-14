@@ -8,6 +8,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import {
   dispatchProjectedTool,
   lookupByMcpName,
@@ -15,7 +16,8 @@ import {
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
 import { PAYLOAD_TIER_RATCHET_CHARS } from '@papercusp/tooldef';
-import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-details';
+import { parseTestRunExecutionDetails, testRunExecutionDetailsReaderContract } from '@papercusp/test-config/execution-details';
+import { captureConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
 import {
   defaultRollupSource,
   foregroundRunMetadata,
@@ -23,6 +25,7 @@ import {
   MUTANT_DIFF_INLINE_CHARS,
   normalizeRunGroupFilter,
   shapeTestingRuns,
+  testRunReaderProvenance,
   toPathPattern,
   toShaPattern,
 } from './runs';
@@ -30,6 +33,10 @@ import runsTool from './runs';
 import { CRITICAL_P95_MS } from '../../event-loop-lag-monitor';
 
 const sqlMock = vi.hoisted(() => vi.fn());
+const readerRuntime = vi.hoisted(() => ({ artifact: null as Record<string, unknown> | null }));
+vi.mock('../../observability/runtime', () => ({
+  runtimeObservabilityHealth: () => ({ artifact: readerRuntime.artifact }),
+}));
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: sqlMock }),
@@ -50,6 +57,54 @@ function renderSqlFragment(fragment: unknown): string {
     .map((part, index) => `${String(part)}${renderSqlFragment(args[index])}`)
     .join('');
 }
+
+describe('testing:runs loaded reader provenance', () => {
+  beforeEach(() => { readerRuntime.artifact = null; });
+
+  it('reports the loaded strict parser contract while leaving unmeasured source unknown', () => {
+    const reader = testRunReaderProvenance();
+    const contract = testRunExecutionDetailsReaderContract();
+    expect(reader.parser.contract).toEqual(JSON.parse(contract));
+    expect(reader.parser.contract.fields).toEqual(expect.arrayContaining([
+      'population', 'sourceBytes', 'proofContext', 'sourceSubmodules', 'populationCaptureStatus',
+    ]));
+    expect(reader.parser.contractSha256).toBe(createHash('sha256').update(contract).digest('hex'));
+    expect(reader.parser.loadedEntrySha256).toBe(createHash('sha256')
+      .update(Function.prototype.toString.call(parseTestRunExecutionDetails)).digest('hex'));
+    expect(reader.artifact).toEqual({ status: 'unknown', reason: 'boot-artifact-not-measured' });
+    expect(parseTestRunExecutionDetails({ schemaVersion: 1, unknownField: true })).toBeUndefined();
+  });
+
+  it('uses the boot source pins and preserves unknown parser membership', () => {
+    const parser = 'libs/test-config/src/execution-details.ts';
+    readerRuntime.artifact = { status: 'measured', sourceSha: 'a'.repeat(40),
+      bundleSha256: 'b'.repeat(64), manifestSha256: 'c'.repeat(64),
+      sourceBlobs: { [parser]: 'd'.repeat(40), 'unrelated.ts': 'e'.repeat(40) }, evidenceRef: '/boot.json' };
+    expect(testRunReaderProvenance().artifact).toEqual({ status: 'measured', sourceSha: 'a'.repeat(40),
+      bundleSha256: 'b'.repeat(64), manifestSha256: 'c'.repeat(64),
+      sourceBlobs: { [parser]: 'd'.repeat(40) }, evidenceRef: '/boot.json' });
+    readerRuntime.artifact = { ...readerRuntime.artifact, sourceBlobs: {} };
+    expect(testRunReaderProvenance().artifact).toMatchObject({ status: 'measured', sourceBlobs: {} });
+    readerRuntime.artifact = { status: 'unknown', reason: 'boot-source-pin-missing' };
+    expect(testRunReaderProvenance().artifact).toEqual({ status: 'unknown', reason: 'boot-source-pin-missing' });
+  });
+
+  it('retains reader identity when a row response is bounded', () => {
+    const reader = testRunReaderProvenance();
+    const shaped = shapeTestingRuns({ reader, count: 0, total: 0, runs: [], truncatedByLimit: false }, 'trimmed');
+    expect(shaped).toMatchObject({ reader });
+  });
+
+  it('attaches the actual reader identity to an exact-ID response, including an absent original', async () => {
+    sqlMock.mockImplementation((strings: TemplateStringsArray, ...values: unknown[]) => {
+      if (strings.some(part => part.includes('WITH filtered'))) return Promise.resolve([]);
+      return { strings: Array.from(strings), values };
+    });
+    const result = await runsTool.handler({ testRunIds: [1] } as never, {} as never);
+    expect(result).toMatchObject({ data: { count: 0, runs: [], reader: testRunReaderProvenance() } });
+    expect(runsTool.result?.safeParse((result as { data: unknown }).data).success).toBe(true);
+  });
+});
 
 describe('toPathPattern', () => {
   it('matches a memorable path FRAGMENT as a substring — the corpus shape', () => {
@@ -239,6 +294,7 @@ describe('testing:runs runGroupId compatibility alias', () => {
 });
 
 describe('testing:runs evidence identity', () => {
+  const configurationSnapshot = captureConfigurationSnapshot({ PAPERCUSP_FLAG_P021_LEDGER: '1' });
   const cappedDetails = {
     schemaVersion: 1, root: '/checkouts/papercusp', filePath: 'same.test.ts',
     runGroupId: null, workspaceId: 'workspace-a', harnessSlug: 'harness-a',
@@ -248,7 +304,7 @@ describe('testing:runs evidence identity', () => {
     passedCaseTitlesTruncated: true,
   };
 
-  async function readDetails(executionDetails: unknown) {
+  async function readDetails(executionDetails: unknown, changes: Record<string, unknown> = {}) {
     sqlMock.mockImplementation((strings: TemplateStringsArray, ...values: unknown[]) => {
       const call = { strings: Array.from(strings), values };
       if (!call.strings.some(part => part.includes('WITH filtered'))) return call;
@@ -259,7 +315,7 @@ describe('testing:runs evidence identity', () => {
         finished_at: '2026-09-08T09:43:06Z', duration_ms: '1000', output_tail: null,
         run_group_id: null, source: 'local', branch: 'staging', commit_sha: 'abc123',
         loop_lag_p95_ms: null, rss_mb: null, worktree_dirty: true,
-        is_scratch_config: false, total: '1',
+        is_scratch_config: false, configuration_snapshot: configurationSnapshot, total: '1', ...changes,
       }]);
     });
     const result = await runsTool.handler({ testRunIds: [17692433], limit: 1 } as never, {} as never) as {
@@ -277,12 +333,143 @@ describe('testing:runs evidence identity', () => {
     { name: 'unsupported extension', stored: { ...cappedDetails, futureField: true }, reason: 'invalid-or-unsupported' },
     { name: 'different file', stored: { ...cappedDetails, filePath: 'other.test.ts' }, reason: 'row-mismatch' },
     { name: 'different group', stored: { ...cappedDetails, runGroupId: 'other-run' }, reason: 'row-mismatch' },
+    { name: 'different source', stored: { ...cappedDetails, commitSha: 'def456' }, reason: 'row-mismatch' },
+    { name: 'missing source', stored: { ...cappedDetails, commitSha: null }, reason: 'row-mismatch' },
+    { name: 'different worktree state', stored: { ...cappedDetails, worktreeDirty: false }, reason: 'row-mismatch' },
+    { name: 'different workspace', stored: { ...cappedDetails, workspaceId: 'workspace-b' }, reason: 'row-mismatch' },
+    { name: 'different harness', stored: { ...cappedDetails, harnessSlug: 'harness-b' }, reason: 'row-mismatch' },
+    { name: 'missing workspace', stored: { ...cappedDetails, workspaceId: null }, reason: 'row-mismatch' },
+    { name: 'missing harness', stored: { ...cappedDetails, harnessSlug: null }, reason: 'row-mismatch' },
   ])('explains execution-details availability for $name without granting identity', async ({ stored, reason }) => {
     const row = await readDetails(stored);
-    expect(row).toMatchObject({ root: null, executionDetails: null, executionDetailsUnavailableReason: reason });
+    expect(row).toMatchObject({ root: null, executionDetails: null, originalResultReference: null,
+      executionDetailsUnavailableReason: reason });
     expect(shapeTestingRuns({ runs: [row] }, 'trimmed')).toMatchObject({
       runs: [{ executionDetailsUnavailableReason: reason }],
     });
+  });
+
+  it('content-addresses the complete original outcome before bounded rendering and JSONB key reordering', async () => {
+    const original = await readDetails(cappedDetails);
+    expect(original?.originalResultReference).toMatchObject({ schemaVersion: 'original-test-run-reference-v2',
+      scope: 'original-test-run-outcome-execution-and-configuration', testRunId: '17692433',
+      sha256: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    const reordered = Object.fromEntries(Object.entries(cappedDetails).reverse());
+    expect((await readDetails(JSON.stringify(reordered)))?.originalResultReference)
+      .toEqual(original?.originalResultReference);
+    expect(shapeTestingRuns({ runs: [original] }, 'trimmed')).toMatchObject({
+      runs: [{ originalResultReference: original?.originalResultReference }],
+    });
+    // An identity beyond the rendered diagnostic sample still rotates the reference.
+    const titles = [...cappedDetails.passedCaseTitles];
+    titles[63] = 'changed last saved identity';
+    expect((await readDetails({ ...cappedDetails, passedCaseTitles: titles }))?.originalResultReference)
+      .not.toEqual(original?.originalResultReference);
+    const reversed = await readDetails({ ...cappedDetails, passedCaseTitles: [...titles].reverse() });
+    expect(reversed?.originalResultReference)
+      .not.toEqual((await readDetails({ ...cappedDetails, passedCaseTitles: titles }))?.originalResultReference);
+  });
+
+  async function readSet(requested: number[] | undefined, observed: number[],
+    rowChanges: Record<string, unknown> = {}, args: Record<string, unknown> = {}) {
+    sqlMock.mockImplementation((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const call = { strings: Array.from(strings), values };
+      if (!call.strings.some(part => part.includes('WITH filtered'))) return call;
+      return Promise.resolve(observed.map(id => ({
+        id: String(id), workspace_id: 'workspace-a', harness_slug: 'harness-a',
+        execution_details: cappedDetails, file_path: 'same.test.ts', status: 'pass', framework: 'vitest',
+        started_at: '2026-09-08T09:43:05Z', finished_at: '2026-09-08T09:43:06Z', duration_ms: '1000',
+        output_tail: null, run_group_id: null, source: 'local', branch: 'staging', commit_sha: 'abc123',
+        loop_lag_p95_ms: null, rss_mb: null, worktree_dirty: true, is_scratch_config: false,
+        configuration_snapshot: configurationSnapshot, total: String(observed.length), ...rowChanges,
+      })));
+    });
+    const result = await runsTool.handler({ testRunIds: requested, ...args } as never, {} as never) as {
+      data: { runs: Array<Record<string, unknown>>;
+        originalResultSetReference: { testRunIds: string[]; sha256: string } | null };
+    };
+    return result.data;
+  }
+
+  it('content-addresses the exact original-row set independent of request, row and JSONB object order', async () => {
+    const original = await readSet([2, 1], [1, 2]);
+    expect(original.originalResultSetReference).toMatchObject({
+      schemaVersion: 'original-test-run-set-reference-v2', scope: 'exact-requested-original-test-runs',
+      testRunIds: ['1', '2'], sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    expect((await readSet([1, 2], [2, 1], {
+      execution_details: Object.fromEntries(Object.entries(cappedDetails).reverse()),
+    })).originalResultSetReference).toEqual(original.originalResultSetReference);
+    expect(shapeTestingRuns(original, 'trimmed')).toMatchObject({
+      originalResultSetReference: original.originalResultSetReference,
+    });
+    expect((await readSet([1], [1])).originalResultSetReference).not.toEqual(original.originalResultSetReference);
+    expect((await readSet([1, 2], [1, 2], { status: 'fail' })).originalResultSetReference)
+      .not.toEqual(original.originalResultSetReference);
+    const titles = [...cappedDetails.passedCaseTitles];
+    titles[63] = 'changed identity beyond the diagnostic sample';
+    expect((await readSet([1, 2], [1, 2], {
+      execution_details: { ...cappedDetails, passedCaseTitles: titles },
+    })).originalResultSetReference).not.toEqual(original.originalResultSetReference);
+  });
+
+  it('binds original references to the independently stored verified configuration snapshot', async () => {
+    const original = await readDetails(cappedDetails);
+    const originalSet = (await readSet([1, 2], [1, 2])).originalResultSetReference;
+    const changed = captureConfigurationSnapshot({ PAPERCUSP_FLAG_P021_LEDGER: '0' });
+    const changedRow = await readDetails(cappedDetails, { configuration_snapshot: changed });
+    expect(changedRow?.configurationFingerprint).toBe(changed.fingerprint);
+    expect(changedRow?.originalResultReference).not.toBeNull();
+    expect(changedRow?.originalResultReference).not.toEqual(original?.originalResultReference);
+    expect((await readSet([1, 2], [1, 2], { configuration_snapshot: changed }))
+      .originalResultSetReference).not.toEqual(originalSet);
+    const reordered = { ...configurationSnapshot,
+      envSha256: Object.fromEntries(Object.entries(configurationSnapshot.envSha256).reverse()),
+      flagEnv: Object.fromEntries(Object.entries(configurationSnapshot.flagEnv).reverse()) };
+    expect((await readDetails(cappedDetails, { configuration_snapshot: reordered }))?.originalResultReference)
+      .toEqual(original?.originalResultReference);
+    for (const stored of [undefined, null, '{', {}, { ...configurationSnapshot, fingerprint: 'forged' },
+      { ...configurationSnapshot, envSha256: changed.envSha256 }]) {
+      expect((await readDetails(cappedDetails, { configuration_snapshot: stored }))?.originalResultReference)
+        .toBeNull();
+      expect(await readDetails(cappedDetails, { configuration_snapshot: stored })).toMatchObject({
+        configurationFingerprint: null, configurationSnapshotUnavailableReason:
+          stored == null ? 'not-recorded' : 'invalid-or-unsupported',
+      });
+      expect((await readSet([1, 2], [1, 2], { configuration_snapshot: stored }))
+        .originalResultSetReference).toBeNull();
+    }
+  });
+
+  it.each([
+    { requested: undefined, observed: [1] },
+    { requested: [1, 2], observed: [1] },
+    { requested: [1, 2], observed: [] },
+    { requested: [1, 2], observed: [1, 3] },
+    { requested: [1, 2], observed: [1, 1] },
+    { requested: [1, 1], observed: [1] },
+    { requested: [1, 1], observed: [1, 1] },
+    { requested: [1], observed: [1], changes: { execution_details: null } },
+    { requested: [1], observed: [1], changes: { execution_details: '{' } },
+    { requested: [1], observed: [1], changes: { workspace_id: 'foreign' } },
+    { requested: [1], observed: [1], changes: { finished_at: null } },
+  ])('leaves an incomplete, ambiguous or untrusted original-row set unknown: %j', async ({ requested, observed, changes }) => {
+    expect((await readSet(requested, observed, changes)).originalResultSetReference).toBeNull();
+  });
+
+  it.each([{ id: '17692434' }, { status: 'fail' }, { framework: 'node:test' },
+    { started_at: '2026-09-08T09:43:04Z' }, { finished_at: '2026-09-08T09:43:07Z' },
+    { duration_ms: '1001' }, { source: 'ci' }, { branch: 'other' }, { is_scratch_config: true }])
+  ('rotates the original result reference when an independent ledger observation changes: %j', async changed => {
+    const original = (await readDetails(cappedDetails))?.originalResultReference;
+    const current = (await readDetails(cappedDetails, changed))?.originalResultReference;
+    expect(current).not.toBeNull();
+    expect(current).not.toEqual(original);
+  });
+
+  it.each([{ finished_at: null }, { duration_ms: null }, { duration_ms: '9007199254740992' },
+    { id: '9007199254740992' }])('leaves an incomplete or inexact result reference unknown: %j', async changed => {
+    expect((await readDetails(cappedDetails, changed))?.originalResultReference).toBeNull();
   });
 
   it.each([
@@ -297,6 +484,8 @@ describe('testing:runs evidence identity', () => {
       const query = Array.from(strings).join(' ');
       if (query.includes('WITH filtered')) return Promise.resolve([{
         id: '17692433', execution_details: details, file_path: details.filePath,
+        workspace_id: details.workspaceId, harness_slug: details.harnessSlug,
+        commit_sha: details.commitSha, worktree_dirty: details.worktreeDirty,
         status: 'fail', framework: 'vitest', run_group_id: null, source: 'local',
         total: '1', started_at: null, finished_at: null,
       }]);
@@ -364,7 +553,7 @@ describe('testing:runs evidence identity', () => {
         passedCaseTitles: ['suite > passed case'],
         passedCaseTitlesTruncated: true,
         mutationPhase: null,
-        commitSha: null,
+        commitSha: 'abc123',
         worktreeDirty: false,
       },
       file_path: 'packages/example/same.test.ts', status: 'pass', framework: 'vitest',
@@ -451,7 +640,7 @@ describe('testing:runs evidence identity', () => {
           collectionFailed: false,
           passedCaseTitles: ['suite > passed case'],
           mutationPhase: null,
-          commitSha: null,
+          commitSha: 'abc123',
           worktreeDirty: false,
         }),
         file_path: 'same.test.ts', status: 'pass', framework: 'vitest',

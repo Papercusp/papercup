@@ -12,6 +12,8 @@ import { expandSelectionCommands } from "./related-tests.mjs";
 import { scriptUsesPassWithNoTests, scriptSupportsPassReuse } from "./empty-suite-guard.mjs";
 import { readNativeArtifactBytes, readNativeProcessTraceArtifacts } from "./budgeted-task-scheduler.mjs";
 import { jsonSha256, readCompletionJsonSync } from "./completion-snapshot.mjs";
+import { captureRecordedProofContext, parseRecordedNativePopulation, parseRecordedWorkerRuntime, parseRecordedWorkerCompilerInputs, parseRecordedWorkerExecution, stableRecordedWorkerExecution, parseRecordedWorkerDatabaseReset, parseRecordedSourceSubmodules, parseRecordedSourceBytes } from "../../libs/test-config/src/execution-details.ts";
+import { proofContextImpact, readProofContextIdentity, readWorkerTestConfiguration } from "@papercusp/test-config/configuration-snapshot";
 
 export const PARTIAL_TASK_CHECKPOINT_SCHEMA = 1;
 export const PARTIAL_TASK_SKIP_LIST_SCHEMA = 1;
@@ -576,6 +578,7 @@ export function readPartialNativeCompletion(file, expected, options = {}) {
   // cannot be relabeled as an interrupted prefix.
   const terminalPassed = Number.isSafeInteger(native.finishedAtMs) && native.finishedAtMs >= native.startedAtMs &&
     native.reason === "passed" && native.unhandledErrorCount === 0 && native.modulePopulationMatched === true &&
+    native.selectedPopulationMatched === true &&
     native.files.length === selectedPaths.size && native.gaps.length === 0;
   const interrupted = native.finishedAtMs === null && native.terminalHook === null && native.reason === null &&
     native.unhandledErrorCount === null && native.modulePopulationMatched === false &&
@@ -623,13 +626,54 @@ export function readPartialNativeCompletion(file, expected, options = {}) {
       source.status === "stable" && Array.isArray(source.sources) && source.sources.length > 0 &&
       source.sources.every(value => repoPath(value.path) && /^[a-f0-9]{64}$/.test(value.sha256) && value.sha256 === value.currentSha256) &&
       Array.isArray(source.reasons) && source.reasons.length === 0;
-    const cases = file.cases;
-    const measuredCases = Array.isArray(cases) && cases.length > 0 && cases.every(value => value.status === "pass");
+    // `cases` is a bounded diagnostic sample. Only the reporter's full original
+    // collection can establish completion; recompute every digest and join it
+    // to the independently frozen specification and the uncapped file counts.
+    const specification = specifications.find(value => value.testFile === file.testFile);
+    const population = parseRecordedNativePopulation(file, specification);
+    const proofContext = readProofContextIdentity(file.proofContext);
+    const workerRuntime = parseRecordedWorkerRuntime(file.proof?.inputs?.runtime);
+    const workerExecution = parseRecordedWorkerExecution(file.proof?.inputs?.workerExecution);
+    const workerCompilerInputs = parseRecordedWorkerCompilerInputs(file.proof?.inputs?.compilerInputs);
+    if (file.proof?.inputs?.compilerInputs !== undefined && (!workerCompilerInputs || !workerExecution
+      || workerCompilerInputs.captureId !== workerExecution.captureId
+      || workerCompilerInputs.testFile !== resolve(expected.root, file.testFile)))
+      return refused("native-worker-compiler-inputs-mismatch");
+    if (file.proof?.inputs?.workerExecution !== undefined && (!workerExecution
+      || workerExecution.testFile !== resolve(expected.root, file.testFile)
+      || !stableRecordedWorkerExecution(workerExecution)))
+      return refused("native-worker-execution-unmeasured-or-changed");
+    const workerDatabaseReset = parseRecordedWorkerDatabaseReset(file.proof?.inputs?.workerDatabaseReset);
+    if (file.proof?.inputs?.workerDatabaseReset !== undefined && (!workerDatabaseReset || !workerExecution
+      || workerDatabaseReset.captureId !== workerExecution.captureId
+      || workerDatabaseReset.testFile !== workerExecution.testFile
+      || workerDatabaseReset.runGroupId !== context.runGroupId))
+      return refused("native-worker-database-reset-mismatch");
+    const workerTestConfiguration = readWorkerTestConfiguration(file.proof?.inputs?.testConfiguration);
+    if (file.proof?.inputs?.testConfiguration !== undefined && !workerTestConfiguration)
+      return refused("native-proof-context-invalid");
+    const sourceSubmodules = parseRecordedSourceSubmodules(file.sourceSubmodules);
+    if (file.sourceSubmodules !== undefined && !sourceSubmodules)
+      return refused("native-proof-context-invalid");
+    const sourceBytes = parseRecordedSourceBytes(file.sourceBytes);
+    if (file.sourceBytes !== undefined && !sourceBytes) return refused("native-proof-context-invalid");
+    if (file.proofContext !== undefined) {
+      const measured = captureRecordedProofContext({ commitSha: snapshot.recordedSha,
+        worktreeDirty: snapshot.worktreeDirty, population, workerRuntime, sourceSubmodules, sourceBytes,
+        workerTestConfiguration });
+      if (!proofContext || Object.keys(measured.components).some(key =>
+        proofContext.components[key] !== measured.components[key]))
+        return refused("native-proof-context-invalid");
+    }
+    const populationBound = !!population;
+    const selectedCases = populationBound ? population.cases.filter(value => value.selected) : [];
+    const measuredCases = selectedCases.length > 0 && selectedCases.every(value => value.outcome === "passed");
     const runClean = interrupted || terminalPassed;
     const opaqueReasons = Array.isArray(row?.opaqueReasons) ? [...row.opaqueReasons] : ["proof-unmeasured"];
     if (!inputMeasured) opaqueReasons.push("input-classification-unmeasured");
     else opaqueReasons.push(...classified.opaqueReasons);
     if (!cleanSource) opaqueReasons.push("native-source-unmeasured");
+    if (!populationBound) opaqueReasons.push("native-population-unmeasured");
     if (!measuredCases) opaqueReasons.push("native-cases-incomplete");
     if (!runClean) opaqueReasons.push("native-run-incomplete-or-errored");
     if (snapshot.configSources?.status !== "unchanged") opaqueReasons.push("config-source-unmeasured");
@@ -639,11 +683,24 @@ export function readPartialNativeCompletion(file, expected, options = {}) {
     const receipt = { unitId: byPath.get(file.testFile).id, completionId: file.completionId,
       observedAtMs: file.observedAtMs, state: file.state === "passed" ? "pass" : file.state === "failed" ? "fail" : "infra",
       worktreeDirty: snapshot.worktreeDirty !== false, firstAttemptVerdict: file.firstAttemptVerdict,
-      observedCount: measuredCases ? cases.length : 0,
+      observedCount: measuredCases ? selectedCases.length : 0,
       proof: { recordedSha: snapshot.recordedSha, runContext: context.runContext,
+        ...(proofContext ? { proofContext } : {}),
+        ...(workerRuntime ? { workerRuntime } : {}),
+        ...(workerCompilerInputs ? { workerCompilerInputs } : {}),
+        ...(workerExecution ? { workerExecution } : {}),
+        ...(workerDatabaseReset ? { workerDatabaseReset } : {}),
+        ...(workerTestConfiguration ? { workerTestConfiguration } : {}),
+        ...(sourceSubmodules ? { sourceSubmodules } : {}),
+        ...(sourceBytes ? { sourceBytes } : {}),
         runnerIdentity: context.runnerIdentity, executedModules: executedModules ?? [],
         inputsCaptured: row?.inputsCaptured === true && inputMeasured,
-        readPaths: inputMeasured ? classified.readPaths : [], opaqueReasons } };
+        readPaths: inputMeasured ? classified.readPaths : [], opaqueReasons,
+        ...(populationBound ? { population, producingRun: {
+          qualificationAttemptId: context.qualificationAttemptId, runGroupId: context.runGroupId,
+          completionId: file.completionId, selectedManifestHash: native.selectedManifest.sha256,
+          ...(physicalCustody ? { physicalCustody } : {}),
+        } } : {}) } };
     receipts.push(receipt);
     // Runtime-input closure remains unmeasured. Current evidence independently
     // requires source/config, full collection, clean first attempt and native
@@ -1231,6 +1288,42 @@ export function evaluatePartialTaskContinuation(checkpoint, expected, options = 
     if (isDeepStrictEqual(authenticated.get(unit.id), receipt)) {
       current.push(unit.id);
       continue;
+    }
+    // Retained work is a NEW reuse decision. A matching Git/runtime pin cannot
+    // stand for configuration, fixtures, capabilities or the selected population.
+    // The before identity comes from the original receipt, never the caller's
+    // comparison. Missing current measurements or incomplete reach rerun the unit.
+    let impact;
+    try {
+      const comparison = expected.proofContexts?.[unit.id];
+      impact = proofContextImpact({ before: receipt.proof?.proofContext,
+        after: comparison?.after, reach: comparison?.reach });
+    } catch { /* Unreadable measurements remain unknown. */ }
+    if (impact?.status !== "known" || impact.tests.includes(unit.id) || impact.tests.includes(unit.path) ||
+        impact.legs.includes(unit.id) || impact.legs.includes(unit.path)) {
+      run.push(unit.id);
+      invalidated.push({ id: unit.id, reason: impact?.status === "known"
+        ? "proof-context-input-changed" : "proof-context-unmeasured" });
+      continue;
+    }
+    // Native retained work additionally needs the independently read original
+    // ledger binding persisted at the qualification recovery boundary. This is
+    // after current-capability authentication: missing originals never revoke
+    // an independently measured outcome of this execution.
+    const producing = receipt.proof?.producingRun;
+    if (unit.kind === "test" && producing) {
+      const bound = stored.nativeProducers?.some(producer => {
+        const originals = producer.originals;
+        return producer.runGroupId === producing.runGroupId && originals?.status === "known" &&
+          originals.runGroupId === producing.runGroupId && originals.selectedManifestHash === producing.selectedManifestHash &&
+          originals.bindings?.some(binding => binding.unitId === unit.id &&
+            binding.completionId === receipt.completionId && binding.reference?.schemaVersion === "original-test-run-reference-v2");
+      });
+      if (!bound) {
+        run.push(unit.id);
+        invalidated.push({ id: unit.id, reason: "original-test-ledger-unmeasured" });
+        continue;
+      }
     }
     let selection;
     if (receipt.worktreeDirty === false && Number.isSafeInteger(receipt.observedCount) && receipt.observedCount > 0 &&

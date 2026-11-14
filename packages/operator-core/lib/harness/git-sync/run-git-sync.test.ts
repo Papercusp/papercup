@@ -61,6 +61,7 @@ import {
   affectsToolRouting,
   affectsGeneratedDeclarations,
   migrationDependencyFenceSkips,
+  censusSubmoduleMigrationReservations,
   checkToolRoutingBeforeCommit,
   generatedDeclarationPair,
   expandGeneratedDeclarationPairHolds,
@@ -272,6 +273,66 @@ describe('migrationDependencyFenceSkips (EI-24940157290396415)', () => {
     expect(
       migrationDependencyFenceSkips([refused], ['schema-consumer.ts', 'root-unrelated.ts'], roster).map((s) => s.path),
     ).toEqual(['schema-consumer.ts', 'root-unrelated.ts']);
+  });
+});
+
+describe('censusSubmoduleMigrationReservations (EI-28016096563878045)', () => {
+  it('reads child migration status in bounded parallel batches and preserves each scope', async () => {
+    const subPaths = Array.from({ length: 24 }, (_, index) => 'child-' + index);
+    let active = 0;
+    let maxActive = 0;
+    const runGit: RunGit = async (_args, cwd) => {
+      const index = Number(cwd.slice(cwd.lastIndexOf('/') + 1).replace('child-', ''));
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return {
+          code: 0,
+          stdout: '?? libs/db/sql/999-unreserved-' + index + '.sql\0',
+          stderr: '',
+        };
+      } finally {
+        active -= 1;
+      }
+    };
+
+    const refusals = await censusSubmoduleMigrationReservations(runGit, '/fixture', subPaths);
+
+    expect(maxActive).toBe(8);
+    expect(refusals).toEqual(subPaths.map((scope, index) => ({
+      scope,
+      path: 'libs/db/sql/999-unreserved-' + index + '.sql',
+      reason: 'migration-reservation',
+      detail: 'migration reservation is checked during child sync',
+    })));
+  });
+
+  it('waits for every in-flight child status before propagating a failure', async () => {
+    const subPaths = Array.from({ length: 16 }, (_, index) => 'child-' + index);
+    let started = 0;
+    let completed = 0;
+    let active = 0;
+    const runGit: RunGit = async (_args, cwd) => {
+      const index = Number(cwd.slice(cwd.lastIndexOf('/') + 1).replace('child-', ''));
+      started += 1;
+      active += 1;
+      try {
+        await new Promise((resolve) => setTimeout(resolve, index === 0 ? 1 : 8));
+        if (index === 0) throw new Error('child status failed');
+        return { code: 0, stdout: '', stderr: '' };
+      } finally {
+        active -= 1;
+        completed += 1;
+      }
+    };
+
+    await expect(censusSubmoduleMigrationReservations(runGit, '/fixture', subPaths))
+      .rejects.toThrow('child status failed');
+
+    expect(started).toBe(8);
+    expect(completed).toBe(8);
+    expect(active).toBe(0);
   });
 });
 
@@ -2046,9 +2107,9 @@ describe('runGitSync (real git, no submodule)', () => {
 
   it('reports a silent staged-deletion command failure without committing or pushing', async () => {
     writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
-    const runGit: RunGit = async (args, cwd) => args.includes('--diff-filter=D')
+    const runGit: RunGit = async (args, cwd, options) => args.includes('--diff-filter=D')
       ? { code: -1, stdout: '', stderr: '' }
-      : directRunGit(args, cwd);
+      : directRunGit(args, cwd, options);
     const out = await runGitSync('test', { repoPath: repo, config: cfg, runGit });
     expect(out.status).toBe('error');
     if (out.status !== 'error') throw new Error(`expected error outcome, got ${out.status}`);
@@ -2056,7 +2117,8 @@ describe('runGitSync (real git, no submodule)', () => {
       'post-stage guard could not read staged deletions: git exited with code -1 without output',
     );
     expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain('normal.txt');
-    expect(git(repo, 'diff', '--cached', '--name-only')).toContain('normal.txt');
+    expect(git(repo, 'diff', '--cached', '--name-only')).not.toContain('normal.txt');
+    expect(readFileSync(join(repo, 'normal.txt'), 'utf8')).toBe('ordinary work\n');
   });
 
   it('EI-24712906810240170: fails closed when the post-stage live-lock refresh rejects', async () => {
@@ -2850,6 +2912,99 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(repo, 'status', '--porcelain')).toBe('');
   });
 
+  it('EI-28016096563878045: batches held and provider HEAD/index reads while keeping the fixed-point hold', async () => {
+    const batchRepo = mkdtempSync(join(tmpdir(), 'git-sync-held-head-batch-'));
+    try {
+      execFileSync('git', ['init', '-q', batchRepo], { encoding: 'utf8' });
+      configUser(batchRepo);
+      const firstPath = 'lib/first.ts';
+      const secondPath = 'lib/second.ts';
+      const heldPaths = Array.from({ length: 40 }, (_, index) => `lib/held/consumer-${index}.ts`);
+      mkdirSync(join(batchRepo, 'lib/held'), { recursive: true });
+      writeFileSync(join(batchRepo, firstPath), "import { oldSecond } from './second';\nexport const oldFirst = oldSecond;\n");
+      writeFileSync(join(batchRepo, secondPath), 'export const oldSecond = 1;\n');
+      for (let index = 0; index < heldPaths.length; index++) {
+        writeFileSync(join(batchRepo, heldPaths[index]!), index === 0
+          ? "import { oldFirst } from '../first';\nexport const value = oldFirst;\n"
+          : `export const unrelated${index} = ${index};\n`);
+      }
+      git(batchRepo, 'add', '-A');
+      git(batchRepo, 'commit', '--no-verify', '-m', 'seed held importer batch');
+
+      writeFileSync(join(batchRepo, firstPath), 'export const replacementFirst = 1;\n');
+      writeFileSync(join(batchRepo, secondPath), 'export const replacementSecond = 1;\n');
+      git(batchRepo, 'add', firstPath, secondPath);
+
+      const headTreeCalls: string[][] = [];
+      const heldHeadShowCalls: string[] = [];
+      const providerHeadShowCalls: string[] = [];
+      const providerIndexShowCalls: string[] = [];
+      const stagedIndexListCalls: string[][] = [];
+      const catFileBatchCalls: string[][] = [];
+      const catFileBatchCheckCalls: string[][] = [];
+      const countedRunGit: RunGit = async (args, cwd, options) => {
+        if (args[0] === 'ls-tree' && args.includes('HEAD')) headTreeCalls.push([...args]);
+        if (args[0] === 'show' && args[1]?.startsWith('HEAD:lib/held/')) heldHeadShowCalls.push(args[1]);
+        if (args[0] === 'show' && [firstPath, secondPath].some(path => args[1] === `HEAD:${path}`)) {
+          providerHeadShowCalls.push(args[1]!);
+        }
+        if (args[0] === 'show' && [firstPath, secondPath].some(path => args[1] === `:${path}`)) {
+          providerIndexShowCalls.push(args[1]!);
+        }
+        // Count the provider helper's path-filtered listing, not the separate
+        // whole-index census used by the staged-gitlink guard.
+        if (args[0] === 'ls-files' && args[1] === '--stage' && args.includes('--')) {
+          stagedIndexListCalls.push([...args]);
+        }
+        return directRunGit(args, cwd, options);
+      };
+      const countedRunGitStdin: RunGitStdin = async (args, cwd, stdin, options) => {
+        if (args[0] === 'cat-file' && args.includes('--batch')) catFileBatchCalls.push([...args]);
+        if (args[0] === 'cat-file' && args[1]?.startsWith('--batch-check=')) catFileBatchCheckCalls.push([...args]);
+        const result = spawnSync('git', args, {
+          cwd,
+          input: stdin,
+          timeout: 30_000,
+          killSignal: 'SIGKILL',
+          env: options?.env ? { ...process.env, ...options.env } : process.env,
+        });
+        return {
+          code: result.status ?? -1,
+          stdout: Buffer.isBuffer(result.stdout) ? result.stdout : Buffer.from(result.stdout ?? ''),
+          stderr: String(result.stderr ?? result.error ?? ''),
+        };
+      };
+      const result = await guardStagedIndexBeforeCommit({
+        runGit: countedRunGit,
+        runGitStdin: countedRunGitStdin,
+        repoPath: batchRepo,
+        scope: 'superproject',
+        excludedDependencies: heldPaths,
+        readText: async () => null,
+        log: () => {},
+      });
+
+      if (!result.ok) throw new Error(result.error);
+      expect(result.unstaged.sort()).toEqual([firstPath, secondPath].sort());
+      expect(headTreeCalls).toHaveLength(2);
+      expect(headTreeCalls.every(args =>
+        args.includes('-r') && args.includes('-l') && args.includes('-z') && args.includes('HEAD'),
+      )).toBe(true);
+      expect(headTreeCalls.some(args =>
+        args.includes(`:(literal)${firstPath}`) && args.includes(`:(literal)${secondPath}`),
+      )).toBe(true);
+      expect(stagedIndexListCalls).toHaveLength(1);
+      expect(stagedIndexListCalls[0]).toEqual(expect.arrayContaining([firstPath, secondPath]));
+      expect(catFileBatchCheckCalls).toHaveLength(1);
+      expect(catFileBatchCalls).toHaveLength(3);
+      expect(heldHeadShowCalls).toEqual([]);
+      expect(providerHeadShowCalls).toEqual([]);
+      expect(providerIndexShowCalls).toEqual([]);
+    } finally {
+      rmSync(batchRepo, { recursive: true, force: true });
+    }
+  });
+
   it('EI-25203309445902479: a new importer created after the dirty census is held with its excluded dependencies', async () => {
     const quarantinedPath = 'quarantined-export.ts';
     const lockedPath = 'locked-export.ts';
@@ -3441,7 +3596,7 @@ describe('runGitSync (real git, no submodule)', () => {
     utimesSync(lockPath, tenMinAgo, tenMinAgo);
 
     let urlSyncAttempts = 0;
-    const runGit: RunGit = async (args, cwd) => {
+    const runGit: RunGit = async (args, cwd, options) => {
       if (args.join(' ') === 'submodule sync --recursive' && urlSyncAttempts++ === 0) {
         return {
           code: 1,
@@ -3449,8 +3604,7 @@ describe('runGitSync (real git, no submodule)', () => {
           stderr: `error: could not lock config file ${join(repo, '.git', 'config')}: File exists`,
         };
       }
-      const r = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
-      return { code: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+      return directRunGit(args, cwd, options);
     };
 
     const out = await runGitSync('test', {
@@ -3483,7 +3637,7 @@ describe('runGitSync (real git, no submodule)', () => {
 
       let urlSyncAttempts = 0;
       const probed: string[] = [];
-      const runGit: RunGit = async (args, cwd) => {
+      const runGit: RunGit = async (args, cwd, options) => {
         if (args.join(' ') === 'submodule sync --recursive' && urlSyncAttempts++ === 0) {
           return {
             code: 1,
@@ -3491,8 +3645,7 @@ describe('runGitSync (real git, no submodule)', () => {
             stderr: `error: could not lock config file ${join(repo, '.git', 'config')}: File exists`,
           };
         }
-        const r = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
-        return { code: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+        return directRunGit(args, cwd, options);
       };
 
       const out = await runGitSync('test', {
@@ -3840,6 +3993,13 @@ describe('runGitSync (real git, no submodule)', () => {
   it('binds post-stage stdin reads to the attributed private index', async () => {
     writeFileSync(join(repo, 'mine.txt'), 'clean staged content\n');
     const privateIndexes: string[] = [];
+    const privateSeedCallsites: string[] = [];
+    const runGit: RunGit = async (args, cwd, options) => {
+      if (args[0] === 'read-tree' && options?.env?.GIT_INDEX_FILE) {
+        privateSeedCallsites.push(options.diagnosticTags?.callsite ?? '');
+      }
+      return directRunGit(args, cwd, options);
+    };
     const runGitStdin: RunGitStdin = async (args, cwd, stdin, options) => {
       const index = options?.env?.GIT_INDEX_FILE;
       if (index) privateIndexes.push(index);
@@ -3871,13 +4031,14 @@ describe('runGitSync (real git, no submodule)', () => {
         { agent: 'cup-7', agentLabel: 'Cup Seven', intent: 'wire the parser', files: ['mine.txt'] },
       ],
       contentDetectors: [detector],
-      runGit: directRunGit,
+      runGit,
       runGitStdin,
     });
 
     expect(out.status).toBe('synced');
     expect(privateIndexes.length).toBeGreaterThan(0);
     expect(privateIndexes.every((index) => index.includes('papercusp-git-sync-attributed-'))).toBe(true);
+    expect(privateSeedCallsites).toContain('private-index-attributed');
   });
 
   it('STRANDING GUARD (WI-1316 / 8186adfb5): a FAILED attributed commit (index.lock race) must NOT skip the catch-all — the remainder still commits', async () => {
@@ -4931,6 +5092,221 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
 
   afterEach(() => rmSync(root, { recursive: true, force: true }));
 
+  const addNestedSlowSubmodule = (): {
+    slowOrigin: string;
+    slowParentOrigin: string;
+    slowRepo: string;
+    slowParentRepo: string;
+    slowParentInitialSha: string;
+  } => {
+    const slowOrigin = join(root, 'slow-origin.git');
+    const slowParentOrigin = join(root, 'slow-parent-origin.git');
+    git(root, 'init', '--bare', '-b', 'main', slowOrigin);
+    git(root, 'init', '--bare', '-b', 'main', slowParentOrigin);
+
+    const slowSeed = join(root, 'slow-seed');
+    git(root, 'clone', slowOrigin, slowSeed);
+    configUser(slowSeed);
+    writeFileSync(join(slowSeed, 'slow.txt'), 'slow-v1\n');
+    git(slowSeed, 'add', '-A');
+    git(slowSeed, 'commit', '--no-verify', '-m', 'slow init');
+    git(slowSeed, 'push', '-u', 'origin', 'main');
+
+    const slowParentSeed = join(root, 'slow-parent-seed');
+    git(root, 'clone', slowParentOrigin, slowParentSeed);
+    configUser(slowParentSeed);
+    git(slowParentSeed, ...allowFile, 'submodule', 'add', slowOrigin, 'nested/slow');
+    configUser(join(slowParentSeed, 'nested/slow'));
+    git(slowParentSeed, 'add', '-A');
+    git(slowParentSeed, 'commit', '--no-verify', '-m', 'slow parent init');
+    git(slowParentSeed, 'push', '-u', 'origin', 'main');
+    const slowParentInitialSha = git(slowParentSeed, 'rev-parse', 'HEAD');
+
+    git(repo, ...allowFile, 'submodule', 'add', slowParentOrigin, 'vendor/slow-parent');
+    configUser(join(repo, 'vendor/slow-parent'));
+    git(repo, ...allowFile, 'submodule', 'update', '--init', '--recursive');
+    const slowParentRepo = join(repo, 'vendor/slow-parent');
+    const slowRepo = join(slowParentRepo, 'nested/slow');
+    configUser(slowRepo);
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '--no-verify', '-m', 'add nested slow submodule');
+    git(repo, 'push', 'origin', 'main');
+    git(repo, 'fetch', 'origin', '+refs/heads/main:refs/remotes/origin/main');
+    return { slowOrigin, slowParentOrigin, slowRepo, slowParentRepo, slowParentInitialSha };
+  };
+
+  it.each([false, true] as const)(
+    'EI-28009112703724068: publishes a verified root leaf before unrelated deep work, but guards prior local gitlinks (%s)',
+    async (priorUnverifiedRootPointer) => {
+      const nested = addNestedSlowSubmodule();
+      const fastRepo = join(repo, 'libs/sub');
+      const fastInitialRootSha = git(superOrigin, 'rev-parse', 'main:libs/sub');
+      const slowInitialRootSha = git(superOrigin, 'rev-parse', 'main:vendor/slow-parent');
+
+      if (priorUnverifiedRootPointer) {
+        writeFileSync(join(nested.slowParentRepo, 'unpublished.txt'), 'local-only parent commit\n');
+        git(nested.slowParentRepo, 'add', '-A');
+        git(nested.slowParentRepo, 'commit', '--no-verify', '-m', 'local-only parent commit');
+        git(repo, 'add', 'vendor/slow-parent');
+        git(repo, 'commit', '--no-verify', '-m', 'local root with unverified parent pin');
+      } else {
+        writeFileSync(join(nested.slowRepo, 'slow.txt'), 'slow-v2\n');
+      }
+      writeFileSync(join(fastRepo, 'sub.txt'), 'fast-v2\n');
+
+      const blockedRepo = priorUnverifiedRootPointer ? nested.slowParentRepo : nested.slowRepo;
+      let releaseBlockedPush = () => {};
+      const blockedPushGate = new Promise<void>((resolve) => {
+        releaseBlockedPush = resolve;
+      });
+      let signalBlockedPush = () => {};
+      const blockedPushStarted = new Promise<void>((resolve) => {
+        signalBlockedPush = resolve;
+      });
+      let blockedPush = false;
+      let rootPushCount = 0;
+      const run: RunGit = async (args, cwd, options) => {
+        if (cwd === blockedRepo && args.includes('push')) {
+          blockedPush = true;
+          signalBlockedPush();
+          await blockedPushGate;
+          const result = await directRunGit(args, cwd, options);
+          blockedPush = false;
+          return result;
+        }
+        if (cwd === repo && args.includes('push')) {
+          const result = await directRunGit(args, cwd, options);
+          if (result.code === 0) rootPushCount += 1;
+          return result;
+        }
+        return directRunGit(args, cwd, options);
+      };
+
+      const phaseOutputs = new Map<string, unknown>();
+      const step: GitSyncStepRunner = async <T>(name: string, operation: () => Promise<T>): Promise<T> => {
+        const result = await operation();
+        phaseOutputs.set(name, structuredClone(result));
+        return result;
+      };
+      const firstRunRootCommits: string[] = [];
+      const runPromise = runGitSync('test', {
+        repoPath: repo,
+        runGit: run,
+        step,
+        onRootCommit: (commit) => firstRunRootCommits.push(commit.sha),
+      });
+      let waitTimer: ReturnType<typeof setTimeout> | undefined;
+      const reachedBlockedPush = await Promise.race([
+        blockedPushStarted.then(() => true),
+        runPromise.then(() => false, () => false),
+        new Promise<boolean>((resolve) => {
+          waitTimer = setTimeout(() => resolve(false), 15_000);
+        }),
+      ]);
+      if (waitTimer) clearTimeout(waitTimer);
+      const rootFastPinWhileBlocked = reachedBlockedPush ? git(superOrigin, 'rev-parse', 'main:libs/sub') : '';
+      const rootSlowPinWhileBlocked = reachedBlockedPush
+        ? git(superOrigin, 'rev-parse', 'main:vendor/slow-parent')
+        : '';
+      const pushesWhileBlocked = rootPushCount;
+      const wasBlocked = blockedPush;
+      releaseBlockedPush();
+      const outcome = await runPromise;
+
+      expect(reachedBlockedPush).toBe(true);
+      expect(wasBlocked).toBe(true);
+      if (priorUnverifiedRootPointer) {
+        expect(pushesWhileBlocked).toBe(0);
+        expect(rootFastPinWhileBlocked).toBe(fastInitialRootSha);
+      } else {
+        expect(pushesWhileBlocked).toBeGreaterThan(0);
+        expect(rootFastPinWhileBlocked).toBe(git(subOrigin, 'rev-parse', 'main'));
+      }
+      expect(rootSlowPinWhileBlocked).toBe(slowInitialRootSha);
+      expect(git(superOrigin, 'rev-parse', 'main:libs/sub')).toBe(git(subOrigin, 'rev-parse', 'main'));
+      expect(git(superOrigin, 'rev-parse', 'main:vendor/slow-parent')).toBe(
+        git(nested.slowParentOrigin, 'rev-parse', 'main'),
+      );
+      expect(outcome.status).toBe('synced');
+
+      if (!priorUnverifiedRootPointer) {
+        const submodulePhase = phaseOutputs.get('git-sync:submodules') as {
+          earlyRootCommit?: { localCommits?: Array<{ sha: string }> };
+        };
+        const earlyCommitSha = submodulePhase.earlyRootCommit?.localCommits?.[0]?.sha;
+        expect(earlyCommitSha).toBeDefined();
+        expect(firstRunRootCommits).toContain(earlyCommitSha);
+
+        let replayPushCount = 0;
+        const replayRunGit: RunGit = async (args, cwd, options) => {
+          if (args.includes('push')) replayPushCount += 1;
+          return directRunGit(args, cwd, options);
+        };
+        const replayStep: GitSyncStepRunner = async <T>(name: string, operation: () => Promise<T>): Promise<T> =>
+          phaseOutputs.has(name) ? structuredClone(phaseOutputs.get(name)) as T : operation();
+        const replayRootCommits: string[] = [];
+        await runGitSync('test', {
+          repoPath: repo,
+          runGit: replayRunGit,
+          step: replayStep,
+          onRootCommit: (commit) => replayRootCommits.push(commit.sha),
+        });
+        expect(replayPushCount).toBe(0);
+        expect(replayRootCommits).toContain(earlyCommitSha);
+      }
+    },
+  );
+
+  it.each(['complete', 'blocked', 'unreadable'] as const)('EI-282804: only a completed later root census supersedes early findings (%s)', async (mode) => {
+    const source = 'held-export.ts';
+    const consumer = 'metadata-proof.ts';
+    const baseline = 'export const value = 1;\n';
+    writeFileSync(join(repo, source), baseline);
+    git(repo, 'add', source);
+    git(repo, 'commit', '--no-verify', '-m', 'seed held exporter');
+    writeFileSync(join(repo, source), 'export const value = 2;\n');
+    writeFileSync(join(repo, consumer), "import { value } from './held-export';\nexport { value };\n");
+    const phases = new Map<string, unknown>();
+    let unreadableStatus = false;
+    const step: GitSyncStepRunner = async <T>(name: string, operation: () => Promise<T>): Promise<T> => {
+      if (name === 'git-sync:pointer-bump') {
+        writeFileSync(join(repo, source), baseline);
+        unreadableStatus = mode === 'unreadable';
+        if (mode === 'blocked') return {
+          committedLocal: false, dirtyPathCount: 1, committedCount: 0,
+          oversized: [], contentErrors: [], error: 'fixture: final guard census unavailable',
+        } as T;
+      }
+      const result = await operation();
+      phases.set(name, structuredClone(result));
+      return result;
+    };
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      runGit: async (args, cwd, options) => {
+        if (unreadableStatus && cwd === repo && args.join(' ') === 'status --porcelain') {
+          unreadableStatus = false;
+          return { code: 128, stdout: '', stderr: 'fixture: dirty status unavailable' };
+        }
+        return directRunGit(args, cwd, options);
+      },
+      step,
+      liveLockHoldings: [{ path: source, owner: 'su-held', intent: 'preserve live source custody' }],
+    });
+
+    const early = phases.get('git-sync:submodules') as { earlyRootCommit?: { contentErrors: Array<{ file: string }> } };
+    expect(early.earlyRootCommit?.contentErrors).toContainEqual(expect.objectContaining({ file: consumer }));
+    if (mode !== 'complete') {
+      expect(out.contentErrors).toContainEqual(expect.objectContaining({ file: consumer }));
+      expect(git(repo, 'status', '--porcelain', '--', consumer)).toContain(consumer);
+    } else {
+      expect(git(superOrigin, 'show', `main:${consumer}`)).toContain("from './held-export'");
+      expect(git(repo, 'status', '--porcelain', '--', source, consumer)).toBe('');
+      expect(out.contentErrors).not.toContainEqual(expect.objectContaining({ file: consumer }));
+    }
+  });
+
   // WI-6554700010018409: AttributionTally.scope must carry the repo label that
   // git_sync_commit_attribution uses for the same commits (resolveAttributionRepo).
   it('labels attribution tallies with each repo label from a superproject install', async () => {
@@ -5470,13 +5846,18 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
     // origin but is absent from the locally pinned submodule revision.
     writeFileSync(join(repo, 'consumer.ts'), "import { classify } from './libs/sub/turn-error';\nvoid classify;\n");
 
-    const failedSubmoduleFetch: RunGit = async (args, cwd) => {
+    const failedSubmoduleFetch: RunGit = async (args, cwd, options) => {
       if (cwd === join(repo, 'libs/sub') && args[0] === 'fetch') {
         return { code: 1, stdout: '', stderr: 'simulated temporary submodule fetch failure' };
       }
-      return directRunGit(args, cwd);
+      return directRunGit(args, cwd, options);
     };
-    const out = await runGitSync('test', { repoPath: repo, runGit: failedSubmoduleFetch });
+    const syncLogs: string[] = [];
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      runGit: failedSubmoduleFetch,
+      log: (message) => syncLogs.push(message),
+    });
 
     expect(out.status).toBe('error');
     if (out.status === 'error') {
@@ -5486,7 +5867,13 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
     expect(git(superOrigin, 'rev-parse', 'main')).toBe(originalSuperHead);
     expect(git(superOrigin, 'rev-parse', 'main:libs/sub')).toBe(staleSubHead);
     // Preserve locally committed source for the next successful submodule-sync tick.
-    expect(git(repo, 'show', 'HEAD:consumer.ts')).toContain("'./libs/sub/turn-error'");
+    let committedSource: string | undefined;
+    try {
+      committedSource = git(repo, 'show', 'HEAD:consumer.ts');
+    } catch {
+      // The assertion below includes the git-sync decision log when HEAD lacks the file.
+    }
+    expect(committedSource, syncLogs.join('\n')).toContain("'./libs/sub/turn-error'");
   });
 
   it('EI-21234208817497976: clears an orphaned submodule .git/modules/**/index.lock and publishes the recovered gitlink', async () => {
@@ -6293,11 +6680,57 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
     }
     return out;
   };
+  const fakeHead = 'a'.repeat(40);
+  const fakeBaseTree = 'b'.repeat(40);
+  const fakeChangedTree = 'c'.repeat(40);
+  const fakeCommit = 'd'.repeat(40);
   const fakeGit =
-    (handle: (args: string[]) => { code: number; stdout?: string; stderr?: string }): RunGit =>
-    async (args) => {
-      const r = handle(stripGitCFlags(args));
-      return { code: r.code, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+    (
+      handle: (args: string[]) => { code: number; stdout?: string; stderr?: string },
+      { gitDir = '/fake/.git' }: { gitDir?: string } = {},
+    ): RunGit => {
+      let privateIndexDirty = false;
+      return async (args, _cwd, options) => {
+        const normalized = stripGitCFlags(args);
+        const command = normalized.join(' ');
+        // Model the private-index contract used by runGitSync while keeping these
+        // command-classification cases deterministic. A caller can provide a real
+        // temporary gitDir when a lock-file probe is part of the case.
+        if (command === 'rev-parse --absolute-git-dir') return { code: 0, stdout: gitDir, stderr: '' };
+        const r = handle(normalized);
+        if (command === 'rev-parse --git-path index' && r.code === 0 && !r.stdout?.trim()) {
+          return { code: 0, stdout: options?.env?.GIT_INDEX_FILE ?? join(gitDir, 'index'), stderr: r.stderr ?? '' };
+        }
+        if (command === 'rev-parse --verify -q HEAD^{commit}' && r.code === 0 && !r.stdout?.trim()) {
+          return { code: 0, stdout: fakeHead, stderr: r.stderr ?? '' };
+        }
+        if (command === 'rev-parse --verify HEAD^{commit}' && r.code === 0 && !r.stdout?.trim()) {
+          return { code: 0, stdout: fakeHead, stderr: r.stderr ?? '' };
+        }
+        if (command === `rev-parse --verify -q ${fakeHead}^{tree}` && r.code === 0 && !r.stdout?.trim()) {
+          return { code: 0, stdout: fakeBaseTree, stderr: r.stderr ?? '' };
+        }
+        if (command === `rev-parse --verify ${fakeHead}^{tree}` && r.code === 0 && !r.stdout?.trim()) {
+          return { code: 0, stdout: fakeBaseTree, stderr: r.stderr ?? '' };
+        }
+        if (command === 'rev-parse HEAD' && r.code === 0 && !r.stdout?.trim()) {
+          return { code: 0, stdout: fakeHead, stderr: r.stderr ?? '' };
+        }
+        if (options?.env?.GIT_INDEX_FILE && ['add', 'update-index'].includes(normalized[0]!) && r.code === 0) {
+          privateIndexDirty = true;
+        }
+        if (normalized[0] === 'write-tree' && r.code === 0) {
+          return {
+            code: 0,
+            stdout: r.stdout?.trim() || (privateIndexDirty ? fakeChangedTree : fakeBaseTree),
+            stderr: r.stderr ?? '',
+          };
+        }
+        if (normalized[0] === 'commit-tree' && r.code === 0 && !r.stdout?.trim()) {
+          return { code: 0, stdout: fakeCommit, stderr: r.stderr ?? '' };
+        }
+        return { code: r.code, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+      };
     };
 
   it('WI-10003100: overlaps sibling submodules but finishes children before parents', async () => {
@@ -6369,10 +6802,9 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
       if (j.startsWith('status --porcelain -z -uall')) return { code: 0, stdout: '' }; // no oversized
       if (j.startsWith('status --porcelain')) return { code: 0, stdout: ' M file.txt\n' }; // dirty
       if (j.startsWith('add')) return { code: 0 };
-      if (j.startsWith('rev-parse --absolute-git-dir')) return { code: 1, stderr: 'not a git directory' };
-      if (j.startsWith('commit')) {
+      if (j.startsWith('commit-tree')) {
         commitAttempts++;
-        return { code: 1, stderr: "fatal: Unable to create '.git/index.lock': File exists" };
+        return { code: 1, stderr: 'fatal: injected commit-tree failure' };
       }
       return { code: 0, stdout: '' };
     });
@@ -6387,20 +6819,19 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
       expect(out.errors.map((e) => e.scope)).toContain('superproject');
       expect(out.errors[0].message).toMatch(/commit failed/i);
     }
-    expect(commitAttempts).toBe(1 + 3); // initial attempt + bounded live-contention retries
+    expect(commitAttempts).toBe(1); // private-index commit-tree is not the legacy index.lock writer
   });
 
   it('EI-258149: a publication failure remains an error when another dirty path is live-held', async () => {
-    let commitAttempts = 0;
+    let publicationAttempts = 0;
     const run = fakeGit((args) => {
       const j = args.join(' ');
       if (j.startsWith('symbolic-ref')) return { code: 0, stdout: 'main' };
       if (j.startsWith('status --porcelain -z')) return { code: 0, stdout: ' M file.txt\0 M held.txt\0' };
       if (j.startsWith('status --porcelain')) return { code: 0, stdout: ' M file.txt\n M held.txt\n' };
-      if (j.startsWith('rev-parse --absolute-git-dir')) return { code: 1, stderr: 'not a git directory' };
-      if (j.startsWith('commit')) {
-        commitAttempts++;
-        return { code: 1, stderr: "fatal: Unable to create '.git/index.lock': File exists" };
+      if (args[0] === 'update-ref' && args.includes('HEAD')) {
+        publicationAttempts++;
+        return { code: 1, stderr: 'fatal: injected update-ref publication failure' };
       }
       return { code: 0, stdout: '' };
     });
@@ -6413,49 +6844,54 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
       config: { push: false, pushSubmodules: false },
     });
 
-    expect(commitAttempts).toBe(4);
+    expect(publicationAttempts).toBe(1);
     expect(out.skippedPaths).toEqual(expect.arrayContaining([expect.objectContaining({ path: 'held.txt', owner: 'peer' })]));
     expect(out.status).toBe('error');
     if (out.status === 'error') {
-      expect(out.errors).toEqual(expect.arrayContaining([expect.objectContaining({ scope: 'superproject', message: expect.stringContaining('commit failed') })]));
+      expect(out.errors).toEqual(expect.arrayContaining([expect.objectContaining({ scope: 'superproject', message: expect.stringContaining('commit not published') })]));
     }
   });
 
-  it('EI-21210284687094143: catch-all commit retries a transient live index.lock instead of red-sticking git-sync', async () => {
-    let commitAttempts = 0;
-    const logs: string[] = [];
+  it('EI-21210284687094143: catch-all publication retries a transient HEAD.lock that disappears before inspection', async () => {
+    const gitDir = mkdtempSync(join(tmpdir(), 'gitsync-head-lock-'));
+    let publicationAttempts = 0;
     const run = fakeGit((args) => {
-      const j = args.join(' ');
-      if (j.startsWith('symbolic-ref')) return { code: 0, stdout: 'main' };
-      if (j.startsWith('status --porcelain -z -uall')) return { code: 0, stdout: '' };
-      if (j.startsWith('status --porcelain')) return { code: 0, stdout: ' M file.txt\n' };
-      if (j.startsWith('add')) return { code: 0 };
-      if (j.startsWith('rev-parse --absolute-git-dir')) return { code: 1, stderr: 'live holder' };
-      if (j.startsWith('commit')) {
-        commitAttempts++;
-        if (commitAttempts === 1) {
+      if (args[0] === 'symbolic-ref') return { code: 0, stdout: 'main' };
+      if (args[0] === 'status' && args.includes('--porcelain')) {
+        return { code: 0, stdout: args.includes('-uall') ? '' : ' M file.txt\n' };
+      }
+      if (args[0] === 'add') return { code: 0 };
+      if (args[0] === 'update-ref' && args.includes('HEAD')) {
+        publicationAttempts++;
+        if (publicationAttempts === 1) {
+          const headLock = join(gitDir, 'HEAD.lock');
+          writeFileSync(headLock, '');
+          rmSync(headLock);
           return {
             code: 128,
             stderr:
-              "fatal: Unable to create '/fake/.git/index.lock': File exists.\n\nAnother git process seems to be running",
+              `fatal: Unable to create '${join(gitDir, 'HEAD.lock')}': File exists.\n\nAnother git process seems to be running`,
           };
         }
         return { code: 0 };
       }
       return { code: 0, stdout: '' };
-    });
+    }, { gitDir });
 
-    const out = await runGitSync('test', {
-      repoPath: '/fake',
-      runGit: run,
-      submodulePaths: [],
-      config: { push: false, pushSubmodules: false },
-      log: (message) => logs.push(message),
-    });
+    try {
+      const out = await runGitSync('test', {
+        repoPath: '/fake',
+        runGit: run,
+        submodulePaths: [],
+        config: { push: false, pushSubmodules: false },
+      });
 
-    expect(out.status).toBe('synced');
-    expect(commitAttempts).toBe(2);
-    expect(logs.join('\n')).toContain("'git commit' hit live index.lock contention");
+      expect(out.status).toBe('synced');
+      expect(publicationAttempts).toBe(2);
+      expect(() => readFileSync(join(gitDir, 'HEAD.lock'))).toThrow();
+    } finally {
+      rmSync(gitDir, { recursive: true, force: true });
+    }
   });
 
   it('EI-25545265520729999: a failed HEAD read cannot supply partial-outcome head evidence', async () => {
@@ -6496,6 +6932,9 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
   });
 
   it('EI-20347384139844425: live config.lock contention retries before failing the tick', async () => {
+    const gitDir = mkdtempSync(join(tmpdir(), 'gitsync-config-lock-'));
+    const configLock = join(gitDir, 'config.lock');
+    writeFileSync(configLock, '');
     let urlSyncAttempts = 0;
     const logs: string[] = [];
     const run = fakeGit((args) => {
@@ -6510,40 +6949,47 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
         }
         return { code: 0 };
       }
-      // Fail the stale-lock probe closed: this fixture represents a live writer,
-      // never an orphan that git-sync is allowed to unlink.
-      if (j === 'rev-parse --absolute-git-dir') return { code: 1, stderr: 'not a git directory' };
       if (j.startsWith('symbolic-ref')) return { code: 0, stdout: 'main' };
       if (j.startsWith('status --porcelain')) return { code: 0, stdout: '' };
       if (j.startsWith('fetch')) return { code: 0 };
       if (j.startsWith('merge')) return { code: 0, stdout: 'Already up to date.' };
       if (j.startsWith('rev-list --count')) return { code: 0, stdout: '0' };
       return { code: 0, stdout: '' };
-    });
+    }, { gitDir });
 
-    const out = await runGitSync('test', {
-      repoPath: '/fake',
-      runGit: run,
-      submodulePaths: [],
-      config: { push: false, pushSubmodules: true, pushSubmoduleOrigins: false },
-      log: (message) => logs.push(message),
-    });
+    try {
+      const out = await runGitSync('test', {
+        repoPath: '/fake',
+        runGit: run,
+        submodulePaths: [],
+        config: { push: false, pushSubmodules: true, pushSubmoduleOrigins: false },
+        log: (message) => logs.push(message),
+      });
 
-    expect(out.status).toBe('nothing');
-    expect(urlSyncAttempts).toBe(3);
-    expect(logs.filter((message) => message.includes('live config.lock contention'))).toHaveLength(2);
+      expect(out.status).toBe('nothing');
+      expect(urlSyncAttempts).toBe(3);
+      expect(logs.filter((message) => message.includes('live config.lock contention'))).toHaveLength(2);
+      expect(readFileSync(configLock, 'utf8')).toBe('');
+    } finally {
+      rmSync(gitDir, { recursive: true, force: true });
+    }
   });
 
   it('P-002a: a commit that simply had nothing to commit (all-oversized) is NOT an error', async () => {
-    // every dirty file was excluded as oversized → `git commit` exits non-zero with
-    // "nothing to commit" — benign, must fall through to fetch/merge, not error.
+    // Every path is excluded from the private index, so write-tree equals the base
+    // tree and commit-tree is never invoked.
+    let commitTreeCalls = 0;
     const run = fakeGit((args) => {
       const j = args.join(' ');
       if (j.startsWith('symbolic-ref')) return { code: 0, stdout: 'main' };
       if (j.startsWith('status --porcelain -z -uall')) return { code: 0, stdout: '' };
       if (j.startsWith('status --porcelain')) return { code: 0, stdout: ' M file.txt\n' };
       if (j.startsWith('add')) return { code: 0 };
-      if (j.startsWith('commit')) return { code: 1, stdout: 'nothing to commit, working tree clean' };
+      if (j === 'write-tree') return { code: 0, stdout: fakeBaseTree };
+      if (j.startsWith('commit-tree')) {
+        commitTreeCalls++;
+        return { code: 1, stdout: 'nothing to commit, working tree clean' };
+      }
       if (j.startsWith('fetch')) return { code: 0 };
       if (j.startsWith('merge')) return { code: 0, stdout: 'Already up to date.' };
       return { code: 0, stdout: '' };
@@ -6555,6 +7001,7 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
       config: { push: false, pushSubmodules: false },
     });
     expect(out.status).toBe('nothing'); // benign — not an error
+    expect(commitTreeCalls).toBe(0);
   });
 
   it('P-002b: a failed merge with NO conflicted paths is classified error, not conflict', async () => {
@@ -6679,37 +7126,86 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
     expect(pushCalls).toBe(1);
   });
 
-  it('EI-18094449017685490: a transient ENOENT on `git add -A` (concurrent atomic-write race) is retried, not surfaced as an error', async () => {
-    let addAttempts = 0;
-    const run = fakeGit((args) => {
-      const j = args.join(' ');
-      if (j.startsWith('symbolic-ref')) return { code: 0, stdout: 'main' };
-      if (j.startsWith('status --porcelain -z -uall')) return { code: 0, stdout: '' }; // no oversized
-      if (j.startsWith('status --porcelain')) return { code: 0, stdout: ' M file.txt\n' }; // dirty
-      if (j.startsWith('add')) {
-        addAttempts++;
-        // vanishes on the first two attempts (a concurrent atomic-write race), lands on the third
-        if (addAttempts < 3) {
+  describe('ENOENT retries with a real private index (WI-6554700010047054)', () => {
+    let root: string;
+    let repo: string;
+
+    beforeEach(() => {
+      root = mkdtempSync(join(tmpdir(), 'gitsync-enoent-'));
+      const origin = join(root, 'origin.git');
+      git(root, 'init', '--bare', origin);
+      repo = join(root, 'repo');
+      git(root, 'init', '-b', 'main', repo);
+      configUser(repo);
+      writeFileSync(join(repo, 'file.txt'), 'before\n');
+      git(repo, 'add', '-A');
+      git(repo, 'commit', '--no-verify', '-m', 'init');
+      git(repo, 'remote', 'add', 'origin', origin);
+      git(repo, 'push', '-u', 'origin', 'main');
+      writeFileSync(join(repo, 'file.txt'), 'after\n');
+    });
+
+    afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+    // Inject only the stat race. Real Git supplies metadata and proves env
+    // forwarding, so these cases reach add rather than fail private-index setup.
+    it('EI-18094449017685490: a transient ENOENT on `git add -A` (concurrent atomic-write race) is retried, not surfaced as an error', async () => {
+      let addAttempts = 0;
+      const indexes: Array<string | undefined> = [];
+      const run: RunGit = async (args, cwd, options) => {
+        if (stripGitCFlags(args)[0] === 'add') {
+          addAttempts++;
+          indexes.push(options?.env?.GIT_INDEX_FILE);
+          if (addAttempts < 3) {
+            return {
+              code: 128,
+              stdout: '',
+              stderr: "fatal: unable to stat 'some/file.tmp.210675.abc': No such file or directory",
+            };
+          }
+        }
+        return directRunGit(args, cwd, options);
+      };
+      const out = await runGitSync('test', {
+        repoPath: repo,
+        runGit: run,
+        submodulePaths: [],
+        config: { push: false, pushSubmodules: false },
+      });
+      expect(out.status).toBe('synced');
+      expect(addAttempts).toBe(3);
+      expect(indexes[0]).toMatch(/papercusp-git-sync-catch-all-/);
+      expect(new Set(indexes).size).toBe(1);
+      expect(git(repo, 'show', 'HEAD:file.txt')).toBe('after');
+    });
+
+    it('EI-18094449017685490: exhausting the transient-ENOENT retry budget still surfaces a real error (never a silent strand)', async () => {
+      const before = git(repo, 'rev-parse', 'HEAD');
+      let addAttempts = 0;
+      const run: RunGit = async (args, cwd, options) => {
+        if (stripGitCFlags(args)[0] === 'add') {
+          addAttempts++;
           return {
             code: 128,
+            stdout: '',
             stderr: "fatal: unable to stat 'some/file.tmp.210675.abc': No such file or directory",
           };
         }
-        return { code: 0 };
-      }
-      if (j.startsWith('commit')) return { code: 0 };
-      if (j.startsWith('fetch')) return { code: 0 };
-      if (j.startsWith('merge')) return { code: 0, stdout: 'Already up to date.' };
-      return { code: 0, stdout: '' };
+        return directRunGit(args, cwd, options);
+      };
+      const out = await runGitSync('test', {
+        repoPath: repo,
+        runGit: run,
+        submodulePaths: [],
+        config: { push: false, pushSubmodules: false },
+      });
+      expect(out.status).toBe('error');
+      if (out.status === 'error') expect(out.errors[0].message).toMatch(/git add -A failed/i);
+      expect(addAttempts).toBe(4);
+      expect(git(repo, 'rev-parse', 'HEAD')).toBe(before);
+      expect(git(repo, 'diff', '--cached', '--name-only')).toBe('');
+      expect(readFileSync(join(repo, 'file.txt'), 'utf8')).toBe('after\n');
     });
-    const out = await runGitSync('test', {
-      repoPath: '/fake',
-      runGit: run,
-      submodulePaths: [],
-      config: { pushSubmodules: false },
-    });
-    expect(out.status).toBe('synced'); // NOT stranded on the transient race
-    expect(addAttempts).toBe(3); // the original attempt + 2 retries before it resolved
   });
 
   it('WI-40170: an ignored protected path drops only its redundant exclusion pathspec and retries', async () => {
@@ -6872,6 +7368,9 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
   });
 
   it('EI-20201578457434474: live index.lock contention retries with bounded backoff before surfacing an error', async () => {
+    const gitDir = mkdtempSync(join(tmpdir(), 'gitsync-index-lock-'));
+    const indexLock = join(gitDir, 'index.lock');
+    writeFileSync(indexLock, '');
     let addAttempts = 0;
     const run = fakeGit((args) => {
       const j = args.join(' ');
@@ -6884,51 +7383,29 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
           return {
             code: 128,
             stderr:
-              "fatal: Unable to create '/fake/.git/index.lock': File exists.\n\nAnother git process seems to be running",
+              `fatal: Unable to create '${indexLock}': File exists.\n\nAnother git process seems to be running`,
           };
         }
         return { code: 0 };
       }
-      // Make the stale-lock probe fail closed in this injected case: the lock is
-      // live contention, not an orphan we are allowed to unlink.
-      if (j.startsWith('rev-parse --absolute-git-dir')) return { code: 1, stderr: 'not a git directory' };
       if (j.startsWith('commit')) return { code: 0 };
       if (j.startsWith('fetch')) return { code: 0 };
       if (j.startsWith('merge')) return { code: 0, stdout: 'Already up to date.' };
       return { code: 0, stdout: '' };
-    });
-    const out = await runGitSync('test', {
-      repoPath: '/fake',
-      runGit: run,
-      submodulePaths: [],
-      config: { push: false, pushSubmodules: false },
-    });
-    expect(out.status).toBe('synced');
-    expect(addAttempts).toBe(3); // original attempt + 2 bounded contention retries
-  });
-
-  it('EI-18094449017685490: exhausting the transient-ENOENT retry budget still surfaces a real error (never a silent strand)', async () => {
-    let addAttempts = 0;
-    const run = fakeGit((args) => {
-      const j = args.join(' ');
-      if (j.startsWith('symbolic-ref')) return { code: 0, stdout: 'main' };
-      if (j.startsWith('status --porcelain -z -uall')) return { code: 0, stdout: '' };
-      if (j.startsWith('status --porcelain')) return { code: 0, stdout: ' M file.txt\n' };
-      if (j.startsWith('add')) {
-        addAttempts++;
-        return { code: 128, stderr: "fatal: unable to stat 'some/file.tmp.210675.abc': No such file or directory" };
-      }
-      return { code: 0, stdout: '' };
-    });
-    const out = await runGitSync('test', {
-      repoPath: '/fake',
-      runGit: run,
-      submodulePaths: [],
-      config: { pushSubmodules: false },
-    });
-    expect(out.status).toBe('error'); // a REAL, persistent failure still surfaces loudly
-    if (out.status === 'error') expect(out.errors[0].message).toMatch(/git add -A failed/i);
-    expect(addAttempts).toBe(4); // 1 original + TRANSIENT_STAT_FAILURE_MAX_RETRIES(3) retries, then give up
+    }, { gitDir });
+    try {
+      const out = await runGitSync('test', {
+        repoPath: '/fake',
+        runGit: run,
+        submodulePaths: [],
+        config: { push: false, pushSubmodules: false },
+      });
+      expect(out.status).toBe('synced');
+      expect(addAttempts).toBe(3); // original attempt + 2 bounded contention retries
+      expect(readFileSync(indexLock, 'utf8')).toBe('');
+    } finally {
+      rmSync(gitDir, { recursive: true, force: true });
+    }
   });
 
   it('P-004: a detached HEAD syncs to its OWN remote default (origin/HEAD → main), not cfg.branch', async () => {

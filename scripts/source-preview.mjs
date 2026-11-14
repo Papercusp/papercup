@@ -44,11 +44,17 @@
 //
 // Exit: 0 ok / in sync · 1 finding / drift / refused · 2 usage or cannot check.
 import assert from 'node:assert/strict';
+import { normalizeVerifierInputs, validateCommittedVerifierInputs,
+  measureVerifierSourceBytesFromGit } from './verifier-source-preflight.mjs';
+import { compilerOptionsFromArgs, createCompilerInputCustody } from './lib/compiler-input-custody.mjs';
+import { captureTestingCoreInputUniverse, qualifyTestingCoreConfigurationClosure, retainTestingCoreResolverMetadata,
+  verifyTestingCoreInputs, verifyTestingCoreReceipt } from './lib/testing-core-witness.mjs';
 import { assertCommittedWorkspaceLockMatches, committedWorkRootDependencyDonor } from './lint-as-committed.mjs';
 import { assertRootLockManifestMatches } from './npm-install-safe.mjs';
 import { admitTaskDeadline, readTaskDeadlineEpochMs } from './lib/task-deadline.mjs';
 import { PRIVATE_TEST_PG_RELEASE_TOKEN_ENV, requestPrivateTestPgRelease } from './lib/with-test-pg-cleanup.mjs';
 import { createProgressAwareWatchdog } from './lib/batch-watchdog.mjs';
+import { hashNativeArtifactBytes } from './lib/budgeted-task-scheduler.mjs';
 import { processGroupLifetime } from '@papercusp/operator-core/lib/fleet/process-group-lifetime';
 import { readProcessIdentity } from '@papercusp/operator-core/lib/process-identity';
 import { sealRuntimeSourceHandle } from '@papercusp/operator-core/lib/blind-review-source-seal';
@@ -494,24 +500,7 @@ function measureVerifierArchiveSourceBytes({ repo, ref, receiptSha256 }) {
 /** @param {{ repo: string, ref: string, receiptSha256?: string }} options */
 export function measureVerifierSourceBytes({ repo, ref, receiptSha256 }) {
   if (receiptSha256 !== undefined) return measureVerifierArchiveSourceBytes({ repo, ref, receiptSha256 });
-  const measure = (source, sha, prefix = '') => {
-    let bytes = 0;
-    for (const entry of git(source, ['ls-tree', '-r', '-z', '-l', sha]).split('\0')) {
-      if (!entry) continue;
-      const fields = entry.slice(0, entry.indexOf('\t')).trim().split(/\s+/);
-      if (fields[1] !== 'blob') continue;
-      const size = Number(fields[3]);
-      if (!Number.isSafeInteger(size) || size < 0) throw new PreviewError('cannot measure committed source bytes', 2);
-      bytes += Math.ceil(size / 4096) * 4096;
-    }
-    for (const link of listGitlinks(source, sha)) {
-      const full = prefix ? `${prefix}/${link.path}` : link.path;
-      bytes += measure(materializedSubmodule(source, link, full), link.sha, full);
-    }
-    if (!Number.isSafeInteger(bytes)) throw new PreviewError('committed source size exceeds safe integer range', 2);
-    return bytes;
-  };
-  return measure(repo, resolveCommit(repo, ref));
+  return measureVerifierSourceBytesFromGit({ repo, ref });
 }
 
 /**
@@ -566,6 +555,7 @@ export const TAURI_VERIFIER_INPUTS = Object.freeze([
   'apps/operator/bin/bundle-host.sh',
   'apps/operator/bin/bundle-host-common.sh',
   'scripts/source-preview.mjs',
+  'scripts/verifier-source-preflight.mjs',
   'scripts/lib/committed-source-loader.mjs',
   'scripts/restricted-hold-tree-gate.mjs',
   'scripts/lib/spa-require-built.sh',
@@ -596,6 +586,7 @@ export const TAURI_VERIFIER_INPUTS = Object.freeze([
 // source, and a Git checkout cannot discard its tracked population.
 const VERIFIER_REBUILT_OUTPUTS = [
   'apps/operator/dist-verify',
+  'apps/operator-vite/dist',
   'papercusp-desktop/src-tauri/resources/workbench@papercusp.ai.shell-extension.zip',
   'papercusp-desktop/src-tauri/resources/workbench-install.js',
 ];
@@ -611,25 +602,7 @@ function committedVerifierPathTracked(repo, sha, path) {
  * @param {{ repo: string, ref: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, receiptSha256?: string }} options
  */
 export async function validateVerifierInputs({ repo, ref, inputs = [], inputsFile, tauriInputs = false, receiptSha256 }) {
-  if (inputsFile !== undefined) {
-    const listed = JSON.parse(await fs.readFile(inputsFile, 'utf8'));
-    if (!Array.isArray(listed) || !listed.length || listed.some((path) => typeof path !== 'string')) {
-      throw new PreviewError('verification inputs file must contain a non-empty JSON array of paths', 2);
-    }
-    inputs = [...inputs, ...listed];
-  }
-  if (!inputs.length) throw new PreviewError('verification export needs explicit tested inputs', 2);
-  if (tauriInputs) inputs = [...inputs, ...TAURI_VERIFIER_INPUTS];
-  const paths = [...new Set(inputs)].sort();
-  for (const path of paths) {
-    if (VERIFIER_REBUILT_OUTPUTS.some(output => path === output || path.startsWith(output + '/'))) {
-      throw new PreviewError(`generated verifier runtime output cannot be a tested source input: ${path}`, 2);
-    }
-    if (typeof path !== 'string' || !path || isAbsolute(path) || path.includes('\0')
-      || path.split('/').some((p) => p === '..' || p === '.' || !p)) {
-      throw new PreviewError(`invalid tested input: ${path}`, 2);
-    }
-  }
+  const paths = await normalizeVerifierInputs({ inputs, inputsFile, tauriInputs });
   if (receiptSha256 !== undefined) {
     const { root, receipt } = readPinnedVerifierArchive(repo, ref, receiptSha256);
     const receiptPaths = receipt.testedInputs.map(input => input.path).sort();
@@ -650,25 +623,7 @@ export async function validateVerifierInputs({ repo, ref, inputs = [], inputsFil
     verifyVerifierSourceSync(root, receipt, { runtimeArtifacts: true });
     return { sha: receipt.sourceCommit, paths };
   }
-  const sha = resolveCommit(repo, ref);
-  // Refuse initial mismatches before creating a destination, cloning or
-  // archiving. Keep the post-copy comparison below as the race guard.
-  const inputTrees = new Map();
-  for (const path of paths) {
-    const live = join(repo, path);
-    if (!(await fs.lstat(live)).isFile()) {
-      throw new PreviewError(`tested input is not a regular file: ${path}`, 2);
-    }
-    const blob = committedInputBlob(repo, sha, path, inputTrees);
-    const bytes = await fs.readFile(live);
-    // Git's raw blob identity includes its object header; do not apply filters.
-    const digest = createHash(blob.length === 64 ? 'sha256' : 'sha1')
-      .update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
-    if (digest !== blob) {
-      throw new PreviewError(`dirty tested-input mismatch: ${path}`, 2);
-    }
-  }
-  return { sha, paths };
+  return validateCommittedVerifierInputs({ repo, ref, paths });
 }
 
 /** Prepare a source snapshot only after all declared inputs match their pin.
@@ -915,14 +870,42 @@ export function verifierPhaseRunner(path, env, childDiagnosticsPath) {
   writeFileSync(archivePath, '', { flag: 'wx', mode: 0o600 });
   const started = performance.now();
   let sequence = 0;
+  let writeFailure = null;
   const record = (phase, event, fields = {}) => {
+    if (writeFailure) throw writeFailure;
+    const nextSequence = sequence + 1;
     const bytes = `${JSON.stringify({
-      schemaVersion: 'verifier-phase-v1', sequence: ++sequence,
+      schemaVersion: 'verifier-phase-v1', sequence: nextSequence,
       taskId: env.PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID ?? null,
       phase, event, elapsedMs: Math.round(performance.now() - started), ...fields,
     })}\n`;
-    appendFileSync(archivePath, bytes);
-    appendFileSync(path, bytes);
+    let archiveFd, receiptFd, archiveSize, receiptSize;
+    try {
+      archiveFd = openSync(archivePath, 'a');
+      receiptFd = openSync(path, 'a');
+      archiveSize = fstatSync(archiveFd).size;
+      receiptSize = fstatSync(receiptFd).size;
+      appendFileSync(archiveFd, bytes);
+      appendFileSync(receiptFd, bytes);
+      sequence = nextSequence;
+    } catch (error) {
+      const rollbackErrors = [];
+      if (receiptFd !== undefined && receiptSize !== undefined) {
+        try { ftruncateSync(receiptFd, receiptSize); } catch (rollbackError) { rollbackErrors.push(rollbackError); }
+      }
+      if (archiveFd !== undefined && archiveSize !== undefined) {
+        try { ftruncateSync(archiveFd, archiveSize); } catch (rollbackError) { rollbackErrors.push(rollbackError); }
+      }
+      if (rollbackErrors.length) {
+        writeFailure = new AggregateError([error, ...rollbackErrors],
+          'Unable to roll back a verifier phase receipt append');
+        throw writeFailure;
+      }
+      throw error;
+    } finally {
+      if (receiptFd !== undefined) closeSync(receiptFd);
+      if (archiveFd !== undefined) closeSync(archiveFd);
+    }
   };
   const active = new Set();
   const reportProgress = (phase, progress) => {
@@ -1316,97 +1299,13 @@ function bgVerifierCompilerCustody({ prepared, dependencies }, verifyBoundary) {
     assert.ok(!files.has(path), `BG compiler duplicate input: ${path}`);
     files.set(path, { ...row, path });
   }
-  /** @param {string} local */
-  const inputIdentity = local => {
-    const path = join(prepared.root, local);
-    const stat = lstatSync(path, { bigint: true });
-    return { physical: realpathSync(path), dev: stat.dev, ino: stat.ino,
-      mode: stat.mode, nlink: stat.nlink, size: stat.size,
-      mtimeNs: stat.mtimeNs, ctimeNs: stat.ctimeNs };
-  };
-  const originalIdentities = new Map([...files.keys()].map(local => [local, inputIdentity(local)]));
-  // Derive the protected directory population from retained inputs, never from
-  // later directory discovery. Include physical ancestors of in-root links.
-  // Generated-only output directories are outside this population, so ordinary
-  // compiler output does not invalidate the original input directories.
-  const directories = new Set(['.']);
-  for (const [local, identity] of originalIdentities) {
-    const physical = relative(prepared.root, identity.physical).split(sep).join('/');
-    assert.ok(physical && physical !== '..' && !physical.startsWith('../') && !isAbsolute(physical),
-      'BG compiler original input escaped selected generation');
-    for (const path of [local, physical]) {
-      let directory = dirname(path);
-      while (directory !== '.') {
-        directories.add(directory);
-        directory = dirname(directory);
-      }
-    }
-  }
-  const originalDirectories = new Map([...directories].map(local => [local, inputIdentity(local)]));
-  /** @type {Map<string, { path: string, realpath: string, sha256: string }>} */
-  const consumed = new Map();
-  /** Read once and validate the exact buffer handed to an evaluator/compiler.
-   * @param {string} path */
-  const readInput = path => {
-    const physical = realpathSync(path);
-    const local = relative(prepared.root, physical).split(sep).join('/');
-    assert.ok(local && local !== '..' && !local.startsWith('../') && !isAbsolute(local),
-      'BG compiler input escaped selected generation');
-    const expected = files.get(local);
-    assert.ok(expected?.kind === 'file', `BG compiler input is outside original census: ${local}`);
-    const fd = openSync(physical, 'r');
-    /** @type {Buffer} */
-    let contents;
-    try {
-      const before = fstatSync(fd, { bigint: true });
-      assert.ok(before.isFile(), 'BG compiler input must be regular');
-      contents = readFileSync(fd);
-      const after = fstatSync(fd, { bigint: true });
-      assert.ok(['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].every(key => before[key] === after[key])
-        && realpathSync(path) === physical, `BG compiler input changed while reading: ${local}`);
-    } finally { closeSync(fd); }
-    const sha256 = createHash('sha256').update(contents).digest('hex');
-    assert.equal(sha256, expected.sha256, `BG compiler consumed bytes mismatch: ${local}`);
-    return { contents, identity: { path: local, realpath: physical, sha256 } };
-  };
-  // This plugin must precede any other onLoad provider. It fails closed for
-  // unknown inputs/loaders instead of asking esbuild to read them unobserved.
-  /** @type {import('esbuild').Plugin} */
-  const plugin = { name: 'bg-original-input-custody', setup(build) {
-    assert.equal(build.initialOptions.plugins?.[0], plugin, 'BG compiler custody must be the first plugin');
-    assert.equal(build.initialOptions.stdin, undefined, 'BG compiler stdin is outside original census');
-    build.onLoad({ filter: /.*/ }, ({ path, namespace }) => {
-      assert.equal(namespace, 'file', 'BG compiler virtual input is outside original census');
-      const { contents, identity } = readInput(path);
-      const { path: local, realpath: physical } = identity;
-      /** @type {Record<string, import('esbuild').Loader>} */
-      const loaders = { js: 'js', mjs: 'js', cjs: 'js', jsx: 'jsx', ts: 'ts', mts: 'ts', cts: 'ts', tsx: 'tsx', json: 'json', css: 'css', txt: 'text' };
-      const loader = build.initialOptions.loader?.['.' + local.split('.').at(-1)]
-        ?? loaders[local.split('.').at(-1)];
-      assert.ok(loader, `BG compiler input loader is UNKNOWN: ${local}`);
-      consumed.set(local, identity);
-      return { contents, loader, resolveDir: dirname(physical) };
-    });
-  } };
-  const verifyInputs = () => {
-    verifyBoundary('before-publication', original);
-    for (const [local, expected] of originalIdentities)
-      assert.deepEqual(inputIdentity(local), expected, `BG compiler original input identity changed: ${local}`);
-    for (const [local, expected] of originalDirectories)
-      assert.deepEqual(inputIdentity(local), expected, `BG compiler original directory identity changed: ${local}`);
-  };
-  const custody = { plugin, readToolchainInput: readInput,
-    consumed: () => freezeBgExpectation([...consumed.values()].sort((a, b) => a.path.localeCompare(b.path))),
-    verifyBeforePublication() {
-      verifyInputs();
-      assert.ok(consumed.size > 0, 'BG compiler consumed input proof is UNKNOWN');
-      return freezeBgExpectation([...consumed.values()].sort((a, b) => a.path.localeCompare(b.path)));
-    } };
+  const custody = createCompilerInputCustody({ root: prepared.root, files, label: 'BG compiler',
+    verifyBoundary: () => verifyBoundary('before-publication', original) });
   bgRuntimeInputCustodies.set(custody, {
     preparedSha256: createHash('sha256').update(JSON.stringify(prepared)).digest('hex'),
     dependencySha256: createHash('sha256').update(JSON.stringify(original)).digest('hex'),
     capturedAtMs: Date.now(), capturedMonotonicNs: process.hrtime.bigint(),
-    files: originalIdentities.size, directories: originalDirectories.size, verify: verifyInputs });
+    files: custody.fileCount, directories: custody.directoryCount, verify: custody.verifyInputs });
   return custody;
 }
 
@@ -1570,44 +1469,7 @@ export function verifyBgVerifierBuildRecord(record, invocation, boundary) {
  * @param {string[]} argv @param {string} root
  */
 function bgCompilerOptions(argv, root) {
-  /** @type {import('esbuild').BuildOptions} */
-  const options = { absWorkingDir: root, entryPoints: [], write: false };
-  /** @type {string | undefined} */
-  let metafile;
-  for (const arg of argv) {
-    if (!arg.startsWith('-')) { options.entryPoints.push(arg); continue; }
-    const flag = { '--bundle': 'bundle', '--minify-whitespace': 'minifyWhitespace',
-      '--minify-syntax': 'minifySyntax', '--keep-names': 'keepNames' }[arg];
-    if (flag) { options[flag] = true; continue; }
-    const scalar = /^--(platform|format|target|outfile|log-level|log-limit)=(.+)$/s.exec(arg);
-    if (scalar) {
-      const key = { 'log-level': 'logLevel', 'log-limit': 'logLimit' }[scalar[1]] ?? scalar[1];
-      options[key] = scalar[1] === 'log-limit' ? Number(scalar[2]) : scalar[2];
-      continue;
-    }
-    if (arg.startsWith('--metafile=')) { metafile = arg.slice(11); options.metafile = true; continue; }
-    if (arg.startsWith('--external:')) { (options.external ??= []).push(arg.slice(11)); continue; }
-    const mapping = /^--(define|alias|banner):([^=]+)=(.*)$/s.exec(arg);
-    if (mapping) { (options[mapping[1]] ??= {})[mapping[2]] = mapping[3]; continue; }
-    throw new Error(`BG compiler switch is outside maintained recipe: ${arg}`);
-  }
-  assert.equal(options.entryPoints.length, 1, 'BG compiler requires exactly one maintained entry');
-  assert.ok(options.outfile, 'BG compiler output path is required');
-  const ownedPath = path => {
-    const output = resolve(root, path), local = relative(root, output);
-    assert.ok(local && !isAbsolute(local) && local !== '..' && !local.startsWith(`..${sep}`),
-      'BG compiler output escaped selected generation');
-    // Refuse existing directory-link parents as well as lexical escapes.
-    let parent = dirname(output);
-    while (!existsSync(parent)) parent = dirname(parent);
-    const physical = realpathSync(parent), inside = relative(root, physical);
-    assert.ok(inside !== '..' && !inside.startsWith(`..${sep}`) && !isAbsolute(inside),
-      'BG compiler output escaped selected generation');
-    return output;
-  };
-  options.outfile = ownedPath(options.outfile);
-  if (metafile !== undefined) metafile = ownedPath(metafile);
-  return { options, metafile };
+  return compilerOptionsFromArgs(argv, root);
 }
 
 /** Keep the common source/dependency receipt once, with a separate original
@@ -1651,11 +1513,34 @@ function validateBgVerifierBuildContexts(context) {
     assert.ok(!commands.has(key), 'BG invocation set duplicated command');
     commands.add(key);
     const { options, metafile } = bgCompilerOptions(entry.original.argv, context.record.prepared.root);
+    assert.ok(!Object.hasOwn(options.define ?? {}, '__PAPERCUSP_TESTING_CORE_SOURCE_SHA256__')
+      && !Object.hasOwn(options.define ?? {}, '__PAPERCUSP_TESTING_CORE_WITNESS__'),
+    'BG testing core cannot accept a caller-supplied witness');
     for (const output of [options.outfile, metafile].filter(Boolean)) {
       assert.ok(!outputs.has(output), 'BG invocation set duplicated output');
       outputs.add(output);
     }
   }
+}
+
+/** Derive the dependency from the ORIGINAL selected entry population, before
+ * stage creation. Keep main at index zero for its existing artifact authority.
+ * Only the maintained core may produce the later parent's derived define.
+ * @param {ReturnType<typeof prepareBgVerifierBuildContexts>} contexts */
+function bgTestingCorePlan(contexts) {
+  const root = contexts.record.prepared.root;
+  const core = join(root, 'packages/operator-core/lib/agent-tools/testing/testing-core.worker.ts');
+  const producers = contexts.invocations.flatMap((row, index) => {
+    const { options } = bgCompilerOptions(row.original.argv, root);
+    return resolve(root, options.entryPoints[0]) === core ? [{ index, options }] : [];
+  });
+  if (!producers.length) return null;
+  assert.equal(producers.length, 1, 'BG testing core producer must be unique');
+  const producer = producers[0];
+  assert.ok(producer.index > 0 && producer.options.bundle
+    && producer.options.platform === 'node' && producer.options.format === 'esm',
+  'BG testing core requires a separate plain-Node bundled producer');
+  return { producerIndex: producer.index, consumerIndex: 0 };
 }
 
 /** Refresh the shared source/dependency census once per boundary, while still
@@ -1703,6 +1588,7 @@ export function prepareBgVerifierBuildTransaction({ prepared, dependencies, invo
   assert.match(stageLeaf, /^[A-Za-z0-9][A-Za-z0-9._-]*$/, 'BG transaction stage leaf is invalid');
   const transaction = freezeBgExpectation({ schemaVersion: 'bg-build-transaction-v1', contexts,
     bank: bankIdentity, stage: join(bank, stageLeaf), outputs, ...(assets === undefined ? {} : { assets }), ...(recipe ? { recipe } : {}),
+    testingCore: bgTestingCorePlan(contexts),
     ...(publicationLeaf === undefined ? {} : { publicationLeaf }) });
   validateBgVerifierBuildTransaction(transaction);
   assert.ok(!existsSync(transaction.stage) && !isBgSymlink(transaction.stage), 'BG transaction stage already exists');
@@ -1731,6 +1617,8 @@ function validateBgVerifierBuildTransaction(transaction) {
   assert.equal(transaction.schemaVersion, 'bg-build-transaction-v1', 'BG transaction is UNKNOWN');
   const { contexts, bank, stage, outputs } = transaction;
   verifyBgVerifierBuildContexts(contexts, 'before-build');
+  assert.deepEqual(transaction.testingCore ?? null, bgTestingCorePlan(contexts),
+    'BG testing core original dependency changed');
   assert.deepEqual(readBgDirectoryIdentity(bank.path), bank, 'BG transaction bank identity changed');
   assert.equal(dirname(stage), bank.path, 'BG transaction stage escaped bank');
   assert.match(basename(stage), /^[A-Za-z0-9][A-Za-z0-9._-]*$/, 'BG transaction stage leaf is invalid');
@@ -1783,6 +1671,13 @@ function validateBgVerifierBuildTransaction(transaction) {
   }
   // Exact equality makes the original logical population authoritative.
   assert.deepEqual(compilerOutputs.sort(), outputs.map(row => row.temporary).sort(), 'BG transaction compiler output membership mismatch');
+  if (transaction.testingCore) {
+    const producer = contexts.invocations[transaction.testingCore.producerIndex];
+    const { options, metafile } = bgCompilerOptions(producer.original.argv, contexts.record.prepared.root);
+    assert.ok(outputs.some(row => join(stage, row.temporary) === options.outfile
+      && row.final === 'testing-core.worker.mjs') && outputs.some(row => join(stage, row.temporary) === metafile
+      && row.final === 'testing-core.worker.mjs.meta.json'), 'BG testing core original output membership changed');
+  }
   // A full-output expectation must contain the main entry before any effects.
   // Explicit source-only authority protects its original subset; the separate
   // complete original source census must still contain the new main entry.
@@ -1946,6 +1841,7 @@ export function qualifyBgVerifierBuildOutputSet({ binding, receipts }) {
     commands.add(key);
   }
   assert.equal(commands.size, receipts.length, 'BG output compiler command population mismatch');
+  verifyBgTestingCoreDependency(binding, receipts);
   assert.deepEqual([...identities.keys()].sort(), binding.outputs.map(row => row.temporary).sort(),
     'BG output compiler file population mismatch');
   for (const asset of assets) {
@@ -2070,6 +1966,7 @@ export async function qualifyBgVerifierLogicalOutputSet(args) {
   }
   const artifact = await qualifyBgVerifierOutput({ record: { ...contexts.record, invocation: main.original },
     invocation: main.invocation, entry: join(stage, entry.final),
+    logicalBinding: binding,
     compilerReceipt: receipts.find(receipt => JSON.stringify(receipt.argv) === JSON.stringify(main.original.argv)) });
   const controls = ['.bg-build-binding.json', '.bg-build-context.json']
     .filter(path => existsSync(join(stage, path))).map(path => readBgIndependentOutputIdentity(join(stage, path)));
@@ -2105,6 +2002,7 @@ export function verifyBgVerifierLogicalOutputSet(logical, { output, binding, rec
       assert.equal(row.identity[key], original.identity[key], 'BG logical compiler file replaced');
     assert.deepEqual(readBgIndependentOutputIdentity(row.identity.path), row.identity, 'BG logical file changed');
   }
+  verifyBgTestingCoreDependency(binding, receipts, logical.files);
   const main = contexts.invocations[0];
   verifyBgVerifierOutputRecord(logical.artifact, { ...contexts.record, invocation: main.original }, main.invocation);
   const controls = new Map([['.bg-build-binding.json', JSON.stringify(binding)],
@@ -2231,13 +2129,24 @@ export async function runBgVerifierBuildRecipe(args) {
     return binding;
   });
   const receipts = [];
-  // Preserve original command order and record identity. A later compiler
-  // failure leaves diagnostic temporary files but cannot publish a partial set.
-  for (const entry of binding.contexts.invocations) {
+  // Execution order follows the dependency frozen before stage creation. The
+  // original main record, argv, array membership and budget slot order survive.
+  const corePlan = transaction.testingCore;
+  const order = binding.contexts.invocations.map((_, index) => index);
+  if (corePlan) order.unshift(...order.splice(corePlan.producerIndex, 1));
+  let producer;
+  for (const index of order) {
+    const entry = binding.contexts.invocations[index];
     const record = { ...binding.contexts.record, invocation: entry.original };
-    receipts.push(await runPhase(`bg.recipe.compiler.${receipts.length}`, () =>
+    const receipt = await runPhase(`bg.recipe.compiler.${receipts.length}`, () =>
       compileBgVerifierInvocation({ record, invocation: entry.invocation,
-        argv: entry.invocation.argv, expectedVersion: '0.25.0', runPhase })));
+        argv: entry.invocation.argv, expectedVersion: '0.25.0', runPhase,
+        ...(corePlan && [corePlan.producerIndex, corePlan.consumerIndex].includes(index)
+          ? { testingCore: { binding, ...(index === corePlan.consumerIndex ? { producer } : {}) } } : {}) }));
+    receipts.push(receipt);
+    if (corePlan && index === corePlan.producerIndex) producer = {
+      producing: receipt.testingCore, compilerReceiptSha256: bgRecordHash(receipt),
+    };
   }
   await runPhase('bg.recipe.assets', () => stageBgVerifierAssetCopies(binding));
   const output = await runPhase('bg.recipe.output', () => qualifyBgVerifierBuildOutputSet({ binding, receipts }));
@@ -2255,6 +2164,137 @@ function writeBgVerifierBinding(binding) {
   writeFileSync(join(stage, '.bg-build-context.json'), JSON.stringify(binding.contexts), { flag: 'wx', mode: 0o600 });
 }
 
+const bgRecordHash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+
+/** @param {ReturnType<typeof beginBgVerifierBuildTransaction>} binding
+ * @param {ReturnType<typeof prepareBgVerifierBuildRecord>} record */
+function bgTestingCoreRecords(binding, record) {
+  const { contexts, transaction } = verifyBgVerifierOutputBinding(binding);
+  const plan = transaction.testingCore;
+  assert.ok(plan, 'BG testing core original dependency is UNKNOWN');
+  const producer = { ...contexts.record, invocation: contexts.invocations[plan.producerIndex].original };
+  const consumer = { ...contexts.record, invocation: contexts.invocations[plan.consumerIndex].original };
+  assert.ok([bgRecordHash(producer), bgRecordHash(consumer)].includes(bgRecordHash(record)),
+    'BG testing core command is outside original dependency');
+  return { producer, consumer };
+}
+
+/** @param {ReturnType<typeof beginBgVerifierBuildTransaction>} binding
+ * @param {ReturnType<typeof prepareBgVerifierBuildRecord>} producer
+ * @param {BgTestingCoreProducer} proof
+ * @param {boolean} [logical] */
+function verifyBgTestingCoreProducer(binding, producer, proof, logical = false) {
+  const receipt = proof?.producing;
+  assert.ok(receipt && /^[a-f0-9]{64}$/.test(proof.compilerReceiptSha256 ?? ''),
+    'BG testing core producing receipt is UNKNOWN');
+  const { options } = bgCompilerOptions(producer.invocation.argv, producer.prepared.root);
+  const { outfile, ...profile } = options;
+  assert.equal(receipt.root, producer.prepared.root, 'BG testing core source root changed');
+  assert.equal(receipt.output, outfile, 'BG testing core original output changed');
+  assert.deepEqual(receipt.input.bgCompiler, bgCompilerConsumptionIdentity(producer),
+    'BG testing core original compiler identity changed');
+  assert.deepEqual(receipt.input.source, producer.prepared.source, 'BG testing core original source changed');
+  assert.deepEqual(receipt.input.dependencies, producer.dependencies, 'BG testing core original dependencies changed');
+  assert.deepEqual(receipt.input.profile, profile, 'BG testing core original profile changed');
+  assert.equal(receipt.input.bgCompiler.transactionSha256, binding.transactionSha256,
+    'BG testing core original transaction changed');
+  (logical ? verifyTestingCoreInputs : verifyTestingCoreReceipt)(receipt, receipt.witness);
+  if (!logical) assert.deepEqual(readBgIndependentOutputIdentity(receipt.output), receipt.outputIdentity,
+    'BG testing core produced file identity changed');
+  return receipt.witness;
+}
+
+/** @param {ReturnType<typeof beginBgVerifierBuildTransaction>} binding
+ * @param {Awaited<ReturnType<typeof compileBgVerifierInvocation>>[]} receipts
+ * @param {{temporary: string, final: string, identity: ReturnType<typeof readBgIndependentOutputIdentity>}[]} [logical] */
+function verifyBgTestingCoreDependency(binding, receipts, logical) {
+  const plan = binding.transaction.testingCore;
+  if (!plan) {
+    assert.ok(receipts.every(row => !row.testingCore && !row.testingCoreDependency),
+      'BG testing core has no original dependency');
+    return;
+  }
+  const contexts = binding.contexts;
+  const original = contexts.invocations[plan.producerIndex].original;
+  const parent = contexts.invocations[plan.consumerIndex].original;
+  const find = argv => receipts.find(row => JSON.stringify(row.argv) === JSON.stringify(argv));
+  const producerReceipt = find(original.argv), consumerReceipt = find(parent.argv);
+  const producer = { ...contexts.record, invocation: original };
+  const proof = { producing: producerReceipt?.testingCore, compilerReceiptSha256: bgRecordHash(producerReceipt) };
+  const witness = verifyBgTestingCoreProducer(binding, producer, proof, !!logical);
+  const dependency = { compilerReceiptSha256: proof.compilerReceiptSha256, witness,
+    transactionSha256: binding.transactionSha256 };
+  assert.deepEqual(consumerReceipt?.testingCoreDependency, dependency, 'BG testing core parent dependency changed');
+  assert.deepEqual(producerReceipt?.effectiveArgv, [...original.argv,
+    '--define:__PAPERCUSP_TESTING_CORE_SOURCE_SHA256__=' + JSON.stringify(witness.sourceSha256)],
+  'BG testing core derived producer argv changed');
+  assert.deepEqual(consumerReceipt?.effectiveArgv, [...parent.argv,
+    '--define:__PAPERCUSP_TESTING_CORE_WITNESS__=' + JSON.stringify(witness)],
+  'BG testing core derived parent argv changed');
+  for (const [receipt, key] of [[producerReceipt, 'testingCore'], [consumerReceipt, 'testingCoreDependency']]) {
+    assert.deepEqual(receipt.consumption[key], receipt[key], 'BG testing core sealed consumption changed');
+    assert.deepEqual(receipt.consumption.effectiveArgv, receipt.effectiveArgv,
+      'BG testing core sealed derived argv changed');
+    const path = logical?.find(row => join(binding.transaction.stage, row.temporary) === receipt.metafile?.path)?.final;
+    const sealed = JSON.parse(readFileSync(path ? join(binding.transaction.stage, path) : receipt.metafile.path, 'utf8'));
+    assert.deepEqual(sealed.papercuspCompilerConsumption, receipt.consumption,
+      'BG testing core original sealed receipt changed');
+  }
+  if (logical) {
+    const core = logical.find(row => join(binding.transaction.stage, row.temporary) === producerReceipt.output.path);
+    assert.equal(core?.identity.sha256, witness.artifactSha256, 'BG testing core final bytes changed');
+  }
+}
+
+/** @typedef {{ producing: any, compilerReceiptSha256: string }} BgTestingCoreProducer */
+
+/** Derive generated inputs from the original command and measured dependency,
+ * never from the compiler's reported input names or caller-supplied switches.
+ * @param {ReturnType<typeof prepareBgVerifierBuildRecord>} record
+ * @param {string | undefined} sourceSha256
+ * @param {any} dependency */
+function bgCompilerDerivation(record, sourceSha256, dependency) {
+  assert.ok(!sourceSha256 || !dependency, 'BG compiler cannot produce and consume a core witness');
+  const effectiveArgv = [...record.invocation.argv], generatedInputs = [];
+  const core = join(record.prepared.root, 'packages/operator-core/lib/agent-tools/testing/testing-core.worker.ts');
+  const entry = resolve(record.prepared.root, bgCompilerOptions(effectiveArgv, record.prepared.root).options.entryPoints[0]);
+  if (sourceSha256) {
+    assert.equal(entry, core, 'BG compiler derived producer entry changed');
+    assert.match(sourceSha256, /^[a-f0-9]{64}$/);
+    effectiveArgv.push('--define:__PAPERCUSP_TESTING_CORE_SOURCE_SHA256__=' + JSON.stringify(sourceSha256));
+  }
+  if (dependency) {
+    assert.notEqual(entry, core, 'BG compiler derived consumer entry changed');
+    assert.equal(dependency.transactionSha256, record.invocation.outputNamespace?.transactionSha256,
+      'BG compiler derived dependency transaction changed');
+    assert.match(dependency.compilerReceiptSha256, /^[a-f0-9]{64}$/);
+    assert.equal(dependency.witness?.schemaVersion, 1);
+    for (const digest of [dependency.witness.sourceSha256, dependency.witness.artifactSha256])
+      assert.match(digest, /^[a-f0-9]{64}$/);
+    const define = '__PAPERCUSP_TESTING_CORE_WITNESS__', value = JSON.stringify(dependency.witness);
+    effectiveArgv.push('--define:' + define + '=' + value);
+    generatedInputs.push({ path: '<define:' + define + '>', define, value });
+  }
+  return { effectiveArgv, generatedInputs };
+}
+
+/** Object defines are compiler-generated, zero-byte virtual inputs. Admit only
+ * the independently derived names, with their exact native metafile semantics.
+ * Real onLoad inputs still require the original exact-buffer custody census.
+ * @param {any} metafile @param {{path: string}[]} consumed
+ * @param {{path: string, define: string, value: string}[]} generatedInputs
+ * @param {string} root */
+function verifyBgCompilerInputMembership(metafile, consumed, generatedInputs, root) {
+  assert.ok(metafile?.inputs && typeof metafile.inputs === 'object' && !Array.isArray(metafile.inputs),
+    'BG compiler complete consumption inputs are UNKNOWN');
+  assert.deepEqual(Object.keys(metafile.inputs).map(path =>
+    relative(root, resolve(root, path)).split(sep).join('/')).sort(),
+  [...consumed.map(row => row.path), ...generatedInputs.map(row => row.path)].sort(),
+  'BG compiler complete consumption membership mismatch');
+  for (const row of generatedInputs) assert.deepEqual(metafile.inputs[row.path], { bytes: 0, imports: [] },
+    'BG compiler generated input metadata changed');
+}
+
 /** The shared shell recipe delegates one EXACT recorded compiler invocation
  * here. Use its private API and binary, pass the digest-checked buffers to
  * esbuild, then fence source/dependencies again before writing any output.
@@ -2262,13 +2302,51 @@ function writeBgVerifierBinding(binding) {
  * imports and no module cache. Its native service consumes a retained sealed
  * descriptor. Runtime imports, full host closure and service readiness remain separate.
  * @param {{ record: ReturnType<typeof prepareBgVerifierBuildRecord>,
- *   invocation: BgBuildInvocation, argv: string[], expectedVersion: string, runPhase?: VerifierPhaseRunner }} args
+ *   invocation: BgBuildInvocation, argv: string[], expectedVersion: string, runPhase?: VerifierPhaseRunner,
+ *   testingCore?: { binding: ReturnType<typeof beginBgVerifierBuildTransaction>, producer?: BgTestingCoreProducer } }} args
  */
-export async function compileBgVerifierInvocation({ record, invocation, argv, expectedVersion,
+export async function compileBgVerifierInvocation({ record, invocation, argv, expectedVersion, testingCore,
   runPhase = async (_phase, operation) => operation() }) {
   await runPhase('bg.compiler.before-build', () => verifyBgVerifierBuildRecord(record, invocation, 'before-build'));
   assert.deepEqual(argv, record.invocation.argv, 'BG compiler argv differs from original invocation');
-  const { options, metafile } = bgCompilerOptions(argv, record.prepared.root);
+  let { options, metafile } = bgCompilerOptions(argv, record.prepared.root);
+  assert.ok(!Object.hasOwn(options.define ?? {}, '__PAPERCUSP_TESTING_CORE_SOURCE_SHA256__')
+    && !Object.hasOwn(options.define ?? {}, '__PAPERCUSP_TESTING_CORE_WITNESS__'),
+  'BG testing core cannot accept a caller-supplied witness');
+  const originalOptions = options;
+  let coreUniverse, coreInput, coreSourceSha256, coreResolverMetadata, testingCoreDependency;
+  const effectiveArgv = [...argv];
+  if (testingCore) {
+    const { producer } = bgTestingCoreRecords(testingCore.binding, record);
+    if (bgRecordHash(record) === bgRecordHash(producer)) {
+      assert.ok(!testingCore.producer, 'BG testing core producer cannot consume another witness');
+      coreUniverse = await runPhase('bg.compiler.core-inputs', () =>
+        captureTestingCoreInputUniverse(record.prepared.root, testingCore.binding.transaction.bank.path));
+      coreResolverMetadata = retainTestingCoreResolverMetadata(coreUniverse);
+      const { outfile, ...profile } = originalOptions;
+      coreInput = { schemaVersion: 1, bgCompiler: bgCompilerConsumptionIdentity(record),
+        source: record.prepared.source, dependencies: record.dependencies, profile,
+        resolverMetadata: coreResolverMetadata.map(row => ({ path: row.path, sha256: row.sha256 })),
+        resolutionPopulation: coreUniverse.rows.map(row => ({
+          path: relative(record.prepared.root, row.path).split(sep).join('/'), kind: row.original.kind,
+          ...(row.original.target ? { target: row.original.target } : {}) })),
+        enclosingMetadata: coreUniverse.ancestors.filter(row => row.sha256)
+          .map(row => ({ path: row.path, sha256: row.sha256 })) };
+      coreSourceSha256 = bgRecordHash(coreInput);
+      effectiveArgv.push('--define:__PAPERCUSP_TESTING_CORE_SOURCE_SHA256__=' + JSON.stringify(coreSourceSha256));
+    } else {
+      const witness = verifyBgTestingCoreProducer(testingCore.binding, producer, testingCore.producer);
+      testingCoreDependency = { compilerReceiptSha256: testingCore.producer.compilerReceiptSha256,
+        witness, transactionSha256: testingCore.binding.transactionSha256 };
+      effectiveArgv.push('--define:__PAPERCUSP_TESTING_CORE_WITNESS__=' + JSON.stringify(witness));
+    }
+    options = bgCompilerOptions(effectiveArgv, record.prepared.root).options;
+  } else assert.notEqual(resolve(record.prepared.root, options.entryPoints[0]),
+    join(record.prepared.root, 'packages/operator-core/lib/agent-tools/testing/testing-core.worker.ts'),
+  'BG testing core requires its original recipe dependency');
+  const derived = bgCompilerDerivation(record, coreSourceSha256, testingCoreDependency);
+  assert.deepEqual(effectiveArgv, derived.effectiveArgv, 'BG compiler derived argv changed');
+  const { generatedInputs } = derived;
   const actualNode = await runPhase('bg.compiler.node', () => readBgFileIdentity(process.execPath));
   assert.ok(actualNode.realpath === record.invocation.node.realpath && actualNode.sha256 === record.invocation.node.sha256,
     'BG compiler actual Node differs from original invocation');
@@ -2352,9 +2430,14 @@ export async function compileBgVerifierInvocation({ record, invocation, argv, ex
     const consumed = await runPhase('bg.compiler.verify', () => {
       assert.equal(binaryLaunches, 1, 'BG compiler native consumption is UNKNOWN');
       const consumed = custody.verifyBeforePublication();
-      if (result.metafile) assert.deepEqual(Object.keys(result.metafile.inputs).map(path =>
-        relative(record.prepared.root, resolve(record.prepared.root, path)).split(sep).join('/')).sort(),
-      consumed.map(row => row.path).sort(), 'BG compiler complete consumption membership mismatch');
+      if (coreUniverse) qualifyTestingCoreConfigurationClosure(coreUniverse, consumed.map(row => ({ ...row,
+        path: relative(coreUniverse.domainRoot, row.realpath).split(sep).join('/') })),
+        local => custody.readToolchainInput(resolve(record.prepared.root, local)).contents, []);
+      if (testingCoreDependency) {
+        const { producer } = bgTestingCoreRecords(testingCore.binding, record);
+        verifyBgTestingCoreProducer(testingCore.binding, producer, testingCore.producer);
+      }
+      if (metafile) verifyBgCompilerInputMembership(result.metafile, consumed, generatedInputs, record.prepared.root);
       return consumed;
     });
     return await runPhase('bg.compiler.output', async () => {
@@ -2365,6 +2448,27 @@ export async function compileBgVerifierInvocation({ record, invocation, argv, ex
         await fs.writeFile(file.path, file.contents, { flag: 'wx' });
       }
       assert.equal(result.outputFiles?.length, 1, 'BG compiler output is UNKNOWN');
+      let coreReceipt;
+      if (coreUniverse) {
+        await runPhase('bg.compiler.core-final-bytes', () => {
+          const script = join(record.prepared.root, 'apps/operator/bin/ascii-escape-bundle.mjs');
+          custody.readToolchainInput(script);
+          const escaped = spawnSync(actualNode.realpath, [script, options.outfile, '--check'], {
+            env: invocation.environment, encoding: 'utf8', timeout: 30_000,
+          });
+          assert.equal(escaped.status, 0, `BG testing core final bytes failed qualification: ${escaped.stderr}`);
+        });
+        custody.verifyInputs();
+        coreReceipt = { schemaVersion: 'testing-core-producing-build-v1', root: record.prepared.root,
+          output: options.outfile, input: coreInput,
+          outputIdentity: readBgIndependentOutputIdentity(options.outfile),
+          witness: { schemaVersion: 1, sourceSha256: coreSourceSha256,
+            artifactSha256: readBgIndependentOutputIdentity(options.outfile).sha256 },
+          interval: { rows: coreUniverse.rows,
+            ancestors: coreUniverse.ancestors.map(({ contents, ...row }) => row), toolchain: [],
+            resolverMetadata: coreResolverMetadata } };
+        verifyTestingCoreReceipt(coreReceipt, coreReceipt.witness);
+      }
       // Retain the actually evaluated API buffer and the native descriptor
       // alongside the input census. An argv naming a compiler is not evidence
       // that its API or native binary produced these output bytes.
@@ -2372,15 +2476,21 @@ export async function compileBgVerifierInvocation({ record, invocation, argv, ex
         bytes: String(sealedInfo.size), dev: String(sealedInfo.dev), ino: String(sealedInfo.ino), launches: binaryLaunches };
       const compilerExecution = { node: actualNode, api: compilerApi.identity, binary, compilerBinary };
       const consumption = freezeBgExpectation({ schemaVersion: 'bg-compiler-consumption-v1',
-        ...bgCompilerConsumptionIdentity(record), consumed, compilerExecution });
+        ...bgCompilerConsumptionIdentity(record), consumed, generatedInputs, compilerExecution,
+        ...(testingCore ? { effectiveArgv } : {}),
+        ...(coreReceipt ? { testingCore: coreReceipt } : {}),
+        ...(testingCoreDependency ? { testingCoreDependency } : {}) });
       if (metafile) await fs.writeFile(metafile, JSON.stringify({ ...result.metafile,
         papercuspCompilerConsumption: consumption }), { flag: 'wx' });
       return freezeBgExpectation({ schemaVersion: 'bg-compiler-invocation-v1', argv: record.invocation.argv,
         buildRecordSha256: createHash('sha256').update(JSON.stringify(record)).digest('hex'),
         originalSourceReceiptSha256: record.originalSourceReceiptSha256, compilerVersion: activeCompiler.version,
+        ...(testingCore ? { effectiveArgv } : {}),
+        ...(coreReceipt ? { testingCore: coreReceipt } : {}),
+        ...(testingCoreDependency ? { testingCoreDependency } : {}),
         compilerApi: compilerApi.identity, binary,
         compilerBinary,
-        consumed, consumption, output: readBgIndependentOutputIdentity(options.outfile),
+        consumed, generatedInputs, consumption, output: readBgIndependentOutputIdentity(options.outfile),
         ...(metafile ? { metafile: readBgIndependentOutputIdentity(metafile) } : {}) });
     });
   } finally {
@@ -2471,7 +2581,7 @@ function verifyBgOutputAuthority(output, record, requireCompiler = false) {
   const accepted = record.prepared.acceptedManifest;
   if (accepted.authorityKind !== 'source-only') {
     assert.deepEqual(output.artifact.sourceBlobs, accepted.members, 'BG output accepted member census mismatch');
-    if (!requireCompiler) return;
+    if (!requireCompiler && !output.compilerReceipt) return;
   }
   const receipt = output.compilerReceipt;
   assert.ok(receipt?.metafile && receipt.consumption, 'BG complete compiler consumption is UNKNOWN');
@@ -2483,8 +2593,18 @@ function verifyBgOutputAuthority(output, record, requireCompiler = false) {
   assert.deepEqual(receipt.argv, expected.argv, 'BG compiler consumption argv mismatch');
   const meta = readBgFileIdentity(output.entry.path + '.meta.json');
   assert.equal(meta.sha256, receipt.metafile.sha256, 'BG sealed compiler consumption metafile changed');
-  const sealed = JSON.parse(readFileSync(meta.path, 'utf8')).papercuspCompilerConsumption;
+  const compilerMetafile = JSON.parse(readFileSync(meta.path, 'utf8'));
+  const sealed = compilerMetafile.papercuspCompilerConsumption;
   assert.deepEqual(sealed, receipt.consumption, 'BG sealed compiler consumption receipt changed');
+  const derived = bgCompilerDerivation(record, receipt.testingCore?.witness.sourceSha256,
+    receipt.testingCoreDependency);
+  assert.deepEqual(receipt.effectiveArgv ?? receipt.argv, derived.effectiveArgv, 'BG compiler derived argv changed');
+  assert.deepEqual(sealed.effectiveArgv ?? sealed.argv, derived.effectiveArgv, 'BG sealed derived argv changed');
+  for (const key of ['testingCore', 'testingCoreDependency'])
+    assert.deepEqual(receipt[key], sealed[key], 'BG sealed derived witness changed');
+  assert.deepEqual(receipt.generatedInputs, derived.generatedInputs, 'BG compiler generated inputs changed');
+  assert.deepEqual(sealed.generatedInputs, derived.generatedInputs, 'BG sealed generated inputs changed');
+  verifyBgCompilerInputMembership(compilerMetafile, receipt.consumed, derived.generatedInputs, record.prepared.root);
   const execution = sealed.compilerExecution;
   assert.ok(execution, 'BG original compiler execution is UNKNOWN');
   assert.ok(execution.node?.realpath === record.invocation.node.realpath
@@ -2505,10 +2625,31 @@ function verifyBgOutputAuthority(output, record, requireCompiler = false) {
     && native.bytes === String(binaryStat.size) && /^[0-9]+$/.test(native.dev)
     && /^[1-9][0-9]*$/.test(native.ino) && native.launches === 1,
   'BG original sealed compiler binary is UNKNOWN');
-  assert.deepEqual(readBgIndependentOutputIdentity(output.entry.path), receipt.output,
-    'BG compiler produced output identity changed');
-  assert.deepEqual(readBgIndependentOutputIdentity(meta.path), receipt.metafile,
-    'BG compiler produced metafile identity changed');
+  const logical = output.logicalCompilerOutput;
+  if (logical) {
+    const { transaction, contexts, outputs } = verifyBgVerifierOutputBinding(logical.binding);
+    assert.deepEqual(record, { ...contexts.record, invocation: contexts.invocations[0].original },
+      'BG logical artifact original compiler changed');
+    for (const [original, retained, path] of [[receipt.output, logical.entry, output.entry.path],
+      [receipt.metafile, logical.metafile, meta.path]]) {
+      const mapping = outputs.find(row => join(transaction.stage, row.temporary) === original.path);
+      assert.ok(mapping && join(transaction.stage, mapping.final) === path,
+        'BG logical artifact original output mapping changed');
+      assert.ok(!existsSync(original.path) && !isBgSymlink(original.path),
+        'BG logical artifact temporary output remains');
+      assert.equal(retained.path, path, 'BG logical artifact retained output path changed');
+      // The original transaction permits this one rename. Keep byte/inode/
+      // modification-time custody and then fence the full post-rename identity.
+      for (const key of ['sha256', 'dev', 'ino', 'size', 'mtimeNs'])
+        assert.equal(retained[key], original[key], 'BG logical compiler file replaced');
+      assert.deepEqual(readBgIndependentOutputIdentity(path), retained, 'BG logical artifact output changed');
+    }
+  } else {
+    assert.deepEqual(readBgIndependentOutputIdentity(output.entry.path), receipt.output,
+      'BG compiler produced output identity changed');
+    assert.deepEqual(readBgIndependentOutputIdentity(meta.path), receipt.metafile,
+      'BG compiler produced metafile identity changed');
+  }
   assert.deepEqual(receipt.consumed, sealed.consumed, 'BG sealed complete compiler consumption changed');
   assert.ok(Array.isArray(receipt.consumed) && receipt.consumed.length > 0,
     'BG complete compiler consumption is UNKNOWN');
@@ -2546,22 +2687,27 @@ function verifyBgOutputAuthority(output, record, requireCompiler = false) {
  * @typedef {{ schemaVersion: 'bg-build-output-v1', buildRecordSha256: string,
  *   originalSourceReceiptSha256: string, entry: ReturnType<typeof readBgFileIdentity>,
  *   manifest: ReturnType<typeof readBgFileIdentity>,
+ *   logicalCompilerOutput?: { binding: ReturnType<typeof beginBgVerifierBuildTransaction>,
+ *     entry: ReturnType<typeof readBgIndependentOutputIdentity>,
+ *     metafile: ReturnType<typeof readBgIndependentOutputIdentity> },
  *   compilerReceipt?: Awaited<ReturnType<typeof compileBgVerifierInvocation>>,
  *   artifact: Extract<import('@papercusp/operator-core/lib/release/operator-artifact').OperatorArtifactIdentity,
  *     { status: 'measured' }> }} BgVerifierOutputRecord
  * @param {{ record: ReturnType<typeof prepareBgVerifierBuildRecord>,
  *   invocation: BgBuildInvocation, entry: string,
+ *   logicalBinding?: ReturnType<typeof beginBgVerifierBuildTransaction>,
  *   compilerReceipt?: Awaited<ReturnType<typeof compileBgVerifierInvocation>> }} options
  * @returns {Promise<BgVerifierOutputRecord>}
  */
-export async function qualifyBgVerifierOutput({ record, invocation, entry, compilerReceipt }) {
+export async function qualifyBgVerifierOutput({ record, invocation, entry, compilerReceipt, logicalBinding }) {
   verifyBgVerifierBuildRecord(record, invocation, 'before-publication');
   const file = readBgFileIdentity(entry);
   const local = relative(record.prepared.root, file.realpath);
   assert.ok(file.path === file.realpath && local && !isAbsolute(local)
     && local !== '..' && !local.startsWith(`..${sep}`), 'BG output escaped selected generation');
   const artifact = await writeOperatorArtifactManifest({ root: record.prepared.root, entry,
-    sourceSha: record.prepared.source.sourceCommit });
+    sourceSha: record.prepared.source.sourceCommit,
+    generatedInputs: compilerReceipt?.generatedInputs.map(row => row.path) ?? [] });
   assert.equal(artifact.status, 'measured', 'BG output artifact is UNKNOWN');
   if (artifact.status !== 'measured') throw new Error('BG output artifact is UNKNOWN');
   /** @type {BgVerifierOutputRecord} */
@@ -2569,6 +2715,8 @@ export async function qualifyBgVerifierOutput({ record, invocation, entry, compi
     buildRecordSha256: createHash('sha256').update(JSON.stringify(record)).digest('hex'),
     originalSourceReceiptSha256: record.originalSourceReceiptSha256,
     entry: file, manifest: readBgFileIdentity(artifact.evidenceRef), artifact,
+    ...(logicalBinding ? { logicalCompilerOutput: { binding: logicalBinding,
+      entry: readBgIndependentOutputIdentity(entry), metafile: readBgIndependentOutputIdentity(entry + '.meta.json') } } : {}),
     ...(compilerReceipt ? { compilerReceipt } : {}) });
   verifyBgVerifierOutputRecord(output, record, invocation);
   return output;
@@ -3155,16 +3303,20 @@ function preflightVerifierWorkspaceBinDonor({ repo, commit, donor }) {
 
 /** Freeze source and dependencies before invoking a command that allocates fixtures.
  * The receipt survives outside the owned tree; only this invocation's tree is removed.
- * @param {{ repo: string, runtimeAssetDonor?: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, sourceArchive?: { root: string, receiptSha256: string }, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number, preparationMaxMs?: number, prepareChildEnv?: (context: { sourceRoot: string }) => Promise<NodeJS.ProcessEnv | void> | NodeJS.ProcessEnv | void, releaseParentPrivatePg?: boolean, requestParentPgReleaseImpl?: (token: string) => Promise<unknown>,
+ * Preserve mode is for read-only consumers whose rebuilt output is external to
+ * the source tree; the post-command census rejects any mutation of retained files.
+ * @param {{ repo: string, runtimeAssetDonor?: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, sourceArchive?: { root: string, receiptSha256: string }, runtimeOutputs?: 'rebuild' | 'preserve', command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number, preparationMaxMs?: number, prepareChildEnv?: (context: { sourceRoot: string }) => Promise<NodeJS.ProcessEnv | void> | NodeJS.ProcessEnv | void, releaseParentPrivatePg?: boolean, requestParentPgReleaseImpl?: (token: string) => Promise<unknown>,
  *   signal?: AbortSignal, clock?: { now: () => number, setTimeout: (callback: () => void, delay: number) => ReturnType<typeof setTimeout>, clearTimeout: (timer: ReturnType<typeof setTimeout>) => void } }} options
  * @returns {Promise<number>}
  */
-export async function runVerifierCommand({ repo, runtimeAssetDonor, ref, receiptPath, inputs = [], inputsFile, tauriInputs = false, sourceArchive, command, env = process.env, budgetFrom, childEstimateMs = 0, preparationMaxMs, prepareChildEnv = async () => ({}),
+export async function runVerifierCommand({ repo, runtimeAssetDonor, ref, receiptPath, inputs = [], inputsFile, tauriInputs = false, sourceArchive, runtimeOutputs = 'rebuild', command, env = process.env, budgetFrom, childEstimateMs = 0, preparationMaxMs, prepareChildEnv = async () => ({}),
   releaseParentPrivatePg = false, requestParentPgReleaseImpl = requestPrivateTestPgRelease, signal,
   clock = { now: Date.now, setTimeout, clearTimeout } }) {
   if (signal?.aborted) throw new PreviewError('verifier command canceled before launch', 143);
   if (!ref?.trim() || !receiptPath || !command?.length || !command[0])
     throw new PreviewError('verifier command needs an explicit ref, external receipt and command', 2);
+  if (!['rebuild', 'preserve'].includes(runtimeOutputs))
+    throw new PreviewError('verifier runtime outputs must be rebuild or preserve', 2);
   if (!Number.isSafeInteger(childEstimateMs) || childEstimateMs < 0)
     throw new PreviewError('verifier child estimate must be a nonnegative integer', 2);
   const sourceRepo = realpathSync(repo);
@@ -3186,19 +3338,6 @@ export async function runVerifierCommand({ repo, runtimeAssetDonor, ref, receipt
   // checksum-pinned helper can admit and copy those bytes.
   const runtimeDonor = realpathSync(runtimeAssetDonor ?? donor);
   const runtimeSetupPath = 'apps/operator/scripts/setup-porcupine-runtime.sh';
-  if (git(sourceRepo, ['ls-tree', sourceCommit, '--', runtimeSetupPath]).trim()) {
-    // Ignored runtime assets are not covered by node/workspace generation custody.
-    // Use the selected commit's checksum pin before allocating the source tree;
-    // the eventual snapshot still copies and rechecks the donor bytes.
-    const runtimeSetup = git(sourceRepo, ['show', sourceCommit + ':' + runtimeSetupPath]);
-    const modelDonor = join(runtimeDonor, 'apps/operator/public/porcupine/porcupine_params.pv');
-    const check = spawnSync('bash', ['-c', runtimeSetup, join(sourceRepo, runtimeSetupPath),
-      '--check-source', modelDonor], { cwd: sourceRepo, env: verifierDependencyEnv(env),
-      encoding: 'utf8', timeout: 120_000, maxBuffer: 1024 * 1024 });
-    if (check.error || check.status !== 0)
-      throw new PreviewError('verifier runtime asset preflight failed: ' +
-        (check.error?.message || check.stderr || check.status), 2);
-  }
   // Never allocate below a source donor: even ignored scratch is part of an
   // immutable source census. Reuse the external root the task reconciler knows.
   let scratch = await fs.realpath(tmpdir());
@@ -3275,15 +3414,6 @@ export async function runVerifierCommand({ repo, runtimeAssetDonor, ref, receipt
   try {
     assertOutsideArchive(owned, resolve(receiptPath));
     ownership = writeVerifierTaskReceipt(owned, sourceRepo, env, taskReceiptPath);
-    const originalDeadline = readTaskDeadlineEpochMs(env);
-    if (originalDeadline !== null) {
-      inventoryCustody = { ownership, sourceCommit };
-      resourceInventory = verifierResourceInventory({ path: `${receiptPath}.resources.jsonl`,
-        owner: ownership.taskId ?? ownership.processIdentity, deadlineEpochMs: originalDeadline,
-        custody: inventoryCustody, now: clock.now });
-      resourceInventory.record({ id: 'candidate-root', kind: 'root', path: owned });
-      resourceInventory.record({ id: 'source-root', kind: 'root', path: root });
-    }
     const tracedPhase = verifierPhaseRunner(`${resolve(receiptPath)}.phases.jsonl`, env,
       `${receiptPath}.child.json`);
     phaseArchivePath = tracedPhase.archivePath;
@@ -3358,19 +3488,56 @@ export async function runVerifierCommand({ repo, runtimeAssetDonor, ref, receipt
         : null;
       return admitBudget(estimate, true);
     });
+    const originalDeadline = readTaskDeadlineEpochMs(env);
+    if (originalDeadline !== null) {
+      inventoryCustody = { ownership, sourceCommit };
+      resourceInventory = verifierResourceInventory({ path: `${receiptPath}.resources.jsonl`,
+        owner: ownership.taskId ?? ownership.processIdentity, deadlineEpochMs: originalDeadline,
+        custody: inventoryCustody, now: clock.now });
+      resourceInventory.record({ id: 'candidate-root', kind: 'root', path: owned });
+      resourceInventory.record({ id: 'source-root', kind: 'root', path: root });
+    }
+    if (git(sourceRepo, ['ls-tree', sourceCommit, '--', runtimeSetupPath]).trim()) {
+      // Ignored assets need the selected commit's checksum pin before source
+      // freezing. Admit and journal this work too: its process group must obey
+      // the original cutoff and be joined before owned-tree cleanup.
+      await runPhase('deps.runtime-assets.preflight', () => {
+        const runtimeSetup = git(sourceRepo, ['show', sourceCommit + ':' + runtimeSetupPath]);
+        const modelDonor = join(runtimeDonor, 'apps/operator/public/porcupine/porcupine_params.pv');
+        return runVerifierDependencyCommand('bash', ['-c', runtimeSetup, join(sourceRepo, runtimeSetupPath),
+          '--check-source', modelDonor], { cwd: sourceRepo, env: verifierDependencyEnv(env),
+          timeoutMs: 120_000, maxMs: 120_000, cutoffEpochMs: budget.childCutoffEpochMs,
+          signal: cancellation.signal, now: clock.now, resourceInventory });
+      });
+    }
     // Historical pins can track outputs that the private runtime must rebuild.
     // Reuse the archive exporter for those pins; retain the normal Git checkout
     // when its tracked source population can remain intact.
-    const gitCheckout = !VERIFIER_REBUILT_OUTPUTS.some(path =>
+    const gitCheckout = runtimeOutputs === 'preserve' || !VERIFIER_REBUILT_OUTPUTS.some(path =>
       committedVerifierPathTracked(sourceRepo, sourceCommit, path));
     const receipt = await runPhase('source.freeze', () => prepareVerifierSource({ repo: sourceRepo, ref: sourceCommit, dest: root,
-      inputs, inputsFile, tauriInputs, gitCheckout, sourceArchive, requireDependencyCoherence: true }));
+      inputs, inputsFile, tauriInputs, gitCheckout, runtimeOutputs, sourceArchive, requireDependencyCoherence: true }));
     await runPhase('receipt.write', () => fs.writeFile(receiptPath, `${JSON.stringify(receipt)}\n`, { flag: 'wx', mode: 0o600 }));
     // Native generation selection also needs independently pinned archive
     // custody before dependency materialization, using the reporter contract.
     const sourceEnv = { ...env, VERIFY_TAURI_SOURCE_RECEIPT: resolve(receiptPath),
       VERIFY_TAURI_SOURCE_REF: receipt.sourceCommit };
     if (snapshotSelection.command === 'snapshot-generation-locked') {
+      const generationHelper = join(root, 'apps/operator/bin/release/dependency-generation.sh');
+      let generationHelperSource;
+      try { generationHelperSource = await fs.readFile(generationHelper, 'utf8'); }
+      catch (error) {
+        throw new PreviewError('selected source is missing its dependency generation helper: ' +
+          String(error?.message ?? error), 2);
+      }
+      if (!/^\s*--ensure-ref\)/m.test(generationHelperSource) ||
+          !/^\s*--verifier-source\)/m.test(generationHelperSource))
+        throw new PreviewError('selected source does not support exact verifier dependency generations', 2);
+      await runPhase('deps.generation.ensure', () =>
+        runVerifierDependencyCommand('bash', [generationHelper, '--integration', donor,
+          '--ensure-ref', receipt.sourceCommit, '--verifier-source', root], {
+          cwd: root, env: verifierDependencyEnv(sourceEnv), cutoffEpochMs: budget.childCutoffEpochMs,
+          signal: cancellation.signal, now: clock.now, resourceInventory }));
       await runPhase('deps.preflight', () => {
         const check = spawnSync('bash', [join(root, helperPath), 'preflight-generation', donor, root],
           { env: verifierDependencyEnv(sourceEnv), encoding: 'utf8', timeout: 120_000, maxBuffer: 1024 * 1024 });
@@ -3611,6 +3778,8 @@ export async function runVerifierCommand({ repo, runtimeAssetDonor, ref, receipt
               childExitCode: commandExitCode, error: failure ?? finalizationFailure });
             process.stderr.write(`VERIFIER_TASK_EVIDENCE ${JSON.stringify({
               taskId: ownership.taskId, manifestPath: retainedManifestPath,
+              manifestSha256: hashNativeArtifactBytes(retainedManifestPath,
+                lstatSync(retainedManifestPath).size, 8 * 1024 * 1024),
             })}\n`);
           } catch (evidenceError) {
             const priorError = failure ?? finalizationFailure;
@@ -3788,7 +3957,7 @@ const VERIFIER_PREPARATION_PHASES = ['source.freeze', 'receipt.write', 'deps.sou
   'deps.source.after-preflight', 'deps.census', 'deps.receipt.write'];
 // Older receipts and non-native runs may omit these phases. Completed native
 // observations still consume preparation time and must enter the launch forecast.
-const VERIFIER_OPTIONAL_PREPARATION_PHASES = ['deps.preflight', 'deps.runtime-assets',
+const VERIFIER_OPTIONAL_PREPARATION_PHASES = ['deps.runtime-assets.preflight', 'deps.preflight', 'deps.runtime-assets',
   'deps.source.after-runtime-assets'];
 
 /** Read observations only, never acceptance evidence. A killed phase is not a duration.
@@ -3800,9 +3969,11 @@ export function readVerifierPhaseMeasurements(path) {
   const started = new Set();
   let sequence = 0, elapsed = 0;
   for (const row of rows) {
-    assert.ok(row.schemaVersion === 'verifier-phase-v1' && row.sequence === ++sequence &&
+    assert.ok(row.schemaVersion === 'verifier-phase-v1' && Number.isSafeInteger(row.sequence) &&
+      row.sequence > sequence &&
       Number.isSafeInteger(row.elapsedMs) && row.elapsedMs >= elapsed && typeof row.phase === 'string',
     'Invalid verifier phase budget receipt');
+    sequence = row.sequence;
     elapsed = row.elapsedMs;
     if (row.event === 'started') {
       assert.ok(!started.has(row.phase), 'Duplicate verifier phase start');
@@ -4906,7 +5077,7 @@ function parseArgs(argv) {
     else if (a === '--git-checkout') opts.gitCheckout = true;
     else if (a === '--tauri-inputs') opts.tauriInputs = true;
     else if (a === '--co-author') opts.coAuthors.push(rest[++i]);
-    else if (['--inputs-file', '--budget-from', '--child-estimate-ms', '--preparation-max-ms', '--runtime-asset-donor', '--source-archive', '--operator-api-root', '--operator-api-source-receipt',
+    else if (['--inputs-file', '--budget-from', '--child-estimate-ms', '--preparation-max-ms', '--runtime-asset-donor', '--source-archive', '--runtime-outputs', '--operator-api-root', '--operator-api-source-receipt',
       '--operator-api-source-sha', '--operator-api-inputs', '--operator-api-inputs-sha'].includes(a)) {
       const path = rest[++i];
       if (!path || path.startsWith('--')) throw new PreviewError(`missing value for ${a}`, 2);
@@ -5018,6 +5189,7 @@ async function main(argv) {
       runtimeAssetDonor: opts['runtime-asset-donor'],
       sourceArchive: opts['source-archive']
         ? { root: opts['source-archive'], receiptSha256: opts['receipt-sha256'] } : undefined,
+      runtimeOutputs: opts['runtime-outputs'],
       inputs: opts.inputs?.split(',').filter(Boolean) ?? [], inputsFile: opts['inputs-file'],
       tauriInputs: opts.tauriInputs === true, command: opts.command,
       budgetFrom: opts['budget-from'], childEstimateMs: opts['child-estimate-ms'] === undefined ? 0 : Number(opts['child-estimate-ms']),

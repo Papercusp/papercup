@@ -167,7 +167,10 @@ export async function recoverExpectedLoopExecution(input: {
        FROM harness_shared.routines WHERE id = ${input.routineId} FOR UPDATE`;
     const row = rows[0];
     if (!row || !row.active || !row.parked || row.target_owner_id !== input.ownerId || row.fired_ms == null) {
-      return { handled: false };
+      // The caller's sweep snapshot lost its row prerequisites. A terminal guard
+      // must stand down on this authoritative change, rather than interpreting
+      // the missing execution state as permission to pause the newer routine.
+      return { handled: true };
     }
     const current = await getHost(input.ownerId);
     if (!current || current.pid !== host.pid || current.parked) return { handled: true };

@@ -51,6 +51,9 @@ function fakeHandle(append: (op: unknown) => Promise<void>, harnessSlug = 'hx'):
     harnessSlug,
     ownLog: { keyHex: 'aa'.repeat(32) },
     append,
+    appendWithAdmission(op: unknown) {
+      return { admitted: Promise.resolve(), completion: append(op) };
+    },
     registerCloseHook: () => {},
   } as unknown as BootedHarnessHandle;
 }
@@ -249,6 +252,58 @@ describe('outbox-drain per-row poison quarantine (WI-3896)', () => {
     } finally {
       errSpy.mockRestore();
       warnSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not quarantine a row while it waits for intentional append-hold admission', async () => {
+    vi.useFakeTimers();
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      let releaseAdmission!: () => void;
+      let announceAdmission!: () => void;
+      const admissionGate = new Promise<void>((resolve) => { releaseAdmission = resolve; });
+      const admissionStarted = new Promise<void>((resolve) => { announceAdmission = resolve; });
+      const append = vi.fn(async (_op: unknown) => {});
+      const handle = fakeHandle(append);
+      handle.appendWithAdmission = (op) => {
+        announceAdmission();
+        return {
+          admitted: admissionGate,
+          completion: admissionGate.then(() => append(op)),
+        };
+      };
+      const updated: unknown[][] = [];
+      const episodes: Array<{ detail: string; kind?: string }> = [];
+      const drain = startOutboxDrain(
+        handle,
+        fakePg(() => [row(1, 'held')], { onUpdate: (vals) => updated.push(vals) }),
+        {
+          pollMs: 60_000,
+          _passTimeoutMs: 0,
+          _backlogStallMs: 0,
+          _rowTimeoutMs: 100,
+          _rowQuarantineThreshold: 1,
+          _onStallEpisode: (detail, kind) => episodes.push({ detail, kind }),
+        },
+      );
+      try {
+        await admissionStarted;
+        await vi.advanceTimersByTimeAsync(350);
+        expect(append).not.toHaveBeenCalled();
+        expect(updated).toHaveLength(0);
+        expect(episodes.filter((episode) => episode.kind === 'drain_row_quarantined')).toHaveLength(0);
+
+        releaseAdmission();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(append).toHaveBeenCalledTimes(1);
+        expect(updated).toHaveLength(1);
+        expect(episodes.filter((episode) => episode.kind === 'drain_row_quarantined')).toHaveLength(0);
+      } finally {
+        await drain.stop();
+      }
+    } finally {
+      errSpy.mockRestore();
       vi.useRealTimers();
     }
   });

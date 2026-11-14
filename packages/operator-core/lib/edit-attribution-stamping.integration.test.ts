@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { publishGitSyncCandidate, type RunGit } from './harness/git-sync/run-git-sync';
 import type { FrozenEditCohort } from './edit-attribution';
+import { AUTHORITY_KINDS } from './governance-policy/effective-authority';
 import postgres from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
@@ -27,7 +28,8 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 vi.mock('./agent-tools/coordination/presence', () => ({ getPresence: async () => h.presence }));
 
 const { recordEditAttribution, preserveEditGeneration, readEditPredecessors, describeEditCohort,
-  freezeEditCohort, checkFrozenEditCohortEvidence, preserveReleasedEditGenerations } = await import('./edit-attribution');
+  freezeEditCohort, checkFrozenEditCohortEvidence, preserveReleasedEditGenerations,
+  reserveProspectiveEditSubject, recordProspectiveEditSubjectResult } = await import('./edit-attribution');
 
 const WS = 'ws-stamping';
 const AGENT = 'su-stamping';
@@ -120,6 +122,37 @@ describe('edit stamping from the editor held set', () => {
   async function lifecycle(sql = h.db!.sql) {
     return (await cohort(sql) as { gitSyncLifecycle: { captures: Record<string, unknown>; frozen: FrozenEditCohort } }).gitSyncLifecycle;
   }
+  function restartedLifecycle(): Awaited<ReturnType<typeof lifecycle>> {
+    // The replacement process receives only the private fixture connection and
+    // durable work identity, never the editor's in-memory captures or frozen tuple.
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      import { readFileSync } from 'node:fs';
+      import postgres from 'postgres';
+      const input = JSON.parse(readFileSync(0, 'utf8'));
+      const sql = postgres(input.url, { max: 1, prepare: false });
+      try {
+        const rows = await sql.unsafe(
+          "SELECT payload->'gitSyncLifecycle' AS lifecycle FROM harness_shared.work_items " +
+          'WHERE workspace_id = $1 AND harness_slug = $2 AND feature_id = $3',
+          [input.workspaceId, 'papercusp', input.workItemId],
+        );
+        if (rows.length !== 1) throw new Error('durable cohort missing after restart');
+        process.stdout.write(JSON.stringify({ pid: process.pid, lifecycle: rows[0].lifecycle }));
+      } finally {
+        await sql.end({ timeout: 5 });
+      }
+    `], {
+      cwd: process.cwd(), encoding: 'utf8', timeout: 30_000,
+      input: JSON.stringify({ url: h.db!.url, workspaceId: WS, workItemId: 'WI-A' }),
+    });
+    expect(child.status, child.stderr).toBe(0);
+    const resumed = JSON.parse(child.stdout) as {
+      pid: number; lifecycle: Awaited<ReturnType<typeof lifecycle>>;
+    };
+    expect(resumed.pid).toBeGreaterThan(0);
+    expect(resumed.pid).not.toBe(process.pid);
+    return resumed.lifecycle;
+  }
   function evidence(frozen: FrozenEditCohort, captures: Record<string, unknown>) {
     return { frozen, captures, ...context, publicationIntent: true, dependencies: [],
       checks: [{ check: 'focused-suite', identity: frozen.identity, environmentIdentity: context.environmentIdentity,
@@ -133,7 +166,7 @@ describe('edit stamping from the editor held set', () => {
     // Both lifecycle boundaries can drop the short-lived editor, never the work.
     h.presence = null;
     await h.db!.sql`UPDATE harness_shared.work_items SET taken_by = NULL WHERE workspace_id = ${WS} AND feature_id = 'WI-A'`;
-    const reloaded = await lifecycle();
+    const reloaded = _boundary === 'session-restart' ? restartedLifecycle() : await lifecycle();
     expect(reloaded.frozen).toEqual(frozen);
     expect(await freeze()).toEqual(frozen);
     expect(checkFrozenEditCohortEvidence({ ...evidence(reloaded.frozen, reloaded.captures), publicationIntent: false }))
@@ -323,11 +356,11 @@ describe('edit stamping from the editor held set', () => {
         await h.db!.sql`UPDATE harness_shared.work_items SET taken_by = 'successor'
           WHERE workspace_id = ${WS} AND feature_id = 'WI-A'`;
         if (publishMilestone) {
-          // A new database session reloads the durable subject, independently
-          // of the vanished editor and its in-memory capture receipt.
+          // A replacement process reloads the durable subject after the edit
+          // handoff; the publisher's reader is a separate database session too.
           const freshReader = postgres(h.db!.url, { max: 1, prepare: false });
           try {
-            const resumed = await lifecycle(freshReader);
+            const resumed = restartedLifecycle();
             expect(resumed.frozen).toEqual(originalMilestone);
             const member = resumed.frozen.members[0].candidate;
             const request = { requestId: member.requestId, generation: member.generation,
@@ -354,7 +387,7 @@ describe('edit stamping from the editor held set', () => {
           goalRef: 'WI-A', sessionId: 'fresh-successor-session', dispatchCallId: 'successor-session-edit' };
         const receipt = await preserveEditGeneration({ ...successor, operationState: 'granted' }, runGit);
         await recordEditAttribution({ ...successor, captureReceipt: receipt }, { strict: true });
-        const resumed = await lifecycle();
+        const resumed = restartedLifecycle();
         expect(checkFrozenEditCohortEvidence(evidence(originalMilestone!, resumed.captures)))
           .toEqual({ ok: false, reason: 'cohort-changed' });
         const nextMilestone = await freeze();
@@ -400,6 +433,160 @@ describe('edit stamping from the editor held set', () => {
     await capturedEdit('op-a', 'a.ts', 'restarted-session');
     expect(await cohort()).toMatchObject({ gitSyncLifecycle: {
       captures: { 'op-a': receipt('a.ts'), 'op-b': receipt('b.ts') } } });
+  });
+
+  async function prospectiveInput() {
+    await hold('WI-A');
+    const originalReceipt = { ...member('op-a', 'a.ts'), workspaceId: WS, agentId: AGENT, goalRef: 'WI-A' };
+    await recordEditAttribution({ repoRoot: root, files: ['a.ts'], agentId: AGENT, workspaceId: WS,
+      goalRef: 'WI-A', dispatchCallId: 'op-a', captureReceipt: originalReceipt }, { strict: true });
+    return { workspaceId: WS, harnessSlug: 'papercusp', workItemId: 'WI-A', actorId: AGENT,
+      originalOperationId: 'op-a', originalReceipt,
+      binding: { rule: { amendmentKey: 'reviewed-rule', decisionId: 'D-007', ruleSha256: '1'.repeat(64),
+        rubricRevision: 6, subjectRevision: 78 }, independentExpectationSha256: '2'.repeat(64),
+      request: { requestId: 'prospective-a', generation: 1, base: 'a'.repeat(40), baseTree: 'b'.repeat(40),
+        payloadTree: 'c'.repeat(40), gitlinks: [], inputs: [{ path: 'a.ts', blobOid: 'd'.repeat(40), sha256: '3'.repeat(64) }] } } };
+  }
+
+  it('D012 reserves ONE durable subject across concurrent different ids and roots, preserving the original', async () => {
+    const first = await prospectiveInput();
+    const second = structuredClone(first);
+    second.binding.request.requestId = 'prospective-b';
+    second.binding.request.payloadTree = 'e'.repeat(40);
+    const results = await Promise.allSettled([reserveProspectiveEditSubject(first), reserveProspectiveEditSubject(second)]);
+    expect(results.filter(r => r.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter(r => r.status === 'rejected')).toHaveLength(1);
+    const state = await lifecycle();
+    expect(state.captures['op-a']).toEqual(first.originalReceipt);
+    const winner = results[0].status === 'fulfilled' ? first : second;
+    const replay = await reserveProspectiveEditSubject(winner);
+    expect(replay).toMatchObject({ state: 'reserved', result: null });
+    expect((restartedLifecycle() as unknown as { prospectiveSubject: { identitySha256: string } }).prospectiveSubject.identitySha256)
+      .toBe(replay.identitySha256);
+    await expect(reserveProspectiveEditSubject(results[0].status === 'fulfilled' ? second : first))
+      .rejects.toThrow('ownership-original-or-binding');
+  });
+
+  it('D012 recovers both crash boundaries without resetting the subject or replacing its result', async () => {
+    const input = await prospectiveInput();
+    const reserved = await reserveProspectiveEditSubject(input);
+    // Crash before a ref: the reservation still occupies the one slot.
+    expect(await reserveProspectiveEditSubject(input)).toEqual(reserved);
+    // Crash after a ref but before its result: ingress must validate this exact
+    // ref; the storage seam does no Git work and cannot allocate a second root.
+    const literal = { ref: 'refs/fixture/prospective-a', tree: 'c'.repeat(40) };
+    await recordProspectiveEditSubjectResult(input, literal);
+    await recordProspectiveEditSubjectResult(input, structuredClone(literal));
+    expect(await reserveProspectiveEditSubject(input)).toEqual({ ...reserved, state: 'recorded', result: literal });
+    expect((restartedLifecycle() as unknown as { prospectiveSubject: { result: unknown } }).prospectiveSubject.result).toEqual(literal);
+    await expect(recordProspectiveEditSubjectResult(input, { ...literal, tree: 'f'.repeat(40) })).rejects.toThrow('result-cas');
+  });
+
+  it('D012 refuses changed rules, expectations, original wrappers, foreign custodians and terminal items', async () => {
+    const input = await prospectiveInput();
+    await expect(recordProspectiveEditSubjectResult(input, { ref: 'not-reserved' })).rejects.toThrow('result-cas');
+    await reserveProspectiveEditSubject(input);
+    for (const change of [
+      (next: typeof input) => { next.binding.rule.ruleSha256 = '4'.repeat(64); },
+      (next: typeof input) => { next.binding.rule.subjectRevision++; },
+      (next: typeof input) => { next.binding.independentExpectationSha256 = '5'.repeat(64); },
+      (next: typeof input) => { next.originalReceipt.capture.candidate.tree = 'e'.repeat(40); },
+    ]) {
+      const next = structuredClone(input); change(next);
+      await expect(reserveProspectiveEditSubject(next)).rejects.toThrow('ownership-original-or-binding');
+    }
+    await expect(reserveProspectiveEditSubject({ ...input, actorId: 'foreign' })).rejects.toThrow('original-scope');
+    await h.db!.sql`UPDATE harness_shared.work_items SET taken_by = 'foreign' WHERE feature_id = 'WI-A'`;
+    await expect(reserveProspectiveEditSubject(input)).rejects.toThrow('ownership-original-or-binding');
+    await expect(recordProspectiveEditSubjectResult(input, { ref: 'foreign-result' })).rejects.toThrow('result-cas');
+    await h.db!.sql`UPDATE harness_shared.work_items SET taken_by = ${AGENT}, status = 'done' WHERE feature_id = 'WI-A'`;
+    await expect(reserveProspectiveEditSubject(input)).rejects.toThrow('ownership-original-or-binding');
+  });
+
+  it('D012 detaches a pending request before the first await and refuses ambiguous JSON', async () => {
+    const input = await prospectiveInput();
+    const retained = structuredClone(input);
+    const pending = reserveProspectiveEditSubject(input);
+    input.binding.request.payloadTree = 'f'.repeat(40);
+    await pending;
+    expect((await reserveProspectiveEditSubject(retained)).state).toBe('reserved');
+    await expect(reserveProspectiveEditSubject(input)).rejects.toThrow('ownership-original-or-binding');
+    const ambiguous = structuredClone(retained);
+    Object.assign(ambiguous.binding.request, { lostByJson: undefined });
+    await expect(reserveProspectiveEditSubject(ambiguous)).rejects.toThrow('json');
+    const ambiguousArray = structuredClone(retained);
+    Object.assign(ambiguousArray.binding.request.gitlinks, { lostByJson: 'extra' });
+    await expect(reserveProspectiveEditSubject(ambiguousArray)).rejects.toThrow('json');
+  });
+
+  async function hostBoundProspectiveInput() {
+    const input = await prospectiveInput();
+    return { ...input, binding: { ...input.binding, hostEvidence: {
+      authorityRevisions: { contextRevision: 'retained-context-1', authorities:
+        AUTHORITY_KINDS.map(kind =>
+          ({ kind, id: `${kind}-fixture`, revision: `${kind}-revision-1` })) },
+      originalRestrictionCensusSha256: '6'.repeat(64),
+    } } };
+  }
+
+  it('D012 retains host revision and ORIGINAL restriction identities across reservation and result replay', async () => {
+    const input = await hostBoundProspectiveInput();
+    const retained = structuredClone(input);
+    const pending = reserveProspectiveEditSubject(input);
+    input.binding.hostEvidence.authorityRevisions.contextRevision = 'mutated-after-call';
+    const reserved = await pending;
+    expect(await reserveProspectiveEditSubject(retained)).toEqual(reserved);
+    const slot = (await cohort()).gitSyncLifecycle as { prospectiveSubject: { binding: unknown } };
+    expect(slot.prospectiveSubject.binding).toEqual(retained.binding);
+    const result = { ref: 'refs/fixture/host-bound', tree: 'c'.repeat(40) };
+    await recordProspectiveEditSubjectResult(retained, result);
+    expect(await reserveProspectiveEditSubject(retained)).toEqual({ ...reserved, state: 'recorded', result });
+  });
+
+  it.each(['context', 'authority', 'restriction', 'omit'] as const)(
+    'D012 refuses %s evidence drift at both CAS boundaries without replacing the original slot', async change => {
+      const input = await hostBoundProspectiveInput();
+      const reserved = await reserveProspectiveEditSubject(input);
+      const next = structuredClone(input);
+      if (change === 'context') next.binding.hostEvidence.authorityRevisions.contextRevision += '-changed';
+      if (change === 'authority') next.binding.hostEvidence.authorityRevisions.authorities[0].revision += '-changed';
+      if (change === 'restriction') next.binding.hostEvidence.originalRestrictionCensusSha256 = '7'.repeat(64);
+      const changed = change === 'omit' ? { ...next, binding: { ...input.binding } } : next;
+      if (change === 'omit') delete (changed.binding as { hostEvidence?: unknown }).hostEvidence;
+      await expect(reserveProspectiveEditSubject(changed)).rejects.toThrow('ownership-original-or-binding');
+      await expect(recordProspectiveEditSubjectResult(changed, { ref: 'must-not-record' })).rejects.toThrow('result-cas');
+      expect(await reserveProspectiveEditSubject(input)).toEqual(reserved);
+    });
+
+  it.each(['duplicate', 'missing-kind', 'missing-context', 'invalid-digest'] as const)(
+    'D012 rejects malformed host evidence (%s) before occupying the slot', async defect => {
+      const input = await hostBoundProspectiveInput();
+      const evidence = input.binding.hostEvidence;
+      if (defect === 'duplicate') evidence.authorityRevisions.authorities.push(evidence.authorityRevisions.authorities[0]);
+      if (defect === 'missing-kind') evidence.authorityRevisions.authorities.shift();
+      if (defect === 'missing-context') evidence.authorityRevisions.contextRevision = '';
+      if (defect === 'invalid-digest') evidence.originalRestrictionCensusSha256 = 'unknown';
+      await expect(reserveProspectiveEditSubject(input)).rejects.toThrow();
+      expect((await cohort()).gitSyncLifecycle).not.toHaveProperty('prospectiveSubject');
+    });
+
+  it('D012 leaves malformed durable result states unresolved instead of returning success', async () => {
+    const input = await prospectiveInput();
+    await reserveProspectiveEditSubject(input);
+    const [{ slot }] = await h.db!.sql<Array<{ slot: Record<string, unknown> }>>`
+      SELECT payload->'gitSyncLifecycle'->'prospectiveSubject' AS slot
+        FROM harness_shared.work_items WHERE feature_id = 'WI-A'`;
+    for (const broken of [
+      { ...slot, state: 'recorded', result: true }, { ...slot, state: 'recorded', result: [] },
+      { ...slot, state: 'recorded', result: null }, { ...slot, state: 'unknown', result: {} },
+      Object.fromEntries(Object.entries({ ...slot, state: 'recorded' }).filter(([key]) => key !== 'result')),
+    ]) {
+      await h.db!.sql`UPDATE harness_shared.work_items
+        SET payload = jsonb_set(payload, '{gitSyncLifecycle,prospectiveSubject}', ${JSON.stringify(broken)}::text::jsonb)
+        WHERE feature_id = 'WI-A'`;
+      await expect(reserveProspectiveEditSubject(input)).rejects.toThrow('ownership-original-or-binding');
+      await expect(recordProspectiveEditSubjectResult(input, { ref: 'must-not-repair' })).rejects.toThrow('result-cas');
+    }
   });
 
   it('refuses a changed member under the same operation key and keeps its original generation', async () => {

@@ -93,7 +93,7 @@ describe('native P017 pipeline source-runtime measurement selector', () => {
     const acceptedSource = { expectedSha256: digest, observedSha256: digest, matches: true,
       deployedContains: false, runtimeContainment: { 'staging-operator': true } };
     vi.mocked(gitPipelinePosition).mockResolvedValue({ repoRoot: '/native-fixture', submodule: null,
-      acceptedSource, servingRuntimes: [{ runtime: 'staging-operator', containsChange: true }],
+      acceptedSource, servingRuntimes: [{ runtime: 'staging-operator', buildSha: 'c'.repeat(40), containsChange: true }],
       gate: { verdictStaleReason: 'unrelated gate detail '.repeat(2_000) } } as unknown as PipelinePosition);
     const args = tool.args.parse({ path: 'target.ts', expectedSourceSha256: digest,
       sourceRuntimeOnly: true, testClass: 'operator-api' });
@@ -154,7 +154,7 @@ describe('dev:pipeline_position current-build test route selection', () => {
     positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
     runtime: { host: 'bg-host', releasePipelineApplies: false, restartTarget: 'bg-host', activation: 'restart' },
     runtimes: [{ host: 'bg-host', releasePipelineApplies: false }],
-    servingRuntimes: { entries: [] },
+    servingRuntimes: [{ runtime: 'staging-operator', buildSha: 'c'.repeat(40), containsChange: true }],
   } as unknown as PipelinePosition;
 
   it('keeps the original native selectors and route through schema, named-view and oversized handler output (EI-25679146311569247)', async () => {
@@ -200,6 +200,28 @@ describe('dev:pipeline_position current-build test route selection', () => {
       prerequisites: ['Containing staging commit loaded', 'private test identity/data for writes'],
     });
     expect(out.data.currentBuildTestRoute?.isolation).toMatch(/database and workspace are not isolated/i);
+  });
+
+  it('does not mark operator-api ready without a measured staging identity containing the change', async () => {
+    const missingRuntimeMeasurements = [
+      [],
+      [{ runtime: 'staging-operator', buildSha: null, containsChange: null }],
+      [{ runtime: 'staging-operator', buildSha: 'b'.repeat(40), containsChange: false }],
+    ];
+
+    for (const servingRuntimes of missingRuntimeMeasurements) {
+      vi.mocked(gitPipelinePosition).mockResolvedValue({
+        ...running,
+        servingRuntimes,
+      } as unknown as PipelinePosition);
+      const out = await tool.handler({ path: PATH, testClass: 'operator-api' } as never, {} as never) as {
+        data: { currentBuildTestRoute?: { readiness: string; prerequisites: string[] } };
+      };
+      expect(out.data.currentBuildTestRoute).toMatchObject({
+        readiness: 'requires-prerequisites',
+        prerequisites: expect.arrayContaining(['Measured runtime identity contains this change']),
+      });
+    }
   });
 
   it('requires private background runtime prerequisites before claiming a runnable route', async () => {

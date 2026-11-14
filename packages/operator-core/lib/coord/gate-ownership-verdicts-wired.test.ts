@@ -13,12 +13,13 @@
  * a decision helper extracted "so it is testable without firing a ~55min suite" tends to die.
  * Extraction makes it easy to test and equally easy to forget to wire.
  *
- * So this asserts REACHABILITY, deliberately by grep over production sources rather than by types:
+ * So this asserts REACHABILITY by searching production sources rather than by types:
  * an unused export is valid TypeScript, so tsc is structurally incapable of failing here.
  */
 import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const MODULE = 'gate-ownership.ts';
@@ -60,37 +61,40 @@ function sourceImportsSymbolFromModule(src: string, symbol: string): boolean {
   return false;
 }
 
-function importsSymbolFromModule(relPath: string, symbol: string): boolean {
-  try {
-    return sourceImportsSymbolFromModule(readFileSync(join(REPO_ROOT, relPath), 'utf8'), symbol);
-  } catch {
-    return false;
-  }
-}
-
-function directProductionCallSites(symbol: string): string[] {
+function readProductionSources(repoRoot: string): ReadonlyMap<string, string> {
   let out = '';
   try {
-    out = execFileSync('grep', ['-rl', '--include=*.ts', symbol, 'packages', 'libs', 'apps'], {
-      cwd: REPO_ROOT,
+    out = execFileSync('rg', [
+      '-l', '--fixed-strings',
+      '--glob=*.ts',
+      '--glob=!**/node_modules/**',
+      '--glob=!**/*.test.ts',
+      'gate-ownership', 'packages', 'libs', 'apps',
+    ], {
+      cwd: repoRoot,
       encoding: 'utf8',
       timeout: 120_000,
       killSignal: 'SIGKILL',
     });
-  } catch {
-    return []; // grep exits 1 on no match
+  } catch (error) {
+    if ((error as { status?: number }).status === 1) return new Map();
+    // A failed or timed-out instrument must fail visibly, not pretend no callers exist.
+    throw error;
   }
-  return (
-    out
-      .split('\n')
-      .map((l) => l.trim())
-      .filter(Boolean)
-      // the definition itself, any test, and THIS guard are not production callers
-      .filter((f) => !f.endsWith(`coord/${MODULE}`))
-      .filter((f) => !/\.test\.tsx?$/.test(f))
-      // …and a mention is not a call. See importsSymbolFromModule.
-      .filter((f) => importsSymbolFromModule(f, symbol))
-  );
+  return new Map(out.split('\n').filter(Boolean)
+    .filter((file) => !file.endsWith(`coord/${MODULE}`))
+    .map((file) => [file, readFileSync(join(repoRoot, file), 'utf8')]));
+}
+
+// Read this first-party source population once, including across recursive wrapper checks.
+let productionSources: ReadonlyMap<string, string> | undefined;
+function directProductionCallSites(
+  symbol: string,
+  sources: ReadonlyMap<string, string> = productionSources ??= readProductionSources(REPO_ROOT),
+): string[] {
+  return [...sources]
+    .filter(([, source]) => sourceImportsSymbolFromModule(source, symbol))
+    .map(([file]) => file);
 }
 
 /**
@@ -166,6 +170,25 @@ describe('gate-ownership verdict helpers are WIRED, not merely correct', () => {
     const proseOnly = `/** Call ownershipContradicted() before treating the lease as abandoned. */`;
     expect(proseOnly).toContain('ownershipContradicted(');
     expect(sourceImportsSymbolFromModule(proseOnly, 'ownershipContradicted')).toBe(false);
+  });
+
+  it('CONTROL: dependency imports cannot certify production wiring', () => {
+    const root = mkdtempSync(join(tmpdir(), 'gate-ownership-wiring-'));
+    try {
+      for (const dir of ['packages/src', 'libs', 'apps', 'packages/nested/node_modules/dependency']) {
+        mkdirSync(join(root, dir), { recursive: true });
+      }
+      writeFileSync(join(root, 'packages/src/caller.ts'),
+        "import { ownershipContradicted } from './gate-ownership';\nownershipContradicted(value);\n");
+      writeFileSync(join(root, 'packages/nested/node_modules/dependency/caller.ts'),
+        "import { ownershipNeedsLivenessConfirmation } from './gate-ownership';\nownershipNeedsLivenessConfirmation(value);\n");
+
+      const sources = readProductionSources(root);
+      expect(directProductionCallSites('ownershipContradicted', sources)).toEqual(['packages/src/caller.ts']);
+      expect(directProductionCallSites('ownershipNeedsLivenessConfirmation', sources)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('recognizes the live-holder verdict through the production-wired stand-down wrapper', () => {

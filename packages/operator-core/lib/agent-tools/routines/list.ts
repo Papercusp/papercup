@@ -292,7 +292,8 @@ export function isHealthRecordKey(key: string): boolean {
   return key === 'health' || (key.endsWith('_health') && key.length > '_health'.length);
 }
 
-function healthOf(metadata: Record<string, unknown> | null): Record<string, unknown> | null {
+/** Exported for its projection test (last-errors-predate-active-fire.test.ts). */
+export function healthOf(metadata: Record<string, unknown> | null): Record<string, unknown> | null {
   if (!metadata) return null;
   const OPERATIONAL_KEYS = [
     'gate_health',
@@ -319,6 +320,10 @@ function healthOf(metadata: Record<string, unknown> | null): Record<string, unkn
     'last_status',
     'last_error',
     'last_errors',
+    // EI-28696436611358092: when last_errors was written, and the dated, attributed
+    // record of the most recent action timeout (survives the next fire's heartbeat).
+    'last_errors_at',
+    'last_timeout',
     'consecutive_error_ticks',
     'consecutive_content_error_ticks',
     // WI-6554700010018198: attribution health. A non-zero counter with last_attribution
@@ -370,7 +375,26 @@ function healthOf(metadata: Record<string, unknown> | null): Record<string, unkn
   for (const k of Object.keys(metadata).sort()) {
     if (!(k in out) && isHealthRecordKey(k)) emit(k);
   }
+  const lastErrorsStale = lastErrorsPredateActiveFire(metadata);
+  if (lastErrorsStale !== null) out.last_errors_predate_active_fire = lastErrorsStale;
   return Object.keys(out).length ? out : null;
+}
+
+/**
+ * EI-28696436611358092 — `last_errors` is replaced only by a COMPLETED outcome, so for the
+ * whole length of a long in-flight fire it still shows the PREVIOUS fire's failure (a
+ * timeout string read as current beside a progressing pass). True when an active fire
+ * started after `last_errors_at`; null when either side is unmeasured (a legacy row with
+ * no `last_errors_at`, or no active marker), which must never read as "current".
+ */
+export function lastErrorsPredateActiveFire(metadata: Record<string, unknown>): boolean | null {
+  const errors = metadata.last_errors;
+  if (!Array.isArray(errors) || errors.length === 0) return null;
+  const at = metadata.last_errors_at;
+  const activity = metadata.git_sync_activity as { active?: unknown; started_at?: unknown } | null | undefined;
+  if (typeof at !== 'number' || !activity || activity.active !== true) return null;
+  if (typeof activity.started_at !== 'number') return null;
+  return activity.started_at > at;
 }
 
 const PLAN_CLEANUP_DAILY_INTERVAL_MS = 24 * 60 * 60 * 1_000;
@@ -1118,6 +1142,23 @@ function projectGitSyncCommandSnapshot(value: unknown): Record<string, unknown> 
   const reportedActiveOmitted = safeGitSyncInteger(snapshot.omitted_count);
   const completedCount = safeGitSyncInteger(snapshot.completed_count);
   const reportedCompletedOmitted = safeGitSyncInteger(snapshot.completed_omitted_count);
+  const totals = gitSyncRecord(snapshot.completed_totals);
+  const scopeTotals = (value: unknown): { count: number; duration_ms: number } | null => {
+    const record = gitSyncRecord(value);
+    const count = safeGitSyncInteger(record?.count);
+    const durationMs = safeGitSyncInteger(record?.duration_ms);
+    return count === null || durationMs === null ? null : { count, duration_ms: durationMs };
+  };
+  const rootTotals = scopeTotals(totals?.superproject);
+  const otherTotals = scopeTotals(totals?.other_repositories);
+  const totalDurationMs = safeGitSyncInteger(totals?.duration_ms);
+  // Older writers have no totals. Reject inconsistent records rather than
+  // presenting a partial sum as whole-fire coverage; whitelist numeric fields.
+  const completedTotals = rootTotals && otherTotals && totalDurationMs !== null &&
+    rootTotals.count + otherTotals.count === completedCount &&
+    rootTotals.duration_ms + otherTotals.duration_ms === totalDurationMs
+    ? { duration_ms: totalDurationMs, superproject: rootTotals, other_repositories: otherTotals }
+    : null;
   const activeOmitted =
     reportedActiveOmitted === null
       ? (active.dropped > 0 ? active.dropped : null)
@@ -1135,6 +1176,7 @@ function projectGitSyncCommandSnapshot(value: unknown): Record<string, unknown> 
     completed_count: completedCount ?? (completedOmitted === null ? null : completed.rows.length + completedOmitted),
     completed_omitted_count: completedOmitted,
     completed: completed.rows,
+    ...(completedTotals ? { completed_totals: completedTotals } : {}),
   };
 }
 
@@ -1667,7 +1709,7 @@ export default defineTool({
       '`lastFire` — WHAT the newest completed fire DID, for a `system:` routine when `name` pins the read (null otherwise, or when no fire completed in 8 days): { completedAt, workflowId, diagnostics, softError, error }, read from the DBOS step output bound to this routine id (EI-25264102161745452). `diagnostics` is the action\'s own per-fire evidence (e.g. operator-e2e-red-filer\'s owned/filed outcome per red spec); `health` stays null on a clean fire, so this is the read for "what did it do". `{ unavailable }` means the lookup failed — not "no fire".',
       '`paused` — non-null means a DELIBERATE hold, carrying { reason, by, at }. Read it before calling a routine stalled; a bare active:false with paused:null is the one worth investigating.',
       '`acceptanceBacklog` — on `acceptance-grading-sweep`, { depth, oldestPlanUpdatedAt }; depth counts active non-rubric plans in `awaiting-acceptance`. A paused routine with depth > 0 is not an empty pause; do not re-arm it automatically because grading spends LLM budget.',
-      '`health` — the operational half of the routine row, null when the row carries none of it. Carries EVERY `<subsystem>_health` record the row holds, derived from the key name rather than an allowlist, so a new writer is readable the day it ships (`gate_health` on green-checkpoint: the live in-flight-retriage marker, observed candidate and consecutive-red count; `gitnexus_health` on gitnexus-reindex: embeddings coverage, DB utilization, failure streak), plus last_status / last_error / consecutive_error_ticks / fire_count / armed_at where present. For git-sync, `health.git_sync_freshness` is the read-time verdict derived from last_synced_at, the in-flight fire and the cron cadence: degraded means either no completed outcome for more than three scheduled intervals, or one fire in flight longer than that same window. `health.git_sync_activity` is the writer-backed whole-fire marker: while `active:true`, `last_status` describes only the local stage; wait for `phase:"complete"` before treating the fire as terminal.',
+      '`health` — the operational half of the routine row, null when the row carries none of it. Carries EVERY `<subsystem>_health` record the row holds, derived from the key name rather than an allowlist, so a new writer is readable the day it ships (`gate_health` on green-checkpoint: the live in-flight-retriage marker, observed candidate and consecutive-red count; `gitnexus_health` on gitnexus-reindex: embeddings coverage, DB utilization, failure streak), plus last_status / last_error / consecutive_error_ticks / fire_count / armed_at where present. For git-sync, `health.git_sync_freshness` is the read-time verdict derived from last_synced_at, the in-flight fire and the cron cadence: degraded means either no completed outcome for more than three scheduled intervals, or one fire in flight longer than that same window. `health.git_sync_activity` is the writer-backed whole-fire marker: while `active:true`, `last_status` describes only the local stage; wait for `phase:"complete"` before treating the fire as terminal. `last_errors` is replaced only by a completed fire: `health.last_errors_predate_active_fire:true` means it belongs to an EARLIER fire (dated by `last_errors_at`; the last action timeout is `last_timeout`).',
       '⚠ git-sync `health.last_status` is DERIVED-OVERRIDDEN, not raw (EI-21807573331912223). When git_sync_freshness is degraded it reads `degraded (derived — see git_sync_freshness; raw: <writer value>)`, because the writer-backed headline reported `synced` on every tick for ~35 minutes while committing nothing — a skipped tick deliberately does not overwrite the last real outcome. The writer value is preserved at `git_sync_freshness.raw_last_status`; the `harness_shared.routines.metadata.last_status` column is untouched.',
       '⚠ `health.origin_freshness` — whether commits are REACHING ORIGIN, which `git_sync_freshness` cannot tell you (EI-22702954391733746): { alerted, cause, tracked_origin_sha, stall_sweeps, integrator_backlog_sweeps, publish_refused_sweeps, publish_backlog_sweeps }, null on a pot the origin watchdog does not judge. Read it as the SEPARATE question it is: `git_sync_freshness` measures whether the LOCAL COMMIT stage ran on schedule, and on a `bridged` pot the member is commit-only BY DESIGN, so `fresh` + `synced` is fully compatible with origin being arbitrarily stale — measured 2026-09-08, this surface read a clean bill for ~8h while origin sat 26 commits behind. When `alerted:true` the `last_status` headline is derived-overridden to say so.',
       '⚠ `health.git_sync_exclusions` — what the last completed sweep LEFT OUT (EI-21900560691158244/WI-2141747): { skip_reason, skipped_at, skipped_count, skipped_sample, oversized_count, oversized_sample, bulk_excluded_count, bulk_excluded_sample, +_truncated markers, sweep_at, sweep_age_ms, sweep_stale, warning }. `oversized_*` is only the per-file blob guard; `bulk_excluded_*` is the cumulative commit-size guard and has a different remedy. Counts are true totals; samples are bounded. `sweep_stale:true` (including legacy rows with no matching stamp, or a degraded git-sync freshness verdict) suppresses exclusion-action advice for skipped paths and byte exclusions until a fresh completed sweep is measured. Always present on a git-sync row, so zero counts are measurements, not missing fields.',

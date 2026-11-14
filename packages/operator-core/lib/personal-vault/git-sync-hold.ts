@@ -44,12 +44,14 @@
  */
 
 import { realpath, stat } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import type postgres from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { liveLockHoldingsStrict, type LiveLockHolding } from '../agent-tools/locks/live-lock-paths';
 import { isRetriablePgConnectError, withPgRetry } from '../pg-transient-retry';
 import { DisclosureRefused } from './disclosure-ledger';
+import type { GitSyncCandidateCapture } from '../harness/git-sync/run-git-sync';
 
 type Db = postgres.Sql | postgres.TransactionSql;
 
@@ -162,13 +164,23 @@ function isConnectRefused(error: unknown): boolean {
   return false;
 }
 
+/** Retry only failures that prove a read-only census query never reached Postgres. */
+function withRestrictedCensusRetry<T>(query: () => Promise<T>, label: string): Promise<T> {
+  return withPgRetry(query, {
+    retries: MAX_CONNECT_RETRIES,
+    backoffMs: 100,
+    label: 'personal-vault:git-sync-hold:' + label,
+    classifier: (error) => isConnectRefused(error) || isRetriablePgConnectError(error),
+  });
+}
+
 /**
  * This census query is read-only. Retry a refused TCP connection, which can be a
  * one-off at the local Postgres endpoint, and a postgres-js CONNECT_TIMEOUT, which
  * occurs before the queued query reaches the server. Every other error still fails closed.
  */
 async function readRestrictedEditRows(sql: Db): Promise<RestrictedEditRow[]> {
-  return withPgRetry(
+  return withRestrictedCensusRetry(
     () => sql<RestrictedEditRow[]>`
         SELECT DISTINCT ON (l.repo_root, l.file)
                l.repo_root, l.file, l.agent_id, l.work_item_id
@@ -178,12 +190,7 @@ async function readRestrictedEditRows(sql: Db): Promise<RestrictedEditRow[]> {
            AND l.ts >= d.delivered_at
          WHERE d.released_at IS NULL
          ORDER BY l.repo_root, l.file, l.ts DESC`,
-    {
-      retries: MAX_CONNECT_RETRIES,
-      backoffMs: 100,
-      label: 'personal-vault:git-sync-hold:restricted-edit-census',
-      classifier: (error) => isConnectRefused(error) || isRetriablePgConnectError(error),
-    },
+    'restricted-edit-census',
   );
 }
 
@@ -405,10 +412,13 @@ export async function readRestrictedWindowHoldings(deps: RestrictedWindowDeps): 
   const sql = deps.sql ?? getOrgPg().sql;
   let window: { since: Date | string | null; restricted: string[] | null } | undefined;
   try {
-    [window] = await sql<Array<{ since: Date | string | null; restricted: string[] | null }>>`
-      SELECT min(delivered_at) AS since, array_agg(DISTINCT agent_owner_id) AS restricted
-        FROM harness_shared.personal_disclosures
-       WHERE released_at IS NULL`;
+    [window] = await withRestrictedCensusRetry(
+      () => sql<Array<{ since: Date | string | null; restricted: string[] | null }>>`
+        SELECT min(delivered_at) AS since, array_agg(DISTINCT agent_owner_id) AS restricted
+          FROM harness_shared.personal_disclosures
+         WHERE released_at IS NULL`,
+      'restricted-window-disclosure-census',
+    );
   } catch (error) {
     throw ledgerUnavailable('git-sync unattributed-write hold', error);
   }
@@ -444,12 +454,15 @@ export async function readRestrictedWindowHoldings(deps: RestrictedWindowDeps): 
   }
   let rows: Array<{ repo_root: string; file: string; agent_id: string | null; ts: Date | string }>;
   try {
-    rows = await sql<Array<{ repo_root: string; file: string; agent_id: string | null; ts: Date | string }>>`
-      SELECT repo_root, file, agent_id, ts
-        FROM harness_shared.edit_attribution_ledger
-       WHERE repo_root = ANY(${roots}::text[])
-         AND file = ANY(${[...spellings]}::text[])
-         AND ts >= ${new Date(sinceMs - RESTRICTED_WINDOW_ATTRIBUTION_SLACK_MS)}`;
+    rows = await withRestrictedCensusRetry(
+      () => sql<Array<{ repo_root: string; file: string; agent_id: string | null; ts: Date | string }>>`
+        SELECT repo_root, file, agent_id, ts
+          FROM harness_shared.edit_attribution_ledger
+         WHERE repo_root = ANY(${roots}::text[])
+           AND file = ANY(${[...spellings]}::text[])
+           AND ts >= ${new Date(sinceMs - RESTRICTED_WINDOW_ATTRIBUTION_SLACK_MS)}`,
+      'restricted-window-attribution-census',
+    );
   } catch (error) {
     throw ledgerUnavailable('git-sync unattributed-write hold', error);
   }
@@ -476,6 +489,25 @@ export async function readRestrictedWindowHoldings(deps: RestrictedWindowDeps): 
 
 export type RestrictedSourceHoldState = 'held' | 'clear' | 'unknown';
 
+/** Evidence for this policy only. A clear census is not source-operation authority. */
+export interface RestrictedSourceHoldEvidence {
+  resolver: 'restricted-source-hold-v1' | 'restricted-source-hold-v2';
+  state: RestrictedSourceHoldState;
+  integrationRoot: string | null;
+  censusSha256: string | null;
+  matching: { attributed: number; window: number } | null;
+  original?: (RestrictedOriginalSource & { repositoryRealpath: string }) | null;
+  reason?: 'root-unconfigured' | 'root-unavailable' | 'original-unavailable' | 'census-unavailable';
+}
+
+/** Host-derived from the retained ORIGINAL wrapper, never the nominated root.
+ * This reader checks only restricted writes; it cannot authenticate the wrapper
+ * or supply the remaining owner/system policy population or a writer fence. */
+export interface RestrictedOriginalSource {
+  operationId: string;
+  candidate: GitSyncCandidateCapture;
+}
+
 export interface RestrictedSourceHoldDeps {
   /** Override the attributed edit census. */
   readAttributed?: () => Promise<RestrictedEditHolding[]>;
@@ -489,7 +521,9 @@ function pathIsUnder(root: string, target: string): boolean {
   return absoluteTarget === absoluteRoot || absoluteTarget.startsWith(absoluteRoot + path.sep);
 }
 
-async function holdingTouchesRoot(realRoot: string, holding: RestrictedEditHolding): Promise<boolean> {
+async function holdingTouchesRoot(
+  realRoot: string, holding: RestrictedEditHolding, originalPaths: readonly string[] = [],
+): Promise<boolean> {
   let domain = realRoot;
   if (holding.coordinationDomain) {
     const candidate = holding.coordinationDomain.trim();
@@ -498,7 +532,8 @@ async function holdingTouchesRoot(realRoot: string, holding: RestrictedEditHoldi
   }
   const absolute = path.resolve(path.isAbsolute(holding.path) ? holding.path : path.resolve(domain, holding.path));
   const real = await realpath(absolute).catch(() => absolute);
-  return pathIsUnder(realRoot, absolute) || pathIsUnder(realRoot, real);
+  return pathIsUnder(realRoot, absolute) || pathIsUnder(realRoot, real) || originalPaths.some(target =>
+    [absolute, real].some(location => pathIsUnder(target, location) || pathIsUnder(location, target)));
 }
 
 async function runRestrictedSourceGit(args: string[], cwd: string): Promise<{ code: number; stdout: string; stderr: string }> {
@@ -518,14 +553,56 @@ export async function readRestrictedSourceHoldState(
   integrationRoot: string | null | undefined = process.env.PAPERCUSP_INTEGRATION_ROOT,
   deps: RestrictedSourceHoldDeps = {},
 ): Promise<RestrictedSourceHoldState> {
-  const configuredRoot = integrationRoot?.trim();
-  if (!configuredRoot) return 'unknown';
+  return (await readRestrictedSourceHoldEvidence(integrationRoot, deps)).state;
+}
 
+/** Both complete censuses and their applicable holdings are bound to the resolved
+ * root. Supplying ORIGINAL custody also reads its window and binds its complete
+ * immutable candidate identity, even outside the nominated integration root.
+ * Explicitly unknown ORIGINAL custody refuses. Call again at the effect fence;
+ * this observation acquires no lease and says nothing about other owner/system
+ * restrictions. Unknown has no digest. Legacy root-only evidence remains v1. */
+export async function readRestrictedSourceHoldEvidence(
+  integrationRoot: string | null | undefined = process.env.PAPERCUSP_INTEGRATION_ROOT,
+  deps: RestrictedSourceHoldDeps = {},
+  original?: RestrictedOriginalSource | null,
+): Promise<RestrictedSourceHoldEvidence> {
+  const resolver = original === undefined ? 'restricted-source-hold-v1' as const : 'restricted-source-hold-v2' as const;
+  const unknown = (reason: RestrictedSourceHoldEvidence['reason'], root: string | null = null): RestrictedSourceHoldEvidence =>
+    ({ resolver, state: 'unknown', integrationRoot: root, censusSha256: null, matching: null, reason,
+      ...(original === undefined ? {} : { original: null }) });
+  const configuredRoot = integrationRoot?.trim();
+  if (!configuredRoot) return unknown('root-unconfigured');
+
+  // Freeze the supplied identity before the first await, not after resolving a
+  // filesystem path or importing its existing strict candidate parser.
+  let detached: RestrictedOriginalSource | null | undefined;
+  try { detached = original === undefined ? undefined : structuredClone(original); }
+  catch { return unknown('original-unavailable'); }
   let realRoot: string;
   try {
     realRoot = await realpath(configuredRoot);
   } catch {
-    return 'unknown';
+    return unknown('root-unavailable');
+  }
+
+  let retained: RestrictedSourceHoldEvidence['original'];
+  const originalPaths: string[] = [];
+  if (detached !== undefined) {
+    try {
+      const { parseGitSyncCandidateCapture } = await import('../harness/git-sync/run-git-sync');
+      if (!detached || !detached.operationId || detached.operationId !== detached.candidate?.requestId) {
+        return unknown('original-unavailable', realRoot);
+      }
+      const candidate = parseGitSyncCandidateCapture(detached.candidate);
+      const repositoryRealpath = await realpath(candidate.repository);
+      if (!(await stat(repositoryRealpath)).isDirectory()) return unknown('original-unavailable', realRoot);
+      retained = { operationId: detached.operationId, candidate, repositoryRealpath };
+      for (const selected of candidate.paths) {
+        const absolute = path.resolve(repositoryRealpath, selected);
+        originalPaths.push(absolute, await realpath(absolute).catch(() => absolute));
+      }
+    } catch { return unknown('original-unavailable', realRoot); }
   }
 
   try {
@@ -536,13 +613,42 @@ export async function readRestrictedSourceHoldState(
         readRestrictedWindowHoldings({
           listDirtyFiles: () => listDirtyFilesRecursive(runRestrictedSourceGit, root),
         }));
-    const [attributed, window] = await Promise.all([readAttributed(), readWindow(realRoot)]);
-    for (const holding of [...attributed, ...window]) {
-      if (await holdingTouchesRoot(realRoot, holding)) return 'held';
-    }
-    return 'clear';
+    const windowRoots = [...new Set([realRoot, ...(retained ? [retained.repositoryRealpath] : [])])];
+    const rows = await Promise.all([readAttributed(), ...windowRoots.map(root => readWindow(root))]);
+    // Detach the completed observations before asynchronous path resolution.
+    // Normalize explicit fields so insertion order cannot change the digest.
+    const snapshot = structuredClone(rows).map((leg, index) => {
+      if (!Array.isArray(leg)) throw new Error('source-hold-census-shape');
+      return leg.map(holding => {
+        if (!holding || typeof holding.path !== 'string' || !holding.path.trim() ||
+            typeof holding.owner !== 'string' || !holding.owner.trim() ||
+            typeof holding.intent !== 'string' ||
+            ['coordinationDomain', 'goalRef', 'heldSince'].some(key => {
+              const value = holding[key as keyof RestrictedEditHolding];
+              return value !== undefined && typeof value !== 'string';
+            })) throw new Error('source-hold-census-shape');
+        return { path: holding.path, owner: holding.owner, intent: holding.intent,
+          coordinationDomain: holding.coordinationDomain ?? (index && retained ? windowRoots[index - 1] : null), goalRef: holding.goalRef ?? null,
+          heldSince: holding.heldSince ?? null };
+      });
+    });
+    const applicable = await Promise.all(snapshot.map(async leg => {
+      const selected = [];
+      for (const holding of leg) {
+        if (retained && !holding.coordinationDomain) throw new Error('original-hold-domain-unavailable');
+        if (await holdingTouchesRoot(realRoot, { ...holding, coordinationDomain: holding.coordinationDomain ?? undefined,
+          goalRef: holding.goalRef ?? undefined, heldSince: holding.heldSince ?? undefined }, originalPaths)) selected.push(holding);
+      }
+      return selected.map(holding => JSON.stringify(holding)).sort();
+    }));
+    const window = retained ? [...new Set(applicable.slice(1).flat())].sort() : applicable[1]!;
+    const matching = { attributed: applicable[0]!.length, window: window.length };
+    const censusSha256 = createHash('sha256').update(JSON.stringify({ resolver, integrationRoot: realRoot,
+      attributed: applicable[0], window, ...(retained ? { original: retained } : {}) })).digest('hex');
+    return { resolver, state: matching.attributed || matching.window ? 'held' : 'clear',
+      integrationRoot: realRoot, censusSha256, matching, ...(retained ? { original: retained } : {}) };
   } catch {
-    return 'unknown';
+    return unknown('census-unavailable', realRoot);
   }
 }
 

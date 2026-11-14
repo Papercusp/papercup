@@ -2834,7 +2834,11 @@ export async function publishDependencyGeneration({
       }
       publisherResult = runPublisher(
         "bash",
-        [DEPENDENCY_GENERATION_SCRIPT, "--integration", repoRoot],
+        // The install reader ends with this process. Retain its latest handoff
+        // until a consumer can select it, using the publisher's existing
+        // expiring, one-pin-per-repo/label contract (24 hours by default).
+        [DEPENDENCY_GENERATION_SCRIPT, "--integration", repoRoot,
+          "--retain-input-as", "npm-install-safe"],
         { cwd: repoRoot, stdio: "inherit", env },
       );
       return publisherResult;

@@ -73,7 +73,7 @@ import {
 } from '@papercusp/agent-mcp';
 import { createPhaseTracker, type PhaseTracker } from '@papercusp/tooldef';
 import { readServingGeneration, type ServingGeneration } from '../../../serving-generation';
-import { withMcpBuildFence } from '../../../serving-build';
+import { requestedBuildOf, withMcpBuildFence } from '../../../serving-build';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { applyScopedSuperuserTransportBoundary } from './scoped-superuser-transport-boundary';
@@ -1666,7 +1666,7 @@ export function pinVerifiedMcpRequest(
  */
 export async function tryBuildSpawnContext(
   extra: unknown,
-  options: { allowStalePlanRecovery?: boolean } = {},
+  options: { allowStalePlanRecovery?: boolean; listingOnly?: boolean } = {},
 ): Promise<TrySpawnContextResult> {
   // Before pinned connection identity, signed spawns, cookies or privileged
   // transport synthesis. A root bootstrap credential cannot borrow any of them.
@@ -1697,7 +1697,8 @@ export async function tryBuildSpawnContext(
 
 async function tryBuildUnboundSpawnContext(
   extra: unknown,
-  options: { allowStalePlanRecovery?: boolean } = {},
+  /** listingOnly: the caller only LISTS (tools/list) — skip incarnation fences that gate acting. */
+  options: { allowStalePlanRecovery?: boolean; listingOnly?: boolean } = {},
 ): Promise<TrySpawnContextResult> {
   const info = (extra as { requestInfo?: object } | undefined)?.requestInfo;
   const verified = info && verifiedConnectionRequests.get(info);
@@ -1831,13 +1832,14 @@ async function tryBuildUnboundSpawnContext(
           },
           verifierTraceId,
         );
-        if (binding.binding === 'foreign') {
-          return {
-            kind: 'failed',
-            reason: 'superuser_foreign_native_session',
-            nativeSessionFailure: nativeSessionFailure(binding.advSessionId),
-          };
-        }
+        let incarnationFenced = binding.binding === 'foreign';
+        // WI-6554700010048107: the two fences below are DIFFERENT conditions and
+        // must stay distinguishable in tool_invocations telemetry. DB-foreign =
+        // the native session is bound to another owner; stale-live-host = it is
+        // still bound to THIS owner, but a newer incarnation is the live one.
+        let fenceReason:
+          | 'superuser_foreign_native_session'
+          | 'superuser_stale_live_host_native_session' = 'superuser_foreign_native_session';
         // A native session can remain validly bound to the same stable owner
         // after a carry/wake starts a successor. That is enough for attribution,
         // but not enough to authorize writes: same-owner file locks are
@@ -1845,19 +1847,33 @@ async function tryBuildUnboundSpawnContext(
         // discovery record names the one current Codex child. Reject an older
         // still-bound native session before any tool dispatch so both the
         // native edit hook (locks:acquire) and capability:edit share this fence.
-        const liveHost = findLiveHost(suIdentity, undefined, {
-          workspaceId: headerWs || wsParam || undefined,
-        });
-        if (liveHost?.nativeSessionId && liveHost.nativeSessionId !== nativeSessionId) {
+        if (!incarnationFenced) {
+          const liveHost = findLiveHost(suIdentity, undefined, {
+            workspaceId: headerWs || wsParam || undefined,
+          });
+          incarnationFenced = Boolean(liveHost?.nativeSessionId && liveHost.nativeSessionId !== nativeSessionId);
+          if (incarnationFenced) fenceReason = 'superuser_stale_live_host_native_session';
+        }
+        // WI-6554700010048023: these incarnation fences gate ACTING as the owner.
+        // A listing (tools/list) grants no authority, and Claude fetches it ONCE
+        // per connection: refusing it during a transient mismatch (a carry
+        // successor whose binding lags its first connect) leaves the session
+        // permanently toolless. Listing proceeds unverified; every tools/call
+        // still re-runs this fence, so the fence clears per call on its own.
+        if (incarnationFenced && !options.listingOnly) {
           return {
             kind: 'failed',
-            reason: 'superuser_foreign_native_session',
+            reason: fenceReason,
             nativeSessionFailure: nativeSessionFailure(binding.advSessionId),
           };
         }
-        const observation = nativeSessionFailure(binding.advSessionId);
-        if (observation) {
-          nativeSessionAudit = { ...observation, binding: binding.binding };
+        // A fenced binding (now reachable here by a listing) is never audited as
+        // verified; the explicit 'foreign' check keeps the audit typed bound|unbound.
+        const auditBinding = incarnationFenced || binding.binding === 'foreign' ? null : binding.binding;
+        const observation = auditBinding ? nativeSessionFailure(binding.advSessionId) : undefined;
+        if (observation && auditBinding) {
+          const audit: NonNullable<RequestOriginMetadata['nativeSession']> = { ...observation, binding: auditBinding };
+          nativeSessionAudit = audit;
           // Codex/OMP supply callId alongside threadId. The installed Claude
           // CLI supplies claudecode/toolUseId on both HTTP and SDK MCP calls;
           // its verified native-session header retains a DIFFERENT carrier.
@@ -1867,12 +1883,13 @@ async function tryBuildUnboundSpawnContext(
           // principal. Input scope cannot qualify as a funded turn/receipt.
           const nativeCallId = nativeThread ? requestMeta?.callId
             : nativeSessionHeader ? requestMeta?.['claudecode/toolUseId'] : undefined;
-          if (binding.binding === 'bound' &&
+          if (auditBinding === 'bound' &&
               typeof nativeCallId === 'string' && /^[A-Za-z0-9._:-]{1,256}$/.test(nativeCallId)) {
-            nativeSessionAudit.callIdFingerprint = createHash('sha256').update(nativeCallId, 'utf8').digest('hex');
+            audit.callIdFingerprint = createHash('sha256').update(nativeCallId, 'utf8').digest('hex');
           }
         }
         if (
+          !incarnationFenced &&
           binding.binding === 'bound' &&
           binding.advSessionId != null &&
           Number.isSafeInteger(binding.advSessionId) &&
@@ -1910,7 +1927,9 @@ async function tryBuildUnboundSpawnContext(
             /* diagnostic trigger failures must not alter fail-closed auth behavior */
           }
         }
-        return {
+        // Listing only (WI-6554700010048023): an unverified incarnation lists,
+        // never acts — tools/call still fails closed here on its own request.
+        if (!options.listingOnly) return {
           kind: 'failed',
           reason: 'superuser_native_session_verifier_unavailable',
           nativeSessionFailure: nativeSessionFailure(
@@ -3339,7 +3358,10 @@ function withMcpMemoryReceipts<Req, Res extends object>(
       import('../../../memory/session-epoch-ledger'), import('@papercusp/db-org'),
     ]);
     return withMemoryEmissionReceipt(getOrgPg().sql, transportOwnerId(spawn.ctx),
-      'confirmations' in receipt ? receipt.confirmations : undefined, () => handler(req, extra));
+      'confirmations' in receipt ? receipt.confirmations : undefined, () => handler(req, extra), {
+        workspaceId: spawn.ctx.workspaceId, harness: spawn.ctx.harnessSlug, client: spawn.ctx.callerAgent ?? 'unknown',
+        port: (req as { method?: string })?.method === 'initialize' ? 'mcp-initialize' : 'mcp-result',
+      });
   };
 }
 
@@ -3382,7 +3404,9 @@ async function resolveVisibleToolListings(extra: unknown, phases: PhaseTracker =
     }
 > {
   await phases.track('operatorToolsLoad', () => ensureOperatorToolsLoaded());
-  const spawnRes = await phases.track('spawnContext', () => tryBuildSpawnContext(extra));
+  // listingOnly (WI-6554700010048023): a native-incarnation mismatch must not
+  // strand a session toolless — listing grants nothing; tools/call stays fenced.
+  const spawnRes = await phases.track('spawnContext', () => tryBuildSpawnContext(extra, { listingOnly: true }));
   // WI-574 (loud auth-fail): carry the rejection reason so tools/list can fail LOUDLY instead of
   // silently advertising an empty tool list (which is indistinguishable from a healthy server).
   if (spawnRes.kind === 'failed') {
@@ -3571,6 +3595,28 @@ function declaredServingGeneration(req: unknown): string | null {
   const meta = (req as { params?: { _meta?: unknown } } | undefined)?.params?._meta;
   if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return null;
   const declared = (meta as Record<string, unknown>)['papercusp/servingGeneration'];
+  return typeof declared === 'string' && declared.trim() ? declared.trim() : null;
+}
+
+/**
+ * The generation a stateless tools:invoke declares through its OWN argument
+ * (`arguments.servingGeneration`, the value tools:find returns). invoke.ts already verifies it
+ * against the live generation, so the transport fence must accept it as a declaration too.
+ * Reading only `_meta` refused callers that followed tools:find's advice verbatim
+ * (WI-6554700010048041). Clients that serialize arguments as JSON strings are decoded
+ * up to two levels, matching the :9071 proxy.
+ */
+function declaredInvokeArgumentGeneration(req: unknown): string | null {
+  let args: unknown = (req as { params?: { arguments?: unknown } } | undefined)?.params?.arguments;
+  for (let depth = 0; depth < 2 && typeof args === 'string'; depth++) {
+    try {
+      args = JSON.parse(args);
+    } catch {
+      return null;
+    }
+  }
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return null;
+  const declared = (args as Record<string, unknown>).servingGeneration;
   return typeof declared === 'string' && declared.trim() ? declared.trim() : null;
 }
 
@@ -3769,20 +3815,23 @@ function withMcpSessionSurfaceRecheck<Req, Res>(
     // as stale refused EVERY HTTP tools/call, even straight after a successful
     // tools/list. A stateless call can still opt into the fence by echoing the
     // generation its listing carried (`_meta['papercusp/servingGeneration']`,
-    // stamped on every tools/list entry). Ordinary direct calls without that
-    // declaration retain their legacy path. Dynamic tools:invoke is different:
-    // its target schema may come from another generation, so it must fail closed
-    // when the stateless caller supplies no listing generation.
-    const declaredGeneration = declaredServingGeneration(req);
+    // stamped on every tools/list entry). A call without that declaration
+    // retains the legacy path — tools:invoke included (WI-6554700010048085).
+    // Standard MCP clients (Claude Code, Codex) never echo tool-definition _meta
+    // onto tools/call, and the :9071 proxy stamps no generation, so failing an
+    // undeclared tools:invoke closed refused the documented discovery path
+    // (tools:find → tools:invoke { name, args }) for every such client. The
+    // nested dispatch still runs the TARGET tool's own schema validation, which
+    // is the same guarantee an undeclared direct call gets. A DECLARED generation
+    // (listing _meta, or tools:find's servingGeneration argument) is still
+    // verified below and refused when stale.
     const requestedName = (req as { params?: { name?: unknown } } | null)?.params?.name;
-    if (!sessionKey && declaredGeneration === null) {
-      if (requestedName === 'tools:invoke') {
-        throw new Error(
-          'stale_tool_contract: stateless tools:invoke requires papercusp/servingGeneration metadata from tools/list; refresh tools/list before retrying',
-        );
-      }
-      return runHandler();
-    }
+    const declaredGeneration = declaredServingGeneration(req)
+      ?? (requestedName === 'tools:invoke' ? declaredInvokeArgumentGeneration(req) : null);
+    if (!sessionKey && declaredGeneration === null) return runHandler();
+    // WI-6554700010048041: withMcpBuildFence runs OUTSIDE this wrapper and refuses a
+    // build selector this operator does not serve, so a selector seen here is verified.
+    const routedBuild = requestedBuildOf(req).build;
 
     const before = await readGeneration();
     if (before.state !== 'known') {
@@ -3819,7 +3868,11 @@ function withMcpSessionSurfaceRecheck<Req, Res>(
           ? `stale_tool_contract: this MCP session has no tools/list baseline for the current serving generation ` +
               `${before.revision}; call tools/list before retrying tools/call`
           : `stale_tool_contract: this call declares serving generation ${declaredGeneration}, but the server now serves ` +
-              `${before.revision}; call tools/list before retrying tools/call`,
+              `${before.revision}; call tools/list before retrying tools/call` +
+              (routedBuild !== null
+                ? ` (this call was routed to the ${routedBuild} build, so a generation discovered on another build ` +
+                  `cannot match: omit servingGeneration, or rediscover with tools:find { build: '${routedBuild}' })`
+                : ''),
       );
     }
 
@@ -4502,7 +4555,9 @@ export function registerMcpHost(server: McpServer): void {
         );
         const recoveryHint = spawnRes.reason === 'superuser_native_session_unverified'
           ? ' The MCP client supplied malformed native thread metadata (expected a 1–128 character string using ASCII letters, digits, period, underscore, colon, or hyphen). Reconnect the MCP client so it resends the active thread ID.'
-          : '';
+          : spawnRes.reason === 'superuser_stale_live_host_native_session'
+            ? ' This native session is still bound to this owner, but the owner\'s live psu host record names a different native session. Either this connection belongs to a superseded incarnation (act from the live session), or this is a carry successor whose host record has not caught up yet (that clears on its own within a few calls).'
+            : '';
         return {
           isError: true,
           content: [

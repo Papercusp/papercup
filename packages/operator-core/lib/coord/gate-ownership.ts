@@ -559,7 +559,10 @@ export async function readGateOwnership(
   let objs: ReadonlyMap<string, ConditionObject>;
   try {
     const find = opts.findConditionObjects ?? findConditionObjects;
-    objs = await find([stallKey, redStreakKey], { harnessSlug: harness });
+    // The exact condition keys identify this pipeline within the workspace.
+    // Its incident can live in a different physical pot home; filtering that
+    // home by the install slug hides owners and duplicates from the action guard.
+    objs = await find([stallKey, redStreakKey]);
   } catch (err) {
     return unmeasuredCell(stallKey, `ownership store unreachable: ${err instanceof Error ? err.message : String(err)}`);
   }

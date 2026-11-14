@@ -380,6 +380,7 @@ describe('private native proof custody (P002)', () => {
       const f = fixture(), saved = f.save(), manifest = structuredClone(saved.manifest);
       manifest.schemaVersion = schemaVersion;
       delete manifest.referenceArtifactLimit;
+      delete manifest.archiveObjectAccounting;
       delete manifest.segments;
       delete manifest.archiveLimits;
       for (const group of manifest.groups) for (const entry of [
@@ -391,6 +392,12 @@ describe('private native proof custody (P002)', () => {
         .persist(Buffer.from(JSON.stringify(manifest)), 'native-proof.json');
       const inventoryHash = createHash('sha256').update(JSON.stringify({ groups: manifest.groups, gaps: manifest.gaps })).digest('hex');
       expect(verifyNativeProofPacket(f.directory, { ...saved.locator, manifest: pin, inventoryHash }, f.contract).status).toBe('complete');
+      const incompatible = { ...manifest, archiveObjectAccounting: 'unique-family-artifact-ref-v1' };
+      const incompatiblePin = createNativeArtifactPersister(join(f.directory, 'objects'))
+        .persist(Buffer.from(JSON.stringify(incompatible)), 'native-proof.json');
+      expect(() => verifyNativeProofPacket(f.directory,
+        { ...saved.locator, manifest: incompatiblePin, inventoryHash }, f.contract))
+        .toThrow('custody archive object accounting mismatch');
     });
 
   it.each(['reporter-json', 'native-digest'] as const)

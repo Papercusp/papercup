@@ -33,9 +33,12 @@ import { z } from 'zod';
 
 /** Shared by continuity execution and rubric authoring; never accept a check the runner must truncate. */
 export const CONTINUITY_PROBE_MAX_PER_WAKE = 8;
+/** Shape default shared with the dependency-light rubric probe identity encoder. */
+export const SQL_PROBE_DEFAULT_MAX_ROWS = 50;
 
 /**
- * Most probe checks one rubric may declare. scorecards:emit and the rubric re-score run them
+ * Most distinct probe operations one rubric evaluation may execute. Identical declarations
+ * keep separate consumer receipts. scorecards:emit and the rubric re-score run operations
  * in chunks of CONTINUITY_PROBE_MAX_PER_WAKE, so the shared batch runner never truncates and
  * a larger read-only SQL census (papercusp-app-performance: 13 probes) stays executable.
  * test-rubric-unification-2026-10-12 P-010.

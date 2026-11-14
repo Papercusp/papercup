@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
+import { createProofContextIdentity, PROOF_CONTEXT_COMPONENTS, type ProofContextIdentity } from '@papercusp/test-config/configuration-snapshot';
 import {
   assessTerminalRepairQueueReconciliation,
   beginQualificationTransaction,
@@ -337,18 +338,21 @@ describe('prepared selection authority shape', () => {
 });
 
 describe('fenced durable remaining-work continuation', () => {
+  const context = createProofContextIdentity(Object.fromEntries(PROOF_CONTEXT_COMPONENTS.map(key =>
+    [key, createHash('sha256').update(key).digest('hex')])) as ProofContextIdentity['components'])!;
   const running = () => reserveQualificationRunner(begin(), { attemptId: 'attempt-1', runnerId: 'runner-1',
     candidate: 'candidate-1', runId: 'run-1', pid: 42, pidIdentity: 'boot:42', started: true,
     leaseDurationMs: 1_000, nowMs: 200 }).transaction;
   const input = (): QualificationWorkProgressInput => ({ attemptId: 'attempt-1', candidate: 'candidate-1',
     repairHead: null, runnerId: 'runner-1', runId: 'run-1', pidIdentity: 'boot:42', root: '/repo',
     taskKey: 'qualification', runContext: 'ci', runnerIdentity: 'proof-v3 node', retryStates: [],
+    proofContexts: { a: { after: context }, post: { after: context } },
     manifest: { schemaVersion: 1, units: [
       { id: 'a', kind: 'test', path: 'a.test.ts' }, { id: 'post', kind: 'post-suite', path: 'post.mjs' } ] },
     updates: [{ receipt: { unitId: 'a', completionId: 'completion-a', observedAtMs: 250, state: 'pass',
       worktreeDirty: false, observedCount: 1, firstAttemptVerdict: 'pass', proof: {
         recordedSha: 'candidate-1', executedModules: ['a.test.ts'], readPaths: [], inputsCaptured: true,
-        opaqueReasons: [], runContext: 'ci', runnerIdentity: 'proof-v3 node' } } }], nowMs: 300 });
+        opaqueReasons: [], runContext: 'ci', runnerIdentity: 'proof-v3 node', proofContext: context } } }], nowMs: 300 });
 
   it('persists the entire frozen population and survives the production parse/recovery path', () => {
     const saved = recordQualificationWorkProgress(running(), input());
@@ -363,6 +367,103 @@ describe('fenced durable remaining-work continuation', () => {
       manifest: { schemaVersion: 1, units: [] } } })).toBeNull();
     expect(parseCheckpointQualificationTransaction({ ...recovered, continuation: { ...recovered.continuation,
       supersededReceipts: recovered.continuation!.receipts } })).toBeNull();
+  });
+
+  const completeInput = (): QualificationWorkProgressInput => {
+    const value = input();
+    value.updates.push({ receipt: { ...structuredClone(value.updates[0]!.receipt), unitId: 'post',
+      completionId: 'completion-post', proof: { ...value.updates[0]!.receipt.proof,
+        executedModules: ['post.mjs'] } } });
+    return value;
+  };
+
+  it('composes the full original population and preserves unknowns until every unit is measured', () => {
+    const partial = recordQualificationWorkProgress(running(), input());
+    expect(partial.status).toBe('updated');
+    expect(Object.values(partial.transaction.continuation!.proofContext!.components)).toEqual(
+      PROOF_CONTEXT_COMPONENTS.map(() => null));
+    const request = completeInput();
+    const saved = recordQualificationWorkProgress(running(), request);
+    expect(saved.status).toBe('updated');
+    const aggregate = saved.transaction.continuation!.proofContext!;
+    expect(Object.values(aggregate.components).every(value => typeof value === 'string')).toBe(true);
+    expect(aggregate).not.toEqual(context);
+    expect(parseCheckpointQualificationTransaction(JSON.parse(JSON.stringify(saved.transaction))))
+      .toEqual(saved.transaction);
+    // Caller measurements cannot replace an original, even if all caller fields
+    // claim a complete context. Current execution authority is still independent.
+    delete request.updates[1]!.receipt.proof!.proofContext;
+    const missing = recordQualificationWorkProgress(running(), request);
+    expect(missing.status).toBe('updated');
+    expect(Object.values(missing.transaction.continuation!.proofContext!.components)).toEqual(
+      PROOF_CONTEXT_COMPONENTS.map(() => null));
+  });
+
+  it.each(PROOF_CONTEXT_COMPONENTS)('binds aggregate %s to the original units and refuses a persisted transplant', component => {
+    const request = completeInput();
+    const original = recordQualificationWorkProgress(running(), request).transaction;
+    const changed = createProofContextIdentity({ ...context.components,
+      [component]: createHash('sha256').update(`changed-${component}`).digest('hex') })!;
+    request.updates[1]!.receipt.proof!.proofContext = changed;
+    request.proofContexts!.post = { after: changed };
+    const next = recordQualificationWorkProgress(running(), request);
+    expect(next.status).toBe('updated');
+    const aggregate = next.transaction.continuation!.proofContext!;
+    expect(PROOF_CONTEXT_COMPONENTS.filter(key => aggregate.components[key] !==
+      original.continuation!.proofContext!.components[key])).toEqual([component]);
+    const transplanted = structuredClone(next.transaction);
+    transplanted.continuation!.proofContext = original.continuation!.proofContext;
+    expect(parseCheckpointQualificationTransaction(transplanted)).toBeNull();
+    expect(recordQualificationWorkProgress(transplanted, { ...request, updates: [] })).toMatchObject({
+      status: 'conflict', refusalReason: 'continuation-proof-context-mismatch' });
+    request.updates[1]!.receipt.proof!.proofContext = createProofContextIdentity({ ...context.components,
+      [component]: null });
+    const unknown = recordQualificationWorkProgress(running(), request);
+    expect(unknown.status).toBe('updated');
+    expect(unknown.transaction.continuation!.proofContext!.components[component]).toBeNull();
+  });
+
+  it('canonicalizes original unit order and JSONB keys while retaining exclusion and leg identity', () => {
+    const request = completeInput();
+    const original = recordQualificationWorkProgress(running(), request).transaction;
+    request.manifest.units.reverse();
+    request.updates.reverse();
+    for (const update of request.updates) update.receipt.proof = Object.fromEntries(
+      Object.entries(update.receipt.proof!).reverse());
+    const reordered = recordQualificationWorkProgress(running(), request);
+    expect(reordered.status).toBe('updated');
+    expect(reordered.transaction.continuation!.proofContext).toEqual(original.continuation!.proofContext);
+    request.manifest.units.find(unit => unit.id === 'post')!.exclusion = { reason: 'policy', policyRef: 'v1' };
+    const excluded = recordQualificationWorkProgress(running(), request);
+    expect(excluded.status).toBe('updated');
+    expect(excluded.transaction.continuation!.proofContext).not.toEqual(original.continuation!.proofContext);
+    // Exclusion never lets an unmeasured unit vanish from the aggregate.
+    request.updates = request.updates.filter(update => update.receipt.unitId !== 'post');
+    expect(Object.values(recordQualificationWorkProgress(running(), request).transaction
+      .continuation!.proofContext!.components)).toEqual(PROOF_CONTEXT_COMPONENTS.map(() => null));
+  });
+
+  it('does not hash outcomes or physical attempts and upgrades a legacy aggregate without rewriting originals', () => {
+    const request = completeInput();
+    const original = recordQualificationWorkProgress(running(), request).transaction;
+    for (const update of request.updates) {
+      update.receipt.state = 'fail';
+      update.receipt.completionId += '-retry';
+      update.receipt.observedAtMs += 10;
+    }
+    const changedOutcome = recordQualificationWorkProgress(running(), request);
+    expect(changedOutcome.status).toBe('updated');
+    expect(changedOutcome.transaction.continuation!.proofContext).toEqual(original.continuation!.proofContext);
+    const legacy = structuredClone(original);
+    delete legacy.continuation!.proofContext;
+    expect(parseCheckpointQualificationTransaction(legacy)).toEqual(legacy);
+    const upgraded = recordQualificationWorkProgress(legacy, { ...completeInput(), updates: [] });
+    expect(upgraded.status).toBe('updated');
+    expect(upgraded.transaction.continuation!.proofContext).toEqual(original.continuation!.proofContext);
+    expect(upgraded.transaction.continuation!.receipts).toEqual(legacy.continuation!.receipts);
+    const malformed = structuredClone(original);
+    malformed.continuation!.receipts[0]!.proof!.proofContext = { ...context, fingerprint: 'forged' };
+    expect(parseCheckpointQualificationTransaction(malformed)).toBeNull();
   });
 
   it('saves the exact yield cursor while retaining single-flight custody through cleanup', () => {
@@ -443,6 +544,25 @@ describe('fenced durable remaining-work continuation', () => {
         supersededReceipts: [{ state: 'fail', completionId: 'completion-a' }] } } });
     const validPass = recordQualificationWorkProgress(running(), input()).transaction;
     expect(recordQualificationWorkProgress(validPass, { ...retry, retryStates: [] })).toMatchObject({
+      status: 'conflict', refusalReason: 'continuation-replacement-not-admitted' });
+  });
+
+  it('requalifies an unmeasured retained pass without discarding its original receipt', () => {
+    const saved = recordQualificationWorkProgress(running(), input()).transaction;
+    const replacement = input();
+    replacement.proofContexts = undefined;
+    replacement.updates[0]!.supersedesCompletionId = 'completion-a';
+    replacement.updates[0]!.receipt.completionId = 'requalified-a';
+    replacement.nowMs = 400;
+    const result = recordQualificationWorkProgress(saved, replacement);
+    expect(result).toMatchObject({ status: 'updated', transaction: { continuation: {
+      receipts: [{ completionId: 'requalified-a', proof: { proofContext: context } }],
+      supersededReceipts: [{ completionId: 'completion-a', proof: { proofContext: context } }],
+    } } });
+    expect(parseCheckpointQualificationTransaction(JSON.parse(JSON.stringify(result.transaction))))
+      .toEqual(result.transaction);
+    const withoutPredecessor = { ...replacement, updates: [{ receipt: replacement.updates[0]!.receipt }] };
+    expect(recordQualificationWorkProgress(saved, withoutPredecessor)).toMatchObject({
       status: 'conflict', refusalReason: 'continuation-replacement-not-admitted' });
   });
 });

@@ -15,6 +15,10 @@ import { isDeepStrictEqual, promisify } from 'node:util';
 import { getOrgPg } from '@papercusp/db-org';
 import type { BuildShaSource } from '../build-info';
 import { canonicalJson } from '@papercusp/hash-chain';
+import { parseTestRunExecutionDetails,
+  stableRecordedWorkerExecution } from '@papercusp/test-config/execution-details';
+import { originalTestRunReference } from '../testing-run-original-reference';
+import { readConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
 import type { GateVerdictTarget } from './gate-verdict-target';
 import { isCheckpointCandidateSource, type CheckpointCandidateSource } from './checkpoint-candidate-source';
 import type { FreezeCutRecord } from './known-good-freeze';
@@ -24,6 +28,8 @@ import { FROZEN_REPAIR_CARRY_METADATA_KEY, FROZEN_REPAIR_CARRY_LAST_METADATA_KEY
 import { boundedOrgTxn } from '../pg-bounded-txn';
 import { appendPipelineEvent } from '../harness/git-sync/pipeline-events';
 import { evaluatePartialTaskContinuation, readPartialCurrentCommandCompletion, readPartialTaskCommandCompletion, readPartialNativeCompletion, readPartialNativeProducer } from '../../../../scripts/lib/partial-task-resume.mjs';
+import { createProofContextIdentity, readProofContextIdentity, PROOF_CONTEXT_COMPONENTS,
+  type ProofContextComparison, type ProofContextIdentity } from '@papercusp/test-config/configuration-snapshot';
 import {
   dependencyGenerationInfraCode,
   GREEN_CHECKPOINT_RESULT_MARKER,
@@ -940,10 +946,41 @@ export interface QualificationWorkContinuation {
   receipts: QualificationWorkReceipt[];
   retryStates: Array<'fail' | 'infra'>;
   supersededReceipts: QualificationWorkReceipt[];
+  /** Derived from the entire original manifest/receipt population. Never supplied
+   * by the caller's current contexts; incomplete units keep components unknown. */
+  proofContext?: ProofContextIdentity;
   /** Immutable enrollment references, retained across physical runner replacement. */
   nativeProducers?: QualificationNativeProducerReference[];
   /** Saved under the same row lock as receipts; never releases a still-live runner. */
   lastYield?: QualificationWorkYield;
+}
+
+/** Compose measured inputs, not outcomes or physical execution IDs. Every unit,
+ * including excluded units and non-test legs, participates in the population.
+ * A missing original measurement cannot disappear through a partial receipt set.
+ * The existing original-artifact validator remains the authority for each receipt;
+ * this aggregate does not authenticate it or grant permission to reuse it. */
+function qualificationWorkProofContext(work: Pick<QualificationWorkContinuation, 'manifest' | 'receipts'>):
+  ProofContextIdentity | null {
+  const units = [...work.manifest.units].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  const receipts = new Map(work.receipts.map(receipt => [receipt.unitId, receipt]));
+  const contexts = new Map<string, ProofContextIdentity>();
+  for (const receipt of work.receipts) {
+    const value = receipt.proof?.proofContext;
+    if (value === undefined) continue;
+    const context = readProofContextIdentity(value);
+    if (!context) return null;
+    contexts.set(receipt.unitId, context);
+  }
+  const components = Object.fromEntries(PROOF_CONTEXT_COMPONENTS.map(component => {
+    const complete = units.length > 0 && units.every(unit => receipts.has(unit.id)
+      && contexts.get(unit.id)?.components[component] != null);
+    const entries = units.map(unit => [unit, contexts.get(unit.id)?.components[component] ?? null]);
+    return [component, complete ? createHash('sha256').update(canonicalJson([
+      'qualification-proof-context-v1', component, entries,
+    ])).digest('hex') : null];
+  })) as ProofContextIdentity['components'];
+  return createProofContextIdentity(components);
 }
 
 export interface QualificationWorkYield {
@@ -1016,6 +1053,118 @@ export interface QualificationNativeProducerReference {
   supersedesCompletionIds?: Record<string, string>;
   /** No outcome existed, no receipt was banked, and the ended runner was proved dead. */
   missingSnapshot?: { runnerId: string; confirmedAtMs: number };
+  /** Independently read originals; never a current-execution or reset capability. */
+  originals?: QualificationNativeOriginals;
+}
+
+export type QualificationNativeOriginals =
+  | { status: 'unknown'; reason: string }
+  | { status: 'known'; schemaVersion: 'qualification-native-originals-v1'; runGroupId: string;
+      selectedManifestHash: string; sha256: string;
+      bindings: Array<{ unitId: string; completionId: string;
+        reference: NonNullable<ReturnType<typeof originalTestRunReference>> }> };
+
+/** Authenticate the full native selection against independent, unshaped ledger rows.
+ * Dirty/missing/late/duplicate originals remain unknown. Tenant labels may be NULL:
+ * they must match their own producer metadata, never the gate target's defaults. */
+export function authenticateQualificationNativeOriginals(
+  rows: Record<string, unknown>[],
+  expected: Pick<QualificationWorkProgressInput, 'attemptId' | 'candidate' | 'root' | 'manifest'>,
+  selected: readonly { testFile: string; projectName: string | null }[],
+  observed: ReturnType<typeof readPartialNativeCompletion>,
+): QualificationNativeOriginals {
+  const unknown = (reason: string): QualificationNativeOriginals => ({ status: 'unknown', reason });
+  if (observed.status !== 'ready' || !('origin' in observed) || !observed.origin.runGroupId
+    || observed.origin.sourceCommit !== expected.candidate || observed.origin.startedAtMs === null
+    || !selected.length || rows.length !== selected.length || observed.receipts.length !== selected.length
+    || new Set(selected.map(spec => spec.testFile)).size !== selected.length)
+    return unknown('original-population-incomplete-or-ambiguous');
+  const group = observed.origin.runGroupId;
+  const bindings: Extract<QualificationNativeOriginals, { status: 'known' }>['bindings'] = [];
+  let selectedManifestHash: string | undefined;
+  const ids = new Set<number>();
+  for (const spec of selected) {
+    const matches = rows.filter(row => row.file_path === spec.testFile);
+    const units = expected.manifest.units.filter(unit => unit.kind === 'test' && !unit.exclusion && unit.path === spec.testFile);
+    if (matches.length !== 1 || units.length !== 1) return unknown('original-population-incomplete-or-ambiguous');
+    const row = matches[0]!;
+    const receipt = observed.receipts.find(value => value.unitId === units[0]!.id);
+    const proof = receipt?.proof as Record<string, unknown> | undefined;
+    const producingRun = proof?.producingRun as Record<string, unknown> | undefined;
+    const details = parseTestRunExecutionDetails(row.execution_details);
+    const configuration = readConfigurationSnapshot(row.configuration_snapshot);
+    const id = Number(row.id);
+    if (!details || !configuration || !Number.isSafeInteger(id) || id <= 0 || ids.has(id)
+      || row.file_path !== details.filePath || row.run_group_id !== group || details.runGroupId !== group
+      || row.commit_sha !== expected.candidate || details.commitSha !== row.commit_sha
+      || row.worktree_dirty !== false || details.worktreeDirty !== false
+      || row.workspace_id !== details.workspaceId || row.harness_slug !== details.harnessSlug
+      || details.root !== expected.root || row.framework !== 'vitest' || row.is_scratch_config !== false)
+      return unknown('original-row-identity-or-configuration-unmeasured');
+    const population = details.population;
+    const worker = stableRecordedWorkerExecution(details.workerExecution);
+    const instant = (value: unknown) => value instanceof Date ? value.toISOString() : value;
+    const startedAt = instant(row.started_at), finishedAt = instant(row.finished_at);
+    if (!receipt || !proof || !producingRun || !population || !population.cases.length || !worker
+      || typeof startedAt !== 'string' || typeof finishedAt !== 'string'
+      || !Number.isFinite(Date.parse(startedAt)) || !Number.isFinite(Date.parse(finishedAt))
+      || Date.parse(startedAt) < observed.origin.startedAtMs || Date.parse(finishedAt) < Date.parse(startedAt)
+      || Date.parse(finishedAt) > receipt.observedAtMs
+      || !details.workerTestConfiguration || !details.proofContext
+      || !population.cases.every(value => value.identity[0] === (spec.projectName ?? '') && value.identity[1] === spec.testFile)
+      || receipt.state !== row.status || receipt.observedCount !== details.passed
+      || producingRun.qualificationAttemptId !== expected.attemptId || producingRun.runGroupId !== group
+      || producingRun.completionId !== receipt.completionId
+      || typeof producingRun.selectedManifestHash !== 'string' || !/^[a-f0-9]{64}$/.test(producingRun.selectedManifestHash)
+      || selectedManifestHash !== undefined && selectedManifestHash !== producingRun.selectedManifestHash
+      || !isDeepStrictEqual(proof.population, population) || !isDeepStrictEqual(proof.workerExecution, worker)
+      || !isDeepStrictEqual(proof.workerRuntime, details.workerRuntime)
+      || !isDeepStrictEqual(proof.workerTestConfiguration, details.workerTestConfiguration)
+      || !isDeepStrictEqual(proof.workerDatabaseReset, details.workerDatabaseReset)
+      || !isDeepStrictEqual(proof.sourceSubmodules, details.sourceSubmodules)
+      || !isDeepStrictEqual(proof.proofContext, details.proofContext))
+      return unknown('original-native-worker-population-or-context-mismatch');
+    const reference = originalTestRunReference({ id, workspaceId: row.workspace_id, harnessSlug: row.harness_slug,
+      filePath: row.file_path, status: row.status, framework: row.framework,
+      startedAt, finishedAt,
+      durationMs: row.duration_ms === null ? null : Number(row.duration_ms), commitSha: row.commit_sha,
+      runGroupId: row.run_group_id, source: row.source, branch: row.branch,
+      worktreeDirty: row.worktree_dirty, isScratchConfig: row.is_scratch_config,
+      executionDetails: details, configurationFingerprint: configuration.fingerprint });
+    if (!reference) return unknown('original-reference-unavailable');
+    ids.add(id);
+    selectedManifestHash = producingRun.selectedManifestHash;
+    bindings.push({ unitId: receipt.unitId, completionId: receipt.completionId, reference });
+  }
+  bindings.sort((a, b) => a.unitId < b.unitId ? -1 : a.unitId > b.unitId ? 1 : 0);
+  const identity = { schemaVersion: 'qualification-native-originals-v1' as const,
+    runGroupId: group, selectedManifestHash: selectedManifestHash!, bindings };
+  return { status: 'known', ...identity,
+    sha256: createHash('sha256').update(canonicalJson(identity)).digest('hex') };
+}
+
+/** The bounded query uses the already locked transaction, not another pool or
+ * tenant-filtered listing. One excess row suffices to refuse an ambiguous set. */
+async function recordNativeOriginals(
+  sql: Sql, transaction: CheckpointQualificationTransaction, input: QualificationWorkProgressInput,
+  observation: QualificationNativeCompletionInput, observed: ReturnType<typeof readPartialNativeCompletion>,
+): Promise<CheckpointQualificationTransaction> {
+  const producer = transaction.continuation?.nativeProducers?.find(ref => ref.outPath === observation.path);
+  if (!producer || observed.status !== 'ready' || !('origin' in observed) || !observed.origin.runGroupId) return transaction;
+  const rows = await sql<Record<string, unknown>[]>`
+    SELECT id::text, workspace_id, harness_slug, execution_details, configuration_snapshot,
+           file_path, status, framework, started_at, finished_at, duration_ms,
+           commit_sha, run_group_id, source, branch, worktree_dirty, is_scratch_config
+      FROM harness_shared.test_runs
+     WHERE run_group_id = ${observed.origin.runGroupId}
+       AND file_path = ANY(${observation.selectedSpecifications.map(spec => (spec as { testFile: string }).testFile)}::text[])
+     ORDER BY id
+     LIMIT ${observation.selectedSpecifications.length + 1}`;
+  const originals = authenticateQualificationNativeOriginals(rows, input,
+    observation.selectedSpecifications as Array<{ testFile: string; projectName: string | null }>, observed);
+  if (isDeepStrictEqual(producer.originals, originals)) return transaction;
+  return { ...transaction, continuation: { ...transaction.continuation!,
+    nativeProducers: transaction.continuation!.nativeProducers!.map(ref => ref === producer ? { ...ref, originals } : ref) } };
 }
 
 function validNativeProducerReferences(value: unknown): value is QualificationNativeProducerReference[] {
@@ -1036,6 +1185,29 @@ function validNativeProducerReferences(value: unknown): value is QualificationNa
         typeof ref.missingSnapshot.runnerId !== 'string' || !ref.missingSnapshot.runnerId ||
         !Number.isSafeInteger(ref.missingSnapshot.confirmedAtMs) ||
         ref.missingSnapshot.confirmedAtMs < ref.registeredAtMs)) return false;
+    if (ref.originals !== undefined) {
+      const original = ref.originals as QualificationNativeOriginals;
+      if (!original || !['known', 'unknown'].includes(original.status)) return false;
+      if (original.status === 'unknown') {
+        if (typeof original.reason !== 'string' || !original.reason) return false;
+      } else {
+        if (original.schemaVersion !== 'qualification-native-originals-v1' || original.runGroupId !== ref.runGroupId
+          || !/^[a-f0-9]{64}$/.test(original.selectedManifestHash) || !Array.isArray(original.bindings)
+          || original.bindings.length !== ref.selectedSpecifications.length
+          || original.bindings.some(binding => !binding || !binding.unitId || !binding.completionId || !binding.reference)
+          || new Set(original.bindings.map(binding => binding.unitId)).size !== original.bindings.length
+          || new Set(original.bindings.map(binding => binding.completionId)).size !== original.bindings.length
+          || new Set(original.bindings.map(binding => binding.reference?.testRunId)).size !== original.bindings.length
+          || original.bindings.some(binding => !binding.unitId || !binding.completionId
+            || binding.reference?.schemaVersion !== 'original-test-run-reference-v2'
+            || binding.reference.scope !== 'original-test-run-outcome-execution-and-configuration'
+            || !/^[1-9][0-9]*$/.test(binding.reference.testRunId)
+            || !/^[a-f0-9]{64}$/.test(binding.reference.sha256))) return false;
+        const { status: _status, sha256, ...identity } = original;
+        try { if (createHash('sha256').update(canonicalJson(identity)).digest('hex') !== sha256) return false; }
+        catch { return false; }
+      }
+    }
     paths.add(ref.path); outputs.add(ref.outPath);
     return true;
   });
@@ -1063,6 +1235,9 @@ export interface QualificationWorkProgressInput {
   retryStates: QualificationWorkContinuation['retryStates'];
   runContext: string;
   runnerIdentity: string;
+  /** Current producer measurements per original unit. Absence cannot bank a
+   * retained pass; the original before identity always comes from its receipt. */
+  proofContexts?: Record<string, Omit<ProofContextComparison, 'before'>>;
   updates: Array<{ receipt: QualificationWorkReceipt; supersedesCompletionId?: string }>;
   nowMs?: number;
 }
@@ -1085,6 +1260,8 @@ export function recordQualificationWorkProgress(
   const prior = current.continuation;
   if (prior && (prior.attemptId !== current.attemptId || prior.candidate !== current.candidate ||
       prior.repairHead !== current.repairHead)) return conflict('continuation-lineage-mismatch');
+  if (prior?.proofContext !== undefined && !isDeepStrictEqual(readProofContextIdentity(prior.proofContext),
+      qualificationWorkProofContext(prior))) return conflict('continuation-proof-context-mismatch');
   const retryStates = [...new Set(input.retryStates)].sort();
   if (prior && (prior.root !== input.root || prior.taskKey !== input.taskKey ||
       JSON.stringify(prior.retryStates) !== JSON.stringify(retryStates))) return conflict('continuation-policy-mismatch');
@@ -1092,7 +1269,8 @@ export function recordQualificationWorkProgress(
   const history = [...(prior?.supersededReceipts ?? [])];
   const expected = { root: input.root, taskKey: input.taskKey, attemptId: current.attemptId,
     candidate: current.candidate, repairHead: current.repairHead, sourceCommit: input.candidate,
-    runContext: input.runContext, runnerIdentity: input.runnerIdentity, manifest: input.manifest, retryStates };
+    runContext: input.runContext, runnerIdentity: input.runnerIdentity, manifest: input.manifest, retryStates,
+    proofContexts: input.proofContexts };
   const grade = (manifest: QualificationWorkContinuation['manifest'], values: QualificationWorkReceipt[]) =>
     evaluatePartialTaskContinuation({ root: input.root, taskKey: input.taskKey,
       continuation: { schemaVersion: 1, attemptId: current.attemptId, candidate: current.candidate,
@@ -1122,6 +1300,10 @@ export function recordQualificationWorkProgress(
   }
   const result = grade(input.manifest, [...receipts.values()]);
   if (result.status !== 'ready') return conflict(`continuation-${result.reason}`);
+  const proofContext = qualificationWorkProofContext({ manifest: prior?.manifest ?? input.manifest,
+    receipts: [...receipts.values()] });
+  if (!proofContext) return conflict('continuation-original-proof-context-invalid');
+  changed ||= !isDeepStrictEqual(prior?.proofContext, proofContext);
   if (!changed) return { status: 'idempotent', transaction: current };
   const nowMs = input.nowMs ?? Date.now();
   if (!Number.isSafeInteger(nowMs) || nowMs < current.updatedAtMs) return conflict('continuation-clock-regressed');
@@ -1129,7 +1311,7 @@ export function recordQualificationWorkProgress(
     continuation: { schemaVersion: 1, attemptId: current.attemptId, candidate: input.candidate,
       repairHead: current.repairHead, root: input.root, taskKey: input.taskKey,
       manifest: structuredClone(prior?.manifest ?? input.manifest), receipts: [...receipts.values()],
-      retryStates, supersededReceipts: history,
+      retryStates, supersededReceipts: history, proofContext,
       ...(prior?.lastYield ? { lastYield: structuredClone(prior.lastYield) } : {}),
       ...(prior?.nativeProducers ? { nativeProducers: structuredClone(prior.nativeProducers) } : {}) } } };
 }
@@ -1810,6 +1992,9 @@ export function parseCheckpointQualificationTransaction(value: unknown): Checkpo
         candidate: row.candidate, repairHead: row.repairHead ?? null, manifest: work.manifest, receipts },
     }, expected).status === 'ready';
     if (!validate(work.receipts)) return null;
+    const proofContext = qualificationWorkProofContext(work);
+    if (!proofContext || work.proofContext !== undefined &&
+        !isDeepStrictEqual(readProofContextIdentity(work.proofContext), proofContext)) return null;
     if (work.lastYield !== undefined && !validQualificationWorkYield(work.lastYield, work)) return null;
     const completions = new Set(work.receipts.map(receipt => receipt.completionId));
     for (const receipt of work.supersededReceipts) {
@@ -2941,6 +3126,7 @@ export function assessTerminalRepairQueueReconciliation(
 type StoredQualificationRowContext = {
   /** `metadata.repair_queue` exactly as stored (null when no frozen queue exists). */
   rawRepairQueue: unknown;
+  sql: Sql;
 };
 
 type StoredQualificationMutationOptions = {
@@ -3004,7 +3190,7 @@ async function mutateStoredQualification(
       if (raw != null && !current) {
         return { status: 'unreadable' as const, error: 'qualification transaction metadata is malformed' };
       }
-      const rowContext: StoredQualificationRowContext = { rawRepairQueue: metadata.repair_queue ?? null };
+      const rowContext: StoredQualificationRowContext = { rawRepairQueue: metadata.repair_queue ?? null, sql: tx };
       const queueHead = frozenRepairQueueVerificationTarget(rowContext.rawRepairQueue);
       if (current?.pendingRepairHead && queueHead && current.pendingRepairHead !== queueHead) {
         return { status: 'conflict' as const, transaction: current,
@@ -3440,9 +3626,18 @@ export function recordStoredQualificationNativeCompletion(
   input: QualificationWorkProgressInput,
   observation: QualificationNativeCompletionInput,
 ): Promise<StoredQualificationMutation> {
-  return mutateStoredQualification(target, current => current
-    ? recordQualificationNativeCompletion(current, input, observation)
-    : { status: 'unreadable', error: 'missing attempt' });
+  return mutateStoredQualification(target, async (current, context) => {
+    if (!current) return { status: 'unreadable', error: 'missing attempt' };
+    const observed = readPartialNativeCompletion(observation.path, { ...input, sourceCommit: input.candidate,
+      taskKey: observation.taskKey ?? input.taskKey, workspaceName: observation.workspaceName,
+      selectedSpecifications: observation.selectedSpecifications,
+      ...(observation.producerPath ? { producerPath: observation.producerPath } : {}) },
+    { classifyReadPaths: observation.classifyReadPaths, requireTerminal: observation.requireTerminal });
+    const result = recordQualificationNativeCompletion(current, input, observation, observed);
+    if (result.status !== 'updated' && result.status !== 'idempotent') return result;
+    const transaction = await recordNativeOriginals(context.sql, result.transaction, input, observation, observed);
+    return transaction === result.transaction ? result : { status: 'updated', transaction };
+  });
 }
 
 function recordQualificationNativeCompletion(
@@ -3456,6 +3651,7 @@ function recordQualificationNativeCompletion(
     const custody = recordQualificationWorkProgress(current, input);
     if (custody.status !== 'updated' && custody.status !== 'idempotent') return custody;
     const observed = nativeObservation ?? readPartialNativeCompletion(observation.path, { ...input,
+      sourceCommit: input.candidate,
       taskKey: observation.taskKey ?? input.taskKey,
       workspaceName: observation.workspaceName, selectedSpecifications: observation.selectedSpecifications,
       ...(observation.producerPath !== undefined ? { producerPath: observation.producerPath } : {}),
@@ -3525,7 +3721,8 @@ export function recordStoredQualificationNativeProducer(
     };
     const prior = custody.transaction.continuation!.nativeProducers ?? [];
     const existing = prior.find(value => value.path === ref.path || value.outPath === ref.outPath);
-    if (existing) return isDeepStrictEqual(existing, ref) ? custody : conflict('native-producer-reference-conflict');
+    if (existing) return isDeepStrictEqual({ ...existing, originals: undefined }, { ...ref, originals: undefined })
+      ? custody : conflict('native-producer-reference-conflict');
     if (!validNativeProducerReferences([ref])) return conflict('native-producer-reference-invalid');
     const selection = evaluatePartialTaskContinuation({ root: input.root, taskKey: input.taskKey,
       continuation: custody.transaction.continuation }, { ...input, sourceCommit: input.candidate });
@@ -3558,7 +3755,7 @@ export function recoverStoredQualificationNativeCompletions(
   classifyReadPaths?: QualificationNativeCompletionInput['classifyReadPaths'],
   options: { recoverMissingSnapshots?: boolean } = {},
 ): Promise<StoredQualificationMutation> {
-  return mutateStoredQualification(target, async current => {
+  return mutateStoredQualification(target, async (current, context) => {
     if (!current) return { status: 'unreadable', error: 'missing attempt' };
     const conflict = (refusalReason: string): QualificationTransition => ({ status: 'conflict', transaction: current, refusalReason });
     if (input.updates.length) return conflict('native-recovery-mixed-updates');
@@ -3602,15 +3799,18 @@ export function recoverStoredQualificationNativeCompletions(
         changed = true;
         continue;
       }
-      const result = recordQualificationNativeCompletion(transaction, input, {
+      const observation = {
         path: ref.outPath, producerPath: ref.path, taskKey: ref.taskKey, workspaceName: ref.workspaceName,
         selectedSpecifications: ref.selectedSpecifications, classifyReadPaths,
         ...(ref.supersedesCompletionIds ? { supersedesCompletionIds: ref.supersedesCompletionIds } : {}),
-      });
+      };
+      const observed = readPartialNativeCompletion(ref.outPath, { ...input, ...observation,
+        sourceCommit: input.candidate }, { classifyReadPaths });
+      const result = recordQualificationNativeCompletion(transaction, input, observation, observed);
       if (result.status !== 'updated' && result.status !== 'idempotent')
         return result.status === 'conflict' ? conflict(result.refusalReason ?? 'native-recovery-conflict') : result;
-      changed ||= result.status === 'updated';
-      transaction = result.transaction;
+      transaction = await recordNativeOriginals(context.sql, result.transaction, input, observation, observed);
+      changed ||= result.status === 'updated' || transaction !== result.transaction;
     }
     return { status: changed ? 'updated' : 'idempotent', transaction };
   });
@@ -3797,13 +3997,13 @@ export function recordStoredQualificationComposedVerdict(
   verdict: Omit<Parameters<typeof recordStoredQualificationVerdict>[1], 'attemptId'>,
   options: QualificationCompositionOptions = {},
 ): Promise<StoredQualificationMutation> {
-  return mutateStoredQualification(target, async current => {
+  return mutateStoredQualification(target, async (current, context) => {
     if (!current) return { status: 'unreadable', error: 'missing attempt' };
     const conflict = (refusalReason: string): QualificationTransition => ({ status: 'conflict', transaction: current, refusalReason });
     if (classifyQualificationVerdict(verdict).kind !== 'green') return conflict('continuation-composition-not-green');
     if (verdict.candidate !== input.candidate || verdict.runId !== input.runId ||
         (verdict.repairHead ?? null) !== input.repairHead) return conflict('continuation-lineage-mismatch');
-    const composed = await composeQualificationWork(current, input, options);
+    const composed = await composeQualificationWork(current, input, options, context.sql);
     if (composed.status !== 'updated' && composed.status !== 'idempotent') return composed;
     return settleQualificationTransaction(composed.transaction, { ...verdict, attemptId: input.attemptId,
       [COMPOSED_QUALIFICATION_GREEN]: true });
@@ -3819,8 +4019,8 @@ export function composeStoredQualificationWork(
   input: QualificationWorkProgressInput,
   options: QualificationCompositionOptions = {},
 ): Promise<StoredQualificationMutation> {
-  return mutateStoredQualification(target, current => current
-    ? composeQualificationWork(current, input, options)
+  return mutateStoredQualification(target, (current, context) => current
+    ? composeQualificationWork(current, input, options, context.sql)
     : { status: 'unreadable', error: 'missing attempt' });
 }
 
@@ -3828,6 +4028,7 @@ async function composeQualificationWork(
   current: CheckpointQualificationTransaction,
   input: QualificationWorkProgressInput,
   options: QualificationCompositionOptions,
+  sql: Sql,
 ): Promise<QualificationTransition> {
     const conflict = (refusalReason: string): QualificationTransition => ({ status: 'conflict', transaction: current, refusalReason });
     if (input.updates.length || !current.continuation) return conflict('continuation-composition-unmeasured');
@@ -3870,6 +4071,7 @@ async function composeQualificationWork(
         ...(ref.supersedesCompletionIds ? { supersedesCompletionIds: ref.supersedesCompletionIds } : {}),
       };
       const observed = readPartialNativeCompletion(ref.outPath, { ...input, ...observation,
+        sourceCommit: input.candidate,
         continuationTaskKey: input.taskKey,
         runnerReservedAtMs: transaction.currentPhysicalRunner!.reservedAtMs,
         nowMs: input.nowMs ?? Date.now(),
@@ -3888,7 +4090,7 @@ async function composeQualificationWork(
       }
       const recovered = recordQualificationNativeCompletion(transaction, input, observation, observed);
       if (recovered.status !== 'updated' && recovered.status !== 'idempotent') return recovered;
-      transaction = recovered.transaction;
+      transaction = await recordNativeOriginals(sql, recovered.transaction, input, observation, observed);
     }
     // A banked prefix never substitutes for the task's final runtime guard. A
     // later producer must actually finish cleanly under the same enrolled task;
@@ -3939,7 +4141,8 @@ async function composeQualificationWork(
         { timeout: 5_000, maxBuffer: 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } })).stdout.trim();
       if (await git('rev-parse', '--show-prefix') !== '' ||
           await git('rev-parse', '--verify', 'HEAD') !== input.candidate ||
-          await git('status', '--porcelain', '--untracked-files=normal') !== '')
+          // Submodule ignore settings must not hide changed inputs at promotion.
+          await git('status', '--porcelain', '--untracked-files=normal', '--ignore-submodules=none') !== '')
         return conflict('continuation-source-changed');
     } catch { return conflict('continuation-source-unmeasured'); }
     return { status: isDeepStrictEqual(current, transaction) ? 'idempotent' : 'updated', transaction };

@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync, readFileSync, symlinkSync, lstatSync, readlinkSync } from 'node:fs';
+import { type Stats, mkdtempSync, writeFileSync, rmSync, mkdirSync, readFileSync, symlinkSync, lstatSync, readlinkSync, chmodSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, join, delimiter } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -9,6 +9,8 @@ import { collectStateCensus } from '../../../../packages/backup/src/state-census
 import { archiveReapTail } from '../task-manager/reap-archive';
 import * as censusProducers from './state-census-producers';
 import { setEnvEnabled } from '../harness/env-switcher-prefs';
+import { dbEncryptionKeyFilePath, ensureDbEncryptionKeyFile } from '../db-encryption';
+import { oauthStateKeyFilePath, ensureOAuthStateKeyFile } from '../oauth/state';
 
 // Filesystem-only census must load without the live account/task runtime.
 vi.mock('../deployment/account-pool-store', () => { throw new Error('host account store unavailable'); });
@@ -171,18 +173,23 @@ describe('unit census executable exit contract', () => {
 
   it('recovers pre-latch archives only from exact canonical reaper outcomes in registered workspaces', async () => {
     const home = mkdtempSync(join(tmpdir(), 'reap-message-census-'));
-    const ids = ['known', 'failed', 'literal.id', 'literalXid', 'foreign', 'forged', 'unrelated', 'missing', 'prefix'];
+    const ids = ['known', 'failed', 'literal.id', 'consult', 'sidecar', 'literalXid', 'foreign', 'forged',
+      'unrelated', 'missing', 'prefix', 'unarchived'];
     const summary = (outcomes: string) => '[task-reaper] reaped 1/2 agent-session scope(s). '
       + 'Log tails archived under ~/.papercusp/reap-archive/. ' + outcomes;
     const message = (outcomes: string, overrides = {}) => ({ workspaceId: 'active', writerKey: 'task-manager',
       from: 'task-manager', summary: summary(outcomes), ...overrides });
     const readReaperMessages = vi.fn(async (_scopes: string[], _ids: string[]) => [
-      message('✓ known (quiet-zombie) · ✗ failed (terminal-residue) · ✓ literal.id (managed-residue)'),
-      message('✓ foreign (quiet-zombie)', { workspaceId: 'foreign' }),
-      message('✓ forged (quiet-zombie)', { writerKey: 'other' }),
-      message('✓ forged (quiet-zombie)', { from: 'other' }),
+      message('✓ known (quiet-zombie) · ✗ failed (terminal-residue) · ✓ literal.id (managed-residue)'
+        + ' · ✓ consult (consult-settled) · ✓ sidecar (orphaned-sidecar)'),
+      message('✓ foreign (orphaned-sidecar)', { workspaceId: 'foreign' }),
+      message('✓ forged (orphaned-sidecar)', { writerKey: 'other' }),
+      message('✓ forged (orphaned-sidecar)', { from: 'other' }),
       message('✓ unrelated (quiet-zombie)', { summary: 'unrelated ' + summary('✓ unrelated (quiet-zombie)') }),
       message('✓ unrelated (quiet-zombie)', { summary: '[task-reaper] reaped ✓ unrelated (quiet-zombie)' }),
+      message('✓ unarchived (orphaned-sidecar)', {
+        summary: '[task-reaper] reaped 1/1 agent-session scope(s). ✓ unarchived (orphaned-sidecar)',
+      }),
       message('✓ prefix-extra (quiet-zombie) · ✓ missing (unknown-kind) · ✓ unrequested (quiet-zombie)'),
     ]);
     try {
@@ -196,8 +203,10 @@ describe('unit census executable exit contract', () => {
       expect(readReaperMessages).toHaveBeenCalledExactlyOnceWith(['active', 'default'], expect.arrayContaining(ids));
       const census = await collectStateCensus({ ...producer, readCatalogs: async () => [] });
       expect(census.inventory.filter(entry => entry.classification === 'state' && entry.name.endsWith('.tail.log'))
-        .map(entry => entry.name.split('/').at(-1)).sort()).toEqual(['failed.tail.log', 'known.tail.log', 'literal.id.tail.log']);
-      expect(census.residue).toHaveLength(ids.length - 3);
+        .map(entry => entry.name.split('/').at(-1)).sort()).toEqual([
+        'consult.tail.log', 'failed.tail.log', 'known.tail.log', 'literal.id.tail.log', 'sidecar.tail.log',
+      ]);
+      expect(census.residue).toHaveLength(ids.length - 5);
       await expect(readRetainedReapTaskIds(['known'], [{ id: 'active' }], {
         readTasks: async () => [], readTerminalLatches: async () => [],
         readReaperMessages: async () => Array.from({ length: 2000 }, () => message('✓ known (quiet-zombie)')),
@@ -315,6 +324,7 @@ describe('unit census executable exit contract', () => {
     const owned = join(directory, 'receipt-backed.json');
     const unknown = join(directory, 'unproven.json');
     writeFileSync(owned, 'private fixture', { mode: 0o600 });
+    writeFileSync(join(directory, 'bounded-output.json'), 'bounded verifier fixture');
     writeFileSync(unknown, 'unproven fixture', { mode: 0o600 });
     const evidence = [{ ref: 'archive:fixture', toolInput: 'fixture', receipt: '{}',
       startedAt: '2026-10-03T05:10:33Z', finishedAt: '2026-10-03T05:10:34Z' }];
@@ -324,11 +334,17 @@ describe('unit census executable exit contract', () => {
       roots: [{ id: 'stripe-fixture', path: directory }], declarations: [{ kind: 'path', root: 'stripe-fixture',
         name: 'receipt-backed.json', classification: 'secret', producer: 'historical-stripe-test-config:archive:fixture' }],
     });
+    const verifierProducer = vi.spyOn(censusProducers, 'historicalVerifierArtifactCensusProducer').mockResolvedValue({
+      roots: [{ id: 'verifier-fixture', path: directory }], declarations: [{ kind: 'path', root: 'verifier-fixture',
+        name: 'bounded-output.json', classification: 'state', producer: 'historical-verifier-artifact:archive:fixture' }],
+    });
     try {
       const stages: string[] = [];
       const report = await runRootCensus({ checkpointLogDir: join(fixtureHome, 'checkpoint-history'),
         historicalWriterEvidence: evidence, onStage: stage => stages.push(stage) });
       expect(producer).toHaveBeenCalledWith(evidence);
+      expect(verifierProducer).toHaveBeenCalledWith(evidence, expect.any(Array));
+      expect(report.inventory.some(entry => entry.producers.includes('historical-verifier-artifact:archive:fixture') && entry.classification === 'state')).toBe(true);
       expect(report.inventory.some(entry => entry.producers.includes('historical-stripe-test-config:archive:fixture') && entry.classification === 'secret')).toBe(true);
       expect(report.residue.some(entry => entry.name.endsWith('unproven.json'))).toBe(true);
       expect(report.inventory.find(entry => entry.name === 'spills')?.classification).toBe('cache');
@@ -338,6 +354,7 @@ describe('unit census executable exit contract', () => {
       expect(stages[0]).toBe('installed-roots');
       expect(stages.at(-1)).toBe('complete');
       expect(stages).toContain('collect-state-census');
+      expect(stages).toContain('historical-verifier-artifacts');
       expect(stages).not.toContain('host-catalogs');
       const inputs = JSON.parse(JSON.stringify(await discoverRootCensusInputs({
         checkpointLogDir: join(fixtureHome, 'checkpoint-history'), historicalWriterEvidence: evidence,
@@ -348,7 +365,9 @@ describe('unit census executable exit contract', () => {
       expect(staged.inventory).toEqual(report.inventory);
       expect(staged.residue).toEqual(report.residue);
     } finally {
-      producer.mockRestore(); rmSync(owned, { force: true }); rmSync(unknown, { force: true });
+      producer.mockRestore(); verifierProducer.mockRestore();
+      rmSync(join(directory, 'bounded-output.json'), { force: true });
+      rmSync(owned, { force: true }); rmSync(unknown, { force: true });
       rmSync(registry, { recursive: true, force: true });
       rmSync(spills, { recursive: true, force: true });
       rmSync(mutex, { recursive: true, force: true });
@@ -391,6 +410,215 @@ describe('unit census executable exit contract', () => {
       expect(result.declarations.every(entry => !entry.prune)).toBe(true);
       expect(result.declarations.filter(entry => entry.descendants).map(entry => entry.name))
         .toEqual(['crash-reports', 'snapshot-fold-checkpoints', 'crash-reports', 'snapshot-fold-checkpoints']);
+    } finally { rmSync(parent, { recursive: true, force: true }); }
+  });
+
+  it.each(['default', 'mounted'])('retains real default db and OAuth keys across known homes with %s current keys', async current => {
+    const parent = mkdtempSync(join(tmpdir(), 'retained-runtime-keys-'));
+    const saved = new Map(['PAPERCUSP_HOME', 'PAPERCUSP_DB_ENCRYPTION_KEY_FILE', 'PAPERCUSP_OAUTH_STATE_KEY_FILE']
+      .map(key => [key, process.env[key]]));
+    const active = join(parent, 'active');
+    const homes = [active, join(parent, 'inactive'), join(parent, 'default'), join(parent, '.papercusp')];
+    const foreign = join(parent, 'foreign');
+    const keys = ['db-encryption-key', 'oauth-state-key'];
+    const before = new Map<string, Stats>();
+    try {
+      for (const home of [...homes, foreign]) {
+        process.env.PAPERCUSP_HOME = ` ${home} \t`;
+        delete process.env.PAPERCUSP_DB_ENCRYPTION_KEY_FILE;
+        delete process.env.PAPERCUSP_OAUTH_STATE_KEY_FILE;
+        expect(dbEncryptionKeyFilePath()).toBe(join(home, keys[0]));
+        expect(oauthStateKeyFilePath()).toBe(join(home, keys[1]));
+        ensureDbEncryptionKeyFile(dbEncryptionKeyFilePath());
+        ensureOAuthStateKeyFile(oauthStateKeyFilePath());
+        mkdirSync(join(home, 'nested'));
+        for (const key of keys) {
+          writeFileSync(join(home, `${key}.bak`), 'unproven backup');
+          writeFileSync(join(home, `${key}.copy`), 'unproven copy');
+          writeFileSync(join(home, 'nested', key), 'unproven nested key');
+          if (process.platform !== 'win32') chmodSync(join(home, key), 0);
+          before.set(join(home, key), lstatSync(join(home, key)));
+        }
+      }
+      process.env.PAPERCUSP_HOME = active;
+      for (const [env, name] of [['PAPERCUSP_DB_ENCRYPTION_KEY_FILE', 'db'], ['PAPERCUSP_OAUTH_STATE_KEY_FILE', 'oauth']]) {
+        if (current === 'mounted') process.env[env] = join(parent, 'absent-mount', name);
+        else delete process.env[env];
+      }
+      const result = await readWorkspaceSetupHomes([{ id: 'inactive' }, { id: 'inactive' }],
+        workspace => join(parent, workspace), active, parent);
+      expect(result.roots.map(root => root.path)).toEqual(homes);
+      const census = await collectStateCensus({ ...result, readCatalogs: async () => [] });
+      for (const root of result.roots) {
+        for (const [index, key] of keys.entries()) {
+          expect(census.inventory.find(entry => entry.root === root.id && entry.name === key))
+            .toMatchObject({ classification: 'secret', producers: [index === 0 ? 'db-encryption' : 'oauth-state-signing-key'] });
+          const declaration = result.declarations.find(entry => entry.root === root.id && entry.name === key)!;
+          expect(declaration.descendants).toBeUndefined();
+          expect(declaration.prune).toBeUndefined();
+        }
+        expect(census.residue.filter(entry => entry.root === root.id).map(entry => entry.name).sort())
+          .toEqual(['nested', ...keys.flatMap(key => [`${key}.bak`, `${key}.copy`, `nested/${key}`])].sort());
+      }
+      for (const [path, stat] of before) {
+        const after = lstatSync(path);
+        for (const field of ['mode', 'size', 'ino', 'mtimeMs', 'ctimeMs'] as const) expect(after[field]).toBe(stat[field]);
+      }
+      expect(existsSync(join(parent, 'absent-mount'))).toBe(false);
+      expect(census.ok).toBe(false);
+      rmSync(homes[2], { recursive: true });
+      symlinkSync(foreign, homes[2]);
+      expect((await readWorkspaceSetupHomes([], workspace => join(parent, workspace), active, parent)).roots.map(root => root.path))
+        .toEqual([active, homes[3]]);
+      expect(readlinkSync(homes[2])).toBe(foreign);
+    } finally {
+      for (const [key, value] of saved) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      }
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('retains real CLI capability grants across known homes without claiming copies or foreign homes', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'consent-grants-census-'));
+    const savedHome = process.env.PAPERCUSP_HOME;
+    const { promptConsent } = await import('../../../../libs/papercusp/packages/cli/src/consent');
+    const { _resetPapercuspRootForTests } = await import('../../../../libs/papercusp/packages/cli/src/papercusp-root');
+    const homes = [join(parent, 'active'), join(parent, 'inactive'), join(parent, 'default'), join(parent, '.papercusp')];
+    const foreign = join(parent, 'foreign');
+    const names = ['granted-capabilities.json', 'extended-grants.json'];
+    const before = new Map<string, Stats>();
+    try {
+      for (const home of [...homes, foreign]) {
+        process.env.PAPERCUSP_HOME = home;
+        _resetPapercuspRootForTests();
+        await promptConsent({ manifest: { name: 'census-fixture', version: '1.0.0', capabilities: ['storage:plugin-private'] },
+          harnessSlug: 'fixture', acceptAllHarnesses: true });
+        mkdirSync(join(home, 'nested'));
+        for (const name of names) {
+          const bytes = readFileSync(join(home, name));
+          writeFileSync(join(home, `${name}.bak`), bytes);
+          writeFileSync(join(home, 'nested', name), bytes);
+          before.set(join(home, name), lstatSync(join(home, name)));
+        }
+      }
+      const result = await readWorkspaceSetupHomes([{ id: 'inactive' }], workspace => join(parent, workspace), homes[0], parent);
+      expect(result.roots.map(root => root.path)).toEqual(homes);
+      const census = await collectStateCensus({ ...result, readCatalogs: async () => [] });
+      for (const root of result.roots) {
+        for (const name of names) {
+          expect(census.inventory.find(entry => entry.root === root.id && entry.name === name))
+            .toMatchObject({ classification: 'config', producers: ['plugin-capability-consent'] });
+          expect(result.declarations.find(entry => entry.root === root.id && entry.name === name))
+            .toMatchObject({ classification: 'config' });
+          expect(result.declarations.find(entry => entry.root === root.id && entry.name === name)?.descendants).toBeUndefined();
+        }
+        expect(census.residue.filter(entry => entry.root === root.id).map(entry => entry.name).sort())
+          .toEqual(['nested', ...names.flatMap(name => [`${name}.bak`, `nested/${name}`])].sort());
+      }
+      for (const [path, stat] of before) {
+        const after = lstatSync(path);
+        for (const field of ['mode', 'size', 'ino', 'mtimeMs', 'ctimeMs'] as const) expect(after[field]).toBe(stat[field]);
+      }
+      expect(census.ok).toBe(false);
+      rmSync(homes[2], { recursive: true });
+      symlinkSync(foreign, homes[2]);
+      expect((await readWorkspaceSetupHomes([], workspace => join(parent, workspace), homes[0], parent)).roots.map(root => root.path))
+        .toEqual([homes[0], homes[3]]);
+      expect(readlinkSync(homes[2])).toBe(foreign);
+    } finally {
+      if (savedHome === undefined) delete process.env.PAPERCUSP_HOME; else process.env.PAPERCUSP_HOME = savedHome;
+      _resetPapercuspRootForTests();
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('retains real announce identity defaults across known homes without claiming copies or foreign homes', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'announce-identity-census-'));
+    const { resolveLocalAnnounceIdentity } = await import('../sync/hyperbee/local-announce-identity');
+    const homes = [join(parent, 'active'), join(parent, 'inactive'), join(parent, 'default'), join(parent, '.papercusp')];
+    const foreign = join(parent, 'foreign');
+    const name = 'local-announce-identity.json';
+    const before = new Map<string, { stat: Stats; bytes: Buffer }>();
+    try {
+      for (const home of [...homes, foreign]) {
+        const cachePath = join(home, name);
+        await resolveLocalAnnounceIdentity({ logCoreKeyHex: 'ab'.repeat(32), identityMode: 'authoring', cachePath,
+          resolveGithubUser: async () => ({ id: 123, login: 'census-fixture' }),
+          buildKeychainId: () => '123:fixture-device',
+          loadKeypair: async keychainId => ({ keychainId, pubkeyBase64: Buffer.alloc(32, 7).toString('base64') }),
+          resolveAttestationGistId: async () => 'fixture-gist' });
+        const bytes = readFileSync(cachePath);
+        expect(JSON.parse(bytes.toString())).toMatchObject({ version: 1, githubLogin: 'census-fixture',
+          keychainId: '123:fixture-device', attestationGistId: 'fixture-gist' });
+        mkdirSync(join(home, 'nested'));
+        writeFileSync(join(home, `${name}.bak`), bytes);
+        writeFileSync(join(home, 'nested', name), bytes);
+        before.set(cachePath, { stat: lstatSync(cachePath), bytes });
+      }
+      const result = await readWorkspaceSetupHomes([{ id: 'inactive' }], workspace => join(parent, workspace), homes[0], parent);
+      expect(result.roots.map(root => root.path)).toEqual(homes);
+      const census = await collectStateCensus({ ...result, readCatalogs: async () => [] });
+      for (const root of result.roots) {
+        expect(census.inventory.find(entry => entry.root === root.id && entry.name === name))
+          .toMatchObject({ classification: 'state', producers: ['local-announce-identity'] });
+        const declaration = result.declarations.find(entry => entry.root === root.id && entry.name === name);
+        expect(declaration).toMatchObject({ classification: 'state' });
+        expect(declaration?.descendants).toBeUndefined();
+        expect(declaration?.prune).toBeUndefined();
+        expect(census.residue.filter(entry => entry.root === root.id).map(entry => entry.name).sort())
+          .toEqual([`${name}.bak`, 'nested', `nested/${name}`].sort());
+      }
+      for (const [path, { stat, bytes }] of before) {
+        expect(readFileSync(path)).toEqual(bytes);
+        const after = lstatSync(path);
+        for (const field of ['mode', 'size', 'ino', 'mtimeMs', 'ctimeMs'] as const) expect(after[field]).toBe(stat[field]);
+      }
+      expect(census.ok).toBe(false);
+      rmSync(homes[2], { recursive: true });
+      symlinkSync(foreign, homes[2]);
+      expect((await readWorkspaceSetupHomes([], workspace => join(parent, workspace), homes[0], parent)).roots.map(root => root.path))
+        .toEqual([homes[0], homes[3]]);
+      expect(readlinkSync(homes[2])).toBe(foreign);
+    } finally { rmSync(parent, { recursive: true, force: true }); }
+  });
+
+  it('retains migration cooldown defaults across known homes without claiming copies or foreign homes', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'migration-cooldown-census-'));
+    const homes = [join(parent, 'active'), join(parent, 'inactive'), join(parent, 'default'), join(parent, '.papercusp')];
+    const foreign = join(parent, 'foreign');
+    const name = 'migration-failure-cooldown.json';
+    const bytes = JSON.stringify({ '001-fixture.sql': { lastFailedAt: 1234, error: 'fixture failure', attempts: 2 } });
+    const before = new Map<string, Stats>();
+    try {
+      for (const home of [...homes, foreign]) {
+        mkdirSync(join(home, 'nested'), { recursive: true });
+        for (const file of [name, `${name}.bak`, `nested/${name}`]) writeFileSync(join(home, file), bytes);
+        before.set(join(home, name), lstatSync(join(home, name)));
+      }
+      const result = await readWorkspaceSetupHomes([{ id: 'inactive' }], workspace => join(parent, workspace), homes[0], parent);
+      expect(result.roots.map(root => root.path)).toEqual(homes);
+      const census = await collectStateCensus({ ...result, readCatalogs: async () => [] });
+      for (const root of result.roots) {
+        expect(census.inventory.find(entry => entry.root === root.id && entry.name === name))
+          .toMatchObject({ classification: 'state', producers: ['boot-migration-cooldown'] });
+        const declaration = result.declarations.find(entry => entry.root === root.id && entry.name === name);
+        expect(declaration?.descendants).toBeUndefined();
+        expect(declaration?.prune).toBeUndefined();
+        expect(census.residue.filter(entry => entry.root === root.id).map(entry => entry.name).sort())
+          .toEqual([`${name}.bak`, 'nested', `nested/${name}`].sort());
+      }
+      for (const [path, stat] of before) {
+        expect(readFileSync(path, 'utf8')).toBe(bytes);
+        const after = lstatSync(path);
+        for (const field of ['mode', 'size', 'ino', 'mtimeMs', 'ctimeMs'] as const) expect(after[field]).toBe(stat[field]);
+      }
+      expect(census.ok).toBe(false);
+      rmSync(homes[2], { recursive: true });
+      symlinkSync(foreign, homes[2]);
+      expect((await readWorkspaceSetupHomes([], workspace => join(parent, workspace), homes[0], parent)).roots.map(root => root.path))
+        .toEqual([homes[0], homes[3]]);
+      expect(readlinkSync(homes[2])).toBe(foreign);
     } finally { rmSync(parent, { recursive: true, force: true }); }
   });
 

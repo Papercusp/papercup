@@ -201,13 +201,19 @@ describe('cancellable caller with real IPC and child processes', () => {
     let clientConnectionId = '';
     let settled = false;
     const secret = 'test-only-never-log-command-arguments-or-environment';
+    // This test deliberately holds admission or settlement while it inspects
+    // progress; leave enough command budget for the gated assertions to finish.
     const result = client.call<{ code: number; stdout: string }>('process:exec', {
       command: process.execPath, args: ['-e', `process.stdout.write(${JSON.stringify(secret)})`],
-      env: { PC_TEST_SECRET: secret }, cwd: dir, timeoutMs: 2000,
+      env: { PC_TEST_SECRET: secret }, cwd: dir, timeoutMs: 15_000,
       callerLabel: PROCESS_EXEC_CALLER_LABELS.command,
     }, { onRequestId: (id, connection) => { requestId = id; clientConnectionId = connection; } });
     void result.then(() => { settled = true; }, () => {});
     const stage = phase === 'admission' ? 'admission-start' : 'settlement-start';
+    let assertionError: unknown;
+    let resultValue: { code: number; stdout: string } | undefined;
+    let resultError: unknown;
+    let resultRejected = false;
     const matching = () => events.mock.calls.flatMap(([tag, details]) => {
       if (tag !== '[spawner-process-exec-stage]') return [];
       const parsed = parseExecStageLogDetails(details);
@@ -233,16 +239,37 @@ describe('cancellable caller with real IPC and child processes', () => {
         expect(stages).toHaveProperty('group-exit-confirmed');
         expect(stages).not.toHaveProperty('settlement-complete');
         expect(alive(details.childPid as number)).toBe(false);
+        const timing = details.forkserverLifecycleTiming as {
+          spawn: { forkserverAtMs: number; parentReceivedAtMs: number };
+          exit: { forkserverAtMs: number; parentReceivedAtMs: number };
+          close: { forkserverAtMs: number; parentReceivedAtMs: number };
+          closeCallbackAtMs: number;
+        };
+        expect(timing).toMatchObject({
+          spawn: { forkserverAtMs: expect.any(Number), parentReceivedAtMs: expect.any(Number) },
+          exit: { forkserverAtMs: expect.any(Number), parentReceivedAtMs: expect.any(Number) },
+          close: { forkserverAtMs: expect.any(Number), parentReceivedAtMs: expect.any(Number) },
+          closeCallbackAtMs: expect.any(Number),
+        });
+        expect(timing.spawn.forkserverAtMs).toBeLessThanOrEqual(timing.exit.forkserverAtMs);
+        expect(timing.exit.forkserverAtMs).toBeLessThanOrEqual(timing.close.forkserverAtMs);
+        expect(timing.close.parentReceivedAtMs).toBeLessThanOrEqual(timing.closeCallbackAtMs);
       }
       expect(settled).toBe(false);
       expect(JSON.stringify(details)).not.toContain(secret);
       expect(JSON.stringify(details)).not.toContain(dir);
       expect(details).not.toHaveProperty('command');
       expect(details).not.toHaveProperty('env');
+    } catch (error) {
+      assertionError = error;
     } finally {
       release();
-      expect(await result).toMatchObject({ code: 0, stdout: secret });
+      try { resultValue = await result; }
+      catch (error) { resultRejected = true; resultError = error; }
     }
+    if (assertionError !== undefined) throw assertionError;
+    if (resultRejected) throw resultError;
+    expect(resultValue).toMatchObject({ code: 0, stdout: secret });
     const completed = () => events.mock.calls.flatMap(([tag, details]) => {
       if (tag !== '[spawner-process-exec-stage]') return [];
       const parsed = parseExecStageLogDetails(details);

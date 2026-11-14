@@ -224,6 +224,27 @@ async function read(args: Record<string, unknown>, slug = PLAN): Promise<BriefRe
 }
 
 describe('plans:get derivedStatus (real PG) — derived-status-not-hand-written-2026-10-12 P-001', () => {
+  it('keeps the graphless fixture index aligned on insertion and reseeding', async () => {
+    const slug = `${PLAN}-reseed`;
+    const content = PLAN_CONTENT.replace(PLAN, slug);
+    const storedStatuses = async () => {
+      const [row] = await fx.admin<{ items: Array<{ id: string; status: string }> }[]>`
+        SELECT items FROM harness_shared.harness_plans
+         WHERE workspace_id = ${fx.workspaceId} AND harness_slug = ${HARNESS} AND plan_slug = ${slug}
+      `;
+      return row!.items.map(({ id, status }) => [id, status]);
+    };
+
+    await seedPlan(fx.admin, fx.workspaceId, HARNESS, slug, content);
+    expect(await storedStatuses()).toEqual([['P-001', 'done'], ['P-002', 'todo'], ['P-003', 'todo']]);
+
+    await seedPlan(fx.admin, fx.workspaceId, HARNESS, slug, content.replace('**P-002** `todo`', '**P-002** `done`'));
+    expect(await storedStatuses()).toEqual([['P-001', 'done'], ['P-002', 'done'], ['P-003', 'todo']]);
+    const ds = (await read({}, slug)).derivedStatus!;
+    expect(ds.counts).toMatchObject({ total: 3, done: 2, todo: 1 });
+    expect(ds.actionable.map(({ id }) => id)).toEqual(['P-003']);
+  });
+
   it('returns derivedStatus by default, computed from item state, with linked holders and the latest decision', async () => {
     const ds = (await read({})).derivedStatus!;
     expect(ds).toBeDefined();

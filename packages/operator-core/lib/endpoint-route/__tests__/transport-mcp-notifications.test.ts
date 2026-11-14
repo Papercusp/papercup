@@ -445,7 +445,14 @@ describe('MCP session tool-contract revision notifications', () => {
       expect(generationReads).toBe(1);
     });
 
-    it('refuses stateless tools:invoke without the generation returned by tools/list', async () => {
+    // WI-6554700010048085: standard MCP clients never echo tool-definition _meta onto
+    // tools/call and the :9071 proxy stamps no generation, so the bare documented form
+    // (tools:invoke { name, args }, plus the client's own _meta) must dispatch — the
+    // target's schema validation still runs inside the nested dispatch.
+    it.each([
+      ['no _meta', undefined],
+      ['client-only _meta (Claude Code shape)', { 'claudecode/toolUseId': 'toolu_01' }],
+    ])('admits an undeclared, unrouted stateless tools:invoke (%s) without reading the generation', async (_label, meta) => {
       __resetSessionSurfaces();
       const { sent } = recordingSendNotification();
       let dispatchCount = 0;
@@ -457,13 +464,75 @@ describe('MCP session tool-contract revision notifications', () => {
       const req = { params: {
         name: 'tools:invoke',
         arguments: { name: 'capability:launch-agent', args: { resume: { sessionId: 'native-session' } } },
+        ...(meta ? { _meta: meta } : {}),
       } };
 
-      await expect(call(req, { sendNotification: vi.fn() }))
-        .rejects.toThrow(/stale_tool_contract.*stateless tools:invoke requires.*servingGeneration/);
-      expect(dispatchCount).toBe(0);
+      expect(await call(req, { sendNotification: vi.fn() })).toEqual({ isError: false });
+      expect(dispatchCount).toBe(1);
       expect(generationReads).toBe(0);
       expect(sent).toEqual([]);
+    });
+
+    // WI-6554700010048041: tools:find tells callers to pass servingGeneration as a
+    // tools:invoke ARGUMENT; the fence used to read only _meta and refused them.
+    it.each([
+      ['object arguments', { name: 'coord:whoami', args: {}, servingGeneration: 'generation-1' }],
+      ['JSON-string arguments', JSON.stringify({ name: 'coord:whoami', args: {}, servingGeneration: 'generation-1' })],
+    ])('admits stateless tools:invoke declaring the generation via arguments.servingGeneration (%s)', async (_label, args) => {
+      __resetSessionSurfaces();
+      let dispatchCount = 0;
+      let generationReads = 0;
+      const call = __withMcpSessionSurfaceRecheckForTests(
+        async () => { dispatchCount += 1; return { isError: false }; },
+        async () => { generationReads += 1; return knownGeneration('generation-1'); },
+      );
+      expect(await call({ params: { name: 'tools:invoke', arguments: args } }, {})).toEqual({ isError: false });
+      expect(dispatchCount).toBe(1);
+      expect(generationReads).toBe(1);
+    });
+
+    it('refuses a stale arguments.servingGeneration on stateless tools:invoke before dispatch', async () => {
+      __resetSessionSurfaces();
+      let dispatchCount = 0;
+      const call = __withMcpSessionSurfaceRecheckForTests(
+        async () => { dispatchCount += 1; return { isError: false }; },
+        async () => knownGeneration('generation-2'),
+      );
+      const req = { params: { name: 'tools:invoke', arguments: { name: 'coord:whoami', args: {}, servingGeneration: 'generation-1' } } };
+      await expect(call(req, {})).rejects.toThrow(/stale_tool_contract.*declares serving generation generation-1.*generation-2/);
+      expect(dispatchCount).toBe(0);
+    });
+
+    // The build fence (outside this wrapper) has already verified the selector names this
+    // operator's build; an explicit or proxy-defaulted build route is the acknowledgment.
+    it.each([
+      ['proxy _meta stamp', { name: 'tools:invoke', arguments: { name: 'consult:get_feedback', args: {} }, _meta: { 'papercusp/build': 'staging' } }],
+      ['build argument', { name: 'tools:invoke', arguments: { name: 'coord:whoami', args: {}, build: 'staging' } }],
+    ])('admits an undeclared stateless tools:invoke that carries a build route (%s)', async (_label, params) => {
+      __resetSessionSurfaces();
+      let dispatchCount = 0;
+      let generationReads = 0;
+      const call = __withMcpSessionSurfaceRecheckForTests(
+        async () => { dispatchCount += 1; return { isError: false }; },
+        async () => { generationReads += 1; return knownGeneration('generation-1'); },
+      );
+      expect(await call({ params }, {})).toEqual({ isError: false });
+      expect(dispatchCount).toBe(1);
+      expect(generationReads).toBe(0);
+    });
+
+    it('names the build route when a build-routed call declares another build\'s generation', async () => {
+      __resetSessionSurfaces();
+      const call = __withMcpSessionSurfaceRecheckForTests(
+        async () => ({ isError: false }),
+        async () => knownGeneration('staging-generation'),
+      );
+      const req = { params: {
+        name: 'tools:invoke',
+        arguments: { name: 'consult:get_feedback', args: {}, servingGeneration: 'main-generation' },
+        _meta: { 'papercusp/build': 'staging' },
+      } };
+      await expect(call(req, {})).rejects.toThrow(/routed to the staging build.*omit servingGeneration.*tools:find \{ build: 'staging' \}/);
     });
 
     it('refuses a call whose declared generation is stale, before dispatch', async () => {

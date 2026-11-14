@@ -3,6 +3,10 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { captureConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
+import { TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION, captureRecordedProofContext,
+  createRecordedTestPopulation, type RecordedPopulationIdentity } from '@papercusp/test-config/execution-details';
+import type { readPartialNativeCompletion } from '../../../../scripts/lib/partial-task-resume.mjs';
 
 const h = vi.hoisted(() => ({ boundedOrgTxn: vi.fn(), appendPipelineEvent: vi.fn() }));
 
@@ -10,6 +14,7 @@ vi.mock('../pg-bounded-txn', () => ({ boundedOrgTxn: h.boundedOrgTxn }));
 vi.mock('../harness/git-sync/pipeline-events', () => ({ appendPipelineEvent: h.appendPipelineEvent }));
 
 import {
+  authenticateQualificationNativeOriginals,
   beginQualificationTransaction,
   beginStoredQualification,
   cancelStoredQualification,
@@ -49,6 +54,103 @@ import {
   markFrozenRepairFixerFinished,
   parseFrozenCandidateRepairQueue,
 } from './frozen-candidate-repair-queue';
+
+describe('native qualification authenticates original ledger rows', () => {
+  const fixture = () => {
+    const candidate = 'a'.repeat(40), root = '/repo', group = 'original-run';
+    const selected = ['a.test.ts', 'b.test.ts'].map(testFile => ({ testFile, projectName: null }));
+    const workerConfiguration = { schemaVersion: 'vitest-worker-configuration-v1',
+      before: 'b'.repeat(64), after: 'b'.repeat(64) };
+    const workerProcess = { pid: 123, threadId: 0,
+      bootId: '01234567-89ab-cdef-0123-456789abcdef', startTicks: '456' };
+    const rows = selected.map((spec, index) => {
+      const identity: RecordedPopulationIdentity = ['', spec.testFile, 'complete case', 1, 'test'];
+      const population = createRecordedTestPopulation([{ identity, selected: true, outcome: 'passed' }], [identity])!;
+      const workerExecution = { schemaVersion: 'worker-execution-v1',
+        captureId: `12345678-9abc-def0-1234-56789abcdef${index}`, testFile: `${root}/${spec.testFile}`,
+        before: workerProcess, after: { ...workerProcess } };
+      const proofContext = captureRecordedProofContext({ commitSha: candidate, worktreeDirty: false,
+        population, workerTestConfiguration: workerConfiguration });
+      return { id: String(index + 1), workspace_id: null, harness_slug: null,
+        file_path: spec.testFile, status: 'pass', framework: 'vitest', started_at: '2026-11-01T00:00:00.000Z',
+        finished_at: '2026-11-01T00:00:01.000Z', duration_ms: 1000, commit_sha: candidate,
+        run_group_id: group, source: 'ci', branch: 'staging', worktree_dirty: false, is_scratch_config: false,
+        configuration_snapshot: captureConfigurationSnapshot({}),
+        execution_details: { schemaVersion: TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION, root,
+          filePath: spec.testFile, runGroupId: group, workspaceId: null, harnessSlug: null,
+          testNamePattern: null, passed: 1, failed: 0, skipped: 0, collectionFailed: false,
+          mutationPhase: null, commitSha: candidate, worktreeDirty: false,
+          populationCaptureStatus: 'captured', population, workerExecution,
+          workerTestConfiguration: workerConfiguration, proofContext } };
+    });
+    const expected = { attemptId: 'attempt', candidate, root,
+      manifest: { schemaVersion: 1 as const, units: selected.map(spec =>
+        ({ id: `test:${spec.testFile}`, path: spec.testFile, kind: 'test' as const })) } };
+    const observed = { status: 'ready', reason: null, currentEvidence: [],
+      origin: { terminal: 'passed', runGroupId: group, sourceCommit: candidate, startedAtMs: Date.parse(rows[0]!.started_at) },
+      receipts: rows.map(row => ({ unitId: `test:${row.file_path}`, completionId: `completion:${row.id}`,
+        observedAtMs: Date.parse(row.finished_at), state: 'pass', observedCount: 1, firstAttemptVerdict: 'pass',
+        proof: { population: row.execution_details.population, proofContext: row.execution_details.proofContext,
+          workerExecution: row.execution_details.workerExecution, workerTestConfiguration: workerConfiguration,
+          producingRun: { qualificationAttemptId: expected.attemptId, runGroupId: group,
+            completionId: `completion:${row.id}`, selectedManifestHash: 'c'.repeat(64) } } }))
+    } as unknown as ReturnType<typeof readPartialNativeCompletion>;
+    const read = (originals: Record<string, unknown>[] = rows) =>
+      authenticateQualificationNativeOriginals(originals, expected, selected, observed);
+    return { rows, expected, selected, observed, read };
+  };
+
+  it('authenticates both NULL-tenant originals, independently of ordering and diagnostic samples', () => {
+    const { rows, read } = fixture();
+    const original = read();
+    expect(original).toMatchObject({ status: 'known', runGroupId: 'original-run', bindings: [
+      { unitId: 'test:a.test.ts', reference: { testRunId: '1', schemaVersion: 'original-test-run-reference-v2' } },
+      { unitId: 'test:b.test.ts', reference: { testRunId: '2' } },
+    ] });
+    expect(read([...rows].reverse())).toEqual(original);
+    expect(read([rows[0]!])).toMatchObject({ status: 'unknown' });
+    expect(read([...rows, rows[0]!])).toMatchObject({ status: 'unknown' });
+    expect(read([rows[0]!, { ...rows[0]!, id: '3' }])).toMatchObject({ status: 'unknown' });
+  });
+
+  it.each(['run_group_id', 'commit_sha', 'workspace_id', 'harness_slug', 'file_path', 'framework',
+    'worktree_dirty', 'is_scratch_config', 'configuration_snapshot', 'id'] as const)
+  ('refuses an independent original %s mismatch', key => {
+    const { rows, read } = fixture();
+    expect(read()).toMatchObject({ status: 'known' });
+    const changed = key === 'configuration_snapshot' ? null
+      : key === 'worktree_dirty' || key === 'is_scratch_config' ? true : key === 'id' ? rows[1]!.id : 'foreign';
+    expect(read([{ ...rows[0]!, [key]: changed }, rows[1]!])).toMatchObject({ status: 'unknown' });
+  });
+
+  it('refuses a changed original worker capture even when its nested context remains valid', () => {
+    const { rows, read } = fixture();
+    const details = rows[0]!.execution_details;
+    expect(read([{ ...rows[0]!, execution_details: { ...details,
+      workerExecution: { ...details.workerExecution, captureId: 'ffffffff-ffff-ffff-ffff-ffffffffffff' } } }, rows[1]!]))
+      .toMatchObject({ status: 'unknown', reason: 'original-native-worker-population-or-context-mismatch' });
+  });
+
+  it.each([{ started_at: '2026-10-31T23:59:59.000Z' },
+    { finished_at: '2026-11-01T00:00:01.001Z' }, { finished_at: null }])
+  ('refuses an original outside the native observation interval: %j', changed => {
+    const { rows, read } = fixture();
+    expect(read([{ ...rows[0]!, ...changed }, rows[1]!])).toMatchObject({ status: 'unknown' });
+  });
+
+  it('rotates authenticated content when only original branch or verified configuration changes', () => {
+    const { rows, read } = fixture();
+    const original = read();
+    if (original.status !== 'known') throw Error('original control did not authenticate');
+    for (const changed of [{ branch: 'other' },
+      { configuration_snapshot: captureConfigurationSnapshot({ PAPERCUSP_FLAG_NATIVE_JOIN: 'changed' }) }]) {
+      const result = read([{ ...rows[0]!, ...changed }, rows[1]!]);
+      expect(result.status).toBe('known');
+      if (result.status === 'known') expect(result.sha256).not.toBe(original.sha256);
+    }
+    expect(read()).toEqual(original);
+  });
+});
 
 describe('stored qualification child scope custody', () => {
   it.each(['live', 'unknown', 'dead'] as const)('probes %s payload under the row lock and ignores caller death claims', async state => {

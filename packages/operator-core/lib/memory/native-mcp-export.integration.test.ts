@@ -3,20 +3,119 @@
  * this fixture. Native registration/request evidence does not prove shipment. */
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createServer, request } from 'node:http';
 import { pathToFileURL } from 'node:url';
 import { expect, it } from 'vitest';
 import { mcpBootstrapInstructions, mcpToolsWithBootstrap } from '../endpoint-route/routes/transport/mcp-contract';
 import { lintInstructionText } from '../instruction-lint';
 import { capabilityMapText } from '../agent-tools/tools/capability-map';
 import { DELIVERY_MATRIX_CLIENTS, bootstrapDescriptionForClient, validateBootstrapExportArtifact,
+  attributeFinalContextTranscript, sampleFinalDeliveredContext,
+  type FinalContextAttemptSnapshot,
   type BootstrapExportArtifact, type BootstrapExportCell } from './injection-delivery-coverage';
-import { captureNativeMcp, frozenBootstrap, baselineHash, requestDescriptors, sha256 } from './fixtures/native-mcp-export';
+import { captureNativeMcp, frozenBootstrap, baselineHash, nativeMcpTranscriptLocators,
+  observeNativeResponseClose, requestDescriptors, sha256 } from './fixtures/native-mcp-export';
 import { resolveOnPath, wellKnownBackendBin } from '../backend-bin-resolve.mjs';
 
 const sha = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+
+for (const client of ['codex', 'claude', 'omp'] as const)
+  it(`context reliability R-10: installed ${client} physical native transcript`, async ({ task }) => {
+    const startedAt = new Date().toISOString();
+    const body = 'Native physical source canary. Only after final approval ☃.';
+    const capture = await captureNativeMcp(client, [{ name: 'receipt_canary', description: 'Local source observation.' }],
+      body, [], { stdioReceipt: 'memory', stdioPort: 'orient', retainNativeTranscript: true,
+        ...(client === 'omp' ? { receiptAdapter: 'omp-rpc' as const } : {}),
+        onDiagnostics: path => Object.assign(task.meta, { nativeMcpDiagnostics: path }) });
+    const source = capture.nativeTranscript!;
+    expect(source).toBeDefined();
+    const bytes = readFileSync(source.path);
+    expect(bytes.toString('utf8')).toBe(source.transcript);
+    expect(bytes.length).toBe(source.sourceBytes);
+    expect(sha256(bytes)).toBe(source.sourceSha256);
+    expect(existsSync(source.originalPath)).toBe(false);
+    const diagnostics = JSON.parse(readFileSync(capture.diagnosticsPath, 'utf8'));
+    expect(diagnostics.nativeSessionId).toBe(source.nativeSessionId);
+    expect(diagnostics.nativeTranscript).toEqual(source);
+    const records = source.transcript.trimEnd().split('\n').map(line => JSON.parse(line));
+    if (client === 'codex') expect(records[0]).toMatchObject({ type: 'session_meta', payload: { id: source.nativeSessionId } });
+    else if (client === 'omp') expect(records.find(row => row.type === 'session')).toMatchObject({ id: source.nativeSessionId });
+    else {
+      expect(diagnostics.requestedClaudeSessionId).toBe(source.nativeSessionId);
+      const messages = records.filter(row => ['user', 'assistant'].includes(row.type));
+      expect(messages.length).toBeGreaterThan(0);
+      expect(messages.every(row => row.sessionId === source.nativeSessionId)).toBe(true);
+    }
+    expect(source.transcript).toContain(body);
+    expect(diagnostics.invocation.argv).not.toContain('--ephemeral');
+    expect(diagnostics.invocation.argv).not.toContain('--no-session-persistence');
+    expect(diagnostics.invocation.argv).not.toContain('--no-session');
+    const capturedAt = new Date().toISOString(), visible = JSON.stringify({ orient: body });
+    const attemptId = capture.stdoutDelivery!.confirmations[0]! as { token: string };
+    const attempt = { sourceStoreId: 'fixture-native-mcp', attemptId: attemptId.token,
+      attemptSchemaVersion: 'native-mcp-fixture-v1', recordVersion: 0,
+      createdAt: startedAt, visibleAt: capturedAt, client, sink: 'orient', recipient: capture.stdoutDelivery!.owner,
+      workspace: 'isolated-native-fixture', epoch: 3, nativeSessionId: source.nativeSessionId,
+      context: { attemptId: attemptId.token, sessionId: capture.stdoutDelivery!.owner, epoch: 3,
+        port: 'orient', block: visible, fragments: [] } };
+    const snapshot: FinalContextAttemptSnapshot = { schemaVersion: 'final-attempt-source-v1',
+      snapshotId: capture.diagnosticsPath, sourceSchemaSha256: sha('native-mcp-fixture-v1'),
+      capturedAt, measuredAt: capturedAt, runtimeGeneration: capture.clientVersion,
+      environmentSha256: sha(diagnostics.invocation.environment), configurationSha256: sha(diagnostics.invocation.argv),
+      attempts: [attempt], receipts: [] };
+    const locators = nativeMcpTranscriptLocators(capture, attempt, visible);
+    expect(locators).toHaveLength(1);
+    const bound = { ...source, client, recipient: attempt.recipient, workspace: attempt.workspace, epoch: attempt.epoch };
+    const attribution = attributeFinalContextTranscript(snapshot, bound, locators);
+    expect(attribution.attributions).toMatchObject([{ status: 'observed', unknown: [], observedSha256: sha256(visible) }]);
+    expect(attributeFinalContextTranscript(snapshot, { ...bound, nativeSessionId: 'foreign' }, locators)
+      .attributions[0]!.status).toBe('UNKNOWN');
+    expect(sampleFinalDeliveredContext(snapshot)).toMatchObject({ attempted: 1, usefulSuccesses: 0, usefulUnknown: 1 });
+    Object.assign(task.meta, { nativePhysicalSource: { client, ...source, snapshot, locators, attribution,
+      scope: 'installed client JSONL with scripted local provider and fixture source; no semantic or shipment claim' } });
+  }, 60_000);
+
+for (const action of ['fault-before-cleanup', 'cleanup-only', 'native-before-cleanup'] as const)
+  it(`native transport close attribution: ${action}`, async () => {
+    let cleaningUp = false;
+    let resolveObservation!: (value: ReturnType<typeof observeNativeResponseClose>['observation']) => void;
+    let rejectObservation!: (error: unknown) => void;
+    const observed = new Promise<ReturnType<typeof observeNativeResponseClose>['observation']>((resolve, reject) => {
+      resolveObservation = resolve; rejectObservation = reject;
+    });
+    const server = createServer((_req, res) => {
+      void (async () => {
+        const closure = observeNativeResponseClose(res, () => cleaningUp);
+        if (action === 'fault-before-cleanup') closure.destroy();
+        if (action === 'native-before-cleanup') {
+          res.destroy(); await closure.closed;
+        }
+        cleaningUp = true;
+        if (action === 'cleanup-only') res.destroy();
+        await closure.closed;
+        resolveObservation(closure.observation);
+      })().catch(rejectObservation);
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Native close probe has no TCP address');
+    try {
+      const client = request({ hostname: '127.0.0.1', port: address.port }, response => {
+        response.resume(); rejectObservation(new Error('Destroyed response emitted HTTP headers'));
+      });
+      client.on('error', () => {}); client.end();
+      expect(await observed).toMatchObject({ closed: true, writableEnded: false,
+        destroyedBeforeCleanup: action === 'fault-before-cleanup',
+        closedEventBeforeCleanup: action === 'native-before-cleanup',
+        closedBeforeCleanup: action !== 'cleanup-only', elapsedMs: expect.any(Number) });
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
 
 it('context reliability R-7: immutable-native-baseline', ({ task }) => {
   const bytes = readFileSync(new URL('./fixtures/r7-native-pre-change.json', import.meta.url));
@@ -133,7 +232,7 @@ it('context reliability R-7: nested-request-descriptors', () => {
 function observeNativeBootstrap(client: typeof DELIVERY_MATRIX_CLIENTS[number]): Promise<BootstrapExportCell> {
   const prior = nativeExports.get(client);
   if (prior) return prior;
-  const observation = (async () => {
+  const observation = (async (): Promise<BootstrapExportCell> => {
     const { baseline } = frozenBootstrap();
     const { exported } = bootstrapReplay();
     const before = await captureNativeMcp(client, baseline.tools);
@@ -145,7 +244,8 @@ function observeNativeBootstrap(client: typeof DELIVERY_MATRIX_CLIENTS[number]):
     nativeDiagnostics.set(client, { before: summary(before), after: summary(after) });
     expect(after.clientVersion).toBe(before.clientVersion);
     expect(after.clientSettings).toEqual(before.clientSettings);
-    return { client, clientVersion: after.clientVersion, evidencePlane: after.evidencePlane,
+    return { client, clientVersion: after.clientVersion,
+      evidencePlane: client === 'omp' ? 'installed-client-registration' : 'installed-client-local-request',
       before: before.descriptors.filter(tool => tool.description.includes('exec tool declaration:')),
       after: after.descriptors.filter(tool => tool.description.includes('exec tool declaration:')),
       evidenceRefs: [`vitest:context reliability R-7: ${client}-wire`] };
@@ -239,6 +339,86 @@ it('observes the installed OMP registration and mounted route without inference'
   expect(result.descriptors).toEqual([{ name: 'mcp__offline_canary_echo', description: 'Offline registration canary.' }]);
   expect(result.evidencePlane).toBe('installed-client-registration');
 }, 45_000);
+
+for (const kind of ['memory', 'corpus'] as const) for (const port of ['orient', 'claim', 'create'] as const)
+  for (const fault of ['complete', 'absent-offer', 'partial-stdout'] as const)
+  it(`context reliability R-1: installed omp ${kind} ${port} RPC ${fault}`, async ({ task }) => {
+    const canary = `Native ${kind} ${port} RPC canary ☃`;
+    const instructions = canary + (fault === 'partial-stdout' ? 'x'.repeat(512 * 1024) + ' FINAL_CONDITION' : '');
+    let diagnosticsPath = '', capture: Awaited<ReturnType<typeof captureNativeMcp>> | undefined, failure: unknown;
+    try {
+      capture = await captureNativeMcp('omp', [{ name: 'receipt_canary', description: 'Local receipt observation.' }],
+        instructions, [], { stdioReceipt: kind, stdioPort: port, receiptAdapter: 'omp-rpc',
+          ...(fault !== 'complete' ? { stdioFault: fault } : {}),
+          onDiagnostics: path => { diagnosticsPath = path; } });
+    } catch (error) { failure = String(error); }
+    const diagnostics = JSON.parse(readFileSync(diagnosticsPath, 'utf8'));
+    Object.assign(task.meta, { nativeOmpReceipt: { fault, capture, diagnostics, failure,
+      productionBackend: 'UNKNOWN', productionRuntime: 'UNKNOWN' } });
+    expect(diagnostics.methods).toContain('initialize');
+    expect(diagnostics.methods).toContain('tools/list');
+    expect(diagnostics.mcpRequests.some((row: { method: string }) => row.method === 'tools/call')).toBe(true);
+    if (fault === 'partial-stdout') {
+      expect(diagnostics.pipeProbe).toMatchObject({ cut: true, closed: true, recorded: false,
+        targetMethod: 'tools/call', forwardedBytes: 1024 });
+      expect(diagnostics.pipeProbe.targetRequest.method).toBe('tools/call');
+      expect(diagnostics.pipeProbe.consumedBytes).toBeGreaterThanOrEqual(1024);
+      expect(diagnostics.pipeProbe.consumedBytes).toBeLessThan(Buffer.byteLength(instructions));
+      // OMP can transform a large tool body before its final RPC frame. The
+      // interrupted native event and exact call, rather than a pre-host text
+      // prefix, identify this real partial-output observation.
+      expect(diagnostics.pipeProbe.prefix).toContain('"type":"tool_execution_end"');
+      expect(diagnostics.pipeProbe.prefix).toContain('"toolName":"mcp__papercusp_su_receipt_canary"');
+      expect(diagnostics.pipeProbe.targetRequest.params._meta.threadId).toBe(diagnostics.nativeSessionId);
+      expect(diagnostics.rpcOutputs).toEqual([]);
+      expect(diagnostics.stdoutDelivery.confirmations).toEqual([]);
+      return;
+    }
+    expect(failure).toBeUndefined();
+    expect(capture!.evidencePlane).toBe('installed-client-rpc-output');
+    const output = diagnostics.rpcOutputs[0];
+    expect(output.payloadBytes).toBe(Buffer.byteLength(output.payload));
+    expect(output.payloadSha256).toBe(sha256(output.payload));
+    expect(JSON.parse(output.payload)).toMatchObject({ type: 'tool_execution_end', isError: false,
+      result: { content: [{ type: 'text', text: JSON.stringify({ [port]: instructions }) }] } });
+    expect(output.recorded).toBe(fault === 'complete');
+    const confirmations = fault === 'complete' ? [{ token: `native-${port}-omp`, fragments: [{
+      kind, id: `native-${kind}`, epoch: 3, port, bodySha256: sha256(instructions), bodyBytes: Buffer.byteLength(instructions),
+    }] }] : [];
+    expect(capture!.stdoutDelivery).toEqual({ adapter: 'omp-rpc', owner: 'su-native-receipt-omp', confirmations });
+    const calls = diagnostics.mcpRequests.filter((row: { method: string }) => row.method === 'tools/call');
+    expect(calls).toHaveLength(2);
+    expect(calls[0].params._meta['papercusp/memoryReceipt'].confirmations).toEqual([]);
+    expect(calls[1].params._meta['papercusp/memoryReceipt'].confirmations).toEqual(confirmations);
+    expect(calls[1].params._meta.threadId).toBe(diagnostics.nativeSessionId);
+    if (fault === 'complete') expect(capture!.stdoutReceipts![0]).toMatchObject({
+      stage: 'stdout-emitted', payloadSha256: output.payloadSha256, payloadBytes: output.payloadBytes,
+    });
+  }, 45_000);
+
+for (const mode of ['complete', 'remove-instructions'] as const)
+  it(`context reliability R-1: OMP initialized instructions final provider context ${mode}`, async ({ task }) => {
+    const canary = 'Initialized native context: approval remains required ☃';
+    const observed = await captureNativeMcp('omp', [{ name: 'context_echo', description: 'Local context fixture.' }],
+      canary, [], { ompProviderContext: mode });
+    expect(observed.evidencePlane).toBe('installed-client-provider-context');
+    const prompt = observed.request.systemPrompt;
+    const finalContext = Array.isArray(prompt) ? prompt.join('\n') : String(prompt);
+    if (mode === 'complete') expect(finalContext).toContain(canary);
+    else expect(finalContext).not.toContain(canary);
+    expect(observed.stdoutDelivery).toBeUndefined();
+    expect(observed.stdoutReceipts).toBeUndefined();
+    Object.assign(task.meta, { ompInitializedContext: { mode, clientVersion: observed.clientVersion,
+      evidencePlane: observed.evidencePlane, diagnostics: observed.diagnosticsPath,
+      promptSha256: sha256(finalContext), promptBytes: Buffer.byteLength(finalContext),
+      containsInitializedInstructions: finalContext.includes(canary), stdoutReceiptClaimed: false } });
+  }, 60_000);
+
+it('context reliability R-1: OMP RPC profile cannot assert initialize delivery', async () => {
+  await expect(captureNativeMcp('omp', [], 'Initialize canary', [], {
+    stdioReceipt: 'memory', stdioPort: 'initialize', receiptAdapter: 'omp-rpc',
+  })).rejects.toThrow('OMP RPC receipt profile requires an OMP tool-result port');
+});
 
 for (const client of ['codex', 'claude'] as const) for (const kind of ['memory', 'corpus'] as const)
   for (const port of ['initialize', 'orient', 'claim', 'create'] as const)

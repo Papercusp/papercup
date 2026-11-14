@@ -156,6 +156,27 @@ describe('durable R-10 exact headroom targets', () => {
     input.censuses = input.censuses.filter((_, i) => i % 6 === 0);
     expect(assessDurableHeadroomTargets(input, window).verdict).toBe('unknown');
   });
+  it.each([
+    { path: '/', dip: false }, { path: '/mnt/data', dip: false },
+    { path: '/', dip: true }, { path: '/mnt/data', dip: true },
+  ])('retains an incomplete census beside a complete sample on $path (dip=$dip)', ({ path, dip }) => {
+    const input = fixture();
+    const complete = input.censuses.find(row => row.path === path && row.id.endsWith('-30'))!;
+    input.censuses.push({ ...complete, id: `${path}-incomplete`, at: at(30.25),
+      complete: false, availableBytes: complete.availableBytes - (dip ? 1 : 0) });
+    input.censuses.sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+    const result = assessDurableHeadroomTargets(input, window);
+    expect(result.verdict).toBe(dip ? 'fail' : 'unknown');
+    expect(result.checks).toContainEqual(expect.objectContaining({
+      id: `census-completeness:${path}`, status: 'unknown',
+    }));
+    expect(result.checks).toContainEqual(expect.objectContaining({
+      id: `hourly-coverage:${path}`, status: 'pass',
+    }));
+    expect(result.checks).toContainEqual(expect.objectContaining({
+      id: `exact-target:${path}`, status: dip ? 'fail' : 'pass',
+    }));
+  });
   it('detects incomplete, errored, failed-delegate and non-exhausted receipts', () => {
     for (const change of [{ complete: false }, { errors: ['blocked'] }, { delegates: [{ ok: false }] },
       { entries: [{ status: 'failed' }] }, { policyExhausted: false }]) {

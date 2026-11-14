@@ -4,7 +4,7 @@
  * existing Postgres receipt ledger. Free space is an alarm threshold, never a
  * reason to retain expired artifacts. Existing class owners remain delegates.
  */
-import { lstat, readFile, readdir, rm } from 'node:fs/promises';
+import { lstat, readFile, readdir, realpath, rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { homedir, hostname } from 'node:os';
@@ -1077,19 +1077,43 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
   try {
     await record('started', receipt);
     let mutex: RetentionMutexContext | undefined;
+    let continuationTicket: Awaited<ReturnType<RetentionMutexContext['reserveContinuationTicket']>> | undefined;
     let yieldProgress: { phase: string; timings: typeof phaseTimings } | undefined;
     let protectedPaths: string[] = [];
     let protectionInitialized = false;
+    let effectQuantumPending = false;
     const refreshProtection = () => measure('protectionReadMs', async () => {
       const protection = await options.readProtection?.({ renewEvidence: !protectionInitialized });
       policy.pins = protection?.pins ?? [];
-      protectedPaths = [...(options.protectedPaths ?? []), ...(protection?.paths ?? [])].map((path) => resolve(path));
+      // The installed compiler/vendor root can be offloaded beneath a dated
+      // work-item directory. Protect its physical target and containing entry,
+      // even when no process currently holds an open file there. Refresh aliases
+      // under the retention mutex rather than retaining a previous cutover.
+      const paths = [join(home, '.papercusp', 'vendor'), ...(options.protectedPaths ?? []), ...(protection?.paths ?? [])];
+      const retained = new Set<string>();
+      for (const path of paths) {
+        const logical = resolve(path);
+        retained.add(logical);
+        try { retained.add(await realpath(logical)); }
+        catch (error) {
+          // Missing optional roots have no installed bytes to retain. All other
+          // resolution failures leave protection unknown and abort the pass.
+          if (!absent(error)) throw error;
+        }
+      }
+      protectedPaths = [...retained];
       protectionInitialized = true;
     });
     // Keep the census/effect cursor across FIFO handoffs. Ending the whole pass
     // here made a queued writer discard minutes of inspection on every tick.
     const yieldToWaiter = async function* (onPaused?: (elapsedMs: number) => void): AsyncGenerator<void, number, void> {
-      if (!await measure('waiterCheckMs', async () => mutex?.hasWaiters())) return 0;
+      // Once a continuation resumes, finish one candidate's safety-checked
+      // effect quantum before yielding to later writers. Otherwise every new
+      // ticket can push cleanup back to the tail without any cleanup progress.
+      if (effectQuantumPending) return 0;
+      const heldMutex = mutex;
+      if (!heldMutex || !await measure('waiterCheckMs', () => heldMutex.hasWaiters())) return 0;
+      continuationTicket = await heldMutex.reserveContinuationTicket();
       const pausedAt = Date.now();
       try {
         // Diagnostic persistence must not hold up the writer we are yielding to.
@@ -1099,6 +1123,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         // A pin or lease writer may have changed eligibility while we released
         // the mutex. Never reuse that protection snapshot after reacquisition.
         await refreshProtection();
+        effectQuantumPending = true;
         return Math.max(0, Date.now() - pausedAt);
       } finally {
         // If the owning mutex times out while this generator is suspended, its
@@ -1395,6 +1420,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
           return a.newestWriteMs - b.newestWriteMs || a.path.localeCompare(b.path);
         });
         if (!selected.length) {
+          effectQuantumPending = false;
           if (cap && cap.overByBytes > cap.pinnedOverageBytes) receipt.errors.push(sizeCapError(root.path, cap.overByBytes));
           continue;
         }
@@ -1446,9 +1472,9 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
           return true;
         };
         await recordProgress();
-        if (stopEffects()) { await recordProgress(); continue; }
+        if (stopEffects()) { effectQuantumPending = false; await recordProgress(); continue; }
         yield* yieldEffects();
-        if (stopEffects()) { await recordProgress(); continue; }
+        if (stopEffects()) { effectQuantumPending = false; await recordProgress(); continue; }
         firstCandidateAdmitted = true;
         // This is only an early skip for the first candidate. Every candidate
         // still receives a fresh holder check immediately before its effect.
@@ -1456,6 +1482,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         // fallback and could consume this root's entire effect allowance.
         const holders = await measureEffect('initialHolderScanMs', () => outsideInspectionBudget(() => scanRoot([selected[0]!.path])));
         if (!holders.complete) {
+          effectQuantumPending = false;
           receipt.errors.push(`incomplete process-holder scan:${root.path}: ${JSON.stringify(holders.diagnostics ?? {})}`);
           await recordProgress(); continue;
         }
@@ -1463,10 +1490,10 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
           yield* yieldEffects();
           if (cap && cap.afterBytes <= cap.maxBytes && !agePaths.has(entry.path)) {
             if (keep && entry.buildDirs?.length && buildDirsEligible(keep, entry.newestWriteMs, started)) entry = { ...entry, buildOnly: true };
-            else { effect.processed++; continue; }
+            else { effect.processed++; effectQuantumPending = false; continue; }
           }
-          if (budgetExpired()) { stopAtBudget(root.path); break; }
-          if (stopEffects()) break;
+          if (budgetExpired()) { effectQuantumPending = false; stopAtBudget(root.path); break; }
+          if (stopEffects()) { effectQuantumPending = false; break; }
           const outcome: DiskReclaimReceipt['entries'][number] = { path: entry.path, classId: entry.classId, bytes: entry.bytes, status: 'protected' };
           receipt.entries.push(outcome);
           let deferred = false;
@@ -1577,6 +1604,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
               regularLease = undefined;
             }
             if (!deferred) effect.processed++;
+            effectQuantumPending = false;
             // Do not race or cancel a running safety check or removal. Record
             // progress between effects, after the final holder-to-unlink window.
             if (Date.now() - lastProgressAt >= 10_000) await recordProgress();
@@ -1626,10 +1654,12 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             admitted = true;
             phaseTimings[waitPhase] += Math.max(0, performance.now() - requestedAt);
             mutex = held;
+            continuationTicket = undefined;
             try { done = (await cursor.next()).done === true; }
             finally { callbackFinishedAt = performance.now(); }
           }, {
             timeoutMs: Math.max(1, remainingMs),
+            ...(continuationTicket ? { continuationTicket } : {}),
             onTimedOut: info => {
               receipt.mutexTimeout = { phase: waitPhase === 'initialMutexWaitMs' ? 'initial' : 'reacquire',
                 remainingRunBudgetMs: remainingMs, ...info };
@@ -1646,7 +1676,13 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         }
         if (done) break;
       }
-    } finally { await cursor.return(); }
+    } finally {
+      try { await cursor.return(); }
+      finally {
+        await continuationTicket?.cancel();
+        continuationTicket = undefined;
+      }
+    }
   } catch (err) {
     receipt.errors.push(message(err));
     // A FIFO timeout can terminate the generator while it is suspended, before

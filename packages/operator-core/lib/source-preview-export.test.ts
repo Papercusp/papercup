@@ -17,7 +17,7 @@ import type { Sql } from 'postgres';
 import { createHash } from 'node:crypto';
 import nativeFs, { chmodSync, cpSync, existsSync, fstatSync, linkSync, mkdirSync, mkdtempSync, promises as fsPromises, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it, onTestFailed, vi } from 'vitest';
@@ -88,6 +88,7 @@ import { closeTask } from './task-manager/store';
 import type { TaskRow } from './task-manager/types';
 
 let tmp: string;
+const bgCoreFixtureRoots: string[] = [];
 let fx: Superproject;
 let out: string;
 
@@ -954,6 +955,20 @@ describe('verifier dependency staging preparation boundary', () => {
 });
 
 describe('EI-25303741091409100 — pinned verifier source identity', () => {
+  const deferredMaterializedFixtureRoots: Array<{ root: string; caseId: string }> = [];
+  afterAll(() => {
+    for (const { root, caseId } of deferredMaterializedFixtureRoots) {
+      const cleanupStartedAt = performance.now();
+      process.stderr.write('VERIFIER_MATERIALIZED_FIXTURE ' + JSON.stringify({ caseId, stage: 'cleanup-start',
+        observedAt: new Date().toISOString(), elapsedMs: 0, outsideTestTimeout: true }) + '\n');
+      rmSync(root, { recursive: true, force: true });
+      process.stderr.write('VERIFIER_MATERIALIZED_FIXTURE ' + JSON.stringify({ caseId, stage: 'cleanup-complete',
+        observedAt: new Date().toISOString(), elapsedMs: Math.round(performance.now() - cleanupStartedAt),
+        outsideTestTimeout: true }) + '\n');
+    }
+    deferredMaterializedFixtureRoots.length = 0;
+  }, 120_000);
+
   async function waitForVerifierFixtureReady(child: ReturnType<typeof spawn>, ready: string,
     receiptPath: string, output: () => string, timeout: number) {
     try {
@@ -1061,7 +1076,8 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
   });
 
   it.each([
-    ['deps.preflight', 64_468], ['deps.runtime-assets', 65], ['deps.source.after-runtime-assets', 43_666],
+    ['deps.runtime-assets.preflight', 1234], ['deps.preflight', 64_468],
+    ['deps.runtime-assets', 65], ['deps.source.after-runtime-assets', 43_666],
   ] as const)('includes completed optional native preparation %s without requiring it in legacy receipts', (phase, duration) => {
     const legacy = estimateVerifierCommandBudget(budgetPhases, 600_000);
     const measured = estimateVerifierCommandBudget({ ...budgetPhases, [phase]: duration }, 600_000);
@@ -1501,6 +1517,12 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     }
   });
 
+  it('rejects an unsupported verifier runtime-output mode before source allocation', async () => {
+    await expect(runCli(['verifier-run', '--repo', '/unused', '--ref', 'HEAD', '--receipt', '/unused.json',
+      '--inputs', 'input.mjs', '--runtime-outputs', 'archive', '--', 'true']))
+      .rejects.toThrow('verifier runtime outputs must be rebuild or preserve');
+  });
+
   it('exports exact gitlinks despite unrelated dirty donor bytes and detects archive tampering', async () => {
     const fixture = makeSuperproject(join(tmp, 'verifier-fixture'));
     const dest = join(tmp, 'verifier-export');
@@ -1813,13 +1835,14 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     expect(missingLoader.stderr).toContain('ERR_MODULE_NOT_FOUND');
   });
 
-  it.each(['explicit-cap', 'cleanup-cutoff', 'explicit-pass', 'default', 'command-cap', 'command-pass', 'census-cap', 'census-cancel'] as const)(
+  it.each(['explicit-cap', 'cleanup-cutoff', 'explicit-pass', 'default', 'command-cap', 'command-pass', 'command-preserve', 'census-cap', 'census-cancel'] as const)(
     'bounds dependency preparation and preserves the caller environment (%s)', async mode => {
     const fixture = makeSuperproject(join(tmp, 'verifier-preparation-budget-' + mode));
     git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
     const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
     const script = 'scripts/source-preview.mjs';
     const writer = 'scripts/dependency-progress.cjs';
+    const preservedRuntimePath = 'apps/operator/dist-verify/hono-host.mjs';
     const pidPath = join(tmp, mode + '-preparation.pid');
     write(fixture.repo, DEPENDENCY_POLICY_PATH, DEPENDENCY_POLICY);
     const assertEnv = "if (process.env.VERIFIER_PREP_SENTINEL !== 'caller-only' || process.env.NODE_OPTIONS !== '' || process.env.NODE_PATH !== '') throw Error('caller environment lost');\n";
@@ -1839,13 +1862,21 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       'if [ "$4" = copy ]; then cp -a -- "$2/node_modules" "$3/node_modules"; else cp -al -- "$2/node_modules" "$3/node_modules"; fi',
     ].join('\n'));
     write(fixture.repo, '.gitignore', readFileSync(join(fixture.repo, '.gitignore'), 'utf8') + '\n/.papercusp/scratch/\n');
-    git(fixture.repo, ['add', helper, script, writer, DEPENDENCY_POLICY_PATH, '.gitignore']);
+    if (mode === 'command-preserve') write(fixture.repo, preservedRuntimePath, 'committed generated host');
+    git(fixture.repo, ['add', helper, script, writer, DEPENDENCY_POLICY_PATH, '.gitignore',
+      ...(mode === 'command-preserve' ? [preservedRuntimePath] : [])]);
     git(fixture.repo, ['commit', '-qm', 'bounded dependency preparation fixture']);
     installVerifierTsx(fixture.repo);
     const dest = join(tmp, 'verifier-preparation-dest-' + mode);
-    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: 'HEAD', dest, inputs: [script], gitCheckout: true });
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: 'HEAD', dest, inputs: [script], gitCheckout: true,
+      ...(mode === 'command-preserve' ? { runtimeOutputs: 'preserve' as const } : {}) });
+    const preservedRuntimeMarker = join(tmp, 'preserved-runtime-marker-' + mode);
     const env = childEnv({ VERIFIER_PREP_SENTINEL: 'caller-only', VERIFIER_PREP_PID: pidPath,
       VERIFIER_PREP_NODE: process.execPath, NODE_OPTIONS: '--import=/ambient/loader', NODE_PATH: '/ambient/dependencies',
+      ...(mode === 'command-preserve' ? {
+        VERIFIER_PRESERVED_RUNTIME_PATH: preservedRuntimePath,
+        VERIFIER_PRESERVED_RUNTIME_MARKER: preservedRuntimeMarker,
+      } : {}),
       ...(['census-cap', 'census-cancel'].includes(mode) ? { VERIFIER_SLOW_CENSUS: '1' } : {}) });
     delete env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS;
     if (mode !== 'default') env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS = String(Date.now() + (mode === 'cleanup-cutoff' ? 121_000 : 300_000));
@@ -1853,10 +1884,20 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     const controller = new AbortController(), preparationPhases: string[] = [];
     let cancelTimer: ReturnType<typeof setTimeout> | undefined;
     const receiptPath = join(tmp, mode + '-preparation.json');
-    const commandRun = mode === 'command-cap' || mode === 'command-pass';
+    const commandRun = mode === 'command-cap' || mode === 'command-pass' || mode === 'command-preserve';
+    const preservedCommand = [
+      'const fs = require("node:fs");',
+      'const path = require("node:path");',
+      'const receipt = JSON.parse(fs.readFileSync(process.env.VERIFY_TAURI_SOURCE_RECEIPT, "utf8"));',
+      'if (!receipt.gitCheckout) throw Error("preserve route did not create a Git checkout");',
+      'if (fs.readFileSync(path.join(process.cwd(), process.env.VERIFIER_PRESERVED_RUNTIME_PATH), "utf8") !== "committed generated host") throw Error("committed output was not preserved");',
+      'fs.writeFileSync(process.env.VERIFIER_PRESERVED_RUNTIME_MARKER, "verified");',
+    ].join('\n');
     const result = commandRun
       ? runVerifierCommand({ repo: fixture.repo, ref: receipt.sourceCommit, inputs: [script], receiptPath,
-        command: [process.execPath, '-e', "console.log('provider-ran')"], env, preparationMaxMs: maxMs })
+        ...(mode === 'command-preserve' ? { runtimeOutputs: 'preserve' as const } : {}),
+        command: [process.execPath, '-e', mode === 'command-preserve' ? preservedCommand : "console.log('provider-ran')"],
+        env, preparationMaxMs: maxMs })
       : prepareVerifierDependencies({ donor: fixture.repo, dest, receipt, env,
         signal: controller.signal,
         runPhase: async (phase, operation) => {
@@ -1886,6 +1927,16 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       expect(task.cleanup).toBe('completed');
       expect(existsSync(task.ownedRoot)).toBe(false);
       if (mode === 'command-cap') expect(existsSync(receiptPath + '.child.json')).toBe(false);
+    }
+    if (mode === 'command-preserve') {
+      const runReceipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+      expect(runReceipt.gitCheckout).toBeDefined();
+      expect(runReceipt.files).toContainEqual(expect.objectContaining({
+        path: preservedRuntimePath,
+        sha256: createHash('sha256').update('committed generated host').digest('hex'),
+      }));
+      expect(readFileSync(preservedRuntimeMarker, 'utf8')).toBe('verified');
+      expect(readFileSync(join(fixture.repo, preservedRuntimePath), 'utf8')).toBe('committed generated host');
     }
     expect(env.NODE_OPTIONS).toBe('--import=/ambient/loader');
     expect(env.NODE_PATH).toBe('/ambient/dependencies');
@@ -2033,12 +2084,16 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     trace('fixture-parent-start');
     const fixtureParent = process.platform === 'linux'
       ? mkdtempSync(rootDonor ? '/var/tmp/source-preview-root-donor-' : '/mnt/data/tmp/source-preview-data-donor-') : tmp;
+    if (fixtureParent !== tmp) deferredMaterializedFixtureRoots.push({ root: fixtureParent, caseId });
     try {
+    trace('fixture-parent-created');
     trace('superproject-start');
     const fixture = makeSuperproject(join(fixtureParent, 'verifier-materialized-dependencies-' + caseId));
     trace('superproject-complete');
     const copiesDependencies = process.platform === 'linux' && statSync(fixture.repo).dev === statSync('/').dev;
+    trace('fixture-node-modules-removal-start');
     git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
+    trace('fixture-node-modules-removal-complete');
     const script = 'scripts/source-preview.mjs';
     const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
     write(fixture.repo, script, "import value from '@native-proof/runtime';\nif (value !== 'private-snapshot') throw Error('wrong dependency');\nconsole.log(process.argv.includes('verifier-measure') ? '4096' : 'inputs-ok');\n");
@@ -2060,9 +2115,16 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       '',
     ].join('\n'));
     write(fixture.repo, '.gitignore', readFileSync(join(fixture.repo, '.gitignore'), 'utf8') + '\n/node_modules/\n/.papercusp/scratch/\n');
+    trace('fixture-source-writes-complete');
+    trace('fixture-git-add-start');
     git(fixture.repo, ['add', script, helper, '.gitignore', DEPENDENCY_POLICY_PATH]);
+    trace('fixture-git-add-complete');
+    trace('fixture-git-commit-start');
     git(fixture.repo, ['commit', '-qm', 'materialized dependency donor fixture']);
+    trace('fixture-git-commit-complete');
+    trace('fixture-source-rev-parse-start');
     const sha = git(fixture.repo, ['rev-parse', 'HEAD']).trim();
+    trace('fixture-source-rev-parse-complete');
     trace('source-commit-complete');
     write(fixture.repo, 'node_modules/.bin/probe', '#!/bin/sh\n');
     write(fixture.repo, 'node_modules/@native-proof/runtime/package.json', JSON.stringify({
@@ -2166,11 +2228,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     trace('negative-control-complete');
     expect(existsSync(join(tmp, 'refused-donor-receipt-' + caseId + '.json'))).toBe(false);
     } finally {
-      process.stderr.write('VERIFIER_MATERIALIZED_FIXTURE ' + JSON.stringify({ caseId, stage: 'cleanup-start',
-        observedAt: new Date().toISOString(), elapsedMs: Math.round(performance.now() - startedAt),
-        aborted: context.signal.aborted }) + '\n');
-      if (fixtureParent !== tmp) rmSync(fixtureParent, { recursive: true, force: true });
-      process.stderr.write('VERIFIER_MATERIALIZED_FIXTURE ' + JSON.stringify({ caseId, stage: 'cleanup-complete',
+      process.stderr.write('VERIFIER_MATERIALIZED_FIXTURE ' + JSON.stringify({ caseId, stage: 'cleanup-deferred',
         observedAt: new Date().toISOString(), elapsedMs: Math.round(performance.now() - startedAt),
         aborted: context.signal.aborted }) + '\n');
     }
@@ -2264,7 +2322,8 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     { selection: 'explicit', layout: 'superproject' },
     { selection: 'automatic', layout: 'submodule' },
     { selection: 'explicit', layout: 'submodule' },
-  ] as const)('checks $selection generation custody against selected source before dependencies or PG ($layout helper)', async ({ selection, layout }) => {
+  ] as const)('ensures $selection generation from frozen nested managed-client source before preflight, dependencies, and PG ($layout helper)',
+    async ({ selection, layout }) => {
     const parent = process.platform === 'linux' ? mkdtempSync('/var/tmp/source-preview-generation-preflight-') : tmp;
     try {
       const fixture = makeSuperproject(join(parent, 'generation-' + selection + '-' + layout));
@@ -2272,14 +2331,46 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         statSync(fixture.repo).dev === statSync('/').dev;
       if (selection === 'automatic' && !usesAutomaticGeneration) return;
       const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
+      const generationBuilder = 'apps/operator/bin/release/dependency-generation.sh';
+      const managedClient = 'apps/operator-vite/src/lib/nuqs-tanstack-router-adapter.tsx';
+      const generationMarker = join(tmp, 'generation-ensure-' + selection + '-' + layout + '.txt');
+      const generationEvents = join(tmp, 'generation-events-' + selection + '-' + layout + '.txt');
       const helperSource = [
         '#!/bin/bash', 'set -eu', 'case "$1" in',
         '  preflight-generation)',
         '    test "$(cat "$3/selected-source.txt")" = committed-candidate || { echo "checked moving source" >&2; exit 95; }',
-        '    echo "missing verifier closure" >&2; exit 74 ;;',
-        '  snapshot-generation-locked) echo "snapshot must not start" >&2; exit 93 ;;',
+        '    test -f "$GENERATION_ENSURE_MARKER" || { echo "verifier generation was not ensured" >&2; exit 96; }',
+        '    selected="$(cat "$3/apps/operator-vite/src/lib/nuqs-tanstack-router-adapter.tsx")"',
+        '    generated="$(cat "$GENERATION_ENSURE_MARKER")"',
+        '    test "$generated" = "$selected" || { echo "verifier generation was ensured from moving source" >&2; exit 97; }',
+        '    printf "%s\\n" preflight >> "$GENERATION_EVENT_LOG"',
+        '    exit 0 ;;',
+        '  snapshot-generation-locked)',
+        '    printf "%s\\n" snapshot >> "$GENERATION_EVENT_LOG"',
+        '    echo "snapshot reached after generation preflight" >&2; exit 93 ;;',
         '  *) exit 94 ;;', 'esac', '',
       ].join('\n');
+      write(fixture.repo, generationBuilder, [
+        '#!/bin/bash', 'set -eu',
+        'integration= ref= source=',
+        'while [ "$#" -gt 0 ]; do',
+        '  case "$1" in',
+        '    --integration) integration="$2"; shift 2 ;;',
+        '    --ensure-ref) ref="$2"; shift 2 ;;',
+        '    --verifier-source) source="$2"; shift 2 ;;',
+        '    *) exit 94 ;;',
+        '  esac',
+        'done',
+        'test -n "$integration" && test -n "$ref" && test -n "$source"',
+        'test "$integration" != "$source"',
+        'test "$(git -C "$integration" rev-parse --verify "$ref^{commit}")" = "$ref"',
+        'test "$(cat "$source/selected-source.txt")" = committed-candidate',
+        'managed=apps/operator-vite/src/lib/nuqs-tanstack-router-adapter.tsx',
+        'test "$(cat "$source/$managed")" = committed-adapter',
+        'printf "%s\\n" "$(cat "$source/$managed")" > "$GENERATION_ENSURE_MARKER"',
+        'printf "%s\\n" ensure >> "$GENERATION_EVENT_LOG"',
+        '',
+      ].join('\n'));
       if (layout === 'submodule') {
         git(fixture.repo, ['rm', '-r', '--', 'papercusp-desktop']);
         const desktop = join(parent, 'desktop-' + selection);
@@ -2291,20 +2382,25 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         git(fixture.repo, ['submodule', 'add', '-q', desktop, 'papercusp-desktop']);
       } else write(fixture.repo, helper, helperSource);
       write(fixture.repo, 'selected-source.txt', 'committed-candidate');
-      git(fixture.repo, ['add', 'papercusp-desktop', 'selected-source.txt']);
+      write(fixture.repo, managedClient, 'committed-adapter\n');
+      git(fixture.repo, ['add', 'papercusp-desktop', 'selected-source.txt', managedClient, generationBuilder]);
       git(fixture.repo, ['commit', '-qm', 'generation admission fixture']);
       const ref = git(fixture.repo, ['rev-parse', 'HEAD']).trim();
-      write(fixture.repo, 'selected-source.txt', 'unrelated-live-change');
+      write(fixture.repo, managedClient, 'unrelated-live-adapter\n');
       // The selected gitlink's contract must survive a mutable helper rewrite.
       if (layout === 'submodule') write(fixture.repo, helper, '#!/bin/bash\nexit 0\n');
       const prepareChildEnv = vi.fn(async () => { throw new Error('PG must not start'); });
       const receiptPath = join(tmp, 'generation-preflight-' + selection + '-' + layout + '.json');
       await expect(runVerifierCommand({ repo: fixture.repo,
         ref, receiptPath, prepareChildEnv,
-        inputs: [layout === 'submodule' ? 'apps/operator/src/index.ts' : helper],
-        env: { ...childEnv(), PAPERCUSP_DEPENDENCY_GENERATION_ROOT: selection === 'explicit' ? join(parent, 'store') : '' },
+        inputs: ['selected-source.txt'],
+        env: { ...childEnv(), PAPERCUSP_DEPENDENCY_GENERATION_ROOT: selection === 'explicit' ? join(parent, 'store') : '',
+          GENERATION_ENSURE_MARKER: generationMarker, GENERATION_EVENT_LOG: generationEvents },
         command: [process.execPath, '-e', 'throw Error("provider must not start")'],
-      })).rejects.toThrow('verifier generation preflight failed: missing verifier closure');
+      })).rejects.toThrow('verifier dependency preflight failed: snapshot reached after generation preflight');
+      expect(readFileSync(generationEvents, 'utf8').trim().split('\n')).toEqual(['ensure', 'preflight', 'snapshot']);
+      expect(readFileSync(generationMarker, 'utf8').trim()).toBe('committed-adapter');
+      expect(readFileSync(join(fixture.repo, managedClient), 'utf8')).toBe('unrelated-live-adapter\n');
       expect(JSON.parse(readFileSync(receiptPath, 'utf8')).sourceCommit).toBe(ref);
       const task = JSON.parse(readFileSync(receiptPath + '.task.json', 'utf8'));
       expect(task.cleanup).toBe('completed');
@@ -2315,6 +2411,87 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     } finally {
       if (parent !== tmp) rmSync(parent, { recursive: true, force: true });
     }
+  });
+
+  it.each(['expired', 'short', 'success', 'failed', 'cutoff', 'canceled', 'no-deadline'] as const)(
+    'D117 runtime asset preflight preserves original deadline and retained accounting (%s)', async mode => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-runtime-preflight-' + mode));
+    const setup = 'apps/operator/scripts/setup-porcupine-runtime.sh';
+    const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
+    const receiptPath = join(tmp, 'runtime-preflight-' + mode + '.json');
+    const marker = receiptPath + '.pid';
+    const logs = receiptPath + '.logs';
+    write(fixture.repo, setup, [
+      '#!/bin/bash', 'set -eu', 'test "$1" = --check-source',
+      'printf "%s\\n" "$$" > "$VERIFIER_PREFLIGHT_MARKER"',
+      'test -f "$VERIFIER_PREFLIGHT_RECEIPT.task.json" || { echo "missing ownership" >&2; exit 76; }',
+      'grep -q deps.runtime-assets.preflight "$VERIFIER_PREFLIGHT_RECEIPT.phases.jsonl"',
+      'if test "$VERIFIER_PREFLIGHT_MODE" != no-deadline; then',
+      '  test -f "$VERIFIER_PREFLIGHT_RECEIPT.resources.jsonl"', 'fi',
+      'case "$VERIFIER_PREFLIGHT_MODE" in',
+      '  cutoff|canceled) sleep 3 ;;', '  *) sleep 0.05 ;;', 'esac',
+      'if test "$VERIFIER_PREFLIGHT_MODE" = failed; then echo "fixture checksum failure" >&2; exit 75; fi',
+      '',
+    ].join('\n'));
+    write(fixture.repo, helper, [
+      '#!/bin/bash', 'case "$1" in',
+      '  preflight-generation) echo "fixture stop after runtime preflight" >&2; exit 74 ;;',
+      '  snapshot-generation-locked) exit 93 ;;', '  *) exit 94 ;;', 'esac', '',
+    ].join('\n'));
+    git(fixture.repo, ['add', setup, helper]);
+    git(fixture.repo, ['commit', '-qm', 'fake runtime preflight boundary fixture']);
+    const nowMs = Date.now();
+    const deadline = nowMs + (mode === 'expired' ? -1 : mode === 'short' ? 120_000
+      : mode === 'cutoff' ? 120_400 : 300_000);
+    const env = childEnv({ PAPERCUSP_CHECKPOINT_LOG_DIR: logs,
+      PAPERCUSP_DEPENDENCY_GENERATION_ROOT: join(tmp, 'unused-generation-' + mode),
+      PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(deadline), VERIFIER_PREFLIGHT_MODE: mode,
+      VERIFIER_PREFLIGHT_MARKER: marker, VERIFIER_PREFLIGHT_RECEIPT: receiptPath });
+    delete env.PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID;
+    if (mode === 'no-deadline') delete env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS;
+    const controller = new AbortController();
+    const cancelTimer = mode === 'canceled' ? setInterval(() => {
+      if (existsSync(marker)) controller.abort();
+    }, 10) : undefined;
+    try {
+      await expect(runVerifierCommand({ repo: fixture.repo, ref: 'HEAD', inputs: [helper],
+        receiptPath, env, signal: controller.signal, clock: { now: () => nowMs, setTimeout, clearTimeout },
+        command: [process.execPath, '-e', 'throw Error("provider must not start")'] }))
+        .rejects.toThrow(mode === 'expired' || mode === 'short' ? 'TASK_DEADLINE_REFUSAL'
+          : mode === 'cutoff' ? 'absolute-ceiling' : mode === 'canceled' ? 'canceled by SIGTERM'
+          : mode === 'failed' ? 'fixture checksum failure' : 'fixture stop after runtime preflight');
+    } finally {
+      if (cancelTimer) clearInterval(cancelTimer);
+    }
+    const rows = readFileSync(receiptPath + '.phases.jsonl', 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    const runtime = rows.filter(row => row.phase === 'deps.runtime-assets.preflight');
+    const admitted = !['expired', 'short'].includes(mode);
+    expect(existsSync(marker)).toBe(admitted);
+    expect(runtime.map(row => row.event)).toEqual(admitted
+      ? ['started', ['success', 'no-deadline'].includes(mode) ? 'completed' : 'failed'] : []);
+    expect(rows[0]).toMatchObject({ phase: 'source.admission', event: 'started' });
+    expect(rows.some(row => row.phase === 'child.run')).toBe(false);
+    const task = JSON.parse(readFileSync(receiptPath + '.task.json', 'utf8'));
+    expect(task.cleanup).toBe('completed');
+    expect(existsSync(task.ownedRoot)).toBe(false);
+    if (admitted) {
+      const pid = Number(readFileSync(marker, 'utf8'));
+      expect(readProcessIdentity(pid)).toBeNull();
+      if (mode !== 'no-deadline') {
+        expect(task.budget).toMatchObject({ deadlineEpochMs: deadline, childCutoffEpochMs: deadline - 120_000 });
+        expect(readFileSync(receiptPath + '.resources.jsonl', 'utf8')).toContain('"pid":' + pid);
+      } else expect(task.resourceInventory.status).toBe('unknown');
+    }
+    const measurements = readVerifierPhaseMeasurements(receiptPath + '.phases.jsonl');
+    if (['success', 'no-deadline'].includes(mode)) {
+      expect(measurements['deps.runtime-assets.preflight']).toBe(runtime[1].durationMs);
+      expect(measurements['deps.runtime-assets.preflight']).toBeGreaterThan(0);
+    } else expect(measurements).not.toHaveProperty('deps.runtime-assets.preflight');
+    const original = readFileSync(receiptPath + '.phases.jsonl');
+    const retained = readdirSync(logs).map(name => readFileSync(join(logs, name)));
+    expect(retained).toEqual([original]);
+    rmSync(receiptPath + '.phases.jsonl');
+    expect(readFileSync(join(logs, readdirSync(logs)[0]!))).toEqual(original);
   });
 
   it.each(['same-root', 'frozen-source'] as const)('checks the committed runtime asset pin before allocating verifier source (%s)', async layout => {
@@ -2350,11 +2527,15 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(Date.now() + 300_000) },
       command: [process.execPath, '-e', 'throw Error("provider must not start")'] };
     // Exercise the CLI handoff as well as the exported command entry point.
-    await expect(runCli(['verifier-run', '--repo', source, '--runtime-asset-donor', fixture.repo,
-      '--ref', ref, '--receipt', receiptPath, '--inputs', helper, '--', ...options.command]))
-      .rejects.toThrow('pinned runtime model missing or invalid');
+    vi.stubEnv('PAPERCUSP_TASK_DEADLINE_EPOCH_MS', options.env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS!);
+    try {
+      await expect(runCli(['verifier-run', '--repo', source, '--runtime-asset-donor', fixture.repo,
+        '--ref', ref, '--receipt', receiptPath + '.cli', '--inputs', helper, '--', ...options.command]))
+        .rejects.toThrow('pinned runtime model missing or invalid');
+    } finally { vi.unstubAllEnvs(); }
     write(fixture.repo, model, 'wrong-model');
-    await expect(runVerifierCommand(options)).rejects.toThrow('pinned runtime model missing or invalid');
+    await expect(runVerifierCommand({ ...options, receiptPath: receiptPath + '.invalid' }))
+      .rejects.toThrow('pinned runtime model missing or invalid');
     write(fixture.repo, model, validModel);
     if (source !== fixture.repo) expect(existsSync(join(source, model))).toBe(false);
     await expect(runVerifierCommand(options)).rejects.toThrow('runtime cache accepted; generation guard reached');
@@ -2621,7 +2802,8 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       expect(phases.map(row => row.sequence)).toEqual(phases.map((_, index) => index + 1));
       expect(phases.every(row => Number.isFinite(row.elapsedMs) && row.elapsedMs >= 0)).toBe(true);
       expect(phases.filter(row => row.event === 'started').map(row => row.phase)).toEqual([
-        'source.admission', 'source.freeze', 'receipt.write', 'deps.source.before',
+        'source.admission', ...(mode === 'runtime-asset-donor' ? ['deps.runtime-assets.preflight'] : []),
+        'source.freeze', 'receipt.write', 'deps.source.before',
         ...(mode === 'runtime-asset-donor' ? ['deps.runtime-assets'] : []),
         'deps.source.after-runtime-assets', 'deps.snapshot',
         'deps.source.after-snapshot', 'deps.inputs', 'deps.measure', 'deps.source.after-preflight',
@@ -3735,10 +3917,37 @@ describe('BG inherited manifest and original source boundaries', () => {
   });
 
   async function compilerCandidate(artifactInputs = false, cliHarness = false, sourceOnly = false, protectedUnconsumed = false,
-    runtimeModules = false, frozenGeneration = false) {
-    return makeBgCompilerCandidate(join(tmp, `bg-source-${++serial}`),
-      { artifactInputs, cliHarness, sourceOnly, protectedUnconsumed, runtimeModules, frozenGeneration, trace: bgFixtureTrace });
+    runtimeModules = false, frozenGeneration = false, testingCore = false) {
+    let base = join(tmp, `bg-source-${++serial}`);
+    let privateTemp: string | undefined;
+    if (testingCore) {
+      // The producing interval deliberately binds enclosing negative probes.
+      // Use a private OS temp namespace on the required data filesystem. A
+      // home-directory fixture violates scratchClone's filesystem admission;
+      // global /tmp changes underneath this deliberately strict interval.
+      const bank = join(nativeFs.realpathSync(join(homedir(), '.papercusp/scratch')), 'testing-core-bg-tests');
+      mkdirSync(bank, { recursive: true });
+      expect(nativeFs.realpathSync(bank)).toBe(bank);
+      if (process.platform === 'linux') {
+        expect(statSync(bank).dev).toBe(statSync('/mnt/data').dev);
+        expect(statSync(bank).dev).not.toBe(statSync('/').dev);
+      }
+      base = mkdtempSync(join(bank, 'case-'));
+      bgCoreFixtureRoots.push(base);
+      privateTemp = bank;
+    }
+    const priorTmpdir = process.env.TMPDIR;
+    try {
+      if (privateTemp) process.env.TMPDIR = privateTemp;
+      return await makeBgCompilerCandidate(base,
+        { artifactInputs, cliHarness, sourceOnly, protectedUnconsumed, runtimeModules, frozenGeneration, testingCore, trace: bgFixtureTrace });
+    } finally {
+      if (priorTmpdir === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = priorTmpdir;
+    }
   }
+
+  afterAll(() => { for (const root of bgCoreFixtureRoots) rmSync(root, { recursive: true, force: true }); });
 
   it('compiled runtime source fixture retains a root lock matching its own manifests', async () => {
     const { prepared } = await compilerCandidate(true, true, true, false, true);
@@ -3819,7 +4028,7 @@ describe('BG inherited manifest and original source boundaries', () => {
     const imported = await import('data:text/javascript;base64,' + Buffer.from(result.outputFiles[0]!.contents).toString('base64'));
     expect(imported.dep).toBe(41);
     expect(existsSync(metadata)).toBe(false);
-    expect(custody.verifyBeforePublication().map(row => row.path)).toContain('node_modules/fixture-dependency/index.js');
+    expect(custody.verifyBeforePublication().map((row: { path: string }) => row.path)).toContain('node_modules/fixture-dependency/index.js');
   });
 
   it.each(['source-directory', 'source-ancestor'] as const)(
@@ -3931,8 +4140,11 @@ describe('BG inherited manifest and original source boundaries', () => {
     });
 
   async function maintainedCompilerCandidate(sourceOnly = false, protectedUnconsumed = false, runtimeModules = false,
-    expectedHostManifest?: Parameters<typeof prepareBgVerifierBuildRecord>[0]['expectedHostManifest'], frozenGeneration = false) {
-    const { prepared } = await compilerCandidate(true, true, sourceOnly, protectedUnconsumed, runtimeModules, frozenGeneration);
+    expectedHostManifest?: Parameters<typeof prepareBgVerifierBuildRecord>[0]['expectedHostManifest'], frozenGeneration = false,
+    testingCore = false) {
+    const { prepared } = await compilerCandidate(true, true, sourceOnly, protectedUnconsumed, runtimeModules, frozenGeneration, testingCore);
+    if (testingCore) write(dirname(prepared.root), 'node_modules/fixture-ambient-metadata/package.json',
+      '{"name":"fixture-ambient-metadata","main":"unaccepted.js"}');
     const installed = dirname(createRequire(import.meta.url).resolve('@papercusp/host-esbuild/package.json'));
     const privateCompiler = join(prepared.root, 'node_modules/@papercusp/host-esbuild');
     bgFixtureTrace('private-compiler-copy:start');
@@ -5079,7 +5291,7 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
       realpath: fixture.invocation.compiler, sha256: digest(readFileSync(fixture.invocation.compiler)) });
     expect(compiled.compilerBinary).toMatchObject({ kind: 'kernel-sealed-fd-v1',
       sha256: digest(readFileSync(fixture.invocation.environment.ESBUILD_BINARY_PATH)), launches: 1 });
-    expect(compiled.consumed.map(row => row.path)).toContain('node_modules/fixture-dependency/index.js');
+    expect(compiled.consumed.map((row: { path: string }) => row.path)).toContain('node_modules/fixture-dependency/index.js');
     const imported = await import('data:text/javascript;base64,' + readFileSync(fixture.entry).toString('base64'));
     expect({ y: imported.y, dep: imported.dep }).toEqual({ y: 2, dep: 41 });
     expect(readFileSync(fixture.entry, 'utf8')).toContain('retained banner');
@@ -5107,7 +5319,7 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
       // The original-receipt digest and the maintained source verifier each
       // read it once. Two full censuses would read it four times.
       expect(receiptReads).toBe(2);
-      expect(compiled.consumed.map(row => row.path)).toContain('node_modules/fixture-dependency/index.js');
+      expect(compiled.consumed.map((row: { path: string }) => row.path)).toContain('node_modules/fixture-dependency/index.js');
       expect(existsSync(fixture.entry)).toBe(true);
     } finally { spy.mockRestore(); syncBuiltinESMExports(); }
   });
@@ -5280,8 +5492,8 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
     expect((await qualifyBgVerifierOutput(fixture)).artifact.sourceBlobs).toEqual(fixture.prepared.acceptedManifest.members);
   });
 
-  async function maintainedCompilerContexts() {
-    const fixture = await maintainedCompilerCandidate();
+  async function maintainedCompilerContexts(testingCore = false) {
+    const fixture = await maintainedCompilerCandidate(false, false, false, undefined, false, testingCore);
     const workerEntry = join(dirname(fixture.entry), 'worker.mjs');
     const workerArgv = fixture.argv.map((arg, index) => index === 0
       ? join(fixture.prepared.root, 'packages/core/index.ts') : arg.replaceAll(fixture.entry, workerEntry));
@@ -5300,8 +5512,8 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
     return { ...fixture, worker, workerEntry, contexts, contextPath, run };
   }
 
-  async function transactionCandidate() {
-    const fixture = await maintainedCompilerContexts();
+  async function transactionCandidate(testingCore = false) {
+    const fixture = await maintainedCompilerContexts(testingCore);
     const bank = dirname(fixture.entry), stage = join(bank, 'owned-build');
     await fsPromises.mkdir(bank, { recursive: true });
     const outputs = [
@@ -5313,6 +5525,14 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
     const invocations = [fixture.invocation, fixture.worker].map((invocation, index) => ({ ...invocation,
       argv: invocation.argv.map(arg => arg.replaceAll(index ? fixture.workerEntry : fixture.entry,
         join(stage, outputs[index * 2]!.temporary))) }));
+    if (testingCore) {
+      const temporary = 'testing-core.worker.mjs.new.@BG_PID@.mjs';
+      outputs.push({ temporary, final: 'testing-core.worker.mjs' },
+        { temporary: temporary + '.meta.json', final: 'testing-core.worker.mjs.meta.json' });
+      invocations.push({ ...fixture.invocation, argv: fixture.invocation.argv.map((arg, index) => index === 0
+        ? join(fixture.prepared.root, 'packages/operator-core/lib/agent-tools/testing/testing-core.worker.ts')
+        : arg.replaceAll(fixture.entry, join(stage, temporary))) });
+    }
     const recipe = { entry: fixture.argv[0]!, outfile: join(stage, 'hono-host.mjs'), profile: 'release' as const };
     const args = { ...fixture, bank, stageLeaf: 'owned-build', invocations, outputs, recipe,
       assets: [] as { source: string, temporary: string, final: string }[],
@@ -5321,6 +5541,119 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
     return { ...fixture, args, stage };
   }
 
+  it('BG testing core binds original commands to actual sealed compilation before its parent', async () => {
+    const fixture = await transactionCandidate(true);
+    const transaction = prepareBgVerifierBuildTransaction(fixture.args);
+    const original = JSON.stringify(transaction), order: string[] = [];
+    const publication = await runBgVerifierBuildRecipe({ transaction, ownerPid: process.pid,
+      runPhase: async (phase, operation) => { order.push(phase); return operation(); },
+      budget: { measurements: BG_RECIPE_BUDGET_MEASUREMENTS,
+        env: { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: '1000000000' }, now: () => 1_000 } });
+    expect(JSON.stringify(transaction)).toBe(original);
+    expect(transaction.testingCore).toEqual({ producerIndex: 2, consumerIndex: 0 });
+    const [producer, parent] = publication.receipts;
+    expect(producer!.argv[0]).toContain('/testing/testing-core.worker.ts');
+    expect(parent!.argv[0]).toBe(fixture.args.recipe.entry);
+    expect(parent!.testingCoreDependency).toEqual({ compilerReceiptSha256: digest(JSON.stringify(producer)),
+      witness: producer!.testingCore!.witness, transactionSha256: publication.binding.transactionSha256 });
+    expect(producer!.testingCore!.input.resolverMetadata).toContainEqual({
+      path: join(dirname(fixture.prepared.root), 'node_modules/fixture-ambient-metadata/package.json'),
+      sha256: digest('{"name":"fixture-ambient-metadata","main":"unaccepted.js"}'),
+    });
+    expect(producer!.compilerBinary).toMatchObject({ kind: 'kernel-sealed-fd-v1', launches: 1 });
+    expect(parent!.compilerBinary).toMatchObject({ kind: 'kernel-sealed-fd-v1', launches: 1 });
+    expect(producer!.generatedInputs).toEqual([]);
+    expect(parent!.generatedInputs).toEqual([{ path: '<define:__PAPERCUSP_TESTING_CORE_WITNESS__>',
+      define: '__PAPERCUSP_TESTING_CORE_WITNESS__', value: JSON.stringify(producer!.testingCore!.witness) }]);
+    const corePath = join(fixture.stage, 'testing-core.worker.mjs');
+    const parentPath = join(fixture.stage, 'hono-host.mjs');
+    const core = await import(pathToFileURL(corePath).href);
+    const main = await import(pathToFileURL(parentPath).href);
+    expect(core.TESTING_CORE_SOURCE_SHA256).toBe(producer!.testingCore!.witness.sourceSha256);
+    expect(main.expectedCore).toEqual(producer!.testingCore!.witness);
+    expect({ y: main.y, dep: main.dep, coreDep: core.dep, unicode: core.unicode })
+      .toEqual({ y: 2, dep: 41, coreDep: 41, unicode: 'μ' });
+    expect([...readFileSync(corePath)].every(byte => byte < 128)).toBe(true);
+    expect(digest(readFileSync(corePath))).toBe(main.expectedCore.artifactSha256);
+    expect(order.indexOf('bg.compiler.core-final-bytes')).toBeLessThan(order.indexOf('bg.recipe.compiler.1'));
+    expect(verifyBgVerifierPublication(publication, publication)).toBe(publication);
+    expect(Object.keys(publication.logical.artifact.artifact.sourceBlobs).every(path => !path.startsWith('<'))).toBe(true);
+    const mainContext = publication.binding.contexts.invocations[0]!;
+    const mainRecord = { ...publication.binding.contexts.record, invocation: mainContext.original };
+    for (const field of ['effectiveArgv', 'generatedInputs'] as const) {
+      const changed = JSON.parse(JSON.stringify(publication.logical.artifact));
+      if (field === 'effectiveArgv') changed.compilerReceipt.effectiveArgv.push('--define:UNRECORDED=true');
+      else changed.compilerReceipt.generatedInputs = [];
+      expect(() => verifyBgVerifierOutputRecord(changed, mainRecord, mainContext.invocation))
+        .toThrow(field === 'effectiveArgv' ? 'BG compiler derived argv changed' : 'BG compiler generated inputs changed');
+    }
+    const changed = JSON.parse(JSON.stringify(publication));
+    changed.receipts[1].testingCoreDependency.compilerReceiptSha256 = '0'.repeat(64);
+    expect(() => verifyBgVerifierPublication(changed, changed)).toThrow();
+  });
+
+  it('BG testing core refuses an unexplained generated metafile input before output', async () => {
+    const fixture = await transactionCandidate(true);
+    const transaction = prepareBgVerifierBuildTransaction(fixture.args);
+    let parent = false;
+    await expect(runBgVerifierBuildRecipe({ transaction, ownerPid: process.pid,
+      budget: { measurements: BG_RECIPE_BUDGET_MEASUREMENTS,
+        env: { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: '1000000000' }, now: () => 1_000 },
+      runPhase: async (phase, operation) => {
+        if (phase === 'bg.recipe.compiler.1') parent = true;
+        const result = await operation();
+        if (parent && phase === 'bg.compiler.build') {
+          const built = result as { metafile: { inputs: Record<string, unknown> } };
+          built.metafile.inputs['<unexplained-input>'] = { bytes: 0, imports: [] };
+        }
+        return result;
+      } })).rejects.toThrow('BG compiler complete consumption membership mismatch');
+    expect(parent).toBe(true);
+    expect(existsSync(join(fixture.stage, 'hono-host.mjs.tmp.' + process.pid))).toBe(false);
+    expect(existsSync(join(fixture.args.bank, 'published-build.json'))).toBe(false);
+  });
+
+  it.each(['source', 'metadata', 'enclosing-metadata', 'artifact'] as const)(
+    'BG testing core refuses restored %s changes between producer and parent', async kind => {
+      const fixture = await transactionCandidate(true);
+      const transaction = prepareBgVerifierBuildTransaction(fixture.args);
+      let substituted = false;
+      await expect(runBgVerifierBuildRecipe({ transaction, ownerPid: process.pid,
+        budget: { measurements: BG_RECIPE_BUDGET_MEASUREMENTS,
+          env: { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: '1000000000' }, now: () => 1_000 },
+        runPhase: async (phase, operation) => {
+          if (phase === 'bg.recipe.compiler.1') {
+            const path = kind === 'source' ? join(fixture.prepared.root, 'packages/core/index.ts')
+              : kind === 'metadata' ? join(fixture.prepared.root, 'node_modules/fixture-dependency/package.json')
+                : kind === 'enclosing-metadata' ? join(dirname(fixture.prepared.root), 'node_modules/fixture-ambient-metadata/package.json')
+                : join(fixture.stage, 'testing-core.worker.mjs.new.' + process.pid + '.mjs');
+            const original = readFileSync(path);
+            writeFileSync(path, Buffer.concat([original, Buffer.from('\n/* substituted */')]));
+            writeFileSync(path, original);
+            substituted = true;
+          }
+          return operation();
+        } })).rejects.toThrow(kind === 'artifact'
+        ? 'BG testing core produced file identity changed' : 'Testing core resolver/input interval changed');
+      expect(substituted).toBe(true);
+      expect(existsSync(join(fixture.stage, 'hono-host.mjs.tmp.' + process.pid))).toBe(false);
+      expect(existsSync(join(fixture.args.bank, 'published-build.json'))).toBe(false);
+    });
+
+  it('BG testing core refuses a caller witness and a changed dependency before stage effects', async () => {
+    const fixture = await transactionCandidate(true);
+    const invocations = fixture.args.invocations.map((row, index) => index ? row : {
+      ...row, argv: [...row.argv, '--define:__PAPERCUSP_TESTING_CORE_WITNESS__={}'],
+    });
+    expect(() => prepareBgVerifierBuildTransaction({ ...fixture.args, invocations }))
+      .toThrow('BG testing core cannot accept a caller-supplied witness');
+    const transaction = prepareBgVerifierBuildTransaction(fixture.args);
+    expect(() => beginBgVerifierBuildTransaction({
+      transaction: { ...transaction, testingCore: { producerIndex: 1, consumerIndex: 0 } }, ownerPid: process.pid,
+    })).toThrow('BG testing core original dependency changed');
+    expect(existsSync(fixture.stage)).toBe(false);
+  });
+
   async function transactionRecipe(configure?: (args: Awaited<ReturnType<typeof transactionCandidate>>['args']) => void) {
     const fixture = await transactionCandidate();
     configure?.(fixture.args);
@@ -5328,13 +5661,23 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
     const bytes = JSON.stringify(transaction);
     const path = join(dirname(fixture.prepared.root), 'original-build-transaction.json');
     writeFileSync(path, bytes);
+    const budgetPath = join(dirname(fixture.prepared.root), 'completed-bg-budget.jsonl');
+    let sequence = 0, elapsedMs = 0;
+    const budgetRows = Object.entries(BG_RECIPE_BUDGET_MEASUREMENTS).flatMap(([phase, durationMs]) => [
+      { schemaVersion: 'verifier-phase-v1', phase, event: 'started', sequence: ++sequence, elapsedMs },
+      { schemaVersion: 'verifier-phase-v1', phase, event: 'completed', sequence: ++sequence,
+        elapsedMs: elapsedMs += durationMs, durationMs },
+    ]);
+    writeFileSync(budgetPath, budgetRows.map(row => JSON.stringify(row)).join('\n') + '\n');
     const run = (changes: { digest?: string, entry?: string, outfile?: string, profile?: string, extra?: string[],
-      bindingOnly?: boolean, publishOnly?: boolean, environment?: Record<string, string> } = {}) =>
+      bindingOnly?: boolean, publishOnly?: boolean, budgetFrom?: false, environment?: Record<string, string> } = {}) =>
       spawnSync('bash', [fixture.invocation.builder, '--bg-transaction', path, changes.digest ?? digest(bytes),
         changes.entry ?? fixture.args.recipe.entry, changes.outfile ?? fixture.args.recipe.outfile,
         changes.profile ?? fixture.args.recipe.profile,
         ...(changes.publishOnly ? ['--publish-qualified-output-only']
-          : changes.bindingOnly === false ? [] : ['--binding-preflight-only']), ...(changes.extra ?? [])],
+          : changes.bindingOnly === false ? [] : ['--binding-preflight-only']),
+        ...(changes.publishOnly && changes.budgetFrom !== false ? ['--budget-from', budgetPath] : []),
+        ...(changes.extra ?? [])],
       { env: childEnv({ BUNDLE_HOST_BG_BUILD_CONTEXT: '/must-not-adopt-inherited-context.json',
         PAPERCUSP_CHECKPOINT_LOG_DIR: join(tmp, 'bg-phase-archive'), ...changes.environment }),
         encoding: 'utf8', timeout: 60_000 });
@@ -5389,6 +5732,16 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
     expect(replay.status).not.toBe(0);
     expect(replay.stderr).toContain('BG recipe publication already exists');
     expect(JSON.parse(readFileSync(identity.path, 'utf8'))).toEqual(published);
+  });
+
+  it('BG recipe output-only mode refuses missing completed budgets before stage effects', async () => {
+    const fixture = await transactionRecipe();
+    const child = fixture.runRecipe({ publishOnly: true, budgetFrom: false,
+      environment: { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(Date.now() + 120_000) } });
+    expect(child.status).not.toBe(0);
+    expect(child.stderr).toContain('BG recipe deadline requires completed phase budget observations');
+    expect(existsSync(fixture.stage)).toBe(false);
+    expect(existsSync(join(fixture.args.bank, 'published-build.json'))).toBe(false);
   });
 
   function ancillaryAssets() {

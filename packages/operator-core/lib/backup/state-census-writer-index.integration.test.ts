@@ -1,7 +1,12 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
-import { readHistoricalCensusWriterCandidates, recoverHistoricalCensusWriterEvidence } from './state-census-producers';
+import { readHistoricalCensusWriterCandidates, readHistoricalCensusWriterSource, recoverHistoricalCensusWriterEvidence } from './state-census-producers';
+import type { AdvSessionRow } from '../adv-sessions';
+import { acquireTrackedSessionSource } from '../session-port/service';
 import postgres from 'postgres';
 import { readRetainedReapTaskIds } from '../../../../scripts/state-census-roots.mts';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
@@ -23,8 +28,10 @@ describe('historical census writer index and canonical archive boundary', () => 
       PRIMARY KEY (workspace_id, event_key))`;
     await db.sql`CREATE TABLE harness_shared.coord_event_log (
       id bigserial PRIMARY KEY, workspace_id text, surface text, writer_key text, body jsonb)`;
+    await db.sql`CREATE TABLE harness_shared.session_turns (
+      session_id text, source_kind text, owner text, ingested_at timestamptz)`;
   });
-  beforeEach(async () => { await db.sql`TRUNCATE harness_shared.session_turn_parts, harness_shared.event_key_fires, harness_shared.coord_event_log`; });
+  beforeEach(async () => { await db.sql`TRUNCATE harness_shared.session_turn_parts, harness_shared.event_key_fires, harness_shared.coord_event_log, harness_shared.session_turns`; });
   afterAll(async () => { await db?.cleanup(); });
 
   it('reads exact terminal latches as the first query on a fresh PostgreSQL connection', async () => {
@@ -111,6 +118,66 @@ describe('historical census writer index and canonical archive boundary', () => 
     expect(recovered.every(row => row.receipt && Date.parse(row.finishedAt) === Date.parse(finishedAt))).toBe(true);
   });
 
+  it('discovers bounded verifier receipt writers without adopting foreign index rows', async () => {
+    const complete = readFileSync(new URL('./fixtures/bounded-proof-writer.txt', import.meta.url), 'utf8');
+    const input = complete.slice(0, 2000) + '… [truncated]';
+    expect(input).not.toContain('bounded-proof-receipt.json');
+    expect(input).not.toContain('write_text');
+    await db.sql`INSERT INTO harness_shared.session_turn_parts VALUES
+      ('default', 'codex', 'bounded', 1, 'tool_use', ${input}, ${startedAt}),
+      ('foreign', 'codex', 'other', 1, 'tool_use', ${input}, ${startedAt})`;
+    const candidates = await readHistoricalCensusWriterCandidates(db.sql);
+    expect(candidates.map(row => row.sessionId)).toEqual(['bounded']);
+    const receipt = { receipt: join(homedir(), '.papercusp/test-artifacts/run/bounded-proof-receipt.json'),
+      cleanup: { fixtureRootAbsent: true }, testRunId: 23654091, sourceSha256: 'a'.repeat(64) };
+    const bytes = Buffer.from([
+      { type: 'response_item', timestamp: startedAt,
+        payload: { type: 'custom_tool_call', name: 'exec', call_id: 'bounded', input: complete } },
+      { type: 'response_item', timestamp: finishedAt,
+        payload: { type: 'custom_tool_call_output', call_id: 'bounded',
+          output: [{ type: 'input_text', text: JSON.stringify({ exit_code: 0, output: JSON.stringify(receipt) }) }] } },
+    ].map(row => JSON.stringify(row)).join('\n'));
+    const recovered = await recoverHistoricalCensusWriterEvidence(candidates,
+      async () => ({ bytes, sha256: createHash('sha256').update(bytes).digest('hex') }));
+    expect(recovered).toHaveLength(1);
+    expect(recovered[0]).toMatchObject({ indexedRef: candidates[0].ref, toolInput: complete,
+      receipt: JSON.stringify(receipt) });
+  });
+  it('recovers an indexed earlier incarnation through the exact tracked native reader when its archive is absent', async () => {
+    await db.sql`INSERT INTO harness_shared.session_turns VALUES
+      ('earlier-session', 'codex', 'writer-owner', ${startedAt})`;
+    const row: AdvSessionRow = { id: 41, workspaceId: 'workspace', planSlug: null, agent: 'codex',
+      role: null, feature: null, mode: 'console', terminalBin: null, pid: null, windowId: null,
+      ompThreadId: null, label: null, cwd: '/workspace', coordOwnerId: 'writer-owner',
+      sessionId: 'later-session', display: null, launchArgv: null, launchedAt: null,
+      startedAt, endedAt: finishedAt, exitCode: 0, endedBy: null, endedSignal: null };
+    const missing = vi.fn(async () => { throw new Error('canonical codex archive not found'); });
+    const bytes = Buffer.from('exact retained writer');
+    const stable = { bytes, sha256: createHash('sha256').update(bytes).digest('hex'),
+      source: 'live-jsonl' as const, highWaterBytes: bytes.length, completeBytes: bytes.length, relpath: null };
+    const findLive = vi.fn(async () => '/tracked/exact.jsonl');
+    const readLive = vi.fn(async () => stable);
+    const rowsForOwner = vi.fn(async () => new Map([['writer-owner', row]]));
+    const deps = { sql: db.sql, readArchive: missing, rowsForOwner,
+      readTracked: (selected: AdvSessionRow) => acquireTrackedSessionSource(selected, {
+        rootForSource: source => `/tracked/${source.id}/sessions`, findLive, readLive,
+        readArchive: missing, archiveStore: () => ({} as never),
+      }) };
+    await expect(readHistoricalCensusWriterSource('earlier-session', deps)).resolves.toEqual(stable);
+    expect(rowsForOwner).toHaveBeenCalledWith(1, ['writer-owner']);
+    expect(findLive).toHaveBeenCalledWith('/tracked/41/sessions', 'codex', 'earlier-session');
+    expect(readLive).toHaveBeenCalledWith('/tracked/exact.jsonl');
+    expect(row.sessionId).toBe('later-session');
+    findLive.mockClear();
+    await expect(readHistoricalCensusWriterSource('unindexed-session', deps)).rejects.toThrow('archive not found');
+    await expect(readHistoricalCensusWriterSource('earlier-session', { ...deps,
+      rowsForOwner: async () => new Map([['writer-owner', { ...row, coordOwnerId: 'foreign-owner' }]]),
+    })).rejects.toThrow('archive not found');
+    await expect(readHistoricalCensusWriterSource('earlier-session', { ...deps,
+      readArchive: async () => { throw new Error('archive SHA mismatch'); },
+    })).rejects.toThrow('archive SHA mismatch');
+    expect(findLive).not.toHaveBeenCalled();
+  });
   it('refuses an overflowing writer population even when none has an adjacent receipt', async () => {
     await db.sql`INSERT INTO harness_shared.session_turn_parts
       SELECT 'default', 'codex', 'overflow', n, 'tool_use', ${toolInput}, ${startedAt}::timestamptz

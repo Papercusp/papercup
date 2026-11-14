@@ -773,15 +773,20 @@ describe('target-preserving worker routing', () => {
     } finally { rmSync(directory, { recursive: true, force: true }); }
   });
 
-  it('preserves the explicit environment, build and install at the selected worker', async () => {
+  it.each([false, true])('preserves the explicit target and repairMetadata at the selected worker (deferred=%s)', async (deferred) => {
     const seen: Array<{ label: string; body: string }> = [];
     const selected = await listen(stubOperator('selected', seen));
     const p = await routed([worker(port(selected)), { ...worker(1), executionTarget: { ...target, environment: 'main' } }]);
-    const response = await post(p, request());
+    const repairMetadata = { publishedLibrarySelections: [] };
+    const args = { installSlug: 'selected', target, repairMetadata };
+    const body = deferred
+      ? JSON.stringify(call('tools:invoke', { name: 'git-sync:run', args }, { threadId: 'session-one', workspace: 'workspace-one' }))
+      : request({ repairMetadata });
+    const response = await post(p, body);
     expect(response.status).toBe(200);
     expect(seen).toHaveLength(1);
     const forwarded = JSON.parse(seen[0]!.body);
-    expect(forwarded.params.arguments).toMatchObject({ installSlug: 'selected', target });
+    expect(deferred ? forwarded.params.arguments.args : forwarded.params.arguments).toEqual(args);
     expect(forwarded.params._meta).toMatchObject({ threadId: 'session-one', workspace: 'workspace-one', 'papercusp/build': 'staging' });
   });
 

@@ -193,10 +193,11 @@ from mcp_response import read_hook_payload, read_token_file, with_native_session
 raw = read_hook_payload()
 token = read_token_file(token_path)
 
-# Soft advisory attached to an ALLOW verdict (coord-delivery-residual-gaps
-# P-003). None = plain silent allow; a string rides out as additionalContext
-# on an explicit permissionDecision:'allow' payload. Denies always win — the
-# advisory only decorates commands every gate already passed.
+# Soft advisory attached to a non-blocking verdict (coord-delivery-residual-gaps
+# P-003). None = plain silent allow. Claude receives an explicit allow with the
+# advisory; Codex receives additionalContext without a decision because its
+# parser accepts permissionDecision:'allow' only when updatedInput is present.
+# Denies always win — the advisory only decorates commands every gate passed.
 ADVISORY = None
 
 # Adding an advisory? If it covers a common command shape, pin it OFF in the
@@ -466,16 +467,20 @@ def allow():
         else:
             ADVISORY = None  # already said this session — say it once
     if ADVISORY:
-        json.dump({'hookSpecificOutput': {
+        hook_output = {
             'hookEventName': 'PreToolUse',
-            'permissionDecision': 'allow',
-            # Generic on purpose: FOUR different guards now ride this channel
-            # (long-foreground-exec, background-pipe exit code, tauri --token,
-            # bash→tool substitution), so naming only the first one mislabels
-            # the other three. The specific text is in additionalContext.
-            'permissionDecisionReason': 'advisory (non-blocking)',
             'additionalContext': ADVISORY,
-        }}, sys.stdout)
+        }
+        if os.environ.get('PAPERCUSP_CODEX_HOOK') != '1':
+            hook_output.update({
+                'permissionDecision': 'allow',
+                # Generic on purpose: FOUR different guards now ride this channel
+                # (long-foreground-exec, background-pipe exit code, tauri --token,
+                # bash→tool substitution), so naming only the first one mislabels
+                # the other three. The specific text is in additionalContext.
+                'permissionDecisionReason': 'advisory (non-blocking)',
+            })
+        json.dump({'hookSpecificOutput': hook_output}, sys.stdout)
     sys.exit(0)
 
 # ══ DENIAL FORENSICS (EI-19421518638516187) ══

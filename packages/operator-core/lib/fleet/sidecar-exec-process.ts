@@ -29,7 +29,8 @@ import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import type { ChildProcess } from 'node:child_process';
 import { processGroupLifetime } from './process-group-lifetime';
-import { FORKSERVER_LOST_CODE, spawnSidecarChild, type SidecarChild, type SidecarSpawnRequest } from './forkserver/forkserver-client';
+import { FORKSERVER_LOST_CODE, spawnSidecarChild, type ForkserverChildLifecycleTiming,
+  type SidecarChild, type SidecarSpawnRequest } from './forkserver/forkserver-client';
 import { SIDECAR_PROCESS_KILL_GRACE_MS } from './sidecar-exec-lifetime';
 import { observeAdmission, type AdmissionHealthObserver } from './sidecar-admission-wedge';
 
@@ -115,9 +116,14 @@ export type ExecProcessStage =
   | 'spawn-start' | 'child-spawn' | 'child-close' | 'group-exit-confirmed'
   | 'settlement-start' | 'settlement-complete' | 'handoff-close' | 'exec-complete';
 
+export interface ExecProcessStageDetails {
+  forkserverLifecycleTiming?: ForkserverChildLifecycleTiming;
+  observedAtMs?: number;
+}
+
 export interface ExecProcessDeps {
   /** Observer failures must never change process lifetime or receipt settlement. */
-  onStage?: (stage: ExecProcessStage) => void;
+  onStage?: (stage: ExecProcessStage, details?: ExecProcessStageDetails) => void;
   onAdmissionPhase?: (event: GovernedExecutionAdmissionPhaseEvent) => void;
   beginExecution?: (
     params: ExecParams,
@@ -330,8 +336,8 @@ async function beginSidecarProcessExecution(
 }
 
 export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}): Promise<ExecResult> {
-  const reportStage = (stage: ExecProcessStage): void => {
-    try { deps.onStage?.(stage); } catch { /* diagnostics cannot own execution */ }
+  const reportStage = (stage: ExecProcessStage, details?: ExecProcessStageDetails): void => {
+    try { deps.onStage?.(stage, details); } catch { /* diagnostics cannot own execution */ }
   };
   const aborted = (): ExecResult => ({ code: -1, stdout: '', stderr: 'process aborted before spawn' });
   if (deps.signal?.aborted) return aborted();
@@ -626,7 +632,10 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
         }
       });
       child.on('close', async (code, signal) => {
-        reportStage('child-close');
+        reportStage('child-close', {
+          ...(child.forkserverLifecycleTiming ? { forkserverLifecycleTiming: { ...child.forkserverLifecycleTiming } } : {}),
+          observedAtMs: Date.now(),
+        });
         if (processError) processError.signal = signal;
         if (signal && !maxBufferExceeded) stderr += `${stderr ? '\n' : ''}${params.command} terminated by signal ${signal}`;
         try {

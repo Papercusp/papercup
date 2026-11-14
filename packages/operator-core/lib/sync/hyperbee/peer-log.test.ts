@@ -51,6 +51,43 @@ describe('peer-log', () => {
     expect(log.keyHex).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  it('append admission stays pending behind withAppendsHeld until core.append can start', async () => {
+    const store = makeStore('mb-admission-');
+    await store.ready();
+    const log = await openOwnLog(store);
+    let enterHold!: () => void;
+    let releaseHold!: () => void;
+    const holdEntered = new Promise<void>((resolve) => { enterHold = resolve; });
+    const holdGate = new Promise<void>((resolve) => { releaseHold = resolve; });
+    const holding = log.withAppendsHeld!(async () => {
+      enterHold();
+      await holdGate;
+    });
+    await holdEntered;
+
+    const admission = log.appendWithAdmission!({
+      type: 'put',
+      table: 'features_consolidated',
+      hbKey: 'F-admitted',
+      value: { id: 'F-admitted' },
+      ts: 101,
+      schema_version: 1,
+      author_pubkey: 'devkeyA',
+    });
+    let admitted = false;
+    void admission.admitted.then(() => { admitted = true; });
+    await Promise.resolve();
+    expect(admitted).toBe(false);
+    expect(log.length).toBe(0);
+
+    releaseHold();
+    await holding;
+    await admission.admitted;
+    await admission.completion;
+    expect(log.length).toBe(1);
+    expect(await log.get(0)).toMatchObject({ hbKey: 'F-admitted' });
+  });
+
   it('own log get(i) out of range returns null (does not block or throw)', async () => {
     const store = makeStore('mb-oor-');
     await store.ready();

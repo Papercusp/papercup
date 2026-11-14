@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   admissionRetryDelayMs,
@@ -44,6 +44,9 @@ import {
   buildUnreachableDiagnostic,
   buildConnectionRetryDiagnostic,
   fetchWithConnectionRecovery,
+  isConnectionTimeoutError,
+  isPreConnectTransportError,
+  probeMcpBuildIdentity,
   MCP_CALL_TRANSPORTS,
   resolveMcpTransport,
   shouldTryUdsFallback,
@@ -51,7 +54,16 @@ import {
   buildUdsUnavailableDiagnostic,
   resolveAgentMcpDiscoveryHome,
   callToolViaAgentMcpUds,
+  CURRENT_BUILD_DEFAULT_TOOLS as CLI_CURRENT_BUILD_DEFAULT_TOOLS,
+  currentBuildDefaultToolForCall,
+  callNeedsCurrentBuild,
+  resolveCurrentBuildPort,
+  buildCurrentBuildFallbackWarning,
 } from '../../../scripts/mcp-call.mjs';
+import {
+  CURRENT_BUILD_DEFAULT_TOOLS as PROXY_CURRENT_BUILD_DEFAULT_TOOLS,
+  currentBuildDefaultTool,
+} from '../lib/mcp-proxy/build-routing';
 
 describe('mcp-call argument parsing', () => {
   it('preserves the existing space-separated value flag form', () => {
@@ -343,6 +355,97 @@ describe('mcp-call argument parsing', () => {
   });
 });
 
+// WI-6554700010048041: the CLI fallback must not undo the proxy's current-build routing.
+describe('mcp-call current-build routing parity with the MCP proxy', () => {
+  it('lists exactly the tools the proxy sends to the current build', () => {
+    expect([...CLI_CURRENT_BUILD_DEFAULT_TOOLS]).toEqual([...PROXY_CURRENT_BUILD_DEFAULT_TOOLS]);
+  });
+
+  const calls: Array<{ name: string; arguments?: unknown }> = [
+    ...PROXY_CURRENT_BUILD_DEFAULT_TOOLS.map((name) => ({ name, arguments: {} })),
+    { name: 'mcp__papercusp-su__consult_get_feedback', arguments: {} },
+    { name: 'consult_get-feedback', arguments: '{"question":"q"}' },
+    { name: 'coord:whoami', arguments: {} },
+    { name: 'locks:acquire', arguments: {} },
+    { name: 'work_items:close', arguments: {} },
+    { name: 'tools:invoke', arguments: { name: 'consult:get_feedback', args: {} } },
+    { name: 'tools:invoke', arguments: JSON.stringify({ name: 'consult:reply', args: {} }) },
+    { name: 'tools:invoke', arguments: { name: 'coord:send', args: {} } },
+    { name: 'tools:invoke', arguments: {} },
+    { name: 'code:run', arguments: { script: 'await tools.consult.getFeedback({ question: "q" })' } },
+    { name: 'code:run', arguments: { script: "await tools['consult']['close']({})" } },
+    { name: 'code:run', arguments: { script: 'await tools.release.repairQueue({ op: "get" })' } },
+    { name: 'code:run', arguments: { script: 'await tools.workItems.close({ id: "x" })' } },
+    { name: 'code:run', arguments: { script: 'await tools.locks.acquire({ paths: [] })' } },
+    { name: 'tools:invoke', arguments: { name: 'code:run', args: { script: 'consult:decline' } } },
+    { name: 'code:run', arguments: {} },
+  ];
+
+  it.each(calls)('classifies $name like the proxy', (call) => {
+    expect(currentBuildDefaultToolForCall(call)).toBe(currentBuildDefaultTool(call as Record<string, unknown>));
+  });
+
+  it('honors an explicit build selector over the tool default', () => {
+    expect(callNeedsCurrentBuild({ name: 'consult:get_feedback', arguments: {} })).toBe(true);
+    expect(callNeedsCurrentBuild({ name: 'consult:get_feedback', arguments: { build: 'main' } })).toBe(false);
+    expect(callNeedsCurrentBuild({ name: 'coord:whoami', arguments: { build: ' Staging ' } })).toBe(true);
+    expect(callNeedsCurrentBuild({ name: 'coord:whoami', arguments: {} })).toBe(false);
+  });
+
+  it('tries the proxy and the current build before any release operator', () => {
+    expect(resolveCandidatePorts({}, {}, { currentBuild: true })).toEqual({
+      configuredPort: '3070',
+      candidatePorts: ['9071', '3170', '3070'],
+      pinned: false,
+    });
+    expect(resolveCandidatePorts({}, { PAPERCUSP_HONO_PORT: '3271' }, { currentBuild: true }).candidatePorts)
+      .toEqual(['9071', '3170', '3271', '3070']);
+    expect(resolveCandidatePorts({}, {
+      PAPERCUSP_MCP_PROXY_PORT: '9171',
+      PAPERCUSP_MCP_PROXY_DEV_FALLBACK_PORT: '3171',
+    }, { currentBuild: true }).candidatePorts).toEqual(['9171', '3171', '3070']);
+    expect(resolveCandidatePorts({ port: '3070' }, {}, { currentBuild: true }))
+      .toEqual({ configuredPort: '3070', candidatePorts: ['3070'], pinned: true });
+    expect(resolveCurrentBuildPort({})).toBe('3170');
+  });
+
+  it('warns only when neither current-build endpoint answered', () => {
+    const base = { tool: 'consult:get_feedback', proxyPort: '9071', currentBuildPort: '3170' };
+    expect(buildCurrentBuildFallbackWarning({ ...base, port: '9071' })).toBeNull();
+    expect(buildCurrentBuildFallbackWarning({ ...base, port: '3170' })).toBeNull();
+    expect(buildCurrentBuildFallbackWarning({ ...base, port: '3070' })).toContain('--port 3170');
+  });
+
+  it('sends a consult call to the proxy even when the inherited port names the release operator', async () => {
+    await withMcpCallFetchFixture(async (fixture) => {
+      await writeFile(join(fixture.isolatedHome, 'superuser-token'), 'isolated-valid\n');
+      const run = await runMcpCallWithFetchFixture(fixture, ['--transport', 'http'], {
+        PAPERCUSP_HONO_PORT: '3070',
+      }, 'consult:get_feedback', '{"question":"q"}');
+      const requests = await readMcpCallFetchLog(fixture.logPath);
+
+      expect(run.code, run.stderr).toBe(0);
+      expect(requests.map((request) => new URL(request.url).port)).toEqual(['9071']);
+      expect(run.stderr).not.toContain('WARNING');
+    });
+  });
+
+  it('reaches the release operator only after both current-build endpoints refused, and says so', async () => {
+    await withMcpCallFetchFixture(async (fixture) => {
+      await writeFile(join(fixture.isolatedHome, 'superuser-token'), 'isolated-valid\n');
+      const run = await runMcpCallWithFetchFixture(fixture, ['--transport', 'http'], {
+        MCP_CALL_FETCH_MODE: 'refuse-ports',
+        MCP_CALL_REFUSED_PORTS: '9071,3170',
+      }, 'consult:get_feedback', '{"question":"q"}');
+      const requests = await readMcpCallFetchLog(fixture.logPath);
+
+      expect(run.code, run.stderr).toBe(0);
+      expect(requests.map((request) => new URL(request.url).port)).toEqual(['9071', '3170', '3070']);
+      expect(run.stderr).toContain('consult:get_feedback must run on the current build');
+    });
+  });
+});
+
 describe('mcp-call fallback diagnostics', () => {
   const fetchError = (code: string) => new TypeError('fetch failed', {
     cause: Object.assign(new Error('socket failure'), { code }),
@@ -393,6 +496,20 @@ describe('mcp-call connection refusal diagnostics', () => {
   const refused = () => new TypeError('fetch failed', {
     cause: Object.assign(new Error('connect refused'), { code: 'ECONNREFUSED' }),
   });
+  const connectTimeout = () => new TypeError('fetch failed', {
+    cause: Object.assign(new Error('connect timeout'), { code: 'UND_ERR_CONNECT_TIMEOUT' }),
+  });
+
+  it('classifies only Undici connect timeouts as pre-connect failures', () => {
+    expect(isConnectionTimeoutError(connectTimeout())).toBe(true);
+    expect(isPreConnectTransportError(connectTimeout())).toBe(true);
+    expect(isConnectionTimeoutError(new TypeError('fetch failed', {
+      cause: Object.assign(new Error('socket timeout'), { code: 'ETIMEDOUT' }),
+    }))).toBe(false);
+    expect(isPreConnectTransportError(new TypeError('fetch failed', {
+      cause: Object.assign(new Error('socket reset'), { code: 'ECONNRESET' }),
+    }))).toBe(false);
+  });
 
   it('keeps retries scoped to this mcp-call process instead of inferring an operator restart', async () => {
     let nowMs = 1_000;
@@ -425,6 +542,49 @@ describe('mcp-call connection refusal diagnostics', () => {
     expect(retryMessages[0]).not.toMatch(/operator may be restarting|operator is restarting/);
   });
 
+  it('retries UND_ERR_CONNECT_TIMEOUT within the bounded pinned window and reports it accurately', async () => {
+    let nowMs = 1_000;
+    let fetchCalls = 0;
+    const retryMessages: string[] = [];
+    const success = new Response('ok');
+
+    const result = await fetchWithConnectionRecovery('http://localhost:9171', {}, {
+      fetchImpl: async () => {
+        fetchCalls += 1;
+        if (fetchCalls === 1) throw connectTimeout();
+        return success;
+      },
+      retryWindowMs: 25,
+      retryDelayMs: 10,
+      sleepImpl: async (ms: number) => { nowMs += ms; },
+      now: () => nowMs,
+      onRetry: ({ attempt, delayMs, remainingMs, error }: { attempt: number; delayMs: number; remainingMs: number; error: unknown }) => {
+        retryMessages.push(buildConnectionRetryDiagnostic({
+          port: '9171', attempt, delayMs, remainingMs, error,
+        }));
+      },
+    });
+
+    expect(result).toBe(success);
+    expect(fetchCalls).toBe(2);
+    expect(retryMessages).toHaveLength(1);
+    expect(retryMessages[0]).toContain('connection to port 9171 timed out before a TCP connection was established');
+
+    let genericTimeoutCalls = 0;
+    await expect(fetchWithConnectionRecovery('http://localhost:9171', {}, {
+      fetchImpl: async () => {
+        genericTimeoutCalls += 1;
+        throw new TypeError('fetch failed', {
+          cause: Object.assign(new Error('socket timeout'), { code: 'ETIMEDOUT' }),
+        });
+      },
+      retryWindowMs: 25,
+      retryDelayMs: 1,
+      sleepImpl: async () => {},
+    })).rejects.toMatchObject({ cause: { code: 'ETIMEDOUT' } });
+    expect(genericTimeoutCalls).toBe(1);
+  });
+
   it('limits an exhausted refusal diagnosis to this caller and the exact endpoints tried', () => {
     const diagnostic = buildUnreachableDiagnostic({
       attempts: [{ port: '3170', error: refused() }],
@@ -435,8 +595,57 @@ describe('mcp-call connection refusal diagnostics', () => {
     expect(diagnostic).toContain('Every connection attempt was refused before an MCP request could be sent');
     expect(diagnostic).toContain("this mcp-call process's attempts to the listed ports");
     expect(diagnostic).toContain('same execution environment that ran mcp-call');
-    expect(diagnostic).toContain('does not identify why a connection was refused');
+    expect(diagnostic).toContain('neither a refusal nor a connect timeout identifies why');
     expect(diagnostic).not.toMatch(/operator may be restarting|operator is restarting/);
+  });
+
+  it('reports connect timeouts as pre-dispatch failures without calling them refusals', () => {
+    const diagnostic = buildUnreachableDiagnostic({
+      attempts: [{ port: '9171', error: connectTimeout() }],
+      configuredPort: '9171',
+      pinned: true,
+    });
+
+    expect(diagnostic).toContain('9171 (UND_ERR_CONNECT_TIMEOUT)');
+    expect(diagnostic).toContain('failed before an HTTP request could be sent');
+    expect(diagnostic).not.toContain('At least one failure was not a connection refusal');
+  });
+
+  it('recovers a pinned capability:read call after one Undici connect timeout', async () => {
+    await withMcpCallFetchFixture(async (fixture) => {
+      await writeFile(join(fixture.isolatedHome, 'superuser-token'), 'isolated-valid\n');
+      const run = await runMcpCallWithFetchFixture(
+        fixture,
+        ['--transport', 'http', '--port', '9171'],
+        { MCP_CALL_FETCH_MODE: 'connect-timeout-once' },
+        'capability:read',
+        JSON.stringify({ file_path: '/tmp/evidence.bin', byte_offset: 0, byte_limit: 1024 }),
+      );
+      const requests = await readMcpCallFetchLog(fixture.logPath);
+
+      expect(run.code, run.stderr).toBe(0);
+      expect(requests.map((request) => new URL(request.url).port)).toEqual(['9171', '9171']);
+      expect(run.stderr).toContain('connection to port 9171 timed out before a TCP connection was established');
+    });
+  });
+
+  it('advances an unpinned call to the next endpoint after a pre-connect timeout', async () => {
+    await withMcpCallFetchFixture(async (fixture) => {
+      await writeFile(join(fixture.isolatedHome, 'superuser-token'), 'isolated-valid\n');
+      const run = await runMcpCallWithFetchFixture(
+        fixture,
+        ['--transport', 'http'],
+        { PAPERCUSP_HONO_PORT: '9171', MCP_CALL_FETCH_MODE: 'connect-timeout-once' },
+        'capability:read',
+        JSON.stringify({ file_path: '/tmp/evidence.bin', byte_offset: 0, byte_limit: 1024 }),
+      );
+      const requests = await readMcpCallFetchLog(fixture.logPath);
+
+      expect(run.code, run.stderr).toBe(0);
+      expect(requests.map((request) => new URL(request.url).port)).toEqual(['9171', '3070']);
+      expect(run.stderr).toContain('did not complete');
+      expect(run.stderr).toContain('does not establish that the port is stale');
+    });
   });
 });
 
@@ -600,6 +809,23 @@ describe('mcp-call result-format contract', () => {
 
     expect(isForeignNativeSessionRejection(refusal)).toBe(true);
     expect(shouldRetryWithoutNativeSession(refusal, { client, query, env })).toBe(true);
+    // WI-6554700010048107: an inherited, unbound Codex id against an owner whose
+    // live psu host names another session now reports the stale-live-host
+    // reason, with a recovery hint appended. It must still retry.
+    const staleLiveHost = {
+      isError: true,
+      content: [{
+        type: 'text',
+        text: 'request_rejected: superuser_stale_live_host_native_session This native session is still bound to this owner…',
+      }],
+    };
+    expect(isForeignNativeSessionRejection(staleLiveHost)).toBe(true);
+    expect(shouldRetryWithoutNativeSession(staleLiveHost, { client, query, env })).toBe(true);
+    // The reason token is matched exactly, never as a prefix of a longer code.
+    expect(isForeignNativeSessionRejection({
+      isError: true,
+      content: [{ type: 'text', text: 'request_rejected: superuser_foreign_native_session_v2' }],
+    })).toBe(false);
     expect(shouldRetryWithoutNativeSession({
       isError: true,
       content: [{ type: 'text', text: 'request_rejected: authorization_denied' }],
@@ -779,6 +1005,9 @@ async function withMcpCallFetchFixture<T>(run: (fixture: McpCallFetchFixture) =>
     "  appendFileSync(process.env.MCP_CALL_FETCH_LOG, JSON.stringify(request) + '\\n');",
     '  const mode = process.env.MCP_CALL_FETCH_MODE;',
     '  const url = new URL(request.url);',
+    "  if (mode === 'connect-timeout-once' && fetchCount === 1) {",
+    "    throw new TypeError('fetch failed', { cause: Object.assign(new Error('connect timeout'), { code: 'UND_ERR_CONNECT_TIMEOUT' }) });",
+    '  }',
     "  if (mode === 'configured-loopback-origin') {",
     "    if (url.origin !== process.env.MCP_CALL_EXPECTED_ORIGIN) throw new DOMException('wrong loopback origin', 'TimeoutError');",
     "    if (url.pathname === '/api/health') return new Response(JSON.stringify({ ok: true, sha: process.env.MCP_CALL_EXPECTED_BUILD_SHA, version: '1.2.3' }), { status: 200 });",
@@ -799,7 +1028,12 @@ async function withMcpCallFetchFixture<T>(run: (fixture: McpCallFetchFixture) =>
     "    const sha = mode === 'build-identity-fallback' && url.port === '9071' ? process.env.MCP_CALL_EXPECTED_BUILD_SHA : 'd740fc3802';",
     "    return new Response(JSON.stringify({ ok: true, sha, version: '1.2.3' }), { status: 200, headers: { 'content-type': 'application/json' } });",
     '  }',
-    "  if (mode === 'repair-queue-fallback' && new URL(request.url).port === '41001') {",
+    "  const deadPort = process.env.MCP_CALL_DEAD_PORT ?? '41001';",
+    "  const wrongInstallPort = process.env.MCP_CALL_WRONG_INSTALL_PORT ?? '3070';",
+    "  if (mode === 'repair-queue-fallback' && new URL(request.url).port === deadPort) {",
+    "    throw new TypeError('fetch failed', { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) });",
+    '  }',
+    "  if (mode === 'refuse-ports' && (process.env.MCP_CALL_REFUSED_PORTS ?? '').split(',').includes(url.port)) {",
     "    throw new TypeError('fetch failed', { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) });",
     '  }',
     "  if (mode === 'transport-reset') {",
@@ -814,11 +1048,11 @@ async function withMcpCallFetchFixture<T>(run: (fixture: McpCallFetchFixture) =>
     "    result = { isError: true, content: [{ type: 'text', text: 'request_rejected: superuser_foreign_native_session' }] };",
     "  } else if (mode === 'admission-shed' && fetchCount < 3) {",
     "    return new Response(JSON.stringify({ jsonrpc: '2.0', id: request.body.id, error: { code: -32000, message: 'operator MCP admission is saturated — request shed, retry shortly', data: { retryable: true, reason: 'loop_pressure_critical' } } }), { status: 429, headers: { 'content-type': 'application/json', 'retry-after': '0' } });",
-    "  } else if (mode === 'repair-queue-read-timeout-fallback' && request.body.params?.name === 'release:repair-queue' && request.body.params?.arguments?.op === 'get' && new URL(request.url).port === '41001') {",
+    "  } else if (mode === 'repair-queue-read-timeout-fallback' && request.body.params?.name === 'release:repair-queue' && request.body.params?.arguments?.op === 'get' && new URL(request.url).port === deadPort) {",
     "    result = { isError: true, content: [{ type: 'text', text: 'request_timeout: read-only tool \"release:repair-queue\" exceeded 55000ms (the operation may still be running server-side; this request was not canceled).' }] };",
     "  } else if ((mode === 'repair-queue-fallback' || mode === 'repair-queue-read-timeout-fallback') && request.body.params?.name === 'release:repair-queue' && request.body.params?.arguments?.op === 'get') {",
     "    const port = new URL(request.url).port;",
-    "    const targetInstall = mode === 'repair-queue-read-timeout-fallback' && port === '3070' ? 'papercusp' : process.env.MCP_CALL_TARGET_INSTALL_SLUG;",
+    "    const targetInstall = mode === 'repair-queue-read-timeout-fallback' && port === wrongInstallPort ? 'papercusp' : process.env.MCP_CALL_TARGET_INSTALL_SLUG;",
     "    result = { content: [{ type: 'text', text: JSON.stringify({ ok: true, target: { workspaceId: 'test-ws', installSlug: targetInstall } }) }] };",
     '  } else {',
     "    result = { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] };",
@@ -844,7 +1078,12 @@ function runMcpCallWithArgs(args: string[], envOverrides: NodeJS.ProcessEnv = {}
       'PAPERCUSP_HONO_PORT',
       'PAPERCUSP_OPERATOR_URL',
       'PAPERCUSP_MCP_PROXY_PORT',
+      'PAPERCUSP_MCP_PROXY_DEV_FALLBACK_PORT',
       'MCP_CALL_TARGET_INSTALL_SLUG',
+      'MCP_CALL_DEAD_PORT',
+      'MCP_CALL_WRONG_INSTALL_PORT',
+      'MCP_CALL_REFUSED_PORTS',
+      'MCP_CALL_FETCH_MODE',
     ]) delete env[key];
     for (const [key, value] of Object.entries(envOverrides)) {
       if (value === undefined) delete env[key];
@@ -893,6 +1132,62 @@ async function readMcpCallFetchLog(path: string): Promise<Array<{ url: string; a
 }
 
 describe('mcp-call evaluator build identity pin', () => {
+  it('retries a pinned health-probe timeout but keeps unpinned probes immediate', async () => {
+    const retryLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const expectedSha = '1147c15c86';
+      let pinnedFetches = 0;
+      let pinnedSleeps = 0;
+      const pinnedSignals: (AbortSignal | null | undefined)[] = [];
+      const pinnedResult = await probeMcpBuildIdentity('41001', expectedSha, {
+        pinned: true,
+        retryWindowMs: 25,
+        retryDelayMs: 1,
+        sleepImpl: async () => { pinnedSleeps += 1; },
+        fetchImpl: async (_url, init) => {
+          pinnedFetches += 1;
+          pinnedSignals.push(init?.signal);
+          if (pinnedFetches === 1) {
+            throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+          }
+          return new Response(JSON.stringify({ sha: expectedSha }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        },
+      });
+
+      expect(pinnedResult).toEqual({ matches: true, actual: expectedSha, reason: 'build SHA matches' });
+      expect(pinnedFetches).toBe(2);
+      expect(pinnedSleeps).toBe(1);
+      expect(pinnedSignals).toHaveLength(2);
+      expect(pinnedSignals[0]).not.toBe(pinnedSignals[1]);
+      expect(retryLog).toHaveBeenCalledTimes(1);
+      expect(retryLog).toHaveBeenCalledWith(
+        expect.stringContaining('mcp-call: retrying pinned build-identity health probe on port 41001'),
+      );
+
+      let unpinnedFetches = 0;
+      let unpinnedSleeps = 0;
+      const unpinnedResult = await probeMcpBuildIdentity('41001', expectedSha, {
+        pinned: false,
+        retryWindowMs: 25,
+        retryDelayMs: 1,
+        sleepImpl: async () => { unpinnedSleeps += 1; },
+        fetchImpl: async () => {
+          unpinnedFetches += 1;
+          throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+        },
+      });
+
+      expect(unpinnedResult.matches).toBe(false);
+      expect(unpinnedFetches).toBe(1);
+      expect(unpinnedSleeps).toBe(0);
+    } finally {
+      retryLog.mockRestore();
+    }
+  });
+
   it.each(['http://127.0.0.1:41001/api/mcp', 'http://[::1]:41001'])('preserves the configured loopback origin for identity and MCP: %s', async (operatorUrl) => {
     await withMcpCallFetchFixture(async (fixture) => {
       await writeFile(join(fixture.isolatedHome, 'superuser-token'), 'isolated-valid\n');
@@ -1007,6 +1302,8 @@ describe('mcp-call release repair-queue install scope', () => {
           PAPERCUSP_HONO_PORT: '41001',
           MCP_CALL_FETCH_MODE: 'repair-queue-read-timeout-fallback',
           MCP_CALL_TARGET_INSTALL_SLUG: 'papercusp-pr-drill-20261014',
+          MCP_CALL_DEAD_PORT: '9071',
+          MCP_CALL_WRONG_INSTALL_PORT: '3170',
         },
         'release:repair-queue',
         '{"op":"get"}',
@@ -1018,7 +1315,8 @@ describe('mcp-call release repair-queue install scope', () => {
         ok: true,
         target: { installSlug: 'papercusp-pr-drill-20261014' },
       });
-      expect(requests.map((request) => new URL(request.url).port)).toEqual(['41001', '3070', '9071']);
+      // repair-queue defaults to the current build: proxy, then :3170, then the configured port.
+      expect(requests.map((request) => new URL(request.url).port)).toEqual(['9071', '3170', '41001']);
       expect(requests.every((request) =>
         (request.body.params as { arguments: { op: string } }).arguments.op === 'get',
       )).toBe(true);
@@ -1047,9 +1345,9 @@ describe('mcp-call release repair-queue install scope', () => {
       expect(run.code).toBe(MCP_CALL_TOOL_NOT_OK_EXIT);
       expect(run.stderr).toContain('expected install scope "papercusp-pr-drill-20261014"');
       expect(run.stderr).toContain('port 3070=papercusp');
-      // A mismatched candidate gets only a read-only probe; search continues through the proxy.
-      expect(requests).toHaveLength(3);
-      expect(requests.map((request) => new URL(request.url).port)).toEqual(['41001', '3070', '9071']);
+      // A mismatched candidate gets only a read-only probe; search continues through every endpoint.
+      expect(requests).toHaveLength(4);
+      expect(requests.map((request) => new URL(request.url).port)).toEqual(['9071', '3170', '41001', '3070']);
       expect(requests.every((request) =>
         (request.body.params as { name: string }).name === 'release:repair-queue' &&
         (request.body.params as { arguments: { op: string } }).arguments.op === 'get',
@@ -1069,6 +1367,8 @@ describe('mcp-call release repair-queue install scope', () => {
           PAPERCUSP_HONO_PORT: '41001',
           MCP_CALL_FETCH_MODE: 'repair-queue-read-timeout-fallback',
           MCP_CALL_TARGET_INSTALL_SLUG: 'papercusp-pr-drill-20261014',
+          MCP_CALL_DEAD_PORT: '9071',
+          MCP_CALL_WRONG_INSTALL_PORT: '3170',
         },
         'release:repair-queue',
         '{"op":"admit","paths":["src/fix.ts"]}',
@@ -1078,7 +1378,7 @@ describe('mcp-call release repair-queue install scope', () => {
       expect(run.code, run.stderr).toBe(0);
       expect(JSON.parse(run.stdout)).toEqual({ ok: true });
       expect(requests).toHaveLength(4);
-      expect(requests.map((request) => new URL(request.url).port)).toEqual(['41001', '3070', '9071', '9071']);
+      expect(requests.map((request) => new URL(request.url).port)).toEqual(['9071', '3170', '41001', '41001']);
       expect(requests.map((request) => (request.body.params as { arguments: { op: string } }).arguments.op))
         .toEqual(['get', 'get', 'get', 'admit']);
       expect(requests.every((request) => new URL(request.url).searchParams.get('harness') === 'papercusp-pr-drill-20261014'))

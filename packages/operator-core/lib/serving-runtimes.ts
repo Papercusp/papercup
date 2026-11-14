@@ -26,6 +26,7 @@
 import { readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { cellUnknown, formatCellUnknown, type CellUnknown } from './cell-contract';
+import type { ResolvedServiceStart } from './agent-tools/dev/systemd-service-probe';
 import type { RuntimeVintageRow } from './runtime-vintage';
 import type { RuntimeHost, RuntimeOwnership } from './git-pipeline-position';
 import { RESTART_TARGET_UNITS } from './agent-tools/dev/restart-target-units';
@@ -392,6 +393,10 @@ export interface ServingRuntimeProbe {
   role: 'owner' | 'shared';
   pid: number | null;
   startedAtMs: number | null;
+  /** Unit liveness is separate from process-start time; null means not established. */
+  running?: boolean | null;
+  /** False means the exact unit read failed; it does not mean the unit is stopped. */
+  unitProbeOk?: boolean;
   buildSha: string | null;
   buildShaSource: 'health' | 'runtime-vintage' | null;
   /** Blob containment at `buildSha`: does that commit carry this path's current content? */
@@ -420,12 +425,14 @@ export interface ServingRuntimeEntry {
   codeSource: ServingRuntimeCodeSource;
   pid: number | null;
   startedAtMs: number | null;
+  running?: boolean | null;
+  unitProbeOk?: boolean;
   buildSha: string | null;
   buildShaSource: 'health' | 'runtime-vintage' | null;
   /** TRUE — this runtime executes the change as it stands. FALSE — measured, it does not.
    *  NULL — could not be measured; `unknownReason` says why. Never copied from :3070. */
   containsChange: boolean | null;
-  method: 'blob' | 'start-after-mtime' | 'bundle-mtime' | 'instances' | null;
+  method: 'blob' | 'start-after-mtime' | 'bundle-mtime' | 'instances' | 'unit-state' | null;
   instances: ServingRuntimeInstances | null;
   unknownReason: CellUnknown | null;
   activation: string;
@@ -441,6 +448,8 @@ function entryBase(probe: ServingRuntimeProbe): Omit<ServingRuntimeEntry, 'conta
     codeSource: spec.codeSource,
     pid: probe.pid,
     startedAtMs: probe.startedAtMs,
+    ...(probe.running === undefined ? {} : { running: probe.running }),
+    ...(probe.unitProbeOk === undefined ? {} : { unitProbeOk: probe.unitProbeOk }),
     buildSha: probe.buildSha,
     buildShaSource: probe.buildShaSource,
     instances: probe.instances,
@@ -472,6 +481,22 @@ export function evaluateServingRuntime(probe: ServingRuntimeProbe): ServingRunti
     method: null,
     unknownReason: cellUnknown(code, detail),
   });
+
+  if (probe.unitProbeOk === false && probe.running !== true) {
+    return unknown(
+      'resolver-failed',
+      spec.label + ': the exact systemd unit read failed, so its running state is unknown; a failed probe is not evidence that the process is stopped.',
+    );
+  }
+  if (probe.unitProbeOk === true && probe.running === false) {
+    return { ...base, containsChange: false, method: 'unit-state', unknownReason: null };
+  }
+  if (probe.unitProbeOk === true && probe.running === null) {
+    return unknown(
+      'insufficient-data',
+      spec.label + ': systemd responded but did not establish a live MainPID; running state remains unknown.',
+    );
+  }
 
   if (spec.codeSource === 'desktop-build') {
     return unknown(
@@ -579,6 +604,13 @@ export function evaluateServingRuntime(probe: ServingRuntimeProbe): ServingRunti
     return unknown(
       'insufficient-data',
       `${spec.label} reported a healthy bundle but no health-reported baked source sha or bundle build time; a runtime-vintage boot sha and process start cannot prove which bytes it loaded.`,
+    );
+  }
+  if (spec.healthPort !== null && probe.bundle === null && probe.running === true) {
+    const pidDetail = probe.pid === null ? '' : ' with MainPID ' + probe.pid;
+    return unknown(
+      'insufficient-data',
+      spec.label + ' is running' + pidDetail + ', but its bundle identity was unavailable; source containment is unknown.',
     );
   }
   if (spec.healthPort !== null && probe.bundle === null) {
@@ -719,7 +751,7 @@ export function servingRuntimesMentioned(text: string): ServingRuntimeId[] {
  * ------------------------------------------------------------------------- */
 
 export interface ServingRuntimeProbeDeps {
-  probeUnitStart: (unit: string) => Promise<{ pid: number | null; startedAtMs: number | null } | null>;
+  probeUnitStart: (unit: string) => Promise<ResolvedServiceStart | null>;
   probeHealthSha?: (port: number, path?: string) => Promise<string | null>;
   /** A bundling host's own report of the bundle it booted (WI-10005936); null when unreadable. */
   probeHealthBundle?: (port: number, path?: string) => Promise<ServingRuntimeBundleState | null>;
@@ -846,6 +878,11 @@ export async function probeServingRuntime(
     const started = await deps.probeUnitStart(spec.unit).catch(() => null);
     probe.pid = started?.pid ?? null;
     probe.startedAtMs = started?.startedAtMs ?? null;
+    const hasPositivePid = started?.pid !== null && started?.pid !== undefined && started.pid > 0;
+    const hasMeasuredStart = started?.startedAtMs !== null && started?.startedAtMs !== undefined;
+    const healthReportsRunning = probe.buildShaSource === 'health' || probe.bundle != null;
+    probe.running = started?.running ?? (hasPositivePid || hasMeasuredStart || healthReportsRunning ? true : null);
+    probe.unitProbeOk = started !== null;
   }
   if (spec.healthPort !== null) {
     const healthPath = spec.healthPath ?? DEFAULT_HEALTH_PATH;

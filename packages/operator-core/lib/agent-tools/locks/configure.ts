@@ -28,7 +28,7 @@ configureLocks({
   getAdminBaseUrl: () => getHarnessAdminUrl(),
   getTxnTimeouts: () => txnTimeoutsConfig(),
   acquireDiagnostics: { beginAcquire, recordPoolMax },
-  beforeFileLocksRelease: async ({ coordinationDomain, rows }) => {
+  beforeFileLocksRelease: async ({ coordinationDomain, rows, protectRepositoryPaths }) => {
     if (!hasValidGitEntry(coordinationDomain)) return;
     const [{ preserveReleasedEditGenerations }, { activeWorkspaceId }] = await Promise.all([
       import('../../edit-attribution'), import('../../workspace-registry'),
@@ -39,7 +39,8 @@ configureLocks({
     for (const row of rows) byOwner.set(row.owner, [...(byOwner.get(row.owner) ?? []), row]);
     for (const [owner, selected] of byOwner) {
       await preserveReleasedEditGenerations({ repoRoot: coordinationDomain, rows: selected,
-        agentId: owner, sessionId: owner, workspaceId: activeWorkspaceId() });
+        agentId: owner, sessionId: owner, workspaceId: activeWorkspaceId(),
+        ...(protectRepositoryPaths ? { protectRepositoryPaths } : {}) });
     }
   },
   onResourceExpired: async ({ resource, coordinationDomain }) => {

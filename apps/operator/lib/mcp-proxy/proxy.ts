@@ -6429,6 +6429,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           let noBuildTarget = false;
           let attemptTargetKey: string | null = null;
           let lastResponseTarget: McpProxyTarget | null = null;
+          let responseHeadersAt: number | null = null;
           let last: ForwardOutcome | undefined;
           // Retry loop: refused → walk ordered candidates, then replay the last candidate
           // across the window (shouldRetry); post-connect →
@@ -6521,6 +6522,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                 fwd.klass === "opaque",
               );
               if (outcome.ures) {
+                responseHeadersAt = Date.now();
                 lastResponseTarget = attemptTarget;
                 if (guardTiming) guardTiming.responseHeadersMs = boundedMcpProxyStageMs(Date.now() - receivedAt);
               }
@@ -6789,13 +6791,22 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               let upstreamDiedMidStream = false;
               let upstreamResponseLifecycle: McpRequestTraceEvent["upstreamResponseLifecycle"];
               if (fwd.rpcMethods.includes("tools/call")) {
+                const finalHeadersAt = responseHeadersAt!;
                 res.once("finish", () => {
+                  const finishedAt = Date.now();
                   const httpStatus = res.statusCode;
                   logMcpRequestTrace({
                     traceId,
                     toolName: "tools/call",
                     stage: "proxy_response_finished",
-                    elapsedMs: boundedMcpProxyStageMs(Date.now() - receivedAt),
+                    elapsedMs: boundedMcpProxyStageMs(finishedAt - receivedAt),
+                    proxyStageTimingsMs: {
+                      bodyReadMs: boundedMcpProxyStageMs(bodyReadyAt - receivedAt),
+                      admissionWaitMs: boundedMcpProxyStageMs(admittedAt - bodyReadyAt),
+                      forwardSetupMs: boundedMcpProxyStageMs(started - admittedAt),
+                      forwardToHeadersMs: boundedMcpProxyStageMs(finalHeadersAt - started),
+                      responseStreamMs: boundedMcpProxyStageMs(finishedAt - finalHeadersAt),
+                    },
                     outcome:
                       !upstreamDiedMidStream &&
                       httpStatus >= 200 &&
@@ -6807,7 +6818,20 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                   });
                 });
               }
-              res.writeHead(status, ures.headers);
+              // Bind the hook's immutable receipt to this response's selected hop.
+              // This is transport evidence only: it cannot attest loaded code or
+              // whether the turn-start handler appended a loop marker.
+              if (req.url?.split("?")[0] === "/api/agent-mcp/turn-start-memory" && lastResponseTarget) {
+                const host = lastResponseTarget.host;
+                const authority = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+                res.writeHead(status, {
+                  ...ures.headers,
+                  [MCP_PROXY_TRACE_HEADER]: traceId,
+                  "x-papercusp-mcp-upstream-origin": `http://${authority}:${lastResponseTarget.port}`,
+                });
+              } else {
+                res.writeHead(status, ures.headers);
+              }
               // SSE headers precede tool completion. Keep a continuation's conflict keys
               // until the upstream body ends, including when its caller disconnects.
               // Otherwise the next same-item write can overtake the first verifier.

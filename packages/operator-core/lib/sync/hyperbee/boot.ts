@@ -45,7 +45,14 @@ import {
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { randomUUID } from 'node:crypto';
 import { issueGitServingCapability, type GitServingRequest, type GitServingState } from '../pot-git/serving-capability';
-import { openOwnLog, openRemoteLog, type OwnLog, type PeerLogOp, type RemoteLog } from './peer-log';
+import {
+  openOwnLog,
+  openRemoteLog,
+  type OwnLog,
+  type OwnLogAppendAdmission,
+  type PeerLogOp,
+  type RemoteLog,
+} from './peer-log';
 // P-004 (WI-1840, WI-183 class): the replication-liveness registry — read-time
 // per-log verdicts (live/no_replicator/frozen/…) for the status surfaces + the
 // durable-EI escalation on a sustained stall. Fed once per admitted remote log
@@ -874,6 +881,11 @@ export interface BootedHarnessHandle {
    * lands; today `author_pubkey` falls back to `writerPubkey ?? ''`.
    */
   append(op: LocalWriteOp): Promise<void>;
+  /**
+   * Optional split-phase append for callers that must separate an intentional
+   * own-log hold wait from the timeout budget for the core append itself.
+   */
+  appendWithAdmission?(op: LocalWriteOp): OwnLogAppendAdmission;
   /**
    * The admitted-set: keyHex → log. Seeded with the own log; the swarm
    * announce channel adds remote logs that pass read-admission (4b).
@@ -3623,7 +3635,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         recordBootEvent(
           opts.workspaceId,
           opts.harnessSlug,
-          'peer_capped',
+          'own_log_compaction',
           `on-demand head snapshot: appended=${snap.appended} coversUpTo=${snap.coversUpTo} ` +
             `chunks=${snap.chunkCount} rows=${snap.rowCount} readBlocks=${lengthBefore} ` +
             `receiptFilter=${governorReceiptFilter ? 'on' : 'off'} ` +
@@ -6220,6 +6232,28 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       });
       scheduleWriterProgressAnnounce();
     },
+    ...(ownLog.appendWithAdmission
+      ? {
+          appendWithAdmission: (op: LocalWriteOp): OwnLogAppendAdmission => {
+            const stamped = stampOpHlc(op, opts.hlcClock);
+            const admission = ownLog.appendWithAdmission!({
+              type: stamped.type,
+              table: stamped.table,
+              hbKey: stamped.hbKey,
+              value: stamped.value,
+              ts: stamped.ts,
+              schema_version: stamped.schema_version,
+              hlc: stamped.hlc,
+              author_pubkey: stamped.writerPubkey ?? '',
+              epoch: stamped.epoch,
+            });
+            return {
+              admitted: admission.admitted,
+              completion: admission.completion.then(() => scheduleWriterProgressAnnounce()),
+            };
+          },
+        }
+      : {}),
     admitted,
     mergeNow,
     produceHeadSnapshotNow,

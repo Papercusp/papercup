@@ -357,7 +357,12 @@ function forgetOpen(row: PendingRow): void {
 }
 
 async function writeBatch(sql: Sql, rows: PendingRow[]): Promise<void> {
-  const values = rows.map(({ sql: _ignored, coalesce_anchor_at: _anchorIgnored, ...r }) => r);
+  // postgres.js infers Date OIDs with instanceof. A timestamp produced by
+  // another VM realm has the same value but misses that check and reaches the
+  // wire as an untyped object. Serialize at the SQL boundary; retain Dates in
+  // the buffer for event-time coalescing and let the column parse ISO text.
+  const values = rows.map(({ sql: _ignored, coalesce_anchor_at: _anchorIgnored, ...r }) =>
+    ({ ...r, observed_at: r.observed_at.toISOString() }));
   await sql`
     INSERT INTO harness_shared.fallback_observations
       ${sql(values, 'workspace_id', 'mechanism', 'eligible', 'applied', 'reason', 'scope', 'process_tag', 'correlation_id', 'observed_at', 'samples', 'population_known')}

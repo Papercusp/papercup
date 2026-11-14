@@ -487,6 +487,10 @@ describe('enumerate-then-read guards tolerate index-lagged deletions (WI-1000417
       'ls-files asserts synthetic verifier checkout index membership; file reads use independently named fixture paths, never entries from those listings.',
     ],
     [
+      'packages/operator-core/lib/harness/git-sync/lifecycle-candidate.integration.test.ts',
+      'ls-files inspects only synthetic temporary repository indexes for diagnostics and candidate-state assertions; reads name fixture files independently, never enumerate the shared tree.',
+    ],
+    [
       'apps/operator/lib/release/runtime-workspace-build-coverage.ts',
       'release code (must not import scripts/); every manifest read is try/catch → continue.',
     ],

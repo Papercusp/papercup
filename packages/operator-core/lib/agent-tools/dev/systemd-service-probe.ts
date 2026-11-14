@@ -452,14 +452,25 @@ export async function probeUnitStates(
  * process runs code it does not. Prefer measured; degrade to UNKNOWN, not to a
  * confident wrong answer.
  */
-export function resolveServiceStartMs(
-  info: ServiceStartInfo,
-  nowMs: number,
-): { pid: number | null; startedAtMs: number | null } | null {
+export interface ResolvedServiceStart {
+  pid: number | null;
+  startedAtMs: number | null;
+  /** Exact unit state survives when process-start measurement is unavailable. */
+  running?: boolean | null;
+}
+
+export function resolveServiceStartMs(info: ServiceStartInfo, nowMs: number): ResolvedServiceStart | null {
   if (!info.ok) return null;
-  if (info.startedAtMs !== undefined) return { pid: info.mainPid ?? null, startedAtMs: info.startedAtMs };
-  if (info.secondsSinceStart === undefined) return null;
-  return { pid: info.mainPid ?? null, startedAtMs: nowMs - info.secondsSinceStart * 1000 };
+  const pid = info.mainPid !== undefined && info.mainPid > 0 ? info.mainPid : null;
+  const running =
+    info.mainPid !== undefined
+      ? info.mainPid > 0
+      : info.activeState === 'inactive' || info.activeState === 'failed'
+        ? false
+        : null;
+  if (info.startedAtMs !== undefined) return { pid, startedAtMs: info.startedAtMs, running };
+  if (info.secondsSinceStart === undefined) return { pid, startedAtMs: null, running };
+  return { pid, startedAtMs: nowMs - info.secondsSinceStart * 1000, running };
 }
 
 /**

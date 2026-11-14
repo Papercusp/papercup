@@ -325,6 +325,51 @@ describe('evaluateServingRuntime — each runtime answers from ITS OWN build ide
       expect(evaluateServingRuntime(bg)).toMatchObject({ containsChange: false, method: 'bundle-mtime' });
     });
 
+    it('distinguishes a live MainPID, a stopped unit, and a failed unit read', async () => {
+      const common = {
+        probeHealthSha: async () => null,
+        probeHealthBundle: async () => null,
+        vintageRows: [],
+        localHost: 'box',
+        fileMtimeMs: EDIT,
+        blobContainsAt: async () => ({ contains: null, unknown: null }),
+      };
+      const active = await probeServingRuntime(
+        { runtime: 'bg-host', role: 'owner' },
+        { ...common, probeUnitStart: async () => ({ pid: 847351, startedAtMs: null, running: true }) },
+      );
+      expect(active).toMatchObject({ pid: 847351, startedAtMs: null, running: true, unitProbeOk: true });
+      expect(evaluateServingRuntime(active)).toMatchObject({
+        containsChange: null,
+        running: true,
+        unitProbeOk: true,
+        unknownReason: { code: 'insufficient-data', detail: expect.stringContaining('MainPID 847351') },
+      });
+
+      const stopped = await probeServingRuntime(
+        { runtime: 'bg-host', role: 'owner' },
+        { ...common, probeUnitStart: async () => ({ pid: null, startedAtMs: null, running: false }) },
+      );
+      expect(evaluateServingRuntime(stopped)).toMatchObject({
+        containsChange: false,
+        method: 'unit-state',
+        running: false,
+        unitProbeOk: true,
+        unknownReason: null,
+      });
+
+      const unreadable = await probeServingRuntime(
+        { runtime: 'bg-host', role: 'owner' },
+        { ...common, probeUnitStart: async () => null },
+      );
+      expect(evaluateServingRuntime(unreadable)).toMatchObject({
+        containsChange: null,
+        running: null,
+        unitProbeOk: false,
+        unknownReason: { code: 'resolver-failed', detail: expect.stringContaining('read failed') },
+      });
+    });
+
     // WI-10005944: the embed sidecar is built by the same bundle-host.sh (same fallback),
     // so it must read its own /healthz on :3384, not fall back to start-after-mtime.
     it('probes the embed sidecar on :3384/healthz and judges a stale fallback bundle by its mtime', async () => {

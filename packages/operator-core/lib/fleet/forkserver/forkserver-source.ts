@@ -20,6 +20,7 @@
  *   { t:'spawned', id, pid }            spawn() returned (pid null when it failed)
  *   { t:'spawned', id, pid:null, error } a handoff file or spawn() itself failed
  *   { t:'spawn' | 'error' | 'exit' | 'close' | 'out' | 'err' | 'out-end' | 'err-end', id, ... }
+ * Lifecycle events also carry eventAtMs from the forkserver to separate child time from IPC delay.
  * The child is spawned with `detached` so it leads its own process group; the parent
  * signals that group directly with process.kill(-pgid), exactly as for a direct spawn.
  */
@@ -61,7 +62,7 @@ function start(m) {
   closeFds();
   live.set(id, child);
   send({ t: 'spawned', id, pid: child.pid === undefined ? null : child.pid });
-  child.once('spawn', () => send({ t: 'spawn', id }));
+  child.once('spawn', () => send({ t: 'spawn', id, eventAtMs: Date.now() }));
   child.on('error', (e) => send({ t: 'error', id, error: info(e) }));
   if (child.stdout) {
     child.stdout.on('data', (d) => send({ t: 'out', id, d }));
@@ -71,8 +72,8 @@ function start(m) {
     child.stderr.on('data', (d) => send({ t: 'err', id, d }));
     child.stderr.on('end', () => send({ t: 'err-end', id }));
   }
-  child.on('exit', (code, signal) => send({ t: 'exit', id, code, signal }));
-  child.on('close', (code, signal) => { live.delete(id); send({ t: 'close', id, code, signal }); });
+  child.on('exit', (code, signal) => send({ t: 'exit', id, code, signal, eventAtMs: Date.now() }));
+  child.on('close', (code, signal) => { live.delete(id); send({ t: 'close', id, code, signal, eventAtMs: Date.now() }); });
 }
 process.on('message', (m) => {
   if (!m || typeof m !== 'object') return;

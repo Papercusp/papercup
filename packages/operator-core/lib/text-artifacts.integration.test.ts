@@ -22,12 +22,19 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import { createHash, randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { runInNewContext } from 'node:vm';
 import { createArtifactPreparationStore, openBoundPreparationLedger } from '../../../scripts/lib/source-path-census.mjs';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import type { UnifiedToolContext } from '@papercusp/tooldef';
 import { packContextCandidates } from './context-doors';
-import { loadContextPackingReceipt, pageContextPackingReceipt, saveContextPackingReceipt,
+import { captureContextPackingAttribution, collectContextPackingReceiptSources, loadContextPackingReceipt, pageContextPackingReceipt, saveContextPackingReceipt,
   type ContextPackingScope } from './context-packing-receipts';
+import { collectFinalContextAttemptSnapshot, exportContextPackingAttemptSnapshot, sampleFinalDeliveredContext,
+  joinFinalContextNativeEmissions, type FinalContextAttemptSnapshot } from './memory/injection-delivery-coverage';
+import { captureNativeMcp, nativeMcpTranscriptLocators } from './memory/fixtures/native-mcp-export';
+import { collectMemoryEmission, memoryFragmentOffer, withMemoryEmissionReceipt, confirmMemoryEmission, type MemoryFragmentManifest } from './memory/session-epoch-ledger';
+import { configureReadCursorStore, InMemoryReadCursorStore, resetReadCursorStore } from './agent-tools/coordination/read-cursors';
+import { _resetFallbackObservationsForTests } from './degradation/fallback-observations';
 
 const WS = 'ws-art';
 const h = vi.hoisted(() => ({ db: undefined as unknown, sql: undefined as unknown }));
@@ -82,6 +89,26 @@ beforeAll(async () => {
     )`);
   h.db = drizzle(rootSql);
   h.sql = rootSql;
+  // Bounded attribution capture records degraded reads through the maintained
+  // telemetry writer. Exercise that dependency instead of suppressing warnings
+  // when the suite flushes its observations at a later test boundary.
+  for (const migration of [
+    '1458-fallback-observations.sql',
+    '1471-retrieval-search-correlation.sql',
+    '1489-fallback-observations-samples.sql',
+    '1525-fallback-population-known.sql',
+  ]) {
+    await rootSql.unsafe(await actualFs.readFile(new URL(`../../../libs/papercusp/libs/db/sql/${migration}`, import.meta.url), 'utf8'));
+  }
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.memory_session_epochs (session_id text PRIMARY KEY, epoch integer NOT NULL DEFAULT 0,
+      bumped_at timestamptz NOT NULL DEFAULT now());
+    CREATE TABLE harness_shared.adv_sessions (id bigint PRIMARY KEY, workspace_id text NOT NULL, coord_owner_id text,
+      agent text NOT NULL, session_id text, omp_thread_id text, ended_at timestamptz, ended_by text);
+    CREATE TABLE harness_shared.session_identity_activation_events (id bigint PRIMARY KEY, workspace_id text NOT NULL,
+      owner_id text NOT NULL, adv_session_id bigint, native_session_id text, control_generation bigint NOT NULL,
+      phase text NOT NULL, recorded_at timestamptz NOT NULL DEFAULT now());
+  `);
   await rootSql.unsafe(`CREATE TABLE harness_shared.operator_secrets (name text PRIMARY KEY, value_b64 text NOT NULL)`);
   await rootSql`INSERT INTO harness_shared.operator_secrets VALUES ('spawn-signing-key', ${randomBytes(32).toString('base64')})`;
 }, 90_000);
@@ -91,13 +118,285 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  _resetFallbackObservationsForTests();
   await rootSql`TRUNCATE harness_shared.harness_text_artifacts`;
+  await rootSql.unsafe('TRUNCATE harness_shared.memory_session_epochs, harness_shared.adv_sessions, harness_shared.session_identity_activation_events');
 });
+afterEach(() => { _resetFallbackObservationsForTests(); });
 
 const wsOf = async (slug: string, key: string) =>
   (await rootSql<{ workspace_id: string }[]>`SELECT workspace_id FROM harness_shared.harness_text_artifacts WHERE harness_slug=${slug} AND rel_path=${key}`)[0]?.workspace_id;
 
+describe('packing attempt identity custody', () => {
+  for (const [client, codexCodeMode] of [['codex', false], ['codex', true], ['claude', false], ['omp', false]] as const) it(
+    `joins real PG durable ${client}${codexCodeMode ? ' functions.exec' : ''} preparations to retained installed-native transcript and stdout after cursor cleanup`, async ({ task }) => {
+      const cursors = new InMemoryReadCursorStore();
+      configureReadCursorStore(cursors);
+      try {
+        await rootSql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.memory_session_surfaced (
+          session_id text NOT NULL, epoch integer NOT NULL, memory_id uuid NOT NULL, port text,
+          source_fingerprint text, source_version jsonb, surfaced_at timestamptz DEFAULT now(), PRIMARY KEY(session_id,epoch,memory_id))`);
+        const ownerId = `durable-native-${client}`;
+        const scope: ContextPackingScope = { workspaceId: WS, ownerId, harness: 'web', client, port: 'mcp-result' };
+        const { ownerId: _owner, ...hostScope } = scope;
+        await rootSql`INSERT INTO harness_shared.memory_session_epochs (session_id, epoch) VALUES (${ownerId}, 3)`;
+        const row = memoryFragmentOffer('memory', '11111111-1111-1111-1111-111111111111', 3, 'orient',
+          'Only after explicit final approval ☃.');
+        let offer: { token: string; fragments: MemoryFragmentManifest[] } | undefined;
+        const visible = JSON.stringify({ orient: row.rendered });
+        const capture = await captureNativeMcp(client, [{ name: 'receipt_canary', description: 'Local durable receipt observation.' }],
+          row.rendered, [], { stdioReceipt: 'memory', stdioPort: 'orient', stdioOwner: ownerId,
+            codexCodeMode,
+            receiptAdapter: client === 'omp' ? 'omp-rpc' : 'ptool-stdio', retainNativeTranscript: true,
+            onDiagnostics: path => { Object.assign(task.meta, { nativeMcpDiagnostics: path }); },
+            mcpResult: async (method, result, request, nativeSessionId) => {
+              if (method !== 'tools/call' || (request.params as { name?: string })?.name !== 'receipt_canary') return result;
+              expect(nativeSessionId).toBeTruthy();
+              // This is the enrolled test runtime's journal, not a claim parsed
+              // from model text. The retained native header/result checks it.
+              await rootSql`INSERT INTO harness_shared.adv_sessions
+                (id, workspace_id, coord_owner_id, agent, session_id, omp_thread_id)
+                VALUES (1, ${WS}, ${ownerId}, ${client}, ${nativeSessionId}, ${nativeSessionId})`;
+              await rootSql`INSERT INTO harness_shared.session_identity_activation_events
+                (id, workspace_id, owner_id, adv_session_id, native_session_id, control_generation, phase)
+                VALUES (1, ${WS}, ${ownerId}, 1, ${nativeSessionId}, 1, 'applied')`;
+              const response = await withMemoryEmissionReceipt(rootSql, ownerId, [], async () => {
+                collectMemoryEmission(ownerId, [row]);
+                return { content: [{ type: 'text', text: visible }] };
+              }, hostScope);
+              offer = response._meta?.['papercusp/memoryEmission'] as typeof offer;
+              expect(response._meta?.['papercusp/contextPreparation']).toMatchObject({ status: 'stored' });
+              return response;
+            } });
+        expect(offer).toBeDefined();
+        expect(await confirmMemoryEmission(rootSql, ownerId, offer!)).toBe(1);
+        expect(await confirmMemoryEmission(rootSql, ownerId, offer!)).toBe(0);
+        const census = await collectContextPackingReceiptSources(scope);
+        expect(census.complete).toBe(true); expect(census.mcpSources).toHaveLength(1);
+        expect(JSON.stringify(census)).not.toContain(row.rendered);
+        const digest = (text: string) => createHash('sha256').update(text).digest('hex');
+        const exported = exportContextPackingAttemptSnapshot(census, { snapshotId: `native-${client}`,
+          sourceSchemaSha256: digest('durable-source-v1'), measuredAt: census.capturedAt,
+          runtimeGeneration: capture.clientVersion, environmentSha256: digest('fixture-environment'), configurationSha256: digest('fixture-config') });
+        expect(exported.complete).toBe(true);
+        const snapshot = exported.snapshot!, native = capture.nativeTranscript!;
+        expect(native).toBeDefined();
+        expect(snapshot.attempts[0]!.nativeSessionId).toBe(native.nativeSessionId);
+        expect(snapshot.attempts[0]!.context.block).toBeNull();
+        const locators = nativeMcpTranscriptLocators(capture, snapshot.attempts[0]!, visible);
+        expect(locators).toHaveLength(1);
+        const bound = { ...native, client, recipient: ownerId, workspace: WS, epoch: 3 };
+        const joined = joinFinalContextNativeEmissions(snapshot, bound, locators, capture.stdoutEmissions ?? []);
+        Object.assign(task.meta, { durableNativeJoin: { census, source: native, locators,
+          emissions: capture.stdoutEmissions, joins: joined.joins, snapshot: joined.snapshot,
+          limits: ['fixture-enrolled-runtime', 'independent-labels-unavailable', 'task-benefit-unlabelled'] } });
+        expect(joined.joins, JSON.stringify(joined.joins)).toMatchObject([{ status: 'joined', unknown: [] }]);
+        expect(joined.snapshot.receipts).toHaveLength(1);
+        expect(sampleFinalDeliveredContext(joined.snapshot)).toMatchObject({ attempted: 1, usefulSuccesses: 0, usefulUnknown: 1 });
+      } finally { resetReadCursorStore(); }
+    }, 120_000);
+  it('flushes a fallback timestamp created in another Date realm through the real PG driver', async () => {
+    const telemetry = await import('./degradation/fallback-observations');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const observedAt: Date = runInNewContext('new Date("2026-11-12T15:00:00.000Z")');
+      expect(observedAt instanceof Date).toBe(false);
+      telemetry.observeFallback('mcp-date-realm-regression', { eligible: 1, applied: 0, reason: 'fixture' },
+        { sql: rootSql, workspaceId: WS, observedAt });
+      expect(await telemetry.flushFallbackObservations({ sql: rootSql })).toMatchObject({ written: 1, failed: 0 });
+      expect(warn).not.toHaveBeenCalled();
+      const rows = await rootSql`SELECT observed_at FROM harness_shared.fallback_observations
+        WHERE mechanism='mcp-date-realm-regression'`;
+      expect(rows).toHaveLength(1);
+      expect(new Date(rows[0]!.observed_at).toISOString()).toBe('2026-11-12T15:00:00.000Z');
+    } finally { telemetry._resetFallbackObservationsForTests(); warn.mockRestore(); }
+  });
+
+  it('keeps real PG MCP attempts after successful cursor cleanup and leaves empty or unbound samples UNKNOWN', async () => {
+    const cursors = new InMemoryReadCursorStore();
+    const staged = vi.spyOn(cursors, 'stage'), cleared = vi.spyOn(cursors, 'clear');
+    configureReadCursorStore(cursors);
+    try {
+      await rootSql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.memory_session_surfaced (
+        session_id text NOT NULL, epoch integer NOT NULL, memory_id uuid NOT NULL, port text,
+        source_fingerprint text, source_version jsonb, surfaced_at timestamptz DEFAULT now(), PRIMARY KEY(session_id,epoch,memory_id))`);
+      const scope: ContextPackingScope = { workspaceId: WS, ownerId: 'mcp-owner', harness: 'web', client: 'codex', port: 'mcp-result' };
+      const row = memoryFragmentOffer('memory', '11111111-1111-1111-1111-111111111111', 3, 'orient', 'SECRET recalled ☃ source');
+      const { ownerId, ...hostScope } = scope;
+      const result = await withMemoryEmissionReceipt(rootSql, ownerId, [], async () => {
+        collectMemoryEmission(ownerId, [row]);
+        return { content: [{ type: 'text', text: row.rendered }] };
+      }, hostScope);
+      const receipt = result._meta?.['papercusp/memoryEmission'] as { token: string; fragments: MemoryFragmentManifest[] };
+      expect(result._meta?.['papercusp/contextPreparation']).toMatchObject({ status: 'stored', attemptId: receipt.token });
+      expect(staged).toHaveBeenCalledWith(ownerId, `memory-emission:${receipt.token}`, expect.objectContaining({ fragments: expect.any(Array) }));
+      expect(await confirmMemoryEmission(rootSql, ownerId, receipt)).toBe(1);
+      expect(cleared).toHaveBeenCalledWith(ownerId, `memory-emission:${receipt.token}`);
+      expect((await cursors.ackAndRead(ownerId, `memory-emission:${receipt.token}`)).committed).toBeNull();
+      await withMemoryEmissionReceipt(rootSql, ownerId, [], async () => ({ content: [] }), hostScope);
+      const census = await collectContextPackingReceiptSources(scope);
+      expect(census).toMatchObject({ complete: true, claimsScanned: 2, sources: [], unknown: [] });
+      expect(census.mcpSources).toHaveLength(2);
+      expect(JSON.stringify(census)).not.toContain('SECRET');
+      expect(census.mcpSources?.find(source => source.stored.attemptId === receipt.token)?.stored.fragments[0])
+        .toMatchObject({ id: row.id, bodySha256: row.bodySha256, selected: true });
+      const digest = (text: string) => createHash('sha256').update(text).digest('hex');
+      const exported = exportContextPackingAttemptSnapshot(census, { snapshotId: 'mcp-collected', sourceSchemaSha256: digest('schema'),
+        measuredAt: census.capturedAt, runtimeGeneration: 'fixture-runtime', environmentSha256: digest('env'), configurationSha256: digest('config') });
+      expect(exported.complete).toBe(true);
+      expect(sampleFinalDeliveredContext(exported.snapshot!)).toMatchObject({ attempted: 2, usefulSuccesses: 0, usefulUnknown: 2 });
+      const foreign = await collectContextPackingReceiptSources({ ...scope, ownerId: 'other' });
+      expect(foreign.mcpSources ?? []).toEqual([]); expect(foreign.excluded).toHaveLength(2);
+    } finally { resetReadCursorStore(); }
+  });
+  it.each(['codex', 'claude', 'omp'] as const)('captures real PG epoch and exact %s binding before later compaction/reanchor', async client => {
+    const scope: ContextPackingScope = { workspaceId: WS, ownerId: 'packing-owner', harness: 'web', port: 'turn-start', client };
+    const missing = await captureContextPackingAttribution(scope, rootSql);
+    expect(missing).toMatchObject({ epoch: null, nativeSession: null, unknown: ['epoch-unavailable', 'native-session-unavailable'] });
+    await rootSql`INSERT INTO harness_shared.memory_session_epochs (session_id, epoch) VALUES (${scope.ownerId}, 0)`;
+    await rootSql`INSERT INTO harness_shared.adv_sessions (id, workspace_id, coord_owner_id, agent, session_id, omp_thread_id)
+      VALUES (42, ${WS}, ${scope.ownerId}, ${client}, 'native-a', 'native-a')`;
+    await rootSql`INSERT INTO harness_shared.session_identity_activation_events
+      (id, workspace_id, owner_id, adv_session_id, native_session_id, control_generation, phase)
+      VALUES (9, ${WS}, ${scope.ownerId}, 42, 'native-a', 3, 'applied')`;
+    const attribution = await captureContextPackingAttribution(scope, rootSql);
+    expect(attribution).toMatchObject({ epoch: 0, nativeSession: { backend: client, sessionId: 'native-a', activationEventId: '9' }, unknown: [] });
+    const candidates = [{ sourceRef: 'private:grant', revision: 'r1', class: 'granted' as const, required: false, text: 'private plaintext' }];
+    const packed = packContextCandidates({ attemptId: 'identity-attempt', budgetBytes: 100, candidates });
+    const ref = await saveContextPackingReceipt(scope, packed.receipt, { createdAt: attribution.observedAt, attribution,
+      text: packed.text, candidates, selectedIndexes: packed.selectedIndexes });
+    await rootSql`UPDATE harness_shared.memory_session_epochs SET epoch=1, bumped_at=now()`;
+    await rootSql`UPDATE harness_shared.adv_sessions SET session_id='native-b', omp_thread_id='native-b'`;
+    const changed = await captureContextPackingAttribution(scope, rootSql);
+    expect(changed).toMatchObject({ epoch: 1, nativeSession: null, unknown: ['native-session-unavailable'] });
+    const stored = await loadContextPackingReceipt(scope, packed.receipt.attemptId);
+    expect(stored?.preparation).toBeUndefined();
+    expect(stored?.preparationWithheld?.attribution).toEqual(attribution);
+    expect(await loadImmutableTextArtifact('web', ref.sha256)).not.toContain('private plaintext');
+    const census = await collectContextPackingReceiptSources(scope);
+    expect(census.sources[0]?.stored.preparationWithheld?.attribution).toEqual(attribution);
+    expect(census.sources[0]?.state).toBe('withheld');
+  });
+});
+
 describe('text-artifacts (drizzle, PG)', () => {
+  it('inventories canonical packing claims without losing withheld, legacy, or missing attempts', async () => {
+    const scope: ContextPackingScope = { workspaceId: WS, ownerId: 'census-owner', harness: 'web', port: 'turn-start', client: 'codex' };
+    const save = async (attemptId: string, privateText = false, legacy = false, targetScope = scope) => {
+      const candidates = [{ sourceRef: 'memory:1', revision: 'r1', class: privateText ? 'granted' as const : 'memory' as const,
+        required: false, text: privateText ? 'private grant body' : 'complete condition ☃' }];
+      const packed = packContextCandidates({ attemptId, budgetBytes: 100, candidates });
+      return saveContextPackingReceipt(targetScope, packed.receipt, legacy ? undefined : {
+        createdAt: '2026-11-12T15:00:00.000Z', text: packed.text, selectedIndexes: packed.selectedIndexes, candidates,
+      });
+    };
+    const prepared = await save('census-prepared');
+    await save('census-withheld', true);
+    await save('census-legacy', false, true);
+    await save('census-other-owner', false, false, { ...scope, ownerId: 'other-owner' });
+    await save('census-other-port', false, false, { ...scope, port: 'mid-turn' });
+    await claimImmutableTextArtifact('web', 'unrelated', 'non-packing execution claim');
+    await saveImmutableTextArtifact('web', JSON.stringify({ scope, receipt: { attemptId: 'orphan-not-an-attempt' } }));
+    const census = await collectContextPackingReceiptSources(scope);
+    expect(census.complete).toBe(true);
+    expect(census.sources.map(row => row.state).sort()).toEqual(['legacy', 'prepared', 'withheld']);
+    expect(census.sources.find(row => row.sha256 === prepared.sha256)?.stored.preparation?.text).toBe('complete condition ☃');
+    expect(JSON.stringify(census)).not.toContain('private grant body');
+    expect(census.excluded.map(row => row.reason).sort()).toEqual(['different-scope', 'different-scope', 'other-artifact']);
+    expect(census.sources.length + census.excluded.length + census.unknown.length).toBe(census.claimsScanned);
+    expect(census).toMatchObject({ isolation: 'repeatable read', unknown: [] });
+    // A missing source prevents a complete census; its claim stays in the partition.
+    await rootSql`DELETE FROM harness_shared.harness_text_artifacts WHERE harness_slug='web' AND rel_path=${prepared.relPath}`;
+    const missing = await collectContextPackingReceiptSources(scope);
+    expect(missing.complete).toBe(false);
+    expect(missing.unknown).toEqual([{ claimPath: prepared.path, reason: 'source-missing' }]);
+    expect(missing.sources.length + missing.excluded.length + missing.unknown.length).toBe(missing.claimsScanned);
+    await expect(collectContextPackingReceiptSources({ ...scope, workspaceId: 'foreign' })).rejects.toThrow('scope_invalid');
+  });
+
+  it.each(['claim', 'source', 'claim-binding', 'foreign-target'] as const)('keeps %s corruption explicit in a packing census', async fault => {
+    const scope: ContextPackingScope = { workspaceId: WS, ownerId: 'census-owner', harness: 'web', port: 'mid-turn', client: 'omp' };
+    const packed = packContextCandidates({ attemptId: 'census-corrupt', budgetBytes: 100, candidates: [] });
+    const ref = await saveContextPackingReceipt(scope, packed.receipt);
+    if (fault === 'claim') {
+      await rootSql`UPDATE harness_shared.harness_text_artifacts SET content='private claim content must stay out of diagnostics' WHERE harness_slug='web' AND rel_path=${ref.path}`;
+    } else if (fault === 'source') {
+      await rootSql`UPDATE harness_shared.harness_text_artifacts SET content='corrupt' WHERE harness_slug='web' AND rel_path=${ref.relPath}`;
+    } else if (fault === 'foreign-target') {
+      await rootSql`UPDATE harness_shared.harness_text_artifacts SET workspace_id='foreign' WHERE harness_slug='web' AND rel_path=${ref.relPath}`;
+    } else {
+      const other = await saveImmutableTextArtifact('web', JSON.stringify({ scope, receipt: { ...packed.receipt, attemptId: 'wrong-attempt' } }));
+      const content = JSON.stringify({ sha256: other.sha256 });
+      const wrapper = JSON.stringify({ sha256: createHash('sha256').update(content).digest('hex'), content });
+      await rootSql`UPDATE harness_shared.harness_text_artifacts SET content=${wrapper} WHERE harness_slug='web' AND rel_path=${ref.path}`;
+    }
+    const census = await collectContextPackingReceiptSources(scope);
+    expect(census.complete).toBe(false);
+    expect(census.sources).toEqual([]);
+    expect(census.claimsScanned).toBe(1);
+    expect(census.unknown).toEqual([{ claimPath: ref.path, reason: expect.any(String) }]);
+    expect(JSON.stringify(census)).not.toContain('private claim content');
+    if (fault === 'claim') expect(census.unknown[0]!.reason).toBe('claim-invalid');
+  });
+
+  it('persists replayable prepared context through the canonical packing reader without an emission claim', async () => {
+    const scope: ContextPackingScope = { workspaceId: WS, ownerId: 'prepared-owner', harness: 'web', port: 'turn-start', client: 'codex' };
+    const candidates = [
+      { sourceRef: 'owner:1', revision: 'r1', class: 'owner' as const, required: true, text: 'Keep the complete ☃ duty' },
+      { sourceRef: 'memory:2', revision: 'r2', class: 'memory' as const, required: false, text: 'Omitted condition '.repeat(30) },
+    ];
+    const packed = packContextCandidates({ attemptId: 'prepared-context', budgetBytes: 40, candidates,
+      carrier: { client: 'codex', port: 'turn-start' } });
+    const preparation = { createdAt: '2026-11-12T15:00:00.000Z', text: packed.text, selectedIndexes: packed.selectedIndexes, candidates };
+    const first = await saveContextPackingReceipt(scope, packed.receipt, preparation);
+    expect(await saveContextPackingReceipt(scope, packed.receipt, preparation)).toEqual(first);
+    const stored = await loadContextPackingReceipt(scope, packed.receipt.attemptId);
+    expect(stored?.preparation).toMatchObject({ ...preparation, emission: 'UNKNOWN', schemaVersion: 'context-packing-source-v1' });
+    expect(stored?.receipt.candidates.map(row => row.reason)).toEqual(['selected', 'budget']);
+    expect(JSON.parse((await loadImmutableTextArtifact('web', first.sha256))!)).toEqual(stored);
+    expect(await wsOf('web', first.path)).toBe(WS);
+    expect(await wsOf('web', first.relPath)).toBe(WS);
+    await expect(saveContextPackingReceipt(scope, packed.receipt, { ...preparation,
+      createdAt: '2026-11-12T15:00:01.000Z' })).rejects.toThrow('attempt_conflict');
+    expect(await loadContextPackingReceipt(scope, packed.receipt.attemptId)).toEqual(stored);
+  });
+
+  it('collects enrolled final-context sources through real PG without certifying native emission', async () => {
+    const digest = (text: string) => createHash('sha256').update(text).digest('hex');
+    const source: FinalContextAttemptSnapshot = {
+      schemaVersion: 'final-attempt-source-v1', snapshotId: 'pg-source', sourceSchemaSha256: digest('fixture-schema'),
+      measuredAt: '2026-11-12T12:00:00.000Z', capturedAt: '2026-11-12T12:00:01.000Z',
+      runtimeGeneration: 'fixture-runtime', environmentSha256: digest('fixture-env'), configurationSha256: digest('fixture-config'),
+      attempts: [{ sourceStoreId: 'pg-attempts', attemptId: 'a', attemptSchemaVersion: 'prompt-v1', recordVersion: 1,
+        createdAt: '2026-11-12T10:00:00.000Z', visibleAt: '2026-11-12T11:00:00.000Z',
+        client: 'codex', sink: 'turn-start', recipient: 'recipient', workspace: WS, epoch: 0,
+        context: { attemptId: 'a', sessionId: 'recipient', epoch: 0, port: 'turn-start', block: '字 body',
+          fragments: [{ sourceRef: 'memory:m', factKey: 'f', text: '字 body' }] } }], receipts: [],
+    };
+    const artifact = await saveImmutableTextArtifact('web', JSON.stringify(source));
+    const { attempts: _attempts, receipts: _receipts, ...metadata } = source;
+    const enrollment = { snapshot: { ...metadata, snapshotId: 'pg-collected' }, recipient: 'recipient', workspace: WS,
+      sources: [{ harness: 'web', sha256: artifact.sha256, sourceStoreIds: ['pg-attempts'] }] };
+    const collected = await collectFinalContextAttemptSnapshot(enrollment);
+    expect(collected.complete).toBe(true);
+    expect(collected.snapshot?.attempts).toEqual(source.attempts);
+    expect(collected.sample).toMatchObject({ attempted: 1, usefulSuccesses: 0, usefulUnknown: 1 });
+    expect(collected.sample?.attempts[0]!.assessment.unknown).toContain('terminal-receipt-unmatched');
+    expect(await wsOf('web', artifact.relPath)).toBe(WS);
+    const missing = await collectFinalContextAttemptSnapshot({ ...enrollment,
+      sources: [...enrollment.sources, { ...enrollment.sources[0]!, sha256: 'f'.repeat(64) }] });
+    expect(missing).toMatchObject({ complete: false, snapshot: null, sample: null });
+    expect(missing.sources[1]!.reason).toBe('source-missing');
+    await rootSql`UPDATE harness_shared.harness_text_artifacts SET workspace_id='foreign'
+      WHERE harness_slug='web' AND rel_path=${artifact.relPath}`;
+    expect(await collectFinalContextAttemptSnapshot(enrollment)).toMatchObject({ complete: false, snapshot: null,
+      sources: [{ status: 'UNKNOWN', reason: 'source-missing' }] });
+    await rootSql`UPDATE harness_shared.harness_text_artifacts SET workspace_id=${WS}, content='tampered'
+      WHERE harness_slug='web' AND rel_path=${artifact.relPath}`;
+    expect(await collectFinalContextAttemptSnapshot(enrollment)).toMatchObject({ complete: false, snapshot: null,
+      sources: [{ status: 'UNKNOWN', reason: 'read-failed' }] });
+  });
+
   it.each([0, 1])('retains the complete packing attempt outside a B=%i context, including immutable lookup and diagnostic pages', async budgetBytes => {
     const scope: ContextPackingScope = { workspaceId: WS, ownerId: 'receipt-owner', harness: 'web', port: 'turn-start', client: 'codex' };
     const receipt = packContextCandidates({ attemptId: `packing-${budgetBytes}`, budgetBytes, candidates: [

@@ -486,11 +486,18 @@ describe('bounded subject evidence against real transcript SQL', () => {
       { scoreSubjectEvidence: async (_q: string, texts: string[]) => texts.map(() => NaN), failure: { reason: 'invalid-score', count: 1 } },
     ];
     for (const { scoreSubjectEvidence, failure } of cases) {
-      const result = await routeConsult({ ...baseParams, question }, deps(0, { scoreSubjectEvidence }));
+      const receipts: ExpertiseRoutingReceipt[] = [];
+      const result = await routeConsult({ ...baseParams, question }, deps(0, {
+        scoreSubjectEvidence, recordTelemetry: receipt => { receipts.push(receipt); },
+      }));
       expect(result.verdict).toBe('relevance_unmeasured');
       expect(result.snapshot.degraded).toBe('evidence-unavailable');
       expect(result.qualified).toEqual([]);
       expect(result.snapshot.subjectValidation?.failures).toContainEqual(failure);
+      expect(receipts).toHaveLength(1);
+      expect(receipts[0].subjectValidation).toEqual(result.snapshot.subjectValidation);
+      expect(result.snapshot.measurement?.subjectValidation).toEqual(result.snapshot.subjectValidation);
+      expect(JSON.stringify(receipts)).not.toContain('private scorer payload');
       expect(JSON.stringify(result.snapshot)).not.toContain('private scorer payload');
     }
     const measured = await routeConsult({ ...baseParams, question }, deps(0, { scoreSubjectEvidence: async (_q, texts) => texts.map(() => 0.1) }));
@@ -683,6 +690,12 @@ describe('shared routing telemetry in the real invocation ledger', () => {
     expect(rows[0].metadata_json.stages).toMatchObject({
       disclosure: { outcome: 'returned' }, embedding: { outcome: 'returned' },
       transcripts: { outcome: 'returned' }, verification: { outcome: 'returned' }, ranking: { outcome: 'returned' },
+    });
+    expect(result.snapshot.subjectValidation?.subjects).toContain(baseParams.question);
+    expect(rows[0].metadata_json.subjectValidation).toMatchObject({
+      subjects: ['[question]'],
+      evaluated: result.snapshot.subjectValidation?.evaluated,
+      unmeasured: result.snapshot.subjectValidation?.unmeasured,
     });
     expect(JSON.stringify(rows[0].metadata_json)).not.toContain(baseParams.question);
   });

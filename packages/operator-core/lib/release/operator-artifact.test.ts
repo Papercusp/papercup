@@ -8,7 +8,7 @@ import { dirname, join, resolve } from 'node:path';
 import { measureBootOperatorArtifact as measureArtifact, operatorArtifactSource, writeOperatorArtifactManifest,
   type OperatorArtifactParentExpectation } from './operator-artifact';
 import { BG_INPUTS, makeBgCompilerCandidate, BG_R1_PARENT_CASES, BG_R1_PARENT_SELECTORS,
-  BG_R1_COMPILER_CASES, BG_R1_COMPILER_POSITIVE_CASE } from '../source-preview.fixture';
+  BG_R1_COMPILER_CASES, BG_R1_COMPILER_POSITIVE_CASE, BG_R1_PARTITION_CASES } from '../source-preview.fixture';
 import { captureVerifierDependencies, createBgVerifierCompilerCustody, verifyBgVerifierSource } from '../../../../scripts/source-preview.mjs';
 import { verifierResourceInventory } from '../verifier-source';
 
@@ -152,6 +152,28 @@ describe('operator release artifact provenance', () => {
       root === f.root ? `160000 commit ${'c'.repeat(40)}\tlibs/tracing\0` : `100644 blob ${f.sourceBlob}\truntime.ts\0`;
     await expect(writeOperatorArtifactManifest(f, git)).resolves.toMatchObject({ status: 'measured', sourceBlobs: { [rel]: f.sourceBlob } });
   });
+  it('accounts for an explicitly derived generated input without inventing a source blob', async () => {
+    const f = fixture(), name = '<define:__PAPERCUSP_TESTING_CORE_WITNESS__>';
+    writeFileSync(f.entry + '.meta.json', JSON.stringify({ inputs: {
+      [f.rel]: { bytes: 1 }, [name]: { bytes: 0, imports: [] },
+    } }));
+    await expect(writeOperatorArtifactManifest({ ...f, generatedInputs: [name] }, f.git))
+      .resolves.toMatchObject({ status: 'measured', sourceBlobs: { [f.rel]: f.sourceBlob } });
+  });
+  it.each(['unknown', 'omitted', 'metadata', 'filesystem', 'duplicate'] as const)(
+    'refuses %s generated input accounting', async defect => {
+      const f = fixture(), name = '<define:__PAPERCUSP_TESTING_CORE_WITNESS__>';
+      const inputs: Record<string, unknown> = { [f.rel]: { bytes: 1 }, [name]: { bytes: 0, imports: [] } };
+      const generatedInputs = [name];
+      if (defect === 'unknown') inputs['<unexplained-input>'] = { bytes: 0, imports: [] };
+      if (defect === 'omitted') generatedInputs.pop();
+      if (defect === 'metadata') inputs[name] = { bytes: 1, imports: [] };
+      if (defect === 'filesystem') generatedInputs[0] = f.rel;
+      if (defect === 'duplicate') generatedInputs.push(name);
+      writeFileSync(f.entry + '.meta.json', JSON.stringify({ inputs }));
+      await expect(writeOperatorArtifactManifest({ ...f, generatedInputs }, f.git))
+        .rejects.toThrow('operator-artifact-generated-input-');
+    });
   it('keeps a legacy, replaced, or foreign build unknown', async () => {
     const f = fixture(); expect(measureBootOperatorArtifact(f.entry, f.sourceSha).status).toBe('unknown');
     await f.write(); expect(measureBootOperatorArtifact(f.entry, 'b'.repeat(40)).status).toBe('unknown');
@@ -264,7 +286,7 @@ describe('operator release artifact provenance', () => {
     expect(boot(parent)).toEqual(written); // legacy full-population expectation
   });
 
-  it('withholds fresh-process runtime initialization for an unknown parent and refuses later parent relabeling', async () => {
+  async function compiledBootRuntime() {
     const f = fixture(), sourceRoot = resolve(import.meta.dirname, '../../../..');
     const runtimePath = join(sourceRoot, 'packages/operator-core/lib/observability/runtime.ts');
     // This is a source-level runtime fixture. Reuse the maintained worker's tsx
@@ -349,6 +371,11 @@ describe('operator release artifact provenance', () => {
       expect(line, child.stdout + child.stderr).toBeTruthy();
       return JSON.parse(line!.slice('BOOT_PARENT_BOUNDARY '.length));
     };
+    return { f, parent, boot, bundleSha256, members };
+  }
+
+  it('withholds fresh-process runtime initialization for an unknown parent and refuses later parent relabeling', async () => {
+    const { f, parent, boot, bundleSha256, members } = await compiledBootRuntime();
     expect(boot(parent)).toMatchObject({ ready: true, error: null, initialized: true,
       artifact: { status: 'measured', sourceSha: f.sourceSha, bundleSha256, sourceBlobs: members } });
     const fullOutput = structuredClone(parent);
@@ -364,6 +391,54 @@ describe('operator release artifact provenance', () => {
     expect(boot(parent, true)).toMatchObject({ ready: false,
       error: expect.stringContaining('BG boot parent expectation changed') });
   }, 30_000);
+
+  // Reuse the real compiled initialization boundary, rather than assigning the
+  // registered boot selectors to source-map inspection alone. These fixtures
+  // still do not replace the selected BG service's independent runtime packet.
+  for (const { rowId, testName } of BG_R1_PARTITION_CASES.filter(row =>
+    row.rowId.startsWith('bg-r1-partition-new-boot-'))) {
+    it(testName, async () => {
+      const { f, parent, boot, bundleSha256, members } = await compiledBootRuntime();
+      const fullOutput = structuredClone(parent);
+      fullOutput.acceptedManifest!.authorityKind = 'full-output';
+      const expectedReady = { ready: true, error: null, initialized: true,
+        artifact: { status: 'measured', sourceSha: f.sourceSha, bundleSha256, sourceBlobs: members } };
+      const expectedRefusal = { ready: false,
+        error: expect.stringContaining('BG boot parent artifact unqualified'), initialized: false, artifact: null };
+      const originalPath = fullOutput.acceptedManifest!.path;
+      const originalBytes = readFileSync(originalPath);
+      expect(boot(fullOutput)).toMatchObject(expectedReady);
+      if (rowId === 'bg-r1-partition-new-boot-source-only-substitution') {
+        const sourceOnly = structuredClone(fullOutput);
+        // Keep every byte, path, digest and member equal: only authority changes.
+        sourceOnly.acceptedManifest!.authorityKind = 'source-only';
+        expect(boot(sourceOnly)).toMatchObject(expectedRefusal);
+      } else if (rowId !== 'bg-r1-partition-new-boot-positive-control') {
+        const changed = { ...members };
+        const member = Object.keys(changed)[0]!;
+        if (rowId === 'bg-r1-partition-new-boot-member-added')
+          changed['packages/operator-core/lib/extra-boot-member.ts'] = 'c'.repeat(40);
+        else if (rowId === 'bg-r1-partition-new-boot-member-omitted') delete changed[member];
+        else if (rowId === 'bg-r1-partition-new-boot-member-changed') changed[member] = 'd'.repeat(40);
+        else throw new Error('Unimplemented partition boot selector: ' + rowId);
+        expect(changed).not.toEqual(members);
+        const changedBytes = Buffer.from(JSON.stringify({ schemaVersion: 1, sourceBlobs: changed }));
+        try {
+          writeFileSync(originalPath, changedBytes);
+          // Re-pin the changed bytes so a digest refusal cannot mask either
+          // literal-map guard. Check manifest/expectation and candidate/expectation.
+          for (const expectedMembers of [members, changed]) {
+            const bad = structuredClone(fullOutput);
+            Object.assign(bad.acceptedManifest!, { members: expectedMembers,
+              sha256: createHash('sha256').update(changedBytes).digest('hex') });
+            expect(boot(bad)).toMatchObject(expectedRefusal);
+          }
+        } finally { writeFileSync(originalPath, originalBytes); }
+      }
+      expect(readFileSync(originalPath)).toEqual(originalBytes);
+      expect(boot(fullOutput)).toMatchObject(expectedReady);
+    }, 30_000);
+  }
 });
 
 describe('BG compiler input custody', () => {

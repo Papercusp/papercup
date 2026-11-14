@@ -23,6 +23,7 @@ import {
 } from './process-memory-pressure';
 import { operatorApiBase } from './operator-api-base';
 import { emitServiceHealthTransitionEvent } from './service-health-events';
+import { readBundleStaleMarkerAt } from './bundle-staleness';
 import {
   boundedPgReadTxn,
   PG_READ_TXN_DEFAULT_ACQUIRE_TIMEOUT_MS,
@@ -294,7 +295,7 @@ export interface ProbeResult {
    * loaded the code (EI-21647996938145436).
    */
   provenance?: {
-    source: 'runtime-vintage' | 'mtime-fallback';
+    source: 'runtime-vintage' | 'mtime-fallback' | 'bundle-stale-marker';
     loadedSha?: string | null;
     expectedSha?: string | null;
     loadedPid?: number | null;
@@ -1226,6 +1227,7 @@ export async function probeBgHostCodeDrift(now: number = Date.now()): Promise<Pr
       unit: process.env.PAPERCUSP_BGHOST_WATCHDOG_UNIT || 'papercusp-bg-host',
       hotPaths: BG_HOST_HOT_PATHS,
       artifactPaths: BG_HOST_ARTIFACT_PATHS,
+      bundleStaleMarkerPath: 'apps/operator/dist-host/.bundle-stale.json',
       evaluate: evaluateBgHostCodeDrift,
       platformNote: 'bg-host code-drift probe is Linux/systemd-only — not applicable on this platform',
       failedNote: 'bg-host code-drift unknown (probe failed)',
@@ -1297,6 +1299,7 @@ async function probeCodeDrift(
     listenerPort?: number;
     hotPaths: readonly string[];
     artifactPaths?: readonly string[];
+    bundleStaleMarkerPath?: string;
     evaluate: (
       bootMs: number | null,
       hotChangeMs: number | null,
@@ -1352,6 +1355,28 @@ async function probeCodeDrift(
     if (!integrationRoot) {
       const { stdout } = await run('git', ['rev-parse', '--show-toplevel'], { timeout: 3000 });
       integrationRoot = stdout.trim();
+    }
+    // A fallback restart boots a new process on an old bundle. The build
+    // writer's failure marker outranks both boot time and commit metadata.
+    // The shared uncached reader judges this separate process's bundle.
+    if (spec.bundleStaleMarkerPath && integrationRoot) {
+      const markerPath = join(integrationRoot, spec.bundleStaleMarkerPath);
+      const stale = readBundleStaleMarkerAt(markerPath);
+      if (stale) {
+        return {
+          name: spec.name,
+          up: true,
+          status: null,
+          latencyMs: Date.now() - start,
+          note: `⚠ bg-host CODE DRIFT: STALE BUNDLE after failed rebuild at ${stale.failedAt}; ` +
+            `serving bundle built ${stale.servingBundleMtime ?? 'at an unknown time'}. ` +
+            `Fix the build failure before reloading: ${stale.error.slice(0, 500)}`,
+          provenance: {
+            source: 'bundle-stale-marker',
+            reason: `Build fallback marker ${markerPath} takes precedence over boot time and commit identity`,
+          },
+        };
+      }
     }
     let loadedIdentity: LoadedCodeIdentity | null = null;
     try {

@@ -17,12 +17,26 @@ interface Census { files: Map<string, string>; inputs: SelectedInput[]; objects:
 /** Existing production reader, exposing its selected identity and typed diagnostics. */
 export function workspaceLockTreeInspector(options: { includeObjectInventory?: boolean } = {}) {
   const trees = new Map<string, Promise<Census>>();
+  const blobs = new Map<string, Promise<string>>();
   const limit = pLimit(8);
   return async (runGit: RunGit, repoPath: string, oid: string, kind: 'commit' | 'tree' = 'tree') => {
     const run = async (args: string[], cwd: string) => {
       const out = await limit(() => runGit(args, cwd));
       if (out.code !== 0) throw new Error(`dependency tree read failed (${args[0]}): ${out.stderr || out.stdout}`);
       return out.stdout;
+    };
+    // Candidate trees differ for unrelated source commits while selecting the
+    // same metadata blobs. Share only immutable text, never a tree's verdict or
+    // selected-input identities, across those candidates and concurrent reads.
+    const readBlob = (source: string, object: string): Promise<string> => {
+      const key = `${source}\0${object}`;
+      let pending = blobs.get(key);
+      if (!pending) {
+        pending = run(['cat-file', 'blob', object], source);
+        blobs.set(key, pending);
+        void pending.catch(() => blobs.delete(key));
+      }
+      return pending;
     };
     const selectedOid = (await run(['rev-parse', '--verify', `${oid}^{object}`], repoPath)).trim();
     const type = (await run(['cat-file', '-t', selectedOid], repoPath)).trim();
@@ -67,7 +81,7 @@ export function workspaceLockTreeInspector(options: { includeObjectInventory?: b
               objects.push(...nested.objects.map(input => ({ ...input, path: `${path}/${input.path}`,
                 owner: input.owner ? `${path}/${input.owner}` : path })));
             } else if (type === 'blob' && (isManifest(path) || path === '.gitmodules')) {
-              const text = await run(['cat-file', 'blob', object!], source);
+              const text = await readBlob(source, object!);
               files.set(path, text);
               inputs.push({ kind: 'blob', path, mode: mode!, oid: object!, owner: '', selectedOid: ref,
                 sha256: createHash('sha256').update(text).digest('hex') });
@@ -87,9 +101,46 @@ export function workspaceLockTreeInspector(options: { includeObjectInventory?: b
   };
 }
 
-/** An immutable census: a child checkout supplies objects, never its current manifest. */
-export function workspaceLockTreeValidator() {
-  const inspect = workspaceLockTreeInspector();
+// Publication steps create fresh validators. Keep immutable reads with the
+// exact reader that authorized them, without retaining a completed sync run.
+const validatorInspectors = new WeakMap<RunGit, ReturnType<typeof workspaceLockTreeInspector>>();
+
+type WorkspaceLockInspect = ReturnType<typeof workspaceLockTreeInspector>;
+
+/** Identity of one lock/manifest disagreement; equal keys mean byte-identical drift. */
+export function workspaceLockMismatchKey(mismatch: {
+  lockfile?: unknown; manifest?: unknown; workspace?: unknown; field?: unknown; differences?: unknown;
+}): string {
+  return JSON.stringify([mismatch.lockfile ?? null, mismatch.manifest ?? null, mismatch.workspace ?? null,
+    mismatch.field ?? null, mismatch.differences ?? null]);
+}
+
+/** The baseline's mismatch keys, or null when no strictly readable baseline exists. */
+async function inheritedMismatchKeys(
+  runGit: RunGit, repoPath: string, ref: string, inspect: WorkspaceLockInspect,
+): Promise<Set<string> | null> {
+  const base = await runGit(['rev-parse', '--verify', '--quiet', `${ref}^{tree}`], repoPath);
+  if (base.code !== 0 || !base.stdout.trim()) return null;
+  try {
+    const inspection = await inspect(runGit, repoPath, base.stdout.trim());
+    if (inspection.errors.length) return null;
+    return new Set(inspection.mismatches.map(workspaceLockMismatchKey));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * An immutable census: a child checkout supplies objects, never its current manifest.
+ *
+ * `inheritFrom` turns publication checks into a RATCHET (EI-28599921543233667). A
+ * mismatch the named commit's tree already carries, byte-identically, is inherited
+ * drift, not this candidate's regression. Without it one drifted parent refused every
+ * later commit, including the gitlink bumps that cure the drift, and froze the
+ * superproject. A new or changed disagreement still refuses, and an unreadable or
+ * missing baseline falls back to the strict verdict.
+ */
+export function workspaceLockTreeValidator(options: { inheritFrom?: string } = {}) {
   return async (runGit: RunGit, repoPath: string, tree: string): Promise<void> => {
     const metadata = await runGit(['ls-tree', '-z', tree, '--', 'package-lock.json', 'npm-shrinkwrap.json', 'package.json', '.gitmodules'], repoPath);
     if (metadata.code !== 0) throw new Error(`dependency tree read failed (ls-tree): ${metadata.stderr}`);
@@ -100,7 +151,24 @@ export function workspaceLockTreeValidator() {
     // inspector remains strict; validate the exact peeled tree for this wrapper.
     const peeled = await runGit(['rev-parse', '--verify', `${tree}^{tree}`], repoPath);
     if (peeled.code !== 0 || !peeled.stdout.trim()) throw new Error(`dependency tree read failed (peel): ${peeled.stderr}`);
-    assertWorkspaceLockInspection(await inspect(runGit, repoPath, peeled.stdout.trim()));
+    let inspect = validatorInspectors.get(runGit);
+    if (!inspect) {
+      inspect = workspaceLockTreeInspector();
+      validatorInspectors.set(runGit, inspect);
+    }
+    const candidate = await inspect(runGit, repoPath, peeled.stdout.trim());
+    if (options.inheritFrom && candidate.mismatches.length && !candidate.errors.length) {
+      const inherited = await inheritedMismatchKeys(runGit, repoPath, options.inheritFrom, inspect);
+      if (inherited) {
+        assertWorkspaceLockInspection({
+          ...candidate,
+          mismatches: candidate.mismatches.filter((m: Parameters<typeof workspaceLockMismatchKey>[0]) =>
+            !inherited.has(workspaceLockMismatchKey(m))),
+        });
+        return;
+      }
+    }
+    assertWorkspaceLockInspection(candidate);
   };
 }
 

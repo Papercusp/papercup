@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
 import { PassThrough } from 'node:stream';
 import { tmpdir } from 'node:os';
-import { basename, join, relative, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { transformSync } from 'esbuild';
 import { mockImplementationTyped } from '../testing/typed-mock';
 import { stripVitestAnsi } from '../../../../scripts/lib/vitest-summary.mjs';
@@ -863,6 +863,51 @@ describe('test-files router', () => {
     }
   });
 
+  it('honors a negative Node name filter and records the cases it excludes', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'node-router-negative-selector-'));
+    try {
+      const file = join(dir, 'selector.test.mjs');
+      const excluded = join(dir, 'excluded-ran');
+      const names = [
+        ...Array.from({ length: 12 }, (_, index) => `ordinary case ${index + 1}`),
+        ...Array.from({ length: 5 }, (_, index) => `handler runtime package case ${index + 1}`),
+      ];
+      const rows: TestRunRow[] = [];
+      const { beginNodeTestLedger } = await loadNodeTestLedger();
+      const ledger = await beginNodeTestLedger({ repoRoot: dir,
+        readSnapshot: async () => ({ commit: 'feedface00', porcelain: '' }),
+        writeRows: async (batch: readonly TestRunRow[]) => {
+          rows.push(...batch);
+          return batch.map(row => ({ filePath: row.filePath, status: row.status,
+            outcome: 'inserted', id: '12345' }));
+        } });
+      const cases = names.map(name => name.startsWith('handler runtime package')
+        ? `test(${JSON.stringify(name)}, () => writeFileSync(${JSON.stringify(excluded)}, ${JSON.stringify(name)}));`
+        : `test(${JSON.stringify(name)}, () => {});`);
+      writeFileSync(file, `import { test } from 'node:test';\nimport { writeFileSync } from 'node:fs';\n${cases.join('\n')}\n`);
+
+      const pattern = '^(?!handler runtime package)';
+      const args = buildNodeTestArgs([file], [`--testNamePattern=${pattern}`], {
+        reporterArgs: ledger.reporterArgs,
+      });
+      expect(args).toContain('--test-skip-pattern=^(?:handler runtime package)');
+      const run = spawnSync(process.execPath, args, { cwd: dir, encoding: 'utf8', timeout: 10_000,
+        env: { ...process.env, NODE_OPTIONS: '' } });
+      expect(run.status, run.stderr || run.stdout).toBe(0);
+      expect(existsSync(excluded)).toBe(false);
+      expect(testsExecutedFrom(run.stdout)).toBe(12);
+      // Node omits cases filtered by --test-skip-pattern from its TAP summary.
+      expect(testsSkippedFrom(run.stdout)).toBe(0);
+
+      const recorded = await ledger.record({ testNamePattern: pattern });
+      expect(recorded).toMatchObject({ counts: { executed: 12 } });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.executionDetails?.passedCaseTitles).toEqual(names.slice(0, 12));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('keeps Node preflight/reporting options and excludes Vitest reporting options', () => {
     expect(buildNodeTestArgs(['a.test.js'], [
       '--reporter', 'json', '--outputFile=result.json', '--testNamePattern=--model=', '--test-reporter=tap',
@@ -1281,9 +1326,16 @@ describe('test-files router', () => {
         .PC_EXECUTED_SOURCE_MAP_OUT).toBe('/tmp/sources.json');
       expect(perGroupVitestEnv({ PC_EXECUTED_SOURCE_MAP_OUT: 'sources.json' }, 1, 3)
         .PC_EXECUTED_SOURCE_MAP_OUT).toBe(resolve('sources.1.json'));
-      const unarmed = { PC_EXECUTED_SOURCE_MAP_OUT: ' ' };
+      const cache = { PLAYWRIGHT_BROWSERS_PATH: '/tmp/router-browser-cache' };
+      const unarmed = { ...cache, PC_EXECUTED_SOURCE_MAP_OUT: ' ' };
       expect(perGroupVitestEnv(unarmed, 1, 3)).toEqual({ ...unarmed, NODE_ENV: 'test' });
-      expect(perGroupVitestEnv({}, 1, 3)).toEqual({ NODE_ENV: 'test' });
+      expect(perGroupVitestEnv(cache, 1, 3)).toEqual({ ...cache, NODE_ENV: 'test' });
+    });
+
+    it('derives an unconfigured browser cache from the child HOME without changing source-map activation', () => {
+      expect(perGroupVitestEnv({ HOME: '/tmp/router-child-home', PC_EXECUTED_SOURCE_MAP_OUT: ' ' }, 1, 3))
+        .toEqual({ HOME: '/tmp/router-child-home', PC_EXECUTED_SOURCE_MAP_OUT: ' ', NODE_ENV: 'test',
+          PLAYWRIGHT_BROWSERS_PATH: '/tmp/router-child-home/.cache/ms-playwright' });
     });
 
     it.each([undefined, 'production', 'development'])('establishes test mode for Vitest children inherited from %s', nodeEnv => {
@@ -1696,10 +1748,16 @@ describe('Vitest main-process close timeout is a finalization error', () => {
       const child = perGroupVitestEnv(env, 1, 2, options);
       expect(child.NODE_OPTIONS).toContain('--conditions=test');
       expect(child.NODE_OPTIONS).toMatch(/--require=.*why-is-node-running/);
+      expect(child.PAPERCUSP_TEST_REPORTER_STAGE_TRACE).toBe('1');
       expect(child.PC_EXECUTED_SOURCE_MAP_OUT).toBe('/tmp/sources.1.json');
       expect(perGroupVitestEnv(child, 0, 1, options).NODE_OPTIONS).toBe(child.NODE_OPTIONS);
-      expect(perGroupVitestEnv(env, 0, 1, { vitestArgs: ['--reporter=default'], cwd: REPO_ROOT }).NODE_OPTIONS)
-        .toBe(env.NODE_OPTIONS);
+      const defaultReporter = perGroupVitestEnv(env, 0, 1, {
+        vitestArgs: ['--reporter=default'], cwd: REPO_ROOT,
+      });
+      expect(defaultReporter.NODE_OPTIONS).toBe(env.NODE_OPTIONS);
+      expect(defaultReporter.PAPERCUSP_TEST_REPORTER_STAGE_TRACE).toBeUndefined();
+      const explicitOff = perGroupVitestEnv({ ...env, PAPERCUSP_TEST_REPORTER_STAGE_TRACE: '0' }, 0, 1, options);
+      expect(explicitOff.PAPERCUSP_TEST_REPORTER_STAGE_TRACE).toBe('0');
       expect(env.NODE_OPTIONS).toBe('--conditions=test');
     },
   );
@@ -3684,6 +3742,62 @@ describe('executed proof output custody (EI-26908539061140583)', () => {
 
 describe('main() — evidence runs require inserted Vitest ledger receipts', () => {
   const file = 'packages/operator-core/lib/__tests__/test-file-router.test.ts';
+
+  it.each([true, false])('captures ordinary case recovery after child exit; recovered=%s', async recovered => {
+    const keys = ['PAPERCUSP_TEST_RUN_RECEIPT_FILE', 'PAPERCUSP_TEST_RUN_RECOVERY_FILE',
+      'PAPERCUSP_DISABLE_TEST_RUNS_REPORTER', 'PAPERCUSP_TEST_RUN_GROUP'];
+    const saved = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+    for (const key of keys) delete process.env[key];
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const order: string[] = [];
+    let capturedFile = '';
+    let childEnv: any;
+    const reporter = {
+      TEST_RUN_RECOVERY_ENV: 'PAPERCUSP_TEST_RUN_RECOVERY_FILE',
+      shouldRecordTestRunPath: () => true,
+      pendingTestRunRecoveryPaths: (log: string) => log.includes('recovered') ? [] : [file],
+      reconcileTimedOutTestRunReceipts: async (log: string, options: any) => {
+        order.push('reconcile');
+        expect(log).toBe('captured original cases');
+        expect(options).toMatchObject({ expectedPaths: [file], expectedRoot: REPO_ROOT,
+          runGroupId: childEnv.PAPERCUSP_TEST_RUN_GROUP });
+        if (recovered) writeFileSync(capturedFile, 'recovered original cases');
+        return [];
+      },
+    };
+    try {
+      const code = await main([file], {
+        createRouterProofCustodyImpl: () => null,
+        restrictedHoldPreflightImpl: () => ({ verdict: 'skip' }),
+        loadVitestReceiptReporterImpl: async () => reporter,
+        runVitestListImpl: async () => ({ status: 0, signal: null,
+          stdout: 'lib/__tests__/test-file-router.test.ts\n', stderr: '', timedOut: false, error: null }),
+        runCapturedTestProcessImpl: async (_command: string, _args: string[], options: any) => {
+          childEnv = options.env;
+          capturedFile = options.env.PAPERCUSP_TEST_RUN_RECOVERY_FILE;
+          expect(options.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE).toBeUndefined();
+          expect(options.env.PAPERCUSP_TEST_RUN_GROUP).toEqual(expect.any(String));
+          writeFileSync(capturedFile, 'captured original cases');
+          order.push('child-exited');
+          return { status: 0, signal: null, stdout: 'Test Files 1 passed (1)\nTests 1 passed (1)\n',
+            stderr: '', timedOut: false, error: null };
+        },
+      });
+      expect(code).toBe(0);
+      expect(order).toEqual(['child-exited', 'reconcile']);
+      expect(existsSync(capturedFile)).toBe(!recovered);
+      const errors = errorSpy.mock.calls.flat().join('\n');
+      expect(errors.includes('TEST_FILE_LEDGER_RECOVERY_INCOMPLETE')).toBe(!recovered);
+      if (!recovered) expect(readFileSync(capturedFile, 'utf8')).toBe('captured original cases');
+    } finally {
+      if (capturedFile) rmSync(dirname(capturedFile), { recursive: true, force: true });
+      for (const key of keys) {
+        if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key];
+      }
+      logSpy.mockRestore(); errorSpy.mockRestore();
+    }
+  });
 
   it.each(['shouldRecordTestRunPath', 'missingTestRunReceiptPaths', 'reconcileTimedOutTestRunReceipts'])(
     'refuses a pinned reporter missing %s before collection or execution', async missingExport => {

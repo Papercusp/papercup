@@ -259,6 +259,41 @@ describe('plans:start write receipt recovery', () => {
     expect(JSON.parse(payload.subarray(body._projection.cursor.bodyOffsetInPayload).toString())).toEqual(source);
   });
 
+  it.each(['plans:start', 'tools:invoke'])('preserves canonical execution authority in a large receipt through %s', (toolName) => {
+    const executionStart = { seq: 85_170, contentHash: 'canonical-start-content-hash' };
+    const source = {
+      ok: false, counts: { ok: 1, failed: 1 }, results: [
+        {
+          ok: true, slug: 'started-plan', harnessSlug: 'papercup', executionStart,
+          admission: { ready: true, diagnostic: longText(24_000) },
+        },
+        {
+          ok: false, slug: 'unissued-plan', harnessSlug: 'papercup', error: 'plan_start_authority_unavailable',
+          executionStartIssued: false, earlierSideEffectsMayHaveCommitted: true,
+          admission: {
+            ready: false, executionStartIssued: false, earlierSideEffectsMayHaveCommitted: true,
+            diagnostic: longText(18_000),
+          },
+        },
+      ],
+    };
+    const out = applyResultDoor({ content: [{ type: 'text', text: JSON.stringify(source) }] }, {
+      toolName, nestedTargetToolName: toolName === 'tools:invoke' ? 'plans:start' : undefined,
+      workspaceId: 'ws-1', runId: RUN_ID,
+    });
+    const body = boundedBody(out) as any;
+    expect(body.results[0]).toMatchObject({ ok: true, executionStart, admission: { ready: true } });
+    expect(body.results[1]).toMatchObject({
+      error: 'plan_start_authority_unavailable',
+      executionStartIssued: false,
+      earlierSideEffectsMayHaveCommitted: true,
+      admission: { executionStartIssued: false, earlierSideEffectsMayHaveCommitted: true },
+    });
+    expect(body._projection.cursor.tool).toBe('capability:read');
+    const payload = scratchReference.parseScratchReference(readFileSync(body._projection.cursor.args.file_path))!.payload;
+    expect(JSON.parse(payload.subarray(body._projection.cursor.bodyOffsetInPayload).toString())).toEqual(source);
+  });
+
   it('does not recommend replay when an upstream projection already lost the receipt', () => {
     const tiered = applyPayloadTier({ toolName: 'plans:start', shape: undefined,
       response: { data: receipt() }, tier: 'trimmed', args: { slug: 'receipt-plan' }, log: vi.fn() });

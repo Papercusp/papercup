@@ -34,11 +34,18 @@ import { resolveFsMutexLockRoot } from '../../../../scripts/lib/fs-mutex.mjs';
 import { closureDigestManifestPath } from '../../../../scripts/lib/passing-task-verdict-cache.mjs';
 import { PARTIAL_TASK_CHECKPOINT_SCHEMA } from '../../../../scripts/lib/partial-task-resume.mjs';
 import { defaultTestRunArtifactBase } from '../agent-tools/testing/run-artifacts';
-import { readNativeArtifactBytes, verifyNativeProofPacket } from '../../../../scripts/lib/budgeted-task-scheduler.mjs';
+import { hashNativeArtifactBytes, readNativeArtifactBytes, verifyNativeProofPacket } from '../../../../scripts/lib/budgeted-task-scheduler.mjs';
 import { BUILD_VM_ENV_HOME_RELATIVE_PATH } from '../admin-commands';
+import { OAUTH_APPS_FILE } from '../integrations/oauth-client-registration';
+import { sourceShellOperations, sourceShellOperationEvidence, type OperationAdapterEvidence, type SourceShellOperation } from '../orchestration-trace';
+import { verifierSourceFiles, type VerifierSourceReceipt } from '@papercusp/test-config/verifier-source';
+import type { SqlIntentScope } from '../bash-substitution/sql-intent-fingerprint';
 
 /** Original verifier outputs need the writer's terminal retained custody, not a filename match. */
-async function verifierOriginalCensusDeclarations(home: string, root: string): Promise<CensusDeclaration[]> {
+async function verifierOriginalCensusDeclarations(home: string, root: string, retainedReceipt?: {
+  manifestPath: string; manifestSha256: string; role: 'source.json' | 'dependencies.json';
+  capture: (receipt: { ref: string; bytes: Buffer; sha256: string }) => void;
+}): Promise<CensusDeclaration[]> {
   const base = join(home, 'test-artifacts');
   const canonicalDirectory = async (path: string) => {
     try { return (await lstat(path)).isDirectory() && await realpath(path) === resolve(path); }
@@ -97,8 +104,10 @@ async function verifierOriginalCensusDeclarations(home: string, root: string): P
       const runId = createHash('sha256').update(resolve(receiptPath)).digest('hex');
       const evidenceRoot = join(home, 'checkpoint-logs', `verifier-task-${receipt.taskId}`, runId);
       const manifestPath = join(evidenceRoot, 'manifest.json');
+      if (retainedReceipt && retainedReceipt.manifestPath !== manifestPath) continue;
       if (receipt.evidenceManifestPath !== manifestPath || !await canonicalDirectory(evidenceRoot)) continue;
       const manifestFile = await inspect(manifestPath, true);
+      if (retainedReceipt && manifestFile.sha256 !== retainedReceipt.manifestSha256) continue;
       const manifest = JSON.parse(manifestFile.bytes.toString('utf8'));
       const suffixes: Record<string, string> = { 'task.json': '.task.json', 'phases.jsonl': '.phases.jsonl',
         'resources.jsonl': '.resources.jsonl', 'source.json': '', 'snapshot.txt': '.snapshot.txt',
@@ -113,24 +122,46 @@ async function verifierOriginalCensusDeclarations(home: string, root: string): P
         || !manifest.artifacts || !manifest.artifacts['task.json'] || !manifest.artifacts['phases.jsonl']) continue;
       const witnesses = [task, manifestFile];
       const originals: Array<Awaited<ReturnType<typeof inspect>>> = [];
+      let captured: Awaited<ReturnType<typeof inspect>> | undefined;
+      let source: Awaited<ReturnType<typeof inspect>> | undefined;
       for (const [role, pin] of Object.entries(manifest.artifacts) as Array<[string, { path: string; sizeBytes: number; sha256: string }]>) {
         if (!Object.hasOwn(suffixes, role) || pin.path !== join(evidenceRoot, role)
           || !Number.isSafeInteger(pin.sizeBytes) || pin.sizeBytes < 0 || !/^[0-9a-f]{64}$/.test(pin.sha256))
           throw new Error('invalid verifier artifact pin');
-        const retained = await inspect(pin.path, role === 'task.json');
+        const retained = await inspect(pin.path, role === 'task.json' || role === retainedReceipt?.role
+          || (Boolean(retainedReceipt) && role === 'source.json'));
         if (retained.sizeBytes !== pin.sizeBytes || retained.sha256 !== pin.sha256
           || (role === 'task.json' && !retained.bytes.equals(task.bytes))) throw new Error('invalid retained verifier artifact');
         witnesses.push(retained);
+        if (role === retainedReceipt?.role) captured = retained;
+        if (retainedReceipt && role === 'source.json') source = retained;
         if (role === 'task.json') continue;
         try {
           const original = await inspect(`${receiptPath}${suffixes[role]}`);
           if (original.sizeBytes === pin.sizeBytes && original.sha256 === pin.sha256) originals.push(original);
         } catch { /* Missing, linked or changed originals remain residue independently. */ }
       }
+      if (retainedReceipt) {
+        if (!captured || !source) continue;
+        const sourceReceipt = JSON.parse(source.bytes.toString('utf8'));
+        if (sourceReceipt.schemaVersion !== 'verifier-source-v1'
+          || sourceReceipt.sourceCommit !== manifest.sourceCommit) continue;
+        if (retainedReceipt.role === 'dependencies.json') {
+          const dependencyReceipt = JSON.parse(captured.bytes.toString('utf8'));
+          // The dependency writer pins the parsed source object, not its
+          // whitespace or final LF. Both receipts must belong to this manifest.
+          if (dependencyReceipt.schemaVersion !== 'verifier-dependencies-v1'
+            || dependencyReceipt.sourceCommit !== manifest.sourceCommit
+            || dependencyReceipt.sourceReceiptSha256 !== createHash('sha256')
+              .update(JSON.stringify(sourceReceipt)).digest('hex')) continue;
+        }
+      }
       // Publish no declaration until the complete retained bundle and its
       // external terminal receipt still match the observation above.
       if (!(await Promise.all(witnesses.map(unchanged))).every(Boolean)) continue;
       if (!await canonicalDirectory(container) || !await canonicalDirectory(evidenceRoot)) continue;
+      if (captured) retainedReceipt?.capture({ ref: `${manifestPath}:sha256:${manifestFile.sha256}:${retainedReceipt.role}`,
+        bytes: captured.bytes, sha256: captured.sha256 });
       add(base); add(container); add(task.path);
       for (const original of originals) if (await unchanged(original).catch(() => false)) add(original.path);
     } catch { /* Partial, forged, redirected or corrupt custody proves no original ownership. */ }
@@ -181,18 +212,42 @@ async function nativeRouterCensusDeclarations(home: string, root: string): Promi
       const pins = [locator.value.manifest, ...(manifest.segments ?? []).map((segment: { artifact: unknown }) => segment.artifact)];
       const manifestObject = await json(join(packet, 'objects', locator.value.manifest.ref));
       if (manifestObject.value.schemaVersion === 'native-proof-index-v1') {
-        pins.push(...manifestObject.value.parts.map((part: { artifact: unknown }) => part.artifact));
+        for (const part of manifestObject.value.parts) pins.push(part.artifact);
       }
-      const originals: Array<{ path: string; artifact: { sha256: string; byteLength: number } }> = [];
+      const originals: Array<{ path: string; directory?: string; artifact: { sha256: string; byteLength: number } }> = [];
       for (const group of manifest.groups) {
+        const contract = expected.value.expected.find((entry: { id: string }) => entry.id === group.id);
+        const out = contract?.out;
+        // The router writes one OUT and three flat sibling families. Custody
+        // preserves arbitrary captured paths too; those are not local ownership.
+        const localOut = contract?.armed && contract.runner === 'vitest' && typeof out === 'string'
+          && isAbsolute(out) && resolve(out) === out && [base, container].includes(dirname(out));
         for (const family of group.families) for (const captured of family.entries) {
-          if (captured.chunked) pins.push(...captured.chunked.parts.map((part: { artifact: unknown }) => part.artifact));
+          if (captured.chunked) for (const part of captured.chunked.parts) pins.push(part.artifact);
           else pins.push(captured.artifact);
+          if (!localOut || family.producer !== group.id || !['produced', 'partial'].includes(family.state)) continue;
+          const suffix = { A: '', B: '.modules', C: '.native-processes', D: '.processes' }[family.family];
+          const directory = `${out}${suffix}`;
+          if (family.family === 'A' ? captured.original !== out
+            : typeof captured.original !== 'string' || resolve(captured.original) !== captured.original
+              || dirname(captured.original) !== directory) continue;
+          // An interrupted chunk capture seals only a prefix, never the OUT.
+          if (captured.chunked && !captured.chunked.complete) continue;
+          originals.push({ path: captured.original, artifact: captured.chunked ?? captured.artifact,
+            ...(family.family === 'A' ? {} : { directory }) });
         }
         for (const auxiliary of group.auxiliary) if (auxiliary.artifact) {
           pins.push(auxiliary.artifact);
-          if (['stdout', 'stderr', 'command-exit.json'].includes(auxiliary.role)
-            && auxiliary.path === join(packet, `${group.id}.${auxiliary.role}`)) {
+          // These roles are declared by the Vitest router before launch. Its
+          // retained bytes prove only the exact local output, never neighbors
+          // or an arbitrary external path captured in the same packet.
+          const reporterOutput = contract?.runner === 'vitest' && auxiliary.state === 'produced'
+            && ['report', 'PC_EXECUTED_SOURCE_MAP_RESULT', 'PAPERCUSP_TEST_RUN_RECEIPT_FILE'].includes(auxiliary.role)
+            && typeof auxiliary.path === 'string' && isAbsolute(auxiliary.path)
+            && resolve(auxiliary.path) === auxiliary.path && [base, container].includes(dirname(auxiliary.path));
+          if (typeof auxiliary.path === 'string' && (reporterOutput
+            || (['stdout', 'stderr', 'command-exit.json'].includes(auxiliary.role)
+              && auxiliary.path === join(packet, `${group.id}.${auxiliary.role}`)))) {
             originals.push({ path: auxiliary.path, artifact: auxiliary.artifact });
           }
         }
@@ -202,17 +257,42 @@ async function nativeRouterCensusDeclarations(home: string, root: string): Promi
       add(base); add(container); add(packet); add(join(packet, 'objects'));
       add(join(packet, 'expected.json')); add(join(packet, 'locator.json'));
       for (const pin of pins) if (pin) add(join(packet, 'objects', pin.ref));
-      // Original child streams can change independently of retained custody.
+      // Original source families and child streams can change independently of retained custody.
       // Only claim exact local originals still matching their retained bytes.
       for (const original of originals) {
         try {
-          const bytes = readNativeArtifactBytes(original.path, original.artifact.byteLength, 8 * 1024 * 1024);
-          if (createHash('sha256').update(bytes).digest('hex') === original.artifact.sha256) add(original.path);
+          // Reuse the writer's descriptor/race guards and stream large OUTs.
+          if (hashNativeArtifactBytes(original.path, original.artifact.byteLength, original.artifact.byteLength)
+            === original.artifact.sha256) {
+            if (original.directory) add(original.directory);
+            add(original.path);
+          }
         } catch { /* Changed, linked or missing originals remain unresolved. */ }
       }
     } catch { /* An incomplete, redirected or corrupt packet proves no ownership. */ }
   }
   return [...declarations.values()];
+}
+
+/** Reuse exact retained custody validators without discovering unrelated runtime state. */
+export async function runtimeTestArtifactCensusDeclarations(knownHomes: Iterable<string>, roots: CensusRoot[]) {
+  const declarations: CensusDeclaration[] = [];
+  for (const directory of new Set(knownHomes)) {
+    if (!(await lstat(directory).catch(error => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    }))?.isDirectory() || await realpath(directory) !== resolve(directory)) continue;
+    let evidenceRoot = roots.find(candidate => candidate.path === directory);
+    if (!evidenceRoot) { evidenceRoot = { id: `runtime-native-evidence-${roots.length}`, path: directory }; }
+    const native = await nativeRouterCensusDeclarations(directory, evidenceRoot.id);
+    const verifier = await verifierOriginalCensusDeclarations(directory, evidenceRoot.id);
+    if (native.length || verifier.length) {
+      if (!roots.includes(evidenceRoot)) roots.push(evidenceRoot);
+      for (const declaration of native) declarations.push(declaration);
+      for (const declaration of verifier) declarations.push(declaration);
+    }
+  }
+  return declarations;
 }
 
 /** Compose independent writers without traversing the same physical root twice. */
@@ -247,6 +327,27 @@ export function runtimeRetainedCensusProducer(path = papercuspRoot()) {
     // Keep the enabled-environment choice across transfer. Unlike endpoint
     // discovery and console markers, this is a durable preference, not a lease.
     { kind: 'path', root: root.id, name: 'env-switcher-prefs.json', classification: 'config', producer: 'env-switcher-prefs' },
+    // Both key writers use host-platform papercuspPath() when no file override
+    // is selected. Changing that selection does not retire the old key: retain
+    // these exact defaults in every known home, without claiming copies.
+    { kind: 'path', root: root.id, name: 'db-encryption-key', classification: 'secret', producer: 'db-encryption' },
+    { kind: 'path', root: root.id, name: 'oauth-state-key', classification: 'secret', producer: 'oauth-state-signing-key' },
+    // The bearer reader follows the selected host-platform home. Switching
+    // workspaces leaves the previous credential at this exact writer path.
+    { kind: 'path', root: root.id, name: 'superuser-token', classification: 'secret', producer: 'superuser-token' },
+    // CLI consent and plugin maintenance still persist these exact grants.
+    // Keep their authorization choices when a workspace becomes inactive.
+    { kind: 'path', root: root.id, name: 'granted-capabilities.json', classification: 'config', producer: 'plugin-capability-consent' },
+    { kind: 'path', root: root.id, name: 'extended-grants.json', classification: 'config', producer: 'plugin-capability-consent' },
+    // The last keychain-verified identity supports offline/outage recovery.
+    // Retain the exact writer default even after its workspace is inactive.
+    { kind: 'path', root: root.id, name: 'local-announce-identity.json', classification: 'state', producer: 'local-announce-identity' },
+    // Preserve cross-boot retry pacing; the DB migration ledger remains the
+    // correctness authority. Neither stale copies nor siblings are owned.
+    { kind: 'path', root: root.id, name: 'migration-failure-cooldown.json', classification: 'state', producer: 'boot-migration-cooldown' },
+    // The testing preference shares a file with private PostHog credentials.
+    { kind: 'path', root: root.id, name: 'posthog.json', classification: 'secret', producer: 'posthog-config' },
+    { kind: 'path', root: root.id, name: 'release-sha256-cache.json', classification: 'cache', producer: 'release-record-digest-cache' },
   ];
   return { roots: [root], declarations };
 }
@@ -359,6 +460,34 @@ export async function accountCredentialCensusProducer(accounts: ReadonlyArray<{ 
       }
       if (!durable) continue;
       const files = new Set((entries ?? []).filter(entry => entry.isFile()).map(entry => entry.name));
+      // arg0/src/lib.rs creates tmp/arg0-<OS>; core/src/shell_snapshot.rs
+      // creates shell_snapshots for captured shell state. core-plugins/store.rs
+      // creates plugins/cache (installed.rs), while skills/src/lib.rs installs
+      // skills/.system. Plugins also hold persistent data; skills can include
+      // user configuration. Own only the exact container: children require
+      // independent writer evidence. Snapshots may contain environment values.
+      // Historical Codex rust-v0.104.0 (74d1f7b2) tui/src/lib.rs creates
+      // config::log_dir before opening codex-tui.log; core/src/config/mod.rs
+      // defaults it to CODEX_HOME/log. Retain that legacy container as secret:
+      // diagnostic output may contain user content. Current TUI removal of
+      // the legacy log file does not erase the older writer's directory.
+      for (const [name, classification, producer] of [
+        ['tmp', 'cache', 'codex-arg0-dispatch'],
+        ['shell_snapshots', 'secret', 'codex-shell-snapshot'],
+        ['plugins', 'state', 'codex-plugin-store'],
+        ['skills', 'config', 'codex-system-skills'],
+        ['log', 'secret', 'codex-tui-log'],
+      ] as const) {
+        if (!(entries ?? []).some(entry => entry.name === name && entry.isDirectory())) continue;
+        const container = join(directory, name);
+        try {
+          if ((await lstat(container)).isDirectory() && await realpath(container) === resolve(container)) {
+            add(`${prefix}${name}`, classification, producer);
+          }
+        } catch (error) {
+          if (!['ENOENT', 'ELOOP', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+        }
+      }
       // Codex rust-v0.167.0 state/src/sqlite.rs RuntimeDbSpec. Preserve the
       // database and its SQLite WAL/SHM companions together, never as cache.
       // Check only the bounded header; do not open a live database via SQLite
@@ -379,6 +508,61 @@ export async function accountCredentialCensusProducer(accounts: ReadonlyArray<{ 
           }
         } catch (error) {
           if (!['ENOENT', 'ELOOP'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+        } finally { await handle?.close(); }
+      }
+      // models-manager/src/{manager,cache}.rs writes ModelsCacheEntry to this
+      // exact file. Stale/version-mismatched and empty catalogs are still cache;
+      // freshness is a consumer decision, not an ownership decision.
+      if (files.has('models_cache.json')) {
+        const cachePath = join(directory, 'models_cache.json');
+        let handle;
+        try {
+          handle = await open(cachePath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+          const info = await handle.stat();
+          if (info.isFile() && info.size <= 8 * 1024 * 1024) {
+            const cache = JSON.parse(await handle.readFile('utf8'));
+            const stamp = (stat: typeof info) =>
+              [stat.dev, stat.ino, stat.size, stat.mode, stat.mtimeMs, stat.ctimeMs].join(':');
+            if (cache && typeof cache === 'object' && !Array.isArray(cache)
+              && typeof cache.fetched_at === 'string'
+              && /^[+-]?\d{4,6}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(cache.fetched_at)
+              && Number.isFinite(Date.parse(cache.fetched_at))
+              && ['etag', 'client_version', 'identity'].every(key => cache[key] == null || typeof cache[key] === 'string')
+              && Array.isArray(cache.models) && cache.models.every((model: unknown) =>
+                !!model && typeof model === 'object' && !Array.isArray(model)
+                && typeof (model as Record<string, unknown>).slug === 'string' && !!(model as Record<string, unknown>).slug
+                && typeof (model as Record<string, unknown>).display_name === 'string')
+              && stamp(await handle.stat()) === stamp(info) && stamp(await lstat(cachePath)) === stamp(info)
+              && await realpath(cachePath) === resolve(cachePath)) {
+              add(`${prefix}models_cache.json`, 'cache', 'codex-model-catalog-cache');
+            }
+          }
+        } catch (error) {
+          if (!(error instanceof SyntaxError) && !['ENOENT', 'ELOOP', 'ENOTDIR']
+            .includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+        } finally { await handle?.close(); }
+      }
+      // execpolicy/src/sandbox_migration.rs atomically persists exactly v1\n.
+      // Retain this configuration marker: omitting it re-runs policy migration.
+      if (files.has('.sandbox_migration')) {
+        const markerPath = join(directory, '.sandbox_migration');
+        let handle;
+        try {
+          handle = await open(markerPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+          const info = await handle.stat();
+          if (info.isFile() && info.size === 3) {
+            const bytes = Buffer.alloc(4);
+            const { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
+            const stamp = (stat: typeof info) =>
+              [stat.dev, stat.ino, stat.size, stat.mode, stat.mtimeMs, stat.ctimeMs].join(':');
+            if (bytesRead === 3 && bytes.subarray(0, bytesRead).equals(Buffer.from('v1\n'))
+              && stamp(await handle.stat()) === stamp(info) && stamp(await lstat(markerPath)) === stamp(info)
+              && await realpath(markerPath) === resolve(markerPath)) {
+              add(`${prefix}.sandbox_migration`, 'config', 'codex-sandbox-policy-migration');
+            }
+          }
+        } catch (error) {
+          if (!['ENOENT', 'ELOOP', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
         } finally { await handle?.close(); }
       }
       // core/src/installation_id.rs persists a UUID, with no newline required.
@@ -666,7 +850,7 @@ export async function workspaceTemplateStoreCensusProducer(path = workspacesRoot
     const store = await templateStoreCensusProducer(home, expected, historicalIdentity);
     const id = `workspace-template-store:${entry.name}`;
     roots.push({ id, path: home });
-    declarations.push(...store.declarations.map(declaration => ({ ...declaration, root: id })));
+    for (const declaration of store.declarations) declarations.push({ ...declaration, root: id });
   }
   return { roots, declarations };
 }
@@ -693,6 +877,80 @@ export async function planTemplateStoreCensusProducer(path = papercuspRoot()) {
     }
   }
   return { roots: [root], declarations };
+}
+
+/** Exact OAuth declarations for known runtime homes, also used by bounded census probes. */
+export async function oauthRegistrationCensusDeclarations(discoveryHomes: ReadonlySet<string>, roots: CensusRoot[] = []) {
+  const declarations: CensusDeclaration[] = [];
+  // The registration writer keeps inline secrets and exact file references.
+  // Connection/push consumers prefer a truthy inline secret over the file;
+  // a temporary registration is retained but has not selected a secret yet.
+  const oauthSecrets = new Set<string>();
+  const oauthStamp = (stat: Awaited<ReturnType<typeof lstat>>) =>
+    [stat.dev, stat.ino, stat.size, stat.mode, stat.mtimeMs, stat.ctimeMs].join(':');
+  for (const directory of discoveryHomes) {
+    try {
+      if (!(await lstat(directory)).isDirectory() || await realpath(directory) !== resolve(directory)) continue;
+    } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      if (!entry.isFile() || (entry.name !== OAUTH_APPS_FILE
+        && !/^oauth-apps\.json\.[1-9][0-9]*\.[0-9a-f]{12}\.tmp$/.test(entry.name))) continue;
+      const path = join(directory, entry.name);
+      let handle;
+      try {
+        handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        const stat = await handle.stat();
+        if (!stat.isFile() || stat.size > 1024 * 1024) continue;
+        const record = JSON.parse(await handle.readFile('utf8'));
+        if (!record || typeof record !== 'object' || Array.isArray(record)) continue;
+        // Match readOAuthClientRegistration's plain-object/nonempty-clientId
+        // contract; unrelated objects cannot establish registration ownership.
+        const registrations = Object.values(record).filter((value): value is Record<string, unknown> =>
+          !!value && typeof value === 'object' && !Array.isArray(value)
+          && typeof (value as Record<string, unknown>).clientId === 'string'
+          && !!(value as Record<string, unknown>).clientId);
+        if (Object.keys(record).length && !registrations.length) continue;
+        if (oauthStamp(await handle.stat()) !== oauthStamp(stat) || oauthStamp(await lstat(path)) !== oauthStamp(stat)
+          || await realpath(path) !== resolve(path)) continue;
+        let registryRoot = roots.find(root => root.path === directory);
+        if (!registryRoot) { registryRoot = { id: `runtime-oauth-${roots.length}`, path: directory }; roots.push(registryRoot); }
+        declarations.push({ kind: 'path', root: registryRoot.id, name: entry.name,
+          classification: 'secret', producer: 'oauth-client-registration' });
+        if (entry.name === OAUTH_APPS_FILE) for (const registration of registrations) {
+          const ref = registration.clientSecretFile;
+          if (!registration.clientSecret && typeof ref === 'string' && isAbsolute(ref) && resolve(ref) === ref)
+            oauthSecrets.add(ref);
+        }
+      } catch (error) {
+        if (!(error instanceof SyntaxError) && !['ENOENT', 'ELOOP', 'EACCES', 'EPERM', 'ENOTDIR']
+          .includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+      } finally { await handle?.close(); }
+    }
+  }
+  for (const path of oauthSecrets) {
+    let handle;
+    try {
+      if (await realpath(path) !== path) continue;
+      handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      const stat = await handle.stat();
+      if (!stat.isFile() || oauthStamp(await lstat(path)) !== oauthStamp(stat) || await realpath(path) !== path) continue;
+      let secretRoot = roots.find(root => root.path === dirname(path));
+      if (!secretRoot) {
+        // Known runtime homes require a full inventory even when this exact
+        // secret is their first declaration. External parents select only the
+        // referenced file; unrelated data there is outside the census roots.
+        secretRoot = { id: `runtime-oauth-secret-${roots.length}`, path: dirname(path),
+          ...(discoveryHomes.has(dirname(path)) ? {} : { fileNames: [] }) };
+        roots.push(secretRoot);
+      }
+      if (secretRoot.fileNames && !secretRoot.fileNames.includes(basename(path))) secretRoot.fileNames.push(basename(path));
+      declarations.push({ kind: 'path', root: secretRoot.id, name: basename(path),
+        classification: 'secret', producer: 'oauth-client-registration' });
+    } catch (error) {
+      if (!['ENOENT', 'ELOOP', 'EACCES', 'EPERM', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+    } finally { await handle?.close(); }
+  }
+  return declarations;
 }
 
 /** Exact runtime sidefile writers; siblings require separate provenance. */
@@ -803,20 +1061,52 @@ export async function runtimeSidefileCensusProducer(home = homedir(), environmen
   // discovery left in registered or legacy homes after switching workspaces;
   // arbitrary launch working directories are not runtime-home evidence.
   const discoveryHomes = new Set([ordinaryHome, papercuspHome(environment, home), ...runtimeHomes]);
-  for (const directory of discoveryHomes) {
-    if (!(await lstat(directory).catch(error => {
-      if (error.code === 'ENOENT') return null;
-      throw error;
-    }))?.isDirectory() || await realpath(directory) !== resolve(directory)) continue;
-    let evidenceRoot = roots.find(candidate => candidate.path === directory);
-    if (!evidenceRoot) { evidenceRoot = { id: `runtime-native-evidence-${roots.length}`, path: directory }; }
-    const native = await nativeRouterCensusDeclarations(directory, evidenceRoot.id);
-    const verifier = await verifierOriginalCensusDeclarations(directory, evidenceRoot.id);
-    if (native.length || verifier.length) {
-      if (!roots.includes(evidenceRoot)) roots.push(evidenceRoot);
-      declarations.push(...native, ...verifier);
+  // Both writers accept a truthy path override and pass it directly to fs.
+  // Resolve relative pins against this process's cwd, preserving their exact
+  // spelling semantics (no trimming or home expansion). A pin owns only its
+  // regular file, never external siblings or a symlink's target.
+  for (const [selected, producer] of [
+    [environment.PAPERCUSP_ANNOUNCE_IDENTITY_CACHE, 'local-announce-identity'],
+    [environment.PAPERCUSP_MIGRATION_COOLDOWN_FILE, 'boot-migration-cooldown'],
+  ] as const) {
+    if (!selected) continue;
+    const path = resolve(selected);
+    try {
+      if (!(await lstat(path)).isFile() || await realpath(path) !== path) continue;
+      const directory = dirname(path);
+      let selectedRoot = roots.find(candidate => candidate.path === directory);
+      if (!selectedRoot) {
+        selectedRoot = { id: `runtime-selected-sidefile-${roots.length}`, path: directory,
+          ...(discoveryHomes.has(directory) ? {} : { fileNames: [] }) };
+        roots.push(selectedRoot);
+      }
+      if (selectedRoot.fileNames && !selectedRoot.fileNames.includes(basename(path))) selectedRoot.fileNames.push(basename(path));
+      declarations.push({ kind: 'path', root: selectedRoot.id, name: basename(path), classification: 'state', producer });
+    } catch (error) {
+      if (!['ENOENT', 'ELOOP', 'ENOTDIR', 'EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
     }
   }
+  for (const directory of discoveryHomes) {
+    try {
+      if (!(await lstat(directory)).isDirectory() || await realpath(directory) !== resolve(directory)) continue;
+    } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      // record-release-cli writes this exact process-scoped atomic sidefile.
+      // Only canonical runtime homes establish ownership, never launch cwd.
+      const releaseCacheTemporary = /^release-sha256-cache\.json\.tmp-([1-9][0-9]{0,9})$/.exec(entry.name);
+      if (entry.isFile() && releaseCacheTemporary && Number(releaseCacheTemporary[1]) <= 2147483647) {
+        let cacheRoot = roots.find(root => root.path === directory);
+        if (!cacheRoot) { cacheRoot = { id: `runtime-release-cache-${roots.length}`, path: directory }; roots.push(cacheRoot); }
+        declarations.push({ kind: 'path', root: cacheRoot.id, name: entry.name,
+          classification: 'cache', producer: 'release-record-digest-cache' });
+        continue;
+      }
+    }
+  }
+  // A whole-install inventory can exceed V8's function argument limit.
+  // Append entries individually, including already validated retained proof.
+  for (const declaration of await oauthRegistrationCensusDeclarations(discoveryHomes, roots)) declarations.push(declaration);
+  for (const declaration of await runtimeTestArtifactCensusDeclarations(discoveryHomes, roots)) declarations.push(declaration);
   // Reuse the test runner's resolver for reports, executed inputs and native
   // proof. A path switch leaves earlier packets in known runtime homes.
   // Only the testing-run subtree is opaque retained state; siblings still
@@ -1196,11 +1486,47 @@ export function workspaceRegistryCensusProducer() {
   };
   // The registry is the producer authority for directory names. Classify only
   // directory entries here: their contents still require their own producers.
-  const workspaceDirectories: CensusDeclaration[] = readRegistry().workspaces.map(workspace => ({
-    kind: 'path', root: root.id, name: workspace.id,
-    classification: 'state', producer: 'workspace-registry',
-  }));
-  return { roots: [root], declarations: [declaration, ...workspaceDirectories] };
+  const workspaceDirectories: CensusDeclaration[] = readRegistry().workspaces.flatMap(workspace => [
+    { kind: 'path', root: root.id, name: workspace.id,
+      classification: 'state', producer: 'workspace-registry' },
+    // workspaces.rs creates this exact credential home and links (or copies)
+    // these three files. Preserve user overrides too, without owning other
+    // vendor files or following a credential link into an external home.
+    { kind: 'path', root: root.id, name: `${workspace.id}/.claude`,
+      classification: 'state', producer: 'desktop-workspace-credentials' },
+    { kind: 'path', root: root.id, name: `${workspace.id}/.claude.json`,
+      classification: 'secret', producer: 'desktop-workspace-credentials' },
+    { kind: 'path', root: root.id, name: `${workspace.id}/.claude/.credentials.json`,
+      classification: 'secret', producer: 'desktop-workspace-credentials' },
+    { kind: 'path', root: root.id, name: `${workspace.id}/.gitconfig`,
+      classification: 'config', producer: 'desktop-workspace-credentials' },
+  ]);
+  // Both desktop and headless Server create shared_data_dir() beside the
+  // registry. WSL onboarding persists its shared preference here; database,
+  // code-server and other children still need independent declarations.
+  const shared: CensusDeclaration[] = [
+    { kind: 'path', root: root.id, name: '.shared',
+      classification: 'state', producer: 'desktop-shared-data' },
+    { kind: 'path', root: root.id, name: '.shared/wsl-state.json',
+      classification: 'config', producer: 'desktop-wsl-onboarding' },
+    // spawn_serve in main.rs selects these shared identity paths regardless
+    // of the census process's own HOME and identity environment overrides.
+    // The container owns only itself; unrelated children still need provenance.
+    { kind: 'path', root: root.id, name: '.shared/.papercusp',
+      classification: 'state', producer: 'desktop-shared-data' },
+    { kind: 'path', root: root.id, name: '.shared/.papercusp/identity',
+      classification: 'secret', producer: 'identity-keychain', descendants: true },
+    { kind: 'path', root: root.id, name: '.shared/.papercusp/local-announce-identity.json',
+      classification: 'state', producer: 'local-announce-identity' },
+    // main.rs selects this exact native extraction target. dev-source-extract.ts
+    // populates the whole writable tree and preserves user checkouts in place.
+    { kind: 'path', root: root.id, name: '.shared/dev-source',
+      classification: 'state', producer: 'desktop-bundled-dev-source',
+      descendants: true, retainedSubtree: {
+        evidenceRef: 'source:apps/operator/lib/dev-source-extract.ts#extractDevSourceTree',
+      } },
+  ];
+  return { roots: [root], declarations: [declaration, ...workspaceDirectories, ...shared] };
 }
 
 /** Derive secret locations from their writers, including relocated mounted keys. */
@@ -1432,7 +1758,131 @@ text(r);`;
   return { output };
 }
 
-export interface PlaywrightStateWriterEvidence extends HostedProfileWriterEvidence { receipt: string; indexedRef?: string }
+export interface PlaywrightStateWriterEvidence extends HostedProfileWriterEvidence {
+  receipt: string;
+  indexedRef?: string;
+  /** Transport completion only; producers must independently attest the writer and installed bytes. */
+  terminal?: { exitCode: number; output: string; ref: string };
+  /** Static input inspection only, not a claim that the wrapper or command proves ownership. */
+  command?: { cmd: string; workdir?: string };
+  /** Candidate operations only: never declarations or current-byte ownership. */
+  sourceOperations?: ReturnType<typeof sourceShellOperations>;
+  operationEvidence?: OperationAdapterEvidence[];
+  sourceBindings?: Awaited<ReturnType<typeof attestHistoricalSourceOperations>>;
+}
+
+/** Read ORIGINAL retained receipt bytes through the canonical evidence owner.
+ * The digest must come from that owner's archive, never today's destination.
+ * Reuse source-preview's receipts; this is no new receipt or custody grant.
+ */
+type HistoricalSourceReceiptReader = (sourceRef: string, operation: SourceShellOperation) =>
+  Promise<{ ref: string; bytes: Buffer; sha256: string } | null>;
+
+// Public evidence fields are diagnostic, not authority. Only canonical recovery
+// registers these identities; a spread/JSON copy or caller-supplied binding has
+// no custody. Keep a private snapshot so later edits cannot redirect its reader.
+const recoveredSourceCustody = new WeakMap<PlaywrightStateWriterEvidence, {
+  record: PlaywrightStateWriterEvidence; readOriginal: HistoricalSourceReceiptReader; bindingPin: string;
+}>();
+const sourceRecordSnapshot = (record: PlaywrightStateWriterEvidence): PlaywrightStateWriterEvidence => ({
+  ref: record.ref, toolInput: record.toolInput, receipt: record.receipt,
+  startedAt: record.startedAt, finishedAt: record.finishedAt,
+  ...(record.terminal ? { terminal: { ...record.terminal } } : {}),
+});
+
+/** A terminal archive pins the manifest independently of today's bundle. Reuse
+ * the complete original-custody validator; path-only legacy markers prove no pin.
+ */
+export async function readHistoricalCensusSourceReceipt(record: PlaywrightStateWriterEvidence,
+  operation: SourceShellOperation, runtimeHomes: readonly string[] = [papercuspHome(), join(homedir(), '.papercusp')]) {
+  const prefix = /^(?:archive|retained):codex:[^:]+:sha256:[0-9a-f]{64}:/.exec(record.ref)?.[0];
+  if (!prefix || record.terminal?.exitCode !== 0 || !record.terminal.ref.startsWith(prefix)) return null;
+  const markers = record.terminal.output.split('\n').filter(line => line.startsWith('VERIFIER_TASK_EVIDENCE '));
+  if (markers.length !== 1) return null;
+  try {
+    const marker = JSON.parse(markers[0].slice('VERIFIER_TASK_EVIDENCE '.length));
+    if (typeof marker.taskId !== 'string' || !/^[A-Za-z0-9-]{1,100}$/.test(marker.taskId)
+      || typeof marker.manifestPath !== 'string' || !isAbsolute(marker.manifestPath)
+      || resolve(marker.manifestPath) !== marker.manifestPath
+      || !/^[0-9a-f]{64}$/.test(marker.manifestSha256 ?? '')) return null;
+    const run = dirname(marker.manifestPath), task = dirname(run), logs = dirname(task), home = dirname(logs);
+    if (basename(marker.manifestPath) !== 'manifest.json' || !/^[0-9a-f]{64}$/.test(basename(run))
+      || basename(task) !== `verifier-task-${marker.taskId}` || basename(logs) !== 'checkpoint-logs'
+      || !runtimeHomes.includes(home)) return null;
+    const receipts: { ref: string; bytes: Buffer; sha256: string }[] = [];
+    await verifierOriginalCensusDeclarations(home, 'historical-verifier-original', {
+      manifestPath: marker.manifestPath, manifestSha256: marker.manifestSha256,
+      role: operation.kind === 'git-archive' ? 'source.json' : 'dependencies.json',
+      capture: receipt => { receipts.push(receipt); },
+    });
+    return receipts.length === 1 ? receipts[0] : null;
+  } catch { return null; }
+}
+
+export async function attestHistoricalSourceOperations(record: PlaywrightStateWriterEvidence,
+  readOriginal: HistoricalSourceReceiptReader) {
+  const bindings: { operationIndex: number; receiptRef: string; receiptSha256: string;
+    sourceCommit: string; files: ReturnType<typeof verifierSourceFiles> }[] = [];
+  const command = historicalCensusCommandInput(record.toolInput);
+  const operations = command && sourceShellOperations(command.cmd);
+  if (!operations || operations.status !== 'supported' || record.terminal?.exitCode !== 0
+    || !/^(?:archive|retained):codex:/.test(record.ref)) return bindings;
+  const canonicalDirectory = async (path: string) => isAbsolute(path) && resolve(path) === path
+    && (await lstat(path)).isDirectory() && await realpath(path) === path;
+  for (const [operationIndex, operation] of operations.operations.entries()) {
+    try {
+      const original = await readOriginal(record.ref, operation);
+      if (!original?.ref || !/^[0-9a-f]{64}$/.test(original.sha256) || original.bytes.length > 16 * 1024 * 1024) continue;
+      // Snapshot before the first filesystem await, including digest validation.
+      const originalBytes = Buffer.from(original.bytes);
+      if (createHash('sha256').update(originalBytes).digest('hex') !== original.sha256
+        || !await canonicalDirectory(operation.destination)) continue;
+      const receipt = JSON.parse(originalBytes.toString('utf8'));
+      let files: ReturnType<typeof verifierSourceFiles>;
+      if (operation.kind === 'git-archive') {
+        if (receipt.schemaVersion !== 'verifier-source-v1' || receipt.sourceCommit !== operation.commit) continue;
+        const { resolveCommit, listGitlinks, validateVerifierInputs } = await import('../../../../scripts/source-preview.mjs');
+        if (resolveCommit(operation.repository, operation.commit) !== operation.commit) continue;
+        const submodules: { path: string; sha: string }[] = [];
+        const visit = (repository: string, commit: string, prefix = '', depth = 0) => {
+          if (depth > 32 || submodules.length > 1000) throw new Error('Source gitlink bound exceeded');
+          for (const link of listGitlinks(repository, commit)) {
+            const path = prefix ? `${prefix}/${link.path}` : link.path;
+            submodules.push({ path, sha: link.sha });
+            visit(join(repository, link.path), link.sha, path, depth + 1);
+          }
+        };
+        visit(operation.repository, operation.commit);
+        const sorted = (rows: { path: string; sha: string }[]) => [...rows].sort((a, b) => a.path.localeCompare(b.path));
+        if (JSON.stringify(sorted(submodules)) !== JSON.stringify(sorted(receipt.submodules ?? []))) continue;
+        // source-preview pins the canonical JSON object, while our archive pin
+        // above covers the original bytes, including whitespace and final LF.
+        await validateVerifierInputs({ repo: operation.destination, ref: operation.commit,
+          inputs: (receipt as VerifierSourceReceipt).testedInputs.map(input => input.path),
+          receiptSha256: createHash('sha256').update(JSON.stringify(receipt)).digest('hex') });
+        files = receipt.files;
+      } else {
+        if (receipt.schemaVersion !== 'verifier-dependencies-v1' || receipt.scope !== 'materialized-dependency-files'
+          || !/^[0-9a-f]{40}$/.test(receipt.sourceCommit) || !/^[0-9a-f]{64}$/.test(receipt.sourceReceiptSha256)
+          || !await canonicalDirectory(receipt.root) || !Array.isArray(receipt.trees)
+          || !await canonicalDirectory(operation.source)) continue;
+        const trees = receipt.trees.filter((tree: { path: string }) => typeof tree.path === 'string'
+          && !isAbsolute(tree.path) && !tree.path.split('/').some(part => !part || part === '.' || part === '..')
+          && join(receipt.root, tree.path) === operation.source);
+        if (trees.length !== 1 || !Array.isArray(trees[0].files) || !trees[0].files.length) continue;
+        files = trees[0].files;
+        // Never compare just the two current trees: hardlinks mutate together.
+        // Both must still match the independently retained dependency census.
+        for (const tree of [operation.source, operation.destination]) {
+          if (JSON.stringify(verifierSourceFiles(tree)) !== JSON.stringify(files)) throw new Error('Original dependency bytes changed');
+        }
+      }
+      bindings.push({ operationIndex, receiptRef: original.ref, receiptSha256: original.sha256,
+        sourceCommit: receipt.sourceCommit, files });
+    } catch { /* Missing, redirected or changed evidence stays unbound. */ }
+  }
+  return bindings;
+}
 
 export interface IndexedCensusWriterEvidence extends HostedProfileWriterEvidence { sessionId: string }
 
@@ -1452,7 +1902,12 @@ export async function readHistoricalCensusWriterCandidates(sql: Sql) {
     WHERE writer.workspace_id = 'default' AND writer.source_kind = 'codex' AND writer.part_kind = 'tool_use'
       AND (writer.text LIKE '%writeFileSync(destination,encrypt(%'
         OR (writer.text LIKE '%chromium%' AND writer.text LIKE '%statePath%')
-        OR writer.text LIKE '%securewrite(%')
+        OR writer.text LIKE '%securewrite(%'
+        OR writer.text LIKE '%bounded-proof-receipt.json%write_text%'
+        -- This writer's receipt name is beyond the index's 2,000-character
+        -- prefix. Its early raw-artifact construction only locates the full
+        -- archive; the producer still attests the entire call and receipt.
+        OR writer.text LIKE '%bg-memory-proof.json%raw_names=%')
     ORDER BY writer.session_id, writer.part_idx
     LIMIT 101
   `;
@@ -1571,9 +2026,110 @@ function historicalCensusReceipt(text: string): string | null {
     value.plans.every((plan: Record<string, unknown>) => plan && typeof plan === 'object' &&
       ['planKey', 'priceId', 'productId', 'label', 'description'].every(key => typeof plan[key] === 'string')) &&
     ['portalConfigurationId', 'webhookEndpointId', 'webhookUrl', 'workItem'].every(key => typeof value[key] === 'string');
-  return stripeConfig || value.storageState !== undefined ||
+  const boundedProof = typeof value.receipt === 'string' && value.receipt.endsWith('/bounded-proof-receipt.json')
+    && value.testRunId === 23654091 && /^[0-9a-f]{64}$/.test(value.sourceSha256 ?? '')
+    && value.cleanup?.fixtureRootAbsent === true;
+  return stripeConfig || boundedProof || value.storageState !== undefined ||
     (value.ok === true && typeof value.statePath === 'string' && typeof value.sessionHash === 'string')
     ? JSON.stringify(value) : null;
+}
+
+/** Reuse the port reader for older incarnations in their recorded native home.
+ * An archive integrity error must never fall back to mutable retained bytes.
+ */
+export async function readHistoricalCensusWriterSource(sessionId: string, deps: {
+  readArchive?: (sessionId: string) => Promise<{ bytes: Buffer; sha256: string }>;
+  sql?: Sql;
+  rowsForOwner?: typeof import('../adv-sessions').advSessionsByCoordOwner;
+  readTracked?: typeof import('../session-port/service').acquireTrackedSessionSource;
+} = {}): Promise<{ bytes: Buffer; sha256: string; source?: string }> {
+  const readArchive = deps.readArchive ?? (async (id: string) => {
+    const { readCanonicalNativeArchive } = await import('../session-port/source');
+    const { pgSessionArchiveStore } = await import('../session-archive');
+    return readCanonicalNativeArchive({ backend: 'codex', sessionId: id }, pgSessionArchiveStore());
+  });
+  try { return await readArchive(sessionId); }
+  catch (error) {
+    if (!(error instanceof Error) || error.message !== 'canonical codex archive not found') throw error;
+    const sql = deps.sql ?? (await import('@papercusp/db-org')).getOrgPg().sql as unknown as Sql;
+    const [indexed] = await sql<Array<{ owner: string }>>`
+      SELECT owner FROM harness_shared.session_turns
+       WHERE session_id = ${sessionId} AND source_kind = 'codex' AND owner IS NOT NULL
+       ORDER BY ingested_at DESC LIMIT 1
+    `;
+    if (!indexed?.owner) throw error;
+    const rows = await (deps.rowsForOwner ?? (await import('../adv-sessions')).advSessionsByCoordOwner)(1, [indexed.owner]);
+    const row = rows.get(indexed.owner);
+    const { evidenceIncarnationOwnedBy } = await import('../session-port/source');
+    if (!row || row.agent !== 'codex' || row.role != null || row.coordOwnerId !== indexed.owner || !row.cwd ||
+        !await evidenceIncarnationOwnedBy(sql, row, sessionId)) throw error;
+    const readTracked = deps.readTracked ?? (await import('../session-port/service')).acquireTrackedSessionSource;
+    return readTracked({ ...row, sessionId });
+  }
+}
+
+/** Inspect one direct native command without executing historical JavaScript.
+ * Reuse the TypeScript AST already used by the writer attestations. Unlike
+ * advisory suffix/prompt scanners, every character must resolve from preceding
+ * top-level string constants. Unknown expressions and lexical scopes stay unknown.
+ */
+function historicalCensusCommandInput(input: string): PlaywrightStateWriterEvidence['command'] {
+  const source = ts.createSourceFile('historical-command.js', input, ts.ScriptTarget.Latest, true);
+  if ((source as ts.SourceFile & { parseDiagnostics?: readonly unknown[] }).parseDiagnostics?.length) return;
+  const calls: ts.CallExpression[] = [];
+  const bindings = new Map<string, string>();
+  const invalid = new Set<string>();
+  let toolsShadowed = false;
+  const inspect = (node: ts.Node) => {
+    if ((ts.isVariableDeclaration(node) || ts.isParameter(node) || ts.isFunctionDeclaration(node) || ts.isBindingElement(node)) &&
+      node.name && ts.isIdentifier(node.name) && node.name.text === 'tools') toolsShadowed = true;
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+      node.operatorToken.kind <= ts.SyntaxKind.LastAssignment) {
+      if (ts.isIdentifier(node.left)) invalid.add(node.left.text);
+      if (/^tools(?:\.|\[|$)/.test(node.left.getText(source))) toolsShadowed = true;
+    }
+    if ((ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) && ts.isIdentifier(node.operand))
+      invalid.add(node.operand.text);
+    if (ts.isCallExpression(node) && node.expression.getText(source) === 'tools.exec_command') calls.push(node);
+    ts.forEachChild(node, inspect);
+  };
+  inspect(source);
+  if (toolsShadowed || calls.length !== 1) return;
+  const call = calls[0];
+  for (let parent: ts.Node | undefined = call.parent; parent && parent !== source; parent = parent.parent)
+    if (ts.isFunctionLike(parent) || ts.isBlock(parent)) return;
+  const value = (node: ts.Expression, depth = 0): string | undefined => {
+    if (depth > 64) return;
+    if (ts.isStringLiteralLike(node)) return node.text;
+    if (ts.isIdentifier(node)) return invalid.has(node.text) ? undefined : bindings.get(node.text);
+    if (ts.isParenthesizedExpression(node)) return value(node.expression, depth + 1);
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+      const left = value(node.left, depth + 1); const right = value(node.right, depth + 1);
+      if (left !== undefined && right !== undefined && left.length + right.length <= 65_536) return left + right;
+    }
+  };
+  for (const statement of source.statements) {
+    if (statement.end > call.pos) break;
+    if (!ts.isVariableStatement(statement)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (!ts.isIdentifier(declaration.name)) continue;
+      const name = declaration.name.text;
+      if (bindings.has(name) || !(statement.declarationList.flags & ts.NodeFlags.Const)) invalid.add(name);
+      const resolved = declaration.initializer && value(declaration.initializer);
+      if (resolved !== undefined && !invalid.has(name)) bindings.set(name, resolved);
+    }
+  }
+  if (call.arguments.length !== 1 || !ts.isObjectLiteralExpression(call.arguments[0])) return;
+  const properties = new Map<string, ts.Expression>();
+  for (const property of call.arguments[0].properties) {
+    if (!ts.isPropertyAssignment(property) || !(ts.isIdentifier(property.name) || ts.isStringLiteralLike(property.name))) return;
+    if (properties.has(property.name.text)) return;
+    properties.set(property.name.text, property.initializer);
+  }
+  const cmd = properties.get('cmd'); const workdir = properties.get('workdir');
+  const command = cmd && value(cmd); const cwd = workdir && value(workdir);
+  if (command === undefined || (workdir && cwd === undefined)) return;
+  return { cmd: command, ...(cwd === undefined ? {} : { workdir: cwd }) };
 }
 
 /** The search index locates a session/time; it is not the complete source.
@@ -1581,11 +2137,8 @@ function historicalCensusReceipt(text: string): string | null {
  * Pair calls by call_id, never by adjacent lines/parts (outputs can interleave).
  */
 export async function recoverHistoricalCensusWriterEvidence(candidates: readonly IndexedCensusWriterEvidence[],
-  readArchive: (sessionId: string) => Promise<{ bytes: Buffer; sha256: string }> = async sessionId => {
-    const { readCanonicalNativeArchive } = await import('../session-port/source');
-    const { pgSessionArchiveStore } = await import('../session-archive');
-    return readCanonicalNativeArchive({ backend: 'codex', sessionId }, pgSessionArchiveStore());
-  }): Promise<PlaywrightStateWriterEvidence[]> {
+  readArchive: (sessionId: string) => Promise<{ bytes: Buffer; sha256: string; source?: string }> = readHistoricalCensusWriterSource,
+  operationScope?: SqlIntentScope, readSourceReceipt?: HistoricalSourceReceiptReader): Promise<PlaywrightStateWriterEvidence[]> {
   if (candidates.length > 100) throw new Error('Historical census evidence bound exceeded');
   const result: PlaywrightStateWriterEvidence[] = [];
   for (const sessionId of new Set(candidates.map(candidate => candidate.sessionId))) {
@@ -1598,7 +2151,9 @@ export async function recoverHistoricalCensusWriterEvidence(candidates: readonly
     if (source.bytes.length > 64 * 1024 * 1024 || createHash('sha256').update(source.bytes).digest('hex') !== source.sha256) throw new Error('Historical census archive SHA/size mismatch');
     const selected = candidates.filter(candidate => candidate.sessionId === sessionId);
     const calls = new Map<string, { input: string; timestamp: string; line: number }>();
-    const outputs = new Map<string, { output: unknown; timestamp: string }>();
+    type Output = { output: unknown; timestamp: string; line: number; callId: string };
+    const outputs = new Map<string, Output[]>();
+    const waits = new Map<string, { cellId: string; timestamp: string; line: number; terminate: boolean }>();
     const duplicate = new Set<string>();
     let line = 0;
     for (const raw of source.bytes.toString('utf8').split('\n')) {
@@ -1608,6 +2163,15 @@ export async function recoverHistoricalCensusWriterEvidence(candidates: readonly
       try { record = JSON.parse(raw); } catch { throw new Error('Historical census archive JSONL malformed'); }
       const payload = record?.payload;
       if (record?.type !== 'response_item' || typeof payload?.call_id !== 'string') continue;
+      if (['custom_tool_call', 'function_call'].includes(payload.type) && payload.name === 'wait') {
+        try {
+          const args = JSON.parse(payload.input ?? payload.arguments);
+          if (typeof args?.cell_id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(args.cell_id)) {
+            if (waits.has(payload.call_id)) duplicate.add(payload.call_id);
+            waits.set(payload.call_id, { cellId: args.cell_id, timestamp: record.timestamp, line, terminate: args.terminate === true });
+          }
+        } catch { /* An unparseable wait cannot establish a completion edge. */ }
+      }
       if (['custom_tool_call', 'function_call'].includes(payload.type) && payload.name === 'exec' &&
         selected.some(candidate => Date.parse(candidate.startedAt) === Date.parse(record.timestamp))) {
         let input = payload.input ?? payload.arguments;
@@ -1619,27 +2183,205 @@ export async function recoverHistoricalCensusWriterEvidence(candidates: readonly
         calls.set(payload.call_id, { input, timestamp: record.timestamp, line });
       }
       if (['custom_tool_call_output', 'function_call_output'].includes(payload.type)) {
-        if (outputs.has(payload.call_id)) duplicate.add(payload.call_id);
-        outputs.set(payload.call_id, { output: payload.output, timestamp: record.timestamp });
+        const records = outputs.get(payload.call_id) ?? [];
+        records.push({ output: payload.output, timestamp: record.timestamp, line, callId: payload.call_id });
+        outputs.set(payload.call_id, records);
       }
     }
+    const textsFor = (output: unknown): string[] => typeof output === 'string' ? [output] : Array.isArray(output)
+      ? output.flatMap(block => typeof block?.text === 'string' ? [block.text] : []) : [];
+    const yieldedCell = (output: Output) => {
+      const texts = textsFor(output.output);
+      if (texts.length !== 1) return undefined;
+      return /^Script running with cell ID ([A-Za-z0-9_-]{1,128})\nWall time [0-9.]+ seconds\nOutput:\n\s*$/.exec(texts[0])?.[1];
+    };
+    const terminalFor = (output: Output) => {
+      const envelopes = textsFor(output.output).flatMap(text => {
+        try {
+          const value = JSON.parse(text);
+          return value && Number.isInteger(value.exit_code) && value.exit_code >= 0 && value.exit_code <= 255
+            && !('session_id' in value) && typeof value.output === 'string' && value.output.length <= 65_536
+            ? [{ exitCode: value.exit_code as number, output: value.output as string }] : [];
+        } catch { return []; }
+      });
+      return envelopes.length === 1 ? envelopes[0] : undefined;
+    };
+    const resolveOutput = (callId: string, call: { line: number; timestamp: string }): Output | undefined => {
+      const initial = outputs.get(callId) ?? [];
+      const yields = initial.filter(output => yieldedCell(output) !== undefined);
+      if (!yields.length) return initial.length === 1 ? initial[0] : undefined;
+      if (yields.length !== 1 || initial.some(output => terminalFor(output)
+        || textsFor(output.output).some(text => historicalCensusReceipt(text) !== null))) return;
+      const cell = yieldedCell(yields[0]);
+      let previous = yields[0];
+      if (previous.line <= call.line || !Number.isFinite(Date.parse(previous.timestamp))
+        || Date.parse(previous.timestamp) < Date.parse(call.timestamp)) return;
+      const chain = [...waits].filter(([, wait]) => wait.cellId === cell && wait.line > previous.line)
+        .sort((a, b) => a[1].line - b[1].line);
+      if (chain.length > 64) throw new Error('Historical census wait-chain bound exceeded');
+      for (const [waitId, wait] of chain) {
+        if (duplicate.has(waitId) || wait.terminate || wait.line <= previous.line
+          || !Number.isFinite(Date.parse(wait.timestamp)) || Date.parse(wait.timestamp) < Date.parse(previous.timestamp)) return;
+        const records = outputs.get(waitId) ?? [];
+        if (records.length !== 1) return;
+        const output = records[0];
+        if (output.line <= wait.line || !Number.isFinite(Date.parse(output.timestamp))
+          || Date.parse(output.timestamp) < Date.parse(wait.timestamp)) return;
+        const nextCell = yieldedCell(output);
+        if (nextCell === undefined) return output;
+        if (nextCell !== cell) return;
+        previous = output;
+      }
+    };
     for (const [callId, call] of calls) {
-      const output = outputs.get(callId);
+      const output = resolveOutput(callId, call);
       if (!output || duplicate.has(callId)) continue;
-      const texts = typeof output.output === 'string' ? [output.output] : Array.isArray(output.output)
-        ? output.output.flatMap(block => typeof block?.text === 'string' ? [block.text] : []) : [];
+      const texts = textsFor(output.output);
       const receipts = texts.flatMap(text => {
         const receipt = historicalCensusReceipt(text);
         return receipt === null ? [] : [receipt];
       });
       if (result.length >= 100) throw new Error('Historical census recovered call bound exceeded');
-      result.push({ ref: `archive:codex:${sessionId}:sha256:${source.sha256}:line:${call.line}:call:${callId}`,
+      const prefix = `${source.source === 'live-jsonl' ? 'retained' : 'archive'}:codex:${sessionId}:sha256:${source.sha256}`;
+      const terminal = terminalFor(output);
+      const command = historicalCensusCommandInput(call.input);
+      const ref = `${prefix}:line:${call.line}:call:${callId}`;
+      // Scope is supplied by the caller's existing identity rail. Do not mint a
+      // key or mistake an input digest / terminal exit for an archived receipt.
+      const operationEvidence = command && operationScope ? sourceShellOperationEvidence(command.cmd, operationScope,
+        { ref, authorityRef: prefix, observedAt: output.timestamp, expiresAt: null, providerCallId: callId },
+        terminal ? { status: terminal.exitCode === 0 ? 'success' : 'error', final: true } : { status: 'unknown', final: false }) : undefined;
+      const recovered: PlaywrightStateWriterEvidence = { ref,
         indexedRef: selected.find(candidate => Date.parse(candidate.startedAt) === Date.parse(call.timestamp))?.ref,
         toolInput: call.input, startedAt: call.timestamp, finishedAt: output.timestamp,
-        receipt: receipts.length === 1 ? receipts[0] : '' });
+        receipt: receipts.length === 1 ? receipts[0] : '',
+        ...(command ? { command, sourceOperations: sourceShellOperations(command.cmd) } : {}),
+        ...(operationEvidence ? { operationEvidence } : {}),
+        ...(terminal ? { terminal: { ...terminal, ref: `${prefix}:line:${output.line}:call:${output.callId}` } } : {}) };
+      const trustedRecord = sourceRecordSnapshot(recovered);
+      const readOriginal = readSourceReceipt
+        ?? ((_ref: string, operation: SourceShellOperation) => readHistoricalCensusSourceReceipt(trustedRecord, operation));
+      const bindings = await attestHistoricalSourceOperations(trustedRecord, readOriginal);
+      if (readSourceReceipt || bindings.length) recovered.sourceBindings = bindings;
+      if (bindings.length) recoveredSourceCustody.set(recovered, {
+        record: trustedRecord, readOriginal, bindingPin: JSON.stringify(bindings),
+      });
+      result.push(recovered);
     }
   }
   return result;
+}
+
+/** The complete November 8 writer (archive call_27927da87dbe42aa81c4c4ca91ee8a2e)
+ * prints its destination only after writing the receipt. Only the manifest pin
+ * literals vary; no archived code is executed. This is file custody, not a test
+ * verdict or runtime qualification. Reuse the native packet's byte/race guards.
+ */
+export async function historicalVerifierArtifactCensusProducer(evidence: readonly PlaywrightStateWriterEvidence[],
+  runtimeHomes: readonly string[] = [papercuspHome(), join(homedir(), '.papercusp')]) {
+  const roots: CensusRoot[] = []; const declarations: CensusDeclaration[] = [];
+  if (evidence.length > 100) throw new Error('Verifier artifact evidence bound exceeded');
+  const names = ['bg-memory-trace.log', 'bg-memory-sources.json', 'bg-memory-jit.dump',
+    'bg-memory-observation.json', 'bg-memory-build.json', 'bg-memory-proof.json'];
+  const canonicalDirectory = async (path: string) => (await lstat(path)).isDirectory() && await realpath(path) === resolve(path);
+  for (const record of evidence) {
+    const custody = recoveredSourceCustody.get(record);
+    if (custody && JSON.stringify(sourceRecordSnapshot(record)) === JSON.stringify(custody.record)) {
+      // Reparse the archived operation and re-read the independently pinned
+      // original receipt. Recovery-time success cannot attest today's bytes.
+      const command = historicalCensusCommandInput(custody.record.toolInput);
+      const operations = command && sourceShellOperations(command.cmd);
+      const bindings = await attestHistoricalSourceOperations(custody.record, custody.readOriginal);
+      if (operations?.status === 'supported' && JSON.stringify(bindings) === custody.bindingPin) {
+        for (const binding of bindings) {
+          const operation = operations.operations[binding.operationIndex];
+          const home = runtimeHomes.find(home => {
+            const name = relative(home, operation.destination);
+            return isAbsolute(home) && resolve(home) === home && name.startsWith(`test-artifacts${sep}`);
+          });
+          if (!home) continue;
+          const owned = new Set<string>();
+          for (const file of binding.files) {
+            // Receipt rows name leaves, never arbitrary subtrees. Parents only
+            // receive structural declarations; unknown siblings remain residue.
+            if (!file.path || isAbsolute(file.path) || file.path.split('/').some(part => !part || part === '.' || part === '..')) continue;
+            for (let path = join(operation.destination, file.path); path !== home; path = dirname(path)) owned.add(path);
+          }
+          if (!owned.size) continue;
+          const root = { id: `historical-verifier-${roots.length}`, path: home };
+          roots.push(root);
+          for (const path of owned) declarations.push({ kind: 'path', root: root.id,
+            name: relative(home, path).split(sep).join('/'), classification: 'state',
+            producer: `historical-verifier-source:${custody.record.ref}:${binding.operationIndex}:${binding.receiptSha256}` });
+        }
+      }
+    }
+    if (record.toolInput.length > 65_536 || !/^(?:archive|retained):codex:/.test(record.ref)) continue;
+    const refs = [...record.toolInput.matchAll(/ref='([0-9a-f]{64})\.native-proof\.json'/g)];
+    const sizes = [...record.toolInput.matchAll(/len\(b\)==([0-9]+)/g)];
+    if (refs.length !== 1 || sizes.length !== 1) continue;
+    const normalized = record.toolInput.replace(refs[0][0], "ref='579a09b1f4b64092cb2d1217cc853483ec8addbf9beb66ce2b4f4d958882bfb8.native-proof.json'")
+      .replace(sizes[0][0], 'len(b)==1533779');
+    if (createHash('sha256').update(normalized.trimEnd()).digest('hex') !== '93f0db992500cbabe53596d01a83a1c1c090fae36a4f0f6f6a347d95718a353a') continue;
+    const from = Date.parse(record.startedAt); const to = Date.parse(record.finishedAt);
+    if (!Number.isFinite(from) || !Number.isFinite(to) || to < from || to - from > 300_000) continue;
+    try {
+      const summary = JSON.parse(record.receipt);
+      if (summary.testRunId !== 23654091 || summary.cleanup?.fixtureRootAbsent !== true
+        || typeof summary.receipt !== 'string' || !isAbsolute(summary.receipt)
+        || resolve(summary.receipt) !== summary.receipt || basename(summary.receipt) !== 'bounded-proof-receipt.json'
+        || !/^[0-9a-f]{64}$/.test(summary.sourceSha256 ?? '')) continue;
+      const container = dirname(summary.receipt); const base = dirname(container); const home = dirname(base);
+      if (basename(base) !== 'test-artifacts' || !runtimeHomes.includes(home)
+        || !await canonicalDirectory(home) || !await canonicalDirectory(base) || !await canonicalDirectory(container)) continue;
+      const stat = await lstat(summary.receipt);
+      if (!stat.isFile() || stat.size > 1024 * 1024 || stat.mtimeMs < from || stat.mtimeMs > to) continue;
+      const bytes = readNativeArtifactBytes(summary.receipt, stat.size, 1024 * 1024);
+      const receipt = JSON.parse(bytes.toString('utf8'));
+      if (receipt.workItem !== 'WI-6554700010044858' || receipt.testRunId !== summary.testRunId
+        || receipt.sourcePath !== 'packages/operator-core/lib/source-preview-export.test.ts'
+        || receipt.sourceSha256 !== summary.sourceSha256 || receipt.terminalExitCode !== 0
+        || Date.parse(receipt.createdAt) < from || Date.parse(receipt.createdAt) > to
+        || !Number.isFinite(Date.parse(receipt.createdAt))
+        || JSON.stringify(receipt.cleanup) !== JSON.stringify(summary.cleanup)
+        || Object.keys(receipt.rawArtifacts ?? {}).sort().join() !== [...names].sort().join()) continue;
+      const manifest = receipt.nativeManifest;
+      if (manifest?.sha256 !== refs[0][1] || manifest.byteLength !== Number(sizes[0][1])
+        || typeof manifest.path !== 'string' || resolve(manifest.path) !== manifest.path
+        || basename(manifest.path) !== `${manifest.sha256}.native-proof.json`
+        || basename(dirname(manifest.path)) !== 'objects') continue;
+      const packet = dirname(dirname(manifest.path));
+      if (dirname(packet) !== container || !/^native-router-[A-Za-z0-9]{6}$/.test(basename(packet))
+        || !await canonicalDirectory(packet)) continue;
+      const json = async (path: string) => {
+        const info = await lstat(path);
+        return JSON.parse(readNativeArtifactBytes(path, info.size, 8 * 1024 * 1024).toString('utf8'));
+      };
+      const locator = await json(join(packet, 'locator.json'));
+      if (locator.manifest?.ref !== basename(manifest.path) || locator.manifest.sha256 !== manifest.sha256
+        || locator.manifest.byteLength !== manifest.byteLength) continue;
+      verifyNativeProofPacket(packet, locator, await json(join(packet, 'expected.json')));
+      const owned: string[] = [];
+      for (const name of names) {
+        const pin = receipt.rawArtifacts[name];
+        if (!Number.isSafeInteger(pin?.byteLength) || pin.byteLength < 0 || !/^[0-9a-f]{64}$/.test(pin.sha256)) continue;
+        const path = join(container, name);
+        try {
+          if (hashNativeArtifactBytes(path, pin.byteLength, pin.byteLength) === pin.sha256) owned.push(path);
+        } catch { /* Originals change independently; their siblings keep their own proof. */ }
+      }
+      const after = await lstat(summary.receipt);
+      if (stat.dev !== after.dev || stat.ino !== after.ino || stat.mtimeMs !== after.mtimeMs
+        || stat.ctimeMs !== after.ctimeMs || stat.size !== after.size
+        || !readNativeArtifactBytes(summary.receipt, stat.size, 1024 * 1024).equals(bytes)
+        || !await canonicalDirectory(container)) continue;
+      const root = { id: `historical-verifier-${roots.length}`, path: home };
+      roots.push(root);
+      for (const path of [base, container, summary.receipt, ...owned]) declarations.push({ kind: 'path', root: root.id,
+        name: relative(home, path).split(sep).join('/'), classification: 'state', producer: `historical-verifier-artifact:${record.ref}` });
+    } catch { /* Unproven, changed, linked or foreign evidence grants no ownership. */ }
+  }
+  return { roots, declarations };
 }
 
 /** Receipt, complete writer, private file metadata and storage-state schema must
@@ -2002,7 +2744,7 @@ function literalMigrationStatements(source: string): string[] {
       if (!ts.isIdentifier(declaration.name) || !declaration.name.text.endsWith('_MIGRATIONS') ||
         !initializer || !ts.isArrayLiteralExpression(initializer)) continue;
       if (initializer.elements.some(element => !ts.isStringLiteral(element) && !ts.isNoSubstitutionTemplateLiteral(element))) continue;
-      statements.push(...initializer.elements.map(element => (element as ts.StringLiteralLike).text));
+      for (const element of initializer.elements) statements.push((element as ts.StringLiteralLike).text);
     }
   }
   return statements;
@@ -2083,7 +2825,7 @@ export async function registeredProjectMigrationSources(projects: readonly { slu
     if (literalMigrations) {
       const tables = migrationProducerTables(literalMigrations);
       if (tables.length >= 2) sources.push({ producer: `app-migrations:registry:${project.slug}:${project.path}`, tables });
-      sources.push(...await historicalProjectMigrationSources(project.path, `app-migrations:registry:${project.slug}:${project.path}`));
+      for (const source of await historicalProjectMigrationSources(project.path, `app-migrations:registry:${project.slug}:${project.path}`)) sources.push(source);
     }
     const config = await boundedSource(join(project.path, 'drizzle.config.ts'));
     const output = config && literalDrizzleOutput(config);
@@ -2215,7 +2957,7 @@ export function sqlMigrationCensusSource(source: string, producer: string): Migr
     }
     if (!tableColumns.length) return null;
     tables.push(table);
-    columns.push(...tableColumns);
+    for (const column of tableColumns) columns.push(column);
   }
   return tables.length >= 2 ? { producer, tables, columns } : null;
 }
@@ -2442,7 +3184,7 @@ export async function installedUnitCensusDeclarations(
   for (const source of sources) {
     try { await lstat(source); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
-    declarations.push(...await unitCensusDeclarations(source, scope, source === join(runtime, 'transient') ? 'dev-only' : 'config'));
+    for (const declaration of await unitCensusDeclarations(source, scope, source === join(runtime, 'transient') ? 'dev-only' : 'config')) declarations.push(declaration);
   }
   return declarations;
 }

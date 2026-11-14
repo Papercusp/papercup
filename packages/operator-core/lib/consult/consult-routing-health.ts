@@ -181,7 +181,18 @@ function requestOutcome(row: RoutingHealthConsultRow, nowMs: number): keyof Requ
   const open = ['awaiting_responder', 'active', 'budget_exhausted'].includes(row.state);
   if (open && Number.isFinite(expiresMs) && nowMs < expiresMs) return 'pending';
   if (row.state === 'no_launchable_responder') return 'unlaunchable';
-  if (row.state === 'no_qualified_responder') return 'unavailable';
+  if (row.state === 'no_qualified_responder') {
+    const result = jsonObject(request.result);
+    // This lifecycle also stores preparation/instrument failures. Only a
+    // measured route can establish that no expert qualified. Preserve the
+    // legacy exhausted-preparation record, which predates typed results.
+    if (result.verdict === 'relevance_unmeasured' || result.error === 'preparation_failed' ||
+        (request.version === 1 && request.result == null && typeof request.attempts === 'number' &&
+          request.attempts >= 3 && typeof request.lastError === 'string' && request.lastError.length > 0)) {
+      return 'unmeasured';
+    }
+    return 'unavailable';
+  }
   const attempts = walks.flatMap((walk) => walk.attempts);
   if (attempts.length > 0 && attempts.every((attempt) =>
     attempt.outcome === 'skipped' && attempt.reason === 'account-walled')) return 'unavailable';

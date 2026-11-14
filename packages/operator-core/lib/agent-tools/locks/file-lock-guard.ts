@@ -44,6 +44,7 @@ import { randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { resolveCapabilityBaseDir } from '../capability/base-dir';
 import { hasValidGitEntry } from './valid-git-entry';
+import { managedRepositoryPathToLockIdentity } from './external-path';
 import { readFileLockIdentity, type IdentityCtx } from './identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { acquireWithContentionRetry, isWorkspaceContended } from './contention-retry';
@@ -192,18 +193,34 @@ export async function guardFileLock<T>(
   // and the byte that gets written can never disagree.
   const cwd = resolveCapabilityBaseDir(ctx);
 
-  // Resolve to the repo-relative keys the hook + server agree on. A path that
-  // is uncoordinated (outside a repo / escapes it) is simply not locked.
+  const { ownerId, ownerLabel, coordinationDomain: defaultDomain } = readFileLockIdentity(ctx);
+  const baseRepoRoot = findRepoRoot(cwd);
+  let coordinationDomain = defaultDomain;
+  let domains: string[] = [];
+  // Keep the repository and its relative key together. A submodule key paired
+  // with the parent domain neither contends with its peer nor captures its bytes.
   let paths: string[];
   try {
-    const rels = rawPaths
-      .map((p) => toRepoRelative(p, cwd))
-      .filter((r): r is string => r !== null);
-    paths = rels.length > 0 ? normalizePaths(rels) : [];
+    const identities = rawPaths.map((p) => {
+      const absolute = isAbsolute(p) ? p : resolve(cwd, p);
+      const managed = managedRepositoryPathToLockIdentity(absolute);
+      const root = managed?.coordinationDomain ?? findRepoRoot(absolute);
+      const path = managed?.path ?? toRepoRelative(absolute, cwd);
+      return root && path ? {
+        coordinationDomain: root === baseRepoRoot ? defaultDomain : root, path,
+      } : null;
+    }).filter((r): r is { coordinationDomain: string; path: string } => r !== null);
+    domains = [...new Set(identities.map((r) => r.coordinationDomain))];
+    paths = identities.length > 0 ? normalizePaths(identities.map((r) => r.path)) : [];
+    if (domains.length === 1) coordinationDomain = domains[0]!;
   } catch {
-    // Malformed path → uncoordinated (the hook also bails on its own
-    // normalization failure rather than blocking).
+    // Preserve the existing handling of malformed/outside-repository paths.
     paths = [];
+  }
+  // This guard owns one repository transaction and one preservation receipt.
+  // Never collapse an operation spanning repositories onto one of their keys.
+  if (domains.length > 1) {
+    throw new Error('file-lock-multiple-repositories: split the edit by repository');
   }
 
   if (paths.length === 0) {
@@ -222,7 +239,6 @@ export async function guardFileLock<T>(
     };
   }
 
-  const { ownerId, ownerLabel, coordinationDomain } = readFileLockIdentity(ctx);
   const ttlSec = spec.ttlSec ?? DEFAULT_TTL_SEC;
   const goalRef = readAgentStateStamp(ownerId).goalRef ?? undefined;
   const operation = { id: randomUUID(), deadline: new Date(Date.now() + 120_000).toISOString() };
@@ -297,6 +313,8 @@ export async function guardFileLock<T>(
   // before the row it announces is visible. No-ops for non-plan paths.
   notifyPlanLockChange(paths);
   let bodyReturned = false;
+  let bodySucceeded = false;
+  let completionConfirmed = false;
   const finish = (outcome: 'completed' | 'cancelled') =>
     inWorkspaceTxn(coordinationDomain, ownerId, (tx) => tryFinishHookOperation(tx, {
       coordinationDomain, owner: ownerId, ownerLabel, paths, intent: spec.intent,
@@ -323,13 +341,35 @@ export async function guardFileLock<T>(
       if (part.type !== 'text' || !part.text) continue;
       try { if (JSON.parse(part.text)?.ok === false) succeeded = false; } catch { /* ordinary prose result */ }
     }
+    bodySucceeded = succeeded;
     const finished = await finish(succeeded ? 'completed' : 'cancelled');
     if (!finished.ok) throw new Error(`file-lock completion refused: ${finished.reason}`);
+    completionConfirmed = true;
     notifyPlanLockChange(releasePaths);
     return { acquired: true, result, coordinated: true };
   } catch (err) {
     // A preservation failure must retain the fence. Only a body that threw
     // before returning uses cancellation cleanup (without claiming capture).
+    if (bodyReturned && !completionConfirmed) {
+      // Reuse the durable hook operation as the recovery identity. A bare
+      // custody error loses the fact that the mutation callback already ran
+      // and invites callers to apply it again. Do not claim preservation or
+      // handoff, or release the fence, merely to return a useful receipt.
+      throw new Error(JSON.stringify({
+        ok: false,
+        reason: 'file_lock_completion_incomplete',
+        operationId: operation.id,
+        coordinationDomain,
+        paths,
+        bodyCompleted: true,
+        bodySucceeded,
+        custodyStatus: 'unconfirmed',
+        lockReleaseConfirmed: false,
+        retryMutation: false,
+        cause: err instanceof Error ? err.message : String(err),
+        advice: 'Inspect the resulting files and recover preservation for this operation; do not repeat the file mutation.',
+      }), { cause: err });
+    }
     if (!bodyReturned) {
       await finish('cancelled').catch((cleanupError) => {
         ctx.log?.(`[file-lock] cancellation faulted: ${String(cleanupError)}`);

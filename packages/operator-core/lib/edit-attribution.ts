@@ -22,10 +22,12 @@ import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
 import type { RunGit, GitSyncCandidateCapture, GitSyncCandidateDependency } from './harness/git-sync/run-git-sync';
 import { canonicalJson } from './external-bench/reproducibility/canonical-json';
 import { createHash } from 'node:crypto';
-import type { ReleaseLockRow } from '@papercusp/locks';
+import type { ReleaseLockRow, ProtectReleasePaths } from '@papercusp/locks';
+import { isAbsolute, join } from 'node:path';
 import { hasValidGitEntry } from './agent-tools/locks/valid-git-entry';
-import { EXTERNAL_LOCK_PREFIXES } from './agent-tools/locks/external-path';
+import { EXTERNAL_LOCK_PREFIXES, managedRepositoryPathToLockIdentity } from './agent-tools/locks/external-path';
 import { z } from 'zod';
+import { AUTHORITY_KINDS, type AuthorityRevisionVector } from './governance-policy/effective-authority';
 
 export interface RecordEditAttributionInput {
   /** The lock's coordination domain — the physical repo root (the join key). */
@@ -526,6 +528,174 @@ export async function freezeEditCohort(input: {
   return frozen;
 }
 
+const prospectiveSubjectScope = z.object({
+  workspaceId: z.string().min(1), harnessSlug: z.string().min(1), workItemId: z.string().min(1),
+  actorId: z.string().min(1), originalOperationId: z.string().min(1),
+}).strict();
+
+/** Storage identity only. The trusted ingress must derive the scope, resolve the
+ * current applied rule and every restriction, and retain its writer fence. This
+ * primitive grants no source operation, performs no Git work, and is not exposed
+ * as a tool. Its ONE slot is on the source item, never a request/rule-keyed map. */
+export interface ProspectiveEditSubjectInput {
+  workspaceId: string; harnessSlug: string; workItemId: string; actorId: string;
+  originalOperationId: string;
+  originalReceipt: Record<string, unknown>;
+  binding: {
+    rule: { amendmentKey: string; decisionId: string; ruleSha256: string;
+      rubricRevision: number; subjectRevision: number };
+    /** Full detached ingress request, including base/baseTree/payload and pins. */
+    request: Record<string, unknown>;
+    independentExpectationSha256: string;
+    /** Identity retention only. The host must authenticate these observations,
+     * all remaining freezes and its writer fence before any source effect.
+     * Omitted legacy bindings never establish production admission. */
+    hostEvidence?: {
+      authorityRevisions: AuthorityRevisionVector;
+      /** Digest from the ORIGINAL-bound v2 restriction census, not root-only v1. */
+      originalRestrictionCensusSha256: string;
+    };
+  };
+}
+
+const prospectiveAuthorityRevisionsSchema = z.object({
+  contextRevision: z.string().min(1),
+  authorities: z.array(z.object({
+    kind: z.enum(AUTHORITY_KINDS), id: z.string().min(1), revision: z.string().min(1),
+  }).strict()).min(1),
+}).strict().refine(value => {
+  const keys = value.authorities.map(ref => canonicalJson([ref.kind, ref.id]));
+  return new Set(keys).size === keys.length && AUTHORITY_KINDS.filter(kind => kind !== 'vault')
+    .every(kind => value.authorities.some(ref => ref.kind === kind));
+}, 'authority revision population is incomplete or duplicated');
+
+const prospectiveBindingSchema = z.object({
+  rule: z.object({ amendmentKey: z.string().min(1), decisionId: z.string().min(1),
+    ruleSha256: z.string().regex(/^[a-f0-9]{64}$/), rubricRevision: z.number().int().positive(),
+    subjectRevision: z.number().int().positive() }).strict(),
+  request: z.record(z.string(), z.unknown()),
+  independentExpectationSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  hostEvidence: z.object({
+    authorityRevisions: prospectiveAuthorityRevisionsSchema,
+    originalRestrictionCensusSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  }).strict().optional(),
+}).strict();
+
+/** Reject non-JSON/ambiguous input before hashing or entering the row CAS. */
+function prospectiveJson(value: unknown): string {
+  const visit = (item: unknown, seen: Set<object>): void => {
+    if (item === null || typeof item === 'string' || typeof item === 'boolean' ||
+        typeof item === 'number' && Number.isFinite(item)) return;
+    if (typeof item !== 'object' || seen.has(item)) throw new Error('prospective-subject-refused:json');
+    const next = new Set(seen).add(item);
+    if (Array.isArray(item)) {
+      if (Object.getPrototypeOf(item) !== Array.prototype || Reflect.ownKeys(item).length !== item.length + 1) {
+        throw new Error('prospective-subject-refused:json');
+      }
+      for (let i = 0; i < item.length; i++) {
+        if (!Object.hasOwn(Object.getOwnPropertyDescriptor(item, i) ?? {}, 'value')) {
+          throw new Error('prospective-subject-refused:json');
+        }
+        visit(item[i], next);
+      }
+    } else {
+      if (Object.getPrototypeOf(item) !== Object.prototype && Object.getPrototypeOf(item) !== null ||
+          Reflect.ownKeys(item).some(key => typeof key !== 'string' ||
+            !Object.hasOwn(Object.getOwnPropertyDescriptor(item, key) ?? {}, 'value'))) {
+        throw new Error('prospective-subject-refused:json');
+      }
+      for (const entry of Object.values(item)) visit(entry, next);
+    }
+  };
+  visit(value, new Set());
+  return canonicalJson(value);
+}
+
+function prospectiveSubjectSnapshot(input: ProspectiveEditSubjectInput) {
+  // Detach before the first await, including the complete original wrapper.
+  const detached = JSON.parse(prospectiveJson(input)) as ProspectiveEditSubjectInput;
+  const { originalReceipt, binding, ...scope } = detached;
+  prospectiveSubjectScope.parse(scope);
+  prospectiveBindingSchema.parse(binding);
+  const original = cohortCaptureSchema.parse(originalReceipt);
+  if (originalReceipt.workspaceId !== scope.workspaceId || originalReceipt.agentId !== scope.actorId ||
+      originalReceipt.goalRef !== scope.workItemId || original.capture.candidate.requestId !== scope.originalOperationId) {
+    throw new Error('prospective-subject-refused:original-scope');
+  }
+  const identity = { version: 1, originalOperationId: scope.originalOperationId, originalReceipt, binding };
+  return { scope, originalReceipt, identity,
+    identitySha256: createHash('sha256').update(prospectiveJson(identity)).digest('hex') };
+}
+
+/** Empty -> reserved, or exact replay. Neither a crash nor a different request,
+ * root, expectation or rule can release/reset this slot. The short atomic SQL
+ * update also fences current custody and the exact original wrapper. */
+export async function reserveProspectiveEditSubject(input: ProspectiveEditSubjectInput): Promise<{
+  identitySha256: string; state: 'reserved' | 'recorded'; result: Record<string, unknown> | null;
+}> {
+  const { scope, originalReceipt, identity, identitySha256 } = prospectiveSubjectSnapshot(input);
+  const slot = { ...identity, identitySha256, state: 'reserved', result: null };
+  const { sql } = getOrgPg();
+  const rows = await sql<Array<{ slot: { state: unknown; result?: unknown } }>>`
+    UPDATE harness_shared.work_items
+       SET payload = jsonb_set(payload, '{gitSyncLifecycle,prospectiveSubject}',
+         CASE WHEN payload->'gitSyncLifecycle' ? 'prospectiveSubject'
+           THEN payload->'gitSyncLifecycle'->'prospectiveSubject'
+           ELSE ${JSON.stringify(slot)}::text::jsonb END)
+     WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
+       AND feature_id = ${scope.workItemId} AND taken_by = ${scope.actorId}
+       AND NOT (status = ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[]))
+       AND payload->'gitSyncLifecycle'->'captures'->${scope.originalOperationId}::text
+         = ${JSON.stringify(originalReceipt)}::text::jsonb
+       AND (NOT (payload->'gitSyncLifecycle' ? 'prospectiveSubject')
+         OR (payload->'gitSyncLifecycle'->'prospectiveSubject') - 'state' - 'result'
+           = ${JSON.stringify({ ...identity, identitySha256 })}::text::jsonb)
+    RETURNING payload->'gitSyncLifecycle'->'prospectiveSubject' AS slot
+  `;
+  const saved = rows[0]?.slot;
+  if (rows.length !== 1 || !saved ||
+      !(saved.state === 'reserved' && saved.result === null ||
+        saved.state === 'recorded' && saved.result !== null && typeof saved.result === 'object' && !Array.isArray(saved.result))) {
+    throw new Error('prospective-subject-refused:ownership-original-or-binding');
+  }
+  return { identitySha256, state: saved.state as 'reserved' | 'recorded',
+    result: saved.result as Record<string, unknown> | null };
+}
+
+/** Persist the ingress's already validated exact result on the SAME slot. A lost
+ * response can be retried; a different result cannot replace the first one.
+ * Recording bytes is not independent packet admission or proof of a Git effect. */
+export async function recordProspectiveEditSubjectResult(
+  input: ProspectiveEditSubjectInput, result: Record<string, unknown>,
+): Promise<void> {
+  const { scope, originalReceipt, identity, identitySha256 } = prospectiveSubjectSnapshot(input);
+  const detachedResult = JSON.parse(prospectiveJson(result)) as Record<string, unknown>;
+  if (!detachedResult || Array.isArray(detachedResult) || typeof detachedResult !== 'object') {
+    throw new Error('prospective-subject-refused:result');
+  }
+  const storedIdentity = JSON.stringify({ ...identity, identitySha256 });
+  const { sql } = getOrgPg();
+  const rows = await sql<Array<{ feature_id: string }>>`
+    UPDATE harness_shared.work_items
+       SET payload = jsonb_set(payload, '{gitSyncLifecycle,prospectiveSubject}',
+         payload->'gitSyncLifecycle'->'prospectiveSubject'
+           || jsonb_build_object('state', 'recorded', 'result', ${JSON.stringify(detachedResult)}::text::jsonb))
+     WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
+       AND feature_id = ${scope.workItemId} AND taken_by = ${scope.actorId}
+       AND NOT (status = ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[]))
+       AND payload->'gitSyncLifecycle'->'captures'->${scope.originalOperationId}::text
+         = ${JSON.stringify(originalReceipt)}::text::jsonb
+       AND (payload->'gitSyncLifecycle'->'prospectiveSubject') - 'state' - 'result'
+         = ${storedIdentity}::text::jsonb
+       AND ((payload->'gitSyncLifecycle'->'prospectiveSubject'->>'state' = 'reserved'
+             AND payload->'gitSyncLifecycle'->'prospectiveSubject'->'result' = 'null'::jsonb)
+         OR (payload->'gitSyncLifecycle'->'prospectiveSubject'->>'state' = 'recorded'
+             AND payload->'gitSyncLifecycle'->'prospectiveSubject'->'result' = ${JSON.stringify(detachedResult)}::text::jsonb))
+    RETURNING feature_id
+  `;
+  if (rows.length !== 1) throw new Error('prospective-subject-refused:result-cas');
+}
+
 /** Exact pre-publication evidence, independent of later committed-build and
  * final acceptance proof. A turn-end, session death or capture is no intent.
  * Dependency proofs come from the existing publisher's exact object receipts. */
@@ -563,6 +733,7 @@ export function checkFrozenEditCohortEvidence(input: {
 export async function preserveReleasedEditGenerations(
   input: Omit<RecordEditAttributionInput, 'files' | 'dispatchCallId' | 'captureReceipt'> & {
     rows: ReleaseLockRow[];
+    protectRepositoryPaths?: ProtectReleasePaths;
   },
   dependencies: {
     preserve?: typeof preserveEditGeneration;
@@ -577,17 +748,63 @@ export async function preserveReleasedEditGenerations(
     const key = canonicalJson({ lockId: row.lock_id, goalRef: row.goal_ref, intent: row.intent });
     groups.set(key, [...(groups.get(key) ?? []), row]);
   }
+  const coordinates = new Map(rows.map(row => {
+    const identity = isAbsolute(input.repoRoot)
+      ? managedRepositoryPathToLockIdentity(join(input.repoRoot, row.path)) : undefined;
+    return [row.path, { repoRoot: identity?.coordinationDomain ?? input.repoRoot,
+      path: identity?.path ?? row.path }];
+  }));
+  const aliases = rows.filter(row => coordinates.get(row.path)!.repoRoot !== input.repoRoot);
+  if (aliases.length) {
+    if (!input.protectRepositoryPaths) throw new Error('edit-capture-refused:alias-protection-required');
+    const scopes = new Map<string, string[]>();
+    for (const row of aliases) {
+      const coordinate = coordinates.get(row.path)!;
+      scopes.set(coordinate.repoRoot, [...(scopes.get(coordinate.repoRoot) ?? []), coordinate.path]);
+    }
+    // Protect every child before the first capture, including mixed cohorts.
+    for (const [repoRoot, paths] of [...scopes].sort(([a], [b]) => a.localeCompare(b))) {
+      await input.protectRepositoryPaths(repoRoot, [...new Set(paths)].sort());
+    }
+  }
+  const leaseIdentity = (selected: ReleaseLockRow[]) => selected.map(row => ({
+    path: row.path, lockId: row.lock_id,
+    acquiredAt: row.acquired_identity ?? row.acquired_ts.toISOString(),
+  }));
   for (const selected of groups.values()) {
     selected.sort((a, b) => a.path.localeCompare(b.path));
     const dispatchCallId = 'release:' + createHash('sha256').update(canonicalJson(
-      selected.map(row => ({ path: row.path, lockId: row.lock_id,
-        acquiredAt: row.acquired_identity ?? row.acquired_ts.toISOString() })),
+      leaseIdentity(selected),
     )).digest('hex');
-    const edit = { repoRoot: input.repoRoot, files: selected.map(row => row.path), agentId: input.agentId,
-      workspaceId: input.workspaceId, contributor: input.contributor, sessionId: input.sessionId,
-      intent: selected[0].intent, goalRef: selected[0].goal_ref ?? undefined, dispatchCallId };
-    const receipt = await (dependencies.preserve ?? preserveEditGeneration)({ ...edit, operationState: 'granted' });
-    await (dependencies.attribute ?? recordEditAttributionStrict)({ ...edit, captureReceipt: receipt });
+    const remapped = selected.some(row => coordinates.get(row.path)!.repoRoot !== input.repoRoot);
+    if (remapped) {
+      // Never reinterpret an acknowledged parent capture as fresh child input.
+      // This probe reads immutable Git objects, not moving working bytes.
+      const { readGitSyncCandidate, runGitBounded, gitTimeoutMsFor } = await import('./harness/git-sync/run-git-sync');
+      const old = await readGitSyncCandidate((args, cwd, options) =>
+        runGitBounded(args, cwd, gitTimeoutMsFor(args), options), input.repoRoot,
+      { requestId: dispatchCallId, generation: 1, paths: selected.map(row => row.path) });
+      if (old.ok) throw new Error('edit-capture-refused:acknowledged-alias-remap');
+      if (old.error !== 'source-custody-refused:candidate-not-captured') throw new Error(old.error);
+    }
+    const repositories = new Map<string, ReleaseLockRow[]>();
+    for (const row of selected) {
+      const repoRoot = coordinates.get(row.path)!.repoRoot;
+      repositories.set(repoRoot, [...(repositories.get(repoRoot) ?? []), row]);
+    }
+    for (const [repoRoot, repositoryRows] of [...repositories].sort(([a], [b]) => a.localeCompare(b))) {
+      const releaseSource = remapped ? { coordinationDomain: input.repoRoot,
+        leases: leaseIdentity(selected) } : undefined;
+      const repositoryDispatchId = remapped ? 'release:' + createHash('sha256').update(canonicalJson({
+        releaseSource, repoRoot, paths: repositoryRows.map(row => coordinates.get(row.path)!.path).sort(),
+      })).digest('hex') : dispatchCallId;
+      const edit = { repoRoot, files: repositoryRows.map(row => coordinates.get(row.path)!.path).sort(), agentId: input.agentId,
+        workspaceId: input.workspaceId, contributor: input.contributor, sessionId: input.sessionId,
+        intent: selected[0].intent, goalRef: selected[0].goal_ref ?? undefined, dispatchCallId: repositoryDispatchId };
+      const receipt = await (dependencies.preserve ?? preserveEditGeneration)({ ...edit, operationState: 'granted' });
+      await (dependencies.attribute ?? recordEditAttributionStrict)({ ...edit,
+        captureReceipt: releaseSource ? { ...receipt, releaseSource } : receipt });
+    }
   }
   return true;
 }

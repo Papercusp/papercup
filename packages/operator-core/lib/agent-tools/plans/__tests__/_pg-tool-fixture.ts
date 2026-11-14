@@ -28,6 +28,7 @@ import { createOrgTestDb } from '../../../../test/_org-test-db';
 import { _resetHarnessAdminUrlCacheForTests } from '../../../embedded-pg-discovery';
 import { stopInvalidationListener } from '../../../sync-sse';
 import { fallbackObservationCounters, flushFallbackObservations } from '../../../degradation/fallback-observations';
+import { deriveIndexFromContent } from '../derive-index';
 // eslint-disable-next-line import/no-relative-packages -- clears the env-URL cache the pool resolver memoizes
 import { _resetUrlCacheForTests } from '../../../../../../libs/papercusp/libs/db/src/connection';
 // eslint-disable-next-line import/no-relative-packages -- mirror the canonical client's jsonb serializer (see restoreRawJsonbSerializer's doc)
@@ -214,13 +215,17 @@ export async function seedPlan(
   // A plan for a concrete harness is only resolvable if the harness is registered
   // in projects (WI-148 fail-loud) — seed that precondition alongside the row.
   await registerHarnessProject(admin, workspaceId, harnessSlug);
+  // Graphless fixtures need the same validated item index as an old writer.
+  // An empty index intentionally hides markdown-only items in graph-first reads.
+  const { items } = deriveIndexFromContent(content);
   await admin`
     INSERT INTO harness_shared.harness_plans
-      (workspace_id, harness_slug, plan_slug, content, content_hash, version, origin)
+      (workspace_id, harness_slug, plan_slug, content, content_hash, version, origin, items)
     VALUES
       (${workspaceId}, ${harnessSlug}, ${slug}, ${content},
-       md5(${content}), 1, 'local')
+       md5(${content}), 1, 'local', ${JSON.stringify(items)}::text::jsonb)
     ON CONFLICT (workspace_id, harness_slug, plan_slug) DO UPDATE
-      SET content = EXCLUDED.content, content_hash = EXCLUDED.content_hash
+      SET content = EXCLUDED.content, content_hash = EXCLUDED.content_hash,
+          items = EXCLUDED.items
   `;
 }

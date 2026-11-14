@@ -126,6 +126,9 @@ export interface PsuPtyHost {
    *  absent means unknown; never fall back to the requested argv UUID. */
   nativeSessionId?: string | null;
   childGeneration?: number;
+  /** Epoch ms the CURRENT child started (a carry replaces the child under an unchanged
+   *  `startedAt`). Null/absent = unknown: older hosts, or no child spawned yet. */
+  childStartedAt?: number | null;
   /** Route loaded by the current child, updated only after a successful spawn. */
   accountRoutingMode?: string | null;
   startedAt: number;

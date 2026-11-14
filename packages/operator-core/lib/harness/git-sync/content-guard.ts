@@ -83,6 +83,8 @@ export interface ContentGuardDeps {
   /** The registered content detectors to run (default registry in production). */
   detectors: ContentDetector[];
   log?: (m: string) => void;
+  /** Monotonic millisecond clock seam for deterministic slow-pass diagnostics tests. */
+  clock?: () => number;
   /**
    * EI-21230011589307899: optional sink, filled with `path → contentSnapshotHash(text)`
    * for every file this pass actually judged (the text the detectors saw, after any
@@ -121,13 +123,22 @@ async function detectorsTargeting(
   active: ContentDetector[],
   repoPath: string,
   log?: (m: string) => void,
+  recordMatch?: (detector: ContentDetector, elapsedMs: number, matched: boolean, errored: boolean) => void,
+  clock: () => number = () => performance.now(),
 ): Promise<ContentDetector[]> {
   const dets: ContentDetector[] = [];
   for (const d of active) {
+    const startedAt = clock();
+    let matched = false;
+    let errored = false;
     try {
-      if (await d.matches(file, { repoPath })) dets.push(d);
+      matched = await d.matches(file, { repoPath });
+      if (matched) dets.push(d);
     } catch (e) {
+      errored = true;
       log?.(`[content-guard] detector "${d.key}" match() threw on ${file} — skipping: ${errMsg(e)}`);
+    } finally {
+      recordMatch?.(d, Math.max(0, clock() - startedAt), matched, errored);
     }
   }
   return dets;
@@ -179,6 +190,97 @@ export async function detectContentOffenders(deps: ContentGuardDeps): Promise<Co
   const { runGit, repoPath, readText, writeText, detectors, log } = deps;
   if (detectors.length === 0) return [];
 
+  const clock = deps.clock ?? (() => performance.now());
+  const passStartedAt = clock();
+  const perDetector = new Map<string, {
+    key: string;
+    matchCalls: number;
+    matchedPathCount: number;
+    matchMs: number;
+    matchErrors: number;
+    detectCalls: number;
+    detectMs: number;
+    detectErrors: number;
+    autoFixCalls: number;
+    autoFixMs: number;
+  }>();
+  const detectorMetrics = (key: string) => {
+    let metric = perDetector.get(key);
+    if (!metric) {
+      metric = {
+        key,
+        matchCalls: 0,
+        matchedPathCount: 0,
+        matchMs: 0,
+        matchErrors: 0,
+        detectCalls: 0,
+        detectMs: 0,
+        detectErrors: 0,
+        autoFixCalls: 0,
+        autoFixMs: 0,
+      };
+      perDetector.set(key, metric);
+    }
+    return metric;
+  };
+  const metrics = {
+    activeDetectorResolutionMs: 0,
+    statusCalls: 0,
+    statusMs: 0,
+    statusError: false,
+    dirtyPathCount: 0,
+    targetMatchingMs: 0,
+    targetedPathCount: 0,
+    detectorTargetCount: 0,
+    readCalls: 0,
+    readMs: 0,
+    readMissingCount: 0,
+    readErrorCount: 0,
+    detectorCalls: 0,
+    detectorMs: 0,
+    offenderCount: 0,
+  };
+  const emitSlowPassMetrics = (activeDetectorCount: number): void => {
+    const elapsedMs = Math.max(0, clock() - passStartedAt);
+    if (elapsedMs < 10_000 || !log) return;
+    const summary = {
+      event: 'slow-pass',
+      repoPath,
+      elapsedMs: Math.round(elapsedMs),
+      registeredDetectorCount: detectors.length,
+      activeDetectorCount,
+      activeDetectorResolutionMs: Math.round(metrics.activeDetectorResolutionMs),
+      statusCalls: metrics.statusCalls,
+      statusMs: Math.round(metrics.statusMs),
+      statusError: metrics.statusError,
+      dirtyPathCount: metrics.dirtyPathCount,
+      targetMatchingMs: Math.round(metrics.targetMatchingMs),
+      targetedPathCount: metrics.targetedPathCount,
+      detectorTargetCount: metrics.detectorTargetCount,
+      readConcurrency: MAX_READ_CONCURRENCY,
+      readCalls: metrics.readCalls,
+      readMs: Math.round(metrics.readMs),
+      readMissingCount: metrics.readMissingCount,
+      readErrorCount: metrics.readErrorCount,
+      detectorCalls: metrics.detectorCalls,
+      detectorMs: Math.round(metrics.detectorMs),
+      offenderCount: metrics.offenderCount,
+      perDetector: Array.from(perDetector.values())
+        .sort((a, b) => a.key.localeCompare(b.key))
+        .map((metric) => ({
+          ...metric,
+          matchMs: Math.round(metric.matchMs),
+          detectMs: Math.round(metric.detectMs),
+          autoFixMs: Math.round(metric.autoFixMs),
+        })),
+    };
+    try {
+      log('[git-sync:content-guard] ' + JSON.stringify(summary));
+    } catch {
+      // Diagnostics never change whether a dirty file is quarantined or committed.
+    }
+  };
+
   // EI-19381677675617429 — honour `repoScope`. git-sync runs this guard for the
   // superproject AND for every submodule with the SAME detector list, while `matches`
   // only ever sees a path relative to whichever repo is being guarded — so a
@@ -191,41 +293,115 @@ export async function detectContentOffenders(deps: ContentGuardDeps): Promise<Co
   // costly mistake is the other way round — 45 submodule files carry identity literals
   // by design (redacted at tar time), so wrongly running a superproject-only detector
   // inside a submodule would quarantine them from every commit, fleet-wide.
+  const activeStartedAt = clock();
   const active = await resolveActiveDetectors(runGit, repoPath, detectors, log);
-  if (active.length === 0) return [];
+  metrics.activeDetectorResolutionMs = Math.max(0, clock() - activeStartedAt);
+  if (active.length === 0) {
+    emitSlowPassMetrics(0);
+    return [];
+  }
 
+  metrics.statusCalls++;
+  const statusStartedAt = clock();
   const r = await runGit(['status', '--porcelain', '-z', '-uall'], repoPath);
-  if (r.code !== 0) return []; // can't list — fail open (the commit proceeds as today)
+  metrics.statusMs = Math.max(0, clock() - statusStartedAt);
+  if (r.code !== 0) {
+    metrics.statusError = true;
+    emitSlowPassMetrics(active.length);
+    return []; // can't list — fail open (the commit proceeds as today)
+  }
 
   // Pair each dirty path with the detectors that target it; drop paths no detector wants.
   const targets: Array<{ file: string; dets: ContentDetector[] }> = [];
-  for (const file of parseDirtyPaths(r.stdout)) {
-    const dets = await detectorsTargeting(file, active, repoPath, log);
-    if (dets.length > 0) targets.push({ file, dets });
+  const dirtyPaths = parseDirtyPaths(r.stdout);
+  metrics.dirtyPathCount = dirtyPaths.length;
+  const targetMatchingStartedAt = clock();
+  for (const file of dirtyPaths) {
+    const dets = await detectorsTargeting(
+      file,
+      active,
+      repoPath,
+      log,
+      (detector, elapsedMs, matched, errored) => {
+        const metric = detectorMetrics(detector.key);
+        metric.matchCalls++;
+        metric.matchMs += elapsedMs;
+        if (matched) metric.matchedPathCount++;
+        if (errored) metric.matchErrors++;
+      },
+      clock,
+    );
+    if (dets.length > 0) {
+      metrics.targetedPathCount++;
+      metrics.detectorTargetCount += dets.length;
+      targets.push({ file, dets });
+    }
   }
+  metrics.targetMatchingMs = Math.max(0, clock() - targetMatchingStartedAt);
 
   const offenders: ContentOffender[] = [];
   await mapPool(targets, MAX_READ_CONCURRENCY, async ({ file, dets }) => {
     let text: string | null;
+    const readStartedAt = clock();
+    metrics.readCalls++;
     try {
       text = await readText(file);
     } catch (e) {
+      metrics.readErrorCount++;
+      metrics.readMs += Math.max(0, clock() - readStartedAt);
       log?.(`[content-guard] could not read ${file} — skipping (not blocking): ${errMsg(e)}`);
       return;
     }
-    if (text == null) return; // gone/unreadable — nothing to check
+    metrics.readMs += Math.max(0, clock() - readStartedAt);
+    if (text == null) {
+      metrics.readMissingCount++;
+      return; // gone/unreadable — nothing to check
+    }
     // The working-tree text we detected on — the CAS baseline for a deterministic
     // auto-repair write, so we never clobber a concurrent editor's newer content.
     let baseline = text;
     for (const d of dets) {
+      const measuredDetector: ContentDetector = {
+        ...d,
+        detect: async (targetFile, targetText, context) => {
+          const metric = detectorMetrics(d.key);
+          metric.detectCalls++;
+          metrics.detectorCalls++;
+          const detectStartedAt = clock();
+          try {
+            return await d.detect(targetFile, targetText, context);
+          } catch (error) {
+            metric.detectErrors++;
+            throw error;
+          } finally {
+            const elapsedMs = Math.max(0, clock() - detectStartedAt);
+            metric.detectMs += elapsedMs;
+            metrics.detectorMs += elapsedMs;
+          }
+        },
+        ...(d.autoFix
+          ? {
+              autoFix: (targetText: string, targetFile: string) => {
+                const metric = detectorMetrics(d.key);
+                metric.autoFixCalls++;
+                const repairStartedAt = clock();
+                try {
+                  return d.autoFix!(targetText, targetFile);
+                } finally {
+                  metric.autoFixMs += Math.max(0, clock() - repairStartedAt);
+                }
+              },
+            }
+          : {}),
+      };
       try {
-        const error = await d.detect(file, text, { repoPath });
+        const error = await measuredDetector.detect(file, text, { repoPath });
         if (!error) continue;
         // WI-276 deterministic pre-pass: try the detector's own safe repair BEFORE
         // quarantining + dispatching the LLM fixer. Applied only to an ALREADY-failing
         // file, and kept only when it FULLY resolves the error (re-detect clean).
-        if (d.autoFix && writeText) {
-          const repaired = await tryAutoFix(d, file, text, baseline, { repoPath }, { readText, writeText, log });
+        if (measuredDetector.autoFix && writeText) {
+          const repaired = await tryAutoFix(measuredDetector, file, text, baseline, { repoPath }, { readText, writeText, log });
           if (repaired != null) {
             text = repaired; // subsequent detectors see the repaired text
             baseline = repaired; // and future writes CAS against the just-written content
@@ -250,6 +426,8 @@ export async function detectContentOffenders(deps: ContentGuardDeps): Promise<Co
     // their exclusion keeps them out of the index, so the hash is never consulted.
     deps.scanned?.set(file, contentSnapshotHash(text));
   });
+  metrics.offenderCount = offenders.length;
+  emitSlowPassMetrics(active.length);
   return offenders;
 }
 
@@ -360,6 +538,142 @@ function parseCatFileBatch(output: Buffer, expected: readonly StagedBlobBatchEnt
   return offset === output.length ? contents : null;
 }
 
+/** Inputs for {@link readStagedIndexTextsFromGit}. */
+export interface StagedIndexTextReadDeps {
+  /** Bound to the index the guarded commit records (an attributed group's private index). */
+  runGit: RunGit;
+  /** Optional byte-safe `cat-file --batch` runner bound to the same index. */
+  runGitStdin?: RunGitStdin;
+  repoPath: string;
+  paths: readonly string[];
+  log?: (message: string) => void;
+  /** Diagnostic prefix for fail-open fallbacks; defaults to the content guard. */
+  logLabel?: string;
+}
+
+/**
+ * Read selected index blobs with the content guard's bounded, byte-safe batch path.
+ * Missing index entries stay null (for example, staged deletions); unsupported entries
+ * and failed batches fall back to per-path `git show :path` reads.
+ */
+export async function readStagedIndexTextsFromGit(
+  deps: StagedIndexTextReadDeps,
+): Promise<ReadonlyMap<string, string | null>> {
+  const { runGit, runGitStdin, repoPath, paths, log } = deps;
+  const label = deps.logLabel ?? 'content-guard';
+  const uniquePaths = [...new Set(paths)];
+  const textByPath = new Map<string, string | null>(uniquePaths.map((path) => [path, null]));
+  if (uniquePaths.length === 0) return textByPath;
+
+  const readIndividually = async (items: readonly string[]): Promise<void> =>
+    mapPool([...items], MAX_READ_CONCURRENCY, async (path) => {
+      const blob = await runGit(['show', `:${path}`], repoPath);
+      if (blob.code === 0) textByPath.set(path, blob.stdout);
+    });
+
+  if (!runGitStdin) {
+    await readIndividually(uniquePaths);
+    return textByPath;
+  }
+
+  let indexRows: Map<string, StagedIndexEntry[]> | null = new Map();
+  try {
+    for (const chunk of stagedPathBatches(uniquePaths)) {
+      const listed = await runGit(['ls-files', '--stage', '-z', '--', ...chunk], repoPath, {
+        env: { GIT_LITERAL_PATHSPECS: '1' },
+      });
+      if (listed.code !== 0) { indexRows = null; break; }
+      const parsed = parseStagedIndexEntries(listed.stdout);
+      if (!parsed) { indexRows = null; break; }
+      for (const [path, rows] of parsed) indexRows.set(path, [...(indexRows.get(path) ?? []), ...rows]);
+    }
+  } catch {
+    indexRows = null;
+  }
+  if (!indexRows) {
+    log?.(`[${label}] ${repoPath}: could not list the guarded index for batch reads; falling back to per-file reads`);
+    await readIndividually(uniquePaths);
+    return textByPath;
+  }
+
+  const byOid = new Map<string, string[]>();
+  const fallback = new Set<string>();
+  const indexedPaths: string[] = [];
+  for (const path of uniquePaths) {
+    const rows = indexRows.get(path) ?? [];
+    // A successful census proves there is no staged blob for this path.
+    if (rows.length === 0) continue;
+    indexedPaths.push(path);
+    if (rows.length !== 1 || rows[0]!.stage !== 0 || rows[0]!.mode === '160000') {
+      fallback.add(path);
+      continue;
+    }
+    const linkedPaths = byOid.get(rows[0]!.oid) ?? [];
+    linkedPaths.push(path);
+    byOid.set(rows[0]!.oid, linkedPaths);
+  }
+
+  const uniqueOids = [...byOid.keys()];
+  const sizes = new Map<string, { type: string; bytes: number } | null>();
+  let checkFailed = false;
+  try {
+    for (let start = 0; start < uniqueOids.length; start += MAX_CAT_FILE_BATCH_CHECK_OIDS) {
+      const oids = uniqueOids.slice(start, start + MAX_CAT_FILE_BATCH_CHECK_OIDS);
+      const checked = await runGitStdin(
+        ['cat-file', '--batch-check=%(objectname) %(objecttype) %(objectsize)'],
+        repoPath,
+        `${oids.join('\n')}\n`,
+      );
+      if (checked.code !== 0) throw new Error('cat-file batch-check failed');
+      const parsed = parseCatFileBatchCheck(checked.stdout, oids);
+      if (!parsed) throw new Error('cat-file batch-check output was malformed');
+      for (const [oid, detail] of parsed) sizes.set(oid, detail);
+    }
+  } catch {
+    checkFailed = true;
+  }
+  if (checkFailed) {
+    log?.(`[${label}] ${repoPath}: staged blob batch-check failed; falling back to per-file reads`);
+    await readIndividually(indexedPaths);
+    return textByPath;
+  }
+
+  const blobEntries: StagedBlobBatchEntry[] = [];
+  for (const oid of uniqueOids) {
+    const detail = sizes.get(oid);
+    if (!detail || detail.type !== 'blob') {
+      for (const path of byOid.get(oid) ?? []) fallback.add(path);
+      continue;
+    }
+    blobEntries.push({ oid, path: oid, bytes: detail.bytes });
+  }
+  for (const group of partitionBlobsForScan(blobEntries, DEFAULT_SCAN_CHUNK_BYTES)) {
+    const oids = group.map((entry) => entry.oid);
+    let contents: Map<string, string> | null = null;
+    try {
+      const batch = await runGitStdin(['cat-file', '--batch', '--buffer'], repoPath, `${oids.join('\n')}\n`);
+      if (batch.code === 0) contents = parseCatFileBatch(batch.stdout, group);
+    } catch {
+      contents = null;
+    }
+    if (!contents) {
+      for (const oid of oids) for (const path of byOid.get(oid) ?? []) fallback.add(path);
+      log?.(`[${label}] ${repoPath}: staged cat-file batch failed; falling back to per-file reads for that chunk`);
+      continue;
+    }
+    for (const oid of oids) {
+      const text = contents.get(oid);
+      if (text === undefined) {
+        for (const path of byOid.get(oid) ?? []) fallback.add(path);
+        continue;
+      }
+      for (const path of byOid.get(oid) ?? []) textByPath.set(path, text);
+    }
+  }
+  if (fallback.size > 0) await readIndividually([...fallback]);
+  return textByPath;
+}
+
 /**
  * EI-21230011589307899: judge every staged blob the pre-stage pass never saw.
  *
@@ -412,111 +726,17 @@ export async function detectUnscannedStagedOffenders(deps: StagedRescanDeps): Pr
       }
     }
   };
-  const readIndividually = async (items: (typeof targets)[number][]): Promise<void> =>
-    mapPool(items, MAX_READ_CONCURRENCY, async ({ file, dets }) => {
-      const blob = await runGit(['show', `:${file}`], repoPath);
-      // A staged deletion has no index blob; any other read failure fails open.
-      if (blob.code !== 0) return;
-      await judge({ file, dets }, blob.stdout);
-    });
-
-  if (!runGitStdin) {
-    await readIndividually(targets);
-  } else {
-    let indexRows: Map<string, StagedIndexEntry[]> | null = new Map();
-    try {
-      for (const paths of stagedPathBatches(targets.map((target) => target.file))) {
-        const listed = await runGit(['ls-files', '--stage', '-z', '--', ...paths], repoPath, {
-          env: { GIT_LITERAL_PATHSPECS: '1' },
-        });
-        if (listed.code !== 0) { indexRows = null; break; }
-        const parsed = parseStagedIndexEntries(listed.stdout);
-        if (!parsed) { indexRows = null; break; }
-        for (const [path, rows] of parsed) indexRows.set(path, [...(indexRows.get(path) ?? []), ...rows]);
-      }
-    } catch {
-      indexRows = null;
-    }
-    if (!indexRows) {
-      log?.(`[content-guard] ${repoPath}: could not list the guarded index for batch reads; falling back to per-file reads`);
-      await readIndividually(targets);
-    } else {
-      const byOid = new Map<string, Array<(typeof targets)[number]>>();
-      const fallback = new Set<(typeof targets)[number]>();
-      const indexedTargets: typeof targets = [];
-      for (const target of targets) {
-        const rows = indexRows.get(target.file) ?? [];
-        // A successful census proves there is no staged blob for these paths.
-        // Retrying deletions individually only repeats an expected git show 128.
-        if (rows.length === 0) continue;
-        indexedTargets.push(target);
-        if (rows.length !== 1 || rows[0]!.stage !== 0 || rows[0]!.mode === '160000') {
-          fallback.add(target);
-          continue;
-        }
-        const paths = byOid.get(rows[0]!.oid) ?? [];
-        paths.push(target);
-        byOid.set(rows[0]!.oid, paths);
-      }
-      const uniqueOids = [...byOid.keys()];
-      const sizes = new Map<string, { type: string; bytes: number } | null>();
-      let checkFailed = false;
-      try {
-        for (let start = 0; start < uniqueOids.length; start += MAX_CAT_FILE_BATCH_CHECK_OIDS) {
-          const oids = uniqueOids.slice(start, start + MAX_CAT_FILE_BATCH_CHECK_OIDS);
-          const checked = await runGitStdin(
-            ['cat-file', '--batch-check=%(objectname) %(objecttype) %(objectsize)'],
-            repoPath,
-            `${oids.join('\n')}\n`,
-          );
-          if (checked.code !== 0) throw new Error('cat-file batch-check failed');
-          const parsed = parseCatFileBatchCheck(checked.stdout, oids);
-          if (!parsed) throw new Error('cat-file batch-check output was malformed');
-          for (const [oid, detail] of parsed) sizes.set(oid, detail);
-        }
-      } catch {
-        checkFailed = true;
-      }
-      if (checkFailed) {
-        log?.(`[content-guard] ${repoPath}: staged blob batch-check failed; falling back to per-file reads`);
-        await readIndividually(indexedTargets);
-      } else {
-        const blobEntries: StagedBlobBatchEntry[] = [];
-        for (const oid of uniqueOids) {
-          const detail = sizes.get(oid);
-          if (!detail || detail.type !== 'blob') {
-            for (const target of byOid.get(oid) ?? []) fallback.add(target);
-            continue;
-          }
-          blobEntries.push({ oid, path: oid, bytes: detail.bytes });
-        }
-        for (const group of partitionBlobsForScan(blobEntries, DEFAULT_SCAN_CHUNK_BYTES)) {
-          const oids = group.map((entry) => entry.oid);
-          let contents: Map<string, string> | null = null;
-          try {
-            const batch = await runGitStdin(['cat-file', '--batch', '--buffer'], repoPath, `${oids.join('\n')}\n`);
-            if (batch.code === 0) contents = parseCatFileBatch(batch.stdout, group);
-          } catch {
-            contents = null;
-          }
-          if (!contents) {
-            for (const oid of oids) for (const target of byOid.get(oid) ?? []) fallback.add(target);
-            log?.(`[content-guard] ${repoPath}: staged cat-file batch failed; falling back to per-file reads for that chunk`);
-            continue;
-          }
-          for (const oid of oids) {
-            const text = contents.get(oid);
-            if (text === undefined) {
-              for (const target of byOid.get(oid) ?? []) fallback.add(target);
-              continue;
-            }
-            await mapPool(byOid.get(oid) ?? [], MAX_READ_CONCURRENCY, (target) => judge(target, text));
-          }
-        }
-        if (fallback.size > 0) await readIndividually([...fallback]);
-      }
-    }
-  }
+  const indexTexts = await readStagedIndexTextsFromGit({
+    runGit,
+    runGitStdin,
+    repoPath,
+    paths: targets.map((target) => target.file),
+    log,
+  });
+  await mapPool(targets, MAX_READ_CONCURRENCY, async (target) => {
+    const text = indexTexts.get(target.file);
+    if (text !== null && text !== undefined) await judge(target, text);
+  });
   if (rescanned > 0) {
     log?.(
       `[content-guard] ${repoPath}: post-stage rescan judged ${rescanned} staged path(s) the pre-stage pass ` +

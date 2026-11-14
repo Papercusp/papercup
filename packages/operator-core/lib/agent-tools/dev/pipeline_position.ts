@@ -17,11 +17,40 @@ import { buildKey } from '../../events/await/catalog';
 import { CELL_READ_SPAWN_ID } from '../../cell-read';
 import { canonicalHarnessSlug, operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { statePlaneForDoor } from '../state-plane-door';
-import { CURRENT_BUILD_TEST_CLASSES, currentBuildTestRoute } from '../../serving-runtimes';
+import {
+  CURRENT_BUILD_TEST_CLASSES,
+  currentBuildTestRoute,
+  type CurrentBuildTestRoute,
+} from '../../serving-runtimes';
 import { getServingHostIdentity } from '../../serving-host-identity';
 import { runtimeObservabilityHealth } from '../../observability/runtime';
 
 const TOOL_NAME = 'dev:pipeline_position';
+
+/**
+ * A declared route is not runnable for this source until its measured runtime
+ * reports an identified build that contains the requested path. The route table
+ * is static; runtime availability and containment come from the live probe.
+ */
+function routeWithMeasuredRuntimeReadiness(
+  route: CurrentBuildTestRoute,
+  servingRuntimes: PipelinePosition['servingRuntimes'],
+): CurrentBuildTestRoute {
+  if (route.readiness !== 'ready' || typeof route.runtime !== 'string') return route;
+  const runtime = servingRuntimes.find((entry) => entry.runtime === route.runtime);
+  if (typeof runtime?.buildSha === 'string' && runtime.buildSha.length > 0 && runtime.containsChange === true) {
+    return route;
+  }
+
+  const measuredIdentity = 'Measured runtime identity contains this change';
+  return {
+    ...route,
+    readiness: 'requires-prerequisites',
+    prerequisites: route.prerequisites.includes(measuredIdentity)
+      ? route.prerequisites
+      : [...route.prerequisites, measuredIdentity],
+  };
+}
 
 /**
  * Keep the domain payload below the result door before the generic serializer gets
@@ -904,7 +933,6 @@ export default defineTool({
         supportedClasses: CURRENT_BUILD_TEST_CLASSES.map(({ id }) => id),
       } };
     }
-    const routeHint = testRoute ? { currentBuildTestRoute: testRoute } : {};
     /**
      * unified-agent-state-plane-2026-07-27 P-007: a NO-ARG call is now legal and returns
      * the PIPELINE-WIDE legs (`gate`, `deployedSha`, `verdictProvenance`) with the
@@ -927,6 +955,9 @@ export default defineTool({
      * not depend on a path.
      */
     const result = await gitPipelinePosition({ path: args.path, sha: args.sha, marker: args.marker, expectedSourceSha256: args.expectedSourceSha256 });
+    const routeHint = testRoute
+      ? { currentBuildTestRoute: routeWithMeasuredRuntimeReadiness(testRoute, result.servingRuntimes ?? []) }
+      : {};
     if (args.sourceRuntimeOnly) {
       // Native graph joins need exact source/runtime identity; the ordinary bounded
       // pipeline digest can omit the root or clip nested containment fields. Keep

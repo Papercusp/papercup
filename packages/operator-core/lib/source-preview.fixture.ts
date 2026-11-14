@@ -322,7 +322,7 @@ export function makeBgCandidate(base: string) {
 /** Real compiler inputs, retained independently of the suite registering a case. */
 export async function makeBgCompilerCandidate(base: string, {
   artifactInputs = false, cliHarness = false, sourceOnly = false, protectedUnconsumed = false, runtimeModules = false,
-  frozenGeneration = false,
+  frozenGeneration = false, testingCore = false,
   trace = (_stage: string) => {},
 } = {}) {
   trace('compiler-fixture:start');
@@ -374,6 +374,16 @@ export async function makeBgCompilerCandidate(base: string, {
     }));
   }
   write(c.fixture.repo, BG_INPUTS[0]!, "export { y } from '../../../packages/core/index'; export { default as dep } from 'fixture-dependency';\n");
+  if (testingCore) {
+    write(c.fixture.repo, BG_INPUTS[0]!, readFileSync(join(c.fixture.repo, BG_INPUTS[0]!), 'utf8')
+      + 'export const expectedCore = __PAPERCUSP_TESTING_CORE_WITNESS__;\n');
+    write(c.fixture.repo, 'packages/operator-core/lib/agent-tools/testing/testing-core.worker.ts',
+      "export { default as dep } from 'fixture-dependency';\n"
+      + 'export const TESTING_CORE_SOURCE_SHA256 = __PAPERCUSP_TESTING_CORE_SOURCE_SHA256__;\n'
+      + 'export const unicode = "μ";\n');
+    write(c.fixture.repo, 'apps/operator/bin/ascii-escape-bundle.mjs',
+      readFileSync(join(SOURCE_ROOT, 'apps/operator/bin/ascii-escape-bundle.mjs'), 'utf8'));
+  }
   git(c.fixture.repo, ['add', '-A']);
   git(c.fixture.repo, ['commit', '-qm', 'BG compiler input custody fixture']);
   c.options.ref = git(c.fixture.repo, ['rev-parse', 'HEAD']);

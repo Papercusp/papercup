@@ -39,6 +39,25 @@ function ignoredCandidate(root) {
   return path;
 }
 
+test('Git input census drops index-lagged deletions and invalidates earlier build custody', () => {
+  const root = fixture();
+  generatedPackage(root, 'packages/cli');
+  write(root, 'src/present.js', 'export default 1;\n');
+  write(root, 'src/deleted.js', 'export default 2;\n');
+  execFileSync('git', ['add', '--all'], { cwd: root });
+  write(root, 'src/untracked.js', 'export default 3;\n');
+  buildWorkspace(root, 'packages/cli', [process.execPath, '-e',
+    'const fs=require("node:fs");fs.mkdirSync("dist");fs.copyFileSync("src/cli.cjs","dist/cli.cjs");']);
+  assert.equal(captureClosure(root).complete, true);
+  rmSync(join(root, 'src/deleted.js'));
+  const inputs = buildInputs(root);
+  assert.ok(inputs.some(row => row.path === 'src/present.js'));
+  assert.ok(inputs.some(row => row.path === 'src/untracked.js'));
+  assert.ok(!inputs.some(row => row.path === 'src/deleted.js'));
+  assert.equal(captureClosure(root).complete, false,
+    'dropping a missing index entry must not preserve a receipt that included its source bytes');
+});
+
 test('archive inputs and requirements each use one fresh full census and reject later tampering', () => {
   const root = fixture();
   rmSync(join(root, '.git'), { recursive: true });

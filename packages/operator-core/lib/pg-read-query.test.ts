@@ -379,6 +379,47 @@ describe('boundedPgReadTxn — bounded internal loop reads', () => {
     expect(taggedCalls).toBe(2);
   });
 
+  it('runs all predicate partition reads under one repeatable-read snapshot', async () => {
+    const transactionSettings: string[] = [];
+    const probeStatements: string[] = [];
+    const tx = Object.assign(async (..._args: unknown[]) => [], {
+      unsafe: async (query: string) => {
+        if (/^\s*SET\b/i.test(query)) {
+          transactionSettings.push(query);
+          return [];
+        }
+        probeStatements.push(query);
+        if (/AS row_count/i.test(query)) return [{ d1: true, d2: null, row_count: 1 }];
+        if (/AS total/i.test(query)) return [{ total: 1 }];
+        return [];
+      },
+    });
+    const client = Object.assign(async (..._args: unknown[]) => [], {
+      begin: (callback: (transaction: unknown) => Promise<unknown>) => callback(tx),
+    }) as unknown as NonNullable<Parameters<typeof executePredicatePartition>[1]>['client'];
+    const sql = [
+      'SELECT count(*) FILTER (WHERE quarantined_at IS NOT NULL) AS present,',
+      '       count(*) FILTER (WHERE retry_after < now()) AS due',
+      '  FROM harness_shared.substrate_outbox',
+      " WHERE workspace_id = 'papercusp-workspace' AND harness_slug = 'papercusp'",
+      '   AND drained_at IS NULL',
+    ].join('\n');
+    const plan = planPredicatePartition(sql)!;
+
+    const result = await executePredicatePartition(plan, { client });
+
+    expect(result).toBeTruthy();
+    expect(transactionSettings[0]).toBe(
+      'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY',
+    );
+    expect(probeStatements).toHaveLength(3);
+    expect(probeStatements.map((query) => query.includes('drained_at IS NULL'))).toEqual([
+      true,
+      true,
+      true,
+    ]);
+  });
+
   // WI-6554700010018139: an opt-in lock_timeout lets a caller tell a lock wait (55P03)
   // from a slow statement (57014). It must stay below statement_timeout to do that.
   it('installs an opt-in transaction-local lock_timeout, clamped below statement_timeout', async () => {
@@ -4339,6 +4380,33 @@ describe('buildNonSummingPartitionAdvisory (WI-10002034 — the scalar whose buc
     // `WHERE`s, so this also pins the shallowest-WHERE selection rule.
     expect(advisory).toContain("WHERE workspace_id = 'papercusp-workspace'");
     expect(advisory).not.toContain("(workspace_id = 'papercusp-workspace') AS d");
+  });
+
+  it('stays silent for complementary NULL FILTERs and preserves drained scope for other partitions', () => {
+    const sqlFor = (secondFilter: string) =>
+      [
+        'SELECT count(*) FILTER (WHERE quarantined_at IS NOT NULL) AS quarantined,',
+        `       count(*) FILTER (WHERE ${secondFilter}) AS other_bucket`,
+        '  FROM harness_shared.substrate_outbox',
+        " WHERE workspace_id = 'papercusp-workspace' AND harness_slug = 'papercusp'",
+        '   AND drained_at IS NULL',
+      ].join('\n');
+    const complementary = sqlFor('quarantined_at IS NULL');
+
+    expect(planPredicatePartition(complementary)).toBeNull();
+    expect(buildNonSummingPartitionAdvisory(complementary)).toBeNull();
+
+    const independent = planPredicatePartition(sqlFor("last_error <> 'closed'"))!;
+    const generated = [
+      predicatePartitionSql(independent),
+      predicatePartitionTotalSql(independent),
+      predicatePartitionSampleSql(independent),
+    ];
+    for (const statement of generated) {
+      expect(statement).toContain("workspace_id = 'papercusp-workspace'");
+      expect(statement).toContain("harness_slug = 'papercusp'");
+      expect(statement).toContain('drained_at IS NULL');
+    }
   });
 
   it('stays silent on a standalone boolean EXISTS with a predicate one paren deep', () => {

@@ -2,9 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { mkdtemp, mkdir, writeFile, readFile, stat, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, stat, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import type { ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -91,6 +91,39 @@ describe('scoped retention recovery on real files', () => {
     expect(await readFile(pinned, 'utf8')).toBe('open acceptance evidence');
     expect(await readFile(join(unrelated, 'keep'), 'utf8')).toBe('outside this recovery scope');
     expect(delegate).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { source: 'vendor', capped: false },
+    { source: 'vendor', capped: true },
+    { source: 'caller-protection', capped: false },
+  ])('retains an offloaded $source target and its parent with capped=$capped', async ({ source, capped }) => {
+    const { root, options } = await setup();
+    const home = join(fixture!, 'account');
+    const retained = join(root, 'wi-10006692-retained-model-vendor-2026-10-08');
+    const vendor = join(retained, 'vendor');
+    const compiler = join(vendor, 'lsp', 'node_modules', 'typescript', 'lib', 'typescript.js');
+    const expired = join(root, 'wi-12345-unreferenced');
+    await mkdir(dirname(compiler), { recursive: true });
+    await writeFile(compiler, 'installed compiler bytes');
+    await writeFile(expired, 'expired work output');
+    const alias = join(home, '.papercusp', source === 'vendor' ? 'vendor' : 'retained-source');
+    await mkdir(dirname(alias), { recursive: true });
+    await symlink(vendor, alias, 'dir');
+    const receipt = await runDiskReclaimOnce({ ...options, home,
+      nowMs: Date.now() + 100 * HOUR,
+      policy: [{ ...options.policy[0]!, ...(capped ? { maxBytes: 1 } : {}) }],
+      ...(source === 'caller-protection' ? { readProtection: async () => ({ paths: [alias] }) } : {}),
+    });
+    expect(receipt.entries).toContainEqual(expect.objectContaining({ path: expired, status: 'removed' }));
+    expect(receipt.entries.filter(entry => entry.status === 'removed').map(entry => entry.path)).not.toContain(retained);
+    await expect(stat(expired)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await readFile(compiler, 'utf8')).toBe('installed compiler bytes');
+    expect(await readFile(join(alias, 'lsp', 'node_modules', 'typescript', 'lib', 'typescript.js'), 'utf8'))
+      .toBe('installed compiler bytes');
+    if (capped) expect(receipt.caps).toContainEqual(expect.objectContaining({
+      classId: 'fixture', overByBytes: expect.any(Number),
+    }));
   });
 
   it.each([

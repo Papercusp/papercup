@@ -34,9 +34,16 @@
  */
 
 import { z } from 'zod';
+import { createHash } from 'node:crypto';
+import { canonicalJson } from '@papercusp/hash-chain';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
-import { parseTestRunExecutionDetails, RECORDED_TEST_LAYERS } from '@papercusp/test-config/execution-details';
+import { parseTestRunExecutionDetails, RECORDED_TEST_LAYERS,
+  testRunExecutionDetailsReaderContract } from '@papercusp/test-config/execution-details';
+import { getServingHostIdentity } from '../../serving-host-identity';
+import { runtimeObservabilityHealth } from '../../observability/runtime';
+import { originalTestRunReference as originalResultReference } from '../../testing-run-original-reference';
+import { readConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
 import { CRITICAL_P95_MS } from '../../event-loop-lag-monitor';
 import { toIso } from '../_pg-timestamp';
 import { getForegroundRunVerdictAsync, type ForegroundRunVerdict } from '../../testing-run-store';
@@ -53,6 +60,57 @@ const OMITTED_SOURCE_RUN_IDS_LIMIT = 100;
 /** Inline budget for a bounded row's mutation diff; the full diff stays in the ledger row. */
 export const MUTANT_DIFF_INLINE_CHARS = 600;
 const NO_RUNS_RECORDED_REASON = 'no_runs_recorded' as const;
+
+/** Identify the reader that actually handled these rows. A checkout hash or
+ * process start time cannot identify a cached/bundled parser. Reuse the boot
+ * artifact measurement, never reread a potentially replaced file from disk.
+ * The function digest identifies only the loaded parser entry, not its imports
+ * or source bytes; unmeasured artifacts remain explicitly unknown. */
+export function testRunReaderProvenance() {
+  const contract = testRunExecutionDetailsReaderContract();
+  const bootArtifact = runtimeObservabilityHealth().artifact;
+  const paths = ['libs/test-config/src/execution-details.ts', 'libs/test-config/package.json',
+    'packages/operator-core/lib/agent-tools/testing/runs.ts'];
+  return {
+    schemaVersion: 'test-run-reader-provenance-v1' as const,
+    ...getServingHostIdentity(),
+    parser: {
+      path: paths[0],
+      loadedEntrySha256: createHash('sha256')
+        .update(Function.prototype.toString.call(parseTestRunExecutionDetails)).digest('hex'),
+      contract: JSON.parse(contract) as { schemaVersion: number; fields: string[] },
+      contractSha256: createHash('sha256').update(contract).digest('hex'),
+    },
+    artifact: bootArtifact?.status === 'measured' ? {
+      status: 'measured' as const,
+      sourceSha: bootArtifact.sourceSha,
+      bundleSha256: bootArtifact.bundleSha256,
+      manifestSha256: bootArtifact.manifestSha256,
+      sourceBlobs: Object.fromEntries(paths.filter(path => bootArtifact.sourceBlobs[path])
+        .map(path => [path, bootArtifact.sourceBlobs[path]])),
+      evidenceRef: bootArtifact.evidenceRef,
+    } : { status: 'unknown' as const, reason: bootArtifact?.reason ?? 'boot-artifact-not-measured' },
+  };
+}
+
+/** A complete exact primary-key read, never a listing or a selected-suite claim.
+ * Result references include full originals before diagnostic response shaping. */
+function originalResultSetReference(requested: readonly number[] | null,
+  observed: Array<ReturnType<typeof originalResultReference>>) {
+  if (!requested?.length || requested.length > 100 || observed.length !== requested.length
+    || requested.some(id => !Number.isSafeInteger(id) || id <= 0)
+    || new Set(requested).size !== requested.length) return null;
+  const selected = new Set(requested.map(String));
+  if (observed.some(reference => !reference || !selected.has(reference.testRunId))
+    || new Set(observed.map(reference => reference!.testRunId)).size !== selected.size) return null;
+  const references = observed.map(reference => reference!).sort((a, b) => Number(a.testRunId) - Number(b.testRunId));
+  const scope = 'exact-requested-original-test-runs' as const;
+  return { schemaVersion: 'original-test-run-set-reference-v2' as const, scope,
+    testRunIds: references.map(reference => reference.testRunId),
+    sha256: createHash('sha256').update(canonicalJson([
+      'original-test-run-set-reference-v2', scope, references,
+    ])).digest('hex') };
+}
 
 export const TESTING_RUNS_DIAGNOSTIC_STAGES = {
   rollup: 'testing-runs-rollup',
@@ -282,6 +340,14 @@ const testingRunResultSchema = z
       failedCaseTitles: z.array(z.string()).optional(),
     }).passthrough().nullable(),
     executionDetailsUnavailableReason: z.enum(['not-recorded', 'invalid-or-unsupported', 'row-mismatch']).optional(),
+    configurationFingerprint: z.string().regex(/^sha256-config-snapshot-v1:[a-f0-9]{64}$/).nullable(),
+    configurationSnapshotUnavailableReason: z.enum(['not-recorded', 'invalid-or-unsupported']).optional(),
+    originalResultReference: z.object({
+      schemaVersion: z.literal('original-test-run-reference-v2'),
+      scope: z.literal('original-test-run-outcome-execution-and-configuration'),
+      testRunId: z.string().regex(/^[1-9]\d*$/),
+      sha256: z.string().regex(/^[a-f0-9]{64}$/),
+    }).nullable(),
     executionDetailsBounded: z.object({
       passedCaseTitlesOmitted: z.number().int().nonnegative(),
       failedCaseTitlesOmitted: z.number().int().nonnegative(),
@@ -564,6 +630,7 @@ export default defineTool({
       'Each row: { id, workspaceId, harnessSlug, root, executionDetails, executionDetailsUnavailableReason?, filePath, status, framework, startedAt, finishedAt, durationMs, commitSha, runGroupId, source, branch, outputTail, loopLagP95Ms, rssMb, saturationSuspect, worktreeDirty, isScratchConfig }. id is the durable testRunId for evidence binding; workspaceId/harnessSlug report the stored scope and may be null. root is the parser-validated absolute checkout root captured in execution_details, or null for legacy/malformed rows. executionDetails returns validated measured case counts, the runtime-recorded testLayer (unit|integration|e2e|llm|browser) when present (never inferred from a path), selector and saved case titles; null means unavailable, not zero executed cases. When unavailable, executionDetailsUnavailableReason distinguishes not-recorded (SQL NULL/missing), invalid-or-unsupported (stored metadata rejected by this reader), and row-mismatch (valid metadata names a different file or run group). Bounded responses may omit titles and report executionDetailsBounded; payloadTier:"full" preserves complete saved details. outputTail is populated only for fail/error rows and is truncated.',
       '`runGroup` is the canonical exact run_group_id input selector; `runGroupId` is accepted as a compatibility alias because output rows expose the same value as runGroupId. If both are supplied, runGroup wins.',
       '`testRunIds` is an exact primary-key selector for evidence-lineage lookups; when supplied without an explicit `latestPerFile`, it defaults to `latestPerFile:false` so every requested receipt remains visible, including multiple attempts for one file. Set `latestPerFile:true` only when intentionally collapsing the selected IDs.',
+      'originalResultSetReference v2 identifies the complete exact requested original-row set, including each verified configuration fingerprint, before diagnostic shaping. Missing or invalid configuration snapshots leave references null, as do ordinary listings or missing, filtered, limited, duplicate or invalid originals. It does not establish selected-manifest completeness, producing-run/fence custody, fixture reset or reuse eligibility.',
       '{ count, total, truncatedByLimit, latestPerFile, runs, groups } — `runs` is the row list and `groups` is present for rollups.',
       'Rollup rows: { key, commitSha, commitShaCount, total, failed, failedFiles, files, firstStart, lastFinish } grouped by commit_sha or run_group_id. commitSha names the CANDIDATE the group judged — for rollup:"runGroup" it is the only way to tell which sha a run was about; commitShaCount>1 means the group spans several, so commitSha is one arbitrary member and is NOT "the sha this judged". By default each group uses its latest result per file, matching the row-listing view; pass latestPerFile:false to include historical attempts. The response also reports the effective source filter; BOTH rollups default to source:"ci".',
       '`runs:[]` or `groups:[]` includes `{ notRecorded:true, reason:"no_runs_recorded" }`; an empty ledger result is not evidence that the requested test passed or did not run.',
@@ -678,6 +745,12 @@ export default defineTool({
       count: z.number().int().nonnegative(),
       total: z.number().int().nonnegative(),
       truncatedByLimit: z.boolean(),
+      originalResultSetReference: z.object({
+        schemaVersion: z.literal('original-test-run-set-reference-v2'),
+        scope: z.literal('exact-requested-original-test-runs'),
+        testRunIds: z.array(z.string().regex(/^[1-9]\d*$/)).min(1).max(100),
+        sha256: z.string().regex(/^[a-f0-9]{64}$/),
+      }).nullable().optional(),
       latestPerFile: z.boolean(),
       rollup: z.enum(['commit', 'runGroup']).optional(),
       source: z.enum(['ci', 'local', 'admin-ui', 'mutation-probe']).optional(),
@@ -689,6 +762,18 @@ export default defineTool({
       notRecorded: z.literal(true).optional(),
       reason: z.literal(NO_RUNS_RECORDED_REASON).optional(),
       runs: z.array(testingRunResultSchema).optional(),
+      reader: z.object({
+        schemaVersion: z.literal('test-run-reader-provenance-v1'),
+        host: z.string(), processId: z.string().nullable(), buildSha: z.string().nullable(),
+        parser: z.object({ path: z.string(), loadedEntrySha256: z.string().regex(/^[a-f0-9]{64}$/),
+          contract: z.object({ schemaVersion: z.number(), fields: z.array(z.string()) }),
+          contractSha256: z.string().regex(/^[a-f0-9]{64}$/) }),
+        artifact: z.discriminatedUnion('status', [
+          z.object({ status: z.literal('measured'), sourceSha: z.string(), bundleSha256: z.string(),
+            manifestSha256: z.string(), sourceBlobs: z.record(z.string(), z.string()), evidenceRef: z.string() }),
+          z.object({ status: z.literal('unknown'), reason: z.string() }),
+        ]),
+      }).optional(),
       groups: z.array(testingRunGroupResultSchema).optional(),
     })
     .passthrough(),
@@ -882,6 +967,7 @@ export default defineTool({
         workspace_id: string | null;
         harness_slug: string | null;
         execution_details: unknown;
+        configuration_snapshot: unknown;
         file_path: string;
         status: string;
         framework: string;
@@ -921,7 +1007,7 @@ export default defineTool({
            ORDER BY finished_at DESC NULLS LAST, started_at DESC, id DESC
            LIMIT ${limit}
         )
-        SELECT p.id::text, p.workspace_id, p.harness_slug, p.execution_details,
+        SELECT p.id::text, p.workspace_id, p.harness_slug, p.execution_details, p.configuration_snapshot,
                p.file_path, p.status, p.framework, p.duration_ms::text, p.started_at, p.finished_at,
                CASE WHEN p.status = ANY(${RED_STATUSES as unknown as string[]}::text[])
                     THEN left(p.output_tail, ${OUTPUT_TAIL_CHARS}) END AS output_tail,
@@ -943,7 +1029,7 @@ export default defineTool({
         ), picked AS (
           ${picked}
         )
-        SELECT p.id::text, p.workspace_id, p.harness_slug, p.execution_details,
+        SELECT p.id::text, p.workspace_id, p.harness_slug, p.execution_details, p.configuration_snapshot,
                p.file_path, p.status, p.framework, p.duration_ms::text, p.started_at, p.finished_at,
                CASE WHEN p.status = ANY(${RED_STATUSES as unknown as string[]}::text[])
                     THEN left(p.output_tail, ${OUTPUT_TAIL_CHARS}) END AS output_tail,
@@ -994,7 +1080,7 @@ export default defineTool({
           () => loadTestCaseResults(sql, rows.map((r) => Number(r.id))),
         )
       : null;
-    const casesFor = (id: number, executionDetails: ReturnType<typeof parseStoredExecutionDetails>) => {
+    const casesFor = (id: number, executionDetails: ReturnType<typeof parseStoredExecutionDetails> | null) => {
       if (!caseResults) return {};
       if (caseResults.notMigrated) return { cases: null, casesUnavailableReason: 'not-migrated' as const };
       const list = caseResults.byRun.get(id);
@@ -1011,9 +1097,11 @@ export default defineTool({
       }
       return list ? { cases: list } : { cases: null, casesUnavailableReason: 'not-recorded' as const };
     };
+    const originalReferences: Array<ReturnType<typeof originalResultReference>> = [];
     return {
       data: {
         count: rows.length,
+        reader: testRunReaderProvenance(),
         total,
         truncatedByLimit: total > rows.length,
         ...emptyResultMetadata(rows.length + omittedBySourceFilter),
@@ -1026,17 +1114,26 @@ export default defineTool({
         ...(sourceFilterHint ? { sourceFilterHint } : {}),
         runs: rows.map((r) => {
           const parsedDetails = parseStoredExecutionDetails(r.execution_details);
+          const configurationSnapshot = readConfigurationSnapshot(r.configuration_snapshot);
+          // A valid nested digest is not a join to this original ledger row.
+          // Keep every producer-stamped identity bound, including dirty/null
+          // source observations; never inherit a tenant or candidate label.
           const executionDetails = parsedDetails?.filePath === r.file_path && parsedDetails.runGroupId === r.run_group_id
+            && parsedDetails.commitSha === r.commit_sha && parsedDetails.worktreeDirty === r.worktree_dirty
+            && parsedDetails.workspaceId === r.workspace_id && parsedDetails.harnessSlug === r.harness_slug
             ? parsedDetails : null;
           const executionDetailsUnavailableReason = r.execution_details == null
             ? 'not-recorded' : !parsedDetails ? 'invalid-or-unsupported' : 'row-mismatch';
-          return {
+          const run = {
           id: Number(r.id),
           workspaceId: r.workspace_id,
           harnessSlug: r.harness_slug,
           root: executionDetails?.root ?? null,
           executionDetails,
           ...(executionDetails ? {} : { executionDetailsUnavailableReason }),
+          configurationFingerprint: configurationSnapshot?.fingerprint ?? null,
+          ...(configurationSnapshot ? {} : { configurationSnapshotUnavailableReason:
+            r.configuration_snapshot == null ? 'not-recorded' as const : 'invalid-or-unsupported' as const }),
           filePath: r.file_path,
           status: r.status,
           framework: r.framework,
@@ -1055,7 +1152,11 @@ export default defineTool({
           isScratchConfig: r.is_scratch_config,
           ...casesFor(Number(r.id), executionDetails),
           };
+          const reference = originalResultReference(run);
+          originalReferences.push(reference);
+          return { ...run, originalResultReference: reference };
         }),
+        originalResultSetReference: originalResultSetReference(testRunIds, originalReferences),
       },
     };
   },

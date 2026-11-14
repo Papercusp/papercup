@@ -2172,6 +2172,37 @@ test("fs-mutex admission reconciles abandoned staging readers", async (t) => {
   }
 });
 
+test("fs-mutex lock-wait budget starts after stale staging-reader reconciliation", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "install-safe-staging-budget-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const name = "slow-staging";
+  const orphan = join(root, `${name}.readers-staging`, "orphan.lock");
+  mkdirSync(orphan, { recursive: true });
+  utimesSync(orphan, new Date(0), new Date(0));
+  let preflightMs = 0;
+  let acquired;
+  await withFsMutex(name, async () => undefined, {
+    lockRootDir: root,
+    timeoutMs: 100,
+    retryMs: 5,
+    io: {
+      readFile: async (path, encoding) => {
+        if (path === join(orphan, "owner.json")) {
+          const started = Date.now();
+          await new Promise(resolve => setTimeout(resolve, 150));
+          preflightMs = Date.now() - started;
+          throw Object.assign(new Error("missing owner"), { code: "ENOENT" });
+        }
+        return readFileSync(path, encoding);
+      },
+    },
+    onAcquired: info => { acquired = info; },
+  });
+  assert.ok(preflightMs >= 140, `expected the injected preflight delay, got ${preflightMs}ms`);
+  assert.ok(acquired, "a slow preflight with no holder must not exhaust the lock-wait budget");
+  assert.equal(existsSync(orphan), false, "the stale staging marker must still be reconciled");
+});
+
 test("fs-mutex staging reconciliation preserves live, remote, denied and fresh malformed owners", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "install-safe-staging-controls-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -3317,7 +3348,8 @@ test("publishDependencyGeneration invokes the shared atomic publisher after inst
     assert.equal(calls.length, 1);
     assert.equal(calls[0][0], "bash");
     assert.match(calls[0][1][0], /dependency-generation\.sh$/);
-    assert.deepEqual(calls[0][1].slice(1), ["--integration", repoRoot]);
+    assert.deepEqual(calls[0][1].slice(1), ["--integration", repoRoot,
+      "--retain-input-as", "npm-install-safe"]);
     assert.deepEqual(calls[0][2], {
       cwd: repoRoot,
       stdio: "inherit",
@@ -3375,6 +3407,67 @@ for (const outcome of ["repaired", "unchanged", "failed"]) {
     }
   });
 }
+
+test("publishDependencyGeneration retains its latest handoff after producer exit and expires it normally", { timeout: 120_000 }, async () => {
+  const root = mkdtempSync(join(tmpdir(), "install-safe-retained-handoff-"));
+  const repoRoot = join(root, "source");
+  const competitor = join(root, "competitor");
+  const generationRoot = join(root, "generations");
+  const env = { ...process.env, PAPERCUSP_SKIP_DEP_GENERATION: "0",
+    PAPERCUSP_DEPENDENCY_GENERATION_ROOT: generationRoot, DEPENDENCY_GENERATION_RETAIN_COUNT: "1" };
+  let published, publisherScript;
+  try {
+    for (const [path, name] of [[repoRoot, "retained-source"], [competitor, "independent-competitor"]]) {
+      mkdirSync(join(path, "node_modules/pkg"), { recursive: true });
+      writeFileSync(join(path, "package.json"), JSON.stringify({ name, version: "1.0.0",
+        workspaces: [], dependencies: { pkg: "1.0.0" } }) + "\n");
+      writeFileSync(join(path, "package-lock.json"), JSON.stringify({ name, lockfileVersion: 3,
+        packages: { "": { name, version: "1.0.0", dependencies: { pkg: "1.0.0" } },
+          "node_modules/pkg": { version: "1.0.0" } } }) + "\n");
+      writeFileSync(join(path, "node_modules/pkg/package.json"), '{"name":"pkg","version":"1.0.0"}\n');
+      writeFileSync(join(path, "node_modules/pkg/index.js"), name + "\n");
+    }
+    assert.equal(await publishDependencyGeneration({ repoRoot, env,
+      runPublisher: (command, args, options) => {
+        publisherScript = args[0];
+        published = spawnSync(command, args, { ...options, stdio: "pipe", encoding: "utf8" });
+        return published;
+      },
+    }), 0, published?.stderr);
+    const identity = published.stdout.match(/\bidentity=(v1-[a-f0-9]{64})\b/)?.[1];
+    const input = published.stdout.match(/\binput=([a-f0-9]{64})\b/)?.[1];
+    assert.ok(identity, published.stdout);
+    assert.ok(input, published.stdout);
+    const generation = join(generationRoot, identity);
+    for (let index = 0; index < 3; index++) {
+      writeFileSync(join(competitor, "node_modules/pkg/index.js"), `competitor-${index}\n`);
+      const result = spawnSync("bash", [publisherScript, "--integration", competitor], { env, encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+      assert.notEqual(result.stdout.match(/\binput=([a-f0-9]{64})\b/)?.[1], input,
+        "competitors must use different inputs from the delayed handoff");
+    }
+    assert.equal(existsSync(generation), true,
+      "a safe-install handoff must survive competing publications after its producer exits");
+    const selected = spawnSync("bash", [publisherScript, "--integration", repoRoot,
+      "--select-inputs-from", repoRoot], { env, encoding: "utf8" });
+    assert.equal(selected.status, 0, selected.stderr);
+    assert.equal(selected.stdout.match(/\bidentity=(v1-[a-f0-9]{64})\b/)?.[1], identity);
+    const pins = join(generationRoot, ".pins");
+    const pin = readdirSync(pins).find(name =>
+      readFileSync(join(pins, name), "utf8").includes("label=npm-install-safe\n"));
+    assert.ok(pin, "the normal publisher must create an expiring handoff pin");
+    const pinPath = join(pins, pin);
+    const pinText = readFileSync(pinPath, "utf8");
+    assert.ok(pinText.includes(`identity=${identity}\n`));
+    writeFileSync(pinPath, pinText.replace(/^expires=\d+$/m, "expires=0"));
+    const expired = spawnSync("bash", [publisherScript, "--integration", competitor,
+      "--prune-only"], { env, encoding: "utf8" });
+    assert.equal(expired.status, 0, expired.stderr);
+    assert.equal(existsSync(generation), false, "expired handoff pins must not retain old generations");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("publishDependencyGeneration preserves an explicit emergency skip", async () => {
   let called = false;

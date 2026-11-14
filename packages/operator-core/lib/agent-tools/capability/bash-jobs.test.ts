@@ -636,9 +636,36 @@ describe('background jobs', () => {
       expect(job.exitCode).toBe(0);
       expect(complete).toHaveBeenCalledOnce();
       const detail = complete.mock.calls[0]![1].detail;
-      expect(detail).toMatchObject({ bashJobId: job.id });
+      expect(detail).toMatchObject({ bashJobId: job.id, workloadClass: 'other' });
+      expect(detail).not.toHaveProperty('verificationPurpose');
       if (dispatchCallId) expect(detail).toHaveProperty('dispatchCallId', dispatchCallId);
       else expect(detail).not.toHaveProperty('dispatchCallId');
+    } finally { begin.mockRestore(); complete.mockRestore(); finish.mockRestore(); }
+  });
+
+  it('marks semantically detected test jobs as work-item verification tasks', async () => {
+    const begin = vi.spyOn(enrollSync, 'beginSyncEnrolment').mockReturnValue({
+      taskId: 'verification-purpose-task', enrolled: true, confined: false,
+      unconfinedReason: 'no-scope-support', unitKind: 'scope', scopeUnit: null,
+      registrationReady: null, wrap: (binary: string, argv: string[]) => ({ binary, argv }),
+      releaseEnvironmentTransport: () => {},
+    });
+    const complete = vi.spyOn(enrollSync, 'completeSyncEnrolment').mockImplementation(() => {});
+    const finish = vi.spyOn(enrollSync, 'finishSyncEnrolment').mockImplementation(() => {});
+    try {
+      const job = startBackground({
+        command: 'printf test-run',
+        originalCommand: 'npm run test:file -- packages/operator-core/lib/example.test.ts',
+        cwd: STATE,
+        stateDir: STATE,
+        workItemId: 'WI-verification',
+      }, 5_000);
+      await waitForStatus(job.id);
+      expect(job.status).toBe('completed');
+      expect(complete.mock.calls[0]![1].detail).toMatchObject({
+        workloadClass: 'test-run',
+        verificationPurpose: 'work-item-verification',
+      });
     } finally { begin.mockRestore(); complete.mockRestore(); finish.mockRestore(); }
   });
 
@@ -723,6 +750,106 @@ describe('background jobs', () => {
     expect(final.status).toBe('completed');
     expect(final.exitCode).toBe(0);
     expect(readJobOutput(final)).toContain(`${STATE}\n`);
+  });
+
+  describe('authenticated runner result after observer loss (EI-28693779136382630)', () => {
+    const cases: Array<{
+      name: string;
+      payloadStatus?: 'completed' | 'failed';
+      payloadExitCode?: number;
+      foreignIdentity?: 'taskId' | 'bashJobId' | 'scopeUnit' | 'invocationId' | 'nonce';
+      unsigned?: boolean;
+      missingMarker?: boolean;
+      observerExitCode?: number;
+      killIntent?: boolean;
+      overdue?: boolean;
+      expectedStatus: 'completed' | 'failed' | 'killed' | 'timed_out';
+      expectedExitCode: number | null;
+    }> = [
+      { name: 'completed payload', expectedStatus: 'completed', expectedExitCode: 0 },
+      { name: 'failed payload', payloadStatus: 'failed', payloadExitCode: 7, expectedStatus: 'failed', expectedExitCode: 7 },
+      { name: 'foreign task', foreignIdentity: 'taskId', expectedStatus: 'failed', expectedExitCode: null },
+      { name: 'foreign job', foreignIdentity: 'bashJobId', expectedStatus: 'failed', expectedExitCode: null },
+      { name: 'foreign scope', foreignIdentity: 'scopeUnit', expectedStatus: 'failed', expectedExitCode: null },
+      { name: 'foreign nonce', foreignIdentity: 'nonce', expectedStatus: 'failed', expectedExitCode: null },
+      { name: 'missing invocation', foreignIdentity: 'invocationId', expectedStatus: 'failed', expectedExitCode: null },
+      { name: 'unsigned marker', unsigned: true, expectedStatus: 'failed', expectedExitCode: null },
+      { name: 'missing marker', missingMarker: true, expectedStatus: 'failed', expectedExitCode: null },
+      { name: 'explicit observer failure', observerExitCode: 9, expectedStatus: 'failed', expectedExitCode: 9 },
+      { name: 'kill intent', killIntent: true, expectedStatus: 'killed', expectedExitCode: null },
+      { name: 'overdue deadline', overdue: true, expectedStatus: 'timed_out', expectedExitCode: null },
+    ];
+
+    it.each(cases)('$name', async (testCase) => {
+      const begin = vi.spyOn(enrollSync, 'beginSyncEnrolment').mockReturnValue({
+        taskId: 'observer-result-task',
+        confined: true,
+        unconfinedReason: null,
+        unitKind: 'service',
+        scopeUnit: 'observer-result-task.service',
+        enrolled: true,
+        registrationReady: null,
+        wrap: (_binary, _argv, env) => {
+          const outputPath = env?.[SYSTEMD_RUNNER_OUTPUT_PATH_ENV];
+          const secret = env?.[SYSTEMD_RUNNER_MARKER_SECRET_ENV];
+          if (!outputPath || !secret) throw new Error('Runner identity transport was not prepared');
+          const identity = {
+            taskId: env?.[SYSTEMD_RUNNER_TASK_ID_ENV] ?? '',
+            bashJobId: env?.[SYSTEMD_RUNNER_BASH_JOB_ID_ENV] ?? '',
+            scopeUnit: env?.[SYSTEMD_RUNNER_SCOPE_UNIT_ENV] ?? '',
+            invocationId: 'observer-result-invocation',
+            nonce: createHash('sha256').update(secret).digest('hex'),
+          };
+          if (testCase.foreignIdentity) {
+            identity[testCase.foreignIdentity] = testCase.foreignIdentity === 'nonce'
+              ? '0'.repeat(64)
+              : testCase.foreignIdentity === 'invocationId' ? '' : 'foreign-identity';
+          }
+          writeFileSync(outputPath, testCase.missingMarker ? 'payload output\n' : formatJobLogEndMarker(
+            testCase.payloadStatus ?? 'completed',
+            testCase.payloadExitCode ?? 0,
+            Date.now(),
+            testCase.unsigned ? undefined : identity,
+          ));
+          // Exercise the real observer close event after its input has drained.
+          return {
+            binary: '/bin/bash',
+            argv: ['-c', testCase.observerExitCode === undefined
+              ? 'cat >/dev/null; kill -TERM $$'
+              : 'cat >/dev/null; exit ' + testCase.observerExitCode],
+          };
+        },
+        releaseEnvironmentTransport: () => {},
+      });
+      const complete = vi.spyOn(enrollSync, 'completeSyncEnrolment').mockImplementation(() => {});
+      const finish = vi.spyOn(enrollSync, 'finishSyncEnrolment').mockImplementation(() => {});
+      try {
+        const job = startBackground({ command: 'true', cwd: STATE, stateDir: STATE }, 10_000);
+        const closed = new Promise<void>((resolve) => job.child.once('close', () => resolve()));
+        const flushed = job.logStream ? new Promise<void>((resolve, reject) => {
+          job.logStream!.once('finish', () => resolve());
+          job.logStream!.once('error', reject);
+        }) : Promise.resolve();
+        if (testCase.killIntent) job.status = 'killed';
+        if (testCase.overdue) job.deadlineAt = Date.now() - 1;
+        await closed;
+        await flushed;
+
+        expect(job.runnerOwnsLog).toBe(true);
+        expect(job.status).toBe(testCase.expectedStatus);
+        expect(job.exitCode).toBe(testCase.expectedExitCode);
+        expect(readJobLogTerminal(job.logPath)).toMatchObject({
+          status: testCase.expectedStatus,
+          exitCode: testCase.expectedExitCode,
+        });
+        expect(finish).toHaveBeenCalledOnce();
+        expect(finish.mock.calls[0]![1]).toMatchObject({ exitCode: testCase.expectedExitCode });
+      } finally {
+        begin.mockRestore();
+        complete.mockRestore();
+        finish.mockRestore();
+      }
+    });
   });
 
   it('passes the scrubbed identity and final augmented PATH into the transient service payload', async () => {

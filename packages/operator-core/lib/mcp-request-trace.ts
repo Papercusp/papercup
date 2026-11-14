@@ -87,6 +87,15 @@ export interface McpRequestTraceEvent {
   outcome?: 'success' | 'tool_error' | 'rejected';
   /** HTTP status when the proxy has finished flushing the response; not client receipt. */
   httpStatus?: number;
+  /** Sequential proxy-local intervals through response flush, not server handler time.
+   * Forward-to-headers includes retries/backoff before the final response. */
+  proxyStageTimingsMs?: {
+    bodyReadMs: number;
+    admissionWaitMs: number;
+    forwardSetupMs: number;
+    forwardToHeadersMs: number;
+    responseStreamMs: number;
+  };
   /** Bounded local evidence captured when the proxy observed an incomplete upstream response. */
   upstreamResponseLifecycle?: {
     responseComplete: boolean;

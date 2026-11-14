@@ -4,6 +4,7 @@
  * security-load-bearing part is the PURE command construction + path validation,
  * which is what these cover — proving the agent can never inject a shell command.
  */
+import { ChildProcess } from 'node:child_process';
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -50,6 +51,7 @@ import inspectTool from './inspect';
 import { startBackground } from './bash-jobs';
 import { capabilityExecSandboxPolicy } from './exec-sandbox';
 import { vmCopyInspectSchema } from './vm-copy-authority';
+import { mockReturnTyped } from '../../testing/typed-mock';
 
 const BASE = '/repo';
 const OPERATOR_CORE_GATES = [{ npmScript: 'lint:tsc', prefixes: ['packages/operator-core/'] }];
@@ -606,11 +608,22 @@ describe('capability:inspect — background launch response', () => {
   });
 
   it('launches a background repo-relative test path without a package', async () => {
-    vi.mocked(startBackground).mockReturnValue({
+    mockReturnTyped(vi.mocked(startBackground), {
       id: 'bash-repo-relative-test',
+      command: 'npm test -- packages/operator-core/lib/foo.test.ts',
+      cwd: INSPECT_STATE,
+      child: new ChildProcess(),
+      startedAt: 0,
+      endedAt: null,
+      status: 'running',
+      exitCode: null,
+      buffer: '',
+      totalBytes: 0,
       taskId: 'task-repo-relative-test',
       logPath: '/tmp/bash-repo-relative-test.log',
-    } as never);
+      readCursor: 0,
+      logStream: null,
+    });
 
     const result = await inspect.handler(
       { check: 'test', path: 'packages/operator-core/lib/foo.test.ts', run_in_background: true },

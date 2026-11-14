@@ -1,19 +1,21 @@
 /** Native edit receipts against real Git; no publication or live-repo mutation. */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { preserveEditGeneration, preserveReleasedEditGenerations } from './edit-attribution';
+import { preserveEditGeneration, preserveReleasedEditGenerations, type RecordEditAttributionInput } from './edit-attribution';
 import { captureGitSyncCandidate, SOURCE_CUSTODY_REF_PREFIX, type RunGit } from './harness/git-sync/run-git-sync';
 
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  vi.unstubAllEnvs();
 });
 
-function fixture() {
-  const repo = mkdtempSync(join(tmpdir(), 'edit-capture-'));
+function fixture(parent?: string) {
+  const repo = parent ? join(parent, 'child') : mkdtempSync(join(tmpdir(), 'edit-capture-'));
+  mkdirSync(repo, { recursive: true });
   roots.push(repo);
   function git(...args: string[]): string {
     const result = spawnSync('git', args, { cwd: repo, encoding: 'utf8', timeout: 30_000 });
@@ -42,6 +44,88 @@ function fixture() {
 }
 
 describe('preserveEditGeneration', () => {
+  it('fences nested repository aliases before capture, retains lease provenance and replays immutable child bytes', async () => {
+    const parent = fixture();
+    const child = fixture(parent.repo);
+    vi.stubEnv('PAPERCUSP_CANONICAL_TREE', parent.repo);
+    parent.git('add', 'child');
+    parent.git('commit', '-m', 'nested repository');
+    writeFileSync(join(parent.repo, 'a.txt'), 'parent A1\n');
+    writeFileSync(join(child.repo, 'a.txt'), 'child A1\n');
+    const before = { parent: parent.state(), child: child.state() };
+    const rows = ['a.txt', 'child/a.txt'].map(path => ({ path, lock_id: 'original-parent-lease',
+      goal_ref: 'WI-original', intent: 'original edit', acquired_ts: new Date('2026-06-01T12:00:00Z'),
+      acquired_identity: '1780315200.000001' }));
+    const protectRepositoryPaths = vi.fn(async () => {});
+    const preserve = vi.fn((input: Parameters<typeof preserveEditGeneration>[0]) => {
+      expect(protectRepositoryPaths).toHaveBeenCalledWith(child.repo, ['a.txt']);
+      return preserveEditGeneration(input, parent.runGit, async () => []);
+    });
+    const attribute = vi.fn(async (_input: RecordEditAttributionInput) => {});
+    const input = { repoRoot: parent.repo, rows, agentId: 'original-owner', protectRepositoryPaths };
+    await preserveReleasedEditGenerations(input, { preserve, attribute });
+    const original = attribute.mock.calls.map(([edit]) => edit);
+    expect(original).toHaveLength(2);
+    for (const edit of original) {
+      expect(edit).toMatchObject({ files: ['a.txt'], agentId: 'original-owner', goalRef: 'WI-original', intent: 'original edit',
+        captureReceipt: { releaseSource: { coordinationDomain: parent.repo, leases: [
+          { path: 'a.txt', lockId: 'original-parent-lease', acquiredAt: '1780315200.000001' },
+          { path: 'child/a.txt', lockId: 'original-parent-lease', acquiredAt: '1780315200.000001' },
+        ] } } });
+    }
+    expect({ parent: parent.state(), child: child.state() }).toEqual(before);
+    writeFileSync(join(child.repo, 'a.txt'), 'successor B1\n');
+    attribute.mockClear();
+    await preserveReleasedEditGenerations({ ...input, rows: [...rows].reverse() }, { preserve, attribute });
+    expect(attribute.mock.calls.map(([edit]) => edit)).toEqual(original);
+    const childCapture = original.find(edit => edit.repoRoot === child.repo)!.captureReceipt!.capture as { ref: string };
+    expect(child.git('show', `${childCapture.ref}:payload/a.txt`)).toBe('child A1');
+    expect(readFileSync(join(child.repo, 'a.txt'), 'utf8')).toBe('successor B1\n');
+  });
+
+  it('refuses nested alias capture without a transaction fence or when the canonical child is held', async () => {
+    const parent = fixture();
+    const child = fixture(parent.repo);
+    vi.stubEnv('PAPERCUSP_CANONICAL_TREE', parent.repo);
+    const rows = [{ path: 'child/a.txt', lock_id: 'parent-lease', goal_ref: null,
+      intent: 'original edit', acquired_ts: new Date('2026-06-01T12:00:00Z') }];
+    const preserve = vi.fn();
+    const attribute = vi.fn();
+    const input = { repoRoot: parent.repo, rows, agentId: 'A' };
+    await expect(preserveReleasedEditGenerations(input, { preserve, attribute }))
+      .rejects.toThrow('alias-protection-required');
+    const protectRepositoryPaths = vi.fn(async () => { throw new Error('edit-capture-refused:canonical-path-held'); });
+    await expect(preserveReleasedEditGenerations({ ...input, protectRepositoryPaths }, { preserve, attribute }))
+      .rejects.toThrow('canonical-path-held');
+    expect(protectRepositoryPaths).toHaveBeenCalledWith(child.repo, ['a.txt']);
+    expect(preserve).not.toHaveBeenCalled();
+    expect(attribute).not.toHaveBeenCalled();
+  });
+
+  it('refuses re-rooting acknowledged parent custody after a nested repository appears', async () => {
+    const parent = fixture();
+    vi.stubEnv('PAPERCUSP_CANONICAL_TREE', parent.repo);
+    mkdirSync(join(parent.repo, 'child'));
+    writeFileSync(join(parent.repo, 'child/a.txt'), 'acknowledged parent A1\n');
+    const rows = [{ path: 'child/a.txt', lock_id: 'original-lease', goal_ref: null,
+      intent: 'original edit', acquired_ts: new Date('2026-06-01T12:00:00Z') }];
+    const preserve = vi.fn((input: Parameters<typeof preserveEditGeneration>[0]) =>
+      preserveEditGeneration(input, parent.runGit, async () => []));
+    const attribute = vi.fn(async () => {});
+    const input = { repoRoot: parent.repo, rows, agentId: 'A' };
+    await preserveReleasedEditGenerations(input, { preserve, attribute });
+    const child = fixture(parent.repo);
+    writeFileSync(join(child.repo, 'a.txt'), 'successor B1\n');
+    const before = child.state();
+    preserve.mockClear();
+    attribute.mockClear();
+    await expect(preserveReleasedEditGenerations({ ...input, protectRepositoryPaths: async () => {} }, { preserve, attribute }))
+      .rejects.toThrow('acknowledged-alias-remap');
+    expect(preserve).not.toHaveBeenCalled();
+    expect(attribute).not.toHaveBeenCalled();
+    expect(child.state()).toEqual(before);
+  });
+
   it('correlates a staging refusal without exposing Git output or changing shared bytes', async () => {
     const f = fixture();
     const protectedText = 'protected source contents must stay out of diagnostics';
@@ -116,6 +200,45 @@ describe('preserveEditGeneration', () => {
       captureReceipt: expect.objectContaining({ goalRef: null, pending: true }),
     }));
   });
+
+  it.each(['unused', 'edited', 'deleted'] as const)(
+    'releases an unused new-path reservation alongside %s source without changing the shared index', async state => {
+      const f = fixture();
+      const files = state === 'unused' ? ['never-created.ts']
+        : [state === 'edited' ? 'a.txt' : 'b.txt', 'never-created.ts'];
+      if (state === 'edited') writeFileSync(join(f.repo, 'a.txt'), 'edited source\n');
+      if (state === 'deleted') f.git('rm', '--', 'b.txt');
+      const before = {
+        index: readFileSync(join(f.repo, '.git/index')),
+        head: f.git('rev-parse', 'HEAD'),
+        status: f.git('status', '--porcelain=v1', '--untracked-files=all'),
+        source: readFileSync(join(f.repo, 'a.txt')),
+      };
+      const preserve = vi.fn((input: Parameters<typeof preserveEditGeneration>[0]) =>
+        preserveEditGeneration(input, f.runGit, async () => []));
+      const attribute = vi.fn(async (_input: RecordEditAttributionInput) => {});
+      const rows = files.map(path => ({ path, lock_id: 'reserved-path-lease', goal_ref: 'WI-A',
+        intent: 'edit source and reserve a new path', acquired_ts: new Date('2026-06-01T12:00:00Z') }));
+
+      expect(await preserveReleasedEditGenerations({ repoRoot: f.repo, rows, agentId: 'A' },
+        { preserve, attribute })).toBe(true);
+
+      expect(preserve).toHaveBeenCalledTimes(1);
+      expect(attribute).toHaveBeenCalledTimes(1);
+      const edit = attribute.mock.calls[0]![0];
+      expect(edit.files).toEqual([...files].sort());
+      const capture = edit.captureReceipt!.capture as { ref: string; candidate: { tree: string; baseTree: string; paths: string[] } };
+      expect(capture.candidate.paths).toEqual([...files].sort());
+      expect(f.git('ls-tree', capture.candidate.tree, '--', 'never-created.ts')).toBe('');
+      if (state === 'unused') expect(capture.candidate.tree).toBe(capture.candidate.baseTree);
+      if (state === 'edited') expect(f.git('show', `${capture.ref}:payload/a.txt`)).toBe('edited source');
+      if (state === 'deleted') expect(f.git('ls-tree', capture.candidate.tree, '--', 'b.txt')).toBe('');
+      expect(readFileSync(join(f.repo, '.git/index'))).toEqual(before.index);
+      expect(f.git('rev-parse', 'HEAD')).toBe(before.head);
+      expect(f.git('status', '--porcelain=v1', '--untracked-files=all')).toBe(before.status);
+      expect(readFileSync(join(f.repo, 'a.txt'))).toEqual(before.source);
+    },
+  );
 
   it('preserves a multi-file edit without requiring a work item or changing the shared index', async () => {
     const f = fixture();

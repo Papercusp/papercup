@@ -29,6 +29,7 @@ import { fileURLToPath } from 'node:url';
 import { parse as parseToml } from '@iarna/toml';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CapabilityPolicyRequest } from '@papercusp/orchestrator/managed-capability-policy';
+import { CODEX_MCP_STARTUP_TIMEOUT_SEC } from '../../../apps/operator/lib/mcp-proxy/budgets.mjs';
 
 // os.homedir() reads the OS password DB on Linux, NOT $HOME — so we mock it
 // to a throwaway dir. (A holder var, set per-test, keeps the hoisted mock in
@@ -123,6 +124,7 @@ async function loadMod() {
   return {
     ...mod,
     writeRoleCodexHome: withResolvedDefault(mod.writeRoleCodexHome),
+    writeRoleCodexHomeAsync: withResolvedDefault(mod.writeRoleCodexHomeAsync),
     writeSuCodexHome: withResolvedDefault(mod.writeSuCodexHome),
     writeSuCodexHomeAsync: withResolvedDefault(mod.writeSuCodexHomeAsync),
     ensureSuCodexHomeConfig: withResolvedDefault(mod.ensureSuCodexHomeConfig),
@@ -379,7 +381,9 @@ describe('writeRoleCodexHome', () => {
       promptText: 'P',
     });
     expect(parseToml(readFileSync(role.configPath, 'utf8')).check_for_update_on_startup).toBe(false);
-    expect(parseToml(readFileSync(role.configPath, 'utf8')).mcp_servers).toMatchObject({ papercusp: { required: true } });
+    expect(parseToml(readFileSync(role.configPath, 'utf8')).mcp_servers).toMatchObject({
+      papercusp: { required: true, startup_timeout_sec: CODEX_MCP_STARTUP_TIMEOUT_SEC },
+    });
     const opts = {
       sessionKey: 'no-update-su',
       model: RESOLVED_CODEX_DEFAULT,
@@ -389,7 +393,8 @@ describe('writeRoleCodexHome', () => {
       promptText: 'P',
     };
     const su = mod.writeSuCodexHome(opts);
-    const expectedMcp = { 'papercusp-su': { required: true, tools: { 'tools:invoke': { approval_mode: 'approve' } } } };
+    const expectedMcp = { 'papercusp-su': { required: true, startup_timeout_sec: CODEX_MCP_STARTUP_TIMEOUT_SEC,
+      tools: { 'tools:invoke': { approval_mode: 'approve' } } } };
     expect(parseToml(readFileSync(su.configPath, 'utf8')).mcp_servers).toMatchObject(expectedMcp);
     expect(parseToml(readFileSync(su.configPath, 'utf8')).check_for_update_on_startup).toBe(false);
     const history = join(su.codexHome, 'sessions', 'retained.jsonl');
@@ -407,6 +412,26 @@ describe('writeRoleCodexHome', () => {
   });
 
   // client-native-features-adoption-2026-10-21 P-001 (D-003/D-005).
+  it.each(['missing', 'short'])('repairs a %s MCP startup budget without replacing retained sessions', async mode => {
+    const mod = await loadMod();
+    const opts = { sessionKey: `mcp-budget-${mode}`, model: RESOLVED_CODEX_DEFAULT,
+      sid: `su-mcp-budget-${mode}`, mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P' };
+    const home = mod.writeSuCodexHome(opts);
+    const history = join(home.codexHome, 'sessions', 'retained.jsonl');
+    mkdirSync(join(home.codexHome, 'sessions'), { recursive: true });
+    writeFileSync(history, 'retained transcript');
+    writeFileSync(home.configPath, readFileSync(home.configPath, 'utf8').replace(
+      `startup_timeout_sec = ${CODEX_MCP_STARTUP_TIMEOUT_SEC}`,
+      mode === 'missing' ? '' : 'startup_timeout_sec = 30',
+    ));
+    expect(mod.ensureSuCodexHomeConfig(opts).repaired).toBe(true);
+    expect(parseToml(readFileSync(home.configPath, 'utf8')).mcp_servers).toMatchObject({
+      'papercusp-su': { required: true, startup_timeout_sec: CODEX_MCP_STARTUP_TIMEOUT_SEC },
+    });
+    expect(readFileSync(history, 'utf8')).toBe('retained transcript');
+    expect(mod.ensureSuCodexHomeConfig(opts).repaired).toBe(false);
+  });
+
   it('managed role and SU homes deny native subagents and goals, run off-gateway homes on a stripped catalog, and repair a pre-change home on resume', async () => {
     // The user's own cache, newer than anything a fresh home holds; its models carry
     // the multi_agent fields that switch Codex subagent tools on.
@@ -583,6 +608,11 @@ describe('writeRoleCodexHome', () => {
     expect(hooks.hooks.PreToolUse[0].matcher).toBe('apply_patch|Edit|Write');
     expect(hooks.hooks.PreToolUse[0].hooks[0].command).toContain('pretooluse-locks-acquire.sh');
     expect(hooks.hooks.PreToolUse[0].hooks[0].command).toContain('PAPERCUSP_WORKSPACE_ROOT=');
+    expect(hooks.hooks.PreToolUse[0].hooks[0].command).toContain('PAPERCUSP_CODEX_HOOK=1');
+    const bashGate = hooks.hooks.PreToolUse.find((e: { hooks: { command: string }[] }) =>
+      e.hooks[0].command.includes('pretooluse-bash-resource-gate.sh'),
+    );
+    expect(bashGate.hooks[0].command).toContain('PAPERCUSP_CODEX_HOOK=1');
     const controlBytes = hooks.hooks.PreToolUse.find((e: { hooks: { command: string }[] }) =>
       e.hooks[0].command.includes('pretooluse-control-bytes-content-guard.mjs'),
     );
@@ -731,6 +761,7 @@ describe('writeRoleCodexHome', () => {
     expect(postLock.matcher).toBe('^(?:apply_patch|Edit|Write|exec|functions\\.exec|functions__exec)$');
     expect(preLock.hooks[0].command).toContain("PAPERCUSP_SID='role-abc-9'");
     expect(preLock.hooks[0].command).toContain("PAPERCUSP_LOCK_SID='role-abc-9'");
+    expect(preLock.hooks[0].command).toContain('PAPERCUSP_CODEX_HOOK=1');
     expect(postLock.hooks[0].command).toContain("PAPERCUSP_SID='role-abc-9'");
     expect(postLock.hooks[0].command).toContain("PAPERCUSP_LOCK_SID='role-abc-9'");
     const byteGuard = hooks.hooks.PostToolUse.find((e: { hooks: { command: string }[] }) =>
@@ -1377,24 +1408,64 @@ describe('writeSuCodexHome', () => {
     expect(readFileSync(repaired.configPath, 'utf8')).toContain('client=su-gc-removed-home');
   });
 
-  it('recovers a role config from its recorded SQLite binding without replacing native state', async () => {
-    const { writeRoleCodexHome } = await loadMod();
+  it.each(['writeRoleCodexHome', 'writeRoleCodexHomeAsync'] as const)
+    ('recovers a role config from its recorded SQLite binding without replacing native state (%s)', async writerName => {
+    const writer = (await loadMod())[writerName];
     const input = { sessionKey: 'archived-role-state', mcpUrl: 'http://x/api/mcp?role=judge',
       sid: 'su-archived-role-state', promptText: 'RESTRICTED JUDGE' };
-    const first = writeRoleCodexHome(input);
+    const first = await writer(input);
     const database = join(first.sqliteHome, 'state_5.sqlite');
     writeFileSync(database, 'original native state');
     rmSync(first.configPath);
     const replacementRoot = join(fakeHome, 'different-archive-serving-root');
     process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR = replacementRoot;
-    const repaired = writeRoleCodexHome({ ...input, preserveExisting: true, recordedSqliteHome: first.sqliteHome });
+    const repaired = await writer({ ...input, preserveExisting: true, recordedSqliteHome: first.sqliteHome });
     expect(parseToml(readFileSync(repaired.configPath, 'utf8')).sqlite_home).toBe(first.sqliteHome);
     expect(readFileSync(database, 'utf8')).toBe('original native state');
     expect(existsSync(replacementRoot)).toBe(false);
     const before = readFileSync(repaired.configPath, 'utf8');
-    expect(() => writeRoleCodexHome({ ...input, preserveExisting: true,
-      recordedSqliteHome: replacementRoot })).toThrow('launch receipt and configured sqlite_home disagree');
+    await expect(Promise.resolve().then(() => writer({ ...input, preserveExisting: true,
+      recordedSqliteHome: replacementRoot }))).rejects.toThrow('launch receipt and configured sqlite_home disagree');
     expect(readFileSync(repaired.configPath, 'utf8')).toBe(before);
+  });
+
+  it('keeps the async repair producer on its receipt across serving roots and refuses two extant SQLite bindings', async () => {
+    const { writeSuCodexHomeAsync, ensureSuCodexHomeConfigAsync } = await loadMod();
+    const input = { sessionKey: 'receipt-config-producer', sid: 'su-receipt-config-producer',
+      mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'RETAINED OWNER RULES' };
+    const first = await writeSuCodexHomeAsync(input);
+    const database = join(first.sqliteHome, 'state_5.sqlite');
+    const wal = `${database}-wal`;
+    const transcript = join(first.codexHome, 'sessions', 'rollout.jsonl');
+    mkdirSync(join(first.codexHome, 'sessions'), { recursive: true });
+    writeFileSync(database, 'original native database');
+    writeFileSync(wal, 'original pending WAL');
+    writeFileSync(transcript, 'original native transcript');
+
+    const servingRoot = join(fakeHome, 'other-tmpdir', 'papercusp-codex-sqlite-homes');
+    process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR = servingRoot;
+    const repair = () => ensureSuCodexHomeConfigAsync({ ...input, recordedSqliteHome: first.sqliteHome });
+    expect((await repair()).sqliteHome).toBe(first.sqliteHome);
+    expect(parseToml(readFileSync(first.configPath, 'utf8')).sqlite_home).toBe(first.sqliteHome);
+    expect(existsSync(servingRoot)).toBe(false);
+
+    // Reproduce the incident's two real, distinct directories. A serving-root
+    // change is safe; adopting an already divergent config is ambiguous.
+    const conflictingHome = join(servingRoot, `session-${input.sessionKey}`);
+    mkdirSync(conflictingHome, { recursive: true });
+    const conflictingDatabase = join(conflictingHome, 'state_5.sqlite');
+    writeFileSync(conflictingDatabase, 'unattributed native database');
+    const conflict = readFileSync(first.configPath, 'utf8')
+      .replace(JSON.stringify(first.sqliteHome), JSON.stringify(conflictingHome));
+    writeFileSync(first.configPath, conflict);
+    const prompt = readFileSync(first.agentsPath, 'utf8');
+    await expect(repair()).rejects.toThrow('launch receipt and configured sqlite_home disagree');
+    expect(readFileSync(first.configPath, 'utf8')).toBe(conflict);
+    expect(readFileSync(first.agentsPath, 'utf8')).toBe(prompt);
+    expect(readFileSync(database, 'utf8')).toBe('original native database');
+    expect(readFileSync(wal, 'utf8')).toBe('original pending WAL');
+    expect(readFileSync(transcript, 'utf8')).toBe('original native transcript');
+    expect(readFileSync(conflictingDatabase, 'utf8')).toBe('unattributed native database');
   });
 
   it.each([

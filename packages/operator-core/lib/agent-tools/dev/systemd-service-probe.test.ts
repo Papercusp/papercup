@@ -437,12 +437,12 @@ describe('resolveServiceStartMs (WI-10550: measured start beats a late-biased de
 
   it('prefers the MEASURED /proc start over the etimes derivation when both are present', () => {
     const info: ServiceStartInfo = { ok: true, mainPid: 42, activeState: 'active', secondsSinceStart: 60, startedAtMs: 1_700_000_000_000 };
-    expect(resolveServiceStartMs(info, NOW)).toEqual({ pid: 42, startedAtMs: 1_700_000_000_000 });
+    expect(resolveServiceStartMs(info, NOW)).toEqual({ pid: 42, startedAtMs: 1_700_000_000_000, running: true });
   });
 
   it('falls back to the etimes derivation when /proc could not answer', () => {
     const info: ServiceStartInfo = { ok: true, mainPid: 42, activeState: 'active', secondsSinceStart: 60 };
-    expect(resolveServiceStartMs(info, NOW)).toEqual({ pid: 42, startedAtMs: NOW - 60_000 });
+    expect(resolveServiceStartMs(info, NOW)).toEqual({ pid: 42, startedAtMs: NOW - 60_000, running: true });
   });
 
   /**
@@ -475,9 +475,23 @@ describe('resolveServiceStartMs (WI-10550: measured start beats a late-biased de
 
   it('degrades to UNKNOWN rather than a fabricated timestamp when neither source is available', () => {
     // a .timer: no MainPID concept at all, so nothing to measure
-    expect(resolveServiceStartMs({ ok: true, activeState: 'active' }, NOW)).toBeNull();
+    expect(resolveServiceStartMs({ ok: true, activeState: 'active' }, NOW)).toEqual({
+      pid: null,
+      startedAtMs: null,
+      running: null,
+    });
+    // An active service keeps its exact MainPID even when both start-time reads fail.
+    expect(resolveServiceStartMs({ ok: true, mainPid: 847351, activeState: 'active' }, NOW)).toEqual({
+      pid: 847351,
+      startedAtMs: null,
+      running: true,
+    });
     // MainPID 0: down, determinate, but no start to report
-    expect(resolveServiceStartMs({ ok: true, mainPid: 0, activeState: 'inactive' }, NOW)).toBeNull();
+    expect(resolveServiceStartMs({ ok: true, mainPid: 0, activeState: 'inactive' }, NOW)).toEqual({
+      pid: null,
+      startedAtMs: null,
+      running: false,
+    });
     // probe failed outright
     expect(resolveServiceStartMs({ ok: false }, NOW)).toBeNull();
   });

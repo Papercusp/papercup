@@ -520,8 +520,11 @@ export interface DrainOptions {
    *  inject a fixed value; production omits it (Date.now). */
   now?: number;
   /** Local subscribe→inject fan-out, run per row AFTER the federation append and
-   *  BEFORE drained_at (at-least-once: a failure re-runs; the insert is
-   *  idempotent). Omitted → no fan-out (federation-only, the pre-Phase-2 behavior). */
+   *  BEFORE drained_at. A failed/timed-out fan-out does not block drained_at; it is
+   *  persisted as fan-out retry state (P-003, migration 1632) and re-run by
+   *  `retryPendingFanouts` with backoff, independent of federation. The insert is
+   *  idempotent (deterministic msg_id, mig 126), so a retry never double-delivers.
+   *  Omitted → no fan-out (federation-only, the pre-Phase-2 behavior). */
   fanout?: OutboxFanoutFn;
   /** Re-key encrypt-on-capture capability (C-001). When present, the drain encrypts
    *  the payload of selected hive-CONTENT ops under the current epoch + stamps
@@ -597,6 +600,185 @@ interface OutboxDbRow {
  * caller's retry re-attempts. Also performs the inline 24h GC of long-drained
  * rows before reading the batch.
  */
+/** P-003: base delay before the first fan-out retry; doubles per failed attempt. */
+export const FANOUT_RETRY_BASE_MS = 30_000;
+/** P-003: cap on a single fan-out retry delay. */
+export const FANOUT_RETRY_MAX_DELAY_MS = 60 * 60_000;
+/** P-003: failed fan-out attempts (first try included) before the row is given up. */
+export const FANOUT_MAX_ATTEMPTS = 8;
+/** P-003: rows the fan-out retry sweep handles per drain pass. */
+export const FANOUT_RETRY_BATCH = 25;
+const FANOUT_ERROR_MAX_CHARS = 2_000;
+
+/** Delay before the retry that follows the given number of failed attempts. */
+export function fanoutRetryDelayMs(failedAttempts: number): number {
+  const exp = Math.max(0, failedAttempts - 1);
+  return Math.min(FANOUT_RETRY_BASE_MS * 2 ** exp, FANOUT_RETRY_MAX_DELAY_MS);
+}
+
+function pgErrorCode(e: unknown): string | undefined {
+  const code = (e as { code?: unknown } | null)?.code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+let loggedPreFanoutRetrySchema = false;
+function logPreFanoutRetrySchemaOnce(where: string): void {
+  if (loggedPreFanoutRetrySchema) return;
+  loggedPreFanoutRetrySchema = true;
+  console.error(
+    `[outbox-drain] P-003 fan-out retry columns are missing (${where}); migration 1632 has not run on this ` +
+      `database. Rows still drain, but a failed fan-out cannot be retried until it does.`,
+  );
+}
+
+/**
+ * Stamp a row drained. When its fan-out failed, the SAME UPDATE records the fan-out
+ * retry state, so "federated but notification pending" is atomic: the row is never
+ * marked delivered without its pending retry. On a pre-1632 outbox (42703) it falls
+ * back to the plain stamp so federation is never stalled by the missing columns.
+ */
+async function markRowDrained(
+  pg: postgres.Sql,
+  id: string | number,
+  now: number,
+  logKey: string | null,
+  fanoutFailure: string | null,
+): Promise<unknown> {
+  if (fanoutFailure !== null) {
+    try {
+      return await pg`
+        UPDATE harness_shared.substrate_outbox
+           SET drained_at = ${now},
+               drained_log_key = ${logKey},
+               fanout_attempts = fanout_attempts + 1,
+               fanout_retry_at = ${now + fanoutRetryDelayMs(1)},
+               fanout_last_error = ${fanoutFailure.slice(0, FANOUT_ERROR_MAX_CHARS)}
+         WHERE id = ${id}`;
+    } catch (e) {
+      if (pgErrorCode(e) !== '42703') throw e;
+      logPreFanoutRetrySchemaOnce('mark-drained');
+    }
+  }
+  return pg`
+    UPDATE harness_shared.substrate_outbox
+       SET drained_at = ${now},
+           drained_log_key = ${logKey}
+     WHERE id = ${id}`;
+}
+
+export interface FanoutRetryOptions {
+  fanout: OutboxFanoutFn;
+  now?: number;
+  batch?: number;
+  fanoutTimeoutMs?: number;
+  signal?: AbortSignal;
+}
+
+export interface FanoutRetryResult {
+  retried: number;
+  succeeded: number;
+  rescheduled: number;
+  gaveUp: number;
+}
+
+interface FanoutRetryRow {
+  id: string | number;
+  table_name: string;
+  op: 'put' | 'del';
+  key: string;
+  row: Record<string, unknown> | null;
+  fanout_attempts: number;
+}
+
+/**
+ * P-003: re-run fan-outs whose retry is due, independently of federation (their rows
+ * are already drained). Success clears the retry state; failure reschedules with
+ * exponential backoff until FANOUT_MAX_ATTEMPTS, then gives up loudly while keeping
+ * fanout_last_error for diagnosis. Idempotent end to end: the fan-out insert dedupes
+ * on a deterministic msg_id (mig 126), so a retry after a lost success never
+ * double-delivers. Best-effort: per-row write failures are logged, never thrown.
+ */
+export async function retryPendingFanouts(
+  handle: BootedHarnessHandle,
+  pg: postgres.Sql,
+  opts: FanoutRetryOptions,
+): Promise<FanoutRetryResult> {
+  const result: FanoutRetryResult = { retried: 0, succeeded: 0, rescheduled: 0, gaveUp: 0 };
+  const now = opts.now ?? Date.now();
+  const batch = opts.batch ?? FANOUT_RETRY_BATCH;
+  const timeoutMs = opts.fanoutTimeoutMs ?? FANOUT_ROW_TIMEOUT_MS;
+  let due: FanoutRetryRow[];
+  try {
+    due = await pg<FanoutRetryRow[]>`
+      SELECT o.id, o.table_name, o.op, o.key, o.row, o.fanout_attempts
+        FROM harness_shared.substrate_outbox o
+       WHERE o.workspace_id = ${handle.workspaceId}
+         AND o.harness_slug = ${handle.harnessSlug}
+         AND o.fanout_retry_at IS NOT NULL
+         AND o.fanout_retry_at <= ${now}
+       ORDER BY o.fanout_retry_at, o.id
+       LIMIT ${batch}`;
+  } catch (e) {
+    if (pgErrorCode(e) === '42703') {
+      logPreFanoutRetrySchemaOnce('retry sweep');
+      return result;
+    }
+    throw e;
+  }
+  for (const r of due ?? []) {
+    if (opts.signal?.aborted) break;
+    result.retried += 1;
+    let failure: string | null = null;
+    try {
+      await raceRowStage(
+        r.id,
+        `fanout-retry (row id=${r.id} table=${r.table_name})`,
+        opts.fanout({ id: r.id, table_name: r.table_name, op: r.op, key: r.key, row: r.row }),
+        timeoutMs,
+      );
+    } catch (e) {
+      failure = (e instanceof Error ? e.message : String(e)).slice(0, FANOUT_ERROR_MAX_CHARS);
+    }
+    const attempts = Number(r.fanout_attempts ?? 0) + (failure === null ? 0 : 1);
+    try {
+      if (failure === null) {
+        await pg`
+          UPDATE harness_shared.substrate_outbox
+             SET fanout_retry_at = NULL,
+                 fanout_last_error = NULL
+           WHERE id = ${r.id}`;
+        result.succeeded += 1;
+      } else if (attempts >= FANOUT_MAX_ATTEMPTS) {
+        await pg`
+          UPDATE harness_shared.substrate_outbox
+             SET fanout_retry_at = NULL,
+                 fanout_attempts = ${attempts},
+                 fanout_last_error = ${failure}
+           WHERE id = ${r.id}`;
+        result.gaveUp += 1;
+        console.error(
+          `[outbox-drain] P-003 fan-out GAVE UP after ${attempts} attempts for ${r.table_name} key=${r.key} ` +
+            `(row id=${r.id}); subscribers of this change were not notified. Last error: ${failure}`,
+        );
+      } else {
+        await pg`
+          UPDATE harness_shared.substrate_outbox
+             SET fanout_retry_at = ${now + fanoutRetryDelayMs(attempts)},
+                 fanout_attempts = ${attempts},
+                 fanout_last_error = ${failure}
+           WHERE id = ${r.id}`;
+        result.rescheduled += 1;
+      }
+    } catch (e) {
+      console.error(
+        `[outbox-drain] P-003 fan-out retry state write failed for row id=${r.id} (retry stays due):`,
+        e instanceof Error ? e.message : String(e),
+      );
+    }
+  }
+  return result;
+}
+
 export async function drainOutboxOnce(
   handle: BootedHarnessHandle,
   pg: postgres.Sql,
@@ -637,6 +819,9 @@ export async function drainOutboxOnce(
                AND harness_slug = ${handle.harnessSlug}
                AND drained_at IS NOT NULL
                AND drained_at < ${now - OUTBOX_GC_AGE_MS}
+               -- P-003: never GC a row whose fan-out retry is still pending. Read
+               -- resiliently (pre-1632 outbox: column absent -> NULL -> GC-able).
+               AND (to_jsonb(substrate_outbox.*) ->> 'fanout_retry_at') IS NULL
              ORDER BY id
              LIMIT ${gcBatch}
              FOR UPDATE SKIP LOCKED
@@ -880,13 +1065,21 @@ export async function drainOutboxOnce(
         break;
       }
       const appendStage = `hypercore-append (row id=${r.id} table=${r.table_name})`;
+      // A local handle exposes the atomic admission boundary for its intentional
+      // append-hold queue. Start the row timeout only after that queue opens;
+      // legacy handles still time the whole append call.
+      const appendAdmission = handle.appendWithAdmission?.(op);
+      if (appendAdmission) {
+        void appendAdmission.completion.catch(() => {});
+        await appendAdmission.admitted;
+      }
       await raceRowStage(
         r.id,
         appendStage,
         logIfStageStalls(
           scope,
           appendStage,
-          () => handle.append(op),
+          () => appendAdmission ? appendAdmission.completion : handle.append(op),
           STAGE_STALL_LOG_MS,
           {
             attempt,
@@ -917,6 +1110,11 @@ export async function drainOutboxOnce(
       // drained_at write fails → row reprocessed) is deduped by the idempotent
       // insert (deterministic msg_id + ON CONFLICT, mig 126). Non-subscribable
       // tables are a no-op inside the fan-out.
+      // P-003 (shared-reference-system-2026-11-13): a failed fan-out is NOT treated as
+      // delivered. The row still drains (federation must progress), but the failure is
+      // persisted as fan-out retry state in the SAME mark-drained UPDATE, and
+      // retryPendingFanouts() re-runs it independently of federation.
+      let fanoutFailure: string | null = null;
       if (opts.fanout) {
         try {
           // WI-3896 follow-up: fan-out was previously bounded ONLY by logIfStageStalls
@@ -949,6 +1147,7 @@ export async function drainOutboxOnce(
             fanoutTimeoutMs,
           );
         } catch (e) {
+          fanoutFailure = e instanceof Error ? e.message : String(e);
           const schemaSig = fanoutSchemaMismatchSignature(r.table_name, e);
           if (schemaSig) {
             if (!loggedFanoutSchemaMismatches.has(schemaSig)) {
@@ -982,11 +1181,7 @@ export async function drainOutboxOnce(
       await logIfStageStalls(
         scope,
         `mark-drained (row id=${r.id})`,
-        () => pg`
-        UPDATE harness_shared.substrate_outbox
-           SET drained_at = ${now},
-               drained_log_key = ${handle.ownLog?.keyHex ?? null}
-         WHERE id = ${r.id}`,
+        () => markRowDrained(pg, r.id, now, handle.ownLog?.keyHex ?? null, fanoutFailure),
         STAGE_STALL_LOG_MS,
         { attempt, stage: 'mark-drained' },
       );
@@ -995,6 +1190,21 @@ export async function drainOutboxOnce(
     } catch (error) {
       attempt.finish(error instanceof RowStageTimeoutError ? 'abandoned' : 'rejected');
       throw error;
+    }
+  }
+
+  // P-003: after federation work, re-run fan-outs whose retry is due. Best-effort: a
+  // sweep failure is logged and never fails the drain pass (federation already moved).
+  if (opts.fanout && !opts.signal?.aborted) {
+    try {
+      await retryPendingFanouts(handle, pg, {
+        fanout: opts.fanout,
+        now,
+        fanoutTimeoutMs,
+        signal: opts.signal,
+      });
+    } catch (e) {
+      console.error('[outbox-drain] P-003 fan-out retry sweep failed (federation unaffected):', e instanceof Error ? e.message : String(e));
     }
   }
 

@@ -9,7 +9,9 @@
  * that each of its four spawns reached the seam AND that the answer was built from the seam's
  * output (the newest file / identity leg), not from a fail-soft fallback.
  */
-import { hostname } from 'node:os';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { hostname, tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const BOOT_MS = 1_790_000_000_000;
@@ -49,6 +51,16 @@ function seamResponse(cmd: string, args: string[]): { stdout: string; stderr: st
 }
 
 const prevRoot = process.env.PAPERCUSP_INTEGRATION_ROOT;
+let bundleFixtureRoot: string | undefined;
+
+function bundleFixture(marker?: string): string {
+  bundleFixtureRoot = mkdtempSync(join(tmpdir(), 'service-health-bundle-'));
+  const directory = join(bundleFixtureRoot, 'apps/operator/dist-host');
+  mkdirSync(directory, { recursive: true });
+  if (marker !== undefined) writeFileSync(join(directory, '.bundle-stale.json'), marker);
+  process.env.PAPERCUSP_INTEGRATION_ROOT = bundleFixtureRoot;
+  return bundleFixtureRoot;
+}
 
 beforeEach(() => {
   delete process.env.PAPERCUSP_INTEGRATION_ROOT;
@@ -69,9 +81,85 @@ beforeEach(() => {
 afterEach(() => {
   if (prevRoot === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
   else process.env.PAPERCUSP_INTEGRATION_ROOT = prevRoot;
+  if (bundleFixtureRoot) rmSync(bundleFixtureRoot, { recursive: true, force: true });
+  bundleFixtureRoot = undefined;
 });
 
 describe('code-drift probes route git/find through the spawner sidecar (WI-10005118)', () => {
+  it.runIf(process.platform === 'linux')(
+    'reports fallback code as stale after a new boot even when all source mtimes predate it',
+    async () => {
+      bundleFixture(JSON.stringify({
+        schema: 'bundle-stale-v1',
+        failedAt: new Date(BOOT_MS - 1_000).toISOString(),
+        outfile: 'apps/operator/dist-host/hono-host.mjs',
+        servingBundleMtime: new Date(BOOT_MS - 86_400_000).toISOString(),
+        error: 'COMMITTED_SOURCE refused scripts/lib/testing-core-witness.mjs',
+      }));
+      boundedPgReadTxn.mockResolvedValue([]);
+      execFileViaSidecar.mockImplementation(async (cmd: string, args: string[]) =>
+        cmd === 'find'
+          ? { stdout: `${(BOOT_MS - 120_000) / 1000} old-source.ts\n`, stderr: '' }
+          : seamResponse(cmd, args));
+      const { probeBgHostCodeDrift } = await import('./service-health');
+      const result = await probeBgHostCodeDrift(BOOT_MS + 600_000);
+
+      expect(result.up).toBe(true);
+      expect(result.present).not.toBe(false);
+      expect(result.note).toContain('STALE BUNDLE');
+      expect(result.note).toContain('COMMITTED_SOURCE');
+      expect(result.note).not.toContain('code current');
+      expect(result.provenance?.source).toBe('bundle-stale-marker');
+    },
+  );
+
+  it.runIf(process.platform === 'linux')(
+    'a stale marker overrides even a matching runtime commit identity',
+    async () => {
+      bundleFixture(JSON.stringify({ outfile: 'apps/operator/dist-host/hono-host.mjs' }));
+      boundedPgReadTxn.mockResolvedValue([{
+        host: hostname(), pid: 4242,
+        reportedAt: new Date(BOOT_MS + 1_000).toISOString(),
+        treeSha: HEAD_SHA, bundleVersion: null,
+      }]);
+      execFileViaSidecar.mockImplementation(async (cmd: string, args: string[]) =>
+        cmd === 'find'
+          ? { stdout: `${(BOOT_MS - 120_000) / 1000} old-source.ts\n`, stderr: '' }
+          : seamResponse(cmd, args));
+      const { probeBgHostCodeDrift } = await import('./service-health');
+      const result = await probeBgHostCodeDrift(BOOT_MS + 600_000);
+
+      expect(result.note).toContain('STALE BUNDLE');
+      expect(result.note).not.toContain('code current');
+      expect(result.provenance?.source).toBe('bundle-stale-marker');
+    },
+  );
+
+  it.runIf(process.platform === 'linux')('an unreadable stale marker still prevents a current verdict', async () => {
+    bundleFixture('{ invalid JSON');
+    const { probeBgHostCodeDrift } = await import('./service-health');
+    const result = await probeBgHostCodeDrift(BOOT_MS + 600_000);
+
+    expect(result.up).toBe(true);
+    expect(result.note).toContain('STALE BUNDLE');
+    expect(result.note).toContain('could not be parsed');
+    expect(result.provenance?.source).toBe('bundle-stale-marker');
+  });
+
+  it.runIf(process.platform === 'linux')('keeps the existing fallback when no stale marker exists', async () => {
+    bundleFixture();
+    boundedPgReadTxn.mockResolvedValue([]);
+    execFileViaSidecar.mockImplementation(async (cmd: string, args: string[]) =>
+      cmd === 'find'
+        ? { stdout: `${(BOOT_MS - 120_000) / 1000} old-source.ts\n`, stderr: '' }
+        : seamResponse(cmd, args));
+    const { probeBgHostCodeDrift } = await import('./service-health');
+    const result = await probeBgHostCodeDrift(BOOT_MS + 600_000);
+
+    expect(result.note).toContain('code current');
+    expect(result.provenance?.source).toBe('mtime-fallback');
+  });
+
   it('defaultCodeDriftExec: one fallback label and kill-switch for the whole probe family', async () => {
     const { defaultCodeDriftExec, CODE_DRIFT_SIDECAR_VAR } = await import('./service-health');
     await expect(

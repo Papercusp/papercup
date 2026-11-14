@@ -56,6 +56,7 @@ import {
   detectContentOffenders,
   detectUnscannedStagedOffenders,
   parseDirtyPaths,
+  readStagedIndexTextsFromGit,
   type ContentOffender,
 } from './content-guard';
 import {
@@ -573,7 +574,7 @@ const defaultRunGit: RunGit = (args, cwd, options) =>
   });
 
 /** Binary-safe stdin runner using the same git-sync sidecar route as {@link defaultRunGit}. */
-const runGitSyncStdinBounded: RunGitStdin = async (args, cwd, stdin, options) => {
+export const runGitSyncStdinBounded: RunGitStdin = async (args, cwd, stdin, options) => {
   const timeoutMs = options?.timeoutMs ?? gitTimeoutMsFor(args);
   if (options?.signal?.aborted) return { code: -1, stdout: Buffer.alloc(0), stderr: 'git aborted before spawn' };
   const subcommand = gitSubcommand(args);
@@ -2442,9 +2443,9 @@ const defaultWriteText = async (repoPath: string, relPath: string, text: string)
   await writeFile(join(repoPath, relPath), text, 'utf8');
 };
 
-const isDirty = async (runGit: RunGit, repo: string): Promise<boolean> => {
+const isDirty = async (runGit: RunGit, repo: string): Promise<boolean | null> => {
   const r = await runGit(['status', '--porcelain'], repo);
-  return r.code === 0 && r.stdout.trim().length > 0;
+  return r.code === 0 ? r.stdout.trim().length > 0 : null;
 };
 
 /** Candidate HEAD paths for the same module resolution key used by the
@@ -4591,6 +4592,19 @@ export async function isRegenerableProjection(
 /** Enumerate every dirty path (modified/added/deleted/untracked), repo-relative, in the
  *  same path-space as the oversized/content excludes. `-z` keeps paths with spaces/newlines
  *  intact; a rename/copy origin path (the 2nd `-z` field) is skipped. Exported for P-004 tests. */
+function pathsFromPorcelainZ(stdout: string): string[] {
+  const entries = stdout.split(String.fromCharCode(0)).filter(Boolean);
+  const out: string[] = [];
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i]!;
+    if (entry.length < 4) continue;
+    const xy = entry.slice(0, 2);
+    if (xy.includes('R') || xy.includes('C')) i++; // skip the source path that follows
+    out.push(entry.slice(3));
+  }
+  return out;
+}
+
 export async function dirtyFiles(
   runGit: RunGit,
   repoPath: string,
@@ -4601,16 +4615,7 @@ export async function dirtyFiles(
     ...(options.ignoreSubmodules ? [`--ignore-submodules=${options.ignoreSubmodules}`] : []),
   ], repoPath);
   if (r.code !== 0) return [];
-  const entries = r.stdout.split('\0').filter(Boolean);
-  const out: string[] = [];
-  for (let i = 0; i < entries.length; i++) {
-    const e = entries[i];
-    if (e.length < 4) continue;
-    const xy = e.slice(0, 2);
-    if (xy.includes('R') || xy.includes('C')) i++; // -z rename/copy: skip the origin path that follows
-    out.push(e.slice(3));
-  }
-  return out;
+  return pathsFromPorcelainZ(r.stdout);
 }
 
 /** Enumerate the paths currently in Git's index, losslessly for legal filenames. */
@@ -4799,8 +4804,153 @@ export type PostStageGuardResult =
  * dirty submodule is not a transient superproject blob, and its files are guarded by that
  * submodule's own pass. Fails closed (ok:false) when the lock plane or the index cannot be read.
  */
+const HEAD_TREE_PATHS_PER_BATCH = 512;
+const HEAD_TREE_PATHSPEC_BYTES_PER_BATCH = 64 * 1024;
+const HEAD_CAT_FILE_OBJECTS_PER_BATCH = 128;
+const HEAD_CAT_FILE_BYTES_PER_BATCH = 8 * 1024 * 1024;
+
+type HeadBlobBatchEntry = { oid: string; size: number; paths: string[] };
+
+/** Parse one binary-safe cat-file batch using the sizes from `ls-tree -l`. */
+function parseHeadBlobBatch(
+  output: Buffer,
+  expected: readonly HeadBlobBatchEntry[],
+): Map<string, string> | null {
+  const contents = new Map<string, string>();
+  let offset = 0;
+  for (const entry of expected) {
+    const newline = output.indexOf(0x0a, offset);
+    if (newline < 0) return null;
+    const fields = output.toString('ascii', offset, newline).trim().split(/\s+/);
+    const size = Number(fields[2]);
+    if (fields.length !== 3 || fields[0] !== entry.oid || fields[1] !== 'blob' ||
+        !Number.isSafeInteger(size) || size !== entry.size) return null;
+    const bodyStart = newline + 1;
+    const bodyEnd = bodyStart + size;
+    if (bodyEnd >= output.length || output[bodyEnd] !== 0x0a) return null;
+    contents.set(entry.oid, output.subarray(bodyStart, bodyEnd).toString('utf8'));
+    offset = bodyEnd + 1;
+  }
+  return offset === output.length ? contents : null;
+}
+
+/** Read a set of HEAD paths with bounded `ls-tree` pathspecs and size-bounded cat-file batches. */
+async function readHeadTextsFromGit(
+  runGit: RunGit,
+  runGitStdin: RunGitStdin,
+  repoPath: string,
+  paths: readonly string[],
+  log: (message: string) => void,
+): Promise<ReadonlyMap<string, string | null>> {
+  const uniquePaths = [...new Set(paths)];
+  const textByPath = new Map<string, string | null>();
+  for (const path of uniquePaths) textByPath.set(path, null);
+  if (uniquePaths.length === 0) return textByPath;
+
+  const pathChunks: string[][] = [];
+  let pathChunk: string[] = [];
+  let pathspecBytes = 0;
+  for (const path of uniquePaths) {
+    const bytes = Buffer.byteLength(`:(literal)${path}`, 'utf8') + 1;
+    if (pathChunk.length > 0 &&
+        (pathChunk.length >= HEAD_TREE_PATHS_PER_BATCH || pathspecBytes + bytes > HEAD_TREE_PATHSPEC_BYTES_PER_BATCH)) {
+      pathChunks.push(pathChunk);
+      pathChunk = [];
+      pathspecBytes = 0;
+    }
+    pathChunk.push(path);
+    pathspecBytes += bytes;
+  }
+  if (pathChunk.length > 0) pathChunks.push(pathChunk);
+
+  const blobsByPath = new Map<string, { oid: string; size: number }>();
+  for (const chunk of pathChunks) {
+    let tree: Awaited<ReturnType<RunGit>>;
+    try {
+      tree = await runGit(
+        ['ls-tree', '-r', '-l', '-z', 'HEAD', '--', ...chunk.map(path => `:(literal)${path}`)],
+        repoPath,
+      );
+    } catch (error) {
+      log(`[quarantine-provider-guard] could not list ${chunk.length} HEAD path(s) — skipping (fail open): ${String(error).slice(0, 240)}`);
+      continue;
+    }
+    if (tree.code !== 0) {
+      log(`[quarantine-provider-guard] could not list ${chunk.length} HEAD path(s) — skipping (fail open): ${gitFailureDetail(tree)}`);
+      continue;
+    }
+    const wanted = new Set(chunk);
+    let malformed = false;
+    for (const record of tree.stdout.split('\0').filter(Boolean)) {
+      const tab = record.indexOf('\t');
+      if (tab < 0) { malformed = true; break; }
+      const fields = record.slice(0, tab).trim().split(/\s+/);
+      const path = record.slice(tab + 1);
+      if (!wanted.has(path)) continue;
+      if (fields.length !== 4) { malformed = true; break; }
+      if (fields[1] !== 'blob') continue;
+      const oid = fields[2]!;
+      const size = Number(fields[3]);
+      if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(oid) || !Number.isSafeInteger(size) || size < 0) {
+        malformed = true;
+        break;
+      }
+      blobsByPath.set(path, { oid, size });
+    }
+    if (malformed) {
+      for (const path of chunk) blobsByPath.delete(path);
+      log(`[quarantine-provider-guard] malformed HEAD tree listing for ${chunk.length} path(s) — skipping (fail open)`);
+    }
+  }
+
+  const blobsByOid = new Map<string, HeadBlobBatchEntry>();
+  for (const [path, blob] of blobsByPath) {
+    const entry = blobsByOid.get(blob.oid) ?? { ...blob, paths: [] };
+    if (entry.size !== blob.size) continue;
+    entry.paths.push(path);
+    blobsByOid.set(blob.oid, entry);
+  }
+  const blobs = [...blobsByOid.values()];
+  const groups: HeadBlobBatchEntry[][] = [];
+  let group: HeadBlobBatchEntry[] = [];
+  let groupBytes = 0;
+  for (const blob of blobs) {
+    if (group.length > 0 &&
+        (group.length >= HEAD_CAT_FILE_OBJECTS_PER_BATCH || groupBytes + blob.size > HEAD_CAT_FILE_BYTES_PER_BATCH)) {
+      groups.push(group);
+      group = [];
+      groupBytes = 0;
+    }
+    group.push(blob);
+    groupBytes += blob.size;
+  }
+  if (group.length > 0) groups.push(group);
+
+  for (const batch of groups) {
+    let result: Awaited<ReturnType<RunGitStdin>>;
+    try {
+      const input = batch.map(blob => blob.oid).join('\n') + '\n';
+      result = await runGitStdin(['cat-file', '--batch', '--buffer'], repoPath, input);
+    } catch (error) {
+      log(`[quarantine-provider-guard] cat-file batch failed for ${batch.length} HEAD blob(s) — skipping (fail open): ${String(error).slice(0, 240)}`);
+      continue;
+    }
+    const contents = result.code === 0 ? parseHeadBlobBatch(result.stdout, batch) : null;
+    if (!contents) {
+      log(`[quarantine-provider-guard] malformed or failed cat-file batch for ${batch.length} HEAD blob(s) — skipping (fail open)`);
+      continue;
+    }
+    for (const blob of batch) {
+      const text = contents.get(blob.oid);
+      if (text !== undefined) for (const path of blob.paths) textByPath.set(path, text);
+    }
+  }
+  return textByPath;
+}
+
 export async function guardStagedIndexBeforeCommit(opts: {
   runGit: RunGit;
+  runGitStdin?: RunGitStdin;
   repoPath: string;
   /** Log-only label; structured scope remains the caller's public diagnostic coordinate. */
   scope: string;
@@ -4824,7 +4974,7 @@ export async function guardStagedIndexBeforeCommit(opts: {
   rescanStagedContent?: (staged: readonly string[], indexRunGit: RunGit) => Promise<ContentOffender[]>;
   log: (message: string) => void;
 }): Promise<PostStageGuardResult> {
-  const { runGit, repoPath, scope, log } = opts;
+  const { runGit, runGitStdin, repoPath, scope, log } = opts;
   // 1. The staged set. Fixed since the add, so reading it before the census is safe.
   const stagedRes = await runGit(['diff', '--cached', '--name-only', '--no-renames', '-z'], repoPath);
   if (stagedRes.code !== 0) {
@@ -5048,10 +5198,23 @@ export async function guardStagedIndexBeforeCommit(opts: {
       const result = await runGit(['show', `HEAD:${path}`], repoPath);
       return result.code === 0 ? result.stdout : null;
     },
+    readHeadTexts: runGitStdin
+      ? (paths) => readHeadTextsFromGit(runGit, runGitStdin, repoPath, paths, log)
+      : undefined,
     readIndexText: async (path) => {
       const result = await runGit(['show', `:${path}`], repoPath);
       return result.code === 0 ? result.stdout : null;
     },
+    readIndexTexts: runGitStdin
+      ? (paths) => readStagedIndexTextsFromGit({
+          runGit,
+          runGitStdin,
+          repoPath,
+          paths,
+          log,
+          logLabel: 'quarantine-provider-guard',
+        })
+      : undefined,
     log,
   });
   const heldProviders = providerOffenders.map((offender) => offender.file).filter((file) => stagedSet.has(file));
@@ -5249,8 +5412,13 @@ async function openPrivateIndexSite(
     return { ok: false, error: `${label} could not locate the git dir: ${gitFailureDetail(gitDirRes)}` };
   }
   const newIndexFile = (): string => join(gitDir, `papercusp-git-sync-${tag}-${process.pid}-${randomUUID()}.index`);
+  const callsite = /^[a-z][a-z0-9-]{0,40}$/.test(tag) ? 'private-index-' + tag : 'private-index';
   const bindIndex = (indexFile: string): RunGit => (args, cwd, options) =>
-    runGit(args, cwd, { ...options, env: { ...options?.env, GIT_INDEX_FILE: indexFile } });
+    runGit(args, cwd, {
+      ...options,
+      env: { ...options?.env, GIT_INDEX_FILE: indexFile },
+      diagnosticTags: { ...options?.diagnosticTags, callsite },
+    });
   const bindIndexStdin = runGitStdin
     ? (indexFile: string): RunGitStdin => (args, cwd, stdin, options) =>
         runGitStdin(args, cwd, stdin, { ...options, env: { ...options?.env, GIT_INDEX_FILE: indexFile } })
@@ -5428,7 +5596,8 @@ async function publishPrivateIndexCommit(
   const treeRes = await privateGit(['write-tree'], repoPath);
   const tree = treeRes.stdout.trim();
   if (treeRes.code !== 0 || !tree) return { status: 'error', error: `${p.label} failed: ${gitFailureDetail(treeRes)}` };
-  const validateTree = workspaceLockTreeValidator();
+  // Ratchet against the exact parent this commit is CAS-published onto (EI-28599921543233667).
+  const validateTree = workspaceLockTreeValidator(p.base ? { inheritFrom: p.base } : {});
   try { await validateTree(privateGit, repoPath, tree); }
   catch (error) { return { status: 'error', error: `${p.label} not published: ${error instanceof Error ? error.message : error}` }; }
   // Even an unchanged private tree must prove the inherited base coherent.
@@ -5757,6 +5926,174 @@ const generatedSourceSchema = z.object({ kind: z.literal('generated-lock'),
   custody: z.object({ repositoryRealpath: z.string(), index: metadataIndex, sharedIndex: metadataIndex.nullable(),
     inputs: z.array(metadataRawInput) }).strict() }).strict();
 export type GitSyncGeneratedLockSource = z.infer<typeof generatedSourceSchema>;
+
+const immutableSourceMembers = {
+  gitlinks: z.array(z.object({ path: metadataPath, commit: metadataOid, tree: metadataOid }).strict()),
+  inputs: z.array(z.object({ path: metadataPath, mode: z.enum(['100644', '100755']),
+    blobOid: metadataOid, sha256: metadataSha }).strict()).min(1),
+};
+const immutableSourceInputSchema = z.discriminatedUnion('schemaVersion', [
+  z.object({ schemaVersion: z.literal(1), rootCommit: metadataOid, rootTree: metadataOid,
+    ...immutableSourceMembers }).strict(),
+  z.object({ schemaVersion: z.literal(2), base: metadataOid, baseTree: metadataOid, payloadTree: metadataOid,
+    ...immutableSourceMembers }).strict(),
+]).superRefine((value, ctx) => {
+  for (const rows of [value.gitlinks, value.inputs]) {
+    const paths = rows.map(row => row.path);
+    if (new Set(paths).size !== paths.length || paths.some((path, i) => path !== [...paths].sort()[i])) {
+      ctx.addIssue({ code: 'custom', message: 'immutable-source-path-order' });
+    }
+  }
+});
+export type GitSyncImmutableSourceInput = z.infer<typeof immutableSourceInputSchema>;
+
+/** Read-only preparation, not custody, source admission, or a producer grant.
+ * Both input documents must already be frozen by the caller's independent
+ * expectation authority. No HEAD/index/worktree fallback or object/ref write.
+ * A future capture ingress still needs its own authenticated rule/freeze/CAS
+ * checks; this observation cannot stand in for them. */
+export async function inspectGitSyncImmutableSource(
+  runGit: RunGit, runGitStdin: RunGitStdin, repoPath: string,
+  value: unknown, expected: unknown,
+): Promise<{ ok: true; rootCommit: string; rootTree: string; manifestSha256: string;
+  gitlinkCount: number; inputCount: number } | { ok: true; schemaVersion: 2;
+  base: string; baseTree: string; payloadTree: string; manifestSha256: string;
+  gitlinkCount: number; inputCount: number } | { ok: false; error: string }> {
+  const refuse = (reason: string) => ({ ok: false as const, error: 'immutable-source-' + reason });
+  // Zod detaches both closed documents synchronously, before any asynchronous
+  // object read can give the caller a chance to change its nominated inputs.
+  const supplied = immutableSourceInputSchema.safeParse(value);
+  const retained = immutableSourceInputSchema.safeParse(expected);
+  if (!supplied.success || !retained.success) return refuse('input');
+  const input = supplied.data;
+  if (canonicalJson(input) !== canonicalJson(retained.data)) return refuse('expectation-mismatch');
+  if (typeof runGit !== 'function' || typeof runGitStdin !== 'function') return refuse('binary-reader');
+  const env = { GIT_NO_LAZY_FETCH: '1', GIT_NO_REPLACE_OBJECTS: '1', GIT_OPTIONAL_LOCKS: '0',
+    GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_PARAMETERS: '',
+    GIT_CONFIG_COUNT: '0', GIT_TERMINAL_PROMPT: '0' };
+  const profile = ['-c', 'protocol.allow=never', '-c', 'core.hooksPath=/dev/null',
+    '-c', 'submodule.recurse=false', '-c', 'core.fsmonitor=false'];
+  const git = async (owner: string, args: string[]) => {
+    const result = await runGit([...profile, ...args], owner, { env: { ...env } });
+    if (result.code !== 0) throw Error('immutable-source-object-read');
+    return result.stdout;
+  };
+  try {
+    const root = resolvePath(repoPath);
+    if (await realpath(root) !== root) return refuse('repository');
+    const pins = new Map(input.gitlinks.map(pin => [pin.path, pin]));
+    const seen = new Set<string>();
+    const blobs = new Map<string, { owner: string; mode: string; oid: string }>();
+    const walk = async (owner: string, commit: string, tree: string, prefix: string,
+      literalTree = tree): Promise<void> => {
+      if (await realpath(owner) !== owner || (await git(owner, ['rev-parse', '--show-toplevel'])).trim() !== owner) {
+        throw Error('immutable-source-repository');
+      }
+      if ((await git(owner, ['cat-file', '-t', commit])).trim() !== 'commit' ||
+          (await git(owner, ['cat-file', '-t', tree])).trim() !== 'tree' ||
+          (await git(owner, ['rev-parse', '--verify', commit + '^{tree}'])).trim() !== tree) {
+        throw Error('immutable-source-root-binding');
+      }
+      // V2 proves base ancestry separately from the literal payload. The payload
+      // is a tree object, with no requirement to create or discover a commit.
+      if (literalTree !== tree && (await git(owner, ['cat-file', '-t', literalTree])).trim() !== 'tree') {
+        throw Error('immutable-source-root-binding');
+      }
+      // Paths are part of the expectation, too. A text runner can replace an
+      // invalid UTF-8 filename with U+FFFD and alias a different JSON path.
+      const rawListing = await runGitStdin([...profile, 'ls-tree', '-r', '-z', literalTree], owner, '',
+        { env: { ...env }, timeoutMs: 30_000 });
+      if (rawListing.code !== 0 || !Buffer.isBuffer(rawListing.stdout)) throw Error('immutable-source-tree-list');
+      const listing = rawListing.stdout.toString('utf8');
+      if (!Buffer.from(listing, 'utf8').equals(rawListing.stdout)) throw Error('immutable-source-tree-list');
+      if (listing && !listing.endsWith('\0')) throw Error('immutable-source-tree-list');
+      for (const row of listing.split('\0').filter(Boolean)) {
+        const tab = row.indexOf('\t');
+        const header = /^(100644|100755|120000|160000) (blob|commit) ([a-f0-9]{40}|[a-f0-9]{64})$/.exec(row.slice(0, tab));
+        const path = row.slice(tab + 1);
+        if (tab < 0 || !header || !metadataPath.safeParse(path).success) throw Error('immutable-source-tree-list');
+        const full = prefix ? prefix + '/' + path : path;
+        if (header[1] === '160000' && header[2] === 'commit') {
+          const pin = pins.get(full);
+          if (!pin || pin.commit !== header[3] || seen.has(full)) throw Error('immutable-source-gitlink');
+          seen.add(full);
+          // Resolve only the repository at the literal pinned path. A missing
+          // child must not accidentally resolve its parent's object database.
+          await walk(resolvePath(root, full), pin.commit, pin.tree, full);
+        } else if (header[2] === 'blob' && header[1] !== '160000') {
+          if (blobs.has(full)) throw Error('immutable-source-tree-list');
+          blobs.set(full, { owner, mode: header[1], oid: header[3] });
+        } else throw Error('immutable-source-tree-list');
+      }
+    };
+    if (input.schemaVersion === 1) await walk(root, input.rootCommit, input.rootTree, '');
+    else await walk(root, input.base, input.baseTree, '', input.payloadTree);
+    if (seen.size !== pins.size) return refuse('gitlink-inventory');
+    for (const selected of input.inputs) {
+      const actual = blobs.get(selected.path);
+      if (!actual || actual.mode !== selected.mode || actual.oid !== selected.blobOid) return refuse('selected-input');
+      const content = await runGitStdin([...profile, 'cat-file', 'blob', actual.oid], actual.owner, '',
+        { env: { ...env }, timeoutMs: 30_000 });
+      if (content.code !== 0 || !Buffer.isBuffer(content.stdout) ||
+          createHash('sha256').update(content.stdout).digest('hex') !== selected.sha256) return refuse('content-digest');
+    }
+    const observation = { manifestSha256: createHash('sha256').update(canonicalJson(input)).digest('hex'),
+      gitlinkCount: seen.size, inputCount: input.inputs.length };
+    return input.schemaVersion === 1
+      ? { ok: true, rootCommit: input.rootCommit, rootTree: input.rootTree, ...observation }
+      : { ok: true, schemaVersion: 2, base: input.base, baseTree: input.baseTree,
+        payloadTree: input.payloadTree, ...observation };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error && error.message.startsWith('immutable-source-')
+      ? error.message : 'immutable-source-object-read' };
+  }
+}
+
+/** Strict, detached read boundary for historical custody descriptors. No repair or normalization. */
+export function parseGitSyncCandidateCapture(value: unknown): GitSyncCandidateCapture {
+  const absolute = z.string().min(1).refine(path => isAbsolute(path) && !path.includes('\0') &&
+    !path.includes('\\') && !path.split('/').slice(1).some(part => !part || part === '.' || part === '..'));
+  const paths = z.array(metadataPath).min(1).refine(rows =>
+    new Set(rows).size === rows.length && rows.every((path, i) => path === [...rows].sort()[i]));
+  const dependency = z.object({ requestId: z.string().min(1),
+    generation: z.number().int().positive().max(Number.MAX_SAFE_INTEGER), paths, tree: metadataOid.nullable() }).strict();
+  const parsed = z.object({ version: z.union([z.literal(2), z.literal(3), z.literal(4)]),
+    kind: z.literal('candidate'), repository: absolute, requestId: z.string().min(1),
+    generation: z.number().int().positive().max(Number.MAX_SAFE_INTEGER), base: metadataOid.nullable(),
+    paths, baseTree: metadataOid, tree: metadataOid, dependencies: z.array(dependency).min(1).optional(),
+    contentSource: generatedSourceSchema.optional(), originCapture: metadataOriginProof.optional(),
+  }).strict().parse(value);
+  if (parsed.dependencies) {
+    const keys = parsed.dependencies.map(row => canonicalJson(row));
+    if (parsed.dependencies.some(row => row.requestId === parsed.requestId || row.paths.some(path => !parsed.paths.includes(path))) ||
+        new Set(parsed.dependencies.map(row => row.requestId)).size !== keys.length ||
+        keys.some((key, i) => key !== [...keys].sort((a, b) => a.localeCompare(b))[i])) {
+      throw new Error('candidate-dependency-order');
+    }
+  }
+  const source = parsed.contentSource;
+  const joint = source?.fingerprint.schemaVersion === 2 && source.fingerprint.publishedLibrarySelections.length > 0;
+  if (parsed.version !== (joint ? 4 : source ? 3 : 2) || (!joint && parsed.originCapture !== undefined)) {
+    throw new Error('candidate-version-binding');
+  }
+  if (source) {
+    const f = source.fingerprint;
+    if (f.repositoryRealpath !== parsed.repository || f.requestId !== parsed.requestId ||
+        f.generation !== parsed.generation || f.baseCommit !== parsed.base || f.baseTree !== parsed.baseTree ||
+        canonicalJson(metadataCandidatePaths(f)) !== canonicalJson(parsed.paths)) {
+      throw new Error('candidate-generated-source-binding');
+    }
+    validateMetadataCaptureProof(source, parsed.tree, parsed.originCapture);
+  }
+  const freeze = (item: unknown): void => {
+    if (item && typeof item === 'object') {
+      for (const child of Object.values(item)) freeze(child);
+      Object.freeze(item);
+    }
+  };
+  freeze(parsed);
+  return parsed;
+}
 
 export function metadataSelectionRequest(f: z.infer<typeof metadataJointFingerprint>) {
   return f.publishedLibrarySelections.map(({ path, expectedBasePin, selectedCommit }) => ({ path, expectedBasePin, selectedCommit }));
@@ -7575,6 +7912,34 @@ export type MigrationReservationChecker = (
 const migrationPaths = (paths: readonly string[]): string[] =>
   paths.filter((path) => armedMigrationFilename(path) !== null);
 
+/** Read each child's dirty paths before the early root commit, with the same
+ * bounded fan-out as the later submodule sync pass. Settling a whole batch
+ * before propagating an error keeps in-flight Git reads inside the lease fence. */
+export async function censusSubmoduleMigrationReservations(
+  runGit: RunGit,
+  repo: string,
+  subPaths: readonly string[],
+): Promise<Array<Extract<GitSyncSkippedPath, { reason: 'migration-reservation' }>>> {
+  const refusals: Array<Extract<GitSyncSkippedPath, { reason: 'migration-reservation' }>> = [];
+  for (let batchStart = 0; batchStart < subPaths.length; batchStart += SUBMODULE_SYNC_CONCURRENCY) {
+    const batch = subPaths.slice(batchStart, batchStart + SUBMODULE_SYNC_CONCURRENCY);
+    const results = await Promise.allSettled(batch.map(async (scope) => {
+      const childDirty = await dirtyFiles(runGit, join(repo, scope));
+      return migrationPaths(childDirty).map((path) => ({
+        scope,
+        path,
+        reason: 'migration-reservation' as const,
+        detail: 'migration reservation is checked during child sync',
+      }));
+    }));
+    for (const result of results) {
+      if (result.status === 'rejected') throw result.reason;
+      refusals.push(...result.value);
+    }
+  }
+  return refusals;
+}
+
 async function checkMigrationReservations(
   options: CommitRepoOpts,
   paths: readonly string[],
@@ -7664,6 +8029,8 @@ interface CommitRepoResult {
   committedCount: number;
   oversized: OversizedFile[];
   contentErrors: ContentOffender[];
+  /** A completed census supersedes earlier root-pass findings, including on replay. */
+  guardCensusComplete?: boolean;
   skippedPaths?: GitSyncSkippedPath[];
   /** Persisted with the pointer-bump step so DBOS history retains the measured phase. */
   pointerBumpTiming?: {
@@ -7867,8 +8234,10 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
           }
         : {}),
     };
+    const guardCensus = { complete: false };
     try {
-      return await commitOneRepoWithScratch(runGit, repoPath, passOpts, scratch);
+      const result = await commitOneRepoWithScratch(runGit, repoPath, passOpts, scratch, guardCensus);
+      return { ...result, guardCensusComplete: guardCensus.complete };
     } finally {
       for (const file of scratch) {
         await rm(file, { force: true }).catch(() => {});
@@ -7948,6 +8317,7 @@ async function commitOneRepoWithScratch(
   repoPath: string,
   o: CommitRepoOpts,
   scratch: string[],
+  guardCensus: { complete: boolean },
 ): Promise<CommitRepoResult> {
   const { message } = o;
   const logScope = `${o.harnessSlug}/${o.scope}`;
@@ -8106,6 +8476,7 @@ async function commitOneRepoWithScratch(
   }
   const hasDirtyFiles = await isDirty(runGit, repoPath);
   noteSlowPhase('dirty check');
+  if (hasDirtyFiles === false) guardCensus.complete = true;
   if (hasDirtyFiles) {
     const attachment = await ensureBranchAttachedForCommit(runGit, repoPath, o.remote, o.defaultBranch, o.log);
     noteSlowPhase('branch attachment');
@@ -8356,6 +8727,7 @@ async function commitOneRepoWithScratch(
       if (liveLockImporterErrors.length > 0) contentErrors = [...contentErrors, ...liveLockImporterErrors];
       noteSlowPhase('live lock importer guard');
     }
+    guardCensus.complete = true;
     // Exclude BOTH oversized + content offenders (incl. unsafe deletions + quarantined
     // importers) from the auto-commit (deduped — a file can be both). Everything else
     // still syncs this tick.
@@ -8483,7 +8855,8 @@ async function commitOneRepoWithScratch(
       );
     }
     let committedAny = false;
-    const validateDependencyTree = workspaceLockTreeValidator();
+    // Inherited HEAD drift must not refuse (or defer) a commit that adds none (EI-28599921543233667).
+    const validateDependencyTree = workspaceLockTreeValidator({ inheritFrom: 'HEAD' });
     // EI-24712906810240170: the post-stage guard for every commit below. A late lock is
     // reported like a pre-stage one (skippedPaths), deduped by path.
     // WI-10006705: an attributed group passes the runner bound to its PRIVATE index, so the
@@ -8498,6 +8871,7 @@ async function commitOneRepoWithScratch(
       await o.yieldIfRequested?.('before-superproject-publish');
       const guard = await guardStagedIndexBeforeCommit({
         runGit: indexRunGit,
+        runGitStdin: indexRunGitStdin,
         repoPath,
         scope: logScope,
         refreshLiveLockHoldings: o.refreshLiveLockHoldings,
@@ -9178,7 +9552,8 @@ async function pushSelectedHead(
     if (tree.code !== 0 || !/^[a-f0-9]{40,64}$/.test(tree.stdout.trim())) {
       throw new Error(`cannot resolve publication tree: ${tree.stderr || tree.stdout}`);
     }
-    await workspaceLockTreeValidator()(runGit, repoPath, tree.stdout.trim());
+    // HEAD is the pushed commit itself; ratchet against its first parent instead.
+    await workspaceLockTreeValidator({ inheritFrom: `${expectedCommit}^1` })(runGit, repoPath, tree.stdout.trim());
     return await runNetworkGitWithGitHubHttpsFallback(
       runGit, ['push', remote, `${expectedCommit}:refs/heads/${branch}`], repoPath, log,
     );
@@ -9526,6 +9901,8 @@ async function syncOneRepo(
     remote: string;
     defaultBranch: string;
     doPush: boolean;
+    /** Disable the commit-graph ancestry shortcut when merging submodule gitlinks. */
+    disableCommitGraphForSubmoduleMerge?: boolean;
     requireRemoteVerification?: boolean;
   },
 ): Promise<RepoSyncResult> {
@@ -9881,11 +10258,13 @@ async function runGitSyncPass(
         depth: number;
         startOffsetMs: number;
         durationMs: number;
-        repositories: Array<{ scope: string; durationMs: number; status: RepoSyncResult['status'] | 'rejected' }>;
+        repositories: Array<{ scope: string; durationMs: number; status: RepoSyncResult['status'] | 'rejected' | 'pre-synced' }>;
       }>;
       omittedBatches: number;
     };
     didSomething: boolean;
+    /** Direct root leaf links already verified before deeper submodule batches. */
+    earlySyncedSubmodulePaths: string[];
     /** WI-10007606: set when the walk stopped at a batch boundary to yield. Part of the
      *  checkpointed output, so a crash-replay of this step yields again instead of
      *  treating the partial walk as a complete phase. */
@@ -9928,6 +10307,7 @@ async function runGitSyncPass(
     strandedSubmodules: null,
     submodulePaths: [],
     didSomething: false,
+    earlySyncedSubmodulePaths: [],
   });
 
   const absorb = (into: PhaseCollect, scope: string, r: RepoSyncResult): void => {
@@ -9971,9 +10351,15 @@ async function runGitSyncPass(
     const gitSubcommand = subcommand && /^[a-z][a-z0-9-]{0,63}$/.test(subcommand)
       ? subcommand
       : undefined;
+    const callsite = options?.diagnosticTags?.callsite;
     return runGit(args, cwd, {
       ...(options ?? {}),
-      diagnosticTags: { runId, commandClass: 'git', ...(gitSubcommand ? { gitSubcommand } : {}) },
+      diagnosticTags: {
+        runId,
+        commandClass: 'git',
+        ...(gitSubcommand ? { gitSubcommand } : {}),
+        ...(callsite ? { callsite } : {}),
+      },
     });
   };
 
@@ -10007,6 +10393,7 @@ async function runGitSyncPass(
     let submodulePathsSha256 = hashSubmodulePaths(subPaths);
     let resumeFromSubmodule = 0;
     let resumingFromYield = false;
+    let earlyRootHeadBefore = '';
     let setupStepStartedAt = phaseStartedAt;
     const recordSetupStep = (name: string): void => {
       const now = performance.now();
@@ -10142,6 +10529,7 @@ async function runGitSyncPass(
         }
       }
 
+      if (subPaths.length > 0) earlyRootHeadBefore = await headSha(runGitForTiming, repo);
       if (subPaths.length > 0 && !resumingFromYield) {
         const nestedPotPaths = cfg.nestedPotCheckouts ?? [];
         const rootProtectedPaths = protectedPaths.filter(
@@ -10152,7 +10540,7 @@ async function runGitSyncPass(
             !subPaths.some((subPath) => holding.path === subPath || holding.path.startsWith(`${subPath}/`)) &&
             !isUnderAnyPath(holding.path, nestedPotPaths),
         );
-        const earlyHeadBefore = await headSha(runGitForTiming, repo);
+        const earlyHeadBefore = earlyRootHeadBefore;
         const earlyLocalCommits: GitSyncRootCommit[] = [];
         const yieldEarlySuperproject = async (boundary: GitSyncSuperprojectYieldBoundary): Promise<void> => {
           const reason = await checkYield();
@@ -10205,18 +10593,11 @@ async function runGitSyncPass(
           const earlyAttributedPaths = [...earlyAttribution.keys()];
           let earlyMigrationFenceExcludedPaths: string[] = [];
           if (repoO.migrationReservationChecker) {
-            const potentialMigrationRefusals: Array<Extract<GitSyncSkippedPath, { reason: 'migration-reservation' }>> = [];
-            for (const subPath of subPaths) {
-              const childDirty = await dirtyFiles(runGitForTiming, join(repo, subPath));
-              potentialMigrationRefusals.push(
-                ...migrationPaths(childDirty).map((path) => ({
-                  scope: subPath,
-                  path,
-                  reason: 'migration-reservation' as const,
-                  detail: 'migration reservation is checked during child sync',
-                })),
-              );
-            }
+            const potentialMigrationRefusals = await censusSubmoduleMigrationReservations(
+              runGitForTiming,
+              repo,
+              subPaths,
+            );
             if (potentialMigrationRefusals.length > 0) {
               let earlyFenceRoster: AttributionRosterEntry[] = [];
               try {
@@ -10306,7 +10687,6 @@ async function runGitSyncPass(
         }
       }
     }
-    recordSetupComplete();
     const syncSubmodule = (s: string): Promise<RepoSyncResult> =>
       // P-004: a submodule's last-resort default is its own 'main' (resolved via
       // origin/HEAD first), never the superproject's branch (cfg.branch = 'staging').
@@ -10337,6 +10717,197 @@ async function runGitSyncPass(
         attribution: attributionMapForRepo(roster, s, repo),
         onAttribution,
       });
+    const mergeJsonUnique = <T>(...groups: Array<readonly T[] | undefined>): T[] =>
+      [...new Map(groups.flatMap((group) => group ?? []).map((item) => [JSON.stringify(item), item])).values()];
+    const recordEarlyRootCommit = (result: RepoSyncResult, commits: GitSyncRootCommit[]): void => {
+      const previous = out.earlyRootCommit;
+      const localCommits = mergeJsonUnique(previous?.localCommits, commits);
+      const latest = commits.at(-1);
+      out.earlyRootCommit = {
+        committedLocal: Boolean(previous?.committedLocal || commits.length > 0 || result.committedCount > 0),
+        dirtyPathCount: (previous?.dirtyPathCount ?? 0) + result.dirtyPathCount,
+        committedCount: (previous?.committedCount ?? 0) + result.committedCount,
+        oversized: mergeJsonUnique(previous?.oversized, result.oversized),
+        contentErrors: mergeJsonUnique(previous?.contentErrors, result.contentErrors),
+        ...(previous?.guardCensusComplete === undefined ? {} : { guardCensusComplete: previous.guardCensusComplete }),
+        ...(previous?.skippedPaths || result.skippedPaths
+          ? { skippedPaths: mergeJsonUnique(previous?.skippedPaths, result.skippedPaths) }
+          : {}),
+        ...(previous?.error ? { error: previous.error } : {}),
+        localCommits,
+        ...(latest || previous?.localCommitSha
+          ? {
+              localCommitSha: latest?.sha ?? previous?.localCommitSha,
+              localCommitAtMs: latest?.committedAtMs ?? previous?.localCommitAtMs,
+            }
+          : {}),
+        localCommitShas: mergeJsonUnique(previous?.localCommitShas, commits.map((commit) => commit.sha)),
+      };
+    };
+    const topLevelSubmodulePaths = subPaths.filter(
+      (path) => !subPaths.some((parent) => parent !== path && path.startsWith(parent + '/')),
+    );
+    const earlyLeafSubmodulePaths = topLevelSubmodulePaths.filter(
+      (path) => !subPaths.some((child) => child !== path && child.startsWith(path + '/')),
+    );
+    // A root leaf has no children to wait for. Publish its dirty gitlink before
+    // unrelated deeper branches enter the global deepest-first walk.
+    const earlyLeafCandidates = earlyLeafSubmodulePaths.filter((path) => {
+      const depth = path.split('/').length;
+      return subPaths.some((other) => other.split('/').length > depth);
+    });
+    const earlyYieldReason = doPush && doSubPush && earlyLeafCandidates.length > 0
+      ? await checkYield()
+      : null;
+    if (doPush && doSubPush && earlyLeafCandidates.length > 0 && !earlyYieldReason) {
+      const rootStatus = await runGitForTiming(['status', '--porcelain', '-z', '-uall'], repo);
+      if (rootStatus.code !== 0) {
+        log('[git-sync] ' + slug + ': early root pointer publication skipped; superproject dirty-path census failed');
+      } else {
+        const dirtyRootPaths = pathsFromPorcelainZ(rootStatus.stdout);
+        const dirtyRootPathSet = new Set(dirtyRootPaths);
+        const candidatePaths = earlyLeafCandidates.filter((path) => dirtyRootPathSet.has(path));
+        if (candidatePaths.length > 0 && earlyRootHeadBefore) {
+          // Never push pre-existing local root history that may contain an
+          // unverified gitlink. The guarded source-only snapshot above is new this pass.
+          const rootFetch = await runNetworkGitWithGitHubHttpsFallback(
+            runGitForTiming,
+            ['fetch', remote, '+refs/heads/' + branch + ':refs/remotes/' + remote + '/' + branch],
+            repo,
+            log,
+          );
+          const rootRemoteRef = remote + '/' + branch;
+          const priorRootAhead = rootFetch.code === 0
+            ? await runGitForTiming(['rev-list', '--count', rootRemoteRef + '..' + earlyRootHeadBefore], repo)
+            : { code: rootFetch.code, stdout: '', stderr: rootFetch.stderr || rootFetch.stdout };
+          const priorRootAheadText = priorRootAhead.stdout.trim();
+          const priorRootAheadCount = priorRootAhead.code === 0 && /^[0-9]+$/.test(priorRootAheadText)
+            ? Number.parseInt(priorRootAheadText, 10)
+            : null;
+          if (priorRootAheadCount !== 0) {
+            log(
+              '[git-sync] ' + slug + ': early root pointer publication deferred; ' +
+                (priorRootAheadCount === null
+                  ? 'the existing superproject history could not be verified'
+                  : priorRootAheadCount + ' pre-existing local commit(s) are not on the root origin'),
+            );
+          } else {
+            for (let batchStart = 0; batchStart < candidatePaths.length; batchStart += SUBMODULE_SYNC_CONCURRENCY) {
+              if (await checkYield()) break;
+              const batch = candidatePaths.slice(batchStart, batchStart + SUBMODULE_SYNC_CONCURRENCY);
+              const batchStartedAt = performance.now();
+              const measurement: NonNullable<PhaseCollect['submoduleTiming']>['batches'][number] = {
+                index: timing.batches.length + timing.omittedBatches,
+                depth: batch[0]!.split('/').length,
+                startOffsetMs: Math.round(batchStartedAt - phaseStartedAt),
+                durationMs: 0,
+                repositories: [],
+              };
+              timingLog('early-root-leaf-batch-start', { batch: measurement.index, scopes: batch });
+              const results = await Promise.allSettled(batch.map(async (scope) => {
+                const startedAt = performance.now();
+                let status: RepoSyncResult['status'] | 'rejected' = 'rejected';
+                try {
+                  const result = await syncSubmodule(scope);
+                  status = result.status;
+                  return result;
+                } finally {
+                  const repository = { scope, durationMs: Math.round(performance.now() - startedAt), status };
+                  measurement.repositories.push(repository);
+                  timingLog('repository-settled', { batch: measurement.index, ...repository });
+                }
+              }));
+              measurement.durationMs = Math.round(performance.now() - batchStartedAt);
+              if (timing.batches.length < 64) timing.batches.push(measurement);
+              else timing.omittedBatches++;
+              timingLog('early-root-leaf-batch-settled', measurement);
+              const readyRootLinks: string[] = [];
+              for (let i = 0; i < results.length; i++) {
+                const result = results[i]!;
+                const scope = batch[i]!;
+                if (result.status === 'rejected') {
+                  log(
+                    '[git-sync] ' + slug + '/' + scope + ': early leaf sync failed (' +
+                      String(result.reason) + '); the regular deepest-first pass will retry it',
+                  );
+                  continue;
+                }
+                if (result.value.status === 'nothing' || result.value.status === 'synced') {
+                  absorb(out, scope, result.value);
+                  if (!out.earlySyncedSubmodulePaths.includes(scope)) out.earlySyncedSubmodulePaths.push(scope);
+                  readyRootLinks.push(scope);
+                } else {
+                  log(
+                    '[git-sync] ' + slug + '/' + scope + ': early leaf sync did not verify a publishable child (' +
+                      result.value.status + '); the regular deepest-first pass will retry it',
+                  );
+                }
+              }
+              if (readyRootLinks.length === 0) continue;
+
+              // Re-read status so concurrent root edits stay out of this link-only commit.
+              const publishStatus = await runGitForTiming(['status', '--porcelain', '-z', '-uall'], repo);
+              if (publishStatus.code !== 0) {
+                log('[git-sync] ' + slug + ': early root pointer publication skipped; final dirty-path census failed');
+                continue;
+              }
+              const publishDirtyPaths = pathsFromPorcelainZ(publishStatus.stdout);
+              const currentReadyLinks = readyRootLinks.filter((path) => publishDirtyPaths.includes(path));
+              if (currentReadyLinks.length === 0) continue;
+              const nestedPotPaths = cfg.nestedPotCheckouts ?? [];
+              const rootProtectedPaths = protectedPaths.filter(
+                (path) => !subPaths.some((subPath) => path === subPath || path.startsWith(subPath + '/')),
+              );
+              const rootProtectedHoldings = protectedHoldings.filter(
+                (holding) =>
+                  !subPaths.some((subPath) => holding.path === subPath || holding.path.startsWith(subPath + '/')) &&
+                  !isUnderAnyPath(holding.path, nestedPotPaths),
+              );
+              const earlyRootExcludePaths = [...new Set([
+                ...rootProtectedPaths,
+                ...nestedPotPaths,
+                ...topLevelSubmodulePaths.filter((path) => !currentReadyLinks.includes(path)),
+                ...publishDirtyPaths.filter((path) => !currentReadyLinks.includes(path)),
+              ])];
+              const earlyPointerCommits: GitSyncRootCommit[] = [];
+              const rootResult = await syncOneRepo(runGitForTiming, repo, {
+                ...repoO,
+                scope: 'superproject',
+                defaultBranch: branch,
+                doPush,
+                disableCommitGraphForSubmoduleMerge: subPaths.length > 0,
+                ...(cfg.syncBack ? { syncBack: cfg.syncBack } : {}),
+                migrationFenceRoster: roster,
+                migrationDependencySubmodulePaths: subPaths,
+                excludePaths: earlyRootExcludePaths,
+                protectedHoldings: rootProtectedHoldings,
+                refreshLiveLockHoldings: refreshLiveLockHoldingsForRepo?.('', subPaths),
+                attribution: attributionMapForRepo(roster, '', repo),
+                onAttribution,
+                priorityPaths: currentReadyLinks,
+                onPublished: (sha) => earlyPointerCommits.push({ sha, committedAtMs: Date.now() }),
+              });
+              recordEarlyRootCommit(rootResult, earlyPointerCommits);
+              if (rootResult.status === 'synced') {
+                out.didSomething ||= rootResult.pushed || rootResult.merged;
+                if (rootResult.pushed && !out.pushed.includes('superproject')) out.pushed.push('superproject');
+                if (rootResult.merged && !out.merged.includes('superproject')) out.merged.push('superproject');
+              } else if (rootResult.status === 'error' || rootResult.status === 'conflict' || rootResult.status === 'skipped-locked') {
+                log(
+                  '[git-sync] ' + slug + ': early root pointer push did not complete (' +
+                    rootResult.status + '); the final pointer-bump phase will retry after child reconciliation',
+                );
+              }
+              if (rootResult.mergeCompleted && !out.mergeCompleted.includes('superproject')) {
+                out.mergeCompleted.push('superproject');
+              }
+            }
+            recordSetupStep('early-root-leaf-publication');
+          }
+        }
+      }
+    }
+    recordSetupComplete();
     // WI-10003100: sync independent repos together, deepest-first, so each parent's
     // pushed gitlink resolves on the child origin. A resumed cursor skips only a
     // previously successful prefix while the same restart drain remains queued.
@@ -10361,6 +10932,7 @@ async function runGitSyncPass(
       mergeUnique(target.oversized, source.oversized);
       mergeUnique(target.contentErrors, source.contentErrors);
       mergeUnique(target.skippedPaths, source.skippedPaths);
+      mergeUnique(target.earlySyncedSubmodulePaths, source.earlySyncedSubmodulePaths);
     };
     const syncSubmoduleBatches = async (
       target: PhaseCollect,
@@ -10407,9 +10979,16 @@ async function runGitSyncPass(
             repositories: [],
           };
           timingLog('batch-start', { batch: measurement.index, depth, scopes: batch });
+          const earlySynced = new Set(target.earlySyncedSubmodulePaths);
+          const alreadySynced = batch.filter((scope) => earlySynced.has(scope));
+          const pendingBatch = batch.filter((scope) => !earlySynced.has(scope));
+          for (const scope of alreadySynced) {
+            measurement.repositories.push({ scope, durationMs: 0, status: 'pre-synced' });
+            timingLog('repository-presynced', { batch: measurement.index, scope });
+          }
           // allSettled is a safety barrier: an unexpected rejection must not let a
           // sibling start more Git commands after the action releases its locks.
-          const results = await Promise.allSettled(batch.map(async (scope) => {
+          const results = await Promise.allSettled(pendingBatch.map(async (scope) => {
             const startedAt = performance.now();
             let status: RepoSyncResult['status'] | 'rejected' = 'rejected';
             try {
@@ -10431,11 +11010,17 @@ async function runGitSyncPass(
           for (let i = 0; i < results.length; i++) {
             const result = results[i]!;
             if (result.status === 'rejected') throw result.reason;
-            absorb(target, batch[i]!, result.value);
+            absorb(target, pendingBatch[i]!, result.value);
           }
-          const batchSucceeded = results.every(
-            (result) => result.status === 'fulfilled' && result.value.status !== 'error' && result.value.status !== 'conflict',
-          );
+          const batchSucceeded =
+            alreadySynced.length +
+              results.filter(
+                (result) =>
+                  result.status === 'fulfilled' &&
+                  result.value.status !== 'error' &&
+                  result.value.status !== 'conflict',
+              ).length ===
+            batch.length;
           if (successfulPrefix && batchSucceeded) synced += batch.length;
           else if (!batchSucceeded) successfulPrefix = false;
           if (resumeMode) processedResumeBatch = true;
@@ -10462,6 +11047,7 @@ async function runGitSyncPass(
 
     if (resumingFromYield) {
       const partial = emptyPhase();
+      partial.earlySyncedSubmodulePaths = [...out.earlySyncedSubmodulePaths];
       const progressPass = await syncSubmoduleBatches(partial, resumeFromSubmodule, true);
       if (partial.yielded) {
         out.yielded = partial.yielded;
@@ -10477,12 +11063,21 @@ async function runGitSyncPass(
     return out;
   });
   if (sub.yielded) {
+    const earlyRootCommit = sub.earlyRootCommit;
+    const landed = earlyRootCommit?.localCommitSha
+      ? {
+          localCommitSha: earlyRootCommit.localCommitSha,
+          localCommitAtMs: earlyRootCommit.localCommitAtMs ?? Date.now(),
+          localCommitShas: earlyRootCommit.localCommitShas,
+          localCommits: earlyRootCommit.localCommits,
+        }
+      : undefined;
     throw new GitSyncYieldError(
       sub.yielded.reason,
       sub.yielded.boundary ?? 'submodule-batch',
       sub.yielded.synced,
       sub.yielded.total,
-      undefined,
+      landed,
       sub.yielded.submodulePathsSha256,
     );
   }
@@ -10910,20 +11505,27 @@ async function runGitSyncPass(
 
   const conflicts = [...sub.conflicts, ...supr.conflicts];
   const errors = [...sub.errors, ...supr.errors];
-  const pushed = [...sub.pushed, ...supr.pushed];
-  const merged = [...sub.merged, ...supr.merged];
-  const mergeCompleted = [...sub.mergeCompleted, ...supr.mergeCompleted];
+  const pushed = [...new Set([...sub.pushed, ...supr.pushed])];
+  const merged = [...new Set([...sub.merged, ...supr.merged])];
+  const mergeCompleted = [...new Set([...sub.mergeCompleted, ...supr.mergeCompleted])];
   const earlyRootCommit = sub.earlyRootCommit;
+  // The early pass can observe a held dependency that is restored before the
+  // final pass commits its importer. Reporting that old finding as current
+  // falsely blocks settlement. Only an actually completed newer guard census
+  // supersedes it; blocked and legacy checkpoints retain the earlier evidence.
+  const priorRootFindings = 'guardCensusComplete' in commitRes && commitRes.guardCensusComplete === true
+    ? undefined
+    : earlyRootCommit;
   const oversized = [...new Map([
+    ...(priorRootFindings?.oversized ?? []).map((file) => ({ scope: 'superproject', ...file })),
     ...sub.oversized,
     ...supr.oversized,
-    ...(earlyRootCommit?.oversized ?? []).map((file) => ({ scope: 'superproject', ...file })),
   ].map((file) => [`${file.scope}:${file.path}`, file])).values()];
   const bulkExcluded = oversized.filter((f) => f.exclusionReason === 'cumulative-limit');
   const contentErrors = [...new Map([
+    ...(priorRootFindings?.contentErrors ?? []).map((file) => ({ scope: 'superproject', ...file })),
     ...sub.contentErrors,
     ...supr.contentErrors,
-    ...(earlyRootCommit?.contentErrors ?? []).map((file) => ({ scope: 'superproject', ...file })),
   ].map((file) => [`${file.scope}:${file.file}`, file])).values()];
   // Older in-flight checkpoints predate the skipped-path census. Replay must
   // reconstruct those phase outputs as an empty census rather than throwing or

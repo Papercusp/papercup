@@ -5,6 +5,7 @@ import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import type { PsuPtyHost } from '../../events/await/psu-pty-discovery';
 import type { GatewayOwnerExecution } from '../../inference-gateway/observability';
 import { recoverExpectedLoopExecution } from './loop-execution-recovery';
+import { checkUnreachableTerminalGuard, comatoseStuckFiresForTermination } from './loop-unreachable-guard';
 
 let pg: DedicatedNativePg, org: OrgTestDb, sql: Sql;
 const savedAdmin = process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
@@ -49,6 +50,42 @@ async function state(id: string) {
 }
 
 describe('durable recovery against isolated Postgres', () => {
+  it.each(['scheduled', 'stopped', 'reassigned'] as const)(
+    'does not pause a live successor after the routine became %s during a guard sweep',
+    async changed => {
+      const f = await routine(`recovery-guard-race-${changed}`, changed !== 'stopped', changed !== 'scheduled');
+      if (changed === 'reassigned') {
+        await sql`UPDATE harness_shared.routines SET target_owner_id = 'replacement-owner'
+          WHERE id = ${f.input.routineId}`;
+      }
+      f.host.execution!.phase = 'running';
+      f.host.execution!.turnStartedAt = nowMs - 20_000;
+      f.host.execution!.receivedAtMs = nowMs - 20_000;
+      const before = await state(f.input.routineId);
+      const autoPause = vi.fn(async () => {});
+      const resetFireErrors = vi.fn(async () => 1);
+
+      const result = await checkUnreachableTerminalGuard({
+        sql, routineId: f.input.routineId, targetOwnerId: f.input.ownerId,
+        parkedForMs: 24 * 3600_000, intervalMs: 60_000,
+        stuckFireCount: comatoseStuckFiresForTermination(60_000), circuitOpen: true,
+      }, {
+        probeReachability: async () => ({
+          reachable: true, channel: 'psu-socket', durableWhileAlive: true,
+          summary: 'live fixture host', awaitRepairable: false, wouldBeChannel: null,
+        }),
+        recoverCurrentExecution: input => recoverExpectedLoopExecution(input, { ...f.deps, resetFireErrors }),
+        autoPause,
+      });
+
+      expect(result).toMatchObject({ breach: false, reason: 'current-execution-recovery-unavailable' });
+      expect(autoPause).not.toHaveBeenCalled();
+      expect(resetFireErrors).not.toHaveBeenCalled();
+      expect(f.deps.arm).not.toHaveBeenCalled();
+      expect(await state(f.input.routineId)).toEqual(before);
+    },
+  );
+
   it('leaves pre-observer hosts on the maintained reconciliation path without rewriting failure evidence', async () => {
     const f = await routine('recovery-legacy-host');
     delete f.host.execution;
@@ -110,6 +147,30 @@ describe('durable recovery against isolated Postgres', () => {
     expect(result).toMatchObject({ handled: true, state: { status: 'running', reason: 'active-inference' } });
     expect(result.state?.verifiedSuccessorFireAt).toBeUndefined();
     expect(resetFireErrors).not.toHaveBeenCalled();
+  });
+
+  it('clears the stale streak for a settled successor while preserving the exact fire fence and schedule', async () => {
+    const f = await routine('recovery-settled-successor');
+    f.host.execution!.phase = 'settled';
+    f.host.execution!.turnStartedAt = nowMs - 20_000;
+    f.host.execution!.receivedAtMs = nowMs - 20_000;
+    const resetFireErrors = vi.fn(async () => 1);
+
+    const result = await recoverExpectedLoopExecution({
+      ...f.input, dryRun: true, resetVerifiedSuccessorStreak: true,
+    }, { ...f.deps, resetFireErrors });
+
+    const [{ firedAt }] = await sql<Array<{ firedAt: string }>>`
+      SELECT last_fired_at::text AS "firedAt" FROM harness_shared.routines
+      WHERE id = ${f.input.routineId}`;
+    expect(result).toMatchObject({ handled: false, state: {
+      reason: 'native-turn-settled', verifiedSuccessorFireAt: nowMs - 60_000,
+    } });
+    expect(resetFireErrors).toHaveBeenCalledExactlyOnceWith('papercusp', f.input.routineId, {
+      workspaceId: ws, expectedLastFiredAt: firedAt,
+    });
+    expect(f.deps.arm).not.toHaveBeenCalled();
+    expect(await state(f.input.routineId)).toMatchObject({ parked: true, active: true });
   });
 
   // WI-6554700010012442 — before the fix this returned handled:true on every sweep, so both

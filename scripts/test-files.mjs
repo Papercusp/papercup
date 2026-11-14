@@ -125,6 +125,7 @@ import {
 import { repoLockName } from './npm-install-safe.mjs';
 import { ensurePapercuspTmpdir } from '../libs/test-config/src/tmpdir-guard.ts';
 import { applyGitOptionalLocksDefault } from './lib/git-optional-locks.mjs';
+import { withPlaywrightBrowserCache } from './lib/playwright-cache-path.mjs';
 
 // EI-20767792192323374 — MUST happen HERE, in the launcher, and not in vitest.config.ts.
 // Vitest fixes its module-cache root as a class field initializer (`_tmpDir = join(tmpdir(),
@@ -634,13 +635,23 @@ export function perGroupVitestArgs(vitestArgs, groupIndex, groupCount) {
  * browser placeholders cannot represent Node setup imports.
  */
 export function perGroupVitestEnv(env, groupIndex, groupCount, { vitestArgs = [], cwd = REPO_ROOT } = {}) {
-  const testEnv = { ...env, NODE_ENV: 'test' };
+  // Playwright defaults its browser cache to XDG_CACHE_HOME. Fleet sessions use
+  // per-session XDG caches, while browser binaries are maintained in the shared
+  // home cache. Keep explicit PLAYWRIGHT_BROWSERS_PATH overrides, but pin the
+  // implicit default before passing this environment to Vitest or Node workers.
+  const testEnv = withPlaywrightBrowserCache({ ...env, NODE_ENV: 'test' });
   // Vitest initializes hanging-process in onInit, after loading its config.
   // Preload that SAME tracker when requested, so resources opened by config
   // imports also have creation stacks when onProcessTimeout reports them.
+  // Include reporter-stage spans in this diagnostic mode so a close timeout can
+  // distinguish source preparation, row writing, and shared-PG release.
   const hangingProcess = vitestArgs.some((arg, index) => arg === '--reporter=hanging-process'
     || (arg === '--reporter' && vitestArgs[index + 1] === 'hanging-process'));
   if (hangingProcess) {
+    if (testEnv.PAPERCUSP_TEST_REPORTER_STAGE_TRACE === undefined
+      || testEnv.PAPERCUSP_TEST_REPORTER_STAGE_TRACE === '') {
+      testEnv.PAPERCUSP_TEST_REPORTER_STAGE_TRACE = '1';
+    }
     const vitestPackage = createRequire(join(cwd, 'package.json')).resolve('vitest/package.json');
     const tracker = createRequire(vitestPackage).resolve('why-is-node-running');
     const preload = `--require=${JSON.stringify(tracker)}`;
@@ -1247,6 +1258,20 @@ export function joinNameFilterArgs(vitestArgs) {
   return out;
 }
 
+/**
+ * Node's name-pattern also selects matching parent tests. A simple leading negative
+ * lookahead therefore matches the file-level parent and runs all of its children.
+ * Use Node's skip-pattern for the equivalent literal-prefix exclusion instead.
+ */
+function nodeSkipPatternFromSimpleNegativePrefix(pattern) {
+  const start = '^(?!';
+  if (!pattern.startsWith(start) || !pattern.endsWith(')')) return null;
+  const excludedPrefix = pattern.slice(start.length, -1);
+  const regexSyntax = ['\\', '^', '$', '.', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|'];
+  if (!excludedPrefix || regexSyntax.some(character => excludedPrefix.includes(character))) return null;
+  return `^(?:${excludedPrefix})`;
+}
+
 /** Keep Node options before file paths; translate the router's common selector. */
 export function buildNodeTestArgs(files, runnerArgs, { nodeArgs = [], reporterArgs = [] } = {}) {
   const args = [];
@@ -1255,7 +1280,10 @@ export function buildNodeTestArgs(files, runnerArgs, { nodeArgs = [], reporterAr
     const arg = joined[i];
     const filter = /^(-t|--testNamePattern)=([\s\S]*)$/.exec(arg);
     if (filter) {
-      args.push(`--test-name-pattern=${filter[2]}`);
+      const skipPattern = nodeSkipPatternFromSimpleNegativePrefix(filter[2]);
+      args.push(skipPattern
+        ? `--test-skip-pattern=${skipPattern}`
+        : `--test-name-pattern=${filter[2]}`);
     } else if (arg === '-t' || arg === '--testNamePattern') {
       args.push('--test-name-pattern');
     } else if (arg === '--reporter' || arg === '--outputFile') {
@@ -3980,6 +4008,8 @@ export async function main(
   }
   const expectedVitestReceiptPaths = new Set();
   let receiptReporter = null;
+  let recoveryReceiptFile = null;
+  let recoveryPending = false;
   // WI-6554700010009516: the child notice channel. Opened after the restricted-hold census (below)
   // and closed in the finally, so it stays null on every early return before that point.
   let childSourceNoticeSink = null;
@@ -4013,7 +4043,12 @@ export async function main(
     injectedReportDir = '';
     if (!dir) return;
     try {
-      rmSync(dir, { recursive: true, force: true });
+      if (recoveryPending && recoveryReceiptFile && existsSync(recoveryReceiptFile)) {
+        // Retain only the serialized recovery input, never unrelated private reports.
+        for (const entry of readdirSync(dir)) {
+          if (join(dir, entry) !== recoveryReceiptFile) rmSync(join(dir, entry), { recursive: true, force: true });
+        }
+      } else rmSync(dir, { recursive: true, force: true });
     } catch {
       /* best effort — a leftover temp dir is not worth failing a green run over */
     }
@@ -4231,6 +4266,25 @@ export async function main(
       return TEST_FILE_EXIT_NOT_MEASURED;
     }
   }
+  // Reuse the receipt format for ordinary runs, without the proof sink's longer
+  // budgets/admission contract. Recovery runs only after the child has exited.
+  if (!dry && !receiptFile && !process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER
+    && groups.some(group => group.runner !== 'node')) {
+    try {
+      const reporter = await loadVitestReceiptReporterImpl();
+      if (reporter.TEST_RUN_RECOVERY_ENV !== 'PAPERCUSP_TEST_RUN_RECOVERY_FILE'
+        || typeof reporter.pendingTestRunRecoveryPaths !== 'function'
+        || typeof reporter.reconcileTimedOutTestRunReceipts !== 'function')
+        throw new Error('selected reporter lacks ordinary receipt recovery');
+      const dir = injectedReportDirFor();
+      if (!dir) throw new Error('private recovery directory is unavailable');
+      recoveryReceiptFile = join(dir, 'ledger-recovery.jsonl');
+      receiptReporter = reporter;
+      if (!process.env.PAPERCUSP_TEST_RUN_GROUP?.trim()) process.env.PAPERCUSP_TEST_RUN_GROUP = randomUUID();
+    } catch (error) {
+      console.error(`TEST_FILE_LEDGER_RECOVERY_UNAVAILABLE detail=${JSON.stringify(error instanceof Error ? error.message : String(error))}`);
+    }
+  }
   // WI-6554700010009516: export the child notice channel AFTER the restricted-hold census and
   // BEFORE the vitest list/run spawns. Every child receives `process.env`, and a node process
   // under the inherited committed-source loader appends each substituted/refused module there.
@@ -4244,7 +4298,7 @@ export async function main(
   // (every mutation-probe leg) wrote no notice and childSubstituted read a false measured 0.
   const receiptChildEnv = receiptFile
     ? { ...process.env, PAPERCUSP_TEST_RUN_RECEIPT_FILE: receiptFile }
-    : process.env;
+    : recoveryReceiptFile ? { ...process.env, PAPERCUSP_TEST_RUN_RECOVERY_FILE: recoveryReceiptFile } : process.env;
   if (!dry) proofCustody = await createRouterProofCustodyImpl(groups, receiptChildEnv, repoRoot);
   // EI-13535: every group runs UNCONDITIONALLY — a mismatch or failure in one workspace's group
   // must never abandon the OTHER groups a multi-workspace request spans (see aggregateGroupResults
@@ -5149,6 +5203,28 @@ export async function main(
           'an inserted canonical test_runs receipt for every recordable Vitest file.',
       );
       return TEST_FILE_EXIT_NOT_MEASURED;
+    }
+  }
+  const recoverySink = receiptFile || recoveryReceiptFile;
+  if (recoverySink && typeof receiptReporter?.pendingTestRunRecoveryPaths === 'function'
+    && expectedVitestReceiptPaths.size > 0) {
+    try {
+      const offset = receiptFile ? receiptStartOffset : 0;
+      const readReceipts = () => readFileSync(recoverySink).subarray(offset).toString('utf8');
+      const expectedPaths = [...expectedVitestReceiptPaths].filter(receiptReporter.shouldRecordTestRunPath);
+      let pending = receiptReporter.pendingTestRunRecoveryPaths(readReceipts(), expectedPaths, repoRoot);
+      if (pending.length > 0) {
+        await receiptReporter.reconcileTimedOutTestRunReceipts(readReceipts(), {
+          expectedPaths: pending, expectedRoot: repoRoot, runGroupId: receiptChildEnv.PAPERCUSP_TEST_RUN_GROUP,
+          env: receiptChildEnv,
+        });
+        pending = receiptReporter.pendingTestRunRecoveryPaths(readReceipts(), expectedPaths, repoRoot);
+      }
+      recoveryPending = pending.length > 0;
+      if (recoveryPending) console.error(`TEST_FILE_LEDGER_RECOVERY_INCOMPLETE pending=${pending.length} receiptFile=${JSON.stringify(recoverySink)}`);
+    } catch (error) {
+      recoveryPending = existsSync(recoverySink);
+      console.error(`TEST_FILE_LEDGER_RECOVERY_INCOMPLETE receiptFile=${JSON.stringify(recoverySink)} detail=${JSON.stringify(error instanceof Error ? error.message : String(error))}`);
     }
   }
   // Custody settlement is part of the measured result. Finish before emitting

@@ -320,7 +320,7 @@ describe('startRun', () => {
         cwd: '/tmp',
         runtimeMaxSec: 900,
         launchedBy: 'testing-run-store',
-        detail: { runId: snap.runId, kind: 'vitest' },
+        detail: { runId: snap.runId, kind: 'vitest', verificationPurpose: 'work-item-verification' },
       }),
     );
     expect(enrolment.wrap).toHaveBeenCalledWith(
@@ -344,7 +344,7 @@ describe('startRun', () => {
       cwd: '/tmp',
       runtimeMaxSec: 900,
       launchedBy: 'testing-run-store',
-      detail: { runId: snap.runId, kind: 'vitest' },
+      detail: { runId: snap.runId, kind: 'vitest', verificationPurpose: 'work-item-verification' },
     }), 4242);
   });
 
@@ -600,7 +600,7 @@ describe('task lifecycle handlers', () => {
         cwd: '/repo', requestedFiles: ['lib/one.test.ts'], testRunSource: 'local',
         env: { PAPERCUSP_SYSTEMD_RUNNER_OUTPUT_PATH: '/caller-forged.log', FIXTURE_API_KEY: 'fixture-secret' },
         detachedReportArtifacts: [{
-          reportPath: join(reportDir, 'report.json'), root: '/repo', worktreeBefore: null,
+          reportPath: join(reportDir, 'report.json'), root: '/repo',
           scope: { harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
         }],
       }));
@@ -1261,7 +1261,8 @@ describe('durable detached snapshot lifecycle', () => {
             status: options.failure ? 'failed' : 'passed',
             fullName: options.secretOutput ? `saved assertion ${childOnlySecret}` : 'saved assertion',
             ancestorTitles: options.secretOutput ? [`suite ${childOnlySecret}`] : ['suite'],
-            meta: { nativeToolSurface: { invocations: ['testing:run-status'] } },
+            meta: { nativeToolSurface: { invocations: ['testing:run-status'] },
+              diagnostic: JSON.stringify(['fixture://emissions/token=fixture-receipt-token-value', 'receipt-hash']) },
             ...(options.secretOutput ? { failureMessages: [`child report included ${childOnlySecret}`] } : {}),
           }, { status: 'pending' }],
         }],
@@ -1352,6 +1353,8 @@ describe('durable detached snapshot lifecycle', () => {
         if (retainedReport.testResults[0].name.endsWith('saved.test.ts')) {
           expect(retainedReport.testResults[0].assertionResults[0].meta.nativeToolSurface)
             .toEqual({ invocations: ['testing:run-status'] });
+          expect(retainedReport.testResults[0].assertionResults[0].meta.diagnostic).toContain('[redacted]');
+          expect(retainedReport.testResults[0].assertionResults[0].meta.diagnostic).not.toContain('fixture-receipt-token-value');
         }
         if (options.secretOutput) expect(retainedText).not.toContain(childOnlySecret);
         const manifest = JSON.parse(await readFile(retained.manifestPath, 'utf8'));
@@ -1640,6 +1643,111 @@ describe('durable detached snapshot lifecycle', () => {
       taskId: 'task-test-run',
       status: 'running',
     });
+  });
+
+  it('terminalizes a delegated origin after child exit 143 when its scope ends unobserved without file rows', async () => {
+    const originRunId = 'foreground-after-143';
+    let durableRow: Record<string, unknown> | null = null;
+    let taskState = 'running';
+    let snapshotWriteCount = 0;
+    let terminalSnapshotWriteFailed = false;
+    let perFileLedgerReads = 0;
+    taskManagerMocks.begin.mockReturnValueOnce({
+      taskId: 'task-after-143',
+      confined: false,
+      scopeUnit: null,
+      enrolled: true,
+      registrationReady: Promise.resolve(),
+      releaseEnvironmentTransport: vi.fn(),
+      wrap: vi.fn((binary: string, argv: string[]) => ({ binary, argv })),
+    });
+    const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const statement = strings.join(' ');
+      if (statement.includes('INSERT INTO harness_shared.testing_run_snapshots')) {
+        const inserted = insertedColumns(strings, values);
+        snapshotWriteCount++;
+        if (inserted.status !== 'running') {
+          terminalSnapshotWriteFailed = true;
+          throw new Error('simulated terminal snapshot write loss');
+        }
+        durableRow = inserted;
+        return [{ run_id: inserted.run_id }];
+      }
+      if (statement.includes("detail->>'originRunId'")) {
+        const detail = (taskManagerMocks.begin.mock.calls[0]?.[0] as {
+          detail?: Record<string, unknown>;
+        } | undefined)?.detail;
+        return detail?.originRunId === values[0] && typeof detail.runId === 'string'
+          ? [{ detached_run_id: detail.runId }]
+          : [];
+      }
+      if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')) {
+        if (!durableRow || values[0] !== durableRow.run_id) return [];
+        const detail = (taskManagerMocks.begin.mock.calls[0]?.[0] as {
+          detail?: Record<string, unknown>;
+        } | undefined)?.detail;
+        return [{
+          ...durableRow,
+          task_state: taskState,
+          task_deadline_at: null,
+          task_exit_code: null,
+          task_ended_at: taskState === 'ended_unobserved' ? new Date(1_700_000_010_000) : null,
+          task_detail: detail,
+          task_cwd: '/tmp',
+          task_harness_slug: 'papercusp',
+          task_workspace_id: 'papercusp-workspace',
+        }];
+      }
+      if (statement.includes('FROM harness_shared.test_runs')) {
+        perFileLedgerReads++;
+        return [];
+      }
+      if (statement.includes('UPDATE harness_shared.testing_run_snapshots')) {
+        durableRow = {
+          ...durableRow,
+          status: values[0],
+          exit_code: values[1],
+          finished_at: values[2],
+          output: values[3],
+          truncated: values[4],
+        };
+        return [{ run_id: values[5] }];
+      }
+      return [];
+    }) as unknown as Sql;
+
+    const started = await store.startRunDurable(req({ originRunId }), sql);
+    expect(started.durable).toBe(true);
+    expect(started.originAliasDurable).toBe(true);
+
+    // The process callback observes exit 143, but its terminal snapshot write
+    // is lost. Independent task reconciliation later reports the managed scope
+    // ended_unobserved, with no terminal per-file reporter rows.
+    lastChild._emitClose(143);
+    expect(store.getRun(started.snapshot.runId)).toMatchObject({ status: 'fail', exitCode: 143 });
+    expect(taskManagerMocks.finish).toHaveBeenCalledWith(
+      taskManagerMocks.begin.mock.results[0]?.value,
+      { state: 'exited', exitCode: 143 },
+      { scopeCgroupPath: null },
+    );
+    await vi.waitFor(() => expect(terminalSnapshotWriteFailed).toBe(true));
+    expect(snapshotWriteCount).toBe(2);
+    expect(durableRow?.status).toBe('running');
+
+    taskState = 'ended_unobserved';
+    store._resetTestingRunStore();
+    const recovered = await store.getRunAsync(originRunId, sql);
+
+    expect(recovered).toMatchObject({
+      runId: started.snapshot.runId,
+      taskId: 'task-after-143',
+      status: 'error',
+      exitCode: null,
+      finishedAt: expect.any(Number),
+    });
+    expect(recovered?.output).toContain('no test verdict was observed');
+    expect(perFileLedgerReads).toBeGreaterThan(0);
+    expect(durableRow?.status).toBe('error');
   });
 
   it('retries an empty sibling read until the confirmed snapshot becomes visible', async () => {
@@ -3348,6 +3456,81 @@ describe('durable detached snapshot lifecycle', () => {
         expect(outputIo.reads).toHaveLength(0);
       } finally { await rm(directory, { recursive: true, force: true }); }
     });
+
+  it('recovers a run-bound preparation timeout from ended_unobserved stdout without exposing raw child output', async () => {
+    const directory = await mkdtemp('/tmp/detached-timeout-result-');
+    try {
+      const runId = 'detached-timeout-run';
+      const stdoutPath = join(directory, `${runId}.stdout.log`);
+      const stderrPath = join(directory, `${runId}.stderr.log`);
+      const childOnlySecret = 'synthetic-child-timeout-secret';
+      const routerOutput = [
+        'TEST_FILE_INSTALL_READER_WAIT elapsedMs=180000 waitedSec=180 holder={"pid":17,"phase":"install"}',
+        'Error: Timed out after 180000ms waiting for fs-mutex writer ("npm-install-79e418157b6a")',
+        `CHILD_API_KEY=${childOnlySecret}`,
+      ].join('\n');
+      await writeFile(stdoutPath, JSON.stringify({
+        ok: false, runId, root: '/tmp/papercusp', error: 'timeout', timeoutMs: 180000, routerOutput,
+      }) + '\n');
+
+      const persisted: Record<string, unknown> = {
+        run_id: runId, task_id: 'task-detached-timeout', kind: 'vitest', label: 'timeout recovery',
+        file_path: 'lib/example.test.ts', command: ['node', 'testing-core-worker.mjs'],
+        status: 'error', exit_code: null, started_at: new Date(Date.now() - 180_000),
+        finished_at: new Date(Date.now() - 1_000),
+        output: '[detached-recovery] task-manager reports linked process task-detached-timeout is no longer live (state=ended_unobserved); no test verdict was observed.\n',
+        truncated: false, task_state: 'ended_unobserved', task_exit_code: null,
+        task_cwd: '/tmp/papercusp', task_harness_slug: 'papercusp', task_workspace_id: 'papercusp-workspace',
+        task_detail: {
+          runId, originRunId: 'foreground-timeout-run', kind: 'vitest',
+          requestedFiles: ['lib/example.test.ts'],
+          detachedReportArtifacts: { schemaVersion: 1, artifacts: [{
+            reportPath: join(directory, 'missing-report.json'), root: '/tmp/papercusp',
+            scope: { harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
+            worktreeBefore: { commit: null, porcelain: null }, stdoutPath, stderrPath,
+          }] },
+        },
+      };
+      const updates: unknown[][] = [];
+      const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        const statement = strings.join(' ');
+        if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')) return [{ ...persisted }];
+        if (statement.includes('FROM harness_shared.test_runs')) return [];
+        if (statement.includes('UPDATE harness_shared.testing_run_snapshots')) {
+          updates.push(values);
+          Object.assign(persisted, {
+            status: values[0], exit_code: values[1], finished_at: values[2], output: values[3], truncated: values[4],
+          });
+          return [{ run_id: runId }];
+        }
+        return [];
+      }) as unknown as Sql;
+
+      outputIo.wholeReads.length = 0;
+      outputIo.reads.length = 0;
+      const result = await store.getRunAsync(runId, sql);
+
+      expect(result).toMatchObject({ status: 'error', exitCode: null });
+      expect(result?.output).toContain('runId=detached-timeout-run');
+      expect(result?.output).toContain('error=timeout timeoutMs=180000');
+      expect(result?.output).toContain('cause=TEST_FILE_INSTALL_READER_WAIT');
+      expect(result?.output).toContain('fsMutexTimeoutMs=180000');
+      expect(result?.output).toContain('no per-file test verdict was recorded');
+      expect(result?.output).not.toContain('npm-install-79e418157b6a');
+      expect(result?.output).not.toContain(childOnlySecret);
+      expect(result?.output).not.toContain('CHILD_API_KEY=');
+      expect(outputIo.wholeReads).toHaveLength(0);
+      expect(outputIo.reads).toHaveLength(1);
+      expect(updates).toHaveLength(1);
+
+      const again = await store.getRunAsync(runId, sql);
+      expect(again?.output).toBe(result?.output);
+      expect(outputIo.reads).toHaveLength(1);
+      expect(updates).toHaveLength(1);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
 
   it('still launches when the durable write fails and reports durable=false', async () => {
     const sql = vi.fn(async () => {

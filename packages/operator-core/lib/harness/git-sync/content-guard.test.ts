@@ -122,6 +122,54 @@ describe('detectContentOffenders', () => {
     expect(offenders.map((o) => o.detectorKey).sort()).toEqual(['a', 'b']);
   });
 
+  it('reports bounded per-detector work and timing counts for a slow pass', async () => {
+    let clockMs = 0;
+    const log = vi.fn();
+    const readText = vi.fn(async () => 'clean');
+    const detectors = [
+      makeDetector({ key: 'first', matches: (file) => file.endsWith('.mdx') }),
+      makeDetector({ key: 'second', matches: (file) => file === 'docs/b.mdx' }),
+    ];
+    const offenders = await detectContentOffenders({
+      repoPath: '/repo',
+      detectors,
+      runGit: statusRunGit(['?? docs/a.mdx', ' M docs/b.mdx', ' M src/ignored.ts']),
+      readText,
+      log,
+      clock: () => {
+        const current = clockMs;
+        clockMs += 1_000;
+        return current;
+      },
+    });
+
+    expect(offenders).toEqual([]);
+    expect(readText).toHaveBeenCalledTimes(2);
+    const diagnostic = log.mock.calls
+      .map(([message]) => String(message))
+      .find((message) => message.startsWith('[git-sync:content-guard] '));
+    expect(diagnostic).toBeDefined();
+    const report = JSON.parse(diagnostic!.slice('[git-sync:content-guard] '.length));
+    expect(report).toMatchObject({
+      event: 'slow-pass',
+      dirtyPathCount: 3,
+      targetedPathCount: 2,
+      detectorTargetCount: 3,
+      readCalls: 2,
+      readMissingCount: 0,
+      readErrorCount: 0,
+      detectorCalls: 3,
+      offenderCount: 0,
+    });
+    expect(report.perDetector).toEqual([
+      expect.objectContaining({ key: 'first', matchCalls: 3, matchedPathCount: 2, detectCalls: 2 }),
+      expect.objectContaining({ key: 'second', matchCalls: 3, matchedPathCount: 1, detectCalls: 1 }),
+    ]);
+    expect(report.targetMatchingMs).toBeGreaterThan(0);
+    expect(report.readMs).toBeGreaterThan(0);
+    expect(report.detectorMs).toBeGreaterThan(0);
+  });
+
   it('is a no-op (empty) when no detectors are registered', async () => {
     const readText = vi.fn(async () => 'x');
     const offenders = await detectContentOffenders({

@@ -93,6 +93,7 @@ import {
   resolveCodexModel,
 } from './model-context-budget.mjs';
 import { runCodexHomeMaterializerJob, type CodexHomeMaterializerJob } from './role-codex-home-offload';
+import { CODEX_MCP_STARTUP_TIMEOUT_SEC } from '../../../apps/operator/lib/mcp-proxy/budgets.mjs';
 
 /**
  * WI-6554700010009552: the async APIs run the synchronous materializers in a
@@ -1096,7 +1097,7 @@ export function writeCodexLockHooks(
   const preToolUse: CodexHook[] = [
     {
       matcher: CODEX_LOCK_PRE_MATCHER,
-      hooks: [{ type: 'command', command: `PAPERCUSP_WORKSPACE_ROOT=${root}${lockIdentity} ${pre}` }],
+      hooks: [{ type: 'command', command: `PAPERCUSP_CODEX_HOOK=1 PAPERCUSP_WORKSPACE_ROOT=${root}${lockIdentity} ${pre}` }],
     },
   ];
 
@@ -1197,7 +1198,7 @@ export function writeCodexLockHooks(
       hooks: [
         {
           type: 'command',
-          command: `PAPERCUSP_WORKSPACE_ROOT=${root}${agentMarker} ${gate}`,
+          command: `PAPERCUSP_CODEX_HOOK=1 PAPERCUSP_WORKSPACE_ROOT=${root}${agentMarker} ${gate}`,
         },
       ],
     });
@@ -1207,11 +1208,13 @@ export function writeCodexLockHooks(
   // native shell, the Codex counterpart of the RTK rewrite inside Claude's
   // egress guard. It must stay the ONLY Codex PreToolUse hook that returns
   // updatedInput: codex resolves competing rewrites by completion order (last
-  // to finish wins), and every other hook in this file only denies. Codex
-  // applies a rewrite only with permissionDecision "allow", which this script
-  // emits; code-mode script calls (tool_use_id `exec-*`) stay verbatim. Su AND
-  // role homes, since both run native shells. The script fails open when rtk is
-  // missing. role-codex-home.test.ts fails if this registration is removed.
+  // to finish wins). The shared lock/resource hooks receive PAPERCUSP_CODEX_HOOK
+  // and leave non-rewrite decisions unset; the remaining hooks deny or stay
+  // silent. Codex applies a rewrite only with permissionDecision "allow", which
+  // this script pairs with updatedInput; code-mode script calls (tool_use_id
+  // `exec-*`) stay verbatim. Su AND role homes, since both run native shells.
+  // The script fails open when rtk is missing. role-codex-home.test.ts fails if
+  // this registration is removed.
   const rtkRewrite = join(dir, CODEX_RTK_REWRITE_HOOK);
   if (existsSync(rtkRewrite)) {
     preToolUse.push({
@@ -1710,6 +1713,7 @@ export function writeRoleCodexHome(opts: WriteRoleCodexHomeOptions): RoleCodexHo
     // Coordination is part of the managed runtime. An optional MCP server
     // lets Codex submit its first model step before its catalog is available.
     'required = true',
+    `startup_timeout_sec = ${CODEX_MCP_STARTUP_TIMEOUT_SEC}`,
     ...CODEX_MANAGED_DISPATCHER_APPROVAL_TOML,
     '',
   ].join('\n');
@@ -1963,6 +1967,7 @@ export function suCodexConfigToml(opts: SuCodexConfigInput): string {
     'tool_timeout_sec = 610',
     // Managed turns require Papercusp tools from their first model step.
     'required = true',
+    `startup_timeout_sec = ${CODEX_MCP_STARTUP_TIMEOUT_SEC}`,
     ...CODEX_MANAGED_DISPATCHER_APPROVAL_TOML,
     ...(opts.token || opts.nativeRuntimeBearer ? [`http_headers = { ${[
       ...(opts.token ? [`Authorization = "Bearer ${tomlEscape(opts.token)}"`] : []),
@@ -2136,6 +2141,8 @@ function ensureSuCodexHomeConfigImpl(opts: SuCodexConfigInput & {
       current.includes(expectedProjectMcp) &&
       current.includes(expectedClient) &&
       current.includes(expectedNativeSessionHeader) &&
+      (parsedCurrent.mcp_servers?.['papercusp-su'] as { startup_timeout_sec?: number } | undefined)
+        ?.startup_timeout_sec === CODEX_MCP_STARTUP_TIMEOUT_SEC &&
       parseToml(current).check_for_update_on_startup === false &&
       contextMatches &&
       current.includes(expectedSqliteHome) &&

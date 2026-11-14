@@ -49,6 +49,40 @@ function write(root: string, path: string, body: string) {
   mkdirSync(dirname(join(root, path)), { recursive: true });
   writeFileSync(join(root, path), body);
 }
+function installTsxRuntime(f: ReturnType<typeof fixture>) {
+  const sourceLock = JSON.parse(readFileSync(join(repo, 'package-lock.json'), 'utf8'));
+  const fixtureLockPath = join(f.donor, 'package-lock.json');
+  const fixtureLock = JSON.parse(readFileSync(fixtureLockPath, 'utf8'));
+  const rootManifestPath = join(f.donor, 'package.json');
+  const rootManifest = JSON.parse(readFileSync(rootManifestPath, 'utf8'));
+  const tsxRange = `^${sourceLock.packages['node_modules/tsx'].version}`;
+  rootManifest.devDependencies = { ...(rootManifest.devDependencies ?? {}), tsx: tsxRange };
+  fixtureLock.packages[''].devDependencies = { tsx: tsxRange };
+
+  const pending = ['node_modules/tsx'];
+  const packagePaths = new Set<string>();
+  while (pending.length > 0) {
+    const path = pending.pop()!;
+    if (packagePaths.has(path) || !sourceLock.packages[path]) continue;
+    packagePaths.add(path);
+    const entry = sourceLock.packages[path];
+    for (const name of Object.keys({ ...entry.dependencies, ...entry.optionalDependencies })) {
+      const dependencyPath = `node_modules/${name}`;
+      if (sourceLock.packages[dependencyPath]) pending.push(dependencyPath);
+    }
+  }
+
+  for (const path of packagePaths) {
+    fixtureLock.packages[path] = sourceLock.packages[path];
+    const sourcePath = join(repo, path);
+    if (!existsSync(sourcePath)) continue;
+    const destination = join(f.donor, path);
+    mkdirSync(dirname(destination), { recursive: true });
+    cpSync(sourcePath, destination, { recursive: true });
+  }
+  writeFileSync(rootManifestPath, `${JSON.stringify(rootManifest, null, 2)}\n`);
+  writeFileSync(fixtureLockPath, `${JSON.stringify(fixtureLock)}\n`);
+}
 function fixture(workspace = 'packages/cli') {
   const root = mkdtempSync(join(tmpdir(), 'native-generation-closure-')); roots.push(root);
   const donor = join(root, 'source'), dest = join(root, 'selected'), store = join(root, 'store');
@@ -73,6 +107,7 @@ function fixture(workspace = 'packages/cli') {
   write(donor, '.gitignore', 'node_modules/\ndist/\n');
   write(donor, 'package.json', '{"name":"native-generation-fixture","private":true}');
   write(donor, 'package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: {
+    '': { name: 'native-generation-fixture' },
     'node_modules/pkg': { version: '1.0.0' },
   } }));
   write(donor, workspace + '/package.json', '{"name":"probe","bin":{"probe":"dist/cli.cjs"},"scripts":{"build":"node build.cjs"}}');
@@ -422,6 +457,103 @@ describe('D012 native generation closure', () => {
       expect(binding.identity.dependencyGeneration).toBe(after.split('/').pop());
       await binding.assertUnchanged();
     } finally { vi.unstubAllEnvs(); }
+  }, 120_000);
+
+  it('runVerifierCommand refreshes a stale closure from the nested managed-client source before child setup', async () => {
+    const workspace = 'apps/operator-vite';
+    const managedClient = workspace + '/src/lib/nuqs-tanstack-router-adapter.tsx';
+    const f = fixture(workspace);
+    installTsxRuntime(f);
+    // These two frozen CLI probes are outside this test's contract. Keep them
+    // minimal while the parent source checks and dependency-generation helper
+    // remain real.
+    write(f.donor, 'scripts/source-preview.mjs', [
+      "const operation = process.argv[2];",
+      "if (operation === 'verifier-inputs-check') console.log('inputs-ok');",
+      "else if (operation === 'verifier-measure') console.log('4096');",
+      "else { console.error('unsupported fixture operation: ' + operation); process.exitCode = 2; }",
+      '',
+    ].join('\n'));
+    execFileSync('git', ['add', 'package.json', 'package-lock.json', 'scripts/source-preview.mjs'], { cwd: f.donor });
+    execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+      'commit', '-qm', 'fixture tsx runtime closure'], { cwd: f.donor });
+    const build = [
+      "const fs = require('node:fs');",
+      "const source = fs.readFileSync('src/lib/nuqs-tanstack-router-adapter.tsx', 'utf8');",
+      "fs.mkdirSync('dist', { recursive: true });",
+      "fs.writeFileSync('dist/cli.cjs', source);",
+      '',
+    ].join('\n');
+
+    write(f.donor, managedClient, 'export const marker = "managed-client-source-A";\n');
+    write(f.donor, workspace + '/build.cjs', build);
+    execFileSync('git', ['add', managedClient, workspace + '/build.cjs'], { cwd: f.donor });
+    execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+      'commit', '-qm', 'managed client source A'], { cwd: f.donor });
+    const refA = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: f.donor, encoding: 'utf8' }).trim();
+    buildWorkspace(f.donor, workspace, [process.execPath, 'build.cjs']);
+    const before = f.publish();
+    const beforeClosure = JSON.parse(readFileSync(join(before, '.verifier-closure.json'), 'utf8'));
+    expect(beforeClosure.complete).toBe(true);
+    expect(readFileSync(join(before, 'tree', workspace, 'dist/cli.cjs'), 'utf8'))
+      .toContain('managed-client-source-A');
+
+    write(f.donor, managedClient, 'export const marker = "managed-client-source-B";\n');
+    execFileSync('git', ['add', managedClient], { cwd: f.donor });
+    execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+      'commit', '-qm', 'managed client source B with unchanged locks'], { cwd: f.donor });
+    const refB = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: f.donor, encoding: 'utf8' }).trim();
+    for (const lock of ['package-lock.json', 'papercusp-desktop/package-lock.json']) {
+      expect(execFileSync('git', ['show', `${refB}:${lock}`], { cwd: f.donor }))
+        .toEqual(execFileSync('git', ['show', `${refA}:${lock}`], { cwd: f.donor }));
+    }
+
+    const childMarker = join(f.root, 'verifier-child-started');
+    const observedWorkspaceOutput: string[] = [];
+    const prepareChildEnv = vi.fn(async ({ sourceRoot }: { sourceRoot: string }) => {
+      observedWorkspaceOutput.push(readFileSync(join(sourceRoot, workspace, 'dist/cli.cjs'), 'utf8'));
+      throw new Error('fixture stop before verifier child setup');
+    });
+    const receiptPath = join(f.root, 'source-preview-managed-client.json');
+    await expect(runVerifierCommand({
+      repo: f.donor,
+      ref: refB,
+      receiptPath,
+      inputs: [managedClient],
+      env: f.env,
+      prepareChildEnv,
+      command: [process.execPath, '-e',
+        `require('node:fs').writeFileSync(${JSON.stringify(childMarker)}, 'started')`],
+    })).rejects.toThrow('fixture stop before verifier child setup');
+    expect(prepareChildEnv).toHaveBeenCalledTimes(1);
+    expect(observedWorkspaceOutput).toHaveLength(1);
+    expect(observedWorkspaceOutput[0]).toContain('managed-client-source-B');
+    expect(existsSync(childMarker)).toBe(false);
+
+    const archive = join(f.root, 'managed-client-source-B-archive');
+    const receipt = await prepareVerifierSource({ repo: f.donor, ref: refB, dest: archive,
+      inputs: [managedClient] });
+    const receiptFile = join(f.root, 'managed-client-source-B-receipt.json');
+    writeFileSync(receiptFile, JSON.stringify(receipt));
+    const args = ['--integration', f.donor, '--generation-root', f.store,
+      '--ensure-ref', refB, '--verifier-source', archive, '--retain-as', 'managed-client-closure-test'];
+    const reused = f.shell(f.generationScript, args, {
+      VERIFY_TAURI_SOURCE_RECEIPT: receiptFile, VERIFY_TAURI_SOURCE_REF: refB,
+    });
+    expect(reused.status, reused.stderr).toBe(0);
+    expect(reused.stdout).toContain('reused=true');
+    const after = reused.stdout.match(/\bpath=([^\n]+)$/m)![1]!;
+    expect(after).not.toBe(before);
+    const closure = JSON.parse(readFileSync(join(after, '.verifier-closure.json'), 'utf8'));
+    expect(closure.complete).toBe(true);
+    const workspaceClosure = closure.workspaces.find((entry: { output: string }) => entry.output === workspace + '/dist');
+    expect(workspaceClosure.inputs.map((input: { path: string }) => input.path)).toContain(managedClient);
+    expect(readFileSync(join(after, 'tree', workspace, 'dist/cli.cjs'), 'utf8'))
+      .toContain('managed-client-source-B');
+    expect(readFileSync(join(before, 'tree', workspace, 'dist/cli.cjs'), 'utf8'))
+      .toContain('managed-client-source-A');
+    expect(existsSync(join(archive, 'node_modules'))).toBe(false);
+    expect(existsSync(join(archive, workspace, 'dist'))).toBe(false);
   }, 120_000);
 
   it('keeps the native publication leased through exact-input selection and ref pinning', () => {

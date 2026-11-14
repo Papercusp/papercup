@@ -2045,6 +2045,30 @@ export async function createPtoolStdioTransport({ stdin = process.stdin, stdout 
     importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/shared/stdio.js'),
   ]);
   const transport = new StdioServerTransport(stdin, stdout);
+  // Codex MCP children do not inherit the live thread id in their environment.
+  // Its native tools/call metadata supplies it instead. Keep the binding on
+  // the exact RPC id, so overlapping calls cannot borrow another incarnation.
+  // This is observation data, never an authenticated principal or authority.
+  const requestSessions = new Map();
+  const start = transport.start.bind(transport);
+  transport.start = async () => {
+    const onmessage = transport.onmessage;
+    transport.onmessage = (message, extra) => {
+      if (env.PAPERCUSP_AGENT === 'codex' && 'method' in message && message.method === 'tools/call' && 'id' in message) {
+        const meta = message.params?._meta;
+        const turn = meta?.['x-codex-turn-metadata'];
+        const ids = [meta?.sessionId, meta?.threadId, turn?.session_id, turn?.thread_id];
+        if (ids.some(id => id !== undefined)) {
+          const pinned = env.PAPERCUSP_NATIVE_SESSION_ID ?? env.CODEX_SESSION_ID;
+          const valid = ids.every(id => typeof id === 'string' && id.trim() && id === ids[0]) &&
+            (!pinned || pinned === ids[0]);
+          requestSessions.set(message.id, valid ? ids[0] : null);
+        }
+      }
+      onmessage?.(message, extra);
+    };
+    await start();
+  };
   const onError = error => { transport.onerror?.(error); };
   stdout.on('error', onError);
   let closing = false;
@@ -2059,6 +2083,7 @@ export async function createPtoolStdioTransport({ stdin = process.stdin, stdout 
     // A failed write emits error after its callback. Keep its listener until
     // queued callbacks/events have drained, including close after rejection.
     closing = true;
+    requestSessions.clear();
     await close();
     cleanup();
   };
@@ -2070,7 +2095,8 @@ export async function createPtoolStdioTransport({ stdin = process.stdin, stdout 
       ? openDeliveryLedger(env.PAPERCUSP_SID, env, 'mcp') : null;
     if (ledger) ledger.offer(offer.token, {
       payload, format: 'mcp', client: env.PAPERCUSP_AGENT,
-      nativeSessionId: env.PAPERCUSP_NATIVE_SESSION_ID ?? env.CODEX_SESSION_ID,
+      nativeSessionId: requestSessions.has(message.id) ? requestSessions.get(message.id)
+        : env.PAPERCUSP_NATIVE_SESSION_ID ?? env.CODEX_SESSION_ID,
       memoryFragmentOffers: offer.fragments,
     });
     pendingWrites++;
@@ -2080,6 +2106,7 @@ export async function createPtoolStdioTransport({ stdin = process.stdin, stdout 
       });
       ledger?.commit();
     } finally {
+      requestSessions.delete(message.id);
       pendingWrites--;
       cleanup();
     }
@@ -2855,6 +2882,18 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // returns. Outlive the server's existing 55s foreground window so direct
   // and tools:invoke calls preserve that outcome without an unsafe replay.
   ['plans:edit', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // EI-28725841892231262: the other canonical plan-document writers share the
+  // same CAS write + lint/enrichment path and declare no timeoutSec, so MCP
+  // allows its 55s foreground window. A measured plans:set-content committed
+  // the exact intended hash after ptool reported -32001 at 30,003ms. Keep the
+  // whole writer class (direct and tools:invoke) past that window so the typed
+  // receipt wins; outcome-unknown reconciliation still applies, never a replay.
+  ['plans:set-content', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  ['plans:set-content-chunk', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  ['plans:add-decision', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  ['plans:add-item', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  ['plans:set-now', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  ['plans:set-status', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   // EI-25634460854216048: a successful evidence binding took 30.227s
   // server-side and committed its row after the ordinary 30s client cutoff.
   // Observe the bounded dispatch receipt before the client deadline, including
@@ -3413,6 +3452,7 @@ export async function callToolWithPressureRetry(
     totalTimeoutMs = 0,
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     schemaNeutral = false,
+    callToolResultSchema,
     now = ptoolMonotonicNowMs,
   } = {},
 ) {
@@ -3458,10 +3498,11 @@ export async function callToolWithPressureRetry(
         // Use the SDK's ordinary request primitive with the protocol
         // CallToolResult schema: wire-shape validation remains, while the
         // incompatible cached full-output-schema check is skipped.
-        const { CallToolResultSchema } = await importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/types.js');
+        const protocolSchema = callToolResultSchema ??
+          (await importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/types.js')).CallToolResultSchema;
         result = await client.request(
           { method: 'tools/call', params },
-          CallToolResultSchema,
+          protocolSchema,
           requestOptions(),
         );
       } else {
@@ -3615,7 +3656,7 @@ async function closeClientQuietly(client) {
  * session. A failed replay client is closed before the error is surfaced.
  * @param {any} client
  * @param {any} params
- * @param {{reconnect?: () => Promise<any>, maxAttempts?: number, timeoutMs?: number, replayProof?: unknown, schemaNeutral?: boolean, onStaleToolContract?: (context: {client: any, params: any, error: unknown}) => Promise<any>}} [options]
+ * @param {{reconnect?: () => Promise<any>, maxAttempts?: number, timeoutMs?: number, replayProof?: unknown, schemaNeutral?: boolean, callToolResultSchema?: unknown, onStaleToolContract?: (context: {client: any, params: any, error: unknown}) => Promise<any>}} [options]
  */
 export async function callToolWithReplayRecovery(
   client,
@@ -3626,6 +3667,7 @@ export async function callToolWithReplayRecovery(
     timeoutMs = PTOOL_CALL_TOOL_TIMEOUT_MS,
     replayProof,
     schemaNeutral = false,
+    callToolResultSchema,
     onStaleToolContract,
   } = {},
 ) {
@@ -3643,7 +3685,11 @@ export async function callToolWithReplayRecovery(
   let preConnectRetriesUsed = 0;
   while (true) {
     try {
-      const result = await callToolWithPressureRetry(activeClient, activeParams, { timeoutMs, schemaNeutral });
+      const result = await callToolWithPressureRetry(activeClient, activeParams, {
+        timeoutMs,
+        schemaNeutral,
+        callToolResultSchema,
+      });
       return { client: activeClient, result };
     } catch (error) {
       if (
@@ -4344,13 +4390,27 @@ export function buildMcpUrl(operatorUrl, {
   return url;
 }
 
-/** A foreign native-session refusal is emitted before the tool dispatcher runs. */
+/**
+ * A native-session incarnation refusal is emitted before the tool dispatcher
+ * runs. Two server reasons qualify (WI-6554700010048107): the DB binding names
+ * another owner (superuser_foreign_native_session), or the owner's live psu
+ * host names a different native session (superuser_stale_live_host_native_session;
+ * an inherited, unbound CODEX_SESSION_ID lands here). The server may append a
+ * recovery hint after the reason, so match the reason token, not the whole text.
+ */
+const NATIVE_SESSION_INCARNATION_REASON =
+  '(?:superuser_foreign_native_session|superuser_stale_live_host_native_session)(?![\\w])';
+const NATIVE_SESSION_INCARNATION_REJECTION =
+  new RegExp(`^request_rejected: ${NATIVE_SESSION_INCARNATION_REASON}`);
+const NATIVE_SESSION_INCARNATION_AUTH_FAILURE =
+  new RegExp(`\\bmcp_auth_failed:\\s*${NATIVE_SESSION_INCARNATION_REASON}`);
 export function isForeignNativeSessionRejection(result) {
   return (result?.isError === true &&
     Array.isArray(result.content) &&
     result.content.some((block) =>
-      block?.type === 'text' && block.text === 'request_rejected: superuser_foreign_native_session')) ||
-    /\bmcp_auth_failed:\s*superuser_foreign_native_session\b/.test(errorDetail(result));
+      block?.type === 'text' && typeof block.text === 'string' &&
+      NATIVE_SESSION_INCARNATION_REJECTION.test(block.text))) ||
+    NATIVE_SESSION_INCARNATION_AUTH_FAILURE.test(errorDetail(result));
 }
 
 /** Retry only an inherited Codex claim; an explicit launcher binding stays authoritative.
@@ -4462,8 +4522,8 @@ export function importPtoolSdkModule(specifier) {
  * The finite 10-minute wait covers the observed rewrite duration while still
  * surfacing a stuck installer as an error.
  */
-export async function importSdkModuleWithInstallAwareness(
-  specifier,
+export async function importSdkModulesWithInstallAwareness(
+  specifiers,
   {
     doImport = importPtoolSdkModule,
     recoverOnInstallWait = false,
@@ -4484,27 +4544,37 @@ export async function importSdkModuleWithInstallAwareness(
     },
   } = {},
 ) {
+  const requested = Array.isArray(specifiers) ? specifiers : [];
+  if (requested.length === 0) return [];
+  const importAll = async () => {
+    // Keep the shared reader lease until every module import has settled. A
+    // fast rejection must not leave sibling imports behind while recovery
+    // starts through the independent Node-only transport.
+    const settled = await Promise.allSettled(requested.map((specifier) => doImport(specifier)));
+    const failed = settled.find((entry) => entry.status === 'rejected');
+    if (failed?.status === 'rejected') throw failed.reason;
+    return settled.map((entry) => entry.status === 'fulfilled' ? entry.value : undefined);
+  };
   let modules;
   try {
     modules = await loadInstallMutex();
   } catch {
     // Keep ptool usable when the optional coordination helper cannot load.
-    // If the SDK import also fails, preserve that more useful import error.
-    return doImport(specifier);
+    // If an SDK import also fails, preserve that more useful import error.
+    return importAll();
   }
 
-  if (!modules) return doImport(specifier);
+  if (!modules) return importAll();
   const [{ withFsMutexRead }, { repoLockName, installMutexIsHeld }] = modules;
   const lockName = repoLockName();
-  if (installMutexIsHeld?.(lockName, process.env)) {
-    return doImport(specifier);
-  }
-  return withFsMutexRead(lockName, () => doImport(specifier), {
+  if (installMutexIsHeld?.(lockName, process.env)) return importAll();
+  const moduleLabel = requested.length === 1 ? requested[0] : requested.join(', ');
+  return withFsMutexRead(lockName, importAll, {
     timeoutMs: SDK_IMPORT_MUTEX_TIMEOUT_MS,
     onWaiting: ({ owner, elapsedMs }) => {
       console.error(
         'ptool: waiting for install:safe to finish before importing ' +
-          specifier +
+          moduleLabel +
           ' (' +
           Math.round(elapsedMs / 1000) +
           's so far); holder: ' +
@@ -4515,12 +4585,21 @@ export async function importSdkModuleWithInstallAwareness(
       // marker before onWaiting; leave the installer and its lease untouched.
       if (recoverOnInstallWait) {
         throw Object.assign(new Error(
-          'waiting for install:safe to finish before importing ' + specifier +
+          'waiting for install:safe to finish before importing ' + moduleLabel +
           '; return to the available Node-only scripted transport',
         ), { code: 'PTOOL_SDK_INSTALL_WAIT' });
       }
     },
   });
+}
+
+/**
+ * Import one SDK module under the same install-aware grouped lease used by
+ * connection setup.
+ */
+export async function importSdkModuleWithInstallAwareness(specifier, options = {}) {
+  const [module] = await importSdkModulesWithInstallAwareness([specifier], options);
+  return module;
 }
 
 async function ptoolEnospcFilesystemDiagnostic(error, statfsImpl) {
@@ -4556,28 +4635,42 @@ async function ptoolEnospcFilesystemDiagnostic(error, statfsImpl) {
  * up to ten minutes; that wait is bootstrap time, not operator network time.
  *
  * @param {{transport?: string}} [scope]
- * @param {{importSdkModule?: (specifier: string, options?: {recoverOnInstallWait?: boolean}) => Promise<object>, statfsImpl?: typeof statfs, recoverOnInstallWait?: boolean}} [options]
+ * @param {{importSdkModule?: (specifier: string, options?: {recoverOnInstallWait?: boolean}) => Promise<object>, importSdkModules?: (specifiers: string[], options?: {recoverOnInstallWait?: boolean}) => Promise<object[]>, statfsImpl?: typeof statfs, recoverOnInstallWait?: boolean}} [options]
  */
 export async function preparePtoolConnectionModules(
   { transport: requestedTransport } = {},
-  { importSdkModule = importSdkModuleWithInstallAwareness, statfsImpl = statfs,
-    recoverOnInstallWait = false } = {},
+  { importSdkModule, importSdkModules, statfsImpl = statfs, recoverOnInstallWait = false } = {},
 ) {
   const mode = requestedTransport || process.env.PAPERCUSP_MCP_TRANSPORT || 'http';
   if (!['http', 'uds', 'auto'].includes(mode)) {
     throw new Error('Invalid MCP transport; expected http, uds or auto');
   }
-  if (mode !== 'http') return { mode };
+  const specifiers = mode === 'http'
+    ? [
+      '@modelcontextprotocol/sdk/client/index.js',
+      '@modelcontextprotocol/sdk/client/streamableHttp.js',
+      '@modelcontextprotocol/sdk/types.js',
+    ]
+    : ['@modelcontextprotocol/sdk/types.js'];
+  const loadModules = importSdkModules ?? (importSdkModule
+    ? async (requested, options) => {
+      const settled = await Promise.allSettled(requested.map((specifier) => importSdkModule(specifier, options)));
+      const failed = settled.find((entry) => entry.status === 'rejected');
+      if (failed?.status === 'rejected') throw failed.reason;
+      return settled.map((entry) => entry.status === 'fulfilled' ? entry.value : undefined);
+    }
+    : importSdkModulesWithInstallAwareness);
 
   try {
-    const [clientModule, transportModule] = await Promise.all([
-      importSdkModule('@modelcontextprotocol/sdk/client/index.js', { recoverOnInstallWait }),
-      importSdkModule('@modelcontextprotocol/sdk/client/streamableHttp.js', { recoverOnInstallWait }),
-    ]);
+    const modules = await loadModules(specifiers, { recoverOnInstallWait });
+    const typeModule = modules[mode === 'http' ? 2 : 0];
+    if (mode !== 'http') return { mode, CallToolResultSchema: typeModule.CallToolResultSchema };
+    const [clientModule, transportModule] = modules;
     return {
       mode,
       Client: clientModule.Client,
       StreamableHTTPClientTransport: transportModule.StreamableHTTPClientTransport,
+      CallToolResultSchema: typeModule.CallToolResultSchema,
     };
   } catch (error) {
     const filesystemDiagnostic = await ptoolEnospcFilesystemDiagnostic(error, statfsImpl);
@@ -5226,8 +5319,13 @@ async function main() {
       });
     },
   });
-  const tracedToolCall = (callClient, params, options) => withInvocationPhase(
-    'tools-call', () => callToolWithReplayRecovery(callClient, params, options),
+  let activeCallToolResultSchema = null;
+  const tracedToolCall = (callClient, params, options = {}) => withInvocationPhase(
+    'tools-call',
+    () => callToolWithReplayRecovery(callClient, params, {
+      ...options,
+      callToolResultSchema: options.callToolResultSchema ?? activeCallToolResultSchema,
+    }),
   );
   const tracedPrintResult = (result, options) => withInvocationPhase(
     'result-output', () => printResult(result, {
@@ -5300,9 +5398,15 @@ async function main() {
         trace,
         'sdk-bootstrap',
         null,
-        () => preparePtoolConnectionModules(prepareScope, {
-          recoverOnInstallWait: buildSdkRecoveryInvocation() !== null,
-        }),
+        async () => {
+          const prepared = await preparePtoolConnectionModules(prepareScope, {
+            recoverOnInstallWait: buildSdkRecoveryInvocation() !== null,
+          });
+          // Reuse the schema loaded under the connection-time reader lease.
+          // Projected calls must not reopen mutable SDK files after install:safe starts.
+          activeCallToolResultSchema = prepared.CallToolResultSchema ?? null;
+          return prepared;
+        },
       );
     };
     const tracedConnect = (url, connectScope, options, preparedConnection) => {

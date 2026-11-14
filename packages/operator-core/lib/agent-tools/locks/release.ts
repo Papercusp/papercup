@@ -408,9 +408,9 @@ export default defineTool({
             lockId,
             paths,
             allMine,
-            beforeRelease: async rows => {
+            beforeRelease: async (rows, protectRepositoryPaths) => {
               const identity = resolveAgentIdentity(ctx);
-              preservationRecorded = await preserveReleasedEditGenerations({ repoRoot: domain, rows, agentId: ownerId,
+              preservationRecorded = await preserveReleasedEditGenerations({ repoRoot: domain, rows, agentId: ownerId, protectRepositoryPaths,
                 workspaceId: identity.workspaceId ?? undefined, contributor: identity.userId ?? undefined,
                 sessionId: editSessionId(args.native_edit_proof, ownerId) });
             },

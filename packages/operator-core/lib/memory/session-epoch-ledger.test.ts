@@ -26,13 +26,50 @@ import { stampSurfacedResult } from './session-epoch-ledger';
 
 const UUID_A = '11111111-1111-1111-1111-111111111111';
 const UUID_B = '22222222-2222-2222-2222-222222222222';
+const collection = vi.hoisted(() => ({ save: vi.fn(), capture: vi.fn() }));
+vi.mock('../context-packing-receipts', () => ({ saveMcpContextPreparation: collection.save,
+  captureContextPackingAttribution: collection.capture }));
 
 describe('exact memory emission receipts', () => {
-  beforeEach(() => configureReadCursorStore(new InMemoryReadCursorStore()));
+  beforeEach(() => {
+    configureReadCursorStore(new InMemoryReadCursorStore());
+    collection.save.mockReset().mockResolvedValue({ sha256: 'a'.repeat(64) });
+    collection.capture.mockReset().mockResolvedValue({ epoch: null, nativeSession: null, unknown: ['epoch-unavailable'] });
+  });
   afterEach(() => resetReadCursorStore());
   const offer = (id = UUID_A, epoch = 3, kind: 'memory' | 'corpus' = 'memory') =>
     memoryFragmentOffer(kind, id, epoch, 'turn-start', `- ${id}: complete snowman ☃`);
   const manifest = ({ rendered: _text, ...row }: ReturnType<typeof offer>) => row;
+
+  it('collects the authenticated attempt before run and preserves all offered manifests after final filtering', async () => {
+    const { sql } = makeSql();
+    const a = offer(), omitted = offer(UUID_B);
+    const sourceScope = { workspaceId: 'workspace', harness: 'papercusp', client: 'codex', port: 'mcp-result' as const };
+    const result = await withMemoryEmissionReceipt(sql, 'owner', [], async () => {
+      expect(collection.capture).toHaveBeenCalledWith({ ...sourceScope, ownerId: 'owner' });
+      collectMemoryEmission('owner', [a, omitted]);
+      return { content: [{ type: 'text', text: a.rendered }] };
+    }, sourceScope);
+    expect(collection.save).toHaveBeenCalledWith({ ...sourceScope, ownerId: 'owner' }, expect.objectContaining({
+      offers: [a, omitted], selected: [a], staging: 'staged', response: expect.objectContaining({
+        _meta: expect.objectContaining({ 'papercusp/memoryEmission': expect.objectContaining({ owner: 'owner' }) }) }) }));
+    expect(result._meta?.['papercusp/contextPreparation']).toMatchObject({ status: 'stored', sha256: 'a'.repeat(64) });
+    const before = collection.save.mock.calls[0]![1];
+    const receipt = result._meta?.['papercusp/memoryEmission'] as { token: string };
+    await confirmMemoryEmission(sql, 'owner', { token: receipt.token, fragments: [manifest(a)] });
+    expect(before).toMatchObject({ offers: [a, omitted], staging: 'staged' });
+  });
+
+  it('keeps empty attempts and makes storage failure observable without breaking a completed tool', async () => {
+    const { sql } = makeSql();
+    const sourceScope = { workspaceId: 'workspace', harness: 'papercusp', client: 'claude', port: 'mcp-initialize' as const };
+    collection.save.mockRejectedValueOnce(new Error('private backend detail'));
+    const result = await withMemoryEmissionReceipt(sql, 'owner', [], async () => ({ instructions: 'ordinary tool text' }), sourceScope);
+    expect(result.instructions).toBe('ordinary tool text');
+    expect(collection.save).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ offers: [], selected: [], staging: 'empty' }));
+    expect(result._meta?.['papercusp/contextPreparation']).toMatchObject({ status: 'UNKNOWN', reason: 'preparation-storage-failed' });
+    expect(JSON.stringify(result)).not.toContain('private backend detail');
+  });
 
   it('requires an exact notice stdout proof and records its emission time rather than confirmation time', async () => {
     const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000);

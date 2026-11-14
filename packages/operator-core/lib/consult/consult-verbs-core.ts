@@ -19,18 +19,20 @@
  *    neither a question nor a new fact has no valid kind — termination is
  *    structural, the enum IS the rule. An answer REQUIRES evidence (D-004:
  *    answers cite transcript refs — that is the grounding enforcement).
- *  - THE EXCHANGE CAP: exchanges_used debits per reply; at the cap a reply is
- *    refused with the close-with-what-you-have nudge (D-001). decline/close
- *    are terminal moves and stay available AT the cap — that is the point.
+ *  - THE EXCHANGE CAP: exchanges_used debits per reply; ordinary consults
+ *    refuse replies at the cap (D-001). Policy-bound BAR critiques retain
+ *    accounting without a round cap so required whole-contract re-review can
+ *    finish. decline/close remain terminal moves available at the cap.
  *  - STATE TRANSITIONS: awaiting_responder→active (first responder post);
  *    active→declined (decline w/ reason; remaining candidates from the
  *    routing snapshot feed the D-007(7) manual cascade);
  *    active→closed_answered|closed_cant_help (close w/ structured outcome —
  *    the outcome column comment is the authority). Sweeps to expired /
  *    graduated are P-005's, not here.
- *  - THE PARK-KEY EMIT (D-005/D-008): every responder post (reply, decline,
- *    close) emits the latched `consult:reply:<conversation_id>` event to the
- *    requester — the hard-blocked requester's park key (P-003 returns it).
+ *  - THE PARK-KEY EMIT (D-005/D-008): responder replies/declines and every
+ *    terminal close, whether closed by the responder or requester, emit the
+ *    latched `consult:reply:<conversation_id>` event to the requester — the
+ *    hard-blocked requester's park key (P-003 returns it).
  *  - THE WAKE BUDGET on requester follow-ups (D-005): aggregate wakes_used
  *    over origin_task_ref (same aggregation as get-feedback-core); exhausted
  *    ⇒ the follow-up still posts + delivers by subscription, it just does
@@ -52,6 +54,7 @@ import { consultResponderVerbMenu } from './responder-verb-menu';
 import { isDecisionReviewRouting, validateDecisionReviewStance, type DecisionReviewStance } from './decision-review';
 import { appendParkerResponse } from './park-adapters';
 import { appendConsultReview, readConsultReview, type ReviewAnswer, type ReviewDispositionInput, type ConsultReviewState } from './review-findings';
+import { BAR_CRITIQUE_POLICY } from './selection-policies';
 
 export const RESPONDER_REPLY_KINDS = ['answer', 'clarifying_question', 'new_fact'] as const;
 export const REQUESTER_REPLY_KINDS = ['question', 'new_fact'] as const;
@@ -668,9 +671,12 @@ export async function consultReplyCore(
   // isCurrentResponder for what that equality test silently cost.
   const isPerspective = role === 'responder' && isCurrentResponder(row, req.authorId);
 
-  // The exchange cap (D-001): a reply past the cap is refused; close/decline stay open.
+  // Required full BAR re-review has no round cap. Use the router's persisted
+  // policy, never reply prose; ordinary consults retain D-001's depth bound.
+  const isBarCritique = row.routing !== null && typeof row.routing === 'object'
+    && (row.routing as { policy?: unknown }).policy === BAR_CRITIQUE_POLICY;
   const exchangeDebit = isPerspective || appendsSettledReview ? 0 : 1;
-  if (exchangeDebit && row.exchanges_used + exchangeDebit > row.max_exchanges) {
+  if (!isBarCritique && exchangeDebit && row.exchanges_used + exchangeDebit > row.max_exchanges) {
     return {
       error: 'exchange_cap',
       exchanges_used: row.exchanges_used,
@@ -681,8 +687,8 @@ export async function consultReplyCore(
 
   // Requester follow-ups wake the responder unconditionally — the per-task
   // wake budget is REMOVED (consult-min-max-and-rubric-vetting-2026-08-17
-  // D-005: the per-consult exchange cap above is the remaining bound;
-  // wakes_used keeps being written as a plain stat, never a gate).
+  // D-005); wakes_used remains a plain stat, never a gate. The exchange cap
+  // above bounds ordinary consults only.
   const willWake = !appendsSettledReview && role === 'requester' && row.responder_id != null && Boolean(deps.reach);
 
   // Write-through: post (the substrate commit) → meta overlay → state debit.
@@ -771,6 +777,9 @@ export async function consultReplyCore(
   if (appendsSettledReview) return { ok: true, post_id: postId, role, review,
     state: row.state, exchanges_used: exchangesUsed, max_exchanges: row.max_exchanges,
     hint: 'Finding dispositions recorded; the accepted review remains settled.' };
+  const exchangeProgress = isBarCritique
+    ? `exchange ${exchangesUsed}; BAR critique has no round cap`
+    : `exchange ${exchangesUsed}/${row.max_exchanges}`;
 
   // consult-backed-parking P-006: the parker's adopt/rebut is data, recorded on the
   // committed reply (not fail-soft); the resolver run after it is a side effect (fail-soft).
@@ -828,7 +837,7 @@ export async function consultReplyCore(
       // EI-21761566265989000: a follow-up wake is the case where unread posts are GUARANTEED to
       // exist — that is what makes it a follow-up — so naming the read door matters most here.
       body:
-        `Follow-up (${req.kind}) on consult ${req.conversationId} (exchange ${exchangesUsed}/${row.max_exchanges}).\n` +
+        `Follow-up (${req.kind}) on consult ${req.conversationId} (${exchangeProgress}).\n` +
         consultResponderVerbMenu({ conversationId: req.conversationId }),
     });
     woke = r.woke;
@@ -916,15 +925,15 @@ export async function consultReplyCore(
             ? '; the cascade did not advance'
             : '';
 
-  const capNow = exchangesUsed >= row.max_exchanges;
+  const capNow = !isBarCritique && exchangesUsed >= row.max_exchanges;
   const hint =
     role === 'responder'
       ? capNow
         ? `Posted (exchange ${exchangesUsed}/${row.max_exchanges} — cap reached). Further replies are refused; settle with consult:close { outcome: 'answered' | 'cant_help' } — or still deliberating? consult:close { outcome: 'graduate', reason } mints a shared work item that carries it forward (D-004).`
         : req.kind === 'answer'
-          ? `Answer posted (exchange ${exchangesUsed}/${row.max_exchanges}); the requester was signaled via ${parkKey(req.conversationId)}. When the thread is settled, close it: consult:close { outcome: 'answered' }.${cascadeNote}`
-          : `Posted (exchange ${exchangesUsed}/${row.max_exchanges}); the requester was signaled via ${parkKey(req.conversationId)}.${cascadeNote}`
-      : `Follow-up posted (exchange ${exchangesUsed}/${row.max_exchanges})${willWake ? `; responder ${responderConfirmedDead ? 'confirmed ended' : woke > 0 ? 'wake queued; turn pickup not confirmed' : 'pinged; turn pickup not confirmed'}` : ''}${requesterRerouteHint}.`;
+          ? `Answer posted (${exchangeProgress}); the requester was signaled via ${parkKey(req.conversationId)}. When the thread is settled, close it: consult:close { outcome: 'answered' }.${cascadeNote}`
+          : `Posted (${exchangeProgress}); the requester was signaled via ${parkKey(req.conversationId)}.${cascadeNote}`
+      : `Follow-up posted (${exchangeProgress})${willWake ? `; responder ${responderConfirmedDead ? 'confirmed ended' : woke > 0 ? 'wake queued; turn pickup not confirmed' : 'pinged; turn pickup not confirmed'}` : ''}${requesterRerouteHint}.`;
 
   return {
     ok: true,
@@ -1340,25 +1349,29 @@ export async function consultCloseCore(
     }
   });
 
-  // A responder close is the terminal reply — wake the parked requester. A
-  // requester closing their own consult has nobody parked on the key.
-  // (isCurrentResponder, not an id equality: a fork closes under its own
-  // identity, and the parked requester must still be released.)
-  if (closedByCurrentResponder) {
+  // Every terminal close resolves the requester's exact reply-key await. A
+  // requester may already have a hard-blocked get_feedback await on this key;
+  // closing their own consult must retire that wait just as a responder close
+  // does. Keep responder attribution accurate for requester-authored closes.
+  await deps.emitReplyEvent({
+    key: parkKey(req.conversationId),
+    summary: `consult ${req.conversationId}: ${state} by ${req.authorId} — ${oneLine(body)}`,
+    payload: {
+      conversation_id: req.conversationId,
+      ...(closedByCurrentResponder ? { responder: req.authorId } : { closed_by: req.authorId }),
+      kind: 'close',
+      post_id: postId,
+      state,
+    },
+    to: [row.requester_id],
+  });
+  if (closedByCurrentResponder && req.outcome === 'answered') {
     await deps.emitReplyEvent({
-      key: parkKey(req.conversationId),
-      summary: `consult ${req.conversationId}: ${state} by ${req.authorId} — ${oneLine(body)}`,
+      key: `consult:answer-posted:${req.conversationId}`,
+      summary: `consult ${req.conversationId}: answer posted by ${req.authorId}`,
       payload: { conversation_id: req.conversationId, responder: req.authorId, kind: 'close', post_id: postId, state },
-      to: [row.requester_id],
+      to: [],
     });
-    if (req.outcome === 'answered') {
-      await deps.emitReplyEvent({
-        key: `consult:answer-posted:${req.conversationId}`,
-        summary: `consult ${req.conversationId}: answer posted by ${req.authorId}`,
-        payload: { conversation_id: req.conversationId, responder: req.authorId, kind: 'close', post_id: postId, state },
-        to: [],
-      });
-    }
   }
 
   // The close transaction has committed, including the coarse conversation

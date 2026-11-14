@@ -611,12 +611,13 @@ export function expertiseSubject(question: string): string | null {
   const primary = subjectEvidenceQuery(question) ?? question;
   // Do not treat key:boolean/null options such as `acknowledgeExisting:true`
   // as tool names when scanning the primary question for an action.
-  const tool = primary.match(/\b[a-z][a-z0-9_-]*:(?!true\b|false\b|null\b|undefined\b)[a-z][a-z0-9_-]*\b/i)?.[0];
+  const tool = primary.match(/\b(?!plan:)[a-z][a-z0-9_-]*:(?!true\b|false\b|null\b|undefined\b)[a-z][a-z0-9_-]*\b/i)?.[0];
   const path = extractPathTokens(primary, 1)[0] ?? null;
+  const planRef = primary.match(/\bplan:[a-z0-9][a-z0-9._-]*\b/i)?.[0] ?? null;
   // Dated plan/campaign refs are exact historical subjects when the question
   // explicitly frames one as existing work. Bare date slugs remain ordinary prose.
   const plan = primary.match(/\b(?:existing|plan|campaign)\s+([a-z][a-z0-9-]*-\d{4}-\d{2}-\d{2})\b/i)?.[1] ?? null;
-  return tool ?? path ?? plan;
+  return tool ?? path ?? planRef ?? plan;
 }
 
 /** Compare the registered primary action, excluding operational notes that can
@@ -629,9 +630,16 @@ function subjectEvidenceAction(toolDescription?: string | null): string | null {
 }
 
 const TOOL_SUBJECT_PATTERN = /^[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*$/i;
+const PLAN_SUBJECT_REF_PATTERN = /^plan:[a-z0-9][a-z0-9._-]*$/i;
+
+export function isToolSubject(subject: string): boolean {
+  // `plan:<slug>` is a source reference, not a registered namespace:verb
+  // tool. Requiring a tool contract for it makes exact plan refs unmeasurable.
+  return TOOL_SUBJECT_PATTERN.test(subject) && !PLAN_SUBJECT_REF_PATTERN.test(subject);
+}
 
 export function subjectEvidenceQuery(subject: string, toolDescription?: string | null): string | null {
-  if (!TOOL_SUBJECT_PATTERN.test(subject)) {
+  if (!isToolSubject(subject)) {
     // Compare the primary question with competing primary actions, rather than
     // letting secondary delivery/recovery instructions qualify an unrelated
     // passage. Keep all context preceding the question; retrieval and responder
@@ -748,10 +756,10 @@ export async function scoreSubjectEvidence(subject: string, texts: string[], dea
   // Explicit source paths identify code directly. A natural question has no
   // registered target contract, but still needs the same competing-action
   // qualification: absolute similarity overcredits generic procedural overlap.
-  if (!TOOL_SUBJECT_PATTERN.test(subject) && extractPathTokens(subject).includes(subject)) {
+  if (!isToolSubject(subject) && extractPathTokens(subject).includes(subject)) {
     return phase('inference', () => scorer(query, texts, { deadline }));
   }
-  const targets = TOOL_SUBJECT_PATTERN.test(subject) ? [query] : subjectEvidenceTargets(query);
+  const targets = isToolSubject(subject) ? [query] : subjectEvidenceTargets(query);
   // At most 24 passages × (2 targets + 3 actions + 2 intents), on the same 4s deadline.
   // Reverse retrieval asks which contract explains THIS passage, avoiding the
   // procedural vocabulary that made broad tool descriptions and natural
@@ -763,7 +771,7 @@ export async function scoreSubjectEvidence(subject: string, texts: string[], dea
       if (!contrasts.length) { report({ reason: 'no-contrasts' }); return null; }
       if (Date.now() >= deadline) { report({ reason: 'deadline' }); return null; }
       const alternatives = [...contrasts.map(c => subjectEvidenceQuery(c.name, c.description)!),
-        ...(TOOL_SUBJECT_PATTERN.test(subject) ? [] : NATURAL_SUBJECT_INTENT_CONTRASTS)];
+        ...(isToolSubject(subject) ? [] : NATURAL_SUBJECT_INTENT_CONTRASTS)];
       const scores = await scorer(text, [...targets, ...alternatives], { deadline })
         .catch(error => {
           report({ reason: 'scorer-error', errorCode: routingErrorCode(error) });
@@ -1055,6 +1063,8 @@ export interface ExpertiseRoutingReceipt {
   outcome: 'returned' | 'degraded' | 'threw';
   verdict: RouteResult['verdict'] | null;
   errorCode: string | null;
+  /** Existing bounded, sanitized subject diagnostics; never raw transcript or provider text. */
+  subjectValidation?: RoutingSnapshot['subjectValidation'];
   /** Missing means not exercised, never a zero-duration observation. */
   stages: Partial<Record<ExpertiseRoutingStage, {
     durationMs: number;
@@ -1110,6 +1120,18 @@ export async function routeConsult(params: ConsultRouteParams, deps: ConsultRout
     receipt.outcome = result.snapshot.degraded || Object.values(receipt.stages).some(s => s.outcome === 'threw')
       ? 'degraded' : 'returned';
     receipt.durationMs = elapsed(started);
+    if (result.snapshot.subjectValidation) {
+      const diagnostic = structuredClone(result.snapshot.subjectValidation);
+      // A natural-language subject can be the question itself. Its diagnostic
+      // stays useful without copying that private prose into invocation telemetry.
+      const redact = (subject: string) => params.question
+        ? subject.split(params.question).join('[question]') : subject;
+      if (diagnostic.subject) diagnostic.subject = redact(diagnostic.subject);
+      diagnostic.subjects = diagnostic.subjects.map(redact);
+      diagnostic.unresolved = diagnostic.unresolved.map(redact);
+      if (diagnostic.scoring) diagnostic.scoring = diagnostic.scoring.map(row => ({ ...row, subject: redact(row.subject) }));
+      receipt.subjectValidation = diagnostic;
+    }
     if (params.telemetry || deps.recordTelemetry) result.snapshot.measurement = structuredClone(receipt);
     return result;
   } catch (error) {

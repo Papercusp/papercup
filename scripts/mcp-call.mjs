@@ -177,6 +177,23 @@ export function isConnectionRefusedError(error) {
   return false;
 }
 
+/** Undici raises UND_ERR_CONNECT_TIMEOUT before a TCP connection or HTTP request exists. */
+export function isConnectionTimeoutError(error) {
+  const seen = new Set();
+  let current = error;
+  while (current && (typeof current === 'object' || typeof current === 'function') && !seen.has(current)) {
+    seen.add(current);
+    if (current.code === 'UND_ERR_CONNECT_TIMEOUT') return true;
+    current = current.cause;
+  }
+  return false;
+}
+
+/** These failures prove the HTTP handler could not have received the request. */
+export function isPreConnectTransportError(error) {
+  return isConnectionRefusedError(error) || isConnectionTimeoutError(error);
+}
+
 export function buildFallbackWarning({
   configuredPort,
   port,
@@ -241,9 +258,12 @@ export function stampRequestSent(env = process.env, write = writeFileSync, now =
 }
 
 /**
+ * Retry only failures that prove no TCP connection was established:
+ * ECONNREFUSED and UND_ERR_CONNECT_TIMEOUT. Resets, response timeouts, HTTP
+ * errors, and other fetch failures may follow a dispatched POST and are not replayed.
  * @param {string | URL | Request} url
  * @param {RequestInit} init
- * @param {{fetchImpl?: typeof fetch, retryWindowMs?: number, retryDelayMs?: number, sleepImpl?: (ms: number) => Promise<unknown>, now?: () => number, onRetry?: (event: {attempt: number, delayMs: number, remainingMs: number}) => void}} [options]
+ * @param {{fetchImpl?: typeof fetch, retryWindowMs?: number, retryDelayMs?: number, sleepImpl?: (ms: number) => Promise<unknown>, now?: () => number, retryIf?: (error: unknown) => boolean, onRetry?: (event: {attempt: number, delayMs: number, remainingMs: number, error: unknown}) => void}} [options]
  */
 export async function fetchWithConnectionRecovery(
   url,
@@ -254,6 +274,7 @@ export async function fetchWithConnectionRecovery(
     retryDelayMs = MCP_CALL_CONNECTION_RETRY_DELAY_MS,
     sleepImpl = sleep,
     now = Date.now,
+    retryIf = isPreConnectTransportError,
     onRetry,
   } = {},
 ) {
@@ -266,12 +287,12 @@ export async function fetchWithConnectionRecovery(
     try {
       return await fetchImpl(url, init);
     } catch (error) {
-      if (!isConnectionRefusedError(error)) throw error;
+      if (!retryIf(error)) throw error;
       const remainingMs = deadline - now();
       if (remainingMs <= 0) throw error;
       const waitMs = Math.min(delayMs, remainingMs);
       attempt += 1;
-      onRetry?.({ attempt, delayMs: waitMs, remainingMs });
+      onRetry?.({ attempt, delayMs: waitMs, remainingMs, error });
       await sleepImpl(waitMs);
     }
   }
@@ -574,9 +595,123 @@ export function resolveMcpProxyPort(env = process.env) {
     : DEFAULT_MCP_PROXY_PORT;
 }
 
+/**
+ * Tools the resilient MCP proxy sends to the CURRENT build when the caller names no build
+ * (`CURRENT_BUILD_DEFAULT_TOOLS` in apps/operator/lib/mcp-proxy/build-routing.ts). The :3070
+ * release operator runs the last green `main`, which trails staging for as long as the gate
+ * is red. This CLI is the sanctioned fallback for a dropped MCP client, and it used to try
+ * :3070 first, so it silently undid the proxy's routing: consult calls made through it ran
+ * routing code about six weeks old and refused every Codex-backed expert
+ * (WI-6554700010048041). The VM-rig deploy copies this script alone, so it cannot import
+ * the TypeScript module; the list and its matching are duplicated here and held equal to
+ * the proxy's by a parity test in apps/operator/scripts/mcp-call.test.ts.
+ */
+export const CURRENT_BUILD_DEFAULT_TOOLS = Object.freeze([
+  'release:repair-queue',
+  'release:test-downgrade',
+  'consult:get_feedback',
+  'consult:reply',
+  'consult:decline',
+  'consult:close',
+  'consult:routing-health',
+  'locks:release',
+]);
+
+/** Same normalization as `normalizeMcpName` in @papercusp/tooldef. */
+function normalizeMcpToolName(name) {
+  return name
+    .toLowerCase()
+    .replace(/^mcp__[^_]+(?:[^_]|_(?!_))*__/, '')
+    .replace(/[:_.\-]+/g, ':');
+}
+
+const CURRENT_BUILD_DEFAULT_LOOKUP = new Set(CURRENT_BUILD_DEFAULT_TOOLS.map(normalizeMcpToolName));
+
+// Mirrors the proxy's code:run script matching: a script naming a current-build verb in any
+// spelling the code:run namespace accepts runs on the current build as a whole.
+const CURRENT_BUILD_DEFAULT_SCRIPT_PATTERNS = CURRENT_BUILD_DEFAULT_TOOLS.map((tool) => {
+  const namespace = tool.slice(0, tool.indexOf(':'));
+  const verb = tool.slice(tool.indexOf(':') + 1);
+  const words = verb.split(/[-_]/).map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const spelling = words.join('[-_]?');
+  const pattern = namespace === 'consult' || namespace === 'locks'
+    ? new RegExp(`\\btools(?:\\.${namespace}|\\[['"]${namespace}['"]\\])\\s*(?:\\.${spelling}\\b|\\[['"]${spelling}['"]\\])|\\b${namespace}[:_]${spelling}\\b`, 'i')
+    : new RegExp(spelling, 'i');
+  return { tool: normalizeMcpToolName(tool), pattern };
+});
+
+function isPlainRecord(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** Decode call arguments sent as an object or as a JSON string encoded once or twice. */
+function decodeCallArguments(raw) {
+  let decoded = raw;
+  for (let depth = 0; depth < 2 && typeof decoded === 'string'; depth++) {
+    try {
+      decoded = JSON.parse(decoded);
+    } catch {
+      return null;
+    }
+  }
+  return isPlainRecord(decoded) ? decoded : null;
+}
+
+/**
+ * The normalized current-build-default tool a tools/call targets, unwrapping
+ * `tools:invoke { name, args }` and matching a `code:run` script, or `null`.
+ * Behaviour matches `currentBuildDefaultTool` in build-routing.ts.
+ * @param {{name?: unknown, arguments?: unknown}} params
+ * @returns {string | null}
+ */
+export function currentBuildDefaultToolForCall(params) {
+  if (!params || typeof params.name !== 'string') return null;
+  let target = normalizeMcpToolName(params.name);
+  let args = decodeCallArguments(params.arguments);
+  if (target === 'tools:invoke') {
+    if (!args || typeof args.name !== 'string') return null;
+    target = normalizeMcpToolName(args.name);
+    args = decodeCallArguments(args.args);
+  }
+  if (target === 'code:run') {
+    const script = args?.script;
+    if (typeof script !== 'string') return null;
+    return CURRENT_BUILD_DEFAULT_SCRIPT_PATTERNS.find((p) => p.pattern.test(script))?.tool ?? null;
+  }
+  return CURRENT_BUILD_DEFAULT_LOOKUP.has(target) ? target : null;
+}
+
+/**
+ * Whether a call must reach the current build: it names `build: 'staging'`, or it names no
+ * build and its tool defaults to the current build. `build: 'main'` is the deliberate opt-out.
+ * @param {{name?: unknown, arguments?: unknown}} params
+ * @returns {boolean}
+ */
+export function callNeedsCurrentBuild(params) {
+  const args = decodeCallArguments(params?.arguments);
+  const build = typeof args?.build === 'string' ? args.build.trim().toLowerCase() : '';
+  if (build === 'staging') return true;
+  if (build === 'main') return false;
+  return currentBuildDefaultToolForCall(params) !== null;
+}
+
+/** The proxy's current-build target: PAPERCUSP_MCP_PROXY_DEV_FALLBACK_PORT, default 3170. */
+export function resolveCurrentBuildPort(env = process.env) {
+  const port = Number(env.PAPERCUSP_MCP_PROXY_DEV_FALLBACK_PORT);
+  return Number.isInteger(port) && port > 0 && port <= 65535 ? String(port) : '3170';
+}
+
 /** Resolve the operator ports to try. An explicit CLI port is a fail-closed pin;
- * the inherited environment hint retains its recovery fallback to canonical and proxy. */
-export function resolveCandidatePorts(flags = {}, env = process.env) {
+ * the inherited environment hint retains its recovery fallback to canonical and proxy.
+ * A call that must reach the current build tries the proxy, then the current build
+ * itself, and reaches the configured or canonical operator only after both refused a
+ * connection (a host with no current-build route, such as a VM rig).
+ * @param {{port?: unknown}} [flags]
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {{currentBuild?: boolean}} [options]
+ * @returns {{configuredPort: string, candidatePorts: string[], pinned: boolean}}
+ */
+export function resolveCandidatePorts(flags = {}, env = process.env, { currentBuild = false } = {}) {
   const CANONICAL_PORT = '3070';
   if (flags.port !== undefined) {
     const pinned = String(flags.port).trim();
@@ -588,6 +723,18 @@ export function resolveCandidatePorts(flags = {}, env = process.env) {
   const operatorUrlPort = env.PAPERCUSP_HONO_PORT == null ? resolveOperatorUrlPort(env) : null;
   const configuredPort = env.PAPERCUSP_HONO_PORT ?? operatorUrlPort ?? CANONICAL_PORT;
   const proxyPort = resolveMcpProxyPort(env);
+  if (currentBuild) {
+    return {
+      configuredPort: String(configuredPort),
+      candidatePorts: [...new Set([
+        proxyPort,
+        resolveCurrentBuildPort(env),
+        String(configuredPort),
+        CANONICAL_PORT,
+      ])],
+      pinned: false,
+    };
+  }
   return {
     configuredPort: String(configuredPort),
     // The local MCP proxy stays up while its operator target restarts. Keep it
@@ -597,26 +744,65 @@ export function resolveCandidatePorts(flags = {}, env = process.env) {
   };
 }
 
+/**
+ * Warning for a current-build call that an endpoint other than the proxy or the current
+ * build answered; `null` when the answer came from one of those two.
+ * @param {{tool: string, port: string, proxyPort: string, currentBuildPort: string}} input
+ * @returns {string | null}
+ */
+export function buildCurrentBuildFallbackWarning({ tool, port, proxyPort, currentBuildPort }) {
+  if (port === proxyPort || port === currentBuildPort) return null;
+  return `mcp-call: WARNING — ${tool} must run on the current build, but neither the MCP proxy ` +
+    `(port ${proxyPort}) nor the current build (port ${currentBuildPort}) accepted a connection. ` +
+    `Port ${port} answered instead and may run an older release build. ` +
+    `Pass --port ${currentBuildPort} to require the current build.`;
+}
+
 /** A grading-audit judge must keep implicit MCP recovery on its evaluator build. */
 function resolveExpectedMcpBuildSha(env = process.env) {
   const sha = env.PAPERCUSP_MCP_EXPECTED_BUILD_SHA;
   return typeof sha === 'string' && sha.trim() ? sha.trim() : null;
 }
 
-async function probeMcpBuildIdentity(port, expectedSha, { pinned = false } = {}) {
+function isHealthProbeTimeoutError(error) {
+  const seen = new Set();
+  let current = error;
+  while (current && (typeof current === 'object' || typeof current === 'function') && !seen.has(current)) {
+    seen.add(current);
+    if (current.name === 'TimeoutError' || current.code === 'ETIMEDOUT') return true;
+    current = current.cause;
+  }
+  return false;
+}
+
+export async function probeMcpBuildIdentity(port, expectedSha, {
+  pinned = false,
+  fetchImpl = fetch,
+  retryWindowMs = MCP_CALL_CONNECTION_RETRY_WINDOW_MS,
+  retryDelayMs = MCP_CALL_CONNECTION_RETRY_DELAY_MS,
+  sleepImpl = sleep,
+} = {}) {
   let response;
   try {
     // A retained evaluator can recycle after the audit starts. Its identity
     // preflight must honor the same explicit-pin recovery policy as the MCP
-    // request; otherwise it exits before that existing recovery can run.
+    // request; otherwise it exits before that existing recovery can run. This
+    // endpoint is a read-only GET, so a bounded timeout retry cannot replay a
+    // mutation whose first response was lost.
     response = await fetchWithConnectionRecovery(resolveOperatorBaseUrl(port) + '/api/health', {}, {
-      retryWindowMs: pinned ? MCP_CALL_CONNECTION_RETRY_WINDOW_MS : 0,
+      retryWindowMs: pinned ? retryWindowMs : 0,
+      retryDelayMs,
+      sleepImpl,
+      retryIf: (error) => isConnectionRefusedError(error) || isHealthProbeTimeoutError(error),
       // Each attempt owns its timeout. Reusing one signal would abort the
       // recovery window after two seconds, including time spent between probes.
-      fetchImpl: (url) => fetch(url, { signal: AbortSignal.timeout(2000) }),
+      fetchImpl: (url) => fetchImpl(url, { signal: AbortSignal.timeout(2000) }),
       onRetry: ({ attempt, delayMs, remainingMs }) => {
         if (attempt === 1 || attempt % 10 === 0) {
-          console.error(buildConnectionRetryDiagnostic({ port, attempt, delayMs, remainingMs }));
+          console.error(
+            `mcp-call: retrying pinned build-identity health probe on port ${port} ` +
+            `(attempt ${attempt}; next in ${delayMs}ms; ${remainingMs}ms remain)`,
+          );
         }
       },
     });
@@ -721,9 +907,9 @@ export function isRecoverableAuthorityDenial(raw) {
 
 /**
  * Describe an exhausted endpoint search without turning every transport error
- * into a claim that the port had no listener. Only ECONNREFUSED proves the
- * request could not have reached the MCP handler; resets such as UND_ERR_SOCKET
- * leave the tool outcome unknown.
+ * into a claim that the port had no listener. ECONNREFUSED and
+ * UND_ERR_CONNECT_TIMEOUT both happen before the MCP handler can receive the
+ * request; resets and response timeouts leave the tool outcome unknown.
  */
 export function buildUnreachableDiagnostic({ attempts, configuredPort, pinned }) {
   const renderedAttempts = attempts.map(({ port, error }) => {
@@ -731,14 +917,17 @@ export function buildUnreachableDiagnostic({ attempts, configuredPort, pinned })
     return `${port} (${reason})`;
   }).join(', ');
   const allRefused = attempts.length > 0 && attempts.every(({ error }) => isConnectionRefusedError(error));
+  const allPreConnectFailures = attempts.length > 0 && attempts.every(({ error }) => isPreConnectTransportError(error));
   const outcome = allRefused
     ? 'Every connection attempt was refused before an MCP request could be sent; this request did not invoke the tool.'
+    : allPreConnectFailures
+      ? 'Every connection attempt failed before an HTTP request could be sent; this request did not invoke the tool.'
     : 'At least one failure was not a connection refusal. This does not establish that no listener was present or whether the MCP tool ran; check a write outcome before retrying it.';
 
   return `mcp-call: could not reach the operator MCP endpoint. Tried port(s): ${renderedAttempts}.\n` +
     (pinned ? `  Port ${configuredPort} was explicitly pinned with --port, so no fallback was attempted.\n` : '') +
     `  ${outcome}\n` +
-    `  These results describe this mcp-call process's attempts to the listed ports; a refusal does not identify why a connection was refused or whether another runtime can reach the operator.\n` +
+    "  These results describe this mcp-call process's attempts to the listed ports; neither a refusal nor a connect timeout identifies why another runtime can or cannot reach the operator.\n" +
     `  Run endpoint probes from the same execution environment that ran mcp-call; loopback reachability can differ across environments.\n` +
     `  A healthy operator on a different port may still be serving. Find the live port:\n` +
     `    ss -ltn | grep -E ':(3070|3170|9071)'   # then: PAPERCUSP_HONO_PORT=<live port> re-run\n` +
@@ -749,13 +938,16 @@ export function buildUnreachableDiagnostic({ attempts, configuredPort, pinned })
 }
 
 /**
- * Explain a retry after ECONNREFUSED without attributing the refusal to an
+ * Explain a retry after a pre-connect failure without attributing it to an
  * operator restart. The result is scoped to this helper's caller and endpoint.
  */
-export function buildConnectionRetryDiagnostic({ port, attempt, delayMs, remainingMs }) {
-  return `mcp-call: connection to port ${port} was refused from this mcp-call process; ` +
-    `retry ${attempt} in ${delayMs}ms (${Math.ceil(remainingMs / 1000)}s left). ` +
-    'A refusal alone does not identify the cause or imply that other callers cannot reach the operator.';
+export function buildConnectionRetryDiagnostic({ port, attempt, delayMs, remainingMs, error }) {
+  const failure = isConnectionTimeoutError(error)
+    ? 'connection to port ' + port + ' timed out before a TCP connection was established'
+    : 'connection to port ' + port + ' was refused';
+  return 'mcp-call: ' + failure + ' from this mcp-call process; retry ' +
+    attempt + ' in ' + delayMs + 'ms (' + Math.ceil(remainingMs / 1000) + 's left). ' +
+    'This pre-connect failure does not identify the cause or imply that other callers cannot reach the operator.';
 }
 
 /**
@@ -801,12 +993,22 @@ export function buildMcpSessionQuery({
   return qs;
 }
 
-/** A foreign native-session refusal is emitted before the tool dispatcher runs. */
+/**
+ * A native-session incarnation refusal is emitted before the tool dispatcher
+ * runs. Two server reasons qualify (WI-6554700010048107): the DB binding names
+ * another owner (superuser_foreign_native_session), or the owner's live psu
+ * host names a different native session (superuser_stale_live_host_native_session;
+ * an inherited, unbound CODEX_SESSION_ID lands here). The server may append a
+ * recovery hint after the reason, so match the reason token, not the whole text.
+ */
+const NATIVE_SESSION_INCARNATION_REJECTION =
+  /^request_rejected: (?:superuser_foreign_native_session|superuser_stale_live_host_native_session)(?![\w])/;
 export function isForeignNativeSessionRejection(result) {
   return result?.isError === true &&
     Array.isArray(result.content) &&
     result.content.some((block) =>
-      block?.type === 'text' && block.text === 'request_rejected: superuser_foreign_native_session');
+      block?.type === 'text' && typeof block.text === 'string' &&
+      NATIVE_SESSION_INCARNATION_REJECTION.test(block.text));
 }
 
 /** Retry only an inherited Codex claim; an explicit launcher binding stays authoritative.
@@ -1175,8 +1377,16 @@ async function main() {
   // inherits the same stale port, the primary and its fallback fail together and the
   // symptom reads as "the server is down" while the server is answering in ~4ms.
   // So: try the configured port, then canonical, then the resilient MCP proxy.
-  const { configuredPort, candidatePorts, pinned } = resolveCandidatePorts(flags);
+  // A call that must reach the current build tries the proxy and the current build first.
+  const currentBuild = callNeedsCurrentBuild({ name: tool, arguments: args });
+  const { configuredPort, candidatePorts, pinned } = resolveCandidatePorts(flags, process.env, { currentBuild });
   const proxyPort = resolveMcpProxyPort();
+  const currentBuildPort = resolveCurrentBuildPort();
+  const fallbackWarningFor = (port) => {
+    if (pinned) return null;
+    if (currentBuild) return buildCurrentBuildFallbackWarning({ tool, port: String(port), proxyPort, currentBuildPort });
+    return null;
+  };
 
   const transport = resolveMcpTransport(flags);
   const expectedMcpBuildSha = resolveExpectedMcpBuildSha();
@@ -1232,10 +1442,10 @@ async function main() {
           // An explicit pin means the caller deliberately chose this operator
           // and must not be silently routed to another port while it restarts.
           retryWindowMs: pinned ? MCP_CALL_CONNECTION_RETRY_WINDOW_MS : 0,
-          onRetry: ({ attempt, delayMs, remainingMs }) => {
+          onRetry: ({ attempt, delayMs, remainingMs, error }) => {
             // Keep a long retry loop quiet without hiding that retries are active.
             if (attempt === 1 || attempt % 10 === 0) {
-              console.error(buildConnectionRetryDiagnostic({ port, attempt, delayMs, remainingMs }));
+              console.error(buildConnectionRetryDiagnostic({ port, attempt, delayMs, remainingMs, error }));
             }
           },
         },
@@ -1389,7 +1599,10 @@ async function main() {
         res = candidateRes;
         raw = candidateRaw;
         responsePort = port;
-        if (!pinned && port !== String(configuredPort)) {
+        if (currentBuild) {
+          const warning = fallbackWarningFor(port);
+          if (warning) console.error(warning);
+        } else if (!pinned && port !== String(configuredPort)) {
           console.error(buildFallbackWarning({
             configuredPort,
             port,
@@ -1402,10 +1615,10 @@ async function main() {
       } catch (err) {
         if (index === 0) configuredPortError = err;
         attempts.push({ port, error: err });
-        // ECONNREFUSED proves no MCP handler could have received this request.
-        // Other transport errors leave a mutation outcome unknown: stop without
-        // trying another endpoint or bearer.
-        if (hasEndpointFallback && isConnectionRefusedError(err)) {
+        // Refusal and connect timeout happen before an HTTP request can reach
+        // the handler. Other transport errors leave a mutation outcome unknown:
+        // stop without trying another endpoint or bearer.
+        if (hasEndpointFallback && isPreConnectTransportError(err)) {
           tryNextEndpoint = true;
         } else {
           stopEndpointSearch = true;
@@ -1485,6 +1698,8 @@ async function main() {
     if (uds) {
       responsePort = uds.port;
       out = uds.kind === 'result' ? { result: uds.result } : { error: uds.error };
+      const warning = fallbackWarningFor(uds.port);
+      if (warning) console.error(warning);
     }
     if (flags.raw && out) {
       if (repairQueueExpectedInstall && isRepairQueueRead(args) && !out.error) {

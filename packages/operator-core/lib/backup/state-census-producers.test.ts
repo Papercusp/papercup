@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { closureDigestManifestPath } from '../../../../scripts/lib/passing-task-verdict-cache.mjs';
 import { partialTaskCheckpointPath } from '../../../../scripts/lib/partial-task-resume.mjs';
 import { retainNativeProofPacket, type NativeCustodyGroup } from '../../../../scripts/lib/budgeted-task-scheduler.mjs';
+import * as nativeProof from '../../../../scripts/lib/budgeted-task-scheduler.mjs';
 vi.mock('../db-encryption', () => ({ dbEncryptionKeyFilePath: () => '/mounted/secrets/db-key' }));
 vi.mock('../superuser-token', () => ({ superuserTokenPath: () => '/scoped/home/superuser-token' }));
 vi.mock('../workspace-registry', () => ({
@@ -17,28 +18,118 @@ vi.mock('../papercusp-root', () => ({ papercuspRoot: () => '/relocated/workspace
 // Its optional lookup can fail closed without losing independent state writers.
 vi.mock('../deployment/account-link-cli', () => { throw new Error('interactive login runtime unavailable'); });
 import { databaseCensusEntries, physicalDatabaseCensusEntries, integrationBaselineCensusDeclarations, secretCensusProducers, unitCensusEntries, unitCensusDeclarations, installedUnitCensusDeclarations, verifyHostStateCensus, workspaceRegistryCensusProducer, scratchCensusProducer, installedRootCensusProducers, mergeNestedCensusRoots, postgresStorageDeclaration, gitStorageDeclaration } from './state-census-producers';
-import { mkdtemp, writeFile, rm, symlink, readFile, mkdir, chmod, utimes, rename, lstat, readlink } from 'node:fs/promises';
+import { mkdtemp, writeFile, rm, symlink, readFile, mkdir, chmod, utimes, rename, lstat, readlink, link as createHardlink } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join, relative } from 'node:path';
 import type { CensusDeclaration } from '@papercusp/backup';
 import { collectStateCensus } from '@papercusp/backup';
 import type { Sql } from 'postgres';
 import { templateDatabaseCensusDeclarations, maintenanceDatabaseCensusDeclarations } from './state-census-producers';
 import { hostedConfigurationCensusProducers, configuredOperatorDatabaseCensusDeclarations, unitDatabaseCensusDeclarations, unitEnvironmentFileCensusDeclarations } from './state-census-producers';
 import { migrationProducerTables, migrationDatabaseCensusDeclarations, registeredProjectMigrationSources, sqlMigrationCensusSource, canonicalSqlMigrationCensusSources } from './state-census-producers';
-import { identityKeychainCensusProducer, anchorSecretCensusProducer, runtimeRetainedCensusProducer, accountCredentialCensusProducer, runtimeSidefileCensusProducer, cliSetupHomeCensusProducer, templateStoreCensusProducer } from './state-census-producers';
+import { identityKeychainCensusProducer, anchorSecretCensusProducer, runtimeRetainedCensusProducer, accountCredentialCensusProducer, runtimeSidefileCensusProducer, oauthRegistrationCensusDeclarations, runtimeTestArtifactCensusDeclarations, cliSetupHomeCensusProducer, templateStoreCensusProducer } from './state-census-producers';
 import { peerStorageDeclaration, portalReleaseStorageDeclaration, restoredCloneCensusDeclarations, stripRangeCacheCensusProducer, virtualenvCacheDeclaration, affectedTestCacheCensusProducer } from './state-census-producers';
 import { planTemplateStoreCensusProducer, historicalGitBlobIdentityResolver, workspaceTemplateStoreCensusProducer } from './state-census-producers';
 import { execFileSync } from 'node:child_process';
 import { reapArchiveCensusProducer } from './state-census-producers';
 import { archiveReapTail, REAP_TAIL_MAX_BYTES } from '../task-manager/reap-archive';
 import { historicalHostedProfileConstruction, historicalHostedProfileCensusProducer } from './state-census-producers';
-import { historicalPlaywrightStateConstruction, historicalPlaywrightStateCensusProducer, recoverHistoricalCensusWriterEvidence } from './state-census-producers';
+import { historicalPlaywrightStateConstruction, historicalPlaywrightStateCensusProducer, historicalVerifierArtifactCensusProducer, recoverHistoricalCensusWriterEvidence } from './state-census-producers';
 import { historicalStripeConfigConstruction, historicalStripeConfigCensusProducer } from './state-census-producers';
 import { createCipheriv, scryptSync, randomBytes, createHash } from 'node:crypto';
 import { hostname, userInfo } from 'node:os';
 import { defaultTestRunArtifactBase, TestRunArtifactPacket, testRunDeadline } from '../agent-tools/testing/run-artifacts';
 import { writeVerifierTaskReceipt } from '../verifier-source';
+import { verifierSourceFiles } from '@papercusp/test-config/verifier-source';
+import { attestHistoricalSourceOperations, readHistoricalCensusSourceReceipt } from './state-census-producers';
+
+describe('historical source operation byte binding', () => {
+  const record = (command: string, exitCode = 0) => ({ ref: 'archive:codex:fixture:sha256:original:line:1:call:source',
+    toolInput: `text(await tools.exec_command({cmd:${JSON.stringify(command)}}));`, receipt: '',
+    startedAt: '2026-11-10T10:00:00.000Z', finishedAt: '2026-11-10T10:00:01.000Z',
+    terminal: { exitCode, output: 'complete', ref: 'archive:codex:fixture:line:2' } });
+  const retained = (receipt: unknown) => {
+    const bytes = Buffer.from(JSON.stringify(receipt) + '\n');
+    return { bytes, sha256: createHash('sha256').update(bytes).digest('hex'), ref: 'retained:original-receipt' };
+  };
+
+  it('binds an archive to its original commit/receipt, refusing current-tree substitution and repinned local metadata', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'source-binding-'));
+    const repo = join(base, 'repo'); const dest = join(base, 'archive');
+    try {
+      await mkdir(repo); await mkdir(dest);
+      execFileSync('git', ['init', '--quiet', repo]);
+      const git = (args: string[], input?: string) => execFileSync('git', ['-C', repo,
+        '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', ...args], { input, encoding: 'utf8' }).trim();
+      const blob = git(['hash-object', '-w', '--stdin'], 'original source');
+      const tree = git(['mktree'], `100644 blob ${blob}\tinput.txt\n`);
+      const commit = git(['commit-tree', tree, '-m', 'fixture source']);
+      await writeFile(join(dest, 'input.txt'), 'original source');
+      const receipt = { schemaVersion: 'verifier-source-v1', sourceCommit: commit, submodules: [],
+        testedInputs: [{ path: 'input.txt', sha256: createHash('sha256').update('original source').digest('hex') }],
+        files: verifierSourceFiles(dest) };
+      const original = retained(receipt);
+      await writeFile(join(dest, '.verifier-source.json'), original.bytes);
+      const input = record(`git -C ${repo} archive --format=tar ${commit} | tar -x -C ${dest}`);
+      const bind = (pin = original) => attestHistoricalSourceOperations(input, async () => pin);
+      expect(await bind()).toEqual([{ operationIndex: 0, receiptRef: original.ref, receiptSha256: original.sha256,
+        sourceCommit: commit, files: receipt.files }]);
+      expect(await attestHistoricalSourceOperations({ ...input, terminal: { ...input.terminal, exitCode: 1 } }, async () => original)).toEqual([]);
+      expect(await attestHistoricalSourceOperations(input, async () => null)).toEqual([]);
+      expect(await bind({ ...original, bytes: Buffer.from('{}') })).toEqual([]);
+      await writeFile(join(dest, 'input.txt'), 'substituted current source');
+      expect(await bind()).toEqual([]);
+      await writeFile(join(dest, '.verifier-source.json'), JSON.stringify({ ...receipt,
+        testedInputs: [{ path: 'input.txt', sha256: createHash('sha256').update('substituted current source').digest('hex') }],
+        files: verifierSourceFiles(dest) }));
+      expect(await bind()).toEqual([]);
+      await writeFile(join(dest, 'input.txt'), 'original source');
+      await writeFile(join(dest, '.verifier-source.json'), original.bytes);
+      expect(await bind()).toHaveLength(1);
+      const otherCommit = git(['commit-tree', tree, '-m', 'different commit']);
+      expect(await attestHistoricalSourceOperations(record(
+        `git -C ${repo} archive --format=tar ${otherCommit} | tar -x -C ${dest}`), async () => original)).toEqual([]);
+    } finally { await rm(base, { recursive: true, force: true }); }
+  });
+
+  it('checks both hardlinked trees against the retained dependency bytes, even when both mutate together', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'hardlink-binding-'));
+    const root = join(base, 'original'); const source = join(root, 'node_modules'); const dest = join(base, 'copy');
+    try {
+      await mkdir(source, { recursive: true }); await mkdir(dest);
+      await writeFile(join(source, 'module.js'), 'original dependency');
+      await createHardlink(join(source, 'module.js'), join(dest, 'module.js'));
+      const receipt = { schemaVersion: 'verifier-dependencies-v1', scope: 'materialized-dependency-files',
+        root, sourceCommit: 'a'.repeat(40), sourceReceiptSha256: 'b'.repeat(64),
+        trees: [{ path: 'node_modules', files: verifierSourceFiles(source) }] };
+      const original = retained(receipt); const input = record(`cp -al ${source} ${dest}`);
+      const bind = () => attestHistoricalSourceOperations(input, async () => original);
+      expect(await bind()).toHaveLength(1);
+      const archive = Buffer.from([
+        { type: 'response_item', timestamp: input.startedAt, payload: { type: 'custom_tool_call', name: 'exec',
+          call_id: 'copy-call', input: input.toolInput } },
+        { type: 'response_item', timestamp: input.finishedAt, payload: { type: 'custom_tool_call_output',
+          call_id: 'copy-call', output: JSON.stringify({ exit_code: 0, output: 'complete' }) } },
+      ].map(row => JSON.stringify(row)).join('\n'));
+      const candidate = { ref: 'indexed:copy', sessionId: 'copy-session', toolInput: 'truncated',
+        startedAt: input.startedAt, finishedAt: input.finishedAt };
+      const recovered = await recoverHistoricalCensusWriterEvidence([candidate], async () => ({ bytes: archive,
+        sha256: createHash('sha256').update(archive).digest('hex') }), undefined, async () => original);
+      expect(recovered[0].sourceBindings).toEqual(await bind());
+      expect(recovered[0].receipt).toBe('');
+      expect(recovered[0]).not.toHaveProperty('declarations');
+      await writeFile(join(source, 'module.js'), 'mutated dependency');
+      expect(await readFile(join(dest, 'module.js'), 'utf8')).toBe('mutated dependency');
+      expect(verifierSourceFiles(source)).toEqual(verifierSourceFiles(dest));
+      expect(await bind()).toEqual([]);
+      await writeFile(join(source, 'module.js'), 'original dependency');
+      await writeFile(join(dest, 'extra.js'), 'unrecorded');
+      expect(await bind()).toEqual([]);
+      await rm(join(dest, 'extra.js')); await rename(dest, dest + '-real'); await symlink(dest + '-real', dest);
+      expect(await bind()).toEqual([]);
+    } finally { await rm(base, { recursive: true, force: true }); }
+  });
+});
 
 describe('historical Stripe configuration construction proof', () => {
   // Exact measured dialect from canonical archive SHA06f909e2, call25vdj.
@@ -257,6 +348,38 @@ text(r);`;
       }
     } finally { await rm(home, { recursive: true, force: true }); }
   });
+  it('transports bounded source operations through canonical recovery without inventing receipts or ownership', async () => {
+    const startedAt = '2026-11-10T10:00:00.000Z'; const finishedAt = '2026-11-10T10:00:01.000Z';
+    const candidate = { ref: 'indexed:source-operation', sessionId: 'source-operation-session',
+      toolInput: 'truncated', startedAt, finishedAt };
+    const recover = async (command: string, exitCode = 0) => {
+      const rows = [
+        { type: 'response_item', timestamp: startedAt, payload: { type: 'custom_tool_call', name: 'exec', call_id: 'source-call',
+          input: `text(await tools.exec_command({cmd:${JSON.stringify(command)}}));` } },
+        { type: 'response_item', timestamp: finishedAt, payload: { type: 'custom_tool_call_output', call_id: 'source-call',
+          output: JSON.stringify({ exit_code: exitCode, output: 'copy finished' }) } },
+      ];
+      const bytes = Buffer.from(rows.map(row => JSON.stringify(row)).join('\n'));
+      return (await recoverHistoricalCensusWriterEvidence([candidate], async () => ({ bytes,
+        sha256: createHash('sha256').update(bytes).digest('hex') }),
+      { workspaceId: 'source-workspace', sourceBoundary: 'source-archive', epoch: 'original-epoch', key: new Uint8Array(32).fill(17) }))[0];
+    };
+    const record = await recover('repo=/canonical; cp -al "$repo/modules" /scratch/modules');
+    expect(record.sourceOperations).toMatchObject({ status: 'supported', operations: [
+      { kind: 'hardlink-copy', source: '/canonical/modules', destination: '/scratch/modules' },
+    ] });
+    expect(record.receipt).toBe('');
+    expect(record.operationEvidence).toHaveLength(1);
+    expect(record.operationEvidence![0].source.ref).toBe(record.ref);
+    expect(record.operationEvidence![0].outcome).toEqual({ status: 'success', final: true });
+    expect(record).not.toHaveProperty('declarations');
+    expect((await recover('cp -al /canonical/modules /scratch/modules', 1)).operationEvidence![0].outcome)
+      .toEqual({ status: 'error', final: true });
+    const dynamic = await recover('cp -al "$MISSING" /scratch/modules');
+    expect(dynamic.sourceOperations?.status).toBe('unknown');
+    expect(dynamic.operationEvidence).toEqual([]);
+  });
+
   it('recovers full custom/native calls by timestamp and call id from verified source, rejecting corrupt and ambiguous archives', async () => {
     const candidate = { ref: 'indexed:part121', sessionId: 'native-session', toolInput: archivedInput.slice(0, 1000),
       startedAt: '2026-09-05T19:49:31.511Z', finishedAt: '2026-09-05T19:49:41.364Z' };
@@ -312,6 +435,89 @@ text(r);`;
     const ambiguousOutput = { ...output, payload: { ...output.payload, output: [
       { type: 'input_text', text: receipt }, { type: 'input_text', text: JSON.stringify(envelope) }] } };
     expect((await recoverHistoricalCensusWriterEvidence([candidate], async () => source(writer, ambiguousOutput)))[0].receipt).toBe('');
+  });
+  it('recovers deferred writer completion through exact cell and call identities without trusting notifications or unrelated waits', async () => {
+    const startedAt = '2026-09-05T19:49:31.511Z';
+    const candidate = { ref: 'indexed:deferred', sessionId: 'deferred-session', toolInput: '', startedAt, finishedAt: '' };
+    const receipt = JSON.stringify({ storageState: { mode: '600', bytes: 6625 } });
+    const record = (second: number, payload: object) => ({ type: 'response_item',
+      timestamp: new Date(Date.parse(startedAt) + second * 1000).toISOString(), payload });
+    const call = record(0, { type: 'custom_tool_call', name: 'exec', call_id: 'writer', input: archivedInput });
+    const yielded = (cell = '14') => `Script running with cell ID ${cell}\nWall time 11.0 seconds\nOutput:\n`;
+    const output = (second: number, id: string, value: unknown) => record(second,
+      { type: 'custom_tool_call_output', call_id: id, output: value });
+    const wait = (second: number, id: string, cell = '14', terminate = false) => record(second,
+      { type: 'function_call', name: 'wait', call_id: id, arguments: JSON.stringify({ cell_id: cell, terminate }) });
+    const terminal = (exit_code = 0) => [{ type: 'input_text', text: 'Script completed\nOutput:\n' },
+      { type: 'input_text', text: JSON.stringify({ exit_code, output: receipt }) }];
+    const source = (...rows: object[]) => {
+      const bytes = Buffer.from(rows.map(row => JSON.stringify(row)).join('\n') + '\n');
+      return { bytes, sha256: createHash('sha256').update(bytes).digest('hex') };
+    };
+    const first = [call, output(1, 'writer', yielded()), output(1, 'writer', 'Progress notification'),
+      wait(2, 'unrelated', 'other'), output(3, 'unrelated', terminal()),
+      wait(4, 'poll'), output(5, 'poll', yielded()), wait(6, 'finish')];
+    const recover = (...rows: object[]) => recoverHistoricalCensusWriterEvidence([candidate], async () => source(...rows));
+    const [recovered] = await recover(...first, output(7, 'finish', terminal()));
+    expect(recovered).toMatchObject({ toolInput: archivedInput, receipt, startedAt,
+      finishedAt: new Date(Date.parse(startedAt) + 7000).toISOString(), terminal: { exitCode: 0, output: receipt } });
+    expect(recovered.terminal?.ref).toContain(':call:finish');
+    expect(await recover(...first)).toEqual([]);
+    expect(await recover(...first, output(7, 'different-call', terminal()))).toEqual([]);
+    expect(await recover(...first, output(7, 'finish', terminal()), output(8, 'finish', terminal()))).toEqual([]);
+    expect(await recover(call, output(1, 'writer', yielded()), wait(2, 'finish', 'other'), output(3, 'finish', terminal()))).toEqual([]);
+    expect(await recover(call, output(1, 'writer', yielded()), wait(2, 'finish', '14', true), output(3, 'finish', terminal()))).toEqual([]);
+    expect(await recover(call, output(1, 'writer', yielded()), wait(2, 'poll'), output(3, 'poll', yielded('other')))).toEqual([]);
+    expect(await recover(call, output(1, 'writer', yielded()), wait(3, 'finish'), output(2, 'finish', terminal()))).toEqual([]);
+    const [failed] = await recover(...first, output(7, 'finish', terminal(1)));
+    expect(failed.receipt).toBe('');
+    expect(failed.terminal?.exitCode).toBe(1);
+    const [generic] = await recover(...first, output(7, 'finish', [{ type: 'input_text',
+      text: JSON.stringify({ exit_code: 0, output: 'generic writer stdout' }) }]));
+    expect(generic.receipt).toBe('');
+    expect(generic.terminal?.output).toBe('generic writer stdout');
+    expect((await recover(...first, output(7, 'finish', [{ type: 'input_text',
+      text: JSON.stringify({ exit_code: 0, session_id: 99, output: receipt }) }])))[0].terminal).toBeUndefined();
+  });
+  it('inspects complete static command inputs without evaluating dynamic, shadowed or ambiguous historical code', async () => {
+    const startedAt = '2026-10-28T13:25:38.821Z';
+    const candidate = { ref: 'indexed:operation', sessionId: 'operation-session', toolInput: '', startedAt, finishedAt: '' };
+    const inspect = async (input: string) => {
+      const bytes = Buffer.from([
+        { type: 'response_item', timestamp: startedAt,
+          payload: { type: 'custom_tool_call', name: 'exec', call_id: 'operation', input } },
+        { type: 'response_item', timestamp: '2026-10-28T13:27:01.445Z',
+          payload: { type: 'custom_tool_call_output', call_id: 'operation',
+            output: JSON.stringify({ exit_code: 0, output: 'operation complete' }) } },
+      ].map(row => JSON.stringify(row)).join('\n'));
+      const [record] = await recoverHistoricalCensusWriterEvidence([candidate], async () =>
+        ({ bytes, sha256: createHash('sha256').update(bytes).digest('hex') }));
+      expect(record.terminal?.exitCode).toBe(0);
+      expect(record.receipt).toBe('');
+      return record.command;
+    };
+    const constants = 'const root="/arbitrary/source"; const sha="abcd"; const destination=root+"/"+sha;';
+    const command = 'let r=await tools.exec_command({cmd:"cp -al "+root+" "+destination,workdir:root}); text(JSON.stringify(r));';
+    expect(await inspect(constants + command)).toEqual({ cmd: 'cp -al /arbitrary/source /arbitrary/source/abcd', workdir: '/arbitrary/source' });
+    expect(await inspect('text(await tools.exec_command({"cmd":"literal command"}));')).toEqual({ cmd: 'literal command' });
+    for (const unknown of [
+      constants.replace('const root=', 'let root=') + command,
+      constants + 'root="different";' + command,
+      constants + command.replace('root+" "+destination', 'root+" "+process.env.DESTINATION'),
+      constants + command.replace('cmd:', '...extra,cmd:'),
+      constants + command.replace('cmd:', 'cmd:"overridden",cmd:'),
+      constants + command.replace('workdir:root', 'workdir:resolve(root)'),
+      constants + command + 'await tools.exec_command({cmd:"second command"});',
+      constants + 'async function nested(root){' + command + '}',
+      'const tools=other;' + constants + command,
+      'const {tools}=other;' + constants + command,
+      'const {native:tools}=other;' + constants + command,
+      constants + 'tools.exec_command=replacement;' + command,
+      'const root=readSecret();' + command,
+      'const root="unterminated;' + command,
+      'const root="/earlier"; const root=dynamic;' + command,
+      'const root="/root";' + 'const sha="x".repeat(70_000); const destination=root+sha;' + command,
+    ]) expect(await inspect(unknown)).toBeUndefined();
   });
   it('requires a matching successful receipt, private no-follow file and original write window without exposing values', async () => {
     const home = await mkdtemp(join(tmpdir(), 'playwright-state-proof-'));
@@ -810,6 +1016,48 @@ describe('secret census producer adapters', () => {
       expect(await names()).not.toContain(`${session}/apply_patch`);
     } finally { vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); }
   });
+  it('retains a whole-install artifact inventory beyond the function argument limit', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'large-artifact-census-'));
+    const base = join(home, '.papercusp', 'test-artifacts');
+    const packet = join(base, 'native-router-ABC123');
+    const count = 150_000;
+    const expected: NativeCustodyGroup[] = [{ id: 'group-0', attempt: 'primary',
+      selected: ['/fixture/test.ts'], runner: 'vitest', armed: false, out: null, auxiliary: [] }];
+    const contract = { identity: { workspace: 'fixture', harness: 'fixture', runId: 'large-census' }, expected };
+    try {
+    const retained = retainNativeProofPacket(packet, {
+      ...contract, observations: [{ id: 'group-0', out: null, captureComplete: true }],
+    });
+    await writeFile(join(packet, 'expected.json'), JSON.stringify(contract), { mode: 0o600 });
+    await writeFile(join(packet, 'locator.json'), JSON.stringify(retained.locator), { mode: 0o600 });
+    const manifestRef = retained.locator.manifest.ref;
+    // Keep custody validation independent of this aggregation regression. A
+    // validated large manifest must reach the public producer without losing
+    // entries or turning its declarations into function arguments.
+    const verify = vi.spyOn(nativeProof, 'verifyNativeProofPacket').mockReturnValue({
+      ...retained,
+      manifest: { ...retained.manifest, segments: Array.from({ length: count }, (_, index) => ({
+        index, artifact: { ref: index.toString(16).padStart(64, '0'), sha256: '0'.repeat(64), byteLength: 0 },
+        bytesRead: 0, objectsRead: 0,
+        bytesReadByFamily: { A: 0, B: 0, C: 0, D: 0, auxiliary: 0 },
+        objectsReadByFamily: { A: 0, B: 0, C: 0, D: 0, auxiliary: 0 },
+      })) },
+    });
+    try {
+      vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(home, 'absent-mutex'));
+      const result = await runtimeSidefileCensusProducer(home, {});
+      const names = result.declarations.filter(entry => entry.producer === 'test-file-native-router-custody')
+        .map(entry => entry.name);
+      const prefix = 'test-artifacts/native-router-ABC123';
+      expect(names).toHaveLength(count + 6);
+      expect(new Set(names).size).toBe(names.length);
+      expect(names).toContain(`${prefix}/objects/${manifestRef}`);
+      expect(names).toContain(`${prefix}/objects/${'0'.repeat(64)}`);
+      expect(names).toContain(`${prefix}/objects/${(count - 1).toString(16).padStart(64, '0')}`);
+      expect(verify).toHaveBeenCalledOnce();
+    } finally { verify.mockRestore(); }
+    } finally { vi.unstubAllEnvs(); await rm(home, { recursive: true, force: true }); }
+  });
   it('retains exact pacing and gym sidefiles while leaving unknown siblings and links visible', async () => {
     const home = await mkdtemp(join(tmpdir(), 'sidefile-census-'));
     try {
@@ -828,6 +1076,131 @@ describe('secret census producer adapters', () => {
       expect(hook).toContain('`${statePath}.tmp-${process.pid}-${randomUUID()}`');
       const gym = await readFile(new URL('../harness/routines/template-gym-runner.ts', import.meta.url), 'utf8');
       for (const name of ['template-gym', 'last-run.json', 'runs.jsonl']) expect(gym).toContain(`'${name}'`);
+    } finally { vi.unstubAllEnvs(); await rm(home, { recursive: true, force: true }); }
+  });
+  it('preserves PostHog credentials and identifies release digest caches only in known runtime homes', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'release-config-census-'));
+    const active = join(home, 'active');
+    const inactive = join(home, 'inactive');
+    const foreign = join(home, 'foreign');
+    const ordinary = join(home, '.papercusp');
+    const names = ['posthog.json', 'release-sha256-cache.json', 'release-sha256-cache.json.tmp-123'];
+    const rejected = ['posthog.json.bak', 'release-sha256-cache.json.bak',
+      'release-sha256-cache.json.tmp-0', 'release-sha256-cache.json.tmp-2147483648',
+      'release-sha256-cache.json.tmp-123-copy', 'release-sha256-cache.json.tmp-0123'];
+    const bytes = JSON.stringify({ personalApiKey: 'fixture-only', testingFeatures: true });
+    try {
+      const before = [];
+      for (const directory of [ordinary, active, inactive, foreign]) {
+        await mkdir(join(directory, 'nested'), { recursive: true });
+        for (const name of [...names, ...rejected]) {
+          const path = join(directory, name);
+          await writeFile(path, bytes, { mode: 0o600 });
+          before.push({ path, stat: await lstat(path) });
+        }
+        await writeFile(join(directory, 'nested', names[2]), bytes);
+      }
+      await symlink(join(foreign, names[0]), join(inactive, 'release-sha256-cache.json.tmp-456'));
+      const linked = join(home, 'linked');
+      await symlink(foreign, linked);
+      vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(home, 'absent-mutex'));
+      const sidefiles = await runtimeSidefileCensusProducer(home, { PAPERCUSP_HOME: active }, [foreign], [inactive, linked]);
+      const retained = [ordinary, active, inactive].map((directory, index) => {
+        const result = runtimeRetainedCensusProducer(directory);
+        const id = `retained-${index}`;
+        return { roots: result.roots.map(root => ({ ...root, id })),
+          declarations: result.declarations.map(row => ({ ...row, root: id })) };
+      });
+      const combined = mergeNestedCensusRoots({
+        roots: [...sidefiles.roots, ...retained.flatMap(result => result.roots)],
+        declarations: [...sidefiles.declarations, ...retained.flatMap(result => result.declarations)],
+      });
+      const census = await collectStateCensus({ ...combined, readCatalogs: async () => [] });
+      for (const directory of [ordinary, active, inactive]) {
+        const root = combined.roots.find(root => root.path === directory)!;
+        for (const name of names) {
+          expect(census.inventory.find(row => row.root === root.id && row.name === name))
+            .toMatchObject({ classification: name === 'posthog.json' ? 'secret' : 'cache', problem: null });
+          const declaration = combined.declarations.find(row => row.root === root.id && row.name === name)!;
+          expect(declaration.descendants).toBeUndefined();
+          expect(declaration.prune).toBeUndefined();
+        }
+        const residue = census.residue.filter(row => row.root === root.id).map(row => row.name);
+        expect(residue).toEqual(expect.arrayContaining([...rejected, 'nested', `nested/${names[2]}`]));
+      }
+      expect(sidefiles.roots.some(root => [foreign, linked].includes(root.path))).toBe(false);
+      const inactiveRoot = combined.roots.find(root => root.path === inactive)!;
+      expect(census.residue).toContainEqual(expect.objectContaining({ root: inactiveRoot.id,
+        name: 'release-sha256-cache.json.tmp-456', problem: 'unclassified' }));
+      for (const { path, stat } of before) {
+        expect(await readFile(path, 'utf8')).toBe(bytes);
+        const after = await lstat(path);
+        for (const field of ['mode', 'size', 'ino', 'mtimeMs', 'ctimeMs'] as const) expect(after[field]).toBe(stat[field]);
+      }
+      expect(await readlink(join(inactive, 'release-sha256-cache.json.tmp-456'))).toBe(join(foreign, names[0]));
+      const configWriter = await readFile(new URL('../endpoint-route/routes/flags/testing-features.ts', import.meta.url), 'utf8');
+      expect(configWriter).toContain("papercuspPath('posthog.json')");
+      expect(configWriter).toContain('await fs.promises.writeFile(');
+      const cacheWriter = await readFile(new URL('../../../../apps/operator/lib/release/record-release-cli.ts', import.meta.url), 'utf8');
+      expect(cacheWriter).toContain("papercuspPath('release-sha256-cache.json')");
+      expect(cacheWriter).toContain('`${SHA_CACHE_PATH}.tmp-${process.pid}`');
+      expect(cacheWriter).toContain('fs.renameSync(tmp, SHA_CACHE_PATH)');
+    } finally { vi.unstubAllEnvs(); await rm(home, { recursive: true, force: true }); }
+  });
+  it('retains exact selected identity and migration sidefiles without claiming external siblings or linked paths', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'selected-sidefiles-census-'));
+    const external = join(home, 'external');
+    const identity = join(external, 'chosen-identity.json');
+    const cooldown = join(external, 'chosen-cooldown.json');
+    try {
+      await mkdir(external);
+      await mkdir(join(home, '.papercusp'));
+      vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(home, 'absent-mutex'));
+      const { resolveLocalAnnounceIdentity } = await import('../sync/hyperbee/local-announce-identity');
+      await resolveLocalAnnounceIdentity({ logCoreKeyHex: 'ab'.repeat(32), identityMode: 'authoring', cachePath: identity,
+        resolveGithubUser: async () => ({ id: 123, login: 'census-fixture' }),
+        buildKeychainId: () => '123:fixture-device',
+        loadKeypair: async keychainId => ({ keychainId, pubkeyBase64: Buffer.alloc(32, 7).toString('base64') }),
+        resolveAttestationGistId: async () => 'fixture-gist' });
+      await writeFile(cooldown, JSON.stringify({ '001.sql': { lastFailedAt: 1234, attempts: 1, error: 'fixture' } }));
+      await writeFile(`${identity}.bak`, await readFile(identity));
+      await writeFile(join(external, 'foreign'), 'unrelated');
+      const paths = [identity, cooldown];
+      const before = await Promise.all(paths.map(async path => ({ path, bytes: await readFile(path), stat: await lstat(path) })));
+      for (const relativePaths of [false, true]) {
+        const environment = { PAPERCUSP_ANNOUNCE_IDENTITY_CACHE: relativePaths ? relative(process.cwd(), identity) : identity,
+          PAPERCUSP_MIGRATION_COOLDOWN_FILE: relativePaths ? relative(process.cwd(), cooldown) : cooldown };
+        const result = await runtimeSidefileCensusProducer(home, environment);
+        const selected = result.roots.find(root => root.path === external);
+        expect(selected?.fileNames?.sort()).toEqual(paths.map(path => basename(path)).sort());
+        const census = await collectStateCensus({ ...result, readCatalogs: async () => [] });
+        expect(census.inventory.filter(entry => entry.root === selected?.id).map(entry => entry.name).sort())
+          .toEqual(paths.map(path => basename(path)).sort());
+        for (const [path, producer] of [[identity, 'local-announce-identity'], [cooldown, 'boot-migration-cooldown']]) {
+          expect(census.inventory.find(entry => entry.root === selected?.id && entry.name === basename(path)))
+            .toMatchObject({ classification: 'state', producers: [producer] });
+          const declaration = result.declarations.find(entry => entry.root === selected?.id && entry.name === basename(path));
+          expect(declaration?.descendants).toBeUndefined();
+          expect(declaration?.prune).toBeUndefined();
+        }
+      }
+      for (const { path, bytes, stat } of before) {
+        expect(await readFile(path)).toEqual(bytes);
+        const after = await lstat(path);
+        for (const field of ['mode', 'size', 'ino', 'mtimeMs', 'ctimeMs'] as const) expect(after[field]).toBe(stat[field]);
+      }
+      const linked = join(home, 'linked-parent');
+      await symlink(external, linked);
+      await symlink(identity, join(external, 'linked-identity'));
+      for (const selectedPath of [join(linked, basename(identity)), join(external, 'linked-identity'), external, join(home, 'absent')]) {
+        const result = await runtimeSidefileCensusProducer(home, { PAPERCUSP_ANNOUNCE_IDENTITY_CACHE: selectedPath });
+        expect(result.declarations.some(entry => entry.producer === 'local-announce-identity')).toBe(false);
+      }
+      expect((await runtimeSidefileCensusProducer(home, { PAPERCUSP_ANNOUNCE_IDENTITY_CACHE: '',
+        PAPERCUSP_MIGRATION_COOLDOWN_FILE: '' })).roots.some(root => root.path === external)).toBe(false);
+      const source = await readFile(new URL('../db-boot-migrate.ts', import.meta.url), 'utf8');
+      expect(source).toContain("env.PAPERCUSP_MIGRATION_COOLDOWN_FILE || papercuspPath('migration-failure-cooldown.json')");
+      expect(source).toContain('await writeFile(path, JSON.stringify(state)');
     } finally { vi.unstubAllEnvs(); await rm(home, { recursive: true, force: true }); }
   });
   it('excludes relocated host mutex ownership from transport while preserving unknown siblings and live bytes', async () => {
@@ -893,6 +1266,157 @@ describe('secret census producer adapters', () => {
       expect(queryWriter).toContain('format!(".{key}.{}.tmp", std::process::id())');
       expect(await readFile(new URL('../../../../apps/tui/src/client.rs', import.meta.url), 'utf8')).toContain('"plans-list-standard-v1"');
     } finally { vi.unstubAllEnvs(); await rm(home, { recursive: true, force: true }); }
+  });
+  describe('OAuth registration census evidence', () => {
+    it.each(['configured', 'registered'])('inventories the full %s runtime home when it also contains a referenced secret', async variant => {
+      const home = await mkdtemp(join(tmpdir(), 'oauth-runtime-root-census-'));
+      const ordinary = join(home, '.papercusp');
+      const runtime = join(home, 'runtime');
+      try {
+        await mkdir(ordinary);
+        await mkdir(join(runtime, 'unknown-directory'), { recursive: true });
+        await mkdir(join(runtime, 'test-artifacts', 'testing-run', 'retained'), { recursive: true });
+        const target = join(runtime, 'credential');
+        await writeFile(target, 'fixture credential', { mode: 0o600 });
+        await writeFile(join(ordinary, 'oauth-apps.json'), JSON.stringify({ custom: {
+          clientId: 'fixture', clientSecretFile: target,
+        } }));
+        await writeFile(join(runtime, 'operator-port.json'), JSON.stringify({ port: 3170, updatedAt: 1 }));
+        await writeFile(join(runtime, 'endpoint-ipc.3170.json'), '{}');
+        await writeFile(join(runtime, 'test-artifacts', 'testing-run', 'retained', 'proof'), 'fixture proof');
+        await writeFile(join(runtime, 'unknown'), 'unclassified');
+        await writeFile(join(runtime, 'unknown-directory', 'nested'), 'unclassified');
+        const result = await runtimeSidefileCensusProducer(home,
+          variant === 'configured' ? { PAPERCUSP_HOME: runtime } : {}, [],
+          variant === 'registered' ? [runtime] : []);
+        expect(result.roots.find(root => root.path === runtime)?.fileNames).toBeUndefined();
+        const census = await collectStateCensus({ ...mergeNestedCensusRoots(result), readCatalogs: async () => [] });
+        const atRuntime = census.inventory.filter(entry => result.roots.find(root => root.id === entry.root)?.path === runtime);
+        expect(atRuntime).toEqual(expect.arrayContaining([
+          expect.objectContaining({ name: 'credential', classification: 'secret' }),
+          expect.objectContaining({ name: 'operator-port.json', classification: 'config' }),
+          expect.objectContaining({ name: 'endpoint-ipc.3170.json', classification: 'cache' }),
+          expect.objectContaining({ name: 'test-artifacts/testing-run', classification: 'state' }),
+          expect.objectContaining({ name: 'unknown', classification: null }),
+          expect.objectContaining({ name: 'unknown-directory/nested', classification: null }),
+        ]));
+        expect(census.representedSubtrees).toEqual(expect.arrayContaining([
+          expect.objectContaining({ name: 'test-artifacts/testing-run', disposition: 'preserve-state-subtree' }),
+        ]));
+        expect(census.residue.map(entry => entry.name).sort()).toEqual(['unknown', 'unknown-directory', 'unknown-directory/nested']);
+      } finally { await rm(home, { recursive: true, force: true }); }
+    });
+    it('retains registrations and exact referenced secrets across known runtime homes without changing bytes', async () => {
+      const home = await mkdtemp(join(tmpdir(), 'oauth-registration-census-'));
+      const ordinary = join(home, '.papercusp');
+      const relocated = join(home, 'relocated');
+      const registered = join(home, 'workspace', '.papercusp');
+      const foreign = join(home, 'foreign');
+      const secrets = join(home, 'external-secrets');
+      try {
+        await mkdir(secrets);
+        const target = join(secrets, 'arbitrary-client-credential');
+        await writeFile(target, 'fixture credential\n', { mode: 0o600 });
+        await writeFile(join(secrets, 'unreferenced'), 'unknown');
+        const body = JSON.stringify({ custom: { clientId: 'fixture', clientSecretFile: target } });
+        const files = [target];
+        for (const directory of [ordinary, relocated, registered, foreign]) {
+          await mkdir(directory, { recursive: true });
+          const path = join(directory, 'oauth-apps.json');
+          await writeFile(path, body, { mode: 0o600 });
+          await writeFile(join(directory, 'unknown.json'), body);
+          files.push(path);
+        }
+        const before = await Promise.all(files.map(async path => ({ bytes: await readFile(path), stat: await lstat(path) })));
+        const result = await runtimeSidefileCensusProducer(home, { PAPERCUSP_HOME: relocated }, [foreign], [registered]);
+        const entries = result.declarations.filter(entry => entry.producer === 'oauth-client-registration');
+        const paths = entries.map(entry => join(result.roots.find(root => root.id === entry.root)!.path, entry.name));
+        expect(new Set(paths)).toEqual(new Set([target, ...[ordinary, relocated, registered].map(path => join(path, 'oauth-apps.json'))]));
+        // The focused probe shares the integrated validator and existing roots.
+        // It must neither add a second root for a known home nor expose secrets.
+        const focusedRoots = [{ id: 'existing-runtime', path: registered }];
+        const focused = await oauthRegistrationCensusDeclarations(new Set([ordinary, relocated, registered]), focusedRoots);
+        expect(new Set(focused.map(entry => join(focusedRoots.find(root => root.id === entry.root)!.path, entry.name))))
+          .toEqual(new Set(paths));
+        expect(focusedRoots.filter(root => root.path === registered)).toEqual([{ id: 'existing-runtime', path: registered }]);
+        expect(JSON.stringify({ focused, focusedRoots })).not.toContain('fixture credential');
+        expect(entries.every(entry => entry.classification === 'secret' && !entry.descendants && !entry.prune)).toBe(true);
+        expect(result.roots.find(root => root.path === secrets)?.fileNames).toEqual(['arbitrary-client-credential']);
+        const census = await collectStateCensus({ ...mergeNestedCensusRoots(result), readCatalogs: async () => [] });
+        expect(census.residue.map(entry => entry.name)).toEqual(['unknown.json', 'unknown.json', 'unknown.json']);
+        for (const [index, path] of files.entries()) {
+          expect(await readFile(path)).toEqual(before[index].bytes);
+          const after = await lstat(path);
+          expect([after.ino, after.size, after.mode, after.mtimeMs, after.ctimeMs]).toEqual(
+            [before[index].stat.ino, before[index].stat.size, before[index].stat.mode, before[index].stat.mtimeMs, before[index].stat.ctimeMs]);
+        }
+      } finally { await rm(home, { recursive: true, force: true }); }
+    });
+    it('honors inline-secret precedence and the writer atomic-file contract', async () => {
+      const home = await mkdtemp(join(tmpdir(), 'oauth-precedence-census-'));
+      const ordinary = join(home, '.papercusp');
+      try {
+        await mkdir(ordinary);
+        const unused = join(home, 'unused');
+        await writeFile(unused, 'fixture');
+        const body = JSON.stringify({ custom: { clientId: 'fixture', clientSecret: 'inline fixture', clientSecretFile: unused } });
+        await writeFile(join(ordinary, 'oauth-apps.json'), body);
+        await writeFile(join(ordinary, 'oauth-apps.json.123.aabbccddeeff.tmp'), '{}');
+        await writeFile(join(ordinary, 'oauth-apps.json.123.not-hex.tmp'), body);
+        const result = await runtimeSidefileCensusProducer(home, {});
+        expect(result.declarations.filter(entry => entry.producer === 'oauth-client-registration').map(entry => entry.name).sort())
+          .toEqual(['oauth-apps.json', 'oauth-apps.json.123.aabbccddeeff.tmp'].sort());
+        expect(result.roots.some(root => root.fileNames?.includes('unused'))).toBe(false);
+        const writer = await readFile(new URL('../integrations/oauth-client-registration.ts', import.meta.url), 'utf8');
+        expect(writer).toContain('`${target}.${process.pid}.${randomBytes(6).toString(\'hex\')}.tmp`');
+      } finally { await rm(home, { recursive: true, force: true }); }
+    });
+    it.each(['malformed', 'array', 'foreign', 'oversized', 'linked-registry', 'linked-home', 'linked-parent',
+      'linked-secret', 'linked-secret-parent', 'missing-secret', 'relative-secret', 'directory-secret'])
+    ('preserves unresolved OAuth ownership boundaries: %s', async variant => {
+      const home = await mkdtemp(join(tmpdir(), 'oauth-boundary-census-'));
+      const ordinary = join(home, '.papercusp');
+      try {
+        await mkdir(ordinary);
+        const secrets = join(home, 'secrets');
+        await mkdir(secrets);
+        const target = join(secrets, 'credential');
+        await writeFile(target, 'fixture');
+        let ref = target;
+        let directory = ordinary;
+        if (variant === 'linked-secret') { ref = join(secrets, 'link'); await symlink(target, ref); }
+        if (variant === 'linked-secret-parent') { await symlink(secrets, join(home, 'linked-secrets')); ref = join(home, 'linked-secrets', 'credential'); }
+        if (variant === 'missing-secret') ref = join(secrets, 'missing');
+        if (variant === 'relative-secret') ref = 'secrets/credential';
+        if (variant === 'directory-secret') ref = secrets;
+        let body = JSON.stringify({ custom: { clientId: 'fixture', clientSecretFile: ref } });
+        if (variant === 'malformed') body = '{';
+        if (variant === 'array') body = JSON.stringify([{ clientId: 'fixture', clientSecretFile: ref }]);
+        if (variant === 'foreign') body = JSON.stringify({ custom: { clientSecretFile: ref } });
+        if (variant === 'oversized') body += ' '.repeat(1024 * 1024);
+        await writeFile(join(ordinary, 'oauth-apps.json'), body);
+        if (variant === 'linked-registry') {
+          await rename(join(ordinary, 'oauth-apps.json'), join(home, 'registry'));
+          await symlink(join(home, 'registry'), join(ordinary, 'oauth-apps.json'));
+        }
+        if (variant === 'linked-home' || variant === 'linked-parent') {
+          await rename(ordinary, join(home, 'real-home'));
+          if (variant === 'linked-home') await symlink(join(home, 'real-home'), ordinary);
+          else {
+            await mkdir(join(home, 'real-parent'));
+            await rename(join(home, 'real-home'), join(home, 'real-parent', 'runtime'));
+            await symlink(join(home, 'real-parent'), join(home, 'linked-parent'));
+            directory = join(home, 'linked-parent', 'runtime');
+          }
+        }
+        const result = await runtimeSidefileCensusProducer(home, { PAPERCUSP_HOME: directory });
+        const entries = result.declarations.filter(entry => entry.producer === 'oauth-client-registration');
+        expect(entries.filter(entry => entry.name !== 'oauth-apps.json')).toEqual([]);
+        if (['malformed', 'array', 'foreign', 'oversized', 'linked-registry', 'linked-home', 'linked-parent'].includes(variant))
+          expect(entries).toEqual([]);
+        else expect(entries).toHaveLength(1);
+      } finally { await rm(home, { recursive: true, force: true }); }
+    });
   });
   it('retains exact project MCP writer files as secrets at explicit homes and workspace roots', async () => {
     const home = await mkdtemp(join(tmpdir(), 'project-mcp-census-'));
@@ -1561,6 +2085,221 @@ describe('secret census producer adapters', () => {
       expect(await Promise.all(relativeNames.map(file => readFile(join(home, file))))).toEqual(before);
     } finally { await rm(parent, { recursive: true, force: true }); }
   });
+  it('classifies exact vendor runtime containers without claiming unknown children or changing metadata', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'codex-runtime-containers-'));
+    const home = join(parent, 'deploy-credentials', 'known.codex-cli');
+    const containers = ['tmp', 'shell_snapshots', 'plugins', 'skills', 'log'];
+    try {
+      await mkdir(home, { recursive: true });
+      for (const name of [...containers, 'tmp.backup', 'plugins.backup', 'skills.backup', 'log.backup']) await mkdir(join(home, name));
+      for (const name of containers) await writeFile(join(home, name, 'unknown'), 'must remain unresolved');
+      const unknown = join(dirname(home), 'unknown.codex-cli');
+      for (const name of containers) await mkdir(join(unknown, name), { recursive: true });
+      const before = await Promise.all(containers.map(name => lstat(join(home, name))));
+      const result = await accountCredentialCensusProducer([
+        { credentialRef: `codex-cli:${home}` }, { credentialRef: `codex-cli:${home}` },
+      ]);
+      expect(result.declarations.filter(entry => ['codex-arg0-dispatch', 'codex-shell-snapshot', 'codex-plugin-store', 'codex-system-skills', 'codex-tui-log'].includes(entry.producer)))
+        .toEqual([
+          { kind: 'path', root: 'account-credential-0', name: 'known.codex-cli/tmp', classification: 'cache', producer: 'codex-arg0-dispatch' },
+          { kind: 'path', root: 'account-credential-0', name: 'known.codex-cli/shell_snapshots', classification: 'secret', producer: 'codex-shell-snapshot' },
+          { kind: 'path', root: 'account-credential-0', name: 'known.codex-cli/plugins', classification: 'state', producer: 'codex-plugin-store' },
+          { kind: 'path', root: 'account-credential-0', name: 'known.codex-cli/skills', classification: 'config', producer: 'codex-system-skills' },
+          { kind: 'path', root: 'account-credential-0', name: 'known.codex-cli/log', classification: 'secret', producer: 'codex-tui-log' },
+        ]);
+      expect(result.declarations.every(entry => !entry.descendants && !entry.prune)).toBe(true);
+      expect((await collectStateCensus({ ...result, readCatalogs: async () => [] })).residue.map(entry => entry.name))
+        .toEqual(expect.arrayContaining([
+          ...containers.map(name => `known.codex-cli/${name}/unknown`),
+          ...['tmp.backup', 'plugins.backup', 'skills.backup', 'log.backup'].map(name => `known.codex-cli/${name}`),
+          ...containers.map(name => `unknown.codex-cli/${name}`),
+        ]));
+      const stamp = (info: Awaited<ReturnType<typeof lstat>>) => [info.dev, info.ino, info.mode, info.size, info.mtimeMs, info.ctimeMs];
+      expect((await Promise.all(containers.map(name => lstat(join(home, name))))).map(stamp)).toEqual(before.map(stamp));
+      for (const name of containers) expect(await readFile(join(home, name, 'unknown'), 'utf8')).toBe('must remain unresolved');
+      expect(result.declarations.some(entry => entry.name.startsWith('unknown.codex-cli/'))).toBe(false);
+      // An explicit pool reference registers this second durable home. Its
+      // exact containers become known while their children remain unowned.
+      const registered = await accountCredentialCensusProducer([{ credentialRef: `codex-cli:${unknown}` }]);
+      expect(registered.declarations.filter(entry => entry.producer === 'codex-shell-snapshot'))
+        .toEqual([{ kind: 'path', root: 'account-credential-0', name: 'unknown.codex-cli/shell_snapshots',
+          classification: 'secret', producer: 'codex-shell-snapshot' }]);
+    } finally { await rm(parent, { recursive: true, force: true }); }
+  });
+  it('rejects vendor runtime containers that are files, links, or under redirected homes', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'codex-runtime-containers-negative-'));
+    const home = join(parent, 'deploy-credentials', 'known.codex-cli');
+    const containers = ['tmp', 'shell_snapshots', 'plugins', 'skills', 'log'];
+    const runtimeDeclarations = async (target = home) => (await accountCredentialCensusProducer([
+      { credentialRef: `codex-cli:${target}` },
+    ])).declarations.filter(entry => ['codex-arg0-dispatch', 'codex-shell-snapshot', 'codex-plugin-store', 'codex-system-skills', 'codex-tui-log'].includes(entry.producer));
+    try {
+      await mkdir(home, { recursive: true });
+      const external = join(parent, 'external');
+      await mkdir(external);
+      for (const name of containers) await writeFile(join(home, name), 'foreign file');
+      expect(await runtimeDeclarations()).toEqual([]);
+      for (const name of containers) {
+        await rm(join(home, name));
+        await symlink(external, join(home, name));
+      }
+      expect(await runtimeDeclarations()).toEqual([]);
+      for (const name of containers) {
+        await rm(join(home, name));
+        await mkdir(join(home, name));
+        await mkdir(join(external, name));
+      }
+      expect(await runtimeDeclarations()).toHaveLength(containers.length);
+      expect(await runtimeDeclarations(external)).toEqual([]);
+      await rename(home, `${home}.retained`);
+      await symlink(`${home}.retained`, home);
+      expect(await runtimeDeclarations()).toEqual([]);
+      await rm(home);
+      await rm(`${home}.retained`, { recursive: true });
+      await rename(dirname(home), `${dirname(home)}.retained`);
+      await symlink(`${dirname(home)}.retained`, dirname(home));
+      await mkdir(home);
+      for (const name of containers) await mkdir(join(home, name));
+      expect(await runtimeDeclarations()).toEqual([]);
+    } finally { await rm(parent, { recursive: true, force: true }); }
+  });
+  it('recognizes vendor model caches only in registered durable homes without changing their metadata', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'codex-model-cache-'));
+    const home = join(parent, 'deploy-credentials', 'known.codex-cli');
+    const cachePath = join(home, 'models_cache.json');
+    const catalog = { fetched_at: '2020-01-01T00:00:00Z', client_version: 'old-client', etag: 'etag',
+      identity: 'opaque-provider-identity', models: [{ slug: 'model', display_name: 'Model' }] };
+    const names = ['models_cache.json', 'models_cache.json.backup', 'models_cache.json.123.tmp'];
+    try {
+      await mkdir(home, { recursive: true });
+      for (const name of names) await writeFile(join(home, name), JSON.stringify(catalog));
+      const before = await lstat(cachePath);
+      const bytes = await readFile(cachePath);
+      const result = await accountCredentialCensusProducer([{ credentialRef: `codex-cli:${home}` }]);
+      expect(result.declarations.filter(entry => entry.producer === 'codex-model-catalog-cache')).toEqual([
+        { kind: 'path', root: 'account-credential-0', name: 'known.codex-cli/models_cache.json',
+          classification: 'cache', producer: 'codex-model-catalog-cache' },
+      ]);
+      const census = await collectStateCensus({ ...result, readCatalogs: async () => [] });
+      expect(census.residue.map(entry => entry.name)).toEqual(expect.arrayContaining([
+        'known.codex-cli/models_cache.json.backup', 'known.codex-cli/models_cache.json.123.tmp',
+      ]));
+      expect(await readFile(cachePath)).toEqual(bytes);
+      const after = await lstat(cachePath);
+      expect([after.ino, after.mode, after.size, after.mtimeMs, after.ctimeMs])
+        .toEqual([before.ino, before.mode, before.size, before.mtimeMs, before.ctimeMs]);
+      // The vendor permits empty catalogs and absent optional identity/version fields.
+      await writeFile(cachePath, JSON.stringify({ fetched_at: '-262143-01-01T00:00:00Z', models: [] }));
+      expect((await accountCredentialCensusProducer([{ credentialRef: `codex-cli:${home}` }])).declarations
+        .some(entry => entry.producer === 'codex-model-catalog-cache')).toBe(true);
+      // A valid catalog in an unregistered sibling or an arbitrary referenced
+      // CLI home cannot establish managed-account ownership.
+      const unknown = join(parent, 'deploy-credentials', 'unknown.codex-cli');
+      await mkdir(unknown);
+      await writeFile(join(unknown, 'models_cache.json'), JSON.stringify(catalog));
+      expect((await collectStateCensus({ ...result, readCatalogs: async () => [] })).residue.map(entry => entry.name))
+        .toContain('unknown.codex-cli/models_cache.json');
+      const external = join(parent, 'external');
+      await mkdir(external);
+      await writeFile(join(external, 'models_cache.json'), JSON.stringify(catalog));
+      expect((await accountCredentialCensusProducer([{ credentialRef: `codex-cli:${external}` }])).declarations
+        .some(entry => entry.producer === 'codex-model-catalog-cache')).toBe(false);
+    } finally { await rm(parent, { recursive: true, force: true }); }
+  });
+  it('rejects malformed, oversized, copied and redirected model cache candidates', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'codex-model-cache-negative-'));
+    const home = join(parent, 'deploy-credentials', 'known.codex-cli');
+    const cachePath = join(home, 'models_cache.json');
+    const recognized = async () => (await accountCredentialCensusProducer([{ credentialRef: `codex-cli:${home}` }]))
+      .declarations.some(entry => entry.producer === 'codex-model-catalog-cache');
+    try {
+      await mkdir(home, { recursive: true });
+      for (const candidate of ['{', 'null', '[]', '{}', JSON.stringify({ fetched_at: 'yesterday', models: [] }),
+        JSON.stringify({ fetched_at: '2026-01-01T00:00:00Z', models: [null] }),
+        JSON.stringify({ fetched_at: '2026-01-01T00:00:00Z', models: [{ slug: 'm' }] }),
+        JSON.stringify({ fetched_at: '2026-01-01T00:00:00Z', models: [], identity: {} })]) {
+        await writeFile(cachePath, candidate);
+        expect(await recognized()).toBe(false);
+      }
+      const catalog = JSON.stringify({ fetched_at: '2026-01-01T00:00:00Z', models: [], padding: ' '.repeat(8 * 1024 * 1024) });
+      await writeFile(cachePath, catalog);
+      expect(await recognized()).toBe(false);
+      const external = join(parent, 'external.json');
+      await writeFile(external, JSON.stringify({ fetched_at: '2026-01-01T00:00:00Z', models: [] }));
+      await rm(cachePath);
+      await symlink(external, cachePath);
+      expect(await recognized()).toBe(false);
+      await rm(cachePath);
+      await mkdir(cachePath);
+      expect(await recognized()).toBe(false);
+      await rm(cachePath, { recursive: true });
+      await writeFile(cachePath, await readFile(external));
+      await rename(home, `${home}.retained`);
+      await symlink(`${home}.retained`, home);
+      expect(await recognized()).toBe(false);
+    } finally { await rm(parent, { recursive: true, force: true }); }
+  });
+  it('retains exact vendor policy migration markers without changing bytes or claiming adjacent paths', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'codex-policy-marker-'));
+    const home = join(parent, 'deploy-credentials', 'known.codex-cli');
+    const marker = join(home, '.sandbox_migration');
+    try {
+      await mkdir(home, { recursive: true });
+      await writeFile(marker, 'v1\n');
+      await writeFile(`${marker}.backup`, 'v1\n');
+      await writeFile(join(home, '.tmp-marker'), 'v1\n');
+      const unknown = join(dirname(home), 'unknown.codex-cli');
+      await mkdir(unknown);
+      await writeFile(join(unknown, '.sandbox_migration'), 'v1\n');
+      const before = await lstat(marker);
+      const result = await accountCredentialCensusProducer([
+        { credentialRef: `codex-cli:${home}` }, { credentialRef: `codex-cli:${home}` },
+      ]);
+      expect(result.declarations.filter(entry => entry.producer === 'codex-sandbox-policy-migration')).toEqual([
+        { kind: 'path', root: 'account-credential-0', name: 'known.codex-cli/.sandbox_migration',
+          classification: 'config', producer: 'codex-sandbox-policy-migration' },
+      ]);
+      expect((await collectStateCensus({ ...result, readCatalogs: async () => [] })).residue.map(entry => entry.name))
+        .toEqual(expect.arrayContaining(['known.codex-cli/.sandbox_migration.backup',
+          'known.codex-cli/.tmp-marker', 'unknown.codex-cli/.sandbox_migration']));
+      expect(await readFile(marker, 'utf8')).toBe('v1\n');
+      const after = await lstat(marker);
+      expect([after.dev, after.ino, after.mode, after.size, after.mtimeMs, after.ctimeMs])
+        .toEqual([before.dev, before.ino, before.mode, before.size, before.mtimeMs, before.ctimeMs]);
+      const external = join(parent, 'external');
+      await mkdir(external);
+      await writeFile(join(external, '.sandbox_migration'), 'v1\n');
+      expect((await accountCredentialCensusProducer([{ credentialRef: `codex-cli:${external}` }])).declarations
+        .some(entry => entry.producer === 'codex-sandbox-policy-migration')).toBe(false);
+    } finally { await rm(parent, { recursive: true, force: true }); }
+  });
+  it('rejects malformed, oversized and redirected policy migration markers', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'codex-policy-marker-negative-'));
+    const home = join(parent, 'deploy-credentials', 'known.codex-cli');
+    const marker = join(home, '.sandbox_migration');
+    const recognized = async () => (await accountCredentialCensusProducer([{ credentialRef: `codex-cli:${home}` }]))
+      .declarations.some(entry => entry.producer === 'codex-sandbox-policy-migration');
+    try {
+      await mkdir(home, { recursive: true });
+      for (const value of ['', 'v1', 'v2\n', 'v1\r\n', 'v1\nforeign', ' '.repeat(1024)]) {
+        await writeFile(marker, value);
+        expect(await recognized()).toBe(false);
+      }
+      const external = join(parent, 'external');
+      await writeFile(external, 'v1\n');
+      await rm(marker);
+      await symlink(external, marker);
+      expect(await recognized()).toBe(false);
+      await rm(marker);
+      await mkdir(marker);
+      expect(await recognized()).toBe(false);
+      await rm(marker, { recursive: true });
+      await writeFile(marker, 'v1\n');
+      await rename(home, `${home}.retained`);
+      await symlink(`${home}.retained`, home);
+      expect(await recognized()).toBe(false);
+    } finally { await rm(parent, { recursive: true, force: true }); }
+  });
   it('leaves unknown accounts, malformed databases, orphan companions, backups and links unresolved', async () => {
     const parent = await mkdtemp(join(tmpdir(), 'codex-account-negative-'));
     const home = join(parent, 'deploy-credentials', 'known.codex-cli');
@@ -1762,7 +2501,9 @@ describe('secret census producer adapters', () => {
     } finally { await rm(home, { recursive: true, force: true }); }
   });
   describe('source preview original census evidence', () => {
-    const fixture = async (runtimeHome: string) => {
+    const sourceReceipt = () => ({ schemaVersion: 'verifier-source-v1', sourceCommit: 'a'.repeat(40),
+      submodules: [], testedInputs: [], files: [] });
+    const fixture = async (runtimeHome: string, contents: Record<string, string> = {}, sourceCommit = 'a'.repeat(40)) => {
       const { archiveVerifierTaskEvidence } = await import('../../../../scripts/source-preview.mjs');
       const container = join(runtimeHome, 'test-artifacts');
       await mkdir(container, { recursive: true });
@@ -1778,13 +2519,195 @@ describe('secret census producer adapters', () => {
       const manifestPath = join(evidenceRoot, 'manifest.json');
       await writeFile(taskReceiptPath, JSON.stringify({ ...receipt, cleanup: 'completed', evidenceManifestPath: manifestPath }) + '\n');
       const suffixes = ['', '.snapshot.txt', '.dependencies.json', '.dependencies.after.json', '.child.json', '.stdout.log', '.stderr.log', '.resources.jsonl', '.phases.jsonl'];
-      for (const suffix of suffixes) await writeFile(`${receiptPath}${suffix}`, `writer output ${suffix}\n`, { mode: 0o600 });
-      archiveVerifierTaskEvidence({ evidenceRoot, taskId, sourceCommit: 'a'.repeat(40), receiptPath,
+      for (const suffix of suffixes) await writeFile(`${receiptPath}${suffix}`, contents[suffix]
+        ?? (suffix === '' ? JSON.stringify(sourceReceipt()) + '\n' : `writer output ${suffix}\n`), { mode: 0o600 });
+      archiveVerifierTaskEvidence({ evidenceRoot, taskId, sourceCommit, receiptPath,
         taskReceiptPath, phaseArchivePath: `${receiptPath}.phases.jsonl`, cleanup: 'completed', childExitCode: 0 });
       return { container, receiptPath, taskReceiptPath, evidenceRoot, manifestPath, suffixes };
     };
+    it('reads only independently archived manifest pins and refuses coherent local repinning', async () => {
+      const home = await mkdtemp(join(tmpdir(), 'historical-original-pin-'));
+      try {
+        const runtimeHome = join(home, '.papercusp'); const f = await fixture(runtimeHome);
+        const prefix = `archive:codex:fixture:sha256:${'a'.repeat(64)}:`;
+        const pin = { taskId: 'fixture-verifier-task', manifestPath: f.manifestPath,
+          manifestSha256: createHash('sha256').update(await readFile(f.manifestPath)).digest('hex') };
+        const record = { ref: `${prefix}line:1:call:writer`, toolInput: '', receipt: '', startedAt: '', finishedAt: '',
+          terminal: { exitCode: 0, ref: `${prefix}line:2:call:writer`, output: `VERIFIER_TASK_EVIDENCE ${JSON.stringify(pin)}\n` } };
+        const operation = { kind: 'git-archive' as const, repository: '/repository', commit: 'a'.repeat(40), destination: '/destination' };
+        const read = () => readHistoricalCensusSourceReceipt(record, operation, [runtimeHome]);
+        expect((await read())?.bytes.toString()).toBe(JSON.stringify(sourceReceipt()) + '\n');
+        expect(await readHistoricalCensusSourceReceipt(record, operation, [])).toBeNull();
+        record.terminal.output = `VERIFIER_TASK_EVIDENCE ${JSON.stringify({ ...pin, manifestSha256: undefined })}\n`;
+        expect(await read()).toBeNull();
+        record.terminal.output = `VERIFIER_TASK_EVIDENCE ${JSON.stringify(pin)}\n`.repeat(2);
+        expect(await read()).toBeNull();
+        record.terminal.output = `VERIFIER_TASK_EVIDENCE ${JSON.stringify(pin)}\n`;
+        record.terminal.ref = record.terminal.ref.replace('a'.repeat(64), 'b'.repeat(64));
+        expect(await read()).toBeNull();
+        record.terminal.ref = `${prefix}line:2:call:writer`;
+        await writeFile(join(f.evidenceRoot, 'source.json'), 'substituted');
+        const manifest = JSON.parse(await readFile(f.manifestPath, 'utf8'));
+        manifest.artifacts['source.json'].sizeBytes = Buffer.byteLength('substituted');
+        manifest.artifacts['source.json'].sha256 = createHash('sha256').update('substituted').digest('hex');
+        await writeFile(f.manifestPath, JSON.stringify(manifest));
+        expect(await read()).toBeNull();
+      } finally { await rm(home, { recursive: true, force: true }); }
+    });
+    it.each(['valid', 'forged-bindings', 'copied-record', 'changed-command', 'changed-ref', 'changed-terminal',
+      'changed-source', 'added-file', 'linked-file', 'linked-destination', 'changed-receipt', 'foreign-home'])(
+      'consumes only canonical recovered dependency custody with current original bytes: %s', async condition => {
+      const home = await mkdtemp(join(tmpdir(), 'historical-original-recovery-'));
+      try {
+        const runtimeHome = join(home, '.papercusp'); const root = join(home, 'dependencies');
+        const source = join(root, 'node_modules'), destination = join(runtimeHome, 'test-artifacts', 'copy');
+        await mkdir(source, { recursive: true }); await mkdir(destination, { recursive: true });
+        await writeFile(join(source, 'module.js'), 'original');
+        await createHardlink(join(source, 'module.js'), join(destination, 'module.js'));
+        const dependency = { schemaVersion: 'verifier-dependencies-v1', scope: 'materialized-dependency-files', root,
+          sourceCommit: 'a'.repeat(40), sourceReceiptSha256: createHash('sha256').update(JSON.stringify(sourceReceipt())).digest('hex'),
+          trees: [{ path: 'node_modules', files: verifierSourceFiles(source) }] };
+        const f = await fixture(runtimeHome, { '.dependencies.json': JSON.stringify(dependency) + '\n' });
+        const marker = { taskId: 'fixture-verifier-task', manifestPath: f.manifestPath,
+          manifestSha256: createHash('sha256').update(await readFile(f.manifestPath)).digest('hex') };
+        const startedAt = '2026-11-10T10:00:00.000Z', finishedAt = '2026-11-10T10:00:01.000Z';
+        const bytes = Buffer.from([
+          { type: 'response_item', timestamp: startedAt, payload: { type: 'custom_tool_call', name: 'exec', call_id: 'writer',
+            input: `text(await tools.exec_command({cmd:${JSON.stringify(`cp -al ${source} ${destination}`)}}));` } },
+          { type: 'response_item', timestamp: finishedAt, payload: { type: 'custom_tool_call_output', call_id: 'writer',
+            output: JSON.stringify({ exit_code: 0, output: `VERIFIER_TASK_EVIDENCE ${JSON.stringify(marker)}\n` }) } },
+        ].map(row => JSON.stringify(row)).join('\n'));
+        vi.stubEnv('PAPERCUSP_HOME', runtimeHome);
+        const recover = () => recoverHistoricalCensusWriterEvidence([{ ref: 'indexed:writer', sessionId: 'fixture',
+          toolInput: 'truncated', startedAt, finishedAt }], async () => ({ bytes, sha256: createHash('sha256').update(bytes).digest('hex') }));
+        let records = await recover();
+        expect(records[0].sourceBindings).toHaveLength(1);
+        const unknown = join(f.container, 'unknown-sibling.log');
+        await writeFile(unknown, 'unproven sibling');
+        if (condition === 'forged-bindings') {
+          records[0].sourceBindings![0].files.push({ path: '../unknown-sibling.log', kind: 'file', executable: false, sha256: 'a'.repeat(64) });
+          records[0].sourceOperations = { status: 'supported', operations: [{ kind: 'hardlink-copy', source, destination: f.container }] };
+        }
+        if (condition === 'copied-record') records = [{ ...records[0] }];
+        if (condition === 'changed-command') records[0].toolInput = records[0].toolInput.replace(destination, f.container);
+        if (condition === 'changed-ref') records[0].ref += ':forged';
+        if (condition === 'changed-terminal') records[0].terminal!.output = 'replacement completion';
+        if (condition === 'changed-source') {
+          await writeFile(join(source, 'module.js'), 'changed together');
+          expect(verifierSourceFiles(source)).toEqual(verifierSourceFiles(destination));
+        }
+        if (condition === 'added-file') await writeFile(join(destination, 'unknown.js'), 'unrecorded');
+        if (condition === 'linked-file') {
+          await rm(join(destination, 'module.js')); await symlink(join(source, 'module.js'), join(destination, 'module.js'));
+        }
+        if (condition === 'linked-destination') {
+          await rename(destination, destination + '-original'); await symlink(destination + '-original', destination);
+        }
+        if (condition === 'changed-receipt') {
+          await writeFile(join(f.evidenceRoot, 'dependencies.json'), JSON.stringify({ ...dependency, sourceCommit: 'b'.repeat(40) }));
+        }
+        const produced = await historicalVerifierArtifactCensusProducer(records, condition === 'foreign-home' ? [] : [runtimeHome]);
+        const admitted = ['valid', 'forged-bindings'].includes(condition);
+        expect(produced.declarations.some(row => row.name === 'test-artifacts/copy/module.js')).toBe(admitted);
+        expect(produced.declarations.some(row => row.name === 'test-artifacts/unknown-sibling.log')).toBe(false);
+        expect(produced.declarations.some(row => row.name.endsWith('unknown.js'))).toBe(false);
+        if (admitted) {
+          const census = await collectStateCensus({ ...produced, readCatalogs: async () => [] });
+          expect(census.inventory.some(row => row.name === 'test-artifacts/copy/module.js' && row.classification === 'state')).toBe(true);
+          expect(census.residue.some(row => row.name === 'test-artifacts/unknown-sibling.log')).toBe(true);
+        } else expect(produced).toEqual({ roots: [], declarations: [] });
+      } finally { vi.unstubAllEnvs(); await rm(home, { recursive: true, force: true }); }
+    });
+    it('consumes recovered git archives without granting ownership to their surrounding directory', async () => {
+      const home = await mkdtemp(join(tmpdir(), 'historical-archive-census-'));
+      try {
+        const runtimeHome = join(home, '.papercusp'), repo = join(home, 'repo');
+        const destination = join(runtimeHome, 'test-artifacts', 'archive');
+        await mkdir(repo); await mkdir(join(destination, 'nested'), { recursive: true });
+        execFileSync('git', ['init', '--quiet', repo]);
+        const git = (args: string[], input?: string) => execFileSync('git', ['-C', repo,
+          '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', ...args], { input, encoding: 'utf8' }).trim();
+        const blob = git(['hash-object', '-w', '--stdin'], 'original source');
+        const nested = git(['mktree'], `100644 blob ${blob}\tinput.txt\n`);
+        const tree = git(['mktree'], `040000 tree ${nested}\tnested\n`);
+        const commit = git(['commit-tree', tree, '-m', 'fixture source']);
+        await writeFile(join(destination, 'nested', 'input.txt'), 'original source');
+        const receipt = { schemaVersion: 'verifier-source-v1', sourceCommit: commit, submodules: [],
+          testedInputs: [{ path: 'nested/input.txt', sha256: createHash('sha256').update('original source').digest('hex') }],
+          files: verifierSourceFiles(destination) };
+        await writeFile(join(destination, '.verifier-source.json'), JSON.stringify(receipt) + '\n');
+        const f = await fixture(runtimeHome, { '': JSON.stringify(receipt) + '\n' }, commit);
+        const marker = { taskId: 'fixture-verifier-task', manifestPath: f.manifestPath,
+          manifestSha256: createHash('sha256').update(await readFile(f.manifestPath)).digest('hex') };
+        const startedAt = '2026-11-10T10:00:00.000Z', finishedAt = '2026-11-10T10:00:01.000Z';
+        const archive = Buffer.from([
+          { type: 'response_item', timestamp: startedAt, payload: { type: 'custom_tool_call', name: 'exec', call_id: 'writer',
+            input: `text(await tools.exec_command({cmd:${JSON.stringify(`git -C ${repo} archive --format=tar ${commit} | tar -x -C ${destination}`)}}));` } },
+          { type: 'response_item', timestamp: finishedAt, payload: { type: 'custom_tool_call_output', call_id: 'writer',
+            output: JSON.stringify({ exit_code: 0, output: `VERIFIER_TASK_EVIDENCE ${JSON.stringify(marker)}\n` }) } },
+        ].map(row => JSON.stringify(row)).join('\n'));
+        vi.stubEnv('PAPERCUSP_HOME', runtimeHome);
+        const records = await recoverHistoricalCensusWriterEvidence([{ ref: 'indexed:writer', sessionId: 'fixture',
+          toolInput: 'truncated', startedAt, finishedAt }], async () => ({ bytes: archive,
+          sha256: createHash('sha256').update(archive).digest('hex') }));
+        const produce = () => historicalVerifierArtifactCensusProducer(records, [runtimeHome]);
+        expect((await produce()).declarations.map(row => row.name)).toEqual(expect.arrayContaining([
+          'test-artifacts', 'test-artifacts/archive', 'test-artifacts/archive/nested', 'test-artifacts/archive/nested/input.txt',
+        ]));
+        await writeFile(join(f.container, 'unknown-sibling'), 'unproven');
+        const census = await collectStateCensus({ ...await produce(), readCatalogs: async () => [] });
+        expect(census.residue.some(row => row.name === 'test-artifacts/unknown-sibling')).toBe(true);
+        await writeFile(join(destination, 'nested', 'input.txt'), 'substituted source');
+        expect(await produce()).toEqual({ roots: [], declarations: [] });
+      } finally { vi.unstubAllEnvs(); await rm(home, { recursive: true, force: true }); }
+    });
+    it.each(['source-commit', 'dependency-commit', 'dependency-source-digest', 'raw-source-digest',
+      'source-schema', 'dependency-schema', 'malformed-source', 'missing-source', 'changed-source'])(
+      'refuses independently pinned but inconsistent receipt cross-links: %s', async mismatch => {
+        const home = await mkdtemp(join(tmpdir(), 'historical-original-crosslinks-'));
+        try {
+          const runtimeHome = join(home, '.papercusp');
+          const source = { ...sourceReceipt(), testedInputs: [{ path: 'input.txt', sha256: 'a'.repeat(64) }] };
+          const dependency = { schemaVersion: 'verifier-dependencies-v1', sourceCommit: source.sourceCommit,
+            sourceReceiptSha256: createHash('sha256').update(JSON.stringify(source)).digest('hex') };
+          if (mismatch === 'source-commit') source.sourceCommit = 'b'.repeat(40);
+          if (mismatch === 'dependency-commit') dependency.sourceCommit = 'b'.repeat(40);
+          if (mismatch === 'dependency-source-digest') dependency.sourceReceiptSha256 = 'b'.repeat(64);
+          if (mismatch === 'raw-source-digest') dependency.sourceReceiptSha256 = createHash('sha256')
+            .update(JSON.stringify(source) + '\n').digest('hex');
+          if (mismatch === 'source-schema') source.schemaVersion = 'foreign-source-v1';
+          if (mismatch === 'dependency-schema') dependency.schemaVersion = 'foreign-dependencies-v1';
+          // Same commit with a different source object must still fail its link.
+          if (mismatch === 'changed-source') source.testedInputs[0].path = 'foreign';
+          const f = await fixture(runtimeHome, {
+            '': mismatch === 'malformed-source' ? '{' : JSON.stringify(source) + '\n',
+            '.dependencies.json': JSON.stringify(dependency) + '\n',
+          });
+          if (mismatch === 'missing-source') {
+            const manifest = JSON.parse(await readFile(f.manifestPath, 'utf8'));
+            delete manifest.artifacts['source.json'];
+            await writeFile(f.manifestPath, JSON.stringify(manifest));
+          }
+          const prefix = `archive:codex:fixture:sha256:${'a'.repeat(64)}:`;
+          const marker = { taskId: 'fixture-verifier-task', manifestPath: f.manifestPath,
+            manifestSha256: createHash('sha256').update(await readFile(f.manifestPath)).digest('hex') };
+          const record = { ref: `${prefix}line:1:call:writer`, toolInput: '', receipt: '', startedAt: '', finishedAt: '',
+            terminal: { exitCode: 0, ref: `${prefix}line:2:call:writer`, output: `VERIFIER_TASK_EVIDENCE ${JSON.stringify(marker)}\n` } };
+          const operation = { kind: 'hardlink-copy' as const, source: '/source', destination: '/destination' };
+          expect(await readHistoricalCensusSourceReceipt(record, operation, [runtimeHome])).toBeNull();
+          if (['source-commit', 'source-schema', 'malformed-source', 'missing-source'].includes(mismatch)) {
+            expect(await readHistoricalCensusSourceReceipt(record, { kind: 'git-archive', repository: '/repository',
+              commit: 'a'.repeat(40), destination: '/destination' }, [runtimeHome])).toBeNull();
+          }
+        } finally { await rm(home, { recursive: true, force: true }); }
+      });
     const originals = async (home: string, runtimeHomes: string[] = []) => {
       const result = await runtimeSidefileCensusProducer(home, {}, [], runtimeHomes);
+      const roots = [...result.roots];
+      const focused = await runtimeTestArtifactCensusDeclarations([join(home, '.papercusp'), ...runtimeHomes, ...runtimeHomes], roots);
+      expect(focused.filter(entry => entry.producer === 'source-preview-verifier-original'))
+        .toEqual(result.declarations.filter(entry => entry.producer === 'source-preview-verifier-original'));
+      expect(roots).toEqual(result.roots);
       return { ...result, declarations: result.declarations.filter(entry => entry.producer === 'source-preview-verifier-original') };
     };
     it('uses actual retained writer bytes in ordinary and registered homes, leaving unknown siblings unresolved', async () => {
@@ -1858,10 +2781,23 @@ describe('secret census producer adapters', () => {
     });
   });
   describe('native router retained census evidence', () => {
-    const fixture = async (runtimeHome: string, partial = false) => {
+    const fixture = async (runtimeHome: string, partial = false, sourceFamily = false, large = false) => {
       const container = join(runtimeHome, 'test-artifacts', 'arbitrary-run-name');
       await mkdir(container, { recursive: true, mode: 0o700 });
       const packet = await mkdtemp(join(container, 'native-router-'));
+      const out = sourceFamily ? join(container, 'arbitrary-report.json') : null;
+      const sourceFiles: string[] = [];
+      if (out) {
+        await writeFile(out, JSON.stringify({ rows: [], padding: large ? 'x'.repeat(17 * 1024 * 1024) : '' }), { mode: 0o600 });
+        sourceFiles.push(out);
+        for (const suffix of ['.modules', '.native-processes', '.processes']) {
+          const directory = `${out}${suffix}`;
+          await mkdir(directory, { mode: 0o700 });
+          const path = join(directory, 'writer-output');
+          await writeFile(path, `retained ${suffix}`, { mode: 0o600 });
+          sourceFiles.push(path);
+        }
+      }
       const identity = { workspace: 'fixture-workspace', harness: 'fixture', runId: 'fixture-run' };
       const auxiliary = ['stdout', 'stderr', 'command-exit.json'].map(role => ({
         role, state: 'produced' as const, path: join(packet, `group-0.${role}`),
@@ -1869,19 +2805,178 @@ describe('secret census producer adapters', () => {
       for (const entry of auxiliary) await writeFile(entry.path, entry.role === 'command-exit.json'
         ? JSON.stringify({ writer: 'router-owned-child-close', status: 0 }) : `retained ${entry.role}`, { mode: 0o600 });
       const expected: NativeCustodyGroup[] = [{ id: 'group-0', attempt: 'primary', selected: ['/fixture/test.ts'], runner: 'vitest',
-        armed: false, out: null, cwd: '/fixture', auxiliary: partial
+        armed: sourceFamily, out, cwd: '/fixture', auxiliary: partial
           ? [...auxiliary, { role: 'report', state: 'unavailable', reason: 'fixture-missing-report' }] : auxiliary }];
       const contract = { identity, expected };
       await writeFile(join(packet, 'expected.json'), JSON.stringify(contract), { mode: 0o600 });
       const saved = retainNativeProofPacket(packet, { ...contract,
-        observations: [{ id: 'group-0', out: null, captureComplete: true }], execution: 'router-settled' });
+        observations: [{ id: 'group-0', out, captureComplete: true }], execution: 'router-settled' });
       await writeFile(join(packet, 'locator.json'), JSON.stringify(saved.locator), { mode: 0o600 });
-      return { packet, container, saved };
+      return { packet, container, saved, out, sourceFiles };
     };
+    it.each(['valid', 'retained', 'untrusted-ref', 'changed', 'linked-file', 'linked-directory', 'foreign', 'forged-writer', 'failed-writer', 'changed-receipt', 'corrupt-packet'])(
+      'derives only exact bounded verifier outputs from complete historical custody: %s', async condition => {
+        const home = await mkdtemp(join(tmpdir(), 'bounded-verifier-census-'));
+        try {
+          const runtimeHome = join(home, '.papercusp');
+          const f = await fixture(runtimeHome);
+          const names = ['bg-memory-trace.log', 'bg-memory-sources.json', 'bg-memory-jit.dump',
+            'bg-memory-observation.json', 'bg-memory-build.json', 'bg-memory-proof.json'];
+          const rawArtifacts: Record<string, { sha256: string; byteLength: number }> = {};
+          for (const name of names) {
+            const bytes = Buffer.from(`original ${name}`);
+            await writeFile(join(f.container, name), bytes);
+            rawArtifacts[name] = { sha256: createHash('sha256').update(bytes).digest('hex'), byteLength: bytes.length };
+          }
+          const unknown = join(f.container, 'unproven-output.json'); await writeFile(unknown, 'unknown sibling');
+          const path = join(f.container, 'bounded-proof-receipt.json');
+          const sourceSha256 = 'a'.repeat(64); const createdAt = new Date().toISOString();
+          const cleanup = { fixtureRootAbsent: true, processes: {} };
+          const receipt = { createdAt, workItem: 'WI-6554700010044858', testRunId: 23654091,
+            sourcePath: 'packages/operator-core/lib/source-preview-export.test.ts', sourceSha256, terminalExitCode: 0,
+            nativeManifest: { path: join(f.packet, 'objects', f.saved.locator.manifest.ref),
+              sha256: f.saved.locator.manifest.sha256, byteLength: f.saved.locator.manifest.byteLength }, rawArtifacts, cleanup };
+          await writeFile(path, JSON.stringify(receipt));
+          const writer = await readFile(new URL('./fixtures/bounded-proof-writer.txt', import.meta.url), 'utf8');
+          let toolInput = writer.replace('579a09b1f4b64092cb2d1217cc853483ec8addbf9beb66ce2b4f4d958882bfb8.native-proof.json',
+            `${receipt.nativeManifest.sha256}.native-proof.json`).replace('len(b)==1533779', `len(b)==${receipt.nativeManifest.byteLength}`);
+          if (condition === 'forged-writer') toolInput = toolInput.replace('raw_names=', 'other_names=');
+          const startedAt = new Date(Date.parse(createdAt) - 1000).toISOString();
+          const finishedAt = new Date(Date.parse(createdAt) + 1000).toISOString();
+          const terminal = { exit_code: condition === 'failed-writer' ? 1 : 0,
+            output: JSON.stringify({ receipt: path, cleanup, testRunId: 23654091, sourceSha256 }) };
+          const archive = Buffer.from([
+            { type: 'response_item', timestamp: startedAt, payload: { type: 'custom_tool_call', name: 'exec', call_id: 'writer', input: toolInput } },
+            { type: 'response_item', timestamp: finishedAt, payload: { type: 'custom_tool_call_output', call_id: 'unrelated', output: '{}' } },
+            { type: 'response_item', timestamp: finishedAt, payload: { type: 'custom_tool_call_output', call_id: 'writer', output: JSON.stringify(terminal) } },
+          ].map(row => JSON.stringify(row)).join('\n'));
+          const records = await recoverHistoricalCensusWriterEvidence([{ ref: 'indexed:bounded', sessionId: 'bounded-fixture',
+            toolInput: toolInput.slice(0, 1000), startedAt, finishedAt }], async () => ({ bytes: archive,
+            sha256: createHash('sha256').update(archive).digest('hex'),
+            source: condition === 'retained' ? 'live-jsonl' : 'archive-manifest' }));
+          if (condition === 'retained') expect(records[0].ref).toMatch(/^retained:codex:/);
+          if (condition === 'untrusted-ref') records[0].ref = 'indexed:bounded';
+          const target = join(f.container, names[0]);
+          if (condition === 'changed') await writeFile(target, 'changed bytes');
+          if (condition === 'linked-file') { await rename(target, `${target}-target`); await symlink(`${target}-target`, target); }
+          if (condition === 'linked-directory') { await rename(f.container, `${f.container}-target`); await symlink(`${f.container}-target`, f.container); }
+          if (condition === 'changed-receipt') await writeFile(path, JSON.stringify({ ...receipt, sourceSha256: 'b'.repeat(64) }));
+          if (condition === 'corrupt-packet') await writeFile(receipt.nativeManifest.path, 'corrupt retained packet');
+          const result = await historicalVerifierArtifactCensusProducer(records, condition === 'foreign' ? [join(home, 'foreign')] : [runtimeHome]);
+          const declared = (file: string) => result.declarations.some(entry => entry.name === relative(runtimeHome, file));
+          if (['valid', 'retained', 'changed', 'linked-file'].includes(condition)) {
+            expect(declared(path)).toBe(true);
+            expect(declared(target)).toBe(['valid', 'retained'].includes(condition));
+            expect(declared(join(f.container, names[1]))).toBe(true);
+            expect(declared(unknown)).toBe(false);
+            const census = await collectStateCensus({ ...result, readCatalogs: async () => [] });
+            expect(census.residue.some(entry => entry.name === relative(runtimeHome, unknown))).toBe(true);
+            expect(result.declarations.every(entry => !entry.descendants && !entry.prune && entry.classification === 'state')).toBe(true);
+          } else expect(result).toEqual({ roots: [], declarations: [] });
+        } finally { await rm(home, { recursive: true, force: true }); }
+      });
     const native = async (home: string, runtimeHomes: string[] = []) => {
       const result = await runtimeSidefileCensusProducer(home, {}, [], runtimeHomes);
+      const roots = [...result.roots];
+      const focused = await runtimeTestArtifactCensusDeclarations([join(home, '.papercusp'), ...runtimeHomes, ...runtimeHomes], roots);
+      expect(focused.filter(entry => entry.producer === 'test-file-native-router-custody'))
+        .toEqual(result.declarations.filter(entry => entry.producer === 'test-file-native-router-custody'));
+      expect(roots).toEqual(result.roots);
       return { ...result, declarations: result.declarations.filter(entry => entry.producer === 'test-file-native-router-custody') };
     };
+    it.each(['valid', 'changed', 'linked-file', 'linked-container', 'foreign-container', 'foreign-out', 'unknown-role', 'not-produced', 'node'])(
+      'classifies only exact local reporter auxiliary outputs: %s', async condition => {
+        const home = await mkdtemp(join(tmpdir(), 'router-auxiliary-census-'));
+        try {
+          const runtimeHome = join(home, '.papercusp');
+          const f = await fixture(runtimeHome);
+          const contract = JSON.parse(await readFile(join(f.packet, 'expected.json'), 'utf8'));
+          const roles = ['report', 'PC_EXECUTED_SOURCE_MAP_RESULT', 'PAPERCUSP_TEST_RUN_RECEIPT_FILE'];
+          const parent = condition === 'foreign-container' ? join(runtimeHome, 'test-artifacts', 'other-run')
+            : condition === 'foreign-out' ? runtimeHome : f.container;
+          await mkdir(parent, { recursive: true });
+          const paths = roles.map((_, index) => join(parent, `arbitrary-reporter-output-${index}`));
+          for (const path of paths) await writeFile(path, `retained ${path}`, { mode: 0o600 });
+          const unknown = join(f.container, 'unproven-reporter-output');
+          await writeFile(unknown, 'unproven neighbor');
+          contract.expected[0].auxiliary.push(...roles.map((role, index) => condition === 'not-produced'
+            ? { role, state: 'not-requested', reason: 'reporter-unset' }
+            : { role: condition === 'unknown-role' ? `unknown-${index}` : role, state: 'produced', path: paths[index] }));
+          if (condition === 'node') contract.expected[0].runner = 'node';
+          await writeFile(join(f.packet, 'expected.json'), JSON.stringify(contract), { mode: 0o600 });
+          const saved = retainNativeProofPacket(f.packet, { ...contract,
+            observations: [{ id: 'group-0', out: null, captureComplete: true }], execution: 'router-settled' });
+          await writeFile(join(f.packet, 'locator.json'), JSON.stringify(saved.locator), { mode: 0o600 });
+          if (condition === 'changed') await writeFile(paths[0], 'changed after capture');
+          if (condition === 'linked-file') {
+            await rename(paths[0], `${paths[0]}-target`); await symlink(`${paths[0]}-target`, paths[0]);
+          }
+          if (condition === 'linked-container') {
+            await rename(f.container, `${f.container}-target`); await symlink(`${f.container}-target`, f.container);
+          }
+          const result = await native(home);
+          const declared = (path: string) => result.declarations.some(entry => entry.name === relative(runtimeHome, path));
+          for (const [index, path] of paths.entries()) {
+            expect(declared(path)).toBe(condition === 'valid'
+              || (['changed', 'linked-file'].includes(condition) && index !== 0));
+          }
+          expect(declared(unknown)).toBe(false);
+          expect(result.declarations.every(entry => !entry.descendants && !entry.prune && entry.classification === 'state')).toBe(true);
+          expect(saved.manifest.verdicts.acceptance).toBe('unmeasured');
+        } finally { await rm(home, { recursive: true, force: true }); }
+      });
+    it.each([false, true])('classifies exact captured source families including chunked OUT=%s, preserving unknown siblings', async large => {
+      const home = await mkdtemp(join(tmpdir(), 'source-family-census-'));
+      try {
+        const runtimeHome = join(home, '.papercusp');
+        const f = await fixture(runtimeHome, false, true, large);
+        const unknown = join(`${f.out}.modules`, 'not-captured');
+        await writeFile(unknown, 'not owned');
+        const result = await native(home);
+        for (const path of f.sourceFiles) expect(result.declarations.some(entry => entry.name === relative(runtimeHome, path))).toBe(true);
+        expect(result.declarations.some(entry => entry.name === relative(runtimeHome, unknown))).toBe(false);
+        expect(result.declarations.every(entry => !entry.descendants && !entry.prune)).toBe(true);
+        const census = await collectStateCensus({ ...result, readCatalogs: async () => [] });
+        expect(census.residue.some(entry => entry.name === relative(runtimeHome, unknown))).toBe(true);
+        expect(f.saved.manifest.verdicts.acceptance).toBe('unmeasured');
+      } finally { await rm(home, { recursive: true, force: true }); }
+    });
+    it.each(['changed', 'linked-file', 'linked-directory', 'missing', 'foreign-container', 'foreign-out'])(
+      'leaves %s source originals unresolved while retaining independent custody', async corruption => {
+        const home = await mkdtemp(join(tmpdir(), 'invalid-source-family-census-'));
+        try {
+          const runtimeHome = join(home, '.papercusp');
+          const f = await fixture(runtimeHome, false, true);
+          const path = f.sourceFiles[1];
+          if (corruption === 'changed') await writeFile(path, 'changed');
+          if (corruption === 'missing') await rm(path);
+          if (corruption === 'linked-file' || corruption === 'linked-directory') {
+            const target = corruption === 'linked-file' ? path : dirname(path);
+            await rename(target, `${target}-target`); await symlink(`${target}-target`, target);
+          }
+          if (corruption.startsWith('foreign')) {
+            const foreign = corruption === 'foreign-out' ? join(runtimeHome, 'foreign-owned-file')
+              : join(runtimeHome, 'test-artifacts', 'unrelated-container', 'report.json');
+            await mkdir(dirname(foreign), { recursive: true });
+            await writeFile(foreign, await readFile(f.out!));
+            // The real writer can retain foreign inputs. Byte custody does
+            // not adopt an original outside this packet's local output roots.
+            const contract = JSON.parse(await readFile(join(f.packet, 'expected.json'), 'utf8'));
+            contract.expected[0].out = foreign;
+            const saved = retainNativeProofPacket(f.packet, { ...contract,
+              observations: [{ id: 'group-0', out: contract.expected[0].out, captureComplete: true }], execution: 'router-settled' });
+            await writeFile(join(f.packet, 'expected.json'), JSON.stringify(contract), { mode: 0o600 });
+            await writeFile(join(f.packet, 'locator.json'), JSON.stringify(saved.locator), { mode: 0o600 });
+            expect((await native(home)).declarations.some(entry => entry.name === relative(runtimeHome, foreign))).toBe(false);
+          }
+          const result = await native(home);
+          expect(result.declarations.some(entry => entry.name === relative(runtimeHome, path))).toBe(false);
+          expect(result.declarations.some(entry => entry.name.endsWith('/locator.json'))).toBe(true);
+          if (!corruption.startsWith('foreign')) {
+            expect(result.declarations.some(entry => entry.name === relative(runtimeHome, f.sourceFiles[2]))).toBe(true);
+          }
+        } finally { await rm(home, { recursive: true, force: true }); }
+      });
     it('uses verified custody in ordinary and registered homes while preserving unknown neighbors', async () => {
       const home = await mkdtemp(join(tmpdir(), 'native-census-'));
       try {
@@ -1967,12 +3062,25 @@ describe('secret census producer adapters', () => {
     expect(result.declarations.map(entry => [entry.name, entry.classification, entry.prune])).toEqual([
       ['deploy-credentials', 'state', undefined], ['crash-reports', 'state', undefined], ['snapshot-fold-checkpoints', 'state', undefined],
       ['env-switcher-prefs.json', 'config', undefined],
+      ['db-encryption-key', 'secret', undefined], ['oauth-state-key', 'secret', undefined],
+      ['superuser-token', 'secret', undefined],
+      ['granted-capabilities.json', 'config', undefined], ['extended-grants.json', 'config', undefined],
+      ['local-announce-identity.json', 'state', undefined],
+      ['migration-failure-cooldown.json', 'state', undefined],
+      ['posthog.json', 'secret', undefined], ['release-sha256-cache.json', 'cache', undefined],
     ]);
     const writers = [
       ['../deployment/account-link-cli.ts', "papercuspPath('deploy-credentials'"],
       ['../process-supervision/fatal-diagnostics.ts', "papercuspPath('crash-reports')"],
       ['../sync/hyperbee/boot.ts', "'snapshot-fold-checkpoints'"],
       ['../harness/env-switcher-prefs.ts', "const FILE = 'env-switcher-prefs.json'"],
+      ['../db-encryption.ts', "papercuspPath('db-encryption-key')"],
+      ['../oauth/state.ts', "papercuspPath('oauth-state-key')"],
+      ['../superuser-token.ts', "papercuspPath('superuser-token')"],
+      ['../../../../libs/papercusp/packages/cli/src/consent.ts', "return join(papercuspRoot(), 'granted-capabilities.json')"],
+      ['../../../../libs/papercusp/packages/cli/src/consent.ts', "return join(papercuspRoot(), 'extended-grants.json')"],
+      ['../sync/hyperbee/local-announce-identity.ts', "papercuspPath('local-announce-identity.json')"],
+      ['../db-boot-migrate.ts', "papercuspPath('migration-failure-cooldown.json')"],
     ];
     for (const [path, marker] of writers) expect(await readFile(new URL(path, import.meta.url), 'utf8')).toContain(marker);
     const installed = installedRootCensusProducers();
@@ -1980,6 +3088,41 @@ describe('secret census producer adapters', () => {
       root: 'install-root-0', name: 'registered-project/.papercusp/deploy-credentials', classification: 'state',
     });
     expect(installed.declarations.find(entry => entry.producer === 'deployment-account-link')?.descendants).toBeUndefined();
+  });
+  it('retains the exact bearer in known homes without reading credentials or claiming copies and foreign homes', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'retained-bearer-census-'));
+    const homes = ['active', 'registered', 'default', 'legacy'].map(name => join(parent, name));
+    const foreign = join(parent, 'foreign');
+    const bytes = 'private-fixture-bearer-with-no-disclosure';
+    const stamps = new Map<string, Awaited<ReturnType<typeof lstat>>>();
+    try {
+      for (const home of [...homes, foreign]) {
+        await mkdir(join(home, 'nested'), { recursive: true });
+        for (const name of ['superuser-token', 'superuser-token.bak', 'nested/superuser-token']) {
+          const path = join(home, name);
+          await writeFile(path, bytes, { mode: 0o600 });
+          stamps.set(path, await lstat(path));
+        }
+      }
+      const producers = homes.map(runtimeRetainedCensusProducer);
+      const roots = producers.flatMap((producer, index) => producer.roots.map(root => ({ ...root, id: `known-${index}` })));
+      const declarations = producers.flatMap((producer, index) => producer.declarations.map(entry => ({ ...entry, root: `known-${index}` })));
+      const census = await collectStateCensus({ roots, declarations, readCatalogs: async () => [] });
+      for (const root of roots) {
+        expect(census.inventory.find(entry => entry.root === root.id && entry.name === 'superuser-token'))
+          .toMatchObject({ classification: 'secret', producers: ['superuser-token'], problem: null });
+        expect(census.residue.filter(entry => entry.root === root.id).map(entry => entry.name).sort())
+          .toEqual(['nested', 'nested/superuser-token', 'superuser-token.bak']);
+      }
+      expect(roots.some(root => root.path === foreign)).toBe(false);
+      expect(JSON.stringify(census)).not.toContain(bytes);
+      for (const [path, before] of stamps) {
+        const after = await lstat(path);
+        for (const field of ['mode', 'size', 'ino', 'mtimeMs', 'ctimeMs'] as const) expect(after[field]).toBe(before[field]);
+        expect(await readFile(path, 'utf8')).toBe(bytes);
+      }
+      expect(census.ok).toBe(false);
+    } finally { await rm(parent, { recursive: true, force: true }); }
   });
   it('uses the anchor producer path without resolving a backend or reading private key bytes', () => {
     expect(anchorSecretCensusProducer()).toEqual({ roots: [{ id: 'anchor-key-parent', path: '/fixture/sensitive' }],
@@ -2533,13 +3676,176 @@ describe('secret census producer adapters', () => {
   it('uses the registry writer root without blanket-classifying sibling workspaces', () => {
     const producer = workspaceRegistryCensusProducer();
     expect(producer.roots).toEqual([{ id: 'workspace-registry', path: '/relocated/workspaces' }]);
-    expect(producer.declarations).toEqual([{
+    expect(producer.declarations).toEqual(expect.arrayContaining([{
       kind: 'path', root: 'workspace-registry', name: 'registry.json',
       classification: 'config', producer: 'workspace-registry',
     }, {
       kind: 'path', root: 'workspace-registry', name: 'registered-project',
       classification: 'state', producer: 'workspace-registry',
-    }]);
+    }]));
+  });
+  it('retains native shared identity paths without inheriting ownership into copies or linked targets', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'desktop-shared-identity-census-'));
+    const registry = join(parent, 'registry');
+    const shared = join(registry, '.shared', '.papercusp');
+    const external = join(parent, 'external-key');
+    const key = join(shared, 'identity', 'keypair-owner.enc');
+    const announcement = join(shared, 'local-announce-identity.json');
+    try {
+      await mkdir(join(shared, 'identity'), { recursive: true });
+      await mkdir(join(shared, 'identity-copy'));
+      await mkdir(join(shared, 'nested', 'identity'), { recursive: true });
+      await writeFile(key, 'encrypted identity fixture', { mode: 0o600 });
+      await writeFile(announcement, '{"identityMode":"authoring"}', { mode: 0o600 });
+      await writeFile(external, 'external identity fixture', { mode: 0o600 });
+      await symlink(external, join(shared, 'identity', 'external'));
+      await writeFile(join(shared, 'foreign'), 'unattributed state');
+      await writeFile(`${announcement}.bak`, await readFile(announcement));
+      await writeFile(join(shared, 'identity-copy', 'keypair-owner.enc'), await readFile(key));
+      await writeFile(join(shared, 'nested', 'identity', 'keypair-owner.enc'), await readFile(key));
+      const before = await Promise.all([key, announcement, external].map(async path =>
+        ({ path, bytes: await readFile(path), metadata: await lstat(path) })));
+      // A source-tree census does not inherit the native launcher's overrides.
+      vi.stubEnv('PAPERCUSP_IDENTITY_DIR', join(parent, 'other-identity'));
+      vi.stubEnv('PAPERCUSP_ANNOUNCE_IDENTITY_CACHE', join(parent, 'other-announcement'));
+      const producer = workspaceRegistryCensusProducer();
+      const result = await collectStateCensus({ ...producer,
+        roots: producer.roots.map(root => ({ ...root, path: registry })), readCatalogs: async () => [] });
+      for (const name of ['.shared/.papercusp', '.shared/.papercusp/local-announce-identity.json']) {
+        expect(result.inventory.find(entry => entry.name === name)).toMatchObject({ classification: 'state', problem: null });
+        expect(producer.declarations.find(entry => entry.name === name)?.descendants).toBeUndefined();
+      }
+      for (const name of ['.shared/.papercusp/identity', '.shared/.papercusp/identity/keypair-owner.enc']) {
+        expect(result.inventory.find(entry => entry.name === name)).toMatchObject({
+          classification: 'secret', producers: ['identity-keychain'], problem: null });
+      }
+      expect(result.residue.map(entry => entry.name)).toEqual(expect.arrayContaining([
+        '.shared/.papercusp/foreign', '.shared/.papercusp/local-announce-identity.json.bak',
+        '.shared/.papercusp/identity-copy', '.shared/.papercusp/identity-copy/keypair-owner.enc',
+        '.shared/.papercusp/nested', '.shared/.papercusp/nested/identity',
+        '.shared/.papercusp/nested/identity/keypair-owner.enc',
+      ]));
+      expect(result.ok).toBe(false);
+      expect(await readlink(join(shared, 'identity', 'external'))).toBe(external);
+      expect(result.inventory.some(entry => entry.name.includes('external/'))).toBe(false);
+      for (const { path, bytes, metadata } of before) {
+        expect(await readFile(path)).toEqual(bytes);
+        const after = await lstat(path);
+        for (const field of ['mode', 'size', 'ino', 'mtimeMs', 'ctimeMs'] as const) expect(after[field]).toBe(metadata[field]);
+      }
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+  it('retains desktop shared and registered credential entries without inheriting ownership into siblings or copies', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'desktop-workspace-census-'));
+    const registry = join(parent, 'registry');
+    const linkTarget = join(parent, 'credential-target');
+    const config = 'user-authored identity configuration';
+    try {
+      await writeFile(linkTarget, 'fixture credential');
+      for (const workspace of ['registered-project', 'unregistered']) {
+        const path = join(registry, workspace);
+        await mkdir(join(path, '.claude'), { recursive: true });
+        await symlink(linkTarget, join(path, '.claude.json'));
+        await symlink(linkTarget, join(path, '.claude', '.credentials.json'));
+        await writeFile(join(path, '.gitconfig'), config);
+        await writeFile(join(path, '.claude', 'unrelated'), 'foreign');
+        await writeFile(join(path, '.gitconfig.bak'), config);
+      }
+      await mkdir(join(registry, '.shared', 'nested'), { recursive: true });
+      await mkdir(join(registry, '.shared', 'dev-source'), { recursive: true });
+      await mkdir(join(registry, '.shared', 'dev-source', '.git'));
+      await mkdir(join(registry, '.shared', 'dev-source-copy'));
+      await mkdir(join(registry, '.shared', 'nested', 'dev-source'), { recursive: true });
+      await mkdir(join(registry, 'unregistered', 'dev-source'), { recursive: true });
+      await mkdir(join(registry, '.shared', 'code-server'), { recursive: true });
+      await mkdir(join(registry, '.shared', '.papercusp'), { recursive: true });
+      const sourcePath = join(registry, '.shared', 'dev-source', 'user-edit.ts');
+      await writeFile(sourcePath, 'user-authored source');
+      await writeFile(join(registry, '.shared', 'dev-source', '.git', 'HEAD'), 'ref: refs/heads/user-work\n');
+      await writeFile(join(registry, '.shared', 'dev-source-copy', 'user-edit.ts'), 'user-authored source');
+      await symlink(linkTarget, join(registry, '.shared', 'dev-source', 'external'));
+      const sourceBefore = await lstat(sourcePath);
+      await writeFile(join(registry, '.shared', 'wsl-state.json'), '{"bootstrapped":true}');
+      await writeFile(join(registry, '.shared', 'wsl-state.json.bak'), '{"bootstrapped":true}');
+      await writeFile(join(registry, '.shared', 'nested', 'wsl-state.json'), '{"bootstrapped":true}');
+      const before = await lstat(linkTarget);
+      const producer = workspaceRegistryCensusProducer();
+      const result = await collectStateCensus({ ...producer,
+        roots: producer.roots.map(root => ({ ...root, path: registry })), readCatalogs: async () => [] });
+      const expected = [
+        ['.shared', 'state'], ['.shared/wsl-state.json', 'config'], ['.shared/dev-source', 'state'],
+        ['.shared/.papercusp', 'state'],
+        ['registered-project/.claude', 'state'], ['registered-project/.claude.json', 'secret'],
+        ['registered-project/.claude/.credentials.json', 'secret'], ['registered-project/.gitconfig', 'config'],
+      ];
+      for (const [name, classification] of expected) {
+        expect(result.inventory.find(entry => entry.name === name)).toMatchObject({ classification, problem: null });
+        const declaration = producer.declarations.find(entry => entry.name === name);
+        expect(declaration?.descendants).toBe(name === '.shared/dev-source' ? true : undefined);
+        expect(declaration?.prune).toBeUndefined();
+      }
+      expect(result.representedSubtrees).toEqual([{
+        kind: 'path', root: 'workspace-registry', name: '.shared/dev-source',
+        evidenceRef: 'source:apps/operator/lib/dev-source-extract.ts#extractDevSourceTree',
+        disposition: 'preserve-state-subtree',
+      }]);
+      expect(result.residue.map(entry => entry.name).sort()).toEqual([
+        '.shared/code-server', '.shared/dev-source-copy',
+        '.shared/dev-source-copy/user-edit.ts', '.shared/nested/dev-source',
+        '.shared/nested', '.shared/nested/wsl-state.json', '.shared/wsl-state.json.bak',
+        'registered-project/.claude/unrelated', 'registered-project/.gitconfig.bak',
+        'unregistered', 'unregistered/.claude', 'unregistered/.claude.json',
+        'unregistered/.claude/.credentials.json', 'unregistered/.claude/unrelated',
+        'unregistered/.gitconfig', 'unregistered/.gitconfig.bak', 'unregistered/dev-source',
+      ].sort());
+      expect(result.ok).toBe(false);
+      expect(await readlink(join(registry, 'registered-project', '.claude.json'))).toBe(linkTarget);
+      expect(await readFile(linkTarget, 'utf8')).toBe('fixture credential');
+      expect(await readFile(join(registry, 'registered-project', '.gitconfig'), 'utf8')).toBe(config);
+      const after = await lstat(linkTarget);
+      for (const field of ['mode', 'size', 'ino', 'mtimeMs', 'ctimeMs'] as const) expect(after[field]).toBe(before[field]);
+      const sourceAfter = await lstat(sourcePath);
+      for (const field of ['mode', 'size', 'ino', 'mtimeMs', 'ctimeMs'] as const) expect(sourceAfter[field]).toBe(sourceBefore[field]);
+      expect(await readFile(sourcePath, 'utf8')).toBe('user-authored source');
+      expect(await readFile(join(registry, '.shared', 'dev-source', '.git', 'HEAD'), 'utf8')).toBe('ref: refs/heads/user-work\n');
+      expect(await readlink(join(registry, '.shared', 'dev-source', 'external'))).toBe(linkTarget);
+      const workspaceWriter = await readFile(new URL('../../../../papercusp-desktop/src-tauri/src/workspaces.rs', import.meta.url), 'utf8');
+      expect(workspaceWriter).toContain('workspaces_root().join(".shared")');
+      expect(workspaceWriter).toContain('let ws_claude_dir = workspace_dir.join(".claude")');
+      expect(workspaceWriter).toContain('workspace_dir.join(".claude.json")');
+      expect(workspaceWriter).toContain('ws_claude_dir.join(".credentials.json")');
+      expect(workspaceWriter).toContain('workspace_dir.join(".gitconfig")');
+      const wslWriter = await readFile(new URL('../../../../papercusp-desktop/src-tauri/src/wsl_setup.rs', import.meta.url), 'utf8');
+      expect(wslWriter).toContain('let dir = crate::workspaces::shared_data_dir()');
+      expect(wslWriter).toContain('Ok(dir.join("wsl-state.json"))');
+      const sidecarWriter = await readFile(new URL('../../../../papercusp-desktop/src-tauri/src/main.rs', import.meta.url), 'utf8');
+      expect(sidecarWriter).toContain('shared_state_dir.join("dev-source")');
+    } finally { await rm(parent, { recursive: true, force: true }); }
+  });
+  it('does not follow a linked desktop source tree into an external target', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'linked-desktop-source-census-'));
+    const registry = join(parent, 'registry');
+    const target = join(parent, 'external-source');
+    try {
+      await mkdir(join(registry, '.shared'), { recursive: true });
+      await mkdir(target);
+      const foreignPath = join(target, 'foreign.ts');
+      await writeFile(foreignPath, 'external user work');
+      await symlink(target, join(registry, '.shared', 'dev-source'));
+      const before = await lstat(foreignPath);
+      const producer = workspaceRegistryCensusProducer();
+      const result = await collectStateCensus({ ...producer,
+        roots: producer.roots.map(root => ({ ...root, path: registry })), readCatalogs: async () => [] });
+      expect(result.inventory.map(entry => entry.name).sort()).toEqual(['.shared', '.shared/dev-source']);
+      expect(result.representedSubtrees).toEqual([]);
+      expect(await readlink(join(registry, '.shared', 'dev-source'))).toBe(target);
+      expect(await readFile(foreignPath, 'utf8')).toBe('external user work');
+      const after = await lstat(foreignPath);
+      for (const field of ['mode', 'size', 'ino', 'mtimeMs', 'ctimeMs'] as const) expect(after[field]).toBe(before[field]);
+    } finally { await rm(parent, { recursive: true, force: true }); }
   });
   it('verifies filesystem and all catalogs together and fails on a new host entry', async () => {
     const path = await mkdtemp(join(tmpdir(), 'host-census-'));

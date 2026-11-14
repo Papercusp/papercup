@@ -7,9 +7,10 @@
  * Lives in operator-core (like test-file-router.test.ts) so the gate's test:lane-pure selects it;
  * a test beside the module under scripts/lib runs only under the root config, which no gate task runs.
  */
-import { existsSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -31,7 +32,8 @@ import {
   runVitestRootPreflight,
   vitestRootPreflightSkipReason,
 } from '../../../../scripts/lib/restricted-hold-preflight.mjs';
-import { hostPreflight, nativeChildSourcePreflight } from '../../../../scripts/lib/vitest-host-preflight.mjs';
+import { hostPreflight, nativeChildDependencyPreflight, nativeChildSourcePreflight,
+  NATIVE_QUALIFICATION_SCENARIOS } from '../../../../scripts/lib/vitest-host-preflight.mjs';
 
 const line = (payload: unknown) => `${RESTRICTED_HOLD_PREFLIGHT_MARKER} ${JSON.stringify(payload)}\n`;
 const UNRESTRICTED_ENV = { PATH: '/usr/bin' };
@@ -90,6 +92,92 @@ describe('native child committed source preflight', () => {
     expect(hostPreflight({ root, files: [],
       env: { [RESTRICTED_HOLD_PREFLIGHT_ENV]: RESTRICTED_HOLD_PREFLIGHT_DONE } }))
       .toEqual({ verdict: 'skipped', reason: 'testing-run' });
+  });
+});
+
+describe('native qualification dependency prerequisite', () => {
+  const suite = 'packages/operator-core/lib/release/checkpoint-qualification-lifecycle.integration.test.ts';
+  const root = '/native-dependency-fixture';
+  const input = 'a'.repeat(64), generation = `v1-${'b'.repeat(64)}`;
+  const stdout = `PREREQUISITE_INPUT=${input}\nPREREQUISITE_STORE=/published-store\n`;
+  const request = { root, files: [suite], env: {} };
+
+  it('does not require native dependencies when the resolved name filter selects only sibling cases', () => {
+    const probe = vi.fn(() => ({ status: 74, stdout }));
+    expect(nativeChildDependencyPreflight({ ...request, testNamePattern: /P021: persists the derived original-unit context/ },
+      { hasMarker: () => false, probe })).toBeNull();
+    expect(probe).not.toHaveBeenCalled();
+    expect(hostPreflight({ ...request, testNamePattern: /P021: persists the derived original-unit context/,
+      env: { [RESTRICTED_HOLD_PREFLIGHT_ENV]: RESTRICTED_HOLD_PREFLIGHT_DONE } }))
+      .toEqual({ verdict: 'skipped', reason: 'testing-run' });
+  });
+
+  it('keeps the prerequisite for every native scenario and leaves stateful filters untouched', () => {
+    for (const scenario of NATIVE_QUALIFICATION_SCENARIOS) {
+      const testNamePattern = new RegExp(`across ${scenario} and`, 'g');
+      testNamePattern.lastIndex = 1000;
+      const probe = vi.fn(() => ({ status: 74, stdout }));
+      expect(nativeChildDependencyPreflight({ ...request, testNamePattern }, { hasMarker: () => false, probe }))
+        .toMatchObject({ verdict: 'refuse' });
+      expect(probe).toHaveBeenCalledOnce();
+      expect(testNamePattern.lastIndex).toBe(1000);
+    }
+    for (const testNamePattern of [/^checkpoint qualification lifecycle/, /^.*$/y])
+      expect(nativeChildDependencyPreflight({ ...request, testNamePattern },
+        { hasMarker: () => false, probe: () => ({ status: 74, stdout }) })).toMatchObject({ verdict: 'refuse' });
+  });
+
+  it('refuses the exact missing input for absolute and relative suite selections', () => {
+    for (const file of [suite, resolve(root, suite)]) {
+      const probe = vi.fn(() => ({ status: 74, stdout }));
+      const refusal = nativeChildDependencyPreflight({ ...request, files: [file] }, { hasMarker: () => false, probe });
+      expect(refusal).toMatchObject({ verdict: 'refuse' });
+      expect(JSON.parse(refusal!.message.slice('NATIVE_CHILD_DEPENDENCY_REFUSED '.length)))
+        .toMatchObject({ status: 'unavailable', inputFingerprint: input, generationRoot: '/published-store' });
+      expect(probe).toHaveBeenCalledOnce();
+    }
+  });
+
+  it('requires a measured successful exact selection and refuses unknown or timed-out probes', () => {
+    const hasMarker = () => false;
+    expect(nativeChildDependencyPreflight(request, { hasMarker,
+      probe: () => ({ status: 0, stdout: stdout + `PREREQUISITE_GENERATION=${generation}\n` }) })).toBeNull();
+    for (const result of [{ status: 0, stdout }, { status: null, stdout, error: new Error('timeout') },
+      { status: 74, stdout: '' }]) {
+      expect(nativeChildDependencyPreflight(request, { hasMarker, probe: () => result }))
+        .toMatchObject({ verdict: 'refuse', message: expect.stringContaining('"status":"unmeasured"') });
+    }
+    expect(nativeChildDependencyPreflight(request, { hasMarker, probe: () => { throw new Error('spawn failed'); } }))
+      .toMatchObject({ verdict: 'refuse', message: expect.stringContaining('"status":"unmeasured"') });
+  });
+
+  it('does no selector work for unrelated suites or the existing materialized-install branch', () => {
+    const probe = vi.fn(() => ({ status: null }));
+    expect(nativeChildDependencyPreflight({ ...request, files: ['other.test.ts'] },
+      { hasMarker: () => { throw new Error('unrelated read'); }, probe })).toBeNull();
+    expect(nativeChildDependencyPreflight(request, { hasMarker: () => true, probe })).toBeNull();
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it('uses the real read-only selector before inherited admission or PG setup without creating a store', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'native-dependency-preflight-'));
+    try {
+      const release = join(directory, 'apps/operator/bin/release');
+      mkdirSync(release, { recursive: true });
+      cpSync(join(REPO_ROOT, 'apps/operator/bin/release/dependency-generation.sh'), join(release, 'dependency-generation.sh'));
+      writeFileSync(join(directory, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: {} }));
+      for (const args of [['init', '-q'], ['remote', 'add', 'origin', 'https://example.invalid/fixture']])
+        expect(spawnSync('git', ['-C', directory, ...args]).status).toBe(0);
+      const refusal = hostPreflight({ root: directory, files: [suite], env: { PATH: process.env.PATH,
+        [RESTRICTED_HOLD_PREFLIGHT_ENV]: RESTRICTED_HOLD_PREFLIGHT_DONE } });
+      expect(refusal).toMatchObject({ verdict: 'refuse', message: expect.stringContaining('NATIVE_CHILD_DEPENDENCY_REFUSED') });
+      if (refusal.verdict !== 'refuse') throw new Error('expected prerequisite refusal');
+      const receipt = JSON.parse(refusal.message.slice('NATIVE_CHILD_DEPENDENCY_REFUSED '.length));
+      expect(receipt).toMatchObject({ status: 'unavailable', exitCode: 74,
+        inputFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+        generationRoot: join(directory, '.papercusp/dependency-generations') });
+      expect(existsSync(join(directory, '.papercusp'))).toBe(false);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
   });
 });
 

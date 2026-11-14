@@ -174,7 +174,8 @@ export function readNativeProcessTraceArtifacts(out, startedAtMs = 0, finishedAt
           if (createHash('sha256').update(observationBytes).digest('hex') !== pin.sha256)
             throw new Error('native engine observation hash mismatch');
           const observation = JSON.parse(observationBytes.toString('utf8'));
-          if (observation?.schemaVersion !== 'node-engine-script-observations-v1' || !Array.isArray(observation.scripts))
+          if (!['node-engine-script-observations-v1', 'node-engine-precise-terminal-v1']
+            .includes(observation?.schemaVersion) || !Array.isArray(observation.scripts))
             throw new Error('malformed native engine observation');
           row.observation = observation;
         }
@@ -259,19 +260,54 @@ export function readNativeProcessTraceArtifacts(out, startedAtMs = 0, finishedAt
             index > 0 && (!Number.isSafeInteger(slot.parent) || slot.parent < 0 || slot.parent >= index)) {
           valid = false; break;
         }
-        if (index > 0 && own.filter(row => row.event === 'cooperative-reserve' &&
-            row.epoch === enrollment.epoch && row.admission === slot.parent && row.childAdmission === index).length !== 1) {
+        const constructionId = `${enrollment.epoch}:${slot.parent}:${index}`;
+        const constructionRows = event => own.filter(row => row.event === event &&
+          row.epoch === enrollment.epoch && row.admission === slot.parent && row.childAdmission === index);
+        const reserves = constructionRows('cooperative-reserve'), returns = constructionRows('cooperative-constructed');
+        if (index > 0 && (reserves.length !== 1 || reserves[0].constructionId !== constructionId ||
+            reserves[0].construction?.schemaVersion !== 'cooperative-construction-v1')) {
           valid = false; break;
         }
         if (slot.status === 'aborted') {
-          if (index === 0 || own.filter(row => row.event === 'cooperative-abort' &&
-              row.epoch === enrollment.epoch && row.childAdmission === index).length !== 1 ||
+          const aborts = constructionRows('cooperative-abort');
+          if (index === 0 || aborts.length !== 1 || aborts[0].constructionId !== constructionId || returns.length ||
               one('cooperative-end-ack', index)) valid = false;
           continue;
+        }
+        // Bind the actual returned native Worker to its independently joined
+        // isolate. Argument/source UNKNOWN stays UNKNOWN for qualification;
+        // this reader still certifies only the authenticated OUT protocol.
+        if (index > 0 && (returns.length !== 1 || returns[0].constructionId !== constructionId ||
+            returns[0].childThreadId !== slot.threadId || constructionRows('cooperative-abort').length)) {
+          valid = false; break;
         }
         const ack = one('cooperative-end-ack', index), installed = one('cooperative-installed', index);
         const group = censusGroups.get(ack?.processIdentity), end = group?.ends[0];
         const events = own.filter(row => row.processIdentity === ack?.processIdentity);
+        if (enrollment.preciseCoverage === true) {
+          const preciseRows = events.filter(row => row.event === 'engine-script-execution' &&
+            row.observation?.schemaVersion === 'node-engine-precise-terminal-v1');
+          const receipt = preciseRows.length === 1 ? preciseRows[0] : null;
+          const observation = receipt?.observation;
+          const commands = Array.isArray(observation?.commands) ? observation.commands : [];
+          const starts = commands.filter(row => row.method === 'Profiler.startPreciseCoverage');
+          const takes = commands.filter(row => row.method === 'Profiler.takePreciseCoverage');
+          // This is authenticated response-before-END protocol evidence ONLY.
+          // Even a valid protocol leaves native/source access, target mapping,
+          // the target-free suffix and held-through-K qualification unproved.
+          if (!receipt || installed?.preciseCoverage !== true ||
+              observation.epoch !== enrollment.epoch || observation.admission !== index ||
+              observation.phase !== 'taken' || observation.runtimeQualification !== 'unknown' ||
+              !Array.isArray(observation.raw?.result) || !Number.isFinite(observation.raw?.timestamp) ||
+              !Array.isArray(observation.scripts) || starts.length !== 1 || takes.length !== 1 ||
+              commands.some(row => row.status !== 'complete') ||
+              !Number.isFinite(starts[0]?.endedMs) || !Number.isFinite(takes[0]?.startedMs) ||
+              starts[0].endedMs > takes[0].startedMs ||
+              !(receipt.cooperativeSequence < end?.cooperativeSequence &&
+                end.cooperativeSequence < ack?.cooperativeSequence)) {
+            valid = false; break;
+          }
+        }
         if (!ack || !installed || installed.processIdentity !== ack.processIdentity ||
             installed.threadId !== slot.threadId || installed.supportedViews !== 6 ||
             !end || JSON.stringify(ack.end) !== JSON.stringify(Object.fromEntries(
@@ -289,7 +325,10 @@ export function readNativeProcessTraceArtifacts(out, startedAtMs = 0, finishedAt
         admittedIdentities.add(ack.processIdentity);
       }
       if (valid && (own.some(row => row.event === 'node-entry' && !admittedIdentities.has(row.processIdentity)) ||
-          own.filter(row => row.event === 'cooperative-end-ack').length !== admittedIdentities.size)) valid = false;
+          own.filter(row => row.event === 'cooperative-end-ack').length !== admittedIdentities.size ||
+          own.filter(row => row.event === 'cooperative-reserve').length !== state.fixedCount - 1 ||
+          own.filter(row => ['cooperative-constructed', 'cooperative-abort'].includes(row.event)).length !== state.fixedCount - 1))
+        valid = false;
       if (!valid) population.truncatedBy ??= 'cooperative-census-unverified';
     }
     if (cooperativeEntries.some(({ row }) => !cooperativeEntries.some(({ row: main }) => main.threadId === 0 &&
@@ -488,7 +527,24 @@ function custodyAccounting(budget) {
 }
 function custodyBudget() {
   return { objects: 0, bytes: 0, objectsByFamily: { A: 0, B: 0, C: 0, D: 0, auxiliary: 0 },
-    bytesByFamily: { A: 0, B: 0, C: 0, D: 0, auxiliary: 0 } };
+    bytesByFamily: { A: 0, B: 0, C: 0, D: 0, auxiliary: 0 },
+    objectRefs: new Set(), objectRefsByFamily: Object.fromEntries(custodyFamilyKeys.map(key => [key, new Set()])) };
+}
+function custodyObjectKey(family, ref) { return family + '\0' + ref; }
+function custodyRecordObject(budget, family, ref, limits = custodyLimits) {
+  const key = custodyObjectKey(family, ref);
+  if (budget.objectRefs.has(key)) return false;
+  const familyLimit = limits.families?.[family];
+  if (budget.objects + 1 > limits.objects) throw new Error('custody total object limit');
+  if (familyLimit && budget.objectsByFamily[family] + 1 > familyLimit.objects)
+    throw new Error('custody ' + family + ' object limit');
+  budget.objectRefs.add(key);
+  budget.objects++;
+  if (family) {
+    budget.objectRefsByFamily[family].add(ref);
+    budget.objectsByFamily[family]++;
+  }
+  return true;
 }
 function custodyDirectory(path, privateMode = false) {
   const full = resolve(path);
@@ -502,26 +558,40 @@ function custodyDirectory(path, privateMode = false) {
     throw new Error('custody nonprivate or redirected root');
   return full;
 }
-function custodyRead(path, budget, family = null, limits = custodyLimits) {
+function custodyRead(path, budget, family = null, limits = custodyLimits, options = {}) {
+  const { aggregateBudget = null, deferObject = false, uniqueObjectAccounting = false,
+    uniqueObjectRef = null } = options;
   custodyDirectory(dirname(path));
   const stat = lstatSync(path);
   if (!stat.isFile() || stat.isSymbolicLink() || (budget.private && (stat.mode & 0o777) !== 0o600))
     throw new Error('custody nonregular or nonprivate artifact');
   const familyLimit = family ? limits.families?.[family] : null;
-  if (familyLimit && budget.objectsByFamily[family] + 1 > familyLimit.objects)
+  const uniqueKey = uniqueObjectAccounting && family && uniqueObjectRef !== null
+    ? custodyObjectKey(family, uniqueObjectRef) : null;
+  const countObject = !deferObject && !(uniqueKey && budget.objectRefs?.has(uniqueKey));
+  if (countObject && familyLimit && budget.objectsByFamily[family] + 1 > familyLimit.objects)
     throw new Error('custody ' + family + ' object limit');
-  if (budget.objects + 1 > limits.objects) throw new Error('custody total object limit');
+  if (countObject && budget.objects + 1 > limits.objects) throw new Error('custody total object limit');
   if (stat.size > limits.objectBytes) throw new Error('custody object byte limit');
   if (familyLimit && budget.bytesByFamily[family] + stat.size + 1 > familyLimit.bytes)
     throw new Error('custody ' + family + ' byte limit');
   if (budget.bytes + stat.size + 1 > limits.bytes) throw new Error('custody total byte limit');
-  budget.objects++;
-  if (family) budget.objectsByFamily[family]++;
+  if (countObject) {
+    if (uniqueKey) custodyRecordObject(budget, family, uniqueObjectRef, limits);
+    else {
+      budget.objects++;
+      if (family) budget.objectsByFamily[family]++;
+    }
+  }
   const byteLimit = Math.min(limits.bytes - budget.bytes,
     familyLimit ? familyLimit.bytes - budget.bytesByFamily[family] : limits.bytes - budget.bytes);
   return readNativeArtifactBytes(path, stat.size, byteLimit, count => {
     budget.bytes += count;
     if (family) budget.bytesByFamily[family] += count;
+    if (aggregateBudget) {
+      aggregateBudget.bytes += count;
+      if (family) aggregateBudget.bytesByFamily[family] += count;
+    }
   });
 }
 function custodyInventory(directory, objectLimit = custodyLimits.objects) {
@@ -728,30 +798,44 @@ function prepareNativeProofPacket(directory, input) {
     const size = source?.byteLength ?? lstatSync(path).size, limit = custodyLimits.families[family];
     if (size > custodyLimits.objectBytes) throw new Error('custody object byte limit');
     if (size + 1 > limit.bytes) throw new Error('custody ' + family + ' byte limit');
-    if (budget.objects === custodyArchiveLimits.objects) throw new Error('custody archive object limit');
     let segment = segments.at(-1);
     if (!segment || segment.budget.bytes + size + 1 > custodyLimits.bytes ||
-        segment.budget.objects + 1 > custodyLimits.objects ||
         segment.budget.bytesByFamily[family] + size + 1 > limit.bytes ||
-        segment.budget.objectsByFamily[family] + 1 > limit.objects) {
+        segment.entries.length >= custodyLimits.objects) {
       if (segments.length === custodyArchiveLimits.segments) throw new Error('custody archive segment limit');
       segment = { index: segments.length, budget: custodyBudget(), entries: [] };
       segments.push(segment);
     }
     const before = custodyAccounting(segment.budget);
-    try {
-      const bytes = source ? source.read(segment.budget) : custodyRead(path, segment.budget, family);
-      const pin = { ...store.persist(bytes, suffix), segment: segment.index };
-      segment.entries.push({ family, artifact: pin });
-      return pin;
-    } finally {
-      budget.bytes += segment.budget.bytes - before.bytesRead;
-      budget.objects += segment.budget.objects - before.objectsRead;
-      for (const key of custodyFamilyKeys) {
-        budget.bytesByFamily[key] += segment.budget.bytesByFamily[key] - before.bytesReadByFamily[key];
-        budget.objectsByFamily[key] += segment.budget.objectsByFamily[key] - before.objectsReadByFamily[key];
-      }
+    const bytes = source ? source.read(segment.budget, budget) :
+      custodyRead(path, segment.budget, family, custodyLimits, { aggregateBudget: budget, deferObject: true });
+    const sha256 = createHash('sha256').update(bytes).digest('hex'), ref = sha256 + '.' + suffix;
+    const key = custodyObjectKey(family, ref), archiveNew = !budget.objectRefs.has(key);
+    if (archiveNew && budget.objects >= custodyArchiveLimits.objects)
+      throw new Error('custody archive object limit');
+    let segmentNew = !segment.budget.objectRefs.has(key);
+    if (segmentNew && (segment.budget.objects + 1 > custodyLimits.objects ||
+        segment.budget.objectsByFamily[family] + 1 > limit.objects)) {
+      const chargedBytes = segment.budget.bytes - before.bytesRead;
+      const chargedFamilyBytes = segment.budget.bytesByFamily[family] - before.bytesReadByFamily[family];
+      if (segments.length === custodyArchiveLimits.segments) throw new Error('custody archive segment limit');
+      // Reads precede unique-object admission. Transfer their charge with the
+      // artifact when a full family budget requires a new segment.
+      segment.budget.bytes -= chargedBytes;
+      segment.budget.bytesByFamily[family] -= chargedFamilyBytes;
+      segment = { index: segments.length, budget: custodyBudget(), entries: [] };
+      segment.budget.bytes += chargedBytes;
+      segment.budget.bytesByFamily[family] += chargedFamilyBytes;
+      segments.push(segment);
+      segmentNew = true;
     }
+    const stored = store.persist(bytes, suffix);
+    if (stored.ref !== ref) throw new Error('custody artifact reference mismatch');
+    if (archiveNew) custodyRecordObject(budget, family, ref, custodyArchiveLimits);
+    if (segmentNew) custodyRecordObject(segment.budget, family, ref, custodyLimits);
+    const pin = { ...stored, segment: segment.index };
+    segment.entries.push({ family, artifact: pin });
+    return pin;
   };
   const captureOut = (path, entry) => {
     const size = lstatSync(path).size;
@@ -768,13 +852,13 @@ function prepareNativeProofPacket(directory, input) {
         for (let offset = 0; offset < size;) {
           const byteLength = Math.min(8 * 1024 * 1024 - 1, size - offset);
           let retainedBytes;
-          const artifact = capture(path, 'out-chunk', 'A', { byteLength, read(budget) {
-            budget.objects++; budget.objectsByFamily.A++;
+          const artifact = capture(path, 'out-chunk', 'A', { byteLength, read(budget, aggregateBudget) {
             const bytes = Buffer.alloc(byteLength);
             let length = 0;
             while (length < byteLength) {
               const count = readSync(fd, bytes, length, Math.min(64 * 1024, byteLength - length), null);
               budget.bytes += count; budget.bytesByFamily.A += count;
+              aggregateBudget.bytes += count; aggregateBudget.bytesByFamily.A += count;
               if (!count) throw new Error('native artifact changed during capture');
               length += count;
             }
@@ -892,6 +976,7 @@ function prepareNativeProofPacket(directory, input) {
     bytesRead: budget.bytes, bytesReadByFamily: budget.bytesByFamily,
     objectsRead: budget.objects, objectsReadByFamily: budget.objectsByFamily,
     segments: retainedSegments, archiveLimits: custodyArchiveLimits,
+    archiveObjectAccounting: 'unique-family-artifact-ref-v1',
     gaps, predecessor: input.predecessor ?? null,
     verdicts: { custody: gaps.length ? 'partial' : 'complete', execution: input.execution ?? 'unknown',
       protocol: 'unqualified', producerRetirement: 'not-performed', cleanup: input.cleanup ?? 'unknown',
@@ -935,9 +1020,17 @@ function syncNativeProofPath(path) {
   try { fsyncSync(fd); } finally { closeSync(fd); }
 }
 
-async function syncNativeProofPathAsync(path) {
+async function syncNativeProofPathAsync(path, onOperation) {
+  onOperation?.('open');
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try { await handle.sync(); } finally { await handle.close(); }
+  try {
+    onOperation?.('sync');
+    await handle.sync();
+  } finally {
+    onOperation?.('close');
+    await handle.close();
+    onOperation?.('complete');
+  }
 }
 
 function syncNativeProofPacket(prepared) {
@@ -960,15 +1053,28 @@ function syncNativeProofPacket(prepared) {
 async function syncNativeProofPacketAsync(prepared, deadlineAtMs) {
   const sync = async (path, phase) => {
     const remaining = deadlineAtMs === undefined ? undefined : deadlineAtMs - Date.now();
-    const expired = () => Object.assign(new Error(`native proof sync deadline: ${phase} ${path}`),
-      { code: 'NATIVE_PROOF_SYNC_DEADLINE', phase, path });
+    let operation = 'not-started', operationStartedAt = performance.now();
+    const operationTimingsMs = { open: null, sync: null, close: null };
+    const observe = next => {
+      const now = performance.now();
+      if (operation in operationTimingsMs) operationTimingsMs[operation] = Math.round(now - operationStartedAt);
+      operation = next;
+      operationStartedAt = now;
+    };
+    const expired = () => {
+      const detail = { path, operation, operationElapsedMs: Math.round(performance.now() - operationStartedAt),
+        operationTimingsMs: { ...operationTimingsMs } };
+      prepared.progress('sync-deadline', { syncPhase: phase, ...detail });
+      return Object.assign(new Error(`native proof sync deadline: ${phase} ${path} operation=${operation}`),
+        { code: 'NATIVE_PROOF_SYNC_DEADLINE', phase, ...detail });
+    };
     if (remaining !== undefined && remaining <= 0) throw expired();
     if (remaining === undefined) return syncNativeProofPathAsync(path);
     let timer;
     try {
       // This bounds the waiter, not the kernel operation. No completion is
       // reported on expiry; pending objects remain available for later sealing.
-      await Promise.race([syncNativeProofPathAsync(path), new Promise((_, reject) => {
+      await Promise.race([syncNativeProofPathAsync(path, observe), new Promise((_, reject) => {
         timer = setTimeout(() => reject(expired()), remaining);
       })]);
     } finally { clearTimeout(timer); }
@@ -1045,6 +1151,7 @@ export function verifyNativeProofPacket(directory, locator, contract) {
   const budget = Object.assign(custodyBudget(), { private: true });
   const segmentBudgets = [], segmentEntries = [], consumedEntries = [];
   let segmented = false;
+  let uniqueArchiveObjectAccounting = false;
   let readLimits = custodyLimits;
   const read = (pin, readBudget = budget, family = null) => {
     if (!pin || !comparisonDigest(pin.sha256) || !Number.isSafeInteger(pin.byteLength) ||
@@ -1056,7 +1163,9 @@ export function verifyNativeProofPacket(directory, locator, contract) {
       readBudget = segmentBudgets[pin.segment];
       consumedEntries[pin.segment].push({ family, artifact: pin });
     }
-    const bytes = custodyRead(join(objects, pin.ref), readBudget, family, readLimits);
+    const bytes = custodyRead(join(objects, pin.ref), readBudget, family, readLimits, {
+      uniqueObjectAccounting: uniqueArchiveObjectAccounting, uniqueObjectRef: pin.ref,
+    });
     if (bytes.length !== pin.byteLength || createHash('sha256').update(bytes).digest('hex') !== pin.sha256)
       throw new Error('custody retained bytes differ');
     return bytes;
@@ -1069,6 +1178,10 @@ export function verifyNativeProofPacket(directory, locator, contract) {
   const legacy = manifest.schemaVersion === 'native-proof-custody-v1';
   segmented = manifest.schemaVersion === 'native-proof-custody-v3';
   const current = manifest.schemaVersion === 'native-proof-custody-v2' || segmented;
+  uniqueArchiveObjectAccounting = manifest.archiveObjectAccounting === 'unique-family-artifact-ref-v1';
+  if (manifest.archiveObjectAccounting !== undefined &&
+      (!segmented || manifest.archiveObjectAccounting !== 'unique-family-artifact-ref-v1'))
+    throw new Error('custody archive object accounting mismatch');
   const referenceArtifactLimit = manifest.referenceArtifactLimit ?? custodyLimits.families.B.objects;
   if (manifest.referenceArtifactLimit !== undefined &&
       (!segmented || manifest.referenceArtifactLimit !== custodyArchiveLimits.objects))
@@ -1097,7 +1210,8 @@ export function verifyNativeProofPacket(directory, locator, contract) {
         !Array.isArray(manifest.segments) || manifest.segments.length > custodyArchiveLimits.segments ||
         !Number.isSafeInteger(manifest.objectsRead) || manifest.objectsRead > custodyArchiveLimits.objects)
       throw new Error('custody archive population mismatch');
-    const sums = custodyBudget();
+    const sums = custodyBudget(), archiveObjectRefs = new Set();
+    const archiveObjectsByFamily = Object.fromEntries(custodyFamilyKeys.map(key => [key, new Set()]));
     for (const [index, segment] of manifest.segments.entries()) {
       if (segment.index !== index || !Number.isSafeInteger(segment.bytesRead) || segment.bytesRead < 0 ||
           segment.bytesRead > custodyLimits.bytes || !Number.isSafeInteger(segment.objectsRead) ||
@@ -1110,17 +1224,29 @@ export function verifyNativeProofPacket(directory, locator, contract) {
             !Number.isSafeInteger(nobjects) || nobjects < 0 || nobjects > custodyFamilies[key].objects)
           throw new Error('custody segment family budget mismatch');
         bytes += nbytes; objects += nobjects;
-        sums.bytesByFamily[key] += nbytes; sums.objectsByFamily[key] += nobjects;
+        sums.bytesByFamily[key] += nbytes;
+        if (!uniqueArchiveObjectAccounting) sums.objectsByFamily[key] += nobjects;
       }
       if (bytes !== segment.bytesRead || objects !== segment.objectsRead)
         throw new Error('custody segment accounting mismatch');
-      sums.bytes += bytes; sums.objects += objects;
+      sums.bytes += bytes;
+      if (!uniqueArchiveObjectAccounting) sums.objects += objects;
       const metadata = JSON.parse(read(segment.artifact, { objects: 0, bytes: 0, private: true }).toString('utf8'));
       if (metadata.schemaVersion !== 'native-proof-segment-v1' || metadata.index !== index ||
           !Array.isArray(metadata.entries) || metadata.entries.length > custodyLimits.objects)
         throw new Error('custody segment inventory mismatch');
+      if (uniqueArchiveObjectAccounting) for (const entry of metadata.entries) {
+        if (!entry || !custodyFamilyKeys.includes(entry.family) || typeof entry.artifact?.ref !== 'string')
+          throw new Error('custody segment object reference mismatch');
+        archiveObjectRefs.add(custodyObjectKey(entry.family, entry.artifact.ref));
+        archiveObjectsByFamily[entry.family].add(entry.artifact.ref);
+      }
       segmentBudgets.push(Object.assign(custodyBudget(), { private: true }));
       segmentEntries.push(metadata.entries); consumedEntries.push([]);
+    }
+    if (uniqueArchiveObjectAccounting) {
+      sums.objects = archiveObjectRefs.size;
+      for (const key of custodyFamilyKeys) sums.objectsByFamily[key] = archiveObjectsByFamily[key].size;
     }
     if (JSON.stringify(custodyAccounting(sums)) !== JSON.stringify({ bytesRead: manifest.bytesRead,
       objectsRead: manifest.objectsRead, bytesReadByFamily: manifest.bytesReadByFamily,

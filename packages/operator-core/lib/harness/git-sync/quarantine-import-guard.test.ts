@@ -16,6 +16,89 @@ import {
 } from './quarantine-import-guard';
 
 describe('detectStagedProvidersOfHeldImporters read budget', () => {
+  it('batches package manifests with held consumers while preserving nearest-package alias chains', async () => {
+    const staged = Array.from({ length: 40 }, (_, n) => `packages/pkg-${n}/src/index.ts`);
+    const head = new Map<string, string>([
+      ['consumer.ts', "import { old } from '@example/pkg-0';"],
+      // This outer package must not shadow the nearer package's export map.
+      ['package.json', JSON.stringify({ name: '@example/pkg-0', exports: './unrelated.ts' })],
+    ]);
+    for (let n = 0; n < staged.length; n++) {
+      head.set(`packages/pkg-${n}/package.json`, JSON.stringify({
+        name: `@example/pkg-${n}`, exports: './src/index.ts',
+      }));
+      head.set(staged[n]!, n === 0
+        ? "import { old } from '@example/pkg-1'; export { old };"
+        : 'export const old = 1;');
+    }
+    const singleReads: string[] = [];
+    const batchReads: string[][] = [];
+    const indexReads: string[] = [];
+    const offenders = await detectStagedProvidersOfHeldImporters({
+      stagedFiles: staged,
+      heldImporters: ['consumer.ts'],
+      readHeadText: async path => { singleReads.push(path); return head.get(path) ?? null; },
+      readHeadTexts: async paths => {
+        batchReads.push([...paths]);
+        return new Map(paths.map(path => [path, head.get(path) ?? null]));
+      },
+      readIndexText: async path => { indexReads.push(path); return 'export const replacement = 1;'; },
+    });
+    expect(offenders.map(row => row.file)).toEqual(staged.slice(0, 2));
+    expect(indexReads).toEqual(staged.slice(0, 2));
+    expect(singleReads.filter(path => path.endsWith('package.json'))).toEqual([]);
+    // The manifest prefetch is one batch; each provider introduced by the
+    // fixed-point walk is read in the next bounded wave.
+    expect(batchReads).toHaveLength(3);
+    expect(batchReads.slice(1)).toEqual([[staged[0]], [staged[1]]]);
+    expect(batchReads[0]).toEqual(expect.arrayContaining([
+      'consumer.ts', 'package.json', 'packages/package.json',
+      ...staged.flatMap((_, n) => [
+        `packages/pkg-${n}/package.json`, `packages/pkg-${n}/src/package.json`,
+      ]),
+    ]));
+    expect(new Set(batchReads[0]).size).toBe(batchReads[0]!.length);
+  });
+
+  it('batches provider HEAD and index reads for each held-importer wave', async () => {
+    const staged = ['src/one.ts', 'src/two.ts', 'src/unrelated.ts'];
+    const head = new Map<string, string>([
+      ['consumer.ts', "import { oldOne } from './src/one'; import { oldTwo } from './src/two';"],
+      ['src/one.ts', 'export const oldOne = 1;'],
+      ['src/two.ts', 'export const oldTwo = 1;'],
+    ]);
+    const index = new Map<string, string>([
+      ['src/one.ts', 'export const newOne = 1;'],
+      ['src/two.ts', 'export const newTwo = 1;'],
+    ]);
+    const singleHeadReads: string[] = [];
+    const singleIndexReads: string[] = [];
+    const headBatches: string[][] = [];
+    const indexBatches: string[][] = [];
+    const offenders = await detectStagedProvidersOfHeldImporters({
+      stagedFiles: staged,
+      heldImporters: ['consumer.ts'],
+      readHeadText: async path => { singleHeadReads.push(path); return head.get(path) ?? null; },
+      readHeadTexts: async paths => {
+        headBatches.push([...paths]);
+        return new Map(paths.map(path => [path, head.get(path) ?? null]));
+      },
+      readIndexText: async path => { singleIndexReads.push(path); return index.get(path) ?? null; },
+      readIndexTexts: async paths => {
+        indexBatches.push([...paths]);
+        return new Map(paths.map(path => [path, index.get(path) ?? null]));
+      },
+      log: () => {},
+    });
+
+    expect(offenders.map(row => row.file)).toEqual(['src/one.ts', 'src/two.ts']);
+    expect(indexBatches).toEqual([['src/one.ts', 'src/two.ts']]);
+    expect(singleIndexReads).toEqual([]);
+    expect(headBatches.some(batch => batch.includes('src/one.ts') && batch.includes('src/two.ts'))).toBe(true);
+    expect(singleHeadReads).toEqual([]);
+    expect(indexBatches.flat()).not.toContain('src/unrelated.ts');
+  });
+
   it.each([
     ['unchanged exports', 'export const value = 1;', 'export const value = 2;'],
     ['additive exports', 'export const value = 1;', 'export const value = 1; export const added = 2;'],

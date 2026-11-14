@@ -243,27 +243,30 @@ export default defineTool({
         status: res.status,
       });
 
+      const payload = {
+        ok: res.ok,
+        status: res.status,
+        status_text: res.statusText,
+        headers,
+        truncated,
+        final_url: request.finalUrl,
+        redirects: request.redirectCount,
+        boundary_profile: profile.kind,
+        ...(next ? { next } : {}),
+        ...(logPath ? { log_path: logPath } : {}),
+        provenance: { ...provenance, screened },
+        body: bodyOut,
+      };
+
       return {
         content: [
           {
             type: 'text' as const,
-            text: JSON.stringify({
-              ok: res.ok,
-              status: res.status,
-              status_text: res.statusText,
-              headers,
-              truncated,
-              final_url: request.finalUrl,
-              redirects: request.redirectCount,
-              boundary_profile: profile.kind,
-              ...(next ? { next } : {}),
-              ...(logPath ? { log_path: logPath } : {}),
-              provenance: { ...provenance, screened },
-              body: bodyOut,
-            }),
+            text: JSON.stringify(payload),
           },
         ],
         isError: !res.ok && !args.expected_statuses?.includes(res.status),
+        ...(ctx.codeMode ? { structuredContent: payload } : {}),
       };
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);

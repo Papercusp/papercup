@@ -445,7 +445,7 @@ function extractExportSurface(text: string): ExportSurface {
   return { names, starSources };
 }
 
-function removedConsumedExports(names: string[], before: ExportSurface, after: ExportSurface): string[] {
+function removedConsumedExports(names: readonly string[], before: ExportSurface, after: ExportSurface): string[] {
   if (names.includes('*')) {
     const removed = [...before.names].filter(name => !after.names.has(name));
     for (const source of before.starSources) {
@@ -468,8 +468,12 @@ export interface StagedProviderGuardDeps {
   heldImporters: string[];
   /** Read a path from the current HEAD tree; null when absent or unreadable. */
   readHeadText: (relPath: string) => Promise<string | null>;
+  /** Read HEAD paths in batches; omitted paths are absent or unreadable. */
+  readHeadTexts?: (relPaths: readonly string[]) => Promise<ReadonlyMap<string, string | null>>;
   /** Read a path from this commit's exact index; null when absent or unreadable. */
   readIndexText: (relPath: string) => Promise<string | null>;
+  /** Read selected index paths in one bounded batch; omitted callers keep the per-path fallback. */
+  readIndexTexts?: (relPaths: readonly string[]) => Promise<ReadonlyMap<string, string | null>>;
   log?: (message: string) => void;
 }
 
@@ -502,6 +506,23 @@ export async function detectStagedProvidersOfHeldImporters(
     }
     return pending;
   };
+  const readHeadTexts = async (paths: readonly string[]): Promise<void> => {
+    const missing = [...new Set(paths)].filter(path => !headCache.has(path));
+    if (missing.length === 0) return;
+    if (!deps.readHeadTexts) {
+      await mapPool(missing, MAX_READ_CONCURRENCY, async path => { await readHeadText(path); });
+      return;
+    }
+    let contents: ReadonlyMap<string, string | null>;
+    try {
+      contents = await deps.readHeadTexts(missing);
+    } catch (error) {
+      deps.log?.(`[quarantine-provider-guard] could not batch read HEAD for ${missing.length} path(s) — skipping (fail open): ${errMsg(error)}`);
+      for (const path of missing) headCache.set(path, Promise.resolve(null));
+      return;
+    }
+    for (const path of missing) headCache.set(path, Promise.resolve(contents.get(path) ?? null));
+  };
   const readIndexText = (path: string): Promise<string | null> => {
     let pending = indexCache.get(path);
     if (!pending) {
@@ -513,6 +534,23 @@ export async function detectStagedProvidersOfHeldImporters(
     }
     return pending;
   };
+  const readIndexTexts = async (paths: readonly string[]): Promise<void> => {
+    const missing = [...new Set(paths)].filter(path => !indexCache.has(path));
+    if (missing.length === 0) return;
+    if (!deps.readIndexTexts) {
+      await mapPool(missing, MAX_READ_CONCURRENCY, async path => { await readIndexText(path); });
+      return;
+    }
+    let contents: ReadonlyMap<string, string | null>;
+    try {
+      contents = await deps.readIndexTexts(missing);
+    } catch (error) {
+      deps.log?.(`[quarantine-provider-guard] could not batch read index for ${missing.length} path(s) — skipping (fail open): ${errMsg(error)}`);
+      for (const path of missing) indexCache.set(path, Promise.resolve(null));
+      return;
+    }
+    for (const path of missing) indexCache.set(path, Promise.resolve(contents.get(path) ?? null));
+  };
 
   // Most staged edits preserve their export surface. Prove that first, over the
   // staged providers only: reading every held consumer through a separate Git
@@ -520,28 +558,32 @@ export async function detectStagedProvidersOfHeldImporters(
   // Use the same surface comparison as the binding check below, including star
   // re-exports. Unknown reads retain this guard's existing fail-open behavior.
   type ProviderSurface = { before: ExportSurface; after: ExportSurface };
-  const providerSurfaces = new Map<string, Promise<ProviderSurface | null>>();
-  const readProviderSurface = (path: string): Promise<ProviderSurface | null> => {
-    let pending = providerSurfaces.get(path);
-    if (!pending) {
-      pending = (async () => {
-        const [beforeText, afterText] = await Promise.all([readHeadText(path), readIndexText(path)]);
-        if (beforeText === null || afterText === null) return null;
-        const before = extractExportSurface(beforeText);
-        const after = extractExportSurface(afterText);
-        return removedConsumedExports(['*'], before, after).length > 0 ? { before, after } : null;
-      })();
-      providerSurfaces.set(path, pending);
-    }
-    return pending;
+  const providerSurfaces = new Map<string, ProviderSurface | null>();
+  const readProviderSurfaces = async (paths: readonly string[]): Promise<void> => {
+    const missing = [...new Set(paths)].filter(path => !providerSurfaces.has(path));
+    if (missing.length === 0) return;
+    await Promise.all([readHeadTexts(missing), readIndexTexts(missing)]);
+    await mapPool(missing, MAX_READ_CONCURRENCY, async path => {
+      const [beforeText, afterText] = await Promise.all([readHeadText(path), readIndexText(path)]);
+      if (beforeText === null || afterText === null) {
+        providerSurfaces.set(path, null);
+        return;
+      }
+      const before = extractExportSurface(beforeText);
+      const after = extractExportSurface(afterText);
+      const surface = removedConsumedExports(['*'], before, after).length > 0 ? { before, after } : null;
+      providerSurfaces.set(path, surface);
+    });
   };
   // When consumers are the smaller population, retain the lazy provider lookup:
   // one held file must not cause HEAD/index reads for thousands of unrelated edits.
   let candidates = stagedFiles;
   if (stagedFiles.length < heldQueue.length) {
     const removals = new Set<string>();
-    await mapPool(stagedFiles, MAX_READ_CONCURRENCY, async path => {
-      if (!heldSet.has(path) && await readProviderSurface(path)) removals.add(path);
+    const providerCandidates = stagedFiles.filter(path => !heldSet.has(path));
+    await readProviderSurfaces(providerCandidates);
+    await mapPool(providerCandidates, MAX_READ_CONCURRENCY, async path => {
+      if (providerSurfaces.get(path)) removals.add(path);
     });
     candidates = stagedFiles.filter(path => removals.has(path));
   }
@@ -557,6 +599,22 @@ export async function detectStagedProvidersOfHeldImporters(
 
   // Resolve package aliases against HEAD's manifest: the held importer is the old HEAD
   // text, so its old package export map defines where that specifier points.
+  // Include ancestor manifests in the existing bounded HEAD batch. Otherwise each
+  // candidate directory pays an individual Git dispatch before consumers can use
+  // their batch. Resolution below still selects the nearest owning package; the
+  // broader prefetch changes only I/O, and exact-index provider reads stay lazy.
+  if (deps.readHeadTexts) {
+    const manifests = new Set<string>();
+    for (const path of candidates) {
+      for (let dir = posix.dirname(path); ; dir = posix.dirname(dir)) {
+        const manifest = posix.join(dir, 'package.json');
+        if (manifests.has(manifest)) break;
+        manifests.add(manifest);
+        if (dir === '.') break;
+      }
+    }
+    await readHeadTexts([...manifests, ...heldQueue]);
+  }
   const packages = new Map<string, RepositoryPackage>();
   const manifestReads = new Map<string, Promise<RepositoryPackage | null>>();
   const registerHeadPackage = async (path: string) => {
@@ -584,43 +642,48 @@ export async function detectStagedProvidersOfHeldImporters(
   };
   await mapPool(candidates, MAX_READ_CONCURRENCY, registerHeadPackage);
 
-  // Keep the fixed-point walk deterministic while bounding its initial reads.
-  // When providers are the smaller population, this runs only after a removal;
-  // otherwise it reads the smaller consumer set and resolves providers lazily.
-  await mapPool(heldQueue, MAX_READ_CONCURRENCY, async path => { await readHeadText(path); });
+  // Keep the fixed-point walk deterministic while batching provider surfaces for each
+  // bounded held-importer wave. Newly held providers join a later wave, preserving the
+  // fixed point without serial HEAD/index Git reads for each discovered edge.
+  await readHeadTexts(heldQueue);
   const offenders = new Map<string, ContentOffender>();
-  for (let cursor = 0; cursor < heldQueue.length; cursor++) {
-    const importer = heldQueue[cursor];
-    const headText = await readHeadText(importer);
-    if (headText === null) continue;
-    for (const reference of extractBoundModuleReferences(headText)) {
-      const targets = reference.specifier.startsWith('.')
-        ? [resolveRelativeSpecifier(importer, reference.specifier)]
-        : [...packages.values()].flatMap(pkg => resolvePackageSpecifier(pkg, reference.specifier));
-      const providers = [...new Set(targets.flatMap(target => stagedByModule.get(target) ?? []))];
-      for (const provider of providers) {
-        if (heldSet.has(provider)) continue;
-        const surface = await readProviderSurface(provider);
-        if (!surface) continue;
-        const removed = removedConsumedExports(
-          reference.names,
-          surface.before,
-          surface.after,
-        );
-        if (removed.length === 0) continue;
-        heldSet.add(provider);
-        heldQueue.push(provider);
-        offenders.set(provider, {
-          file: provider,
-          detectorKey: 'quarantined-provider',
-          error:
-            `the HEAD version of held importer '${importer}' still consumes ${removed.join(', ')} ` +
-            `from '${reference.specifier}', but this staged provider removes those exports; ` +
-            `holding the provider so HEAD cannot land with an unresolved import.`,
-          fixerRole: 'content-fixer',
-        });
+  for (let cursor = 0; cursor < heldQueue.length;) {
+    const wave = heldQueue.slice(cursor, cursor + MAX_READ_CONCURRENCY);
+    const checks: Array<{ importer: string; specifier: string; names: readonly string[]; provider: string }> = [];
+    for (const importer of wave) {
+      const headText = await readHeadText(importer);
+      if (headText === null) continue;
+      for (const reference of extractBoundModuleReferences(headText)) {
+        const targets = reference.specifier.startsWith('.')
+          ? [resolveRelativeSpecifier(importer, reference.specifier)]
+          : [...packages.values()].flatMap(pkg => resolvePackageSpecifier(pkg, reference.specifier));
+        const providers = [...new Set(targets.flatMap(target => stagedByModule.get(target) ?? []))];
+        for (const provider of providers) {
+          if (heldSet.has(provider)) continue;
+          checks.push({ importer, specifier: reference.specifier, names: reference.names, provider });
+        }
       }
     }
+    await readProviderSurfaces(checks.map(check => check.provider));
+    for (const check of checks) {
+      if (heldSet.has(check.provider)) continue;
+      const surface = providerSurfaces.get(check.provider);
+      if (!surface) continue;
+      const removed = removedConsumedExports(check.names, surface.before, surface.after);
+      if (removed.length === 0) continue;
+      heldSet.add(check.provider);
+      heldQueue.push(check.provider);
+      offenders.set(check.provider, {
+        file: check.provider,
+        detectorKey: 'quarantined-provider',
+        error:
+          `the HEAD version of held importer '${check.importer}' still consumes ${removed.join(', ')} ` +
+          `from '${check.specifier}', but this staged provider removes those exports; ` +
+          `holding the provider so HEAD cannot land with an unresolved import.`,
+        fixerRole: 'content-fixer',
+      });
+    }
+    cursor += wave.length;
   }
   return [...offenders.values()];
 }

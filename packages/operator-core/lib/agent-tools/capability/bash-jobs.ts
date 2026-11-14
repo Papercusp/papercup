@@ -44,7 +44,8 @@ import {
   SYSTEMD_RUNNER_SCOPE_UNIT_ENV,
   SYSTEMD_RUNNER_TASK_ID_ENV,
 } from '../../systemd-scope-env-runner.mjs';
-import { readJobLogTerminal, type JobLogTerminalIdentity } from '../../task-manager/job-log-terminal';
+import { readJobLogTerminal, type JobLogTerminal, type JobLogTerminalIdentity } from '../../task-manager/job-log-terminal';
+import { WORK_ITEM_VERIFICATION_PURPOSE } from '../../task-manager/types';
 import { redactSelfIdentifyingSecrets, SELF_IDENTIFYING_SECRET_PATTERN } from '../../sensitive-text';
 import {
   absCgroupDir,
@@ -959,9 +960,10 @@ export function formatJobLogEndMarker(
 function runnerIdentityForNormalizedMarker(
   job: BashJob,
   expectedNonceHash: string | null,
+  snapshot?: JobLogTerminal | null,
 ): JobLogTerminalIdentity | undefined {
   if (!expectedNonceHash || !job.taskId || !job.scopeUnit) return undefined;
-  const marker = readJobLogTerminal(job.logPath);
+  const marker = snapshot === undefined ? readJobLogTerminal(job.logPath) : snapshot;
   if (
     !marker ||
     marker.taskId !== job.taskId ||
@@ -3069,6 +3071,7 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
         goalRef: opts.goalRef ?? null,
         workloadClass: isTestRun ? 'test-run' : 'other',
         budgetPolicy: isTestRun ? 'capability-bash-test-v1' : 'deadline-only-v1',
+        ...(isTestRun ? { verificationPurpose: WORK_ITEM_VERIFICATION_PURPOSE } : {}),
       },
     },
     child.pid ?? null,
@@ -3144,11 +3147,26 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     );
   });
   child.on('close', (code) => {
+    const runnerTerminal = job.runnerOwnsLog && runnerMarkerNonceHash ? readJobLogTerminal(job.logPath) : null;
+    const runnerIdentity = runnerIdentityForNormalizedMarker(job, runnerMarkerNonceHash, runnerTerminal);
     const statusBeforeClose = job.status;
     job.status = classifyBackgroundCloseStatus(job.status, job.deadlineAt, Date.now());
     if (statusBeforeClose === 'running' && job.status === 'timed_out') appendDeadlineDiagnostic();
     if (job.status === 'running') {
-      const sigpipeNormalized = normalizeExpectedSigpipeResult(opts.command, code === 0 ? 'completed' : 'failed', code);
+      // A lost observer exit must not replace the authenticated payload result
+      // already flushed by its service runner. Explicit observer exits and
+      // stronger local terminal states retain their existing interpretation.
+      const payloadExitCode = code === null && runnerIdentity && runnerTerminal &&
+        Number.isSafeInteger(runnerTerminal.exitCode) &&
+        ((runnerTerminal.status === 'completed' && runnerTerminal.exitCode === 0) ||
+          (runnerTerminal.status === 'failed' && runnerTerminal.exitCode !== 0))
+        ? runnerTerminal.exitCode
+        : code;
+      const sigpipeNormalized = normalizeExpectedSigpipeResult(
+        opts.command,
+        payloadExitCode === 0 ? 'completed' : 'failed',
+        payloadExitCode,
+      );
       const ppidNormalized = normalizeExpectedPsPpidEmptyResult(
         opts.command,
         sigpipeNormalized.status,
@@ -3189,7 +3207,7 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
       job.status,
       job.exitCode,
       job.endedAt,
-      runnerIdentityForNormalizedMarker(job, runnerMarkerNonceHash),
+      runnerIdentity,
     );
     try {
       job.logStream?.write(terminalMarker);

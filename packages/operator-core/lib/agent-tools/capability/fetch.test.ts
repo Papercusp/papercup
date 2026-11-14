@@ -43,7 +43,7 @@ function responseFrom(chunks: string[]): Response {
   return new Response(stream);
 }
 
-function fetchArgs(status: number, expectedStatuses?: number[]) {
+function fetchArgs(status: number, expectedStatuses?: number[], codeMode = false) {
   const url = 'https://example.test/negative-control';
   mocks.fetchWithCapabilityPolicy.mockResolvedValueOnce({
     response: new Response(JSON.stringify({ error: 'invalid_execution_kind' }), { status }),
@@ -54,11 +54,20 @@ function fetchArgs(status: number, expectedStatuses?: number[]) {
   });
   return capabilityFetch.handler({ url, ...(expectedStatuses ? { expected_statuses: expectedStatuses } : {}) } as never, {
     signal: new AbortController().signal,
+    codeMode,
   } as never);
 }
 
-function toolResult(value: unknown): { isError?: boolean; content?: Array<{ type: string; text?: string }> } {
-  return value as { isError?: boolean; content?: Array<{ type: string; text?: string }> };
+function toolResult(value: unknown): {
+  isError?: boolean;
+  content?: Array<{ type: string; text?: string }>;
+  structuredContent?: unknown;
+} {
+  return value as {
+    isError?: boolean;
+    content?: Array<{ type: string; text?: string }>;
+    structuredContent?: unknown;
+  };
 }
 
 beforeEach(() => {
@@ -112,6 +121,21 @@ describe('capability:fetch expected HTTP statuses', () => {
     expect(result.isError).toBe(true);
     expect(JSON.parse(result.content?.[0]?.text ?? '{}')).toMatchObject({ ok: false, status: 409 });
     expect(failureClassOf({ ok: true, result } as never)).toBe('refused');
+  });
+
+  it('adds a structured twin for code-mode callers while keeping the direct text response unchanged', async () => {
+    const codeModeResult = toolResult(await fetchArgs(200, undefined, true));
+    const directResult = toolResult(await fetchArgs(200));
+
+    expect(codeModeResult.structuredContent).toMatchObject({
+      ok: true,
+      status: 200,
+      truncated: false,
+      body: JSON.stringify({ error: 'invalid_execution_kind' }),
+    });
+    expect(JSON.parse(codeModeResult.content?.[0]?.text ?? '{}')).toEqual(codeModeResult.structuredContent);
+    expect(directResult.structuredContent).toBeUndefined();
+    expect(directResult.content?.[0]?.text).toBe(codeModeResult.content?.[0]?.text);
   });
 });
 

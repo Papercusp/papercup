@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 // scripts/mcp-call.mjs is the sanctioned recovery path when the Claude Code
 // papercusp-su MCP client drops (EI-1740 / EI-1750). Root scripts/** route into
@@ -8,6 +8,7 @@ import {
   fetchWithConnectionRecovery,
   isConnectionRefusedError,
   parseSse,
+  probeMcpBuildIdentity,
   resolveCandidatePorts,
 } from '../../../scripts/mcp-call.mjs';
 
@@ -214,6 +215,49 @@ describe('mcp-call connection recovery', () => {
       ),
     ).rejects.toBe(error);
     expect(calls).toBe(1);
+  });
+
+  it('retries a pinned health-probe timeout without widening MCP request retries', async () => {
+    const retryLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const timeout = Object.assign(new Error('health probe timed out'), { name: 'TimeoutError' });
+    let healthCalls = 0;
+    try {
+      const health = await probeMcpBuildIdentity('36015', 'expected-sha', {
+        pinned: true,
+        retryWindowMs: 50,
+        retryDelayMs: 1,
+        sleepImpl: async () => {},
+        fetchImpl: async () => {
+          healthCalls += 1;
+          if (healthCalls === 1) throw timeout;
+          return Response.json({ sha: 'expected-sha' });
+        },
+      });
+
+      expect(health).toEqual({ matches: true, actual: 'expected-sha', reason: 'build SHA matches' });
+      expect(healthCalls).toBe(2);
+      expect(retryLog).toHaveBeenCalledOnce();
+
+      let mcpCalls = 0;
+      await expect(
+        fetchWithConnectionRecovery(
+          'http://localhost:36015/api/mcp',
+          { method: 'POST' },
+          {
+          retryWindowMs: 50,
+          retryDelayMs: 1,
+          sleepImpl: async () => {},
+          fetchImpl: async () => {
+            mcpCalls += 1;
+            throw timeout;
+          },
+          },
+        ),
+      ).rejects.toBe(timeout);
+      expect(mcpCalls).toBe(1);
+    } finally {
+      retryLog.mockRestore();
+    }
   });
 
   it('stops retrying once the bounded restart window expires', async () => {

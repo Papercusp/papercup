@@ -166,7 +166,7 @@ function scratchQuotaMutexLockRoot(): string | undefined {
  * Explicit scratch/mutex roots retain the colocated state path for isolated/custom deployments.
  */
 export function resolveScratchQuotaStateRoot(
-  env: Pick<NodeJS.ProcessEnv, 'XDG_RUNTIME_DIR' | 'PAPERCUSP_SCRATCH_ROOT' | 'PAPERCUSP_FS_MUTEX_LOCK_DIR'> = process.env,
+  env: Partial<Pick<NodeJS.ProcessEnv, 'XDG_RUNTIME_DIR' | 'PAPERCUSP_SCRATCH_ROOT' | 'PAPERCUSP_FS_MUTEX_LOCK_DIR'>> = process.env,
   scratchRootPath = scratchRoot(),
 ): string {
   const runtimeDir = env.XDG_RUNTIME_DIR?.trim();
@@ -1243,6 +1243,7 @@ async function evictWorkspaceQuotaLocked(
 }> {
   const wsRoot = scratchRootForWorkspace(workspaceId);
   const entry = usageEntry(workspaceId);
+  const retentionPinBusy = new Error('retention-mutex-busy');
   const writeGeneration = entry.writeGeneration;
   const hadActiveWrites = [...entry.writes.values()].some((write) => write.reserved);
   // Request-time recovery blocks new reservations until this walk finishes. Keep references
@@ -1479,8 +1480,15 @@ async function evictWorkspaceQuotaLocked(
         if (!(await removeUnpinnedScratchPath(run.dir, false, (elapsedMs) => {
           rmAsyncMs = elapsedMs;
           if (diagnostics) diagnostics.rmAsyncMs += elapsedMs;
-        }))) continue;
+        }, undefined, () => { throw retentionPinBusy; }))) continue;
       } catch (error) {
+        if (error === retentionPinBusy) {
+          // This pass owns the workspace data lease. A pin writer owns the global retention
+          // mutex; waiting here would block unrelated scratch writes for every remaining run.
+          // Preserve the work completed so far, release the lease, and let a later pass retry.
+          if (diagnostics) diagnostics.pinAdmissionDeferred = true;
+          break;
+        }
         const code = scratchFsErrorCode(error);
         if (code !== 'EACCES' && code !== 'EPERM' && code !== 'EROFS') throw error;
         // One read-only legacy run must not prevent reclaiming another candidate for
@@ -2075,6 +2083,8 @@ export interface ScratchQuotaRecoveryDiagnostics {
   deletePreflightMs: number;
   /** Time waiting for/checking retention pins, excluding recursive removal. */
   pinProtectionMs: number;
+  /** Quota cleanup yielded its workspace lease because the global retention mutex was busy. */
+  pinAdmissionDeferred: boolean;
   /** Recursive rmAsync time after retention-pin protection succeeds. */
   rmAsyncMs: number;
   deleteAttempts: number;
@@ -2115,6 +2125,7 @@ export function newScratchQuotaRecoveryDiagnostics(): ScratchQuotaRecoveryDiagno
     deletionMs: 0,
     deletePreflightMs: 0,
     pinProtectionMs: 0,
+    pinAdmissionDeferred: false,
     rmAsyncMs: 0,
     deleteAttempts: 0,
     deletePreflightSkips: 0,

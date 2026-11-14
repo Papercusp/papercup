@@ -9,7 +9,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import { execFile, execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -27,6 +27,7 @@ import {
   ownerHasActiveDisclosure,
   readGitSyncCensusStrict,
   readRestrictedEditHoldings,
+  readRestrictedSourceHoldEvidence,
   readRestrictedSourceHoldState,
   readRestrictedWindowHoldings,
   readTurnHoldings,
@@ -391,6 +392,188 @@ describe('readRestrictedSourceHoldState', () => {
   });
 });
 
+describe('readRestrictedSourceHoldEvidence', () => {
+  let root: string;
+  beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'restricted-source-evidence-')); });
+  afterEach(() => { rmSync(root, { recursive: true, force: true }); });
+  const hold = (domain: string, file: string) => ({ path: file, owner: 'su-restricted',
+    intent: RESTRICTED_HOLD_INTENT, coordinationDomain: domain });
+
+  const original = (repository: string) => ({ operationId: 'original-operation', candidate: {
+    version: 2 as const, kind: 'candidate' as const, repository, requestId: 'original-operation',
+    generation: 1, base: 'a'.repeat(40), baseTree: 'b'.repeat(40), tree: 'c'.repeat(40), paths: ['original.ts'],
+  } });
+
+  it('checks ORIGINAL paths outside the nominated root without widening to unrelated original paths', async () => {
+    const repository = mkdtempSync(join(tmpdir(), 'original-source-'));
+    try {
+      const scope = original(repository);
+      const readWindow = vi.fn(async (_directory: string) => []);
+      const readAttributed = vi.fn(async () => [hold(repository, 'unrelated.ts')]);
+      const clear = await readRestrictedSourceHoldEvidence(root, { readAttributed, readWindow }, scope);
+      expect(clear.state).toBe('clear');
+      expect(clear).toMatchObject({ resolver: 'restricted-source-hold-v2', original: {
+        operationId: scope.operationId, candidate: scope.candidate, repositoryRealpath: repository,
+      } });
+      expect(readWindow.mock.calls.map(([directory]) => directory).sort()).toEqual([repository, root].sort());
+      readAttributed.mockResolvedValue([hold(repository, 'original.ts')]);
+      const held = await readRestrictedSourceHoldEvidence(root, { readAttributed, readWindow }, scope);
+      expect(held).toMatchObject({ state: 'held', matching: { attributed: 1, window: 0 } });
+      expect(held.censusSha256).not.toBe(clear.censusSha256);
+    } finally { rmSync(repository, { recursive: true, force: true }); }
+  });
+
+  it('includes the ORIGINAL dirty-window census and refuses its failure', async () => {
+    const repository = mkdtempSync(join(tmpdir(), 'original-window-'));
+    try {
+      const scope = original(repository);
+      const deps = { readAttributed: async () => [], readWindow: async (directory: string) =>
+        directory === repository ? [hold(repository, 'original.ts')] : [] };
+      expect(await readRestrictedSourceHoldEvidence(root, deps, scope))
+        .toMatchObject({ state: 'held', matching: { attributed: 0, window: 1 } });
+      expect(await readRestrictedSourceHoldEvidence(root, { ...deps, readWindow: async directory => {
+        if (directory === repository) throw Error('original census unavailable');
+        return [];
+      } }, scope)).toMatchObject({ state: 'unknown', censusSha256: null, reason: 'census-unavailable' });
+    } finally { rmSync(repository, { recursive: true, force: true }); }
+  });
+
+  it('binds clear evidence to the complete ORIGINAL identity, detaches it, and reads a shared root once', async () => {
+    const scope = original(root), retained = structuredClone(scope);
+    const readWindow = vi.fn(async (_directory: string) => []);
+    const first = await readRestrictedSourceHoldEvidence(root, { readAttributed: async () => [], readWindow }, scope);
+    expect(readWindow).toHaveBeenCalledExactlyOnceWith(root);
+    for (const change of [{ tree: 'd'.repeat(40) }, { generation: 2 }, { paths: ['other.ts'] }]) {
+      const next = { ...retained, candidate: { ...retained.candidate, ...change } };
+      expect((await readRestrictedSourceHoldEvidence(root, { readAttributed: async () => [], readWindow }, next)).censusSha256)
+        .not.toBe(first.censusSha256);
+    }
+    const pending = readRestrictedSourceHoldEvidence(root, { readAttributed: async () => [], readWindow }, scope);
+    scope.candidate.paths[0] = 'replacement.ts';
+    expect(await pending).toEqual(first);
+    expect(retained.candidate.paths).toEqual(['original.ts']);
+  });
+
+  it.each(['operation', 'paths', 'repository'] as const)('refuses unknown ORIGINAL %s without reading a census', async failure => {
+    const scope = original(root);
+    if (failure === 'operation') scope.operationId = 'different-operation';
+    if (failure === 'paths') scope.candidate.paths = ['../escape'];
+    if (failure === 'repository') scope.candidate.repository = join(root, 'missing');
+    const readAttributed = vi.fn(async () => []), readWindow = vi.fn(async () => []);
+    expect(await readRestrictedSourceHoldEvidence(root, { readAttributed, readWindow }, scope))
+      .toMatchObject({ resolver: 'restricted-source-hold-v2', state: 'unknown', censusSha256: null,
+        original: null, reason: 'original-unavailable' });
+    expect(readAttributed).not.toHaveBeenCalled(); expect(readWindow).not.toHaveBeenCalled();
+  });
+
+  it('checks ORIGINAL directory ancestors, descendants, and real symlink targets', async () => {
+    const repository = mkdtempSync(join(tmpdir(), 'original-path-boundary-'));
+    const external = mkdtempSync(join(tmpdir(), 'original-path-target-'));
+    try {
+      mkdirSync(join(repository, 'src'));
+      writeFileSync(join(external, 'target.ts'), 'restricted');
+      symlinkSync(join(external, 'target.ts'), join(repository, 'src/linked.ts'));
+      for (const selected of ['src', 'src/linked.ts']) {
+        const scope = original(repository);
+        scope.candidate.paths = [selected];
+        for (const heldPath of ['src', 'src/linked.ts']) {
+          expect(await readRestrictedSourceHoldEvidence(root, { readAttributed: async () => [hold(repository, heldPath)],
+            readWindow: async () => [] }, scope)).toMatchObject({ state: 'held' });
+        }
+      }
+      const scope = original(repository);
+      scope.candidate.paths = ['src/linked.ts'];
+      expect(await readRestrictedSourceHoldEvidence(root, { readAttributed: async () => [hold(external, 'target.ts')],
+        readWindow: async () => [] }, scope)).toMatchObject({ state: 'held' });
+    } finally {
+      rmSync(repository, { recursive: true, force: true }); rmSync(external, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps unknown ORIGINAL custody and unattributed coordinate origins unknown', async () => {
+    const readAttributed = vi.fn(async () => []), readWindow = vi.fn(async () => []);
+    expect(await readRestrictedSourceHoldEvidence(root, { readAttributed, readWindow }, null))
+      .toMatchObject({ state: 'unknown', original: null, censusSha256: null, reason: 'original-unavailable' });
+    expect(readAttributed).not.toHaveBeenCalled(); expect(readWindow).not.toHaveBeenCalled();
+    expect(await readRestrictedSourceHoldEvidence(root, {
+      readAttributed: async () => [{ path: 'original.ts', owner: 'restricted', intent: RESTRICTED_HOLD_INTENT }], readWindow,
+    }, original(root))).toMatchObject({ state: 'unknown', censusSha256: null, reason: 'census-unavailable' });
+    const file = join(root, 'not-a-repository'); writeFileSync(file, 'file');
+    expect(await readRestrictedSourceHoldEvidence(root, { readAttributed, readWindow }, original(file)))
+      .toMatchObject({ state: 'unknown', reason: 'original-unavailable' });
+  });
+
+  it('binds a clear result to both completed censuses and the resolved root', async () => {
+    const readAttributed = vi.fn(async () => []);
+    const readWindow = vi.fn(async () => []);
+    const result = await readRestrictedSourceHoldEvidence(root, { readAttributed, readWindow });
+    expect(result).toEqual({ resolver: 'restricted-source-hold-v1', state: 'clear', integrationRoot: root,
+      censusSha256: expect.stringMatching(/^[a-f0-9]{64}$/), matching: { attributed: 0, window: 0 } });
+    expect(readAttributed).toHaveBeenCalledOnce();
+    expect(readWindow).toHaveBeenCalledExactlyOnceWith(root);
+    const other = mkdtempSync(join(tmpdir(), 'restricted-source-other-'));
+    try {
+      expect((await readRestrictedSourceHoldEvidence(other, { readAttributed, readWindow })).censusSha256)
+        .not.toBe(result.censusSha256);
+    } finally { rmSync(other, { recursive: true, force: true }); }
+  });
+
+  it('preserves the legacy root-only census and multiplicity when ORIGINAL custody is omitted', async () => {
+    const row = hold(root, 'src/restricted.ts');
+    const readWindow = vi.fn(async () => [row, row]);
+    const result = await readRestrictedSourceHoldEvidence(root, { readAttributed: async () => [], readWindow });
+    expect(result).toMatchObject({ resolver: 'restricted-source-hold-v1', state: 'held',
+      matching: { attributed: 0, window: 2 } });
+    expect(result).not.toHaveProperty('original');
+    expect(readWindow).toHaveBeenCalledExactlyOnceWith(root);
+  });
+
+  it('retains both applicable legs, ignores sibling roots, and is independent of row order', async () => {
+    const a = hold(root, 'src/a.ts'), b = hold(root, 'src/b.ts');
+    const irrelevant = hold(root + '-sibling', 'src/a.ts');
+    const first = await readRestrictedSourceHoldEvidence(root, {
+      readAttributed: async () => [a, irrelevant, b], readWindow: async () => [a],
+    });
+    const reordered = await readRestrictedSourceHoldEvidence(root, {
+      readAttributed: async () => [b, a], readWindow: async () => [a],
+    });
+    expect(first.state).toBe('held');
+    expect(first.matching).toEqual({ attributed: 2, window: 1 });
+    expect(reordered).toEqual(first);
+    const moved = await readRestrictedSourceHoldEvidence(root, {
+      readAttributed: async () => [a, b], readWindow: async () => [],
+    });
+    expect(moved.censusSha256).not.toBe(first.censusSha256);
+  });
+
+  it.each(['attributed', 'window'] as const)('has no clear digest when the %s census fails, even with another held leg', async leg => {
+    const rejected = async () => { throw Error('ledger unavailable'); };
+    const held = async () => [hold(root, 'src/private.ts')];
+    const result = await readRestrictedSourceHoldEvidence(root, {
+      readAttributed: leg === 'attributed' ? rejected : held,
+      readWindow: leg === 'window' ? rejected : held,
+    });
+    expect(result).toMatchObject({ state: 'unknown', integrationRoot: root, censusSha256: null,
+      matching: null, reason: 'census-unavailable' });
+  });
+
+  it('does not certify malformed census rows as clear', async () => {
+    const result = await readRestrictedSourceHoldEvidence(root, {
+      readAttributed: async () => [{ ...hold(root, ''), owner: '' }], readWindow: async () => [],
+    });
+    expect(result).toMatchObject({ state: 'unknown', censusSha256: null, reason: 'census-unavailable' });
+  });
+
+  it('does not read any census for an unconfigured or unavailable root', async () => {
+    const readAttributed = vi.fn(async () => []), readWindow = vi.fn(async () => []);
+    expect(await readRestrictedSourceHoldEvidence(null, { readAttributed, readWindow }))
+      .toMatchObject({ state: 'unknown', censusSha256: null, reason: 'root-unconfigured' });
+    expect(await readRestrictedSourceHoldEvidence(join(root, 'missing'), { readAttributed, readWindow }))
+      .toMatchObject({ state: 'unknown', censusSha256: null, reason: 'root-unavailable' });
+    expect(readAttributed).not.toHaveBeenCalled(); expect(readWindow).not.toHaveBeenCalled();
+  });
+});
+
 describe('recordRestrictedEditBeforeRelease', () => {
   const input = { repoRoot: '/srv/papercusp', files: ['notes/secret.md'], ownerId: 'su-restricted' };
 
@@ -545,6 +728,56 @@ describe('git-sync holds a restricted session’s file until its disclosure is r
         edits.map((e) => ({ repo_root: repo, file: e.file, agent_id: e.agent, ts: new Date(e.tsMs) })),
       ]);
 
+    it('retries a one-time CONNECT_TIMEOUT on the active-disclosure census query', async () => {
+      let calls = 0;
+      const sql = (() => {
+        calls++;
+        if (calls === 1) return Promise.reject(connectTimeoutError());
+        return Promise.resolve([{ since: null, restricted: null }]);
+      }) as unknown as FakeSql;
+      const listDirtyFiles = vi.fn(async () => []);
+
+      await expect(readRestrictedWindowHoldings({ sql, listDirtyFiles })).resolves.toEqual([]);
+      expect(calls).toBe(2);
+      expect(listDirtyFiles).not.toHaveBeenCalled();
+    });
+
+    it('fails closed after bounded CONNECT_TIMEOUT retries on the active-disclosure census query', async () => {
+      let calls = 0;
+      const sql = (() => {
+        calls++;
+        return Promise.reject(connectTimeoutError());
+      }) as unknown as FakeSql;
+
+      await expect(readRestrictedWindowHoldings({ sql, listDirtyFiles: async () => [] }))
+        .rejects.toMatchObject({ code: 'disclosure_ledger_unavailable' });
+      expect(calls).toBe(3);
+    });
+
+    it('retries a one-time CONNECT_TIMEOUT on the active-window attribution query and keeps the unattributed file held', async () => {
+      let calls = 0;
+      const sql = (() => {
+        calls++;
+        if (calls === 1) return Promise.resolve([{ since: new Date(0), restricted: ['su-restricted'] }]);
+        if (calls === 2) return Promise.reject(connectTimeoutError());
+        return Promise.resolve([]);
+      }) as unknown as FakeSql;
+
+      const holds = await readRestrictedWindowHoldings({
+        sql,
+        listDirtyFiles: async () => [{ root: '/repo', path: 'changed.ts' }],
+        mtimeMs: async () => 100,
+      });
+
+      expect(calls).toBe(3);
+      expect(holds).toEqual([{
+        path: 'changed.ts',
+        owner: RESTRICTED_WINDOW_OWNER,
+        intent: RESTRICTED_WINDOW_INTENT,
+        coordinationDomain: '/repo',
+      }]);
+    });
+
     it('holds a file written inside the window with no ledger row, and commits the attributed and pre-window ones', async () => {
       writeFileSync(join(repo, 'old.md'), 'changed before the disclosure\n');
       const past = new Date(Date.now() - 3_600_000);
@@ -624,4 +857,8 @@ function sequenceSql(answers: unknown[][]): FakeSql {
   let i = 0;
   const fn = () => Promise.resolve(answers[Math.min(i++, answers.length - 1)] ?? []);
   return fn as unknown as FakeSql;
+}
+
+function connectTimeoutError(): Error & { code: string } {
+  return Object.assign(new Error('write CONNECT_TIMEOUT 127.0.0.1:6432'), { code: 'CONNECT_TIMEOUT' });
 }

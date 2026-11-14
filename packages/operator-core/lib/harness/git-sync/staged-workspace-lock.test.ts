@@ -74,6 +74,104 @@ describe('commit-boundary workspace dependency coherence (real git)', () => {
     expect(git(repo, 'write-tree')).toBe(tree);
   });
 
+  it('reads shared immutable manifests once across distinct concurrent candidate trees without reusing a changed verdict', async () => {
+    git(repo, 'add', 'package-lock.json');
+    const firstTree = git(repo, 'write-tree');
+    writeFileSync(join(repo, 'independent.txt'), 'unrelated source\n');
+    git(repo, 'add', 'independent.txt');
+    const secondTree = git(repo, 'write-tree');
+    expect(secondTree).not.toBe(firstTree);
+
+    const reads: Array<{ cwd: string; oid: string }> = [];
+    const measuredGit: RunGit = async (args, cwd, options) => {
+      if (args[0] === 'cat-file' && args[1] === 'blob') reads.push({ cwd, oid: args[2]! });
+      return runGit(args, cwd, options);
+    };
+    const inspect = workspaceLockTreeInspector();
+    const results = await Promise.all([firstTree, secondTree].map(tree => inspect(measuredGit, repo, tree)));
+    const sync = await import('../../../../../scripts/lint-as-committed.mjs');
+    for (const [index, tree] of [firstTree, secondTree].entries()) {
+      expect(results[index]).toEqual(sync.inspectSelectedWorkspaceLock(repo, { oid: tree, kind: 'tree' }));
+      expect(results[index].ok).toBe(false);
+    }
+    for (const path of ['package.json', 'package-lock.json', '.gitmodules']) {
+      const oid = git(repo, 'rev-parse', `${firstTree}:${path}`);
+      expect(reads.filter(read => read.cwd === repo && read.oid === oid), path).toHaveLength(1);
+    }
+
+    // An immutable text cache must not turn a new lock blob into an old verdict.
+    writeFileSync(join(repo, 'package-lock.json'), lock('1.0.0'));
+    git(repo, 'add', 'package-lock.json');
+    const repairedTree = git(repo, 'write-tree');
+    expect(await inspect(measuredGit, repo, repairedTree)).toEqual(
+      sync.inspectSelectedWorkspaceLock(repo, { oid: repairedTree, kind: 'tree' }),
+    );
+    expect((await inspect(measuredGit, repo, repairedTree)).ok).toBe(true);
+  });
+
+  it('shares immutable reads across fresh validators for one reader while checking each candidate', async () => {
+    git(repo, 'add', 'package-lock.json');
+    const firstTree = git(repo, 'write-tree');
+    writeFileSync(join(repo, 'independent.txt'), 'unrelated source\n');
+    git(repo, 'add', 'independent.txt');
+    const secondTree = git(repo, 'write-tree');
+    const scans: Array<{ cwd: string; oid: string }> = [];
+    const reads: Array<{ cwd: string; oid: string }> = [];
+    const measuredGit: RunGit = async (args, cwd, options) => {
+      if (args[0] === 'ls-tree' && args[1] === '-r') scans.push({ cwd, oid: args[3]! });
+      if (args[0] === 'cat-file' && args[1] === 'blob') reads.push({ cwd, oid: args[2]! });
+      return runGit(args, cwd, options);
+    };
+    await Promise.all([firstTree, secondTree].map(async tree => {
+      await expect(workspaceLockTreeValidator()(measuredGit, repo, tree))
+        .rejects.toThrow('NPM_INSTALL_SAFE_WORKSPACE_LOCK_DRIFT');
+    }));
+    expect(scans.filter(scan => scan.cwd === child && scan.oid === oldPin)).toHaveLength(1);
+    for (const path of ['package.json', 'package-lock.json', '.gitmodules']) {
+      const oid = git(repo, 'rev-parse', `${firstTree}:${path}`);
+      expect(reads.filter(read => read.cwd === repo && read.oid === oid), path).toHaveLength(1);
+    }
+
+    // Only immutable source reads are shared. A new lock must produce a new verdict.
+    writeFileSync(join(repo, 'package-lock.json'), lock('1.0.0'));
+    git(repo, 'add', 'package-lock.json');
+    await expect(workspaceLockTreeValidator()(measuredGit, repo, git(repo, 'write-tree')))
+      .resolves.toBeUndefined();
+  });
+
+  it('keeps fresh validator caches isolated by reader identity', async () => {
+    const tree = git(repo, 'rev-parse', 'HEAD^{tree}');
+    await workspaceLockTreeValidator()(runGit, repo, tree);
+    const deniedGit: RunGit = async (args, cwd, options) => {
+      if (args[0] === 'cat-file' && args[1] === 'blob') {
+        return { code: 128, stdout: '', stderr: 'fixture reader cannot access selected blob' };
+      }
+      return runGit(args, cwd, options);
+    };
+    await expect(workspaceLockTreeValidator()(deniedGit, repo, tree))
+      .rejects.toThrow('fixture reader cannot access selected blob');
+  });
+
+  it('retries an immutable blob read after failure instead of caching an unknown source', async () => {
+    git(repo, 'add', 'package-lock.json');
+    const tree = git(repo, 'write-tree');
+    const oid = git(repo, 'rev-parse', `${tree}:package.json`);
+    let attempts = 0;
+    const recoveringGit: RunGit = async (args, cwd, options) => {
+      if (cwd === repo && args[0] === 'cat-file' && args[1] === 'blob' && args[2] === oid && ++attempts === 1) {
+        return { code: 128, stdout: '', stderr: 'fixture object temporarily unavailable' };
+      }
+      return runGit(args, cwd, options);
+    };
+    const inspect = workspaceLockTreeInspector();
+    await expect(inspect(recoveringGit, repo, tree)).rejects.toThrow('fixture object temporarily unavailable');
+    const sync = await import('../../../../../scripts/lint-as-committed.mjs');
+    expect(await inspect(recoveringGit, repo, tree)).toEqual(
+      sync.inspectSelectedWorkspaceLock(repo, { oid: tree, kind: 'tree' }),
+    );
+    expect(attempts).toBe(2);
+  });
+
   it('holds a stale pinned manifest despite a coherent live child, preserving unrelated source and the shared index', async () => {
     const index = join(root, 'private-index');
     git(repo, 'add', 'package-lock.json');
@@ -147,6 +245,49 @@ describe('commit-boundary workspace dependency coherence (real git)', () => {
       ok: false, error: expect.stringContaining('dependency deferral did not restore a coherent tree'),
     });
     expect(git(repo, 'diff', '--cached', '--name-only')).toBe('independent.txt');
+  });
+
+  describe('inheritFrom ratchet against a drifted parent (EI-28599921543233667)', () => {
+    // The parent publishes lock 2.0.0 while its pin still selects manifest 1.0.0.
+    const commitDriftedParent = () => {
+      git(repo, 'add', 'package-lock.json');
+      git(repo, 'commit', '-m', 'incoherent historical parent');
+    };
+    const ratchet = () => workspaceLockTreeValidator({ inheritFrom: 'HEAD' });
+
+    it('publishes a source-only candidate that merely inherits the parent drift', async () => {
+      commitDriftedParent();
+      writeFileSync(join(repo, 'independent.txt'), 'source\n');
+      git(repo, 'add', 'independent.txt');
+      const tree = git(repo, 'write-tree');
+      await expect(workspaceLockTreeValidator()(runGit, repo, tree)).rejects.toThrow('NPM_INSTALL_SAFE_WORKSPACE_LOCK_DRIFT');
+      await expect(ratchet()(runGit, repo, tree)).resolves.toBeUndefined();
+    });
+
+    it('lets the curing gitlink through the guard instead of deferring it forever', async () => {
+      commitDriftedParent();
+      writeFileSync(join(repo, 'independent.txt'), 'source\n');
+      git(repo, 'add', 'libs/app', 'independent.txt');
+      expect(await guardStagedWorkspaceLock(runGit, repo, ratchet())).toEqual({ ok: true, held: [] });
+      expect(git(repo, 'diff', '--cached', '--name-only').split('\n').sort()).toEqual(['independent.txt', 'libs/app']);
+    });
+
+    it('still refuses drift the candidate changes, and defers it onto the inherited base', async () => {
+      commitDriftedParent();
+      writeFileSync(join(repo, 'package-lock.json'), lock('3.0.0'));
+      writeFileSync(join(repo, 'independent.txt'), 'source\n');
+      git(repo, 'add', 'package-lock.json', 'independent.txt');
+      await expect(ratchet()(runGit, repo, git(repo, 'write-tree'))).rejects.toThrow('NPM_INSTALL_SAFE_WORKSPACE_LOCK_DRIFT');
+      expect(await guardStagedWorkspaceLock(runGit, repo, ratchet())).toMatchObject({ ok: true, held: ['package-lock.json'] });
+      expect(git(repo, 'diff', '--cached', '--name-only')).toBe('independent.txt');
+    });
+
+    it('falls back to the strict verdict when the baseline cannot be resolved', async () => {
+      commitDriftedParent();
+      const tree = git(repo, 'write-tree');
+      await expect(workspaceLockTreeValidator({ inheritFrom: 'refs/heads/no-such-baseline' })(runGit, repo, tree))
+        .rejects.toThrow('NPM_INSTALL_SAFE_WORKSPACE_LOCK_DRIFT');
+    });
   });
 
   it('reads nested manifests from recursive committed pins instead of newer nested checkouts', async () => {

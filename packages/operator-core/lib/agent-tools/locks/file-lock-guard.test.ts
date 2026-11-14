@@ -5,7 +5,7 @@
  * uncoordinated path → no lock at all. The actual acquire/release SQL is the
  * same `tryAcquire`/`tryRelease` `locks:acquire` already uses in production.
  */
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -51,6 +51,9 @@ mkdirSync(join(REPO, '.git'));
 writeFileSync(join(REPO, '.git', 'HEAD'), 'ref: refs/heads/main\n'); // a VALID git dir needs HEAD (valid-git-entry.ts)
 const NO_REPO = mkNonRepoTmpDir('flg-norepo-');
 const ctx = { projectDir: REPO, log: () => {} } as never;
+const CHILD_REPO = join(REPO, 'libs', 'shared');
+mkdirSync(join(CHILD_REPO, 'src'), { recursive: true });
+writeFileSync(join(CHILD_REPO, '.git'), 'gitdir: /unused/submodule\n');
 
 beforeEach(() => {
   h.tryAcquire.mockReset();
@@ -62,6 +65,45 @@ beforeEach(() => {
     await p.beforeRelease?.({ requestedPaths: p.paths, goalRef: null, state: 'granted' });
     if ((grant?.newly_held ?? p.paths).length) await h.tryRelease();
     return { ok: true, released: grant?.newly_held ?? p.paths, state: p.outcome };
+  });
+});
+
+describe('physical repository custody — EI-28700896704680421', () => {
+  it('uses the child repository for acquisition, preservation and finish', async () => {
+    h.tryAcquire.mockResolvedValue({ ok: true, lock_id: 'child', held: ['src/consumer.ts'] });
+    const out = await guardFileLock(ctx, [join(CHILD_REPO, 'src/consumer.ts')],
+      { intent: 'capability:patch' }, async () => 'written');
+    expect(out.acquired).toBe(true);
+    expect(h.tryAcquire).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      coordinationDomain: CHILD_REPO, paths: ['src/consumer.ts'],
+    }));
+    expect(h.preserve).toHaveBeenCalledWith(expect.objectContaining({
+      repoRoot: CHILD_REPO, files: ['src/consumer.ts'],
+    }));
+    expect(h.tryFinish).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      coordinationDomain: CHILD_REPO, paths: ['src/consumer.ts'], outcome: 'completed',
+    }));
+  });
+
+  it('honors a peer hold in the child domain before running the body', async () => {
+    h.tryAcquire.mockImplementation(async (_tx, p) => p.coordinationDomain === CHILD_REPO
+      ? { ok: false, busy: [{ path: 'src/consumer.ts', owner: 'peer', owner_label: 'Peer', intent: 'edit', expires_ts: new Date() }] }
+      : { ok: true, lock_id: 'wrong-parent', held: p.paths });
+    const run = vi.fn(async () => 'written');
+    const out = await guardFileLock(ctx, [join(CHILD_REPO, 'src/consumer.ts')],
+      { intent: 'capability:patch' }, run);
+    expect(out.acquired).toBe(false);
+    expect(run).not.toHaveBeenCalled();
+    expect(h.preserve).not.toHaveBeenCalled();
+  });
+
+  it('refuses a mixed repository cohort before acquiring or editing', async () => {
+    h.tryAcquire.mockResolvedValue({ ok: true, lock_id: 'wrong-parent', held: ['foo.ts'] });
+    const run = vi.fn(async () => 'written');
+    await expect(guardFileLock(ctx, [join(REPO, 'foo.ts'), join(CHILD_REPO, 'src/consumer.ts')],
+      { intent: 'capability:patch' }, run)).rejects.toThrow('file-lock-multiple-repositories');
+    expect(h.tryAcquire).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
   });
 });
 
@@ -137,6 +179,48 @@ describe('guardFileLock', () => {
     expect(h.tryRelease).not.toHaveBeenCalled();
     expect(h.attribute).not.toHaveBeenCalled();
   });
+
+  it.each(['capture', 'attribution'] as const)(
+    'identifies the completed mutation and original operation after a %s failure',
+    async (stage) => {
+      const path = join(REPO, 'captured-edit.ts');
+      writeFileSync(path, 'before\n');
+      h.tryAcquire.mockResolvedValue({ ok: true, lock_id: 'L1', held: ['captured-edit.ts'] });
+      const cause = stage === 'capture'
+        ? 'source-custody-refused:candidate-stage'
+        : 'attribution unavailable';
+      (stage === 'capture' ? h.preserve : h.attribute).mockRejectedValue(new Error(cause));
+      const mutate = vi.fn(async () => {
+        writeFileSync(path, 'after\n');
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, path, replacements: 1 }) }] };
+      });
+
+      const failure = await guardFileLock(ctx, [path], { intent: 'capability:edit' }, mutate)
+        .catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(Error);
+      const receipt = JSON.parse((failure as Error).message);
+      const operation = h.tryAcquire.mock.calls[0][1].operation;
+      expect(receipt).toMatchObject({
+        ok: false,
+        reason: 'file_lock_completion_incomplete',
+        operationId: operation.id,
+        coordinationDomain: '/dom',
+        paths: ['captured-edit.ts'],
+        bodyCompleted: true,
+        bodySucceeded: true,
+        custodyStatus: 'unconfirmed',
+        lockReleaseConfirmed: false,
+        retryMutation: false,
+        cause,
+      });
+      expect(readFileSync(path, 'utf8')).toBe('after\n');
+      expect(mutate).toHaveBeenCalledOnce();
+      expect(h.tryFinish).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ operation }));
+      expect(h.tryRelease).not.toHaveBeenCalled();
+      expect(h.preserve).toHaveBeenCalledOnce();
+      expect(h.attribute).toHaveBeenCalledTimes(stage === 'capture' ? 0 : 1);
+    },
+  );
 
   it('cancels a refused edit without inventing a successful capture', async () => {
     h.tryAcquire.mockResolvedValue({ ok: true, lock_id: 'L1', held: ['foo.ts'] });

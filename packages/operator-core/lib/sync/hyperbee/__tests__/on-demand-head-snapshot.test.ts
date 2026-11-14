@@ -28,7 +28,12 @@ import { bootHarnessSubstrate, type BootHarnessOpts } from '../boot';
 import { CURRENT_SCHEMA_VERSION } from '../schema-version';
 import { findLatestSnapshotIndex } from '../read-merge';
 import { isSnapshotOp, SNAPSHOT_READ_CONCURRENCY, type SnapshotPayload } from '../log-snapshot';
-import { _resetBootHistoryForTests, _setPgWriteForTests, listBootHistory } from '../boot-history';
+import {
+  _resetBootHistoryForTests,
+  _setMirrorForTests,
+  _setPgWriteForTests,
+  listBootHistory,
+} from '../boot-history';
 import * as ownCompactionAnchor from '../own-compaction-anchor';
 import type { PeerLogOp } from '../peer-log';
 
@@ -105,6 +110,32 @@ describe('produceHeadSnapshotNow (P-019 / D-012)', () => {
     expect(await findLatestSnapshotIndex(handle.ownLog)).toBe(lengthBefore);
     const tailOp = await handle.ownLog.get(lengthBefore);
     expect(isSnapshotOp(tailOp)).toBe(true);
+  });
+
+  it('durably mirrors the sparse on-demand append-hold measurement', async () => {
+    const slug = 'p019-held-mirror';
+    const pgRows: Array<{ harnessSlug: string; kind: string; message?: string }> = [];
+    const stdoutLines: string[] = [];
+    _setPgWriteForTests((entry) => pgRows.push(entry));
+    _setMirrorForTests((line) => stdoutLines.push(line));
+    cleanups.push(() => _resetBootHistoryForTests());
+
+    const handle = await bootWithOps(slug, 2);
+    const snap = await handle.produceHeadSnapshotNow();
+
+    expect(snap.appended).toBe(true);
+    const message = headSnapshotEvent(slug);
+    expect(message).toMatch(/appendsHeldMs=\d+/);
+    expect(pgRows.some((entry) =>
+      entry.harnessSlug === slug &&
+      entry.kind === 'own_log_compaction' &&
+      entry.message?.startsWith('on-demand head snapshot: ') &&
+      /appendsHeldMs=\d+/.test(entry.message),
+    )).toBe(true);
+    expect(stdoutLines.some((line) =>
+      line.includes('[boot-history] own_log_compaction harness=' + slug + ' on-demand head snapshot: ') &&
+      /appendsHeldMs=\d+/.test(line),
+    )).toBe(true);
   });
 
   it('runs with the SUBSTRATE_LOG_SNAPSHOT producer flag forced OFF — the request is not rationed by it', async () => {
@@ -311,7 +342,7 @@ async function snapshotRowKeys(
 }
 
 function headSnapshotEvent(slug: string): string | undefined {
-  return listBootHistory({ workspaceId: 'ws-p019', harnessSlug: slug, kinds: ['peer_capped'] })
+  return listBootHistory({ workspaceId: 'ws-p019', harnessSlug: slug, kinds: ['own_log_compaction'] })
     .map((e) => e.message ?? '')
     .find((m) => m.startsWith('on-demand head snapshot: '));
 }

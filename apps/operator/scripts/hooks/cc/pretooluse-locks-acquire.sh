@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # PreToolUse hook — claim SU-locks before a file edit. SHARED by Claude
-# Code and Codex: both implement the same hook wire format (PreToolUse
-# stdin with tool_name/tool_input/tool_use_id/session_id/cwd, and a
-# `hookSpecificOutput.permissionDecision` decision contract).
+# Code and Codex: both use the same input fields, but their non-blocking
+# response contracts differ. Codex accepts permissionDecision:'allow' only
+# when updatedInput is also present. This hook never rewrites, so Codex homes
+# set PAPERCUSP_CODEX_HOOK=1 and advisory paths send additionalContext without
+# an explicit permission decision.
 #
 # stdin (JSON) shapes we handle:
 #   Claude:  { "tool_name": "Edit"|"Write"|"MultiEdit",
@@ -186,6 +188,17 @@ def _note_fail_open(detail, ambiguous=False):
     )
 
 
+def emit_allow_with_context(reason, context):
+    hook_output = {
+        'hookEventName': 'PreToolUse',
+        'additionalContext': context,
+    }
+    if os.environ.get('PAPERCUSP_CODEX_HOOK') != '1':
+        hook_output['permissionDecision'] = 'allow'
+        hook_output['permissionDecisionReason'] = reason
+    json.dump({'hookSpecificOutput': hook_output}, sys.stdout)
+
+
 def allow():
     # A compatibility fallback may still allow the edit, but it must tell the
     # model that the first request hit a stale operator. Otherwise a successful
@@ -193,28 +206,19 @@ def allow():
     # skew keeps widening silently.
     attribution_suffix = ('\n' + attribution_advisory) if attribution_advisory else ''
     if compatibility_advisory:
-        json.dump({'hookSpecificOutput': {
-            'hookEventName': 'PreToolUse',
-            'permissionDecision': 'allow',
-            'permissionDecisionReason': 'file-lock compatibility fallback (non-blocking)',
-            'additionalContext': compatibility_advisory + attribution_suffix,
-        }}, sys.stdout)
+        emit_allow_with_context(
+            'file-lock compatibility fallback (non-blocking)',
+            compatibility_advisory + attribution_suffix,
+        )
         sys.exit(0)
     if fail_open_advisory:
-        json.dump({'hookSpecificOutput': {
-            'hookEventName': 'PreToolUse',
-            'permissionDecision': 'allow',
-            'permissionDecisionReason': 'file-lock fail-open (non-blocking)',
-            'additionalContext': fail_open_advisory,
-        }}, sys.stdout)
+        emit_allow_with_context('file-lock fail-open (non-blocking)', fail_open_advisory)
         sys.exit(0)
     if attribution_advisory:
-        json.dump({'hookSpecificOutput': {
-            'hookEventName': 'PreToolUse',
-            'permissionDecision': 'allow',
-            'permissionDecisionReason': 'file-lock granted; editor holds no work item (non-blocking)',
-            'additionalContext': attribution_advisory,
-        }}, sys.stdout)
+        emit_allow_with_context(
+            'file-lock granted; editor holds no work item (non-blocking)',
+            attribution_advisory,
+        )
         sys.exit(0)
     # Exit 0, no stdout → no decision, client proceeds with normal flow.
     sys.exit(0)
@@ -1517,9 +1521,13 @@ def _coordination_domain_rejection(value):
 # nothing. Failing open would let every edit of this session land unlocked and
 # without a word, so deny it. Keep the match narrow. Any other refusal, such as
 # the transient superuser_native_session_verifier_unavailable, keeps the
-# fail-open, with a visible advisory.
+# fail-open, with a visible advisory. WI-6554700010048107 split the live-host
+# incarnation mismatch out of superuser_foreign_native_session into
+# superuser_stale_live_host_native_session; it was denied before the split and
+# still is (capability:edit hits the same server fence, so it is no way around).
 _IDENTITY_REFUSAL_RE = re.compile(
-    r'\brequest_rejected:\s*(superuser_foreign_native_session|superuser_native_session_unverified)\b')
+    r'\brequest_rejected:\s*(superuser_foreign_native_session|superuser_stale_live_host_native_session'
+    r'|superuser_native_session_unverified)\b')
 
 
 def _rejection_text(value):
@@ -1765,10 +1773,16 @@ def _locks_acquire_once(request):
         if identity_refusal:
             # Nothing was admitted, so there is nothing to recover or settle.
             mark_error('identity-refused', detail)
+            if identity_refusal.group(1) == 'superuser_stale_live_host_native_session':
+                remedy = ('This session is still bound to its owner, but the owner\'s live psu host names '
+                          'a newer native session: act from that live session. A carry successor whose '
+                          'host record has not caught up clears on its own; retry in a few seconds.')
+            else:
+                remedy = ('Relaunch through psu so the native session is registered to its owner, or '
+                          'edit via capability:edit / capability:write.')
             _batch_deny(
                 f'locks: the operator refused this session identity ({identity_refusal.group(1)}), '
-                'so this edit cannot be lock-protected and is blocked. Relaunch through psu so the '
-                'native session is registered to its owner, or edit via capability:edit / capability:write.',
+                f'so this edit cannot be lock-protected and is blocked. {remedy}',
                 settle=False)
         mark_error('parse', detail)
         _note_fail_open(detail)

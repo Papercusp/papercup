@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import { PassThrough, Writable } from 'node:stream';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,7 +12,45 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { CallToolRequestSchema, InitializeRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { expect, it } from 'vitest';
 import { createPtoolStdioTransport, createPtoolStdioBridge, enablePtoolMemoryReceipts } from './ptool.mjs';
-import { openDeliveryLedger } from './hooks/inject/delivery-ledger.mjs';
+import { ledgerDir, openDeliveryLedger } from './hooks/inject/delivery-ledger.mjs';
+
+it.each(['overlap', 'conflicting-fields', 'conflicting-pin', 'incomplete-fields'] as const)(
+  'binds Codex stdout identity to its exact native request: %s', async fault => {
+    const home = await mkdtemp(join(tmpdir(), 'ptool-native-request-'));
+    const env = { PAPERCUSP_HOME: home, PAPERCUSP_SID: 'su-native-request', PAPERCUSP_AGENT: 'codex',
+      ...(fault === 'conflicting-pin' ? { PAPERCUSP_NATIVE_SESSION_ID: 'pinned-foreign' } : {}) };
+    const input = new PassThrough(), output = new PassThrough();
+    output.resume();
+    const transport = await createPtoolStdioTransport({ stdin: input, stdout: output, env });
+    try {
+      const requests: unknown[] = [];
+      let received!: () => void;
+      const ready = new Promise<void>(resolve => { received = resolve; });
+      transport.onmessage = (message: unknown) => { requests.push(message); if (requests.length === 2) received(); };
+      await transport.start();
+      for (const id of [11, 12]) {
+        const session = `native-${id}`;
+        input.write(JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: {
+          name: 'receipt_canary', arguments: {}, _meta: { callId: `call-${id}`, sessionId: session,
+            ...(fault === 'incomplete-fields' ? {} : { threadId: session }),
+            'x-codex-turn-metadata': { session_id: session,
+              thread_id: fault === 'conflicting-fields' ? 'foreign' : session } } } }) + '\n');
+      }
+      await ready;
+      // Complete in the opposite order to request arrival.
+      for (const id of [12, 11]) {
+        const token = `request-${id}`;
+        await transport.send({ jsonrpc: '2.0', id, result: { content: [],
+          _meta: { 'papercusp/memoryEmission': { owner: env.PAPERCUSP_SID, token, fragments: [] } } } });
+        const hash = createHash('sha256').update(token).digest('hex');
+        const receipt = JSON.parse(await readFile(join(ledgerDir(env), `${env.PAPERCUSP_SID}.mcp.emissions`, `${hash}.json`), 'utf8'));
+        expect(receipt.nativeSessionId).toBe(fault === 'overlap' ? `native-${id}` : null);
+      }
+    } finally {
+      await transport.close(); input.destroy(); output.destroy();
+      await rm(home, { recursive: true, force: true });
+    }
+  });
 
 it.each(['codex', 'claude', 'omp'])('records %s MCP output only after the real writable callback', async client => {
   const home = await mkdtemp(join(tmpdir(), 'ptool-stdout-'));

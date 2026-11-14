@@ -1812,6 +1812,32 @@ describe('buildMemoryContextBlock', () => {
     expect(scopes).toEqual([['harness:papercup']]);
   });
 
+  it('context reliability R-2: same-source-revision', async () => {
+    const id = '11111111-1111-4111-8111-111111111111';
+    const text = 'zephyrrepair requires approval before execution';
+    useBackend(mockBackend([{ id, text }]));
+    const input = { userId: 'u1', workspaceId: 'ws', harnessSlugs: [], potSlugs: [],
+      queryContext: 'zephyrrepair approval', budgetChars: 1800 };
+    const prepare = (port: string, epoch = 3) => prepareMemoryContextBlock({ ...input,
+      session: { sessionId: 'su-same-source-revision', epoch, port } });
+    const initial = await prepare('turn-start');
+    expect(initial?.text).toContain(text);
+    expect(initial?.fragments).toHaveLength(1);
+    const fragment = initial!.fragments[0]!;
+    // A stable id without the exact source fingerprint cannot suppress recall.
+    sqlMockState.rows = [{ id }];
+    expect((await prepare('orient'))?.fragments[0]?.sourceFingerprint).toBe(fragment.sourceFingerprint);
+    sqlMockState.rows = [{ id, epoch: 3, source_fingerprint: fragment.sourceFingerprint,
+      source_version: fragment.sourceVersion }];
+    for (const port of ['orient', 'mid-turn', 'initialize']) expect(await prepare(port)).toBeNull();
+    // Identical text at a later canonical revision must remain eligible.
+    useBackend(mockBackend([{ id, text, metadata: { revision: 'r2' } }]));
+    const later = await prepare('mid-turn');
+    expect(later?.fragments).toHaveLength(1);
+    expect(later!.fragments[0]!.sourceFingerprint).not.toBe(fragment.sourceFingerprint);
+    expect(later?.text).toContain('replace-earlier-version');
+  });
+
   it('delivers a same-epoch correction under the same memory id and suppresses only its confirmed canonical version', async () => {
     const id = '11111111-1111-4111-8111-111111111111';
     const input = { userId: 'u1', workspaceId: 'ws', harnessSlugs: [], potSlugs: [],
@@ -2429,14 +2455,23 @@ describe('corpus leg carries its own retrieval health (P-001)', () => {
 
   it('suppresses a previously delivered report at turn start while retaining a new doc and mem0 control', async () => {
     useBackend(mockBackend([{ id: 'm-turn-start-control',text: 'retain verified snapshot' }]));
+    const reportVersion = contextSourceVersion({ namespace: 'corpus:report:ws', ref: 'report:fixture',
+      fullText: 'cited report section', revision: 'r1', updatedAt: null,
+      validity: { status: 'current', validAt: null, invalidAt: null, supersededBy: null } });
     corpusIoResult = { block: null,dropped: [],embedderAvailable: true,candidateCount: 2,
       lines: (['report','doc'] as const).map(kind => ({ line: `- [${kind} fixture] cited ${kind} section`,score: 1,
+        ...(kind === 'report' ? { sourceVersion: reportVersion } : {}),
         handle: { kind,ref: `${kind}:fixture`,query: ['repair'],resolve: `${kind}:get` } })),
     };
-    sqlMockState.rows = [{ ref: 'report:fixture',epoch: 0 }];
-    const block = await buildMemoryContextBlock({ userId: 'u1',workspaceId: 'ws',harnessSlugs: ['papercusp'],
+    const input = { userId: 'u1',workspaceId: 'ws',harnessSlugs: ['papercusp'],
       queryContext: 'repair the queue boundary',budgetChars: 1800,
-      session: { sessionId: 'su-knowledge-dedup',epoch: 0,port: 'turn-start' } });
+      session: { sessionId: 'su-knowledge-dedup',epoch: 0,port: 'turn-start' } };
+    // A historical stable id alone does not prove this revision was delivered.
+    sqlMockState.rows = [{ ref: 'report:fixture',epoch: 0 }];
+    expect(await buildMemoryContextBlock(input)).toContain('[report fixture] cited report section');
+    sqlMockState.rows = [{ ref: 'report:fixture',epoch: 0,
+      source_fingerprint: reportVersion.fingerprint, source_version: reportVersion }];
+    const block = await buildMemoryContextBlock(input);
     expect(block).toContain('retain verified snapshot');
     expect(block).toContain('[doc fixture] cited doc section');
     expect(block).not.toContain('[report fixture] cited report section');
