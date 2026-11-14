@@ -108,6 +108,8 @@ export const DIVERGENCE_ZERO_REASONS = [
   /** The sampling legs ran and found nothing, but the stamped legs could not run
    *  at all (fill rate 0). A PARTIAL answer wearing a zero. */
   'stamped-legs-empty',
+  /** Intent stamps exist, but no eligible action pair could be compared. */
+  'insufficient-action-evidence',
   /**
    * The stamped leg had comparable buckets, and EVERY one of them collapsed
    * because its goals are already terminal (P-010 / EI-18830083673617307). A
@@ -341,6 +343,9 @@ export interface DivergenceCoverage {
   stampedCalls: number;
   /** Calls carrying a `goal_ref`. */
   goalStampedCalls: number;
+  /** Stamped carry/read loop checkpoints excluded ONLY from action comparison.
+   * Raw call/stamp counts and the retry population still include these rows. */
+  stampedActionCallsExcluded: number;
   /**
    * `stampedCalls / callsExamined`, 0..1, rounded to 4dp. THE number P-015
    * measures. A zero here means every stamped leg below was unable to run —
@@ -456,9 +461,33 @@ function explicitCheckpointGoalRef(c: DivergenceCall): string | null {
   return unique.length === 1 ? unique[0]! : null;
 }
 
-function normalizeIntentGoal(c: DivergenceCall): DivergenceCall {
+/**
+ * Resolve the effective goal for a call. The sweep uses the same normalization
+ * before loading goal states, so explicit checkpoint targets are filtered
+ * against their own terminal state rather than the aggregate process stamp.
+ */
+export function normalizeIntentGoal(c: DivergenceCall): DivergenceCall {
   const explicit = explicitCheckpointGoalRef(c);
   return explicit && explicit !== c.goalRef ? { ...c, goalRef: explicit } : c;
+}
+
+/**
+ * loop:checkpoint stores owner-scoped carry state. Its optional shared lesson
+ * needs BOTH trimmed learned and workItem; strict read:true returns before it.
+ * Mirror only that action boundary, not the carry writer or its goal resolver.
+ * Missing/uninspectable args and malformed action fields remain conservative.
+ * Null lesson fields have omission semantics in the current tool schema.
+ */
+function isCarryOnlyLoopCheckpoint(c: DivergenceCall): boolean {
+  if (c.toolName !== 'loop:checkpoint' || c.args === null || typeof c.args !== 'object') return false;
+  const prototype = Object.getPrototypeOf(c.args);
+  if (prototype !== Object.prototype && prototype !== null) return false;
+  const args = c.args as Record<string, unknown>;
+  const { read, learned, workItem } = args;
+  if (read !== undefined && typeof read !== 'boolean') return false;
+  if (learned != null && typeof learned !== 'string') return false;
+  if (workItem != null && typeof workItem !== 'string') return false;
+  return read === true || !learned?.trim() || !workItem?.trim();
 }
 
 /**
@@ -602,10 +631,19 @@ export function detectIntentActionDivergence(
   >();
   let stampedCalls = 0;
   let goalStampedCalls = 0;
+  let stampedActionCallsExcluded = 0;
   for (const c of rows) {
     if (c.goalRef != null && c.goalRef !== '') goalStampedCalls += 1;
     if (c.intentEventId != null) {
       stampedCalls += 1;
+
+      // Count raw telemetry first, then exclude control rows BEFORE touching
+      // lastGoalRef/segment: even a discarded carry stamp can otherwise invent
+      // or conceal a scheduler boundary. The retry pass still sees every row.
+      if (isCarryOnlyLoopCheckpoint(c)) {
+        stampedActionCallsExcluded += 1;
+        continue;
+      }
 
       const currentGoalRef = c.goalRef != null && c.goalRef !== '' ? c.goalRef : null;
       let state = intentSegments.get(c.ownerId);
@@ -912,6 +950,7 @@ export function detectIntentActionDivergence(
     callsExamined,
     stampedCalls,
     goalStampedCalls,
+    stampedActionCallsExcluded,
     stampFillRate: callsExamined === 0 ? 0 : round4(stampedCalls / callsExamined),
     intentBuckets: buckets.size,
     comparableBuckets,
@@ -957,6 +996,7 @@ function zeroReasonFor(c: DivergenceCoverage): DivergenceZeroReason {
   // `agent-state-divergence.test.ts` — the original ordering put this last and a
   // clean all-`ok` fixture fell through to `nothing-comparable`.)
   if (!c.stampedLegRan && c.bucketsCollapsedByTerminal > 0) return 'all-goals-terminal';
+  if (!c.stampedLegRan && c.stampedCalls > 0) return 'insufficient-action-evidence';
   if (!c.stampedLegRan && !c.samplingLegRan) return 'nothing-comparable';
   if (!c.stampedLegRan) return 'stamped-legs-empty';
   return 'agreement';
@@ -971,6 +1011,8 @@ export function explainZero(reason: DivergenceZeroReason): string {
       return 'STRUCTURAL ZERO — calls exist but NONE carried an intent stamp and NONE failed, so neither the stamped legs nor the sampling legs could run. This is not "no divergence": nothing was compared.';
     case 'stamped-legs-empty':
       return "PARTIAL — the sampling legs ran and found nothing, but stampFillRate is 0 so the intent/goal legs never ran. Until P-009's stamp is DEPLOYED every call carries NULL, and a zero here says nothing about intent↔action divergence.";
+    case 'insufficient-action-evidence':
+      return 'STRUCTURAL ZERO — intent stamps are present, but no eligible action pair remained for the stamped goal leg. Carry/read checkpoints without a shared lesson action are excluded; sampling coverage is reported separately. This does not establish intent↔action agreement.';
     case 'all-goals-terminal':
       return 'STRUCTURAL ZERO — intent buckets carried goal stamps, but every comparable bucket collapsed because its goals are already CLOSED. Nothing was compared. Not a missing stamp (the stamps were there) and not agreement (no live pair was examined).';
     case 'agreement':

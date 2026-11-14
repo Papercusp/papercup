@@ -26,6 +26,8 @@ import {
   RETRY_THRASH_THRESHOLD,
   CONVERGENCE_SETTLE_MS,
   THRASH_WINDOW_MS,
+  DIVERGENCE_ZERO_REASONS,
+  normalizeIntentGoal,
   type DivergenceCall,
 } from './agent-state-divergence';
 
@@ -260,6 +262,171 @@ describe('the stamped leg — goal drift inside one intent declaration', () => {
     ]);
     expect(out.divergences).toHaveLength(1);
     expect(out.divergences[0].b.goalRef).toBe('EI-dependency');
+  });
+});
+
+describe('loop carry checkpoints are not stamped object actions (EI-28641335732651256)', () => {
+  const ROOT = 'WI-6554700010046400';
+  const EI = 'EI-28641335732651256';
+  const action = (id: number, target = ROOT) => call({
+    id, toolName: 'work_items:checkpoint', intentEventId: 36968691,
+    goalRef: EI, declaredGoalRefs: [ROOT], args: { id: target, checkpoint: 'object evidence' },
+  });
+  const loop = (id: number, args: unknown, over: Partial<DivergenceCall> = {}) => call({
+    id, toolName: 'loop:checkpoint', intentEventId: 36968691, goalRef: EI,
+    declaredGoalRefs: [ROOT], args, ...over,
+  });
+
+  it('reconstructs historical 48772510/48772764: identical raw EI stamps, refused ROOT append, carry only', () => {
+    // Typed reconstruction from rpt_8ea53b8c-4990-419f-a5eb-941f17e4897d.
+    // Carry prose is immaterial; the ROOT append was attempted, NOT applied.
+    const root = action(48772510);
+    root.args = { id: ROOT, append: true, checkpoint: 'attempted ROOT append' };
+    root.metadataJson = { resultOutcome: 'soft-failure', softFailureReason: 'append_prior_body_overflow' };
+    const carry = loop(48772764, { did: 'progress', left: 'acceptance', next: 'review', insight: 'carry' });
+    expect([root.goalRef, carry.goalRef]).toEqual([EI, EI]);
+    expect(root.status).toBe('ok');
+    expect(normalizeIntentGoal(root).goalRef).toBe(ROOT);
+    const out = detectIntentActionDivergence([root, carry]);
+    expect(out.divergences).toEqual([]);
+    expect(out.coverage).toMatchObject({
+      callsExamined: 2, stampedCalls: 2, goalStampedCalls: 2, stampFillRate: 1,
+      stampedActionCallsExcluded: 1, comparableBuckets: 0, stampedLegRan: false,
+    });
+    expect(out.structuralZero).toBe('insufficient-action-evidence');
+    expect(root.metadataJson).toEqual({ resultOutcome: 'soft-failure', softFailureReason: 'append_prior_body_overflow' });
+    expect(root.goalRef).toBe(EI);
+  });
+
+  it.each([
+    ['ordinary carry', { did: 'progress', left: 'review', insight: 'carry', next: 'test' }],
+    ['empty strings', { note: '', learned: '', workItem: '' }],
+    ['blank lesson', { did: 'progress', learned: ' \n ', workItem: ROOT }],
+    ['blank anchor', { did: 'progress', learned: 'lesson', workItem: ' \t ' }],
+    ['null fields', { note: null, learned: null, workItem: null }],
+    ['null lesson', { did: 'progress', learned: null, workItem: ROOT }],
+    ['null anchor', { did: 'progress', learned: 'lesson', workItem: null }],
+    ['anchor only', { did: 'progress', workItem: ROOT }],
+    ['learned only', { did: 'progress', learned: 'lesson' }],
+    ['explicit false read', { read: false, did: 'progress' }],
+    ['read with lesson pair', { read: true, learned: 'lesson', workItem: ROOT }],
+    ['read only', { read: true }],
+  ])('excludes inspectable %s only from the stamped leg', (_label, args) => {
+    const out = detectIntentActionDivergence([action(1), loop(2, args)]);
+    expect(out.divergences).toEqual([]);
+    expect(out.coverage.stampedActionCallsExcluded).toBe(1);
+    expect(out.coverage.comparableBuckets).toBe(0);
+    expect(out.structuralZero).toBe('insufficient-action-evidence');
+  });
+
+  it.each([
+    ['absent', undefined], ['null', null], ['serialized', '{"read":true}'],
+    ['array', []], ['scalar', 1], ['non-record', new Date(T0)],
+    ['malformed learned', { did: 'progress', learned: 7 }],
+    ['malformed anchor', { did: 'progress', workItem: {} }],
+    ['truthy read', { read: 'true', learned: 'lesson', workItem: ROOT }],
+    ['numeric read', { read: 1 }], ['null read', { read: null }],
+  ])('retains conservative stamped evidence for %s args', (_label, args) => {
+    const out = detectIntentActionDivergence([action(1), loop(2, args)]);
+    expect(out.divergences.map((d) => d.kind)).toEqual(['goal-drift-within-intent']);
+    expect(out.coverage.stampedActionCallsExcluded).toBe(0);
+  });
+
+  it.each([undefined, 'work_item', 'plan', 'goal'] as const)(
+    'retains lesson level %s with its existing stamp, including soft refusal or fallback',
+    (learnedLevel) => {
+      // The anchor cannot identify the resolved parent or fallback destination.
+      for (const metadataJson of [undefined, { resultOutcome: 'soft-failure' }, { learned: { fellBack: true } }]) {
+        const out = detectIntentActionDivergence([
+          action(1),
+          loop(2, { did: 'progress', learned: ' lesson ', workItem: ROOT, learnedLevel }, { metadataJson }),
+        ]);
+        expect(out.divergences).toHaveLength(1);
+        expect(out.divergences[0].b.goalRef).toBe(EI);
+        expect(out.coverage.stampedActionCallsExcluded).toBe(0);
+      }
+    },
+  );
+
+  it('keeps a real undeclared object checkpoint positive beside carry notes', () => {
+    const out = detectIntentActionDivergence([action(1), loop(2, { did: 'carry' }), action(3, EI)]);
+    expect(out.divergences).toHaveLength(1);
+    expect(out.divergences[0]).toMatchObject({ a: { callId: 1, goalRef: ROOT }, b: { callId: 3, goalRef: EI } });
+  });
+
+  it('does not let carry manufacture an unchanged scheduler split that hides real drift', () => {
+    const out = detectIntentActionDivergence([
+      call({ id: 1, intentEventId: 100, goalRef: 'WI-1' }),
+      call({ id: 2, toolName: 'loop:checkpoint', args: { did: 'carry' }, intentEventId: 100, goalRef: 'WI-2' }),
+      call({ id: 3, toolName: 'scheduler:get_next', intentEventId: 100, goalRef: 'WI-1' }),
+      call({ id: 4, intentEventId: 100, goalRef: 'WI-3' }),
+    ]);
+    expect(out.divergences).toHaveLength(1);
+    expect(out.divergences[0]).toMatchObject({ a: { callId: 1 }, b: { callId: 4 } });
+  });
+
+  it('does not let carry suppress a changed scheduler boundary and fabricate drift', () => {
+    const out = detectIntentActionDivergence([
+      call({ id: 1, intentEventId: 100, goalRef: 'WI-old' }),
+      call({ id: 2, toolName: 'loop:checkpoint', args: { note: 'carry' }, intentEventId: 100, goalRef: 'WI-new' }),
+      call({ id: 3, toolName: 'scheduler:get_next', intentEventId: 100, goalRef: 'WI-new' }),
+      call({ id: 4, intentEventId: 100, goalRef: 'WI-new' }),
+    ]);
+    expect(out.divergences).toEqual([]);
+    expect(out.coverage.intentBuckets).toBe(2);
+    expect(out.coverage.comparableBuckets).toBe(0);
+  });
+
+  it.each(['ok', 'invalid-input'])('reports action insufficiency for %s carry-only input', (status) => {
+    const out = detectIntentActionDivergence([loop(1, { did: 'carry' }, { status }), loop(2, { note: null })]);
+    expect(out.structuralZero).toBe('insufficient-action-evidence');
+    expect(out.coverage).toMatchObject({
+      callsExamined: 2, stampedCalls: 2, goalStampedCalls: 2, stampFillRate: 1,
+      stampedActionCallsExcluded: 2, intentBuckets: 0, comparableBuckets: 0,
+      samplingLegRan: status !== 'ok',
+    });
+    expect(isStructuralZero(out.structuralZero)).toBe(true);
+    expect(explainZero(out.structuralZero!)).toContain('eligible action pair');
+    expect(explainZero(out.structuralZero!)).not.toContain('stampFillRate is 0');
+  });
+
+  it('retains raw counts for unstamped carry without claiming stamped exclusions', () => {
+    const out = detectIntentActionDivergence([loop(1, { did: 'carry' }, { intentEventId: null })]);
+    expect(out.coverage).toMatchObject({ callsExamined: 1, stampedCalls: 0, goalStampedCalls: 1, stampFillRate: 0, stampedActionCallsExcluded: 0 });
+    expect(out.structuralZero).toBe('nothing-comparable');
+  });
+
+  it('keeps agreement for a real live pair beside excluded controls', () => {
+    const out = detectIntentActionDivergence([action(1), loop(2, { did: 'carry' }), action(3)]);
+    expect(out.structuralZero).toBe('agreement');
+    expect(out.coverage.comparableBuckets).toBe(1);
+    expect(out.coverage.stampedActionCallsExcluded).toBe(1);
+  });
+
+  it('counts terminal collapse only for eligible pairs, retaining its precedence', () => {
+    const onlyOneAction = detectIntentActionDivergence([action(1), loop(2, { did: 'carry' })], { terminalGoalRefs: new Set([ROOT, EI]) });
+    expect(onlyOneAction.coverage.bucketsCollapsedByTerminal).toBe(0);
+    expect(onlyOneAction.coverage.terminalGoalCallsExcluded).toBe(1);
+    expect(onlyOneAction.structuralZero).toBe('insufficient-action-evidence');
+    const eligiblePair = detectIntentActionDivergence([action(1), loop(2, { did: 'carry' }), action(3, EI)], { terminalGoalRefs: new Set([ROOT, EI]) });
+    expect(eligiblePair.coverage.bucketsCollapsedByTerminal).toBe(1);
+    expect(eligiblePair.coverage.terminalGoalCallsExcluded).toBe(2);
+    expect(eligiblePair.structuralZero).toBe('all-goals-terminal');
+  });
+
+  it('preserves retry threshold and successful carry convergence after action exclusion', () => {
+    const failures = Array.from({ length: RETRY_THRASH_THRESHOLD }, (_, i) =>
+      loop(i + 1, { did: `attempt ${i}` }, { status: 'invalid-input' }),
+    );
+    expect(detectIntentActionDivergence(failures.slice(0, -1)).divergences).toEqual([]);
+    const retry = detectIntentActionDivergence(failures);
+    expect(retry.divergences.map((d) => d.kind)).toEqual(['unconverged-retry-loop']);
+    expect(retry.coverage).toMatchObject({ failuresSeen: RETRY_THRASH_THRESHOLD, thrashRuns: 1, stampedActionCallsExcluded: RETRY_THRASH_THRESHOLD });
+    expect(retry.structuralZero).toBeNull();
+    const converged = detectIntentActionDivergence([...failures, loop(RETRY_THRASH_THRESHOLD + 1, { read: true })]);
+    expect(converged.divergences).toEqual([]);
+    expect(converged.coverage).toMatchObject({ thrashRuns: 1, convergedRuns: 1 });
+    expect(converged.structuralZero).toBe('insufficient-action-evidence');
   });
 });
 
@@ -735,8 +902,9 @@ describe('coverage says WHICH zero it is', () => {
   });
 
   it('every zero reason has an explanation', () => {
-    for (const r of ['no-calls', 'nothing-comparable', 'stamped-legs-empty', 'agreement'] as const) {
+    for (const r of DIVERGENCE_ZERO_REASONS) {
       expect(explainZero(r).length).toBeGreaterThan(20);
+      expect(isStructuralZero(r)).toBe(r !== 'agreement');
     }
   });
 });

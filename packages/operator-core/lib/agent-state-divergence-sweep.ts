@@ -37,6 +37,7 @@ import {
   isStructuralZero,
   RETRY_THRASH_THRESHOLD,
   THRASH_WINDOW_MS,
+  normalizeIntentGoal,
   type Divergence,
   type DivergenceCall,
   type DivergenceReport,
@@ -465,7 +466,9 @@ export async function divergenceSweep(deps: DivergenceSweepDeps = {}): Promise<D
   try {
     terminalGoalRefs = await (deps.loadTerminalGoalRefs ?? loadTerminalGoalRefs)({
       workspaceId,
-      goalRefs: calls.map((c) => c.goalRef).filter((g): g is string => g != null && g !== ''),
+      goalRefs: calls
+        .map((call) => normalizeIntentGoal(call).goalRef)
+        .filter((goal): goal is string => goal != null && goal !== ''),
       sql: deps.sql,
     });
   } catch (e) {

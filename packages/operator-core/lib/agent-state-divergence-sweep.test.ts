@@ -131,6 +131,8 @@ describe('loadRecentCalls', () => {
     // goal; the wrapper itself is control-plane state, not action evidence.
     expect(query).toContain("tool_name <> 'coord:orient'");
     expect(query).not.toContain("tool_name <> 'coord:send'");
+    // Retain carry-only failures AND success boundaries for retry sampling.
+    expect(query).not.toContain("tool_name <> 'loop:checkpoint'");
     expect(query).toContain("tool_name = 'pot:wake'");
     expect(query).toContain("call_origin IS NULL");
     expect(query).toContain("args_json->>'source' = 'event'");
@@ -476,6 +478,46 @@ function goalDriftCalls(a = 'EI-1', b = 'EI-2'): DivergenceCall[] {
 }
 
 describe('P-010 — the sweep resolves goal state before it pages anyone', () => {
+  it('hydrates loop args and suppresses only carry action evidence in the detector', async () => {
+    const rows = [
+      { id: '1', owner: 'su-a', tool_name: 'work_items:checkpoint', status: 'ok',
+        invoked_at: new Date(T0).toISOString(), intent_event_id: '42', goal_ref: 'EI-held',
+        args_json: { id: 'WI-root', checkpoint: 'attempted append' },
+        metadata_json: { resultOutcome: 'soft-failure', softFailureReason: 'append_prior_body_overflow' } },
+      { id: '2', owner: 'su-a', tool_name: 'loop:checkpoint', status: 'ok',
+        invoked_at: new Date(T0 + 1000).toISOString(), intent_event_id: '42', goal_ref: 'EI-held',
+        args_json: { did: 'carry' }, metadata_json: {} },
+    ];
+    const { sql } = mockSqlTag(rows);
+    const loaded = await loadRecentCalls({ workspaceId: 'test-workspace', sinceMs: T0, limit: 10, sql: sql as never });
+    expect(loaded[1].args).toEqual({ did: 'carry' });
+    const d = deps({ loadRecentCalls: vi.fn(async () => loaded) } as never);
+    const out = await divergenceSweep(d);
+    expect(d.sendMessage).not.toHaveBeenCalled();
+    expect(out.report?.structuralZero).toBe('insufficient-action-evidence');
+    expect(out.report?.coverage.stampedActionCallsExcluded).toBe(1);
+  });
+
+  it('withholds lesson goal findings on terminal lookup failure but still delivers carry retries', async () => {
+    const calls = goalDriftCalls();
+    calls[1] = { ...calls[1], toolName: 'loop:checkpoint', args: { did: 'carry', learned: 'shared lesson', workItem: 'WI-anchor', learnedLevel: 'plan' } };
+    // Start this independent failure episode AFTER the successful lesson call;
+    // that success must otherwise (correctly) terminate earlier loop failures.
+    const carryRetries = flailCalls().map((c, i) => ({
+      ...c, id: c.id + 10, invokedAt: new Date(T0 + 10_000 + i * 1000).toISOString(),
+      toolName: 'loop:checkpoint', args: { did: 'carry' },
+    }));
+    const d = deps({
+      loadRecentCalls: vi.fn(async () => [...calls, ...carryRetries]),
+      loadTerminalGoalRefs: vi.fn(async () => { throw new Error('pg down'); }),
+    } as never);
+    const out = await divergenceSweep(d);
+    expect(out.report?.divergences.map((finding) => finding.kind)).toEqual(['goal-drift-within-intent', 'unconverged-retry-loop']);
+    expect(out.outcomes.map((o) => o.outcome)).toEqual(['suppressed', 'notified']);
+    expect(d.sendMessage).toHaveBeenCalledTimes(1);
+    expect(out.outcomes[0].reason).toContain('goal state unresolvable');
+  });
+
   it('CAPABILITY: pages when both goals are live', async () => {
     const d = deps({ loadRecentCalls: vi.fn(async () => goalDriftCalls()) } as never);
     const out = await divergenceSweep(d);
@@ -511,6 +553,52 @@ describe('P-010 — the sweep resolves goal state before it pages anyone', () =>
     expect(d.loadTerminalGoalRefs).toHaveBeenCalledWith(
       expect.objectContaining({ goalRefs: ['EI-1', 'EI-1'] }),
     );
+  });
+
+  it('resolves terminal state for explicit checkpoint targets instead of the aggregate goal stamp', async () => {
+    const doneRef = 'WI-6554700010045862';
+    const blockedRef = 'EI-28019593823641196';
+    const terminalRefs = new Set([doneRef, blockedRef]);
+    const declaredGoalRefs = [blockedRef, 'WI-6554700010045659', 'WI-6554700010045739'];
+    const calls: DivergenceCall[] = [
+      {
+        id: 47290231,
+        ownerId: 'su-a6ceed25-c0a5-47e2-b2e4-128468118deb',
+        toolName: 'work_items:checkpoint',
+        status: 'ok',
+        invokedAt: new Date(T0).toISOString(),
+        intentEventId: 30105892,
+        goalRef: 'WI-6554700010020617',
+        args: { id: doneRef, checkpoint: 'metadata evidence' },
+        declaredGoalRefs,
+      },
+      {
+        id: 47290266,
+        ownerId: 'su-a6ceed25-c0a5-47e2-b2e4-128468118deb',
+        toolName: 'work_items:checkpoint',
+        status: 'ok',
+        invokedAt: new Date(T0 + 1000).toISOString(),
+        intentEventId: 30105892,
+        goalRef: 'WI-6554700010020617',
+        args: { id: blockedRef, checkpoint: 'blocked investigation' },
+        declaredGoalRefs,
+      },
+    ];
+    const d = deps({
+      loadRecentCalls: vi.fn(async () => calls),
+      loadTerminalGoalRefs: vi.fn(async ({ goalRefs }: { goalRefs: readonly string[] }) =>
+        new Set(goalRefs.filter((goal) => terminalRefs.has(goal))),
+      ),
+    } as never);
+
+    const out = await divergenceSweep(d);
+
+    expect(d.loadTerminalGoalRefs).toHaveBeenCalledWith(
+      expect.objectContaining({ goalRefs: [doneRef, blockedRef] }),
+    );
+    expect(d.sendMessage).not.toHaveBeenCalled();
+    expect(out.report?.divergences).toEqual([]);
+    expect(out.report?.coverage.terminalGoalCallsExcluded).toBe(2);
   });
 
   /**
