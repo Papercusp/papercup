@@ -285,6 +285,81 @@ describe('rubrics:propose args — standard-only watchdog fields', () => {
     expect(mocks.proposeRubric).toHaveBeenCalledTimes(1);
   });
 
+  // WI-6554700010048549 (design-intent-rubric-suites-2026-11-13#D-025): a NEW characteristic must be a tag.
+  const proposedRubric = (characteristic: string) => ({
+    ...base,
+    characteristic,
+    rubricId: 'release-readiness',
+    kind: 'standard',
+    description: '',
+    ratingScale: ['healthy', 'degraded', 'broken', 'unknown'],
+    methodRef: null,
+    status: 'proposed',
+    createdBy: null,
+    proposedBy: 'me',
+    ratifiedBy: null,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  });
+
+  it('refuses a NEW phrase-shaped characteristic before anything is written', async () => {
+    const result = await proposeTool.handler(
+      { ...base, kind: 'standard', characteristic: 'Release Health' } as never,
+      {} as never,
+    );
+    const parsed = JSON.parse((result as { content: Array<{ text: string }> }).content[0]!.text);
+
+    expect(parsed).toMatchObject({
+      ok: false,
+      code: 'characteristic_not_tag_shaped',
+      characteristic: 'Release Health',
+      priorCharacteristic: null,
+    });
+    expect(parsed.next).toContain("'release-health'");
+    expect(mocks.getRubric).toHaveBeenCalledWith('release-readiness');
+    expect(mocks.proposeRubric).not.toHaveBeenCalled();
+  });
+
+  it('refuses CHANGING a stored legacy phrase to a different phrase', async () => {
+    mocks.getRubric.mockResolvedValueOnce({ criteria: base.criteria, characteristic: 'delivered work-item quality' });
+    const result = await proposeTool.handler(
+      { ...base, kind: 'standard', characteristic: 'Delivered work item quality' } as never,
+      {} as never,
+    );
+    const parsed = JSON.parse((result as { content: Array<{ text: string }> }).content[0]!.text);
+
+    expect(parsed).toMatchObject({
+      ok: false,
+      code: 'characteristic_not_tag_shaped',
+      priorCharacteristic: 'delivered work-item quality',
+    });
+    expect(mocks.proposeRubric).not.toHaveBeenCalled();
+  });
+
+  it('accepts a NEW tag-shaped characteristic', async () => {
+    mocks.proposeRubric.mockResolvedValue(proposedRubric('release-health'));
+    const result = await proposeTool.handler({ ...base, kind: 'standard' } as never, {} as never);
+    const parsed = JSON.parse((result as { content: Array<{ text: string }> }).content[0]!.text);
+
+    expect(parsed.ok).toBe(true);
+    expect(mocks.proposeRubric).toHaveBeenCalledWith(expect.objectContaining({ characteristic: 'release-health' }));
+  });
+
+  it('accepts a stored legacy phrase characteristic re-sent unchanged', async () => {
+    mocks.getRubric.mockResolvedValueOnce({ criteria: base.criteria, characteristic: 'delivered work-item quality' });
+    mocks.proposeRubric.mockResolvedValue(proposedRubric('delivered work-item quality'));
+    const result = await proposeTool.handler(
+      { ...base, kind: 'standard', characteristic: 'delivered work-item quality' } as never,
+      {} as never,
+    );
+    const parsed = JSON.parse((result as { content: Array<{ text: string }> }).content[0]!.text);
+
+    expect(parsed.ok).toBe(true);
+    expect(mocks.proposeRubric).toHaveBeenCalledWith(
+      expect.objectContaining({ characteristic: 'delivered work-item quality' }),
+    );
+  });
+
   it('surfaces mismatched terminal implementation coverage at the real proposal handler', async () => {
     const method = 'Missing detector branches remain unknown. Their implementation dependency is WI-6554700010014915, assigned to the leader.';
     const item = { ...lightAcceptanceCriterion, key: 'r-6', barKey: 'R-6', method };

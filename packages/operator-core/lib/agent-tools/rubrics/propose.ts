@@ -33,6 +33,37 @@ import { trackDetached } from '../../detached-imports';
 import { lintAcceptanceMethods } from '../../rubrics-method-lint';
 import { runtimeVettingFindings } from '../../acceptance-runtime-citation';
 
+/** A rubric's `characteristic` is a lowercase kebab-case domain tag, e.g. `hive-coordination`. */
+const CHARACTERISTIC_TAG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+/**
+ * Refuse a NEW non-tag `characteristic` (WI-6554700010048549; moved out of
+ * design-intent-rubric-suites-2026-11-13 by D-025). A legacy phrase already stored on the
+ * rubric is accepted when re-sent unchanged, so existing rubrics stay re-proposable.
+ * Enforced here, not in the zod schema (which cannot see the stored revision) and not in
+ * `proposeRubric` (seeding paths must stay unaffected).
+ */
+export function characteristicTagRefusal(characteristic: string, priorCharacteristic: string | null) {
+  if (CHARACTERISTIC_TAG.test(characteristic)) return null;
+  if (priorCharacteristic !== null && characteristic === priorCharacteristic) return null;
+  const suggestion = characteristic
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return {
+    ok: false as const,
+    code: 'characteristic_not_tag_shaped' as const,
+    error:
+      `characteristic '${characteristic}' is not a lowercase kebab-case tag. A new or changed characteristic ` +
+      `must match ${CHARACTERISTIC_TAG.source}; only a stored legacy value re-sent unchanged is accepted.`,
+    characteristic,
+    priorCharacteristic,
+    next: suggestion
+      ? `Re-send with characteristic: '${suggestion}'${priorCharacteristic !== null ? ` or keep the stored '${priorCharacteristic}'` : ''}.`
+      : 'Re-send with a lowercase kebab-case characteristic, e.g. "hive-coordination".',
+  };
+}
+
 const driftMarkers = z
   .string()
   .min(1)
@@ -214,7 +245,11 @@ export const rubricsProposeArgs = refineEvenWithShapeIssues(
       .describe(
         'unpinned composition refs: reusable standard-kind rubrics this rubric composes; each ref is resolved at write time and each rubric evolves independently (omit revision pins)',
       ),
-    characteristic: z.string().min(1).max(120).describe('umbrella domain, e.g. "hive-coordination"'),
+    characteristic: z
+      .string()
+      .min(1)
+      .max(120)
+      .describe('umbrella domain tag, lowercase kebab-case, e.g. "hive-coordination"; a stored legacy value may be re-sent unchanged'),
     title: hardText(LIMITS.SHORT_TITLE),
     description: hardText(8000).optional(),
     criteria: z
@@ -413,6 +448,10 @@ export default defineTool({
     // REGISTERED instrument (or 'none'); a key carried unchanged from the stored revision of the
     // same criterion is grandfathered and reported, so legacy rubrics stay re-proposable.
     const priorRubric = await getRubric(args.rubricRef);
+    const characteristicRefusal = characteristicTagRefusal(args.characteristic, priorRubric?.characteristic ?? null);
+    if (characteristicRefusal) {
+      return { content: [{ type: 'text' as const, text: JSON.stringify(characteristicRefusal) }] };
+    }
     const instrumentAudit = auditInstrumentBindings({
       prior: priorRubric?.criteria ?? [],
       next: args.criteria ?? [],
