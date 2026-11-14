@@ -42,6 +42,7 @@ import postgres from 'postgres';
 import type { OrgTestDb } from '../test/_org-test-db';
 
 const PROBE_INDEX = 'work_items_obs_supersedes_rubric_probe_idx';
+const PRIMARY_INDEX = 'work_items_scorecard_created_keyset_idx';
 const RUBRIC_WIDE_INDEX = 'work_items_obs_rubric_ref_v2_idx';
 const SUPERSEDES_INDEX = 'work_items_obs_supersedes_v2_idx';
 const RUBRIC = 'test-superseder-plan-shape';
@@ -70,6 +71,8 @@ const { createOrgTestDb } = await import('../test/_org-test-db');
 interface PlanNode {
   'Node Type': string;
   'Index Name'?: string;
+  'Relation Name'?: string;
+  Alias?: string;
   Plans?: PlanNode[];
 }
 const flatten = (node: PlanNode): PlanNode[] => [node, ...(node.Plans ?? []).flatMap(flatten)];
@@ -118,9 +121,9 @@ let traced: postgres.Sql;
 const captured: { query: string; params: unknown[] }[] = [];
 
 /** Run the production-shaped read once and return the superseder-excluding statement it sent. */
-async function captureListScorecards(rubricRef: string, limit: number) {
+async function captureListScorecards(rubricRef: string | undefined, limit: number, sourceHive: string | null = SOURCE_HIVE) {
   captured.length = 0;
-  const rows = await listScorecards({ rubricRef, sourceHive: SOURCE_HIVE, limit });
+  const rows = await listScorecards({ rubricRef, sourceHive: sourceHive ?? undefined, limit });
   const statement = captured.find(
     (c) => /NOT EXISTS/.test(c.query) && /AS superseder/.test(c.query) && /ORDER BY scorecard\.created_at DESC/.test(c.query),
   );
@@ -136,12 +139,12 @@ async function explain(sql: postgres.Sql | postgres.TransactionSql, statement: {
 
 class Rollback extends Error {}
 
-/** EXPLAIN under a regime, optionally without the 1631 index; always rolled back. */
-async function explainUnder(statement: { query: string; params: unknown[] }, settings: string[], dropProbeIndex: boolean) {
+/** EXPLAIN under a regime, optionally without one tested index; always rolled back. */
+async function explainUnder(statement: { query: string; params: unknown[] }, settings: string[], dropIndex: string | false) {
   let nodes: PlanNode[] = [];
   try {
     await db.adminSql.begin(async (tx) => {
-      if (dropProbeIndex) await tx.unsafe(`DROP INDEX harness_shared.${PROBE_INDEX}`);
+      if (dropIndex) await tx.unsafe(`DROP INDEX harness_shared.${dropIndex}`);
       for (const s of settings) await tx.unsafe(`SET LOCAL ${s}`);
       nodes = await explain(tx, statement);
       throw new Rollback();
@@ -209,6 +212,15 @@ beforeAll(async () => {
            ${BASE_MS}::bigint + (${OTHER_ROWS}::int + g) * 1000::bigint + 700, ${BASE_MS}::bigint + (${OTHER_ROWS}::int + g) * 1000::bigint + 700,
            jsonb_set(${card(OTHER_RUBRIC)}::text::jsonb, '{observation,supersedes}', to_jsonb('EI-psp-o-' || lpad(g::text, 5, '0')))
       FROM generate_series(1, ${OTHER_SUPERSEDERS}) AS g`;
+  // WI-6554700010049082: the primary scan must skip ordinary issues using the
+  // ordered scorecard population. Keep the whole fixture below ANALYZE's
+  // 30,000-row sample so the existing superseder cases remain deterministic.
+  await db.adminSql`
+    INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, item_kind, status, admission, title, summary, created_ts, updated_ts, payload)
+    SELECT ${ws}, 'papercusp', 'EI-psp-plain-' || lpad(g::text, 5, '0'), 'change', 'done', 'admitted', 'ordinary issue ' || g, '',
+           ${BASE_MS}::bigint + g * 1000::bigint + 900, ${BASE_MS}::bigint + g * 1000::bigint + 900, '{}'::jsonb
+      FROM generate_series(1, 12000) AS g`;
   await db.adminSql`ANALYZE harness_shared.work_items`;
 
   traced = postgres(db.adminDsn, {
@@ -266,7 +278,7 @@ describe('listScorecards superseder probe plan shape (migration 1631)', () => {
     async (rubricRef) => {
       const { statement } = await captureListScorecards(rubricRef, 1);
       const withIndex = await explainUnder(statement, BITMAP_ONLY, false);
-      const withoutIndex = await explainUnder(statement, BITMAP_ONLY, true);
+      const withoutIndex = await explainUnder(statement, BITMAP_ONLY, PROBE_INDEX);
       expect(usesIndex(withIndex, PROBE_INDEX), `with the index: ${describePlan(withIndex)}`).toBe(true);
       expect(rubricWideBitmapAnds(withIndex), `with the index: ${describePlan(withIndex)}`).toHaveLength(0);
       expect(usesIndex(withoutIndex, PROBE_INDEX), `without the index: ${describePlan(withoutIndex)}`).toBe(false);
@@ -275,4 +287,27 @@ describe('listScorecards superseder probe plan shape (migration 1631)', () => {
       expect(idx!.r).not.toBeNull();
     },
   );
+});
+
+describe('listScorecards primary scan (WI-6554700010049082 / migration 1633)', () => {
+  it.each([undefined, RUBRIC, SMALL_RUBRIC])('uses an indexed primary scan for rubric %s', async (rubricRef) => {
+    const { statement } = await captureListScorecards(rubricRef, rubricRef ? 25 : 501, rubricRef ? SOURCE_HIVE : null);
+    const nodes = await explain(db.adminSql, statement);
+    const primary = nodes.filter((node) => node['Relation Name'] === 'work_items' && node.Alias === 'work_items');
+    expect(primary, `missing primary scan: ${describePlan(nodes)}`).toHaveLength(1);
+    expect(primary[0]!['Node Type'], `primary scan: ${describePlan(nodes)}`).not.toBe('Seq Scan');
+    if (!rubricRef) {
+      expect(primary[0]!['Index Name'], `default list: ${describePlan(nodes)}`).toBe(PRIMARY_INDEX);
+    }
+  });
+
+  it('the default production query reaches the ordered partial index, and cannot after it is dropped', async () => {
+    const { statement } = await captureListScorecards(undefined, 501, null);
+    const withIndex = await explain(db.adminSql, statement);
+    const withoutIndex = await explainUnder(statement, [], PRIMARY_INDEX);
+    expect(usesIndex(withIndex, PRIMARY_INDEX), describePlan(withIndex)).toBe(true);
+    expect(usesIndex(withoutIndex, PRIMARY_INDEX), describePlan(withoutIndex)).toBe(false);
+    const [idx] = await db.adminSql`SELECT to_regclass(${'harness_shared.' + PRIMARY_INDEX}) AS r`;
+    expect(idx!.r).not.toBeNull();
+  });
 });

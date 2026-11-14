@@ -153,11 +153,15 @@ export async function resolveIdentityToolSurface(
       return { kind: 'error' };
     }
   };
+  // A predicate, not an inline `'kind' in v && v.kind === 'error'`: `kind` is not a
+  // discriminant of this union, so TS cannot narrow the inline form's false branch.
+  const isEvaluationError = (verdict: KernelEnforcementResult | { kind: 'error' }): verdict is { kind: 'error' } =>
+    'kind' in verdict && verdict.kind === 'error';
   const applyVerdict = (
     candidate: IdentitySurfaceCandidate,
     verdict: KernelEnforcementResult | null | { kind: 'error' },
   ): IdentityToolSurface | null => {
-    if (verdict && 'kind' in verdict && verdict.kind === 'error') return { kind: 'unresolved', key };
+    if (verdict && isEvaluationError(verdict)) return { kind: 'unresolved', key };
     if (verdict === null) return { kind: 'ungoverned', key };
     if (unresolvedVerdict(verdict)) return { kind: 'unresolved', key };
     if (verdict.decision === 'allow') admitted.add(candidate.name);
