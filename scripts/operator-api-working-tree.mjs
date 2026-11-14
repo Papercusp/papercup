@@ -39,11 +39,30 @@ const env = { ...process.env, FORCE_COLOR: '0', TMPDIR: join(evidenceDir, 'tmp')
   WORKING_TREE_OPERATOR_API_EVIDENCE_DIR: evidenceDir, WORKING_TREE_OPERATOR_API_CALLER_CWD: process.cwd() };
 delete env.PC_HEAVY_PREEMPT_READY_FILE;
 delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
+// PC_ISOLATED_RUNTIME_PROOF=1 makes with-test-pg send proof receipts to ITS
+// parent (this CLI) and hold the worker until an isolated-runtime-observed
+// reply arrives (10s, then "original worker observation timed out"). With a
+// supervising verifier above us (IPC present) we relay both directions below;
+// without one there is no observer, so the proof mode must not be forwarded.
+const relayProof = env.PC_ISOLATED_RUNTIME_PROOF === '1' && typeof process.send === 'function';
+if (!relayProof) {
+  delete env.PC_ISOLATED_RUNTIME_PROOF;
+  delete env.PC_ISOLATED_RUNTIME_START_TOKEN;
+  delete env.PAPERCUSP_ISOLATED_PROGRESS_FILE;
+}
 
 console.error(`[operator-api-working-tree] evidence → ${evidenceDir}`);
 const child = fork(join(ROOT, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
   process.execPath, '--import', 'tsx', join(ROOT, 'packages/operator-core/test/working-tree-operator-api-fixture.ts'),
   ...(caller.length ? ['--', ...caller] : [])], { cwd: ROOT, env, execArgv: [], stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
+if (relayProof) {
+  // Transparent proof relay: the verifier observes with-test-pg's worker as if
+  // it had forked with-test-pg itself (messages carry their own pids/tokens).
+  child.on('message', message => { if (process.connected) process.send(message); });
+  const toChild = message => { if (child.connected) child.send(message); };
+  process.on('message', toChild);
+  child.once('exit', () => { process.off('message', toChild); if (process.connected) process.disconnect(); });
+}
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => child.kill(signal));
 child.on('close', (code, signal) => {
   rmSync(modules, { force: true });
