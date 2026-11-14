@@ -19,6 +19,11 @@
 #    cross, sync was not working and "the after-markers never crossed" proves nothing, so the
 #    result is inconclusive. Do not combine with CONFLICT_AT_OBS: an unresolved D-055 conflict
 #    parks the joiner, which looks exactly like a revoke.
+#  - RECLAIM=1 (S4): use a spot VM with a retained boot disk, exchange a positive control,
+#    commit run-unique markers on both peers, and reclaim while at least one is still in flight.
+#    Reuse reclaim-drill.sh for the stop/start timeline. Recovery requires both original commits,
+#    matching marker blobs at HEAD, and exactly one non-merge commit per marker on each peer.
+#    S4 runs before S8 when both are requested; failed/inconclusive S4 exits 7 before revocation.
 # Required env: DEB (gs:// URL of a test-artifact .deb), SHA (its sha256), JOIN_BODY (local file
 # with the join-link POST body; it carries a join token, so it stays out of the repo). Mint it with
 # `npx tsx scripts/agent-capacity/vm/mint-join-body.ts --hive <POT> --out <file>` (WI-10006697).
@@ -53,6 +58,7 @@ RIG_LOCK=${RIG_LOCK:-}; SU=${SU:-${PAPERCUSP_SID:-}}
 REVOKE=${REVOKE:-0}; REVOKE_PORT=${REVOKE_PORT:-3170}; REVOKE_WAIT_SEC=${REVOKE_WAIT_SEC:-1200}
 S8_POLL_SEC=${S8_POLL_SEC:-60}; WS=${WS:-papercusp-workspace}
 S8_COMMIT_TRIES=${S8_COMMIT_TRIES:-10}; S8_COMMIT_RETRY_SEC=${S8_COMMIT_RETRY_SEC:-15}
+RECLAIM=${RECLAIM:-0}
 DEB=${DEB:-}; SHA=${SHA:-}; JOIN_BODY=${JOIN_BODY:-}
 for v in DEB SHA JOIN_BODY; do
   [ -n "${!v}" ] || { echo "USAGE: $v is required (see the header of $0)" >&2; exit 2; }
@@ -62,6 +68,8 @@ git -C "$HIVE" rev-parse --git-dir >/dev/null 2>&1 || { echo "USAGE: HIVE '$HIVE
 case "$CONFLICT_AT_OBS" in '' | [1-9] | [1-9][0-9]) ;; *) echo "USAGE: CONFLICT_AT_OBS must be 1-99" >&2; exit 2 ;; esac
 case "$REVOKE" in 0) ;; 1) [ -z "$CONFLICT_AT_OBS" ] || { echo "USAGE: REVOKE=1 cannot be combined with CONFLICT_AT_OBS (a parked joiner looks like a revoke)" >&2; exit 2; } ;;
   *) echo "USAGE: REVOKE must be 0 or 1" >&2; exit 2 ;; esac
+case "$RECLAIM" in 0) ;; 1) [ -z "$CONFLICT_AT_OBS" ] || { echo "USAGE: RECLAIM=1 cannot be combined with CONFLICT_AT_OBS" >&2; exit 2; } ;;
+  *) echo "USAGE: RECLAIM must be 0 or 1" >&2; exit 2 ;; esac
 mkdir -p "$OUT" || exit 2
 JB=/tmp/$(basename "$JOIN_BODY")
 
@@ -115,14 +123,14 @@ commit_joiner() {
 # or the wait ends. Sets COMMITTED (both sides' commits exist, so a crossing is measurable at all),
 # PUSHED (joiner's file reached the tower) and PULLED (tower's file reached the joiner).
 exchange() {
-  local waited=0 tf="s8-$RUN-tower-$1.txt" jf="s8-$RUN-joiner-$1.txt" trc=0 jrc=0
+  local waited=0 prefix=${2:-s8} tf="${2:-s8}-$RUN-tower-$1.txt" jf="${2:-s8}-$RUN-joiner-$1.txt" trc=0 jrc=0
   echo "$RUN tower $1 $(ts)" > "$HIVE/$tf"
   ssh_vm "echo '$RUN joiner $1 $(ts)' | sudo -u $JUSER tee $JCLONE/$jf >/dev/null"
   commit_tower "$tf" || trc=1
   commit_joiner "$jf" || jrc=1
-  log "S8_COMMITTED tag=$1 tower=$((1 - trc)) joiner=$((1 - jrc))"
+  log "${prefix^^}_COMMITTED tag=$1 tower=$((1 - trc)) joiner=$((1 - jrc))"
   PUSHED=0; PULLED=0; COMMITTED=$([ "$trc$jrc" = 00 ] && echo 1 || echo 0)
-  [ "$COMMITTED" = 1 ] || { log "S8_EXCHANGE tag=$1 waited=0s joinerPushed=0 joinerPulled=0 not-measured=commit-failed"; return; }
+  [ "$COMMITTED" = 1 ] || { log "${prefix^^}_EXCHANGE tag=$1 waited=0s joinerPushed=0 joinerPulled=0 not-measured=commit-failed"; return; }
   while [ "$waited" -lt "$REVOKE_WAIT_SEC" ]; do
     sleep "$S8_POLL_SEC"; waited=$((waited + S8_POLL_SEC))
     [ "$(on_tower "$jf")" = 1 ] && PUSHED=1
@@ -130,7 +138,64 @@ exchange() {
     [ "$PUSHED$PULLED" = 11 ] && break
     [ "$S8_POLL_SEC" -gt 0 ] || break
   done
-  log "S8_EXCHANGE tag=$1 waited=${waited}s joinerPushed=$PUSHED joinerPulled=$PULLED"
+  log "${prefix^^}_EXCHANGE tag=$1 waited=${waited}s joinerPushed=$PUSHED joinerPulled=$PULLED"
+}
+# Executed locally and, unchanged, under the joiner's service user after reboot.
+# An SSH failure or missing/duplicated commit cannot produce the success sentinel.
+s4_check() {
+  local repo=$1 tc=$2 jc=$3 tf=$4 jf=$5 tb=$6 jb=$7 tn jn
+  git -C "$repo" merge-base --is-ancestor "$tc" HEAD || return 1
+  git -C "$repo" merge-base --is-ancestor "$jc" HEAD || return 1
+  tn=$(git -C "$repo" log --no-merges --format=%H HEAD -- "$tf" | sort -u | wc -l)
+  jn=$(git -C "$repo" log --no-merges --format=%H HEAD -- "$jf" | sort -u | wc -l)
+  echo "S4_COUNTS tower=$tn joiner=$jn"
+  [ "$tn" = 1 ] && [ "$jn" = 1 ] || return 1
+  [ "$(git -C "$repo" rev-parse "HEAD:$tf")" = "$tb" ] || return 1
+  [ "$(git -C "$repo" rev-parse "HEAD:$jf")" = "$jb" ] || return 1
+  echo S4_VERIFIED
+}
+s4() {
+  local tf="s4-$RUN-tower-inflight.txt" jf="s4-$RUN-joiner-inflight.txt" tc jc tb jb pending start waited=0 cmd quoted tower joiner trc jrc
+  [ "$(on_tower "s4-$RUN-tower-before-reclaim.txt")" = 0 ] && [ "$(on_tower "$tf")" = 0 ] || {
+    log "S4_RESULT verdict=inconclusive reason=run-name-reused"; return 1;
+  }
+  exchange before-reclaim s4
+  [ "$COMMITTED$PUSHED$PULLED" = 111 ] || { log "S4_RESULT verdict=inconclusive reason=control-failed"; return 1; }
+  echo "$RUN tower inflight" > "$HIVE/$tf"
+  ssh_vm "echo '$RUN joiner inflight' | sudo -u $JUSER tee $JCLONE/$jf >/dev/null" || return 1
+  commit_tower "$tf" && commit_joiner "$jf" || { log "S4_RESULT verdict=inconclusive reason=commit-failed"; return 1; }
+  tc=$(git -C "$HIVE" log -1 --format=%H -- "$tf")
+  jc=$(ssh_vm "sudo -u $JUSER git -C $JCLONE log -1 --format=%H -- $jf")
+  [[ "$tc" =~ ^([a-f0-9]{40}|[a-f0-9]{64})$ && "$jc" =~ ^([a-f0-9]{40}|[a-f0-9]{64})$ ]] || { log "S4_RESULT verdict=inconclusive reason=origin-unreadable"; return 1; }
+  tb=$(git -C "$HIVE" rev-parse "$tc:$tf")
+  jb=$(ssh_vm "sudo -u $JUSER git -C $JCLONE rev-parse $jc:$jf")
+  [[ "$tb" =~ ^([a-f0-9]{40}|[a-f0-9]{64})$ && "$jb" =~ ^([a-f0-9]{40}|[a-f0-9]{64})$ ]] || { log "S4_RESULT verdict=inconclusive reason=blob-unreadable"; return 1; }
+  pending="$(on_tower "$jf")$(on_joiner "$tf")"
+  case "$pending" in 00|01|10) ;; 11) log "S4_RESULT verdict=inconclusive reason=already-converged-before-reclaim"; return 1 ;;
+    *) log "S4_RESULT verdict=inconclusive reason=pre-reclaim-unreadable"; return 1 ;; esac
+  printf 'side\tcommit\tblob\tpath\ntower\t%s\t%s\t%s\njoiner\t%s\t%s\t%s\n' "$tc" "$tb" "$tf" "$jc" "$jb" "$jf" > "$OUT/s4-origins.tsv"
+  log "S4_INFLIGHT towerCommit=$tc joinerCommit=$jc crossings=$pending"
+  rig heartbeat
+  start=$(date +%s)
+  RECLAIM_OUT="$OUT/reclaim" bash scripts/agent-capacity/vm/reclaim-drill.sh reclaim "$VM" "$P" "$Z" > "$OUT/s4-reclaim.log" 2>&1 || {
+    log "S4_RESULT verdict=inconclusive reason=reclaim-failed"; return 1;
+  }
+  cmd="$(declare -f s4_check); s4_check '$JCLONE' '$tc' '$jc' '$tf' '$jf' '$tb' '$jb'"
+  printf -v quoted %q "$cmd"
+  while [ "$waited" -lt "$REVOKE_WAIT_SEC" ]; do
+    trc=0; jrc=0
+    tower=$(s4_check "$HIVE" "$tc" "$jc" "$tf" "$jf" "$tb" "$jb" 2>&1) || trc=$?
+    joiner=$(ssh_vm "sudo -u $JUSER bash -c $quoted" 2>&1) || jrc=$?
+    printf 'waited=%s towerRc=%s joinerRc=%s tower=[%s] joiner=[%s]\n' "$waited" "$trc" "$jrc" "$tower" "$joiner" >> "$OUT/s4-recovery.log"
+    if [ "$trc$jrc" = 00 ] && grep -qx S4_VERIFIED <<< "$tower" && grep -qx S4_VERIFIED <<< "$joiner"; then
+      log "S4_RESULT verdict=reconverged control=ok lost=0 duplicates=0 elapsedSec=$(( $(date +%s) - start ))"
+      return 0
+    fi
+    sleep "$S8_POLL_SEC"; waited=$((waited + S8_POLL_SEC))
+    [ "$S8_POLL_SEC" -gt 0 ] || break
+  done
+  log "S4_RESULT verdict=inconclusive reason=recovery-not-proven elapsedSec=$(( $(date +%s) - start ))"
+  return 1
 }
 s8() {
   local dev ghid rc control
@@ -178,14 +243,16 @@ log "SOAK_START run=$RUN vm=$VM pot=$POT observe=${OBSERVE_SEC}s conflictAtObs=$
 # Armed BEFORE create: a create that half-succeeds still leaves a billable VM to delete.
 trap teardown EXIT
 trap 'exit 143' TERM INT
-npx tsx scripts/agent-capacity/gcp-rails.ts create --run="$RUN" --name="$VM" --machine-type="$MACHINE_TYPE" --max-hours="$MAX_HOURS" > "$OUT/create.log" 2>&1
+CREATE_FLAGS=()
+[ "$RECLAIM" = 1 ] && CREATE_FLAGS+=(--spot --on-reclaim=stop)
+npx tsx scripts/agent-capacity/gcp-rails.ts create --run="$RUN" --name="$VM" --machine-type="$MACHINE_TYPE" --max-hours="$MAX_HOURS" "${CREATE_FLAGS[@]}" > "$OUT/create.log" 2>&1
 rc=$?; log "CREATE_RC=$rc"
 [ $rc -eq 0 ] || { tail -5 "$OUT/create.log"; exit 3; }
 for _ in $(seq 1 30); do ssh_vm true >/dev/null 2>&1 && break; sleep "${SSH_RETRY_SLEEP:-10}"; done
 ssh_vm true >/dev/null 2>&1 || { log "SSH_NEVER_UP"; exit 4; }
 log "SSH_UP"
 gcloud compute scp scripts/agent-capacity/vm/install-server.sh scripts/agent-capacity/vm/sample-footprint.py \
-  scripts/agent-capacity/vm/read-routine-metadata.mjs "$JOIN_BODY" "$VM":/tmp/ --project="$P" --zone="$Z" --quiet \
+  scripts/agent-capacity/vm/read-routine-metadata.mjs scripts/agent-capacity/vm/reclaim-vm-hooks.sh "$JOIN_BODY" "$VM":/tmp/ --project="$P" --zone="$Z" --quiet \
   || { log "SCP_FAILED"; exit 4; }
 ssh_vm "bash /tmp/install-server.sh '$DEB' $SHA PAPERCUSP_DISABLE_DOGFOOD_HIVE=1" > "$OUT/install.out" 2>&1
 rc=$?; log "INSTALL_RC=$rc $(grep -E '^(T_APT|T_BOOT_TO_HEALTH|SERVER_HEALTH)=' "$OUT/install.out" | tr '\n' ' ')"
@@ -215,6 +282,7 @@ log "JOIN_END T_JOIN=$(awk -v a="$J0" -v b="$J1" 'BEGIN { printf "%.1f", b - a }
 [ "$JHTTP" = HTTP=200 ] || { log "JOIN_FAILED ${JHTTP:-HTTP=none} body=[$(grep -v '^HTTP=' "$OUT/join.out" | tr '\n' ' ' | head -c 300)]"; exit 6; }
 DEV=$(grep -oE '"pubkeyBase64":"[^"]+"' "$OUT/join.out" | cut -d'"' -f4 | cut -c1-8)
 log "JOINER_DEVICE prefix=${DEV:-unknown}"
+[ "$RECLAIM" != 1 ] || ssh_vm 'sudo bash /tmp/reclaim-vm-hooks.sh' > "$OUT/s4-hooks.log" 2>&1 || { log "S4_RESULT verdict=inconclusive reason=hooks-failed"; exit 7; }
 
 end=$(( $(date +%s) + OBSERVE_SEC )); n=0
 while [ "$(date +%s)" -lt "$end" ]; do
@@ -249,5 +317,6 @@ while [ "$(date +%s)" -lt "$end" ]; do
   sleep "$OBS_INTERVAL_SEC"
 done
 log "OBSERVE_DONE observations=$n"
+[ "$RECLAIM" != 1 ] || s4 || exit 7
 [ "$REVOKE" = 1 ] && s8
 exit 0
