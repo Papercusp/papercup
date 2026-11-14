@@ -356,7 +356,7 @@ export default defineTool({
     build: z
       .enum(['main', 'staging'])
       .optional()
-      .describe("'staging' runs the call on the staging operator (:3170), for a tool main does not have yet. Default main."),
+      .describe("Omitted: staging (:3170) when this proxy has a staging target, else main. 'main' pins the release build (:3070)."),
     // EI-6681 / EI-15360: some MCP clients serialize the target args as a JSON
     // string, sometimes with multiple encoding layers. Use a plain union so JSON
     // Schema publishes both input shapes; decoding belongs in the handler because
