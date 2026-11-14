@@ -663,7 +663,7 @@ if bundle_host_run_step compiler-resolve bundle_host_prepare_esbuild "$REPO_ROOT
     exit 1
   fi
   if ! bundle_host_run_step host-testing-core-verify bundle_host_verify_testing_core "$REPO_ROOT"; then
-    echo 'ERROR: producing testing-core interval or final worker changed; keeping the last-known-good host.'
+    echo 'ERROR: testing-core witness verify failed AND the unwitnessed fallback worker rebuild failed (EI-28752668992567658); keeping the last-known-good host.'
     exit 78
   fi
   # Retain the host graph alongside its accepted bundle, as for spawner-sidecar.
