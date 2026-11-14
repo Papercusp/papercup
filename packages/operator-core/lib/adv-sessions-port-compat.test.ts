@@ -170,7 +170,13 @@ describe('adv_sessions port-column rollout compatibility (WI-4936)', () => {
     const mod = await import('./adv-sessions');
     await mod.listResumableSessions();
     expect(textOf(sql)).toContain('pg_attribute');
-    expect(textOf(sql, 1)).toContain(present ? "COALESCE(a.port_status, 'delivered') = 'delivered'" : 'TRUE');
+    expect(textOf(sql, 1)).toContain(present ? 'COALESCE(a.port_status, ?) = ?' : 'TRUE');
+    if (present) {
+      const predicate = sql.mock.calls.find(([strings]) =>
+        Array.isArray(strings) && strings.join('?').includes('COALESCE(a.port_status'),
+      );
+      expect(predicate?.slice(1)).toEqual(['delivered', 'delivered']);
+    }
     expect(textOf(sql, 2)).not.toContain("to_jsonb(a)->>'port_status'");
   });
 });
