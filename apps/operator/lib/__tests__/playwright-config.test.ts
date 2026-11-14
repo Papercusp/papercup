@@ -154,18 +154,20 @@ describe('Playwright isolated webServer contract', () => {
     expect(listing).toMatch(/Total: 1 test in 1 file/);
   }, PLAYWRIGHT_CHILD_TIMEOUT_MS + 10_000);
 
-  it('keeps the engineering evidence Playwright profile on controls; P-007 acceptance uses Tauri', () => {
-    const env = { ...process.env };
-    delete env.PAPERCUSP_ENGINEERING_CONTROLS_LIVE;
-    const listing = execFileSync(process.execPath, [
-      require.resolve('@playwright/test/cli'), 'test',
-      '--config', 'playwright.engineering-evidence.config.ts',
-      '--list', '--reporter=list',
-    ], { cwd: OPERATOR_DIR, encoding: 'utf8', timeout: PLAYWRIGHT_CHILD_TIMEOUT_MS, env });
-    expect(listing).toContain('ee.shared-controls: real-app checkbox and evidence-repair input states');
-    expect(listing).not.toContain('ee.current-or-shipped');
-    expect(listing).toMatch(/Total: 1 test in 1 file/);
-  }, PLAYWRIGHT_CHILD_TIMEOUT_MS + 10_000);
+  it('keeps the engineering evidence Playwright profile on controls; P-007 acceptance uses Tauri', async () => {
+    const prior = process.env.PAPERCUSP_ENGINEERING_CONTROLS_LIVE;
+    try {
+      delete process.env.PAPERCUSP_ENGINEERING_CONTROLS_LIVE;
+      vi.resetModules();
+      const { default: config } = await import('../../playwright.engineering-evidence.config');
+      const testMatch = config.testMatch as RegExp;
+      expect(testMatch.test(join(E2E_DIR, 'engineering-evidence-controls.live.ts'))).toBe(true);
+      expect(testMatch.test(join(E2E_DIR, 'engineering-evidence.live.ts'))).toBe(false);
+    } finally {
+      restoreEnv('PAPERCUSP_ENGINEERING_CONTROLS_LIVE', prior);
+      vi.resetModules();
+    }
+  });
 
   it('passes the selected port strictly and preserves Vite startup diagnostics', async () => {
     const previousPort = process.env.OPERATOR_E2E_PORT;
