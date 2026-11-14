@@ -7,6 +7,7 @@ import { getClaimTimeTaskBrief, type TaskBriefDeps } from './task-brief';
 import { firstPartyCallers } from './first-party-callers';
 import { declarationContentHash, type PlanItemAnchor } from '../plan-items/anchors';
 import { ensureBootstrap, getTxPool, tryAcquire, tryRelease, _resetForTests as resetLockStore } from '../agent-tools/locks/su-lock-store';
+import { inWorkspaceTxn } from '../agent-tools/locks/in-workspace-txn';
 import { toolsetFromNames } from './push-toolset';
 import { readPushSourceLinks } from './push-channel';
 import { liveLockHoldingsStrict } from '../agent-tools/locks/live-lock-paths';
@@ -17,9 +18,9 @@ describe('plan anchors P008 persisted claim context', () => {
   beforeAll(async () => { state = await setupEngineeringEvidenceFixture(); }, 180_000);
   afterAll(async () => {
     try {
-      if (lockAcquired) await getTxPool().begin(tx => tryRelease(tx as never, {
+      if (lockAcquired) await inWorkspaceTxn(state.root, 'su-p008-peer', tx => tryRelease(tx as never, {
         coordinationDomain: state.root, owner: 'su-p008-peer', allMine: true,
-      }));
+      }), { paths: ['consumer.ts'] });
     } finally { try { await resetLockStore(); } finally { await state?.dispose(); } }
   });
 
@@ -49,9 +50,9 @@ describe('plan anchors P008 persisted claim context', () => {
     ]);
     // The lock package deliberately derives a side database on the configured test server.
     expect(actual[0]).toEqual({ ...expected[0], name: 'papercusp_su' });
-    expect(await lockDb.begin(tx => tryAcquire(tx as never, { coordinationDomain: root,
+    expect(await inWorkspaceTxn(root, 'su-p008-peer', tx => tryAcquire(tx as never, { coordinationDomain: root,
       owner: 'su-p008-peer', ownerLabel: 'P008 fixture peer', paths: ['consumer.ts'], intent: 'fixture consumer edit',
-      goalRef: 'WI-p008-consumer', ttlSec: 120 }))).toMatchObject({ ok: true });
+      goalRef: 'WI-p008-consumer', ttlSec: 120 }), { paths: ['consumer.ts'] })).toMatchObject({ ok: true });
     lockAcquired = true;
     // Fail at the real reader seam before the bounded brief can hide a fixture
     // route error as unknown context. Keep phase/row evidence for slow failures.

@@ -1252,6 +1252,30 @@ select_verifier_snapshot_root() {
 # Run in this shell: a command substitution would discard the selected mode.
 verifier_run_step verifier-snapshot-root select_verifier_snapshot_root || exit $?
 
+# WI-6554700010048341: a copy-mode dependency snapshot verifies through the
+# frozen helper's snapshot-generation-locked route, and its verifier demands an
+# external source receipt (libs/test-config/src/verifier-source.ts). Only the
+# committed-ref route (VERIFY_TAURI_SOURCE_REF) writes one; the working-tree
+# route never does, so it always died after a ~20-min tree copy (boot 7, ~45 min).
+# TEMPORARY MITIGATION: refuse before any copy. Durable fix (a working-tree
+# census receipt) stays tracked on WI-6554700010048341.
+refuse_unreceipted_working_tree_copy() {
+  [ "${VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE:-hardlink}" = copy ] ||
+    [ -n "${PAPERCUSP_DEPENDENCY_GENERATION_ROOT:-}" ] || return 0
+  [ -z "${VERIFY_TAURI_SOURCE_REF:-}" ] || return 0
+  [ -z "${VERIFY_TAURI_SOURCE_RECEIPT:-}" ] || return 0
+  grep -Eq '^[[:space:]]*snapshot-generation-locked\)' \
+    "$DESKTOP_DIR/bin/lib/pinned-deps.sh" 2>/dev/null || return 0
+  {
+    echo 'FATAL: the working-tree route (empty VERIFY_TAURI_SOURCE_REF) cannot boot with a copy-mode dependency snapshot:'
+    echo '  snapshot-generation-locked requires an independent verifier source receipt, and only the committed-ref route writes one.'
+    echo '  Use VERIFY_TAURI_SOURCE_REF=<committed sha> (let git-sync commit your change first), or a donor on a non-root data'
+    echo '  device with VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE=hardlink. Refused before the tree copy (WI-6554700010048341).'
+  } >&2
+  return 2
+}
+refuse_unreceipted_working_tree_copy || exit $?
+
 # Root-device donors select independent copies above. Validate their task
 # envelope now, before Cargo capacity, native checks, or source export. Keep
 # the frozen-tree recheck at the copy boundary as protection against drift.
