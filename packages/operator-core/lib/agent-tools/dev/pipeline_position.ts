@@ -202,6 +202,8 @@ export const PIPELINE_GATE_PROJECTED_FIELDS = [
   'convergence',
   'freezeDisposition',
   'retriage',
+  // The registered run-progress cell uses this bounded projection too.
+  'run',
 ] as const;
 
 /** Projected by their own bounded helpers below, not by the flat pick. */

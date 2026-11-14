@@ -205,6 +205,26 @@ const CURRENT_BUILD_TEST_CLASS_TABLE = [
     readiness: 'ready',
   },
   {
+    // WI-6554700010048234: the commit-independent route. :3170 above only ever
+    // serves COMMITTED staging, so an uncommitted or git-sync-held edit is
+    // invisible there; this one bundles the working tree itself.
+    id: 'operator-api-working-tree',
+    source: 'Canonical working tree including uncommitted edits, bundled per run (no commit or staging sync needed)',
+    runtime: null,
+    route: 'node scripts/operator-api-working-tree.mjs [-- <caller command>]',
+    routeFile: 'scripts/operator-api-working-tree.mjs',
+    isolation:
+      'Private operator host on auto-picked ports against a disposable migrated PG and private workspace; background workers and DBOS off; torn down after the caller exits.',
+    prerequisites: [
+      'Host bundle build from the working tree (apps/operator/bin/bundle-host.sh)',
+      'local embedded PG and migration assets',
+      'caller reads PAPERCUSP_OPERATOR_URL / PAPERCUSP_OPERATOR_MCP_URL / PAPERCUSP_OPERATOR_BEARER',
+    ],
+    verification:
+      'WORKING_TREE_OPERATOR_API_RECEIPT line: bundle sha256, private /api/health identity, caller (or MCP probe) exit and host teardown.',
+    readiness: 'requires-prerequisites',
+  },
+  {
     id: 'background-federation',
     source: 'canonical tree loaded by bg-host, not the :3170 API bundle',
     runtime: 'bg-host',
